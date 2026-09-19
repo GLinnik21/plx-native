@@ -1,7 +1,6 @@
 //! The frame scheduler (spec §8): `Budget` — admission control, not sampling (§8.1) — the
 //! `RenderSet` residency check (§8.3), and `glass::GlassPlan`, the glass chain's half of §8.3:
-//! the ONE shared backdrop-refresh cadence and the surfaces whose visible lifetime belongs to no
-//! screen.
+//! the layer/region backdrop registry and the chrome material whose lifetime belongs to no screen.
 //!
 //! Phase 2-i / 2 ship the MINIMAL type: the struct, `take(class)` in the clock-before-every-take
 //! shape, one class (`Poster`, quota 3 per frame) and `has_queued_work`. Phase 11 adds the
@@ -23,3 +22,5 @@ mod render_set;
 
 pub use budget::*;
 pub use render_set::*;
+
+pub(crate) mod backdrop;

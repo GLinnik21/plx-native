@@ -197,6 +197,14 @@ pub(crate) struct DecisionAlert {
     /// [`Tone::Destructive`], so every alert built before this field existed looks exactly as it
     /// did.
     tone: Tone,
+    /// The panel's material: the page under the alert, latched ONCE per open from the framebuffer
+    /// at the head of [`draw_scrim`](Self::draw_scrim), before the alert's own dim touches it —
+    /// the same field `containers::modal::ModalUnderlay` latches for a surface, owned here because
+    /// this alert is drawn from inside its page rather than as a `ModalStack` surface, so no
+    /// container field describes what is actually behind it (over Privacy & data, the stack's
+    /// field is HOME's, one surface further down). Over the video plane (the player's repair
+    /// alert) the sample refuses and the panel draws the flat sheet — what the old glass did there.
+    field: crate::ui::underlay::UnderlayField,
 }
 
 impl DecisionAlert {
@@ -215,6 +223,7 @@ impl DecisionAlert {
             body: Vec::new(),
             answers: Answers::Two,
             tone: Tone::Destructive,
+            field: crate::ui::underlay::UnderlayField::new(),
         }
     }
     /// Set the second answer's face. Called once, outside the draw loop — a tone is a property of
@@ -286,7 +295,6 @@ impl DecisionAlert {
         // The body determines the panel's size. A cached ground can contain the OLD outline;
         // dropping it here lets all hosts redraw the measured panel, even inside an own scope.
         crate::ui::popover::host::ground_invalidate();
-        crate::ui::popover::note_own_damage();
         crate::ui::idle::invalidate();
         true
     }
@@ -301,6 +309,8 @@ impl DecisionAlert {
     }
     fn open_inner(&mut self) {
         self.choice = Choice::Cancel;
+        // A fresh open is a fresh page under it: re-latch at the next `draw_scrim`.
+        self.field.reset();
         self.pop.open();
         crate::ui::idle::invalidate();
     }
@@ -352,8 +362,6 @@ impl DecisionAlert {
     }
     pub(crate) fn set_choice(&mut self, choice: Choice) {
         self.choice = self.valid_choice(choice);
-        // The ring moved and nothing behind the alert did — `popover::note_own_damage`.
-        crate::ui::popover::note_own_damage();
         crate::ui::idle::invalidate();
     }
     pub(crate) fn update(&mut self, dt: f32) {
@@ -369,15 +377,21 @@ impl DecisionAlert {
             dt,
         );
     }
-    pub(crate) fn draw_scrim(&self) {
+    pub(crate) fn draw_scrim(&mut self) {
         if self.visible() {
             // Live over the frozen host — and the first `live` of a frame is what takes the
             // snapshot, before this scrim lands on it. See `popover::host::live`.
             let _live = crate::ui::popover::host::live();
-            // The DECISION role's weight. Still the flat ink (`Popover::scrim`), not the
-            // container's inherited field: this alert is a legacy `Popover` drawn from inside its
-            // page (consent, and the player's repair alert over the video plane), not a
-            // `ModalStack` surface, so it has no field owner to inherit through.
+            // The panel's field, from the page as it stands before the dim below touches it —
+            // idempotent once latched; until the read lands, and on a refusal (the video plane),
+            // the flat sheet.
+            let _ = self.field.latch_from_frame(
+                crate::ui::underlay::Grade::Dim,
+                crate::ui::popover::host::page_tex(),
+            );
+            // The DECISION role's weight, as the flat ink (`Popover::scrim`): this alert is a
+            // `Popover` drawn from inside its page (consent, and the player's repair alert over the
+            // video plane), not a `ModalStack` surface, so its DIM has no container field to inherit.
             self.pop.scrim(theme::underlay::DIM_DECISION);
         }
     }
@@ -393,7 +407,7 @@ impl DecisionAlert {
         let _live = crate::ui::popover::host::live();
         let l = self.measured();
         let p = self.pop.content_painter(Popover::RISE);
-        crate::ui::profile::phase("da.panel", || self.pop.panel(p, l.panel, theme::ALERT_PANEL_RAD));
+        crate::ui::profile::phase("da.panel", || self.pop.panel(p, l.panel, theme::ALERT_PANEL_RAD, Some(&self.field)));
         crate::ui::profile::phase("da.text", || {
             Self::question_view(self.question).draw(p, l.question);
             let mut y = l.body.y;

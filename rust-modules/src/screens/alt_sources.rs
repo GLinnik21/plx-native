@@ -2,8 +2,8 @@
 //!
 //! Deliverable E of the Shared Sources design (`docs/shared-servers.md` §6): when a second pinned
 //! source also holds the item on screen, the detail page's actions row grows an *Also available*
-//! pill with a trailing chevron, and it opens this panel — a `TableView` on a glass ground, the
-//! same object the Library's Sort and Filter chips open one page over.
+//! pill with a trailing chevron, and it opens this panel — a `TableView` on the panel ground
+//! (`widgets::panel_ground`), the same object the Library's Sort and Filter chips open one page over.
 //!
 //! **A `Style::Compact` surface on the container tree** since restructure phase 10 (§6.2): the
 //! anchored menu the Library's chips already are. The container owns its PHASE and its appear
@@ -97,7 +97,6 @@ use crate::ui::screen::{
     Stop,
 };
 use crate::ui::table::{Badge, Row, Section, TableView};
-use crate::ui::widgets::{Glass, GlassState};
 use crate::ui::{theme, Rect};
 
 /// The fields [`AltSourcesScreen::write`] canonicalises, for the recorder's shape pin (§5.4). The
@@ -322,7 +321,6 @@ pub(crate) struct AltSourcesScreen {
     /// The rows the `TableView` and `dests` were built from — the rebuild stamp (module doc).
     rows: Vec<AltRow>,
     pub(crate) table: TableView,
-    glass: GlassState,
 }
 
 impl AltSourcesScreen {
@@ -332,7 +330,6 @@ impl AltSourcesScreen {
             arg,
             rows: Vec::new(),
             table: TableView::new(),
-            glass: GlassState::new(),
         };
         screen.rebuild(Sel::OnTheCopyYouAreOn, meta);
         screen
@@ -600,19 +597,17 @@ impl<H: AppLike<Memory = PageMemory> + crate::screens::registry::MetadataLike> S
     fn crumb(&self, _cx: &Cx<'_, H>) -> Option<Cow<'_, str>> {
         None
     }
-    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {
-        Glass::CACHED.prepare(&mut self.glass, false);
-    }
+    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
     /// The modal dim, asked for rather than drawn. Nothing is lifted back out of it: this picker
     /// hangs under the detail page's Source chip, and the chip is a control that says which copy
     /// is playing rather than the subject of the panel — unlike the card menu's tile or the
     /// profile menu's chip, there is nothing here whose dimming contradicts what the panel is
     /// about.
     ///
-    /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): a
-    /// `Glass::CACHED` ground samples the default framebuffer as it stands, so the dim has to be
-    /// down before the panel's backdrop is taken or the frosted ground reads brighter than the
-    /// dimmed screen around it. `ModalStack::draw_scrims` draws it at the end of the PAGE pass,
+    /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): the
+    /// panel's ground once sampled the framebuffer (`Glass::CACHED`), so the dim had to be down
+    /// before the backdrop was taken; the ground is the latched underlay field now, latched at the
+    /// head of the dims from the undimmed page. `ModalStack::draw_scrims` draws it at the end of the PAGE pass,
     /// which is strictly earlier than the surface pass this `draw` runs in, and multiplies by the
     /// appear spring and by `nav::page_alpha` — the second of which the in-`draw` version could
     /// not reach, `DrawFrame::page_alpha` being the surface's own spring alone.
@@ -628,8 +623,9 @@ impl<H: AppLike<Memory = PageMemory> + crate::screens::registry::MetadataLike> S
         let measure = f.measure;
         // Named for `/tmp/plxnative-cpuprof` beside the page's own phases, so a slow frame while
         // this panel is up can be read as the PANEL or as the host under it.
+        let field = f.underlay;
         crate::ui::profile::phase("dt.alt", || {
-            Glass::CACHED.panel(p, r, RISE * (1.0 - appear), PANEL_RAD);
+            crate::ui::widgets::panel_ground(p, r, PANEL_RAD, field);
             self.table.draw(p, r, measure);
         });
         // The hit map's stops are registered against the SETTLED geometry (`self.frame()`, what

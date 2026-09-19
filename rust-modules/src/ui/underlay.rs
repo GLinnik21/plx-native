@@ -13,7 +13,7 @@
 //!   field below, and [`UnderlayField::latch_from_corners`] is what a caller with no readable
 //!   frame — the video plane, a route that opens before Home has drawn — still reaches for.)
 //!
-//! This is the third: a 15x8 grid reduced from the frame itself (`gfx::sample_underlay_field`),
+//! This is the third: a 15x8 grid reduced from the frame itself (`gfx::field_kick`),
 //! low-passed, graded, reconstructed to 60x32 and drawn as one magnified quad with the shared
 //! dither. **It is spatially faithful** — the green stays where the green is — and it costs one
 //! texture fetch a fragment, because the expensive part happened once, at the latch.
@@ -159,7 +159,45 @@ pub(crate) struct UnderlayField {
     /// The 60x32 reconstruction, or 0 before the first latch. Re-specced in place on every latch
     /// (`upload_rgba` reuses `prev`), so a field costs one texture name for its whole life.
     tex: u32,
+    /// Rec.709 luma of every texel of that reconstruction, over its display CODES — what a panel's
+    /// luma ceiling is solved against ([`panel_plan`](Self::panel_plan)). Kept beside the texture
+    /// rather than recomputed per draw: a panel asks every frame, the field changes only at a latch.
+    luma: [u8; TEX_W * TEX_H],
     latched: bool,
+    /// A page reduction queued by [`latch_from_frame`](Self::latch_from_frame)
+    /// and not yet read back.
+    pending: Option<gfx::FieldTicket>,
+}
+
+/// What [`UnderlayField::latch_from_frame`] answers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum FrameLatch {
+    /// The field holds a picture (this call's, or an earlier one's).
+    Latched,
+    /// The read is in flight; ask again next frame.
+    Pending,
+    /// No honest answer this frame (`gfx::field_kick`'s refusals): the caller's fallback.
+    Refused,
+}
+
+/// **What [`UnderlayField::draw_panel`] resolves to, as a VALUE** — [`Draw`]'s counterpart for a
+/// popover's material, so the one decision a host test cannot see through GL (which window of the
+/// field, how bright) is gradeable without a context.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum PanelDraw {
+    /// Nothing latched: the flat panel sheet (`theme::PANEL_TOP`/`PANEL_BOT`), never a blank.
+    Flat,
+    /// The field's window `uv` — `(x, y, w, h)` of the panel over the screen size — multiplied by
+    /// the opaque `tint`.
+    Field { uv: [f32; 4], tint: [f32; 4] },
+}
+
+/// **The panel's window into the field**: its SCREEN rect over the screen size. The field maps the
+/// whole screen, so this is the only UV rect under which a cell stays where it is on the page —
+/// green under the panel's bottom-left is sampled at the panel's bottom-left.
+pub(crate) fn panel_uv(screen: Rect) -> [f32; 4] {
+    let (sw, sh) = (crate::ui::consts::SCR_W, crate::ui::consts::SCR_H);
+    [screen.x / sw, screen.y / sh, screen.w / sw, screen.h / sh]
 }
 
 impl UnderlayField {
@@ -167,27 +205,56 @@ impl UnderlayField {
         Self {
             cells: [[0.0; 3]; N],
             tex: 0,
+            luma: [0; TEX_W * TEX_H],
             latched: false,
+            pending: None,
         }
     }
 
-    /// **Freeze the frame that has already been drawn.** Idempotent while latched — the second
-    /// caller gets `true` and the first caller's picture, which is the property that makes this
-    /// safe to call from a `draw` that runs every frame.
+    /// **Freeze the frame that has already been drawn — without ever waiting for it.** Idempotent
+    /// while latched, which is what makes it safe to call from a `draw` that runs every frame.
     ///
-    /// `false` means `gfx::sample_underlay_field` had no honest answer this frame (a blur source
+    /// The page is reduced on the first call (`gfx::field_kick`) and read back on a LATER one, once
+    /// the GPU has actually finished the reduction (`gfx::field_collect`; [`FrameLatch::Pending`]
+    /// until then). Reading it on the frame that asked — which this used to do whenever the
+    /// owner's surface was already visible — made the `glReadPixels` wait for everything the GPU
+    /// had queued: 26–37 ms of a modal's open frame on the television (2026-09-19). A field that
+    /// is not latched yet draws its owner's fallback (the flat ground, the flat panel sheet) for
+    /// the frame or two the read takes, at the very bottom of an appear ramp.
+    ///
+    /// `src` is `gfx::field_kick`'s: a texture that already holds the page, or `None` for the
+    /// framebuffer as it stands. [`FrameLatch::Refused`] is `field_kick`'s refusals (a blur source
     /// pass, a video-plane frame, a frozen page, a drawable the exact-2x chain cannot be built
-    /// for); the caller keeps whatever it was drawing and may ask again next frame, or fall back
-    /// to [`latch_from_corners`](Self::latch_from_corners).
-    pub(crate) fn latch_from_frame(&mut self, grade: Grade) -> bool {
+    /// for): the caller keeps what it was drawing, may ask again next frame, or falls back to
+    /// [`latch_from_corners`](Self::latch_from_corners).
+    pub(crate) fn latch_from_frame(&mut self, grade: Grade, src: Option<u32>) -> FrameLatch {
         if self.latched {
-            return true;
+            return FrameLatch::Latched;
         }
-        let Some(raw) = gfx::sample_underlay_field() else {
-            return false;
-        };
-        self.adopt(cells_from_frame(&raw, grade));
-        true
+        if let Some(t) = self.pending.take() {
+            match gfx::field_collect(t) {
+                gfx::FieldRead::Ready(raw) => {
+                    let c = cells_from_frame(&raw, grade);
+                    self.adopt(c);
+                    return FrameLatch::Latched;
+                }
+                gfx::FieldRead::Pending => {
+                    self.pending = Some(t);
+                    crate::ui::idle::wake();
+                    return FrameLatch::Pending;
+                }
+                gfx::FieldRead::Lost => {}
+            }
+        }
+        match gfx::field_kick(src) {
+            Some(t) => {
+                self.pending = Some(t);
+                // A frame for the read to land in, whether or not anything else moves.
+                crate::ui::idle::wake();
+                FrameLatch::Pending
+            }
+            None => FrameLatch::Refused,
+        }
     }
 
     /// **Latch from a four-corner envelope instead of the framebuffer** — the CPU source, for the
@@ -212,7 +279,7 @@ impl UnderlayField {
     ///
     /// Unlike [`latch_from_frame`](Self::latch_from_frame) it is NOT idempotent, and that is the
     /// point: the owner samples FIRST and only calls this with a real answer, so a frame on which
-    /// `gfx::sample_underlay_field` has none (a blur source pass, a frozen page) keeps the field
+    /// `gfx::field_kick` has none (a blur source pass, a frozen page) keeps the field
     /// it had instead of dropping to the flat dim for a frame. It is also the seam a host test
     /// drives the latch through, since the sample is the one step that needs a GL context.
     pub(crate) fn latch_sampled(&mut self, raw: &[[f32; 3]; N], grade: Grade) {
@@ -224,6 +291,7 @@ impl UnderlayField {
     pub(crate) fn reset(&mut self) {
         self.cells = [[0.0; 3]; N];
         self.latched = false;
+        self.pending = None;
     }
 
     pub(crate) fn is_latched(&self) -> bool {
@@ -276,9 +344,68 @@ impl UnderlayField {
         }
     }
 
+    /// **A popover panel's material, decided** — see [`PanelDraw`]. `screen` is the panel's rect
+    /// as DRAWN (the cascade's translate folded in); `weight` is `theme::underlay::PANEL_TINT` or
+    /// its sweep.
+    ///
+    /// The tint is one scalar for the whole window: `weight`, lowered just far enough that the
+    /// brightest texel the panel covers lands at `theme::underlay::PANEL_LUMA_MAX` — the ground's
+    /// `ground_capped` rule, applied per panel rather than per cell so that the field's shape
+    /// under the panel survives the cap instead of being flattened by it.
+    pub(crate) fn panel_plan(&self, screen: Rect, weight: f32) -> PanelDraw {
+        if !self.latched {
+            return PanelDraw::Flat;
+        }
+        let peak = self.peak_luma(screen);
+        let cap = crate::ui::theme::underlay::PANEL_LUMA_MAX;
+        let w = weight.clamp(0.0, 1.0);
+        let k = if peak * w > cap { cap / peak } else { w };
+        PanelDraw::Field {
+            uv: panel_uv(screen),
+            tint: [k, k, k, 1.0],
+        }
+    }
+
+    /// **Paint the field as a panel's material over `r`** (corner `radius`) through `p`. Returns
+    /// whether it drew; `false` — unlatched, or no program/texture — is the caller's cue to lay
+    /// down the flat sheet (`widgets::panel_ground`).
+    pub(crate) fn draw_panel(&self, p: Painter, r: Rect, radius: f32, weight: f32) -> bool {
+        let (_, screen, _) = p.to_screen(r);
+        match self.panel_plan(screen, weight) {
+            PanelDraw::Flat => false,
+            PanelDraw::Field { uv, tint } => p.field_panel(r, radius, self.tex, uv, tint),
+        }
+    }
+
+    /// The brightest texel the magnified field can put inside `screen`, 0..1. Bilinear
+    /// magnification never leaves the hull of the two texels either side of a point, so the texels
+    /// bracketing the rect's texel-centre span bound every fragment in it.
+    fn peak_luma(&self, screen: Rect) -> f32 {
+        let span = |lo: f32, len: f32, extent: f32, n: usize| -> (usize, usize) {
+            let a = (lo / extent * n as f32 - 0.5).floor();
+            let b = ((lo + len) / extent * n as f32 - 0.5).floor() + 1.0;
+            let clamp = |v: f32| v.clamp(0.0, (n - 1) as f32) as usize;
+            (clamp(a), clamp(b))
+        };
+        let (i0, i1) = span(screen.x, screen.w, crate::ui::consts::SCR_W, TEX_W);
+        let (j0, j1) = span(screen.y, screen.h, crate::ui::consts::SCR_H, TEX_H);
+        let mut peak = 0u8;
+        for j in j0..=j1 {
+            for &l in &self.luma[j * TEX_W + i0..=j * TEX_W + i1] {
+                peak = peak.max(l);
+            }
+        }
+        peak as f32 / 255.0
+    }
+
     fn adopt(&mut self, cells: [[f32; 3]; N]) {
         self.cells = cells;
-        self.tex = upload(self.tex, &texture_rgba(&self.cells));
+        let px = texture_rgba(&self.cells);
+        for (l, t) in self.luma.iter_mut().zip(px.chunks_exact(4)) {
+            let y = 0.2126 * t[0] as f32 + 0.7152 * t[1] as f32 + 0.0722 * t[2] as f32;
+            *l = (y + 0.5).min(255.0) as u8;
+        }
+        self.tex = upload(self.tex, &px);
         self.latched = true;
     }
 }
@@ -477,21 +604,56 @@ pub(crate) fn reconstruct(cells: &[[f32; 3]; N], u: f32, v: f32) -> [f32; 3] {
 
 /// The 60x32 display-encoded RGBA8 the shader samples. Alpha is opaque: coverage is the tint's
 /// business (`fs_field.frag` multiplies `c.a * u_tint.a`), never the texture's.
+///
+/// **[`reconstruct`] evaluated SEPARABLY**, and to the bit: `reconstruct` already runs its cubic
+/// along x for each of four rows and then once along y, so the x pass depends only on a texel's
+/// COLUMN and a grid row, and is shared by every texel of that column. Computing it once per
+/// (row, column) and then running the y pass per texel performs exactly the arithmetic
+/// `reconstruct` does, in the same order, with a quarter of the cubics and none of the per-tap
+/// extrapolation — `a_separable_texture_is_reconstruct_to_the_bit` holds it to that. Evaluated per
+/// texel it was 7.5–8.6 ms of the frame a modal's dim first latched on the television
+/// (2026-09-19), the one CPU cost left in a frame the GPU already fills.
 pub(crate) fn texture_rgba(cells: &[[f32; 3]; N]) -> [u8; TEX_W * TEX_H * 4] {
+    // The grid rows a texel's y pass can reach: `j0 - 1 ..= j0 + 2` over every texel row.
+    let row_lo = texel_knot(0, TEX_H, H).0 - 1;
+    let row_hi = texel_knot(TEX_H - 1, TEX_H, H).0 + 2;
+    let rows = (row_hi - row_lo + 1) as usize;
+    // x pass: `xs[r][i][ch]` is the cubic along x through grid row `row_lo + r` at texel column i.
+    let mut xs = vec![[[0.0f32; 3]; TEX_W]; rows];
+    for (r, out) in xs.iter_mut().enumerate() {
+        let j = row_lo + r as isize;
+        for (i, o) in out.iter_mut().enumerate() {
+            let (i0, fx) = texel_knot(i, TEX_W, W);
+            *o = std::array::from_fn(|ch| {
+                let p: [f32; 4] = std::array::from_fn(|m| cell_at(cells, i0 - 1 + m as isize, j, ch));
+                crom(p, fx)
+            });
+        }
+    }
     let mut px = [0u8; TEX_W * TEX_H * 4];
     for j in 0..TEX_H {
+        let (j0, fy) = texel_knot(j, TEX_H, H);
         for i in 0..TEX_W {
-            let u = (i as f32 + 0.5) / TEX_W as f32;
-            let v = (j as f32 + 0.5) / TEX_H as f32;
-            let c = reconstruct(cells, u, v);
             let o = (j * TEX_W + i) * 4;
             for ch in 0..3 {
-                px[o + ch] = (gfx::enc(c[ch]).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                let col: [f32; 4] =
+                    std::array::from_fn(|k| xs[(j0 - 1 + k as isize - row_lo) as usize][i][ch]);
+                let c = crom(col, fy);
+                px[o + ch] = gfx::enc_u8(c);
             }
             px[o + 3] = 255;
         }
     }
     px
+}
+
+/// Texel `t` of `n` across a grid of `cells`: its left/top knot and the fraction past it —
+/// [`reconstruct`]'s own `(i0, fx)` for `u = (t + 0.5) / n`, by the same expressions.
+fn texel_knot(t: usize, n: usize, cells: usize) -> (isize, f32) {
+    let u = (t as f32 + 0.5) / n as f32;
+    let x = u.clamp(0.0, 1.0) * cells as f32 - 0.5;
+    let x0 = x.floor();
+    (x0 as isize, x - x0)
 }
 
 #[cfg(test)]

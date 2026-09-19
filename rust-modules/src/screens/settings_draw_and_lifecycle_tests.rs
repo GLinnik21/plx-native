@@ -59,6 +59,8 @@ fn nested_draw_preserves_navigation_at_rest_and_through_push_and_pop() {
             id: InstanceId(id),
             screen: Box::new(DrawProbe { id, seen: Rc::clone(&seen) }) as Box<dyn Screen<InnerHost>>,
             inflight: Vec::new(),
+            staged: false,
+            staged_effects: Vec::new(),
         };
         // Install inert bodies directly: no real page construction, auth/session reads or
         // lifecycle side effects. Both resting cases retain a page underneath the top.

@@ -1902,48 +1902,121 @@ fn parent_read_only_api_projects_engine_focus_without_setters() {
     s.redraw_focused(&mut frame, None);
 }
 
+/// The billboard's 8 s auto-advance is a TIMER, not an animation: nothing it counts is drawn, and
+/// the dispatcher ticks the page every loop iteration whether or not the frame presents. So a
+/// settled hero must let the present gate close while it counts down, and the flip it ends in must
+/// still happen on time — and wake the gate itself.
+///
+/// D4 (phase 12) made the countdown note `Motion` on every tick, which kept a still Home
+/// presenting at the full frame rate indefinitely (measured on the TV, 2026-09-19): every modal
+/// dismiss and page pop returned to a Home that never went idle, and the next transition's first
+/// frame paid that GPU queue. The test that pinned the old behaviour stepped through a fresh
+/// `Present`, whose first-frame `dirty` answers `true` whatever the screen reports — it could not
+/// have failed.
 #[test]
-fn the_hero_carousel_auto_advance_reports_motion_on_every_tick_while_armed() {
-    // D4 (phase 12): `hero_auto`'s countdown itself is deliberately UNCHANGED arithmetic — it is
-    // hashed `LogicalState` across three committed replay fixtures, and moving it onto
-    // `motion::Ramp` measurably diverged the hash (`tests/focusfp.sh --replay`, flow 1). What DID
-    // change is the actual bug this conversion exists to catch: the countdown never reported
-    // `Motion`, so a hero left mid-count-down on an otherwise-settled screen could silently freeze
-    // under `ui::idle`'s present gate, exactly like the `Xfade`/`Spinner` cases the module doc
-    // already names. `tick` now notes `Motion` explicitly every frame the countdown runs.
+fn a_settled_hero_counting_down_lets_the_gate_close_and_still_flips() {
     let _guard = crate::testlock::serial();
     let mut state = crate::pms::PmsState::default();
     let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
-    crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
     let snapshot = crate::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    assert!(view.hero_count() > 1, "the auto-advance only arms with more than one hero slot");
+    let mut s = screen(view);
+    let context = cx(view, None);
+    let mut present = crate::ui::present::Present::new();
+    // `take` at tick_ms 0 throughout keeps the keepalive term out: this counts only what the
+    // screen itself asked for. The first take drains the fresh gate's first-frame `dirty`.
+    present.take(0);
+    let mut asked_while_counting = 0u32;
+    let mut flipped_at = None;
+    // 10 s of 16 ms ticks: past HERO_AUTO_S, so the countdown expires exactly once.
+    for frame in 1..=625u32 {
+        let mut out = Vec::new();
+        {
+            let mut fx = Effects::new(
+                &mut out,
+                crate::ui::machine::MachineId::Instance(InstanceId(9)),
+                &mut present,
+            );
+            let tick = ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_000 });
+            Machine::<TestHost>::step(&mut s, &tick, &context, &mut fx);
+        }
+        let asked = present.take(0);
+        if s.outgoing.is_some() {
+            flipped_at.get_or_insert(frame);
+            assert!(asked, "the flip's slide is motion and must present");
+        } else if flipped_at.is_none() && asked {
+            asked_while_counting += 1;
+        }
+    }
+    let flipped_at = flipped_at.expect("the countdown must still end in a flip");
     assert!(
-        snapshot.view().hero_count() > 1,
-        "the auto-advance branch only arms with more than one hero slot"
+        (flipped_at as f32 * 0.016 - HERO_AUTO_S).abs() < 0.05,
+        "flipped after {flipped_at} ticks, not after {HERO_AUTO_S} s"
     );
-    let mut s = screen(snapshot.view());
-    let (_, _, motion) = step(
+    assert_eq!(
+        asked_while_counting, 0,
+        "a settled hero asked for {asked_while_counting} presents while only counting down"
+    );
+}
+
+#[test]
+fn the_hero_does_not_advance_while_a_modal_covers_home() {
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    assert!(view.hero_count() > 1, "the auto-advance only arms with more than one hero slot");
+    let mut s = screen(view);
+    let selected = s.carousel.clone();
+
+    step(&mut s, view, None, &ScreenEvent::Cover);
+    for frame in 1..=625u32 {
+        step(
+            &mut s,
+            view,
+            None,
+            &ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_000 }),
+        );
+    }
+
+    assert_eq!(
+        s.carousel, selected,
+        "a Compact modal still ticks its host, but covering Home must pause its hero"
+    );
+    assert!(s.outgoing.is_none(), "no hidden hero slide was started under the modal");
+}
+
+#[test]
+fn the_hero_countdown_restarts_when_the_last_modal_is_dismissed() {
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    s.hero_auto = 0.25;
+    let selected = s.carousel.clone();
+
+    step(&mut s, view, None, &ScreenEvent::Cover);
+    // Navigation emits Uncover only when the last modal surface is dismissed.
+    step(&mut s, view, None, &ScreenEvent::Uncover);
+    step(
         &mut s,
-        snapshot.view(),
+        view,
         None,
-        &ScreenEvent::Tick(Tick {
-            ms: 16,
-            dt_us: 16_000,
-        }),
+        &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_000 }),
     );
+
+    assert_eq!(s.carousel, selected, "dismissal must not trigger an immediate hero jump");
+    assert!(s.outgoing.is_none(), "dismissal must not begin a hidden hero slide");
     assert!(
-        motion,
-        "the hero countdown must report Motion on every tick while the carousel auto-advance is armed"
+        (s.hero_auto - (HERO_AUTO_S - 0.016)).abs() < f32::EPSILON,
+        "the fresh countdown should have one ordinary tick consumed, got {}",
+        s.hero_auto
     );
-    // A second tick, still short of HERO_AUTO_S, keeps reporting motion rather than going quiet
-    // once started.
-    let (_, _, motion_again) = step(
-        &mut s,
-        snapshot.view(),
-        None,
-        &ScreenEvent::Tick(Tick {
-            ms: 32,
-            dt_us: 16_000,
-        }),
-    );
-    assert!(motion_again, "the ramp must keep reporting motion on the next tick too");
 }

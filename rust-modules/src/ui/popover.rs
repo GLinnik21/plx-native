@@ -29,21 +29,16 @@
 //!   scrim included. The scrim and the [`Opener`] lift stay LIVE above the quad, which they must:
 //!   the scrim ramps with the appear spring, and a lift baked into the snapshot would then be
 //!   dimmed by the live scrim drawn over it, which is the exact bug the lift exists to fix.
-//! - **A cached-glass snapshot is still taken from the completed dimmed page.** Nothing about the
-//!   glass changes: `Glass::CACHED` grabs framebuffer 0 after the page scrim is on it, and the page
-//!   scrim is drawn live over the cached quad, so the composite it samples is identical.
+//! - **A panel's ground reads no framebuffer at all.** It is the latched underlay field (the one
+//!   the modal dim draws, `ui::underlay`) sampled at the panel's own rect under the frost — see
+//!   [`crate::ui::widgets::panel_ground`] — so nothing about the snapshot constrains it, and nothing
+//!   about it constrains the snapshot.
 //! - **HOST DAMAGE refreshes the snapshot; the popover's OWN activity does not.** That distinction
 //!   was the bio panel's private `OWN_DAMAGE` ledger and is now [`own_motion`] / [`host::live`] /
-//!   [`host::input_scope`] / [`host::page_pass`] for the host cache (and [`note_own_damage`] for
-//!   the glass ledger), shared — attributed at the source and counted
-//!   (`idle::take_page_damage`), with [`host_refresh`] as the host cache's decision and
-//!   [`glass_refresh`] as the dynamic backdrop's.
-//! - **A ground captured this frame is already drawn.** Promotion from page to ground marks it
-//!   served immediately, before any foreground. A later scope (including the dispatcher's empty
-//!   modal-scrim scope after an embedded alert) must never replay that background over live ink.
-use crate::ui::widgets::{Glass, GlassState};
+//!   [`host::input_scope`] / [`host::page_pass`], shared — attributed at the source and counted
+//!   (`idle::take_page_damage`), with [`host_refresh`] as the decision.
 use crate::ui::{theme, Painter, Rect, Spring};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
+use std::sync::atomic::{AtomicU32, Ordering::Relaxed};
 
 /// Stiffness of the appear spring — the panels' shared open-motion constant, and the stiffness every
 /// other fade-into-place in the UI matches (the tab capsules' alpha, [`crate::ui::widgets::TabStrip`]).
@@ -73,9 +68,9 @@ static OPEN_COUNT: AtomicU32 = AtomicU32::new(0);
 /// the app goes through [`Popover::open`]/[`Popover::close`], so registering there is exact, costs
 /// nothing, and a panel added tomorrow is counted without touching this.
 ///
-/// Its user is the glass tab bar. A modal disables that bar because the two far-apart glass regions
-/// would union into most of the frame; the popover's own material is the only glass worth drawing
-/// while it is up. This remains true for both cached and dynamic popovers.
+/// Its user is the glass tab bar. A modal disables that bar's backdrop blur: the bar sits under the
+/// dim, and a live blur of a page the modal has frozen is a full-screen source pass bought for a
+/// strip nobody is looking at.
 pub(crate) fn any_open() -> bool {
     OPEN_COUNT.load(Relaxed) > 0
 }
@@ -149,91 +144,30 @@ static HOST_USERS: AtomicU32 = AtomicU32::new(0);
 /// ([`host_refresh`]) — under an open panel only its damage is.
 static HOST_CLOSING: AtomicU32 = AtomicU32::new(0);
 
-/// Damage this frame that a POPOVER caused, rather than the page underneath it.
-///
-/// The process-wide dirty/motion flags cannot tell the two apart — a panel's page turn calls
-/// `idle::invalidate` (it must: the panel really did change) and a panel's scroll spring reports
-/// through `note_spring` exactly like the page's would. So the panels keep this ledger of the
-/// damage they are themselves the reason for, and [`glass_refresh`] subtracts it.
-///
-/// It was the bio panel's private static and is shared for one blunt reason: the bug it fixes is a
-/// property of every popover with a scroll or a selection in it, and that module had it only
-/// because it was the first one whose FPS was measured. Set through [`note_own_damage`] /
-/// [`own_motion`], taken once a frame by [`host::begin_frame`].
-static OWN_DAMAGE: AtomicBool = AtomicBool::new(false);
-/// The panel's own SPRINGS moved this frame ([`own_motion`]). Both bits feed ONE consumer now —
-/// the dynamic backdrop's cadence, through [`host::own_damage_this_frame`] — merged; the host
-/// cache no longer reads either, its attribution being by scope and by count
-/// (`idle::take_page_damage`, [`host::input_scope`]).
-static OWN_MOTION: AtomicBool = AtomicBool::new(false);
-
-/// Record that a popover's OWN state changed this frame — a page turn, a selection move, a row
-/// commit. Call it beside the `idle::invalidate` such a change already owes: the two are different
-/// questions ("something must repaint" vs "the page underneath did NOT change"), and answering only
-/// the first is what made every keypress re-source a backdrop.
-#[inline]
-pub(crate) fn note_own_damage() {
-    OWN_DAMAGE.store(true, Relaxed);
-}
-
 /// Attribute the spring motion of a popover's own `update` to the POPOVER rather than to the page
 /// it stands on — one line at the top of that `update`, held for the body.
 ///
-/// This is [`crate::ui::idle::MotionScope`] with the result routed into [`OWN_MOTION`], plus an
+/// This is [`crate::ui::idle::MotionScope`], so the panel's springs never read as the PAGE's
+/// (`idle::PAGE_MOVING`, which [`host_refresh`] asks for a fading panel), plus an
 /// [`crate::ui::idle::OwnScope`] so that every `idle::invalidate` the update raises (the appear
-/// spring's, a marquee's) is the panel's own damage rather than the page's: the same shape `app.rs`
-/// already uses to keep Home's springs out of the account popover's backdrop, said once here so
+/// spring's, a marquee's) is the panel's own damage rather than the page's. Said once here so
 /// every panel's `update` is one line rather than six, and so that a panel added tomorrow inherits
 /// it.
 ///
-/// **The scope merges back**, so a popover's motion still keeps the present gate awake — this
-/// changes who the motion is ATTRIBUTED to, never whether it counts as motion.
+/// **The scope merges back** on drop, so a popover's motion still keeps the present gate awake —
+/// this changes who the motion is ATTRIBUTED to, never whether it counts as motion.
 #[must_use = "the scope is only open for this guard's lifetime"]
 pub(crate) struct OwnMotion(
-    Option<crate::ui::idle::MotionScope>,
+    #[allow(dead_code)] crate::ui::idle::MotionScope,
     #[allow(dead_code)] crate::ui::idle::OwnScope,
 );
 
 /// See [`OwnMotion`].
 pub(crate) fn own_motion() -> OwnMotion {
     OwnMotion(
-        Some(crate::ui::idle::MotionScope::open()),
+        crate::ui::idle::MotionScope::open(),
         crate::ui::idle::OwnScope::open(),
     )
-}
-
-impl Drop for OwnMotion {
-    fn drop(&mut self) {
-        if let Some(scope) = self.0.take() {
-            if scope.close() {
-                OWN_MOTION.store(true, Relaxed);
-            }
-        }
-    }
-}
-
-/// **Should a popover re-source its dynamic BACKDROP this present?** The decision behind the
-/// dynamic glass cadence. (The host snapshot's lifetime used to be resolved from it too; that is
-/// [`host_refresh`] over `idle::take_page_damage` now.)
-///
-/// Lifted verbatim out of the bio panel (`screens::person_bio` since phase 10), where it was
-/// written after a measured FPS regression and two review passes; the reasoning that produced it is
-/// general and the file it lived in was not. Its callers are `Popover::prepare_present` for the one
-/// legacy panel left, and `Screen::prepare_present` for a surface — the container hands the latter
-/// its own appear state, which is the one term a surface cannot answer for itself.
-///
-/// - `underlay_changed` is what the caller believes about the page. It cannot be trusted alone:
-///   `app.rs` folds `idle::present_dirty()` into it, and every key press sets that — including the
-///   ones this panel swallowed.
-/// - `own_damage` is [`OWN_DAMAGE`], the panel's own ledger, subtracted from it.
-/// - `appear_settled` keeps the ramp honest: while the panel is fading in, the SCRIM under it is
-///   still darkening, so a backdrop sampled once at open would frost an undimmed page for the rest
-///   of the session.
-///
-/// A settled panel over a page that nothing but the panel touched never re-sources; one over a page
-/// that just grew a shelf, or landed a poster texture, re-sources once.
-pub(crate) fn glass_refresh(underlay_changed: bool, appear_settled: bool, own_damage: bool) -> bool {
-    !appear_settled || (underlay_changed && !own_damage)
 }
 
 /// **Does the host snapshot survive this frame?** Two questions about the PAGE, and only the page.
@@ -328,8 +262,6 @@ pub(crate) struct Popover {
     /// panel is no longer OPEN (input has returned to the page) but it is still VISIBLE.
     closing: bool,
     appear: Spring,
-    glass: Glass,
-    glass_state: GlassState,
     /// See [`HostPolicy`]. Opt-in through [`Popover::caching_host`], so the set of popovers that
     /// freeze their page is a list a reviewer can read off the constructors.
     host: HostPolicy,
@@ -340,27 +272,13 @@ pub(crate) struct Popover {
     host_held: bool,
     /// Counted in [`HOST_CLOSING`]: held AND dismissed. Cleared by a re-open or by the release.
     host_closing: bool,
-    /// The `rise` the last [`painter`](Self::painter) was asked for, so [`panel`](Self::panel) can
-    /// work out how far this frame is from the panel's resting position. Stashed rather than passed
-    /// again because the painter and panel belong to one draw choreography, and a second copy of the
-    /// number is a second place for it to be wrong. A `Cell` because both calls take `&self`, and
-    /// this is main-thread draw state like everything else here.
-    rise: std::cell::Cell<f32>,
 }
 impl Popover {
     pub(crate) const fn new() -> Self {
-        Self::with_glass(Glass::CACHED)
-    }
-    /// Opt this popover into a reusable glass policy. Existing callers stay cached through
-    /// [`new`](Self::new); a moving underlay must choose the dynamic policy explicitly.
-    pub(crate) const fn with_glass(glass: Glass) -> Self {
         Popover {
             open: false,
             closing: false,
             appear: Spring::at(0.0),
-            glass,
-            glass_state: GlassState::new(),
-            rise: std::cell::Cell::new(0.0),
             host: HostPolicy::Live,
             host_held: false,
             host_closing: false,
@@ -380,24 +298,7 @@ impl Popover {
         self
     }
     /// (re)open: restart the fade+slide from 0.
-    ///
-    /// Also starts this popover's glass lifetime — the CACHED policy's one snapshot. A dynamic
-    /// popover anchors its every-changed-present cadence instead, and takes the frame plan's clock
-    /// to do it: [`open_on`](Self::open_on). Anything outside that policy which changes the
-    /// underlay still owes `gfx::blur_invalidate` a call of its own.
     pub(crate) fn open(&mut self) {
-        self.open_inner(None);
-    }
-
-    /// The same, for a DYNAMIC-glass popover: its cadence is the frame plan's shared clock (phase
-    /// 11), so opening one has to COVER this present on that clock rather than on a process-wide
-    /// one. Every popover in the product is `Glass::CACHED` — `Popover::new` is the only
-    /// constructor any of them use — so this form exists for the opt-in `with_glass` path.
-    pub(crate) fn open_on(&mut self, clock: &mut crate::ui::widgets::DynamicClock) {
-        self.open_inner(Some(clock));
-    }
-
-    fn open_inner(&mut self, clock: Option<&mut crate::ui::widgets::DynamicClock>) {
         self.appear = Spring::at(0.0);
         self.closing = false;
         // A re-open DURING the fade-out: the held user stops being a closing one.
@@ -412,10 +313,6 @@ impl Popover {
             self.hold_host();
         }
         self.open = true;
-        match clock {
-            Some(c) => self.glass.activate_on(c, &mut self.glass_state),
-            None => self.glass.activate(&mut self.glass_state),
-        }
         // A re-open restarts the appear motion over a page that may have moved since, and the very
         // first frame of a first open has no snapshot at all. Both are "the cache does not describe
         // what is behind me", which is what this call means.
@@ -433,7 +330,7 @@ impl Popover {
         self.closing = false;
         self.appear = Spring::at(0.0);
     }
-    /// The bookkeeping half of a close: input modality and the glass lifetime end NOW, whether the
+    /// The bookkeeping half of a close: input modality ends NOW, whether the
     /// panel then vanishes or fades. The host freeze is NOT in here — see
     /// [`release_host`](Self::release_host) for why it outlives a dismiss.
     fn release(&mut self) {
@@ -441,7 +338,6 @@ impl Popover {
             OPEN_COUNT.fetch_sub(1, Relaxed);
         }
         self.open = false;
-        self.glass_state.deactivate();
         host::invalidate();
     }
     /// Register this popover's frozen-host user — once, however many times it is (re)opened, and
@@ -519,20 +415,11 @@ impl Popover {
         self.open || self.closing
     }
     /// step the appear spring; no-op when closed.
-    ///
-    /// The ramp is booked as the POPOVER's own damage, not the page's: `Spring::step` reports to
-    /// `ui::idle` like every other spring, and without this the frame-wide motion bit would say
-    /// "the underlay is moving" for the whole of every panel's entry animation — the one stretch
-    /// where nothing behind it moves at all.
     pub(crate) fn update(&mut self, dt: f32) {
         if self.open {
             self.step_appear(1.0, dt);
-            if !self.appear_settled() {
-                note_own_damage();
-            }
         } else if self.closing {
             self.step_appear(0.0, dt);
-            note_own_damage();
             // the same visual-arrival tolerance as `appear_settled`, at the other end
             if self.appear.pos <= 0.001 {
                 self.closing = false;
@@ -551,61 +438,16 @@ impl Popover {
     /// through `note_spring` (a fraction of a percent short of 1 is not a frame anybody can see),
     /// so this is a coarser, visual-arrival test rather than that motion-detector's own tolerance.
     ///
-    /// The one caller today is a `DYNAMIC_BACKDROP` popover deciding whether ITS OWN opening
-    /// motion is still a reason to keep resampling the host page — see
-    /// `person_bio::prepare_present`'s module note. A popover with no reason to ask this (a cached
-    /// one, or one with no backdrop at all) simply never calls it.
+    /// Its callers: [`ground_done`](Self::ground_done), which captures the host's GROUND stage only
+    /// once the ramp is over, and `DecisionAlert::settled`, which gates pointer hits on it.
     pub(crate) fn appear_settled(&self) -> bool {
         self.appear.pos >= 0.999
-    }
-
-    /// Resolve this popover's glass cadence BEFORE its host page draws. `underlay_changed`
-    /// describes that page, not this popover's own springs. Capture is still deferred to [`panel`],
-    /// after the host page is complete; this resolves only cadence invalidation.
-    ///
-    /// The caller's flag is not passed straight through: it goes through [`glass_refresh`] together
-    /// with this popover's own appear state and the shared [`OWN_DAMAGE`] ledger, which is where
-    /// "the page changed" is separated from "I changed". `person_bio` did that folding privately
-    /// and every other panel did not; doing it here is what makes the second one impossible to
-    /// forget.
-    pub(crate) fn prepare_present(&mut self, underlay_changed: bool) {
-        self.prepare_present_inner(None, underlay_changed);
-    }
-
-    /// The same for a DYNAMIC-glass popover — the twin of [`open_on`](Self::open_on), and it has
-    /// to exist for the same reason: since phase 11 the recurring cadence is the frame plan's
-    /// clock, so a refreshing popover cannot resolve one without being handed it.
-    pub(crate) fn prepare_present_on(
-        &mut self,
-        clock: &mut crate::ui::widgets::DynamicClock,
-        underlay_changed: bool,
-    ) {
-        self.prepare_present_inner(Some(clock), underlay_changed);
-    }
-
-    fn prepare_present_inner(
-        &mut self,
-        clock: Option<&mut crate::ui::widgets::DynamicClock>,
-        underlay_changed: bool,
-    ) {
-        if self.open {
-            let refresh = glass_refresh(
-                underlay_changed,
-                self.appear_settled(),
-                host::own_damage_this_frame(),
-            );
-            match clock {
-                Some(c) => self.glass.prepare_on(c, &mut self.glass_state, refresh),
-                None => self.glass.prepare(&mut self.glass_state, refresh),
-            }
-        }
     }
 
     /// The panel painter without a full-screen scrim. Pair with [`scrim`](Self::scrim), for a
     /// caller that draws the dim as part of its host page — see that method for why one does.
     pub(crate) fn content_painter(&self, rise: f32) -> Painter {
         let a = self.appear();
-        self.rise.set(rise);
         Painter::root()
             .alpha(a * crate::ui::nav::page_alpha())
             .translate(0.0, rise * (1.0 - a))
@@ -639,14 +481,6 @@ impl Popover {
     /// already goes through, and it is 1.0 whenever no route change is in flight — which is every
     /// frame of the in-player panels, since playback has no page transition.
     pub(crate) fn painter(&self, scrim_a: f32, rise: f32) -> Painter {
-        // A REFRESHING policy's scrim belongs to the host page — see [`Glass::needs_page_scrim`].
-        // Reaching here with one means the panel's own backdrop will be sampled from an undimmed
-        // page, which on a television reads as a panel brighter than the screen around it and is
-        // very hard to attribute. On the host it is now this line.
-        debug_assert!(
-            !self.glass.needs_page_scrim() || scrim_a <= 0.0,
-            "a refreshing popover's scrim belongs to the page: use Popover::scrim + content_painter"
-        );
         self.scrim(scrim_a);
         self.content_painter(rise)
     }
@@ -697,50 +531,30 @@ impl Popover {
         }
     }
 
-    /// Draw the panel's GROUND at `r` with corner `rad` — frosted over a live backdrop blur where
-    /// the platform allows one, and the near-opaque sheet where it does not.
+    /// Draw the panel's GROUND at `r` with corner `rad` through [`widgets::panel_ground`](crate::ui::widgets::panel_ground)
+    /// — the latched underlay field under the frost where `field` has one, the flat panel
+    /// material where it does not — then report the ground done to [`host`].
     ///
-    /// **The pair is the point.** `theme::PANEL_FROST_*` is only legal on top of a blur, and the
-    /// blur latches itself off on a driver that cannot give it a render target — so a screen that
-    /// picked the frosted tokens itself would draw a translucent hole on exactly the devices nobody
-    /// here owns. One function owns both halves and no screen carries the fallback.
-    ///
-    /// Call it as the FIRST thing drawn through the content painter: `gfx::draw_blur_backdrop`
-    /// samples the default framebuffer as it stands, so everything meant to show through must
-    /// already be on it and nothing that sits on the panel may be yet.
-    ///
-    /// Two consequences worth knowing. The window follows the panel through its entry SLIDE, which
-    /// is what real glass does — the snapshot is of the page, not of the panel's final resting
-    /// place. Cached popovers capture the page-drawn scrim at their first draw; a dynamic policy
-    /// refreshes that same composed underlay on every changed present.
+    /// Call it as the FIRST thing drawn through the content painter: everything after it is the
+    /// popover's moving foreground, which is what [`ground_done`](Self::ground_done) marks.
     ///
     /// **Not for the player's panels.** Behind those is punch-through alpha to the hardware video
     /// plane, which GL cannot read; they keep `p.rect(…, PANEL_TOP, PANEL_BOT, …)` on purpose.
-    pub(crate) fn panel(&self, p: Painter, r: Rect, rad: f32) {
-        // How far below (or above) its resting place this frame draws the panel — exactly the
-        // translate `painter` just applied. The snapshot is grabbed around the REST rect, so the
-        // slide itself never forces another capture; a dynamic refresh policy may still do so.
-        let slide = self.rise.get() * (1.0 - self.appear());
-        self.glass.panel(p, r, slide, rad);
-        self.ground_done();
-    }
-
-    /// The large-modal counterpart of [`panel`](Self::panel). It keeps the same cached/dynamic
-    /// lifetime policy and entry motion, but asks [`Glass::sheet`] for the design-system sheet
-    /// material instead of spreading the compact-menu material over a near-full-screen surface.
-    pub(crate) fn sheet(&self, p: Painter, r: Rect, rad: f32) {
-        let slide = self.rise.get() * (1.0 - self.appear());
-        self.glass.sheet(p, r, slide, rad);
+    pub(crate) fn panel(
+        &self,
+        p: Painter,
+        r: Rect,
+        rad: f32,
+        field: Option<&crate::ui::underlay::UnderlayField>,
+    ) {
+        crate::ui::widgets::panel_ground(p, r, rad, field);
         self.ground_done();
     }
 
     /// The boundary between this popover's GROUND and its FOREGROUND, reported to [`host`].
     ///
-    /// It hangs off [`panel`](Self::panel)/[`sheet`](Self::sheet) rather than being a call every
-    /// screen has to remember, because those two ARE that boundary: their doc has always said
-    /// "call it as the FIRST thing drawn through the content painter", so everything after one of
-    /// them is the moving part. A panel that grew a second ground call would break this, which is
-    /// why the ground is drawn by exactly these two methods and not by the screens.
+    /// It hangs off [`panel`](Self::panel) rather than being a call every screen has to remember,
+    /// because that method IS the boundary: everything after it is the moving part.
     ///
     /// Inert for a `Live` host: a popover that does not freeze its page has no ground stage, and
     /// the player's overlays must never reach one — behind them is punch-through alpha to a
@@ -788,13 +602,13 @@ impl Drop for Popover {
 ///
 /// Four calls, in this order, once per drawn frame:
 ///
-/// 1. [`begin_frame`] — before anything on the route draws. Takes the frame's [`OWN_DAMAGE`] and
+/// 1. [`begin_frame`] — before anything on the route draws. Takes the page's damage count and
 ///    decides whether the snapshot still describes what is under the popover.
 /// 2. [`page_pass`] — first thing inside the page-drawing closure, on BOTH passes (the visible one
 ///    and the direct blur source one). An RAII guard: it draws or arms as the snapshot allows, and
 ///    on drop takes the capture nobody else took.
 /// 3. [`live`] — an RAII guard at the top of each popover's `draw` and `draw_scrim`.
-/// 4. [`ground_drawn`] — `Popover::panel`/`sheet`, the moment the popover's own GROUND is down.
+/// 4. [`ground_drawn`] — `Popover::panel`, the moment the popover's own GROUND is down.
 ///
 /// A popover drawn from inside its page (`decision_alert`; `about_panel` and `person_bio` were the
 /// other two until phase 10) and one drawn after it (the container's surfaces) both work, and
@@ -825,12 +639,56 @@ impl Drop for Popover {
 /// invalidate the ground is damage that invalidates the page too, at which point the page is
 /// redrawn for real anyway.
 ///
-/// **A blur source pass never sees [`Held::Ground`]**, and that is not a nicety: the ground quad
-/// contains the panel's own frost, so a dynamic backdrop re-sourced from it would frost a picture
-/// of itself, one refresh stale, forever. [`live`] and [`page_pass`] both fall back to the page
-/// stage inside such a pass, and entering one drops the ground.
+/// The live-backdrop layer walk knows which z range the held image replaces. Sources below
+/// that replacement are occluded; a source above it sees the frozen image without invalidating it.
 pub(crate) mod host {
-    use super::{HOST_USERS, OWN_DAMAGE, OWN_MOTION};
+    /// Exclusive borrower of the existing texture. It never allocates another FrameCache.
+    #[derive(Default)]
+    pub(crate) struct TransitionSnapshot {
+        target: Option<crate::surface::PageTarget>,
+    }
+    static TRANSITION_OWNS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    impl crate::ui::containers::transition::PageSnapshot for TransitionSnapshot {
+        fn available(&self) -> bool {
+            users() == 0 && held() == Held::Nothing
+                && unsafe { (*std::ptr::addr_of!(CACHE)).render_available() }
+        }
+        fn valid(&self) -> bool {
+            TRANSITION_OWNS.load(Relaxed) && unsafe { (*std::ptr::addr_of!(CACHE)).tex().is_some() }
+        }
+        fn revision(&self) -> u64 { page_epoch() as u64 }
+        fn resident_bytes(&self) -> usize {
+            unsafe { (*std::ptr::addr_of!(CACHE)).resident_bytes() }
+        }
+        fn begin(&mut self) -> bool {
+            if !self.available() || crate::ui::frame::backdrop::source_walk() { return false; }
+            // FBO refusal falls back to a live draw, not a synchronous framebuffer copy.
+            self.target = unsafe { (*std::ptr::addr_of_mut!(CACHE)).render_into() };
+            TRANSITION_OWNS.store(self.target.is_some(), Relaxed);
+            self.target.is_some()
+        }
+        fn finish(&mut self) {
+            if let Some(target) = self.target.take() {
+                unsafe { (*std::ptr::addr_of_mut!(CACHE)).finish_render(target); }
+                PAGE_EPOCH.fetch_add(1, Relaxed);
+            }
+        }
+        fn draw(&self, alpha: f32, clear: bool) {
+            if !self.valid() { return; }
+            if clear {
+                let c = crate::ui::theme::CLEAR_RGB;
+                crate::gfx::frame_clear(c.0, c.1, c.2);
+            }
+            unsafe { (*std::ptr::addr_of!(CACHE)).draw_alpha(alpha); }
+        }
+        fn release(&mut self) {
+            self.target = None;
+            if TRANSITION_OWNS.swap(false, Relaxed) { invalidate(); }
+        }
+    }
+
+    use super::HOST_USERS;
     use std::sync::atomic::Ordering::Relaxed;
 
     #[cfg(not(test))]
@@ -846,7 +704,7 @@ pub(crate) mod host {
         /// The undimmed host page.
         Page,
         /// The host page, the scrim, the lifted opener and the popover's own ground.
-        Ground,
+        Ground(crate::ui::frame::backdrop::Z),
     }
 
     /// The one snapshot. Main-render-thread only, like the `gfx` resource it holds.
@@ -856,22 +714,22 @@ pub(crate) mod host {
     /// meaningful bite out of the app's `requiredMemory` budget. The larger half is that only one
     /// modal is ever up over one page, so a second cache could only ever hold a stale copy of a
     /// page some OTHER popover had already frozen — a second answer to a question with one answer.
+    /// The snapshot represents one explicit prefix of the layer stack; nested live surfaces sit
+    /// above that prefix rather than each owning a competing frozen picture of the page.
     static mut CACHE: FrameCache = FrameCache::new();
 
     /// Which stage [`CACHE`] holds.
     static mut HELD: Held = Held::Nothing;
 
+    /// The page being drawn straight INTO [`CACHE`] this frame (`gfx::FrameCache::render_into`),
+    /// opened by [`page_pass`] when it owes a capture and closed by [`capture_now`] at the instant
+    /// the capture would otherwise have been copied. `None` on every other frame.
+    static mut TARGET: Option<crate::surface::PageTarget> = None;
+
     /// Is the ground already on this frame's framebuffer, either drawn live and captured or
     /// served from the cache? A popover reaches [`live`] twice (its scrim and its panel), and a
     /// dispatcher may enter more scopes afterwards. None may replay ground over the foreground.
     static GROUND_DRAWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-    /// [`OWN_DAMAGE`] as taken by [`begin_frame`], readable for the rest of the frame.
-    ///
-    /// Taken ONCE and stored rather than swapped at each reader: the frame has two of them (the
-    /// glass cadence through `Popover::prepare_present`, and this module's own invalidation) and a
-    /// second `swap` would hand the second reader `false` for damage that really happened.
-    static OWN_THIS_FRAME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     /// Is a capture owed before the next popover draws? Set by [`page_pass`] when it finds no
     /// snapshot, cleared by whoever takes it.
@@ -892,6 +750,15 @@ pub(crate) mod host {
     /// (Settings, whose opaque ground needs no lift) re-rendered its host AND re-copied it on
     /// every ramp frame — 67 ms a frame on the entry fade, 33 ms once the copy is held.
     fn capture_now() -> bool {
+        // The page went straight into the snapshot (`page_pass` redirected it): close that pass and
+        // put the page on the frame from the texture. No copy, and no pointless-capture question —
+        // the redirect is only ever opened when the capture is wanted.
+        if let Some(target) = unsafe { (*std::ptr::addr_of_mut!(TARGET)).take() } {
+            unsafe { (*std::ptr::addr_of_mut!(CACHE)).rendered(target) };
+            unsafe { HELD = Held::Page };
+            PAGE_EPOCH.fetch_add(1, Relaxed);
+            return true;
+        }
         if CAPTURE_POINTLESS.load(Relaxed) {
             return false;
         }
@@ -918,6 +785,33 @@ pub(crate) mod host {
     /// this frame has already been taken and counted by then.
     pub(crate) fn page_epoch() -> u32 {
         PAGE_EPOCH.load(Relaxed)
+    }
+
+    /// **The page snapshot's texture, while the snapshot IS the undimmed page** (`Held::Page`) —
+    /// `None` in every other stage, the ground stage above all, whose quad has the scrim baked in.
+    ///
+    /// `containers::modal::ModalUnderlay` reduces its field from it: the field is asked for at the
+    /// instant this snapshot is taken ([`page_epoch`]'s doc), so a second full-screen copy of the
+    /// framebuffer for the field's own chain would be a copy of the same pixels.
+    pub(crate) fn page_tex() -> Option<std::ffi::c_uint> {
+        if held() != Held::Page {
+            return None;
+        }
+        unsafe { (*std::ptr::addr_of!(CACHE)).tex() }
+    }
+
+    /// Hold off the GROUND stage for this frame. Set by `containers::modal::ModalUnderlay` while its
+    /// field is still being read off the GPU: the ground quad bakes the dim in, so a ground taken
+    /// now would keep the dim of the field BEFORE the read lands for as long as the panel stays
+    /// up. Re-armed every frame by the underlay and cleared by [`begin_frame`], so it cannot outlive
+    /// the stack that set it.
+    static GROUND_DEFERRED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+
+    /// See [`GROUND_DEFERRED`].
+    pub(crate) fn defer_ground(defer: bool) {
+        if crate::gfx::blur_source_pass() { return; }
+        GROUND_DEFERRED.store(defer, Relaxed);
     }
 
     /// How many open popovers want a frozen host.
@@ -958,7 +852,7 @@ pub(crate) mod host {
     /// page and wrong the moment anything re-blurs.
     pub(crate) fn ground_invalidate() {
         unsafe {
-            if HELD == Held::Ground {
+            if matches!(HELD, Held::Ground(_)) {
                 (*std::ptr::addr_of_mut!(CACHE)).invalidate();
                 HELD = Held::Nothing;
             }
@@ -969,13 +863,38 @@ pub(crate) mod host {
         unsafe { HELD }
     }
 
-    /// The damage the open popovers caused this frame, as taken by [`begin_frame`].
-    pub(crate) fn own_damage_this_frame() -> bool {
-        OWN_THIS_FRAME.load(Relaxed)
+    /// Z of the last layer included in the held full-canvas image. A source below this
+    /// replacement is occluded; a source above it must retain this exact frozen composite.
+    pub(crate) fn held_ceiling() -> Option<crate::ui::frame::backdrop::Z> {
+        use crate::ui::frame::backdrop::Z;
+        match held() {
+            Held::Nothing => None,
+            Held::Page => Some(Z(Z::DIM.0 - 1)),
+            Held::Ground(z) => Some(z),
+        }
     }
 
-    /// Open the frame: take the popovers' own-damage ledger (for the glass) and the page's damage
-    /// count (for the host), and decide whether the snapshot survives them.
+    fn draw_held() -> bool {
+        // The cached quad is a layer too. It cannot bypass the source walk's explicit ceiling.
+        let _layer=held_ceiling().map(|z|crate::ui::frame::backdrop::layer(z,false));
+        unsafe { (*std::ptr::addr_of!(CACHE)).draw() }
+    }
+
+    fn freezes_current_layer() -> bool {
+        held_ceiling().is_some_and(|end|
+            crate::ui::frame::backdrop::current_layer().is_none_or(|current|current<end))
+    }
+
+    fn hold_ground() {
+        let ceiling=crate::ui::frame::backdrop::current_layer()
+            .unwrap_or(crate::ui::frame::backdrop::Z::surface(0));
+        unsafe { HELD=Held::Ground(ceiling); }
+        // The copy did not remove the ground from the visible framebuffer. Repainting it at
+        // the next surface would erase foreground that has since been drawn above it.
+        GROUND_DRAWN.store(true,Relaxed);
+    }
+
+    /// Open the frame: take the page's damage count and decide whether the snapshot survives them.
     ///
     /// **The host-damage test is route-agnostic on purpose.** It is `idle::take_page_damage` —
     /// every invalidation this frame that was not raised inside a popover's own scope
@@ -984,10 +903,9 @@ pub(crate) mod host {
     /// cannot derive). Derived here rather than per screen, it covers the detail and person pages
     /// too, and it cannot go stale when a seventh screen learns to host a popover.
     ///
-    /// **Ramping open is deliberately NOT a reason to re-capture**, although it is one for the
-    /// dynamic backdrop (see [`glass_refresh`]). The two are asking about different pictures: the
-    /// backdrop re-sources because the SCRIM over the page is still darkening, and the scrim is
-    /// drawn live above this snapshot rather than into it. The page itself is not moving.
+    /// **Ramping open is deliberately NOT a reason to re-capture**: the SCRIM over the page is still
+    /// darkening, but the scrim is drawn live above this snapshot rather than into it. The page
+    /// itself is not moving.
     pub(crate) fn begin_frame(page_moving: bool) {
         // §9: there is no host to snapshot on a video-plane frame — what is behind these panels is
         // a hardware plane GL cannot read back, so a capture is a photograph of the punch-through
@@ -1004,20 +922,19 @@ pub(crate) mod host {
         // `gfx::page_wash_dither` to read, until 2026-09-19 proved a page-wide verdict is the wrong
         // question for a wash: the wash's own dissolve is in it. (That function is gone too: every
         // wash dithers on every frame now — `gfx::draw_ambient`.)
-        let own = OWN_DAMAGE.swap(false, Relaxed);
-        let own_motion = OWN_MOTION.swap(false, Relaxed);
-        // The glass backdrop's ledger stays MERGED: re-sourcing a blur one frame late self-heals on
-        // the next damage, and the dynamic cadence reads it through `Popover::prepare_present`.
-        OWN_THIS_FRAME.store(own || own_motion, Relaxed);
         // Taken every drawn frame, holder or not, so the count never carries over into the first
         // frame of the next panel to open.
         let page_dirty = crate::ui::idle::take_page_damage();
         CAPTURE_OWED.store(false, Relaxed);
         GROUND_DRAWN.store(false, Relaxed);
+        GROUND_DEFERRED.store(false, Relaxed);
         if users() == 0 {
-            invalidate();
+            if !TRANSITION_OWNS.load(Relaxed) { invalidate(); }
             return;
         }
+        // Modal snapshots contain chrome and possibly a dim. A page-only transition image
+        // must never be mistaken for that prefix when a surface interrupts navigation.
+        if TRANSITION_OWNS.swap(false, Relaxed) { invalidate(); }
         let moving = crate::ui::idle::page_moving() || page_moving;
         CAPTURE_POINTLESS.store(fading_only() && moving, Relaxed);
         if super::host_refresh(fading_only(), page_dirty, moving) {
@@ -1050,23 +967,27 @@ pub(crate) mod host {
                 own: None,
             };
         }
-        // A source pass may never be served the GROUND stage — it would hand a dynamic backdrop a
-        // picture of its own frost. Drop it and let the page draw for real; the visible pass will
-        // take a new one.
-        if crate::gfx::blur_source_pass() {
-            ground_invalidate();
-        }
         let served = match held() {
             // The ground quad is one draw for the whole frame and belongs to the first `live`,
             // which is also where the freeze has to still be armed. Nothing is drawn here.
-            Held::Ground => true,
+            Held::Ground(_) => true,
             // `FrameCache::draw` lifts the freeze around its own quad, so this is correct whether
             // or not an outer pass has one armed.
-            Held::Page => unsafe { (*std::ptr::addr_of!(CACHE)).draw() },
+            Held::Page => draw_held(),
             Held::Nothing => false,
         };
         if !served {
             CAPTURE_OWED.store(true, Relaxed);
+            // Draw this page into the snapshot rather than onto the frame and copy it out after:
+            // see `FrameCache::render_into` for what the copy cost. Not in a blur source pass (the
+            // capture is refused there anyway) and not when the capture would be thrown away.
+            if !crate::gfx::blur_source_pass() && !CAPTURE_POINTLESS.load(Relaxed) {
+                unsafe {
+                    if (*std::ptr::addr_of!(TARGET)).is_none() {
+                        TARGET = (*std::ptr::addr_of_mut!(CACHE)).render_into();
+                    }
+                }
+            }
         }
         PagePass {
             was_frozen: crate::gfx::set_page_frozen(served),
@@ -1081,10 +1002,12 @@ pub(crate) mod host {
         /// frozen picture with no crash, no log line and no way back.
         fn drop(&mut self) {
             crate::gfx::set_page_frozen(self.was_frozen);
+            if crate::gfx::blur_source_pass() { return; }
             // Nobody lifted: this page's popovers draw AFTER the closure (the two menus,
             // `account_menu`). The framebuffer holds the completed undimmed page, which is exactly
             // what the snapshot is.
-            if CAPTURE_OWED.swap(false, Relaxed) {
+            let redirected = unsafe { (*std::ptr::addr_of!(TARGET)).is_some() };
+            if CAPTURE_OWED.swap(false, Relaxed) || redirected {
                 capture_now();
             }
         }
@@ -1118,17 +1041,28 @@ pub(crate) mod host {
 
     /// See [`Live`].
     pub(crate) fn live() -> Live {
-        if crate::gfx::blur_source_pass() {
-            ground_invalidate();
+        if crate::ui::frame::backdrop::discovering() {
+            return Live {
+                was_frozen: crate::gfx::page_frozen(),
+                own: crate::ui::idle::OwnScope::open(),
+            };
         }
-        if held() == Held::Ground {
+        if crate::gfx::blur_source_pass() {
+            let ground = matches!(held(), Held::Ground(_));
+            if ground && held_ceiling().is_some_and(crate::ui::frame::backdrop::claim_snapshot) { draw_held(); }
+            return Live {
+                was_frozen: crate::gfx::set_page_frozen(ground && freezes_current_layer()),
+                own: crate::ui::idle::OwnScope::open(),
+            };
+        }
+        if matches!(held(), Held::Ground(_)) {
             // STAGE TWO: the scrim, the lifted opener and the panel's own ground are all in this
             // one quad. Stay FROZEN through them — `Popover::panel` lifts for the foreground.
             if !GROUND_DRAWN.swap(true, Relaxed) {
-                unsafe { (*std::ptr::addr_of!(CACHE)).draw() };
+                draw_held();
             }
             return Live {
-                was_frozen: crate::gfx::set_page_frozen(true),
+                was_frozen: crate::gfx::set_page_frozen(freezes_current_layer()),
                 own: crate::ui::idle::OwnScope::open(),
             };
         }
@@ -1145,9 +1079,8 @@ pub(crate) mod host {
         }
     }
 
-    /// **The popover's own GROUND is now on the framebuffer** — called by `Popover::panel` and
-    /// `Popover::sheet`, which is the one line every panel in the app draws between its ground and
-    /// its foreground.
+    /// **The popover's own GROUND is now on the framebuffer** — called by `Popover::panel`, the one
+    /// line a `Popover` draws between its ground and its foreground.
     ///
     /// Two jobs, exactly one of which runs:
     ///
@@ -1161,16 +1094,19 @@ pub(crate) mod host {
     /// `settled` is the caller's `appear_settled`: capturing during the entry ramp would freeze a
     /// half-faded panel over a half-dimmed page for the rest of the session.
     pub(crate) fn ground_drawn(settled: bool) {
+        crate::ui::frame::backdrop::boundary();
+        if crate::ui::frame::backdrop::discovering() { return; }
         if crate::gfx::page_frozen() {
             crate::gfx::set_page_frozen(false);
             return;
         }
-        if settled && held() == Held::Page && !crate::gfx::blur_source_pass() {
+        if settled
+            && held() == Held::Page
+            && !crate::gfx::blur_source_pass()
+            && !GROUND_DEFERRED.load(Relaxed)
+        {
             if unsafe { (*std::ptr::addr_of_mut!(CACHE)).capture() } {
-                unsafe { HELD = Held::Ground };
-                // The capture copied the ground already on this framebuffer. A later `live`
-                // scope must not blit that foreground-free copy over the ink drawn after us.
-                GROUND_DRAWN.store(true, Relaxed);
+                hold_ground();
             }
         }
     }
@@ -1180,10 +1116,78 @@ pub(crate) mod host {
             crate::gfx::set_page_frozen(self.was_frozen);
         }
     }
-
     #[cfg(test)]
     mod tests {
         include!("popover_host_tests.rs");
+    }
+
+    #[cfg(test)]
+    mod backdrop_tests {
+        use super::*;
+        #[test]
+        fn layers_above_a_frozen_prefix_remain_live_in_both_draw_walks() {
+            let _guard=crate::testlock::serial();
+            let old=held(); let drawn=GROUND_DRAWN.swap(true,Relaxed);
+            unsafe {HELD=Held::Ground(crate::ui::frame::backdrop::Z::surface(0));}
+            let mut frozen=Vec::new();
+            for ceiling in [crate::ui::frame::backdrop::Z::ALL,crate::ui::frame::backdrop::Z::OPENER] {
+                let sources=std::rc::Rc::new(std::cell::RefCell::new(crate::ui::frame::backdrop::Sources::default()));
+                let _walk=crate::ui::frame::backdrop::enter(sources,ceiling);
+                let _layer=crate::ui::frame::backdrop::layer(crate::ui::frame::backdrop::Z::surface(1),false);
+                let _live=live(); frozen.push(crate::gfx::page_frozen());
+            }
+            unsafe {HELD=old;} GROUND_DRAWN.store(drawn,Relaxed);
+            assert_eq!(frozen,vec![false,false]);
+        }
+        #[test]
+        fn promoting_a_ground_does_not_repaint_over_later_foreground() {
+            let _guard=crate::testlock::serial();
+            let old=held(); let drawn=GROUND_DRAWN.swap(false,Relaxed);
+            hold_ground();
+            let already_present=GROUND_DRAWN.load(Relaxed);
+            unsafe {HELD=old;} GROUND_DRAWN.store(drawn,Relaxed);
+            assert!(already_present,"the captured ground is already on this visible frame");
+        }
+
+        #[test]
+        fn a_frozen_ground_records_the_last_layer_it_contains() {
+            let _guard=crate::testlock::serial();
+            let old=held();
+            let drawn=GROUND_DRAWN.load(Relaxed);
+            let sources=std::rc::Rc::new(std::cell::RefCell::new(crate::ui::frame::backdrop::Sources::default()));
+            let _walk=crate::ui::frame::backdrop::discover(sources);
+            let _layer=crate::ui::frame::backdrop::layer(crate::ui::frame::backdrop::Z::surface(0),false);
+            let glass=crate::ui::frame::backdrop::surface(crate::ui::Rect::new(0.0,0.0,10.0,10.0)).unwrap();
+            crate::ui::frame::backdrop::boundary();
+            hold_ground(); // successful capture seam; no GL in this test
+            let ceiling=held_ceiling().unwrap();
+            let foreground=crate::ui::frame::backdrop::surface(crate::ui::Rect::new(0.0,0.0,10.0,10.0)).unwrap();
+            let _new_layout=crate::ui::frame::backdrop::layer(crate::ui::frame::backdrop::Z::surface(0),false);
+            crate::ui::frame::backdrop::surface(crate::ui::Rect::new(0.0,0.0,10.0,10.0));
+            let added=crate::ui::frame::backdrop::surface(crate::ui::Rect::new(0.0,0.0,10.0,10.0)).unwrap();
+            unsafe { HELD=old; }
+            GROUND_DRAWN.store(drawn,Relaxed);
+            assert!(ceiling>glass.z,"the held image contains this glass, so it replaces a higher layer");
+            assert!(foreground.z>ceiling,"new foreground glass belongs above the held prefix");
+            assert!(ceiling>added.z,"adding glass inside the ground does not move it above the snapshot");
+        }
+
+        #[test]
+        fn a_source_walk_preserves_the_frozen_ground_and_its_visible_draw_ledger() {
+            let _guard=crate::testlock::serial();
+            let old=held();
+            let drawn=GROUND_DRAWN.swap(false,Relaxed);
+            unsafe { HELD=Held::Ground(crate::ui::frame::backdrop::Z::surface(0)); }
+            {
+                let sources=std::rc::Rc::new(std::cell::RefCell::new(crate::ui::frame::backdrop::Sources::default()));
+                let _walk=crate::ui::frame::backdrop::enter(sources,crate::ui::frame::backdrop::Z::OPENER);
+                let _live=live();
+            }
+            let unchanged=matches!(held(), Held::Ground(_)) && !GROUND_DRAWN.load(Relaxed);
+            unsafe { HELD=old; }
+            GROUND_DRAWN.store(drawn,Relaxed);
+            assert!(unchanged,"a source is not the visible ground draw and cannot discard it");
+        }
     }
 }
 
@@ -1191,97 +1195,17 @@ pub(crate) mod host {
 mod tests {
     use super::*;
 
-    /// A closed popover prepares NOTHING, whichever policy it carries — no activation, no
-    /// invalidation, no snapshot scheduled. That is what lets every popover in the app call
-    /// `prepare_present` unconditionally from its route arm.
-    /// The rule `painter` asserts on, graded as a pure property of the two policies: a refreshing
-    /// backdrop is re-sourced from the page closure, so its dim has to be IN that closure.
-    #[test]
-    fn only_a_refreshing_policy_owes_its_scrim_to_the_page() {
-        assert!(
-            !Glass::CACHED.needs_page_scrim(),
-            "a cached grab already contains its own scrim"
-        );
-        assert!(
-            Glass::DYNAMIC_BACKDROP.needs_page_scrim(),
-            "a refreshing backdrop re-renders the page, which must therefore carry the dim"
-        );
-    }
-
-    /// **The FPS regression, as a pure decision.** Moved here from `person_bio` on 2026-09-02 with
-    /// the function it grades, unchanged; it was confirmed red against the code it replaced before
-    /// that fix landed, which is a claim about the ORIGINAL commit and not about this move.
-    ///
-    /// The bug: `prepare_present` used to hand `underlay_changed` straight to the glass policy, so
-    /// a settled panel with `underlay_changed == true` — the panel's OWN page turn, misread as page
-    /// motion by the process-wide `present_dirty` flag — forced a re-source on every such keypress.
-    /// [`glass_refresh`] subtracts the panel's own activity from the caller's flag once the appear
-    /// ramp has finished, and still refreshes for damage the panel did NOT cause (a shelf landing,
-    /// a poster texture) rather than freezing the frost at its open frame.
-    ///
-    /// It now grades the HOST CACHE as well, which reads the same predicate with `appear_settled`
-    /// pinned true — see `host::begin_frame`.
-    #[test]
-    fn the_backdrop_refreshes_while_ramping_or_for_host_damage_never_for_the_panels_own_scroll() {
-        assert!(
-            glass_refresh(false, false, false),
-            "still ramping open — must refresh even with nothing reported changed"
-        );
-        assert!(
-            glass_refresh(true, false, true),
-            "ramping AND the page changed — still a refresh, whoever caused it"
-        );
-        assert!(
-            !glass_refresh(true, true, true),
-            "settled — the caller's flag carries this panel's own scroll or page turn, so it must not refresh"
-        );
-        assert!(
-            !glass_refresh(false, true, false),
-            "settled and nothing reported — no refresh"
-        );
-        assert!(
-            glass_refresh(true, true, false),
-            "settled and the HOST changed (a shelf landed, a poster arrived) — the frost must follow it"
-        );
-    }
-
-    /// **The host snapshot's lifetime, as the same pure decision at `appear_settled = true`.**
-    ///
-    /// Split out from the case above because the two consumers differ on exactly one input and the
-    /// difference is deliberate: a panel still RAMPING open must re-source its backdrop (the scrim
-    /// beneath it is still darkening) but must NOT re-capture its host (the page is not moving, and
-    /// the scrim is drawn live above the snapshot rather than into it). Getting this wrong is a
-    /// full page redraw for every frame of every panel's entry animation, which is invisible in a
-    /// screenshot and costs exactly the frames this mechanism exists to save.
-    #[test]
-    fn the_host_snapshot_survives_the_entry_ramp_and_the_panels_own_paging() {
-        let held = |changed, own| glass_refresh(changed, true, own);
-        assert!(
-            !held(false, false),
-            "settled page, nothing reported — the snapshot stands"
-        );
-        assert!(
-            !held(true, true),
-            "the panel's own page turn set the process-wide flag — not a reason to re-capture"
-        );
-        assert!(
-            held(true, false),
-            "the HOST changed — the snapshot is stale and must be retaken"
-        );
-    }
-
-    /// **A fresh open is not settled, and stepping the appear spring to rest is.** The one caller
-    /// (`Popover::prepare_present`) uses this to tell "still ramping open" from "at rest with
-    /// only my own foreground moving" — a popover whose spring never reaches this true would keep
-    /// re-sourcing its backdrop forever, which is the FPS regression this predicate exists to end.
+    /// **A fresh open is not settled, and stepping the appear spring to rest is.** The host
+    /// snapshot's GROUND stage keys on it (`ground_done`): a popover whose spring never reaches this
+    /// true would never let the ground be captured, and would redraw its scrim and frost forever.
     #[test]
     fn appear_settled_is_false_on_open_and_true_once_the_spring_arrives() {
         // `open`/`close` touch the shared `OPEN_COUNT` static — the same reason the round-trip
         // test below takes this lock, and for the same reason this one must not skip it: two
         // popovers opening at once on different threads would otherwise race that counter.
         let _g = crate::testlock::serial();
-        let mut pop = Popover::with_glass(Glass::DYNAMIC_BACKDROP);
-        pop.open_on(&mut crate::ui::widgets::DynamicClock::new());
+        let mut pop = Popover::new();
+        pop.open();
         assert!(!pop.appear_settled(), "a fresh open has not ramped in yet");
         for _ in 0..240 {
             pop.update(1.0 / 60.0);
@@ -1368,18 +1292,6 @@ mod tests {
 
         live.close();
         assert_eq!(users(), 0);
-    }
-
-    #[test]
-    fn cached_is_the_default_and_dynamic_glass_requires_an_explicit_opt_in() {
-        let _g = crate::testlock::serial();
-        let mut cached = Popover::new();
-        let mut dynamic = Popover::with_glass(Glass::DYNAMIC_BACKDROP);
-        assert_eq!(cached.glass, Glass::CACHED);
-        assert_eq!(dynamic.glass, Glass::DYNAMIC_BACKDROP);
-        cached.prepare_present(false);
-        dynamic.prepare_present_on(&mut crate::ui::widgets::DynamicClock::new(), false);
-        assert!(!cached.glass_state.is_active() && !dynamic.glass_state.is_active());
     }
 
     /// The counter behind [`any_open`], driven through the four sequences that leak it if either

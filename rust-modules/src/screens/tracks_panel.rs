@@ -1,6 +1,6 @@
 //! **Track information** — the detail page's file inspector (`Alert Views.dc.html` §1B).
 //!
-//! One glass panel answering "what actually IS this file": the container and its size, the video
+//! One panel answering "what actually IS this file": the container and its size, the video
 //! stream's own technicals, the Dolby Vision layering when there is any, and then EVERY audio and
 //! subtitle track the part carries. It is opened with OK on the About footer's **Languages**
 //! column — the block that lists those tracks — and closed by BACK; it has no controls of its own,
@@ -648,7 +648,6 @@ pub(crate) struct TracksPanelScreen {
     /// page turn can clamp without re-measuring text off the draw path (`text_width` reaches
     /// SDL_ttf, which the host suite cannot link).
     content_h: f32,
-    glass: crate::ui::widgets::GlassState,
 }
 
 impl TracksPanelScreen {
@@ -658,7 +657,6 @@ impl TracksPanelScreen {
             page: arg.page.max(1),
             scroll: Spring::at(0.0),
             content_h: 0.0,
-            glass: crate::ui::widgets::GlassState::new(),
         }
     }
 
@@ -971,11 +969,17 @@ impl TracksPanelScreen {
     /// `&mut self` because the walk MEASURES: the body is laid out twice, once silently to produce the
     /// content height the page count and the rail describe and once for real, and that height is the
     /// panel's state.
-    fn paint(&mut self, d: &Detail, appear: f32, measure: &dyn crate::ui::machine::Measure) {
+    fn paint(
+        &mut self,
+        d: &Detail,
+        appear: f32,
+        measure: &dyn crate::ui::machine::Measure,
+        field: Option<&crate::ui::underlay::UnderlayField>,
+    ) {
         let r = panel_rect();
         let slide = RISE * (1.0 - appear);
         let p = Painter::root().alpha(appear).translate(0.0, slide);
-        crate::ui::widgets::Glass::CACHED.panel(p, r, slide, theme::ALERT_PANEL_RAD);
+        crate::ui::widgets::panel_ground(p, r, theme::ALERT_PANEL_RAD, field);
 
         // ---- header ------------------------------------------------------------------------------
         let cx = r.x + PAD;
@@ -1224,17 +1228,15 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
     fn crumb(&self, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> {
         None
     }
-    fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &crate::ui::machine::Cx<'_, H>) {
-        crate::ui::widgets::Glass::CACHED.prepare(&mut self.glass, false);
-    }
+    fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &crate::ui::machine::Cx<'_, H>) {}
     /// The modal dim, asked for rather than drawn — the design's `scrimStill`, at the PANEL role
     /// ([`theme::underlay::DIM_PANEL`]). Nothing is lifted: this sheet replaces the middle of the frame and holds no
     /// control, so there is no element under it the dim must spare.
     ///
-    /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): a
-    /// `Glass::CACHED` ground samples the framebuffer as it stands, so the dim has to be down
-    /// before the sheet's backdrop is taken or the frosted ground reads brighter than the dimmed
-    /// screen around it. `ModalStack::draw_scrims` draws it at the end of the PAGE pass — strictly
+    /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): the
+    /// panel's ground once sampled the framebuffer (`Glass::CACHED`), so the dim had to be down
+    /// before the backdrop was taken; the ground is the latched underlay field now, latched at the
+    /// head of the dims from the undimmed page. `ModalStack::draw_scrims` draws it at the end of the PAGE pass — strictly
     /// earlier than the surface pass this `draw` runs in — and multiplies by the appear spring and
     /// by `nav::page_alpha`, which is `Popover::scrim`'s own arithmetic and one factor more than
     /// the in-`draw` version could reach.
@@ -1255,7 +1257,8 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
         // this sheet is up can be read as the PANEL or as the host under it rather than as one
         // `main.ui` total. It is the scene `fps:page-panel` grades.
         let measure = f.measure;
-        crate::ui::profile::phase("dt.tracks", || self.paint(d, appear, measure));
+        let field = f.underlay;
+        crate::ui::profile::phase("dt.tracks", || self.paint(d, appear, measure, field));
     }
     fn render(&self) -> crate::ui::screen::RenderStrategy {
         crate::ui::screen::RenderStrategy::Page

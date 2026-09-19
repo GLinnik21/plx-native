@@ -306,6 +306,8 @@ impl LogicalState for FixtureState {
 /// Library's scroll. One page rather than all of them: a spring in flight keeps the present gate
 /// awake, and every other test in this bundle grades quiet frames.
 pub const ANIMATED_PAGE: u32 = 950;
+/// A transition fixture whose page-owned motion intentionally outlives PageDip's 140 ms In ramp.
+pub const QUIESCENCE_PAGE: u32 = 951;
 
 pub struct FixtureScreen {
     pub arg: FixtureArg,
@@ -419,6 +421,10 @@ impl Machine<FixtureHost> for FixtureScreen {
                 self.spring.step(1.0, 300.0, t.dt());
                 Handled::Yes
             }
+            ScreenEvent::Tick(t) if self.arg == FixtureArg::Page(QUIESCENCE_PAGE) && t.ms < 400 => {
+                fx.note(super::present::PresentEvent::Motion);
+                Handled::Yes
+            }
             ScreenEvent::Enter(super::screen::Enter::Fresh { .. }) if self.arg == FixtureArg::Page(2) => {
                 // a structural op emitted from a FRESH Enter: parked for the NEXT frame's commit
                 // (§3.3); a Restored Enter (a pop back onto this page) pushes nothing, or a BACK
@@ -474,6 +480,17 @@ impl Screen<FixtureHost> for FixtureScreen {
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
         self.draw_at = draw_order();
         composed_draw(self, f);
+        if matches!(self.arg, FixtureArg::Page(_)) {
+            f.painter.text(
+                c"pending page text".as_ptr(),
+                100.0,
+                100.0,
+                24,
+                [1.0; 4],
+                0,
+                0,
+            );
+        }
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page
@@ -574,6 +591,8 @@ impl FixtureModal {
                                 draw_at: 0,
                             }),
                             inflight: Vec::new(),
+                            staged: false,
+                            staged_effects: Vec::new(),
                         });
                     }
                 }
@@ -894,6 +913,7 @@ impl Screen<FixtureHost> for VideoPlaneScreen {
 pub struct FixtureRig {
     pub page_alpha: f32,
     pub chrome_alpha: f32,
+    pub chrome_draws: usize,
     pub view_tab: Option<u32>,
     pub blur_amount: f32,
     pub navigation_reads: std::cell::Cell<usize>,
@@ -920,6 +940,7 @@ impl FixtureRig {
         Self {
             page_alpha: 1.0,
             chrome_alpha: 1.0,
+            chrome_draws: 0,
             view_tab: None,
             blur_amount: 0.0,
             navigation_reads: std::cell::Cell::new(0),
@@ -959,6 +980,10 @@ impl Rig<FixtureHost> for FixtureRig {
             page_alpha: self.page_alpha, chrome_alpha: self.chrome_alpha,
             view_tab: self.view_tab, blur_amount: self.blur_amount,
         }
+    }
+    fn draw_chrome(&mut self, _arg: &FixtureArg, _parts: &CxParts<u32>,
+        _nav: super::screen::NavPresentation, _glass: Option<&mut super::frame::glass::GlassPlan>) {
+        self.chrome_draws += 1;
     }
     fn scrim_chrome_read(&self) -> Option<super::widgets::ChromeRead<'_>> {
         self.scrim_chrome.then(|| super::widgets::ChromeRead {
@@ -1856,7 +1881,7 @@ fn below_drawn(d: &Dispatcher<FixtureHost>) -> u32 {
 ///
 /// *Takes no snapshot.* Four doors read framebuffer 0 back — the frozen-host snapshot
 /// (`popover::host::begin_frame`), Glass, the underlay field's live-frame sample
-/// (`underlay::sample_underlay_field`, `RouteGround::draw_host`'s source) and `FrameCache::capture`
+/// (`gfx::field_kick`, `RouteGround::draw_host`'s source) and `FrameCache::capture`
 /// — and on this frame framebuffer 0 IS the hole. What each of them would cache is a photograph of
 /// transparent black, served back over the film for as long as the cache lives. Before phase 9 the
 /// only statement of that rule was prose ("never call it on the player route") plus the loop
@@ -1965,7 +1990,7 @@ fn a_video_plane_screen_replaces_its_host_and_takes_no_snapshot() {
         ("src/gfx.rs", "video_plane_refuses(\"FrameCache::capture\")"),
         ("src/gfx.rs", "video_plane_refuses(\"Glass::backdrop\")"),
         ("src/ui/popover.rs", "video_plane_refuses(\"popover::host::begin_frame\")"),
-        ("src/gfx.rs", "video_plane_refuses(\"underlay::sample_underlay_field\")"),
+        ("src/gfx.rs", "video_plane_refuses(\"gfx::field_kick\")"),
     ] {
         let src =
             std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file))

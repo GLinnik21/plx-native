@@ -14,7 +14,6 @@ use crate::ui::screen::{
 };
 use crate::ui::source_list::{self, Level, SrcAction, Tail};
 use crate::ui::table::{Row, Section, TableView};
-use crate::ui::widgets::{Glass, GlassState};
 use crate::ui::Rect;
 use std::borrow::Cow;
 
@@ -309,7 +308,6 @@ pub(crate) struct LibraryMenu {
     identities: Vec<String>,
     table: TableView,
     stamp: Vec<u8>,
-    glass: GlassState,
     desired_unwatched: Option<bool>,
     #[cfg(test)] draft_rebuilds: usize,
 }
@@ -324,7 +322,6 @@ impl LibraryMenu {
             identities: Vec::new(),
             table: TableView::new(),
             stamp: Vec::new(),
-            glass: GlassState::new(),
             desired_unwatched: None,
             #[cfg(test)] draft_rebuilds: 0,
         }
@@ -646,9 +643,7 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> {
         None
     }
-    fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {
-        Glass::CACHED.prepare(&mut self.glass, false);
-    }
+    fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {}
     /// The COMPACT role — the card menu's weight, because this is the same object one page over: a
     /// chip-shaped control on a live page opening a list beside it. The page recedes (inheriting
     /// its own light through the container's field) and stays readable.
@@ -661,8 +656,9 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
         // The panel's own share, named for `/tmp/plxnative-cpuprof` beside the page's `lb.*`
         // phases: the frosted ground plus its rows, so a slow frame while the Sort/Filter menu is
         // up can be read as the PANEL or as the host under it rather than as one `main.ui` total.
+        let field = f.underlay;
         crate::ui::profile::phase("lb.menu", || {
-            Glass::CACHED.panel(p, self.frame(), 0.0, PANEL_RADIUS);
+            crate::ui::widgets::panel_ground(p, self.frame(), PANEL_RADIUS, field);
             self.table.draw(p, self.frame(), measure);
         });
         for row in &self.rows {

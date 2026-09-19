@@ -28,7 +28,7 @@ fn restored_live_and_evicted_bodies_receive_memory_before_enter() {
 }
 use super::transition::PageDip;
 use crate::ui::dispatch::{Dispatcher, NoTap};
-use crate::ui::fixture::{booted, events_of, key, tick, FixtureArg, FixtureHost, FixtureRig};
+use crate::ui::fixture::{booted, events_of, key, tick, FixtureArg, FixtureHost, FixtureRig, QUIESCENCE_PAGE};
 use crate::ui::machine::{EntryId, FocusKey, InputOwner, Key, MachineId, NavOp};
 
 fn open_modal(d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, style: Style, ms: u32) -> EntryId {
@@ -184,22 +184,46 @@ fn the_scrim_callback_receives_the_normal_chromes_borrowed_frame_read() {
 // ── The inherited dim: one field per stack, latched from a page no dim has touched ────────────
 
 /// A framebuffer that remembers what was painted on it: one grey level, darkened by every dim
-/// exactly as `scrim_black(a)` over it would. `sample` reads it back as a flat grid, so a field
-/// latched from it says, in its `key`, which picture it saw.
+/// exactly as `scrim_black(a)` over it would. `kick` queues it as a flat grid that `collect` hands
+/// back once a frame has ended — `gfx::field_kick`/`field_collect`'s contract — so a field latched
+/// from it says, in its `key`, which picture it saw, and the events say WHEN it was read.
 struct FakeFb {
     level: f32,
     epoch: u32,
     refuse: bool,
     video_plane: bool,
     events: Vec<&'static str>,
+    /// Drawn frames so far (`gfx::field_frame_end`).
+    swaps: u32,
+    /// Chain runs so far; a later kick reuses the one set of targets.
+    runs: u32,
+    /// What the last run reduced.
+    reduced: f32,
+    /// Is a read in flight (`DimSink::in_flight`)?
+    in_flight: bool,
+    /// Did this frame capture the host (`DimSink::captured`)?
+    captured: bool,
 }
 
 impl FakeFb {
     fn new(level: f32) -> Self {
-        Self { level, epoch: 0, refuse: false, video_plane: false, events: Vec::new() }
+        Self {
+            level,
+            epoch: 0,
+            refuse: false,
+            video_plane: false,
+            events: Vec::new(),
+            swaps: 0,
+            runs: 0,
+            reduced: 0.0,
+            in_flight: false,
+            captured: false,
+        }
     }
-    /// The page is drawn again (live, or served from the snapshot) at the start of a frame.
+    /// The previous frame is swapped and the page is drawn again (live, or served from the
+    /// snapshot) at the start of the next.
     fn frame(&mut self, level: f32) {
+        self.swaps += 1;
         self.level = level;
         self.events.clear();
     }
@@ -212,12 +236,31 @@ impl super::modal::DimSink for FakeFb {
     fn page_epoch(&self) -> u32 {
         self.epoch
     }
-    fn sample(&mut self) -> Option<[[f32; 3]; crate::gfx::FIELD_CELLS]> {
+    fn captured(&self) -> bool {
+        self.captured
+    }
+    fn kick(&mut self) -> Option<crate::gfx::FieldTicket> {
         if self.refuse {
             return None;
         }
-        self.events.push("sample");
-        Some([[self.level; 3]; crate::gfx::FIELD_CELLS])
+        self.events.push("kick");
+        self.runs += 1;
+        self.reduced = self.level;
+        Some(crate::gfx::FieldTicket::for_test(self.runs, self.swaps))
+    }
+    fn collect(&mut self, t: crate::gfx::FieldTicket) -> crate::gfx::FieldRead {
+        use crate::gfx::{field_ticket_state, FieldRead, TicketState};
+        match field_ticket_state(t, self.runs, self.swaps, true) {
+            TicketState::Due => {
+                self.events.push("collect");
+                FieldRead::Ready([[self.reduced; 3]; crate::gfx::FIELD_CELLS])
+            }
+            TicketState::Pending => FieldRead::Pending,
+            TicketState::Lost => FieldRead::Lost,
+        }
+    }
+    fn in_flight(&mut self, pending: bool) {
+        self.in_flight = pending;
     }
     fn dim(&mut self, _field: &crate::ui::underlay::UnderlayField, alpha: f32) {
         self.events.push("dim");
@@ -239,35 +282,125 @@ fn key_level(d: &Dispatcher<FixtureHost>) -> f32 {
     d.nav.modals.underlay.field().key()[0]
 }
 
+/// Draw one frame's dims through `fb`.
+fn dims_frame(d: &mut Dispatcher<FixtureHost>, rig: &FixtureRig, fb: &mut FakeFb) {
+    let read = crate::ui::dispatch::scrim_lift_read::<FixtureHost>(rig, None);
+    d.nav.modals.draw_scrims_on(1.0, read, fb);
+}
+
 /// **The field is latched from the page BEFORE any dim is on it — and so it can never inherit its
 /// own dim** (the one property the whole mechanism rests on: a dim keyed to a dimmed picture of
 /// itself darkens a little more every time it is re-read).
 ///
 /// Two sheets at 0.5 over a page of grey 0.5. The field must read 0.5, not 0.25 or 0.125, and the
-/// read must come before both dims in the frame's paint order. The next frame at the same host
-/// epoch must not read again at all, even though the framebuffer it would see now carries two dims.
+/// reduction must be QUEUED before both dims in the frame's paint order. The next frame at the same
+/// host epoch must not read again at all, even though the framebuffer it would see now carries two
+/// dims.
 ///
 /// Observed RED with `underlay.sync` moved after the dim loop in `draw_scrims_on`: the events were
-/// `["dim", "dim", "sample"]`.
+/// `["dim", "dim", "sample"]` (the read was one synchronous `sample` then).
 #[test]
 fn the_dims_field_is_latched_from_the_undimmed_page_before_the_first_dim() {
     let (mut d, mut rig, _) = booted();
     let _ = two_dimming_sheets(&mut d, &mut rig);
-    let read = crate::ui::dispatch::scrim_lift_read::<FixtureHost>(&rig, None);
     let mut fb = FakeFb::new(0.5);
 
-    d.nav.modals.draw_scrims_on(1.0, read, &mut fb);
-    assert_eq!(fb.events, ["sample", "dim", "dim"], "the read precedes every dim of the frame");
-    assert!((key_level(&d) - 0.5).abs() < 2e-3, "latched from the UNDIMMED page, got {}", key_level(&d));
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(fb.events, ["kick", "dim", "dim"], "the reduction is queued before every dim");
     assert!((fb.level - 0.125).abs() < 1e-6, "and both dims still landed, bottom to top");
+
+    // The next frame reads what was queued — the undimmed page, whatever is on the framebuffer now.
+    fb.frame(0.5);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(fb.events, ["collect", "dim", "dim"], "the read lands before this frame's dims");
+    assert!((key_level(&d) - 0.5).abs() < 2e-3, "latched from the UNDIMMED page, got {}", key_level(&d));
 
     // Same host snapshot: the page has not been re-captured, so the field is not re-read — even
     // though what is on the framebuffer between frames is the dimmed picture.
     fb.frame(0.5);
-    let read = crate::ui::dispatch::scrim_lift_read::<FixtureHost>(&rig, None);
-    d.nav.modals.draw_scrims_on(1.0, read, &mut fb);
+    dims_frame(&mut d, &rig, &mut fb);
     assert_eq!(fb.events, ["dim", "dim"], "no re-read while the host snapshot stands");
     assert!((key_level(&d) - 0.5).abs() < 2e-3);
+}
+
+/// **The page read never stalls the frame that asked for it.** A `glReadPixels` of work queued on
+/// the same frame waits for the GPU to draw everything submitted so far: measured on the
+/// television (2026-09-19, `FRAMEDROP … spans=…fieldread:25.7`), 26–37 ms of every modal's
+/// 60–69 ms open frame, when the read ran inside `draw_scrims` on the frame the host was captured.
+/// So the read is due only once a drawn frame has ended since the kick — and until it lands, the
+/// loop is kept turning for it (a settled stack may otherwise stop presenting, and the read would
+/// wait for the keepalive) and the host's ground stage, which bakes the dim in, is held off.
+#[test]
+fn the_page_read_lands_a_frame_after_it_is_queued_and_holds_the_ground_until_then() {
+    let (mut d, mut rig, _) = booted();
+    let _ = two_dimming_sheets(&mut d, &mut rig);
+    let mut fb = FakeFb::new(0.5);
+
+    dims_frame(&mut d, &rig, &mut fb);
+    assert!(!fb.events.contains(&"collect"), "no read on the frame the reduction was queued");
+    assert!(!d.nav.modals.underlay.field().is_latched(), "the open frame's dim is the flat ink");
+    assert!(fb.in_flight, "a read in flight keeps the loop turning and holds the ground");
+
+    // A second draw of the SAME frame (a blur source pass re-renders the page) still may not read.
+    dims_frame(&mut d, &rig, &mut fb);
+    assert!(!fb.events.contains(&"collect"));
+    assert_eq!(fb.events.iter().filter(|e| **e == "kick").count(), 1, "and does not queue twice");
+
+    fb.frame(0.5);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert!(d.nav.modals.underlay.field().is_latched());
+    assert!(!fb.in_flight, "landed: the ground may be taken and the loop may rest");
+}
+
+/// **The page is read on the frame that captured it, before any dim is seen.** That frame's GPU
+/// work is waited out before anything else presents (`gfx::snapshot_frame_begin`), so the
+/// reduction queued there costs no presented frame — queued a frame later, it was the GPU backlog
+/// the frame after THAT paid (20–24 ms, television, 2026-09-19). Without a capture on the frame, a
+/// held surface still queues nothing: there is no fence to hide the reduction behind.
+#[test]
+fn the_page_is_read_on_the_capture_frame_and_not_on_a_held_frame_without_one() {
+    let (mut d, mut rig, _) = booted();
+    let a = open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    modal_mut(&mut d, a).scrim_alpha = 0.5;
+    d.nav.modals.surface_mut(a).unwrap().motion = super::modal::PopoverMotion::at(0.0);
+    let mut fb = FakeFb::new(0.5);
+
+    dims_frame(&mut d, &rig, &mut fb);
+    assert!(fb.events.is_empty(), "held, no capture this frame: nothing queued, nothing dimmed");
+
+    fb.frame(0.5);
+    fb.captured = true;
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(fb.events, ["kick"], "the capture frame queues the read, and dims nothing");
+
+    fb.frame(0.5);
+    fb.captured = false;
+    d.nav.modals.surface_mut(a).unwrap().motion = super::modal::PopoverMotion::at(1.0);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(fb.events, ["collect", "dim"], "the first dim stands on the landed field");
+}
+
+/// **A read whose targets were reused is asked for again, not adopted.** The chain's targets are
+/// shared with every other reader (`RouteGround`'s ground latches off the same chain), so a run in
+/// between leaves another page's field in them.
+#[test]
+fn a_lost_page_read_is_queued_again_rather_than_adopted() {
+    let (mut d, mut rig, _) = booted();
+    let _ = two_dimming_sheets(&mut d, &mut rig);
+    let mut fb = FakeFb::new(0.5);
+    dims_frame(&mut d, &rig, &mut fb);
+
+    // Someone else ran the chain before the read was due.
+    fb.runs += 1;
+    fb.reduced = 0.9;
+    fb.frame(0.5);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(fb.events, ["kick", "dim", "dim"], "lost: re-queued from this frame's page");
+    assert!(!d.nav.modals.underlay.field().is_latched(), "the other reader's field is never adopted");
+
+    fb.frame(0.5);
+    dims_frame(&mut d, &rig, &mut fb);
+    assert!((key_level(&d) - 0.5).abs() < 2e-3, "got {}", key_level(&d));
 }
 
 /// **A re-captured host re-latches; a refused read keeps what it had; the last dismissal resets.**
@@ -276,16 +409,22 @@ fn a_recaptured_host_relatches_and_the_last_dismissal_resets_the_field() {
     let (mut d, mut rig, _) = booted();
     let (a, b) = two_dimming_sheets(&mut d, &mut rig);
     let mut fb = FakeFb::new(0.5);
-    let read = crate::ui::dispatch::scrim_lift_read::<FixtureHost>(&rig, None);
-    d.nav.modals.draw_scrims_on(1.0, read, &mut fb);
+    dims_frame(&mut d, &rig, &mut fb);
+    fb.frame(0.5);
+    dims_frame(&mut d, &rig, &mut fb);
     assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Page(0));
 
-    // The page under the stack changed and `popover::host` re-took its snapshot.
+    // The page under the stack changed and `popover::host` re-took its snapshot: the field keeps
+    // the old page's light for the one frame the new read is in flight…
     fb.frame(0.8);
     fb.epoch = 1;
-    let read = crate::ui::dispatch::scrim_lift_read::<FixtureHost>(&rig, None);
-    d.nav.modals.draw_scrims_on(1.0, read, &mut fb);
-    assert_eq!(fb.events, ["sample", "dim", "dim"], "a new host snapshot is read again, first");
+    dims_frame(&mut d, &rig, &mut fb);
+    assert_eq!(fb.events, ["kick", "dim", "dim"], "a new host snapshot is read again, first");
+    assert!((key_level(&d) - 0.5).abs() < 2e-3, "the old light stands while the read is in flight");
+    assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Page(0));
+    // …and follows it once the read lands.
+    fb.frame(0.8);
+    dims_frame(&mut d, &rig, &mut fb);
     assert!((key_level(&d) - 0.8).abs() < 2e-3, "…and the field follows it, got {}", key_level(&d));
     assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Page(1));
 
@@ -294,11 +433,11 @@ fn a_recaptured_host_relatches_and_the_last_dismissal_resets_the_field() {
     fb.frame(0.3);
     fb.epoch = 2;
     fb.refuse = true;
-    let read = crate::ui::dispatch::scrim_lift_read::<FixtureHost>(&rig, None);
-    d.nav.modals.draw_scrims_on(1.0, read, &mut fb);
+    dims_frame(&mut d, &rig, &mut fb);
     assert!(d.nav.modals.underlay.field().is_latched(), "a refusal keeps the field");
     assert!((key_level(&d) - 0.8).abs() < 2e-3);
     assert_eq!(d.nav.modals.underlay.held(), super::modal::Latched::Page(1), "still owed");
+    assert!(!fb.in_flight, "a refusal queued nothing to wait for");
 
     // Both sheets leave: once the stack is empty the field is re-armed for whatever comes next.
     // (`hide` rather than a dismissal stepped through `Dispatcher::frame`: a frame DRAWS, and a
@@ -1023,6 +1162,32 @@ fn a_page_dip_commits_at_its_floor_and_a_back_inside_the_window_withdraws_it() {
     assert_eq!(d.nav.tabs.stack.page_alpha(), 1.0);
 }
 
+/// A pending destination is laid out through the text recorder while the old page is still the
+/// visible top. The host has no GL context, so `text`'s test backend records residency at the same
+/// cache boundary the device backend rasterises and uploads through.
+#[test]
+fn a_page_pushed_behind_a_dip_has_its_text_resident_before_it_is_seen() {
+    let _g = crate::testlock::serial();
+    let mut d: Dispatcher<FixtureHost> = Dispatcher::with_transition(Box::new(PageDip::new()));
+    let mut rig = FixtureRig::new();
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+    for i in 0..30u32 {
+        d.frame(&mut rig, tick(i * 16), vec![], vec![], &mut NoTap);
+    }
+    assert_eq!(d.top_screen().unwrap().name(), "home");
+
+    crate::text::reset_prewarm_for_test();
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(42)));
+    d.frame(&mut rig, tick(600), vec![], vec![], &mut NoTap);
+    d.frame(&mut rig, tick(616), vec![], vec![], &mut NoTap);
+
+    assert_eq!(d.top_screen().unwrap().name(), "home", "the outgoing page remains visible");
+    assert!(
+        crate::text::prewarm_resident_for_test(b"pending page text", 24, 0),
+        "the incoming page's text was warmed before the dip floor"
+    );
+}
+
 /// **`has_pending_navigation` is a question about the PAGE stack**, and [`Navigation::moves_page`]
 /// is the one classifier that answers it — the same one [`Navigation::request`] routes by, so the
 /// guard and the commit cannot disagree about what a parked op is.
@@ -1268,4 +1433,189 @@ fn reset_for_profile_clears_a_pending_op_so_it_cannot_apply_over_the_emptied_tre
         d.prune(&report.unmounted);
     }
     assert!(d.nav.tabs.stack.entries.is_empty(), "nothing minted itself back in behind the reset");
+}
+
+#[derive(Default)]
+struct CountingSnapshot {
+    valid: bool,
+    begins: std::rc::Rc<std::cell::Cell<u32>>,
+}
+impl super::transition::PageSnapshot for CountingSnapshot {
+    fn available(&self) -> bool { true }
+    fn valid(&self) -> bool { self.valid }
+    fn begin(&mut self) -> bool {
+        self.valid = false;
+        self.begins.set(self.begins.get() + 1);
+        true
+    }
+    fn finish(&mut self) { self.valid = true; }
+    fn release(&mut self) { self.valid = false; }
+}
+
+fn frozen_fixture() -> (Dispatcher<FixtureHost>, FixtureRig) {
+    // Product opens this ledger once per loop before dispatch. Keep the isolated fixture from
+    // inheriting another serialized spring test's last `page_moving` bit.
+    crate::ui::idle::frame_begin(1.0 / 60.0);
+    let (mut d, rig, _) = booted();
+    d.page_snapshot = Box::<CountingSnapshot>::default();
+    d.nav.tabs.stack.transition = Box::new(PageDip::new());
+    (d, rig)
+}
+fn page_draw_order(d: &Dispatcher<FixtureHost>) -> usize {
+    d.top_screen().unwrap().as_any().unwrap()
+        .downcast_ref::<crate::ui::fixture::FixtureScreen>().unwrap().draw_at
+}
+
+#[test]
+fn frozen_dispatch_skips_the_page_but_keeps_chrome_live() {
+    let _guard = crate::testlock::serial();
+    let (mut d, mut rig) = frozen_fixture();
+    d.nav.tabs.stack.transition.request(true);
+    d.draw(&mut rig, true); // capture
+    let before = page_draw_order(&d);
+    let chrome = rig.chrome_draws;
+    d.draw(&mut rig, true); // held
+    assert_eq!(page_draw_order(&d), before, "OUT must not invoke the live page");
+    assert_eq!(rig.chrome_draws, chrome + 1, "chrome is outside the captured page");
+}
+
+#[test]
+fn frozen_dispatch_in_reuses_the_floor_capture() {
+    let _guard = crate::testlock::serial();
+    let (mut d, mut rig) = frozen_fixture();
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(7)));
+    for i in 1..=7 { d.frame(&mut rig, tick(i * 16), vec![], vec![], &mut NoTap); }
+    assert_eq!(d.top_arg(), Some(&FixtureArg::Page(7)));
+    assert!(d.nav.tabs.stack.transition.in_flight());
+    d.draw(&mut rig, true);
+    let before = page_draw_order(&d);
+    d.draw(&mut rig, true);
+    assert_eq!(page_draw_order(&d), before, "IN must not invoke the live page");
+}
+
+#[test]
+fn frozen_dispatch_resumes_live_after_settle() {
+    let _guard = crate::testlock::serial();
+    let (mut d, mut rig) = frozen_fixture();
+    d.nav.tabs.stack.transition.request(true);
+    d.draw(&mut rig, true);
+    d.draw(&mut rig, true);
+    let held = page_draw_order(&d);
+    d.draw(&mut rig, true);
+    assert_eq!(page_draw_order(&d), held, "premise: page is held before settle");
+    d.nav.tabs.stack.transition.cancel();
+    for i in 1..=20 { d.frame(&mut rig, tick(i * 16), vec![], vec![], &mut NoTap); }
+    assert!(!d.nav.tabs.stack.transition.in_flight());
+    d.draw(&mut rig, true);
+    assert!(page_draw_order(&d) > held, "settled page is live again");
+}
+
+#[test]
+fn frozen_dispatch_holds_past_the_dip_while_page_motion_and_resource_work_remain() {
+    let _guard = crate::testlock::serial();
+    let (mut d, mut rig) = frozen_fixture();
+    let begins = std::rc::Rc::new(std::cell::Cell::new(0));
+    d.page_snapshot = Box::new(CountingSnapshot { valid: false, begins: begins.clone() });
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(QUIESCENCE_PAGE)));
+    d.frame_with(&mut rig, tick(0), vec![], vec![], &mut NoTap, false);
+    d.draw(&mut rig, true); // outgoing capture
+
+    let mut floor_capture_draw = None;
+    for i in 1..=29u32 {
+        let ms = i * 16;
+        crate::ui::idle::frame_begin(1.0 / 60.0);
+        // Motion ends at 400 ms; a late first-frame resource keeps the hold through 464 ms.
+        d.budget.note_queued((400..480).contains(&ms));
+        d.frame_with(&mut rig, tick(ms), vec![], vec![], &mut NoTap, false);
+        d.draw(&mut rig, true);
+        if d.top_arg() == Some(&FixtureArg::Page(QUIESCENCE_PAGE)) {
+            let now = page_draw_order(&d);
+            let floor = *floor_capture_draw.get_or_insert(now);
+            if ms >= 240 {
+                assert_eq!(now, floor, "frame {ms}: no visible/live page draw while motion or resource work remains");
+            }
+        }
+    }
+    assert!(!d.nav.tabs.stack.transition.in_flight(), "the 140 ms dip itself has ended");
+    let held = floor_capture_draw.expect("destination captured at the floor");
+
+    crate::ui::idle::frame_begin(1.0 / 60.0);
+    d.budget.note_queued(false);
+    d.frame_with(&mut rig, tick(480), vec![], vec![], &mut NoTap, false);
+    d.draw(&mut rig, true); // the one off-screen settled replacement capture
+    assert!(page_draw_order(&d) > held);
+    assert_eq!(begins.get(), 3, "outgoing, incoming floor, and exactly one settled replacement");
+
+    let replacement = page_draw_order(&d);
+    crate::ui::idle::frame_begin(1.0 / 60.0);
+    d.frame_with(&mut rig, tick(496), vec![], vec![], &mut NoTap, false);
+    d.draw(&mut rig, true);
+    assert!(page_draw_order(&d) > replacement, "live begins only after the matching image frame");
+    assert_eq!(begins.get(), 3, "the handoff never captures a second replacement");
+}
+
+#[test]
+fn frozen_dispatch_source_and_surfaces_passes_preserve_the_image() {
+    let _guard = crate::testlock::serial();
+    let (mut d, mut rig) = frozen_fixture();
+    d.nav.tabs.stack.transition.request(true);
+    d.draw(&mut rig, true);
+    let before = page_draw_order(&d);
+    {
+        use crate::ui::frame::backdrop::{self, Sources};
+        let _source = backdrop::discover(std::rc::Rc::new(std::cell::RefCell::new(Sources::default())));
+        d.draw(&mut rig, true);
+    }
+    assert_eq!(page_draw_order(&d), before, "glass discovery must not walk a held page");
+    d.draw(&mut rig, false);
+    assert!(d.page_snapshot.valid(), "the surfaces pass cannot release the page image");
+    d.draw(&mut rig, true);
+    assert_eq!(page_draw_order(&d), before);
+    let layers = d.backdrop_layers(0.5);
+    assert!(layers.iter().any(|layer| layer.blocks && layer.z < crate::ui::frame::backdrop::Z::CHROME));
+}
+
+#[test]
+fn held_page_backdrop_identity_is_invariant_under_alpha_only_changes() {
+    let _guard = crate::testlock::serial();
+    let (mut d, mut rig) = frozen_fixture();
+    d.nav.tabs.stack.transition.request(true);
+    d.draw(&mut rig, true);
+    let first = d.backdrop_layers(1.0).into_iter()
+        .find(|layer| layer.z < crate::ui::frame::backdrop::Z::CHROME)
+        .expect("held page layer").revision;
+    d.frame_with(&mut rig, tick(32), vec![], vec![], &mut NoTap, false);
+    let second = d.backdrop_layers(1.0).into_iter()
+        .find(|layer| layer.z < crate::ui::frame::backdrop::Z::CHROME)
+        .expect("held page layer").revision;
+    assert_eq!(first, second, "PageDip alpha is composite state, not filtered-source content");
+}
+
+#[test]
+fn frozen_dispatch_capture_refusal_keeps_the_live_fallback() {
+    let _guard = crate::testlock::serial();
+    struct Refused;
+    impl super::transition::PageSnapshot for Refused {
+        fn available(&self) -> bool { true }
+    }
+    let (mut d, mut rig) = frozen_fixture();
+    d.page_snapshot = Box::new(Refused);
+    d.nav.tabs.stack.transition.request(true);
+    d.draw(&mut rig, true);
+    let before = page_draw_order(&d);
+    d.draw(&mut rig, true);
+    assert!(page_draw_order(&d) > before);
+    assert!(!d.page_snapshot.valid());
+}
+
+#[test]
+fn frozen_dispatch_modal_takes_the_single_snapshot() {
+    let _guard = crate::testlock::serial();
+    let (mut d, mut rig) = frozen_fixture();
+    d.nav.tabs.stack.transition.request(true);
+    d.draw(&mut rig, true);
+    assert!(d.page_snapshot.valid());
+    open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    d.draw(&mut rig, true);
+    assert!(!d.page_snapshot.valid(), "page-only pixels cannot serve a modal's chrome prefix");
 }

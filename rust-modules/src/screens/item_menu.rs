@@ -56,7 +56,7 @@ use crate::ui::screen::{
     Hover, Placed, RenderStrategy, Screen, ScreenEvent, Scrim, Seat, Step, Stop,
 };
 use crate::ui::table::{Row, Section, TableView};
-use crate::ui::widgets::{Glass, GlassState, PosterMark};
+use crate::ui::widgets::PosterMark;
 use crate::ui::{theme, Rect};
 
 /// What the highlighted row does on OK. Every variant carries the identity it needs, captured when
@@ -420,7 +420,6 @@ pub(crate) struct ItemMenuScreen {
     /// [`ACTS_PARALLEL`].
     acts: Vec<Option<Action>>,
     table: TableView,
-    glass: GlassState,
     /// The cadence a HELD direction walks this panel's list at. `app/run.rs`'s client-side repeat
     /// timer (`App::held_key`) did this at 110 ms for exactly this menu and, before phase 9, for
     /// the player's four panels; the dispatcher delivers the hardware's ~50 ms `Edge::Repeat`
@@ -454,7 +453,6 @@ impl ItemMenuScreen {
             arg,
             acts: Vec::new(),
             table: TableView::new(),
-            glass: GlassState::new(),
             repeat: RepeatGate::IDLE,
             built: false,
         }
@@ -694,21 +692,18 @@ impl<H: AppLike + crate::screens::registry::MetadataLike> Screen<H> for ItemMenu
     ///
     /// That tile is the panel's whole subject: the design's stated point is that "the card and the
     /// rest of the shelf stay where they are, visible behind it", which a scrim over the card
-    /// itself quietly contradicts. The un-dimmed copy is also what the host snapshot holds, so the
-    /// panel's own glass never frosts a dimmed picture of the very card it is about.
+    /// itself quietly contradicts. The un-dimmed copy is also what the host snapshot holds.
     fn scrim(&self) -> Scrim {
         // The COMPACT role — the lightest dim in `theme::underlay`: the design's whole point is that
         // the card and the shelf stay legible behind the popover, so this recesses them rather
         // than blanking them.
         Scrim::dim(theme::underlay::DIM_COMPACT)
     }
-    fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {
-        Glass::CACHED.prepare(&mut self.glass, false);
-    }
+    fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
         let r = self.frame();
-        Glass::CACHED.panel(p, r, 0.0, PANEL_RAD);
+        crate::ui::widgets::panel_ground(p, r, PANEL_RAD, f.underlay);
         self.table.draw(p, r, f.measure);
         for elem in self.focusable().collect::<Vec<_>>() {
             if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {

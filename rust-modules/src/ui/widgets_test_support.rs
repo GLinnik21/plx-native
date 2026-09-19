@@ -28,16 +28,7 @@ pub(super) fn band_region(w: f32) -> f32 {
     u[2] * u[3]
 }
 
-/// A cadence of THREE, which is no longer the shipped default and is the point.
-///
-/// These tests were written against `DEFAULT_DYNAMIC_PERIOD` and broke the day it moved from
-/// three to one — which is the wrong thing for them to be sensitive to. What they exist to
-/// prove is the MECHANISM: every Nth qualifying present, damage pending across the gap, one
-/// capture shared by every owner in a present, and a counter that wraps. None of that is a
-/// property of N, so N is pinned here and the shipped value is asserted separately by
-/// [`the_shipped_cadence_is_every_changed_present`]. A period of one would also make three of
-/// the four assertions below unreachable, since nothing would ever `Wait`.
-pub(super) const P: u32 = 3;
+
 
 // ── The poster's state mark: one vocabulary, one mark at a time ───────────────────────────
 //

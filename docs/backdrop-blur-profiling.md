@@ -85,8 +85,10 @@ to the correct cropped-texture UV offset.
 
 ## Cache and refresh policy
 
-`Glass::CACHED` invalidates on activation and then reuses the blurred `mid` texture until explicit
-page invalidation or a region containment miss. `Glass::DYNAMIC` keeps drawing the glass material
+Popover panels stopped using the chain on 2026-09-19 (they stand on the latched underlay field,
+`widgets::panel_ground`); the cached popover preset `Glass::CACHED`, which reused the blurred `mid`
+texture until explicit page invalidation or a region containment miss, went with them.
+`Glass::DYNAMIC_BACKDROP` (the chrome) keeps drawing the glass material
 every presented UI frame and invalidates a dirty backdrop on every changed successful present.
 The modal dim is a page-drawn scrim rather than an input transform on the source render. Skipped
 idle-loop iterations do not advance that clock. The Account panel's exact height depends on the
@@ -1010,3 +1012,590 @@ banding measured above, so that trade is not available. The next levers are stru
 per-shader: extend the hero's one-pass ground (`fs_hero`) across the fold so the wash and the hero
 scrim are one pass, and opaque card interiors that let the tiler skip the wash beneath them.
 `ui::idle`'s settle frame no longer has a renderer term to settle and could be retired separately.
+
+## 2026-09-19: transition hitches — `modal-100` and `push-100`, attributed
+
+Both benches fail their 20 ms `bench_worst_ms` on base 727e4851. This section records where the
+worst frames go, the two fixes that landed, and what is still over budget. Every number is from
+the television, with the panel off and the sound muted. The "after" runs are 16-cycle (`modal`)
+and 15-cycle (`push`) versions of the same benches, so their RSS lines cover only six cycles
+after cycle 10 and cannot stand in for the 100-cycle RSS verdict.
+
+**Instrument.** `diag::spans` (new) adds `spans=name:ms,…` to every `FRAMEDROP` line. The
+dispatcher marks `prep`, `page`, `chrome`, `scrims` and `surf`. The framebuffer-0 `clear` carries
+the driver's GPU throttle wait. Popover capture is `cap`. The underlay chain's full-screen copy
+is `fieldcopy`, and its 480-byte `glReadPixels` is `fieldread`. A repeated name is summed and
+suffixed `xN`.
+
+| bench (worst_ms per cycle) | p50 | p95 | max | RSS last − cycle 10 |
+|---|---|---|---|---|
+| modal-100, base (100 cycles) | 63.9 | 84.3 | 131.2 | +17060 kB |
+| modal, Home fix + read one frame late (16 cycles) | 42.6 | 73.7 | 73.7 | +5580 kB |
+| modal, Home fix + read two frames late (16 cycles) | 52.1 | 99.3 | 99.3 | +5604 kB |
+| push-100, base (100 cycles) | 33.4 | 52.4 | 109.7 | +648 kB |
+| push, after (15 cycles) | 33.5 | 101.5 | 101.5 | −1924 kB |
+
+**What the modal open frame cost on base.** The open frame took 60–69 ms. Of that, 26–37 ms was
+`fieldread`: `ModalUnderlay` read the underlay field back on the same frame that queued the
+chain, so the read waited for the whole frame to draw. `clear` took 12–13 ms and `page` (the
+host capture) 14 ms. On Settings, `surf` took 50.9 ms, most of it `RouteGround`'s own synchronous
+latch.
+
+**Fix 1: a settled Home no longer presents forever.** The hero auto-advance reported
+`PresentEvent::Motion` on every tick while it counted down. As a result, a settled Home kept
+presenting full frames indefinitely. Each of those frames cost about 24 ms of GPU, and the next
+transition paid for the backlog. The countdown is a timer. It is ticked on every loop
+iteration, and the flip itself wakes the gate. Regression test:
+`a_settled_hero_counting_down_lets_the_gate_close_and_still_flips`, observed red with "asked
+for 500 presents".
+
+**Fix 2: the field read is split from the reduction.** `gfx::field_kick` queues the chain, using
+the host's `Held::Page` snapshot as its source when there is one, which also saves the
+full-screen copy. `gfx::field_collect` reads the ticket later. Until the read lands, the modal
+keeps the loop turning and holds off the host's `Held::Ground` stage. Waiting one drawn frame was
+not enough to make the read free: the collect still spent 11–25 ms in `fieldread`, because the
+GPU runs more than a frame behind. At two frames the read costs 0.1–0.4 ms, but the collect
+frame's total grew from 42–45 ms to 50–57 ms, almost none of it inside a span. The GPU is
+saturated through the whole ramp, so the extra frame only adds to the backlog, and the wait
+moves to the first unspanned framebuffer-0 draw. Both runs were back to back, and Home's frames
+between cycles cost the same in each (median 25.0 and 25.2 ms), so the difference is not the
+set. The bench grades the worst frame, so `FIELD_READ_LAG_SWAPS` stays at one.
+
+**What is still over 20 ms, by cause.**
+
+- **Home's steady GPU cost.** With the modal bench running, Home draws two page passes per frame
+  (`pagex2`), and the throttle `clear` waits 17–20 ms. Every modal cycle starts on that backlog.
+  This is the ambient lane's territory (the Home ground and its blur source pass), not a
+  transition mechanism.
+- **Settings' first visible frame.** Settings' `RouteGround` is not drawn while its opacity is 0,
+  so its first latch happens on a visible frame and falls back to the synchronous read
+  (`fieldcopy:2–9`, `fieldread:20–30`, inside `surf:47`). Deferring that read means drawing a
+  frame or two without the sampled ground at low alpha, which is a visual change. It has not been
+  made.
+- **Push (`detail` and `library`).** These show no one-off hitch. Frames are sustained at 22–25
+  ms: `clear` 11–18 ms plus `page` 21 ms on Detail, and two page passes on Library throughout
+  the push spring. Only fill-rate work on those pages can fix that. The Detail first-cycle
+  outlier (101.5 ms) is the cold artwork load.
+
+**Ambient scenes on the "two frames late" build.** That build differs from the landed one only in the read lag. No base run was taken on the same day. The
+reference is the latest figures in this document.
+
+| scene | result |
+|---|---|
+| home-hero | PASS, median 60 fps |
+| home-fold | PASS, median 54 fps |
+| home-grid | FAIL on loop floor: robust_min 49 against 50; fps median 34 against floor 20 |
+| detail-transition | PASS, median 50 fps |
+| settings-root | PASS, 60 fps |
+| modal-ramp | PASS, worst robust_max 58.7 ms against 75 |
+| item-menu | PASS, loop 60 |
+| home-acct-glass | PASS, median 56 fps (60 in the 2026-09-04 table) |
+
+## 2026-09-19 (later): the modal open, one frame at a time — still over budget
+
+All numbers come from the television, with the panel off and the sound muted. They are from
+`TMP-modal-short`, a 16-cycle copy of `fps:modal-100` that cycles through Settings, the account
+menu, the item menu and About. Because the run is short, its RSS line covers only six cycles after
+cycle 10.
+
+| build (worst_ms per cycle) | p50 | p95 | max | RSS last − cycle 10 |
+|---|---|---|---|---|
+| start of this lane (ed3801b4 + FBO capture + fence) | 40.1 | 75.9 | 75.9 | +9.7 MB |
+| + frozen page never reads its ground, read once the dim is seen | 40.1 | 61.7 | 61.7 | +4.7 MB |
+| + separable `texture_rgba` | 37.2 | 62.5 | 62.5 | +8.6 MB |
+| + the appear spring held for the capture frame | 31.1 | 71.6 | 71.6 | +8.6 MB |
+
+The max figure is Settings' cold first cycle each time. The RSS figure moves by ±4 MB between
+back-to-back runs of the same build, so six cycles cannot settle a leak verdict.
+
+**What landed, and why.**
+
+- **The host page renders straight INTO the snapshot.** `FrameCache::render_into` does this
+  instead of drawing to framebuffer 0 and then copying it out mid-frame. The underlay field reads
+  its fence-guarded ticket (`egl::fence`) only after the GPU has signalled, so `fieldread` is never
+  a drain.
+- **A frozen page never reads its ground** (`gfx::may_read_ground`). Every thirtieth frame of a
+  modal held over Home, the tab-track and Hero-row samplers issued a synchronous `glReadPixels`.
+  That drained the GPU for 21 ms on a page whose pixels could not have changed.
+  Test: `a_frozen_page_answers_its_ground_from_the_last_reading`, observed red (SIGSEGV, reaching
+  `glReadPixels`).
+- **The field is read on the first frame a dim is SEEN** (`draw_scrims_on`, `RouteGround::draw_host`).
+  Before this, it was read on the frame the surface was presented.
+- **`texture_rgba` is separable and bit-identical.** It computes the x pass once per (grid row,
+  texel column) and runs only the y pass per texel. Its CPU time on the dim-latch frame fell from
+  7.5–8.6 ms to 3.5–4.5 ms. What remains is mostly 5,760 `powf` in `gfx::enc`.
+  Test: `a_separable_texture_is_reconstruct_to_the_bit`.
+- **The appear spring holds at 0 for one tick after `present`** (`PopoverMotion::hold`). The frame
+  that renders the host into its snapshot therefore carries no dim, no reduction and no panel ramp.
+  The ramp is the same curve, one frame later.
+  Test: `a_presented_surface_holds_at_zero_for_one_frame_then_ramps`, observed red.
+
+**What is still over 20 ms: GPU backlog at the open.** The graded worst frame of almost every
+cycle is the third frame after the open. It waits 22–37 ms (`tpp`) for a buffer while doing
+3–6 ms of its own CPU work. `main.ui` HWCNT per frame (About):
+
+| frame | GPU cycles |
+|---|---|
+| capture | 11.2 M |
+| next | 5.5 M |
+| next | 12.1 M |
+| steady | 7.7 M |
+
+Home is 8.7 M a frame, and 3.0 M of every frame is the compositor floor
+(`drawmask=all`, the 2026-09-02 section). The steady modal frame is already close to a vsync
+of GPU, so the open's roughly 5.8 M excess has no headroom to drain into. With
+`drawmask=all` the same bench grades p50 17.5 and 12 of 16 cycles pass, which shows that the
+remaining cost is the app's own draw work, not presentation pacing.
+
+Leads not yet taken:
+- Serve the Held::Ground stage from the settle frame. It never fired in these runs.
+- Price the steady frame's 4.5 M app cycles class by class. A `drawmask` leg does NOT change the
+  HWCNT legs of `--graphics-profile`, so use `frame.ui` production A/B runs.
+- Replace `enc` with an exact threshold search.
+- Handle Settings' cold first open. Its `surf` is 46–56 ms on the CPU.
+
+`push-100` was not worked in this lane.
+
+## 2026-09-19 (modal-60 lane): who waits for the capture — `modal-100` 100/100 → 23/100 over
+
+**Why `Held::Ground` never fires.** `host::ground_drawn` is reached only through `Popover::panel`.
+Its only caller is `decision_alert`. Every container surface (item menu, account menu, About,
+tracks, alt sources, person bio, library menu) calls `widgets::panel_ground` directly. The stage
+would not help the bench anyway: a settled modal stops presenting, so every graded frame is a ramp
+frame.
+
+**Where the open's cost went.** A trace with every frame logged (`plxnative-framedrop=1`) of the
+16-cycle bench showed the pattern. The capture frame's CPU is short, 4–10 ms, because the CPU runs
+a frame ahead. Its GPU is a whole host render plus the composite. The second presented frame after
+it then waited 25–35 ms for a buffer, with under 1 ms of spans.
+
+`drawmask` pricing on the same bench (cycles over 20 ms, of 16):
+
+| leg | over |
+|---|---|
+| none | 15 |
+| field | 14 |
+| glass | 15 |
+| ambient | 16 |
+| image,text | 7 |
+| ambient,image,text,shadow,card,grad | 8 |
+
+So the cost is the host page's own content, rendered once into the snapshot, not any modal
+feature. It cannot be made cheaper per frame. What changed is who waits for it.
+
+**What landed (branch `perf/modal-60`).**
+
+1. **A capture is not followed by a present until the GPU has it.**
+   - After a capture frame's swap, `gfx::snapshot_frame_end` inserts a fence.
+   - `snapshot_frame_begin` latches whether that fence is still in flight. It is bounded by
+     `SNAPSHOT_DEFER_MAX` = 4 frames, and nothing is ever deferred without fences.
+   - `app::run`'s present gate skips those frames without consuming the idle gate's damage.
+   - `PopoverMotion::tick_gated` keeps a held surface at appear 0 through them. The ramp therefore
+     starts on an empty GPU queue, while the panel shows the capture frame, which is the unchanged
+     page.
+   - Tests: `a_snapshot_in_flight_defers_presents_for_a_bounded_number_of_frames` and
+     `a_held_surface_stays_at_zero_while_its_snapshot_is_in_flight`, both observed red.
+2. **The field is queued on the capture frame.**
+   - Both readers used to kick the reduction on the first ramp frame: `ModalStack::draw_scrims_on`
+     and `RouteGround::draw_host` (`ground_reads_host`). That work was the backlog the frame after
+     it paid (20–24 ms).
+   - The reduction is now waited out with the capture.
+   - Test: `the_page_is_read_on_the_capture_frame_and_not_on_a_held_frame_without_one`, observed
+     red.
+3. **The field read runs at the frame head.**
+   - `gfx::field_frame_begin` runs before `draw`, under the same due rule.
+   - `field_collect` no longer touches GL. A mid-frame `glReadPixels` ended framebuffer 0's render
+     pass.
+   - Test: `a_field_collect_answers_only_what_the_frame_head_read`.
+4. **`gfx::enc_u8`.** The texture quantisation uses 255 thresholds, bisected once against the
+   formula, instead of 5760 `powf` per latch. It is identical to the formula bit for bit:
+   `the_quantised_encode_is_the_powf_encode_to_the_bit`.
+
+**Results** (television, panel off):
+
+| | 16-cycle bench, over 20 ms | p50 | `modal-100` |
+|---|---|---|---|
+| before (3a3e640e) | 15/16 | 31.4 ms | not run in this lane |
+| + fence gate | 5/16 | 19.2 ms | |
+| + capture-frame kick | 5/16 | 17.7 ms | 23/100 over, p50 18.2, drift −8.8 |
+
+Regression scenes on the final binary:
+- `fps:item-menu`, `settings-root` and `home-acct-glass` pass at 60.
+- `modal-ramp` passes with worst robust_max 31.8 ms against its ceiling of 75.
+
+**Still over, by attribution** (`modal-100`, final binary):
+
+- **Settings' cold first open**, cycle 1: 91 ms, with `surf` 54 ms of CPU on its first draw. Later
+  opens are about 5 ms. This is not yet attributed inside the draw.
+- **Item-menu capture frames with `page` 28–33 ms**: cycles 3, 27, 99. The page pass blocks inside
+  the snapshot render. It coincides with Home's own texture traffic.
+- **About 15 cycles at 20.1–24.3 ms.** The steady ramp frame is about a vsync of GPU, so any extra
+  CPU on a frame shows. Examples:
+  - the field adopt, `scrims` 2.4–2.8 ms;
+  - a hero backdrop upload landing on an open frame, `prepare` 14 ms (`up=1 px=922320`).
+
+**RSS is not a leak.** `rss growth(last−cycle10)` = 15.5 MB fails the gate. The texture ledger
+(`tex=` on every cycle line) explains it:
+- Home's hero rotation (`HERO_AUTO_S` = 8 s) keeps running between opens. Each new hero adds a
+  1280x720 backdrop (3600 kB) to the bounded `TexCache`.
+- The ledger reaches 132 textures / 76 MB by cycle 31.
+- It then stays flat to cycle 100: RSS is 112.4 ± 0.7 MB from cycle 30 on.
+- Pinning `plxnative-heroidx` does not stop the rotation. The ledger sequence was identical with it.
+
+**Dismissals.** The first frame of every dismissal is 25–29 M GPU cycles and 14,298 tiles (HWCNT,
+previous lane). That is roughly seven full-screen passes. The bench does not grade it, but it is a
+real hitch.
+
+## 2026-09-19 (later): `push-100`, frame by frame — the ground samplers, and what is left
+
+All numbers come from the television with the panel off and the sound muted, on the full
+100-cycle `fps:push-100` unless a row says otherwise. Base is 3a3e640e. The attribution runs used
+a temporary 12-cycle copy of the bench with a per-frame trace (frame index since the push, total,
+`nav::page_alpha`) beside the `FRAMEDROP` spans. That trace was not committed.
+
+| build (worst_ms per cycle) | Detail p50 | Detail over 20 | Person over 20 | Library over 20 | all p50 | max |
+|---|---|---|---|---|---|---|
+| base 3a3e640e | 28.3 | 34 / 34 | 6 / 33 | 9 / 33 | 19.7 | 114.7 |
+| + async ground probe (a721d229) | 20.9 | 22 / 34 | 7 / 33 | 11 / 33 | 19.7 | 100.5 |
+
+**The page dip is not a cross-fade.** `PageDip` draws one page per frame: the outgoing page fades
+to the app ground, the op applies at the floor, and the incoming page fades up. The dip frames
+themselves were mostly 6–18 ms. The graded worst frame of a warm Detail cycle was almost never in
+the dip. It was in the settled page, which presents every frame because the wash dithers every
+frame.
+
+**What failed every warm Detail cycle: the Hero row's ground read.** `sample_control_ground` ran a
+synchronous `glReadPixels` once every thirty frames. That frame cost 27–29 ms: `clear` ~11 ms, plus
+~15 ms of GPU drain and reduction inside `page`. It is exactly the period of the spikes: frames 16,
+46 and 76 of one cycle, and 29 and 59 of another.
+
+**Fix: a ground reading never waits on the frame** (`gfx::GroundProbe`, cadence in the pure
+`gfx::ProbeCadence`). A due call copies the tap boxes GPU-side into a small probe target and
+inserts a fence. `gfx::ground_probes_frame_end` reads the target right after the swap, once the
+fence has signalled. The sampler's next call reduces it. Both samplers take this path: the tab
+track's `sample_ground` and the Hero row's `sample_control_ground`. Two intermediate steps were
+measured and rejected:
+
+- **Reading the probe mid-page, at the sampler's next call.** `gndread` fell to 0.2 ms, but the
+  frame still ran ~12 ms over its neighbours.
+- **Reading it between frames.** That frame was still ~12 ms over. The cause was the reduction
+  itself: 5 × 49 × 49 × 3 = 36,015 `powf` on the render thread. `lin_u8` is a 256-entry table and
+  is bit-identical to the `powf` mean (`the_u8_ground_mean_is_the_powf_mean_to_the_bit`).
+  `gndmean` is now 0.5–1.6 ms.
+
+The kick (`gndkick`) costs 1.8–2.7 ms of CPU. The answer lands one or two frames later than before.
+Both samplers refuse to read while the page dips (`may_sample_control_ground`, the track's
+`settled`), so no mid-transition frame changes. On the 12-cycle bench, warm cycles 4–12 then graded
+17.0–21.4 ms, against 17.0–35.1 ms before.
+
+The modal lane's 27606a23 moves the underlay FIELD's read to the frame head. It is the same idea
+on a different chain. The two merge cleanly (`git merge-tree`), and nothing about the field is
+changed here.
+
+**What is still over 20 ms, by cause:**
+
+- **Detail's steady GPU cost, in bursts.** A warm cycle can fall to 30 Hz for 4–9 consecutive
+  frames: `clear` 26–28 ms, `page` 31–32 ms, the page's own CPU 4.5 ms. Nothing in the app changes
+  on those frames. The settled Detail frame sits within about a millisecond of the vsync on the
+  GPU, so any disturbance tips it into two-vsync frames until the backlog drains. That disturbance
+  can be a probe kick's render-pass split, a texture arriving, or GPU clock scaling. This is now the
+  main warm-cycle failure (22 of 34 Detail cycles). Only fill-rate work on the settled Detail
+  frame can fix it. Price it class by class with production `drawmask` A/B runs.
+- **The cold first cycle of each page (cycle 1 Detail ~100 ms, the first Person 30–45 ms, the
+  first Library 38–41 ms).** On the cold Detail frame (106.8 ms in total), 47 new strings each paid
+  a `TTF_RenderUTF8_Blended` (24.7 ms together) and a texture upload (`upload_rgba`, 26.2 ms
+  together, ~0.55 ms each). The rating row took 22.4 ms, the identity line 15.7 ms and the cast
+  section 23.9 ms. Font opens are not the cost: 0.7–1.1 ms each, three on that frame. No per-string
+  path gets such a frame under 20 ms. Rendering the strings over several frames under a per-frame
+  budget would; the strings would then appear over the first frames of the fade-in. That is a
+  visual decision for the owner and has not been made.
+- **Home's run-up into the push.** Home draws two page passes per frame (the tab-glass blur source
+  pass) at `clear` 17–20 ms. The floor frame of the push (the first Detail frame) inherits that
+  backlog: `clear` 19–38 ms.
+
+**The other gated scenes on a721d229** (same session, after the push-100 run):
+
+| scene | result |
+|---|---|
+| detail-transition | PASS, median 59 fps, robust_min 52 |
+| home-detail-nav | PASS, loop median 60 |
+| library-scroll | PASS, 60 fps |
+| home-hero | PASS, 60 fps |
+| home-fold | PASS, median 58 fps |
+| home-grid | PASS, loop robust_min 57 |
+
+This is not a same-day A/B. The base figures in the table two sections up predate 3a3e640e.
+
+## 2026-09-19 (r3)
+
+**Host-side diagnosis and fixes; no new television measurements.** Inputs were
+`/tmp/stress-r3/modal-100-frames.txt` and `/tmp/stress-r3/push-100-frames.txt` on
+`perf/stress-r3`. The cycle lines reproduce 17/100 modal failures (Settings 8, item menu 4,
+account menu 3, About 2) and 42/100 push failures (Detail 25, Library 12, Person 5).
+The files contain 312 modal FRAMEDROPs, all on Home, and 116 push FRAMEDROPs (Home 61,
+Detail 46, Library 8, Person 1). Counting every line in these supplied files gives 189 modal
+frames with all of `clearx2,pagex2,chromex2,scrimsx2,surfx2`, rather than the request's 174;
+the duplicate-pass finding is present. There are 227 modal `pagex2` frames overall. Counts
+are calls within one frame, not a claim that every draw primitive survives the host freeze.
+
+**Why the second pass survives a frozen host.** `app/run.rs::draw` prepared the top track
+whenever the page wore tab chrome, even with a modal up. `TabBand::prepare` fed the shared
+`DynamicClock` the entire frame's `idle::present_moving() || present_dirty()`. Surface
+animation therefore invalidated the chrome blur. `gfx::blur_direct_region` saw an invalid
+snapshot and the previous frame's requested region, and `blur_snapshot_direct` called the
+same `page` closure into its small FBO. That closure calls `Dispatcher::draw_with_glass`;
+`ui/dispatch.rs::draw_with` draws pages/chrome, scrims, AND modal surfaces. It is not a
+page-only source callback.
+
+`ui/popover.rs::host::page_pass` serves `Held::Page` as a cached quad and freezes page
+primitives, but the dispatcher's surface scopes call `host::live`, which lifts the freeze.
+Both `page_pass` and `live` also invalidate `Held::Ground` during a source pass. Worse,
+`gfx::blur_invalidate` invalidates that ground before the pass even starts. A modal whose
+host reached the ground stage can consequently lose its snapshot and redraw the page too.
+A fresh page capture deliberately refuses `FrameCache::render_into` inside a source FBO;
+the visible pass must capture it instead. Thus the cache is not a guard against a second
+whole-dispatch traversal, and the blur's invalidation can destroy the cache's benefit.
+
+**Shared fixes.** `ui/frame/glass.rs::GlassPlan` now owns the source's visibility and motion
+verdict. `run.rs` supplies `Dispatcher::surface_up()` (including entrance and exit phases)
+and samples page/navigation motion before the shared chrome steps. Covered chrome does not
+prepare/invalidate the track or experimental tile source, and the loop does not enter the
+source callback while a modal is visible. Modal fields and foreground rendering retain their
+ordinary visible pass. On an uncovered page, chrome's own density/strip/chip springs still
+animate, but no longer invalidate what is behind them. Actual page motion, one final settle
+frame, and discrete damage still refresh; existing activation and region-miss handling remain
+in force. Returning from a different route therefore still gets a fresh source before reuse.
+This is not a promise to skip the first pop-back frame or a still-changing page transition.
+
+**Elimination versus cadence.** The earlier experiment in this document measured 46 fps with
+source work every present, 35 without glass, and 36 at one-in-eight. The source pass paces the
+GPU; its exact driver/DVFS explanation remains unproven. We have not changed the cadence for
+changing pages (`DEFAULT_DYNAMIC_PERIOD` remains 1), nor disabled glass globally. We eliminate
+an invisible source under a modal, and reuse a valid source when only its foreground chrome
+moves. This avoids redundant work without temporally undersampling changing artwork. It still
+changes GPU submission on the eliminated frames and needs a television A/B before any speedup
+or bench pass can be claimed. The ambient wash's per-frame dithering is unchanged.
+
+**A second shared defect in the push path: text recording cleared the live framebuffer.**
+The dispatcher's PageDip prewarm drew the pending screen with `Painter::recording`, but Home,
+Library and Detail call raw `gfx::frame_clear` outside that painter. The recording pass could
+therefore erase the outgoing page and issue another clear. Eight Detail FRAMEDROPs have
+`clearx2` with only one `page` span, consistent with this path; that shape is different from
+the glass source's two page spans. `gfx::without_frame_clear` now suppresses both opaque and
+transparent frame clears while the pending screen records, restoring its state on nesting
+and unwind. It preserves the independent modal freeze. The dispatcher also runs text prewarm
+only on the visible pass: a source callback previously recorded and drained a second 6 ms
+budget in the same presented frame. The text budget itself and its admission rules are unchanged.
+
+**Remaining classes, and limits of attribution:**
+
+- Settings' recurring failed cycles are 21, 49, 53, 69, 73, 81 and 89, plus cold cycle 1.
+  Adjacent return-to-Home frames at file lines 110, 224, 284, 307, 343 and 378 have single
+  `clear` calls around 14–15 ms and chrome around 5–7 ms, not duplicate surface draws.
+  Cycle 81 additionally has a 22.1 ms frame (line 344) with page 0.5 ms, surface 2.3 ms,
+  but draw 20.6 ms: the named nested spans do not cover all host-cache/driver work.
+  Cold cycle 1 is 69.2 ms with surface 53.4 ms. Covered-source invalidation is fixed for
+  the whole family, but these samples do not prove a Settings-local defect or identify
+  another safe optimization. No speculative change to Settings' ground or text was made.
+- Detail has 46 slow frames, all single-page-pass; 43 have at least 10 ms in `clear` and
+  44 have no uploads. One warm sample is total 32.7, draw 31.5, clear 29.9 ms. These are
+  consistent with the previously measured GPU/back-buffer backlog, not evidence that the
+  page's CPU work or a synchronous read is responsible. The redundant recording clears
+  above are fixed, but ordinary clears, fill-rate, probe timing and driver scheduling have
+  not been blindly altered. Cold Detail is 88.5 ms (prepare 13.2, page 73.8); three Detail
+  frames have prepare over 10 ms. Existing prewarm remains budgeted and does not guarantee
+  that all cold strings/assets fit before first paint.
+- All eight slow Library frames have `pagex2`; seven have no uploads. The shared source
+  policy addresses the subset caused by chrome-only motion, and the prewarm fix prevents
+  duplicate preparation during transitions. The logs do not contain a page-motion verdict,
+  so they cannot prove that all eight source passes were unnecessary. Changing content
+  still requires a source. Five have at least 10 ms in `clear`.
+- Home in push has 24 `pagex2` frames and 35 with a single `page` span in the complete file
+  (rather than the request's 31). Fifty-six have at least 10 ms in `clear`. The static-source
+  fix applies on return, but single-pass backlog is not itself a duplicated-pass defect.
+- Person has one logged slow frame: total 23.1, page 21.5, no uploads. The five failed
+  Person-labelled cycles cannot all be assigned to Person rendering: the bench measures
+  only its Measuring phase, while FRAMEDROP also records the waiting/return intervals.
+  Likewise, nearby Settings log lines are context, not exact cycle-frame joins. A cycle's
+  target is not necessarily the route of its worst frame. No Person-specific change was made.
+
+**Verification.** Before each change, host tests reproduced covered-source eligibility,
+chrome-only source invalidation, the missing final settle refresh, recording clears (including
+nested/unwinding scopes), and duplicate source-pass text preparation as failures. The fixes
+make those predicates pass without a GL context; an additional test preserves discrete-damage
+refresh. Host checks cannot establish pixels, GPU pacing, or the 20 ms cycle limit. No TV,
+SSH, deployment, private configuration files, grading rules, ceilings or bench exemptions were
+used or changed. The final targeted run (`ui::`, `gfx::`, shared chrome/navigation tests) passed
+743 tests; the shipping `cargo +nightly check --lib --no-default-features` passed too. An earlier
+full host run passed 3,630 tests, ignored one and failed 126 network tests: 123 explicitly report
+sandbox permission errors, and three fail in connection/fixture setup. It is not a full green gate.
+No ARM build or device result is claimed. A manual review of the changed prose and render boundaries
+found no new FFI, symbol, linkage or firmware ABI change.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+
+
+## 2026-09-19: live backdrop sources follow the layer stack
+
+This supersedes the r3 `cover_page(surface_up())` gate and page-wide
+`note_page_motion`/`source_changed` verdict. Those APIs, widget prepare calls and widget-local
+source-pass exclusions have been removed. The live cadence clock and its `glasshz` override
+have also been removed: a changed visible source refreshes on every presented frame. The
+synthetic load dial still owns its separate experimental cadence.
+
+`ui/frame/backdrop.rs` is the single policy owner, held by `GlassPlan`. A declaration traversal
+of the ordinary painter records this frame's glass rectangles and exact, ordered draw arguments
+(including transforms, clip bounds, material values, text bytes and texture upload revisions).
+It submits no visual primitives and spends no second text-prewarm budget. Source identity is
+the ordered commands intersecting each sampling footprint strictly below that glass, including
+the blur/lens margin. This replaces the page-wide motion verdict: a last settling position is a
+changed command just like an input, navigation or asset landing; foreground commands and changes
+outside the sampled region do not invalidate the source. The identity uses exact values, not a
+hash whose collision could silently declare a changed region unchanged. Each retained source
+keeps the description of its captured prefix, so an unfurl into already-captured, unchanged pixels
+reuses that source too. Lower-glass dependencies are regional, not a band-wide revision counter.
+A texture re-upload
+changes its identity even if the GL name and dimensions remain the same.
+
+The dispatcher walks page, chrome, dims, surfaces and the lifted opener with an explicit z
+ceiling. An inline glass advances the layer boundary; primitive submission stops at that boundary
+inside a source traversal. A widget no longer needs to know it is being drawn as a source.
+The stack publishes geometry for held Page/Ground images, an opaque route's replacement ground,
+and full-alpha dims. A completely covered glass neither refreshes nor draws. Multiple rectangular
+blockers can jointly cover it. A held ground stores the actual last included z boundary, so glass
+added inside a modal's ground is covered too; it is not assumed to be below the first surface.
+A replacement between a source and lower commands also hides
+those commands' damage. Source/declaration traversals preserve the held-ground draw ledger;
+only the visible traversal advances its capture/readback lifecycle. Each source walk has its own
+once-per-prefix snapshot ledger; it neither consumes the visible ledger nor repaints a frozen quad
+over lower live foreground. Layers above the stored frozen boundary remain live.
+
+Captures are coalesced **per z band**, never across incompatible depths. Disjoint chrome surfaces
+share one capture covering the union declared in the current frame, including activation; the
+empty gap between them is not a sampler for validity. Overlap splits the band automatically.
+Independent bands retain the measured quarter-resolution direct-source path. A band whose
+footprint intersects lower glass captures the visible framebuffer prefix instead: that prefix
+contains the lower glass's actual composite, including its sharp rim, and cannot contain the
+upper glass or a later layer. This deliberately avoids rendering a lower glass with an approximate
+rim into an upper source. All bands reuse the same blur scratch chain and retain only compact
+half-resolution output textures; those outputs are counted in the render-set budget and released
+before the GL context shuts down. A failed inline capture cannot retry after another member has
+painted its fallback into the band. Material choice stays independent of capture success, so the
+same logical surfaces participate in declaration and visible walks. Existing renderer refusals
+(video planes and disabled/masked glass) apply before declaration as well.
+
+The earlier result remains a constraint: 46 fps refreshing every changing present versus 35
+without glass and 36 at one-in-eight. The source pass **paces** this Mali GPU; the driver/DVFS
+explanation remains unproven. This mechanism skips only occluded or unchanged sources. It does
+not undersample changing underlays. The extra declaration traversal, retained-output copy and
+per-band storage are deliberate costs for structural correctness; the prefix-copy path for
+stacked glass also needs a device comparison before any performance claim. Host-only tests cover
+the layer walk, geometry, validity, union scheduling, upload identity and frozen-host bookkeeping.
+No television was contacted and no new GPU measurements or visual verification are claimed here.
+
+## 2026-09-19: two declaration-traversal costs, `modal-100`/`push-100` still regressed after the fix
+
+TV A/B (`integ/stress@e8c016dc` vs `perf/stress-r3@394ff9ea`, same session, interleaved,
+md5-verified deploys) showed `fps:modal-100` cycles-over-20ms at A 16/15 vs B 31/34, and
+`fps:push-100` at A 43 vs B 57, with B's slow frames shifting toward `route=detail`. Two real
+costs in the general mechanism above, both now fixed; a third, smaller one remains open.
+
+**Cause 1 — `text_value` recorded one `u64` per BYTE.** Every discovered frame's exact-draw-
+description walk re-records every live text primitive regardless of whether it changed (rule #5:
+every changed visible source refreshes each present, so validity is compared every frame). The
+byte-per-word encoding meant a Settings row list or a Detail synopsis + cast bios paid an 8x
+`Vec<u64>` inflation on allocation, push and later `Paint::eq` comparison. Fixed by packing 8
+bytes per `u64` word (`text_value`, `backdrop.rs`): same exact-identity semantics (`values ==
+values` still means byte-for-byte equal, no hash, no collision risk, no truncation), 6.69x fewer
+words and ~1.64x less construction time in a standalone `rustc -O` micro-benchmark. Regression
+test: `text_value_packs_bytes_instead_of_one_word_per_byte`.
+
+**Cause 2 — the surfaces loop declared into a band nothing ever reads.** `dispatch.rs::draw_with`
+draws `nav.modals.surfaces` (Settings/AccountMenu/ItemMenu/About's own content) unconditionally in
+both the no-GL discovery pass and the real draw pass — unlike the page/chrome/dim/scrims block,
+which the existing `host_render != Replaced` gate already skips correctly. But no glass entry is
+ever created at or above `Z::surface(0)`: every `Glass::DYNAMIC_BACKDROP.backdrop(...)` call site
+sits inside the CHROME layer scope (grep-verified against the whole crate), and popovers stood off
+the blur chain entirely on 2026-09-19 (`docs/backdrop-blur-profiling.md`, above) — they use the
+frozen-host snapshot in `popover.rs`, which feeds its own synthetic `Paint` straight into
+`Sources::begin`, never through `paint()`. So every primitive a surface declared was allocated,
+recorded, sorted and scanned for nothing: no current or (by this architecture) foreseeable
+consumer ever reads a `Paint` above that boundary. Fixed with two layered checks: `paint()` is the
+authoritative gate (returns before allocating the `Paint`/pushing to `sources.paints` once
+`w.current >= Z::surface(0)`), and `Painter::declare` has a fast pre-check (`recording_excluded`)
+so the caller skips building the primitive's `Vec<u64>` — and, for text, the `text_value` packing
+above — in the first place, rather than building it only to have `paint` discard it. A
+`debug_assert` at the `declare` short-circuit trips immediately if a future glass command is ever
+declared up there, rather than silently starving it of data. Regression tests:
+`content_at_or_above_the_surfaces_band_is_never_recorded` (red without the fix: recorded 3 paints
+instead of 1) and `a_glass_command_above_the_surfaces_band_trips_the_debug_assert`.
+
+Both fixes are inside the general mechanism: no special case for a screen, no ceiling change, no
+exemption from the "every changed source refreshes each present" rule, and the ambient wash still
+dithers every frame. All 27 `backdrop::` tests and the full `cargo test --lib` (3777 passed, 1
+ignored, 0 failed) stay green; `cargo +nightly check --lib --no-default-features` stays clean.
+
+**Re-measured on the TV** (same session, `com.beb.plxnative.debug`, panel off, muted, md5-verified
+deploys), `fps:modal-100`:
+
+| build | run | cycles>20ms | p50 | p95 | max | rss growth |
+|---|---|---|---|---|---|---|
+| A `e8c016dc` | 1 | 13 | 18.2 | 21.5 | 73.7 | +76 kB |
+| A `e8c016dc` | 2 | 15 | 18.0 | 22.8 | 65.0 | +116 kB |
+| B, `text_value` fix only | 1 | 36 | 19.5 | 28.4 | 71.4 | -8 kB |
+| B, both fixes | 1 | 31 | 19.3 | 21.8 | 75.5 | 0 kB |
+
+The surfaces-band fix alone brought `about` and `item-menu` to parity with or better than A (A:
+1/3 over20 vs B-both: 3/2), and `p95` is now inside A's own run-to-run spread (21.5–22.8). It did
+not close the gap on `settings`/`account-menu` (A: 6/3 over20 vs B-both: 16/10): B's per-cycle
+worst frame for those two targets sits a fairly constant ~1-1.5 ms above A's (comparing the two
+runs' worst-frame distributions directly, not just the over20 count), which is small enough to be
+a genuine third cost rather than the doubled-walk shape of causes 1-2. `push-100` was not
+re-measured after these fixes (time budget); the `route=detail` shift the original A/B lane
+reported is still unexplained.
+
+**Open hypothesis for the residual `settings`/`account-menu` gap.** Both targets freeze their host
+(`Style::Sheet`/`Opaque`, `HostUpdate::Frozen`, `surface_policy` → `HostRender::Cached`, not
+`Replaced`), so `dispatch.rs::draw_with`'s page/chrome block still runs every frame — it is only
+`Replaced` that the existing gate skips. `gfx.rs`'s `may_read_ground` doc (`page_frozen`) states
+plainly that a frozen page's "draw produces no pixels": the low-level GL calls are suppressed, but
+the full Home widget tree (layout, string formatting, every `Painter::declare` call) still walks,
+both during the no-GL discovery pass (to record, same as causes 1-2) and during the real draw pass
+(to reach the point where the suppressed GL call would have been). Whether this walk is new cost
+introduced by this mechanism, or an existing cost the r3 special case (`8014abc5`) happened to
+avoid by blocking the chrome glass source pass while a modal is up, is not yet established — that
+special case was never TV-measured, so there is no baseline to compare against directly. The next
+worker should: (1) confirm with a host micro-benchmark or `spans=` breakdown whether `page`/
+`chrome` span time under a frozen host in B is larger per-frame than under A's mechanism, not just
+present in both; (2) if so, look at whether `paint()`'s `Z::surface(0)` exclusion in this change
+generalizes to "recording content covered by a frozen-host boundary is also dead," the same way it
+did for the surfaces band — `held_ceiling()`'s synthetic `Layer` already carries the frozen
+boundary `z`, so the same shape of fix (skip recording, not skip drawing) may apply there too,
+but it needs the same care this change gave the surfaces band: prove no live glass ever reads
+content below a frozen boundary before excluding it, the same way `Z::surface(0)` was proven safe
+here by grepping every `DYNAMIC_BACKDROP.backdrop()` call site.
+
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+## 2026-09-19: stress-v3 visible dependencies and held-page hand-off
+
+The general `GlassPlan` path now treats discovery as strictly descriptive: control-ground probes
+refuse discovery/source walks, probe cadence advances by presented frames rather than calls, and
+excluded text is not measured. `FRAMEDROP` includes a `disc` span for this walk.
+
+Capture scheduling now follows the visible prefix. A retained lower glass covered by a frozen or
+opaque replacement is not an upper band's dependency; the upper band directly replays the frozen
+composite and current dim, while the covered lower source remains untouched. Held PageDip image
+content is filtered once at full alpha. Animated alpha is applied over the constant app ground by
+the glass composite shader, so alpha-only frames schedule no new filter job; geometry or snapshot
+revision still invalidates.
+
+PageDip no longer releases solely because its 140 ms In ramp ended. The destination continues to
+tick and load behind the held image until page-owned motion and first-frame resource work are both
+quiet, with a documented 600 ms maximum hold. It then takes one settled replacement capture
+off-screen, presents that image, and switches to matching live output on the next frame. The old
+live-page-plus-full-screen-image dissolve is gone. `FRAMEDROP` now carries
+`dip=out|hold|in|held|live` for phase attribution.
+
+These changes were host-tested only in this lane. No television was contacted, so the requested
+push-100/modal-100/deep-100 ≤20 ms outcome remains a prediction until the coordinator's device run.

@@ -1873,8 +1873,12 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 /// was rebaselined by hand; the value is whatever `state_fp(SCREEN_SHAPES)` actually produces over
 /// the merged tree, taken from a failing run of `the_screen_shape_inventory_is_pinned` and copied in
 /// verbatim. Re-record fixtures the same way any other bump requires.
+///
+/// **Home modal cover state** (0x0e66_311c_e4f1_0769 → this): `screens::home::SHAPE` gains
+/// `covered:bool`. Compact surfaces keep their host page ticking, so the recorder must distinguish
+/// a Home whose hero timer is paused beneath a surface from the same visible state while active.
 #[cfg(test)]
-const SCREEN_SHAPES_PIN: u64 = 0x0e66_311c_e4f1_0769;
+const SCREEN_SHAPES_PIN: u64 = 0x285a_3a99_d1e2_f068;
 
 #[cfg(test)]
 mod arg_tests {

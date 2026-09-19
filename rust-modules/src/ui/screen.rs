@@ -232,37 +232,6 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn crumb(&self, cx: &Cx<'_, H>) -> Option<Cow<'_, str>>;
     /// RENDER resources only.
     fn prepare(&mut self, b: &mut Budget, cx: &Cx<'_, H>);
-    /// **A REFRESHING backdrop's cadence, resolved before the host page draws** — the second
-    /// prepare, and the only one that cannot happen in [`Screen::prepare`].
-    ///
-    /// A surface whose glass re-sources its backdrop (`Glass::DYNAMIC_BACKDROP`) has to decide
-    /// whether to do so at a slot with a boundary on each side: after the host-user latch that
-    /// tells "the page changed" from "I changed", and before the frame's blur SOURCE pass is
-    /// sampled, so an invalidation raised here reaches this frame's own source rather than the
-    /// next one's. `prepare` runs at the dispatcher's step 9, inside the frame, which is neither.
-    ///
-    /// Two facts, because neither is the screen's to know. `underlay_changed` is what the CALLER
-    /// believes about the page (`app/run.rs` hands the dispatcher
-    /// `underlay_moving || idle::present_dirty()`), and `appear_settled` is the CONTAINER's answer
-    /// about this surface's own appear spring, which it owns — a page, having no such spring, is
-    /// asked with `true`. The decision itself is one shared function, `popover::glass_refresh`,
-    /// which subtracts the own-damage ledger from the caller's belief: it cannot tell "the page
-    /// under me changed" from "the key I just swallowed raised an invalidate", and both set the
-    /// same process-wide flag.
-    ///
-    /// A screen with a CACHED ground, or none at all, wants nothing here and inherits this no-op.
-    ///
-    /// `glass` is the frame plan's ONE shared refresh cadence (spec §8.3, phase 11): a refreshing
-    /// backdrop prepares against it rather than against a process-wide clock, which is what makes
-    /// two owners opened on different presents share one schedule instead of compounding into a
-    /// refresh every frame.
-    fn prepare_present(
-        &mut self,
-        _glass: &mut crate::ui::frame::glass::GlassPlan,
-        _underlay_changed: bool,
-        _appear_settled: bool,
-    ) {
-    }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>);
     fn render(&self) -> RenderStrategy;
     /// Whether remounting an evicted child surface can read this page's identity-matched data.
@@ -810,6 +779,12 @@ pub struct DrawFrame<'a, 'views, H: Host> {
     /// construction — the one write is `with_navigation`.
     pub nav_page_alpha: f32,
     pub press: PressRead,
+    /// **The page under this surface, as the container latched it** — the `ModalStack`'s one
+    /// underlay field (`containers::modal::ModalUnderlay`), which a popover panel's ground is drawn
+    /// from (`widgets::panel_ground`). `None` on a page's own frame and on any frame whose
+    /// container owns no field; a panel reads `None`, or a field not latched yet, as "draw the flat
+    /// sheet". Set by the dispatcher's surface pass, never by a screen.
+    pub underlay: Option<&'a crate::ui::underlay::UnderlayField>,
     stops: Vec<Stop<H::Elem>>,
 }
 
@@ -828,6 +803,7 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
             blur_amount: nav.blur_amount,
             nav_page_alpha: nav.page_alpha,
             press: cx.press,
+            underlay: None,
             stops: Vec::new(),
         }
     }
@@ -854,6 +830,9 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
     /// folded in here (`Painter::to_screen`) and the stop is clipped to the cascade's clip
     /// intersected with `s.clip` (also in painter space).
     pub fn stop(&mut self, p: Painter, mut s: Stop<H::Elem>) {
+        if p.is_recording() {
+            return;
+        }
         let (rect, _, cascade_clip) = p.to_screen(s.rect);
         let (_, rest, _) = p.to_screen(s.rest_rect);
         let own = Rect::new(s.clip.x + p.dx(), s.clip.y + p.dy(), s.clip.w, s.clip.h);
@@ -868,6 +847,9 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
     /// replacement for the bare `Painter::clip`/`clip_clear` pair (spec §7.6). Draw the clipped
     /// content through the painter the scope hands back.
     pub fn clip(&mut self, p: Painter, r: Rect) -> ClipScope {
+        if p.is_recording() {
+            return ClipScope::inert();
+        }
         let inner = p.clipped(r);
         ClipScope::open(inner.clip_rect())
     }
@@ -885,6 +867,7 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
 /// bookkeeping on the host test binary (no GL is linked): what is graded is the stack.
 pub struct ClipScope {
     prev: Option<Rect>,
+    active: bool,
 }
 
 thread_local! {
@@ -896,7 +879,11 @@ impl ClipScope {
     fn open(screen: Rect) -> Self {
         let prev = CLIP_STACK.with(|c| c.replace(Some(screen)));
         apply_scissor(Some(screen));
-        Self { prev }
+        Self { prev, active: true }
+    }
+
+    fn inert() -> Self {
+        Self { prev: None, active: false }
     }
 
     /// The scissor in force (the innermost open scope), for tests and instruments.
@@ -907,6 +894,9 @@ impl ClipScope {
 
 impl Drop for ClipScope {
     fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
         CLIP_STACK.with(|c| c.set(self.prev));
         apply_scissor(self.prev);
     }

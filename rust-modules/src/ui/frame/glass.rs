@@ -1,47 +1,19 @@
-//! `GlassPlan` — the frame plan's half of the glass chain (spec §8.3, §15.2).
-//!
-//! Everything the renderer's ONE blurred-snapshot chain schedules with used to be a `static mut`:
-//! the shared refresh cadence in `ui/widgets.rs`, and the dev load dial's whole live state in
-//! `ui/glassload.rs`. `ci/allow/statics.txt` carried the eight glassload entries with the reason
-//! "owned by the frame plan from phase 11", which is this type. They are fields now, `App` owns
-//! one of these, and the draw/prepare path reaches it by `&mut` — so the allowlist shrinks rather
-//! than being re-justified.
-//!
-//! **`App` owns it, not the `Dispatcher`'s rig.** Every live reader is either `app/run.rs`'s own
-//! draw phase (the dial's prepare and its two draws, the tile band's cadence) or something
-//! `app/run.rs` already calls with `&mut App` in hand (`Bridge::prepare_home_chrome`,
-//! `Dispatcher::prepare_present`); the rig reaches none of them without a second `&mut` through
-//! `Rig::draw_chrome`, which nothing else needs.
-//!
-//! **Zero behaviour change is the whole point.** `DEFAULT_DYNAMIC_PERIOD` is still 1 and the
-//! cadence arithmetic is byte-for-byte the code that was in the statics' readers — the glass
-//! source pass PACES the GPU on this part (glass every present measured 46 fps against 35 with
-//! none and 36 at one-in-eight; `docs/backdrop-blur-profiling.md`), so a "simplification" of the
-//! cadence here is a frame-rate change wearing a refactor's clothes.
-//!
-//! Main render thread only, like the snapshot chain it schedules. What instruments read from
-//! elsewhere — the dial's live step index, and whether it is armed at all — is a PUBLISHED
-//! snapshot the dial writes on change (spec §2.3), not a borrow: `ui/profile.rs` tags every HWCNT
-//! phase record with the step and has no `&App` to ask.
+//! Application-owned live backdrop schedule and chrome material state.
+//! Every dynamic surface enters `backdrop` through the painter; the dispatcher supplies z bands.
+//! The layer walk, geometric occlusion and region validity live in `backdrop`, with no route tests.
 
 use crate::ui::glassload::Dial;
-use crate::ui::widgets::{DynamicClock, Glass, GlassState, TabBand, TabLabels};
+use crate::ui::widgets::TabBand;
+use super::backdrop::{Sources, Z};
+use std::{rc::Rc, cell::RefCell};
 
-/// The frame's glass schedule: one shared cadence clock, the surfaces whose lifetime belongs to no
+/// The frame's glass schedule, the surfaces whose lifetime belongs to no
 /// screen, and the dev load dial.
 pub(crate) struct GlassPlan {
-    /// The ONE recurring cadence every dynamic backdrop shares. Two owners opened on different
-    /// presents with separate phases would refresh 2/3 or even every frame between them — the
-    /// clock is global because the snapshot chain under it is.
-    dynamic: DynamicClock,
+    pub(crate) sources: Rc<RefCell<Sources>>,
     /// Persistent state for the shared top tab track: visible lifetime, adaptive density and this
     /// frame's material. The strip borrows it during paint; the Bridge never owns a second copy.
     tab: TabBand,
-    /// The tile bands' visible lifetime (`/tmp/plxnative-tileglass`). ONE for every band in a
-    /// frame: there is one blur cache and every glass surface converges on one grab, so per-tile
-    /// state would buy nothing and would let two tiles disagree about whether this present's
-    /// snapshot is stale.
-    tile: GlassState,
     /// The dev backdrop-glass load dial and the blurred-transition prototype beside it
     /// (`/tmp/plxnative-glassload`, `/tmp/plxnative-navblur`).
     dial: Dial,
@@ -50,9 +22,8 @@ pub(crate) struct GlassPlan {
 impl GlassPlan {
     pub(crate) fn new() -> Self {
         let plan = Self {
-            dynamic: DynamicClock::new(),
+            sources: Rc::new(RefCell::new(Sources::default())),
             tab: TabBand::new(),
-            tile: GlassState::new(),
             dial: Dial::new(),
         };
         // The dial's step and armed bit are read by instruments that hold no borrow of this type,
@@ -61,19 +32,8 @@ impl GlassPlan {
         plan
     }
 
-    /// The shared cadence clock, for an owner whose `GlassState` lives on the surface itself
-    /// (every popover, the person page's bio panel, the tab track).
-    pub(crate) fn clock(&mut self) -> &mut DynamicClock {
-        &mut self.dynamic
-    }
-
-    /// Resolve one REFRESHING backdrop's cadence before its host page draws.
-    pub(crate) fn prepare_dynamic(&mut self, state: &mut GlassState, underlay_changed: bool) {
-        Glass::DYNAMIC_BACKDROP.prepare_on(&mut self.dynamic, state, underlay_changed);
-    }
-
-    pub(crate) fn prepare_tab_band(&mut self, labels: TabLabels<'_>) {
-        self.tab.prepare(labels, &mut self.dynamic);
+    pub(crate) fn walk(&self, ceiling: Z) -> super::backdrop::Scope {
+        super::backdrop::enter(self.sources.clone(), ceiling)
     }
 
     pub(crate) fn step_tab_band(&mut self, dt: f32) {
@@ -101,20 +61,6 @@ impl GlassPlan {
     #[cfg(test)]
     pub(crate) fn set_tab_face_for_test(&mut self, face: crate::gfx::GlassFace) {
         self.tab.set_face(face);
-    }
-
-    /// Resolve the tile bands' glass cadence BEFORE the page they sit on draws — `Glass::prepare`'s
-    /// contract, exactly as the tab track and the person page's bio panel do. A no-op unless the
-    /// experiment is armed.
-    pub(crate) fn prepare_tile_band(&mut self) {
-        if !crate::ui::widgets::tile_glass_armed() || crate::gfx::blur_source_pass() {
-            return;
-        }
-        Glass::DYNAMIC_BACKDROP.prepare_on(
-            &mut self.dynamic,
-            &mut self.tile,
-            crate::ui::idle::present_moving() || crate::ui::idle::present_dirty(),
-        );
     }
 
     /// Arm the load dial from `/tmp/plxnative-glassload`'s content.
@@ -160,7 +106,7 @@ mod tests {
     //! Two properties, and both are about OWNERSHIP rather than about glass: that the dial's live
     //! state travels with the instance it was armed on (eight `static mut`s could not have this
     //! test at all — a second plan would have read the first one's step), and that moving it
-    //! changed no cadence.
+    //! preserves the every-changed-present rule.
     use super::*;
 
     /// **Two plans do not share a step.** The whole point of the move: `configure_dial` on one
@@ -195,11 +141,11 @@ mod tests {
     /// frame-rate change.
     #[test]
     fn the_shipped_cadence_is_still_every_changed_present() {
-        assert_eq!(
-            crate::ui::widgets::dynamic_period(),
-            1,
-            "DEFAULT_DYNAMIC_PERIOD is 1 and the plan reads it rather than holding its own"
-        );
+        use super::super::backdrop::{decide, Damage, Request, Z, canvas};
+        for _ in 0..16 {
+            assert!(decide(Request {z:Z::CHROME,rect:canvas(),valid:true}, &[],
+                &[Damage {z:Z::PAGE,rect:canvas()}]).refresh);
+        }
     }
 
     /// The tab band is frame-plan state. Mutating one plan's solve/material must leave another

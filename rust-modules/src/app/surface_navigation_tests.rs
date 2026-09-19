@@ -899,6 +899,9 @@ fn dismiss_surfaces_now_settles_the_surface_in_the_same_call_unlike_the_ordinary
     // not yet "mid-open", and asserting `appear > 0.0` there fails on the frame ORDER rather
     // than on anything this test is about.
     frame(&mut d, &mut rig, AppArg::Home, tick(2), vec![]);
+    // …and a THIRD: the first tick after `present` holds the spring at 0 for the frame that
+    // renders the host into its snapshot (`PopoverMotion::hold`), so the ramp starts one later.
+    frame(&mut d, &mut rig, AppArg::Home, tick(3), vec![]);
     // Now one tick HAS run over it: the appear spring is climbing toward its open target and
     // the phase has not yet been promoted past `Opening` (`ModalStack::tick` only promotes it
     // to `Open` once `motion.settled()`) — i.e. deliberately mid-open, nowhere near the

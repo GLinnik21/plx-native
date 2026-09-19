@@ -543,7 +543,7 @@
       "warmup_s": 5,
       "fps_ceiling": 5,
       "worst_ceiling_ms": 40,
-      "comment": "The About sheet (plxnative-about), the second page-owned glass alert over the same caching host as page-panel and the first surface converted for restructure phase 10's criterion 5. Same gates as page-panel, and the pair is the point: same page, same host policy, two different sheets, so a frame-time regression in the SHARED path (the host snapshot, the scrim, the glass ground) shows on both while one panel's own layout shows on one. It carries an overlay word where page-panel does not, because this scene is also what proves `overlay=about` reaches the heartbeat now that the word is the surface's own `Screen::name` rather than a byte on the page. NOT YET MEASURED on the television: the ceilings are page-panel's, inherited rather than baselined, and the first device run owes this comment its own numbers.",
+      "comment": "The About sheet (plxnative-about), the second page-owned glass alert over the same caching host as page-panel and the first surface converted for restructure phase 10's criterion 5. Same gates as page-panel, and the pair is the point: same page, same host policy, two different sheets, so a frame-time regression in the SHARED path (the host snapshot, the scrim, the panel ground) shows on both while one panel's own layout shows on one. It carries an overlay word where page-panel does not, because this scene is also what proves `overlay=about` reaches the heartbeat now that the word is the surface's own `Screen::name` rather than a byte on the page. NOT YET MEASURED on the television: the ceilings are page-panel's, inherited rather than baselined, and the first device run owes this comment its own numbers.",
       "triggers": {
         "plxnative-detail": "$rk",
         "plxnative-about": true
@@ -560,7 +560,7 @@
       "warmup_s": 5,
       "fps_ceiling": 5,
       "worst_ceiling_ms": 40,
-      "comment": "The biography sheet (plxnative-bio) over the person page. Same gates as about-panel and page-panel, and it is the third of that family for one reason worth knowing: this is the app's only DYNAMIC_BACKDROP glass, so it re-sources its blur while the other two sample once — a ceiling that holds for those and fails here is the refresh CADENCE (`Screen::prepare_present`), not the panel. It needs plxnative-personbio to have any prose at all on a headless boot: the bio comes from plex.tv, which answers an injected server token 401. NOT YET MEASURED on the television; the ceilings are page-panel's, inherited rather than baselined.",
+      "comment": "The biography sheet (plxnative-bio) over the person page. Same gates as about-panel and page-panel. It was the app's only DYNAMIC_BACKDROP glass, re-sourcing its blur every changed present, until 2026-09-19: like every panel it now stands on the latched underlay field (`widgets::panel_ground`), so a ceiling that fails here and holds for the other two is this sheet's own foreground (the paged prose, the rail, the feather), not a refresh cadence. It needs plxnative-personbio to have any prose at all on a headless boot: the bio comes from plex.tv, which answers an injected server token 401. NOT YET MEASURED on the television; the ceilings are page-panel's, inherited rather than baselined.",
       "triggers": {
         "plxnative-detail": "$rk",
         "plxnative-detailsec": 1,
@@ -579,7 +579,7 @@
       "warmup_s": 5,
       "fps_ceiling": 5,
       "worst_ceiling_ms": 40,
-      "comment": "The shared yes/no alert (Delete all local data?, plxnative-alert) over the privacy panel over Settings over Home — three glass layers, the deepest composition a bar page carries. Opening it deletes nothing. BASELINE 2026-09-06 panel-ON (TV session 1): worst robust_max=3.0 ms (max=3.7); the ceiling stands.",
+      "comment": "The shared yes/no alert (Delete all local data?, plxnative-alert) over the privacy panel over Settings over Home — three modal layers, the deepest composition a bar page carries. Opening it deletes nothing. BASELINE 2026-09-06 panel-ON (TV session 1): worst robust_max=3.0 ms (max=3.7); the ceiling stands.",
       "triggers": {
         "plxnative-settings": "privacy",
         "plxnative-alert": true

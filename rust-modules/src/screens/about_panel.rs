@@ -1,4 +1,4 @@
-//! **About** — the detail page's About footer, read in full, as a glass alert panel.
+//! **About** — the detail page's About footer, read in full, as an alert panel.
 //!
 //! `Alert Views.dc.html` §1A. The About footer (detail section 5) is four columns; only the FIRST
 //! one, the card, opens THIS panel. That is the design's rule and it is stated as a rule rather
@@ -31,7 +31,7 @@
 //!
 //! # What it is made of
 //!
-//! One glass ground and a fixed vertical ladder of runs — no list, no focus, no control, and no
+//! One panel ground and a fixed vertical ladder of runs — no list, no focus, no control, and no
 //! state of its own at all. The only key it answers is BACK (and OK, see [`AboutPanelScreen`]),
 //! because §1E states the family rule: *"only 1D carries a control — the read-only panels close on
 //! BACK."* So the closing `Press [BACK] to return` line is not a hint, it is the whole affordance,
@@ -58,16 +58,12 @@
 //! at a different width would be pointless. The panel grows, and [`syn_lines`] is the last resort:
 //! it spends whatever is left inside the screen's glass keep-out and never less than one line.
 //!
-//! **It is the only glass on its frame, and it charges past the region budget.** Stated rather than
-//! hidden, in the design's own words: every one of these panels does, once grown 88px a side — and
-//! that is accepted because [`crate::gfx::GLASS_REGION_BUDGET`] prices a MOVING host, while the page
-//! under an open alert is standing still. The detail page behind this one is not scrolling, its
-//! shelves are not springing and its hero is not advancing: nothing under the panel changes, so the
-//! one cached snapshot [`crate::ui::widgets::Glass::CACHED`] takes on open stays true for as long as
-//! the panel is up. A panel over a moving page would owe `Glass::DYNAMIC_BACKDROP` and a real
-//! per-frame cost; this one owes one capture. It also clears the design's `--glass-edge-clear` 68 on
-//! all four sides ([`EDGE_CLEAR`]), which is what keeps the blur's own sample window on the page
-//! rather than off the edge of it.
+//! **Its ground is the latched underlay field, not glass** (`widgets::panel_ground`): the page
+//! under it sampled once into the 15×8 field the modal dim already latched, windowed to the
+//! panel's own rect and graded toward the panel material, under the frost. So it reads no
+//! framebuffer, pays no blur region however far it grows, and the page behind it standing still is
+//! a property of the host snapshot rather than a condition of the material. It still clears the
+//! design's `--glass-edge-clear` 68 on all four sides ([`EDGE_CLEAR`]) — a layout margin now.
 
 use crate::metadata;
 use crate::ui::consts::{SCR_H, SCR_W};
@@ -261,16 +257,12 @@ const RISE: f32 = crate::ui::popover::Popover::RISE;
 /// (`registry::ContentPanel::About`), dismissed by BACK or OK.
 pub(crate) struct AboutPanelScreen {
     entry: crate::ui::machine::EntryId,
-    /// The frosted ground's render state — a resource, never logical state, which is why it is not
-    /// in [`SHAPE`].
-    glass: crate::ui::widgets::GlassState,
 }
 
 impl AboutPanelScreen {
     pub(crate) fn new(entry: crate::ui::machine::EntryId) -> Self {
         Self {
             entry,
-            glass: crate::ui::widgets::GlassState::new(),
         }
     }
 
@@ -284,6 +276,7 @@ impl AboutPanelScreen {
         d: &metadata::Detail,
         appear: f32,
         measure: &dyn crate::ui::machine::Measure,
+        field: Option<&crate::ui::underlay::UnderlayField>,
     ) {
         let slide = RISE * (1.0 - appear);
         let p = Painter::root().alpha(appear).translate(0.0, slide);
@@ -306,7 +299,7 @@ impl AboutPanelScreen {
         let r = panel_rect(s.h);
 
         // ---- ground ----
-        crate::ui::widgets::Glass::CACHED.panel(p, r, slide, theme::ALERT_PANEL_RAD);
+        crate::ui::widgets::panel_ground(p, r, theme::ALERT_PANEL_RAD, field);
 
         // ---- content ----
         let cx = r.x + PAD;
@@ -473,9 +466,7 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
     fn crumb(&self, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> {
         None
     }
-    fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &crate::ui::machine::Cx<'_, H>) {
-        crate::ui::widgets::Glass::CACHED.prepare(&mut self.glass, false);
-    }
+    fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &crate::ui::machine::Cx<'_, H>) {}
     /// The modal dim, asked for rather than drawn.
     ///
     /// **Nothing is LIFTED back out of it.** `Scrim::lifting` exists for a panel that is ABOUT an
@@ -483,10 +474,10 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
     /// that card says, at length — lifting it would put a truncated copy of this panel's own first
     /// three runs alongside it. The mock lifts nothing either.
     ///
-    /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): a
-    /// `Glass::CACHED` ground samples the framebuffer as it stands, so the dim has to be down
-    /// before the sheet's backdrop is taken, or the frosted ground reads brighter than the dimmed
-    /// screen around it. `ModalStack::draw_scrims` draws it at the end of the PAGE pass — strictly
+    /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): the
+    /// panel's ground once sampled the framebuffer (`Glass::CACHED`), so the dim had to be down
+    /// before the backdrop was taken; the ground is the latched underlay field now, latched at the
+    /// head of the dims from the undimmed page. `ModalStack::draw_scrims` draws it at the end of the PAGE pass — strictly
     /// earlier than the surface pass this `draw` runs in — and multiplies by the appear spring and
     /// by `nav::page_alpha`, which is `Popover::scrim`'s own arithmetic and one factor more than
     /// the page-drawn version could reach.
@@ -508,7 +499,8 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
         // Named for `/tmp/plxnative-cpuprof` beside the page's own phases, so a slow frame while
         // this sheet is up can be read as the PANEL or as the host under it rather than as one
         // `main.ui` total.
-        crate::ui::profile::phase("dt.about", || self.paint(&d, appear, measure));
+        let field = f.underlay;
+        crate::ui::profile::phase("dt.about", || self.paint(&d, appear, measure, field));
     }
     fn render(&self) -> crate::ui::screen::RenderStrategy {
         crate::ui::screen::RenderStrategy::Page
@@ -694,51 +686,6 @@ mod tests {
             }),
             1
         );
-    }
-
-    /// **What the panel costs the blur chain, pinned — because dropping the repeated blocks was
-    /// also the cheapest thing available for the frame-rate complaint that came with them.**
-    ///
-    /// A glass surface's price is its snapshot REGION: its own rect grown by `gfx::BLUR_MARGIN` on
-    /// every side, which the chain then reduces twice and up-filters. Removing the title, the genre
-    /// line, a hairline and the four-column facts grid took **300px** off the reference item's
-    /// panel (715 → 415), and because the region grows in one dimension only — the width is fixed
-    /// at [`PANEL_W`] — the whole of that comes off the region: **1.15M authored px² → 0.77M, a
-    /// third less.**
-    ///
-    /// Graded here rather than described, with the OLD number written down, because the failure
-    /// mode is silent and specific: a block spliced back into [`stack`] re-inflates the region with
-    /// nothing on screen to say so, and the cost lands on a television nobody here owns. The
-    /// ceiling is deliberately not `gfx::GLASS_REGION_BUDGET` (300k) — every alert in the family
-    /// charges past that, in the design's own words, because the budget prices a MOVING host and
-    /// the page under a modal is standing still. This grades the direction of travel instead.
-    ///
-    /// It says nothing about frames per second, and cannot: the region is authored geometry, the
-    /// frame rate is the SM9000's Mali, and the two are joined only by a measurement on the set.
-    #[test]
-    fn the_prose_only_panel_costs_the_blur_chain_a_third_less_region() {
-        // the reference item: a 3-line synopsis and a tagline
-        let b = Blocks {
-            synopsis: 3.0 * SYN_LEAD,
-            tagline: FINE_LEAD,
-        };
-        let r = panel_rect(stack(b).h);
-        let reg = crate::gfx::blur_region(r.x, r.y, r.w, r.h);
-        let area = reg[2] * reg[3];
-
-        // what the same item cost while the panel also carried a title, genres, a second hairline
-        // and the facts grid — 300px of ladder, all of it height, and still centred
-        let was = crate::gfx::blur_region(r.x, r.y - 150.0, r.w, r.h + 300.0);
-        let was_area = was[2] * was[3];
-
-        assert!(
-            area < was_area * 0.72,
-            "the prose-only panel should cost a third less region: {area} against {was_area}"
-        );
-        // …and the panel it is measuring is the real one, not an arithmetic slip: a 1120-wide sheet
-        // grown by the margin either side, still inside the frame.
-        assert_eq!(reg[2], PANEL_W + 2.0 * crate::gfx::BLUR_MARGIN);
-        assert!(reg[1] >= 0.0 && reg[1] + reg[3] <= crate::ui::consts::SCR_H);
     }
 
     /// The panel is centred both ways and never enters the glass keep-out — including when its

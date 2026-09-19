@@ -51,7 +51,7 @@ pub(crate) enum Class {
     Blur = 8,
     /// `gfx::draw_field` — the magnified UNDERLAY FIELD, plus the reduction chain that produces
     /// it, booked in TARGET pixels like [`Blur`](Self::Blur). Unlike `Blur` this one IS maskable,
-    /// and masking it removes the whole feature at once: `gfx::sample_underlay_field` refuses
+    /// and masking it removes the whole feature at once: `gfx::field_kick` refuses
     /// before the chain runs, so a `drawmask=field` leg prices the sample and the draw together
     /// rather than leaving the draw sampling a stale texture.
     Field = 9,

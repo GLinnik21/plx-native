@@ -337,6 +337,9 @@ pub struct Dispatcher<H: Host> {
     parked_life: Vec<Life<H>>,
     timers: Vec<(TimerId, u32, MachineId)>,
     pub present: Present,
+    pub(crate) page_snapshot: Box<dyn super::containers::transition::PageSnapshot>,
+    page_image: super::containers::transition::PageImage,
+    page_stops: Vec<Stop<H::Elem>>,
     pub budget: Budget,
     pub nav: Navigation<H>,
     /// The Input machine (§2.2): the engine, the hit map, the press and its arm.
@@ -360,6 +363,9 @@ pub struct Dispatcher<H: Host> {
     last_tick: Tick,
     /// This frame's prepare pass ran (a `draw` after a non-presenting frame runs it itself).
     prepared: bool,
+    /// The previous frame's page-owned motion/resource verdict, retained past `Present::take` so
+    /// the held transition image can wait for the destination's visual quiescence.
+    page_quiescent: bool,
 }
 
 impl<H: Host> Default for Dispatcher<H>
@@ -392,6 +398,9 @@ where
             budget: Budget::new(),
             nav: Navigation::new(transition),
             input: InputMachine::new(),
+            page_snapshot: Box::new(super::popover::host::TransitionSnapshot::default()),
+            page_image: Default::default(),
+            page_stops: Vec::new(),
             focus_override: None,
             frame: 0,
             carried_streak: 0,
@@ -402,6 +411,7 @@ where
             pending_back: false,
             last_tick: Tick::default(),
             prepared: false,
+            page_quiescent: false,
         }
     }
 
@@ -421,6 +431,12 @@ where
             .surfaces
             .iter()
             .any(|s| s.phase != super::containers::modal::Phase::Hidden)
+    }
+
+    /// Compact PageDip/image state for per-frame performance attribution.
+    pub(crate) fn dip_word(&self) -> &'static str {
+        let phase = self.nav.tabs.stack.transition.phase_word();
+        if phase == "live" && self.page_image.is_held() { "held" } else { phase }
     }
 
     /// The topmost surface's heartbeat word, if a surface is up.
@@ -1047,6 +1063,9 @@ where
         // 8. the present decision, once (its WHY is read before the take clears it)
         let why = self.present.why();
         report.underlay_moving = self.present.page_moving();
+        self.page_quiescent = !report.underlay_moving
+            && !crate::ui::idle::page_moving()
+            && !self.budget.has_queued_work();
         let will_present = self.present.take(tick.ms) || self.budget.has_queued_work();
         tap.present(f, will_present, why);
         // `prepare_does_not_change_the_logical_state_hash` (§5.4): a prepare pass touches render
@@ -1124,42 +1143,6 @@ where
         rig.prepare(budget, present);
     }
 
-    /// **Resolve every visible surface's REFRESHING backdrop, before the host page draws.**
-    ///
-    /// A second, narrower prepare, called from the loop's glass-owner block rather than from the
-    /// dispatcher's own frame, because the slot is load-bearing at both ends and neither boundary
-    /// exists inside `prepare_pass`: `popover::host::begin_frame` above it latches the own-damage
-    /// ledger this fold reads, and `gfx::blur_direct_region()` is sampled below it, so an
-    /// invalidation raised here reaches this frame's own blur source instead of the next one's.
-    ///
-    /// The TOP PAGE and every visible surface are asked, in that order. What the container
-    /// contributes is the half a screen cannot know: whether its own appear spring has SETTLED,
-    /// which it owns (`Surface::motion`) — a page, having no such spring, is asked with `true`.
-    /// The decision itself stays one function, `popover::glass_refresh`, in the screen that owns
-    /// the glass policy.
-    ///
-    /// It replaces a call that NAMED one screen (`ui::person_bio::prepare_present`, routed on
-    /// `Route::Person` for a while, then self-gated) — the shape §14 is about: a rule stated in one
-    /// module and enforced by a route test three modules away. A screen with a cached ground, or
-    /// none, inherits the no-op.
-    pub fn prepare_present(
-        &mut self,
-        glass: &mut crate::ui::frame::glass::GlassPlan,
-        underlay_changed: bool,
-    ) {
-        if let Some(inst) = self.nav.tabs.stack.top_mut().and_then(|e| e.inst.as_mut()) {
-            inst.screen.prepare_present(glass, underlay_changed, true);
-        }
-        for s in &mut self.nav.modals.surfaces {
-            if s.phase == crate::ui::containers::modal::Phase::Hidden {
-                continue;
-            }
-            let Some(inst) = s.entry.inst.as_mut() else { continue };
-            let settled = s.motion.settled();
-            inst.screen.prepare_present(glass, underlay_changed, settled);
-        }
-    }
-
     /// Step 10 on a frame the CALLER presents (the legacy loop's own gate, phase 5b): the
     /// prepare pass first if this frame's steps did not run it, then the draw. The surfaces
     /// alone or the whole tree — `pages` says whether the page pass is drawn here too (the
@@ -1171,33 +1154,66 @@ where
             self.prepare_pass(rig, tick);
         }
         let mut report = FrameReport::default();
-        self.draw_with(rig, tick, &mut report, pages, None);
+        self.draw_with(rig, tick, &mut report, pages, None, super::frame::backdrop::Z::ALL);
         report
     }
 
-    /// Product draw entry: the application-owned frame plan accompanies the rig so shared chrome
-    /// can mutate its tab-band render state without moving that state onto the rig.
-    pub fn draw_with_glass(
+    /// The compositing stack publishes blockers from the same host fold the draw walk uses.
+    pub(crate) fn backdrop_layers(&self, page_alpha: f32) -> Vec<super::frame::backdrop::Layer> {
+        use super::frame::backdrop::{Layer, Z, canvas};
+        let mut layers = Vec::new();
+        if self.page_snapshot.valid() && self.nav.modals.host_policy().1 == HostRender::Live {
+            if let Some(entry) = self.nav.top_page() {
+                let mut image = self.page_image;
+                let paint = image.plan(entry.id, self.nav.tabs.stack.transition.in_flight(),
+                    self.nav.tabs.stack.transition.page_alpha(), self.last_tick.ms, true,
+                    self.page_quiescent);
+                if let Some(alpha) = paint.frozen_alpha() {
+                    layers.push(Layer { z: Z(Z::CHROME.0 - 1), rect: canvas(),
+                        blocks: !paint.draws_live(),
+                        revision: self.page_snapshot.revision(), composite_alpha: Some(alpha) });
+                }
+            }
+        }
+        if let Some(z) = crate::ui::popover::host::held_ceiling() {
+            layers.push(Layer { z, rect:canvas(), blocks:true, revision:crate::ui::popover::host::page_epoch() as u64, composite_alpha:None });
+        }
+        for (index,surface) in self.nav.modals.surfaces.iter().enumerate() {
+            if super::containers::modal::surface_policy(surface.style,surface.phase,surface.ground_ready).1 == HostRender::Replaced {
+                layers.push(Layer { z:Z::surface(index), rect:canvas(), blocks:true, revision:0, composite_alpha:None });
+            }
+        }
+        if self.nav.modals.scrims(page_alpha).iter().any(|(_,a,_)| *a >= 1.0) {
+            layers.push(Layer { z:Z::DIM, rect:canvas(), blocks:true, revision:0, composite_alpha:None });
+        }
+        layers
+    }
+
+    /// Product draw entry with a strict z ceiling; `Z::ALL` is the visible frame.
+    /// Chrome borrows the application-owned material without moving it onto the rig.
+    pub fn draw_with_glass_below(
         &mut self,
         rig: &mut dyn Rig<H>,
         glass: &mut super::frame::glass::GlassPlan,
         pages: bool,
+        ceiling: super::frame::backdrop::Z,
     ) -> FrameReport {
         let tick = self.last_tick;
         if !self.prepared {
-            self.prepare_pass(rig, tick);
+            crate::diag::spans::span("prep", || self.prepare_pass(rig, tick));
         }
         let mut report = FrameReport::default();
-        self.draw_with(rig, tick, &mut report, pages, Some(glass));
+        self.draw_with(rig, tick, &mut report, pages, Some(glass), ceiling);
         report
     }
 
     fn draw_pass(&mut self, rig: &mut dyn Rig<H>, tick: Tick, report: &mut FrameReport) {
-        self.draw_with(rig, tick, report, true, None);
+        self.draw_with(rig, tick, report, true, None, super::frame::backdrop::Z::ALL);
     }
 
     fn draw_with(&mut self, rig: &mut dyn Rig<H>, tick: Tick, report: &mut FrameReport, pages: bool,
-        mut glass: Option<&mut super::frame::glass::GlassPlan>) {
+        mut glass: Option<&mut super::frame::glass::GlassPlan>, ceiling: super::frame::backdrop::Z) {
+        use super::frame::backdrop::{self, Z};
         let strip_owner = self.owner_entry();
         let navigation = rig.navigation_presentation();
         let (_, host_render) = self.nav.modals.host_policy();
@@ -1205,14 +1221,45 @@ where
         // page freeze is. Every framebuffer-sampling door is refused while it is up.
         let video_plane = self.video_plane_frame();
         let was_video_plane = crate::gfx::set_video_plane_frame(video_plane);
-        rig.clear_opaque_region();
+        if !crate::gfx::blur_source_pass() { rig.clear_opaque_region(); }
         let parts = self.parts(tick);
-        let Dispatcher { nav, input, .. } = self;
+        let source_pass = backdrop::source_walk() || crate::gfx::blur_source_pass();
+        let eligible = pages && host_render == HostRender::Live && !video_plane
+            && self.nav.tabs.stack.transition.freezes_page() && self.page_snapshot.available();
+        let page_quiescent = self.page_quiescent
+            && !self.present.page_moving()
+            && !crate::ui::idle::page_moving()
+            && !self.budget.has_queued_work();
+        let mut image = self.page_image;
+        let paint = if eligible {
+            self.nav.top_page().map_or(super::containers::transition::PagePaint::Live, |entry|
+                image.plan(entry.id, self.nav.tabs.stack.transition.in_flight(),
+                    self.nav.tabs.stack.transition.page_alpha(), tick.ms, self.page_snapshot.valid(),
+                    page_quiescent))
+        } else { super::containers::transition::PagePaint::Live };
+        if !source_pass && (pages || host_render != HostRender::Live || video_plane) {
+            self.page_image = image;
+            if matches!(paint, super::containers::transition::PagePaint::Live) {
+                self.page_snapshot.release();
+                self.page_image = Default::default();
+            }
+            if matches!(paint, super::containers::transition::PagePaint::Held(_)
+                | super::containers::transition::PagePaint::ReplacementCapture) {
+                // The held-image compositor needs another present, but it is not PAGE-owned
+                // motion. Attributing it to Page would make the quiescence predicate observe its
+                // own hold and keep the image forever.
+                self.present.set_scope(super::present::Scope::Surface);
+                PresentHandle::of(&mut self.present).note(super::present::PresentEvent::Motion);
+                self.present.set_scope(super::present::Scope::Page);
+                crate::ui::idle::invalidate();
+            }
+        }
+        let Dispatcher { nav, input, page_snapshot, page_image, page_stops, .. } = self;
         let mut stops = Vec::new();
         let mut set = RenderSet {
             // the shared poster/logo residency (ui/tex.rs) is the one pool rule (c) sums beside
             // the screens' own renders and the FrameCache
-            extra_bytes: super::tex::resident_bytes(),
+            extra_bytes: super::tex::resident_bytes() + glass.as_ref().map_or(0, |g|g.sources.borrow().resident_bytes()),
             ..Default::default()
         };
         // the page pass: the top page (and, under a push, the level beneath it), unless the
@@ -1225,26 +1272,63 @@ where
             let n = nav.tabs.stack.entries.len();
             let top_entry = nav.tabs.stack.top().map(|entry| entry.id);
             let from = if draws_below { n.saturating_sub(2) } else { n.saturating_sub(1) };
-            for e in nav.tabs.stack.entries[from..].iter_mut() {
+            for (index, e) in nav.tabs.stack.entries[from..].iter_mut().enumerate() {
+                let page_z = Z::page(index);
+                if page_z >= ceiling { break; }
+                let _page_layer = backdrop::layer(page_z, false);
                 if let Some(inst) = e.inst.as_mut() {
                     let Split { views, measure, .. } = rig.split();
                     let mut page_cx = parts.cx::<H>(views, measure);
                     page_cx.owner = InputOwner::Entry(e.id);
                     page_cx.focus = input.engine.read(page_cx.owner);
-                    let mut f = DrawFrame::with_navigation(&page_cx, Painter::root(), navigation);
-                    f.page_alpha *= nav.tabs.stack.transition.page_alpha();
-                    inst.screen.draw(&mut f);
-                    report.drawn.push(inst.id);
-                    stops.extend(f.into_stops());
+                    use super::containers::transition::PagePaint;
+                    let capture_guard = if paint.captures_page() && !source_pass {
+                        super::containers::transition::PageCapture::begin(page_snapshot.as_mut())
+                    } else { None };
+                    let capture = capture_guard.is_some();
+                    // Source/declaration walks never capture or paint a live page underneath a
+                    // held image. A missing image is captured by the visible pass, at full alpha.
+                    let visible_live = paint.draws_live()
+                        || (paint == PagePaint::Capture && !capture && !source_pass);
+                    let render_page = capture || visible_live;
+                    if render_page {
+                        let mut page_navigation = navigation;
+                        if capture { page_navigation.page_alpha = 1.0; }
+                        let mut f = DrawFrame::with_navigation(&page_cx, Painter::root(), page_navigation);
+                        if !capture { f.page_alpha *= nav.tabs.stack.transition.page_alpha(); }
+                        backdrop::draw_span("page", || inst.screen.draw(&mut f));
+                        report.drawn.push(inst.id);
+                        let drawn_stops = f.into_stops();
+                        if capture { *page_stops = drawn_stops.clone(); }
+                        stops.extend(drawn_stops);
+                    } else if page_image.held_entry() == Some(e.id) {
+                        stops.extend(page_stops.iter().cloned());
+                    }
+                    drop(capture_guard);
+                    if capture {
+                        if paint == PagePaint::ReplacementCapture {
+                            page_image.replacement_captured(e.id);
+                        } else {
+                            page_image.captured(e.id);
+                        }
+                        let alpha = if paint == PagePaint::ReplacementCapture { 1.0 }
+                            else { nav.tabs.stack.transition.page_alpha() };
+                        backdrop::draw_span("page.image", || page_snapshot.draw(alpha, true));
+                    } else if let Some(alpha) = paint.frozen_alpha() {
+                        let _image_layer = backdrop::layer(Z(Z::CHROME.0 - 1), false);
+                        let source_alpha = if source_pass { 1.0 } else { alpha };
+                        backdrop::draw_span("page.image", || page_snapshot.draw(source_alpha, !visible_live));
+                    }
                     set.pages += 1;
                     set.bytes += inst.screen.render_report().bytes;
-                    if top_entry == Some(e.id) && e.arg.chrome() == super::machine::Chrome::TabBar
+                    if Z::CHROME < ceiling && top_entry == Some(e.id) && e.arg.chrome() == super::machine::Chrome::TabBar
                         && inst.screen.focus_source() == FocusSource::Engine {
                         let mut chrome_parts = parts.clone();
                         chrome_parts.owner = InputOwner::Entry(e.id);
                         chrome_parts.focus = input.engine.read(chrome_parts.owner);
                         drop(page_cx);
-                        rig.draw_chrome(&e.arg, &chrome_parts, navigation, glass.as_deref_mut());
+                        let _chrome_layer = backdrop::layer(Z::CHROME, true);
+                        backdrop::draw_span("chrome", || rig.draw_chrome(&e.arg, &chrome_parts, navigation, glass.as_deref_mut()));
                     }
                 }
             }
@@ -1272,17 +1356,58 @@ where
             // frame's first `popover::host::live()`, which is also what defines the host snapshot
             // as the UNDIMMED page — and the instant the dims' inherited field is read from
             // (`ModalUnderlay`), for the same reason.
-            {
+            if Z::DIM < ceiling {
+                let _dim_layer = backdrop::layer(Z::DIM, false);
                 let _scope = rig.surface_scope();
                 let read = scrim_lift_read(rig, glass.as_deref());
-                nav.modals.draw_scrims(navigation.page_alpha, read);
+                backdrop::draw_span("scrims", || nav.modals.draw_scrims(navigation.page_alpha, read));
             }
         }
-        if host_render == HostRender::Cached {
-            set.frame_cache_bytes = super::frame::FRAME_CACHE_BYTES;
+        // A PageDip keeps the committed top as the visible/input page throughout its OUT half.
+        // Its pending destination is nevertheless a real staged screen, so run that same screen
+        // tree through a painter which records text and submits no visual primitive. Re-recording
+        // each frame is intentional: cache hits disappear from the queue, while work which missed
+        // this frame's deadline is rediscovered next frame without stale cross-navigation state.
+        if prewarm_text_due(nav.tabs.stack.transition.prewarms_text(), source_pass) {
+            crate::text::clear_prewarm();
+            if let Some(entry) = nav.tabs.stack.pending_target_mut() {
+                if let Some(inst) = entry.inst.as_mut() {
+                    let Split { views, measure, .. } = rig.split();
+                    let mut warm_cx = parts.cx::<H>(views, measure);
+                    warm_cx.owner = InputOwner::Entry(entry.id);
+                    warm_cx.focus = input.engine.read(warm_cx.owner);
+                    let mut f = DrawFrame::with_navigation(
+                        &warm_cx,
+                        Painter::recording(),
+                        navigation,
+                    );
+                    f.page_alpha = 0.0;
+                    // Raw screen clears bypass Painter::recording; they must not erase
+                    // the outgoing page while its destination only records text.
+                    crate::gfx::without_frame_clear(|| inst.screen.draw(&mut f));
+                }
+            }
+            crate::text::drain_prewarm(
+                super::containers::transition::TEXT_PREWARM_BUDGET_US,
+                || rig.now_us(),
+            );
+        } else if !crate::gfx::blur_source_pass() {
+            crate::text::clear_prewarm();
         }
-        // the surfaces, bottom to top; a later stop is above an earlier one
-        for s in &mut nav.modals.surfaces {
+        set.frame_cache_bytes = page_snapshot.resident_bytes();
+        if host_render == HostRender::Cached {
+            set.frame_cache_bytes = set.frame_cache_bytes.max(super::frame::FRAME_CACHE_BYTES);
+        }
+        // the surfaces, bottom to top; a later stop is above an earlier one. Each is handed the
+        // stack's ONE underlay field — latched by the dims above, from the undimmed page, on this
+        // very frame — which is what a popover panel's ground is drawn from
+        // (`widgets::panel_ground`). Disjoint fields of the stack: the field is only read here.
+        let modals = &mut nav.modals;
+        let field = modals.underlay.field();
+        for (index, s) in modals.surfaces.iter_mut().enumerate() {
+            let z = Z::surface(index);
+            if z >= ceiling { break; }
+            let _layer = backdrop::layer(z, false);
             if let Some(inst) = s.entry.inst.as_mut() {
                 let _surface_scope = rig.surface_scope();
                 // §4.4: a spring stepped while a SURFACE draws is the panel's, and an
@@ -1296,7 +1421,8 @@ where
                 surface_cx.focus = input.engine.read(surface_cx.owner);
                 let mut f = DrawFrame::with_navigation(&surface_cx, Painter::root(), navigation);
                 f.page_alpha = s.motion.appear;
-                inst.screen.draw(&mut f);
+                f.underlay = Some(field);
+                backdrop::draw_span("surf", || inst.screen.draw(&mut f));
                 report.drawn.push(inst.id);
                 stops.extend(f.into_stops());
                 // (b) is a count of THIS SURFACE's own backing renders, asked of the surface —
@@ -1307,7 +1433,7 @@ where
                 set.surfaces.push((s.entry.id, render.textures));
                 set.bytes += render.bytes;
                 // an Opaque surface's ground has drawn: the fold REPLACES the host from here
-                s.ground_ready = inst.screen.ground_ready();
+                if !crate::gfx::blur_source_pass() { s.ground_ready = inst.screen.ground_ready(); }
             }
         }
         // the hit map swaps only on a presented frame (§7.6); a legacy page registers nothing
@@ -1317,6 +1443,8 @@ where
             self.input.hit.fill(if hit_page { stops } else { Vec::new() });
             self.input.hit.swap();
         }
+        if crate::gfx::blur_source_pass() { report.render_set = set; return; }
+        set.extra_bytes = super::tex::resident_bytes() + glass.as_ref().map_or(0, |g|g.sources.borrow().resident_bytes());
         if let Err(breach) = set.check() {
             // The policy itself is `frame::on_breach` — assert on the host, log once on a
             // television — so that both halves are reachable from a test.
@@ -1956,6 +2084,9 @@ where
                 _ => unreachable!("only structural ops are parked"),
             }
         }
+        if let Some(eid) = self.nav.stage_page_target() {
+            self.stage_mount(rig, parts, eid);
+        }
         life.extend(self.nav.commit());
         for step in life {
             match step {
@@ -1996,7 +2127,25 @@ where
         post: &mut Vec<Stamped<H>>,
         report: &mut FrameReport,
     ) {
-        if self.nav.entry(eid).map_or(true, |e| e.inst.is_some()) {
+        if self.nav.entry(eid).is_none() {
+            return;
+        }
+        if self.nav.entry(eid).and_then(|e| e.inst.as_ref()).is_some() {
+            let Some((id, name, out)) = self.nav.entry_mut(eid).and_then(|entry| {
+                let inst = entry.inst.as_mut()?;
+                if !inst.staged {
+                    return None;
+                }
+                inst.staged = false;
+                Some((inst.id, inst.screen.name(), std::mem::take(&mut inst.staged_effects)))
+            }) else { return };
+            post.push(Stamped {
+                from: MachineId::Nav,
+                fx: Fx::Deliver(MachineId::Instance(id), Delivery::Screen(ScreenEvent::Mount)),
+            });
+            post.extend(out);
+            report.mounted.push((id, name));
+            self.cold.mounted(id.0, name, parts.tick.ms);
             return;
         }
         let id = self.nav.ids.instance();
@@ -2024,6 +2173,8 @@ where
                 id,
                 screen,
                 inflight: Vec::new(),
+                staged: false,
+                staged_effects: Vec::new(),
             });
             entry.evicted = false;
         }
@@ -2034,6 +2185,42 @@ where
         post.extend(out);
         report.mounted.push((id, name));
         self.cold.mounted(id.0, name, parts.tick.ms);
+    }
+
+    /// Construct a pending destination without publishing it as mounted. The screen is reused at
+    /// the floor; effects emitted by its constructor and the `Mount` lifecycle remain buffered, so
+    /// the outgoing page is still the sole live/input owner during the dip-out.
+    fn stage_mount(
+        &mut self,
+        rig: &mut dyn Rig<H>,
+        parts: &CxParts<H::Elem>,
+        eid: EntryId,
+    ) {
+        if self.nav.entry(eid).map_or(true, |e| e.inst.is_some()) {
+            return;
+        }
+        let id = self.nav.ids.instance();
+        let mut out: Vec<Stamped<H>> = Vec::new();
+        let screen = {
+            let Dispatcher { nav, present, input, .. } = self;
+            let entry = nav.entry(eid).expect("staged above");
+            let Split { mounter, views, measure } = rig.split();
+            let mut p = parts.clone();
+            p.owner = InputOwner::Entry(eid);
+            p.focus = input.engine.read(p.owner);
+            let cx = p.cx::<H>(views, measure);
+            let mut fx = Effects::new(&mut out, MachineId::Instance(id), present);
+            mounter.mount(id, &entry.arg, &entry.ret, &cx, &mut fx)
+        };
+        if let Some(entry) = self.nav.entry_mut(eid) {
+            entry.inst = Some(Instance {
+                id,
+                screen,
+                inflight: Vec::new(),
+                staged: true,
+                staged_effects: out,
+            });
+        }
     }
 
     /// Register a request as in flight for an instance (the app's registry calls this when it
@@ -2064,6 +2251,8 @@ where
                 id,
                 screen: inst.screen,
                 inflight: Vec::new(),
+                staged: false,
+                staged_effects: Vec::new(),
             });
         }
         post.push(Stamped {
@@ -2566,6 +2755,55 @@ mod edge_back_tests {
     }
 
     #[test]
+    fn deep_page_unwind_releases_retired_entries_and_focus() {
+        let _guard = crate::testlock::serial();
+        for dip in [false, true] {
+            let (mut d, mut rig) = booted();
+            d.nav.tabs.stack.transition = if dip {
+                Box::new(crate::ui::containers::transition::PageDip::new())
+            } else {
+                Box::new(crate::ui::containers::transition::Immediate)
+            };
+            let mut ms = 0;
+            let advance = |d: &mut Dispatcher<FixtureHost>, rig: &mut EdgeBackRig, ms: &mut u32| {
+                for _ in 0..if dip { 40 } else { 1 } {
+                    *ms += 16;
+                    let report = d.frame(rig, tick(*ms), vec![], vec![], &mut NoTap);
+                    d.prune(&report.unmounted);
+                }
+                assert!(!d.nav.tabs.stack.is_pending());
+            };
+            let root = d.nav.top_page().unwrap().id;
+            let mut entries = Vec::new();
+            for n in 1..=100 {
+                d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(n)));
+                advance(&mut d, &mut rig, &mut ms);
+                let entry = d.nav.top_page().unwrap().id;
+                d.input.engine.remember_projected(entry, GroupId(901), n);
+                entries.push(entry);
+                assert!(d.nav.tabs.stack.entries.iter().filter(|e| e.inst.is_some()).count()
+                    <= crate::ui::containers::stack::CAP);
+            }
+            for _ in 0..100 {
+                d.request(MachineId::Nav, NavOp::Pop);
+                advance(&mut d, &mut rig, &mut ms);
+            }
+            assert_eq!(d.nav.tabs.stack.depth(), 1);
+            assert_eq!(d.nav.top_page().unwrap().id, root);
+            assert!(d.nav.tabs.stack.retired.is_empty());
+            assert!(d.nav.covered_modals.is_empty());
+            assert!(d.parked.is_empty());
+            assert!(d.app_returns.is_empty());
+            assert_eq!(d.queued(), 0);
+            for entry in entries {
+                assert!(d.nav.entry(entry).is_none());
+                assert_eq!(d.input.engine.current(InputOwner::Entry(entry)), None);
+                assert!(d.input.engine.remembered_snapshot(entry).is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn carried_unmounts_finish_before_production_pruning_forgets_retired_bodies() {
         let _guard = crate::testlock::serial();
         let (mut d, mut rig) = booted();
@@ -2745,5 +2983,20 @@ mod edge_back_tests {
         assert!(r.back_at_root, "the root refused it");
         assert_eq!(rig.roots, 1, "…and the application heard it once");
         assert_eq!(d.nav.tabs.stack.depth(), 1, "the stack never moved");
+    }
+}
+
+/// Text preparation belongs to the visible frame, not each rendering of its blur source.
+fn prewarm_text_due(requested: bool, source_pass: bool) -> bool {
+    requested && !source_pass
+}
+
+#[cfg(test)]
+mod prewarm_pass_tests {
+    #[test]
+    fn blur_source_does_not_spend_a_second_text_prewarm_budget() {
+        assert!(!super::prewarm_text_due(true, true));
+        assert!(super::prewarm_text_due(true, false));
+        assert!(!super::prewarm_text_due(false, false));
     }
 }

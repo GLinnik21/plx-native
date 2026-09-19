@@ -117,9 +117,10 @@ shelf pitch, `consts::TITLE_DY + CARD_DY` (see `related.rs`, `cast.rs`, `extras.
 heading-to-card distance Home and the Library use, quoted as the sum rather than as a number this
 file would then have to keep in step.
 
-Surfaces over a page use the `Glass` policy, which has exactly one axis: how often the backdrop
-snapshot refreshes. `Glass::CACHED` is the default, capture once on open. A surface over a moving
-page opts into `Glass::DYNAMIC_BACKDROP`.
+Surfaces over a page stand on the page's own latched light: `widgets::panel_ground` draws the
+underlay field the modal dim latched, windowed to the panel's rect and graded toward the panel
+material under its frost. Backdrop-blur glass (`Glass::DYNAMIC_BACKDROP`) is chrome-only — the top
+bar's track and the profile chip. See `docs/liquid-glass.md`.
 
 ## Navigation says where BACK goes, once
 

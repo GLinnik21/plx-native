@@ -817,16 +817,6 @@ pub(crate) unsafe fn construct(
     // in one pass instead of the art plus four blended gradient quads over it. Absent, the
     // shipped four-quad path draws, which is what makes this an A/B on one binary.
     if !controlled { crate::dev::scenarios::arm_heroground(); }
-    // dev: /tmp/plxnative-glasshz=<presents-per-refresh> moves the shared dynamic-backdrop
-    // cadence for the cost curve in `docs/backdrop-blur-profiling.md` — 1 is a refresh on every
-    // present (60 Hz while the UI presents at 60), 3 is ~20 Hz, 4 is 15 Hz.
-    // ABSENT, nothing here runs and the cadence is exactly the shipped one. It is a profiling
-    // knob, so it also turns on the heartbeat's `snap=` field (refreshes per second), which
-    // is the only way to check the cadence that RAN against the one that was asked for — and
-    // The production Account menu no longer arms or consumes this path: its host is frozen and
-    // its glass snapshot is cached for the whole open lifetime.  The knob remains for explicit
-    // material profiling, not as part of an Account FPS scene.
-    let glass_hz_armed = !controlled && crate::dev::scenarios::arm_glasshz();
     // dev: /tmp/plxnative-nobudget — the frame budget's A/B CONTROL leg (spec §8.1). Read here
     // with the other boot triggers; applied to the one `Budget` below, once the tree exists.
     let nobudget = !controlled && crate::dev::scenarios::nobudget_armed();
@@ -1000,6 +990,9 @@ pub(crate) unsafe fn construct(
         .filter(|v: &f64| *v > 0.0)
         .unwrap_or(22.0);
     let instr = crate::diag::heartbeat::Instruments::new(framedrop_on, framedrop_thresh);
+    if framedrop_on {
+        crate::diag::spans::arm();
+    }
 
     let last_input = initial.as_ref().map_or_else(clock::now, |initial| initial.clock_start);
     let t0 = last_input;
@@ -1299,7 +1292,6 @@ pub(crate) unsafe fn construct(
                 onboard_osc,
                 nav_osc,
                 nav_osc_rk,
-                glass_hz_armed,
                 nobudget,
             },
         },

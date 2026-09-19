@@ -24,8 +24,8 @@ use std::rc::Rc;
 // every block — the text is stable, so memoize the wrapped lines by (text, sz, bold, width, lines).
 // The lines are shared via Rc, so a cache hit is a refcount bump. Main-thread only (immediate-mode
 // draw), like the poster/icon caches.
-/// Wrapped lines plus whether `max_lines` cut the text off — the latter drives the optional
-/// trailing run (a "MORE" affordance only makes sense when there is hidden text).
+/// Wrapped lines and their measured widths plus whether `max_lines` cut the text off — the
+/// latter drives the optional trailing run (a "MORE" affordance needs hidden text).
 ///
 /// Lines are stored **NUL-terminated (`CString`), built once at wrap time**: draw hands
 /// `as_ptr()` straight to the text backend, so a cache hit paints the whole block with ZERO
@@ -34,6 +34,8 @@ use std::rc::Rc;
 /// explicit zero-alloc goal.)
 struct Wrapped {
     lines: Vec<CString>,
+    /// Same indices as `lines`; measured during wrapping, reused by fade and alignment queries.
+    widths: Vec<f32>,
     truncated: bool,
 }
 static mut WRAP_CACHE: Option<HashMap<u64, Rc<Wrapped>>> = None;
@@ -286,14 +288,14 @@ impl<'a> TextView<'a> {
     }
 
     /// pixel width of an arbitrary `&str` — allocates a scratch CString, so WRAP-TIME ONLY
-    /// (the trial strings). The draw path measures cached lines via [`measure_c`](Self::measure_c).
+    /// (the trial strings). Draw reuses wrapped widths and measures only newly clipped lines.
     fn measure(&self, s: &str) -> f32 {
         CString::new(s)
             .ok()
             .map(|c| self.width(&c, self.bold != 0))
             .unwrap_or(0.0)
     }
-    /// pixel width of an already-NUL-terminated cached line — no allocation, draw-path safe.
+    /// Pixel width of a newly clipped, NUL-terminated line — no scratch allocation.
     fn measure_c(&self, c: &CString) -> f32 {
         self.width(c, self.bold != 0)
     }
@@ -398,15 +400,19 @@ impl<'a> TextView<'a> {
         // or a space-less script that yields one "word") — ellipsize any over-wide line so it never
         // paints past the column (Painter has no clip). Also covers the whole-text-is-one-token case
         // that slips past the truncation gate above.
+        let mut widths = Vec::with_capacity(lines.len());
         for (li, ln) in lines.iter_mut().enumerate() {
             let w = if li == 0 {
                 (width - lead_w).max(0.0)
             } else {
                 width
             };
-            if self.measure(ln) > w {
+            let mut measured = self.measure(ln);
+            if measured > w {
                 *ln = self.elide(ln, w);
+                measured = self.measure(ln);
             }
+            widths.push(measured);
         }
         // NUL-terminate once, here — every later frame draws these by pointer (interior NULs
         // can't occur in PMS strings; degrade to an empty line rather than panic if one does)
@@ -414,7 +420,7 @@ impl<'a> TextView<'a> {
             .into_iter()
             .map(|s| CString::new(s).unwrap_or_default())
             .collect();
-        Wrapped { lines, truncated }
+        Wrapped { lines, widths, truncated }
     }
 
     /// the height this occupies when wrapped to `width` (line count × pitch).
@@ -450,9 +456,9 @@ impl<'a> TextView<'a> {
     /// memoised wrap. Zero for an empty block.
     pub fn last_line_w(&self, width: f32) -> f32 {
         self.wrap(width)
-            .lines
+            .widths
             .last()
-            .map(|l| self.measure_c(l))
+            .copied()
             .unwrap_or(0.0)
     }
 
@@ -486,7 +492,7 @@ impl<'a> TextView<'a> {
                 // the far edge would strand the label word across the whole slack of the line
                 // with its own value nowhere near it. Left/centre keep the column edge.
                 let lx = if self.align == HAlign::Right {
-                    let w0 = lines.first().map(|l| self.measure_c(l)).unwrap_or(0.0);
+                    let w0 = wrapped.widths.first().copied().unwrap_or(0.0);
                     frame.x + frame.w - w0 - lead_w
                 } else {
                     frame.x
@@ -507,7 +513,7 @@ impl<'a> TextView<'a> {
             // on a truncated block, e.g. the About card) and the one owned CString on this path;
             // every ordinary line draws the CACHED CString by pointer, zero alloc.
             let clipped: Option<CString> =
-                if is_last && reserve > 0.0 && self.measure_c(ln) + reserve > frame.w {
+                if is_last && reserve > 0.0 && wrapped.widths[i] + reserve > frame.w {
                     let s = ln.to_str().unwrap_or("");
                     CString::new(self.elide(s, (frame.w - reserve).max(0.0)))
                     .ok()
@@ -515,13 +521,14 @@ impl<'a> TextView<'a> {
                     None
                 };
             let tc: &CString = clipped.as_ref().unwrap_or(ln);
+            let text_w = clipped.as_ref().map_or(wrapped.widths[i], |c| self.measure_c(c));
             let row = Rect::new(frame.x + dx, frame.y + i as f32 * lh, frame.w - dx, 0.0);
             // a truncated last line with a fade_last reservation dissolves into the affordance zone
             // instead of colliding with it (only when it actually reaches that far)
             let last_line_dissolves = is_last
                 && wrapped.truncated
                 && self.fade_last > 0.0
-                && self.measure_c(tc) > fade_from;
+                && text_w > fade_from;
             // Does THIS line's own box cross a vertical edge band at all? Most lines of a
             // viewport's prose answer no on both counts and stay on the cheap plain path below —
             // see `edge_fade`'s doc for why that matters, and [`line_overlaps_band`] for the test.
@@ -573,7 +580,7 @@ impl<'a> TextView<'a> {
             if is_last {
                 if let Some((r, rc)) = run {
                     if let Ok(cs) = CString::new(r) {
-                        let rx = frame.x + self.measure_c(tc) + 8.0;
+                        let rx = frame.x + text_w + 8.0;
                         Label::new(cs.as_ptr(), self.sz, rc)
                             .bold()
                             .h(HAlign::Left)
@@ -680,6 +687,39 @@ mod tests {
         assert_eq!(font.0.get(), after_first, "the next frame's fresh view re-measured the paragraph");
         assert_eq!(first.lines, second.lines);
         crate::text::take_measure_fault();
+    }
+
+    #[test]
+    fn cached_wrap_reuses_line_widths_across_queries_and_frames() {
+        use crate::ui::machine::Measure;
+        use std::cell::Cell;
+        let _serial = crate::testlock::serial();
+        struct Counting(Cell<u32>, bool);
+        impl Measure for Counting {
+            fn width(&self, s: &std::ffi::CStr, sz: i32, bold: bool) -> f32 {
+                self.0.set(self.0.get() + 1);
+                s.to_bytes().len() as f32 * sz as f32 * if bold { 0.6 } else { 0.5 }
+            }
+            fn cap_h(&self, sz: i32) -> f32 { sz as f32 }
+            fn line_h(&self, sz: i32) -> f32 { sz as f32 }
+            fn live_font(&self) -> bool { self.1 }
+        }
+        for live in [false, true] {
+            let font = Counting(Cell::new(0), live);
+            let view = || TextView::new("zq-width-memo alpha beta gamma delta epsilon",
+                theme::size::BODY, theme::TEXT_PRIMARY).max_lines(2).with_measure(&font);
+            let first = view();
+            let wrapped = first.wrap(211.0);
+            let expected = wrapped.lines.last().unwrap().as_bytes().len() as f32
+                * theme::size::BODY as f32 * 0.5;
+            let calls = font.0.get();
+            assert!(calls > 0);
+            for _ in 0..3 { assert_eq!(first.last_line_w(211.0), expected); }
+            if live { assert_eq!(view().last_line_w(211.0), expected); }
+            assert_eq!(font.0.get(), calls, "cached line widths must not be measured again");
+            first.last_line_w(311.0);
+            assert!(font.0.get() > calls, "a different wrap width must recompute");
+        }
     }
 
     #[test]

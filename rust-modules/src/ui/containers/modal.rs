@@ -78,6 +78,20 @@ pub struct PopoverMotion {
     pub appear: f32,
     vel: f32,
     target: f32,
+    /// **The frame a surface is presented on draws it at appear 0**, and the spring starts on the
+    /// next. That frame is the one that renders the whole host into its snapshot
+    /// (`popover::host::page_pass`) — a full page render on top of the frame's own composite, the
+    /// heaviest GPU frame a modal has — and a dim or a panel ramped onto it as well pushed it past a
+    /// vsync on every open: 13.6 M GPU cycles against Home's 9.2 M, and the frame after it waited
+    /// 22–37 ms for a buffer (television, 2026-09-19). Held, the open frame costs a page render
+    /// (and the field reduction queued with it) and nothing the panel owns; the hold then lasts
+    /// until that capture has left the GPU ([`PopoverMotion::tick_gated`]), and the ramp is the
+    /// same curve from there.
+    hold: bool,
+    /// This frame's tick was the held one. Not `settled` until a real step has run, so a surface
+    /// dismissed on its held frame still passes through `Closing` for a frame — the phase every
+    /// dismissal is observed by — rather than being pruned before anything saw it go.
+    holding: bool,
 }
 
 /// The appear spring's stiffness (`popover.rs`'s number).
@@ -89,15 +103,34 @@ impl PopoverMotion {
             appear: v,
             vel: 0.0,
             target: v,
+            hold: false,
+            holding: false,
         }
+    }
+    /// Pin the spring where it is for the next [`tick`](Self::tick) — see [`hold`](Self::hold).
+    pub fn hold_one_frame(&mut self) {
+        self.hold = true;
     }
     pub fn to(&mut self, target: f32) {
         self.target = target;
     }
     pub fn settled(&self) -> bool {
-        (self.appear - self.target).abs() < 0.002 && self.vel.abs() < 0.02
+        !self.holding && (self.appear - self.target).abs() < 0.002 && self.vel.abs() < 0.02
     }
     pub fn tick(&mut self, t: Tick, present: &mut PresentHandle<'_>) {
+        self.tick_gated(t, present, crate::gfx::snapshot_pending());
+    }
+    /// [`tick`](Self::tick) with the host snapshot's GPU state passed in: a HELD surface stays
+    /// held while the snapshot its hold frame rendered is still in flight, because those frames
+    /// are not presented (`gfx::snapshot_frame_begin`) and a ramp stepped through them would open
+    /// with a jump. A surface already ramping is never re-held.
+    pub fn tick_gated(&mut self, t: Tick, present: &mut PresentHandle<'_>, snapshot_in_flight: bool) {
+        self.holding = std::mem::take(&mut self.hold) || (self.holding && snapshot_in_flight);
+        if self.holding {
+            // Still moving: the next frame must present and take the first real step.
+            present.note(super::super::present::PresentEvent::Motion);
+            return;
+        }
         motion::spring(&mut self.appear, &mut self.vel, self.target, APPEAR_K, t, present);
         if self.settled() {
             let changed = self.appear != self.target || self.vel != 0.0;
@@ -252,15 +285,23 @@ pub(crate) fn latch_step(
 
 /// **Where a frame's dims meet the renderer** — the one seam between [`ModalStack::draw_scrims`]'
 /// ordering and GL, so that ordering is host-testable. Production is [`GlDims`]; a test hands in a
-/// fake framebuffer and watches whether the latch ever reads a dim.
+/// fake framebuffer and watches whether the latch ever reads a dim, and when it reads it.
 pub(crate) trait DimSink {
     /// Is this a video-plane frame (`gfx::video_plane_frame`)?
     fn video_plane(&self) -> bool;
     /// `popover::host::page_epoch`.
     fn page_epoch(&self) -> u32;
-    /// `gfx::sample_underlay_field`: the framebuffer as it stands, or `None` when it has no honest
-    /// answer this frame.
-    fn sample(&mut self) -> Option<[[f32; 3]; crate::gfx::FIELD_CELLS]>;
+    /// Did THIS frame capture the host page (`gfx::snapshot_captured_this_frame`)? Its GPU work
+    /// is waited out before the next present, so a reduction queued now costs no presented frame.
+    fn captured(&self) -> bool;
+    /// `gfx::field_kick`: queue the reduction of the page as it stands NOW — before any dim is on
+    /// it — or `None` when it has no honest answer this frame.
+    fn kick(&mut self) -> Option<crate::gfx::FieldTicket>;
+    /// `gfx::field_collect`: the reduction `kick` queued, once the GPU has had a frame for it.
+    fn collect(&mut self, t: crate::gfx::FieldTicket) -> crate::gfx::FieldRead;
+    /// A read is (or is no longer) in flight: keep the loop turning for it, and keep the host's
+    /// ground stage — whose quad bakes the dim in — from being taken before it lands.
+    fn in_flight(&mut self, pending: bool);
     /// Paint one surface's dim through `field` at `alpha`.
     fn dim(&mut self, field: &crate::ui::underlay::UnderlayField, alpha: f32);
 }
@@ -275,16 +316,34 @@ impl DimSink for GlDims {
     fn page_epoch(&self) -> u32 {
         crate::ui::popover::host::page_epoch()
     }
-    fn sample(&mut self) -> Option<[[f32; 3]; crate::gfx::FIELD_CELLS]> {
+    fn captured(&self) -> bool {
+        crate::gfx::snapshot_captured_this_frame()
+    }
+    fn kick(&mut self) -> Option<crate::gfx::FieldTicket> {
         // A host test links GL but never creates a context — `underlay::upload`'s reason. A test
         // that wants a sample drives the seam with its own `DimSink`.
         #[cfg(not(test))]
         {
-            crate::gfx::sample_underlay_field()
+            // Reduce the host snapshot itself when it is the undimmed page — it was taken at this
+            // same instant, so the chain's own full-screen copy would duplicate it.
+            crate::gfx::field_kick(crate::ui::popover::host::page_tex())
         }
         #[cfg(test)]
         {
             None
+        }
+    }
+    fn collect(&mut self, t: crate::gfx::FieldTicket) -> crate::gfx::FieldRead {
+        // No context-free guard needed: with no chain built (a host test never builds one) this
+        // answers `Lost` before touching GL.
+        crate::gfx::field_collect(t)
+    }
+    fn in_flight(&mut self, pending: bool) {
+        crate::ui::popover::host::defer_ground(pending);
+        if pending {
+            // A frame for the read to land in, without claiming the page changed — which would
+            // re-capture the host and restart the read it is waiting on.
+            crate::ui::idle::wake();
         }
     }
     fn dim(&mut self, field: &crate::ui::underlay::UnderlayField, alpha: f32) {
@@ -312,7 +371,7 @@ impl DimSink for GlDims {
 /// served from the `Held::Page` snapshot, which is taken at that same instant). The one frame state
 /// in which the framebuffer could carry a dim at that point — `popover::host`'s `Held::Ground`
 /// stage, whose quad bakes the scrim in — arms `PAGE_FROZEN` through that same `live()`, and
-/// `gfx::sample_underlay_field` refuses a frozen page; so does a blur source pass. A refusal keeps
+/// `gfx::field_kick` refuses a frozen page; so does a blur source pass. A refusal keeps
 /// the field it had (`UnderlayField::latch_sampled` is only called with a real answer).
 ///
 /// **When it re-latches**: whenever `popover::host::page_epoch` moves, i.e. whenever the host
@@ -322,6 +381,8 @@ impl DimSink for GlDims {
 pub struct ModalUnderlay {
     field: crate::ui::underlay::UnderlayField,
     held: Latched,
+    /// A page read queued and not yet landed: the epoch it reads, and its ticket.
+    pending: Option<(u32, crate::gfx::FieldTicket)>,
 }
 
 impl ModalUnderlay {
@@ -329,6 +390,7 @@ impl ModalUnderlay {
         Self {
             field: crate::ui::underlay::UnderlayField::new(),
             held: Latched::Nothing,
+            pending: None,
         }
     }
 
@@ -341,18 +403,48 @@ impl ModalUnderlay {
     }
 
     /// Bring the field up to date for `source` — the head of every frame's dims.
+    ///
+    /// **A page read lands one drawn frame after it is asked for** (`gfx::FIELD_READ_LAG_SWAPS`).
+    /// The reduction is queued on the frame the host snapshot is taken ([`DimSink::kick`], before
+    /// any dim, which is the property this whole type rests on) and read back on the next
+    /// ([`DimSink::collect`]). Read on the frame that queued it, the 480-byte `glReadPixels`
+    /// waited for the GPU to draw everything submitted so far — 26–37 ms of every modal's open
+    /// frame on the television (2026-09-19), the largest single cost in it. A frame later it
+    /// still waits 11–25 ms (the GPU runs more than a frame behind); two frames later it is free,
+    /// but the collecting frame then measured WORSE overall — see the constant's doc.
+    ///
+    /// Meanwhile the field keeps what it had: the previous snapshot's light when the page under a
+    /// standing stack changed (the same page, re-captured, on every dismissal), and — while a
+    /// stack first opens — nothing, so those frames' dim is the flat ink rather than
+    /// `field * TINT`, a difference of `alpha * 0.35 * field` per channel. On the kick frame the
+    /// dim alpha is 0 for the account menu, the item menu and Settings, and 0.035 for the About
+    /// panel (simulator, 2026-09-19): under two 8-bit codes on the brightest cell of the measured
+    /// Home (field 0.61), for one frame.
     pub(crate) fn sync(&mut self, source: Option<UnderlaySource>, sink: &mut dyn DimSink) {
+        if let Some((epoch, ticket)) = self.pending {
+            match sink.collect(ticket) {
+                crate::gfx::FieldRead::Ready(raw) => {
+                    self.field
+                        .latch_sampled(&raw, crate::ui::underlay::Grade::Dim);
+                    self.held = Latched::Page(epoch);
+                    self.pending = None;
+                }
+                crate::gfx::FieldRead::Pending => {}
+                // The targets were reused (another reader ran the chain): ask again below.
+                crate::gfx::FieldRead::Lost => self.pending = None,
+            }
+        }
         let epoch = sink.page_epoch();
         match latch_step(source, self.held, epoch, sink.video_plane()) {
             LatchStep::Keep => {}
             LatchStep::SamplePage => {
-                if let Some(raw) = sink.sample() {
-                    self.field
-                        .latch_sampled(&raw, crate::ui::underlay::Grade::Dim);
-                    self.held = Latched::Page(epoch);
+                if self.pending.is_none_or(|(e, _)| e != epoch) {
+                    // A refusal keeps the field it had, and the read stays owed.
+                    self.pending = sink.kick().map(|t| (epoch, t));
                 }
             }
             LatchStep::Corners(c) => {
+                self.pending = None;
                 self.field.reset();
                 self.field
                     .latch_from_corners(c, crate::ui::underlay::Grade::Dim);
@@ -360,11 +452,13 @@ impl ModalUnderlay {
             }
             LatchStep::Reset => self.reset(),
         }
+        sink.in_flight(self.pending.is_some());
     }
 
     pub(crate) fn reset(&mut self) {
         self.field.reset();
         self.held = Latched::Nothing;
+        self.pending = None;
     }
 }
 
@@ -410,7 +504,9 @@ impl<H: Host> ModalStack<H> {
             motion: PopoverMotion::at(0.0),
             ground_ready: false,
         });
-        self.surfaces.last_mut().unwrap().motion.to(1.0);
+        let motion = &mut self.surfaces.last_mut().unwrap().motion;
+        motion.to(1.0);
+        motion.hold_one_frame();
         let out = vec![
             Life::Mount(id),
             Life::Ev(
@@ -625,6 +721,15 @@ impl<H: Host> ModalStack<H> {
     /// bare `Scrim::lift` fn cannot borrow the rig that owns those values, so they cross as this
     /// call's own argument instead of through a static.
     pub fn draw_scrims(&mut self, nav_page_alpha: f32, read: crate::ui::screen::ScrimLiftRead<'_>) {
+        if crate::gfx::blur_source_pass() {
+            // Declaration/source traversals consume the published field. Only the visible
+            // traversal may advance its capture/readback lifecycle or the held-ground ledger.
+            for (_, alpha, lift) in self.scrims(nav_page_alpha) {
+                GlDims.dim(self.underlay.field(), alpha);
+                (lift)(read);
+            }
+            return;
+        }
         self.draw_scrims_on(nav_page_alpha, read, &mut GlDims);
     }
 
@@ -638,9 +743,19 @@ impl<H: Host> ModalStack<H> {
         read: crate::ui::screen::ScrimLiftRead<'_>,
         sink: &mut dyn DimSink,
     ) {
+        let dims = self.scrims(nav_page_alpha);
         let source = self.underlay_source();
-        self.underlay.sync(source, sink);
-        for (_, a, lift) in self.scrims(nav_page_alpha) {
+        // The page is read on the frame that CAPTURED it, or else the first frame a dim is seen.
+        // The capture frame renders the whole host into its snapshot and is the heaviest GPU frame
+        // a modal has — but nothing presents after it until that work has left the GPU
+        // (`gfx::snapshot_frame_begin`), so the reduction queued alongside it is waited out with it
+        // and costs no presented frame. Queued a frame later instead, on the first ramp frame, it
+        // was the backlog the frame after that paid: 20–24 ms (television, 2026-09-19). A held
+        // surface on a frame that captured nothing still queues nothing.
+        if !dims.is_empty() || source != Some(UnderlaySource::Page) || sink.captured() {
+            self.underlay.sync(source, sink);
+        }
+        for (_, a, lift) in dims {
             sink.dim(self.underlay.field(), a);
             (lift)(read);
         }
@@ -648,8 +763,8 @@ impl<H: Host> ModalStack<H> {
 
     /// Where the stack's field inherits from: the BOTTOM surface that declares a dim — it is the
     /// one whose dim lies directly on the host, and every dim above it lies over the same page.
-    /// `None` when no surface declares one. Asked whatever the surface's appear, so the field is
-    /// latched on the very frame a surface is presented, while its dim is still at 0.
+    /// `None` when no surface declares one. Asked whatever the surface's appear; the READ waits for
+    /// the first frame a dim is painted (`draw_scrims_on`).
     fn underlay_source(&self) -> Option<UnderlaySource> {
         self.surfaces
             .iter()
@@ -736,6 +851,78 @@ mod hide_tests {
             let mut ph = PresentHandle::of(&mut present);
             ms.tick(tick(from + i * 16), &mut ph);
         }
+    }
+
+    /// **The first tick after `present` holds the spring at 0, and asks for the next frame.** The
+    /// frame that renders the host into its snapshot draws no dim and no panel; the ramp starts on
+    /// the frame after, from 0, along the same curve.
+    #[test]
+    fn a_presented_surface_holds_at_zero_for_one_frame_then_ramps() {
+        let mut ms: ModalStack<FixtureHost> = ModalStack::new();
+        let mut ids = Minter::default();
+        let (id, _) = ms.present(&mut ids, FixtureArg::Modal, Style::Sheet);
+        let mut present = Present::new();
+        {
+            let mut ph = PresentHandle::of(&mut present);
+            ms.tick(tick(16), &mut ph);
+        }
+        assert_eq!(ms.surface(id).unwrap().motion.appear, 0.0, "held on the capture frame");
+        assert_eq!(ms.surface(id).unwrap().phase, Phase::Opening);
+        assert!(present.take(16), "…and the next frame is asked for, or the ramp never starts");
+        {
+            let mut ph = PresentHandle::of(&mut present);
+            ms.tick(tick(32), &mut ph);
+        }
+        let a = ms.surface(id).unwrap().motion.appear;
+        assert!(a > 0.0 && a < 0.2, "the ramp begins on the frame after, from 0: {a}");
+
+        // Dismissed ON the held frame, a surface still passes through `Closing` for that frame —
+        // prune leaves it — and retires on the next, with nothing ever ramped.
+        let (id, _) = ms.present(&mut ids, FixtureArg::Modal, Style::Sheet);
+        {
+            let mut ph = PresentHandle::of(&mut present);
+            ms.tick(tick(48), &mut ph);
+        }
+        assert!(ms.dismiss(id));
+        assert!(ms.prune().is_empty(), "Closing is observable on the held frame");
+        assert_eq!(ms.surface(id).unwrap().phase, Phase::Closing);
+        {
+            let mut ph = PresentHandle::of(&mut present);
+            ms.tick(tick(64), &mut ph);
+        }
+        assert_eq!(ms.surface(id).unwrap().motion.appear, 0.0);
+        let life = ms.prune();
+        assert_eq!(life.len(), 2, "…and it retires on the next frame");
+    }
+
+    /// **The hold lasts until the host snapshot has left the GPU, not one frame.** The frame after
+    /// the capture is not presented while the snapshot render is still in flight (`app::run`'s
+    /// present gate, `gfx::snapshot_frame_begin`), so a spring stepped on those frames would start
+    /// its ramp off-screen and open with a jump. Only a HELD surface stays held: one already ramping
+    /// when an unrelated recapture lands keeps its clock.
+    #[test]
+    fn a_held_surface_stays_at_zero_while_its_snapshot_is_in_flight() {
+        let mut m = PopoverMotion::at(0.0);
+        m.to(1.0);
+        m.hold_one_frame();
+        let mut present = Present::new();
+        for (i, in_flight) in [false, true, true].into_iter().enumerate() {
+            let mut ph = PresentHandle::of(&mut present);
+            m.tick_gated(tick(16 * (i as u32 + 1)), &mut ph, in_flight);
+            assert_eq!(m.appear, 0.0, "frame {i}: held while the capture is in flight");
+            assert!(!m.settled(), "frame {i}: a held surface is not settled");
+        }
+        {
+            let mut ph = PresentHandle::of(&mut present);
+            m.tick_gated(tick(64), &mut ph, false);
+        }
+        let a = m.appear;
+        assert!(a > 0.0 && a < 0.2, "the ramp starts from 0 once it has landed: {a}");
+        {
+            let mut ph = PresentHandle::of(&mut present);
+            m.tick_gated(tick(80), &mut ph, true);
+        }
+        assert!(m.appear > a, "a ramping surface is not re-held by a later capture");
     }
 
     /// `hide` retires on the same frame — no spring runs at all — while `dismiss` over the same

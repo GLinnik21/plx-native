@@ -186,6 +186,7 @@ fn random_uuid_v4() -> Option<String> {
 // of a caller either way, because `warnings = "deny"` turns "compiled but unused" into a build
 // error, and that is the check doing the work here.
 pub(crate) mod heartbeat; // the frame's own instruments: the eight phase stamps, FRAMEDROP, worstframe=/worstprep=
+pub(crate) mod spans; // named sub-spans of one frame's draw, printed on its FRAMEDROP line
 #[cfg(feature = "lab-diagnostics")]
 pub(crate) mod ring;
 #[cfg(feature = "lab-diagnostics")]

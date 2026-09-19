@@ -4,7 +4,7 @@
 //! main-thread statics. link_program/use_prog are also used by text.rs (crate path).
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uint, c_void};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
 use crate::ui::overdraw::{gate, masked, note_px, set_clip, Class};
@@ -59,8 +59,9 @@ pub(crate) use glsl;
 /// wash takes [`DITHER_LSB`] on every draw: it is always broad, and since 2026-09-19 nothing may
 /// switch its noise off).
 ///
-/// **Only the three SLOW-FIELD programs are built with it** — `fs_ambient`, `fs_field` and
-/// `fs_glass`, the ones whose ramp is a blur or a full-screen wash. `fs_src` and `fs_shadow`, the
+/// **Only the SLOW-FIELD programs are built with it** — `fs_ambient`, `fs_field` (and its panel
+/// twin `fs_field_panel`) and `fs_glass`, the ones whose ramp is a blur, a field or a full-screen
+/// wash. `fs_src` and `fs_shadow`, the
 /// per-rect programs every card, chip, scrim and row highlight goes through, are deliberately plain:
 /// the prelude is not free on Midgard (then behind a uniform branch, which is itself not free —
 /// `dither.glsl` cost rule 1), and carrying it on those two was measured
@@ -122,6 +123,7 @@ const VS_IMG_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_img.vert");
 const VS_SRC_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_src.vert");
 const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
 const FS_FIELD: &CStr = glsl_dithered!("shaders/fs_field.frag");
+const FS_FIELD_PANEL: &CStr = glsl_dithered!("shaders/fs_field_panel.frag");
 const FS_HERO: &CStr = glsl!("shaders/fs_hero.frag");
 const FS_BLUR: &CStr = glsl!("shaders/fs_blur.frag");
 const FS_GLASS: &CStr = glsl_dithered!("shaders/fs_glass.frag");
@@ -221,6 +223,7 @@ extern "C" {
     fn glTexParameteri(target: c_uint, pname: c_uint, param: c_int);
     // UI self-capture (the "cap_*" section at the bottom of this file)
     fn glGenFramebuffers(n: c_int, ids: *mut c_uint);
+    fn glDeleteFramebuffers(n: c_int, ids: *const c_uint);
     fn glBindFramebuffer(target: c_uint, framebuffer: c_uint);
     fn glFramebufferTexture2D(
         target: c_uint,
@@ -292,6 +295,8 @@ const GL_SCISSOR_TEST: c_uint = 0x0C11;
 static mut CLIP_TARGET: Option<(c_int, c_int, f32, c_int, c_int)> = None;
 
 pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
+    crate::ui::frame::backdrop::clip(Some(crate::ui::Rect::new(x,y,w,h)));
+    if crate::ui::frame::backdrop::discovering() { return; }
     let x0 = x.max(0.0);
     let y_top = y.max(0.0);
     let x1 = (x + w).min(SCR_W);
@@ -348,6 +353,8 @@ pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
 /// bare `glDisable` in the middle of the scene draw would let the rest of the page spill across
 /// the tap targets' other content.
 pub(crate) fn clip_clear() {
+    crate::ui::frame::backdrop::clip(None);
+    if crate::ui::frame::backdrop::discovering() { return; }
     set_clip(None);
     unsafe {
         match CLIP_TARGET {
@@ -372,18 +379,45 @@ pub(crate) fn frame_clear_through() {
     frame_clear_alpha(0.0, 0.0, 0.0, 0.0);
 }
 
+thread_local! {
+    static SUPPRESS_FRAME_CLEAR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A text-recording scene may call raw frame clears outside its recording Painter.
+/// Keep those calls off the visible framebuffer; restore even if the screen unwinds.
+pub(crate) fn without_frame_clear<R>(draw: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            SUPPRESS_FRAME_CLEAR.with(|v| v.set(self.0));
+        }
+    }
+    let _restore = Restore(SUPPRESS_FRAME_CLEAR.with(|v| v.replace(true)));
+    draw()
+}
+
+fn frame_clear_allowed() -> bool {
+    !page_frozen() && !crate::ui::frame::backdrop::suppressed() && !SUPPRESS_FRAME_CLEAR.with(|v| v.get())
+}
+
 fn frame_clear_alpha(r: f32, g: f32, b: f32, a: f32) {
+    if crate::ui::frame::backdrop::discovering() {
+        if SUPPRESS_FRAME_CLEAR.with(|v|v.get()) { return; }
+        crate::ui::frame::backdrop::paint(crate::ui::frame::backdrop::canvas(),
+            vec![0,r.to_bits() as u64,g.to_bits() as u64,b.to_bits() as u64,a.to_bits() as u64]);
+        return;
+    }
     // A frozen page must not clear: the cached host quad is already on the framebuffer and this is
     // the FIRST thing every page draws, so an ungated clear would wipe the snapshot and leave the
     // popover sitting on flat grey. See [`PAGE_FROZEN`] — this is the one refusal that is not a
     // quad and so cannot ride on [`culled`].
-    if page_frozen() {
+    if !frame_clear_allowed() {
         return;
     }
-    unsafe {
+    crate::diag::spans::span("clear", || unsafe {
         glClearColor(r, g, b, a);
         glClear(GL_COLOR_BUFFER_BIT);
-    }
+    });
 }
 
 /// Block until the GPU has finished all queued commands. Used ONLY as a completion boundary and
@@ -558,10 +592,22 @@ static mut IL_SHCOL: c_int = 0;
 /// here has: the field is a magnification of a 60x32 texture over up to 2.07M fragments, and the
 /// image program's SDF radius, rim and penumbra branches are all disabled on every one of them.
 /// It takes the program slot `fs_modal_ground.frag` used to hold, so the dithered-program count is
-/// still three — see [`glsl_dithered`].
+/// still three — see [`glsl_dithered`]. (Four since the panel twin below.)
 static mut UPROG: c_uint = 0;
 static mut UL_RECT: c_int = 0;
 static mut UL_TINT: c_int = 0;
+/// **The underlay field as a PANEL'S MATERIAL** (`shaders/fs_field_panel.frag` over
+/// `vs_src.vert`): the same 60x32 texture as [`UPROG`], sampled at the panel's own window into it
+/// and cut to its rounded shape. Its own program so that neither the sub-rect nor the SDF costs the
+/// full-screen dims drawn through [`UPROG`] a single instruction — see the shader's header. 0 when
+/// the link failed; [`draw_field_panel`] then reports `false` and the caller draws the flat sheet.
+static mut PPROG: c_uint = 0;
+static mut FP_RECT: c_int = 0;
+static mut FP_TINT: c_int = 0;
+static mut FP_UVRECT: c_int = 0;
+static mut FP_SIZE: c_int = 0;
+static mut FP_RADIUS: c_int = 0;
+static mut FP_DITHER: c_int = 0;
 // ---- hero-ground program: the backdrop art with both scrim fields folded into it (fs_hero.frag).
 // Its own program because it is the SAME quad the art already draws, only carrying two more
 // closed-form fields — nothing else in the app wants them, and the card composite must not pay for
@@ -915,6 +961,25 @@ pub(crate) fn init_gl() {
             glUniform2f(glGetUniformLocation(UPROG, c"u_screen".as_ptr()), SCR_W, SCR_H);
             glUniform1i(glGetUniformLocation(UPROG, c"u_tex".as_ptr()), 0);
             UL_DITHER = dither_uniforms(UPROG);
+        }
+
+        // The same field as a popover's material — `draw_field_panel`. DITHERED, same contract as
+        // `UPROG` above: `fs_field_panel.frag` is built with `glsl_dithered!`, so it must link
+        // against the `PLX_DITHER_NC` vertex variant.
+        PPROG = link_program(VS_SRC_DITHERED.as_ptr(), FS_FIELD_PANEL.as_ptr()).unwrap_or_else(|| {
+            log("field-panel prog link failed — popover panels fall back to the flat sheet");
+            0
+        });
+        if PPROG != 0 {
+            FP_RECT = glGetUniformLocation(PPROG, c"u_rect".as_ptr());
+            FP_TINT = glGetUniformLocation(PPROG, c"u_tint".as_ptr());
+            FP_UVRECT = glGetUniformLocation(PPROG, c"u_uvrect".as_ptr());
+            FP_SIZE = glGetUniformLocation(PPROG, c"u_size".as_ptr());
+            FP_RADIUS = glGetUniformLocation(PPROG, c"u_radius".as_ptr());
+            use_prog(PPROG);
+            glUniform2f(glGetUniformLocation(PPROG, c"u_screen".as_ptr()), SCR_W, SCR_H);
+            glUniform1i(glGetUniformLocation(PPROG, c"u_tex".as_ptr()), 0);
+            FP_DITHER = dither_uniforms(PPROG);
         }
 
         // Hoist the compile-time-constant uniforms: uniforms are per-program state, so each
@@ -1685,6 +1750,7 @@ pub(crate) fn upload_rgba(prev: c_uint, w: c_int, h: c_int, pixels: *const u8) -
         if tex == 0 {
             glGenTextures(1, &mut tex);
         }
+        tex_ledger::specified(tex, w, h);
         glBindTexture(GL_TEXTURE_2D, tex);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
         glTexImage2D(
@@ -1704,6 +1770,116 @@ pub(crate) fn upload_rgba(prev: c_uint, w: c_int, h: c_int, pixels: *const u8) -
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         tex
     }
+}
+
+/// **Every texture [`upload_rgba`] specifies, counted until [`delete_tex`] frees it** — the live
+/// count and the bytes the driver holds for them (RGBA8, level 0). `VmRSS` on this driver
+/// includes GPU memory, so a stress bench that watches RSS grow cannot tell texture churn from a
+/// heap leak on its own; this ledger is the half it cannot see, and the stress benches print it
+/// beside `rss_kb=` on every cycle line. Main-render-thread only, like every GL call here.
+pub(crate) mod tex_ledger {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::os::raw::{c_int, c_uint};
+
+    thread_local! {
+        static LIVE: RefCell<HashMap<c_uint, (u64,u64)>> = RefCell::new(HashMap::new());
+        static REVISION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// `tex` was (re)specified at `w`×`h`: a re-spec of a known name replaces its size.
+    pub(crate) fn specified(tex: c_uint, w: c_int, h: c_int) {
+        let bytes = w.max(0) as u64 * h.max(0) as u64 * 4;
+        LIVE.with(|m| {
+            let revision=REVISION.with(|n| { let next=n.get().wrapping_add(1); n.set(next); next });
+            m.borrow_mut().insert(tex, (bytes,revision));
+        });
+    }
+
+    /// `tex` was deleted. A name this ledger never saw is ignored.
+    pub(crate) fn deleted(tex: c_uint) {
+        LIVE.with(|m| {
+            m.borrow_mut().remove(&tex);
+        });
+    }
+
+    pub(crate) fn revision(tex: c_uint) -> u64 { LIVE.with(|m| m.borrow().get(&tex).map_or(0, |v|v.1)) }
+
+    /// `(live textures, live bytes)`.
+    pub(crate) fn totals() -> (usize, u64) {
+        LIVE.with(|m| {
+            let m = m.borrow();
+            (m.len(), m.values().map(|v|v.0).sum())
+        })
+    }
+}
+
+/// **A frame that snapshots the page is not followed by a present until the GPU has finished it.**
+///
+/// A [`FrameCache`] capture puts a whole page render on a frame that also composites the page
+/// and whatever stands over it — the heaviest GPU frame a modal has, and more than a vsync of GPU
+/// on the television. The CPU runs a frame ahead of the GPU, so the capture frame itself returns
+/// quickly and its cost lands on the NEXT presented frame, which waits a whole extra vsync for a
+/// buffer (22–37 ms, once per modal open, `fps:modal-100`, 2026-09-19). The GPU cannot do the
+/// work faster; what can change is who waits. A fence goes in after the capture frame's swap
+/// ([`snapshot_frame_end`]) and the frames that follow are simply not presented until it
+/// signals ([`snapshot_frame_begin`], `app::run`'s present gate) — the panel still shows the
+/// capture frame, which is the unchanged page, and the modal's appear spring stays held at 0
+/// (`PopoverMotion`), so its ramp starts on a GPU with nothing queued rather than behind a
+/// page render.
+///
+/// Bounded by [`SNAPSHOT_DEFER_MAX`] frames, so a fence that never signals costs a few frames
+/// once and never a frozen screen; with no fences (the simulator) nothing is ever deferred.
+static SNAPSHOT_THIS_FRAME: AtomicBool = AtomicBool::new(false);
+/// The capture frame's fence. Main render thread only, like the chain.
+static mut SNAPSHOT_FENCE: Option<crate::egl::fence::Fence> = None;
+/// Consecutive frames deferred for the fence so far.
+static SNAPSHOT_DEFERRED: AtomicU32 = AtomicU32::new(0);
+/// This iteration's answer, latched once by [`snapshot_frame_begin`] so the present gate and the
+/// appear spring see the same one.
+static SNAPSHOT_PENDING: AtomicBool = AtomicBool::new(false);
+/// Frames a capture may defer presents for — about 67 ms, several times the capture's own GPU cost.
+pub(crate) const SNAPSHOT_DEFER_MAX: u32 = 4;
+
+/// [`snapshot_frame_begin`]'s decision: `fence` is `None` with nothing to wait for, else whether
+/// it has signalled; `deferred` the frames already deferred for it.
+pub(crate) fn snapshot_defers(fence: Option<bool>, deferred: u32) -> bool {
+    fence == Some(false) && deferred < SNAPSHOT_DEFER_MAX
+}
+
+/// Close a presented frame: a frame that captured the page leaves a fence behind it.
+pub(crate) fn snapshot_frame_end() {
+    if SNAPSHOT_THIS_FRAME.swap(false, Ordering::Relaxed) {
+        // SAFETY: main render thread, like every GL call here.
+        unsafe { SNAPSHOT_FENCE = crate::egl::fence::Fence::insert() };
+        SNAPSHOT_DEFERRED.store(0, Ordering::Relaxed);
+    }
+}
+
+/// Start an iteration: is a capture still in flight on the GPU? Latched for
+/// [`snapshot_pending`]; a signalled fence (or the cap) drops it.
+pub(crate) fn snapshot_frame_begin() {
+    // SAFETY: main render thread.
+    let fence = unsafe { (*std::ptr::addr_of!(SNAPSHOT_FENCE)).as_ref().map(|f| f.signaled()) };
+    let n = SNAPSHOT_DEFERRED.load(Ordering::Relaxed);
+    let defer = snapshot_defers(fence, n);
+    if defer {
+        SNAPSHOT_DEFERRED.store(n + 1, Ordering::Relaxed);
+    } else if fence.is_some() {
+        unsafe { SNAPSHOT_FENCE = None };
+    }
+    SNAPSHOT_PENDING.store(defer, Ordering::Relaxed);
+}
+
+/// Has this frame captured the page so far? Its GPU work will be waited out before the next
+/// present, which makes this the frame to queue anything else that reads the capture.
+pub(crate) fn snapshot_captured_this_frame() -> bool {
+    SNAPSHOT_THIS_FRAME.load(Ordering::Relaxed)
+}
+
+/// Is this iteration waiting for a page capture to leave the GPU? See [`SNAPSHOT_THIS_FRAME`].
+pub(crate) fn snapshot_pending() -> bool {
+    SNAPSHOT_PENDING.load(Ordering::Relaxed)
 }
 
 /// Force a freshly uploaded texture RESIDENT now, on the upload's own frame, by sampling it once.
@@ -1745,6 +1921,7 @@ pub(crate) fn warm_tex(tex: c_uint) {
 /// guard resurrects the crash the moment a host test calls `delete_tex` with a nonzero id again.
 pub(crate) fn delete_tex(tex: c_uint) {
     if tex != 0 {
+        tex_ledger::deleted(tex);
         #[cfg(not(test))]
         unsafe {
             glDeleteTextures(1, &tex)
@@ -1885,7 +2062,7 @@ pub(crate) fn draw_tex(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32,
     );
 }
 
-/// One full logical-screen snapshot reused as the host below a modal surface.
+/// One full logical-screen snapshot shared by modal hosts and frozen page transitions.
 ///
 /// This is deliberately a renderer primitive rather than an Account-menu special case. A modal
 /// may freeze a page's *state* and still accidentally redraw its hero, shelves and text on every
@@ -1903,6 +2080,12 @@ pub(crate) struct FrameCache {
     valid: bool,
     checked: bool,
     off: bool,
+    /// The framebuffer object over [`tex`](Self::tex) that [`render_into`](Self::render_into)
+    /// draws the page through; 0 until first asked for, and dropped with the texture it names.
+    fbo: c_uint,
+    /// The FBO came back incomplete once: [`render_into`](Self::render_into) declines from then
+    /// on and the capture falls back to [`capture`](Self::capture)'s copy.
+    fbo_off: bool,
 }
 
 #[cfg_attr(test, allow(dead_code))]
@@ -1915,11 +2098,26 @@ impl FrameCache {
             valid: false,
             checked: false,
             off: false,
+            fbo: 0,
+            fbo_off: false,
         }
+    }
+
+    /// Rendering needs an initialized image shader and a usable FBO backend. Host logic tests
+    /// construct dispatchers without a GL context; they must take the live fallback.
+    pub(crate) fn render_available(&self) -> bool {
+        let (x, y, w, h) = crate::surface::viewport();
+        unsafe { IPROG != 0 && !self.off && !self.fbo_off && x == 0 && y == 0 && w > 0 && h > 0 }
     }
 
     pub(crate) fn invalidate(&mut self) {
         self.valid = false;
+    }
+
+    /// The captured texture, while it holds a capture: the drawable's viewport as
+    /// `glCopyTexSubImage2D` left it (bottom-up, full size).
+    pub(crate) fn tex(&self) -> Option<c_uint> {
+        (self.valid && self.tex != 0).then_some(self.tex)
     }
 
     /// Copy the authored viewport from framebuffer 0. Call after the host page and before the
@@ -1936,15 +2134,9 @@ impl FrameCache {
             return false;
         }
         unsafe {
-            if self.tex == 0 || self.w != vw || self.h != vh {
-                delete_tex(self.tex);
-                self.tex = cap_tex(vw, vh);
-                self.w = vw;
-                self.h = vh;
-                self.checked = false;
-            }
+            self.ensure_tex(vw, vh);
             glBindTexture(GL_TEXTURE_2D, self.tex);
-            glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vx, vy, vw, vh);
+            crate::diag::spans::span("cap", || glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, vx, vy, vw, vh));
             if !self.checked {
                 self.checked = true;
                 let e = glGetError();
@@ -1959,7 +2151,96 @@ impl FrameCache {
             }
         }
         self.valid = true;
+        SNAPSHOT_THIS_FRAME.store(true, Ordering::Relaxed);
         true
+    }
+
+    /// A texture of the viewport's size, re-made (and its FBO with it) when the viewport moved.
+    unsafe fn ensure_tex(&mut self, vw: c_int, vh: c_int) {
+        if self.tex == 0 || self.w != vw || self.h != vh {
+            if self.fbo != 0 {
+                glDeleteFramebuffers(1, &self.fbo);
+                self.fbo = 0;
+            }
+            delete_tex(self.tex);
+            self.tex = cap_tex(vw, vh);
+            self.w = vw;
+            self.h = vh;
+            self.checked = false;
+        }
+    }
+
+    /// **Draw the page INTO the cache rather than copying it out afterwards.** Binds an FBO over
+    /// the cache's texture as the page's target ([`crate::surface::PageTarget`]) and returns the
+    /// guard; the page is then drawn exactly as it would be to the frame, and
+    /// [`rendered`](Self::rendered) closes it and puts it on the frame as one quad.
+    ///
+    /// Why, when [`capture`](Self::capture) already works: a `glCopyTexSubImage2D` of framebuffer 0
+    /// in the MIDDLE of a frame makes a tiler resolve the whole frame to memory so it can be read,
+    /// and then reload every tile of it when the modal draws on top. Drawn into the texture, the
+    /// page is written once, where it is needed, and the frame gets it back as the same quad every
+    /// later frame of the modal is served with.
+    ///
+    /// `None` — the caller copies instead — inside a blur source pass, on a video-plane frame, on
+    /// a letterboxed drawable (the texture is the viewport's size and would not line up with a
+    /// viewport that does not start at the origin), and once the FBO has proved incomplete.
+    pub(crate) fn render_into(&mut self) -> Option<crate::surface::PageTarget> {
+        if self.off || self.fbo_off || blur_source_pass() {
+            return None;
+        }
+        if video_plane_refuses("FrameCache::render_into") {
+            return None;
+        }
+        let (vx, vy, vw, vh) = crate::surface::viewport();
+        if vw <= 0 || vh <= 0 || vx != 0 || vy != 0 {
+            return None;
+        }
+        unsafe {
+            self.ensure_tex(vw, vh);
+            if self.fbo == 0 {
+                let mut f: c_uint = 0;
+                glGenFramebuffers(1, &mut f);
+                glBindFramebuffer(GL_FRAMEBUFFER, f);
+                glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, self.tex, 0);
+                let st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+                glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
+                if st != GL_FRAMEBUFFER_COMPLETE {
+                    log(&format!(
+                        "frame cache: FBO {vw}x{vh} incomplete (status=0x{st:x}) — copying instead"
+                    ));
+                    glDeleteFramebuffers(1, &f);
+                    self.fbo_off = true;
+                    return None;
+                }
+                self.fbo = f;
+            }
+            self.valid = false;
+            let target = crate::surface::PageTarget::enter(self.fbo);
+            // A fresh pass over the texture: a clear is what tells a tiler it need not load the
+            // previous capture's tiles first. The page's own `frame_clear` lays its ground next.
+            glClearColor(0.0, 0.0, 0.0, 0.0);
+            glClear(GL_COLOR_BUFFER_BIT);
+            Some(target)
+        }
+    }
+
+    /// Close a [`render_into`](Self::render_into): the frame's framebuffer is bound again, the
+    /// texture holds the page, and the page goes onto the frame from it as one quad.
+    pub(crate) fn rendered(&mut self, target: crate::surface::PageTarget) {
+        self.finish_render(target);
+        self.draw();
+    }
+
+    /// Finish a capture without compositing it yet. Page transitions clear the app ground and
+    /// apply their alpha only to this texture, never to the page rendered into it.
+    pub(crate) fn finish_render(&mut self, target: crate::surface::PageTarget) {
+        drop(target);
+        self.valid = true;
+        SNAPSHOT_THIS_FRAME.store(true, Ordering::Relaxed);
+    }
+
+    pub(crate) fn resident_bytes(&self) -> usize {
+        if self.tex == 0 { 0 } else { self.w as usize * self.h as usize * 4 }
     }
 
     /// Draw the cached viewport across the authored canvas. A framebuffer copy is bottom-up;
@@ -1970,11 +2251,16 @@ impl FrameCache {
     /// here rather than relying on the caller arming the freeze afterwards removes an ordering trap
     /// that would show up as a blank screen with no error anywhere.
     pub(crate) fn draw(&self) -> bool {
+        self.draw_alpha(1.0)
+    }
+
+    pub(crate) fn draw_alpha(&self, alpha: f32) -> bool {
         if !self.valid || self.tex == 0 {
             return false;
         }
         let was = set_page_frozen(false);
         let uv = frame_cache_uv();
+        let tint = crate::ui::theme::with_a(CAP_TINT, alpha);
         draw_tex_core(
             Class::Image,
             self.tex,
@@ -1984,7 +2270,7 @@ impl FrameCache {
             SCR_H,
             uv,
             0.0,
-            CAP_TINT.as_ptr(),
+            tint.as_ptr(),
             0.0,
             NO_RIM.as_ptr(),
             SCR_W * 0.5,
@@ -2078,9 +2364,8 @@ use crate::log;
 //
 // 1. **Snapshots are cached.** A popover over a still page captures on open and then costs one
 //    textured quad per drawn frame. A surface over a MOVING page opts into
-//    `widgets::Glass::DYNAMIC_BACKDROP`, which invalidates on the shared cadence while its underlay
-//    is dirty; the widget still draws every present.
-//    Capturing every present was measured at 52.6 fps on the dev television and is not supported.
+//    `widgets::Glass::DYNAMIC_BACKDROP`; the frame's layer/region mechanism refreshes its
+//    source on every changed present and otherwise reuses it.
 // 2. **The capture is MID-FRAME.** `Painter`'s primitives are immediate GL calls, so the default
 //    framebuffer already holds exactly the prepared page with its page-drawn overlay scrim
 //    at the moment the panel is about to draw.
@@ -2122,10 +2407,9 @@ use crate::log;
 ///
 /// **One material, two paths.** The direct path renders the page at 1/4; the capture path has to
 /// arrive at the same place. They publish into one snapshot and one shader samples it, and which
-/// path served a given panel is not a property of that panel: a cached popover is served by the
-/// capture path on an ordinary frame and by the DIRECT path the moment a dynamic owner is live on
-/// the page under it (`/tmp/plxnative-glassboth` is the same thing on demand). So the source scale
-/// belongs to the material, not to a path — a surface whose blur depends on who took the snapshot
+/// path served a given surface is not a property of its material: an independent band uses
+/// the direct prefix, while a band over lower glass captures that glass's visible composite.
+/// The source scale belongs to the material, not to a path — a surface whose blur depends on who took the snapshot
 /// is not a material at all.
 ///
 /// **They drifted, and closing that is what this constant is for.** It went 2 -> 1 the day after the
@@ -2329,6 +2613,7 @@ fn blur_dims(vw: c_int, vh: c_int) -> ((c_int, c_int), (c_int, c_int)) {
     (mid, ((mid.0 / 2).max(1), (mid.1 / 2).max(1)))
 }
 
+#[derive(Clone)]
 struct BlurChain {
     grab: c_uint, // the canvas rect of the drawable, copied verbatim
     gw: c_int,
@@ -2370,6 +2655,42 @@ struct BlurChain {
     rw: c_int,
     rh: c_int,
 }
+/// A z band's retained output. All bands share the reduction scratch chain; only the compact
+/// half-resolution result survives. A higher band may sample this while scratch is its target.
+pub(crate) struct BackdropImage {
+    chain: BlurChain,
+    texture: std::rc::Rc<BackdropTexture>,
+    alpha_invariant: bool,
+}
+impl BackdropImage {
+    pub(crate) fn covers(&self, r: crate::ui::Rect) -> bool { blur_region_covers(self.chain.reg,r.x,r.y,r.w,r.h) }
+    pub(crate) fn bytes(&self) -> usize { self.chain.mw as usize * self.chain.mh as usize * 4 }
+}
+struct BackdropTexture(c_uint);
+impl Drop for BackdropTexture {
+    fn drop(&mut self) { delete_tex(self.0); }
+}
+pub(crate) fn retain_backdrop(z: crate::ui::frame::backdrop::Z) -> bool {
+    unsafe {
+        if !BLUR_VALID { return false; }
+        let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else { return false; };
+        let (w,h) = ((c.rw/2).max(1), (c.rh/2).max(1));
+        let previous = crate::ui::frame::backdrop::image(z);
+        let texture = previous.as_ref().filter(|p| p.chain.mw == w && p.chain.mh == h)
+            .map(|p| p.texture.clone()).unwrap_or_else(|| std::rc::Rc::new(BackdropTexture(cap_tex(w,h))));
+        glBindFramebuffer(GL_FRAMEBUFFER, c.mid_fbo);
+        glBindTexture(GL_TEXTURE_2D, texture.0);
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, w, h);
+        glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
+        if glGetError() != GL_NO_ERROR { return false; }
+        let mut chain = c.clone();
+        chain.out=texture.0; chain.mid=texture.0; chain.mw=w; chain.mh=h;
+        let alpha_invariant = crate::ui::frame::backdrop::source_alpha(z).is_some();
+        crate::ui::frame::backdrop::captured(z, BackdropImage { chain, texture, alpha_invariant });
+        true
+    }
+}
+
 /// Snapshots actually taken since the last heartbeat — the REFRESH RATE, measured rather than
 /// assumed.
 ///
@@ -2766,12 +3087,11 @@ static mut GL_SHARP_PX: c_int = 0;
 static mut GL_SHARPW: c_int = 0;
 static mut GL_RIMCLEAR: c_int = 0;
 static mut GL_DEEP: c_int = 0;
+static mut GL_SOURCE_ALPHA: c_int = 0;
+static mut GL_SOURCE_GROUND: c_int = 0;
 
-/// Drop the cached snapshot: the next [`draw_blur_backdrop`] re-captures.
-///
-/// `Popover::open` starts every cache lifetime. A cached policy stops there; a dynamic `Glass`
-/// policy also calls this on its configured successful-present cadence. Anything changing an
-/// underlay outside those policies still owes an explicit invalidation.
+/// Invalidate the scratch snapshot used by the synthetic load dial and navigation experiments.
+/// Live surfaces own separate retained outputs through the frame's layer/region registry.
 pub(crate) fn blur_invalidate() {
     unsafe { BLUR_VALID = false };
     // A popover's GROUND snapshot contains that popover's frost, composited from the very snapshot
@@ -3076,6 +3396,8 @@ fn blur_lazy_init() -> bool {
         GL_SHARPW = glGetUniformLocation(GPROG, c"u_sharpw".as_ptr());
         GL_RIMCLEAR = glGetUniformLocation(GPROG, c"u_rimclear".as_ptr());
         GL_DEEP = glGetUniformLocation(GPROG, c"u_deep".as_ptr());
+        GL_SOURCE_ALPHA = glGetUniformLocation(GPROG, c"u_source_alpha".as_ptr());
+        GL_SOURCE_GROUND = glGetUniformLocation(GPROG, c"u_source_ground".as_ptr());
         use_prog(GPROG);
         glUniform2f(GL_SCREEN, SCR_W, SCR_H);
         glUniform1i(GL_TEX, 0);
@@ -3434,8 +3756,8 @@ const BLUR_DIRECT_SCALE: u32 = 4;
 /// Latched off for the rest of the process after a GL error inside the source pass, which is the
 /// one condition that can make the direct path unusable at RUNTIME rather than at boot.
 ///
-/// It exists because the fallback is real and must stay reachable: the capture path is still the
-/// only path for `Glass::CACHED`, so falling back costs a copy, not a picture. A latch rather than
+/// It exists because the fallback is real and must stay reachable: the capture path serves every
+/// glass owner as well, so falling back costs a copy, not a picture. A latch rather than
 /// a per-frame retry, because a pass that errored once will error again and the log line would
 /// then repeat sixty times a second.
 static mut BLUR_DIRECT_OFF: bool = false;
@@ -3459,25 +3781,27 @@ static mut BLUR_IN_PASS: bool = false;
 /// Is the page currently being drawn as a low-resolution blur source rather than for the panel?
 #[inline]
 pub(crate) fn blur_source_pass() -> bool {
-    unsafe { BLUR_IN_PASS }
+    unsafe { BLUR_IN_PASS || crate::ui::frame::backdrop::source_walk() }
 }
 
 /// **Sample what is actually on the panel under `r`, at a low rate.**
 ///
-/// Five small `glReadPixels` boxes along the rect's centre line, at most every
-/// [`GROUND_SAMPLE_MS`]. It exists because a material whose density follows its ground needs to know
+/// Five small boxes along the rect's centre line, at most every [`GROUND_SAMPLE_EVERY`] calls,
+/// through the asynchronous [`GroundProbe`]. It exists because a material whose density follows its ground needs to know
 /// the ground, and every cheaper source is the wrong colour: Plex's `UltraBlurColors` are a derived
 /// muted palette for an ambient wash — measured against the Luca hero, they give (0.30, 0.23, 0.18)
 /// where the top of the panel is actually (0.00, 0.68, 0.91) — and the wash's own corners lean only
 /// 26% toward the art. The pixels are the only honest answer.
 ///
-/// A readback stalls a tiler, so the rate is the whole design: a hero holds for 8 seconds and a
-/// scrim density has no business changing faster than the picture does, so twice a second costs one
-/// flush and buys an exact answer. Returns `None` until the first sample lands and inside a source
-/// pass, where framebuffer 0 is not bound and the answer would be the FBO's own contents.
+/// A hero holds for 8 seconds and a scrim density has no business changing faster than the picture
+/// does, so twice a second is the rate. Each reading is a GPU-side copy queued on one call and read
+/// back between frames once the GPU has passed it ([`ProbeCadence`]), so it never waits on the
+/// frame — it used to be a synchronous `glReadPixels` that drained the GPU mid-page. Returns `None`
+/// until the first reading lands, and the last one inside a source pass, where framebuffer 0 is not
+/// bound and the answer would be the FBO's own contents.
 ///
-/// Counted in CALLS rather than milliseconds: this is called once per drawn bar, so the count is
-/// the frame rate and needs no clock. 30 is about twice a second at 60.
+/// Counted in presented frames rather than milliseconds: discovery/source calls between swaps do
+/// not consume cadence. 30 is about twice a second at 60 presented frames per second.
 const GROUND_SAMPLE_EVERY: u32 = 30;
 /// How many places across the rect are sampled. Odd, so one of them is the middle.
 const GROUND_TAPS: usize = 5;
@@ -3491,8 +3815,7 @@ const GROUND_TAPS: usize = 5;
 /// actually sit on is the checker's mid-grey. A box at the blur's support answers for the region the
 /// blur will produce — the same answer on a smooth ground, and the honest one on a busy one.
 ///
-/// 25px, odd so a tap has a middle. One `glReadPixels` per tap either way, 3125 pixels in total,
-/// which is nothing beside the flush the readback already costs.
+/// 25px, odd so a tap has a middle. One copy per tap either way, 3125 pixels in total.
 const GROUND_TAP_PX: c_int = 25;
 static mut GROUND_RGB: Option<[f32; 3]> = None;
 /// **The SPREAD across the taps, in CIE L\*, beside the mean.**
@@ -3506,21 +3829,22 @@ static mut GROUND_SPAN: f32 = 0.0;
 pub(crate) fn ground_span() -> f32 {
     unsafe { *std::ptr::addr_of!(GROUND_SPAN) }
 }
-static mut GROUND_AT: u32 = 0;
+/// The bar's probe: its cadence, its target, and the reading in flight.
+static mut GROUND_PROBE: GroundProbe<GROUND_TAPS> = GroundProbe::new(GROUND_SAMPLE_EVERY, GROUND_TAP_PX);
 
 /// **ONE latch and ONE rate counter, for the whole process — so this has exactly one caller.**
 ///
-/// `GROUND_RGB` is a single `Option`, and `GROUND_AT` a single counter that admits a real readback
-/// once every [`GROUND_SAMPLE_EVERY`] calls. A second caller passing a different `r` therefore does
-/// two things, both silent AS THE CODE STANDS: it halves the rate each caller actually gets, and
-/// every call it does take clobbers the other's answer with pixels from somewhere else on the
-/// screen. There is no per-caller state to key on.
+/// `GROUND_RGB` is a single `Option`, and `GROUND_PROBE` a single cadence that admits a real reading
+/// once every [`GROUND_SAMPLE_EVERY`] presented frames. A second visible caller passing a different
+/// `r` would share that one admission and whichever call is due would clobber the other's answer
+/// with pixels from somewhere else on the screen. There is no per-caller state to key on.
 ///
 /// **What adding one would cost is a number worth having right, because a decision was taken
 /// against it.** It is not "a second `glReadPixels` flush per frame" — this is rate-limited by
-/// CALL COUNT, so two callers each keeping their own counter would each read once every
-/// [`GROUND_SAMPLE_EVERY`] of their own calls: one extra flush roughly twice a second, and only
-/// while the second surface is on screen. Two `Option`s and two `u32`s. The reason to prefer one
+/// PRESENT COUNT, so two callers each keeping their own counter would each read once every
+/// [`GROUND_SAMPLE_EVERY`] presents: one extra copy roughly twice a second, and only
+/// while the second surface is on screen (a queued copy now, not a flush). Two `Option`s and two
+/// probes. The reason to prefer one
 /// solve is therefore the MATERIAL's — one band, one density — and not the readback's price; do not
 /// re-derive the argument from a cost that is thirty times smaller than it reads here.
 ///
@@ -3534,29 +3858,268 @@ static mut GROUND_AT: u32 = 0;
 /// weight so its INK clears a contrast floor over these pixels; a surface that is not inside `r`
 /// gets a density answered for somewhere else. `BarMaterial`'s doc carries the measurement for the
 /// one surface in this app that is in that position.
+/// **May a ground sampler take a FRESH reading on this draw?** Not while the page is frozen.
+///
+/// Both samplers ([`sample_ground`], [`sample_control_ground`]) answered from a synchronous
+/// `glReadPixels` when this refusal was written, which returns only once the GPU has drawn
+/// everything submitted before it; they queue a [`GroundProbe`] copy now, which is cheap but still
+/// a mid-frame copy of framebuffer 0 and still pointless here. A frozen page is one served from the
+/// host snapshot under a modal — its draw produces no pixels, so the ground under its bar and its
+/// Hero row is by construction the one the last live reading already took, and a fresh read can
+/// only return that same answer. What it did cost was the stall: every thirtieth frame of a modal
+/// held over Home drew the page for 21 ms of `glReadPixels` wait, the one frame per cycle over
+/// budget in `fps:modal-100` once the open itself fitted (television, 2026-09-19). The last answer
+/// is kept, and the first live frame after the modal re-reads on its own cadence.
+#[inline]
+fn may_read_ground() -> bool {
+    !page_frozen()
+}
+
+/// What a ground probe does on one sampler call — [`ProbeCadence::step`]'s answer.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ProbeStep {
+    /// Answer from the last reading.
+    Keep,
+    /// Queue a copy of the tap boxes into the probe's own target, and read nothing.
+    Kick,
+    /// The queued copy has been passed by the GPU: read the probe's target and latch the answer.
+    Collect,
+}
+
+/// **When a ground sampler reads, as a pure function** — the half of [`GroundProbe`] a host test
+/// can reach.
+///
+/// Both samplers used to answer a due call with `glReadPixels` on the frame being drawn. A read of
+/// the framebuffer is synchronous: it returns only once the GPU has drawn everything submitted
+/// before it, the previous frame included. On the Detail page that was one frame in every thirty
+/// at 27–29 ms (`clear` ~11 + ~15 ms of drain inside `page`), the steady-state frame that failed
+/// every Detail cycle of `fps:push-100` (television, 2026-09-19).
+///
+/// So a due call only QUEUES: the tap boxes are copied GPU-side into a small target and a fence is
+/// inserted after the copy ([`ProbeStep::Kick`]). A later call reads that target once at least one
+/// drawn frame has ended since (the swap is what flushes the copy) and the fence has signalled
+/// ([`ProbeStep::Collect`]) — a read of finished work, which does not wait. The answer lands one or
+/// two frames later than it used to; the cadence it keeps is the same.
+///
+/// `at` counts PRESENTED frames, not calls. Discovery and source walks can invoke a sampler more
+/// than once between swaps, and those descriptive calls must not accelerate a GPU probe. `dirty`
+/// forces the next visible call to queue a reading whatever the count says, and is cleared only
+/// when one is collected.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct ProbeCadence {
+    every: u32,
+    at: u32,
+    last_drawn: u32,
+    dirty: bool,
+    /// The drawn-frame count a queued reading was kicked in, while one is in flight.
+    pending: Option<u32>,
+}
+
+impl ProbeCadence {
+    pub(crate) const fn new(every: u32) -> Self {
+        Self {
+            every,
+            at: 0,
+            last_drawn: 0,
+            dirty: true,
+            pending: None,
+        }
+    }
+
+    /// One sampler call. `have`: a reading is latched. `drawn`: drawn frames so far
+    /// ([`drawn_frames`]). `finished`: the GPU has passed the queued copy (its fence signalled, or
+    /// there is no fence to ask).
+    pub(crate) fn step(&mut self, have: bool, drawn: u32, finished: bool) -> ProbeStep {
+        if let Some(kicked) = self.pending {
+            if drawn.wrapping_sub(kicked) >= 1 && finished {
+                self.pending = None;
+                self.dirty = false;
+                self.at = 0; // the cadence counts from the reading, not from its kick
+                self.last_drawn = drawn;
+                return ProbeStep::Collect;
+            }
+            return ProbeStep::Keep;
+        }
+        self.at = self.at.wrapping_add(drawn.wrapping_sub(self.last_drawn));
+        self.last_drawn = drawn;
+        if self.dirty || !have || self.at % self.every == 0 {
+            self.pending = Some(drawn);
+            ProbeStep::Kick
+        } else {
+            ProbeStep::Keep
+        }
+    }
+
+    /// The pixels under the probe changed meaning (a new item behind the Hero row): drop any
+    /// reading in flight and queue a fresh one on the next call.
+    pub(crate) fn invalidate(&mut self) {
+        self.at = 0;
+        self.dirty = true;
+        self.pending = None;
+    }
+
+    /// A kick that could not be queued (no target): nothing is in flight after all.
+    fn abandon(&mut self) {
+        self.pending = None;
+    }
+}
+
+/// **A ground sampler's asynchronous read-back**: `N` boxes of `px` square, copied side by side
+/// into one `N*px x px` target, fenced, and read once finished. See [`ProbeCadence`] for why.
+///
+/// The target is built lazily on the first kick and never resized. An incomplete FBO latches `off`
+/// and the sampler answers from its last reading (`None` if it never had one) from then on — the
+/// same refusal every other chain in this module makes.
+pub(crate) struct GroundProbe<const N: usize> {
+    cadence: ProbeCadence,
+    px: c_int,
+    /// `(texture, framebuffer)`, once built.
+    target: Option<(c_uint, c_uint)>,
+    off: bool,
+    fence: Option<crate::egl::fence::Fence>,
+    /// The queued copy, read back at a frame boundary ([`ground_probes_frame_end`]) and waiting
+    /// for the sampler's next call to reduce it.
+    ready: Option<Vec<u8>>,
+}
+
+impl<const N: usize> GroundProbe<N> {
+    pub(crate) const fn new(every: u32, px: c_int) -> Self {
+        Self {
+            cadence: ProbeCadence::new(every),
+            px,
+            target: None,
+            off: false,
+            fence: None,
+            ready: None,
+        }
+    }
+
+    /// Drop any reading in flight or read back, and queue a fresh one on the next call.
+    fn invalidate(&mut self) {
+        self.cadence.invalidate();
+        self.ready = None;
+    }
+
+    /// **The read-back, at a frame BOUNDARY.** Called right after the swap, before the next frame
+    /// draws anything: reading the probe's target here binds another framebuffer while the
+    /// frame's own has nothing pending, so it neither splits a render pass nor waits on one. The
+    /// first measurement read at the sampler's next call instead, mid-page, and that frame still
+    /// ran ~12 ms over its neighbours with a 0.2 ms read (television, 2026-09-19). Only once the
+    /// copy's fence has signalled; with no fences (the simulator) the swap alone is the rule.
+    unsafe fn read_if_finished(&mut self) {
+        if self.cadence.pending.is_none() || self.ready.is_some() {
+            return;
+        }
+        let Some((_, fbo)) = self.target else { return };
+        if !self.fence.as_ref().is_none_or(|f| f.signaled()) {
+            return;
+        }
+        let (w, h) = (self.px * N as c_int, self.px);
+        let mut buf = vec![0u8; (w * h * 4) as usize];
+        crate::diag::spans::span("gndread", || {
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, buf.as_mut_ptr() as *mut c_void);
+            glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
+        });
+        self.fence = None;
+        self.ready = Some(buf);
+    }
+
+    /// One sampler call. `origins` are the boxes' lower-left corners in framebuffer pixels, already
+    /// clamped — used only on a kick. Returns the collected `N*px x px` RGBA row-major buffer on a
+    /// collect, `None` otherwise.
+    unsafe fn step(&mut self, have: bool, origins: &[(c_int, c_int); N], who: &str) -> Option<Vec<u8>> {
+        if self.off {
+            return None;
+        }
+        match self.cadence.step(have, drawn_frames(), self.ready.is_some()) {
+            ProbeStep::Keep => None,
+            ProbeStep::Kick => {
+                if self.target.is_none() {
+                    // `fbo_target` binds `default_fb()` back, which is the page's current target
+                    // (the frame, or a host snapshot being rendered into) — where this was called.
+                    self.target = fbo_target(self.px * N as c_int, self.px, who);
+                    if self.target.is_none() {
+                        self.off = true;
+                        self.cadence.abandon();
+                        return None;
+                    }
+                }
+                let (tex, _) = self.target?;
+                let px = self.px;
+                crate::diag::spans::span("gndkick", || {
+                    glBindTexture(GL_TEXTURE_2D, tex);
+                    for (i, &(x, y)) in origins.iter().enumerate() {
+                        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, i as c_int * px, 0, x, y, px, px);
+                    }
+                });
+                // After the copies, so it signals once they are done. Replacing an older fence
+                // destroys it; nothing is waiting on it.
+                self.fence = crate::egl::fence::Fence::insert();
+                None
+            }
+            ProbeStep::Collect => self.ready.take(),
+        }
+    }
+}
+
+/// Read back every ground probe whose copy the GPU has passed — `app::run` calls it right after
+/// the swap, beside [`field_frame_end`]. See [`GroundProbe::read_if_finished`].
+pub(crate) fn ground_probes_frame_end() {
+    // SAFETY: main render thread, like every other access to the probes.
+    unsafe {
+        (*std::ptr::addr_of_mut!(GROUND_PROBE)).read_if_finished();
+        (*std::ptr::addr_of_mut!(CONTROL_PROBE)).read_if_finished();
+    }
+}
+
+/// Box `i`'s pixels in a [`GroundProbe`]'s collected buffer: `px` rows of `px` RGBA texels, taken
+/// from the `n*px`-wide atlas row by row. Order within a box is irrelevant to every consumer (each
+/// one averages).
+fn probe_tap(buf: &[u8], i: usize, px: c_int, n: usize) -> impl Iterator<Item = &[u8]> {
+    let (px, w) = (px as usize, px as usize * n);
+    (0..px).flat_map(move |row| {
+        let at = (row * w + i * px) * 4;
+        buf[at..at + px * 4].chunks_exact(4)
+    })
+}
+
+/// Drawn frames so far — the frame count [`field_frame_end`] advances beside the swap, shared by
+/// every fenced read-back in this module.
+#[inline]
+fn drawn_frames() -> u32 {
+    FIELD_SWAPS.load(Ordering::Relaxed)
+}
+
 pub(crate) fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
     unsafe {
         // A caller can refuse a FRESH reading while still wanting the last one — the route
         // cross-fade's case. `ui::nav` dips the whole page toward `SURFACE_APP` while the chrome
         // holds still, so for the length of a transition the pixels under this bar are not the
-        // page's colour at all, and a readback landing there latches a ground the screen is not on
+        // page's colour at all, and a reading queued there latches a ground the screen is not on
         // for the next thirty drawn frames.
         if !may_read {
             return *std::ptr::addr_of!(GROUND_RGB);
         }
-        if BLUR_IN_PASS {
+        if blur_source_pass() || !may_read_ground() {
             return *std::ptr::addr_of!(GROUND_RGB);
         }
-        let n = (*std::ptr::addr_of!(GROUND_AT)).wrapping_add(1);
-        GROUND_AT = n;
-        if (*std::ptr::addr_of!(GROUND_RGB)).is_some() && n % GROUND_SAMPLE_EVERY != 0 {
-            return *std::ptr::addr_of!(GROUND_RGB);
-        }
+        let have = (*std::ptr::addr_of!(GROUND_RGB)).is_some();
         let (gx, gy, gw, gh) = crate::surface::viewport();
         let (sx, sy) = (gw as f32 / SCR_W, gh as f32 / SCR_H);
         let cy = gy + gh - 1 - ((r[1] + r[3] * 0.5) * sy) as c_int; // GL origin is bottom-left
-        let n = GROUND_TAP_PX as usize;
-        let mut buf = vec![0u8; n * n * 4];
+        let origins: [(c_int, c_int); GROUND_TAPS] = std::array::from_fn(|i| {
+            let f = (i as f32 + 0.5) / GROUND_TAPS as f32;
+            let x = gx + ((r[0] + r[2] * f) * sx) as c_int;
+            (
+                (x - GROUND_TAP_PX / 2).clamp(0, gx + gw - GROUND_TAP_PX),
+                (cy - GROUND_TAP_PX / 2).clamp(0, gy + gh - GROUND_TAP_PX),
+            )
+        });
+        let probe = &mut *std::ptr::addr_of_mut!(GROUND_PROBE);
+        let Some(buf) = probe.step(have, &origins, "ground") else {
+            return *std::ptr::addr_of!(GROUND_RGB);
+        };
         let mut taps = [[0.0f32; 3]; GROUND_TAPS];
         let mut taps_l = [0.0f32; GROUND_TAPS];
         let lin = |v: f32| {
@@ -3566,20 +4129,10 @@ pub(crate) fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
                 ((v + 0.055) / 1.055).powf(2.4)
             }
         };
+        let n = GROUND_TAP_PX as usize;
         for i in 0..GROUND_TAPS {
-            let f = (i as f32 + 0.5) / GROUND_TAPS as f32;
-            let x = gx + ((r[0] + r[2] * f) * sx) as c_int;
-            glReadPixels(
-                (x - GROUND_TAP_PX / 2).clamp(0, gx + gw - GROUND_TAP_PX),
-                (cy - GROUND_TAP_PX / 2).clamp(0, gy + gh - GROUND_TAP_PX),
-                GROUND_TAP_PX,
-                GROUND_TAP_PX,
-                GL_RGBA,
-                GL_UNSIGNED_BYTE,
-                buf.as_mut_ptr() as *mut c_void,
-            );
             let mut acc = [0.0f32; 3];
-            for p in buf.chunks_exact(4) {
+            for p in probe_tap(&buf, i, GROUND_TAP_PX, GROUND_TAPS) {
                 for c in 0..3 {
                     acc[c] += p[c] as f32 / 255.0;
                 }
@@ -3636,15 +4189,16 @@ const CONTROL_GROUND_SAMPLE_EVERY: u32 = 30;
 const CONTROL_GROUND_TAPS: usize = 5;
 const CONTROL_GROUND_TAP_PX: c_int = 49;
 static mut CONTROL_GROUND_RGB: Option<[f32; 3]> = None;
-static mut CONTROL_GROUND_AT: u32 = 0;
-static mut CONTROL_GROUND_DIRTY: bool = true;
+/// The Hero row's probe — its own cadence and its own target, never the bar's.
+static mut CONTROL_PROBE: GroundProbe<CONTROL_GROUND_TAPS> =
+    GroundProbe::new(CONTROL_GROUND_SAMPLE_EVERY, CONTROL_GROUND_TAP_PX);
 
 /// Mark a Hero's sampled ground stale when the item behind the row changes. The last honest answer
-/// remains available during the carousel/route transition; the first settled draw replaces it.
+/// remains available during the carousel/route transition; the first settled draw queues a fresh
+/// reading, and a reading still in flight for the old item is dropped rather than latched.
 pub(crate) fn control_ground_invalidate() {
     unsafe {
-        CONTROL_GROUND_AT = 0;
-        CONTROL_GROUND_DIRTY = true;
+        (*std::ptr::addr_of_mut!(CONTROL_PROBE)).invalidate();
     }
 }
 
@@ -3674,6 +4228,44 @@ pub(crate) fn enc(v: f32) -> f32 {
     }
 }
 
+/// **Linear radiance straight to an 8-bit display code** — exactly
+/// `(enc(v).clamp(0.0, 1.0) * 255.0 + 0.5) as u8`, answered by a search instead of a `powf`.
+///
+/// That quantisation is a step function of `v` with 255 steps, so it is fully described by the
+/// 255 smallest inputs at which each code begins; the code for `v` is how many of those it has
+/// reached. The thresholds are found ONCE, by bisecting the float bit patterns against the formula
+/// itself on this machine's own `powf`, so the answer is that formula's to the bit (held by
+/// `the_quantised_encode_is_the_powf_encode_to_the_bit`) rather than an approximation of it. A
+/// modal's field texture is 60x32x3 of these per latch: 5760 `powf` were ~4 ms of the Cortex-A53
+/// frame that latched it (2026-09-19); eight comparisons each are not measurable.
+#[inline]
+pub(crate) fn enc_u8(v: f32) -> u8 {
+    // `partition_point` counts the thresholds `v` has reached; NaN reaches none, as `as u8` maps
+    // the formula's NaN to 0.
+    enc_u8_thresholds().partition_point(|&t| t <= v) as u8
+}
+
+fn enc_u8_thresholds() -> &'static [f32; 255] {
+    static T: std::sync::OnceLock<[f32; 255]> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let code = |v: f32| (enc(v).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        std::array::from_fn(|k| {
+            // Smallest non-negative float whose code is > k. Non-negative floats order as their
+            // bits; code(0) = 0 and code(1) = 255 bracket every step.
+            let (mut lo, mut hi) = (0.0f32.to_bits(), 1.0f32.to_bits());
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                if code(f32::from_bits(mid)) > k as u8 {
+                    hi = mid;
+                } else {
+                    lo = mid + 1;
+                }
+            }
+            f32::from_bits(lo)
+        })
+    })
+}
+
 /// Average display-encoded sRGB samples as radiance and encode the result back to sRGB.
 /// Kept pure so the material's defining operation is host-testable without an OpenGL context.
 fn diffuse_ground_mean(samples: impl IntoIterator<Item = [f32; 3]>) -> [f32; 3] {
@@ -3692,49 +4284,64 @@ fn diffuse_ground_mean(samples: impl IntoIterator<Item = [f32; 3]>) -> [f32; 3] 
     [enc(acc[0] / k), enc(acc[1] / k), enc(acc[2] / k)]
 }
 
+/// [`lin`] of every 8-bit channel value, `lin(v as f32 / 255.0)` exactly — the same function on the
+/// same input, so a mean taken through it is bit-identical to one taken through [`lin`].
+///
+/// A collected Hero-row probe is 5 x 49 x 49 texels, 36,015 channel values, and every one of them
+/// went through a `powf` on the render thread: ~12 ms of CPU on the frame that latched the reading
+/// (television, 2026-09-19 — the probe's read-back itself was 0.2 ms by then). There are only 256
+/// distinct inputs.
+fn lin_u8(v: u8) -> f32 {
+    static LUT: std::sync::OnceLock<[f32; 256]> = std::sync::OnceLock::new();
+    LUT.get_or_init(|| std::array::from_fn(|i| lin(i as f32 / 255.0)))[v as usize]
+}
+
+/// [`diffuse_ground_mean`] over RGBA8 texels, through [`lin_u8`]: the same sum in the same order,
+/// so the same answer to the bit.
+fn diffuse_ground_mean_u8<'a>(texels: impl IntoIterator<Item = &'a [u8]>) -> [f32; 3] {
+    let mut acc = [0.0f32; 3];
+    let mut n = 0usize;
+    for p in texels {
+        for c in 0..3 {
+            acc[c] += lin_u8(p[c]);
+        }
+        n += 1;
+    }
+    if n == 0 {
+        return [0.0; 3];
+    }
+    let k = n as f32;
+    [enc(acc[0] / k), enc(acc[1] / k), enc(acc[2] / k)]
+}
+
 /// Sample the pixels already rendered beneath one Hero action row.
 pub(crate) fn sample_control_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
     unsafe {
-        if !may_read || BLUR_IN_PASS {
+        if !may_read || blur_source_pass() || !may_read_ground() {
             return *std::ptr::addr_of!(CONTROL_GROUND_RGB);
         }
-        let at = (*std::ptr::addr_of!(CONTROL_GROUND_AT)).wrapping_add(1);
-        CONTROL_GROUND_AT = at;
-        if !*std::ptr::addr_of!(CONTROL_GROUND_DIRTY)
-            && (*std::ptr::addr_of!(CONTROL_GROUND_RGB)).is_some()
-            && at % CONTROL_GROUND_SAMPLE_EVERY != 0
-        {
-            return *std::ptr::addr_of!(CONTROL_GROUND_RGB);
-        }
-
+        let have = (*std::ptr::addr_of!(CONTROL_GROUND_RGB)).is_some();
         let (gx, gy, gw, gh) = crate::surface::viewport();
         let (sx, sy) = (gw as f32 / SCR_W, gh as f32 / SCR_H);
         let cy = gy + gh - 1 - ((r[1] + r[3] * 0.5) * sy) as c_int;
-        let n = CONTROL_GROUND_TAP_PX as usize;
-        let mut buf = vec![0u8; n * n * 4];
-        let mut taps = [[0.0f32; 3]; CONTROL_GROUND_TAPS];
-        for (i, tap) in taps.iter_mut().enumerate() {
+        let origins: [(c_int, c_int); CONTROL_GROUND_TAPS] = std::array::from_fn(|i| {
             let f = (i as f32 + 0.5) / CONTROL_GROUND_TAPS as f32;
             let x = gx + ((r[0] + r[2] * f) * sx) as c_int;
-            glReadPixels(
+            (
                 (x - CONTROL_GROUND_TAP_PX / 2).clamp(gx, gx + gw - CONTROL_GROUND_TAP_PX),
                 (cy - CONTROL_GROUND_TAP_PX / 2).clamp(gy, gy + gh - CONTROL_GROUND_TAP_PX),
-                CONTROL_GROUND_TAP_PX,
-                CONTROL_GROUND_TAP_PX,
-                GL_RGBA,
-                GL_UNSIGNED_BYTE,
-                buf.as_mut_ptr() as *mut c_void,
-            );
-            *tap = diffuse_ground_mean(buf.chunks_exact(4).map(|p| {
-                [
-                    p[0] as f32 / 255.0,
-                    p[1] as f32 / 255.0,
-                    p[2] as f32 / 255.0,
-                ]
-            }));
-        }
+            )
+        });
+        let probe = &mut *std::ptr::addr_of_mut!(CONTROL_PROBE);
+        let Some(buf) = probe.step(have, &origins, "control ground") else {
+            return *std::ptr::addr_of!(CONTROL_GROUND_RGB);
+        };
+        let taps: [[f32; 3]; CONTROL_GROUND_TAPS] = crate::diag::spans::span("gndmean", || {
+            std::array::from_fn(|i| {
+                diffuse_ground_mean_u8(probe_tap(&buf, i, CONTROL_GROUND_TAP_PX, CONTROL_GROUND_TAPS))
+            })
+        });
         CONTROL_GROUND_RGB = Some(diffuse_ground_mean(taps));
-        CONTROL_GROUND_DIRTY = false;
         *std::ptr::addr_of!(CONTROL_GROUND_RGB)
     }
 }
@@ -3910,7 +4517,7 @@ pub(crate) fn video_plane_frame() -> bool {
 /// **The refusal every framebuffer-SAMPLING door takes on a video-plane frame** (spec §9).
 ///
 /// `true` = refuse. The four doors are `popover::host::begin_frame` (the frozen-host snapshot),
-/// `draw_blur_backdrop` (Glass), `underlay::sample_underlay_field` (the field `RouteGround::draw_host`
+/// `draw_blur_backdrop` (Glass), `gfx::field_kick` (the field `RouteGround::draw_host`
 /// latches its live source from) and `FrameCache::capture`. Every one of them answers a question by
 /// READING BACK framebuffer 0 —
 /// and on this frame framebuffer 0 is a hole: the picture the viewer sees is a hardware plane the
@@ -3959,7 +4566,7 @@ pub(crate) fn video_plane_refuses(what: &str) -> bool {
 /// Always `false` outside a source pass, so the visible frame is drawn exactly as it always was.
 #[inline]
 pub(crate) fn culled(x: f32, y: f32, w: f32, h: f32) -> bool {
-    if unsafe { PAGE_FROZEN } {
+    if unsafe { PAGE_FROZEN } || crate::ui::frame::backdrop::suppressed() {
         return true;
     }
     match unsafe { CULL_RECT } {
@@ -4024,27 +4631,6 @@ pub(crate) fn blur_direct_scale() -> Option<u32> {
     // source at the same AUTHORED resolution a television does — the same material, not a finer one.
     (!unsafe { BLUR_DIRECT_OFF })
         .then_some(BLUR_DIRECT_SCALE * crate::surface::render_scale() as u32)
-}
-
-/// The region a direct source pass should be taken at THIS frame, or `None` to do nothing.
-///
-/// `Some` requires three things at once: the direct path armed, a refresh actually due, and a
-/// region to take it at. The region is the PREVIOUS drawn frame's complete union — the same
-/// `BLUR_WANT_PREV` the capture path unions into, and the only thing known this early, because the
-/// current frame's needs are recorded by the glass surfaces themselves and they have not drawn
-/// yet. On the first frame a panel appears that union is empty and this answers `None`; the
-/// capture path then takes that one frame the way it always has, and the direct path picks it up
-/// from the next present onward. One frame of the old behaviour at activation is the price of
-/// hooking before the page draws, which is the only place a second scene pass can go.
-pub(crate) fn blur_direct_region() -> Option<[f32; 4]> {
-    unsafe {
-        blur_direct_scale()?;
-        if BLUR_VALID {
-            return None;
-        }
-        let prev = *std::ptr::addr_of!(BLUR_WANT_PREV);
-        (prev[2] > 0.0 && prev[3] > 0.0).then_some(prev)
-    }
 }
 
 /// The backdrop source, rendered by DRAWING THE SCENE AGAIN at 1/`scale` per axis, instead of
@@ -4225,9 +4811,15 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
     }
 }
 
+/// Declaration and visible drawing share these refusal conditions. A disabled glass or a
+/// hardware video plane must not schedule a source before the draw-time guard can refuse it.
+pub(crate) fn live_blur_available() -> bool {
+    !unsafe { BLUR_OFF } && !video_plane_frame() && !masked(Class::Glass)
+}
+
 /// Draw the frosted backdrop for a panel at `(x,y,w,h)` with corner `radius`, capturing the
-/// snapshot first if there isn't a live one. Returns whether anything was drawn — `false` means the
-/// feature is latched off and the caller's own ground is the whole panel.
+/// snapshot first if needed. Returns whether the material was handled, including a culled or
+/// declaration-only surface. `false` asks the caller to paint its flat fallback.
 ///
 /// `rest` is where the panel comes to REST, and it is the rect the region is built around — not
 /// `(x,y,w,h)`, which is where this frame draws it. A popover slides into place over its appear
@@ -4273,15 +4865,16 @@ pub(crate) fn draw_blur_backdrop(
     face: GlassFace,
     deep: f32,
 ) -> bool {
+    let live = crate::ui::frame::backdrop::surface(crate::ui::Rect::new(x,y,w,h));
+    if live.is_some_and(|r| !r.draw) { return true; }
     unsafe {
-        // A glass surface met while drawing the page AS a blur source draws nothing at all. It
-        // cannot draw itself — the snapshot it would sample is the target currently bound — and it
-        // must not RECORD a need or take a capture either, both of which would run inside the FBO.
-        // `false` is also the right picture: the caller falls back to its opaque ground, which is
-        // what belongs under a blur anyway. See `BLUR_IN_PASS`.
-        if BLUR_IN_PASS {
-            return false;
-        }
+        // Direct jobs never intersect a lower glass: those bands capture the visible prefix
+        // instead, retaining the lower surface's complete composite. Never capture recursively
+        // from the FBO being produced. The explicit walk ceiling has already refused this glass
+        // and everything above it.
+        // Keep material-dependent child calls identical to declaration. The independent
+        // source does not sample this lower glass, so it is handled without painting it.
+        if BLUR_IN_PASS { return true; }
         // §9: a Glass surface samples the framebuffer behind it, and on a video-plane frame there
         // is nothing behind it in OUR framebuffer — the picture is a hardware plane. `ui/mod.rs`
         // has said "never call it on the player route" in prose since the blur landed; this is the
@@ -4304,31 +4897,36 @@ pub(crate) fn draw_blur_backdrop(
         if masked(Class::Glass) {
             return false;
         }
-        // Declare what this surface needs BEFORE deciding whether to snapshot, so a frame's second
-        // glass element is on record even if the first one is what ends up taking the capture.
         let need = blur_region(rest[0], rest[1], rest[2], rest[3]);
-        BLUR_WANT_CUR = blur_region_union(*std::ptr::addr_of!(BLUR_WANT_CUR), need);
-        // Containment, not equality: a region grabbed around the panel at rest already holds
-        // everything the panel needs at every point of its slide. `blur_invalidate` is what forces
-        // a retake when the PAGE changes; this only retakes when the cached region cannot serve.
-        let stale = (*std::ptr::addr_of!(BLURST))
-            .as_ref()
-            .is_none_or(|c| !blur_region_covers(c.reg, x, y, w, h));
-        if !BLUR_VALID || stale {
-            // Grab what the LAST frame turned out to need, unioned with what this caller needs —
-            // never `need` alone. A miss that replaces the region instead of growing it is what
-            // makes two neighbouring glass controls ping-pong: each retakes the other's region
-            // every frame, two full chains, worse than not limiting the grab at all. A second
-            // element inside one grab adds only its composite fragments; a pair at opposite
-            // corners instead expands the shared snapshot toward the whole frame.
-            let want = blur_region_union(*std::ptr::addr_of!(BLUR_WANT_PREV), need);
-            blur_snapshot(want);
-        }
-        if BLUR_OFF || !BLUR_VALID {
-            return false;
-        }
-        let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else {
-            return false;
+        let retained;
+        let c = if let Some(request) = live {
+            if !BLUR_IN_PASS && (request.refresh || crate::ui::frame::backdrop::image(request.z).is_none_or(|image| !image.covers(request.rect))) {
+                // Activation and newly exposed geometry capture the framebuffer prefix HERE:
+                // the layer walker has reached, but has not drawn, this glass's z ceiling.
+                if !crate::ui::frame::backdrop::begin_inline_capture(request.z) { return false; }
+                BLUR_VALID=false;
+                let r = crate::ui::frame::backdrop::region(request.z).unwrap_or(crate::ui::Rect::new(x,y,w,h));
+                blur_snapshot(blur_region(r.x,r.y,r.w,r.h));
+                if !retain_backdrop(request.z) {
+                    crate::ui::frame::backdrop::capture_failed(request.z);
+                    return false;
+                }
+            }
+            retained = crate::ui::frame::backdrop::image(request.z);
+            let Some(image) = retained.as_ref() else { return false; };
+            &image.chain
+        } else {
+            retained = None;
+            // The dev load dial is a synthetic chain benchmark, outside the live surface walk.
+            BLUR_WANT_CUR = blur_region_union(*std::ptr::addr_of!(BLUR_WANT_CUR), need);
+            let stale = (*std::ptr::addr_of!(BLURST)).as_ref()
+                .is_none_or(|c| !blur_region_covers(c.reg,x,y,w,h));
+            if !BLUR_VALID || stale {
+                blur_snapshot(blur_region_union(*std::ptr::addr_of!(BLUR_WANT_PREV),need));
+            }
+            if BLUR_OFF || !BLUR_VALID { return false; }
+            let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else { return false; };
+            c
         };
         // ...and only NOW is a composite certain, so this is where the ledger hears about it. The
         // mask was answered at the top of the function; this books the quad. Booking it up there
@@ -4352,6 +4950,12 @@ pub(crate) fn draw_blur_backdrop(
         ];
         let uv = blur_uv_rect(x, y, w, h, c.reg, span, c.bottom_up);
         use_prog(GPROG);
+        let source_alpha = if retained.as_ref().is_some_and(|image| image.alpha_invariant) {
+            live.and_then(|request| crate::ui::frame::backdrop::source_alpha(request.z)).unwrap_or(1.0)
+        } else { 1.0 };
+        let ground = crate::ui::theme::CLEAR_RGB;
+        glUniform1f(GL_SOURCE_ALPHA, source_alpha);
+        glUniform3f(GL_SOURCE_GROUND, ground.0, ground.1, ground.2);
         // A BLUR is the slowest field the app produces, so the policy is the area test, per draw
         // — moving or not: a panel's glass is a fraction of the screen and the tile is one fetch,
         // and gating it on motion (one day, 2026-09-04) flickered the bands in and out on every
@@ -4842,9 +5446,97 @@ fn field_lazy_init() -> bool {
     }
 }
 
-/// **The colour field under the frame as it stands right now**, 15x8 cells, display-encoded sRGB,
-/// row-major from the TOP-LEFT. `None` means "no honest answer this frame" and is not a failure —
-/// `ui::underlay` has a CPU source (`latch_from_corners`) for every case below.
+/// A reduction [`field_kick`] queued, to be read by [`field_collect`] once the GPU has had a frame
+/// to finish it. `run` names the chain run (a later kick reuses the same targets, so an older
+/// ticket is simply lost), `swaps` the drawn-frame count it was queued in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct FieldTicket {
+    run: u32,
+    swaps: u32,
+}
+
+impl FieldTicket {
+    /// A ticket for a fake `DimSink` — a host test has no chain to queue on.
+    #[cfg(test)]
+    pub(crate) fn for_test(run: u32, swaps: u32) -> Self {
+        Self { run, swaps }
+    }
+}
+
+/// What [`field_collect`] answers for a ticket.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum FieldRead {
+    /// The field the kick reduced.
+    Ready([[f32; 3]; FIELD_CELLS]),
+    /// Queued on this very frame: reading it now is the stall the ticket exists to avoid.
+    Pending,
+    /// The targets have been reused by a later run (or the chain is gone): kick again.
+    Lost,
+}
+
+/// Chain runs so far — a ticket's `run`. Main render thread only, like the chain itself.
+static mut FIELD_RUNS: u32 = 0;
+/// Drawn frames so far, advanced by [`field_frame_end`] beside the swap.
+static FIELD_SWAPS: AtomicU32 = AtomicU32::new(0);
+
+/// Drawn frames that must end between a kick and its read — the FLOOR, not the rule. The swap is
+/// what flushes the kick (and its fence) to the GPU, so nothing can be finished before one.
+///
+/// The rule is the kick's fence ([`crate::egl::fence`]): the read waits for the GPU to have
+/// actually passed the reduction. A frame count alone was a guess, and a wrong one on the
+/// television, where the GPU runs more than a frame behind a modal's open: one frame later the
+/// read still waited 11–25 ms (`fieldread`), and two frames later the collecting frame paid a
+/// larger throttle wait instead (2026-09-19, `docs/backdrop-blur-profiling.md`). With no fences
+/// (the simulator) the floor is the whole rule.
+const FIELD_READ_LAG_SWAPS: u32 = 1;
+
+/// The fence [`field_kick`] inserted after its passes, with the run it belongs to. Main render
+/// thread only, like the chain.
+static mut FIELD_FENCE: Option<(u32, crate::egl::fence::Fence)> = None;
+
+/// Close a DRAWN frame for the field's tickets — `app::run` calls it beside `blur_frame_end`,
+/// inside the idle gate, because a frame the gate skipped queued nothing on the GPU and gives a
+/// pending read no more time to finish.
+pub(crate) fn field_frame_end() {
+    FIELD_SWAPS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Where a ticket stands — [`field_collect`]'s decision before it touches GL.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum TicketState {
+    Due,
+    Pending,
+    Lost,
+}
+
+/// [`field_collect`]'s decision, as a pure function of the ticket, the two counters and the GPU's
+/// word on the kick (`finished`: its fence has signalled, or there is no fence to ask).
+pub(crate) fn field_ticket_state(t: FieldTicket, runs: u32, swaps: u32, finished: bool) -> TicketState {
+    if t.run != runs {
+        TicketState::Lost
+    } else if swaps.wrapping_sub(t.swaps) < FIELD_READ_LAG_SWAPS || !finished {
+        TicketState::Pending
+    } else {
+        TicketState::Due
+    }
+}
+
+/// Has the GPU finished run `run`'s reduction? `true` when there is no fence to ask — a chain
+/// without fences answers by frame count alone.
+fn field_run_finished(run: u32) -> bool {
+    // SAFETY: main render thread, like every other access to the chain.
+    match unsafe { (*std::ptr::addr_of!(FIELD_FENCE)).as_ref() } {
+        Some((r, fence)) if *r == run => fence.signaled(),
+        _ => true,
+    }
+}
+
+/// **Queue the reduction of the undimmed page to the 15x8 field, and read nothing yet.**
+///
+/// `src` is a texture that already holds the drawable's viewport exactly as a
+/// `glCopyTexSubImage2D` of it would (bottom-up, full size) — `popover::host`'s page snapshot,
+/// which is taken at the same instant this is asked and makes the chain's own full-screen copy a
+/// second copy of the same pixels. `None` copies the framebuffer as it stands.
 ///
 /// The refusals, and why each one is not a guess:
 ///
@@ -4867,12 +5559,12 @@ fn field_lazy_init() -> bool {
 /// GL state is restored the way [`cap_cycle`] restores it: framebuffer and viewport back to the
 /// drawable, blend back on. Programs bind themselves lazily through [`use_prog`], texture unit 0
 /// never moves, and vertex state is untouched.
-pub(crate) fn sample_underlay_field() -> Option<[[f32; 3]; FIELD_CELLS]> {
+pub(crate) fn field_kick(src: Option<c_uint>) -> Option<FieldTicket> {
     unsafe {
-        if BLUR_IN_PASS || PAGE_FROZEN || masked(Class::Field) {
+        if blur_source_pass() || PAGE_FROZEN || masked(Class::Field) {
             return None;
         }
-        if video_plane_refuses("underlay::sample_underlay_field") {
+        if video_plane_refuses("gfx::field_kick") {
             return None;
         }
         if !field_lazy_init() {
@@ -4881,14 +5573,21 @@ pub(crate) fn sample_underlay_field() -> Option<[[f32; 3]; FIELD_CELLS]> {
         let c = (*std::ptr::addr_of!(FIELDST)).as_ref()?;
         let (gx, gy, gw, gh) = c.view;
 
-        glBindTexture(GL_TEXTURE_2D, c.grab);
-        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, gx, gy, gw, gh);
+        let mut prev = match src {
+            Some(tex) if tex != 0 => tex,
+            _ => {
+                glBindTexture(GL_TEXTURE_2D, c.grab);
+                crate::diag::spans::span("fieldcopy", || {
+                    glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, gx, gy, gw, gh)
+                });
+                c.grab
+            }
+        };
 
         // Blend OFF: every target is a fresh copy, and `glClear` before each pass spares Midgard
         // the tile preserve-load of the stale contents (a full-screen quad does not relieve that
         // obligation — `cap_cycle` carries the same note).
         glDisable(GL_BLEND);
-        let mut src = c.grab;
         for &(_, fbo, w, h) in &c.levels {
             glBindFramebuffer(GL_FRAMEBUFFER, fbo);
             glViewport(0, 0, w, h);
@@ -4900,7 +5599,7 @@ pub(crate) fn sample_underlay_field() -> Option<[[f32; 3]; FIELD_CELLS]> {
             note_px(Class::Field, (w as f64) * (h as f64));
             draw_tex_core(
                 Class::Blur,
-                src,
+                prev,
                 0.0,
                 0.0,
                 SCR_W,
@@ -4915,11 +5614,102 @@ pub(crate) fn sample_underlay_field() -> Option<[[f32; 3]; FIELD_CELLS]> {
                 0.0,
                 NO_RIM.as_ptr(),
             );
-            src = fbo_tex_of(c, fbo);
+            prev = fbo_tex_of(c, fbo);
         }
 
-        let mut buf = [0u8; FIELD_CELLS * 4];
-        glPixelStorei(GL_PACK_ALIGNMENT, 1); // 15 RGBA texels is 60 bytes — 4-aligned anyway
+        // Restore the world exactly — see `cap_cycle`'s step D for what "exactly" has to mean.
+        glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
+        glViewport(gx, gy, gw, gh);
+        glEnable(GL_BLEND);
+
+        FIELD_RUNS = FIELD_RUNS.wrapping_add(1);
+        // After the passes, so it signals once they are done. Replacing the previous run's fence
+        // destroys it: that run's ticket is `Lost` from here on and nobody will ask.
+        FIELD_FENCE = crate::egl::fence::Fence::insert().map(|f| (FIELD_RUNS, f));
+        FIELD_KICK_SWAPS = FIELD_SWAPS.load(Ordering::Relaxed);
+        Some(FieldTicket {
+            run: FIELD_RUNS,
+            swaps: FIELD_KICK_SWAPS,
+        })
+    }
+}
+
+/// The live run's kick frame (its ticket's `swaps`), so the frame head can ask
+/// [`field_ticket_state`] about it without a ticket in hand. Main render thread only.
+static mut FIELD_KICK_SWAPS: u32 = 0;
+/// The field the frame head read, with the run it belongs to. Main render thread only.
+static mut FIELD_LANDED: Option<(u32, [[f32; 3]; FIELD_CELLS])> = None;
+
+/// **Read the live run's field at the HEAD of a drawn frame, before anything is drawn.**
+///
+/// `app::run` calls it first thing in a drawn frame. The read used to happen wherever a consumer
+/// collected — between the page and the surfaces, after framebuffer 0 already held a frame's worth
+/// of tiles — and a `glReadPixels` there ends framebuffer 0's render pass on Midgard: the rest of
+/// the frame then reloads every tile it had drawn (+2743 tiles, ~12 M GPU cycles on the frame a
+/// modal's dim latched, 2026-09-19). At the head there is nothing of this frame to split. The
+/// decision is still [`field_ticket_state`]'s — a frame after the kick AND past its fence — so the
+/// read never waits for the GPU either; one it refuses is simply asked again next frame.
+pub(crate) fn field_frame_begin() {
+    // SAFETY: main render thread, like every other access to the chain.
+    unsafe {
+        let Some(c) = (*std::ptr::addr_of!(FIELDST)).as_ref() else {
+            return;
+        };
+        let run = FIELD_RUNS;
+        if run == 0 || matches!(*std::ptr::addr_of!(FIELD_LANDED), Some((r, _)) if r == run) {
+            return;
+        }
+        let t = FieldTicket {
+            run,
+            swaps: FIELD_KICK_SWAPS,
+        };
+        let swaps = FIELD_SWAPS.load(Ordering::Relaxed);
+        if field_ticket_state(t, run, swaps, field_run_finished(run)) == TicketState::Due {
+            if let Some(field) = field_readback(c) {
+                FIELD_LANDED = Some((run, field));
+            }
+        }
+    }
+}
+
+/// [`field_collect`]'s answer, as a pure function of the ticket, the live run and the run whose
+/// field [`field_frame_begin`] last read.
+pub(crate) fn field_answer(t: FieldTicket, runs: u32, landed: Option<u32>) -> TicketState {
+    if t.run != runs {
+        TicketState::Lost
+    } else if landed == Some(t.run) {
+        TicketState::Due
+    } else {
+        TicketState::Pending
+    }
+}
+
+/// **The field a [`field_kick`] queued, once the frame head has read it** — [`FieldRead::Pending`]
+/// before that, [`FieldRead::Lost`] if a later run has reused the targets. Touches no GL: the read
+/// itself is [`field_frame_begin`]'s, at the head of a frame, for the reason given there.
+pub(crate) fn field_collect(t: FieldTicket) -> FieldRead {
+    // SAFETY: main render thread, like every other access to the chain.
+    unsafe {
+        if (*std::ptr::addr_of!(FIELDST)).is_none() {
+            return FieldRead::Lost;
+        }
+        let landed = *std::ptr::addr_of!(FIELD_LANDED);
+        match field_answer(t, FIELD_RUNS, landed.map(|l| l.0)) {
+            TicketState::Due => landed.map_or(FieldRead::Lost, |l| FieldRead::Ready(l.1)),
+            TicketState::Pending => FieldRead::Pending,
+            TicketState::Lost => FieldRead::Lost,
+        }
+    }
+}
+
+/// Read the chain's last level — the 15x8 a run left there — and put the framebuffer back.
+unsafe fn field_readback(c: &FieldChain) -> Option<[[f32; 3]; FIELD_CELLS]> {
+    let &(_, fbo, _, _) = c.levels.last()?;
+    let (gx, gy, gw, gh) = c.view;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    let mut buf = [0u8; FIELD_CELLS * 4];
+    glPixelStorei(GL_PACK_ALIGNMENT, 1); // 15 RGBA texels is 60 bytes — 4-aligned anyway
+    crate::diag::spans::span("fieldread", || {
         glReadPixels(
             0,
             0,
@@ -4928,34 +5718,32 @@ pub(crate) fn sample_underlay_field() -> Option<[[f32; 3]; FIELD_CELLS]> {
             GL_RGBA,
             GL_UNSIGNED_BYTE,
             buf.as_mut_ptr() as *mut c_void,
-        );
+        )
+    });
+    glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
+    glViewport(gx, gy, gw, gh);
 
-        // Restore the world exactly — see `cap_cycle`'s step D for what "exactly" has to mean.
-        glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
-        glViewport(gx, gy, gw, gh);
-        glEnable(GL_BLEND);
-
-        // ORIENTATION, DERIVED rather than asserted. `glCopyTexSubImage2D` leaves `grab` bottom-up
-        // and every full-quad pass flips row order once (`vs_img` emits `-ndc.y` with `v_cuv =
-        // a_pos`), so an ODD pass count puts `glReadPixels`' first row at the TOP of the screen.
-        // The television runs seven; a supersampled simulator runs eight. The blur chain records
-        // what a hard-coded parity cost when a pass count changed — this one counts its own.
-        let top_down = c.levels.len() % 2 == 1;
-        Some(std::array::from_fn(|i| {
-            let (row, col) = (i / FIELD_W as usize, i % FIELD_W as usize);
-            let row = if top_down {
-                row
-            } else {
-                FIELD_H as usize - 1 - row
-            };
-            let p = (row * FIELD_W as usize + col) * 4;
-            [
-                buf[p] as f32 / 255.0,
-                buf[p + 1] as f32 / 255.0,
-                buf[p + 2] as f32 / 255.0,
-            ]
-        }))
-    }
+    // ORIENTATION, DERIVED rather than asserted. `glCopyTexSubImage2D` leaves `grab` (and the page
+    // snapshot, which is the same copy) bottom-up and every full-quad pass flips row order once
+    // (`vs_img` emits `-ndc.y` with `v_cuv = a_pos`), so an ODD pass count puts `glReadPixels`'
+    // first row at the TOP of the screen. The television runs seven; a supersampled simulator runs
+    // eight. The blur chain records what a hard-coded parity cost when a pass count changed — this
+    // one counts its own.
+    let top_down = c.levels.len() % 2 == 1;
+    Some(std::array::from_fn(|i| {
+        let (row, col) = (i / FIELD_W as usize, i % FIELD_W as usize);
+        let row = if top_down {
+            row
+        } else {
+            FIELD_H as usize - 1 - row
+        };
+        let p = (row * FIELD_W as usize + col) * 4;
+        [
+            buf[p] as f32 / 255.0,
+            buf[p + 1] as f32 / 255.0,
+            buf[p + 2] as f32 / 255.0,
+        ]
+    }))
 }
 
 /// The texture attached to `fbo` — the next pass's source. The chain stores the pair together, so
@@ -4988,9 +5776,84 @@ pub(crate) fn draw_field(x: f32, y: f32, w: f32, h: f32, tex: c_uint, tint: *con
     }
 }
 
+/// Draw the underlay field as a popover's MATERIAL over the rounded rect `x,y,w,h` (corner
+/// `radius`): the field's own window `uv` — the panel's screen rect over the screen size, which
+/// `ui::underlay::panel_uv` computes — magnified, tinted and dithered
+/// (`shaders/fs_field_panel.frag`).
+///
+/// Returns whether the program was reachable. `false` — no texture or no program — tells the
+/// caller to lay down the flat sheet instead, so a panel is never left as a hole. A culled or
+/// `drawmask`ed quad answers `true`: the draw was ASKED for and refused on purpose, and a fallback
+/// sheet in its place would make the mask leg price the wrong primitive.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_field_panel(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    uv: [f32; 4],
+    tex: c_uint,
+    tint: *const f32,
+) -> bool {
+    if tex == 0 || unsafe { PPROG } == 0 {
+        return false;
+    }
+    if culled(x, y, w, h) || gate(Class::Field, x, y, w, h) {
+        return true;
+    }
+    unsafe {
+        use_prog(PPROG); // u_screen and the sampler unit are set once at init
+        glUniform4f(FP_RECT, x, y, w, h);
+        glUniform4fv(FP_TINT, 1, tint);
+        glUniform4f(FP_UVRECT, uv[0], uv[1], uv[2], uv[3]);
+        glUniform2f(FP_SIZE, w, h);
+        glUniform1f(FP_RADIUS, radius.min(w.min(h) * 0.5));
+        glUniform1f(FP_DITHER, dither_for_field(w, h));
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **[`enc_u8`] is `(enc(v).clamp(0, 1) * 255 + 0.5) as u8` to the bit, without a `powf`.**
+    /// Every threshold is checked from both sides (the last float below it and the threshold
+    /// itself), then a dense sweep of the whole working range and the edge values a colour
+    /// pipeline can hand it: negatives, zero, the linear toe, above white, infinities and NaN.
+    #[test]
+    fn the_quantised_encode_is_the_powf_encode_to_the_bit() {
+        let reference = |v: f32| (enc(v).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        for &t in enc_u8_thresholds().iter() {
+            let below = f32::from_bits(t.to_bits() - 1);
+            assert_eq!(enc_u8(below), reference(below), "just below {t:e}");
+            assert_eq!(enc_u8(t), reference(t), "at {t:e}");
+        }
+        // Every 16th float in [0, 1.25): ~67M values' worth of bit patterns, sampled 1 in 16.
+        let (lo, hi) = (0.0f32.to_bits(), 1.25f32.to_bits());
+        let mut b = lo;
+        while b < hi {
+            let v = f32::from_bits(b);
+            assert_eq!(enc_u8(v), reference(v), "at {v:e}");
+            b += 16;
+        }
+        for v in [
+            -1.0,
+            -0.0,
+            f32::MIN_POSITIVE,
+            0.0031308,
+            1.0,
+            2.0,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+        ] {
+            assert_eq!(enc_u8(v), reference(v), "at {v:e}");
+        }
+    }
 
     /// **The underlay chain is a BOX FILTER only because every pass is exactly 2x**, and that is a
     /// property of the drawable's width, so it is graded here rather than assumed. The television
@@ -5010,6 +5873,62 @@ mod tests {
         assert_eq!(field_passes(1440), None, "a 0.75x window cannot be halved onto 15 columns");
         assert_eq!(field_passes(14), None);
         assert_eq!(field_passes(15), Some(0));
+    }
+
+    /// **A field read is due one drawn frame after its kick, and never from a reused chain.** The
+    /// lag is what keeps `glReadPixels` off the frame that queued the reduction (26–37 ms of a
+    /// modal's open frame on the television when it was not); the run check is what keeps one
+    /// reader from adopting another's page.
+    #[test]
+    fn a_field_ticket_is_due_a_frame_later_and_lost_to_a_later_run() {
+        let t = FieldTicket { run: 4, swaps: 10 };
+        assert_eq!(field_ticket_state(t, 4, 10, true), TicketState::Pending, "same frame: would stall");
+        assert_eq!(field_ticket_state(t, 4, 11, true), TicketState::Due);
+        assert_eq!(field_ticket_state(t, 4, 40, true), TicketState::Due, "late is still the same page");
+        assert_eq!(field_ticket_state(t, 5, 11, true), TicketState::Lost, "another run reused the targets");
+        let wrapped = FieldTicket { run: 1, swaps: u32::MAX };
+        assert_eq!(field_ticket_state(wrapped, 1, 0, true), TicketState::Due, "the swap count wraps");
+    }
+
+    /// **A frame count is only the floor: the read waits for the GPU's own word.** On the
+    /// television the GPU runs more than a frame behind a modal's open, so "one frame later" still
+    /// stalled the collecting frame by 11–25 ms; an unsignalled fence keeps the ticket pending however
+    /// many frames have passed, and a signalled one is still refused on the kick's own frame.
+    #[test]
+    fn a_field_ticket_waits_for_its_fence_whatever_the_frame_count() {
+        let t = FieldTicket { run: 4, swaps: 10 };
+        assert_eq!(field_ticket_state(t, 4, 11, false), TicketState::Pending, "not finished: no read");
+        assert_eq!(field_ticket_state(t, 4, 40, false), TicketState::Pending, "late but unfinished");
+        assert_eq!(field_ticket_state(t, 4, 10, true), TicketState::Pending, "the floor still holds");
+        assert_eq!(field_ticket_state(t, 5, 40, false), TicketState::Lost, "a reused chain is lost either way");
+    }
+
+    /// **The read happens at the frame's HEAD; a collect mid-frame only answers what landed.** A
+    /// `glReadPixels` between the page and the surfaces ends framebuffer 0's render pass on Midgard
+    /// and makes the rest of the frame reload every tile it had drawn, so `field_collect` must
+    /// never touch GL: it is `Due` only for the run [`field_frame_begin`] already read, `Pending`
+    /// for the live run until then, and `Lost` for any other run whatever landed.
+    #[test]
+    fn a_field_collect_answers_only_what_the_frame_head_read() {
+        let t = FieldTicket { run: 4, swaps: 10 };
+        assert_eq!(field_answer(t, 4, None), TicketState::Pending, "nothing read yet");
+        assert_eq!(field_answer(t, 4, Some(3)), TicketState::Pending, "an older run landed");
+        assert_eq!(field_answer(t, 4, Some(4)), TicketState::Due, "the head read this run");
+        assert_eq!(field_answer(t, 5, Some(4)), TicketState::Lost, "a later run reused the targets");
+        assert_eq!(field_answer(t, 5, Some(5)), TicketState::Lost, "another run's page");
+    }
+
+    /// **A frame that rendered the page offscreen is not followed by a present until the GPU has
+    /// finished it — for a bounded number of frames.** Unfenced (the simulator), nothing is ever
+    /// pending; a fence that never signals stops deferring after `SNAPSHOT_DEFER_MAX` frames rather
+    /// than freezing the screen.
+    #[test]
+    fn a_snapshot_in_flight_defers_presents_for_a_bounded_number_of_frames() {
+        assert!(!snapshot_defers(None, 0), "no fence: nothing in flight");
+        assert!(!snapshot_defers(Some(true), 0), "signalled: present");
+        assert!(snapshot_defers(Some(false), 0), "in flight: defer");
+        assert!(snapshot_defers(Some(false), SNAPSHOT_DEFER_MAX - 1));
+        assert!(!snapshot_defers(Some(false), SNAPSHOT_DEFER_MAX), "the cap: present anyway");
     }
 
     #[test]
@@ -5170,6 +6089,7 @@ mod tests {
         for (name, src) in [
             ("fs_ambient.frag", FS_AMBIENT),
             ("fs_field.frag", FS_FIELD),
+            ("fs_field_panel.frag", FS_FIELD_PANEL),
             ("fs_glass.frag", FS_GLASS),
         ] {
             let code = shader_code(src);
@@ -5276,6 +6196,142 @@ mod tests {
     /// Every motion this test can raise is raised through the real seams — a popover's scope, the
     /// page's unscoped springs, the verdict app.rs threads into `popover::host::begin_frame` — and
     /// NONE of them may move the answer.
+    /// **A frozen page never reads its ground.** Under a modal the page is the host snapshot, so
+    /// both samplers answer with their last reading however many draws pass — neither cadence
+    /// counter moves, so no `glReadPixels` (a full GPU drain) is ever reached — and the freeze
+    /// lifting hands the cadence back where it was.
+    #[test]
+    fn a_frozen_page_answers_its_ground_from_the_last_reading() {
+        let _g = crate::testlock::serial();
+        let last = Some([0.25f32, 0.5, 0.75]);
+        let (g0, c0) = unsafe {
+            GROUND_RGB = last;
+            CONTROL_GROUND_RGB = last;
+            (
+                (*std::ptr::addr_of!(GROUND_PROBE)).cadence,
+                (*std::ptr::addr_of!(CONTROL_PROBE)).cadence,
+            )
+        };
+        let was = set_page_frozen(true);
+        for _ in 0..(3 * GROUND_SAMPLE_EVERY.max(CONTROL_GROUND_SAMPLE_EVERY)) {
+            assert_eq!(sample_ground([0.0, 0.0, 100.0, 40.0], true), last);
+            assert_eq!(sample_control_ground([0.0, 0.0, 100.0, 40.0], true), last);
+        }
+        set_page_frozen(was);
+        let (g1, c1) = unsafe {
+            (
+                (*std::ptr::addr_of!(GROUND_PROBE)).cadence,
+                (*std::ptr::addr_of!(CONTROL_PROBE)).cadence,
+            )
+        };
+        assert_eq!((g1, c1), (g0, c0), "no reading was even counted toward while frozen");
+        unsafe {
+            GROUND_RGB = None;
+            CONTROL_GROUND_RGB = None;
+        }
+    }
+
+    #[test]
+    fn discovery_does_not_advance_a_cached_control_ground_probe() {
+        let _g = crate::testlock::serial();
+        use crate::ui::frame::backdrop::{self, Sources};
+        use std::{cell::RefCell, rc::Rc};
+
+        let last = Some([0.25f32, 0.5, 0.75]);
+        let before = unsafe {
+            CONTROL_GROUND_RGB = last;
+            let probe = &mut *std::ptr::addr_of_mut!(CONTROL_PROBE);
+            probe.cadence = ProbeCadence {
+                every: CONTROL_GROUND_SAMPLE_EVERY,
+                at: 7,
+                last_drawn: drawn_frames(),
+                dirty: false,
+                pending: None,
+            };
+            probe.cadence
+        };
+        {
+            let _discovery = backdrop::discover(Rc::new(RefCell::new(Sources::default())));
+            assert_eq!(sample_control_ground([0.0, 0.0, 100.0, 40.0], true), last);
+        }
+        let after = unsafe { (*std::ptr::addr_of!(CONTROL_PROBE)).cadence };
+        assert_eq!(after, before, "discovery is descriptive and must not consume probe cadence");
+
+        unsafe { CONTROL_GROUND_RGB = None; }
+    }
+
+    /// **A due ground reading never reads the frame it is due on.** The kick only queues a copy;
+    /// the answer is collected on a later call, once a drawn frame has ended since AND the GPU has
+    /// passed the copy — never before either. Then the cadence resumes counting. Observed RED
+    /// against the synchronous shape (a due call answered `Collect` on the frame itself: the
+    /// `glReadPixels` drain behind every thirtieth Detail frame of `fps:push-100`).
+    #[test]
+    fn a_due_ground_reading_is_queued_and_collected_only_once_the_gpu_has_passed_it() {
+        let mut c = ProbeCadence::new(30);
+        assert_eq!(c.step(false, 100, true), ProbeStep::Kick, "nothing latched: queue one");
+        assert_eq!(c.step(false, 100, true), ProbeStep::Keep, "same frame: the copy is not even flushed");
+        assert_eq!(c.step(false, 101, false), ProbeStep::Keep, "a frame later, but the GPU is behind");
+        assert_eq!(c.step(false, 102, true), ProbeStep::Collect);
+        // latched now: the next reading is due on the thirtieth call after the collect
+        let mut steps = Vec::new();
+        for i in 0..30 {
+            steps.push(c.step(true, 103 + i, true));
+        }
+        assert!(steps[..29].iter().all(|s| *s == ProbeStep::Keep), "{steps:?}");
+        assert_eq!(steps[29], ProbeStep::Kick);
+        assert_eq!(c.step(true, 132, true), ProbeStep::Keep, "kicked this frame");
+        assert_eq!(c.step(true, 133, true), ProbeStep::Collect);
+    }
+
+    /// An invalidation drops a reading still in flight for the OLD item — collecting it would
+    /// latch the previous hero's ground — and queues a fresh one on the very next call.
+    #[test]
+    fn an_invalidated_probe_drops_its_reading_in_flight_and_queues_a_fresh_one() {
+        let mut c = ProbeCadence::new(30);
+        assert_eq!(c.step(true, 1, true), ProbeStep::Kick, "a fresh probe is dirty");
+        c.invalidate();
+        assert_eq!(c.step(true, 5, true), ProbeStep::Kick, "not the old kick's collect");
+        assert_eq!(c.step(true, 6, true), ProbeStep::Collect);
+        assert_eq!(c.step(true, 7, true), ProbeStep::Keep, "clean again once collected");
+    }
+
+    /// The table-driven mean is the `powf` mean to the bit, on every 8-bit value and on a real
+    /// probe-sized box of mixed texels.
+    #[test]
+    fn the_u8_ground_mean_is_the_powf_mean_to_the_bit() {
+        for v in 0..=255u8 {
+            assert_eq!(lin_u8(v).to_bits(), lin(v as f32 / 255.0).to_bits(), "value {v}");
+        }
+        let mut x = 0x2545_f491u32;
+        let texels: Vec<[u8; 4]> = (0..49 * 49)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                let b = x.to_le_bytes();
+                [b[0], b[1], b[2], 255]
+            })
+            .collect();
+        let fast = diffuse_ground_mean_u8(texels.iter().map(|t| &t[..]));
+        let slow = diffuse_ground_mean(
+            texels.iter().map(|t| [t[0] as f32 / 255.0, t[1] as f32 / 255.0, t[2] as f32 / 255.0]),
+        );
+        assert_eq!(fast.map(f32::to_bits), slow.map(f32::to_bits));
+    }
+
+    /// Box `i` of a collected atlas is exactly its own `px x px` texels, row by row.
+    #[test]
+    fn a_probe_tap_is_its_own_box_of_the_atlas() {
+        let (px, n) = (3usize, 4usize);
+        let w = px * n;
+        let buf: Vec<u8> = (0..w * px).flat_map(|t| [(t % w / px) as u8, 0, 0, 255]).collect();
+        for i in 0..n {
+            let texels: Vec<&[u8]> = probe_tap(&buf, i, px as c_int, n).collect();
+            assert_eq!(texels.len(), px * px);
+            assert!(texels.iter().all(|p| p[0] == i as u8), "box {i}: {texels:?}");
+        }
+    }
+
     #[test]
     fn a_field_keeps_its_dither_through_every_motion() {
         use crate::ui::idle::{frame_begin, note_spring, page_moving, present_moving, MotionScope};
@@ -5745,5 +6801,35 @@ mod tests {
             blur_is_bottom_up(),
             "the v span runs backwards iff stored bottom-up"
         );
+    }
+}
+
+#[cfg(test)]
+mod recording_clear_tests {
+    #[test]
+    fn text_prewarm_cannot_clear_the_visible_frame() {
+        let _guard = crate::testlock::serial();
+        let old = super::set_page_frozen(false);
+        assert!(super::frame_clear_allowed());
+        super::without_frame_clear(|| {
+            assert!(!super::frame_clear_allowed(), "pending screen raw clear must be refused");
+        });
+        assert!(super::frame_clear_allowed());
+        super::set_page_frozen(old);
+    }
+
+    #[test]
+    fn recording_clear_scope_restores_after_nesting_and_unwind() {
+        let _guard = crate::testlock::serial();
+        let old = super::set_page_frozen(false);
+        super::without_frame_clear(|| {
+            let _ = std::panic::catch_unwind(|| super::without_frame_clear(|| panic!("screen")));
+            assert!(!super::frame_clear_allowed());
+        });
+        assert!(super::frame_clear_allowed());
+        super::set_page_frozen(true);
+        super::without_frame_clear(|| {});
+        assert!(!super::frame_clear_allowed(), "must preserve the independent modal freeze");
+        super::set_page_frozen(old);
     }
 }

@@ -1,10 +1,10 @@
 # Backdrop blur: what the refresh cadence costs
 
-`Glass::DYNAMIC` now refreshes its shared backdrop snapshot on every changed successful present.
-This note is the 2026-08-19 experiment that priced the former period-3 default: what each cadence
-costs in GPU cycles on both source paths, what it costs in frames, and what it buys on the panel. It is a
-companion to `docs/backdrop-blur-profiling.md`, whose instruments, scene and cautions it uses
-unchanged.
+**Archived experiment.** The measurements below are from 2026-08-19. The live-backdrop
+mechanism now refreshes every changed visible source and reuses unchanged regions; see
+[the 2026-09-19 layer-stack addendum](backdrop-blur-profiling.md#2026-09-19-live-backdrop-sources-follow-the-layer-stack).
+The old cadence clock and `glasshz` override were removed with that migration. The instrument
+and recommendation below describe the historical implementation, not current usage instructions.
 
 Everything below was measured on the dev television (LG 49SM9000PLA, Mali-T820 MP2, DDK r12p0,
 webOS 4.5) on 2026-08-19.
@@ -140,7 +140,7 @@ no still frame can show judder. The bound that *is* certain is arithmetic — at
 refresh in three, the backdrop a frame shows is at most 33 ms old, and each skipped step is worth
 about 2/255 mean-abs inside the panel.
 
-## Recommendation
+## Recommendation recorded at the time (superseded)
 
 **Keep three. Do not raise the cadence on the capture path, and do not lower it.**
 
@@ -155,6 +155,5 @@ about 2/255 mean-abs inside the panel.
   configuration, and 60 fps held. That is the honest way to state the direct path's value: it does
   not save much at the cadence we run today, it removes the reason not to raise it.
 
-The trigger stays in the tree because the curve above is a property of one scene on one television,
-and the next scene with a genuinely moving underlay behind glass will want it re-measured rather
-than re-argued.
+The trigger was retained after this experiment for further measurements. It was retired by the
+2026-09-19 migration; the measurements remain historical evidence, not a live scheduling option.

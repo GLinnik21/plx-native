@@ -469,8 +469,8 @@ pub(crate) fn armed() -> bool {
 ///
 /// Two things happen here and both have to precede every glass surface in the frame: the step may
 /// roll over (which invalidates, so a configuration change is not measured against the last one's
-/// cached snapshot), and the cadence clock may invalidate. `Glass::prepare`'s contract, for the
-/// same reason.
+/// cached snapshot), and the dial's experimental cadence may invalidate its scratch source.
+/// This synthetic benchmark is independent of the live surface registry.
 impl Dial {
     pub(crate) fn prepare(&mut self, now_ms: u32) {
         if !self.armed() {
