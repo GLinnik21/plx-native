@@ -5070,6 +5070,128 @@ def grade_bench(scene, lines):
     return ok, detail
 
 
+# `bench: kind=deep cycle=<i>/<n> target=<name> dir=<push|pop> depth=<d> worst_ms=<f> frames=<k>
+# dur_ms=<d> rss_kb=<r>` — one line per completed DEEP-stack bench step (`dev::scenarios::
+# deep_bench_tick`), and a terminal `bench: kind=deep done cycles=<n> rss_root_kb=<r>` once every
+# step ran. Unlike `push`/`modal` (one open+close round trip per line), a `deep` line is ONE nav op
+# — a push OR a pop, never both — which is why it carries its own `dir`/`depth` fields the other
+# two kinds don't need.
+BENCH_DEEP_RE = re.compile(
+    r"^bench: kind=deep cycle=(?P<cycle>\d+)/(?P<n>\d+) target=(?P<target>[\w-]+) "
+    r"dir=(?P<dir>push|pop) depth=(?P<depth>\d+) worst_ms=(?P<worst>\d+(?:\.\d+)?) "
+    r"frames=(?P<frames>\d+) dur_ms=(?P<dur>\d+) rss_kb=(?P<rss>\d+)")
+BENCH_DEEP_DONE_RE = re.compile(r"^bench: kind=deep done cycles=(?P<n>\d+) rss_root_kb=(?P<rss>\d+)")
+
+
+def parse_deep_bench(lines):
+    """Every completed `bench: kind=deep` step, in log order, plus the `done` line's own
+    `rss_root_kb` (`None` if it never printed). Each step: `{cycle, n, target, dir, depth,
+    worst_ms, frames, dur_ms, rss_kb}`, `cycle` 1-based exactly like `parse_bench`."""
+    reject_simulator(lines)
+    steps = []
+    rss_root_kb = None
+    for ln in lines:
+        s = ln.strip()
+        m = BENCH_DEEP_RE.match(s)
+        if m:
+            steps.append({
+                "cycle": int(m.group("cycle")),
+                "n": int(m.group("n")),
+                "target": m.group("target"),
+                "dir": m.group("dir"),
+                "depth": int(m.group("depth")),
+                "worst_ms": float(m.group("worst")),
+                "frames": int(m.group("frames")),
+                "dur_ms": int(m.group("dur")),
+                "rss_kb": int(m.group("rss")),
+            })
+            continue
+        m = BENCH_DEEP_DONE_RE.match(s)
+        if m:
+            rss_root_kb = int(m.group("rss"))
+    return steps, rss_root_kb
+
+
+def grade_deep_bench(scene, lines):
+    """Grade a `bench: kind=deep` DEEP nav-stack stress run (spec: `depth` pushes with no pop in
+    between, then `depth` pops back to the root one page at a time — `2*depth` steps total).
+
+    FAILS unless: all `2*depth` steps AND the terminal `done` line are present; every step's
+    `worst_ms` is <= `bench_worst_ms` (default 20.0, same ceiling `grade_bench` uses); the mean
+    `worst_ms` of the LAST 10 pushes is <= the FIRST 10 pushes' mean + `bench_drift_ms` (default
+    2.0) — catches per-push cost growing with depth — and the identical check over pops, where the
+    FIRST 10 pops are the DEEPEST (recorded right after the walk turns around) and the LAST 10 are
+    the SHALLOWEST (just before the root); the deepest push's `rss_kb` is <= the 10th step's
+    `rss_kb` + `bench_depth_rss_kb` (default 16384 — ~180kB/level over the 90 levels past the
+    first 10, retained STATE rather than pixels) — catches memory growing with depth; and the
+    `done` line's own `rss_root_kb` is <= the 10th step's `rss_kb` + `bench_rss_growth_kb` (default
+    8192, the same key `grade_bench` uses) — the stack must give everything back once fully
+    unwound.
+
+    Returns `(ok, detail)`, same contract as `grade_bench`."""
+    steps, rss_root_kb = parse_deep_bench(lines)
+    if not steps:
+        return False, " | no `bench: kind=deep` step lines — the bench never armed, or logged nothing"
+
+    n = steps[0]["n"]
+    worst_ceiling = scene.get("bench_worst_ms", 20.0)
+    drift_ceiling = scene.get("bench_drift_ms", 2.0)
+    rss_ceiling = scene.get("bench_rss_growth_kb", 8192)
+    depth_rss_ceiling = scene.get("bench_depth_rss_kb", 16384)
+
+    ok = True
+    detail = f" | bench:deep {len(steps)} step line(s) (expect n={n})"
+
+    if rss_root_kb is None or len(steps) < n:
+        ok = False
+        detail += " | FAIL: no `done` line, or fewer than the expected step count — not every step completed"
+
+    misses = [s for s in steps if s["worst_ms"] > worst_ceiling]
+    if misses:
+        ok = False
+        worst_ex = max(misses, key=lambda s: s["worst_ms"])
+        detail += (f" | FAIL: {len(misses)} step(s) over bench_worst_ms={worst_ceiling} (worst "
+                   f"step cycle={worst_ex['cycle']}/{worst_ex['n']} dir={worst_ex['dir']} "
+                   f"target={worst_ex['target']} worst_ms={worst_ex['worst_ms']:.1f})")
+
+    pushes = [s for s in steps if s["dir"] == "push"]
+    pops = [s for s in steps if s["dir"] == "pop"]
+
+    def drift_check(label, samples):
+        nonlocal ok, detail
+        if len(samples) < 10:
+            detail += f" | {label} drift: only {len(samples)} step(s), need >= 10 — not graded"
+            return
+        vals = [s["worst_ms"] for s in samples]
+        mean_first = sum(vals[:10]) / 10.0
+        mean_last = sum(vals[-10:]) / 10.0
+        drift = mean_last - mean_first
+        ok = ok and drift <= drift_ceiling
+        detail += (f" | {label} drift(last10-first10)={drift:+.2f}ms (first10 mean={mean_first:.2f}, "
+                   f"last10 mean={mean_last:.2f}) vs bench_drift_ms {drift_ceiling}")
+
+    drift_check("push", pushes)
+    drift_check("pop", pops)
+
+    if len(steps) >= 10:
+        rss10 = steps[9]["rss_kb"]
+        if pushes:
+            rss_depth_max = pushes[-1]["rss_kb"]
+            depth_growth = rss_depth_max - rss10
+            ok = ok and depth_growth <= depth_rss_ceiling
+            detail += (f" | depth rss growth(maxdepth-step10)={depth_growth}kB (step10={rss10}, "
+                       f"maxdepth={rss_depth_max}) vs bench_depth_rss_kb {depth_rss_ceiling}")
+        if rss_root_kb is not None:
+            root_growth = rss_root_kb - rss10
+            ok = ok and root_growth <= rss_ceiling
+            detail += (f" | root rss growth(root-step10)={root_growth}kB (step10={rss10}, "
+                       f"root={rss_root_kb}) vs bench_rss_growth_kb {rss_ceiling}")
+    else:
+        detail += f" | rss growth: only {len(steps)} step(s), need >= 10 — not graded"
+
+    return ok, detail
+
+
 def rate_stats(vals):
     s = sorted(vals)
     n = len(s)
@@ -5196,13 +5318,17 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     # fails on the <5-samples guard and reads as "the app never reached this screen".
     require_install(lines, cfg)
 
-    # A `bench` scene (push-100/modal-100) is graded entirely off its own `bench:` lines — see
-    # `grade_bench`. It shares every line above (triggers, `make run`, log capture, install
-    # check) with an ordinary fps scene, and diverges only here: none of loop_floor/fps_floor/
-    # fps_ceiling/worst_ceiling_ms/coldopen_ceiling_ms describes what a counted, stop-after-n
-    # bench run is answering.
+    # A `bench` scene (push-100/modal-100/deep-100) is graded entirely off its own `bench:` lines
+    # — see `grade_bench`/`grade_deep_bench`. It shares every line above (triggers, `make run`, log
+    # capture, install check) with an ordinary fps scene, and diverges only here: none of
+    # loop_floor/fps_floor/fps_ceiling/worst_ceiling_ms/coldopen_ceiling_ms describes what a
+    # counted, stop-after-n bench run is answering. `deep` is graded separately from `push`/`modal`
+    # because its wire format carries `dir`/`depth` the other two kinds don't.
     if scene.get("bench"):
-        ok, detail = grade_bench(scene, lines)
+        if scene["bench"] == "deep":
+            ok, detail = grade_deep_bench(scene, lines)
+        else:
+            ok, detail = grade_bench(scene, lines)
         print(f"    [{'PASS' if ok else 'FAIL'}]{detail}")
         return ok, detail
 
