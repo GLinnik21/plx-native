@@ -28,6 +28,12 @@ on:
       - "pkg/appfont-bold.ttf"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
+  # nightly.yml calls this after every published nightly, so the site's "latest nightly" pointer
+  # (staged below, `_site/nightly/latest.json`) moves the same day a nightly does rather than
+  # waiting for the next unrelated site/docs push. The caller grants pages: write, id-token: write
+  # and contents: read on the calling job; this workflow's own top-level `permissions:` still
+  # governs the push/workflow_dispatch triggers above.
+  workflow_call:
 
 permissions:
   contents: read
@@ -54,6 +60,7 @@ jobs:
           mkdir -p _site/assets
           mkdir -p _site/docs/screenshots
           mkdir -p _site/fonts
+          mkdir -p _site/nightly
 
           cp site/index.html _site/index.html
           cp site/styles.css _site/styles.css
@@ -75,6 +82,16 @@ jobs:
 
           cp pkg/appfont.ttf _site/fonts/appfont.ttf
           cp pkg/appfont-bold.ttf _site/fonts/appfont-bold.ttf
+
+      - name: Stage nightly/latest.json
+        # `{"available": false}` when no nightly has ever published — the site has to build before
+        # the first nightly exists, so a `gh api` miss here must not fail the whole Pages build.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 ci/nightly.py latest-json --repo "${{ github.repository }}" > _site/nightly/latest.json
+          cat _site/nightly/latest.json
 
       - name: Check for missing assets
         run: |

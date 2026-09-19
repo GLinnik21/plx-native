@@ -13,12 +13,11 @@ name: build + verify
 # This file owns exactly one thing: turn a checked-out ref into a built, packaged, gate-verified
 # .ipk plus its sidecar evidence files, uploaded as one artifact.
 #
-# A third caller (a nightly workflow, on a schedule) is still coming in a later change; what
-# lands HERE is only the plumbing it will need — `flavor: nightly` and the `nightly-date` input,
-# passed through as `PLX_NIGHTLY_DATE` — so that the FLAVOR/version machinery this job already
-# exercises for stable and debug is proven before anything schedules a run. The boolean inputs
-# below (`homebrew-manifest`, `source-asset`, `caches`, `fwcompat`) exist so that future caller can
-# select the right subset without a third copy of this job.
+# A third caller, `nightly.yml` (a scheduled build from `main`), now uses this too — `flavor:
+# nightly` with the `nightly-date` input, passed through as `PLX_NIGHTLY_DATE`, so the FLAVOR/
+# version machinery this job already exercised for stable and debug covers nightly the same way.
+# The boolean inputs below (`homebrew-manifest`, `source-asset`, `caches`, `fwcompat`) are what let
+# three callers each select the right subset without a third copy of this job.
 
 on:
   workflow_call:
