@@ -5,9 +5,13 @@
 //!
 //! * a **scrim** — `theme::scrim_black(a)` over the whole screen — says nothing about the page at
 //!   all, so a modal over a green-lit hero and a modal over a blue-lit one are the same picture;
-//! * a **four-corner envelope** — `gfx::sample_modal_ambient` + [`AmbientWash`] — says the page is
-//!   greenish, with four degrees of freedom. It cannot say that the green is on the LEFT of the
-//!   bottom edge and the red on the right, because a bilinear surface has no such shape in it.
+//! * a **four-corner envelope** — four sampled corners keyed through [`AmbientWash`] — says the
+//!   page is greenish, with four degrees of freedom. It cannot say that the green is on the LEFT
+//!   of the bottom edge and the red on the right, because a bilinear surface has no such shape in
+//!   it. (`RouteGround`'s own live-frame sample used to read this way, through the four
+//!   `glReadPixels` taps of `gfx::sample_modal_ambient`; PR2 stage B retired both in favour of the
+//!   field below, and [`UnderlayField::latch_from_corners`] is what a caller with no readable
+//!   frame — the video plane, a route that opens before Home has drawn — still reaches for.)
 //!
 //! This is the third: a 15x8 grid reduced from the frame itself (`gfx::sample_underlay_field`),
 //! low-passed, graded, reconstructed to 60x32 and drawn as one magnified quad with the shared
@@ -18,8 +22,9 @@
 //! `docs/liquid-glass.md` sizes what it costs, and the thing it buys — letter-scale structure
 //! softened rather than destroyed — is exactly what a GROUND must not have. Reducing to 15x8 is a
 //! box filter with a support 128 screen pixels wide; titles, faces and poster edges cannot survive
-//! it, which is the property [`RouteGround`](crate::ui::route_screen::RouteGround) states in prose
-//! about its four corners and which this keeps while adding the one thing four corners lack.
+//! it, which is the property a four-corner wash always had and which this keeps while adding the
+//! one thing four corners lack — see [`RouteGround`](crate::ui::route_screen::RouteGround), whose
+//! ground this module has been since PR2 stage B.
 //!
 //! # The pipeline, and why each step is where it is
 //!
@@ -55,8 +60,6 @@
 //! *right* shape for four corners and the wrong one for 120 cells. Catmull-Rom is C1, so the
 //! reconstruction is done on the CPU, once, into a texture that bilinear magnification then only
 //! has to smooth 32x further. 4x per axis is where the crease stops being findable.
-#![allow(dead_code)] // consumers land in the same PR (RouteGround); stage B removes this
-
 use crate::gfx;
 use crate::ui::theme;
 use crate::ui::widgets::AmbientWash;
@@ -108,6 +111,11 @@ pub(crate) enum Role {
     /// black ink: `mix(theme::SCRIM_BLACK_INK, field, weight)`, which is a plain multiply because
     /// the ink is zero. **`weight == 0` is today's flat `theme::scrim_black` and must stay
     /// BIT-IDENTICAL to it** — see [`plan`].
+    ///
+    /// Not constructed outside this module's own tests yet: `RouteGround` (PR2 stage B) only ever
+    /// draws [`Role::Ground`]. A scrim that reads the page under it — a popover or the player HUD —
+    /// is PR3's consumer of this variant, not a reason to delete it now.
+    #[allow(dead_code)]
     Dim { weight: f32 },
 }
 
@@ -141,9 +149,9 @@ pub(crate) fn plan(latched: bool, weight: f32, alpha: f32) -> Draw {
 
 /// **A latched colour field of the page under an overlay.**
 ///
-/// It owns a GL texture, so unlike [`RouteGround`](crate::ui::route_screen::RouteGround) it is not
-/// `Copy`: the owner holds it (a screen field, exactly as `RouteGround` is held) and dropping the
-/// owner frees the texture.
+/// It owns a GL texture, so it is not `Copy` — the owner holds it (a screen field; since PR2 stage
+/// B, [`RouteGround`](crate::ui::route_screen::RouteGround) holds one this way, which is what
+/// makes RouteGround itself no longer `Copy` either) and dropping the owner frees the texture.
 pub(crate) struct UnderlayField {
     /// The graded field in LINEAR light, row-major from the top-left. Linear because every
     /// reconstruction below is a weighted sum; display-encoded is what `sample` and the texture
@@ -223,8 +231,9 @@ impl UnderlayField {
     }
 
     /// **The one colour that stands for the whole field** — the mean taken in LINEAR light and
-    /// returned display-encoded, which is `gfx::sample_modal_ambient`'s `key` contract exactly, so
-    /// this is interchangeable with `RouteGround::key` wherever a `ControlPalette` is keyed.
+    /// returned display-encoded, the same contract the old four-corner sampler's `key` field kept
+    /// (mean-in-linear, encoded back), so `RouteGround::palette` keys a `ControlPalette` from this
+    /// wherever it used to key one from that.
     pub(crate) fn key(&self) -> [f32; 3] {
         let mut acc = [0.0f32; 3];
         for c in &self.cells {

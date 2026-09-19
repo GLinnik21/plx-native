@@ -3689,63 +3689,6 @@ fn diffuse_ground_mean(samples: impl IntoIterator<Item = [f32; 3]>) -> [f32; 3] 
     [enc(acc[0] / k), enc(acc[1] / k), enc(acc[2] / k)]
 }
 
-/// One frozen colour envelope for a full-screen modal.  The four broad samples are deliberately
-/// converted into an ambient gradient by the UI instead of retained as a downsampled image: text
-/// and poster edges therefore cannot survive as readable squares, while the host page still keys
-/// the modal's colour.
-#[derive(Clone, Copy)]
-pub(crate) struct ModalAmbientSample {
-    pub(crate) corners: [[f32; 3]; 4],
-    pub(crate) key: [f32; 3],
-}
-
-pub(crate) fn sample_modal_ambient() -> ModalAmbientSample {
-    const TAP: c_int = 49;
-    // Painter order: top-left, top-right, bottom-right, bottom-left.
-    const POINTS: [[f32; 2]; 4] = [[0.22, 0.22], [0.78, 0.22], [0.78, 0.78], [0.22, 0.78]];
-    if unsafe { BLUR_IN_PASS } {
-        let c = [
-            crate::ui::theme::SURFACE_APP[0],
-            crate::ui::theme::SURFACE_APP[1],
-            crate::ui::theme::SURFACE_APP[2],
-        ];
-        return ModalAmbientSample {
-            corners: [c; 4],
-            key: c,
-        };
-    }
-    let (gx, gy, gw, gh) = crate::surface::viewport();
-    let mut corners = [[0.0; 3]; 4];
-    let n = TAP as usize;
-    let mut buf = vec![0u8; n * n * 4];
-    for (out, [fx, fy]) in corners.iter_mut().zip(POINTS) {
-        let x = gx + (gw as f32 * fx) as c_int;
-        let y = gy + gh - 1 - (gh as f32 * fy) as c_int;
-        unsafe {
-            glReadPixels(
-                (x - TAP / 2).clamp(gx, gx + gw - TAP),
-                (y - TAP / 2).clamp(gy, gy + gh - TAP),
-                TAP,
-                TAP,
-                GL_RGBA,
-                GL_UNSIGNED_BYTE,
-                buf.as_mut_ptr() as *mut c_void,
-            );
-        }
-        *out = diffuse_ground_mean(buf.chunks_exact(4).map(|p| {
-            [
-                p[0] as f32 / 255.0,
-                p[1] as f32 / 255.0,
-                p[2] as f32 / 255.0,
-            ]
-        }));
-    }
-    ModalAmbientSample {
-        key: diffuse_ground_mean(corners),
-        corners,
-    }
-}
-
 /// Sample the pixels already rendered beneath one Hero action row.
 pub(crate) fn sample_control_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
     unsafe {
@@ -3964,8 +3907,9 @@ pub(crate) fn video_plane_frame() -> bool {
 /// **The refusal every framebuffer-SAMPLING door takes on a video-plane frame** (spec §9).
 ///
 /// `true` = refuse. The four doors are `popover::host::begin_frame` (the frozen-host snapshot),
-/// `draw_blur_backdrop` (Glass), `RouteGround::draw_host` (the ambient sample) and
-/// `FrameCache::capture`. Every one of them answers a question by READING BACK framebuffer 0 —
+/// `draw_blur_backdrop` (Glass), `underlay::sample_underlay_field` (the field `RouteGround::draw_host`
+/// latches its live source from) and `FrameCache::capture`. Every one of them answers a question by
+/// READING BACK framebuffer 0 —
 /// and on this frame framebuffer 0 is a hole: the picture the viewer sees is a hardware plane the
 /// television composites underneath our surface, which GL cannot read. What each of them would
 /// cache is therefore a photograph of transparent black, served back over the video for as long as
@@ -4802,11 +4746,12 @@ pub(crate) fn cap_cycle(want_960: bool, buf: &mut Vec<u8>) -> Option<(c_int, c_i
 // that everything below this line needs a context and everything above that line is arithmetic a
 // host test can grade.
 //
-// WHY A CHAIN AND NOT FOUR `glReadPixels` TAPS. `sample_modal_ambient` reads four 49x49 squares and
-// hands back a four-corner envelope; that is a bilinear gradient with four degrees of freedom, so
-// it cannot say "the green is on the LEFT of the bottom edge and the red on the right". 120 cells
-// can, and they cost one read instead of four — 480 bytes against 4 x 9.6 kB, all of it produced by
-// the GPU's own filter rather than by averaging 2401 samples per corner on the CPU.
+// WHY A CHAIN AND NOT FOUR `glReadPixels` TAPS. The four-corner sampler this replaced (PR2 stage B,
+// 2026-09-19; it read four 49x49 squares and handed back a four-corner envelope) hands back a
+// bilinear gradient with four degrees of freedom, so it cannot say "the green is on the LEFT of the
+// bottom edge and the red on the right". 120 cells can, and they cost one read instead of four —
+// 480 bytes against 4 x 9.6 kB, all of it produced by the GPU's own filter rather than by averaging
+// 2401 samples per corner on the CPU.
 //
 // WHY EXACT 2x PASSES. Bilinear minification is a clean 2x2 box at exactly 2x and nothing else
 // (see `blur_dims`' note): one 128x reduction would sample 2x2 of each 128x128 block and the field
@@ -4901,11 +4846,13 @@ fn field_lazy_init() -> bool {
 /// The refusals, and why each one is not a guess:
 ///
 /// * **Inside a blur source pass** ([`BLUR_IN_PASS`]) the bound framebuffer is a quarter-resolution
-///   crop of the page, not the page — the same reason `sample_modal_ambient` refuses there.
+///   crop of the page, not the page — the same reason [`sample_ground`] and
+///   [`sample_control_ground`] refuse there.
 /// * **On a video-plane frame** framebuffer 0 is the punch-through hole the television composites
 ///   the plane through, so a read returns transparent black; [`video_plane_refuses`] is the shared
-///   gate and `RouteGround::draw_host` states the consequence — a ground latched to that is black
-///   for the life of the ground.
+///   gate, and it is why this returns `None` here rather than a photograph of the hole —
+///   `RouteGround::draw_host` falls back to its corner envelope on exactly this `None` rather than
+///   latch to black for the life of the ground.
 /// * **While the page is served from [`FrameCache`]** ([`PAGE_FROZEN`]) every primitive in this
 ///   module refuses its quad, the reduction passes included, so the chain would reduce whatever
 ///   was last left in its targets. The pixels on the panel are right; the ones this would read are

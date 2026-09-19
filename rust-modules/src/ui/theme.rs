@@ -70,8 +70,9 @@ const SAND_100: [f32; 4] = rgb8(0xe9, 0xe6, 0xe0);
 // real keyed hero ground (`AmbientWash::keyed`, capped at `GROUND_LUMA` 0.42 and mixed toward the
 // surface at `GROUND_W` 0.26) can and does land in a similarly narrow band when the source artwork
 // itself is flat — the difference is that a `RouteGround` fallback bypasses that mix entirely
-// (`RouteGround::latch_target` `jump`s the literal quad, unmixed) and has no artwork to fall back
-// on if it reads as flat, so it has to carry its OWN contrast rather than borrow the keying
+// (`underlay::Grade::Dim` is the identity grade `RouteGround` latches this quad through — unmixed,
+// unlike the `Grade::Ground` a real seed or live frame is capped and leaned through) and has no
+// artwork to fall back on if it reads as flat, so it has to carry its OWN contrast rather than borrow the keying
 // pipeline's. These four now spread across a ~3x luminance range (see
 // `route_screen::tests::the_pre_home_fallback_reads_as_a_directional_wash`) on the same diagonal
 // an authored key light would use — bright near one corner, dark at its opposite — while every
