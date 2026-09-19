@@ -159,7 +159,31 @@ pub(crate) struct UnderlayField {
     /// The 60x32 reconstruction, or 0 before the first latch. Re-specced in place on every latch
     /// (`upload_rgba` reuses `prev`), so a field costs one texture name for its whole life.
     tex: u32,
+    /// Rec.709 luma of every texel of that reconstruction, over its display CODES — what a panel's
+    /// luma ceiling is solved against ([`panel_plan`](Self::panel_plan)). Kept beside the texture
+    /// rather than recomputed per draw: a panel asks every frame, the field changes only at a latch.
+    luma: [u8; TEX_W * TEX_H],
     latched: bool,
+}
+
+/// **What [`UnderlayField::draw_panel`] resolves to, as a VALUE** — [`Draw`]'s counterpart for a
+/// popover's material, so the one decision a host test cannot see through GL (which window of the
+/// field, how bright) is gradeable without a context.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum PanelDraw {
+    /// Nothing latched: the flat panel sheet (`theme::PANEL_TOP`/`PANEL_BOT`), never a blank.
+    Flat,
+    /// The field's window `uv` — `(x, y, w, h)` of the panel over the screen size — multiplied by
+    /// the opaque `tint`.
+    Field { uv: [f32; 4], tint: [f32; 4] },
+}
+
+/// **The panel's window into the field**: its SCREEN rect over the screen size. The field maps the
+/// whole screen, so this is the only UV rect under which a cell stays where it is on the page —
+/// green under the panel's bottom-left is sampled at the panel's bottom-left.
+pub(crate) fn panel_uv(screen: Rect) -> [f32; 4] {
+    let (sw, sh) = (crate::ui::consts::SCR_W, crate::ui::consts::SCR_H);
+    [screen.x / sw, screen.y / sh, screen.w / sw, screen.h / sh]
 }
 
 impl UnderlayField {
@@ -167,6 +191,7 @@ impl UnderlayField {
         Self {
             cells: [[0.0; 3]; N],
             tex: 0,
+            luma: [0; TEX_W * TEX_H],
             latched: false,
         }
     }
@@ -276,9 +301,68 @@ impl UnderlayField {
         }
     }
 
+    /// **A popover panel's material, decided** — see [`PanelDraw`]. `screen` is the panel's rect
+    /// as DRAWN (the cascade's translate folded in); `weight` is `theme::underlay::PANEL_TINT` or
+    /// its sweep.
+    ///
+    /// The tint is one scalar for the whole window: `weight`, lowered just far enough that the
+    /// brightest texel the panel covers lands at `theme::underlay::PANEL_LUMA_MAX` — the ground's
+    /// `ground_capped` rule, applied per panel rather than per cell so that the field's shape
+    /// under the panel survives the cap instead of being flattened by it.
+    pub(crate) fn panel_plan(&self, screen: Rect, weight: f32) -> PanelDraw {
+        if !self.latched {
+            return PanelDraw::Flat;
+        }
+        let peak = self.peak_luma(screen);
+        let cap = crate::ui::theme::underlay::PANEL_LUMA_MAX;
+        let w = weight.clamp(0.0, 1.0);
+        let k = if peak * w > cap { cap / peak } else { w };
+        PanelDraw::Field {
+            uv: panel_uv(screen),
+            tint: [k, k, k, 1.0],
+        }
+    }
+
+    /// **Paint the field as a panel's material over `r`** (corner `radius`) through `p`. Returns
+    /// whether it drew; `false` — unlatched, or no program/texture — is the caller's cue to lay
+    /// down the flat sheet (`widgets::panel_ground`).
+    pub(crate) fn draw_panel(&self, p: Painter, r: Rect, radius: f32, weight: f32) -> bool {
+        let (_, screen, _) = p.to_screen(r);
+        match self.panel_plan(screen, weight) {
+            PanelDraw::Flat => false,
+            PanelDraw::Field { uv, tint } => p.field_panel(r, radius, self.tex, uv, tint),
+        }
+    }
+
+    /// The brightest texel the magnified field can put inside `screen`, 0..1. Bilinear
+    /// magnification never leaves the hull of the two texels either side of a point, so the texels
+    /// bracketing the rect's texel-centre span bound every fragment in it.
+    fn peak_luma(&self, screen: Rect) -> f32 {
+        let span = |lo: f32, len: f32, extent: f32, n: usize| -> (usize, usize) {
+            let a = (lo / extent * n as f32 - 0.5).floor();
+            let b = ((lo + len) / extent * n as f32 - 0.5).floor() + 1.0;
+            let clamp = |v: f32| v.clamp(0.0, (n - 1) as f32) as usize;
+            (clamp(a), clamp(b))
+        };
+        let (i0, i1) = span(screen.x, screen.w, crate::ui::consts::SCR_W, TEX_W);
+        let (j0, j1) = span(screen.y, screen.h, crate::ui::consts::SCR_H, TEX_H);
+        let mut peak = 0u8;
+        for j in j0..=j1 {
+            for &l in &self.luma[j * TEX_W + i0..=j * TEX_W + i1] {
+                peak = peak.max(l);
+            }
+        }
+        peak as f32 / 255.0
+    }
+
     fn adopt(&mut self, cells: [[f32; 3]; N]) {
         self.cells = cells;
-        self.tex = upload(self.tex, &texture_rgba(&self.cells));
+        let px = texture_rgba(&self.cells);
+        for (l, t) in self.luma.iter_mut().zip(px.chunks_exact(4)) {
+            let y = 0.2126 * t[0] as f32 + 0.7152 * t[1] as f32 + 0.0722 * t[2] as f32;
+            *l = (y + 0.5).min(255.0) as u8;
+        }
+        self.tex = upload(self.tex, &px);
         self.latched = true;
     }
 }

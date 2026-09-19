@@ -1737,17 +1737,12 @@ fn frame_ingest(
         d.store_changed(StoreId::Search.ord(), rig.stores.gen(StoreId::Search));
     }
     let surface = d.surface_up();
-    // A surface's INPUTS are the panel's own damage — the glass cadence's ledger, which asks
-    // "did the panel change" rather than "did the page". The MOTION half is no longer stated
-    // here: this used to wrap the WHOLE dispatcher frame in `popover::own_motion`, so a PAGE's
-    // springs stepped inside it were attributed to the panel and `idle::page_moving` read false
-    // for as long as any surface was up — including a DISMISSED one, where `host_refresh`'s
+    // A surface's MOTION is not attributed here: this used to wrap the WHOLE dispatcher frame in
+    // `popover::own_motion`, so a PAGE's springs stepped inside it were attributed to the panel and
+    // `idle::page_moving` read false for as long as any surface was up — including a DISMISSED one, where `host_refresh`'s
     // `fading_only` term is the only thing that re-takes the snapshot for a page the user is
     // driving again. `ModalStack::tick` and `Dispatcher`'s per-surface step and draw open one
     // scope each (§4.4) now; the page's tick runs in none.
-    if surface && !inputs.is_empty() {
-        crate::ui::popover::note_own_damage();
-    }
     let results = take(rig);
     let session_records: Vec<_> = results.iter().filter_map(|(addr, message)| match message {
         AppMsg::Session(crate::auth::owner::SessionEvent::Result(envelope)) => Some((*addr, envelope.clone())),

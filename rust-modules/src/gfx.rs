@@ -59,8 +59,9 @@ pub(crate) use glsl;
 /// wash takes [`DITHER_LSB`] on every draw: it is always broad, and since 2026-09-19 nothing may
 /// switch its noise off).
 ///
-/// **Only the three SLOW-FIELD programs are built with it** — `fs_ambient`, `fs_field` and
-/// `fs_glass`, the ones whose ramp is a blur or a full-screen wash. `fs_src` and `fs_shadow`, the
+/// **Only the SLOW-FIELD programs are built with it** — `fs_ambient`, `fs_field` (and its panel
+/// twin `fs_field_panel`) and `fs_glass`, the ones whose ramp is a blur, a field or a full-screen
+/// wash. `fs_src` and `fs_shadow`, the
 /// per-rect programs every card, chip, scrim and row highlight goes through, are deliberately plain:
 /// the prelude is not free on Midgard (then behind a uniform branch, which is itself not free —
 /// `dither.glsl` cost rule 1), and carrying it on those two was measured
@@ -122,6 +123,7 @@ const VS_IMG_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_img.vert");
 const VS_SRC_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_src.vert");
 const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
 const FS_FIELD: &CStr = glsl_dithered!("shaders/fs_field.frag");
+const FS_FIELD_PANEL: &CStr = glsl_dithered!("shaders/fs_field_panel.frag");
 const FS_HERO: &CStr = glsl!("shaders/fs_hero.frag");
 const FS_BLUR: &CStr = glsl!("shaders/fs_blur.frag");
 const FS_GLASS: &CStr = glsl_dithered!("shaders/fs_glass.frag");
@@ -558,10 +560,22 @@ static mut IL_SHCOL: c_int = 0;
 /// here has: the field is a magnification of a 60x32 texture over up to 2.07M fragments, and the
 /// image program's SDF radius, rim and penumbra branches are all disabled on every one of them.
 /// It takes the program slot `fs_modal_ground.frag` used to hold, so the dithered-program count is
-/// still three — see [`glsl_dithered`].
+/// still three — see [`glsl_dithered`]. (Four since the panel twin below.)
 static mut UPROG: c_uint = 0;
 static mut UL_RECT: c_int = 0;
 static mut UL_TINT: c_int = 0;
+/// **The underlay field as a PANEL'S MATERIAL** (`shaders/fs_field_panel.frag` over
+/// `vs_src.vert`): the same 60x32 texture as [`UPROG`], sampled at the panel's own window into it
+/// and cut to its rounded shape. Its own program so that neither the sub-rect nor the SDF costs the
+/// full-screen dims drawn through [`UPROG`] a single instruction — see the shader's header. 0 when
+/// the link failed; [`draw_field_panel`] then reports `false` and the caller draws the flat sheet.
+static mut PPROG: c_uint = 0;
+static mut FP_RECT: c_int = 0;
+static mut FP_TINT: c_int = 0;
+static mut FP_UVRECT: c_int = 0;
+static mut FP_SIZE: c_int = 0;
+static mut FP_RADIUS: c_int = 0;
+static mut FP_DITHER: c_int = 0;
 // ---- hero-ground program: the backdrop art with both scrim fields folded into it (fs_hero.frag).
 // Its own program because it is the SAME quad the art already draws, only carrying two more
 // closed-form fields — nothing else in the app wants them, and the card composite must not pay for
@@ -915,6 +929,25 @@ pub(crate) fn init_gl() {
             glUniform2f(glGetUniformLocation(UPROG, c"u_screen".as_ptr()), SCR_W, SCR_H);
             glUniform1i(glGetUniformLocation(UPROG, c"u_tex".as_ptr()), 0);
             UL_DITHER = dither_uniforms(UPROG);
+        }
+
+        // The same field as a popover's material — `draw_field_panel`. DITHERED, same contract as
+        // `UPROG` above: `fs_field_panel.frag` is built with `glsl_dithered!`, so it must link
+        // against the `PLX_DITHER_NC` vertex variant.
+        PPROG = link_program(VS_SRC_DITHERED.as_ptr(), FS_FIELD_PANEL.as_ptr()).unwrap_or_else(|| {
+            log("field-panel prog link failed — popover panels fall back to the flat sheet");
+            0
+        });
+        if PPROG != 0 {
+            FP_RECT = glGetUniformLocation(PPROG, c"u_rect".as_ptr());
+            FP_TINT = glGetUniformLocation(PPROG, c"u_tint".as_ptr());
+            FP_UVRECT = glGetUniformLocation(PPROG, c"u_uvrect".as_ptr());
+            FP_SIZE = glGetUniformLocation(PPROG, c"u_size".as_ptr());
+            FP_RADIUS = glGetUniformLocation(PPROG, c"u_radius".as_ptr());
+            use_prog(PPROG);
+            glUniform2f(glGetUniformLocation(PPROG, c"u_screen".as_ptr()), SCR_W, SCR_H);
+            glUniform1i(glGetUniformLocation(PPROG, c"u_tex".as_ptr()), 0);
+            FP_DITHER = dither_uniforms(PPROG);
         }
 
         // Hoist the compile-time-constant uniforms: uniforms are per-program state, so each
@@ -3431,8 +3464,8 @@ const BLUR_DIRECT_SCALE: u32 = 4;
 /// Latched off for the rest of the process after a GL error inside the source pass, which is the
 /// one condition that can make the direct path unusable at RUNTIME rather than at boot.
 ///
-/// It exists because the fallback is real and must stay reachable: the capture path is still the
-/// only path for `Glass::CACHED`, so falling back costs a copy, not a picture. A latch rather than
+/// It exists because the fallback is real and must stay reachable: the capture path serves every
+/// glass owner as well, so falling back costs a copy, not a picture. A latch rather than
 /// a per-frame retry, because a pass that errored once will error again and the log line would
 /// then repeat sixty times a second.
 static mut BLUR_DIRECT_OFF: bool = false;
@@ -4985,6 +5018,46 @@ pub(crate) fn draw_field(x: f32, y: f32, w: f32, h: f32, tex: c_uint, tint: *con
     }
 }
 
+/// Draw the underlay field as a popover's MATERIAL over the rounded rect `x,y,w,h` (corner
+/// `radius`): the field's own window `uv` — the panel's screen rect over the screen size, which
+/// `ui::underlay::panel_uv` computes — magnified, tinted and dithered
+/// (`shaders/fs_field_panel.frag`).
+///
+/// Returns whether the program was reachable. `false` — no texture or no program — tells the
+/// caller to lay down the flat sheet instead, so a panel is never left as a hole. A culled or
+/// `drawmask`ed quad answers `true`: the draw was ASKED for and refused on purpose, and a fallback
+/// sheet in its place would make the mask leg price the wrong primitive.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_field_panel(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    uv: [f32; 4],
+    tex: c_uint,
+    tint: *const f32,
+) -> bool {
+    if tex == 0 || unsafe { PPROG } == 0 {
+        return false;
+    }
+    if culled(x, y, w, h) || gate(Class::Field, x, y, w, h) {
+        return true;
+    }
+    unsafe {
+        use_prog(PPROG); // u_screen and the sampler unit are set once at init
+        glUniform4f(FP_RECT, x, y, w, h);
+        glUniform4fv(FP_TINT, 1, tint);
+        glUniform4f(FP_UVRECT, uv[0], uv[1], uv[2], uv[3]);
+        glUniform2f(FP_SIZE, w, h);
+        glUniform1f(FP_RADIUS, radius.min(w.min(h) * 0.5));
+        glUniform1f(FP_DITHER, dither_for_field(w, h));
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5167,6 +5240,7 @@ mod tests {
         for (name, src) in [
             ("fs_ambient.frag", FS_AMBIENT),
             ("fs_field.frag", FS_FIELD),
+            ("fs_field_panel.frag", FS_FIELD_PANEL),
             ("fs_glass.frag", FS_GLASS),
         ] {
             let code = shader_code(src);

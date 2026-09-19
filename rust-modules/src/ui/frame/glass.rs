@@ -9,8 +9,7 @@
 //!
 //! **`App` owns it, not the `Dispatcher`'s rig.** Every live reader is either `app/run.rs`'s own
 //! draw phase (the dial's prepare and its two draws, the tile band's cadence) or something
-//! `app/run.rs` already calls with `&mut App` in hand (`Bridge::prepare_home_chrome`,
-//! `Dispatcher::prepare_present`); the rig reaches none of them without a second `&mut` through
+//! `app/run.rs` already calls with `&mut App` in hand (`Bridge::prepare_home_chrome`); the rig reaches none of them without a second `&mut` through
 //! `Rig::draw_chrome`, which nothing else needs.
 //!
 //! **Zero behaviour change is the whole point.** `DEFAULT_DYNAMIC_PERIOD` is still 1 and the
@@ -59,17 +58,6 @@ impl GlassPlan {
         // so they live in a published snapshot (spec §2.3); a fresh plan owns it from here.
         plan.dial.publish();
         plan
-    }
-
-    /// The shared cadence clock, for an owner whose `GlassState` lives on the surface itself
-    /// (every popover, the person page's bio panel, the tab track).
-    pub(crate) fn clock(&mut self) -> &mut DynamicClock {
-        &mut self.dynamic
-    }
-
-    /// Resolve one REFRESHING backdrop's cadence before its host page draws.
-    pub(crate) fn prepare_dynamic(&mut self, state: &mut GlassState, underlay_changed: bool) {
-        Glass::DYNAMIC_BACKDROP.prepare_on(&mut self.dynamic, state, underlay_changed);
     }
 
     pub(crate) fn prepare_tab_band(&mut self, labels: TabLabels<'_>) {

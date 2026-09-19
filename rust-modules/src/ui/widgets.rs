@@ -42,8 +42,6 @@ impl crate::ui::machine::Measure for LegacyMeasure {
 /// is presenting at 60 Hz, and a clean settled page creates no private sampling clock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum GlassRefresh {
-    /// One snapshot when the surface appears; the owner invalidates again if its underlay changes.
-    Cached,
     /// Snapshot on every present on which the underlay actually CHANGED.
     ///
     /// It was every THIRD such present until 2026-08-19, and the three was a cost guess made
@@ -61,8 +59,10 @@ pub(crate) enum GlassRefresh {
     EveryChangedPresent,
 }
 
-/// Reusable backdrop-glass policy. It owns no geometry and no animation: a `Popover` can hold it,
-/// and a standalone widget can use the same `activate` → `prepare` → `backdrop` sequence.
+/// Reusable backdrop-glass policy — CHROME only (the top bar's standing track, the profile chip's
+/// capsule, the dev tile band). It owns no geometry and no animation: a widget runs `prepare_on`
+/// → `backdrop`. Popover panels do not use it; their ground is the latched underlay field
+/// ([`panel_ground`]).
 ///
 /// **It used to carry a second axis — `GlassUnderlay`, i.e. WHERE a modal's dim is applied — and
 /// that axis is gone.** Its non-trivial variant dimmed the host page's RGB going into the backdrop
@@ -200,71 +200,22 @@ pub(crate) fn glass_presented() {
 }
 
 impl Glass {
-    /// Existing popover behaviour: source-over scrim and a cached snapshot.
-    pub(crate) const CACHED: Self = Self {
-        refresh: GlassRefresh::Cached,
-    };
-
     /// A moving surface: dirty-aware backdrop on the shared [`DYNAMIC_PERIOD`] cadence (1 — every
     /// changed present). The widget itself still draws on every presented frame.
     pub(crate) const DYNAMIC_BACKDROP: Self = Self {
         refresh: GlassRefresh::EveryChangedPresent,
     };
 
-    /// **Does a popover on this policy owe its scrim to the host PAGE rather than to its own
-    /// painter?** True for a refreshing policy, and the reason is draw order, not taste.
-    ///
-    /// A `Cached` popover captures once, through the capture path, which grabs framebuffer 0 after
-    /// its own scrim is already on it. A refreshing one comes back round to the DIRECT path, which
-    /// re-renders the page closure before any popover draws — so a scrim drawn with the panel is in
-    /// the visible frame and not in the snapshot, and the frosted ground reads brighter than the
-    /// dimmed screen around it. [`crate::ui::popover::Popover::scrim`] is the fix and
-    /// `Popover::painter` `debug_assert`s on this, so the mistake fails on the host instead of
-    /// being noticed on a television.
-    pub(crate) fn needs_page_scrim(self) -> bool {
-        matches!(self.refresh, GlassRefresh::EveryChangedPresent)
-    }
-
-    /// Start a new visible lifetime and make its first snapshot immediately eligible, for a CACHED
-    /// ground — the policy with no recurring cadence, and so no [`DynamicClock`] to consult.
-    pub(crate) fn activate(self, state: &mut GlassState) {
-        debug_assert!(
-            !matches!(self.refresh, GlassRefresh::EveryChangedPresent),
-            "a refreshing backdrop activates against the frame plan's shared cadence"
-        );
-        self.activate_inner(None, state);
-    }
-
-    /// The same, against the frame plan's ONE shared cadence clock: a refreshing owner's first
-    /// snapshot must also COVER that present, or the next `prepare` refreshes a second time.
-    pub(crate) fn activate_on(self, clock: &mut DynamicClock, state: &mut GlassState) {
-        self.activate_inner(Some(clock), state);
-    }
-
-    fn activate_inner(self, clock: Option<&mut DynamicClock>, state: &mut GlassState) {
+    /// Start a new visible lifetime against the frame plan's ONE shared cadence clock: the
+    /// owner's first snapshot must also COVER that present, or the next `prepare_on` refreshes a
+    /// second time.
+    fn activate(self, clock: &mut DynamicClock, state: &mut GlassState) {
         let present = GLASS_PRESENT_SERIAL.load(Relaxed);
         state.last_seen = present;
         state.active = true;
-        if let Some(c) = clock {
-            c.cover_now(present);
-        }
+        clock.cover_now(present);
         crate::gfx::blur_invalidate();
         crate::ui::idle::wake();
-    }
-
-    /// Resolve this frame before the host page is drawn, for a CACHED ground — the policy with no
-    /// recurring cadence, and so no [`DynamicClock`] to consult.
-    ///
-    /// `underlay_changed` is accepted and unused, exactly as before: it has only ever fed the
-    /// refreshing branch, and every caller here passes `false`. A refreshing policy must go through
-    /// [`prepare_on`](Self::prepare_on) — the frame plan owns the clock since phase 11
-    /// ([`crate::ui::frame::glass::GlassPlan`]), so the two forms differ by who hands it over.
-    pub(crate) fn prepare(self, state: &mut GlassState, underlay_changed: bool) {
-        debug_assert!(
-            !matches!(self.refresh, GlassRefresh::EveryChangedPresent),
-            "a refreshing backdrop prepares through GlassPlan, which owns the shared cadence"
-        );
-        self.prepare_inner(None, state, underlay_changed);
     }
 
     /// Resolve this frame before the host page is drawn, against the frame plan's ONE shared
@@ -278,34 +229,23 @@ impl Glass {
         state: &mut GlassState,
         underlay_changed: bool,
     ) {
-        self.prepare_inner(Some(clock), state, underlay_changed);
-    }
-
-    fn prepare_inner(
-        self,
-        mut clock: Option<&mut DynamicClock>,
-        state: &mut GlassState,
-        underlay_changed: bool,
-    ) {
         let present = GLASS_PRESENT_SERIAL.load(Relaxed);
         // A widget not drawn for one or more successful presents crossed a route/surface lifetime.
         // Its old snapshot may describe that other route, so returning is a fresh activation:
         // start a new visible lifetime and make its first snapshot immediately eligible.
         if state.needs_activation(present) {
-            self.activate_inner(clock.as_deref_mut(), state);
+            self.activate(clock, state);
         }
         state.last_seen = present;
 
-        if let Some(c) = clock {
-            match c.step(present, underlay_changed, dynamic_period()) {
-                DynamicStep::Refresh => crate::gfx::blur_invalidate(),
-                DynamicStep::Wait => {
-                    // A discrete landing may have bought only this one frame. Keep the gate alive
-                    // just until the next global sampling slot so it cannot stay stale for 2 s.
-                    crate::ui::idle::wake();
-                }
-                DynamicStep::None => {}
+        match clock.step(present, underlay_changed, dynamic_period()) {
+            DynamicStep::Refresh => crate::gfx::blur_invalidate(),
+            DynamicStep::Wait => {
+                // A discrete landing may have bought only this one frame. Keep the gate alive
+                // just until the next global sampling slot so it cannot stay stale for 2 s.
+                crate::ui::idle::wake();
             }
+            DynamicStep::None => {}
         }
     }
 
@@ -325,100 +265,66 @@ impl Glass {
     ) -> bool {
         p.backdrop_blur(r, rest_dy, radius, tint, rim, face, mat.deep())
     }
+}
 
-    /// Standard popover ground: glass + frost where available, the existing opaque sheet fallback
-    /// on a driver that cannot render the chain.
-    ///
-    /// **The same edge as the standing track, and that is a decision taken by looking.** The design
-    /// system gives a SHEET a 28px chamfer ramp on top of the line — "so a sheet reads as THICK
-    /// rather than outlined" — and the track no ramp at all. Drawn side by side in one frame the
-    /// two do not read as one material: the panel is a lit slab with a soft band down its top edge
-    /// and a shade along its bottom, the bar is a crisp outline, and the panel wins the eye for
-    /// reasons that have nothing to do with which one you are meant to be reading. A panel over a
-    /// dark ground shows nothing BUT that bevel, which is the case where the argument for it is
-    /// weakest and its cost highest.
-    ///
-    /// So a container is a container: [`crate::gfx::GlassRim::Standing`], and the rim drawn OVER the
-    /// material at [`theme::GLASS_RIM`] with the boost to [`theme::GLASS_RIM_LIGHT`] on the side
-    /// facing the light — the same two weights, the same lamp, the same one pixel. What that
-    /// variant IS has since changed under this note, and the note holds: it was a line with no ramp
-    /// and no bend, it is now a 12px chamfer and a 24px lens, and the sentence that matters is that
-    /// the bar and the panel take the SAME one. Thickness comes from the material — the frost, the
-    /// shadow, and now the bend — not from a ramp that covers a quarter of the panel.
-    ///
-    /// The OPAQUE fallback takes the rim too. A glass panel and a solid one are one object in two
-    /// materials, and an edge is not part of what makes them different.
-    pub(crate) fn panel(self, p: Painter, r: Rect, rest_dy: f32, radius: f32) {
-        let boost = theme::GLASS_RIM_LIGHT[3] - theme::GLASS_RIM[3];
-        // A PANEL's frost is `theme::PANEL_FROST_*`, drawn as its own quad below — it is a sheet,
-        // not a container, and its edge is the shader's own specular. `GlassFace::NONE`.
-        if self.backdrop(
-            p,
-            r,
-            rest_dy,
-            radius,
-            [1.0, 1.0, 1.0, 1.0],
-            crate::gfx::GlassRim::Standing,
-            crate::gfx::GlassFace::NONE,
-            panel_material(),
-        ) {
-            let (ft, fb) = panel_frost();
-            crate::ui::profile::phase("glass.frost", || {
-                p.rect_rimmed(r, radius, ft, fb, theme::GLASS_RIM, boost);
-            });
-        } else {
-            p.rect_rimmed(
-                r,
-                radius,
-                theme::PANEL_TOP,
-                theme::PANEL_BOT,
-                theme::GLASS_RIM,
-                boost,
-            );
-        }
-    }
+/// **A popover panel's GROUND — the page under it, carried into it, WHERE it is.**
+///
+/// Every popover in the app stands on this: the menus, the alert panels, the person bio, the
+/// decision alert. It used to be a real backdrop blur of the host (`Glass::CACHED.panel`, and the
+/// bio's `DYNAMIC_BACKDROP`) tinted by a fixed frost — ~11% of a frame's GPU cycles on the
+/// account panel (`docs/backdrop-blur-profiling.md`), for a picture the frost then covered all but
+/// 15% of. What survives a frost that dense is the page's COLOUR and where it is, which is exactly
+/// what the underlay field already holds: the 15x8 grid the modal dim latched from the undimmed
+/// page (`containers::modal::ModalUnderlay`). So the panel draws the field's own window at its
+/// screen rect ([`crate::ui::underlay::UnderlayField::draw_panel`] — green under the panel's
+/// bottom-left stays under its bottom-left), multiplied by `theme::underlay::PANEL_TINT` and held
+/// under `PANEL_LUMA_MAX`, and then the SAME frost and the same rim the glass panel wore.
+///
+/// **The edge is not part of the material's identity**, and it did not change: the rim is
+/// [`theme::GLASS_RIM`] with the boost to [`theme::GLASS_RIM_LIGHT`] on the side facing the light —
+/// the standing track's two weights, the same lamp, the same one pixel — so a panel and the glass
+/// bar above it still read as one family of object.
+///
+/// `field` is `None`, or not latched yet (the first frame, a refused sample, a panel over the video
+/// plane): the flat near-opaque sheet ([`theme::PANEL_TOP`]/[`theme::PANEL_BOT`]) with the same rim.
+/// Never a blank, and never the frost alone — [`theme::PANEL_FROST_TOP`] is only legal over the
+/// field it is frosting.
+///
+/// **Glass is chrome-only now**: the top bar's standing track and the profile chip's capsule still
+/// sample a live blur, because the page under them moves; nothing that is a popover does.
+pub(crate) fn panel_ground(
+    p: Painter,
+    r: Rect,
+    radius: f32,
+    field: Option<&crate::ui::underlay::UnderlayField>,
+) {
+    let boost = theme::GLASS_RIM_LIGHT[3] - theme::GLASS_RIM[3];
+    let weight = panel_tint_sweep().unwrap_or(theme::underlay::PANEL_TINT);
+    let drew = crate::ui::profile::phase("panel.field", || {
+        field.is_some_and(|f| f.draw_panel(p, r, radius, weight))
+    });
+    let (top, bot) = if drew {
+        panel_frost()
+    } else {
+        (theme::PANEL_TOP, theme::PANEL_BOT)
+    };
+    crate::ui::profile::phase("panel.frost", || {
+        p.rect_rimmed(r, radius, top, bot, theme::GLASS_RIM, boost);
+    });
+}
 
-    /// A large modal SHEET: the same dark panel density in one glass pass, without the compact
-    /// menu's two effects whose cost scales with every covered pixel.
-    ///
-    /// `UltraThin` here selects only the snapshot sampling radius (one fetch, rather than the
-    /// menu's centre + four diagonal fetches); the actual density remains [`panel_frost`]'s
-    /// `PANEL_MATERIAL` value. `Bevelled` is the design-system sheet edge and, unlike `Standing`,
-    /// needs no full-resolution sharp-source copy every presented frame. Folding frost and rim into
-    /// `GlassFace` also avoids the second full-area rounded quad that [`panel`](Self::panel) draws.
-    /// This is what lets a near-full-screen Legal reader remain a blur over its cached Home
-    /// snapshot without paying a context-menu material across almost two million fragments.
-    pub(crate) fn sheet(self, p: Painter, r: Rect, rest_dy: f32, radius: f32) {
-        let (ft, fb) = panel_frost();
-        let face = crate::gfx::GlassFace {
-            scrim_top: ft,
-            scrim_bot: fb,
-            rim: theme::GLASS_RIM,
-            rim_lit: theme::GLASS_RIM_LIGHT,
-            rim_w: 1.0,
-        };
-        if !self.backdrop(
-            p,
-            r,
-            rest_dy,
-            radius,
-            [1.0, 1.0, 1.0, 1.0],
-            crate::gfx::GlassRim::Bevelled,
-            face,
-            theme::Material::UltraThin,
-        ) {
-            let boost = theme::GLASS_RIM_LIGHT[3] - theme::GLASS_RIM[3];
-            p.rect_rimmed(
-                r,
-                radius,
-                theme::PANEL_TOP,
-                theme::PANEL_BOT,
-                theme::GLASS_RIM,
-                boost,
-            );
-        }
-    }
-
+#[cfg(feature = "devtriggers")]
+fn panel_tint_sweep() -> Option<f32> {
+    static SEEN: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    *SEEN.get_or_init(|| {
+        let v = crate::dev::read("paneltint")?.trim().parse::<f32>().ok()?;
+        crate::log(&format!("panel: field tint swept to {v}"));
+        Some(v.clamp(0.0, 1.0))
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+fn panel_tint_sweep() -> Option<f32> {
+    None
 }
 
 /// **What a popover is made of — both halves, from one name.** See [`theme::Material`].
@@ -5732,7 +5638,7 @@ pub(crate) fn bar_glass_wanted_with(data: TabLabels<'_>) -> bool {
 /// of the page draw. On the capture path that merely meant an extra chain now and then. On the
 /// direct path it was measurable: the pre-page snapshot was taken, the tab track then invalidated
 /// it from inside the page, and the capture path re-did the whole thing — both paths running in
-/// one frame. Call this beside the other owners' `prepare_present`.
+/// one frame. Call it before the page draws, with the frame's other glass owners.
 ///
 /// The legacy no-argument wrapper this used to have (`with_legacy_tab_labels(tab_glass_prepare_with)`,
 /// called from `app::run::update`'s draw phase for every bar-wearing route that was not
@@ -7141,7 +7047,7 @@ const PASS_CHARS: [&std::ffi::CStr; 9] = [c"P", c"L", c"E", c"X", c" ", c"P", c"
 ///
 /// A safe atomic (bits of the `f32` held in a `u32`) rather than `static mut` — the same
 /// `AtomicU32` this file already uses for `GLASS_PRESENT_SERIAL`, `DYNAMIC_PERIOD` and
-/// [`VEIL_TEX`], applied to a float memo the way `note_own_damage`'s neighbours apply it to a bool.
+/// [`VEIL_TEX`], applied to a float memo.
 static PASS_W: AtomicU32 = AtomicU32::new(0);
 
 fn pass_label_w(measure: &dyn crate::ui::machine::Measure) -> f32 {

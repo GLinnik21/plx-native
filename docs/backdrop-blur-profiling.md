@@ -85,8 +85,10 @@ to the correct cropped-texture UV offset.
 
 ## Cache and refresh policy
 
-`Glass::CACHED` invalidates on activation and then reuses the blurred `mid` texture until explicit
-page invalidation or a region containment miss. `Glass::DYNAMIC` keeps drawing the glass material
+Popover panels stopped using the chain on 2026-09-19 (they stand on the latched underlay field,
+`widgets::panel_ground`); the cached popover preset `Glass::CACHED`, which reused the blurred `mid`
+texture until explicit page invalidation or a region containment miss, went with them.
+`Glass::DYNAMIC_BACKDROP` (the chrome) keeps drawing the glass material
 every presented UI frame and invalidates a dirty backdrop on every changed successful present.
 The modal dim is a page-drawn scrim rather than an input transform on the source render. Skipped
 idle-loop iterations do not advance that clock. The Account panel's exact height depends on the

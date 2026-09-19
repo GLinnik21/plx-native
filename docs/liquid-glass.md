@@ -1,9 +1,17 @@
 # Liquid glass — what the hardware will and will not give us
 
 The backdrop-blur material (`gfx.rs`'s blur chain + `shaders/fs_glass.frag`, drawn through
-`Popover::panel` / `Painter::backdrop_blur`) is real and cheap enough to ship. This note is the
+`Glass::DYNAMIC_BACKDROP` / `Painter::backdrop_blur`) is real and cheap enough to ship. This note is the
 **envelope it can be designed inside** — the limits that come from the television rather than from
 taste, so a design can be drawn against them instead of into them.
+
+**Glass is CHROME-ONLY since 2026-09-19.** Its users are the top bar's standing track, the profile
+chip's capsule and the dev tile band. Popover panels — the menus, the alert panels, the person bio,
+the decision alert — no longer frost a backdrop blur: they stand on `widgets::panel_ground`, the
+15×8 underlay field the modal dim already latches (`ui::underlay`), windowed to the panel's own
+screen rect, graded by `theme::underlay::PANEL_TINT` under a `PANEL_LUMA_MAX` ceiling, with the
+panel frost and rim over it (`shaders/fs_field_panel.frag`). The panel measurements below are the
+record of the glass those panels used to wear; §7 is the current map.
 
 Everything below is either **measured** on the dev set (LG 49SM9000PLA, webOS 4.10.2, Mali Midgard,
 GLES 2) or **derived from a measured constant**, and each is marked. Nothing here is an opinion
@@ -23,7 +31,8 @@ back from Starfish/ACB either.
 
 So the player's panels — track menu, chapters, info card, the `…` overflow, stats — keep their
 near-opaque sheet (`theme::PANEL_TOP`/`PANEL_BOT`) **permanently**. Design has to accept one
-material split in the product: menus over the UI are glass, menus over video are solid. It cannot be
+material split in the product: menus over the UI stand on the page's latched light, menus over video
+are solid. It cannot be
 designed away, only designed *with*.
 
 *(Measured indirectly: `system.rs` documents the plane as slaved to our wayland surface, and the
@@ -134,7 +143,7 @@ and draw the panel after it" never could.
 83 → 58 ms; the bisect on that build said the survivors were `glass` and `rect` at ~25 ms each — the
 popover's own full-screen modal scrim and its own glass composite, redrawn every frame although
 NEITHER CHANGES once the appear spring has settled. So the snapshot grows to page + scrim + lifted
-`Opener` + the panel's own ground, taken by `Popover::panel`/`sheet` on the first settled frame, and
+`Opener` + the panel's own ground, taken by `Popover::panel` on the first settled frame, and
 only the panel's foreground stays live:
 
 | | draw / presented frame | `loop=` | `fps=` |
@@ -146,9 +155,8 @@ only the panel's foreground stays live:
 
 That last row is the point: with the app submitting no quad at all the frame still costs 40 ms, so
 nothing the app draws remains in it. The person page's bio panel is the same shape — `draw≈75 ms` /
-`loop=26–52` before, `draw≈24–33 ms` / `loop=61–62` after — and it keeps its DYNAMIC backdrop,
-because the scrim is drawn live above the snapshot and a re-source therefore still sees the ramp it
-is meant to. A blur SOURCE pass is never served the ground stage; it contains the panel's own frost,
+`loop=26–52` before, `draw≈24–33 ms` / `loop=61–62` after — and it kept its DYNAMIC backdrop until
+2026-09-19, when every panel moved onto the latched underlay field. A blur SOURCE pass is never served the ground stage; it contains the panel's own frost,
 so a backdrop re-sourced from it would frost a picture of itself.
 
 ---
@@ -169,9 +177,9 @@ Two rules, both of which this material got wrong on its own before 2026-09-02:
   same construction `fs_ambient.frag`'s own header had been recording as a mistake that cost 38% of
   a Home frame. A sine hash is also structured, which is the "strange patterns" half of the report.
 
-`shaders/dither.glsl` is now the one answer for the three programs whose ramp is a blur or a
-whole-screen wash (`fs_ambient`, `fs_field`, `fs_glass` — `fs_field` took the slot of the deleted
-`fs_modal_ground` on 2026-09-19; the per-rect `fs_src`/`fs_shadow`
+`shaders/dither.glsl` is now the one answer for the four programs whose ramp is a blur or a
+slow field (`fs_ambient`, `fs_field`, its panel twin `fs_field_panel`, `fs_glass` — `fs_field` took
+the slot of the deleted `fs_modal_ground` on 2026-09-19; the per-rect `fs_src`/`fs_shadow`
 carried it for two days and cost the hero paging scene 57→50 fps for a branch that answered "no" on
 every draw, 2026-09-04), `gfx::dither_for_field` the one policy for which draws pay. Measured on the panel afterwards: the flat runs that ARE the
 staircase fall from 9.6 px / 15.7 px to 2.2 px, the horizontal autocorrelation at lag 64 from
@@ -181,14 +189,12 @@ staircase fall from 9.6 px / 15.7 px to 2.2 px, the horizontal autocorrelation a
 
 ## 4. It is free at rest; moving glass uses the saved 3-present policy
 
-`widgets::Glass::CACHED`, the default, takes **one snapshot per opening** over a still page. A modal
-over moving opaque UI opts into `widgets::Glass::DYNAMIC`; a non-modal widget uses
-`Glass::DYNAMIC_BACKDROP` to get the same cadence without dimming its host. The widget itself is
-still drawn on every presented frame, while a dirty shared backdrop is refreshed on **at most every
-third successful present**. `DYNAMIC`'s source dim also changes during the opening fade, so it may
-refresh during appear even when the host itself is still. The name in code is
-`EveryThirdPresent`, not “20 Hz”, because 20 Hz is only the result while the UI is actually
-presenting at 60 Hz. `ui::idle` still gates the whole frame, so settled content creates no private
+`widgets::Glass::DYNAMIC_BACKDROP` is the one preset left (the cached popover preset, `Glass::CACHED`,
+left with the popover glass on 2026-09-19). The widget itself is still drawn on every presented
+frame, while a dirty shared backdrop is refreshed on the shared cadence — `DEFAULT_DYNAMIC_PERIOD`,
+every changed present since the direct source path; it was every THIRD, which is the history the
+table below measures. The name in code is `EveryChangedPresent`, in presents rather than hertz,
+because a rate is only a rate while the UI is actually presenting at 60 Hz. `ui::idle` still gates the whole frame, so settled content creates no private
 blur clock and burns no presents.
 
 The cadence and pending-damage state are global, like the snapshot chain: several neighbouring
@@ -213,10 +219,8 @@ historical A/B measured **40.8 fps with the blended scrim** (`n=19` valid heartb
 **59.84 fps with source dim** (`n=38`), but the later direct source path removed the reason to make
 host pages participate in a special dimming mode.
 
-**Current design consequence:** cached glass over static chrome is genuinely free. Dynamic glass
-uses the direct source path and refreshes on every changed successful present; an idle page still
-takes no recurring snapshots. The reusable `Glass::DYNAMIC` preset remains the product API rather
-than an Account-only trigger.
+**Current design consequence:** chrome glass uses the direct source path and refreshes on every
+changed successful present; an idle page still takes no recurring snapshots.
 
 ---
 
@@ -307,16 +311,14 @@ popup menu is too pixelated" was, 2026-08-20 to 2026-08-21.
 
 ## 7. Where it can go today
 
-**Yes:** any popover or sheet over a UI page. All of Sort, Filter, Sources, item menu, alt
-sources, the track sheet and Account draw the same cached frosted ground, but they no longer reach
-it the same way: since the UI restructure moved each onto the container tree (`ModalStack`) they
-call `Glass::CACHED.panel` directly and hold no `Popover` at all, and the surfaces that still hold
-one — About, the person biography and the decision alert — go through `Popover::panel`. Same
-function, same policy, one caller fewer in the middle. A moving host opts in explicitly through
-`Glass::DYNAMIC_BACKDROP` (as `Popover::with_glass`, or as the `Glass` a surface prepares with).
-Account intentionally does not: its page state is frozen and its completed host frame is copied
-once into `gfx::FrameCache`, then drawn as one quad while the scrim and menu remain live. Cached remains the default, so making the policy reusable
-does not silently turn every menu into a recurring capture workload.
+**Glass: the chrome.** The top bar's standing track and the profile chip's capsule, on
+`Glass::DYNAMIC_BACKDROP` (the one preset left). **Popovers and sheets over a UI page are not glass**:
+Sort, Filter, Sources, the item menu, *Also available*, *Track information*, *About*, Account, the
+person biography and the decision alert all draw their ground through `widgets::panel_ground` over
+the latched underlay field — the surfaces reach it as `DrawFrame::underlay`, the decision alert
+latches its own. That removed the panel's glass composite (~11% of a frame's GPU on the set) and
+the person bio's every-changed-present re-blur, and it needs no blur region, so a panel's size is
+no longer priced by §2.
 
 **The tab bar is all-or-nothing across Home, Library and Search.** It is *one control* — `nav`'s
 `chrome_alpha` exists so it holds still while the pages swap under it — so a material that changes

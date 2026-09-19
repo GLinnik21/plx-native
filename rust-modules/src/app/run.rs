@@ -1767,9 +1767,9 @@ fn loop_requests(app: &mut App) {
             // freshly-mounted sign-in screen. And the confirmed answer's own decision alert
             // (`screens::consent.rs`'s `DecisionAlert`, nested inside this same surface) DOES
             // still fade on its own spring — legacy's `close_delete_and_menu(true)` never made
-            // that one instant either, only the popover behind it — so its `Glass::CACHED` panel
-            // is still serving the one snapshot it took of the Settings page for the length of
-            // that fade. `blur_invalidate()` is the same fix legacy reached for at the same call
+            // that one instant either, only the popover behind it — so its panel is still
+            // fading over the frozen host snapshot of the Settings page for the length of that
+            // fade. `blur_invalidate()` is the same fix legacy reached for at the same call
             // site and for the same reason (`consent.rs::close_delete_and_menu`'s comment): it
             // forces a recapture, so the alert's exit shows whatever is actually on screen now —
             // the incoming sign-in page — rather than a ghost of the screen the sweep just erased.
@@ -2147,10 +2147,8 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         app.pages.draw(&mut app.bridge, true);
                         app.diagnostics.draw();
                     } else {
-                        // Open the shared popover frame FIRST: it takes this frame's own-damage
-                        // ledger, which every glass owner below then reads through
-                        // `Popover::prepare_present`, and decides whether the frozen-host
-                        // snapshot still describes the page. Route-agnostic by construction —
+                        // Open the shared popover frame FIRST: it takes this frame's page damage
+                        // and decides whether the frozen-host snapshot still describes the page. Route-agnostic by construction —
                         // see `ui::popover::host::begin_frame`.
                         // A bound preview owns the plane the same way the player branch does: there
                         // is no framebuffer to snapshot. Skip the door instead of tripping the
@@ -2178,26 +2176,6 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // this one is not routed at all, because the shelves it rides appear on
                         // Home, the Library and Search and the trigger is the whole condition.
                         app.glass.prepare_tile_band();
-                        // **Every REFRESHING backdrop on the tree, resolved before anything on
-                        // this route draws** — `Dispatcher::prepare_present`, which folds the
-                        // caller's belief about the page together with each surface's own appear
-                        // state and the shared own-damage ledger and hands each screen one bit.
-                        //
-                        // The slot is load-bearing at BOTH ends and neither boundary exists inside
-                        // the dispatcher's own frame: `popover::host::begin_frame` above latches
-                        // the ledger the fold reads, and `gfx::blur_direct_region()` is sampled
-                        // BELOW, so an invalidation raised here reaches this frame's own blur
-                        // source instead of the next one's.
-                        //
-                        // This line NAMED a screen until phase 10 (`ui::person_bio::prepare_present`,
-                        // and before that with a `matches!(app.route, Route::Person)` around it —
-                        // a rule stated in one module and enforced by a route test three modules
-                        // away, §14). The block states what it resolves rather than who owns it,
-                        // so the next dynamic backdrop joins by being written.
-                        app.pages.prepare_present(
-                            &mut app.glass,
-                            fr.underlay_moving || crate::ui::idle::present_dirty(),
-                        );
                         // THE PAGE, named once because it is drawn TWICE: the direct source path
                         // produces a glass surface's backdrop by rendering the page again into a
                         // small FBO, and that has to happen HERE, before the visible pass — the

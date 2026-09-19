@@ -355,3 +355,142 @@ fn the_texture_is_sixty_by_thirty_two_and_opaque() {
         "a flat field must not acquire structure in the reconstruction"
     );
 }
+
+// ── The panel material (`draw_panel` / `panel_plan`) ─────────────────────────────────────────────
+
+/// A field latched through the REAL adopt path — cells, texture bytes and the luma table the
+/// panel's ceiling is solved against — from one flat display colour.
+fn latched_flat(rgb: [f32; 3]) -> UnderlayField {
+    let mut f = UnderlayField::new();
+    f.latch_sampled(&[rgb; N], Grade::Dim);
+    f
+}
+
+/// **A panel's window into the field is its SCREEN rect over the screen size** — the only UV rect
+/// under which the green at the page's bottom-left is still at the panel's bottom-left. Graded
+/// through a TRANSLATED painter as well, because the rect a panel is drawn at is the one its entry
+/// slide has moved, and a window keyed to the rest rect would slide the field WITH the panel.
+#[test]
+fn a_panels_field_window_is_its_screen_rect_over_the_screen_size() {
+    let f = latched_flat([0.2, 0.3, 0.4]);
+    let r = Rect::new(630.0, 202.0, 660.0, 540.0);
+    let want = [630.0 / SCR_W, 202.0 / SCR_H, 660.0 / SCR_W, 540.0 / SCR_H];
+    assert_eq!(panel_uv(r), want);
+    match f.panel_plan(r, theme::underlay::PANEL_TINT) {
+        PanelDraw::Field { uv, .. } => assert_eq!(uv, want),
+        PanelDraw::Flat => panic!("a latched field must draw the field"),
+    }
+    // Mid-slide: the painter carries the entry translate, and the window follows the DRAWN rect.
+    let p = Painter::root().translate(0.0, 12.0);
+    let (_, moved, _) = p.to_screen(r);
+    let PanelDraw::Field { uv, .. } = f.panel_plan(moved, theme::underlay::PANEL_TINT) else {
+        panic!("latched");
+    };
+    assert_eq!(uv, [630.0 / SCR_W, 214.0 / SCR_H, 660.0 / SCR_W, 540.0 / SCR_H]);
+    // The full screen is the whole texture.
+    assert_eq!(panel_uv(Rect::FULL), [0.0, 0.0, 1.0, 1.0]);
+}
+
+/// **Unlatched is the FLAT sheet, never a blank.** The first frame a panel is up may have no
+/// field (the latch is taken inside that frame's page pass, and a video plane refuses it
+/// outright), and a `false` from `draw_panel` is what makes `widgets::panel_ground` lay down
+/// `PANEL_TOP`/`PANEL_BOT`.
+#[test]
+fn an_unlatched_field_draws_the_flat_panel_material() {
+    let f = UnderlayField::new();
+    let r = Rect::new(100.0, 100.0, 400.0, 300.0);
+    assert_eq!(f.panel_plan(r, theme::underlay::PANEL_TINT), PanelDraw::Flat);
+    assert!(
+        !f.draw_panel(Painter::root(), r, 32.0, theme::underlay::PANEL_TINT),
+        "no field — the caller must draw the flat sheet"
+    );
+    // And a reset field is unlatched again.
+    let mut g = latched_flat([0.5, 0.5, 0.5]);
+    g.reset();
+    assert_eq!(g.panel_plan(r, theme::underlay::PANEL_TINT), PanelDraw::Flat);
+}
+
+/// **The ceiling is `ground_capped`'s rule, per panel**: a dark page keeps the full `PANEL_TINT`,
+/// a white one is lowered until its brightest texel under the panel lands on `PANEL_LUMA_MAX` —
+/// and only the texels UNDER the panel count, so a bright edge elsewhere on the page does not dim
+/// a panel standing on dark ground.
+#[test]
+fn the_panel_tint_is_capped_by_the_brightest_texel_under_the_panel() {
+    let w = theme::underlay::PANEL_TINT;
+    let cap = theme::underlay::PANEL_LUMA_MAX;
+    let r = Rect::new(630.0, 270.0, 660.0, 540.0);
+    let tint = |f: &UnderlayField, r: Rect| match f.panel_plan(r, w) {
+        PanelDraw::Field { tint, .. } => tint,
+        PanelDraw::Flat => panic!("latched"),
+    };
+
+    let dark = tint(&latched_flat([0.05, 0.05, 0.08]), r);
+    assert_eq!(dark, [w, w, w, 1.0], "a dark page is under the ceiling");
+
+    let white = tint(&latched_flat([1.0, 1.0, 1.0]), r);
+    assert!(white[0] < w, "a white page must be lowered, got {white:?}");
+    assert!(
+        (white[0] - cap).abs() < 0.01,
+        "white × k lands on PANEL_LUMA_MAX: {} vs {cap}",
+        white[0]
+    );
+    assert_eq!(white[3], 1.0, "the field is opaque; coverage is the painter's");
+
+    // Bright only in the far LEFT column: a panel on the right half never sees it.
+    let raw: [[f32; 3]; N] =
+        std::array::from_fn(|i| if i % W == 0 { [1.0; 3] } else { [0.04; 3] });
+    let mut edge = UnderlayField::new();
+    edge.latch_sampled(&raw, Grade::Dim);
+    let right = Rect::new(SCR_W * 0.55, 200.0, SCR_W * 0.35, 500.0);
+    assert_eq!(
+        tint(&edge, right),
+        [w, w, w, 1.0],
+        "light outside the panel is not its business"
+    );
+    let left = Rect::new(0.0, 200.0, 400.0, 500.0);
+    assert!(tint(&edge, left)[0] < w, "light under the panel is");
+}
+
+/// WCAG relative luminance over display codes — `gfx::lin` is the same IEC transfer.
+fn rel(c: [f32; 3]) -> f32 {
+    0.2126 * crate::gfx::lin(c[0]) + 0.7152 * crate::gfx::lin(c[1]) + 0.0722 * crate::gfx::lin(c[2])
+}
+fn ratio(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let (x, y) = (rel(a), rel(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+/// **Text on a panel keeps its floors at both ends of the page's range.** The composite is what
+/// the GPU blends, in display codes: the field × k (opaque), then the panel frost over it at the
+/// panel material's density. Primary and secondary ink must clear 4.5:1 and tertiary 3:1 over a
+/// WHITE page (where the ceiling does the work), a BLACK one (where the frost's own neutral does)
+/// and a saturated yellow one, on both frost stops.
+#[test]
+fn text_contrast_floors_hold_over_a_bright_and_a_dark_underlay() {
+    let a = theme::PANEL_MATERIAL.frost();
+    let rgb = |c: [f32; 4]| [c[0], c[1], c[2]];
+    for under in [[1.0f32, 1.0, 1.0], [0.0, 0.0, 0.0], [1.0, 0.85, 0.2]] {
+        let f = latched_flat(under);
+        let PanelDraw::Field { tint, .. } = f.panel_plan(
+            Rect::new(630.0, 270.0, 660.0, 540.0),
+            theme::underlay::PANEL_TINT,
+        ) else {
+            panic!("latched");
+        };
+        let field = [0, 1, 2].map(|i| under[i] * tint[i]);
+        for stop in [theme::PANEL_FROST_TOP, theme::PANEL_FROST_BOT] {
+            let ground = [0, 1, 2].map(|i| stop[i] * a + field[i] * (1.0 - a));
+            for (ink, floor, name) in [
+                (theme::TEXT_PRIMARY, 4.5, "primary"),
+                (theme::TEXT_SECONDARY, 4.5, "secondary"),
+                (theme::TEXT_TERTIARY, 3.0, "tertiary"),
+            ] {
+                let c = ratio(rgb(ink), ground);
+                assert!(
+                    c >= floor,
+                    "{name} ink over {under:?} reads {c:.2}:1 < {floor}:1 (ground {ground:?})"
+                );
+            }
+        }
+    }
+}

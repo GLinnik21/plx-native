@@ -911,6 +911,26 @@ impl Painter {
         }
         full.field(r, tex, theme::with_a(theme::TINT_WHITE, a));
     }
+    /// [`field`](Self::field) as a POPOVER'S MATERIAL: the rounded rect `r` (corner `rad`) filled
+    /// with the field's own window `uv` into the texture. The field maps the WHOLE SCREEN, so `uv`
+    /// is the rect's drawn screen position over the screen size (`underlay::panel_uv`, the
+    /// cascade's translate folded in) — never the whole field squeezed into the panel.
+    ///
+    /// `false` when the field program or texture is missing — the caller's cue to draw the flat
+    /// sheet. `ui::underlay::UnderlayField::draw_panel` is the component; reach for that.
+    pub fn field_panel(self, r: Rect, rad: f32, tex: u32, uv: [f32; 4], tint: [f32; 4]) -> bool {
+        let t = self.c(tint);
+        crate::gfx::draw_field_panel(
+            r.x + self.dx,
+            r.y + self.dy,
+            r.w,
+            r.h,
+            rad,
+            uv,
+            tex,
+            t.as_ptr(),
+        )
+    }
     /// draw text at absolute (x,y) plus the cascade translate; returns width
     pub fn text(
         self,

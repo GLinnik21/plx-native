@@ -41,7 +41,6 @@ use crate::ui::screen::{
     Hover, Placed, RenderStrategy, Screen, ScreenEvent, Scrim, Seat, Step, Stop,
 };
 use crate::ui::table::{Row, Section, TableView};
-use crate::ui::widgets::{Glass, GlassState};
 use crate::ui::Rect;
 
 /// What the highlighted row does on OK.
@@ -183,7 +182,6 @@ pub(crate) struct AccountMenuScreen {
     header: String,
     rows: &'static [Action],
     table: TableView,
-    glass: GlassState,
     /// Has the session been read yet? The rows are a snapshot taken ONCE, at `Mount` — a roster
     /// landing under an open menu must not renumber the rows the user is aiming at.
     built: bool,
@@ -196,7 +194,6 @@ impl AccountMenuScreen {
             header: HEADER_FALLBACK.to_string(),
             rows: &[],
             table: TableView::new(),
-            glass: GlassState::new(),
             built: false,
         }
     }
@@ -381,14 +378,12 @@ impl<H: AppLike> Screen<H> for AccountMenuScreen {
         // with the appear spring (`ModalStack::draw_scrims`).
         Scrim::lifting(crate::ui::theme::underlay::DIM_SHEET, crate::ui::widgets::redraw_profile_chip)
     }
-    fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {
-        Glass::CACHED.prepare(&mut self.glass, false);
-    }
+    fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
         let r = self.frame();
         let measure = f.measure;
-        Glass::CACHED.panel(p, r, 0.0, PANEL_RAD);
+        crate::ui::widgets::panel_ground(p, r, PANEL_RAD, f.underlay);
         crate::ui::profile::phase("glass.foreground", || {
             self.table.draw(p, r, measure);
         });

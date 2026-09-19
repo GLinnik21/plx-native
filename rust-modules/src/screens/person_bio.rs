@@ -1,7 +1,7 @@
 //! The person page's **bio alert panel** — the full biography, behind the truncation mark.
 //!
 //! **The reference is `Alert Views.dc.html` §1C · Person** (the owner's design project): a centred
-//! 1120×700 glass sheet with 48px of padding and a [`theme::ALERT_PANEL_RAD`] corner, holding an
+//! 1120×700 sheet with 48px of padding and a [`theme::ALERT_PANEL_RAD`] corner, holding an
 //! eyebrow, the name, an identity line, and — between two hairlines — the biography as a
 //! **scrolling, paged viewport** with a feathered edge and a rail down its right side. The footer
 //! states what the page knows about this person's presence in the library, and how to leave.
@@ -15,26 +15,20 @@
 //!
 //! ## Three things here are not obvious
 //!
-//! **1. The scrim belongs to the PAGE, and it is heavier than a menu's.** [`scrim`] is called from
-//! `person::draw` before the panel, not from [`draw`] — the rule `Popover::scrim` states for a
-//! refreshing backdrop, kept here because it is also what makes the *contrast* argument work. The
-//! design's host frame carries a standing comment that nothing bright may sit inside the panel's own
-//! rectangle: a large name read through a 72% frost lifts the ground under the fine print past its
-//! graded contrast. On the real page that name is not hypothetical — `person.rs` draws the person's
-//! own name at `size::DISPLAY` (48) at x≈474, y≈96, which is *directly behind this panel's top-left
-//! corner*, where the eyebrow and the identity line sit — and more squarely so than it used to,
-//! since that band top-aligns on the name's cap top now, which makes y≈96 exact rather than
-//! approximate. The mock could stage that away; we cannot, so the page is dimmed at
-//! [`theme::underlay::DIM_PROSE`] — the measured text-legibility floor [`theme::SCRIM_TEXT_A`], as
-//! the PROSE role's weight — before the frost ever samples it. The anchored menus use the lighter
-//! COMPACT/PANEL roles because nothing of theirs is fine print over a headline; this panel's whole
-//! lower half is.
-//!
-//! **The lift that value was chosen against was measured while that name was `size::HERO` (72)**,
-//! and it has not been re-taken since the band stopped condensing and the name dropped to DISPLAY.
-//! So the 23-level lift quoted on [`prepare_present`] below is an upper bound on today's page
-//! rather than a reading of it: do not re-tune the scrim or the glass policy off it without
-//! measuring again.
+//! **1. Its ground is the page's own light, latched once, and its dim is heavier than a menu's.**
+//! The sheet stands on `widgets::panel_ground`: the container's underlay field, sampled from the
+//! UNDIMMED page at the head of the dim (`containers::modal::ModalUnderlay`), drawn through the
+//! panel's own window and frosted. It used to be the app's one `Glass::DYNAMIC_BACKDROP`, re-blurring
+//! the host on every changed present, because a CACHED snapshot taken while its own scrim was still
+//! ramping through zero frosted an undimmed page — and on this page that is not hypothetical:
+//! `person.rs` draws the person's own name at `size::DISPLAY` (48) at x≈474, y≈96, *directly behind
+//! this panel's top-left corner*, where the eyebrow and the identity line sit. A 15x8 field cannot
+//! carry a name — a box 128px wide reduces lettering to a faint lift of its cell — and the panel's
+//! luma ceiling (`theme::underlay::PANEL_LUMA_MAX`) caps even that, so the refreshing backdrop, its
+//! cadence hook and the FPS work it needed went with it. The page around the panel is still dimmed
+//! at [`theme::underlay::DIM_PROSE`] — the measured text-legibility floor [`theme::SCRIM_TEXT_A`],
+//! as the PROSE role's weight — because a panel of fine print over a headline should stand further
+//! forward than a menu does.
 //!
 //! **2. Paragraphs are separate views, because `TextView` cannot hold them.** `TextView::wrap`
 //! splits on `char::is_whitespace` and reflows the lot, so a `\n\n` in a plex.tv biography is
@@ -48,34 +42,6 @@
 //! that gate because they integrate milliseconds, and a hand-rolled scroll offset here would have
 //! been the third. The discrete transitions ([`open`]/[`close`]/[`move_focus`]) still call
 //! `idle::invalidate` because a state change is not motion.
-//!
-//! **4. The panel's own paging must not re-source its own backdrop, and that took a measured FPS
-//! regression to notice.** Every `move_focus` page turn calls `idle::invalidate` (point 3), which
-//! is exactly right for the present gate — a page turn is real content damage and has to present.
-//! It is exactly WRONG for [`prepare_present`]'s `underlay_changed` argument, though: `app.rs`'s
-//! route arm hands it `underlay_moving || idle::present_dirty()`, and `present_dirty` cannot tell
-//! "the PAGE BEHIND this panel changed" from "this panel's own page-turn just fired the very
-//! `invalidate` point 3 documents" — both set the same process-wide flag. Taken straight through,
-//! every keypress re-sources the WHOLE host page into the blur target and re-blurs it, although
-//! nothing under the panel moved at all: the person page's header and shelves sit exactly still
-//! while the reader pages the biography. [`prepare_present`] therefore does not trust the caller's
-//! flag alone — it ALSO asks this panel's own [`Popover::appear_settled`], and refreshes only while
-//! the appear choreography is still ramping (where a stale backdrop under a mid-fade scrim is the
-//! contrast bug point 1 exists to prevent) or the caller's flag is true for some OTHER reason (a
-//! shelf landing or a poster texture arriving on the person page itself, which does redraw the
-//! header/shelves this panel sits over — `person::update` keeps pumping under an open panel, and
-//! the media fetch is independent of the profile fetch that made the panel openable, so this is
-//! the ordinary case on a cold page, not a corner). The panel therefore needs a ledger of the
-//! damage it caused this frame — a page turn, or its scroll spring still gliding — subtracted from
-//! the caller's flag.
-//!
-//! **That ledger and that decision are SHARED now** (2026-09-02). They lived here as a private
-//! `OWN_DAMAGE` static and a private `glass_refresh`, because this was the first panel whose frame
-//! rate was measured; the bug is a property of every popover with a scroll or a selection in it.
-//! They are `popover::note_own_damage` / `popover::own_motion` and `popover::glass_refresh`, and
-//! `Popover::prepare_present` folds them in itself — so this module's `prepare_present` is now a
-//! plain forward, and the panels that never had the fix have it. The decision is unchanged and so
-//! is its test, which moved to `popover.rs` with the function it grades.
 use crate::person::Person;
 use crate::ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
 use crate::ui::label::{Label, VAlign};
@@ -164,9 +130,6 @@ pub(crate) struct PersonBioScreen {
     /// must not be read back as a different page half way there.
     page: usize,
     scroll: Spring,
-    /// The frosted ground's render state — a resource, never logical state, which is why it is not
-    /// in [`SHAPE`].
-    glass: crate::ui::widgets::GlassState,
 }
 
 impl PersonBioScreen {
@@ -175,7 +138,6 @@ impl PersonBioScreen {
             entry,
             page: 1,
             scroll: Spring::at(0.0),
-            glass: crate::ui::widgets::GlassState::new(),
         }
     }
 
@@ -227,11 +189,17 @@ impl PersonBioScreen {
     }
 
     /// The whole panel, at this frame's appear fraction.
-    fn paint(&mut self, person: &Person, appear: f32, measure: &dyn crate::ui::machine::Measure) {
+    fn paint(
+        &mut self,
+        person: &Person,
+        appear: f32,
+        measure: &dyn crate::ui::machine::Measure,
+        field: Option<&crate::ui::underlay::UnderlayField>,
+    ) {
         let slide = RISE * (1.0 - appear);
         let p = Painter::root().alpha(appear).translate(0.0, slide);
         let panel = panel_rect();
-        crate::ui::widgets::Glass::DYNAMIC_BACKDROP.panel(p, panel, slide, theme::ALERT_PANEL_RAD);
+        crate::ui::widgets::panel_ground(p, panel, theme::ALERT_PANEL_RAD, field);
 
         let c = content_rect();
         draw_head(p, person, c, measure);
@@ -369,46 +337,28 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike
         None
     }
     fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &crate::ui::machine::Cx<'_, H>) {}
-    /// **The refreshing backdrop's cadence** — the reason this hook exists at all, and the module
-    /// doc's point 4 is the argument. The decision is the shared `popover::glass_refresh`: the
-    /// caller's belief about the page, minus this panel's own damage (a page turn raises an
-    /// `invalidate`, which `idle::present_dirty` cannot tell from the page changing), and forced
-    /// while the appear ramp is still running, where a stale backdrop under a mid-fade scrim is
-    /// the contrast bug the DYNAMIC policy exists to prevent.
-    fn prepare_present(
-        &mut self,
-        glass: &mut crate::ui::frame::glass::GlassPlan,
-        underlay_changed: bool,
-        appear_settled: bool,
-    ) {
-        let refresh = crate::ui::popover::glass_refresh(
-            underlay_changed,
-            appear_settled,
-            crate::ui::popover::host::own_damage_this_frame(),
-        );
-        glass.prepare_dynamic(&mut self.glass, refresh);
-    }
     /// The page dim, at the PROSE role. Heavier than a menu's on purpose — see the module doc's
     /// point 1: this page draws the person's own name at `size::DISPLAY` directly behind this
-    /// sheet's top corner, and a large name read through a 72% frost lifts the ground under the
-    /// fine print past its graded contrast. `theme::underlay::DIM_PROSE` restates the measured
-    /// text-legibility floor `theme::SCRIM_TEXT_A` as this role's weight.
+    /// sheet's top corner, and the page around a panel of fine print should recede further than
+    /// around a menu. `theme::underlay::DIM_PROSE` restates the measured text-legibility floor
+    /// `theme::SCRIM_TEXT_A` as this role's weight.
     ///
     /// Nothing is lifted: the sheet replaces the middle of the frame and holds no control.
     fn scrim(&self) -> crate::ui::screen::Scrim {
         crate::ui::screen::Scrim::dim(theme::underlay::DIM_PROSE)
     }
     fn draw(&mut self, f: &mut crate::ui::screen::DrawFrame<'_, '_, H>) {
-        // **A surface may not appear in its own backdrop.** The direct blur-source path re-renders
-        // the host page into a small target; the SCRIM deliberately does not take this branch,
-        // being page content whose whole job is to be in what the frost samples.
+        // **A surface is never part of a blur source.** The direct blur-source path (the chrome's
+        // glass — the only glass there is) re-renders the host page into a small target; a
+        // panel drawn into it would be blurred into the bar under its own frost.
         if crate::gfx::blur_source_pass() {
             return;
         }
         let Some(person) = H::person(f.cx).current() else { return };
         let appear = f.page_alpha;
         let measure = f.measure;
-        crate::ui::profile::phase("dt.bio", || self.paint(person, appear, measure));
+        let field = f.underlay;
+        crate::ui::profile::phase("dt.bio", || self.paint(person, appear, measure, field));
     }
     fn render(&self) -> crate::ui::screen::RenderStrategy {
         crate::ui::screen::RenderStrategy::Page

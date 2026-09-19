@@ -463,14 +463,9 @@ fn glass_state_reactivates_after_deactivation_or_a_route_gap() {
 /// measured against the item menu over one checker ground and rejected (`e75b5e49`): dimming the
 /// page going INTO the backdrop destroys the modulation the frost is layered over, so the panel
 /// arrives flat. What is worth pinning now is that no policy can reintroduce it by accident —
-/// the two presets differ in REFRESH and in nothing else.
+/// a policy is its REFRESH and nothing else.
 #[test]
-fn every_glass_policy_composites_and_differs_only_in_refresh() {
-    assert_ne!(
-        Glass::CACHED,
-        Glass::DYNAMIC_BACKDROP,
-        "the two presets are not the same policy"
-    );
+fn every_glass_policy_composites_and_carries_only_its_refresh() {
     // **The policy carries NOTHING beside its refresh**, which is the property the deleted axis
     // violated — and the only form of it that can actually fail. Comparing a preset against a
     // literal of its own one field cannot: that is `Self{refresh} == Self{refresh}`, true by
@@ -480,4 +475,84 @@ fn every_glass_policy_composites_and_differs_only_in_refresh() {
         std::mem::size_of::<GlassRefresh>(),
         "a second axis on Glass would show up here first"
     );
+}
+
+/// **Glass is chrome-only; no popover panel frosts a backdrop blur.** Every panel stands on the
+/// latched underlay field through `panel_ground` (directly, or through `Popover::panel`), and the
+/// blur chain's users are the top bar's standing track, the profile chip's capsule, the dev tile
+/// band — all in `widgets.rs` — plus the frame plan's cadence and the dev load dial.
+///
+/// A source grep, because the failure it guards is a call that COMPILES: `Glass` and
+/// `Painter::backdrop_blur` stay reachable for the chrome, so a panel that reached for them again
+/// would draw, look plausible on a still page, and put the ~11% of a frame's GPU the migration
+/// removed straight back.
+#[test]
+fn no_popover_panel_uses_the_blur_path_and_every_one_stands_on_the_field() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    // The blur path's legitimate users: chrome, the frame plan, the dev dial, the API itself, and
+    // a fixture that names it in a string.
+    const CHROME: &[&str] = &[
+        "ui/widgets.rs",
+        "ui/frame/glass.rs",
+        "ui/glassload.rs",
+        "ui/mod.rs",
+        "ui/fixture.rs",
+        "ui/widgets_glass_budget_tests.rs",
+    ];
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).expect("read src dir") {
+            let p = e.expect("dir entry").path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    walk(&root.join("ui"), &mut files);
+    walk(&root.join("screens"), &mut files);
+    let mut offenders = Vec::new();
+    for f in &files {
+        let rel = f.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/");
+        if CHROME.contains(&rel.as_str()) {
+            continue;
+        }
+        let src = std::fs::read_to_string(f).expect("read source");
+        for (n, line) in src.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            if ["Glass::", "GlassState", "backdrop_blur(", ".backdrop("]
+                .iter()
+                .any(|pat| code.contains(pat))
+            {
+                offenders.push(format!("{rel}:{}: {code}", n + 1));
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "the blur path is chrome-only — a panel's ground is `widgets::panel_ground`:\n{}",
+        offenders.join("\n")
+    );
+
+    // …and every panel that used to frost one now stands on the field.
+    for rel in [
+        "screens/item_menu.rs",
+        "screens/account_menu.rs",
+        "screens/alt_sources.rs",
+        "screens/about_panel.rs",
+        "screens/tracks_panel.rs",
+        "screens/library/menu.rs",
+        "screens/person_bio.rs",
+        "ui/decision_alert.rs",
+    ] {
+        let src = std::fs::read_to_string(root.join(rel)).expect("read panel source");
+        assert!(
+            src.contains("panel_ground(") || src.contains("pop.panel("),
+            "{rel} must draw its ground through `panel_ground` (or `Popover::panel`)"
+        );
+    }
 }

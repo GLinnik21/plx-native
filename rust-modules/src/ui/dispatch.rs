@@ -1124,42 +1124,6 @@ where
         rig.prepare(budget, present);
     }
 
-    /// **Resolve every visible surface's REFRESHING backdrop, before the host page draws.**
-    ///
-    /// A second, narrower prepare, called from the loop's glass-owner block rather than from the
-    /// dispatcher's own frame, because the slot is load-bearing at both ends and neither boundary
-    /// exists inside `prepare_pass`: `popover::host::begin_frame` above it latches the own-damage
-    /// ledger this fold reads, and `gfx::blur_direct_region()` is sampled below it, so an
-    /// invalidation raised here reaches this frame's own blur source instead of the next one's.
-    ///
-    /// The TOP PAGE and every visible surface are asked, in that order. What the container
-    /// contributes is the half a screen cannot know: whether its own appear spring has SETTLED,
-    /// which it owns (`Surface::motion`) — a page, having no such spring, is asked with `true`.
-    /// The decision itself stays one function, `popover::glass_refresh`, in the screen that owns
-    /// the glass policy.
-    ///
-    /// It replaces a call that NAMED one screen (`ui::person_bio::prepare_present`, routed on
-    /// `Route::Person` for a while, then self-gated) — the shape §14 is about: a rule stated in one
-    /// module and enforced by a route test three modules away. A screen with a cached ground, or
-    /// none, inherits the no-op.
-    pub fn prepare_present(
-        &mut self,
-        glass: &mut crate::ui::frame::glass::GlassPlan,
-        underlay_changed: bool,
-    ) {
-        if let Some(inst) = self.nav.tabs.stack.top_mut().and_then(|e| e.inst.as_mut()) {
-            inst.screen.prepare_present(glass, underlay_changed, true);
-        }
-        for s in &mut self.nav.modals.surfaces {
-            if s.phase == crate::ui::containers::modal::Phase::Hidden {
-                continue;
-            }
-            let Some(inst) = s.entry.inst.as_mut() else { continue };
-            let settled = s.motion.settled();
-            inst.screen.prepare_present(glass, underlay_changed, settled);
-        }
-    }
-
     /// Step 10 on a frame the CALLER presents (the legacy loop's own gate, phase 5b): the
     /// prepare pass first if this frame's steps did not run it, then the draw. The surfaces
     /// alone or the whole tree — `pages` says whether the page pass is drawn here too (the
@@ -1281,8 +1245,13 @@ where
         if host_render == HostRender::Cached {
             set.frame_cache_bytes = super::frame::FRAME_CACHE_BYTES;
         }
-        // the surfaces, bottom to top; a later stop is above an earlier one
-        for s in &mut nav.modals.surfaces {
+        // the surfaces, bottom to top; a later stop is above an earlier one. Each is handed the
+        // stack's ONE underlay field — latched by the dims above, from the undimmed page, on this
+        // very frame — which is what a popover panel's ground is drawn from
+        // (`widgets::panel_ground`). Disjoint fields of the stack: the field is only read here.
+        let modals = &mut nav.modals;
+        let field = modals.underlay.field();
+        for s in &mut modals.surfaces {
             if let Some(inst) = s.entry.inst.as_mut() {
                 let _surface_scope = rig.surface_scope();
                 // §4.4: a spring stepped while a SURFACE draws is the panel's, and an
@@ -1296,6 +1265,7 @@ where
                 surface_cx.focus = input.engine.read(surface_cx.owner);
                 let mut f = DrawFrame::with_navigation(&surface_cx, Painter::root(), navigation);
                 f.page_alpha = s.motion.appear;
+                f.underlay = Some(field);
                 inst.screen.draw(&mut f);
                 report.drawn.push(inst.id);
                 stops.extend(f.into_stops());
