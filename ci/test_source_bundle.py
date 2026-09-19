@@ -12,7 +12,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from source_bundle import canonical, digest, read_regular, snapshot, validate, write_archive
+from source_bundle import (PRIVATE_KEY_PATTERN, SENTRY_DSN_PATTERN, canonical, digest, read_regular,
+                           snapshot, validate, write_archive)
 
 
 class BundleTests(unittest.TestCase):
@@ -210,7 +211,7 @@ class BundleTests(unittest.TestCase):
         from source_bundle import scan
         sample = b'https://' + b'0' * 32 + b'@o0.ingest.sentry.io/1'
         name = 'fixture/sample.java'
-        with patch('source_bundle.PUBLIC_DEMO_DSN_FILES', {name: digest(sample)}):
+        with patch('source_bundle.PUBLIC_SAMPLE_FILES', {name: (SENTRY_DSN_PATTERN, digest(sample))}):
             scan(sample, 'outer.tar.gz:' + name)
             with self.assertRaisesRegex(ValueError, 'credential pattern'):
                 scan(sample + b'changed', 'outer.tar.gz:' + name)
@@ -218,6 +219,17 @@ class BundleTests(unittest.TestCase):
                 scan(sample, 'another.java')
             with self.assertRaisesRegex(ValueError, 'private value'):
                 scan(sample, name, [sample])
+
+    def test_public_sample_exception_is_pattern_scoped(self):
+        from source_bundle import scan
+        key = b'-----BEGIN PRIVATE KEY-----\n' + b'A' * 64 + b'\n-----END PRIVATE KEY-----\n'
+        name = 'cargo-vendor/fixture/src/lib.rs'
+        with patch('source_bundle.PUBLIC_SAMPLE_FILES', {name: (PRIVATE_KEY_PATTERN, digest(key))}):
+            scan(key, 'cargo-vendor.tar.gz:' + name)
+        # The same file exempted for a DIFFERENT pattern is still refused.
+        with patch('source_bundle.PUBLIC_SAMPLE_FILES', {name: (SENTRY_DSN_PATTERN, digest(key))}):
+            with self.assertRaisesRegex(ValueError, 'credential pattern'):
+                scan(key, 'cargo-vendor.tar.gz:' + name)
 
     def test_input_symlink_escape(self):
         (self.root / 'link').symlink_to('/etc/passwd')

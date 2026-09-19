@@ -37,6 +37,9 @@ with (work/'build.log').open('w') as log:
  for command in commands:
   run=subprocess.run(command,env=env,stdout=log,stderr=subprocess.STDOUT)
   if run.returncode:
+   # The log is otherwise only a file in the workspace; a CI failure must explain itself.
+   log.flush();tail=(work/'build.log').read_text(errors='replace').splitlines()[-200:]
+   print('FAIL (exit %d): %s\n--- last %d lines of %s ---\n%s'%(run.returncode,' '.join(command),len(tail),work/'build.log','\n'.join(tail)),file=sys.stderr)
    result['exit']=run.returncode;(work/'result.json').write_text(json.dumps(result,indent=2)+'\n');sys.exit(run.returncode)
 result['rebuild_status']='PASS';result['artifacts']={x.name:hashlib.sha256(x.read_bytes()).hexdigest() for x in (source/'pkg').glob('*.ipk')}
 (work/'result.json').write_text(json.dumps(result,indent=2)+'\n')

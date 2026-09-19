@@ -13,7 +13,21 @@ from source_bundle import canonical, digest, fail, read_regular, scan, write_arc
 
 
 def run(*args):
-    return subprocess.check_output(args, stderr=subprocess.PIPE).decode().strip()
+    """Run a tool and return its stdout; on failure, show what the tool itself said.
+
+    The CalledProcessError alone names only the command and exit status — a `cargo vendor` that
+    exits 101 then reads as nothing at all. The home directory is shortened to `~` so a local run
+    does not print the developer's account path; a CI runner's paths are public anyway.
+    """
+    result = subprocess.run(args, capture_output=True)
+    if result.returncode:
+        home = str(Path.home())
+        for name, stream in [('stdout', result.stdout), ('stderr', result.stderr)]:
+            text = stream.decode(errors='replace').strip().replace(home, '~')
+            if text:
+                print('--- ' + args[0] + ' ' + name + ' ---\n' + text, file=sys.stderr)
+        raise subprocess.CalledProcessError(result.returncode, args, result.stdout, result.stderr)
+    return result.stdout.decode().strip()
 
 
 def pack_tree(root, prefix, contents):
@@ -61,6 +75,10 @@ def main():
     with tempfile.TemporaryDirectory(prefix='collect-', dir=output) as temp:
         vendor = Path(temp) / 'cargo-vendor'
         # Only Cargo's explicitly selected locked sources are read, never a whole private cache.
+        # `vendor` takes EVERY package in Cargo.lock — all targets, all features, dev-dependencies
+        # included — while the release ARM build downloads only its own graph. The caller must
+        # `cargo fetch --locked` (no --target) first; --offline then fails loudly on a gap
+        # instead of this script downloading anything itself.
         run('cargo', '+' + args.rust_toolchain, 'vendor', '--offline', '--locked',
             '--manifest-path', str(root / 'rust-modules/Cargo.toml'), str(vendor))
         contents = {}
@@ -141,6 +159,6 @@ if __name__ == '__main__':
     try:
         main()
     except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
-        # subprocess stderr may contain local cache paths; no captured stdout/stderr is printed.
+        # run() has already printed the failing tool's own output above this line.
         print('FAIL: ' + str(error), file=sys.stderr)
         sys.exit(1)
