@@ -17,6 +17,7 @@
 // that gets to do it.
 #![allow(dead_code)] // widgets are added module-by-module; some land before their first caller
 
+use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 
 pub mod anim;
@@ -322,6 +323,42 @@ pub trait View {
     fn update(&mut self, _env: &Env) {}
     fn layout(&mut self, _frame: Rect, _env: &Env) {}
     fn draw(&self, env: &Env, p: Painter);
+}
+
+/// [`Painter::text`]/[`text_fade`](Painter::text_fade)/[`text_fade_v`](Painter::text_fade_v)'s
+/// recording branch still has to answer a width — the caller lays out from it the same frame — but
+/// `Painter` is `Copy` and threaded through hundreds of draw leaves with no capability parameter to
+/// grow one onto (the same shape `widgets::LegacyMeasure`'s doc describes). This mirrors that leaf:
+/// the identical free functions `TtfMeasure` wraps, minus its boot-order `debug_assert!`, so a
+/// warming pass recorded before a host test's `init_text` never trips it.
+struct RecordingMeasure;
+
+impl crate::ui::machine::Measure for RecordingMeasure {
+    fn width(&self, s: &CStr, sz: c_int, bold: bool) -> f32 {
+        crate::text::text_width(s.as_ptr(), sz, bold as c_int)
+    }
+    fn cap_h(&self, sz: c_int) -> f32 {
+        crate::text::cap_h(sz, 0)
+    }
+    fn line_h(&self, sz: c_int) -> f32 {
+        crate::text::text_height(sz, 0)
+    }
+    fn live_font(&self) -> bool {
+        true
+    }
+}
+
+/// The three text-recording call sites share this: builds the `&CStr` [`Measure::width`] takes
+/// from the raw pointer a draw call is handed, the same null guard `crate::text::draw_text` (the
+/// ordinary, non-recording path) applies before it ever reaches a measurement.
+///
+/// [`Measure::width`]: crate::ui::machine::Measure::width
+fn recorded_text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
+    if s.is_null() {
+        return 0.0;
+    }
+    use crate::ui::machine::Measure as _;
+    RecordingMeasure.width(unsafe { CStr::from_ptr(s) }, sz, bold != 0)
 }
 
 /// Folds a cascading alpha (+ optional translate) into every primitive call.
@@ -978,7 +1015,7 @@ impl Painter {
     ) -> f32 {
         if self.text_recorder {
             crate::text::queue_prewarm(s, sz, bold);
-            return crate::text::text_width(s, sz, bold);
+            return recorded_text_width(s, sz, bold);
         }
         let c = self.c(col);
         crate::text::draw_text(s, x + self.dx, y + self.dy, sz, c.as_ptr(), align, bold)
@@ -999,7 +1036,7 @@ impl Painter {
     ) -> f32 {
         if self.text_recorder {
             crate::text::queue_prewarm(s, sz, bold);
-            return crate::text::text_width(s, sz, bold);
+            return recorded_text_width(s, sz, bold);
         }
         let c = self.c(col);
         crate::text::draw_text_fade(
@@ -1040,7 +1077,7 @@ impl Painter {
     ) -> f32 {
         if self.text_recorder {
             crate::text::queue_prewarm(s, sz, bold);
-            return crate::text::text_width(s, sz, bold);
+            return recorded_text_width(s, sz, bold);
         }
         let c = self.c(col);
         // The bands are given in this painter's LOCAL space (the same space `y` is), so the
