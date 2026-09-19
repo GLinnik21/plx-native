@@ -348,6 +348,13 @@ mod tests {
     fn sidecar_picks_share_one_worker_and_drop_abandoned_answers() {
         let _guard = crate::testlock::serial();
         reset();
+        // A prior route test may have left its now-abandoned worker finishing a no-client
+        // result. Let that worker retire before installing this test's controlled transport.
+        let until = Instant::now() + Duration::from_secs(2);
+        while state().running && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!state().running);
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
