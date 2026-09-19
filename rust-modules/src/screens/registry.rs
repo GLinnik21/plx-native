@@ -1581,11 +1581,12 @@ where
                 let mut page = crate::screens::detail::DetailScreen::new(entry, *sid, rk.clone(), H::hubs(cx));
                 // No `RequestDetail` push here: `DetailScreen`'s own `Enter(Fresh)` handler (fired
                 // this same frame, right after mount) already decides whether the freshly mounted
-                // page needs a fetch (`refresh == None && self.detail(meta).is_none() &&
-                // request_status != Some(true)`) — a mount-time push here raced that decision every
-                // time, because the admission it queued had not yet been drained when Enter read
-                // `detail_request_status`, so Enter always saw no fetch in flight and queued a
-                // second one. Mount and Enter now have exactly one owner of the request decision.
+                // page needs a fetch (`refresh == None && request_status != Some(true)` — a fresh
+                // open always refetches unless one is already in flight) — a mount-time push here
+                // raced that decision every time, because the admission it queued had not yet been
+                // drained when Enter read `detail_request_status`, so Enter always saw no fetch in
+                // flight and queued a second one. Mount and Enter now have exactly one owner of the
+                // request decision.
                 if let PageMemory::Detail(spot) = &ret.memory {
                     page.restore_memory(spot, H::metadata(cx));
                 } else if let Some(seed) = self.seed.take() {
