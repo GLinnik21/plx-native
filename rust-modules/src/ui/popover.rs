@@ -691,6 +691,11 @@ pub(crate) mod host {
     use super::HOST_USERS;
     use std::sync::atomic::Ordering::Relaxed;
 
+    #[cfg(not(test))]
+    use crate::gfx::FrameCache;
+    #[cfg(test)]
+    use tests::FrameCache;
+
     /// What the one snapshot currently holds — see the module doc's two stages.
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Held {
@@ -705,10 +710,13 @@ pub(crate) mod host {
     /// The one snapshot. Main-render-thread only, like the `gfx` resource it holds.
     ///
     /// **One, shared, rather than one per popover**, and the memory is the smaller half of the
-    /// argument: a full-screen RGBA texture is 8.3 MB on this panel. The snapshot represents one
-    /// explicit prefix of the layer stack; nested live surfaces sit above that prefix rather
-    /// than each owning a competing frozen picture of the page.
-    static mut CACHE: crate::gfx::FrameCache = crate::gfx::FrameCache::new();
+    /// argument: a full-screen RGBA texture is 8.3 MB on this panel and six of them would be a
+    /// meaningful bite out of the app's `requiredMemory` budget. The larger half is that only one
+    /// modal is ever up over one page, so a second cache could only ever hold a stale copy of a
+    /// page some OTHER popover had already frozen — a second answer to a question with one answer.
+    /// The snapshot represents one explicit prefix of the layer stack; nested live surfaces sit
+    /// above that prefix rather than each owning a competing frozen picture of the page.
+    static mut CACHE: FrameCache = FrameCache::new();
 
     /// Which stage [`CACHE`] holds.
     static mut HELD: Held = Held::Nothing;
@@ -718,9 +726,9 @@ pub(crate) mod host {
     /// the capture would otherwise have been copied. `None` on every other frame.
     static mut TARGET: Option<crate::surface::PageTarget> = None;
 
-    /// Has the ground quad already gone down this frame? A popover reaches [`live`] twice (its
-    /// scrim and its panel), and the quad is one full-screen draw that belongs to the frame rather
-    /// than to either call.
+    /// Is the ground already on this frame's framebuffer, either drawn live and captured or
+    /// served from the cache? A popover reaches [`live`] twice (its scrim and its panel), and a
+    /// dispatcher may enter more scopes afterwards. None may replay ground over the foreground.
     static GROUND_DRAWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     /// Is a capture owed before the next popover draws? Set by [`page_pass`] when it finds no
@@ -1109,6 +1117,11 @@ pub(crate) mod host {
         }
     }
     #[cfg(test)]
+    mod tests {
+        include!("popover_host_tests.rs");
+    }
+
+    #[cfg(test)]
     mod backdrop_tests {
         use super::*;
         #[test]
@@ -1176,7 +1189,6 @@ pub(crate) mod host {
             assert!(unchanged,"a source is not the visible ground draw and cannot discard it");
         }
     }
-
 }
 
 #[cfg(test)]

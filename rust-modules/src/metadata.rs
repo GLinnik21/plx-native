@@ -113,6 +113,10 @@ pub(crate) struct MetadataAdapter {
     season_done: std::sync::atomic::AtomicU32,
     season_result: std::sync::Mutex<Option<SeasonResult>>,
     tracker: std::sync::Mutex<record::Tracker>,
+    /// TEST ONLY: the detail fetches [`request_detail`] admitted, parked here instead of on a
+    /// worker thread — see [`MetadataAdapter::run_held_detail_fetches_for_test`].
+    #[cfg(test)]
+    held_detail: std::sync::Mutex<Vec<(crate::plex::ServerId, String, u32)>>,
 }
 
 impl Default for MetadataAdapter {
@@ -130,7 +134,52 @@ impl Default for MetadataAdapter {
             season_done: std::sync::atomic::AtomicU32::new(0),
             season_result: std::sync::Mutex::new(None),
             tracker: std::sync::Mutex::new(record::Tracker::new(false)),
+            #[cfg(test)]
+            held_detail: std::sync::Mutex::new(Vec::new()),
         }
+    }
+}
+
+#[cfg(test)]
+impl MetadataAdapter {
+    /// Run every detail fetch [`request_detail`] admitted and has not yet run, on THIS thread,
+    /// through the production completion path (`finish_detail_fetch` over `fetch_full`); return
+    /// how many ran. Their landings are queued for the next `pump_detail`.
+    ///
+    /// Under `cfg(test)` a detail request never starts a worker thread. It did until 2026-09-19,
+    /// and every test that drove a request through a real `Bridge` raced that thread: a fetch
+    /// for an unknown server returns in microseconds, so a fast run settled the request before
+    /// an "in flight" assertion (`Some(false)` where `Some(true)` was pinned), while a loaded CI
+    /// runner had not settled it after the hundred `yield_now`s a drain helper spun
+    /// (`Some(true)` where `Some(false)` was pinned). Both halves failed intermittently in
+    /// `app::content::library_publication_tests`. Holding the CURRENT fetch until a test asks
+    /// makes "in flight" and "settled" states the test chooses rather than the scheduler.
+    pub(crate) fn run_held_detail_fetches_for_test(&self) -> usize {
+        self.run_held_detail_fetches(|_| true)
+    }
+
+    /// The superseded half only: fetches whose generation is no longer current, whose landings
+    /// `pump_detail` discards anyway. [`begin_detail_request`] runs these right after it
+    /// supersedes them, BEFORE admitting the new request, so a superseded fetch hands back its
+    /// admission reservation — as the thread it replaces did, well inside a test's next step —
+    /// instead of holding one of the landing's four in-flight slots until a test drains it.
+    fn run_superseded_detail_fetches(&self) -> usize {
+        let current = self.detail_gen.load(std::sync::atomic::Ordering::SeqCst);
+        self.run_held_detail_fetches(|gen| gen != current)
+    }
+
+    fn run_held_detail_fetches(&self, pick: impl Fn(u32) -> bool) -> usize {
+        let run: Vec<_> = {
+            let mut held = self.held_detail.lock().unwrap_or_else(|e| e.into_inner());
+            let (run, keep) = std::mem::take(&mut *held).into_iter().partition(|(_, _, gen)| pick(*gen));
+            *held = keep;
+            run
+        };
+        let n = run.len();
+        for (sid, rk, gen) in run {
+            finish_detail_fetch(self, sid, &rk, gen, || fetch_full(sid, &rk));
+        }
+        n
     }
 }
 
@@ -610,9 +659,13 @@ pub(crate) struct Stream {
     pub(crate) ad: bool,
     pub(crate) forced: bool,
     pub(crate) default: bool, // the file's default track (drives the "Original:" audio label)
-    /// external/sidecar stream (downloaded .srt etc. — NOT inside the container). The client
-    /// renderer can't reach it on direct-play; only a server transcode can burn it.
+    /// external/sidecar stream (downloaded .srt etc. — NOT inside the container). The DEMUXER
+    /// cannot reach it; on direct play a TEXT sidecar is fetched and drawn by `player::sidecar`
+    /// instead ([`Stream::sidecar_renderable`]), and a transcode burns it.
     pub(crate) external: bool,
+    /// PMS `Stream.key` — the sidecar's delivery path (`/library/streams/{id}`). Empty for every
+    /// embedded stream, which is exactly how `external` is derived.
+    pub(crate) key: String,
     /// PMS `Stream.selected` — the server's CURRENT pick for this part, i.e. the track a user
     /// chose on ANY Plex client (phone, web, another TV) and the one `select_streams` writes.
     /// `route`'s selection ladder prefers it over its own defaults, which is what makes a pick
@@ -625,6 +678,20 @@ pub(crate) struct Stream {
 }
 
 impl Stream {
+    /// Can the CLIENT draw this sidecar on direct play? Only a TEXT format: `player::sidecar`
+    /// asks PMS for it as UTF-8 SubRip and parses SubRip/WebVTT/ASS. An image sidecar
+    /// (`.idx`/`.sub` VobSub, `.sup` PGS) has no such path — only a server burn can show it, so
+    /// it stays a transcode-only row. An allow-list rather than "not an image codec", so a
+    /// format nobody here has met is hidden instead of offered and then silently blank.
+    pub(crate) fn sidecar_renderable(&self) -> bool {
+        self.external
+            && !self.key.is_empty()
+            && matches!(
+                self.codec.to_ascii_lowercase().as_str(),
+                "srt" | "subrip" | "ass" | "ssa" | "vtt" | "webvtt" | "smi" | "sami"
+            )
+    }
+
     /// Does this audio track carry **Dolby Atmos**?
     ///
     /// **The answer is in `profile`, and only there** — probed live against the dev server
@@ -1830,6 +1897,7 @@ fn convert_streams(streams: &[crate::plex::Stream]) -> Streams {
             title: s.title.clone(),
             // embedded container streams carry no delivery key; sidecars do
             external: s.stream_type == 3 && !s.key.is_empty(),
+            key: s.key.clone(),
             // the server's current pick for this part (a track chosen on another client)
             selected: s.selected != 0,
         };
@@ -1946,6 +2014,9 @@ pub(crate) struct PlayingItem {
     /// would be the wrong file's, with nothing on screen to say so.
     pub(crate) sid: crate::plex::ServerId,
     pub(crate) rk: String,
+    /// The show's ratingKey when this is an episode (`grandparentRatingKey`), else empty — what
+    /// the resolve asks the show's own language settings of (`route::plan::build_stream`).
+    pub(crate) show_rk: String,
     pub(crate) audio: Vec<Stream>,
     pub(crate) subs: Vec<Stream>,
     pub(crate) video_fps: f64, // the played leaf's video fps (0 = unknown) — feeds the Load esInfo
@@ -2001,6 +2072,7 @@ fn cached_playing(state: &MetadataState, sid: crate::plex::ServerId, rk: &str) -
         .map(|d| PlayingItem {
             sid,
             rk: rk.to_string(),
+            show_rk: d.show_rk.clone(),
             audio: d.audio.clone(),
             subs: d.subs.clone(),
             video_fps: d.video_fps,
@@ -2039,6 +2111,10 @@ pub(crate) fn fetch_playing_item(sid: crate::plex::ServerId, rk: &str) -> Option
         .and_then(|it| it.first_part().map(|p| convert_streams(&p.stream)))
         .unwrap_or_default();
     let (audio, subs, video_fps, dovi) = (st.audio, st.subs, st.fps, st.dovi);
+    let show_rk = it
+        .as_ref()
+        .map(|it| it.grandparent_rating_key.clone())
+        .unwrap_or_default();
     // the frame size rides the same PRIMARY version the streams come from (route.rs's
     // direct-play gate tests it against the device bound — see the field doc)
     let (width, height, bitrate) = it
@@ -2052,6 +2128,7 @@ pub(crate) fn fetch_playing_item(sid: crate::plex::ServerId, rk: &str) -> Option
     Some(PlayingItem {
         sid,
         rk: rk.to_string(),
+        show_rk,
         audio,
         subs,
         video_fps,
@@ -2638,6 +2715,8 @@ fn begin_detail_request(adapter: &MetadataAdapter, sid: crate::plex::ServerId, r
     // DETAIL_DONE must stay behind so `detail_loading()` reports this fetch as in flight
     let gen = adapter.detail_gen.fetch_add(1, Ordering::SeqCst) + 1;
     record::cancel_all(adapter);
+    #[cfg(test)]
+    adapter.run_superseded_detail_fetches();
     *adapter.detail_want.lock().unwrap_or_else(|e| e.into_inner()) = Some((sid, rk.to_string()));
     let addr = detail_addr(gen);
     let admission = record::admit(adapter, addr);
@@ -2662,9 +2741,19 @@ fn request_detail(adapter: &std::sync::Arc<MetadataAdapter>, sid: crate::plex::S
         let adapter = std::sync::Arc::clone(adapter);
         crate::app::bootstrap::stores::admit(serde_json::json!({"store":"metadata",
             "sid":sid.raw(),"rk":rk,"gen":gen,
-            "client":crate::plex::client_for(sid).map(|c| c.instance_gen())}), || crate::task::spawn_small("detail", move || {
-            finish_detail_fetch(&adapter, sid, &rk, gen, || fetch_full(sid, &rk));
-        }))
+            "client":crate::plex::client_for(sid).map(|c| c.instance_gen())}), || {
+            // See `MetadataAdapter::run_held_detail_fetches_for_test`: a test runs the fetch
+            // when it chooses, never on a thread racing its assertions.
+            #[cfg(test)]
+            {
+                adapter.held_detail.lock().unwrap_or_else(|e| e.into_inner()).push((sid, rk, gen));
+                true
+            }
+            #[cfg(not(test))]
+            crate::task::spawn_small("detail", move || {
+                finish_detail_fetch(&adapter, sid, &rk, gen, || fetch_full(sid, &rk));
+            })
+        })
     });
 }
 

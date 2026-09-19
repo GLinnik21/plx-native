@@ -249,6 +249,14 @@ pub(crate) fn arm_heroground() {
 
 /// `/tmp/plxnative-profile` / `/tmp/plxnative-hwcnt` — the two GPU-time profilers. Both present
 /// is refused; either alone arms its mode.
+///
+/// Gated on `devtriggers` at the item level rather than left to `dev::read` folding to `None`:
+/// `dev::read` already makes this whole function inert in a release build, but the disabled-both
+/// diagnostic line below spells out both trigger names in full, and a compiled-but-unreachable
+/// function still carries its own string literals into `--no-default-features` bytes. Compiling
+/// the function out entirely is what actually keeps `plxnative-profile`/`plxnative-hwcnt` out of
+/// the binary `ci/check-package.py`'s dev-trigger-catalog check inspects.
+#[cfg(feature = "devtriggers")]
 pub(crate) fn arm_profile_hwcnt() {
     match (crate::dev::read("profile"), crate::dev::read("hwcnt")) {
         (Some(_), Some(_)) => {
@@ -259,6 +267,8 @@ pub(crate) fn arm_profile_hwcnt() {
         (None, None) => {}
     }
 }
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn arm_profile_hwcnt() {}
 
 /// `/tmp/plxnative-cpuprof` — the render thread's own per-phase CPU clock.
 pub(crate) fn arm_cpuprof() {
@@ -1490,6 +1500,7 @@ fn tex_field() -> String {
     format!("tex={n}/{}", bytes / 1024)
 }
 
+
 /// Called once per iteration, after the frame's Swap phase is stamped (`app::run::report`, right
 /// after `present_and_swap`) — the narrowest point either bench's accumulator can read this
 /// frame's total. Gated on `presented`: an iteration the idle gate skipped drew nothing, so
@@ -1926,15 +1937,133 @@ pub(crate) fn consent_override() -> Option<String> {
 /// `/tmp/plxnative-rec` — read by controlled-bootstrap preflight. The recorder/replay MECHANISM
 /// stays in `app/recorder.rs` (this phase's instructions: it is not a scenario), but the raw
 /// trigger read goes through the one door every other trigger does.
+///
+/// Compiled out, not merely guarded, in a release build: these three controlled-boot readers are
+/// the recorder's whole `/tmp` surface, and a runtime `ENABLED` check still leaves the trigger
+/// names in the binary's bytes, where `ci/check-package.py` grades them.
+#[cfg(feature = "devtriggers")]
 pub(crate) fn rec_trigger() -> Result<Option<String>, &'static str> {
-    if !crate::dev::ENABLED { return Ok(None); }
-    crate::ui::rec::mode_value(&crate::paths::in_runtime_dir("plxnative-rec"))
-        .map_err(|_| "invalid recorder trigger")
+    crate::ui::rec::mode_value(&super::path("rec")).map_err(|_| "invalid recorder trigger")
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn rec_trigger() -> Result<Option<String>, &'static str> {
+    Ok(None)
 }
 
 /// `/tmp/plxnative-recplay` — see [`rec_trigger`].
+#[cfg(feature = "devtriggers")]
 pub(crate) fn recplay_trigger() -> Result<Option<String>, &'static str> {
-    if !crate::dev::ENABLED { return Ok(None); }
-    crate::ui::rec::mode_value(&crate::paths::in_runtime_dir("plxnative-recplay"))
-        .map_err(|_| "invalid replay trigger")
+    crate::ui::rec::mode_value(&super::path("recplay")).map_err(|_| "invalid replay trigger")
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn recplay_trigger() -> Result<Option<String>, &'static str> {
+    Ok(None)
+}
+
+/// `/tmp/plxnative-app-init` — an explicit typed initial for a controlled boot, read by
+/// `app::bootstrap` in place of capturing one. `None` when the trigger is absent (always, in a
+/// release build); `Some(Err)` when it is present but unreadable. See [`rec_trigger`].
+#[cfg(feature = "devtriggers")]
+pub(crate) fn app_init_value() -> Option<Result<serde_json::Value, &'static str>> {
+    crate::dev::flag("app-init").then(|| {
+        crate::ui::rec::initial_value(&super::path("app-init"))
+            .map_err(|_| "invalid explicit initial input")
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn app_init_value() -> Option<Result<serde_json::Value, &'static str>> {
+    None
+}
+
+// =================================================================================================
+// onboarding report arms — sign-in trouble and the consent decision, for the ui-sim captures of
+// the incident offer. Both produce REAL state through the production seams: the sign-in trouble
+// is evidence handed to the same producers a failed request feeds, and the consent state is a
+// real record installed at boot. Nothing here paints a screen directly.
+// =================================================================================================
+
+/// The synthetic failure `plxnative-signinfail` stands for: a name that did not resolve, the
+/// commonest way a television "has no internet". A `net::RequestFailure` like the one libcurl's
+/// `CURLE_COULDNT_RESOLVE_HOST` produces, planted only into the one call it replaces — never into
+/// `net`'s own records, which other callers read as real evidence (0.6.6's reason, kept).
+fn synthetic_dns_failure() -> crate::net::RequestFailure {
+    crate::net::RequestFailure {
+        cause: crate::net::RequestError::Transport,
+        status: None,
+        body_limit: None,
+        curl_rc: Some(6),
+    }
+}
+
+fn signinfail_spec() -> Option<String> {
+    if cfg!(test) { return None; }
+    crate::dev::read("signinfail")
+}
+
+/// `/tmp/plxnative-signinfail[=error]` — every sign-in code request fails as an unresolvable
+/// plex.tv would. Re-read at each attempt, so *Try again* fails the same way until it is removed.
+/// `None` means "make the real request".
+pub(crate) fn signin_trouble_create()
+    -> Option<Result<crate::plex::account::Pin, crate::plex::account::CallEvidence>> {
+    match signinfail_spec()?.as_str() {
+        "" | "error" => {
+            crate::log("dev: signinfail — the sign-in code request fails (synthetic DNS failure)");
+            Some(Err(Err(synthetic_dns_failure())))
+        }
+        _ => None,
+    }
+}
+
+/// `/tmp/plxnative-signinfail=stall` — the code is real, but every poll of it goes unanswered, so
+/// the wait reaches the stalled rule (`auth::LINK_TROUBLE_AFTER`) exactly as a dropped link would.
+pub(crate) fn signin_trouble_poll() -> Option<crate::plex::account::PinPoll> {
+    (signinfail_spec()?.as_str() == "stall")
+        .then(|| crate::plex::account::PinPoll::Unreachable(Err(synthetic_dns_failure())))
+}
+
+/// `/tmp/plxnative-consentstate=unset|yes4|yes7|no` — boot with this consent record instead of
+/// the stored one: never asked, error reports allowed at scope 4 (before the onboarding report
+/// existed) or 7, or declined. Installed through `consent::install` like a real load, and written
+/// nowhere. `None` without the trigger or with an unknown value (which is logged). Unused under
+/// test, where `telemetry::capture_initial` never consults it.
+#[cfg_attr(test, allow(dead_code))]
+pub(crate) fn consent_state_override() -> Option<crate::telemetry::consent::Consent> {
+    use crate::telemetry::consent::{Consent, ONBOARDING_REPORT_SCOPE, POLICY_VERSION};
+    let spec = crate::dev::read("consentstate")?;
+    // An answered record as `consent::apply` would have written it: errors on at `scope` with a
+    // freshly minted Crash report ID, or errors off with nothing kept.
+    let answered = |errors: bool, scope: u32| Consent {
+        asked_version: POLICY_VERSION,
+        errors,
+        errors_scope: if errors { scope } else { 0 },
+        errors_id: errors.then(crate::telemetry::mint_id).flatten(),
+        ..Consent::default()
+    };
+    let consent = match spec.as_str() {
+        "unset" => Consent::default(),
+        "yes4" => answered(true, 4),
+        "yes7" => answered(true, ONBOARDING_REPORT_SCOPE),
+        "no" => answered(false, 0),
+        other => {
+            crate::log(&format!("dev: consentstate — unknown value {other:?}, ignored"));
+            return None;
+        }
+    };
+    crate::log(&format!("dev: consentstate={spec} — booting with that consent record"));
+    Some(consent)
+}
+
+/// Is a harness driving this boot? The onboarding offer is a modal question, and a scripted run
+/// (a test identity, a forced profile pick, a recording) must not stop on one. **Narrow on
+/// purpose**, where `dev::any_trigger_present` is broad: every other trigger — `plxnative-login`,
+/// `-nowan`, `-signinfail`, the consent state — is how the offer is PUT on screen for a capture,
+/// and a gate that saw them would hide the thing being captured. Read once.
+pub(crate) fn harness_driven() -> bool {
+    if cfg!(test) { return false; }
+    static DRIVEN: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DRIVEN.get_or_init(|| {
+        crate::dev::read("token").is_some_and(|t| !t.is_empty())
+            || crate::dev::read("pickuser").is_some()
+            || matches!(rec_trigger(), Ok(Some(_)))
+    })
 }

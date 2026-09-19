@@ -1225,17 +1225,13 @@ impl HomeScreen {
     }
 
     fn draw_status(&self, view: HubsView<'_>, env: &Env, p: Painter, focus: Option<Located>) {
-        let Some((caption, kind, action)) = status_read(view) else {
+        let Some(overlay) = status_overlay(view) else {
             return;
         };
-        let focused = focus == Some(Located::Hero(0));
-        let mut overlay = StatusOverlay::new(Rect::FULL, caption, kind)
+        overlay
             .phase(self.status_ms as u32)
-            .focused(focused);
-        if let Some(label) = action {
-            overlay = overlay.action(label);
-        }
-        overlay.draw(env, p);
+            .focused(focus == Some(Located::Hero(0)))
+            .draw(env, p);
     }
 
     pub(crate) fn record_stops<H: HomeLike>(&self, f: &mut DrawFrame<'_, '_, H>, view: HubsView<'_>) {
@@ -1708,8 +1704,7 @@ impl HomeScreen {
             if index != 0 || action.is_none() {
                 return None;
             }
-            let overlay = StatusOverlay::new(Rect::FULL, c"", StatusKind::Empty).action(action?);
-            return overlay.action_frame_measured(measure);
+            return status_overlay(view)?.action_frame_measured(measure);
         }
         let hero = self.selected_hero(view)?.item;
         let resumes = crate::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
@@ -2030,15 +2025,28 @@ fn status_read(
             (c"Loading your library\u{2026}", StatusKind::Working, None)
         }
         crate::pms::HubState::Failed => (
-            c"Can't reach your Plex server",
+            c"Can\u{2019}t reach your Plex server",
             StatusKind::Failed,
-            Some(c"Try Again"),
+            Some(c"Try again"),
         ),
         crate::pms::HubState::Ready => (
             c"Nothing on this server yet",
             StatusKind::Empty,
             Some(c"Refresh"),
         ),
+    })
+}
+
+/// **The hub read-out, built ONCE for its draw and its hit rect** — the same kind, caption and
+/// action on both, so the pill a click lands in is the pill on screen. It fills the page, so a
+/// failure stands on the shared page lines (`StatusOverlay::page`), level with the sign-in
+/// failure's and a Library section's; loading and the empty answer stay centred.
+fn status_overlay(view: HubsView<'_>) -> Option<StatusOverlay<'static>> {
+    let (caption, kind, action) = status_read(view)?;
+    let overlay = StatusOverlay::new(Rect::FULL, caption, kind).page();
+    Some(match action {
+        Some(label) => overlay.action(label),
+        None => overlay,
     })
 }
 

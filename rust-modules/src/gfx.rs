@@ -2071,6 +2071,8 @@ pub(crate) fn draw_tex(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32,
 /// on dismissal. The modal's own scrim and controls remain live layers above it.
 ///
 /// Main-render-thread only, like every other GL resource in this module.
+// Host protocol tests substitute CPU copies; the GL backend is shipping-only in that build.
+#[cfg_attr(test, allow(dead_code))]
 pub(crate) struct FrameCache {
     tex: c_uint,
     w: c_int,
@@ -2086,6 +2088,7 @@ pub(crate) struct FrameCache {
     fbo_off: bool,
 }
 
+#[cfg_attr(test, allow(dead_code))]
 impl FrameCache {
     pub(crate) const fn new() -> Self {
         Self {

@@ -29,6 +29,8 @@ mod servers;
 // type across a crate) — declared here so those methods compile onto `Client`.
 mod hubs;
 mod library;
+/// Whole-file text subtitles are bounded before transport allocation and parsing.
+pub(crate) const SIDECAR_MAX_BYTES: usize = 4 * 1024 * 1024;
 mod timeline;
 mod transcoder;
 
@@ -68,6 +70,7 @@ pub(crate) mod pins;
 pub(crate) mod discover;
 
 // The re-exports are the public surface the call sites import.
+pub(crate) use client::ArtFetch;
 pub(crate) use client::JsonDeadlineOutcome;
 // The one link/IP ⇄ u8 encode/decode pair — shared by `Client`'s own atomics and
 // `player::report`'s packed attempt snapshot, so the two never keep a private copy each.

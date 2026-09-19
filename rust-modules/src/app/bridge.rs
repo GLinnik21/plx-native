@@ -1491,7 +1491,7 @@ impl Bridge {
         use crate::ui::machine::{Addr, RequestId};
         if let Some(io) = &mut self.home_io {
             if matches!(effect, SessionFx::Capture { .. } | SessionFx::Work { .. }
-                | SessionFx::Coordinator(_) | SessionFx::Erase { .. }) {
+                | SessionFx::Coordinator(_) | SessionFx::Erase { .. } | SessionFx::Incident { .. }) {
                 io.failure = Some("unsupported controlled Home Session operation");
                 return;
             }
@@ -1552,6 +1552,10 @@ impl Bridge {
                 self.session_ready = None;
                 let leftovers = self.session_adapter.erase(all_local, &mut self.stores.metadata);
                 deliver(SessionEvent::Erased { epoch, leftovers });
+            }
+            SessionFx::Incident { id, lane, report } => {
+                let delivery = self.session_adapter.report_incident(id, lane, report);
+                deliver(SessionEvent::IncidentReported { id, delivery });
             }
             SessionFx::Coordinator(action) => {
                 if matches!(action, crate::auth::owner::CoordinatorAction::LocalDataErased) {
@@ -1652,6 +1656,12 @@ impl Bridge {
         let mut results: AppResults = self.session_adapter.take_results().into_iter()
             .map(|envelope| (envelope.addr, AppMsg::Session(crate::auth::owner::SessionEvent::Result(envelope))))
             .collect();
+        // What became of the report whose Report ID the sign-in screen shows: held, delivered or
+        // dropped.
+        if let Some((id, delivery)) = self.session_adapter.take_incident_delivery() {
+            results.push((crate::ui::machine::Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(0) },
+                AppMsg::Session(crate::auth::owner::SessionEvent::IncidentReported { id, delivery })));
+        }
         results.extend(self.take_hubs_results());
         if self.home_io.is_some() {
             if let Some(result) = crate::ui::landgate::take(StoreId::Browse.ord(),
@@ -2056,20 +2066,37 @@ pub(crate) fn player_overlay_kind(
 /// Is ANY player panel up (including one still fading out)? The successor of
 /// `matches!(route, Route::Player { overlay }) if overlay != Overlay::None`.
 ///
-/// **Test-only since restructure phase 12** (PX-PLAYER), and the reason is the point rather than
-/// a tidy-up: its last production caller was `key_player_failed`'s BACK arm, which asked this in
-/// order to close a panel before leaving a failed playback. A panel is a SURFACE and answers its
-/// own BACK before the page under it is offered the key at all, so the question no longer has a
-/// caller that can act on the answer — but it is still exactly what a test asserting the
-/// container's own bookkeeping wants to ask. `dismiss_player_overlays` below is the ritual half
-/// and is very much alive.
-#[cfg(test)]
+/// **Test-only from restructure phase 12 until issue #163** (PX-PLAYER): its last production
+/// caller through that stretch was `key_player_failed`'s BACK arm, which asked this in order to
+/// close a panel before leaving a failed playback. A panel is a SURFACE and answers its own BACK
+/// before the page under it is offered the key at all, so that caller stopped needing the
+/// answer — but a second one has since arrived, [`player_diagnostics_visible`] below, because a
+/// fading-out panel still paints its own opaque ground and must count exactly the way a fully
+/// open one does. `dismiss_player_overlays` below is the ritual half and has been alive the
+/// whole time.
 pub(crate) fn player_overlay_up(d: &Dispatcher<AppHost>) -> bool {
     d.nav
         .modals
         .surfaces
         .iter()
         .any(|s| matches!(s.entry.arg, AppArg::PlayerOverlay(_)))
+}
+
+/// Should the player's diagnostics ("Stats for nerds") panel draw this frame?
+///
+/// No, while any of the player's own four overlay panels (`OverlayKind::Tracks`/`Info`/
+/// `Chapters`/`More`) is up. `app/diagnostics.rs`'s panel is sized to its content rather than to
+/// the screen, but during playback that content routinely spans ~90% of the screen's width from
+/// the left safe margin — wide enough to reach every one of those panels' bottom-right-anchored
+/// rects — and on the player route it has always painted genuinely last, i.e. on TOP of them.
+/// `More` is the sharpest case: it carries the very "Stats for nerds" toggle this panel answers
+/// to, so drawing over it hid the control that turns the panel off (issue #163). The non-player
+/// routes never had this problem because `app/run.rs`'s other `diagnostics.draw()` call already
+/// sits UNDER that route's own popovers (the account/item menu carries the same toggle there) —
+/// this is the player route catching up to a rule the rest of the app already keeps, now that one
+/// of its own panels carries a control too.
+pub(crate) fn player_diagnostics_visible(d: &Dispatcher<AppHost>) -> bool {
+    !player_overlay_up(d)
 }
 
 /// Dismiss every player panel — the exit ritual's half of `close_player_overlays`.
@@ -2344,6 +2371,7 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
         crate::route::restore_quality(
             crate::dev::playback_quality_override().unwrap_or_else(|| saved.playback_quality()),
         );
+        crate::player::restore_subtitle_tone(saved.subtitle_tone());
         let endpoints = super::boot::install_pms_owned(bridge, &c.origin,
             &c.address, &c.token, c.tier, c.pin.as_ref(), &c.install);
         execute_endpoint_outcomes(pages, endpoints);

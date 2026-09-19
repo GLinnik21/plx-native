@@ -106,7 +106,7 @@ void main(){
   // INTERIOR EARLY-OUT. A rounded rect's edge work is only ever needed within a couple of pixels of
   // its border, and a big panel is mostly not that: the Library's Sort popover is 640x700, so ~90%
   // of its ~450K fragments were running sdBox + two smoothsteps to arrive at "solidly inside".
-  // Measured there at 7.1ms of a 33ms frame (`menu.panel`, via /tmp/plxnative-profile), which is
+  // Measured there at 7.1ms of a 33ms frame (`menu.panel`, via the async GPU-time profiler), which is
   // what made an open menu drop the screen from 60 to ~30 - the frame lands either side of vsync,
   // so it alternates 16/33ms rather than degrading smoothly.
   //

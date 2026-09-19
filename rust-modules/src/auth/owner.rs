@@ -9,6 +9,11 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use crate::ui::machine::{Addr, Canon, LogicalState, MachineId};
 
+mod incident;
+use crate::telemetry::incident::{IncidentContext, InternalClass};
+pub(crate) use incident::{IncidentDelivery, IncidentFlow, IncidentKey, IncidentLane, IncidentOffer,
+    IncidentReport, IncidentState};
+
 pub(crate) const SESSION_DATA_RECORDS: usize = 64;
 pub(crate) const SESSION_OWNER_RESERVATIONS: u32 = 32;
 pub(crate) const SESSION_TOTAL_RESERVATIONS: u32 = 32;
@@ -156,6 +161,14 @@ pub(crate) enum Command {
     /// Answer the currently shown [`PersistenceWarning`]. A key that does not match the warning
     /// currently held is inert — it may be stale (a newer warning replaced it).
     AcknowledgePersistenceWarning { key: PersistenceWarningKey },
+    /// The consent decision for the held incident, as the presenting screen derived it at
+    /// `revision` (`telemetry::consent::revision`). Stale ids and unchanged revisions are inert.
+    ResolveIncident { id: u32, permission: crate::telemetry::consent::Permission, revision: u32 },
+    /// Send report — from the incident alert or from Details. A person's press, and the whole of
+    /// the one-off report's consent.
+    ReportIncident { id: u32 },
+    /// Not now: the offer is answered for this launch.
+    DeclineIncident { id: u32 },
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -441,6 +454,9 @@ pub(crate) enum SessionFx {
     Erase { req: u32, epoch: u64, all_local: bool },
     Coordinator(CoordinatorAction),
     RestartReply { to: ReplyTo, accepted: bool },
+    /// Queue one incident report on `lane`. The adapter answers with
+    /// [`SessionEvent::IncidentReported`] carrying the same `id`.
+    Incident { id: u32, lane: IncidentLane, report: IncidentReport },
     SelectionReply { to: ReplyTo, accepted: bool, flow_epoch: u64 },
     BackReply { to: ReplyTo, resumed: bool },
 }
@@ -460,6 +476,8 @@ pub(crate) enum SessionEvent {
     /// effect/FIFO path. It is fenced by request/epoch/arrival/revision before it settles anything.
     Persistence(crate::plex::session::async_persistence::PersistenceCompletion),
     Erased { epoch: u64, leftovers: usize },
+    /// What became of a [`SessionFx::Incident`]; fenced by the offer's id.
+    IncidentReported { id: u32, delivery: IncidentDelivery },
 }
 
 impl CredentialPatch {
@@ -585,6 +603,18 @@ pub(crate) struct SessionInit {
     pub active_profile: Option<UserRef>,
     pub profile_scope: ProfileScope,
     pub delete_leftovers: usize,
+    /// The onboarding incident being offered or reported, if any — see `owner::incident`.
+    #[serde(default)]
+    pub incident: Option<IncidentOffer>,
+    /// Every incident key already resolved this launch: none of them is raised again.
+    #[serde(default)]
+    pub incidents_seen: Vec<IncidentKey>,
+    /// The last incident id handed out. Never reused within a launch.
+    #[serde(default)]
+    pub next_incident: u32,
+    /// plex.tv has left at least two consecutive polls of the code on screen unanswered.
+    #[serde(default)]
+    pub link_trouble: bool,
 }
 
 impl SessionInit {
@@ -600,7 +630,8 @@ impl SessionInit {
             commit_phase: CommitPhase { admitted: false, durable: false, proves_saved_login: false }, admitted_persistence: None,
             persistence_warning: None, held_handoff: None, unconfirmed_fresh_prior: None, pending_erase: None, inbox: VecDeque::new(), pump_pending: false,
             active_profile: None, profile_scope: ProfileScope(0),
-            delete_leftovers: 0 }
+            delete_leftovers: 0, incident: None, incidents_seen: Vec::new(), next_incident: 0,
+            link_trouble: false }
     }
 
     pub fn captured_boot(saved: PersistedSession, primary: Option<crate::plex::session::ServerRef>,
@@ -616,6 +647,10 @@ impl SessionInit {
         } else { init.authority = BootstrapAuthority::Account { extras }; }
         init
     }
+}
+
+pub(super) fn write_incident_context(w: &mut Canon, context: &crate::telemetry::incident::IncidentContext) {
+    incident::write_context(w, context);
 }
 
 pub(super) fn write_user(w: &mut Canon, user: &UserRef) {
@@ -800,6 +835,10 @@ impl LogicalState for SessionInit {
         w.option(self.pending_erase, |w, (epoch, sign_in)| { w.u64(epoch).bool(sign_in); });
         w.bool(self.pump_pending).seq(self.inbox.len());
         for envelope in &self.inbox { envelope.write(w); }
+        w.option(self.incident.as_ref(), incident::write_offer);
+        w.seq(self.incidents_seen.len());
+        for key in &self.incidents_seen { incident::write_key(w, key); }
+        w.u32(self.next_incident).bool(self.link_trouble);
     }
     fn probe(&self, out: &mut String) {
         use std::fmt::Write;
@@ -829,6 +868,10 @@ pub(crate) struct SessionSnapshot {
     pub scope: ProfileScope,
     pub delete_leftovers: usize,
     pub persistence_warning: Option<PersistenceWarning>,
+    /// The onboarding incident being offered or reported — see `owner::incident`.
+    pub incident: Option<IncidentOffer>,
+    /// plex.tv is not answering the polls of the code on screen.
+    pub link_trouble: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -853,6 +896,7 @@ impl SessionSnapshot {
             && self.code_replaced == state.code_replaced && self.pin_denied == state.pin_denied
             && self.scope == state.profile_scope && self.delete_leftovers == state.delete_leftovers
             && self.persistence_warning == state.persistence_warning
+            && self.incident == state.incident && self.link_trouble == state.link_trouble
             && match (&self.profile, &state.active_profile) {
                 (None, None) => true,
                 (Some(read), Some(profile)) => read.uuid == profile.uuid
@@ -881,7 +925,8 @@ impl SessionSnapshot {
             profile: state.active_profile.as_ref().map(|p| ProfileRead {
                 uuid: p.uuid.clone(), title: p.title.clone(), thumb: p.thumb.clone(),
             }), scope: state.profile_scope, delete_leftovers: state.delete_leftovers,
-            persistence_warning: state.persistence_warning }
+            persistence_warning: state.persistence_warning, incident: state.incident.clone(),
+            link_trouble: state.link_trouble }
     }
 }
 
@@ -1171,8 +1216,8 @@ impl SessionMachine {
             }
             let op = self.state.pending.remove(&reply.req).unwrap().key.op;
             match op {
-                SessionOp::Login | SessionOp::Rediscover =>
-                    self.fail_login("Couldn't finish sign-in. Try again.", emit),
+                SessionOp::Login | SessionOp::Rediscover => self.fail_login("Couldn't finish sign-in. Try again.",
+                    Some(IncidentContext::internal(InternalClass::CommitRefused)), emit),
                 SessionOp::ProfileSwitch | SessionOp::Ready => {
                     self.state.phase = Phase::Profiles;
                     self.state.apply_pending = false;
@@ -1323,8 +1368,10 @@ impl SessionMachine {
             // This is an unsequenced, never-admitted refusal. Accepted requests (including ones
             // without a first observation) cannot enter this branch.
             match pending.key.op {
-                SessionOp::Login => self.fail_login("Couldn't start sign-in. Try again.", emit),
-                SessionOp::Rediscover => self.fail_login("Couldn't restart server discovery. Try again.", emit),
+                SessionOp::Login => self.fail_login("Couldn't start sign-in. Try again.",
+                    Some(IncidentContext::internal(InternalClass::AdmissionRefused)), emit),
+                SessionOp::Rediscover => self.fail_login("Couldn't restart server discovery. Try again.",
+                    Some(IncidentContext::internal(InternalClass::AdmissionRefused)), emit),
                 SessionOp::ProfileSwitch => {
                     self.state.phase = Phase::Profiles;
                     self.state.error = "Couldn't switch profile. Try again.".into();
@@ -1461,7 +1508,7 @@ impl SessionMachine {
         if self.state.pending_erase.is_some() { return false; }
         if self.advance_epoch(emit).is_none() { return false; }
         if self.state.persisted.account_token.is_empty() {
-            self.fail_login("You're signed out — sign in to use profiles.", emit);
+            self.fail_login("You're signed out — sign in to use profiles.", None, emit);
             self.replace_publication();
             return true;
         }
@@ -1595,6 +1642,7 @@ impl SessionMachine {
         self.state.signin_active = false;
         self.state.apply_pending = false;
         self.state.code_replaced = false;
+        self.forget_incidents();
         self.publish_profile(None, emit);
         emit(SessionFx::Erase { req: self.state.next_req, epoch: self.state.epoch, all_local: !sign_in });
         self.replace_publication();
@@ -1645,7 +1693,8 @@ impl SessionMachine {
                 return true;
             }
             (CaptureIntent::Login, SessionReadValue::LoginClientId(_)) => {
-                self.fail_login("Couldn't start sign-in. Try again.", emit);
+                self.fail_login("Couldn't start sign-in. Try again.",
+                    Some(IncidentContext::internal(InternalClass::ClientIdUnavailable)), emit);
                 self.retire(req, emit);
                 self.replace_publication();
                 return true;
@@ -1667,7 +1716,7 @@ impl SessionMachine {
 
     fn fail_empty_home_roster(&mut self, emit: &mut impl FnMut(SessionFx)) {
         if self.state.users.is_empty() && self.state.phase == Phase::Profiles {
-            self.fail_login("Couldn't load profiles — check the connection.", emit);
+            self.fail_login("Couldn't load profiles — check the connection.", None, emit);
         }
     }
 
@@ -1921,6 +1970,7 @@ impl SessionMachine {
             self.state.qr_gen = 0;
         }
         self.state.signin_active = true;
+        self.state.link_trouble = false;
         if fresh_attempt { emit(SessionFx::Coordinator(CoordinatorAction::SignInStarted)); }
         let op = if discovery { SessionOp::Rediscover } else { SessionOp::Login };
         let req = self.allocate(op, None).expect("request exhaustion checked before transition");
@@ -1938,7 +1988,11 @@ impl SessionMachine {
         true
     }
 
-    fn fail_login(&mut self, message: &str, emit: &mut impl FnMut(SessionFx)) {
+    /// End the flow on the error read-out. **Every ending names its incident**: `Some` is the
+    /// failure's own closed evidence and is raised here, so the read-out's Details and Send report
+    /// are about THIS failure; `None` is an ending the onboarding report does not cover, and it
+    /// retires whatever is held, which explains an earlier failure and not this one.
+    fn fail_login(&mut self, message: &str, incident: Option<IncidentContext>, emit: &mut impl FnMut(SessionFx)) {
         if std::mem::take(&mut self.state.signin_active) {
             emit(SessionFx::Coordinator(CoordinatorAction::SignInFailed { phase: self.state.phase }));
         }
@@ -1946,6 +2000,18 @@ impl SessionMachine {
         self.state.phase = Phase::Error;
         self.state.persistence_warning = None;
         self.state.held_handoff = None;
+        self.state.link_trouble = false;
+        // A token plex.tv refused is not an authorization in flight any more: without this, the
+        // retry decision (`retry_kind`) kept offering a discovery-only pass that presents the same
+        // refused token again, and Try again could never recover. Dropping it makes the retry a
+        // new QR sign-in; the incident below is raised exactly as before, so its dedup holds.
+        if incident.is_some_and(|context| context.kind.refuses_the_account_token()) {
+            self.state.authorized_in_flow = false;
+        }
+        match incident {
+            Some(context) => self.raise_incident(IncidentFlow::SignIn, context),
+            None => self.state.incident = None,
+        }
     }
 
     /// QR observations need no external commit. SignedIn and registry/profile facts go through
@@ -1961,12 +2027,13 @@ impl SessionMachine {
         match &envelope.outcome {
             SessionArrival::Refused | SessionArrival::Dropped => {
                 if !envelope.terminal { return false; }
-                let message = match (envelope.key.op, &envelope.outcome) {
-                    (SessionOp::Rediscover, SessionArrival::Refused) => "Couldn't restart server discovery. Try again.",
-                    (_, SessionArrival::Refused) => "Couldn't start sign-in. Try again.",
-                    _ => "Couldn't finish sign-in. Try again.",
+                let (message, class) = match (envelope.key.op, &envelope.outcome) {
+                    (SessionOp::Rediscover, SessionArrival::Refused) =>
+                        ("Couldn't restart server discovery. Try again.", InternalClass::WorkerRefused),
+                    (_, SessionArrival::Refused) => ("Couldn't start sign-in. Try again.", InternalClass::WorkerRefused),
+                    _ => ("Couldn't finish sign-in. Try again.", InternalClass::WorkerDropped),
                 };
-                self.fail_login(message, emit);
+                self.fail_login(message, Some(IncidentContext::internal(class)), emit);
             }
             SessionArrival::Data(data) => {
                 let super::observation::Observation::Login(progress) = &**data else { return false };
@@ -1974,7 +2041,8 @@ impl SessionMachine {
                 let (epoch, terminal) = match progress {
                     LoginProgress::CodeReplacing { epoch }
                     | LoginProgress::CodeReady { epoch, .. }
-                    | LoginProgress::Authorized { epoch, .. } => (*epoch, false),
+                    | LoginProgress::Authorized { epoch, .. }
+                    | LoginProgress::LinkTrouble { epoch, .. } => (*epoch, false),
                     LoginProgress::Failed { epoch, .. } => (*epoch, true),
                     LoginProgress::SignedIn { .. } => return false,
                 };
@@ -1986,11 +2054,14 @@ impl SessionMachine {
                         self.state.pin_code.clear();
                         self.state.qr_png.clear();
                         self.state.code_replaced = true;
+                        // The worker's miss count is per code: a fresh code starts clean.
+                        self.state.link_trouble = false;
                     }
                     LoginProgress::CodeReady { code, qr_png, .. } => {
                         if envelope.key.op != SessionOp::Login { return false; }
                         let Some(next) = self.state.next_qr.checked_add(1) else {
-                            self.fail_login("Couldn't start sign-in. Try again.", emit);
+                            self.fail_login("Couldn't start sign-in. Try again.",
+                                Some(IncidentContext::internal(InternalClass::Exhausted)), emit);
                             self.state.pending.remove(&req);
                             emit(SessionFx::Cancel { requests: vec![req], epoch: self.state.epoch });
                             emit(SessionFx::Retire { req });
@@ -2007,10 +2078,20 @@ impl SessionMachine {
                         if envelope.key.op != SessionOp::Login { return false; }
                         self.state.persisted.account_token = token.clone();
                         self.state.authorized_in_flow = true;
+                        self.state.link_trouble = false;
                         self.state.phase = Phase::Discovering;
                         self.state.pending.get_mut(&req).unwrap().expected = Identity::of(&self.state.persisted);
                     }
-                    LoginProgress::Failed { message, .. } => self.fail_login(message, emit),
+                    LoginProgress::LinkTrouble { trouble, .. } => {
+                        if envelope.key.op != SessionOp::Login { return false; }
+                        self.state.link_trouble = trouble.is_some();
+                        if let Some(context) = trouble {
+                            self.raise_incident(IncidentFlow::SignIn, *context);
+                        }
+                    }
+                    LoginProgress::Failed { message, incident, .. } => {
+                        self.fail_login(message, Some(*incident), emit);
+                    }
                     LoginProgress::SignedIn { .. } => unreachable!(),
                 }
             }
@@ -2089,6 +2170,12 @@ impl<H: SessionHost> crate::ui::machine::Machine<H> for SessionMachine {
             SessionEvent::Command(Command::TakeReady) => self.take_ready(&mut emit),
             SessionEvent::Command(Command::AcknowledgePersistenceWarning { key }) =>
                 self.acknowledge_persistence_warning(*key, &mut emit),
+            SessionEvent::Command(command @ (Command::ResolveIncident { .. }
+                | Command::ReportIncident { .. } | Command::DeclineIncident { .. })) => {
+                let handled = self.step_incident_command(command, &mut emit);
+                if handled { self.replace_publication(); }
+                handled
+            }
             SessionEvent::Command(Command::StartSwitch(picker)) => self.start_switch(*picker, &mut emit),
             SessionEvent::Command(Command::SelectProfile { index, pin }) => self.select_profile(*index, pin.clone(), &mut emit),
             SessionEvent::Command(Command::SelectProfileWithReply { index, pin, reply }) => {
@@ -2124,6 +2211,11 @@ impl<H: SessionHost> crate::ui::machine::Machine<H> for SessionMachine {
             SessionEvent::Read(reply) => self.apply_read(reply, &mut emit),
             SessionEvent::Admission(reply) => self.apply_admission(*reply, &mut emit),
             SessionEvent::Erased { epoch, leftovers } => self.erased(*epoch, *leftovers, &mut emit),
+            SessionEvent::IncidentReported { id, delivery } => {
+                let handled = self.incident_reported(*id, delivery);
+                if handled { self.replace_publication(); }
+                handled
+            }
             SessionEvent::Pump => {
                 self.state.pump_pending = false;
                 self.pump_one(&mut emit);
@@ -3069,7 +3161,7 @@ mod tests {
         assert!(owner.apply_qr_observation(&authorized, &mut |_| {}));
         assert!(owner.state.pending[&req].expected.matches(&owner.state.persisted));
         let failed = qr_event(&owner, req, 2, super::super::LoginProgress::Failed {
-            epoch, message: "synthetic discovery failure".into(),
+            epoch, message: "synthetic discovery failure".into(), incident: crate::auth::synthetic_incident()
         }, true);
         assert!(owner.apply_qr_observation(&failed, &mut |_| {}));
         let retained = owner.publication();
@@ -3190,7 +3282,7 @@ mod tests {
             if seated { pending.phase = StreamPhase::ProfileSeated; }
             // Wrong inner epoch; the outer header still identifies this admitted terminal.
             let record = qr_event(&owner, req, 1, super::super::LoginProgress::Failed {
-                epoch: owner.state.epoch + 1, message: "rejected payload text".into(),
+                epoch: owner.state.epoch + 1, message: "rejected payload text".into(), incident: crate::auth::synthetic_incident()
             }, true);
             step(&mut owner, SessionEvent::Result(record));
             assert!(owner.state.pending.is_empty());
@@ -3211,7 +3303,7 @@ mod tests {
             if captured { pending.capture = Some(CaptureIntent::Login); }
             else { pending.last_arrival = Some(2); }
             let record = qr_event(&owner, req, 1, super::super::LoginProgress::Failed {
-                epoch: owner.state.epoch + 1, message: "rejected payload text".into(),
+                epoch: owner.state.epoch + 1, message: "rejected payload text".into(), incident: crate::auth::synthetic_incident()
             }, true);
             let before = owner.snapshot_init().hash();
             step(&mut owner, SessionEvent::Result(record));

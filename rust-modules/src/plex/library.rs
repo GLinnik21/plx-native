@@ -4,6 +4,13 @@ use super::client::{Client, QueryBuilder, StreamUrl};
 use super::models::{MediaContainer, Metadata};
 use super::params::{SectionQuery, StreamSelection};
 
+fn sidecar_key_allowed(key: &str) -> bool {
+    let Some(tail) = key.strip_prefix("/library/streams/") else { return false; };
+    let (id, ext) = tail.split_once('.').unwrap_or((tail, ""));
+    !id.is_empty() && id.len() <= 20 && id.bytes().all(|b| b.is_ascii_digit())
+        && ext.len() <= 10 && ext.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
 impl Client {
     /// GET /library/sections (D-3: spec-canonical is /library/sections/all; keep the
     /// known-working bare path). Read `.directory[]` for {kind, key}.
@@ -107,6 +114,38 @@ impl Client {
     /// → `.directory[]`.
     pub fn section_directory(&self, section_key: i64, directory: &str) -> Option<MediaContainer> {
         self.get_json(&format!("/library/sections/{section_key}/{directory}"))
+    }
+
+    /// A SHOW's language settings (its Advanced dialog in Plex Web: `audioLanguage`,
+    /// `subtitleLanguage`, `subtitleMode`) — see [`crate::plex::ShowLangPrefs`]. None when they
+    /// cannot be read.
+    ///
+    /// Try `includePreferences=1` first. This compatibility parameter is NOT in the vendored
+    /// OpenAPI spec, so it is backed by the one read
+    /// the spec DOES document carrying these settings, `/library/metadata/{id}/tree`, whose
+    /// container holds a `Setting[]` — asked only after a successful response without preferences.
+    /// Both requests share a 1500 ms budget: optional settings must not consume the ordinary
+    /// bulk-read timeout on the play path. HTTP, transport and parse errors fall back immediately.
+    pub fn show_language_prefs(&self, show_rk: &str) -> Option<crate::plex::ShowLangPrefs> {
+        if show_rk.is_empty() || !show_rk.bytes().all(|b| b.is_ascii_digit()) {
+            return None; // a key is server data: only ever a plain ratingKey
+        }
+        let path = QueryBuilder::new(format!("/library/metadata/{show_rk}"))
+            .int("includePreferences", 1)
+            .build();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+        let read = |path: &str| match self.get_json_with_headers_until(path, &[], deadline) {
+            super::client::JsonDeadlineOutcome::Response { parsed, .. } => parsed,
+            _ => None,
+        };
+        let metadata = read(&path)?;
+        if let Some(found) = metadata.metadata.into_iter().next()
+            .and_then(|m| crate::plex::ShowLangPrefs::from_settings(&m.preferences.setting))
+        {
+            return Some(found);
+        }
+        let tree = read(&format!("/library/metadata/{show_rk}/tree"))?;
+        crate::plex::ShowLangPrefs::from_settings(&tree.setting)
     }
 
     /// GET /library/metadata/{rating_key} → the single item (`.metadata[0]`), or None.
@@ -215,6 +254,27 @@ impl Client {
         ))
     }
 
+    /// Fetch a SIDECAR subtitle (`Stream.key`, i.e. `/library/streams/{id}`) for the client
+    /// renderer. The endpoint takes `encoding` and `format` (docs/plex-openapi.json), so the first
+    /// ask is for UTF-8 SubRip whatever the file on disk is — that is what turns a Windows-1250
+    /// `.srt` or an `.ass` into something one parser reads. The two fallbacks exist because the
+    /// conversion is the server's and has been seen refusing a FORMAT before (`.vtt` → 501):
+    /// without `format` PMS re-encodes only, and the bare key is the file as it lies on disk.
+    /// `player::sidecar::parse` reads whichever of the three comes back.
+    pub fn sidecar_subtitle(&self, key: &str) -> Option<Vec<u8>> {
+        if !sidecar_key_allowed(key) {
+            return None; // a key is server data: only ever the path this method is for
+        }
+        let sep = if key.contains('?') { '&' } else { '?' };
+        [
+            format!("{key}{sep}encoding=utf-8&format=srt"),
+            format!("{key}{sep}encoding=utf-8"),
+            key.to_string(),
+        ]
+        .iter()
+        .find_map(|path| self.get_sidecar_bytes(path).filter(|b| !b.is_empty()))
+    }
+
     /// PUT /library/parts/{id} — select the part's audio/subtitle streams SERVER-side (the
     /// transcoder encodes the SELECTED audio and burns the SELECTED subtitle; a query-param
     /// on the stream URL does NOT change them, only this PUT does). `subtitleStreamID` is
@@ -265,6 +325,73 @@ fn guid_type(guid: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn show_preferences_do_not_retry_a_transport_failure() {
+        let client = Client::new(
+            crate::plex::ServerId::UNSET, "fixture",
+            crate::plex::Origin::http("127.0.0.1", 9), "", "cid",
+        );
+        client.disable_data_io();
+        assert_eq!(client.show_language_prefs("42"), None);
+        assert_eq!(client.denied_data_requests(), 1, "a failed optional read must not retry");
+    }
+
+    // A failed optional preference read must not spend another ordinary PMS timeout.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn show_preferences_fail_fast_without_retrying_errors() {
+        use std::io::{Read, Write};
+        use std::time::{Duration, Instant};
+        for (status, body, delay) in [
+            ("404 Not Found", "{}", 0),
+            ("200 OK", "not json", 0),
+            ("200 OK", r#"{"MediaContainer":{}}"#, 2200),
+        ] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            listener.set_nonblocking(true).unwrap();
+            let server = std::thread::spawn(move || {
+                let end = Instant::now() + Duration::from_millis(2500);
+                let mut requests = 0;
+                while Instant::now() < end {
+                    let Ok((mut socket, _)) = listener.accept() else {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    };
+                    socket.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+                    let mut request = [0; 4096];
+                    let n = socket.read(&mut request).unwrap();
+                    let request = String::from_utf8_lossy(&request[..n]);
+                    assert!(request.contains("Accept: application/json"));
+                    requests += 1;
+                    if requests == 1 { std::thread::sleep(Duration::from_millis(delay)); }
+                    let _ = write!(socket, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                }
+                requests
+            });
+            let client = Client::new(
+                crate::plex::ServerId::UNSET, "fixture",
+                crate::plex::Origin::http("127.0.0.1", port as i32), "", "cid",
+            );
+            let start = Instant::now();
+            assert_eq!(client.show_language_prefs("42"), None);
+            let elapsed = start.elapsed();
+            let requests = server.join().unwrap();
+            assert!(elapsed < Duration::from_millis(1500 + 300), "optional GET delayed play: {elapsed:?}");
+            assert_eq!(requests, 1, "failed preference GET must not fetch the show tree");
+        }
+    }
+
+    #[test]
+    fn sidecar_download_refuses_path_traversal() {
+        for key in ["/library/streams/../../identity", "/library/streams/%2e%2e/identity",
+                    "/library/streams/1?path=/identity", "/library/streams/1#fragment"] {
+            assert!(!sidecar_key_allowed(key), "{key}");
+        }
+        assert!(sidecar_key_allowed("/library/streams/123"));
+        assert!(sidecar_key_allowed("/library/streams/123.srt"));
+    }
 
     /// The numbers are PMS's, and the mapping is the only thing standing between "Also available"
     /// showing a quality badge and showing none — `type` is what makes `/library/all?guid=…` return

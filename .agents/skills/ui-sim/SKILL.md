@@ -111,12 +111,12 @@ Inside a root live that instance's dev triggers, its remote FIFO and its event l
 names and the same contents as on the TV, so **every `tv-session` recipe transfers verbatim**.
 With no `SIM_DIR` the root is `/tmp/plxnative-sim` (the Makefile's default); `/tmp` is the *device's* root, not this one's.
 
-**The flavour axis does not reach here.** The TV now carries two installs with two runtime roots,
-so `tv-session` recipes name theirs via `make -s print-rundir FLAVOR=…`; an explicit instance root
-outranks all of that in `paths::resolve_runtime_dir`, so the simulator is steered by `SIM_DIR`
-alone and takes no `FLAVOR`. Translate a device recipe by substituting `$SIM_DIR` for whatever
-runtime root it names — the trigger and log FILE names are identical either way, which is what
-makes the recipes transfer at all.
+**The flavour axis does not reach here.** The TV now carries three installs with three runtime
+roots, so `tv-session` recipes name theirs via `make -s print-rundir FLAVOR=…`; an explicit
+instance root outranks all of that in `paths::resolve_runtime_dir`, so the simulator is steered
+by `SIM_DIR` alone and takes no `FLAVOR`. Translate a device recipe by substituting `$SIM_DIR`
+for whatever runtime root it names — the trigger and log FILE names are identical either way,
+which is what makes the recipes transfer at all.
 
 `SIM_PMS`/`SIM_PORT` default to `src/config.local.h`. The host must be a **numeric IP**:
 `stream.rs` has no DNS resolver here either.
@@ -226,7 +226,9 @@ sign-in may legitimately have advanced by the time the app is foregrounded again
 Layout and spacing · focus and navigation · route transitions and the page cross-fade · every
 screen (home, library grid, detail, person, menus, popovers, the failure read-out) · the entire
 Plex data layer against a real PMS — browse, metadata, seasons, cast, images, sort/filter · idle
-and repaint behaviour · anything reachable by keys or clicks.
+and repaint behaviour · anything reachable by keys or clicks. **Modals are drawn with the frame cache
+OFF** (`frame cache: CopyTexSubImage error=0x500 — cache off`), so a sim capture cannot show a
+fault in the cached host path a modal card is served from; only the TV can.
 
 That is most UI work, and it is the half that transfers.
 

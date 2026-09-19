@@ -457,8 +457,19 @@ pub(crate) fn commit_track(
     match commit {
         TrackCommit::Audio { ordinal, codec, stream_id } =>
             crate::route::commit_audio_selection(ps, ordinal, &codec, stream_id),
-        TrackCommit::Subtitle { render_ordinal, stream_id } =>
-            crate::route::commit_subtitle_selection(ps, render_ordinal, stream_id),
+        TrackCommit::Subtitle { render_ordinal, stream_id, sidecar_key } => {
+            crate::route::commit_subtitle_selection(ps, render_ordinal, stream_id);
+            // An EXTERNAL pick has no demuxer ordinal (`render_ordinal` is -1, so the embedded
+            // renderer is off) — on direct play `player::sidecar` fetches and draws it instead.
+            // While transcoding the commit above already asked for a burn and the sidecar draw
+            // is silenced for as long as that is true, so selecting here is harmless and means
+            // the line survives the playback going BACK to direct play.
+            match sidecar_key {
+                Some(key) => crate::player::sidecar::select(crate::route::cur_sid(ps), stream_id, key),
+                None => crate::player::sidecar::deselect(),
+            }
+        }
+        TrackCommit::SubtitleTone(tone) => crate::player::set_subtitle_tone(tone),
     }
 }
 

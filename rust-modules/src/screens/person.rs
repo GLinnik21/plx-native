@@ -8,7 +8,8 @@
 //! `Style::Alert` surface on the container tree, so its input, its phase and its teardown are the
 //! container's and this page neither intercepts keys for it nor hides it. What stays here is the
 //! GATE — the panel is offered exactly when the `MORE` mark is drawn, and both read
-//! `bio_is_truncated` over this header's own column width.
+//! [`PersonScreen::bio_more`]: the answer `header_flow` measured over this header's own column
+//! width, never a fresh wrap per frame.
 
 use std::ffi::CString;
 
@@ -75,11 +76,22 @@ enum Located {
 const PORTRAIT_EXP: f32 = 320.0;
 const PORTRAIT_BARE: f32 = 220.0;
 const PORTRAIT_RES: (std::os::raw::c_int, std::os::raw::c_int) = (300, 300);
-const HEADER_TOP: f32 = 96.0;
+// The owner's reference mock, 2026-09-19: the portrait's top sits on the page's ordinary top
+// margin, not 42px below it — the header is the top of the page's content, not a band offset
+// from it.
+const HEADER_TOP: f32 = crate::ui::consts::MARGIN_Y;
 const BAND_GAP: f32 = theme::space::XL;
-const META_GAP: f32 = theme::space::LG;
-const LIFE_GAP: f32 = theme::space::SM;
-const BIO_GAP: f32 = theme::space::LG;
+// The owner's reference mock, 2026-09-19: name→roles measures one rung tighter than the shipped
+// `LG` — the header reads as one tight block rather than a loose stack.
+const META_GAP: f32 = theme::space::MD;
+// The owner's reference mock, 2026-09-19: roles→Born/Died measures the SAME rung as the line
+// above it (`MD`), not the tighter `SM` the two lines shipped with — they no longer read as one
+// fact split across two lines, so they no longer sit closer than the gap above them.
+const LIFE_GAP: f32 = theme::space::MD;
+// The highlight BOX, not the prose, keeps `space::MD` (24) from the facts line above it (design:
+// the bio highlight sits `--space-md` below the dates line) — and the box itself pads the prose by
+// `HL_PAD_Y` on every side, so the cap-to-prose gap this measures to has to carry both.
+const BIO_GAP: f32 = theme::space::MD + HL_PAD_Y;
 const SHELF_COUNT_GAP: f32 = theme::space::SM;
 const fn text_w_const(d: f32) -> f32 {
     SCR_W - MARGIN_X - (MARGIN_X + d + BAND_GAP)
@@ -89,9 +101,11 @@ const BIO_LINES: usize = 3;
 const BIO_LEAD: f32 = 40.0;
 const HL_PAD_X: f32 = 26.0;
 const HL_PAD_Y: f32 = 24.0;
-const MORE: &std::ffi::CStr = c"MORE";
 const BIO_MORE_GAP: f32 = theme::space::LG;
-const BAND_GAP_TO_SHELF: f32 = theme::space::XL;
+// The owner's reference mock, 2026-09-19: the Filmography pill sits one rung under the shelf
+// heading below it, not the full `XL` region gap the band and its first shelf shipped with — the
+// pill is part of the header's own block, not a separate section.
+const BAND_GAP_TO_SHELF: f32 = theme::space::MD;
 const SHELF_GAP: f32 = UNDER_LABEL_AIR;
 const SHELF_LABEL_H: f32 = TITLE_DY + CARD_DY;
 const SHELF_STYLE: RowStyle = RowStyle::HOME;
@@ -105,7 +119,9 @@ const ENTRY_MARK_INK: (f32, f32) = crate::ui::icons::ink_x(crate::ui::icons::Ico
 const ENTRY_MARK_BEARING_L: f32 = ENTRY_MARK * ENTRY_MARK_INK.0;
 const ENTRY_MARK_BEARING_R: f32 = ENTRY_MARK * (1.0 - ENTRY_MARK_INK.1);
 const ENTRY_CHEVRON_GAP: f32 = theme::space::SM;
-const ENTRY_GAP: f32 = theme::space::LG;
+// The owner's reference mock, 2026-09-19: the bio-to-pill gap drops two rungs from `LG` to `SM` —
+// the pill reads as the header block's own closing line, not a new section starting under it.
+const ENTRY_GAP: f32 = theme::space::SM;
 const ENTRY_RUN_GAP: f32 = theme::space::XS;
 
 const AMB_HEADER_W: [f32; 4] = [0.10, 0.06, 0.02, 0.03];
@@ -167,8 +183,10 @@ fn entry_reachable(p: &Person) -> bool {
 }
 
 // -------------------------------------------------------------------------------------------
-// header measurement (ported verbatim from `ui/person.rs`; `sc.roles_c`/`sc.life_c` become
-// explicit parameters so the pure half stays testable with no `PersonScreen` in scope)
+// header measurement (ported verbatim from `ui/person.rs`; whether the meta/life lines have
+// anything to draw becomes an explicit `bool` parameter each, so the pure half stays testable
+// with no `PersonScreen` in scope — `header_flow` only ever asked these two "empty or not",
+// never their content, so the runs themselves don't need to cross this seam at all)
 // -------------------------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Default)]
@@ -190,26 +208,29 @@ struct HeaderFlow {
 fn header_flow(
     pending: bool,
     bio: &str,
-    roles_c: &std::ffi::CStr,
-    life_c: &std::ffi::CStr,
+    has_roles: bool,
+    has_life: bool,
     has_entry: bool,
     measure: &dyn Measure,
 ) -> HeaderFlow {
     let mut f = HeaderFlow::default();
     let mut y = measure.cap_h(theme::size::DISPLAY);
-    if pending || !roles_c.to_bytes().is_empty() {
+    if pending || has_roles {
         y += META_GAP;
         f.meta_y = Some(y);
         y += measure.cap_h(theme::size::LABEL);
     }
-    if pending || !life_c.to_bytes().is_empty() {
+    if pending || has_life {
         y += if f.meta_y.is_some() {
             LIFE_GAP
         } else {
             META_GAP
         };
         f.life_y = Some(y);
-        y += measure.cap_h(theme::size::LABEL);
+        // The life line draws at `CAPTION` (see `draw_header`'s loop), not `LABEL` — advancing by
+        // the wrong rung's cap height left a few px of drift between the pending skeleton's
+        // reserved band and the loaded line's actual one.
+        y += measure.cap_h(theme::size::CAPTION);
     }
     if pending || !bio.is_empty() {
         y += BIO_GAP;
@@ -253,7 +274,7 @@ fn bio_view<'a>(bio: &'a str, a: f32, measure: &'a dyn Measure) -> TextView<'a> 
     .with_measure(measure)
     .leading(BIO_LEAD)
     .max_lines(BIO_LINES)
-    .fade_last(measure.width(MORE, theme::size::BODY, true) + BIO_MORE_GAP)
+    .fade_last(measure.width(crate::ui::text_view::MORE_MARK, theme::size::BODY, true) + BIO_MORE_GAP)
 }
 
 fn text_w(d: f32) -> f32 {
@@ -270,12 +291,6 @@ fn cstr_elide(s: &str, w: f32, sz: std::os::raw::c_int, bold: std::os::raw::c_in
     }
     let elided = crate::text::elide_by(s, w, false, |t| measure.width_str(t, sz, bold != 0));
     CString::new(elided).unwrap_or_default()
-}
-
-/// Is there more biography than the header shows? Shared by the truncation mark and the (deferred,
-/// out-of-scope) bio panel's own gate.
-fn bio_is_truncated(p: &Person, measure: &dyn Measure) -> bool {
-    !p.bio.is_empty() && bio_view(&p.bio, 1.0, measure).truncates(BIO_W)
 }
 
 fn shelf_block_h_at(band: f32) -> f32 {
@@ -532,6 +547,15 @@ pub(crate) struct PersonScreen {
     /// One-shot return hydration. While set, a known engine card key may remain unpublished until
     /// that card's own source answers; the engine remains the sole owner of the key itself.
     return_pending: bool,
+    /// This page has already asked the Person store to close the slot it owned. §3.4's
+    /// `pop_sequence` delivers `WillLeave(ForGood)` AND `Unmount` to the same body, and both land
+    /// in the teardown arm below; an un-latched `self.person(cx).is_some()` guard there reads a
+    /// slot this page has already disclaimed by the time the second event arrives, because the
+    /// first `Close` crosses `AppFx::Store` and is still queued rather than applied — and so
+    /// emits a SECOND non-idempotent `Close`. Not hashed: it is teardown bookkeeping for one
+    /// event pair, never a property of the page's logical shape. Mirrors
+    /// `screens/detail/mod.rs`'s `teardown_cleared` exactly (#119, #126).
+    teardown_closed: bool,
 
     // ---- render cache: animation (never hashed; a spring position is not logical state) ----
     shelves: [CardRow; NSHELF],
@@ -548,8 +572,10 @@ pub(crate) struct PersonScreen {
 
     // ---- render cache: baked text runs + measured flow, rebuilt only when the store lands ----
     name_c: CString,
-    roles_c: CString,
-    life_c: CString,
+    /// The life line's parts, in flow order (`Born …`, the birthplace, `Died …`, each absent
+    /// rather than blank) — drawn through `widgets::dotted_run`, which owns the `·` ink itself, so
+    /// this is never joined into one string the way `name_c`/the shelf-count runs are.
+    life_parts: Vec<String>,
     shelf_count_c: [CString; NSHELF],
     entry_count_c: CString,
     header: HeaderFlow,
@@ -614,6 +640,7 @@ impl PersonScreen {
             card_keys: Vec::new(),
             next_card_elem: FIRST_CARD_ELEM,
             return_pending: false,
+            teardown_closed: false,
             shelves: [CardRow::new(); NSHELF],
             scroll: ScrollColumn::new(HEADER_TOP, TOP_MARGIN),
             amb: PageGround::new(),
@@ -621,8 +648,7 @@ impl PersonScreen {
             spin_ms: 0.0,
             spin_phase: crate::ui::motion::Phase::default(),
             name_c: CString::default(),
-            roles_c: CString::default(),
-            life_c: CString::default(),
+            life_parts: Vec::new(),
             shelf_count_c: [CString::default(), CString::default()],
             entry_count_c: CString::default(),
             header: HeaderFlow::default(),
@@ -806,21 +832,25 @@ impl PersonScreen {
     fn refresh_runs(&mut self, p: &Person, measure: &dyn Measure) {
         let w = text_w(PORTRAIT_EXP);
         self.name_c = cstr_elide(&p.name, w, theme::size::DISPLAY, 1, measure);
-        self.roles_c = cstr_elide(&p.roles, w, theme::size::LABEL, 0, measure);
 
-        let mut life: Vec<String> = Vec::new();
+        // Roles and life are drawn through `widgets::dotted_run` now (see `draw_header`), which
+        // owns the `·` ink itself and elides nothing — `MAX_ROLES`/the fixed life-fact count are
+        // this line's width safety, the way the cap on any other fixed-vocabulary run is, so the
+        // per-character `cstr_elide` this used to run is no longer needed. Birthplace is its own
+        // part now (design: "Born …" · birthplace · "Died …"), not glued onto Born with a comma —
+        // it no longer depends on a birth date being known.
+        self.life_parts = Vec::new();
         let born = crate::ui::fmt::pretty_date(&p.born, 0);
         if !born.is_empty() {
-            life.push(match p.birthplace.is_empty() {
-                true => format!("Born {born}"),
-                false => format!("Born {born}, {}", p.birthplace),
-            });
+            self.life_parts.push(format!("Born {born}"));
+        }
+        if !p.birthplace.is_empty() {
+            self.life_parts.push(p.birthplace.clone());
         }
         let died = crate::ui::fmt::pretty_date(&p.died, 0);
         if !died.is_empty() {
-            life.push(format!("Died {died}"));
+            self.life_parts.push(format!("Died {died}"));
         }
-        self.life_c = cstr_elide(&life.join(" \u{b7} "), w, theme::size::CAPTION, 0, measure);
 
         for k in 0..NSHELF {
             self.shelf_count_c[k] = match p.total(k) {
@@ -839,8 +869,8 @@ impl PersonScreen {
         self.header = header_flow(
             crate::person::facts_pending(p),
             &p.bio,
-            &self.roles_c,
-            &self.life_c,
+            !p.roles.is_empty(),
+            !self.life_parts.is_empty(),
             has_entry(p),
             measure,
         );
@@ -896,12 +926,19 @@ impl PersonScreen {
         )
     }
 
+    /// **Regression (phase-7 port): the pill belongs in the TEXT column.** Before the port
+    /// (`894f20f8^:rust-modules/src/ui/person.rs`'s `draw_entry`) it drew at `col_x`, the same x
+    /// the name and roles start at; the port dropped that and both this rect and the draw call
+    /// below fell back to bare `MARGIN_X` — under the circular portrait. `col_x(self.header.
+    /// exp_d)` is the one expression both read, so the drawn pill and its focus/hit rect cannot
+    /// disagree about where it sits.
     fn entry_rect(&self, p: &Person, measure: &dyn Measure) -> Rect {
+        let x = col_x(self.header.exp_d);
         let Some(ey) = self.header.entry_y else {
-            return Rect::new(MARGIN_X, HEADER_TOP, 0.0, 1.0);
+            return Rect::new(x, HEADER_TOP, 0.0, 1.0);
         };
         let w = entry_w(p, &self.entry_count_c, measure);
-        Rect::new(MARGIN_X, HEADER_TOP + ey, w.max(1.0), ENTRY_H)
+        Rect::new(x, HEADER_TOP + ey, w.max(1.0), ENTRY_H)
     }
 
     /// A shelf's absolute SCREEN-space row-y, given its flow position among the present shelves —
@@ -1011,12 +1048,9 @@ impl PersonScreen {
     /// doc for why the raw key is intercepted before the engine ever turns it into `Activate`).
     fn activate_header<H: ContentLike + PersonLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         self.header_marked = true;
-        let Some(p) = self.person(cx) else {
-            return;
-        };
-        if bio_is_truncated(p, cx.measure) {
+        if self.person(cx).is_some() && self.bio_more() {
             // The GATE is the page's, and stays the page's: the panel exists exactly when the
-            // `MORE` mark is drawn, and both read `bio_is_truncated` — which depends on this
+            // `MORE` mark is drawn, and both read `bio_more` — which depends on this
             // header's own column width. A surface asked to re-derive it would be how the mark and
             // the sheet came to disagree about whether there is more to read.
             fx.push(crate::ui::machine::Fx::App(AppFx::Content(ContentReq::Panel(
@@ -1039,7 +1073,16 @@ impl PersonScreen {
     pub(crate) fn bio_available(&self, view: crate::person::PersonView<'_>) -> bool {
         view.current().is_some_and(|person| crate::plex::same_item(
             (person.sid, person.key.as_str()), (self.sid, self.key.as_str())))
-            && !self.header_dirty && self.header.bio_truncated
+            && self.bio_more()
+    }
+
+    /// **Is there more biography than the header shows?** The one predicate the `MORE` mark, the
+    /// OK gate and `bio_available` read. It is the answer `header_flow` measured when the header
+    /// was last laid out — not a fresh wrap: the set's person-page stack profile (2026-09-19)
+    /// caught the draw path re-wrapping the whole bio (`TTF_SizeUTF8` per word) every frame to
+    /// ask this. A header awaiting its remeasure answers `false` until it has one.
+    fn bio_more(&self) -> bool {
+        !self.header_dirty && self.header.bio_truncated
     }
 
     fn activate_entry<H: ContentLike + PersonLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
@@ -1143,7 +1186,7 @@ impl PersonScreen {
         );
 
         let col_x_ = col_x(d);
-        let truncated = bio_is_truncated(person, measure);
+        let truncated = self.bio_more();
         let marked = focus_elem == Some(HEADER_ELEM) && self.header_marked && truncated;
         let mark = flow
             .bio_y
@@ -1175,18 +1218,31 @@ impl PersonScreen {
 
         let pending = crate::person::facts_pending(person);
         let phase = crate::ui::widgets::skeleton_phase(self.spin_ms as u32);
-        for (y, run, sz, w) in [
-            (flow.meta_y, &self.roles_c, theme::size::LABEL, 0.42),
-            (flow.life_y, &self.life_c, theme::size::CAPTION, 0.68),
+        // Roles and life-facts both draw through `widgets::dotted_run` — words in
+        // `TEXT_SECONDARY`, the `·` in `TEXT_SEPARATOR` — rather than one pre-joined `Label`, so
+        // the dot can carry its own ink (design: "Actor · Writer · Producer",
+        // "Born … · <birthplace> · Died …"). `theme::space::XS` is the same pad idiom
+        // `person_bio.rs`'s identity line and `detail.rs`'s facts row already pass it.
+        for (y, parts, sz, w) in [
+            (flow.meta_y, &person.roles, theme::size::LABEL, 0.42),
+            (flow.life_y, &self.life_parts, theme::size::CAPTION, 0.68),
         ] {
             let Some(y) = y else { continue };
             if pending {
                 let h = measure.cap_h(sz);
                 crate::ui::widgets::skeleton_bar(p, Rect::new(col_x_, y, BIO_W * w, h), phase);
             } else {
-                Label::new(run.as_ptr(), sz, theme::TEXT_SECONDARY)
-                    .v(VAlign::CapTop)
-                    .draw(p, Rect::new(col_x_, y, 0.0, 0.0));
+                let refs: Vec<&str> = parts.iter().map(String::as_str).collect();
+                let (cap_top, _) = crate::text::text_cap_band(sz, 0);
+                crate::ui::widgets::dotted_run(
+                    p,
+                    &refs,
+                    col_x_,
+                    y - cap_top,
+                    sz,
+                    theme::TEXT_SECONDARY,
+                    theme::space::XS,
+                );
             }
         }
         if pending {
@@ -1203,7 +1259,7 @@ impl PersonScreen {
             bio.draw(p, Rect::new(col_x_, by, BIO_W, 0.0));
             if truncated {
                 Label::new(
-                    MORE.as_ptr(),
+                    crate::ui::text_view::MORE_MARK.as_ptr(),
                     theme::size::BODY,
                     match mark.is_some() {
                         true => theme::TEXT_SECONDARY,
@@ -1220,7 +1276,9 @@ impl PersonScreen {
             }
         }
         if let Some(y) = flow.entry_y {
-            self.draw_entry(p, person, MARGIN_X, y, focus_elem == Some(ENTRY_ELEM), measure);
+            // Same x the name/roles/life column starts at (`col_x_`, above) — never bare
+            // `MARGIN_X`, which is the pre-phase-7 regression `entry_rect`'s doc explains.
+            self.draw_entry(p, person, col_x_, y, focus_elem == Some(ENTRY_ELEM), measure);
         }
     }
 
@@ -1715,7 +1773,10 @@ impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
                 Handled::Yes
             }
             ScreenEvent::WillLeave(Leave::ForGood) | ScreenEvent::Unmount => {
-                if self.person(cx).is_some() {
+                // `&& !self.teardown_closed`: see the field. One teardown, one `Close`, even
+                // though §3.4 delivers this arm twice and the queued command has not run yet.
+                if self.person(cx).is_some() && !self.teardown_closed {
+                    self.teardown_closed = true;
                     fx.push(crate::ui::machine::Fx::App(AppFx::Store(
                         crate::stores::StoreId::Person,
                         crate::stores::StoreCmd::Person(PersonCmd::Close),
@@ -2062,6 +2123,66 @@ mod tests {
             "the screen emits; only the addressed Bridge is allowed to apply the command");
     }
 
+    /// §3.4's `pop_sequence` delivers `WillLeave(ForGood)` AND `Unmount` to the same body before
+    /// either event's queued effects have run (`AppFx::Store` is deferred to the addressed
+    /// Bridge). Mirrors the `#119`/`teardown_cleared` regression in `screens/detail/mod.rs`: an
+    /// un-latched `self.person(cx).is_some()` guard reads the store as still populated on the
+    /// second event and emits a SECOND non-idempotent `Close` (#126).
+    #[test]
+    fn teardown_closes_the_person_store_exactly_once() {
+        let mut screen = PersonScreen::new(
+            EntryId(0), ServerId::from_raw(2), "161".into(), "person-guid".into(),
+            "Person Name".into(), "thumb".into());
+        let measure = FixtureMeasure;
+        let mut store = crate::stores::person::PersonStore::default();
+        store.run(PersonCmd::Open { sid: ServerId::from_raw(2), key: "161".into(),
+            guid: "person-guid".into(), name: "Person Name".into(), thumb: "thumb".into() });
+        let mut present = crate::ui::present::Present::new();
+        let mut out = Vec::new();
+        let context = cx(&measure, store.view());
+        {
+            let mut fx = Effects::new(&mut out, crate::ui::machine::MachineId::Instance(
+                crate::ui::machine::InstanceId(0)), &mut present);
+            Machine::<PersonHost>::step(
+                &mut screen, &ScreenEvent::WillLeave(Leave::ForGood), &context, &mut fx);
+            // The queued Close has not been applied to `store` yet — it is still populated when
+            // Unmount arrives, exactly as `pop_sequence` delivers it.
+            Machine::<PersonHost>::step(
+                &mut screen, &ScreenEvent::Unmount, &context, &mut fx);
+        }
+        let closes = out.iter().filter(|s| matches!(&s.fx,
+            crate::ui::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Person,
+                crate::stores::StoreCmd::Person(PersonCmd::Close))))).count();
+        assert_eq!(closes, 1,
+            "WillLeave(ForGood) then Unmount must close the Person store exactly once, not twice");
+    }
+
+    /// A bare `Unmount` (no preceding `WillLeave`) must also close the store exactly once — the
+    /// latch must not suppress the only teardown event when there is no pair.
+    #[test]
+    fn unmount_alone_closes_the_person_store_once() {
+        let mut screen = PersonScreen::new(
+            EntryId(0), ServerId::from_raw(2), "161".into(), "person-guid".into(),
+            "Person Name".into(), "thumb".into());
+        let measure = FixtureMeasure;
+        let mut store = crate::stores::person::PersonStore::default();
+        store.run(PersonCmd::Open { sid: ServerId::from_raw(2), key: "161".into(),
+            guid: "person-guid".into(), name: "Person Name".into(), thumb: "thumb".into() });
+        let mut present = crate::ui::present::Present::new();
+        let mut out = Vec::new();
+        let context = cx(&measure, store.view());
+        {
+            let mut fx = Effects::new(&mut out, crate::ui::machine::MachineId::Instance(
+                crate::ui::machine::InstanceId(0)), &mut present);
+            Machine::<PersonHost>::step(
+                &mut screen, &ScreenEvent::Unmount, &context, &mut fx);
+        }
+        let closes = out.iter().filter(|s| matches!(&s.fx,
+            crate::ui::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Person,
+                crate::stores::StoreCmd::Person(PersonCmd::Close))))).count();
+        assert_eq!(closes, 1, "a bare Unmount must close the Person store exactly once");
+    }
+
     /// **The mount-on-entry-pill rule's PENDING half** (module doc, point 2 of `ui/person.rs`'s
     /// own doc): with no filmography answered yet but a guid to ask plex.tv with,
     /// `entry_reachable_of` holds the entry group open even though `has_entry_of` is false — which
@@ -2187,20 +2308,46 @@ mod tests {
         store.run(PersonCmd::Close);
     }
 
+    /// **Regression: the Filmography entry pill must draw in the TEXT column, not under the
+    /// portrait.** Before phase-7 (`894f20f8^:rust-modules/src/ui/person.rs`) `draw_entry` was
+    /// called at `col_x`, the same x the name/roles start at; the phase-7 port dropped that and
+    /// drew — and hit-tested — the pill at bare `MARGIN_X` instead, under the circular portrait.
+    /// `entry_rect` is the one seam both the draw call and the focus/hit rect read, so fixing it
+    /// here fixes both at once.
+    #[test]
+    fn the_entry_pill_sits_in_the_text_column_not_under_the_portrait() {
+        let _serial = crate::testlock::serial();
+        let (mut store, mut s) = seed(1, 0);
+        store.install_credits_for_test(&[("Actor", 3)]);
+        let m = FixtureMeasure;
+        let p = store.view().current().unwrap();
+        s.remeasure_header(p, &m);
+        assert_eq!(
+            s.header.exp_d, PORTRAIT_EXP,
+            "the header must be in its expanded band for this assertion to mean anything"
+        );
+        let rect = s.entry_rect(p, &m);
+        assert_eq!(
+            rect.x,
+            col_x(PORTRAIT_EXP),
+            "the pill must sit in the text column, exactly where the name/roles start"
+        );
+        store.run(PersonCmd::Close);
+    }
+
     /// **Header pending vs answered-with-nothing vs answered-fully** — `header_flow`'s three
     /// states, mined from `ui/person.rs`'s own module doc ("Every header line below the name is
     /// optional… a header line is drawn only when it has content").
     #[test]
     fn header_flow_distinguishes_pending_from_answered_empty_from_answered_full() {
         let m = FixtureMeasure;
-        let empty = std::ffi::CString::default();
         // answered, with nothing: no reserved space for the meta/life/bio lines at all.
-        let flow = header_flow(false, "", &empty, &empty, false, &m);
+        let flow = header_flow(false, "", false, false, false, &m);
         assert!(flow.meta_y.is_none() && flow.life_y.is_none() && flow.bio_y.is_none());
 
         // pending: not yet asked at all — reserves the full placeholder stack even though every
         // cached run is still empty.
-        let pending_flow = header_flow(true, "", &empty, &empty, false, &m);
+        let pending_flow = header_flow(true, "", false, false, false, &m);
         assert!(
             pending_flow.meta_y.is_some()
                 && pending_flow.life_y.is_some()
@@ -2212,10 +2359,34 @@ mod tests {
         );
 
         // answered, WITH content: the runs actually drive the reserved space.
-        let roles = std::ffi::CString::new("Actor").unwrap();
-        let full_flow = header_flow(false, "", &roles, &empty, false, &m);
+        let full_flow = header_flow(false, "", true, false, false, &m);
         assert!(full_flow.meta_y.is_some());
         assert!(full_flow.life_y.is_none(), "no life facts were given");
+    }
+
+    /// **The `MORE` gate is the header's measured answer, not a per-frame wrap.** The set's
+    /// person-page stack profile (2026-09-19) caught `draw_header` asking `bio_is_truncated` —
+    /// a fresh `TextView` wrap of the whole bio, `TTF_SizeUTF8` per word — on every frame. The
+    /// mark, OK's gate and `bio_available` now all read `bio_more`, which is `header_flow`'s
+    /// `bio.truncates(BIO_W)` from the last remeasure, and it takes no measure capability at all.
+    #[test]
+    fn the_more_gate_reads_the_header_measure_not_a_fresh_wrap() {
+        let _serial = crate::testlock::serial();
+        let (mut store, mut s) = seed(1, 0);
+        let m = FixtureMeasure;
+        let long = "A biography far longer than the header's three lines can hold. ".repeat(40);
+        for (bio, want) in [(long.as_str(), true), ("One short line.", false)] {
+            let flow = header_flow(false, bio, false, false, false, &m);
+            assert_eq!(flow.bio_truncated, bio_view(bio, 1.0, &m).truncates(BIO_W));
+            assert_eq!(flow.bio_truncated, want, "fixture sanity for {:.20}", bio);
+            s.header = flow;
+            s.header_dirty = false;
+            assert_eq!(s.bio_more(), want);
+        }
+        s.header = header_flow(false, &long, false, false, false, &m);
+        s.header_dirty = true;
+        assert!(!s.bio_more(), "a header awaiting its remeasure offers no panel yet");
+        store.run(PersonCmd::Close);
     }
 
     /// The Filmography entry pill's group vanishes the instant the header releases it — the two

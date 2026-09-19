@@ -40,7 +40,7 @@ use super::registry::{alert_index, band_index, word, AppFx, ConsentCmd, LoopReq,
 
 const CRASH_TITLE: &str = "Share crash reports?";
 const PRODUCT_TITLE: &str = "Share product analytics?";
-const CRASH_BODY: &str = "If PlxNative crashes, it can send technical details that help find and fix the problem. Reports may include the signal, code addresses, thread information and device compatibility details, plus a random crash report identifier, created when you turn this on and deleted when you turn it off or sign out, so that repeated crashes under one crash report identifier are counted once rather than once each. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or the product analytics identifier.";
+const CRASH_BODY: &str = "If PlxNative crashes, or signing in fails, it can send technical details that help find and fix the problem. Reports may include the signal, code addresses, thread information and device compatibility details, or which sign-in step failed and how the connection answered, plus a random crash report identifier, created when you turn this on and deleted when you turn it off or sign out, so that repeated crashes under one crash report identifier are counted once rather than once each. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or the product analytics identifier.";
 const PRODUCT_BODY: &str = "PlxNative can share which screens and features are used and broad sign-in and playback outcomes. Reports carry a random Analytics ID, created when you turn this on and deleted when you turn it off or sign out, and can include the app version, webOS version, television model and SoC, and whether a selected server is local, remote or relayed. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or exact viewing history.";
 const ROW_ERRORS: &str = "Crash reports";
 const ROW_ERRORS_SUB: &str = "Optional technical crash reports.";
@@ -1094,6 +1094,16 @@ pub(crate) fn preview_crash() -> String {
         .and_then(|v| serde_json::to_string_pretty(&v).ok())
         .unwrap_or_else(|| String::from_utf8_lossy(&handled).into_owned());
     out.push_str(&handled_text);
+    out.push_str(
+        "\n\nSign-in problem report (automatically only when error reporting is on; otherwise \
+         only when you press Send report, and then without the crash report identifier):\n",
+    );
+    let incident = crate::telemetry::incident::preview_event();
+    let incident_text = serde_json::from_slice::<serde_json::Value>(&incident)
+        .ok()
+        .and_then(|v| serde_json::to_string_pretty(&v).ok())
+        .unwrap_or_else(|| String::from_utf8_lossy(&incident).into_owned());
+    out.push_str(&incident_text);
     out.push_str("\n\n");
     out.push_str(&crate::telemetry::playback::preview_domains());
     out

@@ -481,7 +481,11 @@ unsafe fn present_and_swap(
         app.instr.mark(crate::diag::heartbeat::Phase::Capture); // capture
         // Before the swap, never after: the back buffer is undefined once presented.
         #[cfg(feature = "hostsim")]
-        crate::shot::maybe_capture(_vx, _vy, _vw, _vh);
+        if crate::shot::maybe_capture(_vx, _vy, _vw, _vh) {
+            // The headless one-shot is done: finish this frame, then leave through the ordinary
+            // shutdown rather than exiting from inside the frame (see `shot::maybe_capture`).
+            app.running = false;
+        }
         #[cfg(feature = "hostsim")]
         crate::surface::present_supersampled();
         SDL_GL_SwapWindow(app.win);
@@ -2166,7 +2170,13 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // cannot read back, so there is no host snapshot to take
                         // (`RenderStrategy::VideoPlane`).
                         app.pages.draw(&mut app.bridge, true);
-                        app.diagnostics.draw();
+                        // Skipped rather than drawn while one of the player's own four panels is
+                        // up — `More` carries this very panel's own toggle, and the panel's
+                        // content routinely spans wide enough to reach any of their bottom-right
+                        // rects. See `bridge::player_diagnostics_visible` (issue #163).
+                        if super::bridge::player_diagnostics_visible(&app.pages) {
+                            app.diagnostics.draw();
+                        }
                     } else {
                         // Open the shared popover frame FIRST: it takes this frame's page damage
                         // and decides whether the frozen-host snapshot still describes the page. Route-agnostic by construction —
@@ -2228,7 +2238,9 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // could produce no artefact at all: it never reaches a player.
                         //
                         // **Here rather than on the frame's common tail, and the simulator is what
-                        // settled it.** On the player path the panel is genuinely last; here it is
+                        // settled it.** On the player path the panel is genuinely last, except
+                        // while one of the player's own panels is open (issue #163 — skipped
+                        // there instead, see `bridge::player_diagnostics_visible`); here it is
                         // over the PAGE and under the app's modal surfaces, because on this path
                         // something DOES sit in its corner — the profile menu, which carries the row
                         // that turns it off. Drawn last it covered the account chip and then the

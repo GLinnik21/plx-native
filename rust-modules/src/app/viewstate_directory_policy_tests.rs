@@ -169,6 +169,39 @@ fn person_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
 }
 
 #[test]
+fn person_store_notifies_only_when_a_command_actually_changed_state() {
+    let _guard = crate::testlock::serial();
+    let mut bridge = Bridge::for_test(|| 0);
+    let sid = crate::plex::ServerId::from_raw(0);
+    bridge.person_run(person_open(sid, "reader"));
+    bridge.stores.person.install_for_test(vec![person_item(sid, "movie", false)], Vec::new());
+    let _ = bridge.stores.person.take_notice();
+    let gen_before = bridge.stores.person.gen();
+
+    let changed = bridge.person_run(crate::stores::person::PersonCmd::SetWatchedLocal {
+        sid, rk: "no-such-item".into(), on: true,
+    });
+
+    assert!(!changed, "an unmatched SetWatchedLocal must report no change");
+    assert_eq!(bridge.stores.person.gen(), gen_before,
+        "a no-op command must not bump the Person store's generation");
+    assert_eq!(bridge.stores.person.take_notice(), None,
+        "a no-op command must not raise a Person notice");
+}
+
+#[test]
+fn person_reset_on_an_empty_store_still_notifies() {
+    let _guard = crate::testlock::serial();
+    let mut bridge = Bridge::for_test(|| 0);
+    let _ = bridge.stores.person.take_notice();
+
+    bridge.person_run(crate::stores::person::PersonCmd::Reset);
+
+    assert!(bridge.stores.person.take_notice().is_some(),
+        "Reset must still notify, even on an empty store, so a late owner picks up the rotation");
+}
+
+#[test]
 fn addressed_person_store_command_changes_and_notifies_only_its_bridge() {
     let _guard = crate::testlock::serial();
     let mut first = Bridge::for_test(|| 0);
@@ -575,7 +608,7 @@ fn metadata_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
         thumb: String::new(), detail_rk: "old-rk".into(),
     }))));
     assert!(bridge.metadata_run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(crate::metadata::PlayingItem {
-        sid, rk: "old-rk".into(), audio: Vec::new(), subs: Vec::new(), video_fps: 0.0,
+        sid, rk: "old-rk".into(), show_rk: String::new(), audio: Vec::new(), subs: Vec::new(), video_fps: 0.0,
         width: 0, height: 0, bitrate: 0, dovi: Default::default(), markers: Vec::new(), chapters: Vec::new(), blur: None,
     }))));
     bridge.metadata_run(crate::stores::metadata::MetadataCmd::AltInstall {

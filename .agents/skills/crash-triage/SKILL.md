@@ -80,11 +80,12 @@ All paths are relative to the repo root. The TV address comes from the `Makefile
 
 ## First: which install crashed
 
-Two builds can be on this television — `com.beb.plxnative` (stable, what users install) and
-`com.beb.plxnative.debug` (the developer build beside it, and the Makefile's **default**). They
-have separate app directories, separate runtime roots and therefore **separate crash logs**, so
-triaging the wrong one produces a clean bill of health for an app that is dying. Ask the Makefile
-rather than typing a path:
+Three builds can be on this television — `com.beb.plxnative` (stable, what users install),
+`com.beb.plxnative.debug` (the developer build beside it, and the Makefile's **default**), and
+`com.beb.plxnative.nightly` (the nightly build, its own install beside the other two). Each has
+its own app directory, its own runtime root and therefore its own **crash log**, so triaging the
+wrong one produces a clean bill of health for an app that is dying. Ask the Makefile rather than
+typing a path:
 
 ```bash
 make -s print-appid    FLAVOR=debug     # com.beb.plxnative.debug

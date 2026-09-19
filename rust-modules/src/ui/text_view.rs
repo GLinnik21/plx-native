@@ -66,6 +66,14 @@ fn wrap_memo(key: u64, compute: impl FnOnce() -> Wrapped) -> Rc<Wrapped> {
     v
 }
 
+/// The one mark drawn to open a truncated block of text — the About card's footer and the person
+/// page's bio panel are its two callers today. **Clickable text marks are always ALL CAPS** (owner
+/// rule, 2026-09-19): it is a general rule for clickable text blocks, not a per-screen style
+/// choice, so every screen reads this constant rather than spelling its own literal. An earlier
+/// commit (`fc63c0c1`) drew the person page's mark as sentence-case `"More"`; that was wrong and is
+/// the reason this exists as one definition instead of two that can drift apart.
+pub(crate) const MORE_MARK: &std::ffi::CStr = c"MORE";
+
 pub struct TextView<'a> {
     measure: Option<&'a dyn crate::ui::machine::Measure>,
     measured_wrap: std::cell::RefCell<Option<(u64, Rc<Wrapped>)>>,
@@ -590,6 +598,24 @@ impl<'a> TextView<'a> {
 mod tests {
     use super::*;
     use crate::ui::theme;
+
+    /// Owner rule, 2026-09-19: a clickable text mark (the truncation/expand affordance) is always
+    /// ALL CAPS — it is a general rule for clickable text blocks, not a per-screen style choice.
+    /// `fc63c0c1` drew the person page's mark as sentence-case `"More"`, which this constant exists
+    /// to make impossible to repeat: every screen reads `MORE_MARK` instead of spelling its own
+    /// literal, so a future edit that lowers the case fails HERE, citing the rule, rather than
+    /// silently drifting one screen away from every other.
+    #[test]
+    fn the_more_mark_is_ascii_uppercase() {
+        let s = MORE_MARK.to_str().expect("MORE_MARK must be valid UTF-8");
+        assert_eq!(
+            s,
+            s.to_ascii_uppercase(),
+            "clickable text marks are ALL CAPS (owner rule, 2026-09-19) — MORE_MARK in \
+             ui/text_view.rs must stay uppercase; see fc63c0c1 for the sentence-case regression \
+             this test exists to catch"
+        );
+    }
 
     #[test]
     fn measured_wrapping_keeps_live_semantics_and_cannot_reuse_another_owner() {

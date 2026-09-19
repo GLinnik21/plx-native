@@ -172,7 +172,7 @@ Two rules, both of which this material got wrong on its own before 2026-09-02:
 
 - **It is not a precision problem.** Promoting a mix to fp32 changes nothing visible and costs ~4.5
   arithmetic words a fragment. The cure is noise at the OUTPUT.
-- **The noise is a texture fetch behind a uniform branch, never a hash.** `fs_glass.frag` carried
+- **The noise is a texture fetch, never a hash — and, since 2026-09-19, never a branch either:** a uniform `if (u_dither > 0.0)` was tried and cost +5.8M arithmetic words a frame on a scrolling Library, so the prelude is straight-line and an undithered surface is a twin PROGRAM (`shaders/dither_stub.glsl`) instead. `fs_glass.frag` carried
   `fract(sin(dot(p,k))*43758.5)` and evaluated it on EVERY fragment of every glass surface — the
   same construction `fs_ambient.frag`'s own header had been recording as a mistake that cost 38% of
   a Home frame. A sine hash is also structured, which is the "strange patterns" half of the report.

@@ -539,7 +539,7 @@ impl Client {
         }
     }
 
-    /// The deadline-bearing twin used only by an in-flight ABR candidate registration. Parsing
+    /// The deadline-bearing twin for ABR registration and optional show preferences. Parsing
     /// and endpoint-safe diagnostics are identical to the ordinary path; only transport policy
     /// differs.
     pub(super) fn get_json_with_headers_until(
@@ -580,6 +580,18 @@ impl Client {
         self.body_2xx_bulk(path_no_token, &[])
     }
 
+    /// A size-bounded body on either transport, with a finite stalled-transfer timeout.
+    pub(super) fn get_sidecar_bytes(&self, path_no_token: &str) -> Option<Vec<u8>> {
+        if !self.may_send() { return None; }
+        let owned = pms_headers(&[]);
+        let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let r = http::request_probe(
+            &self.origin, &self.with_token(path_no_token), Method::Get, &headers,
+            super::SIDECAR_MAX_BYTES, 25, self.resolve_pin.as_ref(),
+        )?;
+        r.ok().then_some(r.body)
+    }
+
     /// GET raw bytes for a path this server ALREADY BUILT — the one entry point that does **not**
     /// append `X-Plex-Token`, because the path handed in already ends in one.
     ///
@@ -594,19 +606,36 @@ impl Client {
     /// The token is therefore in the CALLER's string. It must not be logged — the poster store
     /// logs no keys, and neither may anything else that holds one.
     pub(crate) fn fetch_built(&self, path_with_token: &str) -> Option<Vec<u8>> {
-        if !self.may_send() { return None; }
+        match self.fetch_built_outcome(path_with_token) {
+            ArtFetch::Bytes(b) => Some(b),
+            ArtFetch::Status(_) | ArtFetch::NoResponse => None,
+        }
+    }
+
+    /// [`Self::fetch_built`] keeping WHY there are no bytes, which is the difference between a
+    /// poster that will never exist (a 404) and one that could not be fetched right now (a refused
+    /// or timed-out connect, a link this client may not send on yet — the shapes a boot's
+    /// address race and an endpoint refresh take). The poster store retries the second kind and
+    /// not the first.
+    pub(crate) fn fetch_built_outcome(&self, path_with_token: &str) -> ArtFetch {
+        if !self.may_send() {
+            return ArtFetch::NoResponse;
+        }
         // NOT `body_2xx`, for the same reason this method exists at all: that helper appends the
         // token, and this path already ends in one.
         let owned = pms_headers(&[]);
         let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
-        let r = http::request_bulk(
+        match http::request_bulk(
             &self.origin,
             path_with_token,
             Method::Get,
             &headers,
             self.resolve_pin.as_ref(),
-        )?;
-        r.ok().then_some(r.body)
+        ) {
+            Some(r) if r.ok() => ArtFetch::Bytes(r.body),
+            Some(r) => ArtFetch::Status(r.status),
+            None => ArtFetch::NoResponse,
+        }
     }
 
     /// GET whose body is discarded (transcode decision / stop registration side effects).
@@ -1120,4 +1149,14 @@ mod tests {
             8020
         );
     }
+}
+
+/// What [`Client::fetch_built_outcome`] found: bytes, an HTTP status outside 2xx, or no
+/// completed response at all (transport — refused, timed out, refused by this build's own
+/// plaintext-credential rule, or a client that may not send yet).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ArtFetch {
+    Bytes(Vec<u8>),
+    Status(i32),
+    NoResponse,
 }

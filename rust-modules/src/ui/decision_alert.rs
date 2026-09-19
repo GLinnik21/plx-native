@@ -1,4 +1,4 @@
-//! Reusable two-choice decision alert.  It owns focus, hit geometry and destructive styling; a
+//! Reusable decision alert — two choices, or a one-answer card.  It owns focus, hit geometry and destructive styling; a
 //! caller supplies the question, the two verbs and — for a question whose consequences its verb
 //! does not state — an optional body, which this module measures and which grows the panel.
 //!
@@ -12,7 +12,7 @@
 //! will almost certainly be a bare one. The body is held on the ALERT
 //! rather than passed to [`DecisionAlert::draw`] because it moves the controls, and
 //! [`DecisionAlert::frames`] — the geometry an owning Engine screen registers its own hit stops
-//! from — has to report the same panel the last draw did.
+//! from — has to measure the same retained content the draw consumes.
 //!
 //! **Focus and hit-testing are the owning screen's, not this type's** (restructure phase 12):
 //! `DecisionAlert` used to carry its own `move_focus`/`press_at` ladder, driven by a caller that
@@ -21,6 +21,19 @@
 //! as ordinary focus-group elements through [`DecisionAlert::frames`] and move this type's
 //! selection with [`DecisionAlert::set_choice`], exactly as it would any other control — so the
 //! two SDL-keysym-shaped methods had no caller left and are gone.
+//!
+//! **The same sheet is also a one- or two-answer CARD** ([`DecisionAlert::open_card`]): a title,
+//! body paragraphs stacked `PARA_GAP` apart, and either the usual two answers or ONE
+//! (`Answers::One`), which takes the centred cancel slot while the destructive rect collapses to
+//! zero width so no caller can register or draw it. The sign-in failure's *Details* is the caller
+//! (its Report ID and support line, *Close*, and *Send report* only while the report can still be
+//! sent) — a disclosure that used to grow the read-out under its control row, and was replaced by
+//! this card because three buttons and three labels stacked on one page read as a mess (owner,
+//! 2026-09-19).
+//! A live card feeds its rendered content back through [`DecisionAlert::reconcile_card`] before
+//! drawing. Changed paragraphs or answers update in place, invalidate the cached panel ground,
+//! and retain any still-valid selection; they never restart the entrance or steal focus for a
+//! newly available action. The host's focus engine reconciles a removed action to that selection.
 //!
 //! **Every interactive exit — confirm, cancel, or BACK — takes [`DecisionAlert::dismiss`], never
 //! [`DecisionAlert::close`].** `close` is [`Popover::close`]'s case: a subject that vanished out
@@ -39,6 +52,8 @@
 //! runs over whatever the app shows next, exactly like a dismissed `account_menu`/`item_menu`
 //! fading over the host it returned to.
 
+use std::borrow::Cow;
+
 use crate::ui::label::HAlign;
 use crate::ui::popover::Popover;
 use crate::ui::text_view::TextView;
@@ -53,6 +68,9 @@ const QUESTION_GAP: f32 = theme::space::LG;
 /// Question → body. Smaller than [`QUESTION_GAP`], which separates the whole text block from the
 /// controls: the body belongs to the question, not to the buttons.
 const BODY_GAP: f32 = theme::space::SM;
+/// Between two body paragraphs — one rung under [`BODY_GAP`]: they are one disclosure in two
+/// parts (a Report ID, then the line support reads it with), not two blocks.
+const PARA_GAP: f32 = theme::space::XS;
 /// The body's measuring width — the panel minus its side padding, so a caller can measure without
 /// reaching into the layout.
 pub(crate) const BODY_W: f32 = PANEL_W - 2.0 * PAD_X;
@@ -72,6 +90,16 @@ pub(crate) enum Choice {
 /// [`theme::DANGER`] face `ui::consent`'s *Delete all local data* uses would say the press is
 /// destructive when it is the opposite — a report leaves, nothing is lost. `Destructive` is the
 /// default and the delete alert's own look is unchanged by this existing at all.
+/// How many answers the alert offers. **`One` is an information card, not a question** — the
+/// sign-in failure's *Details*, which has nothing to decide once its report has gone and so offers
+/// only *Close*. Its one answer is the CANCEL slot, centred on the panel: the slot BACK already
+/// means, so the card needs no second vocabulary.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Answers {
+    One,
+    Two,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Tone {
     Destructive,
@@ -94,6 +122,13 @@ pub(crate) struct Layout {
 /// its question and nothing more, and the arithmetic is written so that case stays byte-identical
 /// to the layout that existed before a body was possible.
 pub(crate) fn layout(question_h: f32, body_h: f32) -> Layout {
+    layout_with(question_h, body_h, Answers::Two)
+}
+
+/// [`layout`] for either answer count. With [`Answers::One`] the cancel slot is centred on the
+/// panel and the destructive rect is the zero-width point at the row's centre — nothing draws
+/// there and nothing registers it.
+pub(crate) fn layout_with(question_h: f32, body_h: f32, answers: Answers) -> Layout {
     let body_block = if body_h > 0.0 { BODY_GAP + body_h } else { 0.0 };
     let h = PAD_TOP + question_h + body_block + QUESTION_GAP + StatusOverlay::CTRL_H + PAD_BOTTOM;
     let panel = Rect::new(
@@ -105,6 +140,16 @@ pub(crate) fn layout(question_h: f32, body_h: f32) -> Layout {
     let row_w = BUTTON_W * 2.0 + BUTTON_GAP;
     let x = panel.cx() - row_w * 0.5;
     let by = panel.y + PAD_TOP + question_h + body_block + QUESTION_GAP;
+    let one = Rect::new(panel.cx() - BUTTON_W * 0.5, by, BUTTON_W, StatusOverlay::CTRL_H);
+    if answers == Answers::One {
+        return Layout {
+            panel,
+            question: Rect::new(panel.x + PAD_X, panel.y + PAD_TOP, panel.w - 2.0 * PAD_X, question_h),
+            body: Rect::new(panel.x + PAD_X, panel.y + PAD_TOP + question_h + BODY_GAP, BODY_W, body_h),
+            cancel: one,
+            destructive: Rect::new(panel.cx(), by, 0.0, StatusOverlay::CTRL_H),
+        };
+    }
     Layout {
         panel,
         question: Rect::new(
@@ -136,12 +181,18 @@ pub(crate) struct DecisionAlert {
     /// Stored with the body so draw and pointer hit-testing use the same measured wrapping even on
     /// the first frame after open.
     question: &'static str,
-    /// The optional paragraph under the question, held on the ALERT rather than passed to
+    /// The optional paragraphs under the question, held on the ALERT rather than passed to
     /// [`draw`](Self::draw). It has to be here because the body changes where the buttons are, and
     /// [`frames`](Self::frames) must compute the same panel as the last draw did. A body passed
     /// per-frame would be correct for drawing and wrong for the first hit test after an open, which
     /// is precisely the frame a fast click lands on.
-    body: Option<&'static str>,
+    ///
+    /// Owned-or-static paragraphs, stacked [`PARA_GAP`] apart: `TextView` has no line breaks, and a
+    /// card whose body names a runtime value (a Report ID) cannot be a `&'static str`. Empty = no
+    /// body.
+    body: Vec<Cow<'static, str>>,
+    /// One answer or two — see [`Answers`].
+    answers: Answers,
     /// Which face the destructive-slot answer wears — see [`Tone`]. Defaults to
     /// [`Tone::Destructive`], so every alert built before this field existed looks exactly as it
     /// did.
@@ -169,7 +220,8 @@ impl DecisionAlert {
             choice: Choice::Cancel,
             controls: CtlPop::new(),
             question: "",
-            body: None,
+            body: Vec::new(),
+            answers: Answers::Two,
             tone: Tone::Destructive,
             field: crate::ui::underlay::UnderlayField::new(),
         }
@@ -192,7 +244,8 @@ impl DecisionAlert {
     /// Ask the question alone.
     pub(crate) fn open(&mut self, question: &'static core::ffi::CStr) {
         self.question = question.to_str().unwrap_or("");
-        self.body = None;
+        self.body.clear();
+        self.answers = Answers::Two;
         self.open_inner();
     }
     /// Ask it with a paragraph underneath — for a question whose consequences are not fully stated
@@ -204,8 +257,56 @@ impl DecisionAlert {
         question: &'static core::ffi::CStr,
         body: &'static str,
     ) {
+        self.open_card(question, vec![Cow::Borrowed(body)], Answers::Two);
+    }
+    /// Open as a CARD: a title, any number of body paragraphs (each wrapped on its own, stacked
+    /// [`PARA_GAP`] apart) and one or two answers. Focus starts on the cancel slot like every open;
+    /// a caller whose default is the second answer says so with [`set_choice`](Self::set_choice).
+    pub(crate) fn open_card(
+        &mut self,
+        question: &'static core::ffi::CStr,
+        paragraphs: Vec<Cow<'static, str>>,
+        answers: Answers,
+    ) {
         self.open(question);
-        self.body = Some(body);
+        self.reconcile_card(question, paragraphs, answers);
+    }
+    /// Reconcile the content an OPEN card renders, without reopening or resetting its spring.
+    /// Equality is over the title, paragraphs and answers, not an owner's incident ID or state
+    /// tag: a receipt can arrive while both of those stay the same. Returns whether paint/layout
+    /// changed. Closed and dismissing cards keep their last content for the exit choreography.
+    pub(crate) fn reconcile_card(
+        &mut self,
+        question: &'static core::ffi::CStr,
+        paragraphs: Vec<Cow<'static, str>>,
+        answers: Answers,
+    ) -> bool {
+        let question = question.to_str().unwrap_or("");
+        if !self.is_open()
+            || (self.question == question && self.body == paragraphs && self.answers == answers)
+        {
+            return false;
+        }
+        let _own = crate::ui::popover::own_motion();
+        self.question = question;
+        self.body = paragraphs;
+        self.answers = answers;
+        self.choice = self.valid_choice(self.choice);
+        // The body determines the panel's size. A cached ground can contain the OLD outline;
+        // dropping it here lets all hosts redraw the measured panel, even inside an own scope.
+        crate::ui::popover::host::ground_invalidate();
+        crate::ui::popover::note_own_damage();
+        crate::ui::idle::invalidate();
+        true
+    }
+    /// One answer or two, as last opened or reconciled.
+    pub(crate) fn answers(&self) -> Answers {
+        self.answers
+    }
+    /// The retained paragraphs DRAW consumes, rather than the caller's latest proposed body.
+    #[cfg(test)]
+    pub(crate) fn body_for_test(&self) -> &[Cow<'static, str>] {
+        &self.body
     }
     fn open_inner(&mut self) {
         self.choice = Choice::Cancel;
@@ -214,14 +315,12 @@ impl DecisionAlert {
         self.pop.open();
         crate::ui::idle::invalidate();
     }
-    /// The panel as last drawn. **Not callable from a host test** — `text_height` and `measure_h`
+    /// The panel for the current retained content. **Not callable from a host test** — `text_height` and `measure_h`
     /// both reach SDL2_ttf; the pure half is [`layout`].
     fn measured(&self) -> Layout {
         let qh = Self::question_view(self.question).measure_h(BODY_W);
-        let bh = self
-            .body
-            .map_or(0.0, |b| Self::body_view(b).measure_h(BODY_W));
-        layout(qh, bh)
+        let heights: Vec<f32> = self.body.iter().map(|b| Self::body_view(b).measure_h(BODY_W)).collect();
+        layout_with(qh, body_h(&heights), self.answers)
     }
     /// Final measured answer frames, shared by draw and the owning screen's hit registration.
     pub(crate) fn frames(&self) -> (Rect, Rect) {
@@ -259,8 +358,11 @@ impl DecisionAlert {
     pub(crate) fn choice(&self) -> Choice {
         self.choice
     }
+    fn valid_choice(&self, choice: Choice) -> Choice {
+        if self.answers == Answers::One { Choice::Cancel } else { choice }
+    }
     pub(crate) fn set_choice(&mut self, choice: Choice) {
-        self.choice = choice;
+        self.choice = self.valid_choice(choice);
         crate::ui::idle::invalidate();
     }
     pub(crate) fn update(&mut self, dt: f32) {
@@ -309,8 +411,12 @@ impl DecisionAlert {
         crate::ui::profile::phase("da.panel", || self.pop.panel(p, l.panel, theme::ALERT_PANEL_RAD, Some(&self.field)));
         crate::ui::profile::phase("da.text", || {
             Self::question_view(self.question).draw(p, l.question);
-            if let Some(body) = self.body {
-                Self::body_view(body).draw(p, l.body);
+            let mut y = l.body.y;
+            for para in &self.body {
+                let view = Self::body_view(para);
+                let h = view.measure_h(BODY_W);
+                view.draw(p, Rect::new(l.body.x, y, l.body.w, h));
+                y += h + PARA_GAP;
             }
         });
         let env = Env::inert();
@@ -319,6 +425,9 @@ impl DecisionAlert {
             .focused(self.choice == Choice::Cancel)
             .scale(self.controls.scale(0))
             .draw(&env, p);
+        if self.answers == Answers::One {
+            return;
+        }
         let destructive_style = match self.tone {
             Tone::Destructive => ControlStyle::Danger,
             Tone::Neutral => ControlStyle::Accent,
@@ -332,9 +441,45 @@ impl DecisionAlert {
     }
 }
 
+/// The body block's height from each paragraph's measured height: stacked [`PARA_GAP`] apart, and
+/// 0.0 — the no-body geometry — when there are none.
+fn body_h(heights: &[f32]) -> f32 {
+    if heights.is_empty() {
+        return 0.0;
+    }
+    heights.iter().sum::<f32>() + PARA_GAP * (heights.len() - 1) as f32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconciling_a_card_preserves_motion_and_valid_focus_and_is_quiet_when_unchanged() {
+        let _serial = crate::testlock::serial();
+        let mut alert = DecisionAlert::new();
+        alert.open_card(c"Details", vec!["old".into()], Answers::Two);
+        alert.set_choice(Choice::Destructive);
+        for _ in 0..90 { alert.update(1.0 / 60.0); }
+        assert!(alert.settled());
+        let appear = alert.pop.appear();
+        let users = crate::ui::popover::host_users_for_test();
+        assert!(alert.reconcile_card(c"Details", vec!["receipt".into()], Answers::Two));
+        assert_eq!(alert.body_for_test(), ["receipt"]);
+        assert_eq!(alert.choice(), Choice::Destructive);
+        assert_eq!(alert.pop.appear(), appear, "content must not restart the entrance");
+        assert_eq!(crate::ui::popover::host_users_for_test(), users);
+        crate::ui::idle::take_local_damage();
+        assert!(!alert.reconcile_card(c"Details", vec!["receipt".into()], Answers::Two));
+        assert_eq!(crate::ui::idle::take_local_damage(), 0, "a settled card must stay idle");
+        assert!(alert.reconcile_card(c"Details", vec!["receipt".into()], Answers::One));
+        assert_eq!(alert.choice(), Choice::Cancel, "the removed answer hands focus to Close");
+        alert.set_choice(Choice::Destructive);
+        assert_eq!(alert.choice(), Choice::Cancel, "a late focus delivery cannot select a missing answer");
+        alert.dismiss();
+        assert!(!alert.reconcile_card(c"Details", vec!["new".into()], Answers::Two));
+        assert_eq!(alert.body_for_test(), ["receipt"], "the exit keeps its last picture");
+    }
     /// **A body must not move an alert that has none.** The body arithmetic has to vanish
     /// completely at `body_h == 0.0` — not merely add a small gap. Written by computing the panel
     /// both ways and comparing.
@@ -421,10 +566,38 @@ mod tests {
         let _serial = crate::testlock::serial();
         let mut alert = DecisionAlert::new();
         alert.open_with_body(c"First question?", "Consequences of the first question.");
-        assert!(alert.body.is_some());
+        assert!(!alert.body.is_empty());
         alert.open(c"Second question?");
         assert_eq!(alert.question, "Second question?");
-        assert!(alert.body.is_none());
+        assert!(alert.body.is_empty());
         alert.close();
+    }
+
+    /// **A one-answer card centres its one answer** in the cancel slot, keeps the two-answer
+    /// panel's height, and a re-open as a question gets both answers back.
+    #[test]
+    fn a_one_answer_card_centres_its_answer_in_the_cancel_slot() {
+        let two = layout(40.0, 90.0);
+        let one = layout_with(40.0, 90.0, Answers::One);
+        assert_eq!((one.panel.y, one.panel.h), (two.panel.y, two.panel.h));
+        assert_eq!(one.cancel.w, BUTTON_W);
+        assert!((one.cancel.cx() - one.panel.cx()).abs() < 1e-3);
+        assert_eq!(one.cancel.y, two.cancel.y);
+        assert_eq!(one.destructive.w, 0.0);
+        let _serial = crate::testlock::serial();
+        let mut alert = DecisionAlert::new();
+        alert.open_card(c"Details", vec!["A".into(), "B".into()], Answers::One);
+        assert_eq!((alert.answers(), alert.body.len()), (Answers::One, 2));
+        alert.open(c"Question?");
+        assert_eq!(alert.answers(), Answers::Two);
+        alert.close();
+    }
+
+    /// Paragraphs stack [`PARA_GAP`] apart, and none is the no-body geometry.
+    #[test]
+    fn paragraphs_stack_one_rung_apart() {
+        assert_eq!(body_h(&[]), 0.0);
+        assert_eq!(body_h(&[30.0]), 30.0);
+        assert_eq!(body_h(&[30.0, 60.0]), 90.0 + PARA_GAP);
     }
 }

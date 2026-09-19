@@ -107,16 +107,16 @@ impl AccountClient {
         decode("GET", url, self.get_raw(url).ok()?)
     }
 
+    /// [`Self::get`], keeping what the call observed when it yields nothing — see [`CallEvidence`].
+    fn get_evidence<T: DeserializeOwned>(&self, url: &str) -> Result<T, CallEvidence> {
+        decode_evidence("GET", url, self.get_raw(url))
+    }
+
     fn get_raw(&self, url: &str) -> Result<crate::net::Resp, crate::net::RequestFailure> {
         let resp = crate::net::request_evidence(url, &self.headers(), "GET", None,
             crate::net::API, false, None, None);
         note_response_contact(url, &resp);
         resp
-    }
-
-    fn post<T: DeserializeOwned>(&self, url: &str) -> Option<T> {
-        let resp = self.post_raw(url).ok()?;
-        decode("POST", url, resp)
     }
 
     /// Complete responses or safe incomplete-response evidence. No body ceiling is enabled here.
@@ -133,7 +133,14 @@ impl AccountClient {
     /// (for the `plex.tv/link` fallback) alongside the QR; the returned `auth_token` is null until
     /// the user authorizes it on another device.
     pub fn create_pin(&self) -> Option<Pin> {
-        self.post(&format!("{PLEX_TV}/api/v2/pins?strong=false"))
+        self.create_pin_evidence().ok()
+    }
+
+    /// [`Self::create_pin`], and when it fails, what the request observed — the sign-in flow's
+    /// onboarding report classifies it (`telemetry::incident::classify`).
+    pub fn create_pin_evidence(&self) -> Result<Pin, CallEvidence> {
+        let url = format!("{PLEX_TV}/api/v2/pins?strong=false");
+        decode_evidence("POST", &url, self.post_raw(&url))
     }
 
     /// GET /api/v2/pins/{id} — poll a pending PIN, GRADED. `Pin.auth_token` becomes `Some` once
@@ -159,7 +166,12 @@ impl AccountClient {
     /// the v6 connections, which are *ranked last* rather than used first (`probe.rs`) — we ask for
     /// them so the ranking is choosing between a known set instead of a set plex.tv edited for us.
     pub fn resources(&self) -> Option<Vec<Resource>> {
-        self.get(&format!(
+        self.resources_evidence().ok()
+    }
+
+    /// [`Self::resources`], keeping the failed call's evidence for the onboarding report.
+    pub fn resources_evidence(&self) -> Result<Vec<Resource>, CallEvidence> {
+        self.get_evidence(&format!(
             "{PLEX_TV}/api/v2/resources?includeHttps=1&includeRelay=1&includeIPv6=1"
         ))
     }
@@ -216,7 +228,10 @@ fn poll_response(url: &str, response: Result<crate::net::Resp, crate::net::Reque
             log_status_failure("GET", url, status);
             return Ok(PinPoll::Gone);
         }
-        let Some(resp) = complete_response(response)? else { return Ok(PinPoll::Unreachable); };
+        let failure = response.as_ref().err().copied();
+        let Some(resp) = complete_response(response)? else {
+            return Ok(PinPoll::Unreachable(Err(failure.expect("an incomplete response is a failure"))));
+        };
         // Gone statuses are handled before body decoding, including incomplete responses;
         // decode logs complete HTTP/body failures using the same safe status logger.
         //
@@ -229,12 +244,13 @@ fn poll_response(url: &str, response: Result<crate::net::Resp, crate::net::Reque
         // whole deserialization and hide a token that was sitting right there. Creation still
         // takes the wide DTO, because it genuinely needs those fields and its failure is immediate
         // and visible.
+        let status = resp.status;
         Ok(match decode::<PinToken>("GET", url, resp) {
             Some(p) => match p.auth_token {
                 Some(t) if !t.is_empty() => PinPoll::Authorized(t),
                 _ => PinPoll::Pending,
             },
-            None => PinPoll::Unreachable,
+            None => PinPoll::Unreachable(Ok(status)),
         })
 }
 
@@ -288,7 +304,7 @@ mod evidence_tests {
     const SWITCH: &str = "https://plex.tv/api/v2/home/users/synthetic/switch";
 
     fn failure(status: Option<u16>, body_limit: Option<usize>) -> Result<Resp, RequestFailure> {
-        Err(RequestFailure { cause: RequestError::Transport, status, body_limit })
+        Err(RequestFailure { cause: RequestError::Transport, status, body_limit, curl_rc: Some(56) })
     }
 
     fn http2_reset_policy(status: u16) {
@@ -526,8 +542,27 @@ pub enum PinPoll {
     /// This pin no longer exists. Nothing will ever come back for it; mint another.
     Gone,
     /// Nothing usable came back and the pin may well still be alive: a transport failure, a 5xx,
-    /// or a 2xx body that did not parse. Retryable.
-    Unreachable,
+    /// or a 2xx body that did not parse. Retryable. Carries what the request observed, which the
+    /// stalled-wait report classifies.
+    Unreachable(CallEvidence),
+}
+
+/// What an account request observed when it produced nothing usable: `Ok(status)` for a complete
+/// response that was refused or would not decode, `Err` for `net`'s own failure. Closed evidence
+/// only — the onboarding report reduces it to a link class plus one number
+/// (`telemetry::incident::classify`); no body, URL or header is kept.
+pub type CallEvidence = Result<u16, crate::net::RequestFailure>;
+
+/// [`decode`], keeping the evidence of a call that yields nothing.
+fn decode_evidence<T: DeserializeOwned>(verb: &str, url: &str,
+    response: Result<crate::net::Resp, crate::net::RequestFailure>) -> Result<T, CallEvidence> {
+    match response {
+        Err(failure) => Err(Err(failure)),
+        Ok(resp) => {
+            let status = resp.status;
+            decode(verb, url, resp).ok_or(Ok(status))
+        }
+    }
 }
 
 /// Does this status mean the pin itself is finished, as opposed to the request having been?

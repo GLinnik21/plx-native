@@ -666,6 +666,8 @@ pub(crate) unsafe fn construct(
         if controlled { session.playback_quality() }
         else { crate::dev::playback_quality_override().unwrap_or_else(|| session.playback_quality()) },
     );
+    // The subtitle tone rides the same file and the same moment: a preference, restored once.
+    crate::player::restore_subtitle_tone(session.subtitle_tone());
     let primary_binding = initial.as_ref().map(|initial| initial.primary_client);
     let activate_session = |bridge: &mut super::bridge::Bridge,
         pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
@@ -833,7 +835,7 @@ pub(crate) unsafe fn construct(
         crate::player::seed_dev_track_names();
     }
     if let Some(initial) = &initial {
-        crate::ui::idle::set_enabled(!initial.triggers.iter().any(|t| t == "plxnative-noidle"));
+        crate::ui::idle::set_enabled(!crate::dev::listed(&initial.triggers, "noidle"));
     } else { crate::dev::scenarios::arm_noidle(); }
     // dev: /tmp/plxnative-detailosc (read once at boot, like the other triggers) makes the detail scroll
     // perpetually swing hero<->bottom so the FPS heartbeat samples the transition, not the ends.

@@ -2043,3 +2043,58 @@ fn the_preview_tells_a_container_remux_apart_from_a_re_encode() {
     // nothing playable loaded (a show still resolving its episode) answers nothing at all
     assert_eq!(playback_preview(&item("h264", "", "aac")), None);
 }
+
+#[test]
+fn restored_sidecar_is_part_of_the_route_contract() {
+    let mut ps = PlaybackSession::IDLE;
+    let _guard = fresh_registry(&mut ps);
+    let sid = ServerId::from_raw(0);
+    let mut meta = crate::stores::metadata::MetadataStore::default();
+    let playing = Some(fourk_item_with_subs(
+        sid, vec![], vec![crate::metadata::Stream {
+            id: 77, external: true, selected: true, codec: "srt".into(),
+            key: "/library/streams/77".into(), ..Default::default()
+        }],
+    ));
+    let start = super::apply_plan(&mut ps, &mut meta, Plan {
+        sid, playing, url: "http://fixture.invalid/movie.mkv".into(), ..Default::default()
+    }, "rk-4k");
+    settle_plan_start_in_unit_test(&mut ps, start);
+    assert_eq!(cur_sub_sid(&ps), 77, "timeline and later audio/quality transcodes must retain the restored sidecar");
+    crate::player::sidecar::reset();
+}
+#[test]
+#[cfg(feature = "devtriggers")]
+fn sidecar_on_invalidates_a_pending_original_recovery() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Original);
+    apply_plan(&mut ps,
+        Plan {
+            url: "http://fixture.invalid/4000/master.m3u8".into(),
+            tsession: "encoder-subtitle-on".into(),
+            delivery: crate::plex::TranscodeDelivery::FixedHls {
+                seconds_per_segment: 2,
+            },
+            ceiling: Some(crate::abr::Rung::P720.ceiling()),
+            auto_original: Some(test_original_candidate(None)),
+            ..Default::default()
+        },
+        "rk-subtitle-on",
+    );
+    request_user_route_intent(&ps, UserRouteIntent::RecoverOriginal);
+
+    commit_subtitle_selection(&mut ps, -1, 88);
+
+    assert!(ps.auto_original.is_none());
+    let action = claim_route_action().expect("the burned subtitle needs HLS retranscode");
+    assert_eq!(
+        action.intent,
+        RouteIntent::User(UserRouteIntent::Retranscode)
+    );
+    finish_route_action(&mut ps, &action, RouteApplyResult::Prepared);
+
+    reset_session(&mut ps);
+    reset_player_control_for_test(&ps);
+    crate::player::reset_subtitle();
+}

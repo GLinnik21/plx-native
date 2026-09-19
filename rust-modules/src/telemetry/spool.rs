@@ -132,11 +132,69 @@ pub(crate) fn append(r: &Record) -> bool {
 /// publishes the new decision and then takes this same lock to purge, so every race has one of two
 /// safe orders: the record is refused, or it is appended first and the purge removes it.
 pub(crate) fn append_if(r: &Record, allowed: impl FnOnce() -> bool) -> Option<bool> {
-    let _g = lock();
-    if !allowed() {
-        return None;
+    append_guarded(r, allowed, None)
+}
+
+/// Admit a watched report and append it as ONE spool transaction. Register before the write:
+/// the flush cannot read it until this lock is released, and compaction can settle a discarded
+/// report during the write itself. No caller registers again after returning — a flush may
+/// already have settled it, or `delivery::forget` may already have erased its watch.
+///
+/// `None` means admission was refused (permission, stale tenure, or no watch capacity), so a
+/// one-off must not fall back to the network. `Some(false)` is a write failure: the watch is
+/// failed and the caller may attempt its bounded fallback in the SAME tenure. Lock order stays
+/// spool → delivery, as in compaction and purge; no delivery lock is held during disk I/O.
+pub(crate) fn append_watched_if(
+    r: &Record,
+    tenure: u64,
+    allowed: impl FnOnce() -> bool,
+) -> Option<bool> {
+    append_guarded(r, allowed, Some(tenure))
+}
+
+fn append_guarded(r: &Record, allowed: impl FnOnce() -> bool, tenure: Option<u64>) -> Option<bool> {
+    use super::delivery::{self, DeliveryState};
+    let result = {
+        let _g = lock();
+        if !allowed() {
+            return None;
+        }
+        if let Some(t) = tenure {
+            if !delivery::watch(&r.event_id, DeliveryState::Queued, t) {
+                return None;
+            }
+        }
+        let appended = append_locked(r);
+        if !appended {
+            if let Some(t) = tenure {
+                delivery::settle_if_current(&r.event_id, DeliveryState::Failed, t);
+            }
+        }
+        Some(appended)
+    };
+    #[cfg(test)]
+    after_append_for_test();
+    result
+}
+
+#[cfg(test)]
+thread_local! {
+    // A deterministic scheduler boundary: the spool lock is released, but its caller has not
+    // resumed. A flush can already read and settle the appended record at this point.
+    static AFTER_APPEND: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn on_append_for_test(f: impl FnOnce() + 'static) {
+    AFTER_APPEND.with(|slot| *slot.borrow_mut() = Some(Box::new(f)));
+}
+
+#[cfg(test)]
+fn after_append_for_test() {
+    let f = AFTER_APPEND.with(|slot| slot.borrow_mut().take());
+    if let Some(f) = f {
+        f();
     }
-    Some(append_locked(r))
 }
 
 fn append_locked(r: &Record) -> bool {
@@ -204,6 +262,7 @@ fn write_locked(records: &[Record]) -> bool {
         crate::log(&format!(
             "telemetry: spool over cap, dropped {dropped} oldest records"
         ));
+        settle_discarded(records, &kept);
     }
     let bytes: Vec<u8> = kept.iter().filter_map(queue::encode).flatten().collect();
     let ok = crate::plex::session::write_atomic(&p, &bytes);
@@ -242,10 +301,15 @@ pub(crate) fn commit_retiring(retired: &[String]) {
 ///
 /// Per category, never wholesale: the two switches are independent, and turning off usage must not
 /// discard crash reports somebody is still consenting to.
+///
+/// **`Category::OneOff` is never named here, and that is deliberate.** A one-off record's consent
+/// was the single press that queued it, not either standing switch, so there is no decision here
+/// for it to be withdrawn BY. Erasure is [`purge_all_local`]'s job.
 pub(crate) fn purge_withdrawn(c: &super::consent::Consent) {
     let _g = lock();
     let mut all = read_locked();
     let before = all.len();
+    let snapshot = all.clone();
     if !c.errors {
         all = queue::purge(all, queue::Category::Errors);
     }
@@ -257,7 +321,35 @@ pub(crate) fn purge_withdrawn(c: &super::consent::Consent) {
             "telemetry: withdrawal purged {} queued records",
             before - all.len()
         ));
+        settle_discarded(&snapshot, &all);
         write_locked(&all);
+    }
+}
+
+/// Every record in `before` that is not in `after` was thrown away unsent: a watched one will never
+/// be delivered (`super::delivery`), so its Report ID must stop reading as on its way.
+fn settle_discarded(before: &[Record], after: &[Record]) {
+    for r in before.iter().filter(|r| !after.iter().any(|k| k.event_id == r.event_id)) {
+        super::delivery::settle(&r.event_id, super::delivery::DeliveryState::Failed);
+    }
+}
+
+/// **Destroy EVERY queued record, `Category::OneOff` included** — what sign-out and Delete all
+/// local data do, through `app::adapters::consent`'s forget path.
+///
+/// [`purge_withdrawn`] spares a one-off record because a consent change does not withdraw the press
+/// that queued it. Ending the account's tenure is not a consent change: it erases this
+/// television's local data, and a report the departing account pressed Send for is part of it.
+pub(crate) fn purge_all_local() {
+    let _g = lock();
+    let n = read_locked().len();
+    if n == 0 {
+        return; // nothing queued: no file is created just to be empty
+    }
+    if write_locked(&[]) {
+        crate::log(&format!("telemetry: local erasure purged {n} queued records"));
+    } else {
+        crate::log("telemetry: could not persist the emptied spool to ANY candidate path");
     }
 }
 
@@ -274,9 +366,17 @@ fn test_path() -> Option<PathBuf> {
 /// There is one spool per process by design, so without this every test in the suite would share
 /// one file under the build directory — the cross-test pollution `crate::testlock` exists for,
 /// arriving by a path nobody would think to grep. Callers hold [`crate::testlock::serial`].
+///
+/// **Also forgets [`ON_DISK`].** It is a per-PROCESS count, sound in production because `path()`
+/// is a `OnceLock` and the file never moves — but a test moves it, and a stale count from whichever
+/// spool test ran last makes the next `append` skip compaction and try to open a file that was
+/// never created at the new path (`append_locked`'s fast path only opens, it never creates). A
+/// one-off submit then reads that as a spool failure and takes the direct fallback instead.
 #[cfg(test)]
 pub(crate) fn set_test_path(p: Option<PathBuf>) {
     *TEST_PATH.lock().unwrap_or_else(|e| e.into_inner()) = p;
+    ON_DISK.store(UNKNOWN, std::sync::atomic::Ordering::Relaxed);
+    AFTER_APPEND.with(|slot| *slot.borrow_mut() = None);
 }
 
 #[cfg(test)]
@@ -321,6 +421,72 @@ mod tests {
 
     fn ids() -> Vec<String> {
         read().into_iter().map(|r| r.event_id).collect()
+    }
+
+    /// **A watched report the spool throws away is a failure**, not a report still on its way:
+    /// a withdrawal's purge and the cap's trim both settle it, so the screen can offer Send
+    /// report again instead of spinning over a record that no longer exists.
+    #[test]
+    fn a_watched_report_the_spool_discards_is_settled_as_failed() {
+        use crate::telemetry::delivery::{self, DeliveryState};
+        let _g = crate::testlock::serial();
+        let _s = Scratch::new("discard");
+        delivery::forget();
+        let standing = Record { category: Category::Errors, dest: Dest::Sentry, ..rec("standing") };
+        assert_eq!(append_if(&standing, || true), Some(true));
+        assert!(delivery::watch("standing", DeliveryState::Queued, delivery::tenure()));
+        purge_withdrawn(&crate::telemetry::consent::Consent::default());
+        let purged = delivery::state("standing");
+
+        let oldest = Record { category: Category::Errors, dest: Dest::Sentry, ..rec("oldest") };
+        assert_eq!(append_if(&oldest, || true), Some(true));
+        assert!(delivery::watch("oldest", DeliveryState::Queued, delivery::tenure()));
+        for i in 0..queue::MAX_RECORDS {
+            let r = Record { category: Category::Errors, dest: Dest::Sentry, ..rec(&format!("e{i}")) };
+            append(&r);
+        }
+        let trimmed = delivery::state("oldest");
+        delivery::forget();
+        assert_eq!((purged, trimmed), (Some(DeliveryState::Failed), Some(DeliveryState::Failed)));
+    }
+
+    #[test]
+    fn a_watched_append_refuses_an_ended_tenure() {
+        use crate::telemetry::delivery::{self, DeliveryState};
+        let _g = crate::testlock::serial();
+        let _s = Scratch::new("watched-tenure");
+        delivery::forget();
+        let tenure = delivery::tenure();
+        assert_eq!(append_watched_if(&rec("stale"), tenure, || {
+            delivery::forget(); // erasure raced permission checking, before watch admission
+            true
+        }), None);
+        assert!(ids().is_empty());
+        assert_eq!(delivery::state("stale"), None);
+        assert!(delivery::watch("stale", DeliveryState::Queued, delivery::tenure()));
+        delivery::settle_if_current("stale", DeliveryState::Delivered, tenure);
+        assert_eq!(delivery::state("stale"), Some(DeliveryState::Queued));
+        delivery::forget();
+    }
+
+    #[test]
+    fn compaction_can_settle_the_report_being_appended() {
+        use crate::telemetry::delivery::{self, DeliveryState};
+        let _g = crate::testlock::serial();
+        let _s = Scratch::new("watched-trim");
+        delivery::forget();
+        let full: Vec<_> = (0..queue::MAX_RECORDS).map(|i| Record {
+            category: Category::OneOff, ..rec(&format!("explicit-{i}"))
+        }).collect();
+        {
+            let _spool = lock();
+            assert!(write_locked(&full));
+        }
+        let standing = Record { category: Category::Errors, ..rec("standing") };
+        assert_eq!(append_watched_if(&standing, delivery::tenure(), || true), Some(true));
+        assert!(!ids().contains(&standing.event_id));
+        assert_eq!(delivery::state("standing"), Some(DeliveryState::Failed));
+        delivery::forget();
     }
 
     #[test]
@@ -486,6 +652,40 @@ mod tests {
         purge_withdrawn(&c);
 
         assert_eq!(ids(), vec!["a-crash".to_string()]);
+    }
+
+    /// **A withdrawal never touches a `OneOff` record, even with BOTH standing switches off** —
+    /// its consent was the one press that queued it, not either switch.
+    #[test]
+    fn a_withdrawal_never_touches_a_one_off_record() {
+        let _g = crate::testlock::serial();
+        let _s = Scratch::new("withdraw-oneoff");
+
+        append(&Record { category: Category::OneOff, dest: Dest::Sentry, ..rec("one-off") });
+        append(&Record { category: Category::Errors, ..rec("a-crash") });
+        append(&rec("a-usage"));
+
+        purge_withdrawn(&crate::telemetry::consent::Consent::default());
+
+        assert_eq!(ids(), vec!["one-off".to_string()]);
+    }
+
+    /// **Unlike a withdrawal, a LOCAL ERASURE takes the `OneOff` record too.** Sign-out and Delete
+    /// all local data remove every queued report; a one-off surviving either would contradict both.
+    #[test]
+    fn a_local_erasure_purges_a_one_off_record_too() {
+        let _g = crate::testlock::serial();
+        let _s = Scratch::new("erase-oneoff");
+
+        append(&Record { category: Category::OneOff, dest: Dest::Sentry, ..rec("one-off") });
+        append(&Record { category: Category::Errors, ..rec("a-crash") });
+
+        purge_all_local();
+
+        assert!(ids().is_empty());
+        // …and the next record lands normally: the erasure emptied the queue, not broke it.
+        assert!(append(&rec("after")));
+        assert_eq!(ids(), vec!["after".to_string()]);
     }
 
     /// **0600.** The spool holds no credential, but it holds what a person consented to send and

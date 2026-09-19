@@ -4,7 +4,8 @@
 //! now lives in the `TextView` primitive in `text_view.rs`.)
 use crate::plex::ServerId;
 use crate::pms::PmsMovie;
-use crate::ui::label::{HAlign, Label};
+use crate::ui::label::{HAlign, Label, VAlign};
+use crate::ui::text_view::TextView;
 use crate::ui::theme;
 use crate::ui::{Env, Painter, Rect, Spring, View};
 use std::ffi::{CStr, CString};
@@ -2836,6 +2837,18 @@ impl Spinner {
     pub fn dot_r(r: f32) -> f32 {
         (r * 0.28).max(3.0)
     }
+    /// The leading GUTTER an inline spinner takes before the line of text it belongs to — the
+    /// ring's full extent (dots included) and an `XS` gap — so a line that is "on its way" moves
+    /// over by this and nothing else. Read by [`StatusOverlay`]'s busy note and by any column of
+    /// fine print that marks a line the same way.
+    pub fn inline_gutter() -> f32 {
+        2.0 * (Self::R_INLINE + Self::dot_r(Self::R_INLINE)) + theme::space::XS
+    }
+    /// An inline spinner in the leading gutter that starts at `x`, centred on `cy` — the middle
+    /// of the cap band of the line it marks.
+    pub fn leading(x: f32, cy: f32) -> Self {
+        Self::new(x + Self::R_INLINE + Self::dot_r(Self::R_INLINE), cy, Self::R_INLINE)
+    }
     pub fn new(cx: f32, cy: f32, r: f32) -> Self {
         // dot size scales WITH the ring radius, so a big spinner reads as a bigger spinner, not the
         // same tiny dots on a wider circle.
@@ -3209,10 +3222,13 @@ impl PageGround {
 // screen (`Rect::FULL`); the person page's shelves are one band, so it passes the band; the player's
 // picture is the whole panel, so it passes `Rect::FULL` too. Carving the frame down to "avoid"
 // nearby chrome pushes the read-out OFF the optical centre, which is exactly what the player's
-// deleted `OVERLAY_BOTTOM` did — it centred the block at y=370 on a 1080 panel. The Library's
-// SECTION read-out is the one case where a smaller frame is the honest answer rather than a dodge:
-// it passes the content region because the chrome above it is still live, and that is the whole
-// difference between a section failing and the app failing (`Shared Sources.dc.html` D).
+// deleted `OVERLAY_BOTTOM` did — it centred the block at y=370 on a 1080 panel. A `Failed`
+// read-out that FILLS THE PAGE — the sign-in failure, Home's, a Library section's — is the other
+// case: it says so with [`StatusOverlay::page`], which hangs its verdict from
+// [`StatusOverlay::FULL_ANCHOR_TOP`] in screen space with the reason and the row stacked under it,
+// so all three share one verdict line (and one row line when they carry the same copy). The Library's still leaves its chrome
+// live above it (a section failing is not the app failing, `Shared Sources.dc.html` D); it just no
+// longer centres in the region under that chrome, which dropped its block ~250px below Home's.
 //
 // **Up to three blocks, and each answers one question**: the verdict (what happened), the reason
 // (why, and what is NOT broken), the action (the one thing to press). Two of the three are
@@ -3222,11 +3238,14 @@ impl PageGround {
 pub enum StatusKind {
     /// in flight — spinner + secondary copy
     Working,
-    /// terminal failure — no spinner, danger-tinted copy
+    /// terminal failure — no spinner, and **no warning colour**: the design system's
+    /// `StatusOverlay` contract ("the app does not scold") draws a failed verdict bold at
+    /// `size::TITLE` in `TEXT_SECONDARY`, the reason regular at `size::BODY` in `TEXT_SECONDARY`.
+    /// See [`StatusOverlay::verdict_face`].
     Failed,
     /// nothing to show, and that is the server's honest ANSWER rather than a fault — no spinner,
-    /// de-emphasized copy. Distinct from `Failed` on purpose: an empty library is not an error and
-    /// must not wear the danger tint.
+    /// de-emphasized copy. Distinct from `Failed` on purpose: an empty library is not an error, so
+    /// it reads a rung quieter (tertiary ink) than a failure does.
     ///
     /// The TINT is this kind's; the ACTION is the caller's, and the two callers differ for a
     /// reason. The Library's empty section offers none — the server answered, and asking it the
@@ -3235,16 +3254,21 @@ pub enum StatusKind {
     /// second look is what finds it. Neither is a retry of a failure.
     Empty,
 }
-/// The read-out's own type sizes. The verdict is reading text; the reason is one rung down because
-/// it EXPLAINS rather than states, and the action carries a control label, which is the verdict's
-/// rung again (`Button`'s rung everywhere else in the product).
+/// The read-out's own type sizes. A `Working`/`Empty` verdict is reading text; its reason is one
+/// rung down because it EXPLAINS rather than states. The action carries a control label, which is
+/// `Button`'s rung everywhere else in the product — `STATUS_CAP_SZ`, and a `Failed` verdict's
+/// larger rung never resizes a pill.
 const STATUS_CAP_SZ: c_int = theme::size::BODY;
 const STATUS_REASON_SZ: c_int = theme::size::CAPTION;
+/// A `Failed` read-out's verdict and reason rungs (`StatusOverlay.jsx`: bold `--size-title`, then
+/// regular `--size-body` in a reserved two-line slot).
+const STATUS_FAILED_VERDICT_SZ: c_int = theme::size::TITLE;
+const STATUS_FAILED_REASON_SZ: c_int = theme::size::BODY;
 pub struct StatusOverlay<'a> {
     pub frame: Rect,
     /// The VERDICT — one line naming what happened.
     ///
-    /// Borrowed rather than `&'static`: a section read-out interpolates a machine name ("Can't
+    /// Borrowed rather than `&'static`: a section read-out interpolates a machine name ("Can’t
     /// reach &lt;machine&gt;"), which no `c"…"` literal can carry. `&'static CStr` still coerces, so the
     /// state-machine captions (`PlaybackState::caption()`, Home's hub states) are unchanged. The
     /// `Label` rule applies to a runtime one — keep the `CString` alive for the whole draw frame.
@@ -3252,23 +3276,43 @@ pub struct StatusOverlay<'a> {
     /// The line UNDER the verdict, in de-emphasized ink: why it happened, and — the job it exists
     /// for — what is still fine. `None` = absent, not empty.
     pub reason: Option<&'a core::ffi::CStr>,
-    /// The read-out's ONE control, drawn below the copy and hit-tested by the screen through
+    /// The read-out's PRIMARY control, drawn below the copy and hit-tested by the screen through
     /// [`StatusOverlay::action_frame`], so the drawn pill and the rect a click lands in are one
     /// expression. `None` = no control: while a fetch is in flight the spinner IS the state, and an
     /// [`StatusKind::Empty`] answer has nothing to retry.
     pub action: Option<&'a core::ffi::CStr>,
+    /// The SECONDARY control on the primary's row, after it — the sign-in failure's *Details*. It
+    /// exists only beside a primary: a read-out whose one thing to press is secondary has no
+    /// primary to be secondary to. `None` = absent, not empty. Frame slot 1.
+    pub secondary: Option<&'a core::ffi::CStr>,
+    /// ONE line of fine print UNDER the control row, centred at `CAPTION` in `TEXT_TERTIARY` — the
+    /// sign-in report's quiet status ("Sending report…", "Report sent"). It wraps (at most two
+    /// lines, never shrinking) inside [`Self::REASON_W`], is absent when `None`, and cannot move
+    /// the blocks above it. Anything longer than one quiet line — a Report ID, a support line —
+    /// belongs in a card the screen opens, not on the read-out.
+    pub note: Option<&'a core::ffi::CStr>,
+    /// The note is still ON ITS WAY — a report being sent. It is drawn with an inline [`Spinner`]
+    /// in a leading gutter, the pair centred together, turning on [`phase`](Self::phase).
+    pub note_busy: bool,
+    /// Placed on the PAGE rather than in its frame — see [`StatusOverlay::page`].
+    pub page: bool,
     pub kind: StatusKind,
     pub phase: u32,
-    /// whether the action pill holds focus (ignored when there is no action)
-    pub focused: bool,
+    /// which pill of the row holds focus — 0 the primary, 1 the `secondary`; `None` when focus is
+    /// elsewhere. Ignored for a slot with no pill.
+    pub focus: Option<usize>,
+    /// the per-pill [FOCUS POP](CTRL_FOCUS_SCALE) the CALLER's `CtlPop` supplies — see the draw
+    /// for why a lone action takes none.
+    pub scales: [f32; 2],
 }
 
-/// The stacked read-out's geometry — the ONE place its three bands are placed, read by the draw and
-/// by [`StatusOverlay::action_frame`] so a screen's hit test cannot drift from the pill it sees.
+/// The stacked read-out's geometry — the ONE place its bands are placed, read by the draw and by
+/// [`StatusOverlay::action_frames_measured`] so a screen's hit test cannot drift from the pills it
+/// sees.
 struct StatusBands {
     cap: Rect,
     reason: Option<Rect>,
-    /// top of the action pill (whether or not there is one)
+    /// top of the action row (whether or not there is one)
     action_y: f32,
 }
 
@@ -3276,6 +3320,15 @@ impl<'a> StatusOverlay<'a> {
     /// The action pill's height. The app's one action-control size — the hero rows' pill/disc
     /// diameter, which `home.rs` aliases rather than restating.
     pub const CTRL_H: f32 = 60.0;
+    /// The fine print's rung — one step under the verdict, the reason's own rung.
+    const NOTE_SZ: c_int = theme::size::CAPTION;
+    /// The measure a reason in the two-line slot — and the note — wraps at: a centred line of
+    /// reading text wider than this is a scan across the room rather than a sentence.
+    pub const REASON_W: f32 = 960.0;
+    /// The FULL-SCREEN top anchor: the player's failure glyph, and the verdict band of a
+    /// [page-filling](Self::page) `Failed` read-out. Anchored from the top so the verdict stays
+    /// put whatever grows below it.
+    pub const FULL_ANCHOR_TOP: f32 = 372.0;
 
     pub fn new(frame: Rect, caption: &'a core::ffi::CStr, kind: StatusKind) -> Self {
         Self {
@@ -3283,9 +3336,14 @@ impl<'a> StatusOverlay<'a> {
             caption,
             reason: None,
             action: None,
+            secondary: None,
+            note: None,
+            note_busy: false,
+            page: false,
             kind,
             phase: 0,
-            focused: false,
+            focus: None,
+            scales: [1.0; 2],
         }
     }
     /// ms clock driving the spinner's rotation (ignored by `Failed`)
@@ -3298,13 +3356,102 @@ impl<'a> StatusOverlay<'a> {
         self.reason = Some(r);
         self
     }
-    /// The read-out's one control — see [`StatusOverlay::action`].
+    /// **This read-out FILLS THE PAGE** — a `Failed` one hangs its verdict from
+    /// [`Self::FULL_ANCHOR_TOP`] in screen space, centred on the panel, with the reason and the
+    /// control row stacked under it, rather than centring in `frame`. The sign-in failure, Home's
+    /// hub failure and a Library section's source failure all say so, which is what puts them on
+    /// one verdict line (and one row line whenever their copy is the same shape); a read-out bounded by a panel or a list region (the
+    /// onboarding list, Search's results, the person page's shelves) does not, and keeps its
+    /// container's centred layout. `Working` and `Empty` are unaffected: a spinner and a quiet
+    /// answer stay centred in the region they are about.
+    pub fn page(mut self) -> Self {
+        if self.kind == StatusKind::Failed {
+            self.page = true;
+            self.frame = Rect::FULL;
+        }
+        self
+    }
+    /// **The verdict's face — rung, weight and ink — by kind**, the design system's
+    /// `StatusOverlay` contract in one place: a `Failed` verdict is bold `size::TITLE` in
+    /// `TEXT_SECONDARY` ("the app does not scold": a failure is never tinted a warning colour);
+    /// `Working` is `size::BODY` secondary and `Empty` `size::BODY` tertiary, as they always were.
+    /// The one read-out whose verdict is `TEXT_PRIMARY` is the player's full-screen failure, which
+    /// carries the 96px glyph and is drawn by `player_hud`, not here.
+    pub(crate) fn verdict_face(kind: StatusKind) -> (c_int, bool, [f32; 4]) {
+        match kind {
+            StatusKind::Working => (STATUS_CAP_SZ, false, theme::TEXT_SECONDARY),
+            StatusKind::Failed => (STATUS_FAILED_VERDICT_SZ, true, theme::TEXT_SECONDARY),
+            StatusKind::Empty => (STATUS_CAP_SZ, false, theme::TEXT_TERTIARY),
+        }
+    }
+    /// The reason's rung and ink by kind: a `Failed` reason is regular `size::BODY` in
+    /// `TEXT_SECONDARY` (the design system's), the others keep the quiet caption line.
+    pub(crate) fn reason_face(kind: StatusKind) -> (c_int, [f32; 4]) {
+        match kind {
+            StatusKind::Failed => (STATUS_FAILED_REASON_SZ, theme::TEXT_SECONDARY),
+            StatusKind::Working | StatusKind::Empty => (STATUS_REASON_SZ, theme::TEXT_TERTIARY),
+        }
+    }
+    /// Whether the reason sits in the design system's RESERVED TWO-LINE slot — every `Failed`
+    /// read-out's (`StatusOverlay.jsx`: "a one-line and a two-line reason leave everything below
+    /// them in the same place"). The slot is two lines tall whatever the reason says, and the
+    /// reason wraps inside it at [`Self::REASON_W`].
+    fn reason_slotted(&self) -> bool {
+        self.kind == StatusKind::Failed
+    }
+    /// The reason's view in the two-line slot: centred, wrapped, never more than two lines.
+    fn reason_view(&self, r: &'a core::ffi::CStr) -> TextView<'a> {
+        let (sz, ink) = Self::reason_face(self.kind);
+        TextView::new(r.to_str().unwrap_or(""), sz, ink).h(HAlign::Center).max_lines(2)
+    }
+    /// The two-line slot's height from one measured line: one line pitch plus the last line's box.
+    fn reason_slot_h(&self, line_h: f32) -> f32 {
+        self.reason_view(c"").line_h() + line_h
+    }
+    /// Whether this read-out hangs from [`Self::FULL_ANCHOR_TOP`] — a `Failed` one its caller
+    /// declared page-filling with [`Self::page`].
+    fn page_placed(&self) -> bool {
+        self.page && self.kind == StatusKind::Failed
+    }
+    /// The note's view: centred `CAPTION` tertiary, wrapping to two lines rather than shrinking.
+    fn note_view(&self, line: &'a core::ffi::CStr) -> TextView<'a> {
+        TextView::new(line.to_str().unwrap_or(""), Self::NOTE_SZ, theme::TEXT_TERTIARY)
+            .h(HAlign::Center)
+            .max_lines(2)
+    }
+    /// The read-out's primary control — see [`StatusOverlay::action`].
     pub fn action(mut self, label: &'a core::ffi::CStr) -> Self {
         self.action = Some(label);
         self
     }
+    /// The row's secondary control — see [`StatusOverlay::secondary`].
+    pub fn secondary(mut self, label: Option<&'a core::ffi::CStr>) -> Self {
+        self.secondary = label;
+        self
+    }
+    /// The quiet line under the row — see [`StatusOverlay::note`].
+    pub fn note(mut self, line: Option<&'a core::ffi::CStr>) -> Self {
+        self.note = line;
+        self
+    }
+    /// Mark the note as on its way — see [`StatusOverlay::note_busy`].
+    pub fn note_busy(mut self, busy: bool) -> Self {
+        self.note_busy = busy;
+        self
+    }
+    /// Focus on the PRIMARY, or on nothing — the lone-action read-outs' whole vocabulary.
     pub fn focused(mut self, f: bool) -> Self {
-        self.focused = f;
+        self.focus = f.then_some(0);
+        self
+    }
+    /// Focus on control `i` (0 the primary, 1 the secondary), or on nothing.
+    pub fn focus(mut self, i: Option<usize>) -> Self {
+        self.focus = i;
+        self
+    }
+    /// Each control's focus pop, normally `[pop.scale(0), pop.scale(1)]`.
+    pub fn scales(mut self, s: [f32; 2]) -> Self {
+        self.scales = s;
         self
     }
     /// How far the read-out's ink reaches ABOVE the frame centre: the spinner ring plus its dots
@@ -3315,26 +3462,38 @@ impl<'a> StatusOverlay<'a> {
         Spinner::R_PAGE + theme::space::XS + Spinner::R_PAGE + Spinner::dot_r(Spinner::R_PAGE)
     }
 
-    /// Where the three blocks sit. Everything hangs off ONE anchor — the caption band, which keeps
+    /// Where the blocks sit. Everything hangs off ONE anchor — the caption band, which keeps
     /// the exact position it has always had (`Working` straddles the frame centre with the spinner
     /// above it; a terminal state owns the centre alone) — and the optional blocks stack BELOW it on
     /// `theme::space` rungs. That ordering is deliberate: adding a reason or an action cannot move
-    /// the read-outs that carry neither, so the player's and the person page's are untouched.
+    /// the read-outs that carry neither, so the player's and the person page's are untouched. A
+    /// [page-placed](Self::page) `Failed` read-out is the exception: its verdict hangs from
+    /// [`Self::FULL_ANCHOR_TOP`] in screen space, and the rest stacks under it as usual.
     fn bands(&self) -> StatusBands {
-        let cap_h = crate::text::text_height(STATUS_CAP_SZ, 0);
-        let reason_h = self.reason.map_or(0.0, |_| crate::text::text_height(STATUS_REASON_SZ, 0));
-        self.bands_from_heights(cap_h, reason_h)
+        self.bands_measured(&LegacyMeasure)
     }
 
     fn bands_measured(&self, measure: &dyn crate::ui::machine::Measure) -> StatusBands {
-        self.bands_from_heights(measure.line_h(STATUS_CAP_SZ),
-            self.reason.map_or(0.0, |_| measure.line_h(STATUS_REASON_SZ)))
+        let (cap_sz, _, _) = Self::verdict_face(self.kind);
+        let (reason_sz, _) = Self::reason_face(self.kind);
+        self.bands_from_heights(measure.line_h(cap_sz), self.reason_h(measure.line_h(reason_sz)))
+    }
+
+    /// The reason band's height from one reason line: absent, one line, or the reserved slot.
+    fn reason_h(&self, line_h: f32) -> f32 {
+        match (self.reason, self.reason_slotted()) {
+            (None, _) => 0.0,
+            (Some(_), false) => line_h,
+            (Some(_), true) => self.reason_slot_h(line_h),
+        }
     }
 
     fn bands_from_heights(&self, cap_h: f32, reason_h: f32) -> StatusBands {
         let cy = self.frame.cy();
         let cap_y = if self.kind == StatusKind::Working {
             cy + theme::space::XS
+        } else if self.page_placed() {
+            Self::FULL_ANCHOR_TOP
         } else {
             cy - cap_h * 0.5
         };
@@ -3346,54 +3505,126 @@ impl<'a> StatusOverlay<'a> {
             below = r.y + h;
             r
         });
-        StatusBands {
-            cap,
-            reason,
-            action_y: below + theme::space::LG,
-        }
+        let action_y = below + theme::space::LG;
+        StatusBands { cap, reason, action_y }
     }
 
-    /// The action pill's frame, or `None` when there is no action. The screen records this for its
+    /// The ROW's labels in draw order — the primary, then the secondary — each with the slot
+    /// index focus and the scales address it by. Empty without a primary.
+    fn row_labels(&self) -> impl Iterator<Item = (usize, &'a core::ffi::CStr)> + '_ {
+        self.action.into_iter().map(|l| (0, l)).chain(
+            self.secondary.map(|l| (1, l)).filter(move |_| self.action.is_some()))
+    }
+
+    /// Lay the row out from its pill widths: one centred run, `CONTROL_GAP` apart — the
+    /// control-group distance a pair of answers uses everywhere else. A lone primary is exactly
+    /// the centred pill it always was.
+    fn row_rects(&self, widths: [Option<f32>; 2], bands: &StatusBands) -> [Option<Rect>; 2] {
+        let present = widths.iter().flatten().count();
+        let total = widths.iter().flatten().sum::<f32>()
+            + CONTROL_GAP * present.saturating_sub(1) as f32;
+        let mut x = self.frame.cx() - total * 0.5;
+        let mut out = [None; 2];
+        for (i, w) in widths.iter().enumerate() {
+            if let Some(w) = w {
+                out[i] = Some(Rect::new(x, bands.action_y, *w, Self::CTRL_H));
+                x += w + CONTROL_GAP;
+            }
+        }
+        out
+    }
+
+    /// The note's band: `space::MD` under the row when there is one, in the row's place when not.
+    /// A note on its way is one line (its spinner sits on it); a settled one is its wrapped view's
+    /// height inside [`Self::REASON_W`].
+    fn note_band(&self, bands: &StatusBands, measure: &dyn crate::ui::machine::Measure) -> Option<Rect> {
+        let line = self.note?;
+        let top = if self.action.is_some() {
+            bands.action_y + Self::CTRL_H + theme::space::MD
+        } else {
+            bands.action_y
+        };
+        let h = if self.note_busy {
+            self.note_view(c"").line_h()
+        } else {
+            self.note_view(line).with_measure(measure).measure_h(Self::REASON_W.min(self.frame.w))
+        };
+        Some(Rect::new(self.frame.x, top, self.frame.w, h))
+    }
+
+    /// The primary pill's frame, or `None` when there is no action. The screen records this for its
     /// pointer hit test; the draw builds its `Button` from the same call.
     pub fn action_frame(&self) -> Option<Rect> {
-        let label = self.action?;
-        let w = Button::pill_w(label.as_ptr(), STATUS_CAP_SZ, false);
-        Some(self.action_rect(w, &self.bands()))
+        self.frames_live(&self.bands())[0]
+    }
+
+    /// The row through the live font — the legacy `View` path's twin of `action_frames_measured`.
+    fn frames_live(&self, bands: &StatusBands) -> [Option<Rect>; 2] {
+        let mut widths = [None; 2];
+        for (i, l) in self.row_labels() {
+            widths[i] = Some(Button::pill_w(l.as_ptr(), STATUS_CAP_SZ, false));
+        }
+        self.row_rects(widths, bands)
     }
 
     /// Owned-screen placement uses the same metrics capability as its draw, including replay.
     pub(crate) fn action_frame_measured(&self, measure: &dyn crate::ui::machine::Measure) -> Option<Rect> {
-        let label = self.action?;
-        let w = Button::pill_w_measured(label, STATUS_CAP_SZ, false, false, measure);
-        Some(self.action_rect(w, &self.bands_measured(measure)))
+        self.action_frames_measured(measure)[0]
     }
 
+    /// Every control, by slot (0 the primary, 1 the secondary), through the geometry the draw uses.
+    pub(crate) fn action_frames_measured(&self, measure: &dyn crate::ui::machine::Measure) -> [Option<Rect>; 2] {
+        if self.action.is_none() {
+            return [None; 2];
+        }
+        let mut widths = [None; 2];
+        for (i, l) in self.row_labels() {
+            widths[i] = Some(Button::pill_w_measured(l, STATUS_CAP_SZ, false, false, measure));
+        }
+        self.row_rects(widths, &self.bands_measured(measure))
+    }
+
+    /// The verdict band through the draw's own geometry — for a screen's test that two read-outs
+    /// stand on one line.
+    #[cfg(test)]
+    pub(crate) fn verdict_band_measured(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
+        self.bands_measured(measure).cap
+    }
+
+    #[cfg(test)]
     fn action_rect(&self, width: f32, bands: &StatusBands) -> Rect {
-        Rect::new(
-            self.frame.cx() - width * 0.5,
-            bands.action_y,
-            width,
-            Self::CTRL_H,
-        )
+        self.row_rects([Some(width), None], bands)[0].expect("one pill")
     }
 
-    /// Render through the very geometry used by `action_frame_measured`, without live font
+    /// Render through the very geometry used by `action_frames_measured`, without live font
     /// measurements deciding the hit target behind the host's measurement capability.
     pub(crate) fn draw_measured(&self, e: &Env, p: Painter, measure: &dyn crate::ui::machine::Measure) {
         let bands = self.bands_measured(measure);
-        let action = self.action.map(|label| self.action_rect(
-            Button::pill_w_measured(label, STATUS_CAP_SZ, false, false, measure), &bands));
-        self.draw_geometry(e, p, bands, action);
+        let frames = self.action_frames_measured(measure);
+        self.draw_geometry(e, p, bands, frames, measure);
     }
 
-    fn draw_geometry(&self, e: &Env, p: Painter, b: StatusBands, action_frame: Option<Rect>) {
+    /// A busy note's band split into the spinner's gutter and the text: the pair — gutter, then
+    /// `text_w` of text — centred on `band` as one group, so the line reads as centred as a
+    /// settled one. Returns the gutter's left edge and the text's rect.
+    fn busy_note_split(band: Rect, text_w: f32) -> (f32, Rect) {
+        let gutter = Spinner::inline_gutter();
+        let left = band.cx() - (gutter + text_w) / 2.0;
+        (left, Rect::new(left + gutter, band.y, text_w, band.h))
+    }
+
+    fn draw_geometry(
+        &self,
+        e: &Env,
+        p: Painter,
+        b: StatusBands,
+        frames: [Option<Rect>; 2],
+        measure: &dyn crate::ui::machine::Measure,
+    ) {
         // spinner above, caption below, the pair centred on the frame
         let cy = self.frame.cy();
-        let (tint, working) = match self.kind {
-            StatusKind::Working => (theme::TEXT_SECONDARY, true),
-            StatusKind::Failed => (theme::DANGER, false),
-            StatusKind::Empty => (theme::TEXT_TERTIARY, false),
-        };
+        let (cap_sz, cap_bold, tint) = Self::verdict_face(self.kind);
+        let working = self.kind == StatusKind::Working;
         // Both branches centre the caption the same way — by Label's cap band (VAlign::Middle,
         // the default). Working straddles the frame centre with the spinner above it; Failed owns
         // the centre alone. Using the cap band for one and a line-box metric for the other put the
@@ -3408,35 +3639,69 @@ impl<'a> StatusOverlay<'a> {
             .tint(tint)
             .draw(e, p);
         }
-        Label::new(self.caption.as_ptr(), STATUS_CAP_SZ, tint)
-            .h(HAlign::Center)
-            .draw(p, b.cap);
-        // The reason is NEVER in the verdict's ink: the tint is the severity of what happened, and
-        // this line's job is the opposite — it says what is still working.
+        let verdict = Label::new(self.caption.as_ptr(), cap_sz, tint).h(HAlign::Center);
+        if cap_bold { verdict.bold() } else { verdict }.draw(p, b.cap);
+        // The reason is in its own face (`reason_face`), never a severity colour: its job is to say
+        // why, and what is still working.
         if let (Some(r), Some(band)) = (self.reason, b.reason) {
-            Label::new(r.as_ptr(), STATUS_REASON_SZ, theme::TEXT_TERTIARY)
-                .h(HAlign::Center)
-                .draw(p, band);
+            if self.reason_slotted() {
+                // Top-aligned in the slot: a one-line reason leaves the second line empty, and
+                // nothing below the slot moves either way.
+                let w = Self::REASON_W.min(band.w);
+                self.reason_view(r)
+                    .with_measure(measure)
+                    .draw(p, Rect::new(band.cx() - w * 0.5, band.y, w, band.h));
+            } else {
+                let (sz, ink) = Self::reason_face(self.kind);
+                Label::new(r.as_ptr(), sz, ink).h(HAlign::Center).draw(p, band);
+            }
         }
-        if let (Some(label), Some(f)) = (self.action, action_frame) {
-            // **No [`CTRL_FOCUS_SCALE`] pop, deliberately.** Every other control face in the app
-            // takes one; this is the one surface where it would say nothing. A read-out's action is
-            // the ONLY focusable thing on the region it owns — `library::sync_readout_focus` lands
-            // the ring on it the moment the read-out appears and there is nowhere else for it to
-            // go — so the pop has no sibling to distinguish this control from and would resolve to
-            // a constant 1.07, i.e. a slightly larger button with no signal in it. The pop is a
-            // ROW's affordance; a lone control is a different question. Give it one the day a
-            // read-out offers two actions.
-            Button::new(label.as_ptr(), STATUS_CAP_SZ, f)
-                .focused(self.focused)
-                .draw(e, p);
+        // **A lone action takes no [`CTRL_FOCUS_SCALE`] pop, deliberately**, and a row does. A
+        // read-out's single action is the ONLY focusable thing on the region it owns —
+        // `library::sync_readout_focus` lands the ring on it the moment the read-out appears and
+        // there is nowhere else for it to go — so a pop would have no sibling to distinguish the
+        // control from and would resolve to a constant 1.07, a slightly larger button with no
+        // signal in it. The pop is a ROW's affordance: once the read-out offers two actions (the
+        // sign-in failure's *Try again* / *Details*), the caller's `CtlPop` scales reach the pills.
+        let row = self.row_labels().count();
+        for (i, label) in self.row_labels() {
+            if let Some(f) = frames[i] {
+                let scale = if row > 1 { self.scales[i] } else { 1.0 };
+                Button::new(label.as_ptr(), STATUS_CAP_SZ, f)
+                    .focused(self.focus == Some(i))
+                    .scale(scale)
+                    .draw(e, p);
+            }
+        }
+        if let (Some(line), Some(band)) = (self.note, self.note_band(&b, measure)) {
+            let ink = theme::TEXT_TERTIARY;
+            if self.note_busy {
+                // Cap-top on the band's top edge, exactly where the settled note's `TextView` puts
+                // its first line, so a report that lands does not hop; the ring sits on the cap band.
+                let (gutter_x, text) = Self::busy_note_split(band, measure.width(line, Self::NOTE_SZ, false));
+                Spinner::leading(gutter_x, band.y + measure.cap_h(Self::NOTE_SZ) * 0.5)
+                    .phase(self.phase)
+                    .tint(ink)
+                    .draw(e, p);
+                Label::new(line.as_ptr(), Self::NOTE_SZ, ink)
+                    .h(HAlign::Left)
+                    .v(VAlign::CapTop)
+                    .draw(p, text);
+            } else {
+                let w = Self::REASON_W.min(band.w);
+                self.note_view(line)
+                    .with_measure(measure)
+                    .draw(p, Rect::new(band.cx() - w * 0.5, band.y, w, band.h));
+            }
         }
     }
 }
 
 impl View for StatusOverlay<'_> {
     fn draw(&self, e: &Env, p: Painter) {
-        self.draw_geometry(e, p, self.bands(), self.action_frame());
+        let bands = self.bands();
+        let frames = self.frames_live(&bands);
+        self.draw_geometry(e, p, bands, frames, &LegacyMeasure);
     }
 }
 

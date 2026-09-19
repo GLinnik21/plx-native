@@ -5871,7 +5871,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
             cur_rk: rk.to_string(),
             cur_sid: plan.sid,
             cur_audio_sid: plan.audio_sid,
-            // the server-selected subtitle (0 = none), so the menu checkmark, the timeline report
+            // the part/show-selected subtitle (0 = none), so the menu checkmark, the timeline report
             // and any later transcode of this item all agree with what the renderer is told below
             cur_sub_sid: plan.sub_sid,
             cur_part_id: plan.part_id,
@@ -5907,12 +5907,19 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
     } else {
         install_active_encoder(&active_encoder);
     }
+    // Restore the external renderer AND the route's stream identity before publishing the
+    // start contract, so timeline reports and later audio/quality transcodes keep this pick.
+    if plan.sub_render_ordinal.is_none() && !is_transcoding(ps) {
+        if let Some(id) = crate::player::sidecar::restore_server_selection(cur_sid(ps), meta.view()) {
+            set_subtitle(ps, id);
+        }
+    }
     let start = prepare_playback_landing(ps, !ps.url.is_empty());
     // SHARED.desired_audio_idx is read by the DEMUX THREAD on every reopen — main thread only.
     if let Some(ord) = plan.feed_audio_ordinal {
         crate::player::set_audio_track(ord);
     }
-    // `request_play` turned subtitles off for the new item; turn the server's selection back on
+    // `request_play` turned subtitles off; apply the resolved part/show selection
     // AFTER that reset (this lands a frame or more later, on the main thread, before the engine
     // starts — so the demuxer's per-block `desired_sub_idx` gate sees it from the first cue).
     if let Some(ord) = plan.sub_render_ordinal {
@@ -6237,7 +6244,7 @@ pub(crate) fn commit_subtitle_selection(ps: &mut PlaybackSession, sub_idx: i32, 
         crate::plex::TranscodeDelivery::FixedHls { .. }
     ) {
         { let s = &mut *ps; {
-            if sub_idx < 0 {
+            if stream_id == 0 {
                 if let Some(candidate) = s.auto_original.as_mut() {
                     candidate.subtitle_ordinal = None;
                 }

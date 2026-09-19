@@ -12,7 +12,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from source_bundle import canonical, digest, read_regular, snapshot, validate, write_archive
+from source_bundle import (PRIVATE_KEY_PATTERN, SENTRY_DSN_PATTERN, canonical, digest, read_regular,
+                           snapshot, validate, write_archive)
 
 
 class BundleTests(unittest.TestCase):
@@ -210,7 +211,7 @@ class BundleTests(unittest.TestCase):
         from source_bundle import scan
         sample = b'https://' + b'0' * 32 + b'@o0.ingest.sentry.io/1'
         name = 'fixture/sample.java'
-        with patch('source_bundle.PUBLIC_DEMO_DSN_FILES', {name: digest(sample)}):
+        with patch('source_bundle.PUBLIC_SAMPLE_FILES', {name: (SENTRY_DSN_PATTERN, digest(sample))}):
             scan(sample, 'outer.tar.gz:' + name)
             with self.assertRaisesRegex(ValueError, 'credential pattern'):
                 scan(sample + b'changed', 'outer.tar.gz:' + name)
@@ -218,6 +219,17 @@ class BundleTests(unittest.TestCase):
                 scan(sample, 'another.java')
             with self.assertRaisesRegex(ValueError, 'private value'):
                 scan(sample, name, [sample])
+
+    def test_public_sample_exception_is_pattern_scoped(self):
+        from source_bundle import scan
+        key = b'-----BEGIN PRIVATE KEY-----\n' + b'A' * 64 + b'\n-----END PRIVATE KEY-----\n'
+        name = 'cargo-vendor/fixture/src/lib.rs'
+        with patch('source_bundle.PUBLIC_SAMPLE_FILES', {name: (PRIVATE_KEY_PATTERN, digest(key))}):
+            scan(key, 'cargo-vendor.tar.gz:' + name)
+        # The same file exempted for a DIFFERENT pattern is still refused.
+        with patch('source_bundle.PUBLIC_SAMPLE_FILES', {name: (SENTRY_DSN_PATTERN, digest(key))}):
+            with self.assertRaisesRegex(ValueError, 'credential pattern'):
+                scan(key, 'cargo-vendor.tar.gz:' + name)
 
     def test_input_symlink_escape(self):
         (self.root / 'link').symlink_to('/etc/passwd')
@@ -357,6 +369,27 @@ class BundleTests(unittest.TestCase):
                                  str(self.path), '--expect-snapshot', '0' * 64], capture_output=True)
         self.assertEqual(result.returncode, 1)
         self.assertIn(b'expected candidate', result.stderr)
+
+
+class RepositoryTreeScan(unittest.TestCase):
+    """Run the bundle's credential scan over the REAL tree, before any ARM build.
+
+    The release step scans the bundle only after a full cross-build; a first-party fixture that
+    looked like a token (X-Plex-Token=<20+ chars>) surfaced there and nowhere earlier.
+    """
+
+    def test_every_bundled_file_passes_the_credential_scan(self):
+        from source_bundle import scan, tracked_sources
+        root = Path(__file__).resolve().parents[1]
+        failures, count = [], 0
+        for name, data, _mode, _transformation in tracked_sources(root):
+            count += 1
+            try:
+                scan(data, name, [])
+            except ValueError as error:
+                failures.append(str(error))
+        self.assertGreater(count, 100)
+        self.assertEqual(failures, [])
 
 
 if __name__ == '__main__':

@@ -67,6 +67,62 @@ pub(crate) struct FixtureResources {
     /// be, so an app-level test can drive `PersistenceWarning` routing without a real filesystem
     /// fault. `None` keeps the default `Durable(PersistedPlaintext)` outcome.
     pub next_completion_outcome: Option<crate::plex::session::async_persistence::CompletionOutcome>,
+    /// Every onboarding report the owner asked for, in order. The fixture answers a standing
+    /// report as queued and a one-off with [`FIXTURE_RECEIPT`].
+    pub incident_reports: Vec<(crate::auth::owner::IncidentLane, crate::auth::owner::IncidentReport)>,
+}
+
+/// The Report ID a fixture adapter answers a one-off with.
+#[cfg(test)]
+pub(crate) const FIXTURE_RECEIPT: &str = "fixture-receipt";
+
+/// A report the owner shows a Report ID for, being followed to its delivery.
+#[derive(Debug, PartialEq, Eq)]
+struct IncidentWatch {
+    id: u32,
+    receipt: String,
+    /// Whether "held, still queued" has been said for it already.
+    said_held: bool,
+}
+
+impl IncidentWatch {
+    fn new(id: u32, receipt: String) -> Self {
+        Self { id, receipt, said_held: false }
+    }
+}
+
+/// One observation of a watched report (`SessionAdapter::incident_watch`) against its delivery
+/// state. PURE over `state`, so the rule is graded without a network or the global table.
+///
+/// Each change is said once: "held" keeps the watch (a later flush may still deliver or drop it);
+/// delivered and failed end it; an id no longer watched (forgotten, evicted) ends it silently.
+fn settle_incident_watch(
+    watch: &mut Option<IncidentWatch>,
+    state: impl Fn(&str) -> Option<crate::telemetry::delivery::DeliveryState>,
+) -> Option<(u32, crate::auth::owner::IncidentDelivery)> {
+    use crate::auth::owner::IncidentDelivery;
+    use crate::telemetry::delivery::DeliveryState;
+    let w = watch.as_mut()?;
+    match state(&w.receipt) {
+        Some(DeliveryState::Queued | DeliveryState::Sending) => None,
+        Some(DeliveryState::Held) if w.said_held => None,
+        Some(DeliveryState::Held) => {
+            w.said_held = true;
+            Some((w.id, IncidentDelivery::Held { receipt: w.receipt.clone() }))
+        }
+        Some(DeliveryState::Delivered) => {
+            let w = watch.take()?;
+            Some((w.id, IncidentDelivery::Delivered { receipt: w.receipt }))
+        }
+        Some(DeliveryState::Failed) => {
+            let w = watch.take()?;
+            Some((w.id, IncidentDelivery::Undelivered { receipt: w.receipt }))
+        }
+        None => {
+            *watch = None;
+            None
+        }
+    }
 }
 
 /// Only auxiliary IO is stubbed: this mode executes the real disk and registry paths.
@@ -141,6 +197,12 @@ pub(crate) struct SessionAdapter {
     /// typed admission is returned; the bridge drains it as a typed completion rather than
     /// letting the owner infer durability from `accepted`.
     live_completion: Option<crate::plex::session::async_persistence::PersistenceCompletion>,
+    /// The report the owner now shows as queued — `(offer id, receipt)`, from either lane — until
+    /// it is delivered or dropped (`telemetry::delivery`). The lane hands back the receipt when it
+    /// TAKES a report, so what became of it is observed here, once per frame, and reaches the
+    /// owner as `IncidentDelivery::Held`, `Delivered` or `Undelivered` — never inferred by a
+    /// screen.
+    incident_watch: Option<IncidentWatch>,
     spawn: fn(&'static str, Box<dyn FnOnce() + Send>) -> bool,
     #[cfg(test)]
     fixture_work: BTreeMap<u32, Box<dyn FnOnce(WorkerOutput, crate::auth::owner::SessionWork) + Send>>,
@@ -214,7 +276,7 @@ impl SessionAdapter {
             disk, endpoints: BTreeMap::new(), native_endpoints: BTreeMap::new(), registry_writes: Vec::new(), profile: None,
             recently_unreachable: false, minted_client_id: "synthetic-client".into(),
             coordinator_events: Vec::new(), root_press_available: true, back_results: Vec::new(), sweep_leftovers: 0,
-            next_completion_outcome: None,
+            next_completion_outcome: None, incident_reports: Vec::new(),
         }))
     }
 
@@ -235,7 +297,7 @@ impl SessionAdapter {
         Self { landing: Arc::new(Landing::with_limits(SESSION_DATA_RECORDS,
                 SESSION_OWNER_RESERVATIONS, SESSION_TOTAL_RESERVATIONS)),
             launches: BTreeMap::new(), native: BTreeMap::new(), resources, controlled_home: false, replay_resources: false,
-            receipts: BTreeMap::new(), live_completion: None, spawn, main_thread: PhantomData, recording_leftovers: 0,
+            receipts: BTreeMap::new(), live_completion: None, incident_watch: None, spawn, main_thread: PhantomData, recording_leftovers: 0,
             #[cfg(test)] fixture_work: BTreeMap::new(),
             #[cfg(test)] resource_test_io: None }
     }
@@ -597,6 +659,62 @@ impl SessionAdapter {
         }
     }
 
+    /// Execute one onboarding report the owner decided on — see `auth::owner::incident`. Both
+    /// lanes only queue (a spool append, or the one-off's bounded background fallback); nothing
+    /// here waits on the network.
+    ///
+    /// `AtPress` is a Declined person's Details press: nothing was retained, so the context is
+    /// built now from the key alone — its kind and link class, with no counters.
+    pub(crate) fn report_incident(&mut self, id: u32, lane: crate::auth::owner::IncidentLane,
+        report: crate::auth::owner::IncidentReport) -> crate::auth::owner::IncidentDelivery {
+        let delivery = self.execute_incident(lane, report);
+        // Either lane's report is followed to its delivery. A newer report replaces the watch:
+        // the owner holds one offer, and fences the old id anyway.
+        if let crate::auth::owner::IncidentDelivery::OneOff { receipt: Some(receipt) }
+        | crate::auth::owner::IncidentDelivery::Standing { receipt: Some(receipt) } = &delivery
+        {
+            self.incident_watch = Some(IncidentWatch::new(id, receipt.clone()));
+        }
+        delivery
+    }
+
+    fn execute_incident(&mut self, lane: crate::auth::owner::IncidentLane,
+        report: crate::auth::owner::IncidentReport) -> crate::auth::owner::IncidentDelivery {
+        use crate::auth::owner::{IncidentDelivery, IncidentLane, IncidentReport};
+        use crate::telemetry::incident::{self, IncidentContext};
+        #[cfg(test)]
+        if let Resources::Fixture(resources) = &mut self.resources {
+            resources.incident_reports.push((lane, report));
+            return match lane {
+                IncidentLane::Standing => IncidentDelivery::Standing { receipt: Some(FIXTURE_RECEIPT.into()) },
+                IncidentLane::OneOff => IncidentDelivery::OneOff { receipt: Some(FIXTURE_RECEIPT.into()) },
+            };
+        }
+        #[cfg(test)]
+        if self.resource_test_io.is_some() {
+            // Real disk and registry, never a real report.
+            return match lane {
+                IncidentLane::Standing => IncidentDelivery::Standing { receipt: None },
+                IncidentLane::OneOff => IncidentDelivery::OneOff { receipt: None },
+            };
+        }
+        let context = match report {
+            IncidentReport::Retained(context) => context,
+            IncidentReport::AtPress(key) => IncidentContext { link: key.link, ..IncidentContext::new(key.kind, None) },
+        };
+        match lane {
+            IncidentLane::Standing => IncidentDelivery::Standing { receipt: incident::report_standing(context) },
+            IncidentLane::OneOff => IncidentDelivery::OneOff { receipt: incident::send_one_off(context) },
+        }
+    }
+
+    /// The next change in what became of the watched report — see `incident_watch`. `None` while
+    /// nothing new is known, and for good once it is delivered, dropped or forgotten (sign-out
+    /// clears `telemetry::delivery`).
+    pub(crate) fn take_incident_delivery(&mut self) -> Option<(u32, crate::auth::owner::IncidentDelivery)> {
+        settle_incident_watch(&mut self.incident_watch, crate::telemetry::delivery::state)
+    }
+
     pub(crate) fn claim_root_press(&mut self) -> bool {
         if self.controlled_home { return false; }
         match &mut self.resources {
@@ -809,7 +927,7 @@ mod tests {
 
     fn key(epoch: u64) -> SessionWorkKey { SessionWorkKey { epoch, op: SessionOp::Login } }
     fn failed(epoch: u64) -> AuthProgress {
-        LoginProgress::Failed { epoch, message: "Synthetic failure".into() }.into()
+        LoginProgress::Failed { epoch, message: "Synthetic failure".into(), incident: crate::auth::synthetic_incident() }.into()
     }
 
     /// Stage B bridge wiring, exercised against the REAL disk writer (not the fixture arm, which
@@ -1660,5 +1778,58 @@ mod tests {
              session::clear() (the canonical clear) — plan section 2's stated order \
              (docs/v0.7.0-forward-port-plan.md)"
         );
+    }
+
+    /// The adapter half of a watched report: while it is queued or on the network nothing is
+    /// said; "saved, will send later" is said ONCE and the watch stays; a delivery or a failure is
+    /// said once, with the receipt it is about, and ends the watch; a forgotten report ends it
+    /// silently.
+    #[test]
+    fn a_watched_report_says_each_change_of_its_delivery_once() {
+        use crate::auth::owner::IncidentDelivery;
+        use crate::telemetry::delivery::DeliveryState as D;
+        let mut watch = Some(IncidentWatch::new(7, "receipt-1".into()));
+        for quiet in [D::Queued, D::Sending] {
+            assert_eq!(super::settle_incident_watch(&mut watch, |_| Some(quiet)), None);
+        }
+        assert!(watch.is_some(), "still on its way");
+        assert_eq!(
+            super::settle_incident_watch(&mut watch, |r| (r == "receipt-1").then_some(D::Held)),
+            Some((7, IncidentDelivery::Held { receipt: "receipt-1".into() }))
+        );
+        assert_eq!(super::settle_incident_watch(&mut watch, |_| Some(D::Held)), None, "said once");
+        assert!(watch.is_some(), "a held report is still watched");
+        assert_eq!(
+            super::settle_incident_watch(&mut watch, |_| Some(D::Delivered)),
+            Some((7, IncidentDelivery::Delivered { receipt: "receipt-1".into() }))
+        );
+        assert_eq!(watch, None, "delivered ends the watch");
+
+        let mut watch = Some(IncidentWatch::new(7, "receipt-2".into()));
+        assert_eq!(
+            super::settle_incident_watch(&mut watch, |_| Some(D::Failed)),
+            Some((7, IncidentDelivery::Undelivered { receipt: "receipt-2".into() }))
+        );
+        assert_eq!(watch, None);
+        let mut watch = Some(IncidentWatch::new(7, "receipt-3".into()));
+        assert_eq!(super::settle_incident_watch(&mut watch, |_| None), None);
+        assert_eq!(watch, None, "a forgotten report ends the watch");
+    }
+
+    /// **(d) Both lanes are watched**: a standing report's receipt is a Report ID on screen too,
+    /// so its delivery is followed exactly as a one-off's is.
+    #[test]
+    fn both_lanes_hand_their_receipt_to_the_watch() {
+        use crate::auth::owner::{IncidentLane, IncidentReport};
+        let ctx = crate::auth::synthetic_incident();
+        for lane in [IncidentLane::Standing, IncidentLane::OneOff] {
+            let mut adapter = SessionAdapter::fixture();
+            adapter.report_incident(3, lane, IncidentReport::Retained(ctx));
+            assert_eq!(
+                adapter.incident_watch.as_ref().map(|w| (w.id, w.receipt.as_str())),
+                Some((3, super::FIXTURE_RECEIPT)),
+                "{lane:?}"
+            );
+        }
     }
 }

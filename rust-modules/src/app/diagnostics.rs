@@ -13,9 +13,12 @@
 //! 10 rather than deferred again. Two properties rule it out and both are stated at their own call
 //! sites below: the panel takes NO KEYS AT ALL (see [`ON`]), so it can never be an input owner,
 //! which is the whole of what a surface IS; and it draws at TWO z-positions — genuinely last on the
-//! player route, and over the page but UNDER the account/item menus everywhere else, because on
-//! that path the menu carrying its own off-switch sits in its corner. One entry in a z-ordered
-//! stack cannot express "sometimes above and sometimes below the other entries".
+//! player route WHEN NONE OF THE PLAYER'S OWN PANELS IS OPEN (`bridge::player_diagnostics_visible`
+//! skips the draw entirely instead, rather than reordering it, while one is — issue #163: `More`
+//! carries this panel's own toggle, so painting over it hid the control), and over the page but
+//! UNDER the account/item menus everywhere else, because on that path the menu carrying its own
+//! off-switch sits in its corner. One entry in a z-ordered stack cannot express "sometimes above,
+//! sometimes below, and sometimes not drawn at all".
 //!
 //! It was PLAYER-ONLY until then, and this doc said so: `app.rs` drew it inside the player branch,
 //! so a toggle offered anywhere else would have ticked a box and shown nothing. The gap that
@@ -23,9 +26,11 @@
 //! this app most often needs from a stranger and was the one it could not produce. The draw call
 //! now runs on both sides of `app.rs`'s player/non-player split, and the `else` half covers every
 //! other route at once, so no route can be forgotten. The two positions differ deliberately: on the
-//! player it is genuinely last, and off it the panel draws over the PAGE but UNDER the app's modal
-//! surfaces — because on that path something sits in its corner, namely the account popover that
-//! carries the row turning it off. Drawn last it hid its own off-switch.
+//! player it is genuinely last EXCEPT while one of the player's own panels is open, and off it the
+//! panel draws over the PAGE but UNDER the app's modal surfaces — because on that path something
+//! sits in its corner, namely the account popover that carries the row turning it off. Drawn last
+//! it hid its own off-switch — the same failure the player route grew once `More` gained the very
+//! same kind of row (issue #163), fixed there by skipping the draw rather than reordering it.
 //!
 //! **Off the player the panel shows a DIFFERENT set of rows, and that is not a decoration.** Every
 //! pipeline row reads a [`crate::player::Diag`] that has never been filled in, so all nine of them
@@ -113,8 +118,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 ///
 /// It was nine `static mut`s. It is deliberately NOT a `ModalStack` surface, which is what §13
 /// files it under: the panel takes no keys at all (see [`ON`]), and it draws at TWO z-positions —
-/// above the player's own panels on the player route and below the account/item menus everywhere
-/// else — so it is neither an input owner nor a single entry in a stack that orders by z. What it
+/// above the player's own panels on the player route when none of them is open (skipped, not
+/// drawn, while one is — `bridge::player_diagnostics_visible`, issue #163) and below the
+/// account/item menus everywhere else — so it is neither an input owner nor a single entry in a
+/// stack that orders by z. What it
 /// is, is a component with state, and the state belongs to the application that samples it.
 ///
 /// Everything here is main-thread: [`update`](Self::update) is called from the frame loop's update

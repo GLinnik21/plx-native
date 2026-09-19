@@ -7,6 +7,7 @@ import io
 import json
 import posixpath
 import re
+import subprocess
 import tarfile
 import zipfile
 import zlib
@@ -74,6 +75,37 @@ def allowed(name):
             or name.startswith('.github/'))
 
 
+def tracked_sources(root, private_values=()):
+    """Yield (name, data, mode, transformation) for every file the source bundle carries.
+
+    THE one selection: tracked files that pass allowed(), with release records redacted exactly as
+    archived. make-source-bundle.py builds from it and test_source_bundle.py scans it, so the
+    pre-build credential check sees the same bytes the release step will.
+    """
+    listing = subprocess.check_output(['git', '-C', str(root), 'ls-files', '-s', '-z'])
+    for item in listing.decode().split('\0'):
+        if not item:
+            continue
+        metadata, name = item.split('\t', 1)
+        if metadata.split()[0] == '160000':
+            fail('submodule needs explicit source support: ' + name)
+        # Deliberate allowlist: untracked files and gitignored inputs never enter here.
+        if not allowed(name):
+            continue
+        data, filemode = read_regular(root, name)
+        transformation = None
+        if name.startswith(('docs/release-audits/', 'docs/release-notes/')):
+            original = data
+            data = re.sub(rb'(?mi)^.*\| telemetry endpoints \|.*$',
+                b'| telemetry endpoints | Redacted in the source reconstruction copy; original release record unchanged |', data)
+            for value in sorted(private_values, key=len, reverse=True):
+                if value: data = data.replace(value, b'<redacted-private-value>')
+            if data != original:
+                transformation = {'original_sha256': digest(original),
+                    'operation': 'Redact confidential literals in copied release record; repository original unchanged'}
+        yield name, data, filemode, transformation
+
+
 def read_regular(root, name):
     safe_name(name)
     path = root / name
@@ -90,12 +122,24 @@ def read_regular(root, name):
     return path.read_bytes(), 0o755 if path.stat().st_mode & 0o111 else 0o644
 
 
-# Public demo endpoint in the checksum-pinned upstream Android sample, not our configuration.
-# Only this pattern is exempt; literal private values and all other credential checks still run.
+# Public sample credentials inside checksum-pinned upstream sources, not our configuration: each
+# entry exempts ONE pattern in ONE file at ONE exact digest. Any other pattern in the same file, the
+# same text anywhere else, a changed file, and every literal private value still fail the scan.
 SENTRY_DSN_PATTERN = rb'https?://[0-9a-fA-F]{24,}@[A-Za-z0-9.-]*ingest[A-Za-z0-9.-]*sentry\.io/'
-PUBLIC_DEMO_DSN_FILES = {
+PRIVATE_KEY_PATTERN = rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\r\n]+[A-Za-z0-9+/=\r\n]{32,}'
+PUBLIC_SAMPLE_FILES = {
+    # Demo DSN in the upstream Android sample app.
     'sentry-native-0.16.6/ndk/sample/src/main/java/io/sentry/ndk/sample/MainActivity.java':
-        '5c67de55db824517dc03b4d3aba066f45bb6e94425ce7c176733aad75719b1be',
+        (SENTRY_DSN_PATTERN, '5c67de55db824517dc03b4d3aba066f45bb6e94425ce7c176733aad75719b1be'),
+    # Doc-example and unit-test keys in the crates behind the `rcgen` dev-dependency (Cargo.lock
+    # pins each crate's checksum; `cargo vendor` ships dev-dependencies because a build from the
+    # vendored tree must resolve the whole lock).
+    'cargo-vendor/pem/README.md':
+        (PRIVATE_KEY_PATTERN, '0f96e3ccaadcaa6b59c2947e7148e12c762865db05802ba2d2f5e7edf3a7fc30'),
+    'cargo-vendor/pem/src/lib.rs':
+        (PRIVATE_KEY_PATTERN, 'be6a429443a8687241f20f9bd2511614b9b8a150e52ed89e445960fbd2ae1906'),
+    'cargo-vendor/rcgen/src/certificate.rs':
+        (PRIVATE_KEY_PATTERN, '04d367a1ffb3a4c6f74154b68721690fef8e319fe591118211eb039a672963a1'),
 }
 
 def scan(data, name, private_values=(), depth=0, budget=None):
@@ -108,7 +152,7 @@ def scan(data, name, private_values=(), depth=0, budget=None):
     for value in private_values:
         if value and value in data:
             fail('private value found in: ' + name)  # Never print the matched value.
-    patterns = [rb'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\r\n]+[A-Za-z0-9+/=\r\n]{32,}',
+    patterns = [PRIVATE_KEY_PATTERN,
                 rb'PLXNATIVE_' + rb'PRIVATE_SENTINEL_[A-Za-z0-9]+',
                 rb'\bgh[pousr]_[A-Za-z0-9]{30,}',
                 rb'\bAKIA[A-Z0-9]{16}\b',
@@ -118,8 +162,7 @@ def scan(data, name, private_values=(), depth=0, budget=None):
     for pattern in patterns:
         if not re.search(pattern, data):
             continue
-        if (pattern == SENTRY_DSN_PATTERN
-                and PUBLIC_DEMO_DSN_FILES.get(name.rsplit(':', 1)[-1]) == digest(data)):
+        if PUBLIC_SAMPLE_FILES.get(name.rsplit(':', 1)[-1]) == (pattern, digest(data)):
             continue
         fail('credential pattern found in: ' + name)
     if data.startswith(b'PK\x03\x04'):

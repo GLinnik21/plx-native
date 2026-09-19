@@ -338,6 +338,64 @@ fn leaving_the_player_with_a_panel_up_returns_the_page_in_the_route_s_own_frame(
     assert!(!player_overlay_up(&d), "the panel left with the page that hosted it");
 }
 
+/// **Issue #163**: the diagnostics ("Stats for nerds") panel painted over the player's own
+/// overlay panels — sharpest with `More`, since that popover carries the very toggle the panel
+/// answers to, so a viewer who turned Stats on from `More` had no way back to the control that
+/// turns it off. `bridge::player_diagnostics_visible` is the decision `app/run.rs`'s player
+/// branch gates `app.diagnostics.draw()` on; this exercises it directly against the real
+/// `ModalStack`, across all four overlay kinds — the bug generalizes to `Tracks`/`Info`/
+/// `Chapters` too, since each is anchored well inside the panel's near-full-width rect.
+#[test]
+fn player_diagnostics_hide_behind_any_open_player_overlay() {
+    use crate::screens::player::overlay::OverlayKind;
+    let _g = crate::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    let mut t = 0u32;
+    let mut next = |d: &mut Dispatcher<AppHost>| {
+        t += 1;
+        frame(d, &mut rig, AppArg::Player, tick(t), vec![])
+    };
+    next(&mut d);
+    assert!(
+        player_diagnostics_visible(&d),
+        "nothing is open yet — the panel draws as it always did"
+    );
+    for kind in [
+        OverlayKind::Tracks { tab: 0 },
+        OverlayKind::Info,
+        OverlayKind::Chapters,
+        OverlayKind::More { quality: false },
+    ] {
+        open_player_overlay(
+            crate::route::idle_session_for_test(),
+            crate::stores::metadata::MetadataStore::default().view(),
+            &mut d,
+            kind,
+        );
+        next(&mut d);
+        assert!(
+            !player_diagnostics_visible(&d),
+            "{kind:?} is open — the panel that carries its own controls must stay reachable"
+        );
+        dismiss_player_overlays(&mut d);
+        // The dismissed surface fades rather than vanishing (`ModalStack::dismiss` — `Phase::
+        // Closing` until its own spring `settled()`), so `player_overlay_up` — and therefore
+        // this predicate — keeps answering "up" for a run of frames after the request. Drive
+        // enough of them that the fade actually finishes before asking again.
+        for _ in 0..200 {
+            next(&mut d);
+            if player_diagnostics_visible(&d) {
+                break;
+            }
+        }
+        assert!(
+            player_diagnostics_visible(&d),
+            "{kind:?} closed — the panel draws again once the dismiss fade settles"
+        );
+    }
+}
+
 /// Phase 5b: the Settings surface is PRESENTED on the tree, owns input from its first frame,
 /// names the heartbeat word of its top page, walks its own stack on BACK (root → Legal →
 /// back → root) and only then lets the container dismiss it — with the app's page untouched.

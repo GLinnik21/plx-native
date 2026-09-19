@@ -524,10 +524,16 @@ pub(crate) struct RequestFailure {
     pub cause: RequestError,
     pub status: Option<u16>,
     pub body_limit: Option<usize>,
+    /// The non-zero `CURLcode` `curl_easy_perform` returned, when the failure came from a transfer
+    /// at all. `None` for a request refused before libcurl ran (a URL with a NUL, an unloadable
+    /// libcurl, a failed handle setup). A bare number with no identity, which is why it may leave
+    /// the device in `telemetry::incident`'s link class; a DNS failure and a TLS refusal are the
+    /// two answers a failed sign-in most needs told apart.
+    pub curl_rc: Option<i32>,
 }
 
 impl From<RequestError> for RequestFailure {
-    fn from(cause: RequestError) -> Self { Self { cause, status: None, body_limit: None } }
+    fn from(cause: RequestError) -> Self { Self { cause, status: None, body_limit: None, curl_rc: None } }
 }
 
 /// CURLINFO_RESPONSE_CODE is the last response, not the CONNECT proxy response:
@@ -561,6 +567,7 @@ fn finish_response(
             cause: if rc == 28 && !sink.overflowed { RequestError::TimedOut } else { RequestError::Transport },
             status,
             body_limit: if sink.overflowed { max_body } else { None },
+            curl_rc: (rc != 0).then_some(rc as i32),
         });
     }
     Ok(Resp { status: status.unwrap(), body: sink.body })

@@ -1278,8 +1278,8 @@ fn selected_pgs_names_subtitle_stream_id_on_mde() {
     crate::plex::reset_servers_for_test();
 }
 
-/// A selected external sidecar is not in the container — Original leaves subs off. MDE must
-/// see subtitleStreamID=0 so it does not force a burn/transcode for a sub we will not render.
+/// A selected external sidecar is not in the container. MDE must see subtitleStreamID=0
+/// so it does not force a burn; renderable text sidecars are restored by the client at landing.
 #[test]
 #[cfg(feature = "devtriggers")]
 fn external_selected_sub_sends_subtitle_stream_id_zero_on_mde() {
