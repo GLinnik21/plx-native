@@ -226,7 +226,9 @@ sign-in may legitimately have advanced by the time the app is foregrounded again
 Layout and spacing · focus and navigation · route transitions and the page cross-fade · every
 screen (home, library grid, detail, person, menus, popovers, the failure read-out) · the entire
 Plex data layer against a real PMS — browse, metadata, seasons, cast, images, sort/filter · idle
-and repaint behaviour · anything reachable by keys or clicks.
+and repaint behaviour · anything reachable by keys or clicks. **Modals are drawn with the frame cache
+OFF** (`frame cache: CopyTexSubImage error=0x500 — cache off`), so a sim capture cannot show a
+fault in the cached host path a modal card is served from; only the TV can.
 
 That is most UI work, and it is the half that transfers.
 

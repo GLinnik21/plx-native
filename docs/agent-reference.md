@@ -1174,7 +1174,8 @@ Measured the day the macOS path landed: 94 `abr:` lines and a rung commit in one
 pinned to the one-television mutex.
 It still CANNOT answer frame rate (different
 GPU — every simulator heartbeat carries **`sim=1`** so a pasted log cannot be mistaken for a
-device measurement), text rasterization, or anything about **LG's decoder** — resource-allocation
+device measurement), text rasterization, the cached modal ground (its frame cache is off —
+`frame cache: … cache off`), or anything about **LG's decoder** — resource-allocation
 refusals, the ACB video-plane bind, the Load payload's Dolby declaration, `SOUND_ERROR_019`, frame
 pacing, which codecs the panel takes. Nothing decodes: the clock sink throws every AU away, and a
 Mac decodes things that television will not and the reverse. Without the trigger, Play still lands
