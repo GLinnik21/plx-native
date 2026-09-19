@@ -639,7 +639,7 @@ pub(crate) fn texture_rgba(cells: &[[f32; 3]; N]) -> [u8; TEX_W * TEX_H * 4] {
                 let col: [f32; 4] =
                     std::array::from_fn(|k| xs[(j0 - 1 + k as isize - row_lo) as usize][i][ch]);
                 let c = crom(col, fy);
-                px[o + ch] = (gfx::enc(c).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                px[o + ch] = gfx::enc_u8(c);
             }
             px[o + 3] = 255;
         }

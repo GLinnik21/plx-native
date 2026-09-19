@@ -3846,6 +3846,44 @@ pub(crate) fn enc(v: f32) -> f32 {
     }
 }
 
+/// **Linear radiance straight to an 8-bit display code** — exactly
+/// `(enc(v).clamp(0.0, 1.0) * 255.0 + 0.5) as u8`, answered by a search instead of a `powf`.
+///
+/// That quantisation is a step function of `v` with 255 steps, so it is fully described by the
+/// 255 smallest inputs at which each code begins; the code for `v` is how many of those it has
+/// reached. The thresholds are found ONCE, by bisecting the float bit patterns against the formula
+/// itself on this machine's own `powf`, so the answer is that formula's to the bit (held by
+/// `the_quantised_encode_is_the_powf_encode_to_the_bit`) rather than an approximation of it. A
+/// modal's field texture is 60x32x3 of these per latch: 5760 `powf` were ~4 ms of the Cortex-A53
+/// frame that latched it (2026-09-19); eight comparisons each are not measurable.
+#[inline]
+pub(crate) fn enc_u8(v: f32) -> u8 {
+    // `partition_point` counts the thresholds `v` has reached; NaN reaches none, as `as u8` maps
+    // the formula's NaN to 0.
+    enc_u8_thresholds().partition_point(|&t| t <= v) as u8
+}
+
+fn enc_u8_thresholds() -> &'static [f32; 255] {
+    static T: std::sync::OnceLock<[f32; 255]> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let code = |v: f32| (enc(v).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        std::array::from_fn(|k| {
+            // Smallest non-negative float whose code is > k. Non-negative floats order as their
+            // bits; code(0) = 0 and code(1) = 255 bracket every step.
+            let (mut lo, mut hi) = (0.0f32.to_bits(), 1.0f32.to_bits());
+            while lo < hi {
+                let mid = lo + (hi - lo) / 2;
+                if code(f32::from_bits(mid)) > k as u8 {
+                    hi = mid;
+                } else {
+                    lo = mid + 1;
+                }
+            }
+            f32::from_bits(lo)
+        })
+    })
+}
+
 /// Average display-encoded sRGB samples as radiance and encode the result back to sRGB.
 /// Kept pure so the material's defining operation is host-testable without an OpenGL context.
 fn diffuse_ground_mean(samples: impl IntoIterator<Item = [f32; 3]>) -> [f32; 3] {
@@ -5336,6 +5374,41 @@ pub(crate) fn draw_field_panel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **[`enc_u8`] is `(enc(v).clamp(0, 1) * 255 + 0.5) as u8` to the bit, without a `powf`.**
+    /// Every threshold is checked from both sides (the last float below it and the threshold
+    /// itself), then a dense sweep of the whole working range and the edge values a colour
+    /// pipeline can hand it: negatives, zero, the linear toe, above white, infinities and NaN.
+    #[test]
+    fn the_quantised_encode_is_the_powf_encode_to_the_bit() {
+        let reference = |v: f32| (enc(v).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        for &t in enc_u8_thresholds().iter() {
+            let below = f32::from_bits(t.to_bits() - 1);
+            assert_eq!(enc_u8(below), reference(below), "just below {t:e}");
+            assert_eq!(enc_u8(t), reference(t), "at {t:e}");
+        }
+        // Every 16th float in [0, 1.25): ~67M values' worth of bit patterns, sampled 1 in 16.
+        let (lo, hi) = (0.0f32.to_bits(), 1.25f32.to_bits());
+        let mut b = lo;
+        while b < hi {
+            let v = f32::from_bits(b);
+            assert_eq!(enc_u8(v), reference(v), "at {v:e}");
+            b += 16;
+        }
+        for v in [
+            -1.0,
+            -0.0,
+            f32::MIN_POSITIVE,
+            0.0031308,
+            1.0,
+            2.0,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+        ] {
+            assert_eq!(enc_u8(v), reference(v), "at {v:e}");
+        }
+    }
 
     /// **The underlay chain is a BOX FILTER only because every pass is exactly 2x**, and that is a
     /// property of the drawable's width, so it is graded here rather than assumed. The television
