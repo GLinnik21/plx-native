@@ -114,6 +114,44 @@ const DIAG: [&str; 25] = [
     "plxnative-recplay",
 ];
 
+/// The triggers a CONTROLLED boot (`app::bootstrap`: the recorder, a replay, an explicit
+/// `app-init`) may carry, as bare names. Anything else armed on a recording boot makes its typed
+/// initial unsupported, so a replay cannot silently run under a trigger it never modelled.
+///
+/// One gated table rather than literals at each consumer, for the reason [`DIAG`] is gated: a
+/// full trigger name in the release binary is exactly what `ci/check-package.py` grades as "dev
+/// triggers compiled in", and `plxnative-noidle` is its witness. A release build never arms a
+/// trigger ([`armed_triggers`] is empty there), so it has no vocabulary to check against and the
+/// accessors below answer "not supported" / "not listed" without naming one.
+#[cfg(any(feature = "devtriggers", test))]
+const CONTROLLED: &[&str] = &[
+    "rec", "recplay", "focus", "noidle", "token", "app-init", "settings",
+    "detail", "detailsec", "detailok", "filmography", "personcredits", "nowan",
+];
+
+/// Is the recorded trigger `trigger` (full `plxnative-<name>` form, as [`armed_triggers`] lists
+/// it) one a controlled boot supports? See [`CONTROLLED`].
+#[cfg(any(feature = "devtriggers", test))]
+pub(crate) fn controlled_trigger(trigger: &str) -> bool {
+    trigger.strip_prefix("plxnative-").is_some_and(|name| CONTROLLED.contains(&name))
+}
+#[cfg(not(any(feature = "devtriggers", test)))]
+pub(crate) fn controlled_trigger(_trigger: &str) -> bool {
+    false
+}
+
+/// Does a recorded trigger list (full names, as [`armed_triggers`] returns them) carry the
+/// trigger `name` (bare)? The typed-initial counterpart of [`flag`]: it reads the list a boot was
+/// captured with, never the filesystem. Always `false` in a release build, whose list is empty.
+#[cfg(any(feature = "devtriggers", test))]
+pub(crate) fn listed(triggers: &[String], name: &str) -> bool {
+    triggers.iter().any(|trigger| trigger.strip_prefix("plxnative-") == Some(name))
+}
+#[cfg(not(any(feature = "devtriggers", test)))]
+pub(crate) fn listed(_triggers: &[String], _name: &str) -> bool {
+    false
+}
+
 /// Is the trigger `name` (bare, without the `plxnative-` prefix) present?
 #[cfg(feature = "devtriggers")]
 pub(crate) fn flag(name: &str) -> bool {

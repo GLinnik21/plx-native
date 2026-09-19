@@ -843,7 +843,7 @@ pub(crate) unsafe fn construct(
         crate::player::seed_dev_track_names();
     }
     if let Some(initial) = &initial {
-        crate::ui::idle::set_enabled(!initial.triggers.iter().any(|t| t == "plxnative-noidle"));
+        crate::ui::idle::set_enabled(!crate::dev::listed(&initial.triggers, "noidle"));
     } else { crate::dev::scenarios::arm_noidle(); }
     // dev: /tmp/plxnative-detailosc (read once at boot, like the other triggers) makes the detail scroll
     // perpetually swing hero<->bottom so the FPS heartbeat samples the transition, not the ends.
