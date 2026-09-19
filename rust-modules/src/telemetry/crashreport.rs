@@ -177,6 +177,14 @@ pub(crate) enum Report {
 /// SIGABRT. Named because the coalescing rule below turns on it and a bare `6` would not say why.
 const SIGABRT: u32 = 6;
 
+/// The panics std itself raises when an earlier panic cannot proceed — its unwind reached an
+/// `extern "C"` frame, or a destructor panicked during cleanup. Each is the same death's second
+/// record, never a crash of its own, whenever a panic immediately precedes it.
+const PANIC_FOLLOWUPS: &[&str] = &[
+    ": panic in a function that cannot unwind",
+    ": panic in a destructor during cleanup",
+];
+
 /// Every report in a crash log, oldest first, **with a panic and the abort it caused counted once**.
 ///
 /// Faults read fixed-shape identity plus **numbers only**. The `(SIGSEGV)` token in the record is
@@ -197,6 +205,10 @@ const SIGABRT: u32 = 6;
 /// thread with nothing able to interleave. A SIGABRT arriving any other way is a real, separate
 /// abort (a failed assertion in a C library, a double free) and is reported. The panic is the one
 /// kept, being the report that says WHERE.
+///
+/// In practice it is THREE records: the panic cannot leave the `extern "C"` frame, so std raises
+/// `panic in a function that cannot unwind` from `core::panicking`, and the hook logs that too.
+/// The same positional rule folds it ([`PANIC_FOLLOWUPS`]) into the panic before it.
 pub(crate) fn parse(log: &str) -> Vec<Report> {
     parse_seeded(log, None)
 }
@@ -224,6 +236,11 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
                 f.registers.pc.get_or_insert(f.pc);
             }
         } else if l.starts_with("*** RUST PANIC ") {
+            if PANIC_FOLLOWUPS.iter().any(|m| l.ends_with(m))
+                && matches!(out.last(), Some(Report::Panic(_)))
+            {
+                continue; // std's own follow-up to the panic above — see the doc
+            }
             if let Some(mut p) = parse_panic(l) {
                 p.image = image.clone();
                 out.push(Report::Panic(p));
@@ -614,38 +631,118 @@ struct Mark {
     reported_bytes: u64,
 }
 
-fn consume_native_match(
-    keys: &mut Vec<super::native::CrashKey>,
-    report: &Report,
-    current_build_id: &str,
-) -> bool {
-    let (build_id, signal) = match report {
-        Report::Fault(f) => (
-            f.image
-                .as_ref()
-                .map(|x| x.build_id.as_str())
-                .unwrap_or(current_build_id),
-            f.signal,
-        ),
-        Report::Panic(p) => (
-            p.image
-                .as_ref()
-                .map(|x| x.build_id.as_str())
-                .unwrap_or(current_build_id),
-            SIGABRT,
-        ),
-    };
-    let Some(pos) = keys
-        .iter()
-        .position(|key| key.build_id == build_id && key.signal == signal)
-    else {
-        return false;
-    };
-    keys.remove(pos);
-    true
+/// What one boot does with the crash log's fresh reports and the native envelopes beside them.
+///
+/// **One process death is one Sentry event, and it is the event that says the most.** A fault
+/// (`SIGSEGV`, …) the daemon also caught is sent as the daemon's event: it walked the frames and
+/// copied the registers, the log record has two addresses. A panic that aborted is the reverse:
+/// the daemon's SIGABRT has one frame, `__libc_do_syscall`, and the panic record is the only
+/// thing naming a source line — so the panic is sent and the envelope is dropped. That is the
+/// same "the panic is the one kept" rule [`parse`] applies inside the log, applied across the two
+/// channels; before it was, every fatal panic in production arrived as a frameless SIGABRT.
+///
+/// Pairing is one-to-one and in order: each record takes the first unused envelope with the same
+/// build id and signal (a panic counts as `SIGABRT`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Plan {
+    /// Per report: `None` to send it, `Some(n)` when native envelope `n` is sent in its place.
+    report_native: Vec<Option<usize>>,
+    /// Per native envelope: `Some(i)` when panic report `i` is sent in its place.
+    native_panic: Vec<Option<usize>>,
 }
 
-/// **Report every fault the last run left behind, once.**
+fn reconcile(reports: &[Report], natives: &[Option<super::native::CrashKey>], current_build_id: &str) -> Plan {
+    let mut plan = Plan {
+        report_native: vec![None; reports.len()],
+        native_panic: vec![None; natives.len()],
+    };
+    let mut used = vec![false; natives.len()];
+    for (i, r) in reports.iter().enumerate() {
+        let (image, signal) = match r {
+            Report::Fault(f) => (&f.image, f.signal),
+            Report::Panic(p) => (&p.image, SIGABRT),
+        };
+        let build_id = image.as_ref().map(|x| x.build_id.as_str()).unwrap_or(current_build_id);
+        let Some(n) = natives.iter().enumerate().position(|(n, key)| {
+            !used[n] && key.as_ref().is_some_and(|k| k.build_id == build_id && k.signal == signal)
+        }) else {
+            continue;
+        };
+        used[n] = true;
+        match r {
+            Report::Fault(_) => plan.report_native[i] = Some(n),
+            Report::Panic(_) => plan.native_panic[n] = Some(i),
+        }
+    }
+    plan
+}
+
+/// The side effects of a recovery pass, behind a seam so their ORDER is testable.
+trait Recovery {
+    /// Durably queue fresh report `i`.
+    fn queue_report(&mut self, i: usize) -> bool;
+    /// Durably queue native envelope `n`, leaving the file in place.
+    fn append_native(&mut self, n: usize) -> bool;
+    fn delete_native(&mut self, n: usize);
+    /// Move the crash-log watermark past every fresh byte. `false` when it could not be persisted.
+    fn advance_mark(&mut self) -> bool;
+}
+
+/// Carry out `plan`. `fresh` is whether the log had unread bytes at all (an empty parse of fresh
+/// bytes still advances the mark; no fresh bytes means there is nothing to advance past).
+///
+/// The order is chosen so that a power cut between ANY two steps leaves neither a lost report nor
+/// two events for one death — the log side re-reads with deterministic [`event_id_for`] ids, the
+/// native side re-imports with the envelope's own id, and Sentry drops a repeated id:
+///
+/// 1. Queue the reports being sent. The first failure stops the pass, as it always has.
+/// 2. Queue every native envelope no panic replaced, leaving the files on disk.
+/// 3. Delete each envelope a *queued* panic replaced — BEFORE the mark moves. Cut after the mark
+///    and before this, and the next boot would import the envelope with no log record left to
+///    pair it with: two events. Cut here instead, and the panic is re-read under the same id.
+/// 4. Advance the mark, if every fresh report is accounted for: queued, or its native winner is.
+/// 5. Delete the queued envelopes — a fault's winner only once the mark has provably moved, or the
+///    next boot would re-read that fault with nothing left to pair it with.
+///
+/// An envelope whose replacing panic did not get queued is left untouched for the next boot.
+fn execute(plan: &Plan, fresh: bool, fx: &mut impl Recovery) {
+    let mut queued = vec![false; plan.report_native.len()];
+    for (i, native) in plan.report_native.iter().enumerate() {
+        if native.is_some() {
+            continue;
+        }
+        if !fx.queue_report(i) {
+            break; // do NOT advance past a record that did not reach the disk
+        }
+        queued[i] = true;
+    }
+    let mut appended = vec![false; plan.native_panic.len()];
+    for (n, panic) in plan.native_panic.iter().enumerate() {
+        if panic.is_none() {
+            appended[n] = fx.append_native(n);
+        }
+    }
+    for (n, panic) in plan.native_panic.iter().enumerate() {
+        if panic.is_some_and(|i| queued[i]) {
+            fx.delete_native(n);
+        }
+    }
+    let complete = plan
+        .report_native
+        .iter()
+        .enumerate()
+        .all(|(i, native)| native.map_or(queued[i], |n| appended[n]));
+    let marked = fresh && complete && fx.advance_mark();
+    for (n, done) in appended.iter().enumerate() {
+        let won_a_fault = plan.report_native.contains(&Some(n));
+        if *done && (marked || !won_a_fault) {
+            fx.delete_native(n);
+        }
+    }
+}
+
+/// **Report every crash the last run left behind, once** — from the crash log and from the native
+/// daemon's envelopes together, so the two can be paired (see [`Plan`]).
 ///
 /// Called at boot, after consent is published and before anything else can crash — the process that
 /// wrote these records no longer exists, which is the whole reason the log is on disk.
@@ -653,7 +750,8 @@ fn consume_native_match(
 /// Three things about the bookkeeping are load-bearing.
 ///
 /// **The mark advances only after the records are durably queued**, never before the enqueue, or a
-/// spool write that fails leaves the report both unsent and permanently skipped.
+/// spool write that fails leaves the report both unsent and permanently skipped. [`execute`] owns
+/// that order, and the order of every envelope delete around it.
 ///
 /// **A log SHORTER than the mark means the file was replaced** — a factory reset, a reinstall, or
 /// somebody clearing `/tmp` — so the mark is reset to zero rather than used to skip records that
@@ -664,84 +762,101 @@ fn consume_native_match(
 /// not degrade to an unsymbolicated frame with a warning; it produces `missing_symbol` and no error
 /// at all, which is indistinguishable from never having uploaded symbols. Sending no image at least
 /// says so.
-pub(crate) fn report_pending(native_crashes: &[super::native::CrashKey]) {
+pub(crate) fn recover_pending() {
     if !super::consent::allows_errors() {
         return; // no consent for this category — nothing is read and nothing is queued
     }
+    let natives = super::native::read_pending();
     let path = crate::paths::in_runtime_dir("plxnative-crash.log");
-    let Ok(bytes) = std::fs::read(&path) else {
-        return;
-    };
-
+    let bytes = std::fs::read(&path).unwrap_or_default();
     let from = resume_from(bytes.len() as u64, read_mark().reported_bytes) as usize;
-    if from >= bytes.len() {
-        return;
-    }
-    // Lossy on purpose: this file is written by a signal handler and by the panic hook, and one
-    // torn multi-byte sequence in it must not cost the whole report.
-    let fresh = String::from_utf8_lossy(&bytes[from..]);
-    let seed = last_image(&String::from_utf8_lossy(&bytes[..from]));
-    let reports = match seed {
-        Some(image) => parse_seeded(&fresh, Some(image)),
-        None => parse(&fresh),
+    let fresh = from < bytes.len();
+    let reports = if fresh {
+        // Lossy on purpose: this file is written by a signal handler and by the panic hook, and one
+        // torn multi-byte sequence in it must not cost the whole report.
+        let text = String::from_utf8_lossy(&bytes[from..]);
+        match last_image(&String::from_utf8_lossy(&bytes[..from])) {
+            Some(image) => parse_seeded(&text, Some(image)),
+            None => parse(&text),
+        }
+    } else {
+        Vec::new()
     };
-    if reports.is_empty() {
-        write_mark(bytes.len() as u64);
-        return;
-    }
     let current_build_id = super::sentry::build_id();
-    // Read once: every report of this pass belongs to the same decision, and a toggle racing this
-    // loop must not split one crash log between two identities.
-    let errors_id = super::consent::errors_id();
-    let mut native_crashes = native_crashes.to_vec();
-    let mut queued = 0usize;
-    let mut native_wins = 0usize;
-    for (i, r) in reports.iter().enumerate() {
-        let bid = match r {
-            Report::Fault(f) => f
-                .image
-                .as_ref()
-                .map(|x| x.build_id.as_str())
-                .unwrap_or(current_build_id),
-            Report::Panic(p) => p
-                .image
-                .as_ref()
-                .map(|x| x.build_id.as_str())
-                .unwrap_or(current_build_id),
-        };
-        if consume_native_match(&mut native_crashes, r, current_build_id) {
-            native_wins += 1;
-            continue;
-        }
-        let did = super::sentry::debug_id(bid);
-        let event_id = event_id_for(bid, from + i, r);
-        let body = match r {
-            Report::Fault(f) => {
-                sentry_body(f, &event_id, bid, did.as_deref(), errors_id.as_deref())
-            }
-            Report::Panic(p) => panic_sentry_body(p, &event_id, errors_id.as_deref()),
-        };
-        let ok = super::spool::append(&super::queue::Record {
-            category: super::queue::Category::Errors,
-            dest: super::queue::Dest::Sentry,
-            event_id,
-            body,
-        });
-        if !ok {
-            break; // do NOT advance past a record that did not reach the disk
-        }
-        queued += 1;
+    let keys: Vec<_> = natives.iter().map(|n| n.key.clone()).collect();
+    let plan = reconcile(&reports, &keys, current_build_id);
+
+    struct Io<'a> {
+        reports: &'a [Report],
+        natives: &'a [super::native::PendingNative],
+        from: usize,
+        log_len: u64,
+        current_build_id: &'a str,
+        // Read once: every report of this pass belongs to the same decision, and a toggle racing
+        // this pass must not split one crash log between two identities.
+        errors_id: Option<String>,
+        queued: usize,
     }
-    crate::log(&format!(
-        "telemetry: crash log had {} report(s), queued {queued}, native_wins={native_wins}, symbols={}",
-        reports.len(),
-        if reports.iter().all(|r| match r {
-            Report::Fault(f) => f.image.as_ref().is_some_and(|i| super::sentry::debug_id(&i.build_id).is_some()),
-            Report::Panic(_) => true,
-        }) { "yes" } else { "partial/no" }
-    ));
-    if queued + native_wins == reports.len() {
-        write_mark(bytes.len() as u64);
+    impl Recovery for Io<'_> {
+        fn queue_report(&mut self, i: usize) -> bool {
+            let r = &self.reports[i];
+            let bid = match r {
+                Report::Fault(f) => f.image.as_ref(),
+                Report::Panic(p) => p.image.as_ref(),
+            }
+            .map(|x| x.build_id.as_str())
+            .unwrap_or(self.current_build_id);
+            let did = super::sentry::debug_id(bid);
+            let event_id = event_id_for(bid, self.from + i, r);
+            let body = match r {
+                Report::Fault(f) => {
+                    sentry_body(f, &event_id, bid, did.as_deref(), self.errors_id.as_deref())
+                }
+                Report::Panic(p) => panic_sentry_body(p, &event_id, self.errors_id.as_deref()),
+            };
+            let ok = super::spool::append(&super::queue::Record {
+                category: super::queue::Category::Errors,
+                dest: super::queue::Dest::Sentry,
+                event_id,
+                body,
+            });
+            self.queued += usize::from(ok);
+            ok
+        }
+        fn append_native(&mut self, n: usize) -> bool {
+            self.natives[n].append()
+        }
+        fn delete_native(&mut self, n: usize) {
+            self.natives[n].delete();
+        }
+        fn advance_mark(&mut self) -> bool {
+            write_mark(self.log_len)
+        }
+    }
+    let mut io = Io {
+        reports: &reports,
+        natives: &natives,
+        from,
+        log_len: bytes.len() as u64,
+        current_build_id,
+        errors_id: super::consent::errors_id(),
+        queued: 0,
+    };
+    execute(&plan, fresh, &mut io);
+
+    let native_wins = plan.report_native.iter().filter(|n| n.is_some()).count();
+    let panic_wins = plan.native_panic.iter().filter(|p| p.is_some()).count();
+    if !reports.is_empty() || !natives.is_empty() {
+        crate::log(&format!(
+            "telemetry: crash log had {} report(s), queued {}, native envelopes {}, native_wins={native_wins}, panic_wins={panic_wins}, symbols={}",
+            reports.len(),
+            io.queued,
+            natives.len(),
+            if reports.iter().all(|r| match r {
+                Report::Fault(f) => f.image.as_ref().is_some_and(|i| super::sentry::debug_id(&i.build_id).is_some()),
+                Report::Panic(_) => true,
+            }) { "yes" } else { "partial/no" }
+        ));
     }
 }
 
@@ -754,7 +869,7 @@ pub(crate) fn discard_pending_before_opt_in() {
     let Ok(meta) = std::fs::metadata(path) else {
         return;
     };
-    write_mark(meta.len());
+    let _ = write_mark(meta.len());
 }
 
 /// Where in the crash log to start reading, given its size and the watermark.
@@ -783,9 +898,9 @@ fn read_mark() -> Mark {
         .unwrap_or_default()
 }
 
-fn write_mark(reported_bytes: u64) {
+fn write_mark(reported_bytes: u64) -> bool {
     let Ok(json) = serde_json::to_vec(&Mark { reported_bytes }) else {
-        return;
+        return false;
     };
     let stored = crate::paths::telemetry_crashmark_candidates()
         .iter()
@@ -796,6 +911,7 @@ fn write_mark(reported_bytes: u64) {
         // request per launch that says nothing new.
         crate::log("telemetry: could not persist the crash watermark to ANY candidate path");
     }
+    stored
 }
 
 /// The image path reported to Sentry.
@@ -1035,6 +1151,9 @@ mod tests {
         assert!(rendered.contains("src/ff.rs:1204"), "the location is kept");
     }
 
+    /// The exact follow-up record the dev set wrote after `crashtest=panic` (2026-09-19).
+    const CANNOT_UNWIND: &str = "*** RUST PANIC [?] at /rustup/toolchains/nightly-aarch64-apple-darwin/\
+         lib/rustlib/src/rust/library/core/src/panicking.rs:225: panic in a function that cannot unwind";
     const PANIC_LINE: &str =
         "*** RUST PANIC [demux] at src/ff.rs:1204: called `Result::unwrap()` on an `Err` value: \
          /media/internal/Films/Dune.mkv";
@@ -1058,6 +1177,29 @@ mod tests {
             r.len()
         );
         assert!(matches!(r[0], Report::Panic(_)));
+    }
+
+    /// **…and on this toolchain it writes THREE**, which the test above never had. The panic cannot
+    /// leave the `extern "C"` frame, so std raises a SECOND panic from `core::panicking` —
+    /// `panic in a function that cannot unwind` — and the hook logs that one too, before the abort.
+    /// Measured on the dev set (webOS 4.10.2, `crashtest=panic`, 2026-09-19): one death, two panic
+    /// events in Sentry. The follow-up says nothing the first one did not; the first says WHERE.
+    #[test]
+    fn a_panic_its_cannot_unwind_followup_and_the_abort_are_one_report() {
+        let abrt = REC.replace("SIGNAL 11", "SIGNAL 6");
+        let log = format!("{PANIC_LINE}\n{CANNOT_UNWIND}\n{abrt}");
+        let r = parse(&log);
+        assert_eq!(r.len(), 1, "one death reported as {} events", r.len());
+        let Report::Panic(p) = &r[0] else { panic!("expected the panic") };
+        assert_eq!(p.location, "src/ff.rs:1204", "the follow-up displaced the panic that says WHERE");
+    }
+
+    /// The follow-up coalesces only onto the panic it follows. Standing alone it is still a crash.
+    #[test]
+    fn a_cannot_unwind_record_with_no_panic_before_it_is_still_reported() {
+        assert_eq!(parse(CANNOT_UNWIND).len(), 1);
+        let log = format!("{PANIC_LINE}\n{REC}{CANNOT_UNWIND}");
+        assert_eq!(parse(&log).len(), 3, "only the ADJACENT follow-up coalesces");
     }
 
     /// …and the rule is exactly that narrow. A SIGABRT arriving any other way is a real, separate
@@ -1188,36 +1330,132 @@ mod tests {
         assert!(fault.image.is_none());
     }
 
-    #[test]
-    fn one_native_envelope_suppresses_exactly_one_matching_fallback() {
-        let build_id = "11223344556677889900aabbccddeeff00112233";
-        let fault = parse(REC).remove(0);
-        let mut keys = vec![super::super::native::CrashKey {
-            build_id: build_id.to_string(),
-            signal: 11,
-        }];
-        assert!(consume_native_match(
-            &mut keys,
-            &fault,
-            "different-current-build"
-        ));
-        assert!(keys.is_empty());
-        assert!(
-            !consume_native_match(&mut keys, &fault, build_id),
-            "one native event hid two faults"
-        );
+    const BUILD: &str = "11223344556677889900aabbccddeeff00112233";
 
+    fn key(signal: u32) -> Option<super::super::native::CrashKey> {
+        Some(super::super::native::CrashKey { build_id: BUILD.to_string(), signal })
+    }
+
+    fn panic_report() -> Report {
         let panic_log = format!("{}\n{}", REC.lines().nth(1).unwrap(), PANIC_LINE);
         let panic = parse(&panic_log).remove(0);
-        keys.push(super::super::native::CrashKey {
-            build_id: build_id.to_string(),
-            signal: SIGABRT,
-        });
-        assert!(consume_native_match(
-            &mut keys,
-            &panic,
-            "different-current-build"
-        ));
+        assert!(matches!(panic, Report::Panic(_)));
+        panic
+    }
+
+    #[test]
+    fn one_native_envelope_suppresses_exactly_one_matching_fallback() {
+        let fault = parse(REC).remove(0);
+        let plan = reconcile(&[fault.clone(), fault], &[key(11)], "different-current-build");
+        assert_eq!(plan.report_native, vec![Some(0), None], "one native event hid two faults");
+        assert_eq!(plan.native_panic, vec![None]);
+    }
+
+    /// **A panic that aborted is reported as the panic, even when the native daemon caught the abort.**
+    ///
+    /// Unwinding out of an `extern "C"` frame writes the panic line and a `SIGNAL 6`, and the
+    /// daemon writes a SIGABRT envelope whose only frame is `__libc_do_syscall`. Letting that
+    /// envelope win threw away the one record naming a source location — production had frameless
+    /// SIGABRTs grouped on `__libc_do_syscall` (PLX-NATIVE-W) and not one panic in 90 days.
+    #[test]
+    fn a_panic_is_not_hidden_by_the_native_abort_it_caused() {
+        let plan = reconcile(&[panic_report()], &[key(SIGABRT)], "different-current-build");
+        assert_eq!(plan.report_native, vec![None], "the native SIGABRT hid the panic that caused it");
+        assert_eq!(plan.native_panic, vec![Some(0)], "the frameless SIGABRT was sent as well");
+    }
+
+    #[test]
+    fn a_panic_does_not_claim_an_envelope_of_another_signal_or_build() {
+        let plan = reconcile(&[panic_report()], &[key(11), None], "different-current-build");
+        assert_eq!(plan.native_panic, vec![None, None]);
+        let mut other = key(SIGABRT);
+        other.as_mut().unwrap().build_id = "ffffffffffffffffffffffffffffffffffffffff".into();
+        assert_eq!(reconcile(&[panic_report()], &[other], BUILD).native_panic, vec![None]);
+    }
+
+    /// Records every side effect in order, failing the steps it is told to fail.
+    #[derive(Default)]
+    struct Fx {
+        log: Vec<String>,
+        fail_report: Option<usize>,
+        fail_native: Option<usize>,
+        fail_mark: bool,
+    }
+    impl Recovery for Fx {
+        fn queue_report(&mut self, i: usize) -> bool {
+            self.log.push(format!("queue r{i}"));
+            self.fail_report != Some(i)
+        }
+        fn append_native(&mut self, n: usize) -> bool {
+            self.log.push(format!("append n{n}"));
+            self.fail_native != Some(n)
+        }
+        fn delete_native(&mut self, n: usize) {
+            self.log.push(format!("delete n{n}"));
+        }
+        fn advance_mark(&mut self) -> bool {
+            self.log.push("mark".into());
+            !self.fail_mark
+        }
+    }
+
+    fn run(plan: &Plan, fresh: bool, mut fx: Fx) -> Vec<String> {
+        execute(plan, fresh, &mut fx);
+        fx.log
+    }
+
+    /// The envelope a panic replaced goes BEFORE the mark moves: a cut between the two re-reads the
+    /// panic under the same event id, where the other order would import the envelope with no log
+    /// record left to pair it with — two events for one death.
+    #[test]
+    fn a_replaced_envelope_is_deleted_after_the_panic_is_queued_and_before_the_mark() {
+        let plan = reconcile(&[panic_report()], &[key(SIGABRT)], BUILD);
+        assert_eq!(run(&plan, true, Fx::default()), ["queue r0", "delete n0", "mark"]);
+    }
+
+    #[test]
+    fn an_unqueued_panic_leaves_its_envelope_and_the_mark_alone() {
+        let plan = reconcile(&[panic_report()], &[key(SIGABRT)], BUILD);
+        let fx = Fx { fail_report: Some(0), ..Fx::default() };
+        assert_eq!(run(&plan, true, fx), ["queue r0"]);
+    }
+
+    /// A fault's native winner is deleted only AFTER the mark: deleted first, a cut would re-read
+    /// the fault with nothing left to pair it with and send it as a second event.
+    #[test]
+    fn a_fault_winner_is_deleted_only_after_the_mark() {
+        let fault = parse(REC).remove(0);
+        let plan = reconcile(&[fault], &[key(11)], BUILD);
+        assert_eq!(run(&plan, true, Fx::default()), ["append n0", "mark", "delete n0"]);
+
+        let fx = Fx { fail_native: Some(0), ..Fx::default() };
+        assert_eq!(run(&plan, true, fx), ["append n0"], "a fault skipped for an unqueued winner");
+
+        let fx = Fx { fail_mark: true, ..Fx::default() };
+        assert_eq!(run(&plan, true, fx), ["append n0", "mark"], "winner deleted under an unpersisted mark");
+    }
+
+    #[test]
+    fn a_failed_report_keeps_a_fault_winner_on_disk_but_frees_an_unrelated_envelope() {
+        let fault = parse(REC).remove(0);
+        let plan = reconcile(&[fault, panic_report()], &[key(11), key(4)], BUILD);
+        let fx = Fx { fail_report: Some(1), ..Fx::default() };
+        assert_eq!(
+            run(&plan, true, fx),
+            ["queue r1", "append n0", "append n1", "delete n1"],
+            "n0 must survive an unadvanced mark; n1 pairs with nothing and is done"
+        );
+    }
+
+    /// Nothing fresh in the log — or no log at all — must not strand an envelope.
+    #[test]
+    fn envelopes_are_queued_with_no_fresh_log() {
+        let plan = reconcile(&[], &[key(11), key(SIGABRT)], BUILD);
+        assert_eq!(
+            run(&plan, false, Fx::default()),
+            ["append n0", "append n1", "delete n0", "delete n1"]
+        );
+        assert_eq!(run(&reconcile(&[], &[], BUILD), true, Fx::default()), ["mark"]);
     }
 
     /// **A build whose id could not be read sends NO debug image**, rather than one asserting a
