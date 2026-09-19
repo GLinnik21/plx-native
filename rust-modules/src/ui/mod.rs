@@ -343,6 +343,11 @@ fn recorded_text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
     widgets::LegacyMeasure.width(unsafe { CStr::from_ptr(s) }, sz, bold != 0)
 }
 
+fn declared_text_bounds(s: *const c_char, sz: c_int, bold: c_int) -> (f32,f32) {
+    if s.is_null() { return (0.0,0.0); }
+    widgets::LegacyMeasure.bounds(unsafe { CStr::from_ptr(s) },sz,bold!=0)
+}
+
 /// Folds a cascading alpha (+ optional translate) into every primitive call.
 /// Copy + stack-lived, so `p.alpha(x)` / `p.translate(..)` chain with zero alloc.
 /// The gfx/text draw fns are `pub extern "C"` (safe to call from Rust).
@@ -384,6 +389,20 @@ fn card_shadow_params(h: f32, f: f32) -> (f32, f32, f32) {
 }
 
 impl Painter {
+    fn declare(self, r: Rect, tag: u64, values: impl FnOnce(&mut Vec<u64>)) -> bool {
+        if self.text_recorder { return true; }
+        if !frame::backdrop::discovering() { return false; }
+        use frame::backdrop::Value;
+        let mut data=vec![tag];
+        [self.a,self.rgb].record(&mut data);
+        [r.x+self.dx,r.y+self.dy,r.w,r.h].record(&mut data);
+        values(&mut data);
+        // The primitive AA/rim can paint just outside its nominal rectangle.
+        let bounds=Rect::new(r.x+self.dx-4.0,r.y+self.dy-4.0,r.w+8.0,r.h+8.0);
+        frame::backdrop::paint(bounds,data);
+        true
+    }
+
     pub const fn root() -> Self {
         Self {
             dx: 0.0,
@@ -493,6 +512,13 @@ impl Painter {
         ]
     }
     pub fn rect(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4], focus: f32) {
+        if self.declare(r, 1, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            top.record(data);
+            bot.record(data);
+            focus.record(data);
+        }) { return; }
         if self.text_recorder { return; }
         let (t, b) = (self.c(top), self.c(bot));
         crate::gfx::draw_rect(
@@ -509,6 +535,12 @@ impl Painter {
         );
     }
     pub fn rrect(self, r: Rect, rl: f32, rr: f32, col: [f32; 4]) {
+        if self.declare(r, 2, |data| {
+            use frame::backdrop::Value;
+            rl.record(data);
+            rr.record(data);
+            col.record(data);
+        }) { return; }
         if self.text_recorder { return; }
         let c = self.c(col);
         crate::gfx::draw_rrect(r.x + self.dx, r.y + self.dy, r.w, r.h, rl, rr, c.as_ptr());
@@ -538,6 +570,12 @@ impl Painter {
     /// card's edge sheen; against a knockout that is wrong while the screen is STILL, it is the far
     /// better trade.
     pub fn rring(self, r: Rect, rad: f32, w: f32, col: [f32; 4]) {
+        if self.declare(r, 3, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            w.record(data);
+            col.record(data);
+        }) { return; }
         if self.text_recorder { return; }
         let c = self.c(col);
         const HOLLOW: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
@@ -562,6 +600,13 @@ impl Painter {
     /// occluder's own rim, ending in a hard step. A tile hides that; anything you can see through
     /// wears it as a drawn frame — use [`shadow_outside`](Self::shadow_outside) there.
     pub fn shadow(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
+        if self.declare(Rect::new(r.x-blur,r.y+off_y-blur,r.w+2.0*blur,r.h+2.0*blur), 4, |data| {
+            use frame::backdrop::Value;
+            radius.record(data);
+            blur.record(data);
+            off_y.record(data);
+            col.record(data);
+        }) { return; }
         if self.text_recorder { return; }
         let c = self.c(col);
         crate::gfx::draw_shadow(
@@ -585,6 +630,13 @@ impl Painter {
     /// entry point rather than a flag on the tile path, because a tile pays a rounded-rect SDF for
     /// a region it covers anyway.
     pub fn shadow_outside(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
+        if self.declare(Rect::new(r.x-blur,r.y+off_y-blur,r.w+2.0*blur,r.h+2.0*blur), 5, |data| {
+            use frame::backdrop::Value;
+            radius.record(data);
+            blur.record(data);
+            off_y.record(data);
+            col.record(data);
+        }) { return; }
         if self.text_recorder { return; }
         let c = self.c(col);
         crate::gfx::draw_shadow(
@@ -604,6 +656,11 @@ impl Painter {
     /// with the pop `f` (0 = resting/close to the shelf, 1 = lifted). Card tiles fold this into their
     /// texture pass via [`tex_carded`](Self::tex_carded) instead; this remains for the non-folded chip.
     pub fn focus_shadow(self, r: Rect, radius: f32, f: f32) {
+        if self.declare({ let (b,o,_)=card_shadow_params(r.h,f); Rect::new(r.x-b,r.y+o-b,r.w+2.0*b,r.h+2.0*b) }, 6, |data| {
+            use frame::backdrop::Value;
+            radius.record(data);
+            f.record(data);
+        }) { return; }
         let (blur, off, a) = card_shadow_params(r.h, f);
         self.shadow(r, radius, blur, off, theme::with_a(theme::CARD_SHADOW, a));
     }
@@ -616,6 +673,12 @@ impl Painter {
     /// A rounded-rect FILL that also carries the 1px perimeter edge-sheen in the SAME pass (the
     /// no-texture counterpart of [`tex_stroked`](Self::tex_stroked)) — for skeleton / chip-disc tiles.
     pub fn rect_sheened(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4]) {
+        if self.declare(r, 7, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            top.record(data);
+            bot.record(data);
+        }) { return; }
         if self.text_recorder { return; }
         let (t, b) = (self.c(top), self.c(bot));
         let rim = self.sheen_rim();
@@ -645,6 +708,14 @@ impl Painter {
         rim: [f32; 4],
         rim_top: f32,
     ) {
+        if self.declare(r, 8, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            top.record(data);
+            bot.record(data);
+            rim.record(data);
+            rim_top.record(data);
+        }) { return; }
         self.rect_rimmed_w(r, rad, top, bot, rim, rim_top, theme::CARD_SHEEN_W)
     }
     /// [`rect_rimmed`](Self::rect_rimmed) with the rim's WIDTH named too — for the one edge in the
@@ -661,6 +732,15 @@ impl Painter {
         rim_top: f32,
         rim_w: f32,
     ) {
+        if self.declare(r, 9, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            top.record(data);
+            bot.record(data);
+            rim.record(data);
+            rim_top.record(data);
+            rim_w.record(data);
+        }) { return; }
         if self.text_recorder { return; }
         let (t, b) = (self.c(top), self.c(bot));
         let rim = self.c(rim);
@@ -700,6 +780,17 @@ impl Painter {
         rim_w: f32,
         glow: Option<[f32; 4]>,
     ) {
+        if self.declare(r, 10, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            (pill.map(|p| p.args())).record(data);
+            top.record(data);
+            bot.record(data);
+            rim.record(data);
+            rim_top.record(data);
+            rim_w.record(data);
+            glow.record(data);
+        }) { return; }
         if self.text_recorder { return; }
         let (t, b) = (self.c(top), self.c(bot));
         let rim = self.c(rim);
@@ -723,6 +814,11 @@ impl Painter {
     }
     /// Flat rounded-rect fill + the 1px perimeter edge-sheen in one pass (the flat-colour placeholder tile).
     pub fn rrect_sheened(self, r: Rect, rad: f32, col: [f32; 4]) {
+        if self.declare(r, 11, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            col.record(data);
+        }) { return; }
         if self.text_recorder { return; }
         let c = self.c(col);
         let rim = self.sheen_rim();
@@ -740,6 +836,13 @@ impl Painter {
         );
     }
     pub fn tex(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4]) {
+        if self.declare(r, 12, |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            crate::gfx::tex_ledger::revision(tex).record(data);
+            rad.record(data);
+            tint.record(data);
+        }) { return; }
         if self.text_recorder { return; }
         let t = self.c(tint);
         crate::gfx::draw_tex(tex, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr());
@@ -779,6 +882,18 @@ impl Painter {
         deep: f32,
     ) -> bool {
         if self.text_recorder { return false; }
+        if frame::backdrop::discovering() {
+            frame::backdrop::surface(Rect::new(r.x+self.dx,r.y+self.dy,r.w,r.h));
+            self.declare(r,frame::backdrop::GLASS_COMMAND,|data| {
+                use frame::backdrop::Value;
+                (rim as u32).record(data);
+                [rest_dy,rad,deep].record(data);
+                tint.record(data);
+                face.scrim_top.record(data); face.scrim_bot.record(data);
+                face.rim.record(data); face.rim_lit.record(data); face.rim_w.record(data);
+            });
+            return true;
+        }
         let t = self.c(tint);
         let (x, y) = (r.x + self.dx, r.y + self.dy);
         crate::gfx::draw_blur_backdrop(
@@ -797,6 +912,13 @@ impl Painter {
     /// [`tex`](Self::tex) with the focus edge-sheen (the 1px inset perimeter rim) baked into the SAME
     /// pass — rim only, no shadow. Used for the profile chip avatar.
     pub fn tex_stroked(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4]) {
+        if self.declare(r, 13, |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            crate::gfx::tex_ledger::revision(tex).record(data);
+            rad.record(data);
+            tint.record(data);
+        }) { return; }
         if self.text_recorder { return; }
         let t = self.c(tint);
         crate::gfx::draw_tex_stroked(
@@ -816,6 +938,14 @@ impl Painter {
     /// the (already-scaled) card rect; the quad is inflated by the penumbra internally. This is how
     /// every art tile gets its resting-and-rising shadow without a separate soft-shadow pass.
     pub fn tex_carded(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4], f: f32) {
+        if self.declare({ let (b,o,_)=card_shadow_params(r.h,f); Rect::new(r.x-b,r.y+o-b,r.w+2.0*b,r.h+2.0*b) }, 14, |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            crate::gfx::tex_ledger::revision(tex).record(data);
+            rad.record(data);
+            tint.record(data);
+            f.record(data);
+        }) { return; }
         if self.text_recorder { return; }
         let t = self.c(tint);
         let (blur, _off, sa) = card_shadow_params(r.h, f); // cards use a symmetric penumbra — offset is chip-only
@@ -846,6 +976,14 @@ impl Painter {
     /// take the cascade here, exactly as the layers they replace took it through [`Self::c`] — the
     /// composite is not linear in them, so folding it anywhere else would quietly change the mix.
     pub fn hero_ground(self, tex: u32, r: Rect, art_a: f32, ramp: [f32; 4], wedge: [f32; 4]) {
+        if self.declare(r, 15, |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            crate::gfx::tex_ledger::revision(tex).record(data);
+            art_a.record(data);
+            ramp.record(data);
+            wedge.record(data);
+        }) { return; }
         if self.text_recorder { return; }
         let tint = self.c(theme::with_a(theme::TINT_WHITE, art_a));
         let ink = self.c(theme::scrim(1.0));
@@ -878,6 +1016,11 @@ impl Painter {
     /// Always dithered (±1-LSB TPDF noise): an opaque, slow, full-screen gradient bands without it,
     /// moving or not, and there is no flag to turn it off (`gfx::draw_ambient` says why).
     pub fn ambient(self, r: Rect, dim: f32, k: [[f32; 3]; 4]) {
+        if self.declare(r, 16, |data| {
+            use frame::backdrop::Value;
+            dim.record(data);
+            k.record(data);
+        }) { return; }
         if self.text_recorder { return; }
         let a = self.a.clamp(0.0, 1.0);
         let g = theme::SURFACE_APP; // `theme::mix` is rgba; a wash corner is rgb
@@ -909,6 +1052,10 @@ impl Painter {
     /// interpolates exactly only when the corners share an rgb, so give it ONE ink at four alphas,
     /// not four hues.
     pub fn grad4(self, r: Rect, k: [[f32; 4]; 4]) {
+        if self.declare(r, 17, |data| {
+            use frame::backdrop::Value;
+            k.record(data);
+        }) { return; }
         if self.text_recorder { return; }
         // bind the mapped array to a `let` first — pointers into a temporary would dangle
         let c = k.map(|q| self.c(q));
@@ -937,6 +1084,12 @@ impl Painter {
     /// fade with the surface it belongs to. `ui::underlay::UnderlayField::draw` is the component;
     /// reach for that, not for this.
     pub fn field(self, r: Rect, tex: u32, tint: [f32; 4]) {
+        if self.declare(r, 18, |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            crate::gfx::tex_ledger::revision(tex).record(data);
+            tint.record(data);
+        }) { return; }
         if self.text_recorder { return; }
         let t = self.c(tint);
         crate::gfx::draw_field(r.x + self.dx, r.y + self.dy, r.w, r.h, tex, t.as_ptr());
@@ -954,6 +1107,12 @@ impl Painter {
     /// at alpha 1, which is every frame outside a transition, this is one draw and the write is
     /// opaque exactly as `ambient`'s is.
     pub fn field_ground(self, r: Rect, tex: u32, a: f32) {
+        if self.declare(r, 19, |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            crate::gfx::tex_ledger::revision(tex).record(data);
+            a.record(data);
+        }) { return; }
         let a = (self.a * a).clamp(0.0, 1.0);
         // The cascade's alpha is spent HERE, on the mix, so neither draw may take it again.
         let full = Self { a: 1.0, ..self };
@@ -971,6 +1130,14 @@ impl Painter {
     /// `false` when the field program or texture is missing — the caller's cue to draw the flat
     /// sheet. `ui::underlay::UnderlayField::draw_panel` is the component; reach for that.
     pub fn field_panel(self, r: Rect, rad: f32, tex: u32, uv: [f32; 4], tint: [f32; 4]) -> bool {
+        if self.declare(r, 20, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            tex.record(data);
+            crate::gfx::tex_ledger::revision(tex).record(data);
+            uv.record(data);
+            tint.record(data);
+        }) { return tex != 0; }
         if self.text_recorder { return false; }
         let t = self.c(tint);
         crate::gfx::draw_field_panel(
@@ -995,6 +1162,18 @@ impl Painter {
         align: c_int,
         bold: c_int,
     ) -> f32 {
+        if frame::backdrop::discovering() {
+            let (width,height)=declared_text_bounds(s,sz,bold);
+            self.declare(Rect::new(match align { 1 => x-width*0.5, 2 => x-width, _ => x },y,width,height),100,|data| {
+                use frame::backdrop::Value;
+                frame::backdrop::text_value(s,data);
+                sz.record(data);
+                col.record(data);
+                align.record(data);
+                bold.record(data);
+            });
+            return width;
+        }
         if self.text_recorder {
             crate::text::queue_prewarm(s, sz, bold);
             return recorded_text_width(s, sz, bold);
@@ -1016,6 +1195,19 @@ impl Painter {
         fade_from: f32,
         fade_to: f32,
     ) -> f32 {
+        if frame::backdrop::discovering() {
+            let (width,height)=declared_text_bounds(s,sz,bold);
+            self.declare(Rect::new(x,y,width,height),101,|data| {
+                use frame::backdrop::Value;
+                frame::backdrop::text_value(s,data);
+                sz.record(data);
+                col.record(data);
+                bold.record(data);
+                fade_from.record(data);
+                fade_to.record(data);
+            });
+            return width;
+        }
         if self.text_recorder {
             crate::text::queue_prewarm(s, sz, bold);
             return recorded_text_width(s, sz, bold);
@@ -1057,6 +1249,19 @@ impl Painter {
         top: Option<(f32, f32)>,
         bot: Option<(f32, f32)>,
     ) -> f32 {
+        if frame::backdrop::discovering() {
+            let (width,height)=declared_text_bounds(s,sz,bold);
+            self.declare(Rect::new(x,y,width,height),102,|data| {
+                use frame::backdrop::Value;
+                frame::backdrop::text_value(s,data);
+                sz.record(data);
+                col.record(data);
+                bold.record(data);
+                top.record(data);
+                bot.record(data);
+            });
+            return width;
+        }
         if self.text_recorder {
             crate::text::queue_prewarm(s, sz, bold);
             return recorded_text_width(s, sz, bold);
@@ -1084,11 +1289,13 @@ impl Painter {
     /// cut cleanly at its frame edge instead of poking over the video / control buttons. ALWAYS pair
     /// with [`clip_clear`](Self::clip_clear) before the frame ends — scissor is global GL state.
     pub fn clip(self, r: Rect) {
+        if frame::backdrop::discovering() { frame::backdrop::clip(Some(Rect::new(r.x+self.dx,r.y+self.dy,r.w,r.h))); return; }
         if self.text_recorder { return; }
         crate::gfx::clip_set(r.x + self.dx, r.y + self.dy, r.w, r.h);
     }
     /// Release the clip set by [`clip`](Self::clip).
     pub fn clip_clear(self) {
+        if frame::backdrop::discovering() { frame::backdrop::clip(None); return; }
         if self.text_recorder { return; }
         crate::gfx::clip_clear();
     }

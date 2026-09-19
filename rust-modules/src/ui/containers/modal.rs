@@ -721,6 +721,15 @@ impl<H: Host> ModalStack<H> {
     /// bare `Scrim::lift` fn cannot borrow the rig that owns those values, so they cross as this
     /// call's own argument instead of through a static.
     pub fn draw_scrims(&mut self, nav_page_alpha: f32, read: crate::ui::screen::ScrimLiftRead<'_>) {
+        if crate::gfx::blur_source_pass() {
+            // Declaration/source traversals consume the published field. Only the visible
+            // traversal may advance its capture/readback lifecycle or the held-ground ledger.
+            for (_, alpha, lift) in self.scrims(nav_page_alpha) {
+                GlDims.dim(self.underlay.field(), alpha);
+                (lift)(read);
+            }
+            return;
+        }
         self.draw_scrims_on(nav_page_alpha, read, &mut GlDims);
     }
 

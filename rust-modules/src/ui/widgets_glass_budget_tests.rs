@@ -230,11 +230,10 @@ fn a_normal_strip_keeps_the_material_and_a_long_one_loses_it() {
 /// measurement behind it rather than a cascade through the cadence tests.
 #[test]
 fn the_shipped_cadence_is_every_changed_present() {
-    assert_eq!(
-        DEFAULT_DYNAMIC_PERIOD, 1,
-        "measured on the direct source path: one-in-one costs +0.07% of the frame against \
-         one-in-three, and 60.0 fps either way"
-    );
+    use crate::ui::frame::backdrop::{decide,Request,Damage,Z,canvas};
+    assert!(decide(Request {z:Z::CHROME,rect:canvas(),valid:true}, &[],
+        &[Damage {z:Z::PAGE,rect:canvas()}]).refresh);
+    assert!(!decide(Request {z:Z::CHROME,rect:canvas(),valid:true}, &[], &[]).refresh);
 }
 
 /// The one-pass hero ground's WEDGE field must be the four-quad wedge, not a lookalike. Graded
@@ -324,138 +323,6 @@ fn one_blend_lands_where_three_stacked_ones_do() {
     }
 }
 
-#[test]
-fn dynamic_glass_refreshes_on_every_third_successful_present() {
-    let mut clock = DynamicClock::new();
-    clock.cover_now(41);
-    assert_eq!(clock.step(42, true, P), DynamicStep::Wait);
-    assert_eq!(
-        clock.step(43, false, P),
-        DynamicStep::Wait,
-        "pending damage survives"
-    );
-    assert_eq!(clock.step(44, false, P), DynamicStep::Refresh);
-    assert_eq!(
-        clock.step(44, true, P),
-        DynamicStep::None,
-        "same-present owners are covered"
-    );
-    assert_eq!(
-        clock.step(45, false, P),
-        DynamicStep::None,
-        "a clean keepalive does nothing"
-    );
-}
-
-#[test]
-fn dynamic_glass_cadence_survives_the_present_counter_wrapping() {
-    let mut clock = DynamicClock::new();
-    clock.cover_now(u32::MAX - 1);
-    assert_eq!(clock.step(u32::MAX, true, P), DynamicStep::Wait);
-    assert_eq!(clock.step(0, false, P), DynamicStep::Wait);
-    assert_eq!(clock.step(1, false, P), DynamicStep::Refresh);
-}
-
-#[test]
-fn staggered_dynamic_owners_share_one_global_cadence() {
-    let mut clock = DynamicClock::new();
-    clock.cover_now(10); // owner A opens
-    assert_eq!(clock.step(11, true, P), DynamicStep::Wait);
-    clock.cover_now(12); // owner B opens: its immediate shared capture covers A too
-    assert_eq!(clock.step(12, true, P), DynamicStep::None);
-    assert_eq!(clock.step(13, true, P), DynamicStep::Wait);
-    assert_eq!(clock.step(14, true, P), DynamicStep::Wait);
-    assert_eq!(clock.step(15, true, P), DynamicStep::Refresh);
-    assert_eq!(
-        clock.step(15, true, P),
-        DynamicStep::None,
-        "B cannot schedule a second capture"
-    );
-}
-
-/// A period of one refreshes on EVERY present with a dirty underlay — the 60 Hz end of the
-/// cadence sweep. It must still refuse a second capture on a present already covered, or two
-/// glass owners would run the chain twice in one frame and the cost curve would measure that.
-#[test]
-fn a_period_of_one_refreshes_every_dirty_present_but_only_once_each() {
-    let mut clock = DynamicClock::new();
-    clock.cover_now(70);
-    assert_eq!(clock.step(71, true, 1), DynamicStep::Refresh);
-    assert_eq!(
-        clock.step(71, true, 1),
-        DynamicStep::None,
-        "already covered this present"
-    );
-    assert_eq!(clock.step(72, true, 1), DynamicStep::Refresh);
-    assert_eq!(
-        clock.step(73, false, 1),
-        DynamicStep::None,
-        "a clean present still refreshes nothing"
-    );
-}
-
-/// A longer period waits longer and no more than that: the wait count is `period - 1`.
-#[test]
-fn a_longer_period_waits_exactly_that_many_presents() {
-    for period in 2..=8u32 {
-        let mut clock = DynamicClock::new();
-        clock.cover_now(0);
-        for present in 1..period {
-            assert_eq!(
-                clock.step(present, true, period),
-                DynamicStep::Wait,
-                "period {period} refreshed early at present {present}"
-            );
-        }
-        assert_eq!(
-            clock.step(period, true, period),
-            DynamicStep::Refresh,
-            "period {period}"
-        );
-    }
-}
-
-/// `/tmp/plxnative-glasshz` writes this static and nothing else does. Zero would be a refresh
-/// every zero frames, so it clamps rather than dividing the cadence by nothing.
-#[test]
-fn the_cadence_override_clamps_and_reports_what_it_installed() {
-    // A crate-wide static, so this takes the shared globals lock rather than a local one.
-    let _g = crate::testlock::serial();
-    let restore = dynamic_period();
-    assert_eq!(
-        set_dynamic_period(0),
-        1,
-        "zero presents per refresh is not a cadence"
-    );
-    assert_eq!(dynamic_period(), 1);
-    assert_eq!(set_dynamic_period(4), 4);
-    assert_eq!(set_dynamic_period(99), 8, "past 8 is clamped, not refused");
-    set_dynamic_period(restore);
-    assert_eq!(
-        dynamic_period(),
-        DEFAULT_DYNAMIC_PERIOD,
-        "the default is what ships"
-    );
-}
-
-#[test]
-fn glass_state_reactivates_after_deactivation_or_a_route_gap() {
-    let mut state = GlassState::new();
-    assert!(state.needs_activation(20));
-    state.active = true;
-    state.last_seen = 20;
-    assert!(
-        !state.needs_activation(21),
-        "idle time has no successful presents"
-    );
-    assert!(
-        state.needs_activation(22),
-        "another route presented in between"
-    );
-    state.deactivate();
-    assert!(state.needs_activation(21));
-}
-
 /// **Every glass policy COMPOSITES**, and the axis that let one not to is gone.
 ///
 /// This test used to assert the source-dim arithmetic — `Glass::DYNAMIC.source_rgb(0.5) == 0.75`
@@ -463,16 +330,13 @@ fn glass_state_reactivates_after_deactivation_or_a_route_gap() {
 /// measured against the item menu over one checker ground and rejected (`e75b5e49`): dimming the
 /// page going INTO the backdrop destroys the modulation the frost is layered over, so the panel
 /// arrives flat. What is worth pinning now is that no policy can reintroduce it by accident —
-/// a policy is its REFRESH and nothing else.
+/// a material carries no private scheduling policy.
 #[test]
-fn every_glass_policy_composites_and_carries_only_its_refresh() {
-    // **The policy carries NOTHING beside its refresh**, which is the property the deleted axis
-    // violated — and the only form of it that can actually fail. Comparing a preset against a
-    // literal of its own one field cannot: that is `Self{refresh} == Self{refresh}`, true by
-    // construction, which is what the first version of this test asserted twice.
+fn live_glass_carries_no_private_source_policy() {
+    // Scheduling is owned by the layer walk, never an independently phased widget clock.
     assert_eq!(
         std::mem::size_of::<Glass>(),
-        std::mem::size_of::<GlassRefresh>(),
+        0,
         "a second axis on Glass would show up here first"
     );
 }
@@ -480,7 +344,7 @@ fn every_glass_policy_composites_and_carries_only_its_refresh() {
 /// **Glass is chrome-only; no popover panel frosts a backdrop blur.** Every panel stands on the
 /// latched underlay field through `panel_ground` (directly, or through `Popover::panel`), and the
 /// blur chain's users are the top bar's standing track, the profile chip's capsule, the dev tile
-/// band — all in `widgets.rs` — plus the frame plan's cadence and the dev load dial.
+/// band — all in `widgets.rs` — plus the frame mechanism and the dev load dial.
 ///
 /// A source grep, because the failure it guards is a call that COMPILES: `Glass` and
 /// `Painter::backdrop_blur` stay reachable for the chrome, so a panel that reached for them again
@@ -494,6 +358,7 @@ fn no_popover_panel_uses_the_blur_path_and_every_one_stands_on_the_field() {
     const CHROME: &[&str] = &[
         "ui/widgets.rs",
         "ui/frame/glass.rs",
+        "ui/frame/backdrop.rs",
         "ui/glassload.rs",
         "ui/mod.rs",
         "ui/fixture.rs",

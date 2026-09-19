@@ -304,7 +304,7 @@ pub(crate) struct Bridge {
     /// The shared top bar's render state — the strip's scroll/capsules/chip unfurl and the tab
     /// track's glass band (restructure phase 12, PX-WIDGETS, review finding 10). `Bridge` is this
     /// bar's one reachable owner: the only `Rig::draw_chrome` implementation, and the only place
-    /// `update_home_chrome`/`prepare_home_chrome` are called from.
+    /// `update_home_chrome` is called from.
     strip: crate::ui::widgets::StripRender,
     home_commands: std::collections::VecDeque<HomeCmd>,
     library_commands: std::collections::VecDeque<crate::screens::registry::LibraryCmd>,
@@ -783,11 +783,6 @@ impl Bridge {
         self.chrome.members(selected, focus, self.strip.scroll_pos(), &mut d.nav.tabs.strip);
     }
 
-    pub(crate) fn prepare_home_chrome(&self, glass: &mut crate::ui::frame::glass::GlassPlan) {
-        let labels = self.chrome.labels();
-        glass.prepare_tab_band(labels);
-    }
-
     #[cfg(test)]
     fn seed_chrome_for_test(&mut self, name: &str, initial: &str, labels: &[&str]) {
         self.chrome.seed_for_test(name, initial, labels, &self.measure);
@@ -1221,11 +1216,9 @@ impl Rig<AppHost> for Bridge {
         let p = crate::ui::Painter::root().alpha(nav.chrome_alpha);
         let chrome = self.chrome.read(self.strip.chip_expand_pos());
         self.strip.draw(chrome.labels, p, glass.tab_band_mut());
-        let glass_wanted = crate::ui::widgets::bar_glass_wanted_with(chrome.labels);
         crate::ui::widgets::profile_chip_with(
             p,
             chrome.profile,
-            glass_wanted,
             chrome.chip_expand,
             glass.tab_face(),
         );

@@ -295,6 +295,8 @@ const GL_SCISSOR_TEST: c_uint = 0x0C11;
 static mut CLIP_TARGET: Option<(c_int, c_int, f32, c_int, c_int)> = None;
 
 pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
+    crate::ui::frame::backdrop::clip(Some(crate::ui::Rect::new(x,y,w,h)));
+    if crate::ui::frame::backdrop::discovering() { return; }
     let x0 = x.max(0.0);
     let y_top = y.max(0.0);
     let x1 = (x + w).min(SCR_W);
@@ -351,6 +353,8 @@ pub(crate) fn clip_set(x: f32, y: f32, w: f32, h: f32) {
 /// bare `glDisable` in the middle of the scene draw would let the rest of the page spill across
 /// the tap targets' other content.
 pub(crate) fn clip_clear() {
+    crate::ui::frame::backdrop::clip(None);
+    if crate::ui::frame::backdrop::discovering() { return; }
     set_clip(None);
     unsafe {
         match CLIP_TARGET {
@@ -393,10 +397,16 @@ pub(crate) fn without_frame_clear<R>(draw: impl FnOnce() -> R) -> R {
 }
 
 fn frame_clear_allowed() -> bool {
-    !page_frozen() && !SUPPRESS_FRAME_CLEAR.with(|v| v.get())
+    !page_frozen() && !crate::ui::frame::backdrop::suppressed() && !SUPPRESS_FRAME_CLEAR.with(|v| v.get())
 }
 
 fn frame_clear_alpha(r: f32, g: f32, b: f32, a: f32) {
+    if crate::ui::frame::backdrop::discovering() {
+        if SUPPRESS_FRAME_CLEAR.with(|v|v.get()) { return; }
+        crate::ui::frame::backdrop::paint(crate::ui::frame::backdrop::canvas(),
+            vec![0,r.to_bits() as u64,g.to_bits() as u64,b.to_bits() as u64,a.to_bits() as u64]);
+        return;
+    }
     // A frozen page must not clear: the cached host quad is already on the framebuffer and this is
     // the FIRST thing every page draws, so an ungated clear would wipe the snapshot and leave the
     // popover sitting on flat grey. See [`PAGE_FROZEN`] — this is the one refusal that is not a
@@ -1773,14 +1783,16 @@ pub(crate) mod tex_ledger {
     use std::os::raw::{c_int, c_uint};
 
     thread_local! {
-        static LIVE: RefCell<HashMap<c_uint, u64>> = RefCell::new(HashMap::new());
+        static LIVE: RefCell<HashMap<c_uint, (u64,u64)>> = RefCell::new(HashMap::new());
+        static REVISION: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     }
 
     /// `tex` was (re)specified at `w`×`h`: a re-spec of a known name replaces its size.
     pub(crate) fn specified(tex: c_uint, w: c_int, h: c_int) {
         let bytes = w.max(0) as u64 * h.max(0) as u64 * 4;
         LIVE.with(|m| {
-            m.borrow_mut().insert(tex, bytes);
+            let revision=REVISION.with(|n| { let next=n.get().wrapping_add(1); n.set(next); next });
+            m.borrow_mut().insert(tex, (bytes,revision));
         });
     }
 
@@ -1791,11 +1803,13 @@ pub(crate) mod tex_ledger {
         });
     }
 
+    pub(crate) fn revision(tex: c_uint) -> u64 { LIVE.with(|m| m.borrow().get(&tex).map_or(0, |v|v.1)) }
+
     /// `(live textures, live bytes)`.
     pub(crate) fn totals() -> (usize, u64) {
         LIVE.with(|m| {
             let m = m.borrow();
-            (m.len(), m.values().sum())
+            (m.len(), m.values().map(|v|v.0).sum())
         })
     }
 }
@@ -2325,9 +2339,8 @@ use crate::log;
 //
 // 1. **Snapshots are cached.** A popover over a still page captures on open and then costs one
 //    textured quad per drawn frame. A surface over a MOVING page opts into
-//    `widgets::Glass::DYNAMIC_BACKDROP`, which invalidates on the shared cadence while its underlay
-//    is dirty; the widget still draws every present.
-//    Capturing every present was measured at 52.6 fps on the dev television and is not supported.
+//    `widgets::Glass::DYNAMIC_BACKDROP`; the frame's layer/region mechanism refreshes its
+//    source on every changed present and otherwise reuses it.
 // 2. **The capture is MID-FRAME.** `Painter`'s primitives are immediate GL calls, so the default
 //    framebuffer already holds exactly the prepared page with its page-drawn overlay scrim
 //    at the moment the panel is about to draw.
@@ -2369,10 +2382,9 @@ use crate::log;
 ///
 /// **One material, two paths.** The direct path renders the page at 1/4; the capture path has to
 /// arrive at the same place. They publish into one snapshot and one shader samples it, and which
-/// path served a given panel is not a property of that panel: a cached popover is served by the
-/// capture path on an ordinary frame and by the DIRECT path the moment a dynamic owner is live on
-/// the page under it (`/tmp/plxnative-glassboth` is the same thing on demand). So the source scale
-/// belongs to the material, not to a path — a surface whose blur depends on who took the snapshot
+/// path served a given surface is not a property of its material: an independent band uses
+/// the direct prefix, while a band over lower glass captures that glass's visible composite.
+/// The source scale belongs to the material, not to a path — a surface whose blur depends on who took the snapshot
 /// is not a material at all.
 ///
 /// **They drifted, and closing that is what this constant is for.** It went 2 -> 1 the day after the
@@ -2576,6 +2588,7 @@ fn blur_dims(vw: c_int, vh: c_int) -> ((c_int, c_int), (c_int, c_int)) {
     (mid, ((mid.0 / 2).max(1), (mid.1 / 2).max(1)))
 }
 
+#[derive(Clone)]
 struct BlurChain {
     grab: c_uint, // the canvas rect of the drawable, copied verbatim
     gw: c_int,
@@ -2617,6 +2630,40 @@ struct BlurChain {
     rw: c_int,
     rh: c_int,
 }
+/// A z band's retained output. All bands share the reduction scratch chain; only the compact
+/// half-resolution result survives. A higher band may sample this while scratch is its target.
+pub(crate) struct BackdropImage {
+    chain: BlurChain,
+    texture: std::rc::Rc<BackdropTexture>,
+}
+impl BackdropImage {
+    pub(crate) fn covers(&self, r: crate::ui::Rect) -> bool { blur_region_covers(self.chain.reg,r.x,r.y,r.w,r.h) }
+    pub(crate) fn bytes(&self) -> usize { self.chain.mw as usize * self.chain.mh as usize * 4 }
+}
+struct BackdropTexture(c_uint);
+impl Drop for BackdropTexture {
+    fn drop(&mut self) { delete_tex(self.0); }
+}
+pub(crate) fn retain_backdrop(z: crate::ui::frame::backdrop::Z) -> bool {
+    unsafe {
+        if !BLUR_VALID { return false; }
+        let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else { return false; };
+        let (w,h) = ((c.rw/2).max(1), (c.rh/2).max(1));
+        let previous = crate::ui::frame::backdrop::image(z);
+        let texture = previous.as_ref().filter(|p| p.chain.mw == w && p.chain.mh == h)
+            .map(|p| p.texture.clone()).unwrap_or_else(|| std::rc::Rc::new(BackdropTexture(cap_tex(w,h))));
+        glBindFramebuffer(GL_FRAMEBUFFER, c.mid_fbo);
+        glBindTexture(GL_TEXTURE_2D, texture.0);
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 0, 0, w, h);
+        glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
+        if glGetError() != GL_NO_ERROR { return false; }
+        let mut chain = c.clone();
+        chain.out=texture.0; chain.mid=texture.0; chain.mw=w; chain.mh=h;
+        crate::ui::frame::backdrop::captured(z, BackdropImage { chain, texture });
+        true
+    }
+}
+
 /// Snapshots actually taken since the last heartbeat — the REFRESH RATE, measured rather than
 /// assumed.
 ///
@@ -3014,11 +3061,8 @@ static mut GL_SHARPW: c_int = 0;
 static mut GL_RIMCLEAR: c_int = 0;
 static mut GL_DEEP: c_int = 0;
 
-/// Drop the cached snapshot: the next [`draw_blur_backdrop`] re-captures.
-///
-/// `Popover::open` starts every cache lifetime. A cached policy stops there; a dynamic `Glass`
-/// policy also calls this on its configured successful-present cadence. Anything changing an
-/// underlay outside those policies still owes an explicit invalidation.
+/// Invalidate the scratch snapshot used by the synthetic load dial and navigation experiments.
+/// Live surfaces own separate retained outputs through the frame's layer/region registry.
 pub(crate) fn blur_invalidate() {
     unsafe { BLUR_VALID = false };
     // A popover's GROUND snapshot contains that popover's frost, composited from the very snapshot
@@ -3706,7 +3750,7 @@ static mut BLUR_IN_PASS: bool = false;
 /// Is the page currently being drawn as a low-resolution blur source rather than for the panel?
 #[inline]
 pub(crate) fn blur_source_pass() -> bool {
-    unsafe { BLUR_IN_PASS }
+    unsafe { BLUR_IN_PASS || crate::ui::frame::backdrop::source_walk() }
 }
 
 /// **Sample what is actually on the panel under `r`, at a low rate.**
@@ -4022,7 +4066,7 @@ pub(crate) fn sample_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
         if !may_read {
             return *std::ptr::addr_of!(GROUND_RGB);
         }
-        if BLUR_IN_PASS || !may_read_ground() {
+        if blur_source_pass() || !may_read_ground() {
             return *std::ptr::addr_of!(GROUND_RGB);
         }
         let have = (*std::ptr::addr_of!(GROUND_RGB)).is_some();
@@ -4487,7 +4531,7 @@ pub(crate) fn video_plane_refuses(what: &str) -> bool {
 /// Always `false` outside a source pass, so the visible frame is drawn exactly as it always was.
 #[inline]
 pub(crate) fn culled(x: f32, y: f32, w: f32, h: f32) -> bool {
-    if unsafe { PAGE_FROZEN } {
+    if unsafe { PAGE_FROZEN } || crate::ui::frame::backdrop::suppressed() {
         return true;
     }
     match unsafe { CULL_RECT } {
@@ -4552,27 +4596,6 @@ pub(crate) fn blur_direct_scale() -> Option<u32> {
     // source at the same AUTHORED resolution a television does — the same material, not a finer one.
     (!unsafe { BLUR_DIRECT_OFF })
         .then_some(BLUR_DIRECT_SCALE * crate::surface::render_scale() as u32)
-}
-
-/// The region a direct source pass should be taken at THIS frame, or `None` to do nothing.
-///
-/// `Some` requires three things at once: the direct path armed, a refresh actually due, and a
-/// region to take it at. The region is the PREVIOUS drawn frame's complete union — the same
-/// `BLUR_WANT_PREV` the capture path unions into, and the only thing known this early, because the
-/// current frame's needs are recorded by the glass surfaces themselves and they have not drawn
-/// yet. On the first frame a panel appears that union is empty and this answers `None`; the
-/// capture path then takes that one frame the way it always has, and the direct path picks it up
-/// from the next present onward. One frame of the old behaviour at activation is the price of
-/// hooking before the page draws, which is the only place a second scene pass can go.
-pub(crate) fn blur_direct_region() -> Option<[f32; 4]> {
-    unsafe {
-        blur_direct_scale()?;
-        if BLUR_VALID {
-            return None;
-        }
-        let prev = *std::ptr::addr_of!(BLUR_WANT_PREV);
-        (prev[2] > 0.0 && prev[3] > 0.0).then_some(prev)
-    }
 }
 
 /// The backdrop source, rendered by DRAWING THE SCENE AGAIN at 1/`scale` per axis, instead of
@@ -4753,9 +4776,15 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
     }
 }
 
+/// Declaration and visible drawing share these refusal conditions. A disabled glass or a
+/// hardware video plane must not schedule a source before the draw-time guard can refuse it.
+pub(crate) fn live_blur_available() -> bool {
+    !unsafe { BLUR_OFF } && !video_plane_frame() && !masked(Class::Glass)
+}
+
 /// Draw the frosted backdrop for a panel at `(x,y,w,h)` with corner `radius`, capturing the
-/// snapshot first if there isn't a live one. Returns whether anything was drawn — `false` means the
-/// feature is latched off and the caller's own ground is the whole panel.
+/// snapshot first if needed. Returns whether the material was handled, including a culled or
+/// declaration-only surface. `false` asks the caller to paint its flat fallback.
 ///
 /// `rest` is where the panel comes to REST, and it is the rect the region is built around — not
 /// `(x,y,w,h)`, which is where this frame draws it. A popover slides into place over its appear
@@ -4801,15 +4830,16 @@ pub(crate) fn draw_blur_backdrop(
     face: GlassFace,
     deep: f32,
 ) -> bool {
+    let live = crate::ui::frame::backdrop::surface(crate::ui::Rect::new(x,y,w,h));
+    if live.is_some_and(|r| !r.draw) { return true; }
     unsafe {
-        // A glass surface met while drawing the page AS a blur source draws nothing at all. It
-        // cannot draw itself — the snapshot it would sample is the target currently bound — and it
-        // must not RECORD a need or take a capture either, both of which would run inside the FBO.
-        // `false` is also the right picture: the caller falls back to its opaque ground, which is
-        // what belongs under a blur anyway. See `BLUR_IN_PASS`.
-        if BLUR_IN_PASS {
-            return false;
-        }
+        // Direct jobs never intersect a lower glass: those bands capture the visible prefix
+        // instead, retaining the lower surface's complete composite. Never capture recursively
+        // from the FBO being produced. The explicit walk ceiling has already refused this glass
+        // and everything above it.
+        // Keep material-dependent child calls identical to declaration. The independent
+        // source does not sample this lower glass, so it is handled without painting it.
+        if BLUR_IN_PASS { return true; }
         // §9: a Glass surface samples the framebuffer behind it, and on a video-plane frame there
         // is nothing behind it in OUR framebuffer — the picture is a hardware plane. `ui/mod.rs`
         // has said "never call it on the player route" in prose since the blur landed; this is the
@@ -4832,31 +4862,35 @@ pub(crate) fn draw_blur_backdrop(
         if masked(Class::Glass) {
             return false;
         }
-        // Declare what this surface needs BEFORE deciding whether to snapshot, so a frame's second
-        // glass element is on record even if the first one is what ends up taking the capture.
         let need = blur_region(rest[0], rest[1], rest[2], rest[3]);
-        BLUR_WANT_CUR = blur_region_union(*std::ptr::addr_of!(BLUR_WANT_CUR), need);
-        // Containment, not equality: a region grabbed around the panel at rest already holds
-        // everything the panel needs at every point of its slide. `blur_invalidate` is what forces
-        // a retake when the PAGE changes; this only retakes when the cached region cannot serve.
-        let stale = (*std::ptr::addr_of!(BLURST))
-            .as_ref()
-            .is_none_or(|c| !blur_region_covers(c.reg, x, y, w, h));
-        if !BLUR_VALID || stale {
-            // Grab what the LAST frame turned out to need, unioned with what this caller needs —
-            // never `need` alone. A miss that replaces the region instead of growing it is what
-            // makes two neighbouring glass controls ping-pong: each retakes the other's region
-            // every frame, two full chains, worse than not limiting the grab at all. A second
-            // element inside one grab adds only its composite fragments; a pair at opposite
-            // corners instead expands the shared snapshot toward the whole frame.
-            let want = blur_region_union(*std::ptr::addr_of!(BLUR_WANT_PREV), need);
-            blur_snapshot(want);
-        }
-        if BLUR_OFF || !BLUR_VALID {
-            return false;
-        }
-        let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else {
-            return false;
+        let retained;
+        let c = if let Some(request) = live {
+            if !BLUR_IN_PASS && (request.refresh || crate::ui::frame::backdrop::image(request.z).is_none_or(|image| !image.covers(request.rect))) {
+                // Activation and newly exposed geometry capture the framebuffer prefix HERE:
+                // the layer walker has reached, but has not drawn, this glass's z ceiling.
+                if !crate::ui::frame::backdrop::begin_inline_capture(request.z) { return false; }
+                BLUR_VALID=false;
+                let r = crate::ui::frame::backdrop::region(request.z).unwrap_or(crate::ui::Rect::new(x,y,w,h));
+                blur_snapshot(blur_region(r.x,r.y,r.w,r.h));
+                if !retain_backdrop(request.z) {
+                    crate::ui::frame::backdrop::capture_failed(request.z);
+                    return false;
+                }
+            }
+            retained = crate::ui::frame::backdrop::image(request.z);
+            let Some(image) = retained.as_ref() else { return false; };
+            &image.chain
+        } else {
+            // The dev load dial is a synthetic chain benchmark, outside the live surface walk.
+            BLUR_WANT_CUR = blur_region_union(*std::ptr::addr_of!(BLUR_WANT_CUR), need);
+            let stale = (*std::ptr::addr_of!(BLURST)).as_ref()
+                .is_none_or(|c| !blur_region_covers(c.reg,x,y,w,h));
+            if !BLUR_VALID || stale {
+                blur_snapshot(blur_region_union(*std::ptr::addr_of!(BLUR_WANT_PREV),need));
+            }
+            if BLUR_OFF || !BLUR_VALID { return false; }
+            let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else { return false; };
+            c
         };
         // ...and only NOW is a composite certain, so this is where the ledger hears about it. The
         // mask was answered at the top of the function; this books the quad. Booking it up there
@@ -5485,7 +5519,7 @@ fn field_run_finished(run: u32) -> bool {
 /// never moves, and vertex state is untouched.
 pub(crate) fn field_kick(src: Option<c_uint>) -> Option<FieldTicket> {
     unsafe {
-        if BLUR_IN_PASS || PAGE_FROZEN || masked(Class::Field) {
+        if blur_source_pass() || PAGE_FROZEN || masked(Class::Field) {
             return None;
         }
         if video_plane_refuses("gfx::field_kick") {

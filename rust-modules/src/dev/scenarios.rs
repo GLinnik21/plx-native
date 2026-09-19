@@ -60,7 +60,6 @@ pub(crate) struct DevFlags {
     pub(crate) onboard_osc: bool,
     pub(crate) nav_osc: bool,
     pub(crate) nav_osc_rk: String,
-    pub(crate) glass_hz_armed: bool,
     /// `plxnative-nobudget`: read at boot, applied to the one `Budget` at boot, and kept here so
     /// a log reader can tell an A leg from a B leg by the flags the boot recorded.
     pub(crate) nobudget: bool,
@@ -243,21 +242,6 @@ pub(crate) fn arm_heroground() {
     if crate::dev::flag("heroground") {
         crate::ui::widgets::set_hero_ground(true);
         crate::log("hero: one-pass ground ENABLED by /tmp/plxnative-heroground");
-    }
-}
-
-/// `/tmp/plxnative-glasshz=<presents-per-refresh>` — the shared dynamic-backdrop cadence knob.
-/// Returns whether it was armed (used to gate the heartbeat's `snap=` field).
-pub(crate) fn arm_glasshz() -> bool {
-    if let Some(v) = crate::dev::read("glasshz") {
-        let asked: u32 = v.parse().unwrap_or(0);
-        let got = crate::ui::widgets::set_dynamic_period(asked);
-        crate::log(&format!(
-            "blur: dynamic cadence asked={asked} presents-per-refresh={got}"
-        ));
-        true
-    } else {
-        false
     }
 }
 

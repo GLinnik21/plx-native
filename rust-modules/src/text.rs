@@ -1151,9 +1151,16 @@ unsafe fn cache_store(
 /// `elide`. A pure-ASCII string still costs exactly one `TTF_SizeUTF8`, decided before any
 /// coverage is loaded.
 pub(crate) fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
+    text_bounds(s,sz,bold).0
+}
+
+/// CPU-only layout bounds, using the same baseline/descent composition as `render_runs`.
+/// A declaration pass needs the height too: an assumed em multiple can miss a linked face.
+/// This does not render or upload a glyph and does not spend the text-prewarm budget.
+pub(crate) fn text_bounds(s: *const c_char, sz: c_int, bold: c_int) -> (f32,f32) {
     unsafe {
         if s.is_null() || *s == 0 {
-            return 0.0;
+            return (0.0, 0.0);
         }
         if TEXT_OK == 0 {
             // NEVER a silent 0.0 (restructure spec §4.3): a layout built on zero widths reads as
@@ -1161,7 +1168,7 @@ pub(crate) fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
             // had was invisible for exactly that reason. Without a font the answer is the
             // average-advance estimate, and the fault is recorded once for the frame tail to log.
             MEASURE_FAULT.store(true, Ordering::Relaxed);
-            return unmeasured_width(CStr::from_ptr(s).to_bytes().len(), sz);
+            return (unmeasured_width(CStr::from_ptr(s).to_bytes().len(), sz), sz as f32);
         }
         let bytes = CStr::from_ptr(s).to_bytes();
         if let Some((st, runs)) = std::str::from_utf8(bytes)
@@ -1169,6 +1176,9 @@ pub(crate) fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
             .and_then(|st| Some((st, split_runs(st)?)))
         {
             let mut total = 0.0f32;
+            let base=font_at(sz,bold);
+            let ascent=if base.is_null() {0} else {TTF_FontAscent(base)};
+            let mut below=if base.is_null() {0} else {TTF_FontHeight(base)-ascent};
             for &(link, from, to) in &runs.at[..runs.n] {
                 let f = link_font(link, sz, bold);
                 let f = if f.is_null() { font_at(sz, bold) } else { f };
@@ -1178,21 +1188,22 @@ pub(crate) fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
                 let (mut w, mut h): (c_int, c_int) = (0, 0);
                 if !f.is_null() && TTF_SizeUTF8(f, c.as_ptr(), &mut w, &mut h) == 0 {
                     total += w as f32;
+                    below=below.max(h-TTF_FontAscent(f));
                 }
             }
-            return total;
+            return (total,if base.is_null() {0.0} else {(ascent+below) as f32});
         }
         let f = font_at(sz, bold);
         if f.is_null() {
-            return 0.0;
+            return (0.0, 0.0);
         }
-        // both out-params are real locals: SDL_ttf guards NULLs, but a height we throw away costs
-        // nothing and keeps this independent of that guard surviving in the TV's 2.0.14 fork.
+        // Both outputs are real locals. The painter needs height as well as width, with no
+        // rasterization or texture upload during declaration.
         let (mut w, mut h): (c_int, c_int) = (0, 0);
         if TTF_SizeUTF8(f, s, &mut w, &mut h) != 0 {
-            return 0.0; // same "unmeasurable → 0" contract the null-surface path had
+            return (0.0, 0.0); // same "unmeasurable → 0" contract the null-surface path had
         }
-        w as f32
+        (w as f32,h as f32)
     }
 }
 

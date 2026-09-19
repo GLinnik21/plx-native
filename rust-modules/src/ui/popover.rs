@@ -639,10 +639,8 @@ impl Drop for Popover {
 /// invalidate the ground is damage that invalidates the page too, at which point the page is
 /// redrawn for real anyway.
 ///
-/// **A blur source pass never sees [`Held::Ground`]**, and that is not a nicety: the ground quad
-/// contains the panel's own frost, so a dynamic backdrop re-sourced from it would frost a picture
-/// of itself, one refresh stale, forever. [`live`] and [`page_pass`] both fall back to the page
-/// stage inside such a pass, and entering one drops the ground.
+/// The live-backdrop layer walk knows which z range the held image replaces. Sources below
+/// that replacement are occluded; a source above it sees the frozen image without invalidating it.
 pub(crate) mod host {
     use super::HOST_USERS;
     use std::sync::atomic::Ordering::Relaxed;
@@ -655,16 +653,15 @@ pub(crate) mod host {
         /// The undimmed host page.
         Page,
         /// The host page, the scrim, the lifted opener and the popover's own ground.
-        Ground,
+        Ground(crate::ui::frame::backdrop::Z),
     }
 
     /// The one snapshot. Main-render-thread only, like the `gfx` resource it holds.
     ///
     /// **One, shared, rather than one per popover**, and the memory is the smaller half of the
-    /// argument: a full-screen RGBA texture is 8.3 MB on this panel and six of them would be a
-    /// meaningful bite out of the app's `requiredMemory` budget. The larger half is that only one
-    /// modal is ever up over one page, so a second cache could only ever hold a stale copy of a
-    /// page some OTHER popover had already frozen — a second answer to a question with one answer.
+    /// argument: a full-screen RGBA texture is 8.3 MB on this panel. The snapshot represents one
+    /// explicit prefix of the layer stack; nested live surfaces sit above that prefix rather
+    /// than each owning a competing frozen picture of the page.
     static mut CACHE: crate::gfx::FrameCache = crate::gfx::FrameCache::new();
 
     /// Which stage [`CACHE`] holds.
@@ -759,6 +756,7 @@ pub(crate) mod host {
 
     /// See [`GROUND_DEFERRED`].
     pub(crate) fn defer_ground(defer: bool) {
+        if crate::gfx::blur_source_pass() { return; }
         GROUND_DEFERRED.store(defer, Relaxed);
     }
 
@@ -800,7 +798,7 @@ pub(crate) mod host {
     /// page and wrong the moment anything re-blurs.
     pub(crate) fn ground_invalidate() {
         unsafe {
-            if HELD == Held::Ground {
+            if matches!(HELD, Held::Ground(_)) {
                 (*std::ptr::addr_of_mut!(CACHE)).invalidate();
                 HELD = Held::Nothing;
             }
@@ -809,6 +807,37 @@ pub(crate) mod host {
 
     fn held() -> Held {
         unsafe { HELD }
+    }
+
+    /// Z of the last layer included in the held full-canvas image. A source below this
+    /// replacement is occluded; a source above it must retain this exact frozen composite.
+    pub(crate) fn held_ceiling() -> Option<crate::ui::frame::backdrop::Z> {
+        use crate::ui::frame::backdrop::Z;
+        match held() {
+            Held::Nothing => None,
+            Held::Page => Some(Z(Z::DIM.0 - 1)),
+            Held::Ground(z) => Some(z),
+        }
+    }
+
+    fn draw_held() -> bool {
+        // The cached quad is a layer too. It cannot bypass the source walk's explicit ceiling.
+        let _layer=held_ceiling().map(|z|crate::ui::frame::backdrop::layer(z,false));
+        unsafe { (*std::ptr::addr_of!(CACHE)).draw() }
+    }
+
+    fn freezes_current_layer() -> bool {
+        held_ceiling().is_some_and(|end|
+            crate::ui::frame::backdrop::current_layer().is_none_or(|current|current<end))
+    }
+
+    fn hold_ground() {
+        let ceiling=crate::ui::frame::backdrop::current_layer()
+            .unwrap_or(crate::ui::frame::backdrop::Z::surface(0));
+        unsafe { HELD=Held::Ground(ceiling); }
+        // The copy did not remove the ground from the visible framebuffer. Repainting it at
+        // the next surface would erase foreground that has since been drawn above it.
+        GROUND_DRAWN.store(true,Relaxed);
     }
 
     /// Open the frame: take the page's damage count and decide whether the snapshot survives them.
@@ -881,19 +910,13 @@ pub(crate) mod host {
                 own: None,
             };
         }
-        // A source pass may never be served the GROUND stage — it would hand a dynamic backdrop a
-        // picture of its own frost. Drop it and let the page draw for real; the visible pass will
-        // take a new one.
-        if crate::gfx::blur_source_pass() {
-            ground_invalidate();
-        }
         let served = match held() {
             // The ground quad is one draw for the whole frame and belongs to the first `live`,
             // which is also where the freeze has to still be armed. Nothing is drawn here.
-            Held::Ground => true,
+            Held::Ground(_) => true,
             // `FrameCache::draw` lifts the freeze around its own quad, so this is correct whether
             // or not an outer pass has one armed.
-            Held::Page => unsafe { (*std::ptr::addr_of!(CACHE)).draw() },
+            Held::Page => draw_held(),
             Held::Nothing => false,
         };
         if !served {
@@ -922,6 +945,7 @@ pub(crate) mod host {
         /// frozen picture with no crash, no log line and no way back.
         fn drop(&mut self) {
             crate::gfx::set_page_frozen(self.was_frozen);
+            if crate::gfx::blur_source_pass() { return; }
             // Nobody lifted: this page's popovers draw AFTER the closure (the two menus,
             // `account_menu`). The framebuffer holds the completed undimmed page, which is exactly
             // what the snapshot is.
@@ -960,17 +984,28 @@ pub(crate) mod host {
 
     /// See [`Live`].
     pub(crate) fn live() -> Live {
-        if crate::gfx::blur_source_pass() {
-            ground_invalidate();
+        if crate::ui::frame::backdrop::discovering() {
+            return Live {
+                was_frozen: crate::gfx::page_frozen(),
+                own: crate::ui::idle::OwnScope::open(),
+            };
         }
-        if held() == Held::Ground {
+        if crate::gfx::blur_source_pass() {
+            let ground = matches!(held(), Held::Ground(_));
+            if ground && held_ceiling().is_some_and(crate::ui::frame::backdrop::claim_snapshot) { draw_held(); }
+            return Live {
+                was_frozen: crate::gfx::set_page_frozen(ground && freezes_current_layer()),
+                own: crate::ui::idle::OwnScope::open(),
+            };
+        }
+        if matches!(held(), Held::Ground(_)) {
             // STAGE TWO: the scrim, the lifted opener and the panel's own ground are all in this
             // one quad. Stay FROZEN through them — `Popover::panel` lifts for the foreground.
             if !GROUND_DRAWN.swap(true, Relaxed) {
-                unsafe { (*std::ptr::addr_of!(CACHE)).draw() };
+                draw_held();
             }
             return Live {
-                was_frozen: crate::gfx::set_page_frozen(true),
+                was_frozen: crate::gfx::set_page_frozen(freezes_current_layer()),
                 own: crate::ui::idle::OwnScope::open(),
             };
         }
@@ -1002,6 +1037,8 @@ pub(crate) mod host {
     /// `settled` is the caller's `appear_settled`: capturing during the entry ramp would freeze a
     /// half-faded panel over a half-dimmed page for the rest of the session.
     pub(crate) fn ground_drawn(settled: bool) {
+        crate::ui::frame::backdrop::boundary();
+        if crate::ui::frame::backdrop::discovering() { return; }
         if crate::gfx::page_frozen() {
             crate::gfx::set_page_frozen(false);
             return;
@@ -1012,7 +1049,7 @@ pub(crate) mod host {
             && !GROUND_DEFERRED.load(Relaxed)
         {
             if unsafe { (*std::ptr::addr_of_mut!(CACHE)).capture() } {
-                unsafe { HELD = Held::Ground };
+                hold_ground();
             }
         }
     }
@@ -1022,6 +1059,75 @@ pub(crate) mod host {
             crate::gfx::set_page_frozen(self.was_frozen);
         }
     }
+    #[cfg(test)]
+    mod backdrop_tests {
+        use super::*;
+        #[test]
+        fn layers_above_a_frozen_prefix_remain_live_in_both_draw_walks() {
+            let _guard=crate::testlock::serial();
+            let old=held(); let drawn=GROUND_DRAWN.swap(true,Relaxed);
+            unsafe {HELD=Held::Ground(crate::ui::frame::backdrop::Z::surface(0));}
+            let mut frozen=Vec::new();
+            for ceiling in [crate::ui::frame::backdrop::Z::ALL,crate::ui::frame::backdrop::Z::OPENER] {
+                let sources=std::rc::Rc::new(std::cell::RefCell::new(crate::ui::frame::backdrop::Sources::default()));
+                let _walk=crate::ui::frame::backdrop::enter(sources,ceiling);
+                let _layer=crate::ui::frame::backdrop::layer(crate::ui::frame::backdrop::Z::surface(1),false);
+                let _live=live(); frozen.push(crate::gfx::page_frozen());
+            }
+            unsafe {HELD=old;} GROUND_DRAWN.store(drawn,Relaxed);
+            assert_eq!(frozen,vec![false,false]);
+        }
+        #[test]
+        fn promoting_a_ground_does_not_repaint_over_later_foreground() {
+            let _guard=crate::testlock::serial();
+            let old=held(); let drawn=GROUND_DRAWN.swap(false,Relaxed);
+            hold_ground();
+            let already_present=GROUND_DRAWN.load(Relaxed);
+            unsafe {HELD=old;} GROUND_DRAWN.store(drawn,Relaxed);
+            assert!(already_present,"the captured ground is already on this visible frame");
+        }
+
+        #[test]
+        fn a_frozen_ground_records_the_last_layer_it_contains() {
+            let _guard=crate::testlock::serial();
+            let old=held();
+            let drawn=GROUND_DRAWN.load(Relaxed);
+            let sources=std::rc::Rc::new(std::cell::RefCell::new(crate::ui::frame::backdrop::Sources::default()));
+            let _walk=crate::ui::frame::backdrop::discover(sources);
+            let _layer=crate::ui::frame::backdrop::layer(crate::ui::frame::backdrop::Z::surface(0),false);
+            let glass=crate::ui::frame::backdrop::surface(crate::ui::Rect::new(0.0,0.0,10.0,10.0)).unwrap();
+            crate::ui::frame::backdrop::boundary();
+            hold_ground(); // successful capture seam; no GL in this test
+            let ceiling=held_ceiling().unwrap();
+            let foreground=crate::ui::frame::backdrop::surface(crate::ui::Rect::new(0.0,0.0,10.0,10.0)).unwrap();
+            let _new_layout=crate::ui::frame::backdrop::layer(crate::ui::frame::backdrop::Z::surface(0),false);
+            crate::ui::frame::backdrop::surface(crate::ui::Rect::new(0.0,0.0,10.0,10.0));
+            let added=crate::ui::frame::backdrop::surface(crate::ui::Rect::new(0.0,0.0,10.0,10.0)).unwrap();
+            unsafe { HELD=old; }
+            GROUND_DRAWN.store(drawn,Relaxed);
+            assert!(ceiling>glass.z,"the held image contains this glass, so it replaces a higher layer");
+            assert!(foreground.z>ceiling,"new foreground glass belongs above the held prefix");
+            assert!(ceiling>added.z,"adding glass inside the ground does not move it above the snapshot");
+        }
+
+        #[test]
+        fn a_source_walk_preserves_the_frozen_ground_and_its_visible_draw_ledger() {
+            let _guard=crate::testlock::serial();
+            let old=held();
+            let drawn=GROUND_DRAWN.swap(false,Relaxed);
+            unsafe { HELD=Held::Ground(crate::ui::frame::backdrop::Z::surface(0)); }
+            {
+                let sources=std::rc::Rc::new(std::cell::RefCell::new(crate::ui::frame::backdrop::Sources::default()));
+                let _walk=crate::ui::frame::backdrop::enter(sources,crate::ui::frame::backdrop::Z::OPENER);
+                let _live=live();
+            }
+            let unchanged=matches!(held(), Held::Ground(_)) && !GROUND_DRAWN.load(Relaxed);
+            unsafe { HELD=old; }
+            GROUND_DRAWN.store(drawn,Relaxed);
+            assert!(unchanged,"a source is not the visible ground draw and cannot discard it");
+        }
+    }
+
 }
 
 #[cfg(test)]

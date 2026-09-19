@@ -1433,3 +1433,62 @@ No ARM build or device result is claimed. A manual review of the changed prose a
 found no new FFI, symbol, linkage or firmware ABI change.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+
+
+## 2026-09-19: live backdrop sources follow the layer stack
+
+This supersedes the r3 `cover_page(surface_up())` gate and page-wide
+`note_page_motion`/`source_changed` verdict. Those APIs, widget prepare calls and widget-local
+source-pass exclusions have been removed. The live cadence clock and its `glasshz` override
+have also been removed: a changed visible source refreshes on every presented frame. The
+synthetic load dial still owns its separate experimental cadence.
+
+`ui/frame/backdrop.rs` is the single policy owner, held by `GlassPlan`. A declaration traversal
+of the ordinary painter records this frame's glass rectangles and exact, ordered draw arguments
+(including transforms, clip bounds, material values, text bytes and texture upload revisions).
+It submits no visual primitives and spends no second text-prewarm budget. Source identity is
+the ordered commands intersecting each sampling footprint strictly below that glass, including
+the blur/lens margin. This replaces the page-wide motion verdict: a last settling position is a
+changed command just like an input, navigation or asset landing; foreground commands and changes
+outside the sampled region do not invalidate the source. The identity uses exact values, not a
+hash whose collision could silently declare a changed region unchanged. Each retained source
+keeps the description of its captured prefix, so an unfurl into already-captured, unchanged pixels
+reuses that source too. Lower-glass dependencies are regional, not a band-wide revision counter.
+A texture re-upload
+changes its identity even if the GL name and dimensions remain the same.
+
+The dispatcher walks page, chrome, dims, surfaces and the lifted opener with an explicit z
+ceiling. An inline glass advances the layer boundary; primitive submission stops at that boundary
+inside a source traversal. A widget no longer needs to know it is being drawn as a source.
+The stack publishes geometry for held Page/Ground images, an opaque route's replacement ground,
+and full-alpha dims. A completely covered glass neither refreshes nor draws. Multiple rectangular
+blockers can jointly cover it. A held ground stores the actual last included z boundary, so glass
+added inside a modal's ground is covered too; it is not assumed to be below the first surface.
+A replacement between a source and lower commands also hides
+those commands' damage. Source/declaration traversals preserve the held-ground draw ledger;
+only the visible traversal advances its capture/readback lifecycle. Each source walk has its own
+once-per-prefix snapshot ledger; it neither consumes the visible ledger nor repaints a frozen quad
+over lower live foreground. Layers above the stored frozen boundary remain live.
+
+Captures are coalesced **per z band**, never across incompatible depths. Disjoint chrome surfaces
+share one capture covering the union declared in the current frame, including activation; the
+empty gap between them is not a sampler for validity. Overlap splits the band automatically.
+Independent bands retain the measured quarter-resolution direct-source path. A band whose
+footprint intersects lower glass captures the visible framebuffer prefix instead: that prefix
+contains the lower glass's actual composite, including its sharp rim, and cannot contain the
+upper glass or a later layer. This deliberately avoids rendering a lower glass with an approximate
+rim into an upper source. All bands reuse the same blur scratch chain and retain only compact
+half-resolution output textures; those outputs are counted in the render-set budget and released
+before the GL context shuts down. A failed inline capture cannot retry after another member has
+painted its fallback into the band. Material choice stays independent of capture success, so the
+same logical surfaces participate in declaration and visible walks. Existing renderer refusals
+(video planes and disabled/masked glass) apply before declaration as well.
+
+The earlier result remains a constraint: 46 fps refreshing every changing present versus 35
+without glass and 36 at one-in-eight. The source pass **paces** this Mali GPU; the driver/DVFS
+explanation remains unproven. This mechanism skips only occluded or unchanged sources. It does
+not undersample changing underlays. The extra declaration traversal, retained-output copy and
+per-band storage are deliberate costs for structural correctness; the prefix-copy path for
+stacked glass also needs a device comparison before any performance claim. Host-only tests cover
+the layer walk, geometry, validity, union scheduling, upload identity and frozen-host bookkeeping.
+No television was contacted and no new GPU measurements or visual verification are claimed here.

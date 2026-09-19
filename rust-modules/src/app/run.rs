@@ -493,7 +493,6 @@ unsafe fn present_and_swap(
         {
             app.buffer_flip_count = (app.buffer_flip_count + 1) % 60;
         }
-        crate::ui::widgets::glass_presented();
         app.instr.mark(crate::diag::heartbeat::Phase::Swap); // swap
         // Inside the gate: `frame_end` is the end of a DRAWN frame. Counting frames the
         // idle gate skipped would pace the profiler's once-per-N-frames log off frames
@@ -505,6 +504,7 @@ unsafe fn present_and_swap(
         // first snapshot is taken at. Once that union is known, several surfaces share one
         // capture; a first discovery frame may still need a second non-contained grab.
         crate::gfx::blur_frame_end();
+        app.glass.sources.borrow_mut().finish();
         // …and a queued underlay-field reduction has had one more drawn frame to finish in.
         crate::gfx::field_frame_end();
         // …and a frame that captured the page leaves a fence the next frames wait on.
@@ -1849,9 +1849,7 @@ fn loop_requests(app: &mut App) {
 /// dev oscillators, the play landing and the remaining pumps — `tick_drain` on the FRAMEDROP
 /// line.
 pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
-        // The owned page and navigation have stepped; shared chrome has not. Its density,
-        // chip and strip springs still request presents, but do not change the page they blur.
-        app.glass.note_page_motion(crate::ui::idle::present_moving() || fr.underlay_moving);
+
 
         // `Route::Login`/`Route::Profiles` no longer have a route-gated `update(dt)` call here
         // (phase 6, mirroring `Route::Onboard`'s own removal in 5b): both are owned screens now,
@@ -2095,7 +2093,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
             // their trigger is absent. HERE and not below the gate, because the dial's cadence
             // is counted in PRESENTS — a loop iteration the gate skipped drew no glass — and
             // because a step rollover invalidates the snapshot, which must precede every glass
-            // surface in the frame exactly as `Glass::prepare` does.
+            // surface drawn by the synthetic dial.
             app.glass.prepare_dial(fr.now);
             // The authored canvas, scaled UNIFORMLY into the drawable and centred. The shaders
             // divide every coordinate by `u_screen` (which stays 1920x1080), so this one call
@@ -2178,163 +2176,48 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         if !(app.player.video_plane_bound && crate::route::is_preview(&app.player.session)) {
                             crate::ui::popover::host::begin_frame(fr.underlay_moving);
                         }
-                        app.glass.cover_page(app.pages.surface_up());
-                        let source_visible = app.glass.source_visible();
-                        // Resolve every glass owner BEFORE anything on this route draws — that is
-                        // `Glass::prepare`'s contract, and the shared top tab track is an owner on
-                        // every route that wears it.
-                        if { use crate::ui::screen::ScreenArg; app.route().chrome() == crate::ui::machine::Chrome::TabBar } {
-                            // Search publishes its own chrome labels through `capture_chrome`
-                            // exactly like Home/Library (its `|| search` clause), so every
-                            // bar-wearing route resolves the shared tab track's glass the same
-                            // way — from the app's OWN captured vocabulary. The retired
-                            // `ui::widgets` legacy label cache this used to fall back to for
-                            // every other bar-wearing route (Search, plus either MENU over one of
-                            // them back when each was a route of its own) is gone with this call.
-                            app.bridge.prepare_home_chrome(&mut app.glass);
-                        }
-                        // The episode tiles' frosted label band — `/tmp/plxnative-tileglass`,
-                        // the 2026-09-05 experiment. Self-gated on the trigger, so a default
-                        // build resolves nothing here; unlike the two owners either side of it
-                        // this one is not routed at all, because the shelves it rides appear on
-                        // Home, the Library and Search and the trigger is the whole condition.
-                        app.glass.prepare_tile_band();
-                        // THE PAGE, named once for a visible pass and, only when needed, a source
-                        // pass. With a modal up the source is invisible; otherwise the direct path
-                        // produces a glass surface's backdrop by rendering the page again into a
-                        // small FBO, and that has to happen HERE, before the visible pass — the
-                        // capture path's hook is inside the glass surface itself, far too late to
-                        // run a second scene pass. The visible full-resolution draw is untouched
-                        // either way.
-                        //
-                        // **The route has to be the same on both passes**, and until 2026-08-19 it
-                        // was not: only Home was reachable from this arm, and the source pass drew
-                        // `home_draw` whatever the route actually was. The Library's and Search's
-                        // tab track therefore blurred HOME — a stale hero from a screen the user
-                        // had left, brighter than the grey it sat on and carrying that page's
-                        // colour. Measured in the simulator on the Library: page ground (44,44,46),
-                        // "glass" track (72,77,59). A track whose whole job is to DARKEN was 1.6x
-                        // brighter than its own ground and green. That is the artefact the material
-                        // was rejected for by eye, and it was this dispatch, not the material.
-                        //
-                        // **`page_of`, not the bare route** used to matter here for its own
-                        // binding — a POPOVER ROUTE named the page it stood on, and the closure's
-                        // `else` used to dispatch by hand between `home_draw` and the retired
-                        // legacy screen's own `draw()`, so getting the wrong route (Library,
-                        // Search or the person page falling through to `home_draw` the moment
-                        // they became menu hosts, or the account popover drawing Home over the
-                        // Library once its chip became pressable) was a real, once-shipped bug.
-                        // Phase 7 (the Search cutover) retired the last per-route arm that needed
-                        // its own `page_route` binding, and phase 10 retired `page_of` itself
-                        // along with both popover routes: a `Route` names exactly one page now, so
-                        // `page_owned` below is already the right answer for Home, Library,
-                        // Detail, Person and Search alike, and the closure's `else` is a
-                        // route-agnostic fallback for the one-frame window between a loop request
-                        // selecting a new page and that page's owned body mounting.
-                        //
-                        // Does the DISPATCHER draw the top page (Home, Library, Search, Favourites, Login, Profiles today)?
-                        // Sampled once, before the closure, because both the visible pass and the
-                        // blur source pass below are gated on it — and because `page` borrows
-                        // nothing of `app`, which is what keeps this readable.
+                        use crate::ui::frame::backdrop::Z;
+                        let layers = app.pages.backdrop_layers(crate::ui::nav::page_alpha());
+                        app.glass.sources.borrow_mut().begin(layers);
+                        let sources = app.glass.sources.clone();
+                        let _visible_walk = app.glass.walk(Z::ALL);
                         let page_owned = super::bridge::page_owned(&app.pages);
-                        // …and the host fold: an opaque surface whose ground has drawn REPLACES
-                        // the page, so the legacy page pass is skipped wholesale. This was two
-                        // `host_ground_ready()` reads, one per full-screen popover, which is
-                        // exactly the list that could not be extended without editing this line.
                         let host_replaced = super::bridge::host_replaced(&app.pages);
-                        // …folded with `page_owned` into the one plan both guards below read, so
-                        // the two bits cannot be combined two different ways two screens apart.
                         let plan = super::bridge::page_plan(host_replaced, page_owned);
-                        let mut page = || {
-                            // A compact modal still exposes most of its host, so unlike
-                            // Settings it cannot replace the page with an opaque ground. It
-                            // freezes that page into one framebuffer texture instead: the first
-                            // frame draws the real tree once, later frames submit one quad while
-                            // the popover's own scrim, springs and panel stay live above it.
-                            //
-                            // Source passes are excluded while any modal surface is visible,
-                            // including its exit fade. Only the visible pass manages this cache.
-                            let _host = crate::ui::popover::host::page_pass();
-                            // `Route::Login`/`Route::Profiles`/`Route::Search` are deliberately
-                            // absent (phase 6/7, mirroring `Route::Onboard`'s own absence here
-                            // since 5b): all three are owned screens now, so `page_owned` reports
-                            // `true` for any of them and this whole closure is skipped in favour
-                            // of the dispatcher's own page pass — see the `page_owned`/
-                            // `host_replaced` guards below.
+                        // One dispatcher walk supplies declarations, strict source prefixes and
+                        // the visible frame. Only the visible walk advances the host cache.
+                        let mut page = |ceiling: Z| {
+                            let _host = (!crate::ui::frame::backdrop::discovering() &&
+                                (ceiling == Z::ALL || crate::ui::popover::host::held_ceiling().is_some_and(|z| z < ceiling)))
+                                .then(crate::ui::popover::host::page_pass);
                             if page_owned {
-                                app.pages.draw_with_glass(&mut app.bridge, &mut app.glass, true);
+                                app.pages.draw_with_glass_below(&mut app.bridge, &mut app.glass, true, ceiling);
                             } else {
-                                // A loop request may have selected Home after this frame's
-                                // commit. Its owned body mounts next frame; never draw a retired
-                                // singleton while waiting for that lifecycle boundary.
                                 crate::gfx::frame_clear(crate::ui::theme::CLEAR_RGB.0, crate::ui::theme::CLEAR_RGB.1, crate::ui::theme::CLEAR_RGB.2);
                             }
-                            // **A popover drawn AFTER this closure owes its scrim TO it.** That is
-                            // the rule, and these are the two popovers in that class — every other
-                            // one is a SURFACE the container draws (the Library's sort menu, *Also available*)
-                            // or is player-route, where there is no page closure and the dim
-                            // is meant to cover the HUD as well.
-                            //
-                            // The scrim sits between the page and the popover's glass, so it is
-                            // part of what that glass looks through, and this closure is what the
-                            // direct source path re-renders. Drawn with the panel instead it
-                            // reaches the visible frame but never the snapshot, and the frosted
-                            // ground comes out at full page brightness inside a dimmed screen —
-                            // which is exactly what the profile menu did.
-                            //
-                            // **The DIM itself is the container's since phase 10** — one
-                            // `ModalStack::draw_scrims` at the end of the dispatcher's own page
-                            // pass, off each surface's `Screen::scrim`, which is inside
-                            // `app.pages.draw(.., true)` above and therefore still inside this
-                            // closure and still before the snapshot. Two hand-written calls stood
-                            // here (`item_menu::draw_scrim` and, until item 2, the account menu's)
-                            // and each self-gated on its own `is_open`.
-                            //
-                            // What is left is the LIFT: the focused tile repainted above that dim.
-                            // The un-dimmed copy has to be in the SNAPSHOT too, or the panel's
-                            // glass frosts a dimmed picture of the very card it is about — and
-                            // only the page that drew the element knows where it landed, which is
-                            // why this half cannot be a `Scrim::lift`'s bare `fn()` the way the
-                            // profile chip's is.
-                            app.bridge.redraw_opener(&app.pages);
-                            // (`settings`/`legal`/`consent`'s scrims stood here — "a notice is
-                            // about the APP, not about anything on the page behind it" — for the
-                            // same reason the two above still do: a popover drawn AFTER this
-                            // closure owes its scrim TO it, or the frosted ground comes out at
-                            // full page brightness inside a dimmed screen. The family draws its
-                            // own scrim INSIDE its page pass now (`RouteSurface::draw` opens with
-                            // it), which satisfies the rule from the other side: the scrim and
-                            // the surface are one draw, so they cannot be separated by a pass.)
+                            if plan != super::bridge::PagePlan::SurfacesOnly && Z::OPENER < ceiling {
+                                let _opener = crate::ui::frame::backdrop::layer(Z::OPENER, false);
+                                app.bridge.redraw_opener(&app.pages);
+                            }
                         };
-                        // All shipping blur owners are page chrome. A modal's dim/panel uses
-                        // its latched underlay field instead, so this source has no visible user
-                        // while a surface is up. Do not dispatch surfaces into a source FBO.
-                        if source_visible {
-                            if let Some(reg) = crate::gfx::blur_direct_region() {
-                                crate::gfx::blur_snapshot_direct(reg, &mut page);
+                        {
+                            let _declarations = crate::ui::frame::backdrop::discover(sources.clone());
+                            page(Z::ALL);
+                        }
+                        sources.borrow_mut().resolve();
+                        let jobs = sources.borrow().jobs();
+                        // Independent bands replay only the strict prefix below their ceiling.
+                        // A band intersecting lower glass captures that composite in visible order.
+                        for (ceiling, rect) in jobs {
+                            let _source_walk = crate::ui::frame::backdrop::enter(sources.clone(), ceiling);
+                            let reg = crate::gfx::blur_region(rect.x, rect.y, rect.w, rect.h);
+                            if crate::gfx::blur_snapshot_direct(reg, &mut || page(ceiling)) {
+                                crate::gfx::retain_backdrop(ceiling);
                             }
                         }
-                        // Settings owns a frozen, already-blurred image of the host. After its
-                        // first visible draw, repainting the full Home hero and shelves beneath
-                        // an opaque full-screen modal only burns fill-rate on the T820. Closing
-                        // Settings clears the flag, so the live page resumes on the next frame.
-                        //
-                        // The compact modals do NOT take this branch: they expose most of their
-                        // host, so the page still has to be on the framebuffer. `page` runs, and
-                        // the freeze inside it is what makes running it cheap.
-                        //
-                        // **A Replaced host is drawn by nobody, owned or legacy.** This read
-                        // `!host_replaced || page_owned` through phase 7, when `page_owned`
-                        // meant only "the dispatcher draws the page, not this closure" and no
-                        // owned page could host an opaque surface. Phase 8 made Home both, and
-                        // the closure then ran under the Settings ground every frame — its
-                        // `page_pass` serving the frozen snapshot as a full-screen quad beneath
-                        // the ground's own full-screen wash, which is the 60 → 40 fps the
-                        // Settings family measured in TV session 4. `bridge::page_plan` is the
-                        // one fold of the two bits; the surfaces of an owned page under a
-                        // Replaced host are drawn by the call below, as a legacy page's are.
+                        // An opaque route ground replaces the page entirely.
                         if plan != super::bridge::PagePlan::SurfacesOnly {
-                            crate::ui::profile::phase("main.ui", || page());
+                            crate::ui::profile::phase("main.ui", || page(Z::ALL));
                         }
                         // The diagnostics read-out, off the player. It drew ONLY inside the branch
                         // above until 2026-08-29, which is why its module doc had to warn that a
@@ -2352,45 +2235,16 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // controls. Two call sites, and the `else` covers every non-player route,
                         // so a new route still cannot be forgotten.
                         app.diagnostics.draw();
-                        // **THE TREE, once, at the slot the family always occupied** — over the
-                        // two compact popovers, under the dev glass. Five calls stood here:
-                        // `settings::draw()`, the Home editor behind its own second push spring,
-                        // `legal::draw()` and `consent::draw()` on top, each self-gated and each
-                        // ordered by hand to mirror the key ladder ("whichever answers BACK first
-                        // must also be the one on top"). One `Dispatcher::draw` states the same
-                        // order structurally: the surfaces are drawn bottom to top and the inner
-                        // stack's push is the surface's own, so Privacy over the root, or the
-                        // second consent stage over the first, is a stack rather than a pair of
-                        // springs somebody has to keep in step.
-                        //
-                        // `pages` is `false` here and it must be: the argument says whether the
-                        // PAGE pass runs too, and an owned page's `true` pass is the one INSIDE
-                        // the closure above — so this call is skipped on the `Owned` plan, and
-                        // runs with the page pass off for a legacy page (whose closure painted
-                        // it) and for either kind under a Replaced host (which paints nothing).
-                        // `Dispatcher::draw` also fills and SWAPS the hit map, so calling it
-                        // twice in a frame — once inside the page closure and once here — would
-                        // register the surfaces' stops twice and hand the pointer a map from the
-                        // wrong pass.
-                        //
-                        // What this call draws lands over the diagnostics read-out — the profile
-                        // and card menus are surfaces of this very stack since phase 10 and are
-                        // drawn BY it — and since phase 8 that is only ever SURFACES: an owned
-                        // page (Home, Library and Search included, all of which wear the tab bar
-                        // and can host both popovers) is painted inside the closure above, under
-                        // them, and reaches this call only under a Replaced host — where the
-                        // page paints nothing and the compact popovers cannot be open, because an
-                        // opaque ground is up. The ordering question this comment used to settle
-                        // by listing the owned pages is therefore the same one the legacy page
-                        // answered on every frame before the migration.
+                        // Owned pages already dispatched their surfaces in the visible walk.
                         if plan != super::bridge::PagePlan::Owned {
-                            app.pages.draw_with_glass(&mut app.bridge, &mut app.glass, false);
+                            app.pages.draw_with_glass_below(&mut app.bridge, &mut app.glass, false, Z::ALL);
                         }
                         // dev: the blurred route transition, then the load dial's glass surfaces.
                         // LAST on the non-player path, so the snapshot either takes is of the
                         // COMPLETE page — which is the honest source for a surface that sits on
                         // top of everything, and the one thing the tab track (drawn inside the
                         // page) cannot have.
+                        drop(_visible_walk);
                         app.glass.draw_nav_blur();
                         app.glass.draw_dial();
                         // The on-screen counter, off the player route (chrome over video). It draws
@@ -2711,17 +2565,16 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
                 app.fps_shown = pres.min(i32::MAX as u32) as i32;
             }
             // dev: which LOAD-DIAL step these frames belong to, the blur refreshes
-            // actually TAKEN in that second, and the cadence in force. Absent unless the
-            // dial or the cadence knob is armed, and placed after `fps=` / before
+            // actually TAKEN in that second. Absent unless the dial is armed, and placed
+            // after `fps=` / before
             // `worstframe=` so both harness regexes are untouched. `snap=` is the one
             // thing a cadence claim cannot be trusted without: it is the rate that RAN,
             // not the rate that was requested.
-            let ld = if crate::ui::glassload::armed() || app.scenarios.dev.glass_hz_armed {
+            let ld = if crate::ui::glassload::armed() {
                 format!(
-                    " load={} snap={} period={}",
+                    " load={} snap={}",
                     crate::ui::glassload::step_index(),
-                    crate::gfx::take_blur_snapshots(),
-                    crate::ui::widgets::dynamic_period()
+                    crate::gfx::take_blur_snapshots()
                 )
             } else {
                 String::new()
@@ -2998,7 +2851,6 @@ mod lifecycle_regression_tests {
                     onboard_osc: Default::default(),
                     nav_osc: Default::default(),
                     nav_osc_rk: Default::default(),
-                    glass_hz_armed: Default::default(),
                     nobudget: Default::default(),
                 },
             },

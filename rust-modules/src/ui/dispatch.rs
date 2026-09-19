@@ -1135,33 +1135,53 @@ where
             self.prepare_pass(rig, tick);
         }
         let mut report = FrameReport::default();
-        self.draw_with(rig, tick, &mut report, pages, None);
+        self.draw_with(rig, tick, &mut report, pages, None, super::frame::backdrop::Z::ALL);
         report
     }
 
-    /// Product draw entry: the application-owned frame plan accompanies the rig so shared chrome
-    /// can mutate its tab-band render state without moving that state onto the rig.
-    pub fn draw_with_glass(
+    /// The compositing stack publishes blockers from the same host fold the draw walk uses.
+    pub(crate) fn backdrop_layers(&self, page_alpha: f32) -> Vec<super::frame::backdrop::Layer> {
+        use super::frame::backdrop::{Layer, Z, canvas};
+        let mut layers = Vec::new();
+        if let Some(z) = crate::ui::popover::host::held_ceiling() {
+            layers.push(Layer { z, rect:canvas(), blocks:true, revision:crate::ui::popover::host::page_epoch() as u64 });
+        }
+        for (index,surface) in self.nav.modals.surfaces.iter().enumerate() {
+            if super::containers::modal::surface_policy(surface.style,surface.phase,surface.ground_ready).1 == HostRender::Replaced {
+                layers.push(Layer { z:Z::surface(index), rect:canvas(), blocks:true, revision:0 });
+            }
+        }
+        if self.nav.modals.scrims(page_alpha).iter().any(|(_,a,_)| *a >= 1.0) {
+            layers.push(Layer { z:Z::DIM, rect:canvas(), blocks:true, revision:0 });
+        }
+        layers
+    }
+
+    /// Product draw entry with a strict z ceiling; `Z::ALL` is the visible frame.
+    /// Chrome borrows the application-owned material without moving it onto the rig.
+    pub fn draw_with_glass_below(
         &mut self,
         rig: &mut dyn Rig<H>,
         glass: &mut super::frame::glass::GlassPlan,
         pages: bool,
+        ceiling: super::frame::backdrop::Z,
     ) -> FrameReport {
         let tick = self.last_tick;
         if !self.prepared {
             crate::diag::spans::span("prep", || self.prepare_pass(rig, tick));
         }
         let mut report = FrameReport::default();
-        self.draw_with(rig, tick, &mut report, pages, Some(glass));
+        self.draw_with(rig, tick, &mut report, pages, Some(glass), ceiling);
         report
     }
 
     fn draw_pass(&mut self, rig: &mut dyn Rig<H>, tick: Tick, report: &mut FrameReport) {
-        self.draw_with(rig, tick, report, true, None);
+        self.draw_with(rig, tick, report, true, None, super::frame::backdrop::Z::ALL);
     }
 
     fn draw_with(&mut self, rig: &mut dyn Rig<H>, tick: Tick, report: &mut FrameReport, pages: bool,
-        mut glass: Option<&mut super::frame::glass::GlassPlan>) {
+        mut glass: Option<&mut super::frame::glass::GlassPlan>, ceiling: super::frame::backdrop::Z) {
+        use super::frame::backdrop::{self, Z};
         let strip_owner = self.owner_entry();
         let navigation = rig.navigation_presentation();
         let (_, host_render) = self.nav.modals.host_policy();
@@ -1169,14 +1189,14 @@ where
         // page freeze is. Every framebuffer-sampling door is refused while it is up.
         let video_plane = self.video_plane_frame();
         let was_video_plane = crate::gfx::set_video_plane_frame(video_plane);
-        rig.clear_opaque_region();
+        if !crate::gfx::blur_source_pass() { rig.clear_opaque_region(); }
         let parts = self.parts(tick);
         let Dispatcher { nav, input, .. } = self;
         let mut stops = Vec::new();
         let mut set = RenderSet {
             // the shared poster/logo residency (ui/tex.rs) is the one pool rule (c) sums beside
             // the screens' own renders and the FrameCache
-            extra_bytes: super::tex::resident_bytes(),
+            extra_bytes: super::tex::resident_bytes() + glass.as_ref().map_or(0, |g|g.sources.borrow().resident_bytes()),
             ..Default::default()
         };
         // the page pass: the top page (and, under a push, the level beneath it), unless the
@@ -1189,7 +1209,10 @@ where
             let n = nav.tabs.stack.entries.len();
             let top_entry = nav.tabs.stack.top().map(|entry| entry.id);
             let from = if draws_below { n.saturating_sub(2) } else { n.saturating_sub(1) };
-            for e in nav.tabs.stack.entries[from..].iter_mut() {
+            for (index, e) in nav.tabs.stack.entries[from..].iter_mut().enumerate() {
+                let page_z = Z::page(index);
+                if page_z >= ceiling { break; }
+                let _page_layer = backdrop::layer(page_z, false);
                 if let Some(inst) = e.inst.as_mut() {
                     let Split { views, measure, .. } = rig.split();
                     let mut page_cx = parts.cx::<H>(views, measure);
@@ -1197,18 +1220,19 @@ where
                     page_cx.focus = input.engine.read(page_cx.owner);
                     let mut f = DrawFrame::with_navigation(&page_cx, Painter::root(), navigation);
                     f.page_alpha *= nav.tabs.stack.transition.page_alpha();
-                    crate::diag::spans::span("page", || inst.screen.draw(&mut f));
+                    backdrop::draw_span("page", || inst.screen.draw(&mut f));
                     report.drawn.push(inst.id);
                     stops.extend(f.into_stops());
                     set.pages += 1;
                     set.bytes += inst.screen.render_report().bytes;
-                    if top_entry == Some(e.id) && e.arg.chrome() == super::machine::Chrome::TabBar
+                    if Z::CHROME < ceiling && top_entry == Some(e.id) && e.arg.chrome() == super::machine::Chrome::TabBar
                         && inst.screen.focus_source() == FocusSource::Engine {
                         let mut chrome_parts = parts.clone();
                         chrome_parts.owner = InputOwner::Entry(e.id);
                         chrome_parts.focus = input.engine.read(chrome_parts.owner);
                         drop(page_cx);
-                        crate::diag::spans::span("chrome", || rig.draw_chrome(&e.arg, &chrome_parts, navigation, glass.as_deref_mut()));
+                        let _chrome_layer = backdrop::layer(Z::CHROME, true);
+                        backdrop::draw_span("chrome", || rig.draw_chrome(&e.arg, &chrome_parts, navigation, glass.as_deref_mut()));
                     }
                 }
             }
@@ -1236,10 +1260,11 @@ where
             // frame's first `popover::host::live()`, which is also what defines the host snapshot
             // as the UNDIMMED page — and the instant the dims' inherited field is read from
             // (`ModalUnderlay`), for the same reason.
-            {
+            if Z::DIM < ceiling {
+                let _dim_layer = backdrop::layer(Z::DIM, false);
                 let _scope = rig.surface_scope();
                 let read = scrim_lift_read(rig, glass.as_deref());
-                crate::diag::spans::span("scrims", || nav.modals.draw_scrims(navigation.page_alpha, read));
+                backdrop::draw_span("scrims", || nav.modals.draw_scrims(navigation.page_alpha, read));
             }
         }
         // A PageDip keeps the committed top as the visible/input page throughout its OUT half.
@@ -1282,7 +1307,10 @@ where
         // (`widgets::panel_ground`). Disjoint fields of the stack: the field is only read here.
         let modals = &mut nav.modals;
         let field = modals.underlay.field();
-        for s in &mut modals.surfaces {
+        for (index, s) in modals.surfaces.iter_mut().enumerate() {
+            let z = Z::surface(index);
+            if z >= ceiling { break; }
+            let _layer = backdrop::layer(z, false);
             if let Some(inst) = s.entry.inst.as_mut() {
                 let _surface_scope = rig.surface_scope();
                 // §4.4: a spring stepped while a SURFACE draws is the panel's, and an
@@ -1297,7 +1325,7 @@ where
                 let mut f = DrawFrame::with_navigation(&surface_cx, Painter::root(), navigation);
                 f.page_alpha = s.motion.appear;
                 f.underlay = Some(field);
-                crate::diag::spans::span("surf", || inst.screen.draw(&mut f));
+                backdrop::draw_span("surf", || inst.screen.draw(&mut f));
                 report.drawn.push(inst.id);
                 stops.extend(f.into_stops());
                 // (b) is a count of THIS SURFACE's own backing renders, asked of the surface —
@@ -1308,7 +1336,7 @@ where
                 set.surfaces.push((s.entry.id, render.textures));
                 set.bytes += render.bytes;
                 // an Opaque surface's ground has drawn: the fold REPLACES the host from here
-                s.ground_ready = inst.screen.ground_ready();
+                if !crate::gfx::blur_source_pass() { s.ground_ready = inst.screen.ground_ready(); }
             }
         }
         // the hit map swaps only on a presented frame (§7.6); a legacy page registers nothing
@@ -1318,6 +1346,8 @@ where
             self.input.hit.fill(if hit_page { stops } else { Vec::new() });
             self.input.hit.swap();
         }
+        if crate::gfx::blur_source_pass() { report.render_set = set; return; }
+        set.extra_bytes = super::tex::resident_bytes() + glass.as_ref().map_or(0, |g|g.sources.borrow().resident_bytes());
         if let Err(breach) = set.check() {
             // The policy itself is `frame::on_breach` — assert on the host, log once on a
             // television — so that both halves are reachable from a test.

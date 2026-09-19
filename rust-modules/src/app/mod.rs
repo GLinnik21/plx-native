@@ -321,10 +321,8 @@ pub(crate) struct App {
     /// The present gate as a machine (spec §4.4). `ui::idle` is still the product's verdict on
     /// this loop; this one receives the render cache's notes and is what `dispatch` takes over.
     present: crate::ui::present::Present,
-    /// The frame plan's GLASS half (spec §8.3): the one shared backdrop-refresh cadence, the tile
-    /// bands' visible lifetime, and the dev load dial's whole live state. Eight `static mut`s in
-    /// `ui/glassload.rs` and two in `ui/widgets.rs` until phase 11; fields of this since. (The
-    /// budget half lives on the `Dispatcher` — the frame scheduler owns admission, §2.2.)
+    /// The frame plan's GLASS half (spec §8.3): the layer/region source registry, shared chrome
+    /// material and dev load dial. The budget half lives on the `Dispatcher` (§2.2).
     pub(crate) glass: crate::ui::frame::glass::GlassPlan,
     /// **The container tree, and since phase 12 (D1) it is the ONE navigation authority.** It was
     /// a shadow through 3b and a half-real tree through 5b, kept in step with an `App.route` field
@@ -482,6 +480,7 @@ fn pre_boot_diagnostics() -> crate::telemetry::native::Guard {
 unsafe fn run_and_shutdown(app: &mut App) -> c_int {
     run::run(app);
     let failed = finish_recording(&mut app.rec) || app.bridge.controlled_failure().is_some();
+    app.glass.sources.borrow_mut().clear();
     run::shutdown(&mut app.player.session, &mut app.adapters.player);
     i32::from(failed)
 }
