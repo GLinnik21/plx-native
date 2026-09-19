@@ -1264,6 +1264,133 @@ class BenchManifest(unittest.TestCase):
                          f"{name}: bench worst_ms reads 0.0 unarmed — see bench_frame_tick's doc")
 
 
+class DeepBenchGrading(unittest.TestCase):
+    """`parse_deep_bench`/`grade_deep_bench` — the DEEP-stack bench (`deep-100`) parser and its
+    five fail conditions (missed-frame, push drift, pop drift, depth-rss growth, root-rss growth)
+    plus the incomplete-run case. Synthetic `bench: kind=deep` lines, same reasoning as
+    `BenchGrading` above: pinned here rather than first exercised on the television."""
+
+    def _lines(self, depth, worsts=None, rss=None, done=True, target="detail"):
+        n = 2 * depth
+        worsts = worsts if worsts is not None else [5.0] * n
+        rss = rss if rss is not None else [1000] * n
+        out = []
+        for i in range(n):
+            cycle = i + 1
+            if i < depth:
+                dirn, d = "push", i + 1
+            else:
+                dirn, d = "pop", depth - 1 - (i - depth)
+            out.append(
+                f"bench: kind=deep cycle={cycle}/{n} target={target} dir={dirn} depth={d} "
+                f"worst_ms={worsts[i]:.1f} frames=5 dur_ms=1400 rss_kb={rss[i]}"
+            )
+        if done:
+            out.append(f"bench: kind=deep done cycles={n} rss_root_kb={rss[-1] if rss else 1000}")
+        return out
+
+    def test_parse_deep_bench_reads_every_field(self):
+        lines = self._lines(3)
+        steps, rss_root_kb = run.parse_deep_bench(lines)
+        self.assertEqual(len(steps), 6)
+        self.assertEqual(rss_root_kb, 1000)
+        self.assertEqual(
+            steps[0],
+            {"cycle": 1, "n": 6, "target": "detail", "dir": "push", "depth": 1,
+             "worst_ms": 5.0, "frames": 5, "dur_ms": 1400, "rss_kb": 1000},
+        )
+        self.assertEqual([s["dir"] for s in steps], ["push"] * 3 + ["pop"] * 3)
+        self.assertEqual([s["depth"] for s in steps], [1, 2, 3, 2, 1, 0])
+
+    def test_a_healthy_run_of_depth_100_passes(self):
+        lines = self._lines(100)
+        ok, detail = run.grade_deep_bench({"bench": "deep"}, lines)
+        self.assertTrue(ok, detail)
+
+    def test_no_deep_bench_lines_at_all_fails_rather_than_passing_vacuously(self):
+        ok, detail = run.grade_deep_bench({"bench": "deep"}, ["loop=60 route=home fps=12"])
+        self.assertFalse(ok)
+        self.assertIn("no `bench: kind=deep` step lines", detail)
+
+    def test_a_run_missing_the_done_line_fails_even_if_every_step_looks_clean(self):
+        lines = self._lines(20, done=False)
+        ok, detail = run.grade_deep_bench({"bench": "deep"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("no `done` line", detail)
+
+    def test_one_step_over_bench_worst_ms_fails(self):
+        lines = self._lines(10)  # 20 steps (depth=10), default bench_worst_ms is 20.0
+        # make step 12 (a pop) the slow one
+        lines[11] = lines[11].replace("worst_ms=5.0", "worst_ms=25.0")
+        ok, detail = run.grade_deep_bench({"bench": "deep"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("over bench_worst_ms=20.0", detail)
+        self.assertIn("cycle=12/20", detail)
+
+    def test_push_drift_growing_with_depth_fails(self):
+        depth = 20
+        worsts = ([5.0] * 10 + [10.0] * 10) + [5.0] * depth  # pushes drift, pops flat
+        lines = self._lines(depth, worsts=worsts)
+        ok, detail = run.grade_deep_bench({"bench": "deep"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("push drift(last10-first10)=+5.00ms", detail)
+        ok, _ = run.grade_deep_bench({"bench": "deep", "bench_drift_ms": 10.0}, lines)
+        self.assertTrue(ok)
+
+    def test_pop_drift_growing_toward_the_root_fails(self):
+        depth = 20
+        # pops in log order run deepest->shallowest; "last 10 pops" (shallowest) drifting above
+        # "first 10 pops" (deepest) is the failure this catches.
+        worsts = [5.0] * depth + ([5.0] * 10 + [10.0] * 10)
+        lines = self._lines(depth, worsts=worsts)
+        ok, detail = run.grade_deep_bench({"bench": "deep"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("pop drift(last10-first10)=+5.00ms", detail)
+        ok, _ = run.grade_deep_bench({"bench": "deep", "bench_drift_ms": 10.0}, lines)
+        self.assertTrue(ok)
+
+    def test_depth_rss_growing_past_step_ten_fails(self):
+        depth = 20
+        # rss climbs steadily across the 20 pushes, flat across the 20 pops. step10 (push index 9)
+        # to the deepest push (index 19) must clear the default bench_depth_rss_kb=16384.
+        push_rss = [1000 + 2000 * i for i in range(depth)]
+        pop_rss = [push_rss[-1]] * depth
+        lines = self._lines(depth, rss=push_rss + pop_rss)
+        ok, detail = run.grade_deep_bench({"bench": "deep"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("depth rss growth(maxdepth-step10)=", detail)
+        # raising bench_depth_rss_kb alone clears the DEPTH clause; bench_rss_growth_kb (root vs
+        # step10) is a separate clause over the same climb and must be raised too for an overall pass.
+        ok, _ = run.grade_deep_bench(
+            {"bench": "deep", "bench_depth_rss_kb": 1000000, "bench_rss_growth_kb": 1000000}, lines)
+        self.assertTrue(ok)
+
+    def test_root_rss_growing_past_step_ten_fails(self):
+        depth = 20
+        push_rss = [1000] * depth
+        pop_rss = [1000] * (depth - 1) + [50000]  # the `done` line's rss_root_kb comes from here
+        lines = self._lines(depth, rss=push_rss + pop_rss)
+        ok, detail = run.grade_deep_bench({"bench": "deep"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("root rss growth(root-step10)=", detail)
+        ok, _ = run.grade_deep_bench({"bench": "deep", "bench_rss_growth_kb": 1000000}, lines)
+        self.assertTrue(ok)
+
+
+class DeepBenchManifest(unittest.TestCase):
+    def test_deep_100_is_a_bench_scene_with_an_item_and_enough_run_secs(self):
+        scenes = {s["name"]: s for s in _manifest()["fps_scenes"]}
+        deep = scenes["deep-100"]
+        self.assertEqual(deep["bench"], "deep")
+        self.assertEqual(deep.get("item"), "movie_in_home_catalog")
+        self.assertEqual(deep["tier"], "ui")
+        # depth=100 -> 200 steps * 2 half-periods each; run_secs must clear that plus warmup.
+        self.assertGreater(deep["run_secs"], 200 * 2 * 1.4 + deep.get("warmup_s", 5))
+        self.assertIn("plxnative-framedrop", deep["triggers"],
+                     "deep-100: bench worst_ms reads 0.0 unarmed — see bench_frame_tick's doc")
+        self.assertIn("bench_depth_rss_kb", deep)
+
+
 class LoadManifest(unittest.TestCase):
     """The whole overlay merge, against the real tracked matrix."""
 

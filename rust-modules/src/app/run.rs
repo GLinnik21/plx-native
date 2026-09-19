@@ -1681,6 +1681,8 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
         crate::dev::scenarios::nav_osc_tick(app, fr.now);
         // dev: /tmp/plxnative-pushbench — `crate::dev::scenarios::push_bench_tick`.
         crate::dev::scenarios::push_bench_tick(app, fr.now);
+        // dev: /tmp/plxnative-deepbench — `crate::dev::scenarios::deep_bench_tick`.
+        crate::dev::scenarios::deep_bench_tick(app, fr.now);
 
         // ---- the page cross-fade's commit frame ------------------------------------------
         // Stepped UNCONDITIONALLY, never per-route: a fader only one screen advances is a fader
@@ -2989,6 +2991,7 @@ mod lifecycle_regression_tests {
                 pause_resume_at: Default::default(),
                 push_bench: Default::default(),
                 modal_bench: Default::default(),
+                deep_bench: Default::default(),
                 dev: crate::dev::scenarios::DevFlags {
                     detail_osc: Default::default(),
                     home_osc: Default::default(),

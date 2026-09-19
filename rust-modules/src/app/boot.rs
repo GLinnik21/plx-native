@@ -976,6 +976,17 @@ pub(crate) unsafe fn construct(
             let rk = if rk.is_empty() { nav_osc_rk.clone() } else { rk };
             crate::dev::scenarios::bench::ModalBench::new(n, rk)
         });
+    // dev: /tmp/plxnative-deepbench[=<depth>[,<ratingKey>]] — the DEEP-stack twin of the two
+    // above: pushes `depth` pages with no pop in between (rotating Detail/Person — never Library,
+    // see `bench::DeepBench::targets`'s doc), then pops all the way back to the root one page at a
+    // time. Same empty-ratingKey resolution against `navosc`'s own value as the two legs above.
+    let deep_bench = (!controlled)
+        .then(crate::dev::scenarios::deepbench_value)
+        .flatten()
+        .map(|(depth, rk)| {
+            let rk = if rk.is_empty() { nav_osc_rk.clone() } else { rk };
+            crate::dev::scenarios::bench::DeepBench::new(depth, rk)
+        });
 
     // dev: /tmp/plxnative-framedrop — the FRAME-DROP DETECTOR. When present, each frame is timed with
     // the high-res perf counter (pump / draw / swap, NO glFinish so it doesn't perturb the pipeline),
@@ -1240,6 +1251,7 @@ pub(crate) unsafe fn construct(
             nav_osc_last,
             push_bench,
             modal_bench,
+            deep_bench,
             marker_tried,
             press_tried,
             press_release_at,

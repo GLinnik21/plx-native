@@ -6,15 +6,24 @@
 //! (`super::bench_frame_tick`'s doc has the wire format), and then stopping — the harness grades
 //! the whole run, not a sampled window of an unbounded one.
 //!
-//! **This module is the pure half.** [`BenchClock`]/[`bench_advance`]/[`bench_target_index`] know
-//! nothing about `App`, a bridge call, or a target's name — they are driven by a `now: u32` the
-//! caller supplies, which is what lets the unit tests below drive a whole run with a fake clock in
-//! a few milliseconds instead of a live loop. The impure half — which bridge call each target
-//! opens/closes, the frame-time accumulation, the `bench:`/`done` log lines — is
-//! `dev::scenarios::push_bench_tick`/`modal_bench_tick`/`bench_frame_tick`, which hold the `&mut
-//! App` this module deliberately never sees.
+//! A third bench, [`DeepBench`] (`/tmp/plxnative-deepbench[=<depth>[,<ratingKey>]]`), does not
+//! round-trip: it pushes `depth` pages with no pop in between, then pops all the way back to the
+//! root one page at a time, so the harness can grade whether a page transition's cost or a
+//! session's memory holds flat as the real nav stack goes ninety-plus entries deep rather than
+//! the shallow depth-1↔2 churn `PushBench` measures. Each PUSH or POP is its own `Start`/`Settle`
+//! pair — one nav op per pair, not a round trip — so it reuses [`BenchClock`]/[`bench_advance`]
+//! unchanged with `n = 2 * depth`.
+//!
+//! **This module is the pure half.** [`BenchClock`]/[`bench_advance`]/[`bench_target_index`]/
+//! [`deep_step`] know nothing about `App`, a bridge call, or a target's name — they are driven by
+//! a `now: u32` the caller supplies, which is what lets the unit tests below drive a whole run
+//! with a fake clock in a few milliseconds instead of a live loop. The impure half — which bridge
+//! call each target opens/closes, the frame-time accumulation, the `bench:`/`done` log lines — is
+//! `dev::scenarios::push_bench_tick`/`modal_bench_tick`/`deep_bench_tick`/`bench_frame_tick`,
+//! which hold the `&mut App` this module deliberately never sees.
 
-/// Both triggers' default cycle count when `=<n>` is absent or unparseable.
+/// All three triggers' default cycle count (`DeepBench`'s own `depth`, same number) when `=<n>`
+/// is absent or unparseable.
 pub(crate) const DEFAULT_BENCH_N: u32 = 100;
 
 /// One bench's own phase: waiting for the next cycle's press, or mid the settle window a cycle
@@ -244,6 +253,104 @@ impl ModalBench {
     }
 }
 
+// =================================================================================================
+// deep bench (`/tmp/plxnative-deepbench`)
+// =================================================================================================
+
+/// One step's direction in [`DeepBench`]'s single walk down and back up the stack.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DeepDir {
+    Push,
+    Pop,
+}
+
+impl DeepDir {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Push => "push",
+            Self::Pop => "pop",
+        }
+    }
+}
+
+/// **The pure half of a DEEP step**: which direction 0-based `cycle` is, and the stack depth it
+/// leaves behind assuming every push really adds one entry and every pop really removes one — which
+/// is exactly what [`DeepBench`]'s own `stack: Vec<PushTarget>` gives it regardless of which target
+/// a `Person` step actually opened (a cast-data fallback changes WHAT was pushed, never how deep).
+/// A pure test can therefore check the whole depth trajectory without a live `App`.
+pub(crate) fn deep_step(depth: u32, cycle: u32) -> (DeepDir, u32) {
+    if cycle < depth {
+        (DeepDir::Push, cycle + 1)
+    } else {
+        let pop_index = cycle - depth;
+        (DeepDir::Pop, depth - 1 - pop_index)
+    }
+}
+
+pub(crate) struct DeepBench {
+    /// `n = 2 * depth` — one `Start`/`Settle` pair per PUSH (cycles `0..depth`) and one per POP
+    /// (cycles `depth..2*depth`). Unlike `PushBench`'s cycle (an open-then-close round trip), each
+    /// cycle here performs exactly ONE nav op and settles it — see the module doc.
+    pub(crate) clock: BenchClock,
+    /// How many pages deep the push half goes before the walk turns around. `0` when the trigger
+    /// carried no ratingKey — see [`Self::new`]: neither `Detail` nor `Person` can open without
+    /// one, and `Library` (see `targets`' doc) cannot stand in for them here.
+    pub(crate) depth: u32,
+    pub(crate) rk: String,
+    /// The push half's rotation — **Detail and Person only.** `Library`, `PushBench`'s third leg,
+    /// is deliberately excluded: it opens through `app::bridge::nav_tab` → `nav_peer` →
+    /// `NavOp::SelectTab`, whose `NavStack::apply` arm retires EVERY entry above the root and
+    /// mints at most one new one over it — a peer swap, not a stack push (`ui/containers/stack.rs`).
+    /// Rotating it into a walk that is supposed to grow by one entry every step would not deepen
+    /// the stack at all past that step: it would silently collapse whatever this bench had built
+    /// back to depth <= 2, and every entry that swap retired leaves `NavStack::entries` for good —
+    /// so the pop half's later `nav_pop` calls would not even be popping the pages this bench
+    /// thinks it pushed. `PushBench` can afford the peer swap only because it closes back to depth
+    /// 1 every cycle regardless of which leg ran; a bench whose whole point is NOT popping in
+    /// between cannot.
+    pub(crate) targets: Vec<PushTarget>,
+    pub(crate) person: Option<(crate::plex::ServerId, String, String, String, String)>,
+    /// Logged once, the first time a `Person` step falls back to re-pushing `Detail` for want of
+    /// cast data (mirrors `PushBench::person_fallback_logged`; the fallback target differs because
+    /// `Library` is not a safe fallback here — see `targets`' doc).
+    pub(crate) person_fallback_logged: bool,
+    /// What was ACTUALLY pushed, in push order. The pop half's `Vec::pop()` is the same LIFO
+    /// `NavStack::entries` itself keeps, so a pop step always names and closes the right target
+    /// without re-deriving it from the (by-then-stale) push rotation index.
+    pub(crate) stack: Vec<PushTarget>,
+    /// The most recent step's direction and the target it opened/closed, latched at `Start` and
+    /// read back at `Settle` — same shape as `PushBench::opened`.
+    pub(crate) dir: DeepDir,
+    pub(crate) opened: PushTarget,
+}
+
+impl DeepBench {
+    pub(crate) fn new(depth: u32, rk: String) -> Self {
+        let empty_rk = rk.is_empty();
+        let depth = if empty_rk { 0 } else { depth };
+        if empty_rk {
+            crate::log(
+                "bench: deepbench has no ratingKey (deepbench=<depth>,<rk> or reuse navosc=<rk>) \
+                 — Library cannot deepen the stack (its entry point is a peer swap, \
+                 NavOp::SelectTab, not a push — see DeepBench::targets's doc), so there is \
+                 nothing left to rotate; running zero cycles",
+            );
+        }
+        let targets = if empty_rk { Vec::new() } else { vec![PushTarget::Detail, PushTarget::Person] };
+        Self {
+            clock: BenchClock::new(2 * depth),
+            depth,
+            rk,
+            targets,
+            person: None,
+            person_fallback_logged: false,
+            stack: Vec::new(),
+            dir: DeepDir::Push,
+            opened: PushTarget::Detail,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,5 +472,62 @@ mod tests {
         let bench = ModalBench::new(8, String::new());
         assert_eq!(bench.targets, vec![ModalTarget::Settings, ModalTarget::AccountMenu, ModalTarget::About]);
         assert!(!bench.targets.contains(&ModalTarget::ItemMenu));
+    }
+
+    #[test]
+    fn deep_bench_clock_emits_exactly_two_depth_start_settle_pairs_then_one_done() {
+        let depth = 4u32;
+        let steps = run(2 * depth, 1400, 20);
+        let mut expect = Vec::new();
+        for i in 0..2 * depth {
+            expect.push(BenchStep::Start(i));
+            expect.push(BenchStep::Settle(i));
+        }
+        expect.push(BenchStep::Done(2 * depth));
+        assert_eq!(steps, expect, "depth={depth} must emit 2*depth Start/Settle pairs, then Done");
+    }
+
+    #[test]
+    fn deep_step_pushes_depth_times_then_pops_back_to_the_root_one_at_a_time() {
+        let depth = 5u32;
+        let got: Vec<(DeepDir, u32)> = (0..2 * depth).map(|cycle| deep_step(depth, cycle)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (DeepDir::Push, 1), (DeepDir::Push, 2), (DeepDir::Push, 3), (DeepDir::Push, 4), (DeepDir::Push, 5),
+                (DeepDir::Pop, 4), (DeepDir::Pop, 3), (DeepDir::Pop, 2), (DeepDir::Pop, 1), (DeepDir::Pop, 0),
+            ],
+            "depth must climb 1..=depth on the way down, then descend depth-1..=0 on the way back"
+        );
+    }
+
+    #[test]
+    fn deep_bench_push_rotation_alternates_detail_and_person() {
+        let bench = DeepBench::new(6, "12345".into());
+        assert_eq!(bench.targets, vec![PushTarget::Detail, PushTarget::Person]);
+        let got: Vec<PushTarget> = (0..bench.depth)
+            .map(|cycle| bench.targets[bench_target_index(bench.targets.len(), cycle)])
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                PushTarget::Detail, PushTarget::Person, PushTarget::Detail,
+                PushTarget::Person, PushTarget::Detail, PushTarget::Person,
+            ]
+        );
+    }
+
+    #[test]
+    fn deep_bench_never_rotates_library_since_selecttab_would_collapse_the_stack() {
+        let bench = DeepBench::new(6, "12345".into());
+        assert!(!bench.targets.contains(&PushTarget::Library));
+    }
+
+    #[test]
+    fn deep_bench_without_a_ratingkey_runs_zero_cycles() {
+        let bench = DeepBench::new(100, String::new());
+        assert_eq!(bench.depth, 0, "Library cannot stand in for Detail/Person here, so there is nothing to push");
+        assert!(bench.targets.is_empty());
+        assert_eq!(bench.clock.n, 0);
     }
 }
