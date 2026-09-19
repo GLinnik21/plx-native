@@ -481,6 +481,26 @@
       "_ceiling_note": "bench_worst_ms=20.0, same first-guess reasoning as push-100 — modal-ramp's 75ms is the uncached Settings RAMP frame specifically (TV session 1/2 bimodal cost, documented above); this bench's settle point is the settled, dismissed-back-to-idle side of the cycle, closer to page-panel/about-panel's cached-host tier."
     },
     {
+      "name": "deep-100",
+      "tier": "ui",
+      "route": "home",
+      "item": "movie_in_home_catalog",
+      "bench": "deep",
+      "run_secs": 630,
+      "warmup_s": 8,
+      "_run_secs_note": "depth=100, so 2*depth=200 steps, each step two half-periods of DEEP_BENCH_PERIOD_MS=1400 (the nav op, then settle) — 560s nominal (200*2*1.4). 630s leaves ~70s of margin over warmup and the discrete per-frame tick granularity, same reasoning as push-100's own note.",
+      "bench_worst_ms": 20.0,
+      "bench_drift_ms": 2.0,
+      "bench_rss_growth_kb": 8192,
+      "bench_depth_rss_kb": 16384,
+      "triggers": {
+        "plxnative-deepbench": "100,$rk",
+        "plxnative-framedrop": true
+      },
+      "comment": "100 pages pushed with NO pop in between (rotating Detail/Person through the real nav_push, opportunistically refreshing Person from the live cast row exactly as push-100 does, falling back to re-pushing Detail — never Library — until cast data lands), then 100 pops back to the root one page at a time — 200 `bench:` lines total, each ONE nav op (`dir=push|pop`) rather than push-100's open+close round trip. Library is NOT in the rotation: its only entry point (app::bridge::nav_tab -> NavOp::SelectTab) retires every entry above the root and mints at most one new one over it, so rotating it in would collapse the very depth this scene exists to build rather than deepen it — see dev::scenarios::bench::DeepBench's module doc. Found while building this scene: NavStack (ui/containers/stack.rs) bounds only the MOUNTED body count at CAP=16 (the oldest body below the top is evicted — Screen torn down, Unmount delivered — once more than 15 stay live below a new top), never the logical stack depth itself, which is unbounded; every Entry (id, arg, ReturnState) is retained regardless, so depth=100 pushes 100 real entries but only ever mounts <=16 of them at once, and a Pop past CAP remounts from the retained ReturnState. bench_depth_rss_kb grades exactly that: retained per-level state past the first 10 must stay small once eviction is doing its job. plxnative-framedrop is required for the same reason as push-100/modal-100. NOT YET MEASURED on the television; run once to seed real baselines and replace this note.",
+      "_ceiling_note": "bench_worst_ms=20.0 reuses push-100's first-guess reasoning (same Detail/Person nav_push machinery, same DEEP_BENCH_PERIOD_MS=PUSH_BENCH_PERIOD_MS). bench_depth_rss_kb=16384 is a first guess for ~180kB/level over the 90 levels past step 10 (state, not pixels) pending a device baseline."
+    },
+    {
       "name": "legal-document",
       "tier": "ui",
       "route": "home",

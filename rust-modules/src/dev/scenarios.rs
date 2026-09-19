@@ -133,6 +133,8 @@ pub(crate) struct Scenarios {
     pub(crate) push_bench: Option<bench::PushBench>,
     /// `/tmp/plxnative-modalbench` — see [`bench`]'s module doc.
     pub(crate) modal_bench: Option<bench::ModalBench>,
+    /// `/tmp/plxnative-deepbench` — see [`bench`]'s module doc.
+    pub(crate) deep_bench: Option<bench::DeepBench>,
     /// The boot-time trigger flags the loop consults every frame after.
     pub(crate) dev: DevFlags,
 }
@@ -372,6 +374,22 @@ pub(crate) fn pushbench_value() -> Option<(u32, String)> {
 /// item menu WITHOUT navosc's bounce sets its own `<rk>` here instead.
 pub(crate) fn modalbench_value() -> Option<(u32, String)> {
     crate::dev::read("modalbench").map(|v| {
+        let v = v.trim();
+        if v.is_empty() {
+            return (bench::DEFAULT_BENCH_N, String::new());
+        }
+        let (n, rk) = v.split_once(',').unwrap_or((v, ""));
+        (parse_bench_n(n), rk.trim().to_string())
+    })
+}
+/// `/tmp/plxnative-deepbench[=<depth>[,<ratingKey>]]` — `(depth, ratingKey)`, the same shape as
+/// [`pushbench_value`]/[`modalbench_value`] and the same empty-value resolution (against
+/// `navosc`'s own ratingKey, by the caller, `app::boot::boot`) — `Library` cannot stand in for a
+/// missing ratingKey here the way it does for `PushBench`, so a `DeepBench` with no ratingKey at
+/// all runs zero cycles (`bench::DeepBench::new`'s own doc says why) rather than falling back to
+/// anything.
+pub(crate) fn deepbench_value() -> Option<(u32, String)> {
+    crate::dev::read("deepbench").map(|v| {
         let v = v.trim();
         if v.is_empty() {
             return (bench::DEFAULT_BENCH_N, String::new());
@@ -1445,6 +1463,9 @@ pub(crate) fn modal_osc_tick(app: &mut App, now: u32) {
 
 const PUSH_BENCH_PERIOD_MS: u32 = 1400;
 const MODAL_BENCH_PERIOD_MS: u32 = 1500;
+/// `DeepBench`'s Detail/Person legs are the same nav_push cost `PushBench`'s own Detail/Person
+/// legs measure, so this reuses `PushBench`'s half-period rather than inventing a fourth number.
+const DEEP_BENCH_PERIOD_MS: u32 = PUSH_BENCH_PERIOD_MS;
 
 /// `/proc/self/status`'s `VmRSS`, in kB — best effort, `0` where the file does not exist (the
 /// macOS simulator host). Not cached: a bench cycle is seconds apart, so one extra file read per
@@ -1488,6 +1509,14 @@ pub(crate) fn bench_frame_tick(app: &mut App, presented: bool) {
         }
     }
     if let Some(b) = app.scenarios.modal_bench.as_mut() {
+        if b.clock.phase == bench::BenchPhase::Measuring {
+            b.clock.frames += 1;
+            if total > b.clock.worst_ms {
+                b.clock.worst_ms = total;
+            }
+        }
+    }
+    if let Some(b) = app.scenarios.deep_bench.as_mut() {
         if b.clock.phase == bench::BenchPhase::Measuring {
             b.clock.frames += 1;
             if total > b.clock.worst_ms {
@@ -1676,6 +1705,126 @@ pub(crate) fn modal_bench_tick(app: &mut App, now: u32) {
         bench::BenchStep::Done(n) => {
             crate::log(&format!("bench: kind=modal done cycles={n}"));
             app.scenarios.modal_bench = None;
+        }
+    }
+}
+
+// =================================================================================================
+// deep bench (`/tmp/plxnative-deepbench`) — see `bench`'s module doc for why each cycle here is
+// one nav op, not a round trip, and why `Library` never appears in its rotation.
+// =================================================================================================
+
+/// Opportunistically refresh the Person target from whichever Detail item is CURRENT — the exact
+/// twin of `push_bench_refresh_person`, kept separate because it writes into `deep_bench` rather
+/// than `push_bench` (both benches may be armed at once, on different triggers).
+fn deep_bench_refresh_person(app: &mut App) {
+    let Some(d) = app.bridge.metadata_view().current() else { return };
+    let Some(c) = d.credit(0) else { return };
+    let key = c.person_key();
+    if key.is_empty() {
+        return;
+    }
+    let person = (d.sid, key, c.tag_key.clone(), c.tag.clone(), c.thumb.clone());
+    if let Some(b) = app.scenarios.deep_bench.as_mut() {
+        b.person = Some(person);
+    }
+}
+
+/// Opens `target` through the same bridge/nav call `push_bench_open`'s Detail/Person arms use,
+/// and returns the target ACTUALLY opened. **`Person` falls back to `Detail`, not `Library`**:
+/// unlike `PushBench` (free to fall back to a peer swap because it closes back to depth 1 every
+/// cycle regardless), this bench must grow by exactly one entry every push step, and only
+/// `Detail`/`Person` do that (`bench::DeepBench::targets`'s doc) — re-pushing the SAME item this
+/// step's Detail leg would have used keeps the depth invariant while still being a page a real
+/// user's own back-chain could produce (an item linking to itself through a cast credit, or
+/// simply pressed twice).
+fn deep_bench_open(app: &mut App, target: bench::PushTarget) -> bench::PushTarget {
+    use crate::screens::registry::ContentArg;
+    match target {
+        bench::PushTarget::Detail => {
+            let rk = app.scenarios.deep_bench.as_ref().unwrap().rk.clone();
+            crate::app::bridge::open_detail(&mut app.pages, &mut app.bridge,
+                crate::plex::current_server(), &rk, None, None);
+            bench::PushTarget::Detail
+        }
+        bench::PushTarget::Person => {
+            let person = app.scenarios.deep_bench.as_ref().unwrap().person.clone();
+            if let Some((sid, key, guid, name, thumb)) = person {
+                crate::app::bridge::nav_push(&mut app.pages,
+                    AppArg::Content(ContentArg::Person { sid, key, guid, name, thumb }));
+                bench::PushTarget::Person
+            } else {
+                let b = app.scenarios.deep_bench.as_mut().unwrap();
+                if !b.person_fallback_logged {
+                    b.person_fallback_logged = true;
+                    crate::log("bench: deep push step wanted Person but no cast data has landed \
+                        yet — re-pushing Detail instead this step (Library is not a safe fallback \
+                        here, see DeepBench::targets's doc)");
+                }
+                deep_bench_open(app, bench::PushTarget::Detail)
+            }
+        }
+        bench::PushTarget::Library => unreachable!("DeepBench::targets never includes Library"),
+    }
+}
+
+/// The pop half's single generic close. `Detail`/`Person` are both ordinary stacking pages, so one
+/// `nav_pop` (`push_bench_close`'s own Detail/Person arm) is the whole story — there is no
+/// Library-shaped tab-close counterpart because Library never opens here.
+fn deep_bench_close(app: &mut App) {
+    crate::app::bridge::nav_pop(&mut app.pages);
+}
+
+/// `/tmp/plxnative-deepbench` — see `bench`'s module doc. Called from `land_results` beside
+/// `push_bench_tick`, the same phase boundary: this bench changes the page stack every step too.
+pub(crate) fn deep_bench_tick(app: &mut App, now: u32) {
+    if app.scenarios.deep_bench.is_none() {
+        return;
+    }
+    deep_bench_refresh_person(app);
+    let step = {
+        let b = app.scenarios.deep_bench.as_mut().unwrap();
+        bench::bench_advance(&mut b.clock, now, DEEP_BENCH_PERIOD_MS)
+    };
+    match step {
+        bench::BenchStep::Nothing => {}
+        bench::BenchStep::Start(cycle) => {
+            let depth = app.scenarios.deep_bench.as_ref().unwrap().depth;
+            let (dir, _) = bench::deep_step(depth, cycle);
+            let opened = match dir {
+                bench::DeepDir::Push => {
+                    let b = app.scenarios.deep_bench.as_ref().unwrap();
+                    let target = b.targets[bench::bench_target_index(b.targets.len(), cycle)];
+                    let opened = deep_bench_open(app, target);
+                    app.scenarios.deep_bench.as_mut().unwrap().stack.push(opened);
+                    opened
+                }
+                bench::DeepDir::Pop => {
+                    deep_bench_close(app);
+                    app.scenarios.deep_bench.as_mut().unwrap().stack.pop()
+                        .unwrap_or(bench::PushTarget::Detail)
+                }
+            };
+            let b = app.scenarios.deep_bench.as_mut().unwrap();
+            b.dir = dir;
+            b.opened = opened;
+        }
+        bench::BenchStep::Settle(cycle) => {
+            let b = app.scenarios.deep_bench.as_ref().unwrap();
+            let (n, opened, dir, worst_ms, frames, cycle_start, depth) = (
+                b.clock.n, b.opened, b.dir, b.clock.worst_ms, b.clock.frames, b.clock.cycle_start,
+                b.stack.len(),
+            );
+            let dur_ms = now.wrapping_sub(cycle_start);
+            crate::log(&format!(
+                "bench: kind=deep cycle={}/{n} target={} dir={} depth={depth} worst_ms={worst_ms:.1} \
+                 frames={frames} dur_ms={dur_ms} rss_kb={}",
+                cycle + 1, opened.name(), dir.name(), read_rss_kb(),
+            ));
+        }
+        bench::BenchStep::Done(n) => {
+            crate::log(&format!("bench: kind=deep done cycles={n} rss_root_kb={}", read_rss_kb()));
+            app.scenarios.deep_bench = None;
         }
     }
 }
