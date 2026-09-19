@@ -1155,3 +1155,93 @@ Leads not yet taken:
 - Handle Settings' cold first open. Its `surf` is 46–56 ms on the CPU.
 
 `push-100` was not worked in this lane.
+
+## 2026-09-19 (modal-60 lane): who waits for the capture — `modal-100` 100/100 → 23/100 over
+
+**Why `Held::Ground` never fires.** `host::ground_drawn` is reached only through `Popover::panel`.
+Its only caller is `decision_alert`. Every container surface (item menu, account menu, About,
+tracks, alt sources, person bio, library menu) calls `widgets::panel_ground` directly. The stage
+would not help the bench anyway: a settled modal stops presenting, so every graded frame is a ramp
+frame.
+
+**Where the open's cost went.** A trace with every frame logged (`plxnative-framedrop=1`) of the
+16-cycle bench showed the pattern. The capture frame's CPU is short, 4–10 ms, because the CPU runs
+a frame ahead. Its GPU is a whole host render plus the composite. The second presented frame after
+it then waited 25–35 ms for a buffer, with under 1 ms of spans.
+
+`drawmask` pricing on the same bench (cycles over 20 ms, of 16):
+
+| leg | over |
+|---|---|
+| none | 15 |
+| field | 14 |
+| glass | 15 |
+| ambient | 16 |
+| image,text | 7 |
+| ambient,image,text,shadow,card,grad | 8 |
+
+So the cost is the host page's own content, rendered once into the snapshot, not any modal
+feature. It cannot be made cheaper per frame. What changed is who waits for it.
+
+**What landed (branch `perf/modal-60`).**
+
+1. **A capture is not followed by a present until the GPU has it.**
+   - After a capture frame's swap, `gfx::snapshot_frame_end` inserts a fence.
+   - `snapshot_frame_begin` latches whether that fence is still in flight. It is bounded by
+     `SNAPSHOT_DEFER_MAX` = 4 frames, and nothing is ever deferred without fences.
+   - `app::run`'s present gate skips those frames without consuming the idle gate's damage.
+   - `PopoverMotion::tick_gated` keeps a held surface at appear 0 through them. The ramp therefore
+     starts on an empty GPU queue, while the panel shows the capture frame, which is the unchanged
+     page.
+   - Tests: `a_snapshot_in_flight_defers_presents_for_a_bounded_number_of_frames` and
+     `a_held_surface_stays_at_zero_while_its_snapshot_is_in_flight`, both observed red.
+2. **The field is queued on the capture frame.**
+   - Both readers used to kick the reduction on the first ramp frame: `ModalStack::draw_scrims_on`
+     and `RouteGround::draw_host` (`ground_reads_host`). That work was the backlog the frame after
+     it paid (20–24 ms).
+   - The reduction is now waited out with the capture.
+   - Test: `the_page_is_read_on_the_capture_frame_and_not_on_a_held_frame_without_one`, observed
+     red.
+3. **The field read runs at the frame head.**
+   - `gfx::field_frame_begin` runs before `draw`, under the same due rule.
+   - `field_collect` no longer touches GL. A mid-frame `glReadPixels` ended framebuffer 0's render
+     pass.
+   - Test: `a_field_collect_answers_only_what_the_frame_head_read`.
+4. **`gfx::enc_u8`.** The texture quantisation uses 255 thresholds, bisected once against the
+   formula, instead of 5760 `powf` per latch. It is identical to the formula bit for bit:
+   `the_quantised_encode_is_the_powf_encode_to_the_bit`.
+
+**Results** (television, panel off):
+
+| | 16-cycle bench, over 20 ms | p50 | `modal-100` |
+|---|---|---|---|
+| before (3a3e640e) | 15/16 | 31.4 ms | not run in this lane |
+| + fence gate | 5/16 | 19.2 ms | |
+| + capture-frame kick | 5/16 | 17.7 ms | 23/100 over, p50 18.2, drift −8.8 |
+
+Regression scenes on the final binary:
+- `fps:item-menu`, `settings-root` and `home-acct-glass` pass at 60.
+- `modal-ramp` passes with worst robust_max 31.8 ms against its ceiling of 75.
+
+**Still over, by attribution** (`modal-100`, final binary):
+
+- **Settings' cold first open**, cycle 1: 91 ms, with `surf` 54 ms of CPU on its first draw. Later
+  opens are about 5 ms. This is not yet attributed inside the draw.
+- **Item-menu capture frames with `page` 28–33 ms**: cycles 3, 27, 99. The page pass blocks inside
+  the snapshot render. It coincides with Home's own texture traffic.
+- **About 15 cycles at 20.1–24.3 ms.** The steady ramp frame is about a vsync of GPU, so any extra
+  CPU on a frame shows. Examples:
+  - the field adopt, `scrims` 2.4–2.8 ms;
+  - a hero backdrop upload landing on an open frame, `prepare` 14 ms (`up=1 px=922320`).
+
+**RSS is not a leak.** `rss growth(last−cycle10)` = 15.5 MB fails the gate. The texture ledger
+(`tex=` on every cycle line) explains it:
+- Home's hero rotation (`HERO_AUTO_S` = 8 s) keeps running between opens. Each new hero adds a
+  1280x720 backdrop (3600 kB) to the bounded `TexCache`.
+- The ledger reaches 132 textures / 76 MB by cycle 31.
+- It then stays flat to cycle 100: RSS is 112.4 ± 0.7 MB from cycle 30 on.
+- Pinning `plxnative-heroidx` does not stop the rotation. The ledger sequence was identical with it.
+
+**Dismissals.** The first frame of every dismissal is 25–29 M GPU cycles and 14,298 tiles (HWCNT,
+previous lane). That is roughly seven full-screen passes. The bench does not grade it, but it is a
+real hitch.
