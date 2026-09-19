@@ -414,6 +414,9 @@ jobs:
           GPL_SCAN_SENTRY_DSN_DEV: ${{ vars.PLX_SENTRY_DSN_DEV }}
           GPL_SCAN_POSTHOG_KEY_DEV: ${{ vars.PLX_POSTHOG_KEY_DEV }}
           GPL_SCAN_SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          # The NDK the release was built with: prepare-source-release.py records its compiler hash
+          # and verify-source-rebuild.py rebuilds with it. Both refuse to run without it.
+          WEBOS_SDK: ${{ steps.ndk.outputs.sdk-dir }}
           FLAVOR: ${{ inputs.flavor }}
           RELEASE: "1"
         run: |
