@@ -117,14 +117,20 @@ fn persist_record_off_thread(next: Consent) {
     crate::storage_worker::drain_for_test();
 }
 
-/// Publish the prospective default before touching disk, then purge withdrawn records and stop
+/// Publish the prospective default before touching disk, then erase every queued record and stop
 /// native capture. The crash mark deliberately remains untouched by this path. The canonical
 /// clear, like `commit_live`'s write, is queued off the frame thread rather than run inline.
+///
+/// This is sign-out and Delete all local data, not a withdrawal, so the spool is ERASED rather
+/// than purged per category: a one-off report the departing account pressed Send for goes with it
+/// (`spool::purge_all_local`), and `delivery::forget` first retires every in-flight one-off send and
+/// the delivery states that would have shown a report's receipt.
 fn forget_live(_prior: &Consent) {
     let next = Consent::default();
     crate::telemetry::consent::install(next.clone());
     crate::player::report::clear_error_trace();
-    crate::telemetry::spool::purge_withdrawn(&next);
+    crate::telemetry::delivery::forget();
+    crate::telemetry::spool::purge_all_local();
     crate::telemetry::native::sync_change(&next);
     persist_forget_off_thread();
 }
@@ -285,6 +291,58 @@ mod tests {
             Some(caller_thread),
             "forget_live must persist off the frame thread, not inline"
         );
+    }
+
+    /// **Sign-out and Delete all local data erase a queued one-off report**, which a withdrawal
+    /// (`commit_live` → `spool::purge_withdrawn`) deliberately keeps.
+    #[test]
+    fn forget_live_erases_a_queued_one_off_report_that_a_withdrawal_keeps() {
+        use crate::telemetry::queue::{Category, Dest, Record};
+        use crate::telemetry::spool;
+        struct Redirect(std::path::PathBuf);
+        impl Drop for Redirect {
+            fn drop(&mut self) {
+                spool::set_test_path(None);
+                crate::telemetry::redirect_for_test(None);
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let _serial = crate::testlock::serial();
+        let saved = consent::current();
+        let dir = std::env::temp_dir().join(format!(
+            "plxnative-consent-adapter-oneoff-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let _redirect = Redirect(dir.clone());
+        crate::telemetry::redirect_for_test(Some(dir.join("telemetry.json")));
+        spool::set_test_path(Some(dir.join("spool.bin")));
+        let one_off = Record {
+            category: Category::OneOff,
+            dest: Dest::Sentry,
+            event_id: "one-off".into(),
+            body: b"{}".to_vec(),
+        };
+        assert!(spool::append(&one_off));
+
+        let mut adapter = ConsentAdapter::live();
+        let previous = decision("owned");
+        let withdrawn = Consent {
+            asked_version: consent::POLICY_VERSION,
+            ..Consent::default()
+        };
+        adapter.commit(&previous, &withdrawn);
+        let kept: Vec<String> = spool::read().into_iter().map(|r| r.event_id).collect();
+        adapter.forget(&withdrawn);
+        let erased = spool::read().is_empty();
+        if let Some(c) = saved {
+            consent::install(c);
+        }
+
+        assert_eq!(kept, vec!["one-off".to_string()], "a withdrawal purged the one-off report");
+        assert!(erased, "sign-out left the one-off report queued");
     }
 
     #[test]

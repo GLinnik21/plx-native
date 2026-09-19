@@ -346,9 +346,10 @@ machine name (`nas-home`) only in the Sources list and the failure read-out.
   sources and carries no annotation at all** — a shelf drawn from three servers cannot be named by
   one of them. Nothing on the tile, ever. The hero needs nothing: it *is* the shelf's focused tile.
 - **D — a dead source is absent from Home** (no shelf, no spinner) and its borrowed items leave
-  Continue Watching. Its library section draws the shared failure read-out: `Can't reach nas-home`,
-  reason `Shared by friend · your own server is fine.`, one action `Try again`, anchored in the
-  content region with only the head of the document beside it — no sort/filter chips, no count, no
+  Continue Watching. Its library section draws the shared failure read-out: `Can’t reach nas-home`,
+  reason `Shared by friend · your own server is fine.`, one action `Try again`, its verdict on the
+  same screen-space anchor as Home's and the sign-in failure's (`StatusOverlay::page`), with only
+  the head of the document beside it — no sort/filter chips, no count, no
   A–Z rail. **The head is whichever form it would take on a healthy page**, which since issue #68
   (2026-09-06) is not always the chip: `Layout::failed` takes `head_on()` and `draw_document` asks
   `lib_row_on()` first, so a dead library that shares its type with another favourite draws the

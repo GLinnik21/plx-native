@@ -250,12 +250,13 @@ pub(crate) const DEFAULT_HOLD_S: u64 = 60;
 /// records of a category that is now off, and the whole point of storing the category with the
 /// record is that this question has an answer.
 pub(crate) fn allowed(r: &Record, c: &consent::Consent) -> bool {
-    if !c.answered() {
-        return false;
-    }
     match r.category {
-        Category::Errors => c.errors,
-        Category::Usage => c.usage,
+        // A one-off report's consent is the single press that queued it, not this snapshot — see
+        // `queue::Category::OneOff`. Allowed whether or not the standing question was ever
+        // answered.
+        Category::OneOff => true,
+        Category::Errors => c.answered() && c.errors,
+        Category::Usage => c.answered() && c.usage,
     }
 }
 
@@ -557,6 +558,21 @@ mod tests {
         let nothing = consent::Consent::default();
         assert!(!allowed(&rec(Category::Errors, Dest::Sentry), &nothing));
         assert!(!allowed(&rec(Category::Usage, Dest::PostHog), &nothing));
+    }
+
+    /// **A `OneOff` record is allowed under ANY consent** — a snapshot that allows nothing, one
+    /// that was never answered, and one that answered No to both. Its consent was the explicit
+    /// press that queued it, not this snapshot.
+    #[test]
+    fn a_one_off_record_is_allowed_under_a_consent_that_allows_nothing() {
+        let unanswered = consent::Consent::default();
+        assert!(!unanswered.answered());
+        assert!(allowed(&rec(Category::OneOff, Dest::Sentry), &unanswered));
+
+        let refused = consent::apply(&unanswered, false, false, || panic!("minted for a refusal"));
+        assert!(refused.answered() && !refused.any());
+        assert!(allowed(&rec(Category::OneOff, Dest::Sentry), &refused));
+        assert!(!allowed(&rec(Category::Errors, Dest::Sentry), &refused));
     }
 
     /// **An unconfigured build cannot send, and says so as a compile-time fact.** This assertion

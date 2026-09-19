@@ -7,6 +7,11 @@
 //! there is still no network to hide behind. [`queue`] is the framing and caps, pure; [`spool`] is
 //! the file those bytes live in and the one owner every read and write goes through; [`sender`] is
 //! the socket, and the place the credential split decides which project this build reports to.
+//! [`incident`] is the closed onboarding-failure schema, sent either as a standing report or — to
+//! somebody who was never asked, or said Yes before it existed — as a one-off on an explicit press,
+//! whose bounded transport is [`oneoff`]. Either one's Report ID is watched in [`delivery`], which
+//! the flush, the spool and the one-off fallback all settle, so the screen can say "sent" only once
+//! a server accepted it.
 //!
 //! **Ungated**, like `diag::scrub` and `diag::schema`, and for the reason both of those record: the
 //! guarantees here are the tests — that no identifier exists before an opt-in, that withdrawal
@@ -15,6 +20,9 @@
 //! default gate does not build is a test that never runs.
 pub(crate) mod consent;
 pub(crate) mod crashreport;
+pub(crate) mod delivery;
+pub(crate) mod incident;
+pub(crate) mod oneoff;
 pub(crate) mod persistence;
 pub(crate) mod native;
 pub(crate) mod window;
@@ -82,7 +90,15 @@ pub(crate) fn activate_initial(c: Consent) -> native::Guard {
 /// The first candidate that exists and parses. Same search-order shape as the session file, and
 /// for the same reason: which of the two `/media` directories is writable depends on the jail
 /// profile, so the answer cannot be a literal.
+///
+/// `plxnative-consentstate` (dev builds) replaces what is stored, for the onboarding-report
+/// captures — see `dev::scenarios::consent_state_override`. Never under test: a stray trigger in
+/// the shared runtime directory must not change what a test's redirected file says.
 pub(crate) fn capture_initial() -> Consent {
+    #[cfg(not(test))]
+    if let Some(c) = crate::dev::scenarios::consent_state_override() {
+        return c;
+    }
     load_from(&candidates())
 }
 
@@ -179,6 +195,12 @@ static FLUSHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::
 /// At most one sleeping retry worker. Manual flushes may happen while it waits; the eventual wake
 /// is harmless, while spawning one sleeper per flush would consume this small device's thread cap.
 static RETRY_SCHEDULED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// A flush was asked for while one was running. That running flush may have read the spool
+/// before the record that asked was appended — a report queued mid-flush would then wait for the
+/// next unrelated trigger, its "Sending report…" turning for nothing — so the worker looks again
+/// on its way out. Raised BEFORE the `FLUSHING` swap, so a worker finishing between the two
+/// cannot miss it.
+static AGAIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Drain the spool on a worker thread.
 ///
@@ -191,7 +213,10 @@ static RETRY_SCHEDULED: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 pub(crate) fn flush_soon() {
     use std::sync::atomic::Ordering;
     if !sender::configured() {
-        return; // nothing in this build to send to — see `sender`'s module doc
+        // Nothing in this build to send to — see `sender`'s module doc. A report the person was
+        // shown a Report ID for can never get through, so it says so instead of spinning.
+        delivery::fail_unsettled();
+        return;
     }
     // A decision must EXIST — nothing loaded means nothing consented.
     let Some(c) = consent::current() else { return };
@@ -203,12 +228,17 @@ pub(crate) fn flush_soon() {
     // writes back an empty file, sending nothing.
     let _ = c.any();
     let decision_revision = consent::revision();
+    AGAIN.store(true, Ordering::Release);
     if FLUSHING.swap(true, Ordering::AcqRel) {
-        return; // one at a time — see FLUSHING
+        return; // one at a time — see FLUSHING; the running one looks again (AGAIN)
     }
+    AGAIN.store(false, Ordering::Release);
     let ok = crate::task::spawn_small("telemetry", move || {
         let retry = flush_now(&c, decision_revision);
         FLUSHING.store(false, Ordering::Release);
+        if AGAIN.load(Ordering::Acquire) {
+            flush_soon();
+        }
         if let Some(seconds) = retry {
             if RETRY_SCHEDULED.swap(true, Ordering::AcqRel) {
                 return;
@@ -266,6 +296,11 @@ fn flush_now(c: &consent::Consent, decision_revision: u32) -> Option<u64> {
 
 /// Process each destination as an independent logical lane. A dead/rate-limited Sentry endpoint
 /// cannot prevent a later PostHog record from being attempted, or vice versa.
+///
+/// Every outcome is also settled in [`delivery`] against the record's event id — a no-op for a
+/// record nobody is watching — so a Report ID on screen follows what the server actually said:
+/// accepted is `Delivered`, refused or retired unsent is `Failed`, and "not now" is `Held` for the
+/// record it was said about AND every record behind it in that lane, which stays spooled untried.
 fn process_records(
     all: &[queue::Record],
     c: &consent::Consent,
@@ -286,11 +321,17 @@ fn process_records(
             // Per record, against its own category — a spool written before a withdrawal can still
             // hold records of a category that is now off.
             if !sender::allowed(r, c) {
+                delivery::settle(&r.event_id, delivery::DeliveryState::Failed);
                 retired.push(r.event_id.clone());
                 continue;
             }
             match send(r) {
-                (sender::Verdict::Done, _) | (sender::Verdict::Hopeless, _) => {
+                (sender::Verdict::Done, _) => {
+                    delivery::settle(&r.event_id, delivery::DeliveryState::Delivered);
+                    retired.push(r.event_id.clone())
+                }
+                (sender::Verdict::Hopeless, _) => {
+                    delivery::settle(&r.event_id, delivery::DeliveryState::Failed);
                     retired.push(r.event_id.clone())
                 }
                 // Stop this lane only. The failure applies to later records for the same endpoint,
@@ -298,6 +339,9 @@ fn process_records(
                 (sender::Verdict::Keep, hold) => {
                     let s = hold.unwrap_or(sender::DEFAULT_HOLD_S);
                     retry = Some(retry.map_or(s, |old| old.min(s)));
+                    for held in all.iter().filter(|h| h.dest == dest).skip_while(|h| h.event_id != r.event_id) {
+                        delivery::settle(&held.event_id, delivery::DeliveryState::Held);
+                    }
                     break;
                 }
             }
@@ -376,6 +420,65 @@ mod tests {
         assert_eq!(attempted, vec!["s1", "p1"]);
         assert_eq!(retired, vec!["p1"]);
         assert_eq!(retry, Some(7));
+    }
+
+    fn watched_record(id: &str, category: queue::Category) -> queue::Record {
+        assert!(delivery::watch(id, delivery::DeliveryState::Queued, delivery::tenure()));
+        queue::Record { category, dest: queue::Dest::Sentry, event_id: id.into(), body: b"{}".to_vec() }
+    }
+
+    /// **(a)–(c), the one-off lane: a queued report is settled by what the flush actually heard.**
+    /// Queued until a server answers; a 2xx is Delivered; a refusal or a record retired unsent is
+    /// Failed; "not now" — and every record the held lane did not get to — is Held, still spooled.
+    #[test]
+    fn the_flush_settles_each_watched_one_off_by_what_the_server_said() {
+        use delivery::DeliveryState as D;
+        let _g = crate::testlock::serial();
+        delivery::forget();
+        let all = vec![
+            watched_record("done", queue::Category::OneOff),
+            watched_record("refused", queue::Category::OneOff),
+            watched_record("held", queue::Category::OneOff),
+            watched_record("behind", queue::Category::OneOff),
+        ];
+        assert_eq!(delivery::state("done"), Some(D::Queued), "queued is not delivered");
+        let c = consent::Consent::default();
+        process_records(&all, &c, || true, |r| match r.event_id.as_str() {
+            "done" => (sender::Verdict::Done, None),
+            "refused" => (sender::Verdict::Hopeless, None),
+            _ => (sender::Verdict::Keep, Some(60)),
+        });
+        let states: Vec<_> = ["done", "refused", "held", "behind"].iter().map(|id| delivery::state(id)).collect();
+        assert_eq!(states, vec![Some(D::Delivered), Some(D::Failed), Some(D::Held), Some(D::Held)]);
+        delivery::forget();
+    }
+
+    /// **(d), the standing lane: the same verdicts, and a withdrawal that retires it unsent is a
+    /// failure, not a delivery.**
+    #[test]
+    fn the_flush_settles_each_watched_standing_report_the_same_way() {
+        use delivery::DeliveryState as D;
+        let _g = crate::testlock::serial();
+        delivery::forget();
+        let on = consent::Consent {
+            asked_version: consent::POLICY_VERSION,
+            errors: true,
+            errors_id: Some("e".repeat(32)),
+            ..Default::default()
+        };
+        let all = vec![
+            watched_record("s-done", queue::Category::Errors),
+            watched_record("s-held", queue::Category::Errors),
+        ];
+        process_records(&all, &on, || true, |r| {
+            if r.event_id == "s-done" { (sender::Verdict::Done, None) } else { (sender::Verdict::Keep, None) }
+        });
+        assert_eq!((delivery::state("s-done"), delivery::state("s-held")), (Some(D::Delivered), Some(D::Held)));
+
+        let withdrawn = vec![watched_record("s-withdrawn", queue::Category::Errors)];
+        process_records(&withdrawn, &consent::Consent::default(), || true, |_| panic!("sent after a withdrawal"));
+        assert_eq!(delivery::state("s-withdrawn"), Some(D::Failed));
+        delivery::forget();
     }
 
     /// The identifier is 32 hex characters and two mints differ. Not a randomness test — it is a

@@ -704,7 +704,7 @@ fn resolved_none_insecure_outranks_refused_and_every_other_shape_is_unchanged() 
     ));
     assert!(matches!(
         resolved_without_roster(Resolved::None { refused: false, insecure: false }),
-        Err(Discovery::Silent)
+        Err(Discovery::Silent(None))
     ));
     assert!(
         matches!(
@@ -1835,4 +1835,62 @@ fn the_three_empty_outcomes_are_distinguished() {
         !roster[0].owned,
         "the primary is a share here, and that is the point"
     );
+}
+
+// ---- the discovery failure's incident (review round 2026-09-19) ----
+
+/// **The discovery-only retry reports the SAME failure the sign-in did.** On this branch the
+/// rediscovery worker is reached only through *Try again* after an authorized discovery failed
+/// (`retry_kind`), so the failure it ends on is that one again. It used to be minted as a kind of
+/// its own, which the per-launch dedup key reads as a new question — the person who answered
+/// Not now was asked again by their own retry. Both workers take the whole incident from
+/// [`discovery_failure`], the one table, and name no kind themselves.
+#[test]
+fn the_discovery_retry_reports_the_failure_it_retried() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/auth.rs"),
+    )
+    .expect("auth.rs must be readable from its own test");
+    for name in ["rediscovery_worker_with_output", "login_worker_with_output"] {
+        let body = extract_fn_body(&src, name);
+        assert!(body.contains("discovery_failure(&discovery)"), "`{name}` no longer uses the shared table");
+        assert!(
+            !body.contains("IncidentKind::Rediscovery") && !body.contains("IncidentKind::Discovery"),
+            "`{name}` names its own discovery incident kind instead of taking the shared table's:\n{body}"
+        );
+    }
+    let (_, silent) = discovery_failure(&Discovery::Silent(None)).expect("a failure");
+    assert_eq!(silent.kind, IncidentKind::Discovery(DiscoveryClass::Silent));
+}
+
+/// **A token plex.tv refused is an authorization failure, not a network one.** `/resources`
+/// answering 401 or 403 means plex.tv heard us and said no — "check the connection" sends the
+/// person to a router that is fine, and the report must not be grouped with real silence.
+#[test]
+fn a_refused_token_is_reported_as_authorization_not_as_silence() {
+    for status in [401u16, 403] {
+        let refused = [
+            Ok(status),
+            // A refusal whose body broke is still that refusal (`net::response_status`).
+            Err(crate::net::RequestFailure {
+                cause: crate::net::RequestError::Transport,
+                status: Some(status),
+                body_limit: None,
+                curl_rc: Some(18),
+            }),
+        ];
+        for last in refused {
+            let (message, incident) =
+                discovery_failure(&Discovery::Silent(Some(last))).expect("a failure");
+            assert_eq!(incident.kind, IncidentKind::Authorization, "{status}");
+            assert_eq!(incident.http_status, Some(status));
+            assert!(!message.contains("connection"), "{status}: {message:?} blames the network");
+        }
+    }
+    // Real silence, and other answers, stay what they were.
+    for last in [None, Some(Ok(503)), Some(Ok(429))] {
+        let (message, incident) = discovery_failure(&Discovery::Silent(last)).expect("a failure");
+        assert_eq!(incident.kind, IncidentKind::Discovery(DiscoveryClass::Silent), "{last:?}");
+        assert!(message.contains("connection"));
+    }
 }

@@ -275,6 +275,32 @@ fn the_status_readout_tells_loading_empty_and_failed_apart() {
     }
 }
 
+/// **A failed Home stands on the page read-out's anchor** — the verdict hanging from
+/// `StatusOverlay::FULL_ANCHOR_TOP` and *Try again* stacked `space::LG` under it (no reason), the
+/// same anchor a failed Library section and a failed sign-in use (each screen's own test pins its
+/// side), in the one wording every screen uses for an unreachable server. The hit rect is the drawn pill: it is
+/// built from the same overlay the draw uses.
+#[test]
+fn a_failed_home_stands_on_the_page_readout_lines() {
+    use crate::ui::widgets::StatusOverlay;
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Failed);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    let (caption, kind, action) = status_read(snapshot.view()).unwrap();
+    assert_eq!((caption.to_str().unwrap(), kind), ("Can\u{2019}t reach your Plex server", StatusKind::Failed));
+    assert_eq!(action.unwrap().to_str().unwrap(), "Try again");
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let overlay = status_overlay(snapshot.view()).unwrap();
+    let verdict = overlay.verdict_band_measured(&measure);
+    assert_eq!(verdict.y, StatusOverlay::FULL_ANCHOR_TOP);
+    let drawn = overlay.action_frame_measured(&measure).unwrap();
+    assert_eq!(drawn.y, verdict.y + verdict.h + crate::ui::theme::space::LG);
+    let hit = screen(snapshot.view()).hero_button_rect(snapshot.view(), 0, &measure).unwrap();
+    assert_eq!([hit.x, hit.y, hit.w, hit.h], [drawn.x, drawn.y, drawn.w, drawn.h]);
+}
+
 #[test]
 fn no_shelves_means_no_grid_snap() {
     assert_eq!(pinned_snap(1.0, 0), 0.0);

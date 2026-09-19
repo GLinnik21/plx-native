@@ -42,7 +42,14 @@ impl Observation {
                         for byte in qr_png { w.u8(*byte); }
                     }
                     LoginProgress::Authorized { epoch, token } => { w.u8(2).u64(*epoch).str(token); }
-                    LoginProgress::Failed { epoch, message } => { w.u8(3).u64(*epoch).str(message); }
+                    LoginProgress::Failed { epoch, message, incident } => {
+                        w.u8(3).u64(*epoch).str(message);
+                        owner::write_incident_context(w, incident);
+                    }
+                    LoginProgress::LinkTrouble { epoch, trouble } => {
+                        w.u8(5).u64(*epoch);
+                        w.option(trouble.as_ref(), |w, c| owner::write_incident_context(w, c));
+                    }
                     LoginProgress::SignedIn { epoch, server, sources, users } => {
                         w.u8(4).u64(*epoch); write_server(w, server); write_sources(w, sources);
                         w.seq(users.len()); for user in users { write_tile(w, user); }
@@ -118,7 +125,7 @@ impl Observation {
                 let login = matches!(pending.key.op, SessionOp::Login | SessionOp::Rediscover);
                 match p {
                     LoginProgress::CodeReplacing { epoch } | LoginProgress::CodeReady { epoch, .. }
-                    | LoginProgress::Authorized { epoch, .. } =>
+                    | LoginProgress::Authorized { epoch, .. } | LoginProgress::LinkTrouble { epoch, .. } =>
                         (*epoch, None, pending.key.op == SessionOp::Login && !terminal),
                     LoginProgress::Failed { epoch, .. } | LoginProgress::SignedIn { epoch, .. } =>
                         (*epoch, None, login && terminal),
