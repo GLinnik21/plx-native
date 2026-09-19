@@ -363,9 +363,11 @@ pub(crate) fn server_slot() -> Option<Result<u16, String>> {
 /// libav: the hook writes its `*** RUST PANIC` line, the unwind stops at the callback's own
 /// boundary, and the process aborts with `plex_run`'s frame intact. That leaves BOTH a panic
 /// record and a native SIGABRT envelope, the pair `telemetry::crashreport` must send as the one
-/// panic. **Not a `panic!` straight in here**: that unwinds `plex_run`'s own frame first, which
-/// drops the telemetry `Guard` — the native backend is stopped and its database deleted before
-/// the abort (dev set, 2026-09-19), so no envelope is written and the pairing is never exercised.
+/// panic. A `panic!` straight in here would instead unwind `plex_run`'s own frame before aborting
+/// at its boundary; that used to drop the telemetry `Guard` and stop the native backend before the
+/// abort (dev set, 2026-09-19), so no envelope was written. The `Guard` now stays armed while a
+/// panic unwinds (`telemetry::native`'s `Drop for Guard`), but the callback remains the shape
+/// worth exercising: it is how a real panic under libav dies.
 ///
 /// **Compiled out of a release build** with the rest of `devtriggers`, so a shipped binary has no
 /// path to it at all. Called after telemetry boot (so native capture can be armed) but before SDL

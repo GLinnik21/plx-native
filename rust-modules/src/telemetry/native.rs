@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 const DATABASE_DIR: &str = "plxnative-sentry-db";
 const PENDING_DIR: &str = "plxnative-sentry-pending";
 
-/// Keep the capture backend alive until the app leaves `plex_run`.
+/// Keep the capture backend alive until the app leaves `plex_run` cleanly (see the `Drop` impl).
 pub(crate) struct Guard;
 
 /// Enough identity to pair a native envelope with the crash log's record of the same death. There
@@ -40,8 +40,16 @@ pub(crate) struct CrashKey {
     pub signal: u32,
 }
 
+/// **A Guard dropped by a panic's unwind leaves the backend armed.** The Guard lives in
+/// `plex_run`'s frame (inside `App`), so a panic that drops it is unwinding towards that
+/// `extern "C"` boundary, and the boundary aborts the process. Tearing the backend down here — stopping it and deleting its
+/// database — would take the SIGABRT handler away microseconds before the abort it exists to
+/// capture, so no envelope would ever be written. Only a clean exit shuts it down.
 impl Drop for Guard {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            return;
+        }
         stop();
         remove_database();
     }
@@ -663,17 +671,66 @@ impl PendingNative {
 }
 
 /// Every complete native envelope, oldest first. Malformed ones are deleted here, as nothing can
-/// ever make them sendable; valid ones are left exactly where they are.
+/// ever make them sendable; valid ones are left exactly where they are, and so are ones that could
+/// not be read this boot (see [`Loaded::Deferred`]).
+///
+/// Reads nothing unless `crashreport::may_read_crash_data` — the same gate as the crash log.
 pub(crate) fn read_pending() -> Vec<PendingNative> {
-    if !super::consent::allows_errors() || super::sender::sentry_dsn().is_none() {
+    if !super::crashreport::may_read_crash_data() {
         return Vec::new();
     }
-    let Ok(entries) = std::fs::read_dir(pending_dir()) else {
+    read_pending_in(&pending_dir())
+}
+
+/// What one pending envelope file turned out to be.
+enum Loaded {
+    Ready(String, Vec<u8>, Option<CrashKey>),
+    /// Permanently unsendable: not a regular file (a symlink, a directory), over `MAX_RECORD`, or
+    /// bytes that were read in full and that [`event_from_envelope`] refused. Deleted.
+    Rejected,
+    /// The bytes could not be READ this time — a metadata, open or read I/O error. That says
+    /// nothing about the envelope, so it stays on disk for the next boot rather than costing a
+    /// crash report to a transient fault. A file that is unreadable for good is never deleted by
+    /// this path and costs one failed read per boot; that is the price of never deleting a report
+    /// we could not look at, and it is bounded by the directory's own contents.
+    Deferred,
+    /// Gone between the directory listing and the read. Nothing to count or delete.
+    Vanished,
+}
+
+fn load_envelope(path: &Path) -> Loaded {
+    use std::io::Read;
+    let max = super::queue::MAX_RECORD;
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Loaded::Vanished,
+        Err(_) => return Loaded::Deferred,
+    };
+    if !meta.file_type().is_file() || meta.len() > max as u64 {
+        return Loaded::Rejected;
+    }
+    let mut bytes = Vec::new();
+    let read = std::fs::File::open(path)
+        .and_then(|f| f.take(max as u64 + 1).read_to_end(&mut bytes));
+    match read {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Loaded::Vanished,
+        Err(_) => Loaded::Deferred,
+        Ok(_) if bytes.len() > max => Loaded::Rejected,
+        Ok(_) => match event_from_envelope(&bytes) {
+            Some((event_id, body, key)) => Loaded::Ready(event_id, body, key),
+            None => Loaded::Rejected,
+        },
+    }
+}
+
+fn read_pending_in(dir: &Path) -> Vec<PendingNative> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut paths: Vec<PathBuf> = entries.filter_map(Result::ok).map(|e| e.path()).collect();
     paths.sort();
     let mut rejected = 0usize;
+    let mut deferred = 0usize;
     let mut pending = Vec::new();
     for path in paths {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
@@ -682,29 +739,22 @@ pub(crate) fn read_pending() -> Vec<PendingNative> {
         if !envelope_filename(name) {
             continue;
         }
-        let parsed = std::fs::symlink_metadata(&path)
-            .ok()
-            .filter(|m| m.file_type().is_file() && m.len() <= super::queue::MAX_RECORD as u64)
-            .and_then(|_| {
-                use std::io::Read;
-                let mut bytes = Vec::new();
-                std::fs::File::open(&path)
-                    .ok()?
-                    .take(super::queue::MAX_RECORD as u64 + 1)
-                    .read_to_end(&mut bytes)
-                    .ok()?;
-                (bytes.len() <= super::queue::MAX_RECORD).then_some(bytes)
-            })
-            .and_then(|b| event_from_envelope(&b));
-        let Some((event_id, body, key)) = parsed else {
-            rejected += 1;
-            let _ = std::fs::remove_file(&path);
-            continue;
-        };
-        pending.push(PendingNative { path, event_id, body, key });
+        match load_envelope(&path) {
+            Loaded::Ready(event_id, body, key) => {
+                pending.push(PendingNative { path, event_id, body, key })
+            }
+            Loaded::Rejected => {
+                rejected += 1;
+                let _ = std::fs::remove_file(&path);
+            }
+            Loaded::Deferred => deferred += 1,
+            Loaded::Vanished => {}
+        }
     }
-    if rejected != 0 {
-        crate::log(&format!("telemetry: native crash envelopes rejected={rejected}"));
+    if rejected != 0 || deferred != 0 {
+        crate::log(&format!(
+            "telemetry: native crash envelopes rejected={rejected} deferred={deferred}"
+        ));
     }
     pending
 }
@@ -1216,5 +1266,76 @@ mod tests {
             .unwrap();
         wrong_id[pos] = b'a';
         assert!(event_from_envelope(&wrong_id).is_none());
+    }
+
+    /// A Guard dropped by a panic's unwind must leave the native backend armed: the unwind ends at
+    /// an `extern "C"` boundary in an abort, and that abort is the crash worth capturing.
+    #[test]
+    fn a_guard_dropped_while_unwinding_keeps_the_native_database() {
+        let _g = crate::testlock::serial();
+        let db = database_dir();
+        std::fs::create_dir_all(&db).unwrap();
+        let unwound = std::panic::catch_unwind(|| {
+            let _guard = Guard;
+            panic!("unwinding past the telemetry guard");
+        });
+        assert!(unwound.is_err());
+        let kept = db.exists();
+        let _ = std::fs::remove_dir_all(&db);
+        assert!(
+            kept,
+            "a Guard dropped while unwinding a panic deleted the native database, so the abort that follows is captured by nothing"
+        );
+    }
+
+    /// The other branch: a clean exit still tears the backend down and removes its database.
+    #[test]
+    fn a_guard_dropped_on_a_clean_exit_tears_the_backend_down() {
+        let _g = crate::testlock::serial();
+        let db = database_dir();
+        std::fs::create_dir_all(&db).unwrap();
+        drop(Guard);
+        let removed = !db.exists();
+        let _ = std::fs::remove_dir_all(&db);
+        assert!(removed, "a clean Guard drop must remove the native database");
+    }
+
+    /// An envelope that cannot be READ right now is not a bad envelope: it stays for the next boot.
+    /// One whose bytes were read and rejected is still deleted.
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_envelope_is_deferred_and_a_malformed_one_deleted() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir()
+            .join(format!("plxnative-sentry-defer-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let unreadable_id = "91ad1844535b4dac89d95384165d703c";
+        let unreadable = dir.join(format!("{unreadable_id}.envelope"));
+        std::fs::write(
+            &unreadable,
+            envelope(unreadable_id, serde_json::json!({"platform": "native"})),
+        )
+        .unwrap();
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let malformed = dir.join("0a1b2c3d4e5f60718293a4b5c6d7e8f9.envelope");
+        std::fs::write(&malformed, b"not an envelope").unwrap();
+
+        // Root reads a 0000 file anyway, which removes the only way this test can make a read fail.
+        let root = std::fs::File::open(&unreadable).is_ok();
+        let pending = read_pending_in(&dir);
+        let unreadable_kept = unreadable.exists();
+        let malformed_kept = malformed.exists();
+        let _ = std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o600));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(!malformed_kept, "a malformed envelope must still be deleted");
+        if !root {
+            assert!(pending.is_empty());
+            assert!(
+                unreadable_kept,
+                "an envelope that failed to OPEN was deleted instead of being left for the next boot"
+            );
+        }
     }
 }
