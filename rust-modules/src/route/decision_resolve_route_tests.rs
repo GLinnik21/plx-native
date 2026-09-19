@@ -2043,3 +2043,23 @@ fn the_preview_tells_a_container_remux_apart_from_a_re_encode() {
     // nothing playable loaded (a show still resolving its episode) answers nothing at all
     assert_eq!(playback_preview(&item("h264", "", "aac")), None);
 }
+
+#[test]
+fn restored_sidecar_is_part_of_the_route_contract() {
+    let mut ps = PlaybackSession::IDLE;
+    let _guard = fresh_registry(&mut ps);
+    let sid = ServerId::from_raw(0);
+    let mut meta = crate::stores::metadata::MetadataStore::default();
+    let playing = Some(fourk_item_with_subs(
+        sid, vec![], vec![crate::metadata::Stream {
+            id: 77, external: true, selected: true, codec: "srt".into(),
+            key: "/library/streams/77".into(), ..Default::default()
+        }],
+    ));
+    let start = super::apply_plan(&mut ps, &mut meta, Plan {
+        sid, playing, url: "http://fixture.invalid/movie.mkv".into(), ..Default::default()
+    }, "rk-4k");
+    settle_plan_start_in_unit_test(&mut ps, start);
+    assert_eq!(cur_sub_sid(&ps), 77, "timeline and later audio/quality transcodes must retain the restored sidecar");
+    crate::player::sidecar::reset();
+}

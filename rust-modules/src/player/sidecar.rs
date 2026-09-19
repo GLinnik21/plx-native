@@ -87,12 +87,6 @@ fn state() -> std::sync::MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The sidecar the viewer has selected (0 = none) — the track menu's checkmark reads this when
-/// the route has no subtitle id of its own (a selection restored at start of play).
-pub(crate) fn selected_stream_id() -> i64 {
-    state().want
-}
-
 /// Select the sidecar `stream_id`, fetching `key` from `server` unless that file is already
 /// loaded. MAIN THREAD.
 pub(crate) fn select(server: crate::plex::ServerId, stream_id: i64, key: String) {
@@ -193,14 +187,14 @@ pub(crate) fn reset() {
 /// session, or on another Plex client. The embedded twin is `route::pick_dp_subtitle`, which
 /// leaves an external selection off because nothing could render it; now something can.
 /// Direct play only (the caller's gate): a transcode start keeps subtitles off, as before.
-pub(crate) fn restore_server_selection(server: crate::plex::ServerId, meta: crate::metadata::MetadataView<'_>) {
-    let Some(item) = meta.playing() else {
-        return;
-    };
+pub(crate) fn restore_server_selection(server: crate::plex::ServerId, meta: crate::metadata::MetadataView<'_>) -> Option<i64> {
+    let item = meta.playing()?;
     if let Some(s) = item.subs.iter().find(|s| s.selected && s.sidecar_renderable()) {
         super::log(&format!("server-selected sidecar subtitle: sid={}", s.id));
         select(server, s.id, s.key.clone());
+        return Some(s.id);
     }
+    None
 }
 
 /// The line to draw at `now_ns`, if a sidecar is selected and this is a direct play.

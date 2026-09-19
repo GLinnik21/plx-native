@@ -5907,6 +5907,13 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
     } else {
         install_active_encoder(&active_encoder);
     }
+    // Restore the external renderer AND the route's stream identity before publishing the
+    // start contract, so timeline reports and later audio/quality transcodes keep this pick.
+    if plan.sub_render_ordinal.is_none() && !is_transcoding(ps) {
+        if let Some(id) = crate::player::sidecar::restore_server_selection(cur_sid(ps), meta.view()) {
+            set_subtitle(ps, id);
+        }
+    }
     let start = prepare_playback_landing(ps, !ps.url.is_empty());
     // SHARED.desired_audio_idx is read by the DEMUX THREAD on every reopen — main thread only.
     if let Some(ord) = plan.feed_audio_ordinal {
@@ -5921,13 +5928,6 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
             plan.sub_sid
         ));
         crate::player::request_subtitle(ord);
-    } else if !is_transcoding(ps) {
-        // …and the EXTERNAL twin: `pick_dp_subtitle` leaves a server-selected sidecar alone
-        // because the demuxer cannot render it, but `player::sidecar` can — on direct play only.
-        // It rides outside the plan on purpose: a sidecar is no demuxer ordinal and no burn, so
-        // nothing in the route contract changes; the track menu reads the selection back from
-        // `sidecar::selected_stream_id`.
-        crate::player::sidecar::restore_server_selection(cur_sid(ps), meta.view());
     }
     // A landing is a DISCRETE change to what is on screen, so it owes the present gate a poke —
     // `ui::idle::invalidate`'s call-site list is that module's correctness argument. The caller

@@ -144,12 +144,7 @@ impl TrackMenuState {
                     .flatten()
                     .or_else(|| t.audio.iter().position(|s| s.default))
                     .unwrap_or(0) as c_int;
-                // the route's id first; a sidecar RESTORED at start of play lives outside the
-                // route (see `route::apply_plan`), so its own selection is the fallback
-                let ssid = match crate::route::cur_sub_sid(ps) {
-                    0 => crate::player::sidecar::selected_stream_id(),
-                    id => id,
-                };
+                let ssid = crate::route::cur_sub_sid(ps);
                 let sub = (ssid > 0)
                     .then(|| t.subs.iter().position(|s| s.id == ssid))
                     .flatten()
