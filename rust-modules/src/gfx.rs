@@ -5232,25 +5232,76 @@ pub(crate) fn field_kick(src: Option<c_uint>) -> Option<FieldTicket> {
         // After the passes, so it signals once they are done. Replacing the previous run's fence
         // destroys it: that run's ticket is `Lost` from here on and nobody will ask.
         FIELD_FENCE = crate::egl::fence::Fence::insert().map(|f| (FIELD_RUNS, f));
+        FIELD_KICK_SWAPS = FIELD_SWAPS.load(Ordering::Relaxed);
         Some(FieldTicket {
             run: FIELD_RUNS,
-            swaps: FIELD_SWAPS.load(Ordering::Relaxed),
+            swaps: FIELD_KICK_SWAPS,
         })
     }
 }
 
-/// **The field a [`field_kick`] queued, once a frame has ended since** — [`FieldRead::Pending`]
-/// before that, [`FieldRead::Lost`] if a later run has reused the targets. Reads an FBO, never
-/// framebuffer 0, so it is legal on a video-plane frame and inside a blur source pass alike.
-pub(crate) fn field_collect(t: FieldTicket) -> FieldRead {
+/// The live run's kick frame (its ticket's `swaps`), so the frame head can ask
+/// [`field_ticket_state`] about it without a ticket in hand. Main render thread only.
+static mut FIELD_KICK_SWAPS: u32 = 0;
+/// The field the frame head read, with the run it belongs to. Main render thread only.
+static mut FIELD_LANDED: Option<(u32, [[f32; 3]; FIELD_CELLS])> = None;
+
+/// **Read the live run's field at the HEAD of a drawn frame, before anything is drawn.**
+///
+/// `app::run` calls it first thing in a drawn frame. The read used to happen wherever a consumer
+/// collected — between the page and the surfaces, after framebuffer 0 already held a frame's worth
+/// of tiles — and a `glReadPixels` there ends framebuffer 0's render pass on Midgard: the rest of
+/// the frame then reloads every tile it had drawn (+2743 tiles, ~12 M GPU cycles on the frame a
+/// modal's dim latched, 2026-09-19). At the head there is nothing of this frame to split. The
+/// decision is still [`field_ticket_state`]'s — a frame after the kick AND past its fence — so the
+/// read never waits for the GPU either; one it refuses is simply asked again next frame.
+pub(crate) fn field_frame_begin() {
     // SAFETY: main render thread, like every other access to the chain.
     unsafe {
         let Some(c) = (*std::ptr::addr_of!(FIELDST)).as_ref() else {
-            return FieldRead::Lost;
+            return;
         };
-        let finished = field_run_finished(t.run);
-        match field_ticket_state(t, FIELD_RUNS, FIELD_SWAPS.load(Ordering::Relaxed), finished) {
-            TicketState::Due => field_readback(c).map_or(FieldRead::Lost, FieldRead::Ready),
+        let run = FIELD_RUNS;
+        if run == 0 || matches!(*std::ptr::addr_of!(FIELD_LANDED), Some((r, _)) if r == run) {
+            return;
+        }
+        let t = FieldTicket {
+            run,
+            swaps: FIELD_KICK_SWAPS,
+        };
+        let swaps = FIELD_SWAPS.load(Ordering::Relaxed);
+        if field_ticket_state(t, run, swaps, field_run_finished(run)) == TicketState::Due {
+            if let Some(field) = field_readback(c) {
+                FIELD_LANDED = Some((run, field));
+            }
+        }
+    }
+}
+
+/// [`field_collect`]'s answer, as a pure function of the ticket, the live run and the run whose
+/// field [`field_frame_begin`] last read.
+pub(crate) fn field_answer(t: FieldTicket, runs: u32, landed: Option<u32>) -> TicketState {
+    if t.run != runs {
+        TicketState::Lost
+    } else if landed == Some(t.run) {
+        TicketState::Due
+    } else {
+        TicketState::Pending
+    }
+}
+
+/// **The field a [`field_kick`] queued, once the frame head has read it** — [`FieldRead::Pending`]
+/// before that, [`FieldRead::Lost`] if a later run has reused the targets. Touches no GL: the read
+/// itself is [`field_frame_begin`]'s, at the head of a frame, for the reason given there.
+pub(crate) fn field_collect(t: FieldTicket) -> FieldRead {
+    // SAFETY: main render thread, like every other access to the chain.
+    unsafe {
+        if (*std::ptr::addr_of!(FIELDST)).is_none() {
+            return FieldRead::Lost;
+        }
+        let landed = *std::ptr::addr_of!(FIELD_LANDED);
+        match field_answer(t, FIELD_RUNS, landed.map(|l| l.0)) {
+            TicketState::Due => landed.map_or(FieldRead::Lost, |l| FieldRead::Ready(l.1)),
             TicketState::Pending => FieldRead::Pending,
             TicketState::Lost => FieldRead::Lost,
         }
@@ -5456,6 +5507,21 @@ mod tests {
         assert_eq!(field_ticket_state(t, 4, 40, false), TicketState::Pending, "late but unfinished");
         assert_eq!(field_ticket_state(t, 4, 10, true), TicketState::Pending, "the floor still holds");
         assert_eq!(field_ticket_state(t, 5, 40, false), TicketState::Lost, "a reused chain is lost either way");
+    }
+
+    /// **The read happens at the frame's HEAD; a collect mid-frame only answers what landed.** A
+    /// `glReadPixels` between the page and the surfaces ends framebuffer 0's render pass on Midgard
+    /// and makes the rest of the frame reload every tile it had drawn, so `field_collect` must
+    /// never touch GL: it is `Due` only for the run [`field_frame_begin`] already read, `Pending`
+    /// for the live run until then, and `Lost` for any other run whatever landed.
+    #[test]
+    fn a_field_collect_answers_only_what_the_frame_head_read() {
+        let t = FieldTicket { run: 4, swaps: 10 };
+        assert_eq!(field_answer(t, 4, None), TicketState::Pending, "nothing read yet");
+        assert_eq!(field_answer(t, 4, Some(3)), TicketState::Pending, "an older run landed");
+        assert_eq!(field_answer(t, 4, Some(4)), TicketState::Due, "the head read this run");
+        assert_eq!(field_answer(t, 5, Some(4)), TicketState::Lost, "a later run reused the targets");
+        assert_eq!(field_answer(t, 5, Some(5)), TicketState::Lost, "another run's page");
     }
 
     #[test]

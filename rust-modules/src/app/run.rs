@@ -454,6 +454,9 @@ unsafe fn present_and_swap(
     if fr.present {
         // the glyph cache's frame serial (phase 11, text.rs's hot window): a drawn frame
         crate::text::begin_frame();
+        // A finished underlay-field reduction is read HERE, before framebuffer 0 holds anything
+        // of this frame — a read between the page and the surfaces splits its render pass.
+        crate::gfx::field_frame_begin();
         let (_vx, _vy, _vw, _vh) = draw(app, fr);
         app.instr.mark(crate::diag::heartbeat::Phase::Draw); // draw
         // dev capture stream: grab this finished frame before the swap (after the last draw,
