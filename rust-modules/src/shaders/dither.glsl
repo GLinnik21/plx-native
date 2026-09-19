@@ -23,7 +23,7 @@
 // IT IS NOT A PRECISION PROBLEM, and reaching for `highp` is the expensive wrong turn. An fp16
 // interpolant across a 1920px quad steps by about 1/1000 of the quad, i.e. a colour error far under
 // one 8-bit quantum; promoting a mix to fp32 changes nothing you can see and, measured with
-// `plxnative-hwcnt`, priced the hero's corner scrim at ~4.5 arithmetic words a fragment — 3.2M
+// the HWCNT vinstr profiler, priced the hero's corner scrim at ~4.5 arithmetic words a fragment — 3.2M
 // cycles of an 11.7M-cycle frame. Banding is an OUTPUT-QUANTISATION problem. The cure is noise at
 // the output, not more bits in the middle. (`fs_src.frag`'s own PRECISION note is about something
 // else entirely — pixel COORDINATES feeding an SDF, where fp16 really does dash a 1px edge.)
@@ -36,7 +36,7 @@
 //     `if (u_dither > 0.0)` replaced it and was believed near-free; it is not. On the two per-rect
 //     programs it measured +4M shader words a frame with every draw answering 0 (2026-09-04), and
 //     on a scrolling Library the branch alone was +5.8M arithmetic words a frame, 49 fps against 59
-//     with the same fetch unguarded (2026-09-19, `plxnative-hwcnt`). So the helpers below are
+//     with the same fetch unguarded (2026-09-19, the HWCNT vinstr profiler). So the helpers below are
 //     straight-line, and the one broad surface that must NOT dither — the hero scrim over
 //     artwork — is a plain twin program (`gfx::ambient_program`, `dither_stub.glsl`). A field under
 //     `gfx::dither_for_field`'s threshold pays one idle-pipe fetch times 0. Only the three

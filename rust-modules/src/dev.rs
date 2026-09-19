@@ -343,7 +343,7 @@ pub(crate) fn server_slot() -> Option<Result<u16, String>> {
     None
 }
 
-/// **Crash the app on purpose** — `plxnative-crashtest=<segv|abrt|bus|ill|trap>`.
+/// **Crash the app on purpose** — `plxnative-crashtest=<segv|abrt|bus|ill|trap|panic>`.
 ///
 /// Not a feature. An INSTRUMENT for the instrument, and it exists because of the rule this repo
 /// keeps re-learning: prove the instrument can see the thing before you read its silence, and
@@ -359,6 +359,14 @@ pub(crate) fn server_slot() -> Option<Result<u16, String>> {
 /// the record carries a real faulting PC and a real `si_addr`. The rest go through `raise`, which
 /// proves five of the seven `sigaction` calls took but cannot produce a meaningful PC.
 ///
+/// `panic` is a Rust panic inside an `extern "C"` CALLBACK — the shape of `ff::read_cb` under
+/// libav: the hook writes its `*** RUST PANIC` line, the unwind stops at the callback's own
+/// boundary, and the process aborts with `plex_run`'s frame intact. That leaves BOTH a panic
+/// record and a native SIGABRT envelope, the pair `telemetry::crashreport` must send as the one
+/// panic. **Not a `panic!` straight in here**: that unwinds `plex_run`'s own frame first, which
+/// drops the telemetry `Guard` — the native backend is stopped and its database deleted before
+/// the abort (dev set, 2026-09-19), so no envelope is written and the pairing is never exercised.
+///
 /// **Compiled out of a release build** with the rest of `devtriggers`, so a shipped binary has no
 /// path to it at all. Called after telemetry boot (so native capture can be armed) but before SDL
 /// or any screen is created, so it remains reachable when the fault being chased prevents UI boot.
@@ -367,6 +375,14 @@ pub(crate) fn crash_on_purpose() {
     let Some(kind) = read("crashtest") else {
         return;
     };
+    if kind == "panic" {
+        extern "C" fn callback() {
+            panic!("crashtest: deliberate panic");
+        }
+        crate::log("crashtest: DELIBERATE crash, kind=panic (aborts at an extern \"C\" callback)");
+        callback();
+        return;
+    }
     // The signal numbers are Linux's, written out rather than taken from a libc crate: this crate
     // binds no libc, and these five have been stable in the Linux ABI since it had one.
     let sig = match kind.as_str() {

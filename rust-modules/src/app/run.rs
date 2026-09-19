@@ -469,7 +469,11 @@ unsafe fn present_and_swap(
         app.instr.mark(crate::diag::heartbeat::Phase::Capture); // capture
         // Before the swap, never after: the back buffer is undefined once presented.
         #[cfg(feature = "hostsim")]
-        crate::shot::maybe_capture(_vx, _vy, _vw, _vh);
+        if crate::shot::maybe_capture(_vx, _vy, _vw, _vh) {
+            // The headless one-shot is done: finish this frame, then leave through the ordinary
+            // shutdown rather than exiting from inside the frame (see `shot::maybe_capture`).
+            app.running = false;
+        }
         #[cfg(feature = "hostsim")]
         crate::surface::present_supersampled();
         SDL_GL_SwapWindow(app.win);
