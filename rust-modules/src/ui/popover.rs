@@ -889,10 +889,27 @@ pub(crate) mod host {
         }
         if unsafe { (*std::ptr::addr_of_mut!(CACHE)).capture() } {
             unsafe { HELD = Held::Page };
+            PAGE_EPOCH.fetch_add(1, Relaxed);
             true
         } else {
             false
         }
+    }
+
+    /// Bumped by every successful [`capture_now`] — i.e. every time the one snapshot starts to
+    /// describe a NEW undimmed host page. Only the `Held::Page` stage counts: the ground capture in
+    /// [`ground_drawn`] contains the scrim, and nothing may ever key an undimmed reading off it.
+    static PAGE_EPOCH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    /// **Which host page the snapshot holds**, as a number that changes exactly when it is re-taken.
+    ///
+    /// `containers::modal::ModalUnderlay` keys its field's latch on it: the dim a surface asks its
+    /// host for inherits the host's own light, and that light has to be re-read when — and only
+    /// when — the page under the surface has been re-captured. It reads it at the head of
+    /// `ModalStack::draw_scrims`, which runs inside the frame's first [`live`], so a capture owed
+    /// this frame has already been taken and counted by then.
+    pub(crate) fn page_epoch() -> u32 {
+        PAGE_EPOCH.load(Relaxed)
     }
 
     /// How many open popovers want a frozen host.

@@ -1967,6 +1967,11 @@ pub(crate) struct PlayingItem {
     pub(crate) dovi: Dovi,
     pub(crate) markers: Vec<Marker>, // intro / credits segments — the in-player Skip prompt
     pub(crate) chapters: Vec<Chapter>, // chapter boundaries — the in-player Chapters tab/strip
+    /// The played leaf's own `UltraBlurColors` corners (tl, tr, br, bl), or `None` when the server
+    /// sent no usable envelope. What the player's panels dim WITH: GL cannot read the video plane,
+    /// so this is the one honest source of "the light under the panel" there
+    /// (`screen::Scrim::over_video`).
+    pub(crate) blur: Option<[[f32; 3]; 4]>,
 }
 /// Load the playing-item track store for `rk` at play time (route::build_stream). Reuses the
 /// loaded detail's streams when it IS this item (no extra GET on the play path — the same
@@ -2005,6 +2010,7 @@ fn cached_playing(state: &MetadataState, sid: crate::plex::ServerId, rk: &str) -
             dovi: d.dovi,
             markers: d.markers.clone(),
             chapters: d.chapters.clone(),
+            blur: d.has_blur.then_some(d.blur),
         })
 }
 
@@ -2039,6 +2045,10 @@ pub(crate) fn fetch_playing_item(sid: crate::plex::ServerId, rk: &str) -> Option
         .as_ref()
         .and_then(|it| it.primary_media().map(|m| (m.width, m.height, m.bitrate)))
         .unwrap_or((0, 0, 0));
+    let blur = it
+        .as_ref()
+        .and_then(|it| it.ultra_blur_colors)
+        .and_then(|u| u.corners());
     Some(PlayingItem {
         sid,
         rk: rk.to_string(),
@@ -2051,6 +2061,7 @@ pub(crate) fn fetch_playing_item(sid: crate::plex::ServerId, rk: &str) -> Option
         dovi,
         markers,
         chapters,
+        blur,
     })
 }
 
