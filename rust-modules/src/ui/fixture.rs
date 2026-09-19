@@ -306,6 +306,8 @@ impl LogicalState for FixtureState {
 /// Library's scroll. One page rather than all of them: a spring in flight keeps the present gate
 /// awake, and every other test in this bundle grades quiet frames.
 pub const ANIMATED_PAGE: u32 = 950;
+/// A transition fixture whose page-owned motion intentionally outlives PageDip's 140 ms In ramp.
+pub const QUIESCENCE_PAGE: u32 = 951;
 
 pub struct FixtureScreen {
     pub arg: FixtureArg,
@@ -417,6 +419,10 @@ impl Machine<FixtureHost> for FixtureScreen {
             // `idle::page_moving` is the only witness that a page under a panel is moving.
             ScreenEvent::Tick(t) if self.arg == FixtureArg::Page(ANIMATED_PAGE) => {
                 self.spring.step(1.0, 300.0, t.dt());
+                Handled::Yes
+            }
+            ScreenEvent::Tick(t) if self.arg == FixtureArg::Page(QUIESCENCE_PAGE) && t.ms < 400 => {
+                fx.note(super::present::PresentEvent::Motion);
                 Handled::Yes
             }
             ScreenEvent::Enter(super::screen::Enter::Fresh { .. }) if self.arg == FixtureArg::Page(2) => {

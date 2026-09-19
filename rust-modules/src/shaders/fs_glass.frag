@@ -135,6 +135,11 @@ uniform float u_rimclear;
 // 56% of its radius vertically. The "on" test is `.x > 0` because a zero radius is exactly the
 // case the flag existed to name.
 uniform vec2 u_deep;
+// A held PageDip image is filtered once at full alpha. Blur is linear, so fading that filtered
+// image over the constant app ground here is exactly the filtered result of the same fade, without
+// re-running the source/reduction chain for every alpha step.
+uniform float u_source_alpha;
+uniform vec3 u_source_ground;
 uniform vec4 u_rimcol;       // the container's perimeter line, over the scrim
 // THE LIT EDGE IS ITS OWN COLOUR, and that is not a refinement — it is the difference between the
 // two polarities being one material and being two. The lamp is above; the grain facing it catches
@@ -157,7 +162,7 @@ vec3 srcRGB(highp vec2 uv){
     c += texture2D(u_tex, uv + vec2(-d.x, -d.y)).rgb;
     c *= 0.2;
   }
-  return c;
+  return mix(u_source_ground, c, u_source_alpha);
 }
 
 highp float sdBox(highp vec2 p, highp vec2 b, highp float r){

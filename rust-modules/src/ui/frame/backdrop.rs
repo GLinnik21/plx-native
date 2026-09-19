@@ -1,4 +1,11 @@
 //! Layer and damage algebra for live backdrop sources. No GL lives here.
+//!
+//! Capture jobs follow visible dependencies, not every retained entry: a lower glass hidden by a
+//! frozen or opaque replacement cannot force an upper band onto the inline-framebuffer path. The
+//! direct replay includes that replacement and any live dim above it. Held PageDip images also
+//! split stable content revision from composite alpha. Their full-alpha filtered source is reused
+//! through the fade; `gfx` applies the changing alpha over the constant app ground at composite
+//! time, while geometry or snapshot-content revision still invalidates normally.
 use crate::ui::Rect;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Default)]
@@ -22,6 +29,10 @@ pub(crate) struct Layer {
     pub rect: Rect,
     pub blocks: bool,
     pub revision: u64,
+    /// Composite-only opacity for an otherwise stable full-alpha source. `None` for ordinary
+    /// layers; held page images use this so filtering keys on content while composition tracks
+    /// the PageDip fade independently.
+    pub composite_alpha: Option<f32>,
 }
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Damage {
@@ -369,6 +380,7 @@ struct Entry {
     captured_layers: Vec<Layer>,
     inline_attempt: Option<u64>,
     fell_back: bool,
+    source_alpha: Option<f32>,
 }
 impl Sources {
     pub fn damage(&mut self, z: Z, rect: Rect) {
@@ -461,6 +473,9 @@ impl Sources {
             }
             e.underlay = current;
             e.prefix = prefix;
+            e.source_alpha = layers.iter().rev()
+                .find(|layer| layer.z < z && layer.composite_alpha.is_some())
+                .and_then(|layer| layer.composite_alpha);
             prefixes.insert(z, e.prefix.clone());
         }
     }
@@ -491,9 +506,22 @@ impl Sources {
                 // it with a different sharp-rim source. That prefix contains its EXACT composite.
                 let r = crate::gfx::blur_region(capture.x, capture.y, capture.w, capture.h);
                 let footprint = Rect::new(r[0], r[1], r[2], r[3]);
-                let composite = self.entries.range(..z).any(|(_, lower)| {
+                let composite = self.entries.range(..z).any(|(&lower_z, lower)| {
                     lower.members.iter().any(|r| {
-                        intersects(
+                        // A retained lower source hidden by a frozen/opaque replacement is not a
+                        // dependency of the visible prefix. Replaying to this z draws the
+                        // replacement (and any current dim above it), so forcing an inline
+                        // framebuffer capture here would merely re-capture a composite the direct
+                        // job already reproduces exactly.
+                        decide(
+                            Request {
+                                z: lower_z,
+                                rect: *r,
+                                valid: lower.valid,
+                            },
+                            &self.layers,
+                            &[],
+                        ).draw && intersects(
                             Rect::new(r.x - 4.0, r.y - 4.0, r.w + 8.0, r.h + 8.0),
                             footprint,
                         )
@@ -518,6 +546,7 @@ impl Sources {
             captured_layers: Vec::new(),
             inline_attempt: None,
             fell_back: false,
+            source_alpha: None,
         });
         if !covers(e.rect, rect) {
             e.rect = union(e.rect, rect);
@@ -790,6 +819,9 @@ pub(crate) fn image(z: Z) -> Option<Rc<crate::gfx::BackdropImage>> {
 pub(crate) fn region(z: Z) -> Option<Rect> {
     WALK.with(|w| Some(w.borrow().as_ref()?.sources.borrow().entries.get(&z)?.rect))
 }
+pub(crate) fn source_alpha(z: Z) -> Option<f32> {
+    WALK.with(|w| Some(w.borrow().as_ref()?.sources.borrow().entries.get(&z)?.source_alpha?))
+}
 pub(crate) fn begin_inline_capture(z: Z) -> bool {
     WALK.with(|w| {
         let w = w.borrow();
@@ -871,6 +903,7 @@ mod tests {
             rect: rect(0.0),
             blocks: false,
             revision: 0,
+            composite_alpha: None,
         });
         assert_eq!(
             below(&layers, Z(2)).map(|l| l.z).collect::<Vec<_>>(),
@@ -885,6 +918,7 @@ mod tests {
             rect: rect(0.0),
             blocks: true,
             revision: 0,
+            composite_alpha: None,
         }];
         let d = decide(
             Request {
@@ -935,6 +969,7 @@ mod tests {
             rect: rect(0.0),
             blocks: false,
             revision: 0,
+            composite_alpha: None,
         });
         assert_eq!(below(&layers, Z(2)).count(), 1);
         assert_eq!(
@@ -1036,6 +1071,49 @@ mod tests {
             "the upper band captures in visible order, with the lower glass's exact sharp rim"
         );
     }
+
+    #[test]
+    fn a_frozen_replacement_removes_covered_lower_glass_from_upper_capture_dependencies() {
+        let _guard = crate::testlock::serial();
+        let sources = Rc::new(RefCell::new(Sources::default()));
+
+        // Seed the lower retained glass and its overlapping upper neighbour.
+        sources.borrow_mut().begin(vec![]);
+        {
+            let _walk = discover(sources.clone());
+            let p = crate::ui::Painter::root();
+            declare_glass(p, rect(0.0));
+            let _upper = layer(Z(3), false);
+            declare_glass(p, rect(0.0));
+        }
+        sources.borrow_mut().resolve();
+        commit(&sources);
+
+        for dim_revision in [1.0f32, 2.0] {
+            sources.borrow_mut().begin(vec![Layer {
+                z: Z(2),
+                rect: canvas(),
+                blocks: true,
+                revision: 9,
+                composite_alpha: None,
+            }]);
+            {
+                let _walk = discover(sources.clone());
+                let p = crate::ui::Painter::root();
+                let _above_replacement = layer(Z(3), false);
+                p.rect(rect(0.0), 0.0, [dim_revision; 4], [0.0; 4], 0.0);
+                declare_glass(p, rect(0.0));
+            }
+            sources.borrow_mut().resolve();
+            let jobs = sources.borrow().jobs();
+            assert_eq!(
+                jobs.iter().map(|(z, _)| *z).collect::<Vec<_>>(),
+                vec![Z(4)],
+                "replay the frozen composite plus current dim directly; never refresh its covered lower glass"
+            );
+            commit(&sources);
+        }
+    }
     #[test]
     fn the_ceiling_stops_real_primitives_and_is_restored_when_a_walk_unwinds() {
         let _guard = crate::testlock::serial();
@@ -1069,12 +1147,14 @@ mod tests {
                 rect: Rect::new(0.0, 0.0, 5.0, 10.0),
                 blocks: true,
                 revision: 0,
+                composite_alpha: None,
             },
             Layer {
                 z: Z(4),
                 rect: Rect::new(5.0, 0.0, 5.0, 10.0),
                 blocks: true,
                 revision: 0,
+                composite_alpha: None,
             },
         ];
         assert!(!decide(request(), &layers, &[]).draw);
@@ -1225,6 +1305,7 @@ mod tests {
             rect: canvas(),
             blocks: true,
             revision: 1,
+            composite_alpha: None,
         }]);
         {
             let _walk = discover(sources.clone());
@@ -1269,6 +1350,7 @@ mod tests {
             rect: canvas(),
             blocks: true,
             revision: 1,
+            composite_alpha: None,
         }]);
         let _walk = discover(sources.clone());
         {
@@ -1405,6 +1487,7 @@ mod tests {
                 rect: canvas(),
                 blocks: true,
                 revision,
+                composite_alpha: None,
             }]);
             {
                 let _walk = discover(sources.clone());
@@ -1415,6 +1498,34 @@ mod tests {
             }
             sources.borrow_mut().resolve();
             assert_eq!(!sources.borrow().entries[&Z(4)].valid, frame != 1);
+            commit(&sources);
+        }
+    }
+    #[test]
+    fn held_image_alpha_reuses_the_filter_but_content_revision_invalidates_it() {
+        let _guard = crate::testlock::serial();
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        for (frame, (revision, alpha)) in [(7, 0.2), (7, 0.8), (8, 0.8)].into_iter().enumerate() {
+            sources.borrow_mut().begin(vec![Layer {
+                z: Z(2),
+                rect: canvas(),
+                blocks: true,
+                revision,
+                composite_alpha: Some(alpha),
+            }]);
+            {
+                let _walk = discover(sources.clone());
+                let _upper = layer(Z(3), false);
+                declare_glass(crate::ui::Painter::root(), rect(0.0));
+            }
+            sources.borrow_mut().resolve();
+            let jobs = sources.borrow().jobs();
+            match frame {
+                0 => assert_eq!(jobs.len(), 1, "the first filtered source is produced"),
+                1 => assert!(jobs.is_empty(), "alpha-only change is composed from the cached filter"),
+                2 => assert_eq!(jobs.len(), 1, "new held-image content invalidates the filter"),
+                _ => unreachable!(),
+            }
             commit(&sources);
         }
     }

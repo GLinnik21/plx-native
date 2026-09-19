@@ -2657,6 +2657,7 @@ struct BlurChain {
 pub(crate) struct BackdropImage {
     chain: BlurChain,
     texture: std::rc::Rc<BackdropTexture>,
+    alpha_invariant: bool,
 }
 impl BackdropImage {
     pub(crate) fn covers(&self, r: crate::ui::Rect) -> bool { blur_region_covers(self.chain.reg,r.x,r.y,r.w,r.h) }
@@ -2681,7 +2682,8 @@ pub(crate) fn retain_backdrop(z: crate::ui::frame::backdrop::Z) -> bool {
         if glGetError() != GL_NO_ERROR { return false; }
         let mut chain = c.clone();
         chain.out=texture.0; chain.mid=texture.0; chain.mw=w; chain.mh=h;
-        crate::ui::frame::backdrop::captured(z, BackdropImage { chain, texture });
+        let alpha_invariant = crate::ui::frame::backdrop::source_alpha(z).is_some();
+        crate::ui::frame::backdrop::captured(z, BackdropImage { chain, texture, alpha_invariant });
         true
     }
 }
@@ -3082,6 +3084,8 @@ static mut GL_SHARP_PX: c_int = 0;
 static mut GL_SHARPW: c_int = 0;
 static mut GL_RIMCLEAR: c_int = 0;
 static mut GL_DEEP: c_int = 0;
+static mut GL_SOURCE_ALPHA: c_int = 0;
+static mut GL_SOURCE_GROUND: c_int = 0;
 
 /// Invalidate the scratch snapshot used by the synthetic load dial and navigation experiments.
 /// Live surfaces own separate retained outputs through the frame's layer/region registry.
@@ -3389,6 +3393,8 @@ fn blur_lazy_init() -> bool {
         GL_SHARPW = glGetUniformLocation(GPROG, c"u_sharpw".as_ptr());
         GL_RIMCLEAR = glGetUniformLocation(GPROG, c"u_rimclear".as_ptr());
         GL_DEEP = glGetUniformLocation(GPROG, c"u_deep".as_ptr());
+        GL_SOURCE_ALPHA = glGetUniformLocation(GPROG, c"u_source_alpha".as_ptr());
+        GL_SOURCE_GROUND = glGetUniformLocation(GPROG, c"u_source_ground".as_ptr());
         use_prog(GPROG);
         glUniform2f(GL_SCREEN, SCR_W, SCR_H);
         glUniform1i(GL_TEX, 0);
@@ -3791,8 +3797,8 @@ pub(crate) fn blur_source_pass() -> bool {
 /// until the first reading lands, and the last one inside a source pass, where framebuffer 0 is not
 /// bound and the answer would be the FBO's own contents.
 ///
-/// Counted in CALLS rather than milliseconds: this is called once per drawn bar, so the count is
-/// the frame rate and needs no clock. 30 is about twice a second at 60.
+/// Counted in presented frames rather than milliseconds: discovery/source calls between swaps do
+/// not consume cadence. 30 is about twice a second at 60 presented frames per second.
 const GROUND_SAMPLE_EVERY: u32 = 30;
 /// How many places across the rect are sampled. Odd, so one of them is the middle.
 const GROUND_TAPS: usize = 5;
@@ -3826,15 +3832,14 @@ static mut GROUND_PROBE: GroundProbe<GROUND_TAPS> = GroundProbe::new(GROUND_SAMP
 /// **ONE latch and ONE rate counter, for the whole process — so this has exactly one caller.**
 ///
 /// `GROUND_RGB` is a single `Option`, and `GROUND_PROBE` a single cadence that admits a real reading
-/// once every [`GROUND_SAMPLE_EVERY`] calls. A second caller passing a different `r` therefore does
-/// two things, both silent AS THE CODE STANDS: it halves the rate each caller actually gets, and
-/// every call it does take clobbers the other's answer with pixels from somewhere else on the
-/// screen. There is no per-caller state to key on.
+/// once every [`GROUND_SAMPLE_EVERY`] presented frames. A second visible caller passing a different
+/// `r` would share that one admission and whichever call is due would clobber the other's answer
+/// with pixels from somewhere else on the screen. There is no per-caller state to key on.
 ///
 /// **What adding one would cost is a number worth having right, because a decision was taken
 /// against it.** It is not "a second `glReadPixels` flush per frame" — this is rate-limited by
-/// CALL COUNT, so two callers each keeping their own counter would each read once every
-/// [`GROUND_SAMPLE_EVERY`] of their own calls: one extra flush roughly twice a second, and only
+/// PRESENT COUNT, so two callers each keeping their own counter would each read once every
+/// [`GROUND_SAMPLE_EVERY`] presents: one extra copy roughly twice a second, and only
 /// while the second surface is on screen (a queued copy now, not a flush). Two `Option`s and two
 /// probes. The reason to prefer one
 /// solve is therefore the MATERIAL's — one band, one density — and not the readback's price; do not
@@ -3893,13 +3898,15 @@ pub(crate) enum ProbeStep {
 /// ([`ProbeStep::Collect`]) — a read of finished work, which does not wait. The answer lands one or
 /// two frames later than it used to; the cadence it keeps is the same.
 ///
-/// `at` counts CALLS, like the counters it replaced (one call per drawn surface, so the count is
-/// the frame rate and needs no clock). `dirty` forces the next call to queue a reading whatever the
-/// count says, and is cleared only when one is collected.
+/// `at` counts PRESENTED frames, not calls. Discovery and source walks can invoke a sampler more
+/// than once between swaps, and those descriptive calls must not accelerate a GPU probe. `dirty`
+/// forces the next visible call to queue a reading whatever the count says, and is cleared only
+/// when one is collected.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct ProbeCadence {
     every: u32,
     at: u32,
+    last_drawn: u32,
     dirty: bool,
     /// The drawn-frame count a queued reading was kicked in, while one is in flight.
     pending: Option<u32>,
@@ -3910,6 +3917,7 @@ impl ProbeCadence {
         Self {
             every,
             at: 0,
+            last_drawn: 0,
             dirty: true,
             pending: None,
         }
@@ -3924,11 +3932,13 @@ impl ProbeCadence {
                 self.pending = None;
                 self.dirty = false;
                 self.at = 0; // the cadence counts from the reading, not from its kick
+                self.last_drawn = drawn;
                 return ProbeStep::Collect;
             }
             return ProbeStep::Keep;
         }
-        self.at = self.at.wrapping_add(1);
+        self.at = self.at.wrapping_add(drawn.wrapping_sub(self.last_drawn));
+        self.last_drawn = drawn;
         if self.dirty || !have || self.at % self.every == 0 {
             self.pending = Some(drawn);
             ProbeStep::Kick
@@ -4304,7 +4314,7 @@ fn diffuse_ground_mean_u8<'a>(texels: impl IntoIterator<Item = &'a [u8]>) -> [f3
 /// Sample the pixels already rendered beneath one Hero action row.
 pub(crate) fn sample_control_ground(r: [f32; 4], may_read: bool) -> Option<[f32; 3]> {
     unsafe {
-        if !may_read || BLUR_IN_PASS || !may_read_ground() {
+        if !may_read || blur_source_pass() || !may_read_ground() {
             return *std::ptr::addr_of!(CONTROL_GROUND_RGB);
         }
         let have = (*std::ptr::addr_of!(CONTROL_GROUND_RGB)).is_some();
@@ -4903,6 +4913,7 @@ pub(crate) fn draw_blur_backdrop(
             let Some(image) = retained.as_ref() else { return false; };
             &image.chain
         } else {
+            retained = None;
             // The dev load dial is a synthetic chain benchmark, outside the live surface walk.
             BLUR_WANT_CUR = blur_region_union(*std::ptr::addr_of!(BLUR_WANT_CUR), need);
             let stale = (*std::ptr::addr_of!(BLURST)).as_ref()
@@ -4936,6 +4947,12 @@ pub(crate) fn draw_blur_backdrop(
         ];
         let uv = blur_uv_rect(x, y, w, h, c.reg, span, c.bottom_up);
         use_prog(GPROG);
+        let source_alpha = if retained.as_ref().is_some_and(|image| image.alpha_invariant) {
+            live.and_then(|request| crate::ui::frame::backdrop::source_alpha(request.z)).unwrap_or(1.0)
+        } else { 1.0 };
+        let ground = crate::ui::theme::CLEAR_RGB;
+        glUniform1f(GL_SOURCE_ALPHA, source_alpha);
+        glUniform3f(GL_SOURCE_GROUND, ground.0, ground.1, ground.2);
         // A BLUR is the slowest field the app produces, so the policy is the area test, per draw
         // — moving or not: a panel's glass is a fraction of the screen and the tile is one fetch,
         // and gating it on motion (one day, 2026-09-04) flickered the bands in and out on every
@@ -6209,6 +6226,35 @@ mod tests {
             GROUND_RGB = None;
             CONTROL_GROUND_RGB = None;
         }
+    }
+
+    #[test]
+    fn discovery_does_not_advance_a_cached_control_ground_probe() {
+        let _g = crate::testlock::serial();
+        use crate::ui::frame::backdrop::{self, Sources};
+        use std::{cell::RefCell, rc::Rc};
+
+        let last = Some([0.25f32, 0.5, 0.75]);
+        let before = unsafe {
+            CONTROL_GROUND_RGB = last;
+            let probe = &mut *std::ptr::addr_of_mut!(CONTROL_PROBE);
+            probe.cadence = ProbeCadence {
+                every: CONTROL_GROUND_SAMPLE_EVERY,
+                at: 7,
+                last_drawn: drawn_frames(),
+                dirty: false,
+                pending: None,
+            };
+            probe.cadence
+        };
+        {
+            let _discovery = backdrop::discover(Rc::new(RefCell::new(Sources::default())));
+            assert_eq!(sample_control_ground([0.0, 0.0, 100.0, 40.0], true), last);
+        }
+        let after = unsafe { (*std::ptr::addr_of!(CONTROL_PROBE)).cadence };
+        assert_eq!(after, before, "discovery is descriptive and must not consume probe cadence");
+
+        unsafe { CONTROL_GROUND_RGB = None; }
     }
 
     /// **A due ground reading never reads the frame it is due on.** The kick only queues a copy;

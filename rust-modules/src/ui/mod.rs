@@ -344,6 +344,10 @@ fn recorded_text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
 }
 
 fn declared_text_bounds(s: *const c_char, sz: c_int, bold: c_int) -> (f32,f32) {
+    // A discovery walk above the surface band, or inside a completely covered layer, records
+    // nothing. Do not populate/measure the glyph cache merely to discover that exclusion later in
+    // `Painter::declare`; discovery is a description pass, not resource preparation.
+    if frame::backdrop::recording_excluded() { return (0.0, 0.0); }
     if s.is_null() { return (0.0,0.0); }
     widgets::LegacyMeasure.bounds(unsafe { CStr::from_ptr(s) },sz,bold!=0)
 }

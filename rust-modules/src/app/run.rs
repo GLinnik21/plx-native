@@ -2202,7 +2202,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         };
                         {
                             let _declarations = crate::ui::frame::backdrop::discover(sources.clone());
-                            page(Z::ALL);
+                            crate::diag::spans::span("disc", || page(Z::ALL));
                         }
                         sources.borrow_mut().resolve();
                         let jobs = sources.borrow().jobs();
@@ -2472,7 +2472,8 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
             let spans = crate::diag::spans::take();
             if let Some(line) = app.instr.frame_drop_line(&|| {
                 format!(
-                    "route={rn} load={} snapt={:.2} {spans}",
+                    "route={rn} dip={} load={} snapt={:.2} {spans}",
+                    app.pages.dip_word(),
                     crate::ui::glassload::step_index(),
                     app.bridge.home_snap_target(&app.pages)
                 )

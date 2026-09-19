@@ -28,7 +28,7 @@ fn restored_live_and_evicted_bodies_receive_memory_before_enter() {
 }
 use super::transition::PageDip;
 use crate::ui::dispatch::{Dispatcher, NoTap};
-use crate::ui::fixture::{booted, events_of, key, tick, FixtureArg, FixtureHost, FixtureRig};
+use crate::ui::fixture::{booted, events_of, key, tick, FixtureArg, FixtureHost, FixtureRig, QUIESCENCE_PAGE};
 use crate::ui::machine::{EntryId, FocusKey, InputOwner, Key, MachineId, NavOp};
 
 fn open_modal(d: &mut Dispatcher<FixtureHost>, rig: &mut FixtureRig, style: Style, ms: u32) -> EntryId {
@@ -1436,16 +1436,26 @@ fn reset_for_profile_clears_a_pending_op_so_it_cannot_apply_over_the_emptied_tre
 }
 
 #[derive(Default)]
-struct CountingSnapshot(bool);
+struct CountingSnapshot {
+    valid: bool,
+    begins: std::rc::Rc<std::cell::Cell<u32>>,
+}
 impl super::transition::PageSnapshot for CountingSnapshot {
     fn available(&self) -> bool { true }
-    fn valid(&self) -> bool { self.0 }
-    fn begin(&mut self) -> bool { self.0 = false; true }
-    fn finish(&mut self) { self.0 = true; }
-    fn release(&mut self) { self.0 = false; }
+    fn valid(&self) -> bool { self.valid }
+    fn begin(&mut self) -> bool {
+        self.valid = false;
+        self.begins.set(self.begins.get() + 1);
+        true
+    }
+    fn finish(&mut self) { self.valid = true; }
+    fn release(&mut self) { self.valid = false; }
 }
 
 fn frozen_fixture() -> (Dispatcher<FixtureHost>, FixtureRig) {
+    // Product opens this ledger once per loop before dispatch. Keep the isolated fixture from
+    // inheriting another serialized spring test's last `page_moving` bit.
+    crate::ui::idle::frame_begin(1.0 / 60.0);
     let (mut d, rig, _) = booted();
     d.page_snapshot = Box::<CountingSnapshot>::default();
     d.nav.tabs.stack.transition = Box::new(PageDip::new());
@@ -1501,6 +1511,50 @@ fn frozen_dispatch_resumes_live_after_settle() {
 }
 
 #[test]
+fn frozen_dispatch_holds_past_the_dip_while_page_motion_and_resource_work_remain() {
+    let _guard = crate::testlock::serial();
+    let (mut d, mut rig) = frozen_fixture();
+    let begins = std::rc::Rc::new(std::cell::Cell::new(0));
+    d.page_snapshot = Box::new(CountingSnapshot { valid: false, begins: begins.clone() });
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(QUIESCENCE_PAGE)));
+    d.frame_with(&mut rig, tick(0), vec![], vec![], &mut NoTap, false);
+    d.draw(&mut rig, true); // outgoing capture
+
+    let mut floor_capture_draw = None;
+    for i in 1..=29u32 {
+        let ms = i * 16;
+        crate::ui::idle::frame_begin(1.0 / 60.0);
+        // Motion ends at 400 ms; a late first-frame resource keeps the hold through 464 ms.
+        d.budget.note_queued((400..480).contains(&ms));
+        d.frame_with(&mut rig, tick(ms), vec![], vec![], &mut NoTap, false);
+        d.draw(&mut rig, true);
+        if d.top_arg() == Some(&FixtureArg::Page(QUIESCENCE_PAGE)) {
+            let now = page_draw_order(&d);
+            let floor = *floor_capture_draw.get_or_insert(now);
+            if ms >= 240 {
+                assert_eq!(now, floor, "frame {ms}: no visible/live page draw while motion or resource work remains");
+            }
+        }
+    }
+    assert!(!d.nav.tabs.stack.transition.in_flight(), "the 140 ms dip itself has ended");
+    let held = floor_capture_draw.expect("destination captured at the floor");
+
+    crate::ui::idle::frame_begin(1.0 / 60.0);
+    d.budget.note_queued(false);
+    d.frame_with(&mut rig, tick(480), vec![], vec![], &mut NoTap, false);
+    d.draw(&mut rig, true); // the one off-screen settled replacement capture
+    assert!(page_draw_order(&d) > held);
+    assert_eq!(begins.get(), 3, "outgoing, incoming floor, and exactly one settled replacement");
+
+    let replacement = page_draw_order(&d);
+    crate::ui::idle::frame_begin(1.0 / 60.0);
+    d.frame_with(&mut rig, tick(496), vec![], vec![], &mut NoTap, false);
+    d.draw(&mut rig, true);
+    assert!(page_draw_order(&d) > replacement, "live begins only after the matching image frame");
+    assert_eq!(begins.get(), 3, "the handoff never captures a second replacement");
+}
+
+#[test]
 fn frozen_dispatch_source_and_surfaces_passes_preserve_the_image() {
     let _guard = crate::testlock::serial();
     let (mut d, mut rig) = frozen_fixture();
@@ -1519,6 +1573,22 @@ fn frozen_dispatch_source_and_surfaces_passes_preserve_the_image() {
     assert_eq!(page_draw_order(&d), before);
     let layers = d.backdrop_layers(0.5);
     assert!(layers.iter().any(|layer| layer.blocks && layer.z < crate::ui::frame::backdrop::Z::CHROME));
+}
+
+#[test]
+fn held_page_backdrop_identity_is_invariant_under_alpha_only_changes() {
+    let _guard = crate::testlock::serial();
+    let (mut d, mut rig) = frozen_fixture();
+    d.nav.tabs.stack.transition.request(true);
+    d.draw(&mut rig, true);
+    let first = d.backdrop_layers(1.0).into_iter()
+        .find(|layer| layer.z < crate::ui::frame::backdrop::Z::CHROME)
+        .expect("held page layer").revision;
+    d.frame_with(&mut rig, tick(32), vec![], vec![], &mut NoTap, false);
+    let second = d.backdrop_layers(1.0).into_iter()
+        .find(|layer| layer.z < crate::ui::frame::backdrop::Z::CHROME)
+        .expect("held page layer").revision;
+    assert_eq!(first, second, "PageDip alpha is composite state, not filtered-source content");
 }
 
 #[test]

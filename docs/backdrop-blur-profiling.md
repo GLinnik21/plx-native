@@ -1576,3 +1576,26 @@ content below a frozen boundary before excluding it, the same way `Z::surface(0)
 here by grepping every `DYNAMIC_BACKDROP.backdrop()` call site.
 
 Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+
+## 2026-09-19: stress-v3 visible dependencies and held-page hand-off
+
+The general `GlassPlan` path now treats discovery as strictly descriptive: control-ground probes
+refuse discovery/source walks, probe cadence advances by presented frames rather than calls, and
+excluded text is not measured. `FRAMEDROP` includes a `disc` span for this walk.
+
+Capture scheduling now follows the visible prefix. A retained lower glass covered by a frozen or
+opaque replacement is not an upper band's dependency; the upper band directly replays the frozen
+composite and current dim, while the covered lower source remains untouched. Held PageDip image
+content is filtered once at full alpha. Animated alpha is applied over the constant app ground by
+the glass composite shader, so alpha-only frames schedule no new filter job; geometry or snapshot
+revision still invalidates.
+
+PageDip no longer releases solely because its 140 ms In ramp ended. The destination continues to
+tick and load behind the held image until page-owned motion and first-frame resource work are both
+quiet, with a documented 600 ms maximum hold. It then takes one settled replacement capture
+off-screen, presents that image, and switches to matching live output on the next frame. The old
+live-page-plus-full-screen-image dissolve is gone. `FRAMEDROP` now carries
+`dip=out|hold|in|held|live` for phase attribution.
+
+These changes were host-tested only in this lane. No television was contacted, so the requested
+push-100/modal-100/deep-100 ≤20 ms outcome remains a prediction until the coordinator's device run.

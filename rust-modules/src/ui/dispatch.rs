@@ -363,6 +363,9 @@ pub struct Dispatcher<H: Host> {
     last_tick: Tick,
     /// This frame's prepare pass ran (a `draw` after a non-presenting frame runs it itself).
     prepared: bool,
+    /// The previous frame's page-owned motion/resource verdict, retained past `Present::take` so
+    /// the held transition image can wait for the destination's visual quiescence.
+    page_quiescent: bool,
 }
 
 impl<H: Host> Default for Dispatcher<H>
@@ -408,6 +411,7 @@ where
             pending_back: false,
             last_tick: Tick::default(),
             prepared: false,
+            page_quiescent: false,
         }
     }
 
@@ -427,6 +431,12 @@ where
             .surfaces
             .iter()
             .any(|s| s.phase != super::containers::modal::Phase::Hidden)
+    }
+
+    /// Compact PageDip/image state for per-frame performance attribution.
+    pub(crate) fn dip_word(&self) -> &'static str {
+        let phase = self.nav.tabs.stack.transition.phase_word();
+        if phase == "live" && self.page_image.is_held() { "held" } else { phase }
     }
 
     /// The topmost surface's heartbeat word, if a surface is up.
@@ -1053,6 +1063,9 @@ where
         // 8. the present decision, once (its WHY is read before the take clears it)
         let why = self.present.why();
         report.underlay_moving = self.present.page_moving();
+        self.page_quiescent = !report.underlay_moving
+            && !crate::ui::idle::page_moving()
+            && !self.budget.has_queued_work();
         let will_present = self.present.take(tick.ms) || self.budget.has_queued_work();
         tap.present(f, will_present, why);
         // `prepare_does_not_change_the_logical_state_hash` (§5.4): a prepare pass touches render
@@ -1153,24 +1166,25 @@ where
             if let Some(entry) = self.nav.top_page() {
                 let mut image = self.page_image;
                 let paint = image.plan(entry.id, self.nav.tabs.stack.transition.in_flight(),
-                    self.nav.tabs.stack.transition.page_alpha(), self.last_tick.ms, true);
+                    self.nav.tabs.stack.transition.page_alpha(), self.last_tick.ms, true,
+                    self.page_quiescent);
                 if let Some(alpha) = paint.frozen_alpha() {
                     layers.push(Layer { z: Z(Z::CHROME.0 - 1), rect: canvas(),
                         blocks: !paint.draws_live(),
-                        revision: (self.page_snapshot.revision() << 32) | alpha.to_bits() as u64 });
+                        revision: self.page_snapshot.revision(), composite_alpha: Some(alpha) });
                 }
             }
         }
         if let Some(z) = crate::ui::popover::host::held_ceiling() {
-            layers.push(Layer { z, rect:canvas(), blocks:true, revision:crate::ui::popover::host::page_epoch() as u64 });
+            layers.push(Layer { z, rect:canvas(), blocks:true, revision:crate::ui::popover::host::page_epoch() as u64, composite_alpha:None });
         }
         for (index,surface) in self.nav.modals.surfaces.iter().enumerate() {
             if super::containers::modal::surface_policy(surface.style,surface.phase,surface.ground_ready).1 == HostRender::Replaced {
-                layers.push(Layer { z:Z::surface(index), rect:canvas(), blocks:true, revision:0 });
+                layers.push(Layer { z:Z::surface(index), rect:canvas(), blocks:true, revision:0, composite_alpha:None });
             }
         }
         if self.nav.modals.scrims(page_alpha).iter().any(|(_,a,_)| *a >= 1.0) {
-            layers.push(Layer { z:Z::DIM, rect:canvas(), blocks:true, revision:0 });
+            layers.push(Layer { z:Z::DIM, rect:canvas(), blocks:true, revision:0, composite_alpha:None });
         }
         layers
     }
@@ -1212,11 +1226,16 @@ where
         let source_pass = backdrop::source_walk() || crate::gfx::blur_source_pass();
         let eligible = pages && host_render == HostRender::Live && !video_plane
             && self.nav.tabs.stack.transition.freezes_page() && self.page_snapshot.available();
+        let page_quiescent = self.page_quiescent
+            && !self.present.page_moving()
+            && !crate::ui::idle::page_moving()
+            && !self.budget.has_queued_work();
         let mut image = self.page_image;
         let paint = if eligible {
             self.nav.top_page().map_or(super::containers::transition::PagePaint::Live, |entry|
                 image.plan(entry.id, self.nav.tabs.stack.transition.in_flight(),
-                    self.nav.tabs.stack.transition.page_alpha(), tick.ms, self.page_snapshot.valid()))
+                    self.nav.tabs.stack.transition.page_alpha(), tick.ms, self.page_snapshot.valid(),
+                    page_quiescent))
         } else { super::containers::transition::PagePaint::Live };
         if !source_pass && (pages || host_render != HostRender::Live || video_plane) {
             self.page_image = image;
@@ -1224,8 +1243,14 @@ where
                 self.page_snapshot.release();
                 self.page_image = Default::default();
             }
-            if matches!(paint, super::containers::transition::PagePaint::Handoff(_)) {
+            if matches!(paint, super::containers::transition::PagePaint::Held(_)
+                | super::containers::transition::PagePaint::ReplacementCapture) {
+                // The held-image compositor needs another present, but it is not PAGE-owned
+                // motion. Attributing it to Page would make the quiescence predicate observe its
+                // own hold and keep the image forever.
+                self.present.set_scope(super::present::Scope::Surface);
                 PresentHandle::of(&mut self.present).note(super::present::PresentEvent::Motion);
+                self.present.set_scope(super::present::Scope::Page);
                 crate::ui::idle::invalidate();
             }
         }
@@ -1257,14 +1282,16 @@ where
                     page_cx.owner = InputOwner::Entry(e.id);
                     page_cx.focus = input.engine.read(page_cx.owner);
                     use super::containers::transition::PagePaint;
-                    let capture_guard = if paint == PagePaint::Capture && !source_pass {
+                    let capture_guard = if paint.captures_page() && !source_pass {
                         super::containers::transition::PageCapture::begin(page_snapshot.as_mut())
                     } else { None };
                     let capture = capture_guard.is_some();
                     // Source/declaration walks never capture or paint a live page underneath a
                     // held image. A missing image is captured by the visible pass, at full alpha.
-                    let live = paint.draws_live() && !(paint == PagePaint::Capture && source_pass);
-                    if live {
+                    let visible_live = paint.draws_live()
+                        || (paint == PagePaint::Capture && !capture && !source_pass);
+                    let render_page = capture || visible_live;
+                    if render_page {
                         let mut page_navigation = navigation;
                         if capture { page_navigation.page_alpha = 1.0; }
                         let mut f = DrawFrame::with_navigation(&page_cx, Painter::root(), page_navigation);
@@ -1279,11 +1306,18 @@ where
                     }
                     drop(capture_guard);
                     if capture {
-                        page_image.captured(e.id);
-                        backdrop::draw_span("page.image", || page_snapshot.draw(nav.tabs.stack.transition.page_alpha(), true));
+                        if paint == PagePaint::ReplacementCapture {
+                            page_image.replacement_captured(e.id);
+                        } else {
+                            page_image.captured(e.id);
+                        }
+                        let alpha = if paint == PagePaint::ReplacementCapture { 1.0 }
+                            else { nav.tabs.stack.transition.page_alpha() };
+                        backdrop::draw_span("page.image", || page_snapshot.draw(alpha, true));
                     } else if let Some(alpha) = paint.frozen_alpha() {
                         let _image_layer = backdrop::layer(Z(Z::CHROME.0 - 1), false);
-                        backdrop::draw_span("page.image", || page_snapshot.draw(alpha, !live));
+                        let source_alpha = if source_pass { 1.0 } else { alpha };
+                        backdrop::draw_span("page.image", || page_snapshot.draw(source_alpha, !visible_live));
                     }
                     set.pages += 1;
                     set.bytes += inst.screen.render_report().bytes;
