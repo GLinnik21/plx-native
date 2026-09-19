@@ -57,22 +57,23 @@ on:
           Attach the LGPL corresponding source for the bundled FFmpeg and build the versioned,
           independently-reconstructible source tarball. Defaults true because it is the
           fail-closed choice: any caller that publishes the package redistributes FFmpeg and
-          owes LGPL corresponding source, not just release. Canary opts out today — publishing
-          a public prerelease with no FFmpeg source is a known gap, to close when the nightly
-          caller replaces it.
+          owes LGPL corresponding source, not just release. Every current caller passes true;
+          the flag stays so a future non-publishing caller can opt out deliberately rather than
+          this defaulting away from fail-closed.
         type: boolean
         default: true
       caches:
         description: >
           Enable the Rust incremental cache and the vendored-FFmpeg cache. Release deliberately
-          builds uncached (a release must be reproducible from a clean checkout); canary opts in
-          for turnaround.
+          builds uncached (a release must be reproducible from a clean checkout); nightly also
+          builds uncached today (it runs once a day, so the turnaround benefit is smaller). The
+          flag stays for a caller that wants the trade.
         type: boolean
         default: false
       fwcompat:
         description: >
           Run the per-binary firmware-database compatibility check (tools/fwcompat.py) against
-          pkg/plxnative and pkg/plxnative-storage, in addition to webosbrew-ipk-verify. Canary
+          pkg/plxnative and pkg/plxnative-storage, in addition to webosbrew-ipk-verify. Nightly
           only today. Release lacking this gate is a known asymmetry to revisit — NOT enabled here,
           this refactor changes no behaviour.
         type: boolean
@@ -188,7 +189,7 @@ jobs:
           # A developer's machine gets the `_DEV` pair instead (`make telemetry-local`), and
           # `telemetry::sender::ENVIRONMENT` is derived from WHICH pair a build was handed — so
           # this is also the whole reason a `telemetry: production` build reports as `production`
-          # and a `telemetry: development` one (the canary) cannot. Declared EMPTY rather than
+          # and a `telemetry: development` one (nightly today) cannot. Declared EMPTY rather than
           # merely absent when the other pair is wanted: the checks below refuse a build that
           # carries the wrong environment's credentials, and an assertion on a variable this
           # workflow never names reads as dead code to the next person editing it — which is how a
@@ -256,9 +257,9 @@ jobs:
             printf '  sentry  %s\n' "$(printf %s "$PLX_SENTRY_DSN"  | sha256sum | cut -c1-16)"
             printf '  posthog %s\n' "$(printf %s "$PLX_POSTHOG_KEY" | sha256sum | cut -c1-16)"
           else
-            [ -n "$PLX_SENTRY_DSN_DEV" ] || { echo '::error::PLX_SENTRY_DSN_DEV is required for the public canary.'; exit 1; }
-            [ -n "$PLX_POSTHOG_KEY_DEV" ] || { echo '::error::PLX_POSTHOG_KEY_DEV is required for the public canary.'; exit 1; }
-            [ -z "$PLX_SENTRY_DSN$PLX_POSTHOG_KEY" ] || { echo '::error::production telemetry is present in canary build.'; exit 1; }
+            [ -n "$PLX_SENTRY_DSN_DEV" ] || { echo '::error::PLX_SENTRY_DSN_DEV is required for a development-telemetry build.'; exit 1; }
+            [ -n "$PLX_POSTHOG_KEY_DEV" ] || { echo '::error::PLX_POSTHOG_KEY_DEV is required for a development-telemetry build.'; exit 1; }
+            [ -z "$PLX_SENTRY_DSN$PLX_POSTHOG_KEY" ] || { echo '::error::production telemetry is present in a development-telemetry build.'; exit 1; }
             grep -q 'tel:' pkg/.build-config
             python3 -c 'import os; b=open("pkg/plxnative","rb").read(); assert os.environ["PLX_SENTRY_DSN_DEV"].encode() in b; assert os.environ["PLX_POSTHOG_KEY_DEV"].encode() in b'
           fi
@@ -306,7 +307,7 @@ jobs:
             exit 1
           fi
           if [ "$TELEMETRY" = development ]; then
-            [ "$SENTRY_PROJECT" = plx-native-dev ] || { echo "::error::canary DIFs must upload to plx-native-dev, not $SENTRY_PROJECT."; exit 1; }
+            [ "$SENTRY_PROJECT" = plx-native-dev ] || { echo "::error::a development-telemetry build's DIFs must upload to plx-native-dev, not $SENTRY_PROJECT."; exit 1; }
           fi
           # `debug-files check` first: it is the step that says whether Symbolicator can use this
           # object at all, and its answer (`Arch: arm`, `Usable: yes`) is the one thing no vendor
@@ -359,7 +360,7 @@ jobs:
             --fw-releases '>=4.0' pkg/*.ipk | tee pkg/ipk-verify.md | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Firmware compatibility gates (per-binary database check)
-        # Canary-only today (`fwcompat`): checks each shipped binary against the local webosbrew
+        # Nightly-only today (`fwcompat`): checks each shipped binary against the local webosbrew
         # compat-checker database directly, in addition to webosbrew-ipk-verify's own per-package
         # verdict above. Not enabled for release yet — see the `fwcompat` input's comment.
         if: inputs.fwcompat
