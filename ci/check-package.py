@@ -230,6 +230,38 @@ def _selftest() -> int:
     print(f"check-package: nightly_stamp_date "
           f"{len(nightly_date_cases) - nightly_date_bad}/{len(nightly_date_cases)} cases correct")
 
+    # `--print-nightly-date` is the CLI wrapper build-package.yml calls instead of its own `sed`.
+    # Run it as an actual subprocess rather than calling the dispatch code directly — the argv
+    # parsing and the stdout shape (bare date, or nothing) are exactly what the shell caller's
+    # `nightly_date=$(...)` depends on, and none of that is exercised by calling
+    # `nightly_stamp_date` in-process.
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        good = Path(td) / "good.build-config"
+        good.write_text("features:--no-default-features+symbols+nightly:20260919+tel:98c4b7d37a4c")
+        good_proc = subprocess.run([sys.executable, __file__, "--print-nightly-date", str(good)],
+                                    capture_output=True, text=True)
+        good_ok = good_proc.returncode == 0 and good_proc.stdout.strip() == "20260919"
+        if not good_ok:
+            print(f"  FAIL — --print-nightly-date {good.name} = (rc={good_proc.returncode}, "
+                  f"stdout={good_proc.stdout!r}), want (0, '20260919')")
+
+        # A stable stamp has no `+nightly:` field at all — exit 0 with empty stdout, same as the
+        # `sed -n` this replaces, NOT an error: `label="$version${nightly_date:+-nightly-...}"`
+        # relies on an empty capture meaning "no suffix".
+        missing = Path(td) / "missing.build-config"
+        missing.write_text("features:--no-default-features+symbols+tel:98c4b7d37a4c")
+        missing_proc = subprocess.run(
+            [sys.executable, __file__, "--print-nightly-date", str(missing)],
+            capture_output=True, text=True)
+        missing_ok = missing_proc.returncode == 0 and missing_proc.stdout.strip() == ""
+        if not missing_ok:
+            print(f"  FAIL — --print-nightly-date {missing.name} = (rc={missing_proc.returncode}, "
+                  f"stdout={missing_proc.stdout!r}), want (0, '')")
+    cli_bad = (0 if good_ok else 1) + (0 if missing_ok else 1)
+    print(f"check-package: --print-nightly-date CLI {2 - cli_bad}/2 cases correct")
+
     # ...and the actual grade, once a date is in hand: an EXACT substring, the same shape stable's
     # own `plxnative@X.Y.Z` check already uses, no boundary assumed on either side. This is the
     # case that defeated both earlier shape rules (`\b`, then `(?![0-9])`): a real nightly binary's
@@ -250,12 +282,31 @@ def _selftest() -> int:
     print(f"check-package: nightly exact-substring grading "
           f"{len(nightly_blob_cases) - nightly_blob_bad}/{len(nightly_blob_cases)} cases correct")
 
-    bad += maintainer_bad + dev_bad + nightly_date_bad + nightly_blob_bad
+    bad += maintainer_bad + dev_bad + nightly_date_bad + cli_bad + nightly_blob_bad
     return 1 if bad else 0
 
 
 if "--selftest" in sys.argv:
     sys.exit(_selftest())
+
+# A single CLI entry point onto `nightly_stamp_date`, so a caller outside this file (currently only
+# build-package.yml's source-tarball-naming step) reads `pkg/.build-config`'s `+nightly:<date>`
+# field the same way the packaging gate above does, rather than re-deriving the regex with its own
+# `sed`. Two copies of that pattern is exactly how the workflow's copy could go blind to the
+# adjacent-literal case `nightly_stamp_date`'s own docstring describes — a `sed` one-liner has no
+# selftest to catch it drifting.
+#
+# Prints the date and nothing else when the field is present, prints nothing (exit 0) when it is
+# absent — same as the `sed -n` it replaces. Absence is a NORMAL outcome here, not a failure: a
+# stable build's stamp never carries this field, and the caller's own `label` construction already
+# treats an empty date as "no `-nightly-` suffix". A malformed or missing date on a build that
+# actually needed one is instead caught downstream, by the caller's regex guard on the final label.
+if len(sys.argv) > 2 and sys.argv[1] == "--print-nightly-date":
+    stamp_path = Path(sys.argv[2])
+    date = nightly_stamp_date(stamp_path.read_text())
+    if date is not None:
+        print(date)
+    sys.exit(0)
 
 # ---- the two release documents -----------------------------------------------------------------
 #
