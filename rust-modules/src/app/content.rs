@@ -939,6 +939,39 @@ mod library_publication_tests {
             "landing after navigation must still address the Detail that emitted the write");
     }
 
+    /// Regression for the double-fetch bug: `registry::mount` unconditionally queues
+    /// `RequestDetail` for a fresh Detail page, and `DetailScreen`'s own `Enter(Fresh)` handler
+    /// used to queue a SECOND one because it read `detail_request_status`/`self.detail(meta)`
+    /// before the mount's own request had been admitted — so every ordinary Detail open spent
+    /// two of the four in-flight admission slots on one page, and a slow server could refuse a
+    /// covered page's own refresh at the limit.
+    #[test]
+    fn opening_a_detail_page_issues_exactly_one_detail_fetch() {
+        let _guard = crate::testlock::serial();
+        let sid = crate::plex::ServerId::UNSET;
+        let a = AppArg::Content(ContentArg::Detail { sid, rk: "detail-a".into() });
+        let mut pages = crate::ui::dispatch::Dispatcher::<bridge::AppHost>::new();
+        let mut rig = bridge::Bridge::for_test(|| 0);
+        let mut frame_no = 0;
+
+        let before = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+        bridge::show_page(&mut pages, a.clone());
+        frame(&mut pages, &mut rig, &mut frame_no);
+        let after = crate::metadata::detail_generation_for_test(rig.metadata_mut().adapter_ref());
+
+        // Each `RequestDetail` admission bumps the generation exactly once (`begin_detail_request`),
+        // whether or not it is later superseded — so the generation delta is a direct count of how
+        // many detail fetches this one open issued, even though a superseded one is consumed
+        // synchronously under `cfg(test)` and never shows up as still "parked" in `held_detail`.
+        assert_eq!(after - before, 1,
+            "opening a fresh Detail page must issue exactly one detail fetch, not one per mount \
+             plus one per Enter");
+
+        drain_detail_workers(&mut rig);
+        rig.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
+        crate::metadata::set_current_for_test(rig.metadata_mut().state_mut(), None);
+    }
+
     #[test]
     fn a_covered_detail_refresh_waits_until_its_page_owns_metadata_again() {
         let _guard = crate::testlock::serial();

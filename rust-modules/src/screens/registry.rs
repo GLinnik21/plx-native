@@ -1579,13 +1579,13 @@ where
             ),
             AppArg::Content(ContentArg::Detail { sid, rk }) => {
                 let mut page = crate::screens::detail::DetailScreen::new(entry, *sid, rk.clone(), H::hubs(cx));
-                fx.push(crate::ui::machine::Fx::App(AppFx::Store(
-                    StoreId::Metadata,
-                    StoreCmd::Metadata(crate::stores::metadata::MetadataCmd::RequestDetail {
-                        sid: *sid,
-                        rk: rk.clone(),
-                    }),
-                )));
+                // No `RequestDetail` push here: `DetailScreen`'s own `Enter(Fresh)` handler (fired
+                // this same frame, right after mount) already decides whether the freshly mounted
+                // page needs a fetch (`refresh == None && self.detail(meta).is_none() &&
+                // request_status != Some(true)`) — a mount-time push here raced that decision every
+                // time, because the admission it queued had not yet been drained when Enter read
+                // `detail_request_status`, so Enter always saw no fetch in flight and queued a
+                // second one. Mount and Enter now have exactly one owner of the request decision.
                 if let PageMemory::Detail(spot) = &ret.memory {
                     page.restore_memory(spot, H::metadata(cx));
                 } else if let Some(seed) = self.seed.take() {
