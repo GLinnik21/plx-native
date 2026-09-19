@@ -221,15 +221,13 @@ pub(crate) fn active(now_ns: i64, transcoding: bool) -> Option<String> {
 }
 
 /// The newest-starting cue covering `now_ns` in a list sorted by start — the same "newest wins"
-/// rule `active_subtitle` applies to the embedded store. The backward scan is bounded rather
-/// than exhaustive: it only has to reach past the cues that overlap a long-running one (a sign
-/// held under dialogue), and 32 of those is far beyond any real file.
+/// rule `active_subtitle` applies to the embedded store. Search the bounded whole-file store:
+/// a long-running sign may outlive any number of shorter dialogue cues.
 fn cue_at(cues: &[Cue], now_ns: i64) -> Option<&Cue> {
     let after = cues.partition_point(|c| c.start_ns <= now_ns);
     cues[..after]
         .iter()
         .rev()
-        .take(32)
         .find(|c| now_ns < c.end_ns)
 }
 
@@ -397,6 +395,13 @@ mod tests {
         let body = format!("00:00:01 --> 00:00:03\n{}", "é".repeat(8192));
         let cues = parse(body.as_bytes());
         assert!(cues[0].text.chars().count() <= 4096);
+    }
+
+    #[test]
+    fn sidecar_long_cue_survives_many_short_overlaps() {
+        let mut cues = vec![Cue { start_ns: 0, end_ns: 1000, text: "sign".into() }];
+        cues.extend((1..40).map(|n| Cue { start_ns: n, end_ns: n + 1, text: "dialogue".into() }));
+        assert_eq!(cue_at(&cues, 100).map(|c| c.text.as_str()), Some("sign"));
     }
 
     const S: i64 = 1_000_000_000;
