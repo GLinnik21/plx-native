@@ -132,11 +132,69 @@ pub(crate) fn append(r: &Record) -> bool {
 /// publishes the new decision and then takes this same lock to purge, so every race has one of two
 /// safe orders: the record is refused, or it is appended first and the purge removes it.
 pub(crate) fn append_if(r: &Record, allowed: impl FnOnce() -> bool) -> Option<bool> {
-    let _g = lock();
-    if !allowed() {
-        return None;
+    append_guarded(r, allowed, None)
+}
+
+/// Admit a watched report and append it as ONE spool transaction. Register before the write:
+/// the flush cannot read it until this lock is released, and compaction can settle a discarded
+/// report during the write itself. No caller registers again after returning — a flush may
+/// already have settled it, or `delivery::forget` may already have erased its watch.
+///
+/// `None` means admission was refused (permission, stale tenure, or no watch capacity), so a
+/// one-off must not fall back to the network. `Some(false)` is a write failure: the watch is
+/// failed and the caller may attempt its bounded fallback in the SAME tenure. Lock order stays
+/// spool → delivery, as in compaction and purge; no delivery lock is held during disk I/O.
+pub(crate) fn append_watched_if(
+    r: &Record,
+    tenure: u64,
+    allowed: impl FnOnce() -> bool,
+) -> Option<bool> {
+    append_guarded(r, allowed, Some(tenure))
+}
+
+fn append_guarded(r: &Record, allowed: impl FnOnce() -> bool, tenure: Option<u64>) -> Option<bool> {
+    use super::delivery::{self, DeliveryState};
+    let result = {
+        let _g = lock();
+        if !allowed() {
+            return None;
+        }
+        if let Some(t) = tenure {
+            if !delivery::watch(&r.event_id, DeliveryState::Queued, t) {
+                return None;
+            }
+        }
+        let appended = append_locked(r);
+        if !appended {
+            if let Some(t) = tenure {
+                delivery::settle_if_current(&r.event_id, DeliveryState::Failed, t);
+            }
+        }
+        Some(appended)
+    };
+    #[cfg(test)]
+    after_append_for_test();
+    result
+}
+
+#[cfg(test)]
+thread_local! {
+    // A deterministic scheduler boundary: the spool lock is released, but its caller has not
+    // resumed. A flush can already read and settle the appended record at this point.
+    static AFTER_APPEND: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn on_append_for_test(f: impl FnOnce() + 'static) {
+    AFTER_APPEND.with(|slot| *slot.borrow_mut() = Some(Box::new(f)));
+}
+
+#[cfg(test)]
+fn after_append_for_test() {
+    let f = AFTER_APPEND.with(|slot| slot.borrow_mut().take());
+    if let Some(f) = f {
+        f();
     }
-    Some(append_locked(r))
 }
 
 fn append_locked(r: &Record) -> bool {
@@ -318,6 +376,7 @@ fn test_path() -> Option<PathBuf> {
 pub(crate) fn set_test_path(p: Option<PathBuf>) {
     *TEST_PATH.lock().unwrap_or_else(|e| e.into_inner()) = p;
     ON_DISK.store(UNKNOWN, std::sync::atomic::Ordering::Relaxed);
+    AFTER_APPEND.with(|slot| *slot.borrow_mut() = None);
 }
 
 #[cfg(test)]
@@ -389,6 +448,45 @@ mod tests {
         let trimmed = delivery::state("oldest");
         delivery::forget();
         assert_eq!((purged, trimmed), (Some(DeliveryState::Failed), Some(DeliveryState::Failed)));
+    }
+
+    #[test]
+    fn a_watched_append_refuses_an_ended_tenure() {
+        use crate::telemetry::delivery::{self, DeliveryState};
+        let _g = crate::testlock::serial();
+        let _s = Scratch::new("watched-tenure");
+        delivery::forget();
+        let tenure = delivery::tenure();
+        assert_eq!(append_watched_if(&rec("stale"), tenure, || {
+            delivery::forget(); // erasure raced permission checking, before watch admission
+            true
+        }), None);
+        assert!(ids().is_empty());
+        assert_eq!(delivery::state("stale"), None);
+        assert!(delivery::watch("stale", DeliveryState::Queued, delivery::tenure()));
+        delivery::settle_if_current("stale", DeliveryState::Delivered, tenure);
+        assert_eq!(delivery::state("stale"), Some(DeliveryState::Queued));
+        delivery::forget();
+    }
+
+    #[test]
+    fn compaction_can_settle_the_report_being_appended() {
+        use crate::telemetry::delivery::{self, DeliveryState};
+        let _g = crate::testlock::serial();
+        let _s = Scratch::new("watched-trim");
+        delivery::forget();
+        let full: Vec<_> = (0..queue::MAX_RECORDS).map(|i| Record {
+            category: Category::OneOff, ..rec(&format!("explicit-{i}"))
+        }).collect();
+        {
+            let _spool = lock();
+            assert!(write_locked(&full));
+        }
+        let standing = Record { category: Category::Errors, ..rec("standing") };
+        assert_eq!(append_watched_if(&standing, delivery::tenure(), || true), Some(true));
+        assert!(!ids().contains(&standing.event_id));
+        assert_eq!(delivery::state("standing"), Some(DeliveryState::Failed));
+        delivery::forget();
     }
 
     #[test]

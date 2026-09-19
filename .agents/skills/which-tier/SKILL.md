@@ -159,6 +159,9 @@ It provably cannot answer:
 - **Anything about video.** The 29-symbol Starfish/ACB seam does not exist off-device; Play lands
   on the app's real failure read-out, which is correct behaviour and a convenient way to look at
   that screen.
+- **The cached modal ground.** The simulator runs with the frame cache OFF (`frame cache:
+  CopyTexSubImage error=0x500 — cache off`), so `popover::host`'s cached stages never run and a sim
+  capture cannot show a fault in them; only the TV can.
 
 **Two host-only traps that read as your change being broken.** The recipes are `ui-sim`'s; they are
 named here only so you can tell them from a regression in your own edit.
