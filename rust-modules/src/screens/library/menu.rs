@@ -650,12 +650,6 @@ impl<H: LibraryLike> Screen<H> for LibraryMenu {
     fn scrim(&self) -> crate::ui::screen::Scrim {
         crate::ui::screen::Scrim::dim(crate::ui::theme::underlay::DIM_COMPACT)
     }
-    /// The COMPACT role — the card menu's weight, because this is the same object one page over: a
-    /// chip-shaped control on a live page opening a list beside it. The page recedes (inheriting
-    /// its own light through the container's field) and stays readable.
-    fn scrim(&self) -> crate::ui::screen::Scrim {
-        crate::ui::screen::Scrim::dim(crate::ui::theme::underlay::DIM_COMPACT)
-    }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
         let measure = f.measure;

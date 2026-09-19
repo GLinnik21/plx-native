@@ -191,18 +191,21 @@ staircase fall from 9.6 px / 15.7 px to 2.2 px, the horizontal autocorrelation a
 
 `widgets::Glass::DYNAMIC_BACKDROP` is the one preset left (the cached popover preset, `Glass::CACHED`,
 left with the popover glass on 2026-09-19). The widget itself is still drawn on every presented
-frame, while a dirty shared backdrop is refreshed on the shared cadence — `DEFAULT_DYNAMIC_PERIOD`,
-every changed present since the direct source path; it was every THIRD, which is the history the
-table below measures. The name in code is `EveryChangedPresent`, in presents rather than hertz,
-because a rate is only a rate while the UI is actually presenting at 60 Hz. `ui::idle` still gates the whole frame, so settled content creates no private
-blur clock and burns no presents.
+frame, while a dirty shared backdrop is refreshed with no named period or clock at all as of
+2026-09-19 — `ui/frame/backdrop.rs`'s `GlassPlan` is the single policy owner, and a source refreshes
+whenever a declaration traversal finds its sampling footprint's ordered draw arguments changed
+underneath it; there is no `DEFAULT_DYNAMIC_PERIOD` or `EveryChangedPresent` left to name (the
+retired cadence clock and its `glasshz` override are gone with it, per
+`docs/backdrop-blur-profiling.md`'s "live backdrop sources follow the layer stack"). The historical
+period-named policy the table below measures — "every changed present", "every third", and the
+other cadence experiments — is exactly that: history, superseded first by the direct source path
+and then by this declaration-traversal mechanism. `ui::idle` still gates the whole frame, so settled
+content creates no private blur clock and burns no presents.
 
-The cadence and pending-damage state are global, like the snapshot chain: several neighbouring
-dynamic widgets cannot stagger their phases into a refresh on every frame. Each owner keeps only
-its visibility/source state and reports whether its **host underlay** moved; foreground modal
-motion is deliberately excluded. A one-shot data/texture landing between sample slots buys at most
-two follow-up presents to reach the next slot, while a pure 2-second compositor keepalive does not
-recapture a clean backdrop.
+Pending-damage state is now per sampling footprint rather than one shared cadence: `ui/frame/
+backdrop.rs` retains each source's own captured-prefix description and compares it band by band,
+so neighbouring dynamic widgets refresh independently rather than sharing one phase. Each owner
+still reports whether its **host underlay** moved; foreground modal motion is deliberately excluded.
 
 Measured on the dev television over the moving Home hero:
 

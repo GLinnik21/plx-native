@@ -20,6 +20,18 @@ impl FrameCache {
     pub(super) fn invalidate(&mut self) {
         self.snapshot = None;
     }
+    /// Host logic tests construct dispatchers without a GL context, so they always take the live
+    /// fallback (`capture`/`draw`) rather than the FBO-render path `render_into` stands for — see
+    /// `gfx::FrameCache::render_available`'s doc, which this mirrors.
+    pub(super) fn render_available(&self) -> bool {
+        false
+    }
+    pub(super) fn tex(&self) -> Option<std::ffi::c_uint> {
+        self.snapshot.is_some().then_some(1)
+    }
+    pub(super) fn resident_bytes(&self) -> usize {
+        self.snapshot.as_ref().map_or(0, |s| s.len())
+    }
     pub(super) fn capture(&mut self) -> bool {
         if self.off || crate::gfx::blur_source_pass() {
             return false;
@@ -27,7 +39,23 @@ impl FrameCache {
         self.snapshot = Some(PIXELS.with(|p| p.borrow().clone()));
         true
     }
+    /// No GL context in a host test: this always declines, exactly as `render_available` says, so
+    /// every caller falls back to the `capture`/`draw` copy path exercised by this file's tests.
+    pub(super) fn render_into(&mut self) -> Option<crate::surface::PageTarget> {
+        None
+    }
+    pub(super) fn rendered(&mut self, target: crate::surface::PageTarget) {
+        self.finish_render(target);
+        self.draw();
+    }
+    pub(super) fn finish_render(&mut self, target: crate::surface::PageTarget) {
+        drop(target);
+        self.snapshot = Some(PIXELS.with(|p| p.borrow().clone()));
+    }
     pub(super) fn draw(&self) -> bool {
+        self.draw_alpha(1.0)
+    }
+    pub(super) fn draw_alpha(&self, _alpha: f32) -> bool {
         let Some(snapshot) = &self.snapshot else { return false };
         // FrameCache's quad bypasses PAGE_FROZEN. It replaces the whole viewport.
         PIXELS.with(|p| *p.borrow_mut() = snapshot.clone());

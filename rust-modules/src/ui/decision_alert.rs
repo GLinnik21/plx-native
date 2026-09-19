@@ -295,7 +295,6 @@ impl DecisionAlert {
         // The body determines the panel's size. A cached ground can contain the OLD outline;
         // dropping it here lets all hosts redraw the measured panel, even inside an own scope.
         crate::ui::popover::host::ground_invalidate();
-        crate::ui::popover::note_own_damage();
         crate::ui::idle::invalidate();
         true
     }
