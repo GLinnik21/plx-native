@@ -2755,6 +2755,55 @@ mod edge_back_tests {
     }
 
     #[test]
+    fn deep_page_unwind_releases_retired_entries_and_focus() {
+        let _guard = crate::testlock::serial();
+        for dip in [false, true] {
+            let (mut d, mut rig) = booted();
+            d.nav.tabs.stack.transition = if dip {
+                Box::new(crate::ui::containers::transition::PageDip::new())
+            } else {
+                Box::new(crate::ui::containers::transition::Immediate)
+            };
+            let mut ms = 0;
+            let advance = |d: &mut Dispatcher<FixtureHost>, rig: &mut EdgeBackRig, ms: &mut u32| {
+                for _ in 0..if dip { 40 } else { 1 } {
+                    *ms += 16;
+                    let report = d.frame(rig, tick(*ms), vec![], vec![], &mut NoTap);
+                    d.prune(&report.unmounted);
+                }
+                assert!(!d.nav.tabs.stack.is_pending());
+            };
+            let root = d.nav.top_page().unwrap().id;
+            let mut entries = Vec::new();
+            for n in 1..=100 {
+                d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(n)));
+                advance(&mut d, &mut rig, &mut ms);
+                let entry = d.nav.top_page().unwrap().id;
+                d.input.engine.remember_projected(entry, GroupId(901), n);
+                entries.push(entry);
+                assert!(d.nav.tabs.stack.entries.iter().filter(|e| e.inst.is_some()).count()
+                    <= crate::ui::containers::stack::CAP);
+            }
+            for _ in 0..100 {
+                d.request(MachineId::Nav, NavOp::Pop);
+                advance(&mut d, &mut rig, &mut ms);
+            }
+            assert_eq!(d.nav.tabs.stack.depth(), 1);
+            assert_eq!(d.nav.top_page().unwrap().id, root);
+            assert!(d.nav.tabs.stack.retired.is_empty());
+            assert!(d.nav.covered_modals.is_empty());
+            assert!(d.parked.is_empty());
+            assert!(d.app_returns.is_empty());
+            assert_eq!(d.queued(), 0);
+            for entry in entries {
+                assert!(d.nav.entry(entry).is_none());
+                assert_eq!(d.input.engine.current(InputOwner::Entry(entry)), None);
+                assert!(d.input.engine.remembered_snapshot(entry).is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn carried_unmounts_finish_before_production_pruning_forgets_retired_bodies() {
         let _guard = crate::testlock::serial();
         let (mut d, mut rig) = booted();

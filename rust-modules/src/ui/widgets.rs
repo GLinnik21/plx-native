@@ -6986,9 +6986,37 @@ pub(crate) fn rating_group(
             bx += measure.width(&s, theme::size::MICRO, true);
         }
     }
-    // the MEASURED width, not what the draws accumulated — a draw and its measurer that can
-    // disagree will eventually be caught disagreeing
-    rating_group_w(caption, cells, measure)
+    // Every advance above already used the supplied metric source. Return that extent rather
+    // than measuring every run a second time; the host test compares it with rating_group_w.
+    bx - x
+}
+
+#[cfg(test)]
+#[test]
+fn rating_group_measures_each_run_once_and_returns_its_drawn_width() {
+    use crate::ui::machine::Measure;
+    use std::cell::Cell;
+    let _serial = crate::testlock::serial();
+    struct Counting(Cell<usize>);
+    impl Measure for Counting {
+        fn width(&self, s: &CStr, sz: i32, _: bool) -> f32 {
+            self.0.set(self.0.get() + 1);
+            s.to_bytes().len() as f32 * sz as f32 * 0.5
+        }
+        fn cap_h(&self, sz: i32) -> f32 { sz as f32 }
+        fn line_h(&self, sz: i32) -> f32 { sz as f32 }
+    }
+    let measure = Counting(Cell::new(0));
+    let cells = [
+        RatingCell { mark: &[], value: "8.1", suffix: "/10" },
+        RatingCell { mark: &[], value: "92%", suffix: "" },
+    ];
+    let expected = rating_group_w("Provider", &cells, &measure);
+    let runs = measure.0.replace(0);
+    let drawn = rating_group(Painter::recording(), 64.0, 100.0, "Provider", &cells, &measure);
+    assert!((drawn - expected).abs() < 0.001);
+    assert_eq!(measure.0.get(), runs, "the draw must not repeat its entire measurement walk");
+    crate::text::take_measure_fault();
 }
 
 #[cfg(test)]
