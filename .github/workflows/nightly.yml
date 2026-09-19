@@ -19,13 +19,17 @@ name: Nightly
 #
 # A THIRD way to run dry, alongside `dry_run: true`: a `pull_request` that touches this workflow
 # or the machinery it depends on (see the `paths:` filter below) builds and gates the PR's own head
-# commit, exactly like `dry_run: true` — plan + build only, never publish/pages/prune. It exists
-# because `workflow_dispatch` cannot target a workflow file that only exists on a branch: GitHub
-# will not let you dispatch `nightly.yml` from a PR branch until that file is on `main`, so a PR
-# is the only way to prove a change to this file (or to the plumbing it calls into) before it lands.
+# commit, exactly like `dry_run: true`. It exists because `workflow_dispatch` cannot target a
+# workflow file that only exists on a branch: GitHub will not let you dispatch `nightly.yml` from
+# a PR branch until that file is on `main`, so a PR is the only way to prove a change to this file
+# (or to the plumbing it calls into) before it lands.
 # `plan` computes ONE `dry` value (true for `pull_request` OR `inputs.dry_run`) and every
-# downstream job gates on that single output, rather than each job re-deriving "is this a real
-# run" from the event name.
+# downstream job reads that single output, rather than each job re-deriving "is this a real run"
+# from the event name — but not always at the same granularity. `build` and `pages`/`prune` gate
+# whole-job on it (`pages`/`prune` never run dry). `publish` runs its whole job even when dry, so a
+# change to staging, note-rendering or local checksum verification gets exercised by a PR — only
+# the steps that would actually mutate the repo's releases (the immutable-tag guard, tagging and
+# `gh release create`, and the post-publish download/verify) are individually gated on `dry`.
 #
 # FORK PULL REQUESTS ARE SKIPPED ENTIRELY (see `plan`'s own `if:`). `build`, even in dry mode,
 # still runs through build-package.yml's "Upload debug files to Sentry" step, which needs
@@ -177,7 +181,13 @@ jobs:
     name: publish nightly prerelease
     runs-on: ubuntu-latest
     needs: [plan, build]
-    if: ${{ needs.plan.outputs.dry != 'true' && needs.plan.outputs.skip != 'true' }}
+    # A dry run (workflow_dispatch's `dry_run` input, or any pull_request) still runs this job —
+    # only the network-mutating steps below are individually gated on `needs.plan.outputs.dry`.
+    # Staging the artifact, rendering notes and verifying the checksum locally are exactly the
+    # steps a change to THIS job's own logic needs exercised before it reaches `main`; skipping
+    # the whole job the way this used to work is why the bare-filename `sha256sum -c` bug in the
+    # staging step survived every dry run and only broke on the first real nightly.
+    if: ${{ needs.plan.outputs.skip != 'true' }}
     permissions:
       contents: write
     steps:
@@ -190,6 +200,9 @@ jobs:
         # against the remote right before publishing, the same belt-and-suspenders shape
         # canary.yml's own "Refuse to overwrite" step uses, for the same reason: plan and publish
         # run minutes apart and a concurrent run (or a hand-pushed tag) could land in between.
+        # Pointless (and a needless GH_TOKEN use) in a dry run, which never reaches
+        # `gh release create` and has no tag to protect.
+        if: ${{ needs.plan.outputs.dry != 'true' }}
         env:
           TAG: ${{ needs.plan.outputs.tag }}
           GH_TOKEN: ${{ github.token }}
@@ -232,7 +245,15 @@ jobs:
           sha256=$(cut -d' ' -f1 dist/nightly.sha256)
           python3 ci/nightly.py notes --label "$LABEL" --sha "$SHA" --prev-tag "$PREV_TAG" \
             --ipk "$IPK" --sha256 "$sha256" --repo "$REPO" > "$RUNNER_TEMP/notes.md"
+      - name: Verify the staged checksum
+        # Runs in every non-skipped build, dry or real: this is the local, no-network check that
+        # `nightly.sha256` (written from inside `dist/` by the staging step above, so it carries
+        # the bare filename) actually verifies against the `.ipk` sitting beside it — the same
+        # shape `ci/verify-published.sh` checks beside a downloaded release asset. Kept as its own
+        # step, separate from the real publish below, specifically so a dry run exercises it.
+        run: ( cd dist && sha256sum -c nightly.sha256 )
       - name: Create and verify the nightly prerelease
+        if: ${{ needs.plan.outputs.dry != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.plan.outputs.tag }}
@@ -241,7 +262,6 @@ jobs:
           IPK: ${{ steps.stage.outputs.ipk }}
         run: |
           set -euo pipefail
-          sha256sum -c dist/nightly.sha256
           gh release create "$TAG" \
             "dist/$IPK" dist/nightly.sha256 dist/ffmpeg-*.tar.xz dist/build-ffmpeg.sh dist/plxnative-source-*.tar.gz* \
             --target "$SHA" \
