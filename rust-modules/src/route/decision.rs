@@ -6244,7 +6244,7 @@ pub(crate) fn commit_subtitle_selection(ps: &mut PlaybackSession, sub_idx: i32, 
         crate::plex::TranscodeDelivery::FixedHls { .. }
     ) {
         { let s = &mut *ps; {
-            if sub_idx < 0 {
+            if stream_id == 0 {
                 if let Some(candidate) = s.auto_original.as_mut() {
                     candidate.subtitle_ordinal = None;
                 }

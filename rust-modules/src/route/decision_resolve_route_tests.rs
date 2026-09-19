@@ -2063,3 +2063,38 @@ fn restored_sidecar_is_part_of_the_route_contract() {
     assert_eq!(cur_sub_sid(&ps), 77, "timeline and later audio/quality transcodes must retain the restored sidecar");
     crate::player::sidecar::reset();
 }
+#[test]
+#[cfg(feature = "devtriggers")]
+fn sidecar_on_invalidates_a_pending_original_recovery() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Original);
+    apply_plan(&mut ps,
+        Plan {
+            url: "http://fixture.invalid/4000/master.m3u8".into(),
+            tsession: "encoder-subtitle-on".into(),
+            delivery: crate::plex::TranscodeDelivery::FixedHls {
+                seconds_per_segment: 2,
+            },
+            ceiling: Some(crate::abr::Rung::P720.ceiling()),
+            auto_original: Some(test_original_candidate(None)),
+            ..Default::default()
+        },
+        "rk-subtitle-on",
+    );
+    request_user_route_intent(&ps, UserRouteIntent::RecoverOriginal);
+
+    commit_subtitle_selection(&mut ps, -1, 88);
+
+    assert!(ps.auto_original.is_none());
+    let action = claim_route_action().expect("the burned subtitle needs HLS retranscode");
+    assert_eq!(
+        action.intent,
+        RouteIntent::User(UserRouteIntent::Retranscode)
+    );
+    finish_route_action(&mut ps, &action, RouteApplyResult::Prepared);
+
+    reset_session(&mut ps);
+    reset_player_control_for_test(&ps);
+    crate::player::reset_subtitle();
+}
