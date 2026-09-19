@@ -907,6 +907,7 @@ impl Screen<FixtureHost> for VideoPlaneScreen {
 pub struct FixtureRig {
     pub page_alpha: f32,
     pub chrome_alpha: f32,
+    pub chrome_draws: usize,
     pub view_tab: Option<u32>,
     pub blur_amount: f32,
     pub navigation_reads: std::cell::Cell<usize>,
@@ -933,6 +934,7 @@ impl FixtureRig {
         Self {
             page_alpha: 1.0,
             chrome_alpha: 1.0,
+            chrome_draws: 0,
             view_tab: None,
             blur_amount: 0.0,
             navigation_reads: std::cell::Cell::new(0),
@@ -972,6 +974,10 @@ impl Rig<FixtureHost> for FixtureRig {
             page_alpha: self.page_alpha, chrome_alpha: self.chrome_alpha,
             view_tab: self.view_tab, blur_amount: self.blur_amount,
         }
+    }
+    fn draw_chrome(&mut self, _arg: &FixtureArg, _parts: &CxParts<u32>,
+        _nav: super::screen::NavPresentation, _glass: Option<&mut super::frame::glass::GlassPlan>) {
+        self.chrome_draws += 1;
     }
     fn scrim_chrome_read(&self) -> Option<super::widgets::ChromeRead<'_>> {
         self.scrim_chrome.then(|| super::widgets::ChromeRead {

@@ -1434,3 +1434,118 @@ fn reset_for_profile_clears_a_pending_op_so_it_cannot_apply_over_the_emptied_tre
     }
     assert!(d.nav.tabs.stack.entries.is_empty(), "nothing minted itself back in behind the reset");
 }
+
+#[derive(Default)]
+struct CountingSnapshot(bool);
+impl super::transition::PageSnapshot for CountingSnapshot {
+    fn available(&self) -> bool { true }
+    fn valid(&self) -> bool { self.0 }
+    fn begin(&mut self) -> bool { self.0 = false; true }
+    fn finish(&mut self) { self.0 = true; }
+    fn release(&mut self) { self.0 = false; }
+}
+
+fn frozen_fixture() -> (Dispatcher<FixtureHost>, FixtureRig) {
+    let (mut d, rig, _) = booted();
+    d.page_snapshot = Box::<CountingSnapshot>::default();
+    d.nav.tabs.stack.transition = Box::new(PageDip::new());
+    (d, rig)
+}
+fn page_draw_order(d: &Dispatcher<FixtureHost>) -> usize {
+    d.top_screen().unwrap().as_any().unwrap()
+        .downcast_ref::<crate::ui::fixture::FixtureScreen>().unwrap().draw_at
+}
+
+#[test]
+fn frozen_dispatch_skips_the_page_but_keeps_chrome_live() {
+    let _guard = crate::testlock::serial();
+    let (mut d, mut rig) = frozen_fixture();
+    d.nav.tabs.stack.transition.request(true);
+    d.draw(&mut rig, true); // capture
+    let before = page_draw_order(&d);
+    let chrome = rig.chrome_draws;
+    d.draw(&mut rig, true); // held
+    assert_eq!(page_draw_order(&d), before, "OUT must not invoke the live page");
+    assert_eq!(rig.chrome_draws, chrome + 1, "chrome is outside the captured page");
+}
+
+#[test]
+fn frozen_dispatch_in_reuses_the_floor_capture() {
+    let _guard = crate::testlock::serial();
+    let (mut d, mut rig) = frozen_fixture();
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(7)));
+    for i in 1..=7 { d.frame(&mut rig, tick(i * 16), vec![], vec![], &mut NoTap); }
+    assert_eq!(d.top_arg(), Some(&FixtureArg::Page(7)));
+    assert!(d.nav.tabs.stack.transition.in_flight());
+    d.draw(&mut rig, true);
+    let before = page_draw_order(&d);
+    d.draw(&mut rig, true);
+    assert_eq!(page_draw_order(&d), before, "IN must not invoke the live page");
+}
+
+#[test]
+fn frozen_dispatch_resumes_live_after_settle() {
+    let _guard = crate::testlock::serial();
+    let (mut d, mut rig) = frozen_fixture();
+    d.nav.tabs.stack.transition.request(true);
+    d.draw(&mut rig, true);
+    d.draw(&mut rig, true);
+    let held = page_draw_order(&d);
+    d.draw(&mut rig, true);
+    assert_eq!(page_draw_order(&d), held, "premise: page is held before settle");
+    d.nav.tabs.stack.transition.cancel();
+    for i in 1..=20 { d.frame(&mut rig, tick(i * 16), vec![], vec![], &mut NoTap); }
+    assert!(!d.nav.tabs.stack.transition.in_flight());
+    d.draw(&mut rig, true);
+    assert!(page_draw_order(&d) > held, "settled page is live again");
+}
+
+#[test]
+fn frozen_dispatch_source_and_surfaces_passes_preserve_the_image() {
+    let _guard = crate::testlock::serial();
+    let (mut d, mut rig) = frozen_fixture();
+    d.nav.tabs.stack.transition.request(true);
+    d.draw(&mut rig, true);
+    let before = page_draw_order(&d);
+    {
+        use crate::ui::frame::backdrop::{self, Sources};
+        let _source = backdrop::discover(std::rc::Rc::new(std::cell::RefCell::new(Sources::default())));
+        d.draw(&mut rig, true);
+    }
+    assert_eq!(page_draw_order(&d), before, "glass discovery must not walk a held page");
+    d.draw(&mut rig, false);
+    assert!(d.page_snapshot.valid(), "the surfaces pass cannot release the page image");
+    d.draw(&mut rig, true);
+    assert_eq!(page_draw_order(&d), before);
+    let layers = d.backdrop_layers(0.5);
+    assert!(layers.iter().any(|layer| layer.blocks && layer.z < crate::ui::frame::backdrop::Z::CHROME));
+}
+
+#[test]
+fn frozen_dispatch_capture_refusal_keeps_the_live_fallback() {
+    let _guard = crate::testlock::serial();
+    struct Refused;
+    impl super::transition::PageSnapshot for Refused {
+        fn available(&self) -> bool { true }
+    }
+    let (mut d, mut rig) = frozen_fixture();
+    d.page_snapshot = Box::new(Refused);
+    d.nav.tabs.stack.transition.request(true);
+    d.draw(&mut rig, true);
+    let before = page_draw_order(&d);
+    d.draw(&mut rig, true);
+    assert!(page_draw_order(&d) > before);
+    assert!(!d.page_snapshot.valid());
+}
+
+#[test]
+fn frozen_dispatch_modal_takes_the_single_snapshot() {
+    let _guard = crate::testlock::serial();
+    let (mut d, mut rig) = frozen_fixture();
+    d.nav.tabs.stack.transition.request(true);
+    d.draw(&mut rig, true);
+    assert!(d.page_snapshot.valid());
+    open_modal(&mut d, &mut rig, Style::Sheet, 16);
+    d.draw(&mut rig, true);
+    assert!(!d.page_snapshot.valid(), "page-only pixels cannot serve a modal's chrome prefix");
+}

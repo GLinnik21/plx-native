@@ -642,6 +642,52 @@ impl Drop for Popover {
 /// The live-backdrop layer walk knows which z range the held image replaces. Sources below
 /// that replacement are occluded; a source above it sees the frozen image without invalidating it.
 pub(crate) mod host {
+    /// Exclusive borrower of the existing texture. It never allocates another FrameCache.
+    #[derive(Default)]
+    pub(crate) struct TransitionSnapshot {
+        target: Option<crate::surface::PageTarget>,
+    }
+    static TRANSITION_OWNS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    impl crate::ui::containers::transition::PageSnapshot for TransitionSnapshot {
+        fn available(&self) -> bool {
+            users() == 0 && held() == Held::Nothing
+                && unsafe { (*std::ptr::addr_of!(CACHE)).render_available() }
+        }
+        fn valid(&self) -> bool {
+            TRANSITION_OWNS.load(Relaxed) && unsafe { (*std::ptr::addr_of!(CACHE)).tex().is_some() }
+        }
+        fn revision(&self) -> u64 { page_epoch() as u64 }
+        fn resident_bytes(&self) -> usize {
+            unsafe { (*std::ptr::addr_of!(CACHE)).resident_bytes() }
+        }
+        fn begin(&mut self) -> bool {
+            if !self.available() || crate::ui::frame::backdrop::source_walk() { return false; }
+            // FBO refusal falls back to a live draw, not a synchronous framebuffer copy.
+            self.target = unsafe { (*std::ptr::addr_of_mut!(CACHE)).render_into() };
+            TRANSITION_OWNS.store(self.target.is_some(), Relaxed);
+            self.target.is_some()
+        }
+        fn finish(&mut self) {
+            if let Some(target) = self.target.take() {
+                unsafe { (*std::ptr::addr_of_mut!(CACHE)).finish_render(target); }
+                PAGE_EPOCH.fetch_add(1, Relaxed);
+            }
+        }
+        fn draw(&self, alpha: f32, clear: bool) {
+            if !self.valid() { return; }
+            if clear {
+                let c = crate::ui::theme::CLEAR_RGB;
+                crate::gfx::frame_clear(c.0, c.1, c.2);
+            }
+            unsafe { (*std::ptr::addr_of!(CACHE)).draw_alpha(alpha); }
+        }
+        fn release(&mut self) {
+            self.target = None;
+            if TRANSITION_OWNS.swap(false, Relaxed) { invalidate(); }
+        }
+    }
+
     use super::HOST_USERS;
     use std::sync::atomic::Ordering::Relaxed;
 
@@ -875,9 +921,12 @@ pub(crate) mod host {
         GROUND_DRAWN.store(false, Relaxed);
         GROUND_DEFERRED.store(false, Relaxed);
         if users() == 0 {
-            invalidate();
+            if !TRANSITION_OWNS.load(Relaxed) { invalidate(); }
             return;
         }
+        // Modal snapshots contain chrome and possibly a dim. A page-only transition image
+        // must never be mistaken for that prefix when a surface interrupts navigation.
+        if TRANSITION_OWNS.swap(false, Relaxed) { invalidate(); }
         let moving = crate::ui::idle::page_moving() || page_moving;
         CAPTURE_POINTLESS.store(fading_only() && moving, Relaxed);
         if super::host_refresh(fading_only(), page_dirty, moving) {

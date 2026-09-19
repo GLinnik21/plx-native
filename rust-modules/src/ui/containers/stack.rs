@@ -234,7 +234,7 @@ impl<H: Host> NavStack<H> {
     /// One frame of the transition (§3.3 step 4, containers before pages). A floor crossed
     /// marks the pending op due for THIS frame's commit.
     pub fn tick(&mut self, t: super::super::machine::Tick, present: &mut super::super::machine::PresentHandle<'_>) {
-        if self.transition.tick(t, present) && self.pending.is_some() {
+        if self.transition.tick_presented(t, present, crate::gfx::snapshot_pending()) && self.pending.is_some() {
             self.due = true;
         }
     }

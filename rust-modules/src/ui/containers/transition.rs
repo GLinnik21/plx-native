@@ -8,12 +8,22 @@
 //!   FLOOR, where the op applies → In 140 ms. Same schedule, same smoothstep, same
 //!   continuous-chrome rule (`chrome_alpha` is 1 while the shared top bar exists on both sides,
 //!   sticky-false for the duration of a retargeted fade), same reversal on cancel. It reports
-//!   `Motion` from inside `tick`, which is what `Xfade` lacked when it shipped frozen.
+//!   `Motion` from inside `tick`. The dispatcher uses [`PageImage`] to capture the outgoing page
+//!   once, reuses the same snapshot texture for the incoming page at the floor, and draws only
+//!   that image during Out/In. Captures render at full alpha; the dip belongs to the textured quad.
+//!   Shared chrome remains a separate live layer. Existing snapshot fences pause the ramp while
+//!   the GPU completes a capture (bounded by `gfx::SNAPSHOT_DEFER_MAX`). After In, live drawing
+//!   resumes beneath the held image, which dissolves over [`PAGE_HANDOFF_MS`] so newly arrived
+//!   art or advanced springs cannot pop at hand-off. No screen/input/lifecycle state is frozen.
 //! - [`RoutePush`] — the Settings family's push: commit is immediate, BOTH levels are drawn, and a
 //!   k=200 spring carries the incoming level in from −0.35 and the outgoing one out to +0.22 (in
 //!   fractions of the width).
 //!
-//! Pure: no static, no clock but the `Tick`, no GL. A transition never knows what it moves.
+//! Motion and image policy are pure: no static, no clock but the frame tick, no GL. The
+//! [`PageSnapshot`] backend borrows the modal host's ONE FrameCache; a modal or video plane takes
+//! precedence and capture failure falls back to live rendering. RoutePush still draws both levels
+//! live: it cannot share one image across two simultaneously visible pages. The image hand-off
+//! adds live fill after settle and must be included in the device frame-time gate.
 
 use super::super::machine::{PresentHandle, Tick};
 use super::super::motion;
@@ -54,6 +64,13 @@ pub trait Transition {
     /// page remains visible. Only the outgoing half of a page dip opts in.
     fn prewarms_text(&self) -> bool {
         false
+    }
+    /// A single image can serve this transition (a dip never displays both levels).
+    fn freezes_page(&self) -> bool { false }
+    /// Capture fences pause presentation time without changing input or commit ownership.
+    fn tick_presented(&mut self, t: Tick, present: &mut PresentHandle<'_>, waiting: bool) -> bool {
+        if waiting && self.freezes_page() { return false; }
+        self.tick(t, present)
     }
 }
 
@@ -129,6 +146,7 @@ impl PageDip {
 }
 
 impl Transition for PageDip {
+    fn freezes_page(&self) -> bool { true }
     fn commit_point(&self) -> CommitPoint {
         CommitPoint::Floor
     }
@@ -287,6 +305,121 @@ impl Transition for RoutePush {
     }
 }
 
+/// Presentation policy for the single shared page image; no screen or GL ownership.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct PageImage {
+    entry: Option<super::super::machine::EntryId>,
+    handoff: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum PagePaint {
+    Live,
+    Capture,
+    Held(f32),
+    Handoff(f32),
+}
+impl PagePaint {
+    pub(crate) fn draws_live(self) -> bool {
+        !matches!(self, Self::Held(_))
+    }
+}
+
+impl PageImage {
+    pub(crate) fn captured(&mut self, entry: super::super::machine::EntryId) {
+        self.entry = Some(entry);
+        self.handoff = None;
+    }
+    pub(crate) fn plan(
+        &mut self,
+        entry: super::super::machine::EntryId,
+        active: bool,
+        alpha: f32,
+        ms: u32,
+        valid: bool,
+    ) -> PagePaint {
+        if active {
+            // Retarget during the live hand-off: capture the now-live page again.
+            if self.handoff.take().is_some() {
+                self.entry = None;
+            }
+            if !valid || self.entry != Some(entry) {
+                return PagePaint::Capture;
+            }
+            return PagePaint::Held(alpha);
+        }
+        if valid && self.entry == Some(entry) {
+            let start = *self.handoff.get_or_insert(ms);
+            let t = (ms.wrapping_sub(start) as f32 / PAGE_HANDOFF_MS).clamp(0.0, 1.0);
+            if t < 1.0 {
+                return PagePaint::Handoff(1.0 - t * t * (3.0 - 2.0 * t));
+            }
+        }
+        *self = Self::default();
+        PagePaint::Live
+    }
+
+    pub(crate) fn held_entry(&self) -> Option<super::super::machine::EntryId> {
+        self.entry
+    }
+}
+
+/// Live content may have landed while held. Reveal it after settle, starting with the exact
+/// held image on top; never replace a stale image with new pixels in one frame.
+pub(crate) const PAGE_HANDOFF_MS: f32 = 70.0;
+
+impl PagePaint {
+    pub(crate) fn frozen_alpha(self) -> Option<f32> {
+        match self {
+            Self::Held(a) | Self::Handoff(a) => Some(a),
+            _ => None,
+        }
+    }
+}
+
+/// A bounded snapshot backend. Production borrows the modal cache; host fixtures record calls.
+pub(crate) trait PageSnapshot {
+    fn available(&self) -> bool {
+        false
+    }
+    fn revision(&self) -> u64 {
+        0
+    }
+    fn resident_bytes(&self) -> usize {
+        if self.valid() {
+            super::super::frame::FRAME_CACHE_BYTES
+        } else {
+            0
+        }
+    }
+    fn valid(&self) -> bool {
+        false
+    }
+    fn begin(&mut self) -> bool {
+        false
+    }
+    fn finish(&mut self) {}
+    fn draw(&self, _alpha: f32, _clear: bool) {}
+    fn release(&mut self) {}
+}
+
+/// Restore the framebuffer even if a screen unwinds out of its draw.
+pub(crate) struct PageCapture<'a>(&'a mut dyn PageSnapshot);
+impl<'a> PageCapture<'a> {
+    pub(crate) fn begin(snapshot: &'a mut dyn PageSnapshot) -> Option<Self> {
+        if snapshot.begin() {
+            Some(Self(snapshot))
+        } else {
+            None
+        }
+    }
+}
+impl Drop for PageCapture<'_> {
+    fn drop(&mut self) {
+        self.0.finish();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,5 +516,107 @@ mod tests {
         assert_eq!(commits, 0, "a push never has a floor");
         assert!(!p.in_flight() && !p.draws_below());
         assert_eq!(p.offsets(), (0.0, PUSH_OUT_TO));
+    }
+}
+
+#[cfg(test)]
+mod page_image_tests {
+    use super::*;
+    use crate::ui::machine::EntryId;
+
+    #[test]
+    fn frozen_out_and_in_do_not_invoke_live_page_draw() {
+        let mut image = PageImage::default();
+        let mut dip = PageDip::new();
+        let mut entry = EntryId(1);
+        dip.request(true);
+        let mut present = crate::ui::present::Present::new();
+        for i in 0..14 {
+            let floor = dip.tick(
+                Tick {
+                    ms: i * 16,
+                    dt_us: 16_667,
+                },
+                &mut PresentHandle::of(&mut present),
+            );
+            if floor {
+                entry = EntryId(2);
+            }
+            if i == 0 || floor {
+                assert_eq!(
+                    image.plan(entry, true, dip.page_alpha(), i * 16, false),
+                    PagePaint::Capture
+                );
+                image.captured(entry);
+            }
+            let paint = image.plan(entry, dip.in_flight(), dip.page_alpha(), i * 16, true);
+            assert!(!paint.draws_live(), "frame {i}: {paint:?}");
+        }
+    }
+
+    #[test]
+    fn frozen_capture_wait_pauses_the_dip_without_spending_its_floor() {
+        let mut dip = PageDip::new();
+        dip.request(true);
+        let mut present = crate::ui::present::Present::new();
+        for i in 0..4 {
+            assert!(!dip.tick_presented(
+                Tick {
+                    ms: i * 16,
+                    dt_us: 16_667
+                },
+                &mut PresentHandle::of(&mut present),
+                true
+            ));
+            assert_eq!(dip.page_alpha(), 1.0);
+        }
+        assert!(!dip.tick_presented(
+            Tick {
+                ms: 64,
+                dt_us: 16_667
+            },
+            &mut PresentHandle::of(&mut present),
+            false
+        ));
+        assert!(dip.page_alpha() < 1.0);
+    }
+
+    #[test]
+    fn frozen_retarget_and_cancel_keep_only_the_current_entry_image() {
+        let mut image = PageImage::default();
+        image.captured(EntryId(1));
+        assert_eq!(
+            image.plan(EntryId(1), true, 0.4, 16, true),
+            PagePaint::Held(0.4)
+        );
+        assert_eq!(
+            image.plan(EntryId(2), true, 0.0, 80, true),
+            PagePaint::Capture
+        );
+        image.captured(EntryId(2));
+        assert_eq!(
+            image.plan(EntryId(2), false, 1.0, 250, true),
+            PagePaint::Handoff(1.0)
+        );
+        assert_eq!(
+            image.plan(EntryId(2), true, 0.8, 266, true),
+            PagePaint::Capture
+        );
+    }
+
+    #[test]
+    fn frozen_settle_handoff_starts_cross_matched_then_releases() {
+        let mut image = PageImage::default();
+        let entry = EntryId(2);
+        image.captured(entry);
+        assert_eq!(
+            image.plan(entry, false, 1.0, 300, true),
+            PagePaint::Handoff(1.0)
+        );
+        let midway = image.plan(entry, false, 1.0, 335, true);
+        assert!(matches!(midway, PagePaint::Handoff(a) if a > 0.0 && a < 1.0));
+        assert!(midway.draws_live());
+        assert_eq!(image.plan(entry, false, 1.0, 370, true), PagePaint::Live);
+        assert_eq!(image.plan(entry, false, 1.0, 400, true), PagePaint::Live);
     }
 }

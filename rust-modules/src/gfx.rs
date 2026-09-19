@@ -2062,7 +2062,7 @@ pub(crate) fn draw_tex(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32,
     );
 }
 
-/// One full logical-screen snapshot reused as the host below a modal surface.
+/// One full logical-screen snapshot shared by modal hosts and frozen page transitions.
 ///
 /// This is deliberately a renderer primitive rather than an Account-menu special case. A modal
 /// may freeze a page's *state* and still accidentally redraw its hero, shelves and text on every
@@ -2098,6 +2098,13 @@ impl FrameCache {
             fbo: 0,
             fbo_off: false,
         }
+    }
+
+    /// Rendering needs an initialized image shader and a usable FBO backend. Host logic tests
+    /// construct dispatchers without a GL context; they must take the live fallback.
+    pub(crate) fn render_available(&self) -> bool {
+        let (x, y, w, h) = crate::surface::viewport();
+        unsafe { IPROG != 0 && !self.off && !self.fbo_off && x == 0 && y == 0 && w > 0 && h > 0 }
     }
 
     pub(crate) fn invalidate(&mut self) {
@@ -2217,10 +2224,20 @@ impl FrameCache {
     /// Close a [`render_into`](Self::render_into): the frame's framebuffer is bound again, the
     /// texture holds the page, and the page goes onto the frame from it as one quad.
     pub(crate) fn rendered(&mut self, target: crate::surface::PageTarget) {
+        self.finish_render(target);
+        self.draw();
+    }
+
+    /// Finish a capture without compositing it yet. Page transitions clear the app ground and
+    /// apply their alpha only to this texture, never to the page rendered into it.
+    pub(crate) fn finish_render(&mut self, target: crate::surface::PageTarget) {
         drop(target);
         self.valid = true;
         SNAPSHOT_THIS_FRAME.store(true, Ordering::Relaxed);
-        self.draw();
+    }
+
+    pub(crate) fn resident_bytes(&self) -> usize {
+        if self.tex == 0 { 0 } else { self.w as usize * self.h as usize * 4 }
     }
 
     /// Draw the cached viewport across the authored canvas. A framebuffer copy is bottom-up;
@@ -2231,11 +2248,16 @@ impl FrameCache {
     /// here rather than relying on the caller arming the freeze afterwards removes an ordering trap
     /// that would show up as a blank screen with no error anywhere.
     pub(crate) fn draw(&self) -> bool {
+        self.draw_alpha(1.0)
+    }
+
+    pub(crate) fn draw_alpha(&self, alpha: f32) -> bool {
         if !self.valid || self.tex == 0 {
             return false;
         }
         let was = set_page_frozen(false);
         let uv = frame_cache_uv();
+        let tint = crate::ui::theme::with_a(CAP_TINT, alpha);
         draw_tex_core(
             Class::Image,
             self.tex,
@@ -2245,7 +2267,7 @@ impl FrameCache {
             SCR_H,
             uv,
             0.0,
-            CAP_TINT.as_ptr(),
+            tint.as_ptr(),
             0.0,
             NO_RIM.as_ptr(),
             SCR_W * 0.5,

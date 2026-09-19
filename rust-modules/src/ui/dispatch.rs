@@ -337,6 +337,9 @@ pub struct Dispatcher<H: Host> {
     parked_life: Vec<Life<H>>,
     timers: Vec<(TimerId, u32, MachineId)>,
     pub present: Present,
+    pub(crate) page_snapshot: Box<dyn super::containers::transition::PageSnapshot>,
+    page_image: super::containers::transition::PageImage,
+    page_stops: Vec<Stop<H::Elem>>,
     pub budget: Budget,
     pub nav: Navigation<H>,
     /// The Input machine (§2.2): the engine, the hit map, the press and its arm.
@@ -392,6 +395,9 @@ where
             budget: Budget::new(),
             nav: Navigation::new(transition),
             input: InputMachine::new(),
+            page_snapshot: Box::new(super::popover::host::TransitionSnapshot::default()),
+            page_image: Default::default(),
+            page_stops: Vec::new(),
             focus_override: None,
             frame: 0,
             carried_streak: 0,
@@ -1143,6 +1149,18 @@ where
     pub(crate) fn backdrop_layers(&self, page_alpha: f32) -> Vec<super::frame::backdrop::Layer> {
         use super::frame::backdrop::{Layer, Z, canvas};
         let mut layers = Vec::new();
+        if self.page_snapshot.valid() && self.nav.modals.host_policy().1 == HostRender::Live {
+            if let Some(entry) = self.nav.top_page() {
+                let mut image = self.page_image;
+                let paint = image.plan(entry.id, self.nav.tabs.stack.transition.in_flight(),
+                    self.nav.tabs.stack.transition.page_alpha(), self.last_tick.ms, true);
+                if let Some(alpha) = paint.frozen_alpha() {
+                    layers.push(Layer { z: Z(Z::CHROME.0 - 1), rect: canvas(),
+                        blocks: !paint.draws_live(),
+                        revision: (self.page_snapshot.revision() << 32) | alpha.to_bits() as u64 });
+                }
+            }
+        }
         if let Some(z) = crate::ui::popover::host::held_ceiling() {
             layers.push(Layer { z, rect:canvas(), blocks:true, revision:crate::ui::popover::host::page_epoch() as u64 });
         }
@@ -1191,7 +1209,27 @@ where
         let was_video_plane = crate::gfx::set_video_plane_frame(video_plane);
         if !crate::gfx::blur_source_pass() { rig.clear_opaque_region(); }
         let parts = self.parts(tick);
-        let Dispatcher { nav, input, .. } = self;
+        let source_pass = backdrop::source_walk() || crate::gfx::blur_source_pass();
+        let eligible = pages && host_render == HostRender::Live && !video_plane
+            && self.nav.tabs.stack.transition.freezes_page() && self.page_snapshot.available();
+        let mut image = self.page_image;
+        let paint = if eligible {
+            self.nav.top_page().map_or(super::containers::transition::PagePaint::Live, |entry|
+                image.plan(entry.id, self.nav.tabs.stack.transition.in_flight(),
+                    self.nav.tabs.stack.transition.page_alpha(), tick.ms, self.page_snapshot.valid()))
+        } else { super::containers::transition::PagePaint::Live };
+        if !source_pass && (pages || host_render != HostRender::Live || video_plane) {
+            self.page_image = image;
+            if matches!(paint, super::containers::transition::PagePaint::Live) {
+                self.page_snapshot.release();
+                self.page_image = Default::default();
+            }
+            if matches!(paint, super::containers::transition::PagePaint::Handoff(_)) {
+                PresentHandle::of(&mut self.present).note(super::present::PresentEvent::Motion);
+                crate::ui::idle::invalidate();
+            }
+        }
+        let Dispatcher { nav, input, page_snapshot, page_image, page_stops, .. } = self;
         let mut stops = Vec::new();
         let mut set = RenderSet {
             // the shared poster/logo residency (ui/tex.rs) is the one pool rule (c) sums beside
@@ -1218,11 +1256,35 @@ where
                     let mut page_cx = parts.cx::<H>(views, measure);
                     page_cx.owner = InputOwner::Entry(e.id);
                     page_cx.focus = input.engine.read(page_cx.owner);
-                    let mut f = DrawFrame::with_navigation(&page_cx, Painter::root(), navigation);
-                    f.page_alpha *= nav.tabs.stack.transition.page_alpha();
-                    backdrop::draw_span("page", || inst.screen.draw(&mut f));
-                    report.drawn.push(inst.id);
-                    stops.extend(f.into_stops());
+                    use super::containers::transition::PagePaint;
+                    let capture_guard = if paint == PagePaint::Capture && !source_pass {
+                        super::containers::transition::PageCapture::begin(page_snapshot.as_mut())
+                    } else { None };
+                    let capture = capture_guard.is_some();
+                    // Source/declaration walks never capture or paint a live page underneath a
+                    // held image. A missing image is captured by the visible pass, at full alpha.
+                    let live = paint.draws_live() && !(paint == PagePaint::Capture && source_pass);
+                    if live {
+                        let mut page_navigation = navigation;
+                        if capture { page_navigation.page_alpha = 1.0; }
+                        let mut f = DrawFrame::with_navigation(&page_cx, Painter::root(), page_navigation);
+                        if !capture { f.page_alpha *= nav.tabs.stack.transition.page_alpha(); }
+                        backdrop::draw_span("page", || inst.screen.draw(&mut f));
+                        report.drawn.push(inst.id);
+                        let drawn_stops = f.into_stops();
+                        if capture { *page_stops = drawn_stops.clone(); }
+                        stops.extend(drawn_stops);
+                    } else if page_image.held_entry() == Some(e.id) {
+                        stops.extend(page_stops.iter().cloned());
+                    }
+                    drop(capture_guard);
+                    if capture {
+                        page_image.captured(e.id);
+                        backdrop::draw_span("page.image", || page_snapshot.draw(nav.tabs.stack.transition.page_alpha(), true));
+                    } else if let Some(alpha) = paint.frozen_alpha() {
+                        let _image_layer = backdrop::layer(Z(Z::CHROME.0 - 1), false);
+                        backdrop::draw_span("page.image", || page_snapshot.draw(alpha, !live));
+                    }
                     set.pages += 1;
                     set.bytes += inst.screen.render_report().bytes;
                     if Z::CHROME < ceiling && top_entry == Some(e.id) && e.arg.chrome() == super::machine::Chrome::TabBar
@@ -1272,7 +1334,7 @@ where
         // tree through a painter which records text and submits no visual primitive. Re-recording
         // each frame is intentional: cache hits disappear from the queue, while work which missed
         // this frame's deadline is rediscovered next frame without stale cross-navigation state.
-        if prewarm_text_due(nav.tabs.stack.transition.prewarms_text(), crate::gfx::blur_source_pass()) {
+        if prewarm_text_due(nav.tabs.stack.transition.prewarms_text(), source_pass) {
             crate::text::clear_prewarm();
             if let Some(entry) = nav.tabs.stack.pending_target_mut() {
                 if let Some(inst) = entry.inst.as_mut() {
@@ -1298,8 +1360,9 @@ where
         } else if !crate::gfx::blur_source_pass() {
             crate::text::clear_prewarm();
         }
+        set.frame_cache_bytes = page_snapshot.resident_bytes();
         if host_render == HostRender::Cached {
-            set.frame_cache_bytes = super::frame::FRAME_CACHE_BYTES;
+            set.frame_cache_bytes = set.frame_cache_bytes.max(super::frame::FRAME_CACHE_BYTES);
         }
         // the surfaces, bottom to top; a later stop is above an earlier one. Each is handed the
         // stack's ONE underlay field — latched by the dims above, from the undimmed page, on this
