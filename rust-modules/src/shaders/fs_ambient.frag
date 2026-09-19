@@ -15,7 +15,7 @@
 // it is what the dither below actually addresses, not the interpolation: an fp16 uv steps by about
 // 1/1000 of the quad, i.e. a colour error far under one 8-bit quantum across even a 1920px span —
 // while a highp coordinate promotes the three mixes to fp32 and, measured on the television
-// (`plxnative-hwcnt`, 2026-09-02), that alone priced the hero's corner scrim at ~4.5 arithmetic
+// (the HWCNT vinstr profiler, 2026-09-02), that alone priced the hero's corner scrim at ~4.5 arithmetic
 // words a fragment, 3.2M GPU cycles of a 11.7M-cycle frame. Banding on an opaque ground is an
 // OUTPUT-quantisation problem and the noise is its cure; the varying was never the cause.
 //

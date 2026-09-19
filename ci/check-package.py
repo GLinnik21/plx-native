@@ -139,6 +139,116 @@ def nightly_stamp_date(stamp: str) -> "str | None":
     return m.group(1) if m else None
 
 
+# ---- the dev-trigger catalog, derived from dev.rs itself -----------------------------------------
+#
+# #138 taught a RELEASE build to fold every `/tmp` trigger away at compile time (`dev::flag`/
+# `dev::read` are `false`/`None` without `devtriggers`, so the branches behind them vanish), and
+# gave `ci/check-package.py` ONE witness of that: `DEV_WITNESS = b"plxnative-noidle"`, a name
+# `dev.rs`'s own `DIAG` array carries as a full, literal `"plxnative-noidle"` string. That witness
+# proves DIAG-as-a-whole is gated — but it names only one member of it, and every OTHER
+# `plxnative-*` name `dev.rs` (or a sibling module) treats as part of the trigger surface could
+# still leak into a release binary with nothing here to notice. `dev_trigger_catalog` generalises
+# the single witness to the WHOLE vocabulary those two arrays actually declare:
+#
+#   * `CONTROLLED` — the bare names a controlled/recorded boot may carry (`dev.rs`'s own comment:
+#     "a full trigger name in the release binary is exactly what `ci/check-package.py` grades as
+#     'dev triggers compiled in'").
+#   * `DIAG` — already-prefixed full names, `#[cfg(any(feature = "devtriggers", test))]`-gated at
+#     the array itself, so every genuine member is compile-time absent from `--no-default-features`
+#     unless something ELSE outside that gate spells the same string (which is exactly the class of
+#     leak this project has now shipped twice: `ui/anim.rs`'s log sink and `dev/scenarios.rs`'s
+#     disabled-both diagnostic both spelled a DIAG name in code the feature never touched).
+#
+# PARSED, not hand-copied: a literal Python list here would rot exactly the way `DEV_WITNESS` did —
+# silently, the day somebody renames or adds a trigger and does not think to update a second file.
+# Regexing the two array bodies out of the CURRENT `dev.rs` means this check is always grading the
+# vocabulary the source actually declares this commit, never a stale snapshot of it.
+DEV_RS = ROOT / "rust-modules/src/dev.rs"
+
+# Names that are real `plxnative-*` bytes in every configuration ON PURPOSE, so a hit here is not a
+# leak — allowlisted once, with the reason, rather than excluded from the catalog silently.
+RELEASE_LEGITIMATE_TRIGGER_NAMES = {
+    # The four log sinks `dev.rs`'s own module doc calls out as deliberately unconditional: they
+    # are CREATES, never READS, so nothing can arm them as a behaviour switch by writing one.
+    "plxnative-events.log", "plxnative-crash.log", "plxnative-stderr.log",
+    # The remote-key FIFO (`remote.rs`) is a shipped PRODUCTION feature, not a dev trigger, even
+    # though `DIAG` also lists it (so that its presence does not suppress the who's-watching
+    # picker the way an actual trigger file would).
+    "plxnative-remote",
+    # `ui/rec.rs:65`'s erasure list — a STABLE/nightly install deletes these leftovers from a
+    # devtriggers install that shared the same system `/tmp` (AGENTS.md: `/tmp` is shared across
+    # installs in both jail profiles). Deleting a name is not carrying its trigger surface.
+    "plxnative-rec", "plxnative-recplay", "plxnative-app-init", "plxnative-recordings",
+    # `app/input.rs`'s `delete_all_local_data` erasure list — the SAME rationale as rec.rs's, for
+    # the diagnostic sinks a coexisting devtriggers install could have left in the shared `/tmp`:
+    # a "delete all my data" action has to clean these up regardless of which build wrote them, so
+    # release code names them on purpose.
+    "plxnative-gputime.jsonl", "plxnative-gst.log", "plxnative-hwcnt.jsonl",
+    "plxnative-anim.log",
+}
+
+
+def _catalog_name_in_binary(
+    name: str, blob: bytes, legitimate: "set[str]" = RELEASE_LEGITIMATE_TRIGGER_NAMES
+) -> bool:
+    """Is the full trigger name `name` present as its OWN string constant in `blob`, rather than
+    merely as a byte-run that happens to start a longer, allowlisted name?
+
+    Rust `&str` constants are fat pointers (data + length), not NUL-terminated C strings, so the
+    compiler is free to lay adjacent literals back to back with no separator at all — and it does:
+    a real ARM release build was observed to contain literally
+    `...jsonlplxnative-hwcnt.jsonlloginonboardli...` as one contiguous byte run, no gap anywhere.
+    A plain `name.encode() in blob` substring test cannot tell "the bare trigger name
+    `plxnative-hwcnt` is compiled in" from "the ALWAYS-legitimate log filename
+    `plxnative-hwcnt.jsonl` (allowlisted above) happens to start with those same bytes" — every
+    catalog name that is a string-prefix of an allowlisted longer name would misgrade as a leak
+    forever, with no source change able to turn the check green. `plxnative-anim` /
+    `plxnative-anim.log` is the same trap in the other direction.
+
+    A trailing word-boundary check (reject the match if the next byte looks like an identifier
+    character) does NOT work here, because the packing above proves the byte right after a
+    legitimate string's own end is whatever unrelated literal happens to sit next — `l` from
+    `login`, not a separator — so a boundary check would reject the LEGITIMATE occurrence too.
+    The only fact this can lean on is the exact allowlist itself: an occurrence of `name` is
+    innocent if, and only if, it is immediately followed by exactly the bytes that would make it
+    read as one particular allowlisted longer name (`name` plus that name's own extra suffix,
+    e.g. `.jsonl`) — checked by slicing the blob, not by asking what comes after in the abstract.
+    If a later occurrence of the same bare `name` is NOT explained that way, it is a real hit.
+    """
+    needle = name.encode()
+    extensions = [n.encode() for n in legitimate if n != name and n.startswith(name)]
+    start = 0
+    while True:
+        i = blob.find(needle, start)
+        if i == -1:
+            return False
+        if not any(blob[i : i + len(ext)] == ext for ext in extensions):
+            return True
+        start = i + 1
+
+
+def parse_dev_trigger_catalog(dev_rs_text: str) -> "set[str]":
+    """Every full `plxnative-<name>` string `dev.rs`'s `CONTROLLED` and `DIAG` arrays declare,
+    parsed out of the given source text (a parameter, not a file read, so this can be pinned
+    against a fixture independently of whatever `dev.rs` says today — see `_selftest`).
+    """
+    names: "set[str]" = set()
+    controlled = re.search(r"const CONTROLLED: &\[&str\] = &\[(.*?)\];", dev_rs_text, re.S)
+    if controlled:
+        names.update(f'plxnative-{n}' for n in re.findall(r'"([a-z0-9_.-]+)"', controlled.group(1)))
+    diag = re.search(r"const DIAG: \[&str; \d+\] = \[(.*?)\];", dev_rs_text, re.S)
+    if diag:
+        names.update(re.findall(r'"(plxnative-[a-z0-9_.-]+)"', diag.group(1)))
+    return names
+
+
+def dev_trigger_catalog() -> "set[str]":
+    """[`parse_dev_trigger_catalog`] against the real `dev.rs`, minus the release-legitimate
+    allowlist — the set `ci/check-package.py` actually grades a packaged binary against.
+    """
+    return parse_dev_trigger_catalog(DEV_RS.read_text()) - RELEASE_LEGITIMATE_TRIGGER_NAMES
+
+
 def _selftest() -> int:
     """Prove the decoder against every stamp the Makefile can actually write.
 
@@ -282,7 +392,88 @@ def _selftest() -> int:
     print(f"check-package: nightly exact-substring grading "
           f"{len(nightly_blob_cases) - nightly_blob_bad}/{len(nightly_blob_cases)} cases correct")
 
-    bad += maintainer_bad + dev_bad + nightly_date_bad + cli_bad + nightly_blob_bad
+    # `parse_dev_trigger_catalog` against a FIXTURE, independent of whatever the real `dev.rs`
+    # says today — this is the regression test for the regex itself, so a change to the two
+    # arrays' shape (a renamed const, a reformatted literal) fails HERE instead of silently
+    # parsing zero names out of the real file and making the binary-grading check vacuous, which
+    # is exactly the failure class `DEV_WITNESS` itself shipped as (`build_configuration`'s own
+    # docstring above).
+    catalog_fixture = '''
+const CONTROLLED: &[&str] = &[
+    "rec", "recplay", "focus", "noidle", "token",
+];
+
+const DIAG: [&str; 5] = [
+    "plxnative-events.log",
+    "plxnative-remote",
+    "plxnative-noidle",
+    "plxnative-overdraw",
+    "plxnative-rec",
+];
+'''
+    got_catalog = parse_dev_trigger_catalog(catalog_fixture)
+    want_catalog = {
+        "plxnative-rec", "plxnative-recplay", "plxnative-focus", "plxnative-noidle",
+        "plxnative-token", "plxnative-events.log", "plxnative-remote", "plxnative-overdraw",
+    }
+    catalog_bad = 0 if got_catalog == want_catalog else 1
+    if catalog_bad:
+        print(f"  FAIL — parse_dev_trigger_catalog(fixture) = {sorted(got_catalog)}, "
+              f"want {sorted(want_catalog)}")
+    print(f"check-package: parse_dev_trigger_catalog fixture "
+          f"{'1/1' if not catalog_bad else '0/1'} correct")
+
+    # And a live sanity check against the REAL `dev.rs`: the catalog must not have gone empty (a
+    # regex that silently stopped matching would make the binary-grading check pass on EVERY
+    # release, vacuously — the exact failure `DEV_WITNESS` shipped as, generalised to a whole set
+    # instead of one string), and the historic witness must still be a member of it.
+    real_catalog = dev_trigger_catalog()
+    catalog_vacuous = not real_catalog or "plxnative-noidle" not in real_catalog
+    if catalog_vacuous:
+        print(f"  FAIL — dev_trigger_catalog() against the real dev.rs is "
+              f"{sorted(real_catalog) or 'EMPTY'} (missing plxnative-noidle)")
+    print(f"check-package: dev_trigger_catalog() against the real dev.rs "
+          f"{'is non-vacuous' if not catalog_vacuous else 'WENT VACUOUS'}")
+
+    # `_catalog_name_in_binary` against the exact adjacency a real ARM release build produced
+    # (2026-09-19): `...jsonlplxnative-hwcnt.jsonlloginonboardli...`, `plxnative-hwcnt.jsonl`
+    # (allowlisted, legitimate) packed with NO separator on either side — the next byte after its
+    # own end is `l` from an unrelated `login`, not a boundary. A plain substring test grades the
+    # bare name `plxnative-hwcnt` "found" forever with no source change able to turn it green; a
+    # trailing-boundary-character test rejects the legitimate occurrence too, for the same reason.
+    # This fixture is that literal adjacency, using a small legitimate-name set independent of the
+    # real allowlist so the case pins the ALGORITHM rather than today's contents of `dev.rs`.
+    boundary_blob = b"...jsonlplxnative-hwcnt.jsonlloginonboardli..." \
+                    b"...r.logplxnative-anim.logplxnative-gst.logplx..." \
+                    b"...standaloneplxnative-hwcnt!bare-occurrence-with-no-extension..."
+    boundary_legit = {"plxnative-hwcnt.jsonl", "plxnative-anim.log", "plxnative-gst.log"}
+    boundary_cases = {
+        # every occurrence of the bare name is fully explained by an allowlisted longer name at
+        # that exact position: not a hit, even though the byte-run is present in the blob.
+        "plxnative-anim": False,
+        # one occurrence is explained (inside `.jsonl`) but a SECOND, later one is not (it is
+        # followed by `!bare-occurrence…`, not any allowlisted extension) — that second one must
+        # still be caught: a name is not safe just because it ALSO appears as someone else's
+        # prefix somewhere else in the binary.
+        "plxnative-hwcnt": True,
+        # the allowlisted longer names themselves really are present.
+        "plxnative-hwcnt.jsonl": True,
+        "plxnative-anim.log": True,
+        "plxnative-gst.log": True,
+        # absent from the fixture entirely.
+        "plxnative-noidle": False,
+    }
+    boundary_bad = 0
+    for name, want in boundary_cases.items():
+        got = _catalog_name_in_binary(name, boundary_blob, boundary_legit)
+        if got != want:
+            boundary_bad += 1
+            print(f"  FAIL — _catalog_name_in_binary({name!r}, …) = {got!r}, want {want!r}")
+    print(f"check-package: _catalog_name_in_binary boundary handling "
+          f"{len(boundary_cases) - boundary_bad}/{len(boundary_cases)} cases correct")
+
+    bad += (maintainer_bad + dev_bad + nightly_date_bad + cli_bad + nightly_blob_bad
+            + catalog_bad + int(catalog_vacuous) + boundary_bad)
     return 1 if bad else 0
 
 
@@ -892,18 +1083,23 @@ if shipped:
 # The witness has to be a string only a `devtriggers` build emits, and almost none are: `dev.rs`
 # composes every trigger path as `paths::in_runtime_dir(format!("plxnative-{name}"))` — a bare name
 # joined to a root resolved at RUNTIME, which since the flavour split is not even always `/tmp` — so
-# no full trigger path is a literal anywhere. The previous witness here was b"plxnative-autoplay" and it matched NOTHING —
-# in EITHER configuration — so from the day it was written this printed "ok — the packaged binary
-# is a RELEASE build" over CI's dev build on every run, while release.yml's stamp grep carried the
-# property alone. `dev.rs`'s DIAG list is the one place the full names are literals, it is
-# `#[cfg(feature = "devtriggers")]`, and `plxnative-noidle` is not one of the four logs `main.c`
-# writes unconditionally. Measured on the two shipped artifacts — published v0.3.0 .ipk: 0
-# occurrences; CI's dev .ipk for 8827d32c: 2.
+# no full trigger path is a literal anywhere BY THAT ROUTE. The previous witness here was
+# b"plxnative-autoplay" and it matched NOTHING — in EITHER configuration — so from the day it was
+# written this printed "ok — the packaged binary is a RELEASE build" over CI's dev build on every
+# run, while release.yml's stamp grep carried the property alone. `dev.rs`'s DIAG list is the one
+# place the full names are literals, it is `#[cfg(feature = "devtriggers")]`, and `plxnative-noidle`
+# is not one of the four logs `main.c` writes unconditionally. Measured on the two shipped
+# artifacts — published v0.3.0 .ipk: 0 occurrences; CI's dev .ipk for 8827d32c: 2.
 #
-# GRADED FROM BOTH SIDES, which is the repair for the defect class rather than for the one string:
-# a witness that cannot fail is not a gate. The dev leg asserts the marker is still emitted, so the
-# day DIAG is renamed CI fails on the next push instead of quietly going vacuous again.
-DEV_WITNESS = b"plxnative-noidle"
+# ONE WITNESS NAMES ONLY ITSELF, though: every OTHER `plxnative-*` name `CONTROLLED`/`DIAG` declare
+# could leak by a route the `format!` argument never takes — a literal spelled directly in code
+# that sits outside the `devtriggers` gate. Two shipped that way before this check existed to catch
+# it: `ui/anim.rs`'s log sink hard-coded `"plxnative-anim.log"` in a function gated only by a
+# runtime flag (always `false` without the feature, but still COMPILED, still IN THE BYTES), and
+# `dev/scenarios.rs`'s disabled-both diagnostic spelled `plxnative-profile`/`plxnative-hwcnt` in an
+# ungated function for the same reason. `dev_trigger_catalog()` (above) generalises the single
+# witness to the whole vocabulary `CONTROLLED`/`DIAG` name, so a THIRD leak like those two fails
+# here instead of shipping.
 binary = PAYLOAD / "plxnative"
 check(binary.exists(), f"the staged payload carries the binary ({binary.name})")
 
@@ -940,21 +1136,30 @@ if binary.exists():
     blob = binary.read_bytes()
     check(BUILD_ID_NOTE in blob,
           "the packaged binary carries a GNU build id (-Wl,--build-id=sha1 is still on the link)")
-    has_dev = DEV_WITNESS in blob
+    DEV_CATALOG = dev_trigger_catalog()
+    dev_hits = sorted(name for name in DEV_CATALOG if _catalog_name_in_binary(name, blob))
     if IS_STABLE or IS_NIGHTLY:
         # Nightly joins stable here rather than getting a branch of its own: it is a THIRD id a
         # stranger's television installs, and the Makefile's release-guard already refuses to
         # BUILD it without RELEASE=1 — this is the same rule graded on the bytes, for the reason
         # `release-guard`'s own comment gives (a reviewer reaching for a documented hatch and
         # forgetting is exactly the failure a bytes-level gate survives).
-        check(not has_dev,
+        check(not dev_hits,
               f"the {PACKAGED_ID} package carries no dev-trigger surface — that id is installed "
-              "beside the app users get, on a television, unattended")
+              "beside the app users get, on a television, unattended"
+              + (f" (found {', '.join(dev_hits)})" if dev_hits else ""))
     if BUILD == "release":
-        check(not has_dev, "the packaged binary is a RELEASE build (no dev triggers compiled in)")
+        check(not dev_hits, "the packaged binary is a RELEASE build (no dev triggers compiled in)"
+                            + (f" (found {', '.join(dev_hits)})" if dev_hits else ""))
     elif BUILD:
-        check(has_dev, "the packaged binary is the DEV build the stamp records — which is also what"
-                       f" proves `{DEV_WITNESS.decode()}` still witnesses the trigger surface")
+        # GRADED FROM BOTH SIDES, which is the repair for the defect class rather than for one
+        # string: a witness that cannot fail is not a gate. The dev leg asserts the catalog is
+        # still emitted at ALL, so the day `CONTROLLED`/`DIAG` are renamed or emptied CI fails on
+        # the next push instead of quietly grading the release leg against nothing forever.
+        check(bool(dev_hits),
+              "the packaged binary is the DEV build the stamp records — which is also what proves "
+              "dev.rs's CONTROLLED/DIAG catalog still witnesses the trigger surface"
+              + ("" if dev_hits else " (0 catalog names found in the bytes)"))
     else:
         print("  SKIP — pkg/.build-config is neither shipped configuration; not grading the binary")
 

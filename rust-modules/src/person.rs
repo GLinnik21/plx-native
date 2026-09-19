@@ -1168,6 +1168,12 @@ fn seed_dev_credits(state: &mut PersonState) -> bool {
         })
         .collect();
     p.credited = true;
+    // Gated: `personcredits` is a `dev::CONTROLLED` name (a controlled/recorded boot may carry
+    // it), and `ci/check-package.py`'s dev-trigger-catalog check greps a release binary for that
+    // exact vocabulary. This function is already unreachable without `devtriggers` (`arg` above
+    // is always `None`), but the log line's literal `/tmp/plxnative-personcredits` would still
+    // have shipped in the bytes regardless of whether the branch ever ran.
+    #[cfg(feature = "devtriggers")]
     crate::log(&format!(
         "person: DEV credits seeded ({} groups, {} held) — /tmp/plxnative-personcredits",
         p.credits.len(),

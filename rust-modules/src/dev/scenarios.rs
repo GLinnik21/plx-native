@@ -263,6 +263,14 @@ pub(crate) fn arm_glasshz() -> bool {
 
 /// `/tmp/plxnative-profile` / `/tmp/plxnative-hwcnt` — the two GPU-time profilers. Both present
 /// is refused; either alone arms its mode.
+///
+/// Gated on `devtriggers` at the item level rather than left to `dev::read` folding to `None`:
+/// `dev::read` already makes this whole function inert in a release build, but the disabled-both
+/// diagnostic line below spells out both trigger names in full, and a compiled-but-unreachable
+/// function still carries its own string literals into `--no-default-features` bytes. Compiling
+/// the function out entirely is what actually keeps `plxnative-profile`/`plxnative-hwcnt` out of
+/// the binary `ci/check-package.py`'s dev-trigger-catalog check inspects.
+#[cfg(feature = "devtriggers")]
 pub(crate) fn arm_profile_hwcnt() {
     match (crate::dev::read("profile"), crate::dev::read("hwcnt")) {
         (Some(_), Some(_)) => {
@@ -273,6 +281,8 @@ pub(crate) fn arm_profile_hwcnt() {
         (None, None) => {}
     }
 }
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn arm_profile_hwcnt() {}
 
 /// `/tmp/plxnative-cpuprof` — the render thread's own per-phase CPU clock.
 pub(crate) fn arm_cpuprof() {
