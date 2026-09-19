@@ -228,3 +228,107 @@ fn a_source_arriving_late_appends_and_moves_no_existing_index() {
         "and the row we were browsing is untouched"
     );
 }
+
+// ---- client-side "Plays" sort (issue #146) --------------------------------------------------
+//
+// Measured against the owner's PMS 1.43.4: `includeMeta=1` never advertises a play-count sort
+// on ANY section type, but the server DOES honour `sort=viewCount:desc`/`:asc` on movie and
+// show sections and returns correctly ordered rows — and an unrecognised sort key 500s the
+// whole listing. So this entry is appended CLIENT-SIDE, gated on the section KIND the browse
+// table already carries, never guessed from a string.
+
+/// A movie section that does not advertise the key gains exactly one "Plays" row, defaulting
+/// to descending (most-played first) — the direction the feature exists for.
+#[test]
+fn a_movie_section_without_a_server_advertised_plays_sort_gains_exactly_one_descending_entry() {
+    let _g = crate::testlock::serial();
+    let (_cleanup, mut browse, _, _) = registered_page_source(); // section 0 is SecKind::Movie
+    land_page_with_sorts(&mut browse, vec![SortEntry {
+        key: "titleSort".into(),
+        title: "Title".into(),
+        default_desc: false,
+    }]);
+    let sorts = browse.state.cur_state().unwrap().sorts.clone();
+    assert_eq!(sorts.len(), 2, "the advertised sort plus exactly one client-side entry");
+    let plays = sorts
+        .iter()
+        .find(|sort| sort.key == "viewCount")
+        .expect("a Plays entry for a movie section");
+    assert_eq!(plays.title, "Plays");
+    assert!(plays.default_desc, "most-played first by default");
+}
+
+/// The server proved `sort=viewCount:desc` on show sections too (their own play count, not
+/// their episodes'), so a show section gains the same client-side entry.
+#[test]
+fn a_show_section_without_a_server_advertised_plays_sort_gains_it_too() {
+    let _g = crate::testlock::serial();
+    let (_cleanup, mut browse, _, _) = registered_page_source_of_kind(SecKind::Show);
+    land_page_with_sorts(&mut browse, vec![SortEntry {
+        key: "titleSort".into(),
+        title: "Title".into(),
+        default_desc: false,
+    }]);
+    let sorts = browse.state.cur_state().unwrap().sorts.clone();
+    assert!(
+        sorts
+            .iter()
+            .any(|sort| sort.key == "viewCount" && sort.title == "Plays" && sort.default_desc),
+        "a show section must gain the entry too: {:?}",
+        sorts.iter().map(|s| &s.key).collect::<Vec<_>>()
+    );
+}
+
+/// A section that ALREADY advertises `viewCount` (a future PMS) must not gain a duplicate row.
+#[test]
+fn a_section_that_already_advertises_view_count_gains_no_duplicate() {
+    let _g = crate::testlock::serial();
+    let (_cleanup, mut browse, _, _) = registered_page_source();
+    land_page_with_sorts(&mut browse, vec![
+        SortEntry { key: "titleSort".into(), title: "Title".into(), default_desc: false },
+        SortEntry { key: "viewCount".into(), title: "Plays".into(), default_desc: true },
+    ]);
+    let sorts = browse.state.cur_state().unwrap().sorts.clone();
+    assert_eq!(
+        sorts.iter().filter(|sort| sort.key == "viewCount").count(),
+        1,
+        "a server that starts advertising the key itself must not produce two rows"
+    );
+}
+
+/// Picking the entry must round-trip to exactly the key/direction pair the server was proven
+/// to honour — `viewCount:desc` — through the same `sort_idx`/`sort_desc` fields the listing
+/// query is built from.
+#[test]
+fn selecting_the_plays_sort_builds_the_proven_viewcount_desc_query() {
+    let _g = crate::testlock::serial();
+    let (_cleanup, mut browse, _, _) = registered_page_source();
+    land_page_with_sorts(&mut browse, vec![SortEntry {
+        key: "titleSort".into(),
+        title: "Title".into(),
+        default_desc: false,
+    }]);
+    assert!(browse.state.set_sort_by_key("viewCount", true));
+    let snapshot = browse.state.listing_snapshot();
+    let view = snapshot.view();
+    let picked = &view.sorts()[view.sort_index()];
+    assert_eq!(picked.key, "viewCount");
+    assert!(view.sort_desc());
+    let query_sort = format!(
+        "{}:{}",
+        picked.key,
+        if view.sort_desc() { "desc" } else { "asc" }
+    );
+    assert_eq!(query_sort, "viewCount:desc");
+}
+
+/// `SecKind` is the closed, exhaustively-matched gate the "Plays" sort is added behind — and
+/// it has no `Artist`/`Photo` variant at all: `SecKind::from_wire` already drops those
+/// directory types before they can become a `BrowseSection`, so there is no path into the
+/// augmentation for them, ever, regardless of this change. This is the invariant the gate
+/// relies on rather than a guessed string comparison.
+#[test]
+fn artist_and_photo_sections_have_no_seckind_and_so_cannot_reach_the_plays_sort_gate() {
+    assert_eq!(SecKind::from_wire("artist"), None);
+    assert_eq!(SecKind::from_wire("photo"), None);
+}
