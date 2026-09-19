@@ -407,8 +407,12 @@ jobs:
       - name: Versioned source asset and isolated reconstruction
         if: inputs.source-asset
         env:
+          # Both telemetry pairs, whichever one `inputs.telemetry` compiled in: the scan proves the
+          # source tarball carries no private value, and a development build holds the `_DEV` pair.
           GPL_SCAN_SENTRY_DSN: ${{ vars.PLX_SENTRY_DSN }}
           GPL_SCAN_POSTHOG_KEY: ${{ vars.PLX_POSTHOG_KEY }}
+          GPL_SCAN_SENTRY_DSN_DEV: ${{ vars.PLX_SENTRY_DSN_DEV }}
+          GPL_SCAN_POSTHOG_KEY_DEV: ${{ vars.PLX_POSTHOG_KEY_DEV }}
           GPL_SCAN_SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           FLAVOR: ${{ inputs.flavor }}
           RELEASE: "1"
@@ -422,6 +426,12 @@ jobs:
           # non-stable caller that opts in.
           appid=$(make -s print-appid FLAVOR="$FLAVOR")
           ipk=$(ls "pkg/${appid}"_*_arm.ipk)
+          # `cargo vendor --offline` inside the collection takes EVERY package in Cargo.lock (all
+          # targets, dev-dependencies too), but the ARM release build above downloaded only its own
+          # graph — since #104 added the `rcgen` dev-dependency, asn1-rs and friends were missing and
+          # vendoring died with exit 101. Fetch the whole lock here, pinned by its checksums; the
+          # collection script itself stays download-free.
+          cargo +nightly-2026-07-02 fetch --locked --manifest-path rust-modules/Cargo.toml
           source="pkg/plxnative-source-$(python3 -c 'import json; print(json.load(open("pkg/appinfo.json"))["version"])').tar.gz"
           python3 ci/prepare-source-release.py --inputs "$RUNNER_TEMP/gpl-source-inputs" \
             --output "$source" --rust-toolchain nightly-2026-07-02 --binary "$ipk" --private-values "$private_values"
