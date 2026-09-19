@@ -119,6 +119,32 @@ impl Client {
     /// only show-level answer to "what's next": the client otherwise holds ONE season's episodes at a
     /// time, so anything it computed itself would change with the selected season tab. Verified live
     /// 2026-07-30 on rk 437 → S2E2 at 635510/3130720 while season 1 was the loaded tab.
+    /// A SHOW's language settings (its Advanced dialog in Plex Web: `audioLanguage`,
+    /// `subtitleLanguage`, `subtitleMode`) — see [`crate::plex::ShowLangPrefs`]. None when they
+    /// cannot be read.
+    ///
+    /// Asked with `includePreferences=1` first — what Plex's own clients use for that dialog, and
+    /// cheap. That parameter is NOT in the vendored OpenAPI spec, so it is backed by the one read
+    /// the spec DOES document carrying these settings, `/library/metadata/{id}/tree`, whose
+    /// container holds a `Setting[]` — asked only when the first answer carries none of the three.
+    pub fn show_language_prefs(&self, show_rk: &str) -> Option<crate::plex::ShowLangPrefs> {
+        if show_rk.is_empty() || !show_rk.bytes().all(|b| b.is_ascii_digit()) {
+            return None; // a key is server data: only ever a plain ratingKey
+        }
+        let path = QueryBuilder::new(format!("/library/metadata/{show_rk}"))
+            .int("includePreferences", 1)
+            .build();
+        if let Some(found) = self
+            .get_json(&path)
+            .and_then(|mc| mc.metadata.into_iter().next())
+            .and_then(|m| crate::plex::ShowLangPrefs::from_settings(&m.preferences.setting))
+        {
+            return Some(found);
+        }
+        let tree = self.get_json(&format!("/library/metadata/{show_rk}/tree"))?;
+        crate::plex::ShowLangPrefs::from_settings(&tree.setting)
+    }
+
     pub fn metadata(&self, rating_key: &str) -> Option<Metadata> {
         let path = QueryBuilder::new(format!("/library/metadata/{rating_key}"))
             .int("includeChapters", 1)
