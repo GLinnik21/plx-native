@@ -1934,3 +1934,63 @@ fn a_settled_hero_counting_down_lets_the_gate_close_and_still_flips() {
         "a settled hero asked for {asked_while_counting} presents while only counting down"
     );
 }
+
+#[test]
+fn the_hero_does_not_advance_while_a_modal_covers_home() {
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    assert!(view.hero_count() > 1, "the auto-advance only arms with more than one hero slot");
+    let mut s = screen(view);
+    let selected = s.carousel.clone();
+
+    step(&mut s, view, None, &ScreenEvent::Cover);
+    for frame in 1..=625u32 {
+        step(
+            &mut s,
+            view,
+            None,
+            &ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_000 }),
+        );
+    }
+
+    assert_eq!(
+        s.carousel, selected,
+        "a Compact modal still ticks its host, but covering Home must pause its hero"
+    );
+    assert!(s.outgoing.is_none(), "no hidden hero slide was started under the modal");
+}
+
+#[test]
+fn the_hero_countdown_restarts_when_the_last_modal_is_dismissed() {
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    s.hero_auto = 0.25;
+    let selected = s.carousel.clone();
+
+    step(&mut s, view, None, &ScreenEvent::Cover);
+    // Navigation emits Uncover only when the last modal surface is dismissed.
+    step(&mut s, view, None, &ScreenEvent::Uncover);
+    step(
+        &mut s,
+        view,
+        None,
+        &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_000 }),
+    );
+
+    assert_eq!(s.carousel, selected, "dismissal must not trigger an immediate hero jump");
+    assert!(s.outgoing.is_none(), "dismissal must not begin a hidden hero slide");
+    assert!(
+        (s.hero_auto - (HERO_AUTO_S - 0.016)).abs() < f32::EPSILON,
+        "the fresh countdown should have one ordinary tick consumed, got {}",
+        s.hero_auto
+    );
+}

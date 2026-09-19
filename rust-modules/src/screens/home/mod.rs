@@ -6,6 +6,8 @@
 //! are interned into `HomeMemory` so reorder and eviction preserve meaning rather than position.
 //! Shared top chrome is container-owned: Home declares the strip doors and handles semantic strip
 //! activation, but neither draws the bar nor stores a bar cursor.
+//! The container's first-`Cover`/last-`Uncover` lifecycle pauses hero auto-rotation beneath every
+//! modal style and restarts its countdown when the page becomes active again.
 
 use std::borrow::Cow;
 use std::ffi::CString;
@@ -95,7 +97,7 @@ const SOURCE_PAD: f32 = theme::space::XS;
 const HERO_ICON_RATIO: f32 = 1.15;
 const HERO_ICON_GAP: f32 = 12.0;
 
-pub(crate) const SHAPE: &str = "HomeScreen{snap_target:f32,snap:{pos:f32,vel:f32},hero_flip_cd:f32,hero_auto:f32,visible_activation:Option<u32>,cta_available:bool,strip_chosen:bool,next_group:u32,next_elem:u32,groups:[HomeGroupKey{identity:HomeHubIdentity,group:u32}],items:[HomeItemKey{identity:HomeItemIdentity,elem:u32,last_row:u32,last_col:u32}],carousel:Option<(sid:u32,rk:str)>,outgoing:Option<(sid:u32,rk:str)>,hero_slide:{pos:f32,vel:f32},hero_dir:f32,hero_pop:{sp:[Spring{pos:f32,vel:f32};2],focused:Option<u32>},projected_generation:Option<u32>,grid:{scroll_y:{pos:f32,vel:f32},scroll_target:f32,rows:[{identity:HomeHubIdentity,group:u32,elems:[u32],motion:CardRow{scale:[Spring;24],overflow:Spring,scroll_x:Spring,lift:Spring,band:Spring,focus:i32,base_y:f32}}]},restored_scroll:[(group:u32,scroll:f32)],restore_reveal:bool}";
+pub(crate) const SHAPE: &str = "HomeScreen{snap_target:f32,snap:{pos:f32,vel:f32},hero_flip_cd:f32,hero_auto:f32,covered:bool,visible_activation:Option<u32>,cta_available:bool,strip_chosen:bool,next_group:u32,next_elem:u32,groups:[HomeGroupKey{identity:HomeHubIdentity,group:u32}],items:[HomeItemKey{identity:HomeItemIdentity,elem:u32,last_row:u32,last_col:u32}],carousel:Option<(sid:u32,rk:str)>,outgoing:Option<(sid:u32,rk:str)>,hero_slide:{pos:f32,vel:f32},hero_dir:f32,hero_pop:{sp:[Spring{pos:f32,vel:f32};2],focused:Option<u32>},projected_generation:Option<u32>,grid:{scroll_y:{pos:f32,vel:f32},scroll_target:f32,rows:[{identity:HomeHubIdentity,group:u32,elems:[u32],motion:CardRow{scale:[Spring;24],overflow:Spring,scroll_x:Spring,lift:Spring,band:Spring,focus:i32,base_y:f32}}]},restored_scroll:[(group:u32,scroll:f32)],restore_reveal:bool}";
 
 #[derive(Clone)]
 struct HubProjection {
@@ -282,9 +284,13 @@ pub(crate) struct HomeScreen {
     /// `hero_auto:f32`). Deliberately still a raw per-frame decrement (phase 12 D4 did NOT move
     /// this onto `motion::Ramp`): it is hashed across three committed replay fixtures, and a
     /// `Ramp`'s absolute-`Tick.ms` math computes the same real quantity through a different float
-    /// operation sequence that measurably diverges the hash. `tick`'s own doc explains the fix
-    /// that DID land — the countdown now reports `Motion`, which it never did before.
+    /// operation sequence that measurably diverges the hash. `tick`'s own comment explains why
+    /// the timer deliberately reports no `Motion` while it counts.
     hero_auto: f32,
+    /// The container says this page is covered. For modals, `Navigation` emits `Cover` for the
+    /// first presentation and `Uncover` only when the last surface is dismissed, independent of
+    /// whether that surface's host-update policy is Live or Frozen.
+    covered: bool,
 
     snap_target: f32,
     /// Stable element still visible while the engine has already crossed the hero/grid door.
@@ -318,6 +324,7 @@ impl HomeScreen {
             hero_slide: Spring::at(1.0),
             hero_dir: 1.0,
             hero_auto: HERO_AUTO_S,
+            covered: false,
             snap_target: 0.0,
             visible_activation: None,
             cta_available: false,
@@ -686,7 +693,11 @@ impl HomeScreen {
                 self.outgoing = None;
             }
         }
-        if self.snap.pos < 0.05 && view.hero_count() > 1 {
+        if self.covered {
+            // Compact surfaces keep ticking their host page, unlike Sheet/Alert/Opaque surfaces.
+            // Cover/Uncover is the shared modal lifecycle across BOTH policies, so retain the
+            // countdown here and restart it exactly once when the last surface is dismissed.
+        } else if self.snap.pos < 0.05 && view.hero_count() > 1 {
             // Spelled as an assignment, not `-= dt`: bit-for-bit identical arithmetic to the
             // pre-D4 accumulator, deliberately UNCHANGED — `hero_auto` is HASHED `LogicalState`
             // (`SHAPE`'s `hero_auto:f32`) across three committed replay fixtures, and a
@@ -699,11 +710,12 @@ impl HomeScreen {
             // an animator (the `Timer` class of `docs/retui-invalidation-design.md`, not its
             // `Ramp`), and the dispatcher delivers `Tick` to the page every loop iteration whether or not the
             // frame presents (`ui::idle`, "What this module does NOT do"), so the countdown runs
-            // on a closed gate and the flip it ends in is what wakes it — `outgoing` is set, and
-            // `moving` below reports the slide. Noting `Motion` on every countdown tick made a
-            // still billboard present at the full frame rate forever: every modal dismiss and
-            // every page pop came back to a Home that never went idle (~24 ms of GPU a frame on
-            // the TV), and the next transition's first frame paid that queue in its `glClear`.
+            // on a closed gate while the page is uncovered and the flip it ends in is what wakes
+            // it — `outgoing` is set, and `moving` below reports the slide. Noting `Motion` on
+            // every countdown tick made a still billboard present at the full frame rate forever:
+            // every modal dismiss and every page pop came back to a Home that never went idle
+            // (~24 ms of GPU a frame on the TV), and the next transition's first frame paid that
+            // queue in its `glClear`.
             // `a_settled_hero_counting_down_lets_the_gate_close_and_still_flips` holds both halves.
             self.hero_auto = self.hero_auto - dt;
             if self.hero_auto <= 0.0 {
@@ -1375,7 +1387,7 @@ impl LogicalState for HomeScreen {
         // is encoded below, including velocities that determine the next Tick's answer.
         let Self { entry: _, instance: _, groups: _, items: _, next_group: _, next_elem: _,
             rows: _, projected_generation: _, restored_scroll: _, restore_reveal: _, carousel: _,
-            outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _,
+            outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _, covered: _,
             snap_target: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,
             hero_pop: _, backdrop: _, grid: _ } = self;
@@ -1383,6 +1395,7 @@ impl LogicalState for HomeScreen {
             .f32(self.snap.pos).f32(self.snap.vel)
             .f32(self.hero_flip_cd)
             .f32(self.hero_auto)
+            .bool(self.covered)
             .option(self.visible_activation, |c, elem| {
                 c.u32(elem);
             })
@@ -1735,7 +1748,18 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 self.cta_available = hero_group_len(H::hubs(cx)) > 0;
                 Handled::Yes
             }
-            ScreenEvent::Enter(_) | ScreenEvent::Uncover => {
+            ScreenEvent::Enter(_) => {
+                self.sync_catalog(cx);
+                fx.invalidate(Provenance::Nav);
+                Handled::Yes
+            }
+            ScreenEvent::Cover => {
+                self.covered = true;
+                Handled::Yes
+            }
+            ScreenEvent::Uncover => {
+                self.covered = false;
+                self.hero_auto = HERO_AUTO_S;
                 self.sync_catalog(cx);
                 fx.invalidate(Provenance::Nav);
                 Handled::Yes
