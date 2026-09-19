@@ -1245,3 +1245,83 @@ Regression scenes on the final binary:
 **Dismissals.** The first frame of every dismissal is 25–29 M GPU cycles and 14,298 tiles (HWCNT,
 previous lane). That is roughly seven full-screen passes. The bench does not grade it, but it is a
 real hitch.
+
+## 2026-09-19 (later): `push-100`, frame by frame — the ground samplers, and what is left
+
+All numbers come from the television with the panel off and the sound muted, on the full
+100-cycle `fps:push-100` unless a row says otherwise. Base is 3a3e640e. The attribution runs used
+a temporary 12-cycle copy of the bench with a per-frame trace (frame index since the push, total,
+`nav::page_alpha`) beside the `FRAMEDROP` spans. That trace was not committed.
+
+| build (worst_ms per cycle) | Detail p50 | Detail over 20 | Person over 20 | Library over 20 | all p50 | max |
+|---|---|---|---|---|---|---|
+| base 3a3e640e | 28.3 | 34 / 34 | 6 / 33 | 9 / 33 | 19.7 | 114.7 |
+| + async ground probe (a721d229) | 20.9 | 22 / 34 | 7 / 33 | 11 / 33 | 19.7 | 100.5 |
+
+**The page dip is not a cross-fade.** `PageDip` draws one page per frame: the outgoing page fades
+to the app ground, the op applies at the floor, and the incoming page fades up. The dip frames
+themselves were mostly 6–18 ms. The graded worst frame of a warm Detail cycle was almost never in
+the dip. It was in the settled page, which presents every frame because the wash dithers every
+frame.
+
+**What failed every warm Detail cycle: the Hero row's ground read.** `sample_control_ground` ran a
+synchronous `glReadPixels` once every thirty frames. That frame cost 27–29 ms: `clear` ~11 ms, plus
+~15 ms of GPU drain and reduction inside `page`. It is exactly the period of the spikes: frames 16,
+46 and 76 of one cycle, and 29 and 59 of another.
+
+**Fix: a ground reading never waits on the frame** (`gfx::GroundProbe`, cadence in the pure
+`gfx::ProbeCadence`). A due call copies the tap boxes GPU-side into a small probe target and
+inserts a fence. `gfx::ground_probes_frame_end` reads the target right after the swap, once the
+fence has signalled. The sampler's next call reduces it. Both samplers take this path: the tab
+track's `sample_ground` and the Hero row's `sample_control_ground`. Two intermediate steps were
+measured and rejected:
+
+- **Reading the probe mid-page, at the sampler's next call.** `gndread` fell to 0.2 ms, but the
+  frame still ran ~12 ms over its neighbours.
+- **Reading it between frames.** That frame was still ~12 ms over. The cause was the reduction
+  itself: 5 × 49 × 49 × 3 = 36,015 `powf` on the render thread. `lin_u8` is a 256-entry table and
+  is bit-identical to the `powf` mean (`the_u8_ground_mean_is_the_powf_mean_to_the_bit`).
+  `gndmean` is now 0.5–1.6 ms.
+
+The kick (`gndkick`) costs 1.8–2.7 ms of CPU. The answer lands one or two frames later than before.
+Both samplers refuse to read while the page dips (`may_sample_control_ground`, the track's
+`settled`), so no mid-transition frame changes. On the 12-cycle bench, warm cycles 4–12 then graded
+17.0–21.4 ms, against 17.0–35.1 ms before.
+
+The modal lane's 27606a23 moves the underlay FIELD's read to the frame head. It is the same idea
+on a different chain. The two merge cleanly (`git merge-tree`), and nothing about the field is
+changed here.
+
+**What is still over 20 ms, by cause:**
+
+- **Detail's steady GPU cost, in bursts.** A warm cycle can fall to 30 Hz for 4–9 consecutive
+  frames: `clear` 26–28 ms, `page` 31–32 ms, the page's own CPU 4.5 ms. Nothing in the app changes
+  on those frames. The settled Detail frame sits within about a millisecond of the vsync on the
+  GPU, so any disturbance tips it into two-vsync frames until the backlog drains. That disturbance
+  can be a probe kick's render-pass split, a texture arriving, or GPU clock scaling. This is now the
+  main warm-cycle failure (22 of 34 Detail cycles). Only fill-rate work on the settled Detail
+  frame can fix it. Price it class by class with production `drawmask` A/B runs.
+- **The cold first cycle of each page (cycle 1 Detail ~100 ms, the first Person 30–45 ms, the
+  first Library 38–41 ms).** On the cold Detail frame (106.8 ms in total), 47 new strings each paid
+  a `TTF_RenderUTF8_Blended` (24.7 ms together) and a texture upload (`upload_rgba`, 26.2 ms
+  together, ~0.55 ms each). The rating row took 22.4 ms, the identity line 15.7 ms and the cast
+  section 23.9 ms. Font opens are not the cost: 0.7–1.1 ms each, three on that frame. No per-string
+  path gets such a frame under 20 ms. Rendering the strings over several frames under a per-frame
+  budget would; the strings would then appear over the first frames of the fade-in. That is a
+  visual decision for the owner and has not been made.
+- **Home's run-up into the push.** Home draws two page passes per frame (the tab-glass blur source
+  pass) at `clear` 17–20 ms. The floor frame of the push (the first Detail frame) inherits that
+  backlog: `clear` 19–38 ms.
+
+**The other gated scenes on a721d229** (same session, after the push-100 run):
+
+| scene | result |
+|---|---|
+| detail-transition | PASS, median 59 fps, robust_min 52 |
+| home-detail-nav | PASS, loop median 60 |
+| library-scroll | PASS, 60 fps |
+| home-hero | PASS, 60 fps |
+| home-fold | PASS, median 58 fps |
+| home-grid | PASS, loop robust_min 57 |
+
+This is not a same-day A/B. The base figures in the table two sections up predate 3a3e640e.
