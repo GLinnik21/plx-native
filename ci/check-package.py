@@ -112,6 +112,22 @@ def expected_nightly_package_version(cargo_version: str, release_line_content: "
     return "{}.{}.{}".format(*triplet)
 
 
+def nightly_stamp_pattern(version: str) -> "re.Pattern[bytes]":
+    """The compiled pattern that finds `plxnative@<version>-nightly-<8 digits>` in a packaged
+    binary's strings — the exact bytes `concat!("plxnative@", env!("PLX_VERSION"))` emits under
+    `build.rs`'s `PLX_CHANNEL=nightly` arm.
+
+    NOT anchored with a trailing `\\b`. Rust string literals compiled into `.rodata` are packed
+    back to back with no NUL separator, so this literal's bytes can be followed immediately by
+    the start of a completely unrelated literal — and if THAT one happens to start with a word
+    character (a digit, in particular), there is no boundary there at all. `\\b` asserts a
+    boundary exists; it does not, so a real build's own bytes failed this check the day it was
+    written. `(?![0-9])` says the true thing instead: the date is exactly 8 digits, so anything
+    OTHER than a 9th digit ends it — an adjacent literal included, a 9th stray digit excluded.
+    """
+    return re.compile(rb"plxnative@" + re.escape(version.encode()) + rb"-nightly-[0-9]{8}(?![0-9])")
+
+
 def _selftest() -> int:
     """Prove the decoder against every stamp the Makefile can actually write.
 
@@ -182,7 +198,28 @@ def _selftest() -> int:
                   f"= ({got_version!r}, {got_err!r}), want version={want_version!r} err={want_err}")
     print(f"check-package: expected_dev_version {len(dev_cases) - dev_bad}/{len(dev_cases)} cases correct")
 
-    bad += maintainer_bad + dev_bad
+    # `nightly_stamp_pattern` against the exact defect this gate shipped with: a real nightly
+    # binary's `plxnative@X.Y.Z-nightly-YYYYMMDD` immediately followed, with no separator, by the
+    # next packed string literal — which is the common case, not an edge case, since `concat!`
+    # output is never NUL-terminated. A trailing `\b` refused to match that adjacent-digit case
+    # and failed on 0.7.0's first nightly run; `(?![0-9])` must accept it while still rejecting a
+    # date that is one digit short or one digit long.
+    nightly_pattern_cases = {
+        b"plxnative@0.7.0-nightly-20260919abc": True,   # adjacent literal, no separator — must match
+        b"plxnative@0.7.0-nightly-2026091": False,      # 7 digits — one short
+        b"plxnative@0.7.0-nightly-202609190": False,    # 9 digits — one long
+    }
+    nightly_bad = 0
+    pattern = nightly_stamp_pattern("0.7.0")
+    for blob, want in nightly_pattern_cases.items():
+        got = pattern.search(blob) is not None
+        if got != want:
+            nightly_bad += 1
+            print(f"  FAIL — nightly_stamp_pattern('0.7.0').search({blob!r}) found={got!r}, want {want!r}")
+    print(f"check-package: nightly_stamp_pattern "
+          f"{len(nightly_pattern_cases) - nightly_bad}/{len(nightly_pattern_cases)} cases correct")
+
+    bad += maintainer_bad + dev_bad + nightly_bad
     return 1 if bad else 0
 
 
@@ -872,12 +909,16 @@ if binary.exists():
     # by whatever `PLX_NIGHTLY_DATE` the build actually ran with — a build-time env var this script
     # has no other record of, so the date is graded by SHAPE (8 digits), not by value.
     if IS_NIGHTLY:
-        nightly_pattern = re.compile(
-            rb"plxnative@" + re.escape(appinfo["version"].encode()) + rb"-nightly-[0-9]{8}\b"
-        )
-        check(nightly_pattern.search(blob) is not None,
-              f"the {PACKAGED_ID} binary reports {appinfo['version']}-nightly-<8 digits> "
-              "(build.rs's PLX_CHANNEL=nightly arm, dated by PLX_NIGHTLY_DATE)")
+        nightly_found = nightly_stamp_pattern(appinfo["version"]).search(blob) is not None
+        nightly_msg = (f"the {PACKAGED_ID} binary reports {appinfo['version']}-nightly-<8 digits> "
+                        "(build.rs's PLX_CHANNEL=nightly arm, dated by PLX_NIGHTLY_DATE)")
+        if not nightly_found:
+            # Self-explaining on failure: list what the binary DOES carry after `plxnative@`,
+            # rather than leaving the next person to go re-derive it from a raw `strings` dump.
+            seen = [m.decode("utf-8", errors="replace")
+                    for m in re.findall(rb"plxnative@[0-9A-Za-z.\-]{1,40}", blob)[:5]]
+            nightly_msg += f" — plxnative@ strings actually present: {seen}"
+        check(nightly_found, nightly_msg)
         # Nightly is always RELEASE=1 (release-guard refuses otherwise) — grade that on the stamp
         # too, the same way the dev-trigger witness above grades it on the bytes.
         check(BUILD == "release",
