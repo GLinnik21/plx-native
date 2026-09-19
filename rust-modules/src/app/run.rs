@@ -1675,6 +1675,8 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
         }
         // dev: /tmp/plxnative-navosc — `crate::dev::scenarios::nav_osc_tick`.
         crate::dev::scenarios::nav_osc_tick(app, fr.now);
+        // dev: /tmp/plxnative-pushbench — `crate::dev::scenarios::push_bench_tick`.
+        crate::dev::scenarios::push_bench_tick(app, fr.now);
 
         // ---- the page cross-fade's commit frame ------------------------------------------
         // Stepped UNCONDITIONALLY, never per-route: a fader only one screen advances is a fader
@@ -1903,6 +1905,8 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // for the modal ramp, 520 ms for the three focus sweeps. Bodies live in
         // `crate::dev::scenarios` now; this frame still runs them at the same phase boundary.
         crate::dev::scenarios::modal_osc_tick(app, fr.now);
+        // dev: /tmp/plxnative-modalbench — `crate::dev::scenarios::modal_bench_tick`.
+        crate::dev::scenarios::modal_bench_tick(app, fr.now);
         crate::dev::scenarios::legal_doc_tick(app, fr.now, fr.dt);
         crate::dev::scenarios::alert_tick(app, fr.now, fr.dt);
         crate::dev::scenarios::settings_osc_tick(app, fr.now, fr.dt);
@@ -2429,6 +2433,10 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
 /// The iteration's report: the route word (on change), the lab route note, the focus probe
 /// and the FRAMEDROP line.
 pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
+        // dev: the stress-bench oscillators' own frame-time accumulator — right after Swap is
+        // stamped (`present_and_swap`, just above this call in `run()`), the earliest point this
+        // iteration's total is known. See `crate::dev::scenarios::bench_frame_tick`'s doc.
+        crate::dev::scenarios::bench_frame_tick(app, fr.present);
         fr.rn = super::words::route_word(&app.route());
     let rn = fr.rn;
     if crate::text::take_measure_fault() && !app.measure_fault_logged {
@@ -2967,6 +2975,8 @@ mod lifecycle_regression_tests {
                 pause_tried: Default::default(),
                 pause_script: Default::default(),
                 pause_resume_at: Default::default(),
+                push_bench: Default::default(),
+                modal_bench: Default::default(),
                 dev: crate::dev::scenarios::DevFlags {
                     detail_osc: Default::default(),
                     home_osc: Default::default(),
