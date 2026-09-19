@@ -38,6 +38,9 @@
 //!   the glass ledger), shared — attributed at the source and counted
 //!   (`idle::take_page_damage`), with [`host_refresh`] as the host cache's decision and
 //!   [`glass_refresh`] as the dynamic backdrop's.
+//! - **A ground captured this frame is already drawn.** Promotion from page to ground marks it
+//!   served immediately, before any foreground. A later scope (including the dispatcher's empty
+//!   modal-scrim scope after an embedded alert) must never replay that background over live ink.
 use crate::ui::widgets::{Glass, GlassState};
 use crate::ui::{theme, Painter, Rect, Spring};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
@@ -830,6 +833,11 @@ pub(crate) mod host {
     use super::{HOST_USERS, OWN_DAMAGE, OWN_MOTION};
     use std::sync::atomic::Ordering::Relaxed;
 
+    #[cfg(not(test))]
+    use crate::gfx::FrameCache;
+    #[cfg(test)]
+    use tests::FrameCache;
+
     /// What the one snapshot currently holds — see the module doc's two stages.
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Held {
@@ -848,14 +856,14 @@ pub(crate) mod host {
     /// meaningful bite out of the app's `requiredMemory` budget. The larger half is that only one
     /// modal is ever up over one page, so a second cache could only ever hold a stale copy of a
     /// page some OTHER popover had already frozen — a second answer to a question with one answer.
-    static mut CACHE: crate::gfx::FrameCache = crate::gfx::FrameCache::new();
+    static mut CACHE: FrameCache = FrameCache::new();
 
     /// Which stage [`CACHE`] holds.
     static mut HELD: Held = Held::Nothing;
 
-    /// Has the ground quad already gone down this frame? A popover reaches [`live`] twice (its
-    /// scrim and its panel), and the quad is one full-screen draw that belongs to the frame rather
-    /// than to either call.
+    /// Is the ground already on this frame's framebuffer, either drawn live and captured or
+    /// served from the cache? A popover reaches [`live`] twice (its scrim and its panel), and a
+    /// dispatcher may enter more scopes afterwards. None may replay ground over the foreground.
     static GROUND_DRAWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     /// [`OWN_DAMAGE`] as taken by [`begin_frame`], readable for the rest of the frame.
@@ -1160,6 +1168,9 @@ pub(crate) mod host {
         if settled && held() == Held::Page && !crate::gfx::blur_source_pass() {
             if unsafe { (*std::ptr::addr_of_mut!(CACHE)).capture() } {
                 unsafe { HELD = Held::Ground };
+                // The capture copied the ground already on this framebuffer. A later `live`
+                // scope must not blit that foreground-free copy over the ink drawn after us.
+                GROUND_DRAWN.store(true, Relaxed);
             }
         }
     }
@@ -1168,6 +1179,11 @@ pub(crate) mod host {
         fn drop(&mut self) {
             crate::gfx::set_page_frozen(self.was_frozen);
         }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        include!("popover_host_tests.rs");
     }
 }
 

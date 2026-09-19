@@ -994,6 +994,13 @@ you its own numbers are wrong.
 > builds and runs one scenario end to end, so an A/B of two builds over one scenario is minutes,
 > not a device session.
 
+**Check the rendering path as well as the picture.** PR #161's sign-in cards looked complete in
+a simulator whose `frame cache: CopyTexSubImage error=0x500 — cache off` log meant it never
+exercised cached modal ground. `ui/popover_host_tests.rs` now runs the production host-cache
+protocol with CPU framebuffer copies: a newly captured ground must not be replayed over an
+embedded alert's foreground by a later container scope. Those tests prove draw order and freeze
+behaviour; real GL copies, glyphs and presentation still need a device capture with caching enabled.
+
 > ### THERE IS ONE TELEVISION AND IT IS A MUTEX. TAKE THE LOCK.
 >
 > There is exactly one dev set, one app instance on it, and webOS enforces nothing: two
