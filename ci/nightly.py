@@ -106,10 +106,33 @@ def changed_outside_site_docs(paths: "list[str]") -> bool:
     return any(not (p.startswith("site/") or p.startswith("docs/")) for p in paths if p.strip())
 
 
-def cmd_plan(date: str, head: str) -> int:
+def plan_decision(dry: bool, prev_tag: "str | None", changed: "list[str]") -> "tuple[bool, str]":
+    """The `(skip, reason)` decision, isolated from git and the clock so `--selftest` can cover it
+    directly. `changed` is `git diff --name-only prev_tag..head`'s output, meaningful only when
+    `prev_tag` is not `None` and `dry` is false — the two cases that skip ever fires for.
+
+    `dry` (a `pull_request` run, or `workflow_dispatch`'s `dry_run` input) NEVER skips: the whole
+    point of a dry run is to prove the pipeline builds, so "nothing changed since the last real
+    nightly" — which is exactly what a PR that only touches this workflow itself would see — must
+    not be the thing that makes the check disappear silently.
+    """
+    if dry:
+        return False, "dry run (pull_request or dry_run input) — always builds regardless of what changed"
+    if prev_tag is None:
+        return False, "no previous nightly tag — first nightly"
+    if changed_outside_site_docs(changed):
+        return False, f"commit(s) outside site/ and docs/ since {prev_tag}"
+    return True, f"no commit outside site/ and docs/ since {prev_tag}"
+
+
+def cmd_plan(date: str, head: str, dry: bool) -> int:
     """Print `$GITHUB_OUTPUT`-shaped `key=value` lines: `version`, `label`, `tag`, `prev_tag`,
     `skip`, `reason`. Refuses (non-zero, `::error::`) if `tag` already exists — same-day rebuilds
     are refused by design; delete the release and its tag first if a genuine re-cut is wanted.
+
+    `dry` skips that refusal too: a dry run (`pull_request`, or `workflow_dispatch`'s `dry_run`)
+    never publishes anything, so a tag that happens to already exist for today's real nightly is
+    not this run's problem — it is proving the BUILD, not claiming the day.
     """
     if not re.fullmatch(r"\d{8}", date):
         print(f"::error::--date must be YYYYMMDD, got {date!r}", file=sys.stderr)
@@ -119,20 +142,16 @@ def cmd_plan(date: str, head: str) -> int:
     label = nightly_label(version, date)
     tag = nightly_tag(label)
 
-    if _git(["tag", "-l", tag]):
+    if not dry and _git(["tag", "-l", tag]):
         print(f"::error::{tag} already exists — same-day nightly rebuilds are refused by design; "
               "delete the release and the tag first to force a re-cut", file=sys.stderr)
         return 1
 
     prev_tag = newest_nightly_tag()
-    if prev_tag is None:
-        skip, reason = False, "no previous nightly tag — first nightly"
-    else:
+    changed = []
+    if not dry and prev_tag is not None:
         changed = [p for p in _git(["diff", "--name-only", f"{prev_tag}..{head}"]).splitlines() if p]
-        if changed_outside_site_docs(changed):
-            skip, reason = False, f"commit(s) outside site/ and docs/ since {prev_tag}"
-        else:
-            skip, reason = True, f"no commit outside site/ and docs/ since {prev_tag}"
+    skip, reason = plan_decision(dry, prev_tag, changed)
 
     print(f"version={version}")
     print(f"label={label}")
@@ -171,7 +190,7 @@ def render_notes(*, label: str, sha: str, prev_tag: "str | None", ipk: str, sha2
         )
     else:
         changes_section = (
-            "## Changes since\n\n"
+            "## Changes\n\n"
             "First nightly.\n\n"
             f"[Latest stable release]({latest_release_link})"
         )
@@ -345,6 +364,19 @@ def _selftest() -> int:
     check(changed_outside_site_docs(["site-plan.md"]) is True,
           "a look-alike path outside site/ (no trailing slash boundary) still counts as outside")
 
+    skip, reason = plan_decision(dry=True, prev_tag="nightly/v0.7.0-nightly-20260918", changed=[])
+    check(skip is False and "dry run" in reason,
+          "dry=True never skips, even with nothing changed since the previous nightly")
+    skip, reason = plan_decision(dry=True, prev_tag=None, changed=["rust-modules/src/app.rs"])
+    check(skip is False and "dry run" in reason, "dry=True never skips regardless of prev_tag/changed")
+    skip, reason = plan_decision(dry=False, prev_tag=None, changed=[])
+    check(skip is False and "first nightly" in reason, "no prev_tag, not dry -> first nightly, never skip")
+    skip, reason = plan_decision(dry=False, prev_tag="nightly/v0.7.0-nightly-20260918", changed=["site/index.html"])
+    check(skip is True, "not dry, prev_tag set, only site/ changed -> skip")
+    skip, reason = plan_decision(dry=False, prev_tag="nightly/v0.7.0-nightly-20260918",
+                                  changed=["rust-modules/src/app.rs"])
+    check(skip is False, "not dry, prev_tag set, an app file changed -> do not skip")
+
     # notes rendering
     body = render_notes(
         label="0.7.0-nightly-20260919", sha="abc1234def5678900000000000000000000000",
@@ -372,6 +404,9 @@ def _selftest() -> int:
         changes=[],
     )
     check("First nightly." in first_notes, "no prev_tag -> 'First nightly.'")
+    check("## Changes\n\n" in first_notes, "no prev_tag -> '## Changes' heading, not '## Changes since' with nothing after it")
+    check("## Changes since" not in first_notes,
+          "no prev_tag -> never renders the dangling '## Changes since' heading")
 
     # latest-json field mapping
     fake_release = {
@@ -424,6 +459,8 @@ def main() -> int:
     p_plan = sub.add_parser("plan")
     p_plan.add_argument("--date", required=True)
     p_plan.add_argument("--head", required=True)
+    p_plan.add_argument("--dry", action="store_true",
+                         help="never skip and never refuse an existing tag — this run will not publish")
 
     p_notes = sub.add_parser("notes")
     p_notes.add_argument("--label", required=True)
@@ -450,7 +487,7 @@ def main() -> int:
         return _selftest()
 
     if args.cmd == "plan":
-        return cmd_plan(args.date, args.head)
+        return cmd_plan(args.date, args.head, args.dry)
     if args.cmd == "notes":
         return cmd_notes(args)
     if args.cmd == "latest-json":

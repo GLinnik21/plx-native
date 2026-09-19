@@ -1,20 +1,7 @@
-# SEQUENCING REQUIREMENT: this repo's Pages source is currently "Deploy from a
-# branch" (legacy, building docs/ with Jekyll), not "GitHub Actions". This
-# workflow only takes effect once an owner with admin access switches the
-# Pages source to GitHub Actions in Settings > Pages.
-#
-# The commit that adds this workflow also deletes docs/index.html and
-# docs/.nojekyll (the landing page moved to site/). If that commit is pushed
-# to main BEFORE the Pages source is switched, the legacy Jekyll build will
-# run over docs/ with no index page and the live site will 404 or render the
-# docs/ tree until the switch happens. Switch the Pages source to Actions
-# FIRST, then push this commit (or push and switch in the same sitting) —
-# never push it against a still-legacy source and leave it there.
-#
-# Verify the current source with:
+# This repo's Pages source is "GitHub Actions" (switched from the legacy
+# "Deploy from a branch" Jekyll build that used to serve docs/). Verify with:
 #   gh api repos/<owner>/<repo>/pages --jq .build_type
-# It should read "workflow" once the switch is done; "legacy" means the
-# ordering above still needs to happen.
+# It should read "workflow"; "legacy" would mean the source reverted.
 name: Deploy landing page
 
 on:

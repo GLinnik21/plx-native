@@ -16,6 +16,22 @@ name: Nightly
 # This supersedes `canary.yml`'s "prove the public-storage pipeline" job in spirit (see that
 # workflow's own header) but does not replace its `dry_run` semantics one for one: `dry_run` here
 # additionally skips `pages` and `prune`, neither of which canary has.
+#
+# A THIRD way to run dry, alongside `dry_run: true`: a `pull_request` that touches this workflow
+# or the machinery it depends on (see the `paths:` filter below) builds and gates the PR's own head
+# commit, exactly like `dry_run: true` — plan + build only, never publish/pages/prune. It exists
+# because `workflow_dispatch` cannot target a workflow file that only exists on a branch: GitHub
+# will not let you dispatch `nightly.yml` from a PR branch until that file is on `main`, so a PR
+# is the only way to prove a change to this file (or to the plumbing it calls into) before it lands.
+# `plan` computes ONE `dry` value (true for `pull_request` OR `inputs.dry_run`) and every
+# downstream job gates on that single output, rather than each job re-deriving "is this a real
+# run" from the event name.
+#
+# FORK PULL REQUESTS ARE SKIPPED ENTIRELY (see `plan`'s own `if:`). `build`, even in dry mode,
+# still runs through build-package.yml's "Upload debug files to Sentry" step, which needs
+# `secrets.SENTRY_AUTH_TOKEN` — and GitHub does not expose repository secrets to a workflow run
+# triggered by a fork's pull request. Running anyway would not "run drier", it would fail on a
+# missing secret and read as this pipeline being broken rather than as the sandboxing that it is.
 
 on:
   schedule:
@@ -30,6 +46,18 @@ on:
         required: false
         type: boolean
         default: false
+  pull_request:
+    # Only a change that could plausibly break tomorrow's 03:00 UTC run earns a build here — not
+    # every PR. Widen this list if another file the nightly path depends on gains one.
+    paths:
+      - .github/workflows/nightly.yml
+      - .github/workflows/build-package.yml
+      - ci/nightly.py
+      - ci/flavor.py
+      - ci/version_rule.py
+      - ci/check-package.py
+      - Makefile
+      - rust-modules/build.rs
 
 permissions:
   contents: read
@@ -42,7 +70,11 @@ jobs:
   plan:
     name: plan today's nightly
     runs-on: ubuntu-latest
+    # FORK PULL REQUESTS ARE SKIPPED ENTIRELY — see the workflow header. A same-repo PR (including
+    # one from a branch of this repo) has the secret and proceeds like any other event.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     outputs:
+      dry: ${{ steps.dry.outputs.dry }}
       sha: ${{ steps.sha.outputs.sha }}
       date: ${{ steps.date.outputs.date }}
       version: ${{ steps.plan.outputs.version }}
@@ -56,10 +88,15 @@ jobs:
       # scheduled run's default ref already is the default branch, but naming it here is the
       # difference between "happens to be main today" and "is main by construction". A DISPATCH
       # checks out whatever ref triggered it (github.sha), which is what lets a branch prove this
-      # whole pipeline with `dry_run: true` before the change ever reaches main.
+      # whole pipeline with `dry_run: true` before the change ever reaches main. A PULL_REQUEST
+      # checks out the PR's own HEAD commit (not the ephemeral merge ref GitHub also offers) —
+      # the point of the dry build is to grade the commit the PR is actually proposing.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event_name == 'schedule' && 'main' || github.sha }}
+          ref: >-
+            ${{ github.event_name == 'schedule' && 'main'
+                || github.event_name == 'pull_request' && github.event.pull_request.head.sha
+                || github.sha }}
           # `ci/nightly.py plan` needs the full tag history (`git for-each-ref refs/tags/nightly/v*`
           # and `git diff prev_tag..head`), which a shallow clone cannot give it.
           fetch-depth: 0
@@ -67,13 +104,35 @@ jobs:
         run: echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
       - id: sha
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - id: dry
+        # ONE value, computed once, that every downstream job gates on — rather than each job
+        # separately re-deriving "is this a real run" from the event name and the dispatch input.
+        # `pull_request` is always dry; `workflow_dispatch` is dry iff `dry_run: true`; `schedule`
+        # is never dry. `inputs.dry_run` is empty (falsy) on both `schedule` and `pull_request`, so
+        # the `= true` string comparison is what keeps an unset input from matching by accident.
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ] || [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "dry=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "dry=false" >> "$GITHUB_OUTPUT"
+          fi
       - id: plan
         # Prints version=/label=/tag=/prev_tag=/skip=/reason= — exactly the $GITHUB_OUTPUT shape,
-        # so it is appended directly rather than parsed apart here.
-        run: python3 ci/nightly.py plan --date "${{ steps.date.outputs.date }}" --head "${{ steps.sha.outputs.sha }}" >> "$GITHUB_OUTPUT"
+        # so it is appended directly rather than parsed apart here. `--dry` (dry runs only) tells
+        # `ci/nightly.py plan` to never skip on "nothing changed" and never refuse an existing
+        # same-day tag — this run will not publish either way, so neither check is this run's
+        # problem (see `plan_decision`'s own docstring in ci/nightly.py).
+        env:
+          DRY: ${{ steps.dry.outputs.dry }}
+        run: |
+          set -euo pipefail
+          args=(--date "${{ steps.date.outputs.date }}" --head "${{ steps.sha.outputs.sha }}")
+          [ "$DRY" = "true" ] && args+=(--dry)
+          python3 ci/nightly.py plan "${args[@]}" >> "$GITHUB_OUTPUT"
       - run: |
           {
             echo "### Nightly plan"
+            echo "- dry: ${{ steps.dry.outputs.dry }}"
             echo "- date: ${{ steps.date.outputs.date }}"
             echo "- sha: ${{ steps.sha.outputs.sha }}"
             echo "- label: ${{ steps.plan.outputs.label }}"
@@ -118,7 +177,7 @@ jobs:
     name: publish nightly prerelease
     runs-on: ubuntu-latest
     needs: [plan, build]
-    if: ${{ !inputs.dry_run && needs.plan.outputs.skip != 'true' }}
+    if: ${{ needs.plan.outputs.dry != 'true' && needs.plan.outputs.skip != 'true' }}
     permissions:
       contents: write
     steps:
@@ -204,7 +263,7 @@ jobs:
   pages:
     name: refresh site latest-nightly pointer
     needs: [plan, publish]
-    if: ${{ !inputs.dry_run && needs.plan.outputs.skip != 'true' }}
+    if: ${{ needs.plan.outputs.dry != 'true' && needs.plan.outputs.skip != 'true' }}
     # pages.yml's own top-level `permissions:` covers its push/workflow_dispatch triggers; a
     # reusable-workflow call needs the CALLER job to grant what the called job actually uses.
     permissions:
@@ -217,7 +276,7 @@ jobs:
     name: prune nightly releases older than 30 days
     runs-on: ubuntu-latest
     needs: [plan, publish]
-    if: ${{ !inputs.dry_run && needs.plan.outputs.skip != 'true' }}
+    if: ${{ needs.plan.outputs.dry != 'true' && needs.plan.outputs.skip != 'true' }}
     permissions:
       contents: write
     steps:
