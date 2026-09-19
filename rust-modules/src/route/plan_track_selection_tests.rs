@@ -106,27 +106,27 @@ fn a_reencode_keeps_the_selected_dts_instead_of_the_ac3_sibling() {
         .unwrap_or(0);
     assert_eq!(dp, 2663, "smart-DP sibling is the Russian AC3");
     assert_eq!(
-        encode_audio_id(true, dp, 0, &tracks),
+        encode_audio_id(true, dp, 0, &tracks, None),
         2663,
         "remux copies the sibling"
     );
     assert_eq!(
-        encode_audio_id(false, dp, 0, &tracks),
+        encode_audio_id(false, dp, 0, &tracks, None),
         2669,
         "cold re-encode keeps the selected DTS"
     );
     assert_eq!(
-        encode_audio_id(false, dp, 2669, &tracks),
+        encode_audio_id(false, dp, 2669, &tracks, None),
         2669,
         "a retry/session pick of that DTS is kept"
     );
     assert_eq!(
-        encode_audio_id(true, dp, 2669, &tracks),
+        encode_audio_id(true, dp, 2669, &tracks, None),
         2663,
         "remux still copies the sibling even when a DTS pick is in env"
     );
     assert_eq!(
-        encode_audio_id(false, dp, dp, &tracks),
+        encode_audio_id(false, dp, dp, &tracks, None),
         dp,
         "retry after remux keeps the sibling already playing"
     );
@@ -146,12 +146,12 @@ fn a_reencode_does_not_treat_a_default_echo_as_a_pick() {
         .unwrap_or(0);
     assert_eq!(dp, 10976, "smart-DP / pref-lang sibling is English");
     assert_eq!(
-        encode_audio_id(true, dp, 0, &tracks),
+        encode_audio_id(true, dp, 0, &tracks, None),
         10976,
         "remux copies English"
     );
     assert_eq!(
-        encode_audio_id(false, dp, 0, &tracks),
+        encode_audio_id(false, dp, 0, &tracks, None),
         10976,
         "cold re-encode keeps English, not the echoed Russian default"
     );
@@ -172,12 +172,12 @@ fn a_reencode_names_selected_dts_not_the_english_ac3_sibling() {
         .unwrap_or(0);
     assert_eq!(dp, 2673, "smart-DP sibling is the English AC3");
     assert_eq!(
-        encode_audio_id(true, dp, 0, &tracks),
+        encode_audio_id(true, dp, 0, &tracks, None),
         2673,
         "remux copies the English AC3"
     );
     assert_eq!(
-        encode_audio_id(false, dp, 0, &tracks),
+        encode_audio_id(false, dp, 0, &tracks, None),
         2669,
         "cold re-encode keeps the selected DTS"
     );
@@ -197,12 +197,12 @@ fn a_reencode_names_pref_lang_dts_when_the_sibling_is_foreign() {
         .unwrap_or(0);
     assert_eq!(dp, 2663, "smart-DP sibling is the Russian AC3");
     assert_eq!(
-        encode_audio_id(true, dp, 0, &tracks),
+        encode_audio_id(true, dp, 0, &tracks, None),
         2663,
         "remux copies the sibling"
     );
     assert_eq!(
-        encode_audio_id(false, dp, 0, &tracks),
+        encode_audio_id(false, dp, 0, &tracks, None),
         2669,
         "cold re-encode names unselected English DTS, not the Russian AC3"
     );
@@ -222,7 +222,7 @@ fn a_reencode_keeps_an_english_ac3_sibling_over_truehd() {
         .unwrap_or(0);
     assert_eq!(dp, 2, "smart-DP sibling is the English AC3");
     assert_eq!(
-        encode_audio_id(false, dp, 0, &tracks),
+        encode_audio_id(false, dp, 0, &tracks, None),
         2,
         "re-encode must not replace the English AC3 with TrueHD"
     );
@@ -242,12 +242,12 @@ fn a_reencode_names_selected_dts_when_there_is_no_ac3_sibling() {
         .unwrap_or(0);
     assert_eq!(dp, 0, "no direct-playable track");
     assert_eq!(
-        encode_audio_id(true, dp, 0, &tracks),
+        encode_audio_id(true, dp, 0, &tracks, None),
         0,
         "remux has no sibling to name"
     );
     assert_eq!(
-        encode_audio_id(false, dp, 0, &tracks),
+        encode_audio_id(false, dp, 0, &tracks, None),
         2,
         "cold re-encode names the selected DTS, not 0"
     );
@@ -481,4 +481,22 @@ fn show_settings_are_read_out_of_a_setting_list() {
         ShowLangPrefs::from_settings(&[s("audioLanguage", "")]),
         Some(ShowLangPrefs { audio: None, subtitle: None, subtitle_mode: -1 })
     );
+}
+
+#[test]
+fn a_show_audio_preference_survives_a_video_transcode() {
+    let tracks = [trk(1, "ac3", "hun", true), trk(2, "ac3", "eng", false)];
+    let (_, _, dp) = pick_dp_audio_pref(&tracks, "ac3", Some("hu-HU")).unwrap();
+    assert_eq!(encode_audio_id(false, dp, 0, &tracks, Some("hu-HU")), 1,
+        "lowering video quality must not replace the show's chosen audio with English");
+}
+
+#[test]
+fn transcode_show_preference_preserves_overrides_and_missing_language_fallback() {
+    let tracks = [trk(1, "ac3", "hun", true), trk(2, "dts", "eng", false)];
+    assert_eq!(encode_audio_id(false, 1, 2, &tracks, Some("hu-HU")), 2);
+    assert_eq!(encode_audio_id(true, 1, 2, &tracks, Some("en-US")), 1);
+    assert_eq!(encode_audio_id(false, 1, 0, &tracks, Some("fr-FR")), 2);
+    let tracks = [trk(1, "ac3", "hun", true), server_selected(trk(2, "dts", "eng", false))];
+    assert_eq!(encode_audio_id(false, 1, 0, &tracks, Some("hu-HU")), 2);
 }

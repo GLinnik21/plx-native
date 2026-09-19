@@ -709,7 +709,7 @@ pub(crate) struct Plan {
     pub(super) auto_original: Option<AutoOriginalCandidate>,
     /// demuxer stream ordinal to feed (direct-play, non-default track). None = leave as-is.
     pub feed_audio_ordinal: Option<i32>,
-    /// the subtitle stream the server already had selected for this part (0 = none/off), so the
+    /// the subtitle selected for this part or by the show preference (0 = none/off), so the
     /// menu checkmark and the timeline report agree with what is on screen — and a later
     /// transcode of this item burns the subtitle the user was already watching.
     pub sub_sid: i64,
@@ -896,7 +896,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         .map(|p| p.audio.as_slice())
         .unwrap_or(&[]);
     // The SHOW's own language settings (its Advanced dialog), for an episode: one small read
-    // per play. See `pick_dp_audio_pref` and `pick_dp_subtitle_pref`.
+    // per play (at most two GETs sharing a 250 ms budget). See the preference pickers.
     let show_prefs = plan
         .playing
         .as_ref()
@@ -988,7 +988,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         // track Original will client-render, or 0 so a sidecar / unadvertised codec does not
         // force a burn. MDE and the remux probe always name that sibling (a copy cannot carry
         // TrueHD/DTS). The play-path PUT and start.mkv use `encode_audio_id`: remux still names
-        // the sibling; a re-encode names a real selected pick or pref-lang English so 720p
+        // the sibling; a re-encode names a real pick, then the show language (English if unset), so 720p
         // does not copy a foreign AC3 sibling.
         server_decision(client, rk, &session, audio_id, subtitle_id)
     };
@@ -1124,7 +1124,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
                         // GET parameters do not install PMS's part selection. Use the same
                         // remux policy as playback, before either the decision or media GET.
                         // A client-rendered subtitle is not a burn; only env.sub_sid requests one.
-                        let probe_audio = encode_audio_id(true, audio_id, env.audio_sid, tracks);
+                        let probe_audio = encode_audio_id(true, audio_id, env.audio_sid, tracks, show_prefs.audio.as_deref());
                         put_selection(env.sid, plan.part_id, probe_audio, env.sub_sid);
                         measure_remote_remux(
                             client,
@@ -1303,9 +1303,9 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // Remux copies, so this PUT names the smart-DP sibling. A re-encode transcodes a real
     // selected source track (English DTS → AC3) and must not PUT that sibling or a 720p start
     // replaces the pick with a foreign AC3 copy. A selected flag that only echoes default is
-    // not a pick; `encode_audio_id` then keeps an English sibling or, if the sibling is a
-    // foreign dub, the first English track (unselected DTS included).
-    let encode_audio = encode_audio_id(remux, audio_id, env.audio_sid, tracks);
+    // not a pick; `encode_audio_id` then keeps a sibling in the show language (English if
+    // unset), or the first track in that language (unselected DTS included).
+    let encode_audio = encode_audio_id(remux, audio_id, env.audio_sid, tracks, show_prefs.audio.as_deref());
     if remux {
         let achosen = audio_sel
             .as_ref()
@@ -1346,7 +1346,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // 4K/60 Mbps bound the moment the user touched the scrubber.
     // Remux: the smart-DP sibling MDE and the remux probe already named — `env.audio_sid` is
     // the part default (TrueHD) at resolve start; putting that undoes smart-DP. Re-encode:
-    // `encode_audio_id` (a real selected pick, else English, else that sibling). Subtitle stays
+    // `encode_audio_id` (a real pick, else show language/English, else that sibling). Subtitle stays
     // `env.sub_sid`: a positive id here is a burn, and Original client-renders instead.
     put_selection(env.sid, plan.part_id, encode_audio, env.sub_sid);
     if remux_probed && adaptive {
@@ -1594,11 +1594,11 @@ fn pick_dp_audio_ladder(
 /// (The Morning Show: the Russian default reads `selected`); that falls through rather than
 /// beating English.
 ///
-/// After that pick, a sibling already in [`PREF_AUDIO_LANG`] stays — taking "first English, any
-/// codec" would PUT English TrueHD on 720p when an English AC3 sibling exists, undoing smart-DP.
-/// Only when the sibling is a foreign dub does the first English track win, so an unselected
-/// English DTS is encoded instead of a Russian AC3 copy. Never `0` (an omitted PUT encodes the
-/// part default).
+/// After that pick, prefer the show language, or [`PREF_AUDIO_LANG`] when unset. Keep a
+/// sibling already in that language before considering other codecs in it, so lowering video
+/// quality preserves a preferred dub and does not needlessly encode a lossless sibling.
+/// Otherwise take the first track in that language. An absent show language falls through
+/// to the ordinary English/DP order (an omitted PUT encodes the part default).
 /// `env_audio_sid` is the session/retry pick and wins on re-encode when set, including a remux
 /// leftover sibling (mid-play quality drop keeps what is already playing). A cold play zeros
 /// it (`request_play`).
@@ -1607,6 +1607,7 @@ fn encode_audio_id(
     dp_audio_id: i64,
     env_audio_sid: i64,
     tracks: &[crate::metadata::Stream],
+    show_audio_pref: Option<&str>,
 ) -> i64 {
     if remux {
         return dp_audio_id;
@@ -1622,18 +1623,18 @@ fn encode_audio_id(
     {
         return id;
     }
-    let sibling_is_pref = tracks
-        .iter()
-        .any(|s| s.id == dp_audio_id && s.lang_code == PREF_AUDIO_LANG);
-    if sibling_is_pref {
-        return dp_audio_id;
+    for pref in show_audio_pref.into_iter().chain(std::iter::once(PREF_AUDIO_LANG)) {
+        if tracks.iter().any(|s| s.id == dp_audio_id && lang_matches(pref, &s.lang_code)) {
+            return dp_audio_id;
+        }
+        if let Some(id) = tracks.iter()
+            .find(|s| s.id > 0 && lang_matches(pref, &s.lang_code))
+            .map(|s| s.id)
+        {
+            return id;
+        }
     }
-    tracks
-        .iter()
-        .find(|s| s.lang_code == PREF_AUDIO_LANG)
-        .map(|s| s.id)
-        .filter(|&id| id > 0)
-        .unwrap_or(dp_audio_id)
+    dp_audio_id
 }
 
 
