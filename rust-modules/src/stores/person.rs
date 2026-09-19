@@ -69,7 +69,9 @@ impl PersonStore {
             self.adapter = Arc::new(Default::default());
         }
         let changed = self.state.run(&self.adapter, cmd);
-        self.bump();
+        if changed {
+            self.bump();
+        }
         changed
     }
 
