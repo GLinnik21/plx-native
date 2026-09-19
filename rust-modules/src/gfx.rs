@@ -59,7 +59,7 @@ pub(crate) use glsl;
 /// wash takes [`DITHER_LSB`] on every draw: it is always broad, and since 2026-09-19 nothing may
 /// switch its noise off).
 ///
-/// **Only the three SLOW-FIELD programs are built with it** — `fs_ambient`, `fs_modal_ground` and
+/// **Only the three SLOW-FIELD programs are built with it** — `fs_ambient`, `fs_field` and
 /// `fs_glass`, the ones whose ramp is a blur or a full-screen wash. `fs_src` and `fs_shadow`, the
 /// per-rect programs every card, chip, scrim and row highlight goes through, are deliberately plain:
 /// the prelude is not free on Midgard (then behind a uniform branch, which is itself not free —
@@ -119,8 +119,9 @@ const FS_SHADOW: &CStr = glsl!("shaders/fs_shadow.frag");
 const VS_IMG: &CStr = glsl!("shaders/vs_img.vert");
 const VS_AMBIENT_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_ambient.vert");
 const VS_IMG_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_img.vert");
+const VS_SRC_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_src.vert");
 const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
-const FS_MODAL_GROUND: &CStr = glsl_dithered!("shaders/fs_modal_ground.frag");
+const FS_FIELD: &CStr = glsl_dithered!("shaders/fs_field.frag");
 const FS_HERO: &CStr = glsl!("shaders/fs_hero.frag");
 const FS_BLUR: &CStr = glsl!("shaders/fs_blur.frag");
 const FS_GLASS: &CStr = glsl_dithered!("shaders/fs_glass.frag");
@@ -437,7 +438,7 @@ static mut AL_BL: c_int = 0;
 static mut FPROG: c_uint = 0;
 static mut FL_RECT: c_int = 0;
 static mut FL_COL: c_int = 0;
-static mut ML_DITHER: c_int = 0;
+static mut UL_DITHER: c_int = 0;
 static mut AL_DITHER: c_int = 0;
 /// The ambient field's PLAIN program (`FS_AMBIENT_PLAIN`) — the hero scrim's (`draw_grad4`), never
 /// the wash's — and its uniforms; 0 when the link failed, in which case `APROG` serves the scrim
@@ -549,13 +550,18 @@ static mut IL_CH: c_int = 0;
 static mut IL_INNER: c_int = 0;
 static mut IL_SHINV: c_int = 0;
 static mut IL_SHCOL: c_int = 0;
-static mut MPROG: c_uint = 0;
-static mut ML_RECT: c_int = 0;
-static mut ML_SCREEN: c_int = 0;
-static mut ML_TINT: c_int = 0;
-static mut ML_UVRECT: c_int = 0;
-static mut ML_TEX: c_int = 0;
-static mut ML_SATURATION: c_int = 0;
+/// **The UNDERLAY FIELD program** (`shaders/fs_field.frag` over `vs_src.vert`) and its uniforms;
+/// 0 when the link failed, in which case [`draw_field`] draws nothing and its caller falls back to
+/// the flat rect it would otherwise have drawn.
+///
+/// Its own program rather than a mode of `IPROG` for the reason every other one-purpose program
+/// here has: the field is a magnification of a 60x32 texture over up to 2.07M fragments, and the
+/// image program's SDF radius, rim and penumbra branches are all disabled on every one of them.
+/// It takes the program slot `fs_modal_ground.frag` used to hold, so the dithered-program count is
+/// still three — see [`glsl_dithered`].
+static mut UPROG: c_uint = 0;
+static mut UL_RECT: c_int = 0;
+static mut UL_TINT: c_int = 0;
 // ---- hero-ground program: the backdrop art with both scrim fields folded into it (fs_hero.frag).
 // Its own program because it is the SAME quad the art already draws, only carrying two more
 // closed-form fields — nothing else in the app wants them, and the card composite must not pay for
@@ -892,6 +898,23 @@ pub(crate) fn init_gl() {
             FL_COL = glGetUniformLocation(FPROG, c"u_col".as_ptr());
             use_prog(FPROG);
             glUniform2f(glGetUniformLocation(FPROG, c"u_screen".as_ptr()), SCR_W, SCR_H);
+        }
+
+        // The underlay field. `vs_src.vert` because a field is drawn 1:1 over its rect, so the
+        // unit quad IS the texture coordinate and there is nothing for a `u_uvrect` to express.
+        // DITHERED: `fs_field.frag` is built with `glsl_dithered!`, so its paired vertex source
+        // must be the `PLX_DITHER_NC` variant that supplies `v_dither_nc` (cost rule 4).
+        UPROG = link_program(VS_SRC_DITHERED.as_ptr(), FS_FIELD.as_ptr()).unwrap_or_else(|| {
+            log("field prog link failed — an underlay field draws nothing");
+            0
+        });
+        if UPROG != 0 {
+            UL_RECT = glGetUniformLocation(UPROG, c"u_rect".as_ptr());
+            UL_TINT = glGetUniformLocation(UPROG, c"u_tint".as_ptr());
+            use_prog(UPROG);
+            glUniform2f(glGetUniformLocation(UPROG, c"u_screen".as_ptr()), SCR_W, SCR_H);
+            glUniform1i(glGetUniformLocation(UPROG, c"u_tex".as_ptr()), 0);
+            UL_DITHER = dither_uniforms(UPROG);
         }
 
         // Hoist the compile-time-constant uniforms: uniforms are per-program state, so each
@@ -1518,24 +1541,6 @@ pub(crate) fn init_image() {
         glUniform2f(IL_SCREEN, SCR_W, SCR_H);
         glUniform1i(IL_TEX, 0);
 
-        // The full-screen Settings ground has no SDF, rim or shadow. Its tiny dedicated shader
-        // keeps the image program's hot poster path unchanged and adds saturation without another
-        // sample. A link failure is harmless: the draw site falls back to IPROG.
-        MPROG = link_program(VS_IMG_DITHERED.as_ptr(), FS_MODAL_GROUND.as_ptr()).unwrap_or(0);
-        if MPROG != 0 {
-            ML_RECT = glGetUniformLocation(MPROG, c"u_trect".as_ptr());
-            ML_SCREEN = glGetUniformLocation(MPROG, c"u_tscreen".as_ptr());
-            ML_TINT = glGetUniformLocation(MPROG, c"u_tint".as_ptr());
-            ML_UVRECT = glGetUniformLocation(MPROG, c"u_uvrect".as_ptr());
-            ML_TEX = glGetUniformLocation(MPROG, c"u_tex".as_ptr());
-            ML_SATURATION = glGetUniformLocation(MPROG, c"u_saturation".as_ptr());
-            use_prog(MPROG);
-            glUniform2f(ML_SCREEN, SCR_W, SCR_H);
-            glUniform1i(ML_TEX, 0);
-            ML_DITHER = dither_uniforms(MPROG);
-        } else {
-            log("modal-ground prog link failed — using the plain cached blur");
-        }
         use_prog(PROG);
     }
 }
@@ -3640,23 +3645,35 @@ pub(crate) fn control_ground_invalidate() {
     }
 }
 
+/// **One display-encoded sRGB channel as RADIANCE** (IEC 61966-2-1), and [`enc`] back again.
+///
+/// Free functions rather than the two closures that used to live inside [`diffuse_ground_mean`],
+/// because averaging framebuffer samples is no longer the only thing in this renderer that has to
+/// do it: `ui::underlay` low-passes, grades and reconstructs a whole 15x8 grid, and every one of
+/// those operations is a WEIGHTED SUM, which is only meaningful in linear light. Two copies of a
+/// transfer function are two chances to get an exponent wrong in a way nothing can see.
+#[inline]
+pub(crate) fn lin(v: f32) -> f32 {
+    if v <= 0.04045 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+/// The inverse of [`lin`] — linear radiance back to a display-encoded sRGB channel.
+#[inline]
+pub(crate) fn enc(v: f32) -> f32 {
+    if v <= 0.0031308 {
+        v * 12.92
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    }
+}
+
 /// Average display-encoded sRGB samples as radiance and encode the result back to sRGB.
 /// Kept pure so the material's defining operation is host-testable without an OpenGL context.
 fn diffuse_ground_mean(samples: impl IntoIterator<Item = [f32; 3]>) -> [f32; 3] {
-    let lin = |v: f32| {
-        if v <= 0.04045 {
-            v / 12.92
-        } else {
-            ((v + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    let enc = |v: f32| {
-        if v <= 0.0031308 {
-            v * 12.92
-        } else {
-            1.055 * v.powf(1.0 / 2.4) - 0.055
-        }
-    };
     let mut acc = [0.0f32; 3];
     let mut n = 0usize;
     for sample in samples {
@@ -3670,63 +3687,6 @@ fn diffuse_ground_mean(samples: impl IntoIterator<Item = [f32; 3]>) -> [f32; 3] 
     }
     let k = n as f32;
     [enc(acc[0] / k), enc(acc[1] / k), enc(acc[2] / k)]
-}
-
-/// One frozen colour envelope for a full-screen modal.  The four broad samples are deliberately
-/// converted into an ambient gradient by the UI instead of retained as a downsampled image: text
-/// and poster edges therefore cannot survive as readable squares, while the host page still keys
-/// the modal's colour.
-#[derive(Clone, Copy)]
-pub(crate) struct ModalAmbientSample {
-    pub(crate) corners: [[f32; 3]; 4],
-    pub(crate) key: [f32; 3],
-}
-
-pub(crate) fn sample_modal_ambient() -> ModalAmbientSample {
-    const TAP: c_int = 49;
-    // Painter order: top-left, top-right, bottom-right, bottom-left.
-    const POINTS: [[f32; 2]; 4] = [[0.22, 0.22], [0.78, 0.22], [0.78, 0.78], [0.22, 0.78]];
-    if unsafe { BLUR_IN_PASS } {
-        let c = [
-            crate::ui::theme::SURFACE_APP[0],
-            crate::ui::theme::SURFACE_APP[1],
-            crate::ui::theme::SURFACE_APP[2],
-        ];
-        return ModalAmbientSample {
-            corners: [c; 4],
-            key: c,
-        };
-    }
-    let (gx, gy, gw, gh) = crate::surface::viewport();
-    let mut corners = [[0.0; 3]; 4];
-    let n = TAP as usize;
-    let mut buf = vec![0u8; n * n * 4];
-    for (out, [fx, fy]) in corners.iter_mut().zip(POINTS) {
-        let x = gx + (gw as f32 * fx) as c_int;
-        let y = gy + gh - 1 - (gh as f32 * fy) as c_int;
-        unsafe {
-            glReadPixels(
-                (x - TAP / 2).clamp(gx, gx + gw - TAP),
-                (y - TAP / 2).clamp(gy, gy + gh - TAP),
-                TAP,
-                TAP,
-                GL_RGBA,
-                GL_UNSIGNED_BYTE,
-                buf.as_mut_ptr() as *mut c_void,
-            );
-        }
-        *out = diffuse_ground_mean(buf.chunks_exact(4).map(|p| {
-            [
-                p[0] as f32 / 255.0,
-                p[1] as f32 / 255.0,
-                p[2] as f32 / 255.0,
-            ]
-        }));
-    }
-    ModalAmbientSample {
-        key: diffuse_ground_mean(corners),
-        corners,
-    }
 }
 
 /// Sample the pixels already rendered beneath one Hero action row.
@@ -3815,7 +3775,8 @@ const DITHER_LSB: f32 = 2.0 / 255.0;
 /// against without, the whole of a 57→50 fps regression, on frames where every ramp test had
 /// answered 0. A rect's ramp is a scrim or a two-stop fill, crossing tens of codes over hundreds
 /// of pixels, and nobody had reported a tread on one; the fields that DID band (the wash, the
-/// glass blur, the modal ground) are exactly the three that keep the prelude.
+/// glass blur, and the modal ground whose program slot the underlay field now holds) are exactly
+/// the three that keep the prelude.
 
 /// **The rule for a surface whose ramp is in SAMPLED DATA or a whole-screen field** — the frosted
 /// glass over a blurred snapshot and the Settings ground's desaturate-and-tint grade. (The ambient
@@ -3946,8 +3907,9 @@ pub(crate) fn video_plane_frame() -> bool {
 /// **The refusal every framebuffer-SAMPLING door takes on a video-plane frame** (spec §9).
 ///
 /// `true` = refuse. The four doors are `popover::host::begin_frame` (the frozen-host snapshot),
-/// `draw_blur_backdrop` (Glass), `RouteGround::draw_host` (the ambient sample) and
-/// `FrameCache::capture`. Every one of them answers a question by READING BACK framebuffer 0 —
+/// `draw_blur_backdrop` (Glass), `underlay::sample_underlay_field` (the field `RouteGround::draw_host`
+/// latches its live source from) and `FrameCache::capture`. Every one of them answers a question by
+/// READING BACK framebuffer 0 —
 /// and on this frame framebuffer 0 is a hole: the picture the viewer sees is a hardware plane the
 /// television composites underneath our surface, which GL cannot read. What each of them would
 /// cache is therefore a photograph of transparent black, served back over the video for as long as
@@ -4529,81 +4491,6 @@ pub(crate) fn draw_blur_backdrop(
     }
 }
 
-/// Draw the cached blurred snapshot through the ordinary image shader.
-///
-/// Full-screen modal grounds have no rounded edge, lens, rim or live refraction. Paying the glass
-/// shader for those disabled branches across every pixel costs more than a frame on the T820. The
-/// blur chain is still real and still captured once; only its settled composite is a plain image.
-/// The caller layers its frost over this result with the normal rect shader.
-pub(crate) fn draw_blur_snapshot_flat(
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    rest: [f32; 4],
-    tint: *const f32,
-    taps: &[f32],
-    saturation: f32,
-) -> bool {
-    unsafe {
-        if BLUR_IN_PASS || masked(Class::Glass) {
-            return false;
-        }
-        let need = blur_region(rest[0], rest[1], rest[2], rest[3]);
-        BLUR_WANT_CUR = blur_region_union(*std::ptr::addr_of!(BLUR_WANT_CUR), need);
-        let stale = (*std::ptr::addr_of!(BLURST))
-            .as_ref()
-            .is_none_or(|c| !blur_region_covers(c.reg, x, y, w, h));
-        if !BLUR_VALID || stale {
-            let want = blur_region_union(*std::ptr::addr_of!(BLUR_WANT_PREV), need);
-            blur_snapshot_with_taps(want, taps);
-        }
-        if BLUR_OFF || !BLUR_VALID {
-            return false;
-        }
-        let Some(c) = (*std::ptr::addr_of!(BLURST)).as_ref() else {
-            return false;
-        };
-        debug_assert_eq!(c.out, c.mid);
-        let span = [
-            (c.rw / 2) as f32 / c.mw as f32,
-            (c.rh / 2) as f32 / c.mh as f32,
-        ];
-        let uv = blur_uv_rect(x, y, w, h, c.reg, span, c.bottom_up);
-        if MPROG != 0 && !culled(x, y, w, h) && !gate(Class::Image, x, y, w, h) {
-            use_prog(MPROG);
-            glUniform4fv(ML_TINT, 1, tint);
-            glUniform1f(ML_SATURATION, saturation);
-            // A grade over a BLUR: the slowest field this app produces, so `dither_for_field` — the
-            // ramp is in the sampled data and no pair of uniforms describes it.
-            glUniform1f(ML_DITHER, dither_for_field(w, h));
-            glUniform4f(ML_UVRECT, uv[0], uv[1], uv[2], uv[3]);
-            glBindTexture(GL_TEXTURE_2D, c.out);
-            glUniform4f(ML_RECT, x, y, w, h);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        } else if MPROG == 0 {
-            draw_tex_core(
-                Class::Image,
-                c.out,
-                x,
-                y,
-                w,
-                h,
-                uv,
-                0.0,
-                tint,
-                0.0,
-                NO_RIM.as_ptr(),
-                w * 0.5,
-                h * 0.5,
-                0.0,
-                NO_RIM.as_ptr(),
-            );
-        }
-        true
-    }
-}
-
 // ============================== UI self-capture ==============================
 // GL side of the dev capture stream (crate::capture): grab our own back buffer,
 // GPU-downscale it, and read the small result back — the fast path the external
@@ -4853,9 +4740,274 @@ pub(crate) fn cap_cycle(want_960: bool, buf: &mut Vec<u8>) -> Option<(c_int, c_i
     }
 }
 
+// ============================== The UNDERLAY FIELD ==============================
+// A COARSE COLOUR FIELD OF WHATEVER IS RENDERED BENEATH AN OVERLAY — the GL half. The CPU half
+// (low-pass, grade, reconstruct, upload) is `ui::underlay`, and the reason the split falls here is
+// that everything below this line needs a context and everything above that line is arithmetic a
+// host test can grade.
+//
+// WHY A CHAIN AND NOT FOUR `glReadPixels` TAPS. The four-corner sampler this replaced (PR2 stage B,
+// 2026-09-19; it read four 49x49 squares and handed back a four-corner envelope) hands back a
+// bilinear gradient with four degrees of freedom, so it cannot say "the green is on the LEFT of the
+// bottom edge and the red on the right". 120 cells can, and they cost one read instead of four —
+// 480 bytes against 4 x 9.6 kB, all of it produced by the GPU's own filter rather than by averaging
+// 2401 samples per corner on the CPU.
+//
+// WHY EXACT 2x PASSES. Bilinear minification is a clean 2x2 box at exactly 2x and nothing else
+// (see `blur_dims`' note): one 128x reduction would sample 2x2 of each 128x128 block and the field
+// would swim as the page scrolled, because it would be keyed to whichever 4 pixels the filter
+// happened to land on. 1920 = 15 * 2^7, so the chain is seven exact halvings; 1080 floors its way
+// down (540, 270, 135, 67, 33, 16, 8), which loses at most one row per level off a field whose
+// whole output is 8 rows tall.
+
+/// The field grid. 15x8 is the coarsest thing that still resolves a SIDE and a CORNER at 16:9 —
+/// finer than the four-corner envelope by a factor of 30 and still small enough that the readback
+/// is 480 bytes, under a single cache line's worth of rows.
+pub(crate) const FIELD_W: c_int = 15;
+pub(crate) const FIELD_H: c_int = 8;
+/// Cells in one field, in `FIELD_W`-major row order from the TOP-LEFT.
+pub(crate) const FIELD_CELLS: usize = (FIELD_W * FIELD_H) as usize;
+
+struct FieldChain {
+    grab: c_uint, // the viewport rect of the drawable, copied verbatim
+    view: (c_int, c_int, c_int, c_int),
+    /// `(tex, fbo, w, h)` per reduction level, ending at exactly `FIELD_W` x `FIELD_H`.
+    levels: Vec<(c_uint, c_uint, c_int, c_int)>,
+}
+
+static mut FIELDST: Option<FieldChain> = None;
+/// Latched after a refusal that cannot get better (an incomplete FBO, a drawable the exact-2x
+/// chain cannot be built for). The caller's answer is then permanently `None`, which is a real
+/// answer: `ui::underlay` has a CPU source for exactly this case.
+static mut FIELD_OFF: bool = false;
+
+/// How many exact halvings take `gw` to [`FIELD_W`], or `None` when it is not a power-of-two
+/// multiple of it.
+///
+/// Pure, so the one property that makes the chain a box filter is host-gradeable without a
+/// context. The television answers 7 (`1920 = 15 * 2^7`); a simulator window scaled to a
+/// non-power-of-two multiple answers `None` and the feature declines rather than producing a
+/// field keyed to an arbitrary 2x2 of each block.
+fn field_passes(gw: c_int) -> Option<u32> {
+    if gw < FIELD_W || gw % FIELD_W != 0 {
+        return None;
+    }
+    let q = (gw / FIELD_W) as u32;
+    q.is_power_of_two().then(|| q.trailing_zeros())
+}
+
+fn field_lazy_init() -> bool {
+    unsafe {
+        let view = crate::surface::viewport();
+        if let Some(c) = (*std::ptr::addr_of!(FIELDST)).as_ref() {
+            if c.view == view {
+                return true;
+            }
+            // The drawable moved under a built chain. Rebuilding one is a resize path this app has
+            // never needed (the television's viewport is fixed for the life of the process), so say
+            // so once and decline rather than sample a stale geometry.
+            log("field: viewport changed under the underlay chain — underlay field off");
+            FIELD_OFF = true;
+            return false;
+        }
+        if FIELD_OFF {
+            return false;
+        }
+        let (_, _, gw, gh) = view;
+        let Some(n) = field_passes(gw) else {
+            log(&format!(
+                "field: drawable {gw}x{gh} is not a power-of-two multiple of {FIELD_W} wide — underlay field off"
+            ));
+            FIELD_OFF = true;
+            return false;
+        };
+        let grab = cap_tex(gw, gh);
+        let mut levels = Vec::with_capacity(n as usize);
+        let (mut w, mut h) = (gw, gh);
+        for _ in 0..n {
+            w = (w / 2).max(1);
+            h = (h / 2).max(1);
+            let Some((t, f)) = fbo_target(w, h, "field") else {
+                FIELD_OFF = true;
+                return false;
+            };
+            levels.push((t, f, w, h));
+        }
+        debug_assert_eq!(levels.last().map(|l| (l.2, l.3)), Some((FIELD_W, FIELD_H)));
+        FIELDST = Some(FieldChain { grab, view, levels });
+        true
+    }
+}
+
+/// **The colour field under the frame as it stands right now**, 15x8 cells, display-encoded sRGB,
+/// row-major from the TOP-LEFT. `None` means "no honest answer this frame" and is not a failure —
+/// `ui::underlay` has a CPU source (`latch_from_corners`) for every case below.
+///
+/// The refusals, and why each one is not a guess:
+///
+/// * **Inside a blur source pass** ([`BLUR_IN_PASS`]) the bound framebuffer is a quarter-resolution
+///   crop of the page, not the page — the same reason [`sample_ground`] and
+///   [`sample_control_ground`] refuse there.
+/// * **On a video-plane frame** framebuffer 0 is the punch-through hole the television composites
+///   the plane through, so a read returns transparent black; [`video_plane_refuses`] is the shared
+///   gate, and it is why this returns `None` here rather than a photograph of the hole —
+///   `RouteGround::draw_host` falls back to its corner envelope on exactly this `None` rather than
+///   latch to black for the life of the ground.
+/// * **While the page is served from [`FrameCache`]** ([`PAGE_FROZEN`]) every primitive in this
+///   module refuses its quad, the reduction passes included, so the chain would reduce whatever
+///   was last left in its targets. The pixels on the panel are right; the ones this would read are
+///   not.
+/// * **`drawmask=field`** removes the whole feature, chain and draw together, so the leg prices it.
+/// * An incomplete FBO or a drawable the exact-2x chain cannot be built for latches
+///   [`FIELD_OFF`] and the answer is `None` from then on.
+///
+/// GL state is restored the way [`cap_cycle`] restores it: framebuffer and viewport back to the
+/// drawable, blend back on. Programs bind themselves lazily through [`use_prog`], texture unit 0
+/// never moves, and vertex state is untouched.
+pub(crate) fn sample_underlay_field() -> Option<[[f32; 3]; FIELD_CELLS]> {
+    unsafe {
+        if BLUR_IN_PASS || PAGE_FROZEN || masked(Class::Field) {
+            return None;
+        }
+        if video_plane_refuses("underlay::sample_underlay_field") {
+            return None;
+        }
+        if !field_lazy_init() {
+            return None;
+        }
+        let c = (*std::ptr::addr_of!(FIELDST)).as_ref()?;
+        let (gx, gy, gw, gh) = c.view;
+
+        glBindTexture(GL_TEXTURE_2D, c.grab);
+        glCopyTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, gx, gy, gw, gh);
+
+        // Blend OFF: every target is a fresh copy, and `glClear` before each pass spares Midgard
+        // the tile preserve-load of the stale contents (a full-screen quad does not relieve that
+        // obligation — `cap_cycle` carries the same note).
+        glDisable(GL_BLEND);
+        let mut src = c.grab;
+        for &(_, fbo, w, h) in &c.levels {
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glViewport(0, 0, w, h);
+            glClear(GL_COLOR_BUFFER_BIT);
+            // `Class::Blur` because the chain is ACCOUNTING-ONLY at the primitive: its targets are
+            // not in authored coordinates and half a masked chain would leave the field reading
+            // stale texels rather than measuring anything. `drawmask=field` refuses the whole
+            // sample above instead, and the ledger gets the target pixels through `note_px` below.
+            note_px(Class::Field, (w as f64) * (h as f64));
+            draw_tex_core(
+                Class::Blur,
+                src,
+                0.0,
+                0.0,
+                SCR_W,
+                SCR_H,
+                [0.0, 0.0, 1.0, 1.0],
+                0.0,
+                CAP_TINT.as_ptr(),
+                0.0,
+                NO_RIM.as_ptr(),
+                0.0,
+                0.0,
+                0.0,
+                NO_RIM.as_ptr(),
+            );
+            src = fbo_tex_of(c, fbo);
+        }
+
+        let mut buf = [0u8; FIELD_CELLS * 4];
+        glPixelStorei(GL_PACK_ALIGNMENT, 1); // 15 RGBA texels is 60 bytes — 4-aligned anyway
+        glReadPixels(
+            0,
+            0,
+            FIELD_W,
+            FIELD_H,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            buf.as_mut_ptr() as *mut c_void,
+        );
+
+        // Restore the world exactly — see `cap_cycle`'s step D for what "exactly" has to mean.
+        glBindFramebuffer(GL_FRAMEBUFFER, crate::surface::default_fb());
+        glViewport(gx, gy, gw, gh);
+        glEnable(GL_BLEND);
+
+        // ORIENTATION, DERIVED rather than asserted. `glCopyTexSubImage2D` leaves `grab` bottom-up
+        // and every full-quad pass flips row order once (`vs_img` emits `-ndc.y` with `v_cuv =
+        // a_pos`), so an ODD pass count puts `glReadPixels`' first row at the TOP of the screen.
+        // The television runs seven; a supersampled simulator runs eight. The blur chain records
+        // what a hard-coded parity cost when a pass count changed — this one counts its own.
+        let top_down = c.levels.len() % 2 == 1;
+        Some(std::array::from_fn(|i| {
+            let (row, col) = (i / FIELD_W as usize, i % FIELD_W as usize);
+            let row = if top_down {
+                row
+            } else {
+                FIELD_H as usize - 1 - row
+            };
+            let p = (row * FIELD_W as usize + col) * 4;
+            [
+                buf[p] as f32 / 255.0,
+                buf[p + 1] as f32 / 255.0,
+                buf[p + 2] as f32 / 255.0,
+            ]
+        }))
+    }
+}
+
+/// The texture attached to `fbo` — the next pass's source. The chain stores the pair together, so
+/// this is a lookup rather than a GL query.
+fn fbo_tex_of(c: &FieldChain, fbo: c_uint) -> c_uint {
+    c.levels
+        .iter()
+        .find(|l| l.1 == fbo)
+        .map_or(0, |l| l.0)
+}
+
+/// Draw a reconstructed underlay field over `x,y,w,h`: one magnified fetch, one tint multiply, one
+/// shared dither (`shaders/fs_field.frag`). `tex` is `ui::underlay`'s 60x32 RGBA8, already LINEAR +
+/// CLAMP_TO_EDGE through [`upload_rgba`].
+///
+/// The dither is [`dither_for_field`]'s decision and not the caller's: a field reconstructed from
+/// 15x8 cells is the slowest ramp this app produces, and motion is not part of the question for a
+/// field (see `shaders/dither.glsl`'s closing note).
+pub(crate) fn draw_field(x: f32, y: f32, w: f32, h: f32, tex: c_uint, tint: *const f32) {
+    if tex == 0 || unsafe { UPROG } == 0 || culled(x, y, w, h) || gate(Class::Field, x, y, w, h) {
+        return;
+    }
+    unsafe {
+        use_prog(UPROG); // u_screen and the sampler unit are set once at init
+        glUniform4f(UL_RECT, x, y, w, h);
+        glUniform4fv(UL_TINT, 1, tint);
+        glUniform1f(UL_DITHER, dither_for_field(w, h));
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The underlay chain is a BOX FILTER only because every pass is exactly 2x**, and that is a
+    /// property of the drawable's width, so it is graded here rather than assumed. The television
+    /// is `1920 = 15 * 2^7`; its height floors to exactly `FIELD_H` along the way; an odd pass count
+    /// is what puts `glReadPixels`' first row at the top of the screen. A drawable that is not a
+    /// power-of-two multiple of the grid refuses — the field then comes from the CPU corners.
+    #[test]
+    fn the_underlay_chain_is_seven_exact_halvings_on_the_television() {
+        assert_eq!(field_passes(1920), Some(7));
+        let mut h = 1080;
+        for _ in 0..7 {
+            h /= 2;
+        }
+        assert_eq!(h, FIELD_H, "1080 floors to the grid's height in the same seven passes");
+        assert_eq!(7 % 2, 1, "an odd pass count reads back top-down");
+        assert_eq!(field_passes(3840), Some(8), "a 2x-supersampled simulator is still exact");
+        assert_eq!(field_passes(1440), None, "a 0.75x window cannot be halved onto 15 columns");
+        assert_eq!(field_passes(14), None);
+        assert_eq!(field_passes(15), Some(0));
+    }
 
     #[test]
     fn a_framebuffer_cache_flips_the_copied_rows_exactly_once() {
@@ -4988,6 +5140,7 @@ mod tests {
         for (name, vs) in [
             ("vs_ambient.vert", VS_AMBIENT_DITHERED),
             ("vs_img.vert", VS_IMG_DITHERED),
+            ("vs_src.vert", VS_SRC_DITHERED),
         ] {
             let code = shader_code(vs);
             assert!(
@@ -4999,7 +5152,11 @@ mod tests {
                 "{name}: the dithered twin defines it"
             );
         }
-        for (name, vs) in [("vs_ambient.vert", VS_AMBIENT), ("vs_img.vert", VS_IMG)] {
+        for (name, vs) in [
+            ("vs_ambient.vert", VS_AMBIENT),
+            ("vs_img.vert", VS_IMG),
+            ("vs_src.vert", VS_SRC),
+        ] {
             assert!(
                 !shader_code(vs).contains("#define PLX_DITHER_NC"),
                 "{name}: the plain vertex shader (every image program, the undithered twin) \
@@ -5009,7 +5166,7 @@ mod tests {
 
         for (name, src) in [
             ("fs_ambient.frag", FS_AMBIENT),
-            ("fs_modal_ground.frag", FS_MODAL_GROUND),
+            ("fs_field.frag", FS_FIELD),
             ("fs_glass.frag", FS_GLASS),
         ] {
             let code = shader_code(src);

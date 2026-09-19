@@ -83,6 +83,7 @@ pub mod text_view;
 pub(crate) mod text_buffer;
 pub mod theme;
 pub mod track_menu;
+pub(crate) mod underlay; // the shared UNDERLAY FIELD: a coarse, spatially faithful colour field of what is drawn beneath an overlay
 pub mod up_next; // end-of-episode Up Next card + auto-advance countdown
 pub mod widgets;
 pub mod xfade; // content cross-fade: fade out → swap the data at the floor → fade in
@@ -747,29 +748,6 @@ impl Painter {
             deep,
         )
     }
-    /// Composite the cached blur through the ordinary image shader. This is for edge-free,
-    /// full-screen modal grounds; shaped glass must use [`backdrop_blur`](Self::backdrop_blur).
-    #[must_use]
-    pub fn backdrop_blur_flat(
-        self,
-        r: Rect,
-        tint: [f32; 4],
-        taps: &[f32],
-        saturation: f32,
-    ) -> bool {
-        let t = self.c(tint);
-        let (x, y) = (r.x + self.dx, r.y + self.dy);
-        crate::gfx::draw_blur_snapshot_flat(
-            x,
-            y,
-            r.w,
-            r.h,
-            [x, y, r.w, r.h],
-            t.as_ptr(),
-            taps,
-            saturation,
-        )
-    }
     /// [`tex`](Self::tex) with the focus edge-sheen (the 1px inset perimeter rim) baked into the SAME
     /// pass — rim only, no shadow. Used for the profile chip avatar.
     pub fn tex_stroked(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4]) {
@@ -893,6 +871,45 @@ impl Painter {
             c[2].as_ptr(),
             c[3].as_ptr(),
         );
+    }
+    /// **The UNDERLAY FIELD**: a coarse colour field of what is rendered BENEATH an overlay,
+    /// magnified out of `ui::underlay`'s 60x32 texture — one fetch, one tint multiply and the
+    /// shared dither (`shaders/fs_field.frag`).
+    ///
+    /// The counterpart of [`ambient`](Self::ambient) and [`grad4`](Self::grad4), and the difference
+    /// from both is SPATIAL FIDELITY: those two evaluate a four-corner bilinear, which can say "the
+    /// page is greenish" but not "the green is on the left of the bottom edge". This samples a
+    /// field that was reduced from the frame itself, so it can.
+    ///
+    /// It takes the cascade through [`c`](Self::c) exactly as `grad4` does — the tint is an
+    /// ordinary straight-alpha colour and the shader multiplies it — which is what makes a field
+    /// fade with the surface it belongs to. `ui::underlay::UnderlayField::draw` is the component;
+    /// reach for that, not for this.
+    pub fn field(self, r: Rect, tex: u32, tint: [f32; 4]) {
+        let t = self.c(tint);
+        crate::gfx::draw_field(r.x + self.dx, r.y + self.dy, r.w, r.h, tex, t.as_ptr());
+    }
+    /// [`field`](Self::field) as an OPAQUE GROUND — the field counterpart of
+    /// [`ambient`](Self::ambient), and it reads a fade the same way that one does: an alpha below 1
+    /// mixes the ground toward [`theme::SURFACE_APP`], never toward transparency, because the app's
+    /// own ground is what lies behind a page and "fade this out" has no other reading for an opaque
+    /// full-screen field.
+    ///
+    /// Where `ambient` folds that mix into four corner colours on the CPU, this one lays the
+    /// surface down as a flat rect and lets the FRAMEBUFFER do it — `SURFACE_APP*(1-a) + field*a`,
+    /// the same algebra — because a field's colours live in a texture the frame cannot rebuild.
+    /// The extra quad is a `fs_flat.frag` fill and is drawn only while a fade is actually running;
+    /// at alpha 1, which is every frame outside a transition, this is one draw and the write is
+    /// opaque exactly as `ambient`'s is.
+    pub fn field_ground(self, r: Rect, tex: u32, a: f32) {
+        let a = (self.a * a).clamp(0.0, 1.0);
+        // The cascade's alpha is spent HERE, on the mix, so neither draw may take it again.
+        let full = Self { a: 1.0, ..self };
+        if a < 1.0 {
+            let g = theme::SURFACE_APP;
+            full.rect(r, 0.0, g, g, 0.0);
+        }
+        full.field(r, tex, theme::with_a(theme::TINT_WHITE, a));
     }
     /// draw text at absolute (x,y) plus the cascade translate; returns width
     pub fn text(

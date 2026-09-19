@@ -49,13 +49,19 @@ pub(crate) enum Class {
     Glass = 7,
     /// The blur chain's own FBO passes, measured in TARGET pixels (they do not touch the panel).
     Blur = 8,
+    /// `gfx::draw_field` — the magnified UNDERLAY FIELD, plus the reduction chain that produces
+    /// it, booked in TARGET pixels like [`Blur`](Self::Blur). Unlike `Blur` this one IS maskable,
+    /// and masking it removes the whole feature at once: `gfx::sample_underlay_field` refuses
+    /// before the chain runs, so a `drawmask=field` leg prices the sample and the draw together
+    /// rather than leaving the draw sampling a stale texture.
+    Field = 9,
 }
 
-pub(crate) const NCLASS: usize = 9;
+pub(crate) const NCLASS: usize = 10;
 
 /// The name each class answers to in `/tmp/plxnative-drawmask`, in [`Class`] order.
 pub(crate) const NAMES: [&str; NCLASS] = [
-    "ambient", "grad", "rect", "shadow", "card", "image", "text", "glass", "blur",
+    "ambient", "grad", "rect", "shadow", "card", "image", "text", "glass", "blur", "field",
 ];
 
 /// The dev arm: the real ledger and the real mask. Its release twin sits below, same names, same
@@ -306,6 +312,10 @@ mod tests {
         // silently attribute every card to whatever moved into slot 4.
         assert_eq!(Class::Ambient as usize, 0);
         assert_eq!(Class::Card as usize, 4);
-        assert_eq!(Class::Blur as usize, NCLASS - 1);
+        assert_eq!(Class::Blur as usize, 8);
+        // The LAST variant closes the table: `NCLASS` is one past it, so a class added without
+        // bumping `NCLASS` (or `NAMES`) fails here rather than indexing off the end of the ledger.
+        assert_eq!(Class::Field as usize, NCLASS - 1);
+        assert_eq!(NAMES[Class::Field as usize], "field");
     }
 }
