@@ -20,6 +20,9 @@ ipkroot/*.tar.gz
 ipkroot/debian-binary
 ipkroot/data/usr/
 
+# CI's webOS NDK install root (.github/actions/webos-ndk); a toolchain, never source
+.webos-ndk/
+
 # reference copies of the TV's proprietary shared libs — not needed to build
 # (the build links against the stub .so files generated from stub/*.c)
 sysroot/
