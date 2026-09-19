@@ -978,12 +978,13 @@ pub(crate) mod host {
         if crate::gfx::video_plane_refuses("popover::host::begin_frame") {
             return;
         }
-        // Published for the renderer before anything draws: `gfx::page_wash_dither` reads it, so a
-        // popover's own appear spring cannot strip the dither off the page snapshot under it. The
-        // same OR `host_refresh` reads below: the scoped verdict app.rs threads in (Home, the
-        // Library, Search, the press dip) plus the unscoped one (Detail updates outside
-        // `scoped_motion` and reports through `idle::page_moving`) — Codex review, 2026-09-04.
-        crate::ui::idle::note_underlay_motion(page_moving || crate::ui::idle::page_moving());
+        // This frame's page verdict — the scoped one app.rs threads in (Home, the Library, Search,
+        // the press dip) OR'd with the unscoped one (Detail updates outside `scoped_motion` and
+        // reports through `idle::page_moving`) — is the host cache's business and nothing else's;
+        // `moving` below is where it is taken. It used to be PUBLISHED here as well, for
+        // `gfx::page_wash_dither` to read, until 2026-09-19 proved a page-wide verdict is the wrong
+        // question for a wash: the wash's own dissolve is in it. (That function is gone too: every
+        // wash dithers on every frame now — `gfx::draw_ambient`.)
         let own = OWN_DAMAGE.swap(false, Relaxed);
         let own_motion = OWN_MOTION.swap(false, Relaxed);
         // The glass backdrop's ledger stays MERGED: re-sourcing a blur one frame late self-heals on

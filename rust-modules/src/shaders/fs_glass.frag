@@ -29,8 +29,8 @@
 //      the "strange patterns" this surface was reported for — and (b) UNCONDITIONAL, evaluated on
 //      every fragment of every glass surface whether or not the amplitude was non-zero. That is the
 //      exact mistake `fs_ambient.frag`'s COST note records having made and fixed, priced there at
-//      38% of a Home frame, and this program never got the fix. It is one `texture2D` behind a
-//      uniform branch now. The old note, still true of WHY a dither is wanted here:
+//      38% of a Home frame, and this program never got the fix. It is one `texture2D` and one add
+//      now, straight-line (`dither.glsl` cost rule 1). The old note, still true of WHY a dither is wanted here:
 //      A blurred field is nearly a gradient, and a gradient in 8 bits BANDS — the more
 //      so where the lens stretches it. `GL_DITHER` is off on this part and `ui/widgets.rs` already
 //      abandoned one construction over the same staircase, so the noise is not optional polish. It
