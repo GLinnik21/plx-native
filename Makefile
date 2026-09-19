@@ -83,11 +83,15 @@ tv-lock-require:
 
 # --- WHICH INSTALL: the FLAVOR axis --------------------------------------------------------
 #
-# Two builds live on one television: `stable` is the app users get (`com.beb.plxnative`, the id in
-# every release, manifest and channel listing), and `debug` is the day-to-day developer build
+# Three builds live on one television: `stable` is the app users get (`com.beb.plxnative`, the id
+# in every release, manifest and channel listing); `debug` is the day-to-day developer build
 # beside it (`com.beb.plxnative.debug`) with its own launcher tile, its own sign-in and its own
-# runtime files. webOS keys everything — the install directory, SAM's launch/closeByAppId, the LS2
-# role file — on that id, so two ids are two apps that cannot touch each other.
+# runtime files; `nightly` (`com.beb.plxnative.nightly`) is a third install beside both — same
+# per-flavour shape (own tile, own sign-in, own runtime root) but ALWAYS a RELEASE=1 build (see
+# `release-guard` below), with its own bumped package version and a dated reported version
+# (`rust-modules/build.rs::emit_version`'s `PLX_CHANNEL=nightly` arm). webOS keys everything — the
+# install directory, SAM's launch/closeByAppId, the LS2 role file — on that id, so distinct ids are
+# distinct apps that cannot touch each other.
 #
 # THE DEFAULT IS `debug`, IN THIS TRACKED FILE, and that is a deliberate asymmetry rather than a
 # preference. Every command in this repo's muscle memory, every skill recipe and every harness
@@ -107,7 +111,7 @@ tv-lock-require:
 # registered app called `com.beb.plxnative.stabel` on the television (LG's id charset accepts it,
 # so nothing downstream objects) and the symptom is a mystery tile on a TV rather than a message on
 # a terminal. `$(error)` at parse time costs one line.
-FLAVORS      = stable debug
+FLAVORS      = stable debug nightly
 FLAVOR      ?= debug
 $(if $(filter $(FLAVOR),$(FLAVORS)),,$(error unknown FLAVOR "$(FLAVOR)" — one of: $(FLAVORS)))
 
@@ -152,8 +156,10 @@ EVENTLOG     = $(RUNDIR)/plxnative-events.log
 # the failure is silent on both sides — the second bind fails with one line in a log nobody is
 # tailing, and the operator then watches one install's picture while every key they type goes into
 # the other install's FIFO. `capture::default_port` is the same rule in Rust; ci/flavor.py's
-# selftest compares them, and is what will object when a third flavour needs a real decision.
-APPPORT      = $(if $(filter stable,$(FLAVOR)),8910,8911)
+# selftest compares them. Nightly was the third flavour that comment warned about: "stable, or one
+# higher" stopped being a rule with three installs, so each flavour now gets its own explicit slot
+# instead of a wildcard — stable 8910, debug 8911, nightly 8912.
+APPPORT      = $(if $(filter stable,$(FLAVOR)),8910,$(if $(filter nightly,$(FLAVOR)),8912,8911))
 
 # The default goal, stated rather than inherited. Make takes the FIRST target in the file, and the
 # seven query targets below are the first ones now — so a bare `make` printed the flavour and
@@ -471,6 +477,25 @@ RUST_TDIR      = target$(if $(RELEASE),-release,)$(if $(LAB),-lab,)$(if $(SYMBOL
 # derivation again.
 override PLX_RELEASE := $(if $(RELEASE),1,)
 export PLX_RELEASE
+# `PLX_CHANNEL=nightly` selects `build.rs::emit_version`'s nightly arm — a dated pre-release
+# string (`X.Y.Z-nightly-YYYYMMDD`) instead of the plain `-dev` suffix every other non-release
+# build reports. Derived from FLAVOR by the same `override … := $(if …)` / unconditional `export`
+# shape as PLX_RELEASE immediately above, for the same reason: a stray command-line
+# `PLX_CHANNEL=nightly FLAVOR=debug` must not reach cargo, and exporting empty-for-everything-but-
+# nightly is the SAME "set but empty is not the special case" idiom `build.rs` already reads
+# PLX_RELEASE with, rather than a second one.
+override PLX_CHANNEL := $(if $(filter nightly,$(FLAVOR)),nightly,)
+export PLX_CHANNEL
+# The date a nightly build reports, `YYYYMMDD`. Only meaningful for FLAVOR=nightly, and exported
+# ONLY then — exporting it unconditionally would make cargo's `rerun-if-env-changed` force a
+# rebuild every single day (the value changes daily) even for a plain `make check` on stable or
+# debug, for a variable those flavours never read. `?=` (not `override`) so it passes through an
+# already-set environment variable — CI's coming nightly caller supplies the date it actually cut;
+# a bare local `make FLAVOR=nightly RELEASE=1 ipk` gets today's UTC date for free.
+ifeq ($(FLAVOR),nightly)
+PLX_NIGHTLY_DATE ?= $(shell date -u +%Y%m%d)
+export PLX_NIGHTLY_DATE
+endif
 # ...and the LINK needs its own witness, because pkg/plxnative is a path BOTH configurations
 # write. Per-dir targets keep cargo honest, but after a RELEASE=1 build the dev .a is older
 # than the release binary sitting at pkg/plxnative, so make would call the link up to date and
@@ -533,7 +558,17 @@ PLX_POSTHOG_KEY ?=
 # `make RELEASE=1 && make deploy`. The values are hashed rather than written, so the stamp file
 # (which is not gitignored) never contains a credential.
 TELEMETRY_CFG  = $(shell printf '%s|%s|%s|%s' '$(PLX_SENTRY_DSN)' '$(PLX_POSTHOG_KEY)' '$(PLX_SENTRY_DSN_DEV)' '$(PLX_POSTHOG_KEY_DEV)' | shasum | cut -c1-12)
-RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(SYMBOLS),+symbols,)+tel:$(TELEMETRY_CFG)
+# `+nightly:<date>` carries PLX_NIGHTLY_DATE into the stamp itself, the same reason SYMBOLS and the
+# telemetry pair are in it and RELEASE already was: a nightly binary's REPORTED version is dated by
+# this value (`build.rs`'s PLX_CHANNEL=nightly arm), so `ci/check-package.py` needs the exact date a
+# packaged binary was built with to grade it — and the ONLY other place that date exists is this
+# environment variable, gone the moment the shell that ran `make` exits. Embedding the real value
+# (not just "nightly: yes/no") is also what makes a DATE CHANGE relink: two nightly builds cut on
+# the same tracked version a day apart must not silently share pkg/plxnative just because nothing
+# else about the configuration moved. `$(filter nightly,$(FLAVOR))` guards it exactly the way
+# PLX_CHANNEL and PLX_NIGHTLY_DATE above are themselves guarded, so a non-nightly stamp is
+# byte-for-byte what it always was.
+RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(SYMBOLS),+symbols,)$(if $(filter nightly,$(FLAVOR)),+nightly:$(PLX_NIGHTLY_DATE),)+tel:$(TELEMETRY_CFG)
 # Handled by $(shell) during PARSING, and by DELETING the output rather than by timestamps.
 # Both choices are load-bearing, and both were arrived at by measuring the failures:
 #   * A rule cannot do it. macOS ships GNU make 3.81, which decides whether a target is up to date
@@ -1287,7 +1322,16 @@ lint:
 # derive from it, and ci/check-package.py asserts ipkroot/ctl/control still agrees. The registry
 # reads both out of the archive (webosbrew repogen/ipk_file.py), so a mismatch is a rejected
 # submission rather than a warning.
-IPK_VERSION := $(shell python3 -c "import json;print(json.load(open('pkg/appinfo.json'))['version'])")
+#
+# THROUGH `ci/flavor.py`, not a raw read of the tracked file — for stable and debug this is a
+# no-op re-derivation of the exact same number, but nightly's OWN package version is a computed
+# next-minor (`appinfo_for`'s nightly arm; see ci/flavor.py and ci/version_rule.py), and that
+# number does not exist as a file yet at Makefile-parse time (`pkg/.flavor/nightly/appinfo.json`
+# is a BUILT artifact, generated by the rule below, and `$(shell …)` here runs before any recipe
+# does). Asking the same transform for the version it WILL write is what lets IPK_VERSION — and
+# therefore $(IPK), used by `ipk`'s own recipe below — agree with what `ci/mkipk.py` actually
+# names the archive, without depending on a file that is not there yet.
+IPK_VERSION := $(shell python3 -c "import sys; sys.path.insert(0, 'ci'); import flavor; print(flavor.appinfo_for('$(FLAVOR)')['version'])")
 IPK         := pkg/$(APPID)_$(IPK_VERSION)_arm.ipk
 # Where the payload is assembled. The DIRECTORY NAME is part of the package's identity — it is
 # what `paths::app_id` reads at runtime — so ci/mkipk.py and ci/check-package.py both assert it
@@ -1423,6 +1467,15 @@ release-guard:
 	  echo "  release build:      make FLAVOR=stable RELEASE=1 $(firstword $(MAKECMDGOALS))"; \
 	  echo "  developer install:  make $(firstword $(MAKECMDGOALS))          (FLAVOR=$(FLAVOR) is not the default)"; \
 	  echo "  really meant it:    make FLAVOR=stable ALLOW_DEV_ON_STABLE=1 $(firstword $(MAKECMDGOALS))"; \
+	  exit 1; fi
+	@# Nightly has no dev-triggers arm at all — unlike the stable guard above, there is no
+	@# ALLOW_DEV_ON_STABLE-shaped hatch here on purpose. A dev build under this id would ship the
+	@# whole `/tmp` trigger surface and the remote FIFO on an install nobody is meant to treat as
+	@# disposable-and-instrumented the way `debug` is; "always RELEASE=1" is the product decision
+	@# (see ci/flavor.py's module doc), not a default that a flag should be able to override.
+	@if [ "$(FLAVOR)" = nightly ] && [ -z "$(RELEASE)" ]; then \
+	  echo "refusing to build $(APPID) without RELEASE=1 — nightly never ships a dev build."; \
+	  echo "  correct:  make FLAVOR=nightly RELEASE=1 $(firstword $(MAKECMDGOALS))"; \
 	  exit 1; fi
 
 # --- installing a flavour on the television ---------------------------------------------------

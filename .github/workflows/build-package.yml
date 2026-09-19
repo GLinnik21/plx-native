@@ -13,9 +13,12 @@ name: build + verify
 # This file owns exactly one thing: turn a checked-out ref into a built, packaged, gate-verified
 # .ipk plus its sidecar evidence files, uploaded as one artifact.
 #
-# A third caller (a nightly flavour) is coming in a later change; the boolean inputs below
-# (`homebrew-manifest`, `source-asset`, `caches`, `fwcompat`) exist so that caller can select the
-# right subset without a third copy of this job — nothing here should need to change to add it.
+# A third caller (a nightly workflow, on a schedule) is still coming in a later change; what
+# lands HERE is only the plumbing it will need — `flavor: nightly` and the `nightly-date` input,
+# passed through as `PLX_NIGHTLY_DATE` — so that the FLAVOR/version machinery this job already
+# exercises for stable and debug is proven before anything schedules a run. The boolean inputs
+# below (`homebrew-manifest`, `source-asset`, `caches`, `fwcompat`) exist so that future caller can
+# select the right subset without a third copy of this job.
 
 on:
   workflow_call:
@@ -25,9 +28,19 @@ on:
         type: string
         required: true
       flavor:
-        description: 'FLAVOR to build — stable or debug.'
+        description: 'FLAVOR to build — stable, debug, or nightly.'
         type: string
         required: true
+      nightly-date:
+        description: >
+          UTC date (YYYYMMDD) a nightly build reports in its version string
+          (`X.Y.Z-nightly-<date>`), passed through as PLX_NIGHTLY_DATE. Ignored by stable/debug,
+          which never read it. A nightly caller must supply a real date: `rust-modules/build.rs`
+          fails the build on `PLX_CHANNEL=nightly` with no date or a malformed one, by design —
+          only a bare local `make FLAVOR=nightly RELEASE=1 ipk`, with the variable truly absent
+          from the shell rather than set empty here, gets the Makefile's own today's-date default.
+        type: string
+        default: ''
       telemetry:
         description: 'Which telemetry credential pair to compile in — production or development.'
         type: string
@@ -88,8 +101,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$FLAVOR" in
-            stable|debug) ;;
-            *) echo "::error::flavor must be stable or debug, got '$FLAVOR'"; exit 1 ;;
+            stable|debug|nightly) ;;
+            *) echo "::error::flavor must be stable, debug, or nightly, got '$FLAVOR'"; exit 1 ;;
           esac
           case "$TELEMETRY" in
             production|development) ;;
@@ -153,6 +166,9 @@ jobs:
           # later on a missing `dist/ipk.sha256` (a flavoured package deliberately does not write
           # that released asset name) — a loud failure naming a checksum rather than a flavour.
           FLAVOR: ${{ inputs.flavor }}
+          # Only meaningful for `flavor: nightly` — `build.rs` never reads it for stable/debug.
+          # See the `nightly-date` input's own comment for what an empty value here means.
+          PLX_NIGHTLY_DATE: ${{ inputs.nightly-date }}
           # DWARF, so the release can be symbolicated later. It must be set on EVERY invocation in
           # this step and it must be the SAME invocation that cuts the .ipk: a debuginfo build and a
           # plain one produce DIFFERENT BUILD IDs from identical sources (measured — see the
