@@ -122,3 +122,19 @@ fn cache_off_and_no_later_scope_explain_the_old_green_paths() {
         assert_eq!(embedded_alert_frame(true, false), expected, "alert drawn last");
     }
 }
+
+#[test]
+fn reconciling_card_content_invalidates_its_cached_ground_only_when_changed() {
+    use crate::ui::decision_alert::{Answers, DecisionAlert};
+    let _serial = crate::testlock::serial();
+    let _reset = Reset::new(false);
+    let mut alert = DecisionAlert::new();
+    alert.open_card(c"Details", vec!["support".into()], Answers::One);
+    embedded_alert_frame(true, true);
+    assert!(held() == Held::Ground);
+    assert!(!alert.reconcile_card(c"Details", vec!["support".into()], Answers::One));
+    assert!(held() == Held::Ground, "unchanged content keeps its snapshot");
+    assert!(alert.reconcile_card(c"Details", vec!["receipt".into(), "support".into()], Answers::Two));
+    assert!(held() == Held::Nothing, "the taller card cannot reuse the old panel outline");
+    assert_eq!(embedded_alert_frame(true, true), ["page", "scrim", "glass", "title/body/buttons"]);
+}

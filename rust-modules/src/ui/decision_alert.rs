@@ -12,7 +12,7 @@
 //! will almost certainly be a bare one. The body is held on the ALERT
 //! rather than passed to [`DecisionAlert::draw`] because it moves the controls, and
 //! [`DecisionAlert::frames`] — the geometry an owning Engine screen registers its own hit stops
-//! from — has to report the same panel the last draw did.
+//! from — has to measure the same retained content the draw consumes.
 //!
 //! **Focus and hit-testing are the owning screen's, not this type's** (restructure phase 12):
 //! `DecisionAlert` used to carry its own `move_focus`/`press_at` ladder, driven by a caller that
@@ -30,6 +30,10 @@
 //! sent) — a disclosure that used to grow the read-out under its control row, and was replaced by
 //! this card because three buttons and three labels stacked on one page read as a mess (owner,
 //! 2026-09-19).
+//! A live card feeds its rendered content back through [`DecisionAlert::reconcile_card`] before
+//! drawing. Changed paragraphs or answers update in place, invalidate the cached panel ground,
+//! and retain any still-valid selection; they never restart the entrance or steal focus for a
+//! newly available action. The host's focus engine reconciles a removed action to that selection.
 //!
 //! **Every interactive exit — confirm, cancel, or BACK — takes [`DecisionAlert::dismiss`], never
 //! [`DecisionAlert::close`].** `close` is [`Popover::close`]'s case: a subject that vanished out
@@ -244,8 +248,7 @@ impl DecisionAlert {
         question: &'static core::ffi::CStr,
         body: &'static str,
     ) {
-        self.open(question);
-        self.body = vec![Cow::Borrowed(body)];
+        self.open_card(question, vec![Cow::Borrowed(body)], Answers::Two);
     }
     /// Open as a CARD: a title, any number of body paragraphs (each wrapped on its own, stacked
     /// [`PARA_GAP`] apart) and one or two answers. Focus starts on the cancel slot like every open;
@@ -257,19 +260,51 @@ impl DecisionAlert {
         answers: Answers,
     ) {
         self.open(question);
+        self.reconcile_card(question, paragraphs, answers);
+    }
+    /// Reconcile the content an OPEN card renders, without reopening or resetting its spring.
+    /// Equality is over the title, paragraphs and answers, not an owner's incident ID or state
+    /// tag: a receipt can arrive while both of those stay the same. Returns whether paint/layout
+    /// changed. Closed and dismissing cards keep their last content for the exit choreography.
+    pub(crate) fn reconcile_card(
+        &mut self,
+        question: &'static core::ffi::CStr,
+        paragraphs: Vec<Cow<'static, str>>,
+        answers: Answers,
+    ) -> bool {
+        let question = question.to_str().unwrap_or("");
+        if !self.is_open()
+            || (self.question == question && self.body == paragraphs && self.answers == answers)
+        {
+            return false;
+        }
+        let _own = crate::ui::popover::own_motion();
+        self.question = question;
         self.body = paragraphs;
         self.answers = answers;
+        self.choice = self.valid_choice(self.choice);
+        // The body determines the panel's size. A cached ground can contain the OLD outline;
+        // dropping it here lets all hosts redraw the measured panel, even inside an own scope.
+        crate::ui::popover::host::ground_invalidate();
+        crate::ui::popover::note_own_damage();
+        crate::ui::idle::invalidate();
+        true
     }
-    /// One answer or two, as last opened.
+    /// One answer or two, as last opened or reconciled.
     pub(crate) fn answers(&self) -> Answers {
         self.answers
+    }
+    /// The retained paragraphs DRAW consumes, rather than the caller's latest proposed body.
+    #[cfg(test)]
+    pub(crate) fn body_for_test(&self) -> &[Cow<'static, str>] {
+        &self.body
     }
     fn open_inner(&mut self) {
         self.choice = Choice::Cancel;
         self.pop.open();
         crate::ui::idle::invalidate();
     }
-    /// The panel as last drawn. **Not callable from a host test** — `text_height` and `measure_h`
+    /// The panel for the current retained content. **Not callable from a host test** — `text_height` and `measure_h`
     /// both reach SDL2_ttf; the pure half is [`layout`].
     fn measured(&self) -> Layout {
         let qh = Self::question_view(self.question).measure_h(BODY_W);
@@ -312,8 +347,11 @@ impl DecisionAlert {
     pub(crate) fn choice(&self) -> Choice {
         self.choice
     }
+    fn valid_choice(&self, choice: Choice) -> Choice {
+        if self.answers == Answers::One { Choice::Cancel } else { choice }
+    }
     pub(crate) fn set_choice(&mut self, choice: Choice) {
-        self.choice = choice;
+        self.choice = self.valid_choice(choice);
         // The ring moved and nothing behind the alert did — `popover::note_own_damage`.
         crate::ui::popover::note_own_damage();
         crate::ui::idle::invalidate();
@@ -400,6 +438,33 @@ fn body_h(heights: &[f32]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reconciling_a_card_preserves_motion_and_valid_focus_and_is_quiet_when_unchanged() {
+        let _serial = crate::testlock::serial();
+        let mut alert = DecisionAlert::new();
+        alert.open_card(c"Details", vec!["old".into()], Answers::Two);
+        alert.set_choice(Choice::Destructive);
+        for _ in 0..90 { alert.update(1.0 / 60.0); }
+        assert!(alert.settled());
+        let appear = alert.pop.appear();
+        let users = crate::ui::popover::host_users_for_test();
+        assert!(alert.reconcile_card(c"Details", vec!["receipt".into()], Answers::Two));
+        assert_eq!(alert.body_for_test(), ["receipt"]);
+        assert_eq!(alert.choice(), Choice::Destructive);
+        assert_eq!(alert.pop.appear(), appear, "content must not restart the entrance");
+        assert_eq!(crate::ui::popover::host_users_for_test(), users);
+        crate::ui::idle::take_local_damage();
+        assert!(!alert.reconcile_card(c"Details", vec!["receipt".into()], Answers::Two));
+        assert_eq!(crate::ui::idle::take_local_damage(), 0, "a settled card must stay idle");
+        assert!(alert.reconcile_card(c"Details", vec!["receipt".into()], Answers::One));
+        assert_eq!(alert.choice(), Choice::Cancel, "the removed answer hands focus to Close");
+        alert.set_choice(Choice::Destructive);
+        assert_eq!(alert.choice(), Choice::Cancel, "a late focus delivery cannot select a missing answer");
+        alert.dismiss();
+        assert!(!alert.reconcile_card(c"Details", vec!["new".into()], Answers::Two));
+        assert_eq!(alert.body_for_test(), ["receipt"], "the exit keeps its last picture");
+    }
     /// **A body must not move an alert that has none.** The body arithmetic has to vanish
     /// completely at `body_h == 0.0` — not merely add a small gap. Written by computing the panel
     /// both ways and comparing.

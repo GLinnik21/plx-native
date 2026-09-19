@@ -24,7 +24,8 @@
 //! a mess."). The read-out itself never grows: *Details* opens the same [`DecisionAlert`] the
 //! question uses, titled "Details", whose body is the Report ID (once there is one) and the
 //! support line, and whose answers are *Close* and — only while a report can still be sent —
-//! *Send report*, which holds focus when it is there. BACK or *Close* puts focus back on
+//! *Send report*, which starts focused when it is there on open. While the card stays open its
+//! content follows the incident, retaining valid focus as receipts and answers change. BACK or *Close* puts focus back on
 //! *Details*; *Send report* closes the card too, and the read-out's one status line then says
 //! "Sending report…" beside its spinner. The QR screen's *Details* opens the same card.
 //!
@@ -954,6 +955,12 @@ impl LoginScreen {
             // or erased by a sign-out. Nothing to answer, so no fade either.
             self.report.alert.close();
         }
+        if self.report.alert.is_open() && self.report.sheet == Sheet::Details {
+            use crate::ui::decision_alert::Answers;
+            let body = self.report.details_body();
+            let answers = if self.report.sendable() { Answers::Two } else { Answers::One };
+            self.report.alert.reconcile_card(DETAILS_TITLE, body, answers);
+        }
         self.report.alert.update(t.dt());
         let focused = cx
             .focus
@@ -1733,8 +1740,16 @@ impl<H: AppLike> Focusable<H> for LoginScreen {
         if self.group_of(&want.elem, cx).is_some() {
             return want;
         }
+        if self.report.alert.is_open() {
+            // Content reconciliation can remove Send while Details stays open. The shared card
+            // has already retained a valid choice; map that choice back to the engine's keys.
+            return self.key(match self.report.alert.choice() {
+                Choice::Cancel => ALERT_CANCEL,
+                Choice::Destructive => ALERT_SEND,
+            });
+        }
         let row = self.row();
-        if row.n == 0 || self.report.alert.is_open() {
+        if row.n == 0 {
             return want;
         }
         let elem = if row.position(DETAILS).is_some() { DETAILS } else { row.elems[0] };
@@ -2992,6 +3007,68 @@ mod tests {
         assert!(s.state.report.details_open);
         assert!(enters_group(&fx, ALERT_GROUP), "focus goes to the card's answers");
         assert_eq!(s.row().as_slice(), [CONTROL, DETAILS]);
+    }
+
+    #[test]
+    fn open_details_card_reconciles_delivery_failure_without_reopening() {
+        use auth::owner::IncidentState as S;
+        use crate::ui::decision_alert::Answers;
+        let _serial = crate::testlock::serial();
+        let mut failed = failed_with(S::Queued { receipt: "old-receipt".into() });
+        let mut s = LoginScreen::new(EntryId(0), failed.read());
+        let m = crate::ui::fixture::FixtureMeasure;
+        step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
+        step_ev_with(&mut s, &ScreenEvent::Activate(DETAILS), &failed, InstanceId(0), &m);
+        assert_eq!(s.report.alert.answers(), Answers::One);
+        assert!(s.report.alert.body_for_test()[0].starts_with("Report ID:"));
+        failed.incident.as_mut().unwrap().state = S::Failed;
+        step_ev_with(&mut s, &tick_ev(32), &failed, InstanceId(0), &m);
+        assert!(s.report.alert.is_open());
+        assert_eq!(s.report.alert.answers(), Answers::Two, "a failed delivery can be sent again while Details stays open");
+        assert_eq!(s.report.alert.body_for_test(), s.report.details_body(), "the retired receipt must leave the card");
+        assert_eq!(s.report.alert.choice(), Choice::Cancel, "adding Send must not steal focus from Close");
+    }
+
+    #[test]
+    fn open_details_card_reconciles_a_receipt_arriving_while_open() {
+        use auth::owner::IncidentState as S;
+        let _serial = crate::testlock::serial();
+        let mut failed = failed_with(S::Sending);
+        let mut s = LoginScreen::new(EntryId(0), failed.read());
+        let m = crate::ui::fixture::FixtureMeasure;
+        step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
+        step_ev_with(&mut s, &ScreenEvent::Activate(DETAILS), &failed, InstanceId(0), &m);
+        assert!(!s.report.alert.body_for_test().iter().any(|p| p.starts_with("Report ID:")));
+        failed.incident.as_mut().unwrap().state = S::Queued { receipt: "0123456789abcdef".into() };
+        step_ev_with(&mut s, &tick_ev(32), &failed, InstanceId(0), &m);
+        assert!(s.report.alert.is_open());
+        assert_eq!(s.report.alert.body_for_test()[0], "Report ID: 0123 4567 89ab cdef",
+            "the same incident gained a receipt after the card opened");
+        assert_eq!(s.report.alert.body_for_test(), s.report.details_body());
+        // A new value within the SAME state variant must repaint too: the card renders the
+        // receipt, not merely the incident's ID or the Queued discriminator.
+        failed.incident.as_mut().unwrap().state = S::Queued { receipt: "fedcba9876543210".into() };
+        step_ev_with(&mut s, &tick_ev(48), &failed, InstanceId(0), &m);
+        assert_eq!(s.report.alert.body_for_test()[0], "Report ID: fedc ba98 7654 3210");
+    }
+
+    #[test]
+    fn open_details_card_reconciles_focus_when_send_is_removed() {
+        use auth::owner::IncidentState as S;
+        let _serial = crate::testlock::serial();
+        let mut failed = failed_with(S::NotNow);
+        let mut s = LoginScreen::new(EntryId(0), failed.read());
+        let m = crate::ui::fixture::FixtureMeasure;
+        step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
+        step_ev_with(&mut s, &ScreenEvent::Activate(DETAILS), &failed, InstanceId(0), &m);
+        assert_eq!(s.report.alert.choice(), Choice::Destructive);
+        failed.incident.as_mut().unwrap().state = S::Queued { receipt: "receipt".into() };
+        step_focused(&mut s, &tick_ev(32), &failed, ALERT_SEND);
+        assert_eq!(s.report.alert.choice(), Choice::Cancel);
+        let cx = cx_with(&m, &failed);
+        let key = <LoginScreen as Focusable<SessionHost>>::reconcile(&s, s.key(ALERT_SEND), &cx);
+        assert_eq!(key, s.key(ALERT_CANCEL));
+        assert!(<LoginScreen as Focusable<SessionHost>>::place(&s, &key.elem, &cx, At::Drawn).is_some());
     }
 
     /// **Send report is on the card iff the report can still be sent**, and holds focus when it is
