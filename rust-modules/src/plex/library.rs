@@ -4,6 +4,13 @@ use super::client::{Client, QueryBuilder, StreamUrl};
 use super::models::{MediaContainer, Metadata};
 use super::params::{SectionQuery, StreamSelection};
 
+fn sidecar_key_allowed(key: &str) -> bool {
+    let Some(tail) = key.strip_prefix("/library/streams/") else { return false; };
+    let (id, ext) = tail.split_once('.').unwrap_or((tail, ""));
+    !id.is_empty() && id.len() <= 20 && id.bytes().all(|b| b.is_ascii_digit())
+        && ext.len() <= 10 && ext.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
 impl Client {
     /// GET /library/sections (D-3: spec-canonical is /library/sections/all; keep the
     /// known-working bare path). Read `.directory[]` for {kind, key}.
@@ -228,7 +235,7 @@ impl Client {
     /// without `format` PMS re-encodes only, and the bare key is the file as it lies on disk.
     /// `player::sidecar::parse` reads whichever of the three comes back.
     pub fn sidecar_subtitle(&self, key: &str) -> Option<Vec<u8>> {
-        if !key.starts_with("/library/streams/") {
+        if !sidecar_key_allowed(key) {
             return None; // a key is server data: only ever the path this method is for
         }
         let sep = if key.contains('?') { '&' } else { '?' };
@@ -286,6 +293,16 @@ fn guid_type(guid: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sidecar_download_refuses_path_traversal() {
+        for key in ["/library/streams/../../identity", "/library/streams/%2e%2e/identity",
+                    "/library/streams/1?path=/identity", "/library/streams/1#fragment"] {
+            assert!(!sidecar_key_allowed(key), "{key}");
+        }
+        assert!(sidecar_key_allowed("/library/streams/123"));
+        assert!(sidecar_key_allowed("/library/streams/123.srt"));
+    }
 
     /// The numbers are PMS's, and the mapping is the only thing standing between "Also available"
     /// showing a quality badge and showing none — `type` is what makes `/library/all?guid=…` return
