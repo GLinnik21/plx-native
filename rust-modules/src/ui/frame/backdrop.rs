@@ -253,6 +253,37 @@ pub(crate) fn clip(rect: Option<Rect>) {
         }
     });
 }
+/// True when every point of `rect` is covered by some blocking layer strictly above `z` — the
+/// same subtraction `decide` already runs to tell whether a GLASS is visible, applied here to a
+/// plain painted rect instead. A frozen host replacement, a `Replaced` surface's opaque ground and
+/// a full-alpha dim all publish `blocks: true` (`dispatch.rs::backdrop_layers`); content under any
+/// of them produces no pixels (`gfx::may_read_ground`'s `page_frozen` doc) and no live glass ever
+/// samples through it — a glass ABOVE such a layer must retain that layer's own frozen composite
+/// instead (`held_ceiling`'s doc), which `Sources::begin` already represents with one synthetic
+/// `Paint` keyed on the layer's revision, not on what is drawn beneath it. Recording that content's
+/// real primitives is therefore exactly the dead work `Z::surface(0)` already excludes above the
+/// surfaces band, just bounded by a per-frame layer instead of a fixed ceiling.
+fn occluded(rect: Rect, layers: &[Layer], z: Z) -> bool {
+    let mut exposed = vec![rect];
+    for layer in layers.iter().filter(|l| l.blocks && l.z > z) {
+        exposed = exposed
+            .into_iter()
+            .flat_map(|r| subtract(r, layer.rect))
+            .collect();
+        if exposed.is_empty() {
+            return true;
+        }
+    }
+    false
+}
+/// Conservative, rect-free version of [`occluded`] for the fast declare-time pre-check, which
+/// runs before the primitive's final padded bounds exist. Every blocking layer this mechanism has
+/// ever produced covers the whole canvas, so "some blocking layer above `z` covers the canvas" is
+/// exactly as precise as the exact test for all real content, and never wrongly excludes should a
+/// future partial-rect blocker exist — it just misses that narrower optimization.
+fn fully_occluded(z: Z, layers: &[Layer]) -> bool {
+    layers.iter().any(|l| l.blocks && l.z > z && covers(l.rect, canvas()))
+}
 pub(crate) fn paint(rect: Rect, values: Vec<u64>) {
     WALK.with(|w| {
         let w = w.borrow();
@@ -281,6 +312,16 @@ pub(crate) fn paint(rect: Rect, values: Vec<u64>) {
         if rect.w <= 0.0 || rect.h <= 0.0 {
             return;
         }
+        // Same shape, a dynamic ceiling: a Cached host (Settings/AccountMenu over Home) still
+        // walks its full page+chrome tree every discovered frame — `may_read_ground`'s doc says a
+        // frozen page's draw "produces no pixels", but nothing stopped the recording underneath it
+        // from happening anyway (open hypothesis, docs/backdrop-blur-profiling.md's last dated
+        // addendum). `held_ceiling()`'s synthetic `Layer` already carries the frozen boundary; this
+        // is the same occlusion test `signature()` already runs when building a glass's prefix, run
+        // here instead so the dead content is never pushed to `paints` in the first place.
+        if occluded(rect, &w.sources.borrow().layers, w.current) {
+            return;
+        }
         let z = w.current;
         let glass = (values.first() == Some(&GLASS_COMMAND)).then_some(z);
         w.sources.borrow_mut().paints.push(Rc::new(Paint {
@@ -298,9 +339,10 @@ pub(crate) fn paint(rect: Rect, values: Vec<u64>) {
 /// [`text_value`]) instead of building it only to have `paint` throw it away.
 pub(crate) fn recording_excluded() -> bool {
     WALK.with(|w| {
-        w.borrow()
-            .as_ref()
-            .is_some_and(|w| w.discovery && w.current >= Z::surface(0))
+        w.borrow().as_ref().is_some_and(|w| {
+            w.discovery
+                && (w.current >= Z::surface(0) || fully_occluded(w.current, &w.sources.borrow().layers))
+        })
     })
 }
 
@@ -1163,6 +1205,85 @@ mod tests {
             if cfg!(debug_assertions) {
                 assert!(caught.is_err(), "a glass command above the band must assert");
             }
+        }
+    }
+
+    #[test]
+    fn content_below_a_frozen_host_boundary_is_never_recorded() {
+        // A Cached host (Settings/AccountMenu over Home) still walks its full page+chrome tree on
+        // every discovered frame; `held_ceiling()` publishes that freeze as a canvas-covering
+        // blocking `Layer` (`dispatch.rs::backdrop_layers`). No live glass ever reads through it —
+        // a glass above it retains the layer's own synthetic, revision-keyed `Paint` instead
+        // (`Sources::begin`) — so recording the real primitives underneath is exactly the dead
+        // work the surfaces-band fix already excludes above `Z::surface(0)`, just bounded by a
+        // per-frame layer instead of a fixed ceiling. This is the modal-100 stress-bench
+        // regression's open hypothesis (docs/backdrop-blur-profiling.md's last dated addendum).
+        let _guard = crate::testlock::serial();
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        sources.borrow_mut().begin(vec![Layer {
+            z: Z(5),
+            rect: canvas(),
+            blocks: true,
+            revision: 1,
+        }]);
+        {
+            let _walk = discover(sources.clone());
+            let p = crate::ui::Painter::root();
+            assert_eq!(
+                sources.borrow().paints.len(),
+                1,
+                "begin() already recorded the blocking layer's own synthetic paint"
+            );
+            {
+                let _layer = layer(Z(1), false);
+                p.rect(rect(0.0), 0.0, [1.0; 4], [0.0; 4], 0.0);
+            }
+            assert_eq!(
+                sources.borrow().paints.len(),
+                1,
+                "content strictly below a canvas-wide blocking layer must not be recorded"
+            );
+            {
+                let _layer = layer(Z(6), false);
+                p.rect(rect(0.0), 0.0, [2.0; 4], [0.0; 4], 0.0);
+            }
+            assert_eq!(
+                sources.borrow().paints.len(),
+                2,
+                "content at/above the frozen boundary is still live and must still record"
+            );
+        }
+    }
+
+    #[test]
+    fn recording_excluded_follows_the_frozen_host_boundary_too() {
+        // `Painter::declare`'s fast pre-check must skip building a primitive's `Vec<u64>` (and, for
+        // text, the byte-packing) under a frozen host boundary the same way it already does above
+        // the surfaces band, so the heaviest-text screens under Home (a Settings row list is drawn
+        // in the surface, but Home's own shelves/hero/cast rows sit BELOW the frozen boundary and
+        // still walk) do not pay for building data `paint` would just discard.
+        let _guard = crate::testlock::serial();
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        sources.borrow_mut().begin(vec![Layer {
+            z: Z(5),
+            rect: canvas(),
+            blocks: true,
+            revision: 1,
+        }]);
+        let _walk = discover(sources.clone());
+        {
+            let _layer = layer(Z(1), false);
+            assert!(
+                recording_excluded(),
+                "below the frozen boundary, declare's pre-check should skip"
+            );
+        }
+        {
+            let _layer = layer(Z(6), false);
+            assert!(
+                !recording_excluded(),
+                "above the frozen boundary, content is still live and must still record"
+            );
         }
     }
 
