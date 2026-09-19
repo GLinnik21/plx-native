@@ -558,7 +558,17 @@ PLX_POSTHOG_KEY ?=
 # `make RELEASE=1 && make deploy`. The values are hashed rather than written, so the stamp file
 # (which is not gitignored) never contains a credential.
 TELEMETRY_CFG  = $(shell printf '%s|%s|%s|%s' '$(PLX_SENTRY_DSN)' '$(PLX_POSTHOG_KEY)' '$(PLX_SENTRY_DSN_DEV)' '$(PLX_POSTHOG_KEY_DEV)' | shasum | cut -c1-12)
-RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(SYMBOLS),+symbols,)+tel:$(TELEMETRY_CFG)
+# `+nightly:<date>` carries PLX_NIGHTLY_DATE into the stamp itself, the same reason SYMBOLS and the
+# telemetry pair are in it and RELEASE already was: a nightly binary's REPORTED version is dated by
+# this value (`build.rs`'s PLX_CHANNEL=nightly arm), so `ci/check-package.py` needs the exact date a
+# packaged binary was built with to grade it — and the ONLY other place that date exists is this
+# environment variable, gone the moment the shell that ran `make` exits. Embedding the real value
+# (not just "nightly: yes/no") is also what makes a DATE CHANGE relink: two nightly builds cut on
+# the same tracked version a day apart must not silently share pkg/plxnative just because nothing
+# else about the configuration moved. `$(filter nightly,$(FLAVOR))` guards it exactly the way
+# PLX_CHANNEL and PLX_NIGHTLY_DATE above are themselves guarded, so a non-nightly stamp is
+# byte-for-byte what it always was.
+RUST_CFG       = features:$(RUST_FEATFLAGS)$(if $(SYMBOLS),+symbols,)$(if $(filter nightly,$(FLAVOR)),+nightly:$(PLX_NIGHTLY_DATE),)+tel:$(TELEMETRY_CFG)
 # Handled by $(shell) during PARSING, and by DELETING the output rather than by timestamps.
 # Both choices are load-bearing, and both were arrived at by measuring the failures:
 #   * A rule cannot do it. macOS ships GNU make 3.81, which decides whether a target is up to date

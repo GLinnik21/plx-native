@@ -39,23 +39,28 @@ def build_configuration(stamp: str) -> "str | None":
 
     THE FEATURE FLAGS ARE ONE FIELD OF SEVERAL, and reading the stamp as a whole string is what
     silently switched every gate that depends on this off. `RUST_CFG` is `features:$(RUST_FEATFLAGS)`,
-    then `+symbols` when SYMBOLS=1, then always `+tel:<hash>` — so the real stamp for an ordinary
-    dev build is `features:+tel:98c4b7d3`, which equals neither of the two literals this was once
-    written against. It matched when it was written; the telemetry field was added later, and from
-    that day the answer was None for EVERY build this project makes. Nothing failed — the callers
-    print "SKIP — neither shipped configuration" and move on — so the dev-trigger gate, the
-    dev-only-library gate and the reported-version gate all graded nothing on every CI run. Exactly
-    the defect class DEV_WITNESS is commented against, a witness that cannot fail, reached by
-    another route. The release cut carries `SYMBOLS=1`, which adds a THIRD field, so repairing the
-    two literals by hand would have left the release job ungraded anyway.
+    then `+symbols` when SYMBOLS=1, then `+nightly:<date>` when FLAVOR=nightly, then always
+    `+tel:<hash>` — so the real stamp for an ordinary dev build is `features:+tel:98c4b7d3`, which
+    equals neither of the two literals this was once written against. It matched when it was
+    written; the telemetry field was added later, and from that day the answer was None for EVERY
+    build this project makes. Nothing failed — the callers print "SKIP — neither shipped
+    configuration" and move on — so the dev-trigger gate, the dev-only-library gate and the
+    reported-version gate all graded nothing on every CI run. Exactly the defect class DEV_WITNESS
+    is commented against, a witness that cannot fail, reached by another route. The release cut
+    carries `SYMBOLS=1`, which adds a THIRD field, so repairing the two literals by hand would have
+    left the release job ungraded anyway.
 
     Only the FEATURE half is decoded, and matched WHOLE rather than by substring: the "shots"
     recipe in the Makefile's header is `--no-default-features --features devtriggers`, which a
     substring test would grade as a release build and then fail for carrying exactly the surface it
-    asked for. `+tel:` and `+symbols` are optional so a stamp written by an older Makefile still
-    decodes, and the feature flags are lazy so they cannot swallow a trailing field.
+    asked for. `+tel:`, `+symbols` and `+nightly:` are all optional so a stamp written by an older
+    Makefile still decodes, and the feature flags are lazy so they cannot swallow a trailing field.
+    `nightly_stamp_date` reads the `+nightly:` field's VALUE separately — this function only has to
+    not choke on its presence.
     """
-    fields = re.fullmatch(r"features:(?P<flags>.*?)(?:\+symbols)?(?:\+tel:[0-9a-f]+)?", stamp.strip())
+    fields = re.fullmatch(
+        r"features:(?P<flags>.*?)(?:\+symbols)?(?:\+nightly:[0-9]{8})?(?:\+tel:[0-9a-f]+)?",
+        stamp.strip())
     if not fields:
         return None
     return {"": "dev", "--no-default-features": "release"}.get(fields.group("flags").strip())
@@ -112,20 +117,26 @@ def expected_nightly_package_version(cargo_version: str, release_line_content: "
     return "{}.{}.{}".format(*triplet)
 
 
-def nightly_stamp_pattern(version: str) -> "re.Pattern[bytes]":
-    """The compiled pattern that finds `plxnative@<version>-nightly-<8 digits>` in a packaged
-    binary's strings — the exact bytes `concat!("plxnative@", env!("PLX_VERSION"))` emits under
-    `build.rs`'s `PLX_CHANNEL=nightly` arm.
+def nightly_stamp_date(stamp: str) -> "str | None":
+    """The `YYYYMMDD` the Makefile wrote into `pkg/.build-config`'s `+nightly:<date>` field when it
+    built with `FLAVOR=nightly` — `None` when the field is absent or is not exactly 8 digits.
 
-    NOT anchored with a trailing `\\b`. Rust string literals compiled into `.rodata` are packed
-    back to back with no NUL separator, so this literal's bytes can be followed immediately by
-    the start of a completely unrelated literal — and if THAT one happens to start with a word
-    character (a digit, in particular), there is no boundary there at all. `\\b` asserts a
-    boundary exists; it does not, so a real build's own bytes failed this check the day it was
-    written. `(?![0-9])` says the true thing instead: the date is exactly 8 digits, so anything
-    OTHER than a 9th digit ends it — an adjacent literal included, a 9th stray digit excluded.
+    THE DATE IS GRADED BY VALUE, not by shape. An earlier version of this gate accepted any
+    `[0-9]{8}` in the binary's own `plxnative@X.Y.Z-nightly-YYYYMMDD` string, first with a
+    trailing `\\b` and then with `(?![0-9])` in its place — and BOTH failed against a real nightly
+    build (`0.7.0-nightly-202609192m4m6m8m10m12m14m1`), because `concat!`'s output in `.rodata` is
+    packed back to back with no NUL separator: the very next packed string literal in that build
+    happened to start with more digits, so no amount of "assert a boundary" or "assert not-a-
+    digit" on the SHAPE of the date can ever be relied on to stop where the date actually stops.
+    There is no shape rule that survives an adjacent literal chosen by the linker.
+    So this stops guessing where the date ends from the bytes alone, and reads it instead from the
+    one place the build ACTUALLY recorded it under its own control: the Makefile's own stamp,
+    where `+` is a delimiter WE chose and control, not a byte sequence the linker assembled.
+    Read `PLX_NIGHTLY_DATE` there, then grade the binary the same way `stable` is graded — an exact
+    substring, no boundary assumed either side, because the substring itself is now precise.
     """
-    return re.compile(rb"plxnative@" + re.escape(version.encode()) + rb"-nightly-[0-9]{8}(?![0-9])")
+    m = re.search(r"\+nightly:([0-9]{8})(?=\+|$)", stamp.strip())
+    return m.group(1) if m else None
 
 
 def _selftest() -> int:
@@ -157,6 +168,8 @@ def _selftest() -> int:
         "features:--no-default-features+tel:98c4b7d37a4c": "release",
         "features:--no-default-features+symbols+tel:98c4b7d37a4c": "release",   # the release cut
         "features:+symbols+tel:98c4b7d37a4c": "dev",
+        # the nightly cut: RELEASE=1 (so --no-default-features), SYMBOLS=1, and the dated field
+        "features:--no-default-features+symbols+nightly:20260919+tel:98c4b7d37a4c": "release",
         # older stamps, from before the telemetry and symbols fields existed
         "features:": "dev",
         "features:--no-default-features": "release",
@@ -198,28 +211,46 @@ def _selftest() -> int:
                   f"= ({got_version!r}, {got_err!r}), want version={want_version!r} err={want_err}")
     print(f"check-package: expected_dev_version {len(dev_cases) - dev_bad}/{len(dev_cases)} cases correct")
 
-    # `nightly_stamp_pattern` against the exact defect this gate shipped with: a real nightly
-    # binary's `plxnative@X.Y.Z-nightly-YYYYMMDD` immediately followed, with no separator, by the
-    # next packed string literal — which is the common case, not an edge case, since `concat!`
-    # output is never NUL-terminated. A trailing `\b` refused to match that adjacent-digit case
-    # and failed on 0.7.0's first nightly run; `(?![0-9])` must accept it while still rejecting a
-    # date that is one digit short or one digit long.
-    nightly_pattern_cases = {
-        b"plxnative@0.7.0-nightly-20260919abc": True,   # adjacent literal, no separator — must match
-        b"plxnative@0.7.0-nightly-2026091": False,      # 7 digits — one short
-        b"plxnative@0.7.0-nightly-202609190": False,    # 9 digits — one long
+    # `nightly_stamp_date` against a real stamp, a stamp from a build that never got the field (an
+    # older Makefile, or a non-nightly flavour that ran through here by mistake), and a corrupted
+    # date of the wrong length — all three must be told apart, because the caller's rule is
+    # "require it, FAIL if absent or malformed" and a silent `None` reads as "absent" either way.
+    nightly_date_cases = {
+        "features:--no-default-features+symbols+nightly:20260919+tel:98c4b7d37a4c": "20260919",
+        "features:--no-default-features+symbols+tel:98c4b7d37a4c": None,                    # no field
+        "features:--no-default-features+symbols+nightly:2026091+tel:98c4b7d37a4c": None,    # 7 digits
+        "features:--no-default-features+symbols+nightly:202609190+tel:98c4b7d37a4c": None,  # 9 digits
     }
-    nightly_bad = 0
-    pattern = nightly_stamp_pattern("0.7.0")
-    for blob, want in nightly_pattern_cases.items():
-        got = pattern.search(blob) is not None
+    nightly_date_bad = 0
+    for stamp, want in nightly_date_cases.items():
+        got = nightly_stamp_date(stamp)
         if got != want:
-            nightly_bad += 1
-            print(f"  FAIL — nightly_stamp_pattern('0.7.0').search({blob!r}) found={got!r}, want {want!r}")
-    print(f"check-package: nightly_stamp_pattern "
-          f"{len(nightly_pattern_cases) - nightly_bad}/{len(nightly_pattern_cases)} cases correct")
+            nightly_date_bad += 1
+            print(f"  FAIL — nightly_stamp_date({stamp!r}) = {got!r}, want {want!r}")
+    print(f"check-package: nightly_stamp_date "
+          f"{len(nightly_date_cases) - nightly_date_bad}/{len(nightly_date_cases)} cases correct")
 
-    bad += maintainer_bad + dev_bad + nightly_bad
+    # ...and the actual grade, once a date is in hand: an EXACT substring, the same shape stable's
+    # own `plxnative@X.Y.Z` check already uses, no boundary assumed on either side. This is the
+    # case that defeated both earlier shape rules (`\b`, then `(?![0-9])`): a real nightly binary's
+    # own bytes, `plxnative@0.7.0-nightly-20260919` immediately followed by more digits from the
+    # next packed literal with no separator at all. Graded by VALUE, that adjacency is no longer
+    # ambiguous — it either is that exact string, or it reports some other date, which must fail.
+    nightly_blob = b"plxnative@0.7.0-nightly-202609192m4m6m8m10m12m14m1"
+    nightly_blob_cases = {
+        ("0.7.0", "20260919"): True,   # the adjacent-literal case above, graded by the real date
+        ("0.7.0", "20260920"): False,  # a date one day off must not pass
+    }
+    nightly_blob_bad = 0
+    for (version, date), want in nightly_blob_cases.items():
+        got = f"plxnative@{version}-nightly-{date}".encode() in nightly_blob
+        if got != want:
+            nightly_blob_bad += 1
+            print(f"  FAIL — plxnative@{version}-nightly-{date} in nightly_blob = {got!r}, want {want!r}")
+    print(f"check-package: nightly exact-substring grading "
+          f"{len(nightly_blob_cases) - nightly_blob_bad}/{len(nightly_blob_cases)} cases correct")
+
+    bad += maintainer_bad + dev_bad + nightly_date_bad + nightly_blob_bad
     return 1 if bad else 0
 
 
@@ -771,7 +802,8 @@ if IS_STABLE and audit.exists():
 # in one shot so they never see that; a by-hand run on a stale tree can, and the disagreement it
 # then reports is true — repackage before believing anything else about that tree.
 _stamp = ROOT / "pkg/.build-config"
-BUILD = build_configuration(_stamp.read_text() if _stamp.exists() else "")
+STAMP_TEXT = _stamp.read_text() if _stamp.exists() else ""
+BUILD = build_configuration(STAMP_TEXT)
 
 # THIRD-PARTY-NOTICES must name exactly the libraries that ship. RELEASE=1 drops swscale, and the
 # notices claimed it for two releases — an LGPL document describing a file that is not in the box.
@@ -906,19 +938,39 @@ if binary.exists():
     # against Cargo.toml above) IS the next-minor-or-patch number — recomputing "next" a second
     # time from it would double-bump and grade against a version nobody built. Its REPORTED
     # version instead adds `build.rs`'s `-nightly-<date>` suffix on top of that SAME number, dated
-    # by whatever `PLX_NIGHTLY_DATE` the build actually ran with — a build-time env var this script
-    # has no other record of, so the date is graded by SHAPE (8 digits), not by value.
+    # by whatever `PLX_NIGHTLY_DATE` the build actually ran with.
+    #
+    # THE DATE IS GRADED BY VALUE, READ FROM THE STAMP — not guessed from the binary's own bytes by
+    # shape. Two earlier versions of this gate tried exactly that: first a trailing `\b`, then
+    # `(?![0-9])` in its place, both trying to say "8 digits, then the date is over" from inside
+    # the blob alone. Both failed on a real nightly build (0.7.0's first run, then again on
+    # 0.7.0-nightly-202609192m4m6m8m10m12m14m1) because `concat!`'s output in `.rodata` is packed
+    # back to back with NO separator — the very next packed literal can start with more digits, and
+    # there is no regex that can tell "the date's 9th digit" from "the first digit of an unrelated
+    # string right after it" from the bytes alone. So the date is no longer inferred from the
+    # binary at all: `nightly_stamp_date` reads it from `pkg/.build-config`'s own `+nightly:<date>`
+    # field — the Makefile's OWN record of the value it built with, where `+` is a delimiter this
+    # project controls rather than one the linker assembled — and the binary is graded the exact
+    # same way `stable`'s plain version is above: a precise substring, no boundary assumed on
+    # either side, because the substring itself is now exact rather than shape-only.
     if IS_NIGHTLY:
-        nightly_found = nightly_stamp_pattern(appinfo["version"]).search(blob) is not None
-        nightly_msg = (f"the {PACKAGED_ID} binary reports {appinfo['version']}-nightly-<8 digits> "
-                        "(build.rs's PLX_CHANNEL=nightly arm, dated by PLX_NIGHTLY_DATE)")
-        if not nightly_found:
-            # Self-explaining on failure: list what the binary DOES carry after `plxnative@`,
-            # rather than leaving the next person to go re-derive it from a raw `strings` dump.
-            seen = [m.decode("utf-8", errors="replace")
-                    for m in re.findall(rb"plxnative@[0-9A-Za-z.\-]{1,40}", blob)[:5]]
-            nightly_msg += f" — plxnative@ strings actually present: {seen}"
-        check(nightly_found, nightly_msg)
+        nightly_date = nightly_stamp_date(STAMP_TEXT)
+        check(nightly_date is not None,
+              "pkg/.build-config carries a +nightly:<8 digit date> field "
+              f"(stamp was {STAMP_TEXT.strip()!r})")
+        if nightly_date is not None:
+            nightly_expect = f"plxnative@{appinfo['version']}-nightly-{nightly_date}".encode()
+            nightly_found = nightly_expect in blob
+            nightly_msg = (f"the {PACKAGED_ID} binary reports {nightly_expect.decode()} "
+                            "(build.rs's PLX_CHANNEL=nightly arm, dated by the pkg/.build-config "
+                            "+nightly: stamp)")
+            if not nightly_found:
+                # Self-explaining on failure: list what the binary DOES carry after `plxnative@`,
+                # rather than leaving the next person to go re-derive it from a raw `strings` dump.
+                seen = [m.decode("utf-8", errors="replace")
+                        for m in re.findall(rb"plxnative@[0-9A-Za-z.\-]{1,40}", blob)[:5]]
+                nightly_msg += f" — plxnative@ strings actually present: {seen}"
+            check(nightly_found, nightly_msg)
         # Nightly is always RELEASE=1 (release-guard refuses otherwise) — grade that on the stamp
         # too, the same way the dev-trigger witness above grades it on the bytes.
         check(BUILD == "release",
