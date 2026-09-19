@@ -91,7 +91,7 @@ const P_FAILED: c_int = 6;
 /// A fetch that failed for a reason that can change — the address race's plaintext window, a
 /// refused or timed-out connect, a 5xx — parked until [`Pslot::retry_at`]. Settled for the LRU
 /// like `P_FAILED`, but a DRAW that finds it due puts it back to `P_WANT`. `P_FAILED` is kept for
-/// the answer that will not change: a 4xx, or bytes the decoder could not read.
+/// an HTTP answer that is not transient, or bytes the decoder could not read.
 const P_RETRY: c_int = 7;
 
 /// How a store lookup treats the slot it lands on. The difference IS the prefetch's safety story.
@@ -193,15 +193,15 @@ fn park_retry(s: &mut Pslot) {
     crate::ui::idle::invalidate();
 }
 
-/// Does a failed fetch's outcome deserve another try? A status the server will keep giving —
-/// the item has no art (404), the request itself is malformed (400/410/415) — is final; every
-/// other way of coming back with nothing (no response, a 5xx, a 401/403 that a re-point or a
-/// token refresh will cure, a 429) is not. Bytes that arrived but did not decode are the
-/// decoder's verdict and final too, so they are not asked here.
+/// Does a failed fetch's outcome deserve another try? Transport failure and the statuses whose
+/// conditions can clear (401/403 after a re-point or token refresh, 408, 429 and 5xx) are
+/// transient. Other completed HTTP answers are final: retrying a redirect we deliberately do not
+/// follow, an unsupported method/media type, or a missing item can never change this request.
+/// Bytes that arrived but did not decode are the decoder's verdict and final too.
 fn is_transient(outcome: &crate::plex::ArtFetch) -> bool {
     match outcome {
         crate::plex::ArtFetch::Bytes(_) => false,
-        crate::plex::ArtFetch::Status(s) => !matches!(s, 400 | 404 | 410 | 415),
+        crate::plex::ArtFetch::Status(s) => matches!(s, 401 | 403 | 408 | 429 | 500..=599),
         crate::plex::ArtFetch::NoResponse => true,
     }
 }
@@ -781,7 +781,7 @@ fn warn_fetch_failed(srv: ServerId, cause: ArtFail) {
     // the one that flipped the bit may write the line.
     if word.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
         crate::log(&format!(
-            "posters: art fetch FAILED on server {} - {} (a 4xx is final; anything else is retried with backoff while the tile is on screen; further ones like this are silent)",
+            "posters: art fetch FAILED on server {} - {} (permanent responses are final; transient failures retry with backoff while the tile is on screen; further ones like this are silent)",
             srv.raw(),
             cause.why()
         ));
@@ -1282,7 +1282,7 @@ mod tests {
     #[test]
     fn only_a_final_status_is_final() {
         use crate::plex::ArtFetch;
-        for s in [404, 400, 410, 415] {
+        for s in [301, 400, 404, 405, 410, 414, 415, 422] {
             assert!(!is_transient(&ArtFetch::Status(s)), "{s} will not change");
         }
         for s in [401, 403, 408, 429, 500, 502, 503, 504] {
