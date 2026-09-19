@@ -4948,6 +4948,128 @@ def grade_frame_ceilings(scene, lines, route, overlay, warmup):
     return ok, detail
 
 
+# `bench: kind=<push|modal> cycle=<i>/<n> target=<name> worst_ms=<f> frames=<k> dur_ms=<d>
+# rss_kb=<r>` — one line per completed stress-bench cycle (`dev::scenarios::push_bench_tick` /
+# `modal_bench_tick`), and a terminal `bench: kind=<k> done cycles=<n>` once every cycle ran.
+BENCH_RE = re.compile(
+    r"^bench: kind=(?P<kind>push|modal) cycle=(?P<cycle>\d+)/(?P<n>\d+) "
+    r"target=(?P<target>[\w-]+) worst_ms=(?P<worst>\d+(?:\.\d+)?) frames=(?P<frames>\d+) "
+    r"dur_ms=(?P<dur>\d+) rss_kb=(?P<rss>\d+)")
+BENCH_DONE_RE = re.compile(r"^bench: kind=(?P<kind>push|modal) done cycles=(?P<n>\d+)")
+
+
+def parse_bench(lines, kind):
+    """Every completed `bench:` cycle for `kind` ("push"|"modal"), in log order, plus whether the
+    terminal `done` line was seen. Each cycle: `{cycle, n, target, worst_ms, frames, dur_ms,
+    rss_kb}`, `cycle` 1-based (the wire format's own `cycle=<i>/<n>` is 1-based)."""
+    reject_simulator(lines)
+    cycles = []
+    done = False
+    for ln in lines:
+        s = ln.strip()
+        m = BENCH_RE.match(s)
+        if m and m.group("kind") == kind:
+            cycles.append({
+                "cycle": int(m.group("cycle")),
+                "n": int(m.group("n")),
+                "target": m.group("target"),
+                "worst_ms": float(m.group("worst")),
+                "frames": int(m.group("frames")),
+                "dur_ms": int(m.group("dur")),
+                "rss_kb": int(m.group("rss")),
+            })
+            continue
+        m = BENCH_DONE_RE.match(s)
+        if m and m.group("kind") == kind:
+            done = True
+    return cycles, done
+
+
+def grade_bench(scene, lines):
+    """Grade a `bench: push`/`bench: modal` stress run (spec: 100 counted push/modal cycles).
+
+    FAILS unless: the `done` line is present (every cycle completed); every cycle's `worst_ms` is
+    <= `bench_worst_ms` (default 20.0 — a single missed 60 Hz frame is ~16.7 ms, so 20 gives a
+    hair of margin before calling it a miss); the mean `worst_ms` of the last 10 cycles is <= the
+    first 10's mean + `bench_drift_ms` (default 2.0); and the last cycle's `rss_kb` is <= cycle
+    10's `rss_kb` + `bench_rss_growth_kb` (default 8192).
+
+    `bench_latch_exempt_ms`, if the scene sets it, permits ONE FRAME's worth of overage per cycle
+    up to that ceiling — i.e. a cycle whose `worst_ms` is over `bench_worst_ms` but at or under
+    `bench_latch_exempt_ms` is not counted as a miss — and every such exemption is named in the
+    detail string rather than silently absorbed, so the report always says which cycle it was.
+
+    Returns `(ok, detail)`, `detail` already prefixed with a leading space+`|` per clause,
+    matching every other `grade_*` helper's contract with the caller's `print`."""
+    kind = scene["bench"]
+    cycles, done = parse_bench(lines, kind)
+    if not cycles:
+        return False, f" | no `bench: kind={kind}` cycle lines — the bench never armed, or logged nothing"
+
+    worst_ceiling = scene.get("bench_worst_ms", 20.0)
+    drift_ceiling = scene.get("bench_drift_ms", 2.0)
+    rss_ceiling = scene.get("bench_rss_growth_kb", 8192)
+    latch_exempt = scene.get("bench_latch_exempt_ms")
+
+    ok = True
+    detail = f" | bench:{kind} {len(cycles)} cycle line(s) (expect n={cycles[-1]['n']})"
+
+    if not done:
+        ok = False
+        detail += " | FAIL: no `done` line — not every cycle completed"
+
+    misses, exempted = [], []
+    for c in cycles:
+        if c["worst_ms"] <= worst_ceiling:
+            continue
+        if latch_exempt is not None and c["worst_ms"] <= latch_exempt:
+            exempted.append(c)
+        else:
+            misses.append(c)
+    if misses:
+        ok = False
+        worst_ex = max(misses, key=lambda c: c["worst_ms"])
+        detail += (f" | FAIL: {len(misses)} cycle(s) over bench_worst_ms={worst_ceiling} (worst "
+                   f"cycle={worst_ex['cycle']}/{worst_ex['n']} target={worst_ex['target']} "
+                   f"worst_ms={worst_ex['worst_ms']:.1f})")
+    if exempted:
+        named = ", ".join(f"cycle={c['cycle']} target={c['target']} worst_ms={c['worst_ms']:.1f}"
+                          for c in exempted)
+        detail += (f" | {len(exempted)} cycle(s) exempted under bench_latch_exempt_ms="
+                   f"{latch_exempt}: {named}")
+
+    worst_vals = [c["worst_ms"] for c in cycles]
+    if len(worst_vals) >= 10:
+        mean_first = sum(worst_vals[:10]) / 10.0
+        mean_last = sum(worst_vals[-10:]) / 10.0
+        drift = mean_last - mean_first
+        ok = ok and drift <= drift_ceiling
+        detail += (f" | drift(last10-first10)={drift:+.2f}ms (first10 mean={mean_first:.2f}, "
+                   f"last10 mean={mean_last:.2f}) vs bench_drift_ms {drift_ceiling}")
+    else:
+        detail += f" | drift: only {len(worst_vals)} cycle(s), need >= 10 — not graded"
+
+    if len(cycles) >= 10:
+        rss10 = cycles[9]["rss_kb"]
+        rss_last = cycles[-1]["rss_kb"]
+        growth = rss_last - rss10
+        ok = ok and growth <= rss_ceiling
+        detail += (f" | rss growth(last-cycle10)={growth}kB (cycle10={rss10}, last={rss_last}) "
+                   f"vs bench_rss_growth_kb {rss_ceiling}")
+    else:
+        detail += f" | rss growth: only {len(cycles)} cycle(s), need >= 10 — not graded"
+
+    sw = sorted(worst_vals)
+    n = len(sw)
+    p50 = sw[n // 2]
+    p95 = sw[min(n - 1, int(n * 0.95))]
+    worst3 = sorted(cycles, key=lambda c: c["worst_ms"], reverse=True)[:3]
+    worst3_str = ", ".join(f"cycle={c['cycle']}/{c['n']} target={c['target']} worst_ms={c['worst_ms']:.1f}"
+                           for c in worst3)
+    detail += (f" | worst_ms p50={p50:.1f} p95={p95:.1f} max={sw[-1]:.1f} n={n} | worst 3: {worst3_str}")
+    return ok, detail
+
+
 def rate_stats(vals):
     s = sorted(vals)
     n = len(s)
@@ -5002,7 +5124,10 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     tv = cfg["tv"]
     route = scene["route"]
     overlay = scene.get("overlay")  # None for home/detail
-    loop_floor = scene["loop_floor"]
+    # A `bench` scene (see grade_bench) is graded entirely off its own `bench:` lines, never off
+    # loop_floor — optional rather than `scene["loop_floor"]` so those scenes need not carry a
+    # value nothing reads.
+    loop_floor = scene.get("loop_floor", 0)
     warmup = scene.get("warmup_s", 5)
     run_secs = scene.get("run_secs", 18)
     tag = route + (f"/{overlay}" if overlay else "")
@@ -5013,8 +5138,11 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     for tname, tval in scene.get("triggers", {}).items():
         if tval is True:
             files.append((tname, None))
-        elif tval == "$rk":
-            files.append((tname, str(scene["rk"])))
+        elif isinstance(tval, str) and "$rk" in tval:
+            # Exact `"$rk"` is the common case (home-detail-nav's `plxnative-navosc`); the
+            # substring form is what a bench scene's `plxnative-pushbench=<n>,$rk` needs, since
+            # its ratingKey rides inside a larger, comma-joined value.
+            files.append((tname, tval.replace("$rk", str(scene["rk"]))))
         else:
             files.append((tname, str(tval)))
     # Player FPS baselines were calibrated on the established Original route. Pin that route just
@@ -5067,6 +5195,16 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     # against the wrong install's log, or against a release build that never read its triggers,
     # fails on the <5-samples guard and reads as "the app never reached this screen".
     require_install(lines, cfg)
+
+    # A `bench` scene (push-100/modal-100) is graded entirely off its own `bench:` lines — see
+    # `grade_bench`. It shares every line above (triggers, `make run`, log capture, install
+    # check) with an ordinary fps scene, and diverges only here: none of loop_floor/fps_floor/
+    # fps_ceiling/worst_ceiling_ms/coldopen_ceiling_ms describes what a counted, stop-after-n
+    # bench run is answering.
+    if scene.get("bench"):
+        ok, detail = grade_bench(scene, lines)
+        print(f"    [{'PASS' if ok else 'FAIL'}]{detail}")
+        return ok, detail
 
     alls = parse_loop(lines, route, overlay)
     samples = alls[warmup:]  # heartbeat is ~1/sec, so drop the first `warmup` matching samples

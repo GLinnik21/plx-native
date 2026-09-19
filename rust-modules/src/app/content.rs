@@ -803,11 +803,13 @@ mod library_publication_tests {
         crate::metadata::land_detail_for_test(state, adapter, sid, rk, gen, detail)
     }
 
+    /// Complete every detail fetch the rig admitted and install the landings. Deterministic: under
+    /// `cfg(test)` those fetches are held rather than threaded (see
+    /// `MetadataAdapter::run_held_detail_fetches_for_test`); this helper used to spin a hundred
+    /// `yield_now`s hoping a real worker had finished, which a loaded CI runner did not honour.
     fn drain_detail_workers(rig: &mut bridge::Bridge) {
-        for _ in 0..100 {
-            rig.metadata_mut().pump_detail();
-            std::thread::yield_now();
-        }
+        rig.metadata_mut().adapter_ref().run_held_detail_fetches_for_test();
+        rig.metadata_mut().pump_detail();
     }
 
     struct SettleDetailBeforeRestoredEnter {

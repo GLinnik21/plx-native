@@ -247,6 +247,25 @@
       "_fps_floor_note": "Graded on the MEDIAN, not the min: navosc reverses every 1400ms of which only the 70+140ms dip is motion, so a 1s heartbeat window can land wholly inside the settled gap and read 0 with a perfectly healthy fade (measured: min=0, median=15). A FROZEN fade reads ~1/s — the keepalive alone — so 8 separates them by a wide margin. This is the scene that proves ui/xfade.rs reports at all: navosc calls nav_open/nav_back DIRECTLY, with no SDL event and no press spring to accidentally cover the ramp."
     },
     {
+      "name": "push-100",
+      "tier": "ui",
+      "route": "home",
+      "item": "movie_in_home_catalog",
+      "bench": "push",
+      "run_secs": 330,
+      "warmup_s": 8,
+      "_run_secs_note": "100 cycles, each cycle two half-periods of PUSH_BENCH_PERIOD_MS=1400 (open, then settle+close) — 280s nominal. 330s leaves ~50s of margin over warmup and the discrete per-frame tick granularity (bench_advance only fires on a frame that actually lands past the period, so real elapsed time runs a little long of the nominal figure, same as navosc's own scenes above).",
+      "bench_worst_ms": 20.0,
+      "bench_drift_ms": 2.0,
+      "bench_rss_growth_kb": 8192,
+      "triggers": {
+        "plxnative-pushbench": "100,$rk",
+        "plxnative-framedrop": true
+      },
+      "comment": "100 push->settle->pop cycles through the real nav path (app::bridge::nav_push/nav_pop/nav_tab), rotating Detail, Person and the Library tab — see dev::scenarios::bench's module doc for why Person opportunistically refreshes from the live cast row rather than being supplied up front, and falls back to Library (logged once) until the first Detail cycle lands cast data. plxnative-framedrop is required: bench's own worst_ms/frames accounting reads the SAME Instruments stamps frame_drop_line does, which read 0 unarmed. Each `bench:` line's worst_ms is the max single-frame Top->Swap cost inside that cycle; the harness (tests/run.py grade_bench) fails on any cycle over bench_worst_ms, on the last-10-vs-first-10 mean drifting past bench_drift_ms, on RSS growing past bench_rss_growth_kb from cycle 10 onward, or on the run stopping short of the `done` line. NOT YET MEASURED on the television; run once to seed real baselines and replace this note.",
+      "_ceiling_note": "bench_worst_ms=20.0 borrows page-panel/about-panel's caching-host ceiling tier rather than modal-ramp's uncached-ramp 75ms — a settled push/pop through Detail and Library is the SAME page-transition machinery home-detail-nav/home-library-nav already grade on loop/fps floors, so 20ms is a first guess pending the device baseline, not a measured figure."
+    },
+    {
       "name": "onboard-sources",
       "tier": "ui",
       "route": "onboard",
@@ -441,6 +460,25 @@
         "plxnative-settings": "root",
         "plxnative-modalosc": true
       }
+    },
+    {
+      "name": "modal-100",
+      "tier": "ui",
+      "route": "home",
+      "item": "movie_in_home_catalog",
+      "bench": "modal",
+      "run_secs": 340,
+      "warmup_s": 8,
+      "_run_secs_note": "100 cycles, each cycle two half-periods of MODAL_BENCH_PERIOD_MS=1500 (present, then settle+dismiss) — 300s nominal, same +50s margin reasoning as push-100.",
+      "bench_worst_ms": 20.0,
+      "bench_drift_ms": 2.0,
+      "bench_rss_growth_kb": 8192,
+      "triggers": {
+        "plxnative-modalbench": "100,$rk",
+        "plxnative-framedrop": true
+      },
+      "comment": "100 present->settle->dismiss cycles through the real modal bridge calls (open_settings/open_account_menu/open_item_menu/open_content_panel, dismiss_surfaces), rotating every Style reachable without a TV-only gesture: Settings (Opaque), the account menu (Sheet), the item menu (Compact, built from a synthetic PmsMovie row through open_item_menu exactly as nav_osc supplies identity directly rather than deriving it from focus) and the About panel (Alert). `plxnative-modalbench=<n>,<rk>` carries its own ratingKey — deliberately NOT reusing plxnative-navosc's trigger here, because setting that file also arms navosc's own independent Home<->tab/Detail bounce (`nav_osc = nav_osc_rk.is_some()`), which would race this bench's own nav stack use. Library menu and Filmography are NOT in the rotation: both need a live, already-mounted page (a Library page instance's SectionAddress/InstanceId, or a Person page gated on Detail cast data) that only push navigation produces, which push-100 already exercises separately — see ModalBench::new's doc for the full reasoning. plxnative-framedrop is required for the same reason as push-100. NOT YET MEASURED on the television; run once to seed real baselines and replace this note.",
+      "_ceiling_note": "bench_worst_ms=20.0, same first-guess reasoning as push-100 — modal-ramp's 75ms is the uncached Settings RAMP frame specifically (TV session 1/2 bimodal cost, documented above); this bench's settle point is the settled, dismissed-back-to-idle side of the cycle, closer to page-panel/about-panel's cached-host tier."
     },
     {
       "name": "legal-document",

@@ -15,10 +15,19 @@ uniform vec2 u_tscreen;
 uniform vec4 u_uvrect;
 varying vec2 v_cuv;
 varying vec2 v_p;
+#ifdef PLX_DITHER_NC
+// The dither tile's coordinate (`shaders/dither.glsl`, cost rule 4): target px / NOISE_DIM, linear
+// in position, so interpolated exactly and never computed per fragment. Only the programs whose
+// vertex source is built with `gfx::glsl_vs_dithered!` carry it — never the poster/card path.
+varying highp vec2 v_dither_nc;
+#endif
 void main(){
   v_cuv = u_uvrect.xy + a_pos * u_uvrect.zw;
   v_p = (a_pos - 0.5) * u_trect.zw;
   vec2 px = u_trect.xy + a_pos * u_trect.zw;
+#ifdef PLX_DITHER_NC
+  v_dither_nc = px * (1.0 / 256.0);
+#endif
   vec2 ndc = px / u_tscreen * 2.0 - 1.0;
   gl_Position = vec4(ndc.x, -ndc.y, 0.0, 1.0);
 }

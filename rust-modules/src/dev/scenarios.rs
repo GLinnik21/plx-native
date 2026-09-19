@@ -38,6 +38,8 @@ use crate::screens::registry::HomeCmd;
 use crate::ui::machine::{Key, Tick};
 use std::os::raw::c_int;
 
+pub(crate) mod bench;
+
 /// The dev triggers read ONCE at boot and consulted by the loop every frame after (each is
 /// documented where it is READ, below). Formerly `App::dev: DevFlags`; unchanged in shape.
 pub(crate) struct DevFlags {
@@ -127,6 +129,11 @@ pub(crate) struct Scenarios {
     pub(crate) pause_tried: bool,
     pub(crate) pause_script: Option<(u32, Option<u32>)>,
     pub(crate) pause_resume_at: Option<u32>,
+    /// `/tmp/plxnative-pushbench` — see [`bench`]'s module doc. `None` unarmed; cleared to `None`
+    /// once its `n` cycles are done, the same shape `content_boot` uses to stop being ticked.
+    pub(crate) push_bench: Option<bench::PushBench>,
+    /// `/tmp/plxnative-modalbench` — see [`bench`]'s module doc.
+    pub(crate) modal_bench: Option<bench::ModalBench>,
     /// The boot-time trigger flags the loop consults every frame after.
     pub(crate) dev: DevFlags,
 }
@@ -357,6 +364,44 @@ pub(crate) fn onboardosc_armed() -> bool {
 /// `/tmp/plxnative-navosc[=<ratingKey>]`.
 pub(crate) fn navosc_value() -> Option<String> {
     crate::dev::read("navosc")
+}
+/// `/tmp/plxnative-pushbench[=<n>[,<ratingKey>]]` — `(n, ratingKey)`, defaulting `n` to 100 and
+/// `ratingKey` to empty (the empty case is resolved against `navosc`'s own value by the caller,
+/// `app::boot::boot`, before `bench::PushBench::new` ever sees it).
+pub(crate) fn pushbench_value() -> Option<(u32, String)> {
+    crate::dev::read("pushbench").map(|v| {
+        let v = v.trim();
+        if v.is_empty() {
+            return (bench::DEFAULT_BENCH_N, String::new());
+        }
+        let (n, rk) = v.split_once(',').unwrap_or((v, ""));
+        (parse_bench_n(n), rk.trim().to_string())
+    })
+}
+/// `/tmp/plxnative-modalbench[=<n>[,<ratingKey>]]` — `(n, ratingKey)`, the same shape as
+/// [`pushbench_value`] and for the same reason: the item menu leg needs its own ratingKey, and
+/// piggy-backing on `navosc`'s value would also arm `navosc`'s own independent Home<->tab/Detail
+/// bounce (`nav_osc = nav_osc_rk.is_some()` in `app::boot::boot`) — two competing navigators
+/// racing the same nav stack while modalbench tries to measure. Empty is resolved against
+/// `navosc`'s own value by the caller exactly as pushbench's empty case is, so a bare
+/// `plxnative-navosc=<rk>` with no `plxnative-modalbench` value still works; a scene wanting the
+/// item menu WITHOUT navosc's bounce sets its own `<rk>` here instead.
+pub(crate) fn modalbench_value() -> Option<(u32, String)> {
+    crate::dev::read("modalbench").map(|v| {
+        let v = v.trim();
+        if v.is_empty() {
+            return (bench::DEFAULT_BENCH_N, String::new());
+        }
+        let (n, rk) = v.split_once(',').unwrap_or((v, ""));
+        (parse_bench_n(n), rk.trim().to_string())
+    })
+}
+fn parse_bench_n(v: &str) -> u32 {
+    if v.is_empty() {
+        bench::DEFAULT_BENCH_N
+    } else {
+        v.parse().ok().filter(|n: &u32| *n > 0).unwrap_or(bench::DEFAULT_BENCH_N)
+    }
 }
 /// `/tmp/plxnative-framedrop[=<ms>]`.
 pub(crate) fn framedrop_value() -> Option<String> {
@@ -1407,6 +1452,242 @@ pub(crate) fn modal_osc_tick(app: &mut App, now: u32) {
     }
 }
 
+// =================================================================================================
+// stress-bench oscillators (`/tmp/plxnative-pushbench`, `/tmp/plxnative-modalbench`) — see
+// `bench`'s module doc for the pure state machine both ticks below drive. Half-periods reuse
+// `nav_osc`'s 1400 ms and `modal_osc`'s 1500 ms exactly: "never faster than a user could
+// plausibly drive" (spec) is the same argument those two already settled.
+// =================================================================================================
+
+const PUSH_BENCH_PERIOD_MS: u32 = 1400;
+const MODAL_BENCH_PERIOD_MS: u32 = 1500;
+
+/// `/proc/self/status`'s `VmRSS`, in kB — best effort, `0` where the file does not exist (the
+/// macOS simulator host). Not cached: a bench cycle is seconds apart, so one extra file read per
+/// cycle is noise next to the frame-time work it is timed beside.
+fn read_rss_kb() -> u64 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("VmRSS:"))
+                .and_then(|rest| rest.split_whitespace().next())
+                .and_then(|v| v.parse().ok())
+        })
+        .unwrap_or(0)
+}
+
+/// Called once per iteration, after the frame's Swap phase is stamped (`app::run::report`, right
+/// after `present_and_swap`) — the narrowest point either bench's accumulator can read this
+/// frame's total. Gated on `presented`: an iteration the idle gate skipped drew nothing, so
+/// counting it toward `frames` or `worst_ms` would grade an absent frame as a fast one, exactly
+/// the reasoning `Instruments::frame_drop_line`'s own `worst` peak already uses.
+pub(crate) fn bench_frame_tick(app: &mut App, presented: bool) {
+    if !presented {
+        return;
+    }
+    let total = app.frame_last_ms();
+    if let Some(b) = app.scenarios.push_bench.as_mut() {
+        if b.clock.phase == bench::BenchPhase::Measuring {
+            b.clock.frames += 1;
+            if total > b.clock.worst_ms {
+                b.clock.worst_ms = total;
+            }
+        }
+    }
+    if let Some(b) = app.scenarios.modal_bench.as_mut() {
+        if b.clock.phase == bench::BenchPhase::Measuring {
+            b.clock.frames += 1;
+            if total > b.clock.worst_ms {
+                b.clock.worst_ms = total;
+            }
+        }
+    }
+}
+
+/// Opens `target` through the real bridge/nav call the interactive press uses, and returns the
+/// target ACTUALLY opened — `Person` falls back to `Library` when no cast data has landed yet.
+fn push_bench_open(app: &mut App, target: bench::PushTarget) -> bench::PushTarget {
+    use crate::screens::registry::{ContentArg, HomeTab};
+    match target {
+        bench::PushTarget::Detail => {
+            let rk = app.scenarios.push_bench.as_ref().unwrap().rk.clone();
+            crate::app::bridge::open_detail(&mut app.pages, &mut app.bridge,
+                crate::plex::current_server(), &rk, None, None);
+            bench::PushTarget::Detail
+        }
+        bench::PushTarget::Person => {
+            let person = app.scenarios.push_bench.as_ref().unwrap().person.clone();
+            if let Some((sid, key, guid, name, thumb)) = person {
+                crate::app::bridge::nav_push(&mut app.pages,
+                    AppArg::Content(ContentArg::Person { sid, key, guid, name, thumb }));
+                bench::PushTarget::Person
+            } else {
+                let b = app.scenarios.push_bench.as_mut().unwrap();
+                if !b.person_fallback_logged {
+                    b.person_fallback_logged = true;
+                    crate::log("bench: push cycle wanted Person but no cast data has landed yet \
+                        — opening Library instead this cycle");
+                }
+                push_bench_open(app, bench::PushTarget::Library)
+            }
+        }
+        bench::PushTarget::Library => {
+            if let Some(kind) = app.bridge.browse_directory().tab_kind(0) {
+                let tab = match kind {
+                    crate::stores::browse::SecKind::Show => HomeTab::Shows,
+                    _ => HomeTab::Movies,
+                };
+                crate::app::bridge::nav_tab(&mut app.pages, &mut app.bridge, tab, None, None);
+            }
+            bench::PushTarget::Library
+        }
+    }
+}
+
+/// …and its close, through `nav_pop`/`nav_tab` exactly as `nav_osc_tick`'s reverse leg does.
+fn push_bench_close(app: &mut App, opened: bench::PushTarget) {
+    use crate::screens::registry::HomeTab;
+    match opened {
+        bench::PushTarget::Detail | bench::PushTarget::Person => {
+            crate::app::bridge::nav_pop(&mut app.pages);
+        }
+        bench::PushTarget::Library => {
+            let origin = crate::app::chrome::pill_at(app.bridge.browse_directory(), 1);
+            crate::app::bridge::nav_tab(&mut app.pages, &mut app.bridge, HomeTab::Home, Some(origin), None);
+        }
+    }
+}
+
+/// Opportunistically refresh the Person target from whichever Detail item is CURRENT — mirrors
+/// `screens::detail::cast::action`'s own logic (that module is private to `detail`, so this is
+/// the same read through `Detail::credit`/`Cast::person_key` directly rather than a visibility
+/// change to reach it) against the FIRST cast credit, the same one a card-row OK at index 0 would
+/// open. Cheap relative to a bench cycle's own 1400 ms period, so it runs on every push-bench tick
+/// rather than only around the Detail leg.
+fn push_bench_refresh_person(app: &mut App) {
+    let Some(d) = app.bridge.metadata_view().current() else { return };
+    let Some(c) = d.credit(0) else { return };
+    let key = c.person_key();
+    if key.is_empty() {
+        return;
+    }
+    let person = (d.sid, key, c.tag_key.clone(), c.tag.clone(), c.thumb.clone());
+    if let Some(b) = app.scenarios.push_bench.as_mut() {
+        b.person = Some(person);
+    }
+}
+
+/// `/tmp/plxnative-pushbench` — see `bench`'s module doc. Called from `land_results` beside
+/// `nav_osc_tick`, the same phase boundary every route-changing dev arm runs at.
+pub(crate) fn push_bench_tick(app: &mut App, now: u32) {
+    if app.scenarios.push_bench.is_none() {
+        return;
+    }
+    push_bench_refresh_person(app);
+    let step = {
+        let b = app.scenarios.push_bench.as_mut().unwrap();
+        bench::bench_advance(&mut b.clock, now, PUSH_BENCH_PERIOD_MS)
+    };
+    match step {
+        bench::BenchStep::Nothing => {}
+        bench::BenchStep::Start(cycle) => {
+            let b = app.scenarios.push_bench.as_ref().unwrap();
+            let target = b.targets[bench::bench_target_index(b.targets.len(), cycle)];
+            let opened = push_bench_open(app, target);
+            app.scenarios.push_bench.as_mut().unwrap().opened = opened;
+        }
+        bench::BenchStep::Settle(cycle) => {
+            let b = app.scenarios.push_bench.as_ref().unwrap();
+            let (n, opened, worst_ms, frames, cycle_start) =
+                (b.clock.n, b.opened, b.clock.worst_ms, b.clock.frames, b.clock.cycle_start);
+            let dur_ms = now.wrapping_sub(cycle_start);
+            crate::log(&format!(
+                "bench: kind=push cycle={}/{n} target={} worst_ms={worst_ms:.1} frames={frames} dur_ms={dur_ms} rss_kb={}",
+                cycle + 1, opened.name(), read_rss_kb(),
+            ));
+            push_bench_close(app, opened);
+        }
+        bench::BenchStep::Done(n) => {
+            crate::log(&format!("bench: kind=push done cycles={n}"));
+            app.scenarios.push_bench = None;
+        }
+    }
+}
+
+/// Present `target` through the real bridge call the interactive press uses.
+fn modal_bench_open(app: &mut App, target: bench::ModalTarget) {
+    use crate::screens::registry::{ContentPanel, ItemMenuArg, ItemMenuKind};
+    match target {
+        bench::ModalTarget::Settings => crate::app::bridge::open_settings(&mut app.pages),
+        bench::ModalTarget::AccountMenu => crate::app::bridge::open_account_menu(&mut app.pages),
+        bench::ModalTarget::About => {
+            if let Some(host) = app.pages.top_page() {
+                crate::app::bridge::open_content_panel(&mut app.pages, host, None, ContentPanel::About);
+            }
+        }
+        bench::ModalTarget::ItemMenu => {
+            let Some(host) = app.pages.nav.top_page().map(|e| e.id) else { return };
+            let rk = app.scenarios.modal_bench.as_ref().unwrap().rk.clone();
+            let sid = crate::plex::current_server();
+            let anchor_rect = crate::screens::item_menu::fallback_anchor();
+            let arg = ItemMenuArg {
+                sid,
+                rk: rk.clone(),
+                kind: ItemMenuKind::Card {
+                    row: Box::new(crate::pms::PmsMovie { sid, rk, ..Default::default() }),
+                    from_deck: false,
+                },
+                host,
+                focus: None,
+                anchor: [anchor_rect.x.to_bits(), anchor_rect.y.to_bits(), anchor_rect.w.to_bits(), anchor_rect.h.to_bits()],
+                loaded_episode: false,
+                from_home: true,
+            };
+            crate::app::bridge::open_item_menu(&mut app.pages, arg);
+        }
+    }
+}
+
+/// `/tmp/plxnative-modalbench` — see `bench`'s module doc. Called from `update` beside
+/// `modal_osc_tick`, the same phase boundary every Settings-family dev arm runs at. Dismissal is
+/// the single generic `dismiss_surfaces` every modal style already shares (`modal_osc_tick`'s own
+/// reverse leg): a Compact/Sheet/Alert surface is dismissed the same way regardless of which one
+/// is up.
+pub(crate) fn modal_bench_tick(app: &mut App, now: u32) {
+    if app.scenarios.modal_bench.is_none() {
+        return;
+    }
+    let step = {
+        let b = app.scenarios.modal_bench.as_mut().unwrap();
+        bench::bench_advance(&mut b.clock, now, MODAL_BENCH_PERIOD_MS)
+    };
+    match step {
+        bench::BenchStep::Nothing => {}
+        bench::BenchStep::Start(cycle) => {
+            let b = app.scenarios.modal_bench.as_ref().unwrap();
+            let target = b.targets[bench::bench_target_index(b.targets.len(), cycle)];
+            modal_bench_open(app, target);
+        }
+        bench::BenchStep::Settle(cycle) => {
+            let b = app.scenarios.modal_bench.as_ref().unwrap();
+            let target = b.targets[bench::bench_target_index(b.targets.len(), cycle)];
+            let (n, worst_ms, frames, cycle_start) =
+                (b.clock.n, b.clock.worst_ms, b.clock.frames, b.clock.cycle_start);
+            let dur_ms = now.wrapping_sub(cycle_start);
+            crate::log(&format!(
+                "bench: kind=modal cycle={}/{n} target={} worst_ms={worst_ms:.1} frames={frames} dur_ms={dur_ms} rss_kb={}",
+                cycle + 1, target.name(), read_rss_kb(),
+            ));
+            crate::app::bridge::dismiss_surfaces(&mut app.pages);
+        }
+        bench::BenchStep::Done(n) => {
+            crate::log(&format!("bench: kind=modal done cycles={n}"));
+            app.scenarios.modal_bench = None;
+        }
+    }
+}
+
 /// `/tmp/plxnative-legaldoc` (with `plxnative-settings=legal`) — one OK on the Legal index.
 pub(crate) fn legal_doc_tick(app: &mut App, now: u32, dt: f32) {
     if app.scenarios.dev.legal_doc
@@ -1504,15 +1785,40 @@ pub(crate) fn consent_override() -> Option<String> {
 /// `/tmp/plxnative-rec` — read by controlled-bootstrap preflight. The recorder/replay MECHANISM
 /// stays in `app/recorder.rs` (this phase's instructions: it is not a scenario), but the raw
 /// trigger read goes through the one door every other trigger does.
+///
+/// Compiled out, not merely guarded, in a release build: these three controlled-boot readers are
+/// the recorder's whole `/tmp` surface, and a runtime `ENABLED` check still leaves the trigger
+/// names in the binary's bytes, where `ci/check-package.py` grades them.
+#[cfg(feature = "devtriggers")]
 pub(crate) fn rec_trigger() -> Result<Option<String>, &'static str> {
-    if !crate::dev::ENABLED { return Ok(None); }
-    crate::ui::rec::mode_value(&crate::paths::in_runtime_dir("plxnative-rec"))
-        .map_err(|_| "invalid recorder trigger")
+    crate::ui::rec::mode_value(&super::path("rec")).map_err(|_| "invalid recorder trigger")
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn rec_trigger() -> Result<Option<String>, &'static str> {
+    Ok(None)
 }
 
 /// `/tmp/plxnative-recplay` — see [`rec_trigger`].
+#[cfg(feature = "devtriggers")]
 pub(crate) fn recplay_trigger() -> Result<Option<String>, &'static str> {
-    if !crate::dev::ENABLED { return Ok(None); }
-    crate::ui::rec::mode_value(&crate::paths::in_runtime_dir("plxnative-recplay"))
-        .map_err(|_| "invalid replay trigger")
+    crate::ui::rec::mode_value(&super::path("recplay")).map_err(|_| "invalid replay trigger")
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn recplay_trigger() -> Result<Option<String>, &'static str> {
+    Ok(None)
+}
+
+/// `/tmp/plxnative-app-init` — an explicit typed initial for a controlled boot, read by
+/// `app::bootstrap` in place of capturing one. `None` when the trigger is absent (always, in a
+/// release build); `Some(Err)` when it is present but unreadable. See [`rec_trigger`].
+#[cfg(feature = "devtriggers")]
+pub(crate) fn app_init_value() -> Option<Result<serde_json::Value, &'static str>> {
+    crate::dev::flag("app-init").then(|| {
+        crate::ui::rec::initial_value(&super::path("app-init"))
+            .map_err(|_| "invalid explicit initial input")
+    })
+}
+#[cfg(not(feature = "devtriggers"))]
+pub(crate) fn app_init_value() -> Option<Result<serde_json::Value, &'static str>> {
+    None
 }

@@ -81,7 +81,8 @@ use crate::ui::consts::SAFE;
 use crate::ui::icons::{self, Icon};
 use crate::ui::machine::Measure;
 use crate::ui::text_view::TextView;
-use crate::ui::widgets::{AmbientWash, ControlPalette};
+use crate::ui::underlay::{Grade, Role, UnderlayField};
+use crate::ui::widgets::ControlPalette;
 use crate::ui::{theme, Painter, Rect, Spring};
 
 /// The left column is the same editorial measure as the Home hero.  Reusing that named measure is
@@ -119,25 +120,23 @@ const PUSH_K: f32 = 200.0;
 const PARENT_TRAVEL: f32 = 0.35;
 const CHILD_LEAD: f32 = 0.22;
 
-/// Density of the Settings-family ambient ground.
-///
-/// The source is already an UltraBlur envelope (or four broad framebuffer means), so increasing
-/// this number does not make it *more blurred*; it only lets more source light through.  Reusing
-/// the shared ground weight keeps bright green/yellow artwork below the section-label contrast
-/// floor while preserving its hue.
-const GROUND_W: f32 = AmbientWash::GROUND_W;
-
 /// The fixed ground under a Settings-family route.
 ///
-/// It deliberately stores a four-corner colour envelope rather than a downsampled screenshot.
-/// That is effectively a blur with a support wider than the screen: title glyphs, faces and poster
-/// edges cannot survive it, but the host artwork's light still does.  Once latched it never samples
-/// again; nested push/back transitions therefore move content over one stationary ground.
-#[derive(Clone, Copy)]
+/// **PR2 stage B (2026-09-19):** it holds an [`UnderlayField`] rather than its own four-corner
+/// [`AmbientWash`](crate::ui::widgets::AmbientWash) envelope, so it owns a GL texture and is no
+/// longer `Copy` — every owner already held it by field (a screen struct, exactly as before), so
+/// nothing but this type's own derive had to change. [`UnderlayField::latch_from_corners`] grades a
+/// four-corner source through the SAME `AmbientWash::keyed_one` a wash used to, so a route drawn
+/// from a seed or from the authored fallback reads the same colour it always did — the migration is
+/// a change of SHAPE, not of palette (see `ui::underlay`'s module doc). [`Self::draw_host`] is the
+/// one path that gets MORE than a corner envelope now: it latches from the rendered frame itself
+/// (120 cells, spatially faithful — title glyphs, faces and poster edges still cannot survive the
+/// reduction, exactly as a four-corner wash's wider blur could not, but the light that does is no
+/// longer four degrees of freedom) and only falls back to a corner envelope when the frame is not a
+/// readable source this frame. Once latched a ground never samples again; nested push/back
+/// transitions therefore move content over one stationary ground.
 pub(crate) struct RouteGround {
-    wash: AmbientWash,
-    key: [f32; 3],
-    latched: bool,
+    field: UnderlayField,
 }
 
 /// **The narrative title's line pitch.** `--size-hero`/**1.05**, which is the design system's own
@@ -156,69 +155,63 @@ const TITLE_LEADING: f32 = theme::size::HERO as f32 * 1.05;
 impl RouteGround {
     pub(crate) const fn new() -> Self {
         Self {
-            wash: AmbientWash::flat(theme::SURFACE_APP),
-            key: [
-                theme::SURFACE_APP[0],
-                theme::SURFACE_APP[1],
-                theme::SURFACE_APP[2],
-            ],
-            latched: false,
+            field: UnderlayField::new(),
         }
     }
 
     pub(crate) fn reset(&mut self) {
-        self.wash.jump([theme::SURFACE_APP; 4]);
-        self.key = [
-            theme::SURFACE_APP[0],
-            theme::SURFACE_APP[1],
-            theme::SURFACE_APP[2],
-        ];
-        self.latched = false;
+        self.field.reset();
+    }
+
+    /// `theme::ROUTE_GROUND_FALLBACK`, dropping its alpha column — the corners every authored
+    /// atmosphere below reaches for when it has no artwork to key from: the pre-Home fallback
+    /// ([`Self::for_home`]'s `None` seed, [`Self::draw_default`]) and, since PR2 stage B,
+    /// [`Self::draw_host`]'s own answer when the live frame is not a readable source this frame.
+    fn fallback_corners() -> [[f32; 3]; 4] {
+        theme::ROUTE_GROUND_FALLBACK.map(|c| [c[0], c[1], c[2]])
     }
 
     /// A pre-content page receives a numeric atmosphere from its application owner at mount.
     /// Neither construction nor drawing this UI value reads a catalog or session file.
+    ///
+    /// A real seed is ARTWORK — the future Home's initial hero — so it is graded exactly as a live
+    /// frame would be ([`Grade::Ground`]: capped and leaned toward the surface). The authored
+    /// fallback is not artwork, it IS the finished colour ([`Grade::Dim`], the identity grade) —
+    /// see `theme::ROUTE_GROUND_FALLBACK`'s own doc for why grading it again would be wrong.
     pub(crate) fn for_home(seed: Option<[[f32; 3]; 4]>) -> Self {
         let mut ground = Self::new();
-        if let Some(blur) = seed { ground.latch(blur, mean_key(blur)); }
-        else { ground.latch_target(theme::ROUTE_GROUND_FALLBACK); }
+        match seed {
+            Some(blur) => ground.field.latch_from_corners(blur, Grade::Ground),
+            None => ground.field.latch_from_corners(Self::fallback_corners(), Grade::Dim),
+        }
         ground
-    }
-
-    fn latch(&mut self, corners: [[f32; 3]; 4], key: [f32; 3]) {
-        if self.latched {
-            return;
-        }
-        self.wash.jump(AmbientWash::keyed(corners, [GROUND_W; 4]));
-        self.key = key;
-        self.latched = true;
-    }
-
-    fn latch_target(&mut self, target: [[f32; 4]; 4]) {
-        if self.latched {
-            return;
-        }
-        self.wash.jump(target);
-        self.key = mean_target_key(target);
-        self.latched = true;
     }
 
     /// Freeze the page that was already drawn this frame. Its one caller is the Settings modal,
     /// which opens over Home; first-run consent takes [`Self::draw_home`] instead, because since
     /// the consent question moved ahead of the profile picker it usually has no rendered host to
     /// sample at all.
+    ///
+    /// `latch_from_frame` is `gfx::sample_underlay_field`'s own refusal list (§9's video-plane door
+    /// among them — see [`crate::gfx::sample_underlay_field`]'s doc): whenever it answers `false`
+    /// this falls back to the same authored atmosphere [`Self::draw_default`] uses when it has no
+    /// host at all, graded [`Grade::Ground`] because it is standing in for a live sample rather than
+    /// being drawn as itself.
+    ///
+    /// Split from the draw call below (`latch_host` / `draw_host`) so a host test can prove the
+    /// live-frame-fails-so-fall-back-to-corners decision without ever reaching `field.draw`'s real
+    /// GL: a host test binary links `OpenGL.framework` but never creates a context, so any draw that
+    /// is not gated behind a `PROG == 0`/`tex == 0` check (`field.draw`'s `Role::Ground` arm is not,
+    /// once latched, is not either — see [`UnderlayField::draw`]) is an immediate SIGSEGV.
+    fn latch_host(&mut self) {
+        if !self.field.latch_from_frame(Grade::Ground) {
+            self.field.latch_from_corners(Self::fallback_corners(), Grade::Ground);
+        }
+    }
+
     pub(crate) fn draw_host(&mut self, p: Painter) {
-        // §9: the sample below reads back framebuffer 0, and on a video-plane frame framebuffer 0
-        // is the hole the television composites the plane through — so the latch would freeze
-        // transparent black as this route's ambient colour, for the life of the ground.
-        if crate::gfx::video_plane_refuses("RouteGround::draw_host") {
-            return;
-        }
-        if !self.latched {
-            let sample = crate::gfx::sample_modal_ambient();
-            self.latch(sample.corners, sample.key);
-        }
-        self.wash.draw(p, Rect::FULL);
+        self.latch_host();
+        self.field.draw(p, Rect::FULL, Role::Ground, 1.0);
     }
 
     /// Draw the pre-Home atmosphere captured at construction. Ordinary Settings samples its
@@ -227,51 +220,60 @@ impl RouteGround {
         self.draw_default(p);
     }
 
+    /// The latch half of [`Self::draw_default`] — see [`Self::latch_host`] for why this is split
+    /// out from the draw call rather than inlined.
+    fn latch_default(&mut self) {
+        if !self.field.is_latched() {
+            self.field.latch_from_corners(Self::fallback_corners(), Grade::Dim);
+        }
+    }
+
     /// Draw a pre-content route on the product's authored fallback atmosphere.
     ///
     /// Login and the profile ceremony have no Home frame and no media item to sample.  They still
     /// belong to the same route family, so they take the same broad graphite/amber envelope as an
     /// artwork-less first-run screen instead of inventing another flat background locally.
     pub(crate) fn draw_default(&mut self, p: Painter) {
-        if !self.latched {
-            self.latch_target(theme::ROUTE_GROUND_FALLBACK);
-        }
-        self.wash.draw(p, Rect::FULL);
+        self.latch_default();
+        self.field.draw(p, Rect::FULL, Role::Ground, 1.0);
     }
 
-    /// **The ground's own colour at one screen point.** Every `draw_*` above paints this wash over
+    /// **The ground's own colour at one screen point.** Every `draw_*` above paints the field over
     /// [`Rect::FULL`], so that is the rect the sample is taken against.
     ///
     /// It exists for an EDGE FADE. A route that scissor-clips a scrolling strip cuts it at a hard
     /// line; laying this colour over the cut at a falling alpha dissolves it instead. The constant
     /// a caller would otherwise guess cannot work here — the ground is keyed to the host page's
-    /// artwork, so it is a different colour on every person's page.
+    /// artwork, so it is a different colour on every person's page. Before the first latch this is
+    /// `theme::SURFACE_APP` everywhere, the same flat answer an unlatched field's own [`Role::Ground`]
+    /// draw falls back to — [`UnderlayField::sample`] has no such guard of its own (an unlatched
+    /// field's cells are zero, not the surface), so it belongs here rather than being forwarded raw.
     pub(crate) fn sample(&self, x: f32, y: f32) -> [f32; 3] {
-        self.wash.sample(Rect::FULL, x, y)
+        if self.field.is_latched() {
+            self.field.sample(x, y)
+        } else {
+            SURFACE_APP_RGB
+        }
     }
 
     pub(crate) fn palette(&self) -> ControlPalette {
-        ControlPalette::ambient(self.key)
+        ControlPalette::ambient(if self.field.is_latched() {
+            self.field.key()
+        } else {
+            SURFACE_APP_RGB
+        })
     }
 
     pub(crate) fn is_latched(&self) -> bool {
-        self.latched
+        self.field.is_latched()
     }
 }
 
-fn mean_key(corners: [[f32; 3]; 4]) -> [f32; 3] {
-    let mut key = [0.0; 3];
-    for corner in corners {
-        for channel in 0..3 {
-            key[channel] += corner[channel] * 0.25;
-        }
-    }
-    key
-}
-
-fn mean_target_key(corners: [[f32; 4]; 4]) -> [f32; 3] {
-    mean_key(corners.map(|c| [c[0], c[1], c[2]]))
-}
+const SURFACE_APP_RGB: [f32; 3] = [
+    theme::SURFACE_APP[0],
+    theme::SURFACE_APP[1],
+    theme::SURFACE_APP[2],
+];
 
 /// The one nested-route transition used by Settings documents.
 ///
@@ -884,9 +886,14 @@ mod tests {
         let rgb = [super::theme::SURFACE_APP[0], super::theme::SURFACE_APP[1], super::theme::SURFACE_APP[2]];
         let seed = [rgb; 4];
         let ground = super::RouteGround::for_home(Some(seed));
-        assert!(ground.latched);
-        assert_eq!(ground.key, super::mean_key(seed));
-        assert!(super::RouteGround::for_home(None).latched);
+        assert!(ground.is_latched());
+        // The seed is graded exactly as `latch_from_corners(_, Grade::Ground)` would grade it on
+        // any other caller — a fresh field latched the same way is the reference, not a re-typed
+        // formula, so this cannot drift from the production path the way a duplicated mean could.
+        let mut want = super::UnderlayField::new();
+        want.latch_from_corners(seed, super::Grade::Ground);
+        assert_eq!(ground.palette(), super::ControlPalette::ambient(want.key()));
+        assert!(super::RouteGround::for_home(None).is_latched());
     }
 
     use super::*;
@@ -1348,28 +1355,93 @@ mod tests {
         assert!(push.amount() < 0.001);
     }
 
+    /// **A latched RouteGround does not re-latch.** `draw_default` runs its own `if
+    /// !self.field.is_latched()` guard every frame it is called, exactly as `draw_host`/`draw_home`
+    /// do; two calls with two different fallbacks in force between them must still land on whichever
+    /// atmosphere the FIRST call saw, or nested push/back transitions would repaint their ground out
+    /// from under the content moving over it.
+    ///
+    /// Exercises `latch_default` rather than `draw_default` itself — see [`RouteGround::latch_host`]'s
+    /// doc for why a host test cannot call through to `field.draw`.
     #[test]
-    fn route_ground_latches_once_instead_of_following_child_screens() {
+    fn a_latched_route_ground_does_not_re_latch() {
         let mut ground = RouteGround::new();
-        let first = [[0.1, 0.2, 0.3]; 4];
-        let second = [[0.8, 0.7, 0.6]; 4];
-        ground.latch(first, mean_key(first));
-        let palette = ground.palette();
-        ground.latch(second, mean_key(second));
-        assert_eq!(ground.palette(), palette);
+        ground.latch_default();
         assert!(ground.is_latched());
+        let palette = ground.palette();
+
+        ground.latch_default();
+        assert_eq!(
+            ground.palette(),
+            palette,
+            "a second latch must not move an already-latched ground"
+        );
     }
 
+    /// **A route whose live-frame latch fails still gets an atmosphere.** `draw_host` cannot force
+    /// `gfx::sample_underlay_field` to answer — a video-plane frame, a blur source pass, a frozen
+    /// page and a drawable the exact-2x chain cannot be built for are all real "no honest frame this
+    /// time" answers this route does not get to pick between — so it has to fall back, once, to the
+    /// same authored corners `draw_default` uses when it has no host at all. The video-plane refusal
+    /// is the one member of that list a host test can DRIVE (`gfx::set_video_plane_frame`, thread-
+    /// local — see its own doc — so this cannot leak into another test): the other three would need
+    /// a live GL context this binary never creates.
+    ///
+    /// Exercises `latch_host` rather than `draw_host` itself — see [`RouteGround::latch_host`]'s doc
+    /// for why a host test cannot call through to `field.draw`.
     #[test]
-    fn route_ground_key_is_the_whole_envelope_not_one_loud_corner() {
+    fn a_route_ground_whose_frame_latch_fails_falls_back_to_corners() {
+        let was = crate::gfx::set_video_plane_frame(true);
+        let mut ground = RouteGround::new();
+        ground.latch_host();
+        crate::gfx::set_video_plane_frame(was);
+
+        assert!(
+            ground.is_latched(),
+            "a refused live frame must still leave the ground with an atmosphere"
+        );
+        let mut want = UnderlayField::new();
+        want.latch_from_corners(RouteGround::fallback_corners(), Grade::Ground);
         assert_eq!(
-            mean_key([
-                [0.0, 0.2, 0.4],
-                [0.2, 0.4, 0.6],
-                [0.4, 0.6, 0.8],
-                [0.6, 0.8, 1.0],
-            ]),
-            [0.3, 0.5, 0.7]
+            ground.palette(),
+            ControlPalette::ambient(want.key()),
+            "the fallback must be the SAME corners, graded the SAME way draw_host would grade a \
+             live sample"
+        );
+    }
+
+    /// **THE POINT OF STAGE B, seen through `RouteGround` itself**: `sample()` is spatially
+    /// faithful, not a four-corner bilinear wearing a new implementation. Green in the bottom-left
+    /// corner must read greener there than in the top-right, which a wash of only four degrees of
+    /// freedom could also manage — the case that actually discriminates is `underlay_tests.rs`'s
+    /// `the_field_samples_greener_where_the_green_is`; this one exists to prove `RouteGround::sample`
+    /// is wired to the field's OWN sample rather than to some remaining four-corner shortcut.
+    #[test]
+    fn route_ground_sample_is_spatially_faithful() {
+        let dark = [0.05, 0.05, 0.05];
+        let red = [0.9, 0.05, 0.05];
+        let green = [0.05, 0.9, 0.05];
+        // Painter corner order: top-left, top-right, bottom-right, bottom-left.
+        let mut ground = RouteGround::new();
+        ground
+            .field
+            .latch_from_corners([dark, red, dark, green], Grade::Dim);
+
+        let bl = ground.sample(
+            crate::ui::consts::SCR_W * 0.08,
+            crate::ui::consts::SCR_H * 0.92,
+        );
+        let tr = ground.sample(
+            crate::ui::consts::SCR_W * 0.92,
+            crate::ui::consts::SCR_H * 0.08,
+        );
+        assert!(
+            bl[1] - bl[0] > 0.2,
+            "the bottom-left corner must read GREEN, got {bl:?}"
+        );
+        assert!(
+            tr[0] - tr[1] > 0.2,
+            "the top-right corner must read RED, got {tr:?}"
         );
     }
 
@@ -1458,13 +1530,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn default_route_ground_latches_the_auth_fallback_once() {
-        let mut ground = RouteGround::new();
-        ground.latch_target(theme::ROUTE_GROUND_FALLBACK);
-        let palette = ground.palette();
-        ground.latch_target([[1.0, 0.0, 0.0, 1.0]; 4]);
-        assert_eq!(ground.palette(), palette);
-        assert!(ground.is_latched());
-    }
 }

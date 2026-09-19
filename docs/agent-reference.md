@@ -1472,7 +1472,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   no-line PASS, 191.4, 227.8", in which a 30 ms open and a 159 ms one are the same output. The
   `coldopen` line is UNARMED and unconditional, so one mount is one sample and an absent line
   fails. Its value on `cold-open` is PROVISIONAL until TV session 7 leg 6 measures it, and the
-  scene's `_coldopen_note` says so. The Search pair is the
+  scene's `_coldopen_note` says so. **And, since 2026-09-19, one STRESS family** — `bench_worst_ms`, `bench_drift_ms`, `bench_rss_growth_kb`, plus the optional `bench_latch_exempt_ms` exemption. It does not compose with the six: a scene carrying `bench` (`push-100`, `modal-100`) is graded entirely by `run.py`'s `grade_bench` and never reaches the rate, frame-time or mount gates, so "six" counts the gates of an ordinary scene. The Search pair is the
   clearest illustration that these are two halves of ONE question — same screen, same trigger, the
   oscillator added or taken away. A scene with no motion and only a `loop_floor`
   gates nothing — **`home-hero` carries an `_idle_gate_note` saying exactly that, and it is the only
@@ -1675,7 +1675,13 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   cross-fade `ui::nav` draws. EMPTY = Home↔the first library section, the two pages that SHARE the
   top tab bar (`fps:home-library-nav`); a ratingKey = Home↔that item's DETAIL page instead, which
   has no shared chrome, a hero backdrop and ambient ground on the far side, and a real teardown at
-  the fade floor (`fps:home-detail-nav`). Both boot to Home), and
+  the fade floor (`fps:home-detail-nav`). Both boot to Home). The COUNTED stress-bench twins of
+  the two above: `/tmp/plxnative-pushbench[=<n>[,<ratingKey>]]` (n push→settle→pop cycles rotating
+  Detail/Person/Library, default n=100 — `fps:push-100`) and
+  `/tmp/plxnative-modalbench[=<n>[,<ratingKey>]]` (n present→settle→dismiss cycles rotating every
+  modal Style reachable without a TV-only gesture — `fps:modal-100`); both log one `bench:` line
+  per cycle (worst-frame ms, presented frames, RSS) and a `bench: ... done` line once, then go
+  idle, graded by `tests/run.py`'s `grade_bench`. See `dev::scenarios::bench`'s module doc. Plus
   `/tmp/plxnative-itemmenu` (snap into the grid, then open the **press-and-hold card context menu**
   on the focused card — `route=home overlay=itemmenu` since UI-restructure phase 10, when the menu
   became a `ModalStack` surface and `route=itemmenu` stopped existing; the interactive path is a
