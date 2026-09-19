@@ -16,6 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from mkipk import storage_archive_errors
 import flavor  # noqa: E402  — ci/flavor.py, which DECIDES a flavour's id and title
+import version_rule  # noqa: E402  — ci/version_rule.py, the shared "next X.Y.Z" arithmetic
 
 ROOT = Path(__file__).resolve().parent.parent
 FAILURES: list[str] = []
@@ -61,28 +62,19 @@ def build_configuration(stamp: str) -> "str | None":
 
 
 def parse_release_line(content: str) -> "tuple[int, int] | None":
-    """Mirror `rust-modules/src/release_line.rs::parse_release_line` exactly: `"X.Y"` (with or
-    without a trailing newline) into its two integers, or `None` for anything else that is not
-    that shape — `"0.6.1"` included, since splitting on the FIRST `.` leaves `"6.1"` for the minor
-    half and that does not parse as one integer either. Malformed content degrades to "absent"
-    (trunk) rather than a build failure, because `RELEASE_LINE` is hand-edited and a bad edit
-    should read as trunk for everyone on the checkout, not as a broken gate.
+    """Mirror `rust-modules/src/release_line.rs::parse_release_line` exactly. Kept as a thin
+    re-export of `ci/version_rule.py`'s copy — the one this file used to own — so nothing else in
+    this module has to change its import.
     """
-    line = content.strip()
-    if "." not in line:
-        return None
-    major, _, minor = line.partition(".")
-    try:
-        return int(major), int(minor)
-    except ValueError:
-        return None
+    return version_rule.parse_release_line(content)
 
 
 def expected_dev_version(appinfo_version: str, release_line_content: "str | None") -> "tuple[str | None, str | None]":
     """The `X.Y.Z-dev` string (no `plxnative@` prefix) `rust-modules/build.rs::emit_version`
     reports for a build that is not `RELEASE=1`, derived by the SAME rule build.rs documents —
     the two must never drift, which is exactly what going and re-deriving it separately here
-    would risk.
+    would risk. The arithmetic itself lives in `ci/version_rule.py::next_version_triplet`, shared
+    with `ci/flavor.py`'s nightly package-version arm; this function only adds the `-dev` suffix.
 
     Trunk (`release_line_content is None` — no tracked `RELEASE_LINE`, matching
     `release_line()`'s "absent means trunk", which also covers a marker present but malformed)
@@ -100,18 +92,24 @@ def expected_dev_version(appinfo_version: str, release_line_content: "str | None
     floating patches for the line it claims to be on, and reporting a plausible-looking dev
     version for it would be worse than refusing.
     """
-    major, minor, patch = (int(x) for x in appinfo_version.split("."))
-    line = parse_release_line(release_line_content) if release_line_content is not None else None
-    if line is None:
-        return f"{major}.{minor + 1}.0-dev", None
-    line_major, line_minor = line
-    if (line_major, line_minor) != (major, minor):
-        return None, (
-            f"RELEASE_LINE names {line_major}.{line_minor} but appinfo.json is at "
-            f"{major}.{minor}.{patch} — mis-cut line (RELEASE_LINE's X.Y must equal "
-            "appinfo.json's major.minor)"
-        )
-    return f"{line_major}.{line_minor}.{patch + 1}-dev", None
+    triplet, err = version_rule.next_version_triplet(appinfo_version, release_line_content)
+    if triplet is None:
+        return None, err
+    return "{}.{}.{}-dev".format(*triplet), None
+
+
+def expected_nightly_package_version(cargo_version: str, release_line_content: "str | None") -> str:
+    """The nightly package's OWN `appinfo.json`/control `version` (three integers, no suffix),
+    computed from `rust-modules/Cargo.toml`'s TRACKED version — the same next-minor-or-next-patch
+    arithmetic `ci/flavor.py::appinfo_for` applies when it moves `version` for the nightly flavour
+    ONLY (`ci/version_rule.py::next_version_triplet`). A build failure (`SystemExit`) on a mis-cut
+    `RELEASE_LINE`, same as `expected_dev_version` — there is no plausible fallback number to grade
+    a nightly package against once the marker disagrees with the tracked version.
+    """
+    triplet, err = version_rule.next_version_triplet(cargo_version, release_line_content)
+    if err:
+        raise SystemExit(err)
+    return "{}.{}.{}".format(*triplet)
 
 
 def _selftest() -> int:
@@ -588,6 +586,12 @@ PACKAGED_ID = staged[0]
 FLAVOR = next((f for f in flavor.FLAVORS if flavor.app_id(f) == PACKAGED_ID), None)
 check(FLAVOR is not None, f"the staged id is a known flavour ({PACKAGED_ID})")
 IS_STABLE = FLAVOR == "stable"
+IS_NIGHTLY = FLAVOR == "nightly"
+# Read ONCE, here, so every check below that needs "what does RELEASE_LINE say" — the nightly
+# package version's agreement with Cargo.toml, and the dev/nightly reported-version checks further
+# down — reads the same content rather than re-opening the file per check.
+_RELEASE_LINE_PATH = ROOT / "RELEASE_LINE"
+RELEASE_LINE_CONTENT = _RELEASE_LINE_PATH.read_text() if _RELEASE_LINE_PATH.exists() else None
 # The staged payload directory — written down ONCE, here, because everything below reads through
 # it: the descriptor, the build-machine-path scan, the binary and the icons.
 PAYLOAD = APPS / PACKAGED_ID
@@ -623,10 +627,22 @@ check(appinfo["version"] == control["Version"],
 # exists to make impossible, and nothing checked it until a release nearly went out that way.
 # (Derived, not copied: `rust-modules/build.rs` reports the next minor with a `-dev` suffix for
 # anything but a RELEASE build, which the binary check further down grades on the bytes.)
+#
+# NIGHTLY IS THE EXCEPTION, and the only one: its PACKAGE version is already the next minor ahead
+# of Cargo.toml's tracked one (`ci/flavor.py::appinfo_for`'s whole reason for moving `version`), so
+# equality here would fail by construction. Graded against the SAME arithmetic instead, via
+# `expected_nightly_package_version` — which is `ci/version_rule.py`'s next-triplet, the one thing
+# both `ci/flavor.py` and this file must agree on.
 cargo = (ROOT / "rust-modules/Cargo.toml").read_text()
 m = re.search(r'^version = "([^"]+)"', cargo, re.M)
-check(m is not None and m.group(1) == appinfo["version"],
-      f'Cargo.toml version == appinfo version ({appinfo["version"]})')
+if IS_NIGHTLY:
+    expected_pkg_version = m and expected_nightly_package_version(m.group(1), RELEASE_LINE_CONTENT)
+    check(m is not None and expected_pkg_version == appinfo["version"],
+          f'nightly appinfo version ({appinfo["version"]}) is the next minor/patch after '
+          f'Cargo.toml ({m and m.group(1)}) — expected {expected_pkg_version}')
+else:
+    check(m is not None and m.group(1) == appinfo["version"],
+          f'Cargo.toml version == appinfo version ({appinfo["version"]})')
 
 # No build machine's directory layout may ship inside the package.
 #
@@ -805,9 +821,15 @@ if binary.exists():
     check(BUILD_ID_NOTE in blob,
           "the packaged binary carries a GNU build id (-Wl,--build-id=sha1 is still on the link)")
     has_dev = DEV_WITNESS in blob
-    if IS_STABLE:
+    if IS_STABLE or IS_NIGHTLY:
+        # Nightly joins stable here rather than getting a branch of its own: it is a THIRD id a
+        # stranger's television installs, and the Makefile's release-guard already refuses to
+        # BUILD it without RELEASE=1 — this is the same rule graded on the bytes, for the reason
+        # `release-guard`'s own comment gives (a reviewer reaching for a documented hatch and
+        # forgetting is exactly the failure a bytes-level gate survives).
         check(not has_dev,
-              f"the {PACKAGED_ID} package carries no dev-trigger surface — that id is what users install")
+              f"the {PACKAGED_ID} package carries no dev-trigger surface — that id is installed "
+              "beside the app users get, on a television, unattended")
     if BUILD == "release":
         check(not has_dev, "the packaged binary is a RELEASE build (no dev triggers compiled in)")
     elif BUILD:
@@ -842,39 +864,58 @@ if binary.exists():
     # by a page the version mechanism never touched. `telemetry::{crashreport,native,playback}`
     # compose `concat!("plxnative@", env!("PLX_VERSION"))` in every configuration — telemetry is
     # ungated on purpose — so this witnesses the emitted value itself.
-    _release_line_path = ROOT / "RELEASE_LINE"
-    _release_line_content = _release_line_path.read_text() if _release_line_path.exists() else None
-    _dev_version_str, _dev_version_err = expected_dev_version(appinfo["version"], _release_line_content)
-    check(_dev_version_err is None,
-          _dev_version_err or "RELEASE_LINE (if tracked) agrees with appinfo.json's major.minor")
-    if _dev_version_err is not None:
-        # Mis-cut line: already failed above. Fall back to trunk's rule so the checks below still
-        # have a string to grade against, rather than crashing on a None this branch already
-        # reported as broken.
-        _major, _minor, _ = (int(x) for x in appinfo["version"].split("."))
-        _dev_version_str = f"{_major}.{_minor + 1}.0-dev"
-    DEV_VERSION = f"plxnative@{_dev_version_str}".encode()
     #
-    # The id is a rule of its own here too, so it sits BESIDE the stamp branch rather than inside
-    # it: whatever configuration produced it, the package users install may not claim a version no
-    # release will ever carry.
-    says_dev = DEV_VERSION in blob
-    if IS_STABLE:
-        check(not says_dev,
-              f"the {PACKAGED_ID} binary reports a released version, not {DEV_VERSION.decode()}"
-              " (build.rs adds the suffix unless PLX_RELEASE is set — RELEASE=1 exports it)")
-        check(f'plxnative@{appinfo["version"]}'.encode() in blob,
-              f'the {PACKAGED_ID} binary reports the packaged version ({appinfo["version"]})')
-    # ...and the configuration is the other half. A `RELEASE=1` build of ANY flavour reports the
-    # exact version — `make FLAVOR=debug RELEASE=1 ipk` is a real combination, the submission
-    # candidate is built that way — so the suffix is graded against the stamp, not against the id.
-    if BUILD == "release":
-        check(not says_dev,
-              f"the RELEASE binary reports {appinfo['version']} exactly, not {DEV_VERSION.decode()}")
-    elif BUILD == "dev":
-        check(says_dev,
-              f"the dev binary says it is one ({DEV_VERSION.decode()}) — which is also what proves"
-              " the suffix still reaches the bytes")
+    # NIGHTLY IS GRADED SEPARATELY. Its package version (`appinfo["version"]`, already checked
+    # against Cargo.toml above) IS the next-minor-or-patch number — recomputing "next" a second
+    # time from it would double-bump and grade against a version nobody built. Its REPORTED
+    # version instead adds `build.rs`'s `-nightly-<date>` suffix on top of that SAME number, dated
+    # by whatever `PLX_NIGHTLY_DATE` the build actually ran with — a build-time env var this script
+    # has no other record of, so the date is graded by SHAPE (8 digits), not by value.
+    if IS_NIGHTLY:
+        nightly_pattern = re.compile(
+            rb"plxnative@" + re.escape(appinfo["version"].encode()) + rb"-nightly-[0-9]{8}\b"
+        )
+        check(nightly_pattern.search(blob) is not None,
+              f"the {PACKAGED_ID} binary reports {appinfo['version']}-nightly-<8 digits> "
+              "(build.rs's PLX_CHANNEL=nightly arm, dated by PLX_NIGHTLY_DATE)")
+        # Nightly is always RELEASE=1 (release-guard refuses otherwise) — grade that on the stamp
+        # too, the same way the dev-trigger witness above grades it on the bytes.
+        check(BUILD == "release",
+              f"the {PACKAGED_ID} package is a RELEASE build stamp (pkg/.build-config decoded as "
+              f"{BUILD!r}) — nightly never ships a dev build")
+    else:
+        _dev_version_str, _dev_version_err = expected_dev_version(appinfo["version"], RELEASE_LINE_CONTENT)
+        check(_dev_version_err is None,
+              _dev_version_err or "RELEASE_LINE (if tracked) agrees with appinfo.json's major.minor")
+        if _dev_version_err is not None:
+            # Mis-cut line: already failed above. Fall back to trunk's rule so the checks below
+            # still have a string to grade against, rather than crashing on a None this branch
+            # already reported as broken.
+            _major, _minor, _ = (int(x) for x in appinfo["version"].split("."))
+            _dev_version_str = f"{_major}.{_minor + 1}.0-dev"
+        DEV_VERSION = f"plxnative@{_dev_version_str}".encode()
+        #
+        # The id is a rule of its own here too, so it sits BESIDE the stamp branch rather than
+        # inside it: whatever configuration produced it, the package users install may not claim a
+        # version no release will ever carry.
+        says_dev = DEV_VERSION in blob
+        if IS_STABLE:
+            check(not says_dev,
+                  f"the {PACKAGED_ID} binary reports a released version, not {DEV_VERSION.decode()}"
+                  " (build.rs adds the suffix unless PLX_RELEASE is set — RELEASE=1 exports it)")
+            check(f'plxnative@{appinfo["version"]}'.encode() in blob,
+                  f'the {PACKAGED_ID} binary reports the packaged version ({appinfo["version"]})')
+        # ...and the configuration is the other half. A `RELEASE=1` build of ANY flavour reports
+        # the exact version — `make FLAVOR=debug RELEASE=1 ipk` is a real combination, the
+        # submission candidate is built that way — so the suffix is graded against the stamp, not
+        # against the id.
+        if BUILD == "release":
+            check(not says_dev,
+                  f"the RELEASE binary reports {appinfo['version']} exactly, not {DEV_VERSION.decode()}")
+        elif BUILD == "dev":
+            check(says_dev,
+                  f"the dev binary says it is one ({DEV_VERSION.decode()}) — which is also what"
+                  " proves the suffix still reaches the bytes")
 
 # The checksum file has to verify where a USER stands: they download it beside the .ipk, so a
 # `pkg/` prefix in the line makes `shasum -a 256 -c` fail for everyone. It did, through v0.2.1.
@@ -905,9 +946,16 @@ check(not appinfo["id"].startswith(("com.palm", "com.webos", "com.lge", "com.pal
 # The crate version is a THIRD copy of the same number: plex/identity.rs sends it to both Plex
 # services as X-Plex-Version (through `PLX_VERSION`, which `build.rs` derives from it), so a build
 # whose Cargo.toml disagreed with appinfo.json would report a version no release ever had.
+# Nightly again the exception, and graded the same way as the first Cargo.toml witness above.
 cargo_ver = re.search(r'^version\s*=\s*"([^"]+)"', (ROOT / "rust-modules/Cargo.toml").read_text(), re.M)
-check(cargo_ver is not None and cargo_ver.group(1) == appinfo["version"],
-      f'rust-modules/Cargo.toml version == appinfo version ({appinfo["version"]})')
+if IS_NIGHTLY:
+    expected_pkg_version = cargo_ver and expected_nightly_package_version(cargo_ver.group(1), RELEASE_LINE_CONTENT)
+    check(cargo_ver is not None and expected_pkg_version == appinfo["version"],
+          f'rust-modules/Cargo.toml next-minor/patch ({expected_pkg_version}) == nightly appinfo '
+          f'version ({appinfo["version"]})')
+else:
+    check(cargo_ver is not None and cargo_ver.group(1) == appinfo["version"],
+          f'rust-modules/Cargo.toml version == appinfo version ({appinfo["version"]})')
 
 # Control-file provenance. None of this is read by opkg, and that is the point: it is what a
 # human — a webosbrew reviewer, or a user running `opkg info` — sees about who ships this and
