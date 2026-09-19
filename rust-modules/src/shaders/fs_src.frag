@@ -97,7 +97,7 @@ void main(){
     // runs on more fragments than any other (every rect, scrim, pill and row highlight), and the
     // shared dither's uniform branch alone was measured at +4M shader words a frame across the
     // hero paging scene (`docs/backdrop-blur-profiling.md`, 2026-09-04). The slow fields that band
-    // — the ambient wash, the glass blur, the modal ground — carry `dither.glsl`; a rect does not.
+    // — the ambient wash, the glass blur, the underlay field — carry `dither.glsl`; a rect does not.
     gl_FragColor = mix(u_colTop, u_colBot, vy);
     return;
   }

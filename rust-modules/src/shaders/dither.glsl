@@ -11,7 +11,9 @@
 // `fs_shadow.frag`'s penumbra had nothing, and `fs_glass.frag` — the popover background this was
 // reported against — had a hash that was both structured AND unconditional. Five programs, four
 // answers. This file is the one answer — for the three programs whose ramp is a slow FIELD:
-// `fs_ambient.frag`, `fs_modal_ground.frag`, `fs_glass.frag`. `fs_src.frag` and `fs_shadow.frag`
+// `fs_ambient.frag`, `fs_field.frag`, `fs_glass.frag` (`fs_field.frag`, the underlay field, took
+// the slot of `fs_modal_ground.frag` when that dead chain was deleted, 2026-09-19).
+// `fs_src.frag` and `fs_shadow.frag`
 // carried it too for two days and were taken back off on 2026-09-04: rule 1 below makes the branch
 // cheap, not free, and on the two programs behind every rect and every card shadow it measured
 // +4M shader words a frame on hero paging with every ramp test answering 0 — the whole of a 57→50

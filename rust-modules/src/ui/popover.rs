@@ -748,12 +748,6 @@ impl Popover {
         }
     }
 
-    /// Paint the shared, full-screen Settings-family ground through this popover's glass policy.
-    /// The screen deliberately cannot reach into `glass`: keeping that field private preserves the
-    /// activation/snapshot lifetime owned by `Popover`.
-    pub(crate) fn modal_ground(&self, p: Painter, r: Rect) {
-        self.glass.modal_ground(p, r);
-    }
 }
 
 /// **Give back the three global counters, for a panel that is dropped while still up.**
