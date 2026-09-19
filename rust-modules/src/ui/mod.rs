@@ -328,37 +328,19 @@ pub trait View {
 /// [`Painter::text`]/[`text_fade`](Painter::text_fade)/[`text_fade_v`](Painter::text_fade_v)'s
 /// recording branch still has to answer a width — the caller lays out from it the same frame — but
 /// `Painter` is `Copy` and threaded through hundreds of draw leaves with no capability parameter to
-/// grow one onto (the same shape `widgets::LegacyMeasure`'s doc describes). This mirrors that leaf:
-/// the identical free functions `TtfMeasure` wraps, minus its boot-order `debug_assert!`, so a
-/// warming pass recorded before a host test's `init_text` never trips it.
-struct RecordingMeasure;
-
-impl crate::ui::machine::Measure for RecordingMeasure {
-    fn width(&self, s: &CStr, sz: c_int, bold: bool) -> f32 {
-        crate::text::text_width(s.as_ptr(), sz, bold as c_int)
-    }
-    fn cap_h(&self, sz: c_int) -> f32 {
-        crate::text::cap_h(sz, 0)
-    }
-    fn line_h(&self, sz: c_int) -> f32 {
-        crate::text::text_height(sz, 0)
-    }
-    fn live_font(&self) -> bool {
-        true
-    }
-}
-
-/// The three text-recording call sites share this: builds the `&CStr` [`Measure::width`] takes
-/// from the raw pointer a draw call is handed, the same null guard `crate::text::draw_text` (the
-/// ordinary, non-recording path) applies before it ever reaches a measurement.
-///
-/// [`Measure::width`]: crate::ui::machine::Measure::width
+/// grow one onto. Rather than a second `impl Measure for` (the `textmeasure` gate's structural
+/// exemption would wave it through, but that is the gate learning to look somewhere new for the
+/// exact raw call it exists to forbid, not the layering it asks for), this reaches for the leaf
+/// already sanctioned for precisely this shape: [`widgets::LegacyMeasure`](widgets::LegacyMeasure)
+/// wraps the identical free functions `TtfMeasure` does, minus its boot-order `debug_assert!`, so a
+/// warming pass recorded before a host test's `init_text` never trips it. The null guard mirrors
+/// `crate::text::draw_text`'s own — the ordinary, non-recording path this stands in for.
 fn recorded_text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
     if s.is_null() {
         return 0.0;
     }
     use crate::ui::machine::Measure as _;
-    RecordingMeasure.width(unsafe { CStr::from_ptr(s) }, sz, bold != 0)
+    widgets::LegacyMeasure.width(unsafe { CStr::from_ptr(s) }, sz, bold != 0)
 }
 
 /// Folds a cascading alpha (+ optional translate) into every primitive call.
