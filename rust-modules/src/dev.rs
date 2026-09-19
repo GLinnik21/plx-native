@@ -343,7 +343,7 @@ pub(crate) fn server_slot() -> Option<Result<u16, String>> {
     None
 }
 
-/// **Crash the app on purpose** — `plxnative-crashtest=<segv|abrt|bus|ill|trap|panic>`.
+/// **Crash the app on purpose** — `plxnative-crashtest=<segv|abrt|bus|ill|trap|panic|unwind>`.
 ///
 /// Not a feature. An INSTRUMENT for the instrument, and it exists because of the rule this repo
 /// keeps re-learning: prove the instrument can see the thing before you read its silence, and
@@ -363,11 +363,16 @@ pub(crate) fn server_slot() -> Option<Result<u16, String>> {
 /// libav: the hook writes its `*** RUST PANIC` line, the unwind stops at the callback's own
 /// boundary, and the process aborts with `plex_run`'s frame intact. That leaves BOTH a panic
 /// record and a native SIGABRT envelope, the pair `telemetry::crashreport` must send as the one
-/// panic. A `panic!` straight in here would instead unwind `plex_run`'s own frame before aborting
-/// at its boundary; that used to drop the telemetry `Guard` and stop the native backend before the
-/// abort (dev set, 2026-09-19), so no envelope was written. The `Guard` now stays armed while a
-/// panic unwinds (`telemetry::native`'s `Drop for Guard`), but the callback remains the shape
-/// worth exercising: it is how a real panic under libav dies.
+/// panic.
+///
+/// `unwind` panics straight in here instead, so the unwind crosses `plex_run`'s own frame before
+/// aborting at its `extern "C"` boundary. That used to drop the telemetry `Guard` on the way past
+/// and stop the native backend before the abort landed (dev set, 2026-09-19), so no envelope was
+/// written. `Drop for Guard` (`telemetry::native`) now checks `std::thread::panicking()` and
+/// returns early instead of tearing the backend down, so the backend stays armed through the
+/// unwind and the boundary abort still produces a native SIGABRT envelope (PR #168). `panic`
+/// remains the shape worth exercising for a real panic under libav; `unwind` is the regression
+/// test for the `Guard` fix itself.
 ///
 /// **Compiled out of a release build** with the rest of `devtriggers`, so a shipped binary has no
 /// path to it at all. Called after telemetry boot (so native capture can be armed) but before SDL
@@ -384,6 +389,12 @@ pub(crate) fn crash_on_purpose() {
         crate::log("crashtest: DELIBERATE crash, kind=panic (aborts at an extern \"C\" callback)");
         callback();
         return;
+    }
+    if kind == "unwind" {
+        crate::log(
+            "crashtest: DELIBERATE crash, kind=unwind (unwinds plex_run to its extern \"C\" boundary)",
+        );
+        panic!("crashtest: deliberate unwinding panic");
     }
     // The signal numbers are Linux's, written out rather than taken from a libc crate: this crate
     // binds no libc, and these five have been stable in the Linux ABI since it had one.
