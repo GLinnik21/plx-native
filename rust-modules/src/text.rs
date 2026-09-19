@@ -68,7 +68,8 @@
 //! ship. `fontcov`'s `rtl_is_out_of_scope_and_stays_that_way` asserts the absence so this stays a
 //! decision rather than an oversight.
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::ffi::{CStr, CString};
 use std::hash::{Hash, Hasher};
@@ -305,6 +306,132 @@ static mut TFRAME_ARMED: bool = false;
 static mut TLIVE: u32 = 0;
 static mut TEVICTED_HOT: u32 = 0;
 
+/// Leave this many slots outside a page prewarm. They are the moving window for chrome, a modal,
+/// and strings which arrive after the recording pass (spec §8.1's occupancy bound).
+const PREWARM_HEADROOM: usize = 32;
+
+/// One cache key copied out of a recording painter. The C string passed to a painter is usually a
+/// frame-local `CString`; owning the bytes here is what makes a request safe to drain on a later
+/// dip frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WarmKey {
+    bytes: Vec<u8>,
+    sz: c_int,
+    bold: c_int,
+}
+
+thread_local! {
+    /// Main-render-thread only, like the glyph cache itself. A queue instead of eager work is the
+    /// boundary that lets `PageDip` spend a fixed slice of each outgoing frame.
+    static PREWARM: RefCell<VecDeque<WarmKey>> = const { RefCell::new(VecDeque::new()) };
+    #[cfg(test)]
+    static PREWARMED_FOR_TEST: RefCell<Vec<WarmKey>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Does the resident cache already hold this exact key? Unlike `text_tex`, this does not touch the
+/// LRU or the frame occupancy: merely observing a destination must not make it hot.
+fn cache_has(s: &[u8], sz: c_int, bold: c_int) -> bool {
+    let hash = key_hash(s, sz, bold);
+    unsafe {
+        (&*addr_of!(TCACHE_A)).iter().any(|e| {
+            e.hash == hash
+                && e.tex != 0
+                && e.sz == sz
+                && e.bold == bold
+                && e.klen as usize == s.len()
+                && s.starts_with(entry_key(e))
+        })
+    }
+}
+
+/// Record a text-cache miss from an off-screen painter. Duplicate draws of the same label collapse
+/// to one job, and the queue is refused before it can consume the cache's 32-slot safety margin.
+pub(crate) fn queue_prewarm(s: *const c_char, sz: c_int, bold: c_int) {
+    if s.is_null() {
+        return;
+    }
+    let bytes = unsafe { CStr::from_ptr(s).to_bytes() };
+    if bytes.is_empty() || cache_has(bytes, sz, bold) {
+        return;
+    }
+    PREWARM.with(|q| {
+        let mut q = q.borrow_mut();
+        if q.iter().any(|k| k.sz == sz && k.bold == bold && k.bytes == bytes) {
+            return;
+        }
+        let ceiling = TCACHE.saturating_sub(PREWARM_HEADROOM);
+        if live_this_frame() as usize + q.len() >= ceiling {
+            return;
+        }
+        q.push_back(WarmKey { bytes: bytes.to_vec(), sz, bold });
+    });
+}
+
+/// Drain jobs until the deadline reached by `now`. The clock is read before starting each next
+/// item, so an indivisible TTF render may finish just beyond the deadline but no further render is
+/// begun there. On the measured pages one item is ~1 ms; the six-millisecond caller budget keeps
+/// that bounded while guaranteeing forward progress.
+fn drain_budgeted<T>(
+    jobs: &mut VecDeque<T>,
+    budget_us: u64,
+    mut now: impl FnMut() -> u64,
+    mut run: impl FnMut(&T),
+) -> usize {
+    let start = now();
+    let mut done = 0;
+    while !jobs.is_empty() && (done == 0 || now().saturating_sub(start) < budget_us) {
+        let job = jobs.pop_front().expect("checked non-empty");
+        run(&job);
+        done += 1;
+    }
+    done
+}
+
+/// Rasterise and upload recorded misses for one dip frame. Host tests deliberately substitute a
+/// residency ledger: there is no GL context there, while the queue and deadline remain identical.
+pub(crate) fn drain_prewarm(budget_us: u64, now: impl FnMut() -> u64) -> usize {
+    PREWARM.with(|slot| {
+        let mut jobs = std::mem::take(&mut *slot.borrow_mut());
+        let done = drain_budgeted(&mut jobs, budget_us, now, |job| {
+            #[cfg(not(test))]
+            unsafe {
+                if *addr_of!(TEXT_OK) != 0 {
+                    if let Ok(s) = CString::new(job.bytes.clone()) {
+                        let _ = text_tex(&job.bytes, s.as_ptr(), job.sz, job.bold);
+                    }
+                }
+            }
+            #[cfg(test)]
+            PREWARMED_FOR_TEST.with(|w| {
+                let mut w = w.borrow_mut();
+                if !w.contains(job) {
+                    w.push(job.clone());
+                }
+            });
+        });
+        *slot.borrow_mut() = jobs;
+        done
+    })
+}
+
+/// A transition ended or was replaced. Never carry its destination's work into an unrelated dip.
+pub(crate) fn clear_prewarm() {
+    PREWARM.with(|q| q.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(crate) fn reset_prewarm_for_test() {
+    clear_prewarm();
+    PREWARMED_FOR_TEST.with(|w| w.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(crate) fn prewarm_resident_for_test(bytes: &[u8], sz: c_int, bold: c_int) -> bool {
+    PREWARMED_FOR_TEST.with(|w| {
+        w.borrow().iter().any(|k| k.bytes == bytes && k.sz == sz && k.bold == bold)
+    })
+}
+
 /// An entry drawn within this many frames is HOT and is not evicted while any colder slot exists.
 ///
 /// Eight at 60 Hz is ~133 ms — comfortably longer than a route cross-fade's dip and than the
@@ -330,18 +457,15 @@ pub(crate) fn begin_frame() {
 
 /// **How many distinct cache entries this frame has touched** — its occupancy.
 ///
-/// The number a prewarm would have to be refused against: §8.1's bound is
-/// `live_this_frame + prewarmed > TCACHE - 32`. **There is no prewarm path in this tree** — the
-/// only `warm` in the image caches is `ui::tex`'s, for posters and clearLogos, and nothing renders
-/// text ahead of a draw — so that comparison has no caller and none is invented here. This is the
-/// half of it that can be true today: the measurement, for the heartbeat and for the moment a
-/// prewarm does exist.
+/// The number the page-dip prewarm is refused against: §8.1's bound is
+/// `live_this_frame + queued > TCACHE - 32`. The outgoing page touches its live text first, then the
+/// recording painter admits destination misses only while that safety margin remains. A warmed
+/// entry is touched by `text_tex` during the budgeted drain and therefore joins this count exactly
+/// like an ordinary draw.
 ///
 /// It counts an entry the first time it is touched in a frame, whether that touch was a HIT or a
 /// fresh store: the question is how much of the cache this frame is standing on, and a string
 /// rendered this frame occupies its slot exactly as one that was already there does.
-#[allow(dead_code)] // no caller yet: see this function's doc — there is no prewarm path to bound,
-// and the heartbeat's occupancy field is another lane's wiring
 pub(crate) fn live_this_frame() -> u32 {
     unsafe { *addr_of!(TLIVE) }
 }
@@ -1613,6 +1737,25 @@ mod cache_policy_tests {
     //! what these cannot see is the rasterization on the other side of it, which is a device
     //! question exactly as the run splitter's is.
     use super::*;
+
+    #[test]
+    fn warming_respects_the_per_frame_budget_and_never_blocks_the_dip() {
+        use std::cell::Cell;
+        use std::collections::VecDeque;
+
+        let clock = Cell::new(0u64);
+        let mut jobs = VecDeque::from([1u8, 2, 3, 4, 5]);
+        let warmed = drain_budgeted(
+            &mut jobs,
+            6_000,
+            || clock.get(),
+            |_| clock.set(clock.get() + 2_000),
+        );
+
+        assert_eq!(warmed, 3, "only work fitting this dip frame was started");
+        assert_eq!(clock.get(), 6_000, "the warmer yielded at its named deadline");
+        assert_eq!(jobs.into_iter().collect::<Vec<_>>(), vec![4, 5]);
+    }
 
     /// A cache of `n` occupied slots whose `use_` serials are the given ones (in slot order), the
     /// rest empty.
