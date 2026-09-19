@@ -459,6 +459,7 @@ pub(crate) fn commit_track(
             crate::route::commit_audio_selection(ps, ordinal, &codec, stream_id),
         TrackCommit::Subtitle { render_ordinal, stream_id } =>
             crate::route::commit_subtitle_selection(ps, render_ordinal, stream_id),
+        TrackCommit::SubtitleTone(tone) => crate::player::set_subtitle_tone(tone),
     }
 }
 

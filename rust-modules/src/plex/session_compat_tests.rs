@@ -252,3 +252,55 @@ fn invalid_auto_sign_in_is_soft_and_off() {
         assert!(!s.auto_sign_in(), "{value}");
     }
 }
+
+/// The subtitle tone's file contract, in both directions: absence is WHITE (every file written
+/// before the field existed must keep drawing what it drew), a spelling this build does not know
+/// is white rather than a parse failure that would cost the credentials, and every rung survives
+/// the wire under its own explicit name.
+#[test]
+fn the_subtitle_tone_is_white_when_absent_or_unknown_and_round_trips_every_rung() {
+    let parsed: Session = serde_json::from_str(r#"{"client_id":"c"}"#).unwrap();
+    assert_eq!(parsed.subtitle_tone(), SubtitleTone::White);
+    for damaged in [r#""mauve""#, "7", "null", r#"{"a":1}"#] {
+        let text = format!(r#"{{"client_id":"c","subtitle_tone":{damaged}}}"#);
+        let parsed: Session = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed.client_id, "c", "a bad tone must not cost the session: {damaged}");
+        assert_eq!(parsed.subtitle_tone(), SubtitleTone::White, "{damaged}");
+    }
+    for (tone, wire) in [
+        (SubtitleTone::White, "white"),
+        (SubtitleTone::Silver, "grey_85"),
+        (SubtitleTone::LightGrey, "grey_70"),
+        (SubtitleTone::Grey, "grey_55"),
+        (SubtitleTone::DarkGrey, "grey_40"),
+        (SubtitleTone::Charcoal, "grey_28"),
+    ] {
+        let json = serde_json::to_value(Session::default().with_subtitle_tone(tone)).unwrap();
+        assert_eq!(json["subtitle_tone"], wire);
+        let again: Session = serde_json::from_value(json).unwrap();
+        assert_eq!(again.subtitle_tone(), tone);
+    }
+    // the ladder is every rung once, lightest first, and the index is its own inverse
+    assert_eq!(SubtitleTone::LADDER[0], SubtitleTone::White);
+    for (i, tone) in SubtitleTone::LADDER.iter().enumerate() {
+        assert_eq!(tone.index() as usize, i);
+        assert_eq!(SubtitleTone::from_index(i as u8), *tone);
+        assert!(!tone.label().is_empty());
+    }
+    assert_eq!(SubtitleTone::from_index(200), SubtitleTone::White, "out of range is white");
+}
+
+/// The tone lives in the PUBLIC preferences half of the canonical split, so it must survive
+/// `split_public` → `join_canonical` and the locked-bundle `public_session` snapshot alike.
+#[test]
+fn the_subtitle_tone_survives_the_canonical_split() {
+    let session = Session::default().with_subtitle_tone(SubtitleTone::DarkGrey);
+    let public = split_public(&session).unwrap();
+    assert_eq!(public.preferences["subtitle_tone"], "grey_40");
+    let joined = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
+    assert_eq!(joined.subtitle_tone(), SubtitleTone::DarkGrey);
+    assert_eq!(public_session(&public).subtitle_tone(), SubtitleTone::DarkGrey);
+    // …and a null preferences blob is white, not a failure
+    let empty = crate::storage::state::PublicPayload::default();
+    assert_eq!(public_session(&empty).subtitle_tone(), SubtitleTone::White);
+}
