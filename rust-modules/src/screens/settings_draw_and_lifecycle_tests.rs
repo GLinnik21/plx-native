@@ -19,6 +19,9 @@ use super::test_support::*;
 /// can set.
 #[test]
 fn settings_scrim_and_entrance_alpha_compose_local_and_nav_page_alpha() {
+    // The peak is the PANEL role's row in `theme::underlay`, not a number of this module's.
+    const SCRIM_A: f32 = theme::underlay::DIM_PANEL;
+    assert_eq!(SCRIM_A, 0.46, "Settings' dim is the design's `scrimStill`");
     assert_eq!(settings_scrim_alpha(1.0, 1.0), SCRIM_A);
     assert_eq!(settings_entrance_alpha(1.0, 1.0), 1.0);
     // the surface is fully open (local 1.0) but the route beneath it is mid-dip (0.5): both

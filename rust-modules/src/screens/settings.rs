@@ -65,7 +65,6 @@ pub(crate) enum Family {
 const PUSH_K: f32 = 200.0;
 const PARENT_TRAVEL: f32 = 0.35;
 const CHILD_LEAD: f32 = 0.22;
-const SCRIM_A: f32 = theme::alert::SCRIM_A;
 
 /// The `Family::Settings` scrim's ink alpha: the surface's own appear (`local_alpha`, the
 /// `RouteSurface`'s `page_alpha` after its container's overwrite) composed with the ROUTE-level
@@ -73,11 +72,11 @@ const SCRIM_A: f32 = theme::alert::SCRIM_A;
 /// scrim never reads as present-but-undimmed while a Home↔Library route change is still fading
 /// underneath a Settings surface that is itself already fully open.
 fn settings_scrim_alpha(local_alpha: f32, nav_page_alpha: f32) -> f32 {
-    SCRIM_A * local_alpha * nav_page_alpha
+    theme::underlay::DIM_PANEL * local_alpha * nav_page_alpha
 }
 
 /// The `Family::Settings` entrance cascade's alpha: same composition as
-/// [`settings_scrim_alpha`], undivided by `SCRIM_A` — what the ground and the pages themselves
+/// [`settings_scrim_alpha`], undivided by `theme::underlay::DIM_PANEL` — what the ground and the pages themselves
 /// draw through.
 fn settings_entrance_alpha(local_alpha: f32, nav_page_alpha: f32) -> f32 {
     local_alpha * nav_page_alpha

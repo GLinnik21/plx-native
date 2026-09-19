@@ -748,12 +748,6 @@ impl Popover {
         }
     }
 
-    /// Paint the shared, full-screen Settings-family ground through this popover's glass policy.
-    /// The screen deliberately cannot reach into `glass`: keeping that field private preserves the
-    /// activation/snapshot lifetime owned by `Popover`.
-    pub(crate) fn modal_ground(&self, p: Painter, r: Rect) {
-        self.glass.modal_ground(p, r);
-    }
 }
 
 /// **Give back the three global counters, for a panel that is dropped while still up.**
@@ -895,10 +889,27 @@ pub(crate) mod host {
         }
         if unsafe { (*std::ptr::addr_of_mut!(CACHE)).capture() } {
             unsafe { HELD = Held::Page };
+            PAGE_EPOCH.fetch_add(1, Relaxed);
             true
         } else {
             false
         }
+    }
+
+    /// Bumped by every successful [`capture_now`] — i.e. every time the one snapshot starts to
+    /// describe a NEW undimmed host page. Only the `Held::Page` stage counts: the ground capture in
+    /// [`ground_drawn`] contains the scrim, and nothing may ever key an undimmed reading off it.
+    static PAGE_EPOCH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+    /// **Which host page the snapshot holds**, as a number that changes exactly when it is re-taken.
+    ///
+    /// `containers::modal::ModalUnderlay` keys its field's latch on it: the dim a surface asks its
+    /// host for inherits the host's own light, and that light has to be re-read when — and only
+    /// when — the page under the surface has been re-captured. It reads it at the head of
+    /// `ModalStack::draw_scrims`, which runs inside the frame's first [`live`], so a capture owed
+    /// this frame has already been taken and counted by then.
+    pub(crate) fn page_epoch() -> u32 {
+        PAGE_EPOCH.load(Relaxed)
     }
 
     /// How many open popovers want a frozen host.
@@ -978,12 +989,13 @@ pub(crate) mod host {
         if crate::gfx::video_plane_refuses("popover::host::begin_frame") {
             return;
         }
-        // Published for the renderer before anything draws: `gfx::page_wash_dither` reads it, so a
-        // popover's own appear spring cannot strip the dither off the page snapshot under it. The
-        // same OR `host_refresh` reads below: the scoped verdict app.rs threads in (Home, the
-        // Library, Search, the press dip) plus the unscoped one (Detail updates outside
-        // `scoped_motion` and reports through `idle::page_moving`) — Codex review, 2026-09-04.
-        crate::ui::idle::note_underlay_motion(page_moving || crate::ui::idle::page_moving());
+        // This frame's page verdict — the scoped one app.rs threads in (Home, the Library, Search,
+        // the press dip) OR'd with the unscoped one (Detail updates outside `scoped_motion` and
+        // reports through `idle::page_moving`) — is the host cache's business and nothing else's;
+        // `moving` below is where it is taken. It used to be PUBLISHED here as well, for
+        // `gfx::page_wash_dither` to read, until 2026-09-19 proved a page-wide verdict is the wrong
+        // question for a wash: the wash's own dissolve is in it. (That function is gone too: every
+        // wash dithers on every frame now — `gfx::draw_ambient`.)
         let own = OWN_DAMAGE.swap(false, Relaxed);
         let own_motion = OWN_MOTION.swap(false, Relaxed);
         // The glass backdrop's ledger stays MERGED: re-sourcing a blur one frame late self-heals on

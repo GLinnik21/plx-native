@@ -24,10 +24,11 @@
 //! own name at `size::DISPLAY` (48) at x≈474, y≈96, which is *directly behind this panel's top-left
 //! corner*, where the eyebrow and the identity line sit — and more squarely so than it used to,
 //! since that band top-aligns on the name's cap top now, which makes y≈96 exact rather than
-//! approximate. The mock could stage that away; we cannot, so the page is dimmed at [`SCRIM_A`] —
-//! [`theme::SCRIM_TEXT_A`], the measured text-legibility floor — before the frost ever samples it.
-//! The anchored chip menus use 0.45 because nothing of theirs is fine print over a headline; this
-//! panel's whole lower half is.
+//! approximate. The mock could stage that away; we cannot, so the page is dimmed at
+//! [`theme::underlay::DIM_PROSE`] — the measured text-legibility floor [`theme::SCRIM_TEXT_A`], as
+//! the PROSE role's weight — before the frost ever samples it. The anchored menus use the lighter
+//! COMPACT/PANEL roles because nothing of theirs is fine print over a headline; this panel's whole
+//! lower half is.
 //!
 //! **The lift that value was chosen against was measured while that name was `size::HERO` (72)**,
 //! and it has not been re-taken since the band stopped condensing and the name dropped to DISPLAY.
@@ -98,10 +99,6 @@ const PANEL_H: f32 = 676.0;
 /// The one padding, on all four sides. Quoted with [`theme::ALERT_PANEL_RAD`] because the two constrain
 /// each other — see that token for why a bigger corner would eat this box.
 const PAD: f32 = theme::alert::PAD;
-
-/// The page dim. See the module doc — this is heavier than the chip menus' 0.45 on purpose, and it
-/// is a named token rather than a tuned number.
-const SCRIM_A: f32 = theme::SCRIM_TEXT_A;
 
 /// Air between paragraphs of the biography. A block gap, one `space` rung — the paragraphs are
 /// separate thoughts, not separate blocks of the page.
@@ -391,14 +388,15 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::PersonLike
         );
         glass.prepare_dynamic(&mut self.glass, refresh);
     }
-    /// The page dim. Heavier than a chip menu's 0.45 on purpose — see the module doc's point 1:
-    /// this page draws the person's own name at `size::DISPLAY` directly behind this sheet's top
-    /// corner, and a large name read through a 72% frost lifts the ground under the fine print past
-    /// its graded contrast. `theme::SCRIM_TEXT_A` is the measured text-legibility floor.
+    /// The page dim, at the PROSE role. Heavier than a menu's on purpose — see the module doc's
+    /// point 1: this page draws the person's own name at `size::DISPLAY` directly behind this
+    /// sheet's top corner, and a large name read through a 72% frost lifts the ground under the
+    /// fine print past its graded contrast. `theme::underlay::DIM_PROSE` restates the measured
+    /// text-legibility floor `theme::SCRIM_TEXT_A` as this role's weight.
     ///
     /// Nothing is lifted: the sheet replaces the middle of the frame and holds no control.
     fn scrim(&self) -> crate::ui::screen::Scrim {
-        crate::ui::screen::Scrim::dim(SCRIM_A)
+        crate::ui::screen::Scrim::dim(theme::underlay::DIM_PROSE)
     }
     fn draw(&mut self, f: &mut crate::ui::screen::DrawFrame<'_, '_, H>) {
         // **A surface may not appear in its own backdrop.** The direct blur-source path re-renders
