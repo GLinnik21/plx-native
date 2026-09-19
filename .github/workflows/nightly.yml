@@ -7,15 +7,15 @@ name: Nightly
 # package YAML resolves — never moves off a real, tested release.
 #
 # `plan` decides the day's version and whether there is anything to build; `build` reuses the same
-# ARM build+verify pipeline release.yml and canary.yml already share (`build-package.yml`); `publish`
-# is the only job that can write to the repo's releases; `pages` refreshes the site's "latest
-# nightly" pointer the same day a nightly ships rather than waiting for an unrelated site/docs push;
-# `prune` deletes nightly releases (and their tags) past their 30-day retention, always keeping the
-# newest one even if the schedule went quiet for longer than that.
+# ARM build+verify pipeline release.yml also uses (`build-package.yml`); `publish` is the only job
+# that can write to the repo's releases; `pages` refreshes the site's "latest nightly" pointer the
+# same day a nightly ships rather than waiting for an unrelated site/docs push; `prune` deletes
+# nightly releases (and their tags) past their 30-day retention, always keeping the newest one even
+# if the schedule went quiet for longer than that.
 #
-# This supersedes `canary.yml`'s "prove the public-storage pipeline" job in spirit (see that
-# workflow's own header) but does not replace its `dry_run` semantics one for one: `dry_run` here
-# additionally skips `pages` and `prune`, neither of which canary has.
+# This superseded the retired `canary.yml`'s "prove the public-storage pipeline" job in spirit, but
+# did not replace its `dry_run` semantics one for one: `dry_run` here additionally skips `pages` and
+# `prune`, which that job never had.
 #
 # A THIRD way to run dry, alongside `dry_run: true`: a `pull_request` that touches this workflow
 # or the machinery it depends on (see the `paths:` filter below) builds and gates the PR's own head
@@ -46,7 +46,7 @@ on:
         description: >
           Build and gate everything but skip publish, the site's latest.json refresh, and
           pruning — proves the pipeline (including the shared build-package.yml) with nothing
-          observable outside the run itself, the same idea as canary.yml's own dry_run.
+          observable outside the run itself.
         required: false
         type: boolean
         default: false
@@ -149,22 +149,22 @@ jobs:
     needs: plan
     if: needs.plan.outputs.skip != 'true'
     # The ARM build+verify pipeline itself lives in build-package.yml — shared with release.yml
-    # and canary.yml so a gate added there covers all three callers rather than two of three.
+    # so a gate added there covers both callers rather than only one.
     uses: ./.github/workflows/build-package.yml
     with:
       ref: ${{ needs.plan.outputs.sha }}
       flavor: nightly
       nightly-date: ${{ needs.plan.outputs.date }}
-      # The DEVELOPMENT telemetry pair, same as canary — a nightly is unreleased and untested on a
-      # television, so its crash reports and usage events belong in the project's development
-      # project (`plx-native-dev`), not mixed into what a real release reports. build-package.yml's
-      # own build step asserts this pair specifically for `telemetry: development`.
+      # The DEVELOPMENT telemetry pair — a nightly is unreleased and untested on a television, so
+      # its crash reports and usage events belong in the project's development project
+      # (`plx-native-dev`), not mixed into what a real release reports. build-package.yml's own
+      # build step asserts this pair specifically for `telemetry: development`.
       telemetry: development
       artifact: nightly-assets
       # The package REDISTRIBUTES FFmpeg, so the LGPL corresponding-source obligation applies here
       # exactly as it does to a stable release — this is the fail-closed default anyway, but named
-      # explicitly because canary's opt-out (a known, separately tracked gap) must not read as
-      # precedent for a caller that actually publishes to the public.
+      # explicitly because a nightly actually publishes to the public and inherits the same
+      # obligation as a stable release.
       source-asset: true
       fwcompat: true
       # Release deliberately builds uncached for reproducibility; nightly runs once a day rather
@@ -197,8 +197,7 @@ jobs:
           fetch-depth: 0
       - name: Refuse to overwrite an immutable nightly
         # `ci/nightly.py plan` already checked the LOCAL tag list at plan time; this re-checks
-        # against the remote right before publishing, the same belt-and-suspenders shape
-        # canary.yml's own "Refuse to overwrite" step uses, for the same reason: plan and publish
+        # against the remote right before publishing, belt-and-suspenders because plan and publish
         # run minutes apart and a concurrent run (or a hand-pushed tag) could land in between.
         # Pointless (and a needless GH_TOKEN use) in a dry run, which never reaches
         # `gh release create` and has no tag to protect.
@@ -269,9 +268,9 @@ jobs:
             --prerelease \
             --latest=false \
             --notes-file "$RUNNER_TEMP/notes.md"
-          # Re-derive every published claim from the live release, the same shape canary.yml
-          # already verifies with: prerelease, target sha, uploader, and the downloaded bytes
-          # hashing to what was staged.
+          # Re-derive every published claim from the live release rather than trusting
+          # `gh release create`'s own exit code: prerelease, target sha, uploader, and the
+          # downloaded bytes hashing to what was staged.
           test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .prerelease)" = true
           test "$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq .target_commitish)" = "$SHA"
           test "$(git ls-remote --tags origin "refs/tags/$TAG" | awk '{print $1}')" = "$SHA"

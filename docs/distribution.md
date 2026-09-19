@@ -1200,11 +1200,13 @@ build you did not make.
 
 ## 8. Release CI (built 2026-08-01)
 
-`.github/workflows/{ci,release,canary,build-package}.yml` + `.github/actions/webos-ndk` + `ci/`.
+`.github/workflows/{ci,release,nightly,build-package}.yml` + `.github/actions/webos-ndk` + `ci/`.
 The ARM build+verify pipeline itself lives once, in `build-package.yml`, as a reusable
-(`workflow_call`) workflow — `release.yml`'s `build` job and `canary.yml`'s `build` job are both
+(`workflow_call`) workflow — `release.yml`'s `build` job and `nightly.yml`'s `build` job are both
 thin callers into it, selecting a flavour, a telemetry pair, and which optional steps (the
-Homebrew manifest, the LGPL source asset, caches, the firmware-database gate) apply.
+Homebrew manifest, the LGPL source asset, caches, the firmware-database gate) apply. (A third
+caller, `canary.yml`, existed the same way before nightly replaced it; its public prereleases
+remain on GitHub as history.)
 
 **The runner is forced.** `webosbrew/native-toolchain` publishes exactly three host builds for
 `webos-d7ed7ee.6` — `darwin-arm64`, `darwin-x86_64`, `linux-aarch64` — and **no linux-x86_64**.
