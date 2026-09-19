@@ -66,6 +66,14 @@ const HERO_FLIP_CD: f32 = 0.35;
 const HERO_AUTO_S: f32 = 8.0;
 const K_SLIDE: f32 = 130.0;
 const HERO_SLIDE_REST_PX: f32 = 0.5;
+/// How near its target the snap dive has to be, in snap units (0 = hero, 1 = grid), before this
+/// page calls the dive over — **together with [`SNAP_REST_VEL`], never alone.** `K_SNAP` is
+/// critically damped, so the dive spends its last dozen frames inside any position threshold worth
+/// picking while the picture is still visibly moving. Read by the present gate.
+const SNAP_REST_POS: f32 = 0.002;
+/// The velocity half of [`SNAP_REST_POS`], in snap units per second — the term that sees the
+/// critically damped tail the position test is blind to.
+const SNAP_REST_VEL: f32 = 0.01;
 const HERO_PREFETCH: usize = 1;
 const HERO_ART_CULL: f32 = 0.996;
 const HERO_WASH_W: [f32; 4] = [0.55, 0.55, 0.40, 0.40];
@@ -152,7 +160,6 @@ impl Backdrop {
         grid_item: Option<&PmsMovie>,
         selected: Option<&(crate::plex::ServerId, String)>,
         snap: f32,
-        sliding: bool,
         dt: f32,
     ) {
         let resolve = |h: Option<HeroRef<'_>>| {
@@ -196,7 +203,6 @@ impl Backdrop {
             AmbientWash::K,
             dt,
         );
-        let _ = sliding;
     }
 
     fn draw(&self, p: Painter, env: &Env, slide: Option<(f32, f32)>) {
@@ -205,9 +211,7 @@ impl Backdrop {
         if !wash_hidden(env.sp, incoming_a, slide.map(|_| outgoing_a))
             && !self.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS)
         {
-            let still = (env.sp <= 0.005 || env.sp >= 0.995) && slide.is_none();
-            self.wash
-                .draw_with(p, Rect::FULL, crate::gfx::page_wash_dither(still));
+            self.wash.draw(p, Rect::FULL);
         }
 
         let folded = env.hero_a > 0.01
@@ -705,6 +709,10 @@ impl HomeScreen {
         }
         self.snap
             .step(pinned_snap(self.snap_target, self.rows.len()), K_SNAP, dt);
+        // ONE answer for "is the dive still running", read by the present gate below. See
+        // `SNAP_REST_POS`/`SNAP_REST_VEL` for why both terms are needed.
+        let snap_moving = (self.snap.pos - self.snap_target).abs() > SNAP_REST_POS
+            || self.snap.vel.abs() > SNAP_REST_VEL;
         let engine_on_grid = self.focused_grid(cx.focus.current).is_some();
         let picture_is_grid = self.snap.pos >= 0.5;
         if engine_on_grid == picture_is_grid {
@@ -739,14 +747,12 @@ impl HomeScreen {
             grid_item,
             self.carousel.as_ref(),
             self.snap.pos,
-            self.outgoing.is_some(),
             dt,
         );
         self.prefetch(view);
 
         let moving = self.outgoing.is_some()
-            || (self.snap.pos - self.snap_target).abs() > 0.002
-            || self.snap.vel.abs() > 0.01
+            || snap_moving
             || matches!(status_read(view), Some((_, StatusKind::Working, _)));
         if moving {
             fx.note(PresentEvent::Motion);
