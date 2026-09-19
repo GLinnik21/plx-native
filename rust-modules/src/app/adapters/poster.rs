@@ -9,7 +9,8 @@
 //! A slot's lifecycle: EMPTY → WANT (claimed by a draw's miss or a prefetch) → LOADING (a worker
 //! fetches + decodes off the lock) → DECODED (pixels waiting on the main thread) → READY (the
 //! pixels were handed to the cache by [`drain_decoded`]; the cache uploads them in PREPARE) or
-//! FAILED. A READY slot recycled by [`victim`] frees its cache entry on the way out.
+//! FAILED / RETRY (a transient fetch parked under bounded backoff). A READY slot recycled by
+//! [`victim`] frees its cache entry on the way out.
 //!
 //! Rust port of the old src/posters.c; rewritten on std::sync (a `Mutex<Store>` + `Condvar` +
 //! two `task::spawn` workers). The decoded-pixel pointer is stored as an address (usize) so the
@@ -132,6 +133,9 @@ struct Pslot {
     /// `None` = parked by the worker and not yet scheduled — the next DRAW on the main thread
     /// sets it, because the clock is the loop's and a worker may not read it.
     retry_at: Option<u32>,
+    /// The due deadline already requested its one present. Without this latch an off-screen retry
+    /// would invalidate every loop iteration forever because no draw visits it to re-queue it.
+    retry_wake_sent: bool,
     /// Transient failures in a row for THIS key — the backoff's exponent; cleared on a claim.
     attempts: u8,
 }
@@ -147,6 +151,7 @@ impl Pslot {
         gen: 0,
         frame: 0,
         retry_at: None,
+        retry_wake_sent: false,
         attempts: 0,
     };
 }
@@ -164,6 +169,28 @@ fn retry_backoff(attempts: u8) -> Duration {
 /// comparison wraps, like every `app::clock` comparison.
 fn retry_due(s: &Pslot, now: u32) -> bool {
     s.state == P_RETRY && s.retry_at.is_some_and(|t| now.wrapping_sub(t) < u32::MAX / 2)
+}
+
+/// Wake the present gate once a scheduled retry's main-thread deadline arrives. The loop calls this
+/// even while a settled screen skips draws; the draw it requests is what probes the slot again and
+/// moves it back to `P_WANT`.
+fn invalidate_due_retries(slots: &mut [Pslot; PT_CAP], now: u32) {
+    if let Some(s) = slots
+        .iter_mut()
+        .find(|s| !s.retry_wake_sent && retry_due(s, now))
+    {
+        s.retry_wake_sent = true;
+        crate::ui::idle::invalidate();
+    }
+}
+
+/// Park one transient result and request the draw that assigns its main-thread deadline.
+fn park_retry(s: &mut Pslot) {
+    s.attempts = s.attempts.saturating_add(1);
+    s.retry_at = None;
+    s.retry_wake_sent = false;
+    s.state = P_RETRY;
+    crate::ui::idle::invalidate();
 }
 
 /// Does a failed fetch's outcome deserve another try? A status the server will keep giving —
@@ -387,7 +414,7 @@ fn logo_probe(srv: ServerId, rk: &str) -> Option<PosterKey> {
 }
 
 /// The slot a miss claims, as a PURE function of what the store looks like: the first EMPTY, else
-/// the least-recently-used SETTLED (`P_READY`/`P_FAILED`) slot the current frame has not touched,
+/// the least-recently-used SETTLED (`P_READY`/`P_FAILED`/`P_RETRY`) slot the current frame has not touched,
 /// else `None` — "everything is either in flight or on screen; skip this request".
 ///
 /// Extracted from [`lookup`] because the PREFETCH's entire safety argument is a claim about this
@@ -451,9 +478,11 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                 if g.slots[i].retry_at.is_none() {
                     let wait = retry_backoff(g.slots[i].attempts).as_millis() as u32;
                     g.slots[i].retry_at = Some(now.wrapping_add(wait));
+                    g.slots[i].retry_wake_sent = false;
                 } else if retry_due(&g.slots[i], now) {
                     g.slots[i].state = P_WANT;
                     g.slots[i].retry_at = None;
+                    g.slots[i].retry_wake_sent = false;
                     drop(g);
                     CV.notify_one();
                     return (None, Warm::Known);
@@ -492,6 +521,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         s.pw = 0;
         s.ph = 0;
         s.retry_at = None;
+        s.retry_wake_sent = false;
         s.attempts = 0;
     }
     drop(g);
@@ -570,8 +600,10 @@ fn store_idle() -> bool {
 /// MAIN thread, once per frame, first: a new frame — nothing is "touched" yet (evict-protection
 /// is per frame, see [`victim`]).
 pub(crate) fn begin_frame() {
+    let now = crate::app::clock::now();
     let mut g = store();
     g.frame = g.frame.wrapping_add(1);
+    invalidate_due_retries(&mut g.slots, now);
 }
 
 /// MAIN thread, once per frame (§3.3 step 3, the adapter's results): every slot a worker has
@@ -710,13 +742,12 @@ impl ArtFail {
 ///
 /// **Why it is logged at all.** `img::img_decode_rgba` reports a decode that failed (`img:
 /// decode-none …`), but that runs only once bytes have ARRIVED; the ways of arriving with NONE are
-/// this module's to speak for. And what it does about them is otherwise invisible: the slot goes
-/// `P_FAILED`, [`lookup`] keeps MATCHING that key and answering `(0, 0, 0)` for it, so the tile is
-/// a skeleton until the LRU walks back to the slot ([`victim`] counts `P_FAILED` as settled). A
-/// transport layer can only ever speak for one request; that the STORE gave up on this art is the
-/// store's to say — and a screen of skeletons with nothing in the event log naming them is the
-/// silence `paths.rs` was fixed for, where a font fell through to DroidSans while `init_text` still
-/// logged `ok=1`.
+/// this module's to speak for. And what it does about them is otherwise invisible: a permanent
+/// answer parks at `P_FAILED`, while a transient one parks at `P_RETRY` until a visible draw's
+/// bounded backoff expires. A transport layer can only speak for one request; the STORE's final-or-
+/// retry decision is this layer's to say — and a screen of skeletons with nothing in the event log
+/// naming them is the silence `paths.rs` was fixed for, where a font fell through to DroidSans
+/// while `init_text` still logged `ok=1`.
 ///
 /// **Why it is latched**, exactly as [`warn_key_refused`] is: this is a per-SLOT path and a grid
 /// claims dozens of them at once, so one line per failure would be dozens per screen, and a log
@@ -884,9 +915,7 @@ fn poster_worker() {
                 s.ph = h;
                 s.state = P_DECODED;
             } else if transient {
-                s.attempts = s.attempts.saturating_add(1);
-                s.retry_at = None; // the main thread schedules it — see `lookup`
-                s.state = P_RETRY;
+                park_retry(s);
             } else {
                 s.state = P_FAILED;
             }
@@ -1289,6 +1318,63 @@ mod tests {
         assert!(retry_due(&s, 50), "the tick wraps like every app::clock comparison");
         s.state = P_FAILED;
         assert!(!retry_due(&s, 60_000), "FAILED is never due");
+    }
+
+    /// A parked retry is clock-driven state on a settled screen. The loop still runs while the
+    /// present gate rests, so the adapter must invalidate that gate when the deadline arrives;
+    /// otherwise no draw probes the slot again and it remains parked until an unrelated frame.
+    #[test]
+    fn a_due_parked_retry_invalidates_the_frame_gate() {
+        let _g = crate::testlock::serial();
+        crate::ui::idle::reset_for_test();
+        let mut slots = [Pslot::ZERO; PT_CAP];
+        slots[3] = Pslot {
+            state: P_RETRY,
+            retry_at: Some(2_000),
+            ..Pslot::ZERO
+        };
+
+        invalidate_due_retries(&mut slots, 1_999);
+        assert_eq!(
+            crate::ui::idle::take_local_damage(),
+            0,
+            "a parked retry must leave the screen settled before its deadline"
+        );
+
+        invalidate_due_retries(&mut slots, 2_000);
+        assert_eq!(
+            crate::ui::idle::take_local_damage(),
+            1,
+            "the deadline must wake a draw that can re-queue the retry"
+        );
+
+        invalidate_due_retries(&mut slots, 2_001);
+        assert_eq!(
+            crate::ui::idle::take_local_damage(),
+            0,
+            "an off-screen due slot must not hold the present gate awake"
+        );
+    }
+
+    /// The worker cannot schedule against the loop clock, but its transition to `P_RETRY` must
+    /// wake one draw to do so. Otherwise a settled screen waits for the keepalive before the
+    /// advertised one-second backoff even begins.
+    #[test]
+    fn a_newly_parked_retry_wakes_the_draw_that_schedules_it() {
+        let _g = crate::testlock::serial();
+        crate::ui::idle::reset_for_test();
+        let mut s = Pslot {
+            state: P_LOADING,
+            attempts: 2,
+            ..Pslot::ZERO
+        };
+
+        park_retry(&mut s);
+
+        assert_eq!(s.state, P_RETRY);
+        assert_eq!(s.attempts, 3);
+        assert_eq!(s.retry_at, None, "only a draw may read the loop clock and schedule");
+        assert_eq!(crate::ui::idle::take_local_damage(), 1);
     }
 
     /// **The test the whole prefetch rests on.** `Touch::Warm` writes `use_ = 0` and a frame stamp
