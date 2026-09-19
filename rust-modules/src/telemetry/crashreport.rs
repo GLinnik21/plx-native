@@ -177,6 +177,14 @@ pub(crate) enum Report {
 /// SIGABRT. Named because the coalescing rule below turns on it and a bare `6` would not say why.
 const SIGABRT: u32 = 6;
 
+/// The panics std itself raises when an earlier panic cannot proceed — its unwind reached an
+/// `extern "C"` frame, or a destructor panicked during cleanup. Each is the same death's second
+/// record, never a crash of its own, whenever a panic immediately precedes it.
+const PANIC_FOLLOWUPS: &[&str] = &[
+    ": panic in a function that cannot unwind",
+    ": panic in a destructor during cleanup",
+];
+
 /// Every report in a crash log, oldest first, **with a panic and the abort it caused counted once**.
 ///
 /// Faults read fixed-shape identity plus **numbers only**. The `(SIGSEGV)` token in the record is
@@ -197,6 +205,10 @@ const SIGABRT: u32 = 6;
 /// thread with nothing able to interleave. A SIGABRT arriving any other way is a real, separate
 /// abort (a failed assertion in a C library, a double free) and is reported. The panic is the one
 /// kept, being the report that says WHERE.
+///
+/// In practice it is THREE records: the panic cannot leave the `extern "C"` frame, so std raises
+/// `panic in a function that cannot unwind` from `core::panicking`, and the hook logs that too.
+/// The same positional rule folds it ([`PANIC_FOLLOWUPS`]) into the panic before it.
 pub(crate) fn parse(log: &str) -> Vec<Report> {
     parse_seeded(log, None)
 }
@@ -224,6 +236,11 @@ fn parse_seeded(log: &str, mut image: Option<ImageIdentity>) -> Vec<Report> {
                 f.registers.pc.get_or_insert(f.pc);
             }
         } else if l.starts_with("*** RUST PANIC ") {
+            if PANIC_FOLLOWUPS.iter().any(|m| l.ends_with(m))
+                && matches!(out.last(), Some(Report::Panic(_)))
+            {
+                continue; // std's own follow-up to the panic above — see the doc
+            }
             if let Some(mut p) = parse_panic(l) {
                 p.image = image.clone();
                 out.push(Report::Panic(p));
@@ -1134,6 +1151,9 @@ mod tests {
         assert!(rendered.contains("src/ff.rs:1204"), "the location is kept");
     }
 
+    /// The exact follow-up record the dev set wrote after `crashtest=panic` (2026-09-19).
+    const CANNOT_UNWIND: &str = "*** RUST PANIC [?] at /rustup/toolchains/nightly-aarch64-apple-darwin/\
+         lib/rustlib/src/rust/library/core/src/panicking.rs:225: panic in a function that cannot unwind";
     const PANIC_LINE: &str =
         "*** RUST PANIC [demux] at src/ff.rs:1204: called `Result::unwrap()` on an `Err` value: \
          /media/internal/Films/Dune.mkv";
@@ -1157,6 +1177,29 @@ mod tests {
             r.len()
         );
         assert!(matches!(r[0], Report::Panic(_)));
+    }
+
+    /// **…and on this toolchain it writes THREE**, which the test above never had. The panic cannot
+    /// leave the `extern "C"` frame, so std raises a SECOND panic from `core::panicking` —
+    /// `panic in a function that cannot unwind` — and the hook logs that one too, before the abort.
+    /// Measured on the dev set (webOS 4.10.2, `crashtest=panic`, 2026-09-19): one death, two panic
+    /// events in Sentry. The follow-up says nothing the first one did not; the first says WHERE.
+    #[test]
+    fn a_panic_its_cannot_unwind_followup_and_the_abort_are_one_report() {
+        let abrt = REC.replace("SIGNAL 11", "SIGNAL 6");
+        let log = format!("{PANIC_LINE}\n{CANNOT_UNWIND}\n{abrt}");
+        let r = parse(&log);
+        assert_eq!(r.len(), 1, "one death reported as {} events", r.len());
+        let Report::Panic(p) = &r[0] else { panic!("expected the panic") };
+        assert_eq!(p.location, "src/ff.rs:1204", "the follow-up displaced the panic that says WHERE");
+    }
+
+    /// The follow-up coalesces only onto the panic it follows. Standing alone it is still a crash.
+    #[test]
+    fn a_cannot_unwind_record_with_no_panic_before_it_is_still_reported() {
+        assert_eq!(parse(CANNOT_UNWIND).len(), 1);
+        let log = format!("{PANIC_LINE}\n{REC}{CANNOT_UNWIND}");
+        assert_eq!(parse(&log).len(), 3, "only the ADJACENT follow-up coalesces");
     }
 
     /// …and the rule is exactly that narrow. A SIGABRT arriving any other way is a real, separate
