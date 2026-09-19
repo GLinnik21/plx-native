@@ -1,4 +1,5 @@
 # count: 0
 # Screens and the loop that still call a data module's mutator directly (spec §14's
-# (caller, mutator) allowlist; docs/stores-as-machines.md). Every mutation goes through
-# `stores::<store>::apply(Cmd)`; an entry here is a debt with a phase number. Shrink, never grow.
+# (caller, mutator) allowlist; docs/stores-as-machines.md). Every mutation goes through the
+# owner's run/step method (e.g. `Bridge::<store>_run`); an entry here is a debt with a phase
+# number. Shrink, never grow.

@@ -1,26 +1,26 @@
 //! **Stores as machines** (restructure spec §2.1/§2.2, phase 4; `docs/stores-as-machines.md`).
 //!
 //! Six data modules provide the application's server-derived state — `browse`, `pms` (the Home
-//! hubs), `metadata`, `search`, `person`, `viewstate`. Browse, Person and ViewState are physically owned by
-//! one [`Stores`] aggregate per `crate::app::bridge::Bridge`, with per-instance state, adapter and
-//! notice; the other three retain the compatibility global + mailbox shape. This layer puts ONE entrance in
-//! front of each: a [`StoreCmd`] is the complete, enumerated vocabulary of mutations, a store's
-//! owned command decoder is the one place its vocabulary is applied, and every command that changes
-//! observable state or landing that changes the store raises the store's NOTICE (a generation the
-//! bridge dispatcher delivers to every live instance as `ScreenEvent::StoreChanged`, spec §3.4).
+//! hubs), `metadata`, `search`, `person`, `viewstate`. All six are physically owned by one
+//! [`Stores`] aggregate per `crate::app::bridge::Bridge`, each with its own per-instance state,
+//! adapter and notice (Browse/Person/ViewState landed first; Search, Hubs and Metadata completed
+//! the port). This layer puts ONE entrance in front of each: a [`StoreCmd`] is the complete,
+//! enumerated vocabulary of mutations, a store's owned command decoder is the one place its
+//! vocabulary is applied, and every command that changes observable state or landing that changes
+//! the store raises the store's NOTICE (a generation the bridge dispatcher delivers to every live
+//! instance as `ScreenEvent::StoreChanged`, spec §3.4).
 //!
 //! Owned stores have two caller shapes and one explicit owner: screens emit `AppFx::Store(id, cmd)` for
 //! `app/bridge.rs` to deliver, while same-turn application boundaries call a method on the
-//! [`Stores`] value they already hold. The generic `apply(cmd)` dispatcher remains only for the
-//! three not-yet-owned stores and rejects Browse, Person and ViewState commands.
+//! [`Stores`] value they already hold. There is no generic `apply(cmd)` dispatcher any more — every
+//! store's vocabulary is applied only through its own owner.
 //!
-//! What lives here is the vocabulary and machines plus Browse/Person/ViewState's production aggregate; the remaining
-//! data stays in the legacy modules until its ownership slice (§14). This module names data crates, `ui::machine` and — since
+//! What lives here is the vocabulary and machines plus all six stores' production aggregate; no
+//! data stays in a legacy compatibility global any more (§14 complete). This module names data
+//! crates, `ui::machine` and — since
 //! phase 11's landing schedule — `ui::landgate`, and nothing else (spec §2.1's layer rule;
 //! `ci/check-deps.sh`'s `mutators` gate refuses the old spelling outside `stores/` and the data
 //! modules).
-
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::ui::machine::StoreOrd;
 
@@ -80,11 +80,12 @@ pub(crate) mod person;
 pub(crate) mod search;
 pub(crate) mod viewstate;
 
-/// Production store aggregate. Browse, Person and ViewState are physical owners here; the remaining stores
-/// retain their compatibility owners until their corresponding ownership slices land.
+/// Production store aggregate. All six stores are physical owners here — Browse, Person and
+/// ViewState landed first; Search, Hubs and Metadata completed the port.
 pub(crate) struct Stores {
     pub(crate) browse: std::rc::Rc<std::cell::RefCell<browse::BrowseStore>>,
     pub(crate) hubs: hubs::HubsStore,
+    pub(crate) metadata: metadata::MetadataStore,
     pub(crate) person: person::PersonStore,
     pub(crate) search: search::SearchStore,
     pub(crate) viewstate: std::cell::RefCell<viewstate::ViewStateStore>,
@@ -96,6 +97,7 @@ impl Default for Stores {
         Self {
             browse,
             hubs: hubs::HubsStore::default(),
+            metadata: metadata::MetadataStore::default(),
             person: person::PersonStore::default(),
             search: search::SearchStore::default(),
             viewstate: std::cell::RefCell::new(viewstate::ViewStateStore::default()),
@@ -123,6 +125,18 @@ impl Stores {
 
     pub(crate) fn person_view(&self) -> crate::person::PersonView<'_> {
         self.person.view()
+    }
+
+    pub(crate) fn metadata_run(&mut self, cmd: metadata::MetadataCmd) -> bool {
+        self.metadata.run(cmd)
+    }
+
+    pub(crate) fn metadata_pump(&mut self) -> bool {
+        self.metadata.pump()
+    }
+
+    pub(crate) fn metadata_view(&self) -> crate::metadata::MetadataView<'_> {
+        self.metadata.view()
     }
 
     pub(crate) fn search_run(
@@ -160,12 +174,14 @@ impl Stores {
         let hubs = &mut self.hubs;
         let person = &mut self.person;
         let search = &mut self.search;
+        let metadata = &mut self.metadata;
         self.viewstate.borrow_mut().run(
             cmd,
             &mut |cmd| browse.borrow_mut().run(cmd),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
             &mut |cmd| person.run(cmd),
             &mut |cmd| search.run_with_directory(cmd, directory),
+            &mut |cmd| metadata.run(cmd),
         )
     }
 
@@ -179,11 +195,13 @@ impl Stores {
         let hubs = &mut self.hubs;
         let person = &mut self.person;
         let search = &mut self.search;
+        let metadata = &mut self.metadata;
         self.viewstate.borrow_mut().pump(
             &mut |cmd| browse.borrow_mut().run(cmd),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
             &mut |cmd| person.run(cmd),
             &mut |cmd| search.run_with_directory(cmd, directory),
+            &mut |cmd| metadata.run(cmd),
         )
     }
 
@@ -208,23 +226,23 @@ impl Stores {
         match id {
             StoreId::Browse => self.browse.borrow().gen(),
             StoreId::Hubs => self.hubs.gen(),
+            StoreId::Metadata => self.metadata.gen(),
             StoreId::Person => self.person.gen(),
             StoreId::Search => self.search.gen(),
             StoreId::ViewState => self.viewstate.borrow().gen(),
-            _ => gen(id),
         }
     }
 
     pub(crate) fn take_notices(&self) -> Vec<(StoreId, u32)> {
-        let mut notices = take_notices();
-        notices.retain(|(id, _)| {
-            !matches!(id, StoreId::Browse | StoreId::Hubs | StoreId::Person | StoreId::Search | StoreId::ViewState)
-        });
+        let mut notices = Vec::new();
         if let Some(generation) = self.browse.borrow().take_notice() {
-            notices.insert(0, (StoreId::Browse, generation));
+            notices.push((StoreId::Browse, generation));
         }
         if let Some(generation) = self.hubs.take_notice() {
             notices.push((StoreId::Hubs, generation));
+        }
+        if let Some(generation) = self.metadata.take_notice() {
+            notices.push((StoreId::Metadata, generation));
         }
         if let Some(generation) = self.person.take_notice() {
             notices.push((StoreId::Person, generation));
@@ -337,86 +355,6 @@ pub(crate) enum StoreEv<C> {
     Pump { dt: f32 },
 }
 
-/// Apply one command to a not-yet-owned store. Browse, Person and ViewState are deliberately rejected:
-/// their dispatcher and synchronous paths require the concrete [`Stores`] owner.
-pub(crate) fn apply(cmd: StoreCmd) -> StoreOutcome {
-    match cmd {
-        StoreCmd::Browse(_) => panic!("Browse commands require an explicit Stores owner"),
-        StoreCmd::Hubs(_) => panic!("Hubs commands require an explicit Stores owner"),
-        StoreCmd::Person(_) => panic!("Person commands require an explicit Stores owner"),
-        StoreCmd::Search(_) => panic!("Search commands require an explicit Stores owner"),
-        StoreCmd::ViewState(_) => panic!("ViewState commands require an explicit Stores owner"),
-        StoreCmd::Metadata(c) => StoreOutcome::changed(metadata::run(c)),
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Compatibility notices for the two not-yet-owned stores. BrowseStore, PersonStore, SearchStore
-// and ViewStateStore carry notices in the per-Bridge aggregate and have no slots in this
-// compatibility array.
-// ---------------------------------------------------------------------------------------------
-
-struct Notice {
-    gen: AtomicU32,
-    dirty: AtomicBool,
-}
-
-const fn notice() -> Notice {
-    Notice {
-        gen: AtomicU32::new(0),
-        dirty: AtomicBool::new(false),
-    }
-}
-
-/// Atomics rather than `static mut`: they are read and written on the main thread only, but an
-/// atomic needs no `unsafe` block at the ~40 call sites and is what the legacy stores already use
-/// for their own generations. Hubs moved into the per-`Bridge` `Stores` aggregate; this array
-/// carries only Metadata now.
-static NOTICES: [Notice; 1] = [notice()];
-
-fn compatibility_notice(id: StoreId) -> &'static Notice {
-    &NOTICES[match id {
-        StoreId::Metadata => 0,
-        StoreId::Hubs | StoreId::Browse | StoreId::Person | StoreId::Search | StoreId::ViewState => {
-            panic!("owned store notices require an explicit Stores owner")
-        }
-    }]
-}
-
-/// The store changed: bump its generation and owe a notice.
-pub(crate) fn bump(id: StoreId) -> u32 {
-    let n = compatibility_notice(id);
-    n.dirty.store(true, Ordering::Relaxed);
-    n.gen.fetch_add(1, Ordering::Relaxed) + 1
-}
-
-/// The store's generation — what a migrated screen keys a `Memo` on (first reader: 5b).
-#[allow(dead_code)]
-pub(crate) fn gen(id: StoreId) -> u32 {
-    compatibility_notice(id).gen.load(Ordering::Relaxed)
-}
-
-/// Drain the one compatibility notice (Metadata). `Stores::take_notices` adds owned notices and is
-/// the aggregate drain used by `app/bridge.rs` once per frame.
-pub(crate) fn take_notices() -> Vec<(StoreId, u32)> {
-    let mut out = Vec::new();
-    for id in [StoreId::Metadata] {
-        let n = compatibility_notice(id);
-        if n.dirty.swap(false, Ordering::Relaxed) {
-            out.push((id, n.gen.load(Ordering::Relaxed)));
-        }
-    }
-    out
-}
-
-/// A pump's answer folded into the notice: `true` bumps.
-fn note(id: StoreId, changed: bool) -> bool {
-    if changed {
-        bump(id);
-    }
-    changed
-}
-
 // ---------------------------------------------------------------------------------------------
 // the landing GATE: a pump's mailbox take, on the frame the recording delivered it (§3.3 step 3)
 // ---------------------------------------------------------------------------------------------
@@ -474,28 +412,12 @@ mod tests {
     }
     use super::*;
 
-    #[test]
-    fn a_command_raises_one_notice_and_a_steady_store_none() {
-        let _g = crate::testlock::serial();
-        let _ = take_notices();
-        let before = gen(StoreId::Metadata);
-        assert!(apply(StoreCmd::Metadata(metadata::MetadataCmd::Clear)).changed);
-        let n = take_notices();
-        assert!(n.contains(&(StoreId::Metadata, before + 1)), "{n:?}");
-        assert!(take_notices().is_empty(), "drained once");
-    }
-
-    #[test]
-    fn generic_dispatch_rejects_all_physically_owned_stores() {
-        for command in [
-            StoreCmd::Browse(browse::BrowseCmd::Reset),
-            StoreCmd::Person(person::PersonCmd::Reset),
-            StoreCmd::Search(search::SearchCmd::Reset),
-            StoreCmd::ViewState(viewstate::ViewStateCmd::Reset),
-        ] {
-            assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| apply(command))).is_err());
-        }
-    }
+    // `a_command_raises_one_notice_and_a_steady_store_none` (the global `apply(StoreCmd::Metadata
+    // (Clear))` regression) and `generic_dispatch_rejects_all_physically_owned_stores` (which
+    // proved the same global `apply` panicked for the already-owned stores) are deleted: the
+    // free `apply`/`take_notices`/`gen` dispatcher they tested no longer exists anywhere in
+    // production code. Every store — Metadata included, as of this layer — now dispatches
+    // through its own per-owner `run`/`step`, so there is no shared router left to grade.
 
     #[test]
     fn the_ordinal_round_trips_for_every_store() {

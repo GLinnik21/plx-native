@@ -50,15 +50,15 @@ pub(crate) enum TrackCommit {
 impl TrackMenuState {
     /// Build the menu focused on `tab` (0=Audio, 1=Subtitles) — the on-screen audio/subs icons
     /// pick a specific tab this way; the plain open path passes 0.
-    pub(crate) fn new(ps: &crate::route::PlaybackSession, tab: c_int) -> Self {
+    pub(crate) fn new(ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int) -> Self {
         let mut s = TrackMenuState {
             tab,
             active_audio: 0,
             active_sub: -1,
             table: TableView::new(),
         };
-        s.sync_item(ps);
-        s.rebuild(ps, tab, false);
+        s.sync_item(ps, meta);
+        s.rebuild(ps, meta, tab, false);
         s
     }
 
@@ -87,41 +87,41 @@ impl TrackMenuState {
         self.active_sub
     }
     /// Plex stream id of the chosen audio track (for &audioStreamID), or 0
-    pub(crate) fn audio_stream_id(&self) -> i64 {
+    pub(crate) fn audio_stream_id(&self, meta: metadata::MetadataView<'_>) -> i64 {
         let i = self.active_audio();
-        tracks()
+        tracks(meta)
             .and_then(|t| t.audio.get(i.max(0) as usize))
             .map(|s| s.id)
             .unwrap_or(0)
     }
     /// Plex stream id of the chosen subtitle track (for &subtitleStreamID), or 0 if Off
-    pub(crate) fn sub_stream_id(&self) -> i64 {
+    pub(crate) fn sub_stream_id(&self, meta: metadata::MetadataView<'_>) -> i64 {
         let i = self.active_sub();
         if i < 0 {
             return 0;
         }
-        tracks()
+        tracks(meta)
             .and_then(|t| t.subs.get(i as usize))
             .map(|s| s.id)
             .unwrap_or(0)
     }
 
     /// selectable rows in a tab — Subtitles has a leading "Off" row
-    fn n_rows(&self, ps: &crate::route::PlaybackSession, tab: c_int) -> c_int {
+    fn n_rows(&self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int) -> c_int {
         if tab == 0 {
-            n_audio()
+            n_audio(meta)
         } else {
-            visible_subs(ps).len() as c_int + 1
+            visible_subs(ps, meta).len() as c_int + 1
         }
     }
     /// the table row that should be focused when entering `tab` (its active selection)
-    fn sel_for_tab(&self, ps: &crate::route::PlaybackSession, tab: c_int) -> c_int {
+    fn sel_for_tab(&self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int) -> c_int {
         if tab == 0 {
             self.active_audio().max(0)
         } else {
             let a = self.active_sub();
             // the row of the active subs-list index within the VISIBLE rows (+1 for Off)
-            visible_subs(ps)
+            visible_subs(ps, meta)
                 .iter()
                 .position(|&i| a >= 0 && i == a as usize)
                 .map(|p| p as c_int + 1)
@@ -135,8 +135,8 @@ impl TrackMenuState {
     /// on first open, a replayed item resets with the playback, and a prior pick round-trips by id.
     /// When no id is recorded (codec-default play), the file's flagged default is checked.
     /// Deliberately does NOT touch `tab`: [`TrackMenuState::new`] sets it directly.
-    fn sync_item(&mut self, ps: &crate::route::PlaybackSession) {
-        let (audio, sub) = match tracks() {
+    fn sync_item(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
+        let (audio, sub) = match tracks(meta) {
             Some(t) => {
                 let asid = crate::route::cur_audio_sid(ps);
                 let audio = (asid > 0)
@@ -182,16 +182,16 @@ impl TrackMenuState {
     /// Show `tab` (0=Audio, 1=Subtitles) on a menu that is ALREADY open — the second disc pressed
     /// while the first one's tab is showing. Same body as the LEFT/RIGHT arm below, which is why
     /// that arm calls this rather than repeating it.
-    pub(crate) fn focus_tab(&mut self, ps: &crate::route::PlaybackSession, tab: c_int) {
+    pub(crate) fn focus_tab(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int) {
         if tab != self.tab {
             self.tab = tab;
-            self.rebuild(ps, tab, false); // swap the whole list → snap the pill, no long glide
+            self.rebuild(ps, meta, tab, false); // swap the whole list → snap the pill, no long glide
         }
     }
 
     /// commit the focused row as the active track for its tab — dismissing the panel afterward is
     /// the container's job now, not this method's.
-    pub(crate) fn on_ok(&mut self, ps: &crate::route::PlaybackSession) -> Option<TrackCommit> {
+    pub(crate) fn on_ok(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> Option<TrackCommit> {
         let tab = self.tab;
         let sel = self.table.sel;
         if tab == 0 {
@@ -200,8 +200,8 @@ impl TrackMenuState {
             if changed {
                 // the menu only reports the pick — native-switch vs re-transcode is route's policy.
                 // The demuxer-facing index is the CONTAINER ordinal (audio_ordinal), not the row.
-                if let Some(s) = tracks().and_then(|t| t.audio.get(sel.max(0) as usize)) {
-                    let ord = tracks()
+                if let Some(s) = tracks(meta).and_then(|t| t.audio.get(sel.max(0) as usize)) {
+                    let ord = tracks(meta)
                         .map(|t| metadata::audio_ordinal(&t.audio, sel.max(0) as usize))
                         .unwrap_or(sel);
                     crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
@@ -217,7 +217,7 @@ impl TrackMenuState {
             None
         } else {
             // row 0 = Off = -1; else map the visible row back to its subs-list index
-            let vis = visible_subs(ps);
+            let vis = visible_subs(ps, meta);
             let new_sub: c_int = if sel <= 0 {
                 -1
             } else {
@@ -229,7 +229,7 @@ impl TrackMenuState {
             self.active_sub = new_sub;
             // the client renderer takes the EMBEDDED-subtitle ordinal (what the demuxer
             // enumerates); an external pick (transcode-only row) renders nothing — it's burned
-            let ridx = tracks()
+            let ridx = tracks(meta)
                 .filter(|_| new_sub >= 0)
                 .map(|t| metadata::sub_render_ordinal(&t.subs, new_sub as usize))
                 .unwrap_or(-1);
@@ -238,22 +238,22 @@ impl TrackMenuState {
                     feature: crate::diag::schema::Feature::SubtitleTrack,
                 });
             }
-            let sidecar_key = tracks()
+            let sidecar_key = tracks(meta)
                 .filter(|_| new_sub >= 0)
                 .and_then(|t| t.subs.get(new_sub as usize))
                 .filter(|s| s.sidecar_renderable())
                 .map(|s| s.key.clone());
             Some(TrackCommit::Subtitle {
                 render_ordinal: ridx,
-                stream_id: self.sub_stream_id(),
+                stream_id: self.sub_stream_id(meta),
                 sidecar_key,
             })
         }
     }
 
-    fn build_audio(&self) -> Section {
+    fn build_audio(&self, meta: metadata::MetadataView<'_>) -> Section {
         let mut sec = Section::new("Audio");
-        let d = match tracks() {
+        let d = match tracks(meta) {
             Some(t) => t,
             None => return sec,
         };
@@ -294,12 +294,12 @@ impl TrackMenuState {
         sec
     }
 
-    fn build_subs(&self, ps: &crate::route::PlaybackSession) -> Section {
+    fn build_subs(&self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> Section {
         let mut sec = Section::new("Subtitles");
         sec = sec.row(Row::new("Off").checked(self.active_sub() < 0));
-        if let Some(t) = tracks() {
+        if let Some(t) = tracks(meta) {
             let names = crate::player::SHARED.track_names.lock().unwrap();
-            for i in visible_subs(ps) {
+            for i in visible_subs(ps, meta) {
                 let s = match t.subs.get(i) {
                     Some(s) => s,
                     None => continue,
@@ -336,13 +336,13 @@ impl TrackMenuState {
         sec
     }
 
-    fn rebuild(&mut self, ps: &crate::route::PlaybackSession, tab: c_int, slide: bool) {
+    fn rebuild(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int, slide: bool) {
         let sec = if tab == 0 {
-            self.build_audio()
+            self.build_audio(meta)
         } else {
-            self.build_subs(ps)
+            self.build_subs(ps, meta)
         };
-        let sel = self.sel_for_tab(ps, tab);
+        let sel = self.sel_for_tab(ps, meta, tab);
         self.table.set_sections(vec![sec], sel, slide);
     }
 
@@ -371,11 +371,9 @@ impl TrackMenuState {
     }
 
     pub(crate) fn draw(&mut self, appear: f32, measure: &dyn crate::ui::machine::Measure) {
-        // modal scrim (dims the video plane showing through) + the appear fade/rise — the container
-        // now drives the phase and the appear spring; this reproduces exactly what
-        // `Popover::scrim(0.58)` and `Popover::content_painter(20.0)` used to draw.
-        let dim = theme::scrim_black(0.58 * appear);
-        Painter::root().rect(Rect::FULL, 0.0, dim, dim, 0.0);
+        // The appear fade/rise — the container drives the phase and the appear spring. The dim
+        // over the video plane is the container's too (`PlayerOverlayScreen::scrim`,
+        // `theme::underlay::DIM_PLAYER`), painted at the end of the player's page pass.
         let p = Painter::root()
             .alpha(appear)
             .translate(0.0, Popover::RISE * (1.0 - appear));
@@ -507,19 +505,17 @@ where
 /// The PLAYING item's track lists — the menu's ONLY data source. `metadata::current()` is the
 /// detail page's item, which is the SHOW during an episode play (its lists are episode 1's) and
 /// can be a different item entirely when playing straight from Home.
-fn tracks() -> Option<&'static metadata::PlayingItem> {
-    metadata::playing()
+fn tracks<'a>(meta: metadata::MetadataView<'a>) -> Option<&'a metadata::PlayingItem> {
+    meta.playing()
 }
 
-fn n_audio() -> c_int {
-    tracks().map(|t| t.audio.len()).unwrap_or(0) as c_int
+fn n_audio(meta: metadata::MetadataView<'_>) -> c_int {
+    tracks(meta).map(|t| t.audio.len()).unwrap_or(0) as c_int
 }
-/// Subtitle rows currently offered, as indices into the playing subs list. An external/sidecar
-/// sub is NOT in the container: on direct play it is offered only when `player::sidecar` can
-/// fetch and draw it (a TEXT format — `Stream::sidecar_renderable`); while transcoding every
-/// sidecar is offered, because the server can burn any of them.
-fn visible_subs(ps: &crate::route::PlaybackSession) -> Vec<usize> {
-    tracks()
+/// Subtitle rows offered on this route: text sidecars can be drawn on direct play;
+/// all sidecars are offered during transcoding, when the server burns them.
+fn visible_subs(ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> Vec<usize> {
+    tracks(meta)
         .map(|t| {
             t.subs
                 .iter()

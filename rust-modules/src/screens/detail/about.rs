@@ -21,6 +21,11 @@ const CARD_Y: f32 = 50.0;
 const CARD_PAD: f32 = 30.0;
 const COL_Y: f32 = 430.0;
 const LANG_X: f32 = 760.0;
+/// The Languages column's text measure — the width the audio list wraps to, and what the focus
+/// plate is [`CARD_PAD`] wider than on each side.
+const LANG_W: f32 = 500.0;
+/// Air between the block's last line and the MORE mark, matching the About card's own.
+const LANG_MORE_LEAD: f32 = 30.0;
 
 pub(crate) fn locate(key: u32, tracks_available: bool) -> Option<usize> {
     match key {
@@ -156,9 +161,20 @@ impl Rows {
                     .with_measure(measure)
                     .leading(32.0)
                     .max_lines(6)
-                    .measure_h(500.0);
+                    .measure_h(LANG_W);
         }
-        Rect::new(LANG_X - 26.0, top + COL_Y - 36.0, 560.0, h + 60.0)
+        // The plate wears the ABOUT CARD's padding — `CARD_PAD` on all four sides — because the
+        // owner named that card as the reference for what these insets should look like
+        // (2026-09-18). Its height therefore has to carry the MORE mark too: MORE is INK, the
+        // block's measured `h` ends at the last audio line, and pinning the mark to the plate's
+        // own bottom edge is what used to leave it all but touching it while the heading sat under
+        // 48px of air.
+        Rect::new(
+            LANG_X - CARD_PAD,
+            top + COL_Y - CARD_PAD,
+            LANG_W + 2.0 * CARD_PAD,
+            CARD_PAD + h + LANG_MORE_LEAD + theme::size::CAPTION as f32 + CARD_PAD,
+        )
     }
 
     /// `tracks` is the PAGE's answer to "is there a file for the track sheet to describe"
@@ -223,7 +239,7 @@ impl Rows {
                 Rect::new(ix, card.y + CARD_PAD + 100.0, card.w - 2.0 * CARD_PAD, 0.0),
             );
         p.text(
-            c"MORE".as_ptr(),
+            crate::ui::text_view::MORE_MARK.as_ptr(),
             card.x + card.w - CARD_PAD,
             card.y + card.h - CARD_PAD - theme::size::CAPTION as f32,
             theme::size::CAPTION,
@@ -285,13 +301,14 @@ impl Rows {
                 .leading(32.0)
                 .max_lines(6)
                 .fade_last(90.0)
-                .draw(p, Rect::new(LANG_X, yy + 34.0, 500.0, 0.0));
+                .draw(p, Rect::new(LANG_X, yy + 34.0, LANG_W, 0.0));
         }
         if tracks {
+            let plate = self.languages_rect(y - COL_Y, measure);
             p.text(
-                c"MORE".as_ptr(),
-                LANG_X + 500.0,
-                self.languages_rect(y - COL_Y, measure).y + self.languages_rect(y - COL_Y, measure).h - 30.0,
+                crate::ui::text_view::MORE_MARK.as_ptr(),
+                plate.x + plate.w - CARD_PAD,
+                plate.y + plate.h - CARD_PAD - theme::size::CAPTION as f32,
                 theme::size::CAPTION,
                 theme::TEXT_TERTIARY,
                 2,

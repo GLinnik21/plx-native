@@ -172,6 +172,47 @@ fn normal_and_controlled_activation_publish_the_owner_supplied_scope() {
     assert_eq!(controlled.controlled_failure(),Some("unrecorded client IO attempted"));
 }
 
+/// **Stage B regression, device-affecting.** Before `0d466527` (stage B), `stores::init` ended
+/// with `crate::metadata::record::reset(initial.content.is_some())`, arming the crate-global
+/// `Tracker` for controlled-content recording of detail terminals. Stage B deleted that line with
+/// the static and nothing armed the per-owner replacement in production, so a `Bridge` built by
+/// `controlled_home` carried a permanently-disabled Tracker (`Tracker::new(false)`, `MetadataStore`'s
+/// own `Default`): every detail landing while the tape was active silently produced NO recorded
+/// terminal at all (`drain_live` -> `Some(([], drain))`), and the device-side validator rejected
+/// `{"data":[]}` as "noncanonical detail replies". This pins `Bridge::controlled_home` actually
+/// arming its own `MetadataStore`'s Tracker from `initial.content.is_some()`.
+#[test]
+fn controlled_home_arms_the_detail_tracker_when_content_initial_is_present() {
+    let _serial = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let mt = unsafe { crate::task::MainThread::assume() };
+    let mut initial = Initial::synthetic_home(41, 17, None).unwrap();
+    initial.content = Some(ContentInitial {
+        detail: "show".into(), detailsec: 0, detailok: true,
+        filmography: false, personcredits: 0, nowan: false,
+    });
+    crate::app::bootstrap::stores::init(&initial, false);
+    crate::ui::landgate::arm_recording();
+    let mut bridge = super::super::bridge::Bridge::controlled_home(||0,&initial,&mt,false);
+    let sid = crate::plex::ServerId::UNSET;
+    crate::app::bootstrap::stores::begin(Default::default(), Default::default());
+    let gen = crate::metadata::begin_detail_for_test(bridge.metadata_mut().adapter_ref(), sid, "show");
+    {
+        let store = bridge.metadata_mut();
+        let (state, adapter) = store.split_for_test();
+        crate::metadata::land_detail_for_test(state, adapter, sid, "show", gen,
+            Some(crate::metadata::Detail { sid, rk: "show".into(), ..Default::default() }));
+    }
+    let results = crate::app::bootstrap::stores::take_results();
+    assert_eq!(results.len(), 1,
+        "controlled_home must arm this Bridge's own MetadataStore Tracker from initial.content, \
+         or a controlled-content detail landing never reaches bootstrap::stores at all");
+    crate::app::bootstrap::stores::finish();
+    crate::ui::landgate::disarm();
+    crate::app::bootstrap::stores::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}
+
 fn recording(initial: &Initial) -> Recording {
     let mut header = crate::ui::rec::Header::new(super::super::recorder::state_fp(),initial);
     header.init_data = serde_json::to_value(initial).unwrap();

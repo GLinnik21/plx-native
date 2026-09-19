@@ -651,6 +651,8 @@ mod tests {
         use std::path::Path;
         let dev = "/media/developer/apps/usr/palm/applications/com.beb.plxnative.debug/plxnative";
         let hbc = "/media/cryptofs/apps/usr/palm/applications/com.beb.plxnative/plxnative";
+        let nightly =
+            "/media/developer/apps/usr/palm/applications/com.beb.plxnative.nightly/plxnative";
         assert_eq!(
             super::installed_app_id(Path::new(dev)).as_deref(),
             Some("com.beb.plxnative.debug")
@@ -658,6 +660,10 @@ mod tests {
         assert_eq!(
             super::installed_app_id(Path::new(hbc)).as_deref(),
             Some("com.beb.plxnative")
+        );
+        assert_eq!(
+            super::installed_app_id(Path::new(nightly)).as_deref(),
+            Some("com.beb.plxnative.nightly")
         );
         // A host build: the parent is `debug`, whose parent is `target-sim` — not `applications`.
         // Without this arm the simulator would mint an app called `debug`, take `/tmp/debug` as its
@@ -693,6 +699,12 @@ mod tests {
                 .and_then(|r| r.strip_prefix('.')),
             Some("debug")
         );
+        assert_eq!(
+            "com.beb.plxnative.nightly"
+                .strip_prefix(super::STABLE_APP_ID)
+                .and_then(|r| r.strip_prefix('.')),
+            Some("nightly")
+        );
         // The real one must agree with the real id, whatever this binary turned out to be.
         assert_eq!(
             super::flavour().is_some(),
@@ -714,17 +726,25 @@ mod tests {
         }
         let stable = super::resolve_runtime_dir(None, None, super::STABLE_APP_ID);
         let debug = super::resolve_runtime_dir(None, None, "com.beb.plxnative.debug");
+        let nightly = super::resolve_runtime_dir(None, None, "com.beb.plxnative.nightly");
         assert_eq!(stable, std::path::Path::new("/tmp"));
         assert_eq!(debug, std::path::Path::new("/tmp/com.beb.plxnative.debug"));
+        assert_eq!(nightly, std::path::Path::new("/tmp/com.beb.plxnative.nightly"));
         assert_ne!(
             stable.join("plxnative-events.log"),
             debug.join("plxnative-events.log")
         );
-        let name = debug.file_name().unwrap().to_string_lossy().into_owned();
-        assert!(
-            !name.starts_with("plxnative-"),
-            "{name} would read as an armed trigger to the other install"
+        assert_ne!(
+            debug.join("plxnative-events.log"),
+            nightly.join("plxnative-events.log")
         );
+        for flavoured in [&debug, &nightly] {
+            let name = flavoured.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(
+                !name.starts_with("plxnative-"),
+                "{name} would read as an armed trigger to another install"
+            );
+        }
     }
 
     /// An absent or empty `PLXNATIVE_RUNTIME_DIR` must resolve to the television's `/tmp`. Empty

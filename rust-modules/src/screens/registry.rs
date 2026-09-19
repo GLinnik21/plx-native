@@ -725,6 +725,26 @@ pub(crate) enum ContentReq {
     },
     /// Stop a hero preview and stay on the page.
     PreviewStop,
+    /// **Pause or resume the live hero preview** — full-trailer mode's OK/PLAY/PAUSE. `Some(true)`
+    /// is the remote's PLAY key, `Some(false)` its PAUSE, `None` the PLAYPAUSE toggle, exactly as
+    /// [`PlayerReq::Transport`] carries them.
+    ///
+    /// A request rather than something the page performs, for [`PlayerReq::Transport`]'s reason:
+    /// pausing needs the `MainThread` token and the playback session's `&mut`, neither of which a
+    /// screen may name (§2.1). It carries no position: this is the toggle only, and its `SeekTo`
+    /// twin is [`ContentReq::PreviewSeek`], below.
+    PreviewTransport(Option<bool>),
+    /// **A user-driven LEFT/RIGHT seek inside a playing trailer** — the target position, in ns.
+    ///
+    /// Deliberately NOT `PlayerReq::SeekTo`/`CommitSeek`: those reach `player::request_seek`,
+    /// which writes `route::note_user_seek_intent` and
+    /// `report::note_seek_for(playback_trace_generation())` — a preview has no trace generation,
+    /// and `player::preview`'s watch-state promise (no PlayQueue, no timeline, no scrobble) covers
+    /// a seek exactly like every other write. This reaches `player::preview::seek` instead, which
+    /// carries its own budget/breaker accounting (`player::preview`'s module doc) — the same
+    /// `MainThread`/`&mut PlaybackSession` reason [`ContentReq::PreviewTransport`] is a request at
+    /// all.
+    PreviewSeek(i64),
     ItemMenu,
     /// **Present one of the Detail page's own panels** on the container tree (spec §6.2's
     /// "page-owned panels"). The page names WHICH and supplies whatever the panel needs to place
@@ -833,6 +853,13 @@ impl<H: AppLike<Memory = PageMemory>> ContentLike for H {}
 /// A host publishing the Person model borrowed from its concrete store owner for this frame.
 pub(crate) trait PersonLike: AppLike + Sized {
     fn person<'a>(cx: &Cx<'a, Self>) -> crate::person::PersonView<'a>;
+}
+
+/// A host publishing the Metadata layer's read surface borrowed from its concrete store owner
+/// for this frame — the same shape [`PersonLike`] gives Person, for a screen generic over `H`
+/// that needs `crate::metadata::MetadataView` rather than the app-concrete `Bridge`.
+pub(crate) trait MetadataLike: AppLike + Sized {
+    fn metadata<'a>(cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a>;
 }
 
 /// A host that publishes Home's retained catalog view. The view is borrowed from the rig-owned
@@ -1517,7 +1544,7 @@ pub(crate) struct AppMounter {
 /// it for its own host exactly as the dispatcher instantiates everything else.
 impl<H> Mounter<H> for AppMounter
 where
-    H: crate::ui::machine::Host<Arg = AppArg> + HomeLike + LibraryLike + SearchLike + PlayerLike + AuthLike + PersonLike,
+    H: crate::ui::machine::Host<Arg = AppArg> + HomeLike + LibraryLike + SearchLike + PlayerLike + AuthLike + PersonLike + MetadataLike,
 {
     fn mount(
         &mut self,
@@ -1536,10 +1563,10 @@ where
             AppArg::AccountMenu => Box::new(crate::screens::account_menu::AccountMenuScreen::new(entry)),
             AppArg::ItemMenu(arg) => Box::new(crate::screens::item_menu::ItemMenuScreen::new(entry, arg.clone())),
             AppArg::PlayerOverlay(arg) => Box::new(
-                crate::screens::player::overlay::PlayerOverlayScreen::new(H::session(cx), entry, arg.kind),
+                crate::screens::player::overlay::PlayerOverlayScreen::new(H::session(cx), H::metadata(cx), entry, arg.kind),
             ),
             AppArg::AltSources(arg) => Box::new(
-                crate::screens::alt_sources::AltSourcesScreen::new(entry, arg.clone()),
+                crate::screens::alt_sources::AltSourcesScreen::new(entry, arg.clone(), H::metadata(cx)),
             ),
             AppArg::TracksPanel(arg) => Box::new(
                 crate::screens::tracks_panel::TracksPanelScreen::new(entry, *arg),
@@ -1552,10 +1579,18 @@ where
             ),
             AppArg::Content(ContentArg::Detail { sid, rk }) => {
                 let mut page = crate::screens::detail::DetailScreen::new(entry, *sid, rk.clone(), H::hubs(cx));
+                // No `RequestDetail` push here: `DetailScreen`'s own `Enter(Fresh)` handler (fired
+                // this same frame, right after mount) already decides whether the freshly mounted
+                // page needs a fetch (`refresh == None && request_status != Some(true)` — a fresh
+                // open always refetches unless one is already in flight) — a mount-time push here
+                // raced that decision every time, because the admission it queued had not yet been
+                // drained when Enter read `detail_request_status`, so Enter always saw no fetch in
+                // flight and queued a second one. Mount and Enter now have exactly one owner of the
+                // request decision.
                 if let PageMemory::Detail(spot) = &ret.memory {
-                    page.restore_memory(spot);
+                    page.restore_memory(spot, H::metadata(cx));
                 } else if let Some(seed) = self.seed.take() {
-                    if seed.sid == *sid && seed.rk == *rk { page.restore(&seed.spot); }
+                    if seed.sid == *sid && seed.rk == *rk { page.restore(&seed.spot, H::metadata(cx)); }
                 }
                 Box::new(page)
             }

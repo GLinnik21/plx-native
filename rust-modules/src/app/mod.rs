@@ -352,6 +352,14 @@ impl App {
         initial.session = self.bridge.snapshot_session_init();
         Some(initial)
     }
+    /// `instr`'s own narrow read — see [`crate::diag::heartbeat::Instruments::last_frame_ms`]. A
+    /// method rather than `pub(crate) instr` because the field otherwise stays module-private on
+    /// purpose (`app::run` is `instr`'s only other reader, and it reaches the field directly as a
+    /// descendant module); `dev::scenarios`'s stress-bench oscillators (`bench_frame_tick`) are
+    /// the one reader outside `app` that needs a single number off it, not the whole instrument.
+    pub(crate) fn frame_last_ms(&self) -> f64 {
+        self.instr.last_frame_ms()
+    }
     /// Controlled construction receives decoded/captured inputs before bootstrap effects.
     pub(crate) unsafe fn from_init(initial: bootstrap::Initial, mode: bootstrap::Preflight,
         pms_host: *const c_char, pms_port: c_int, mt: crate::task::MainThread,

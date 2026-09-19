@@ -558,6 +558,10 @@ pub(crate) struct SearchState {
 
     /// One per registry slot; see [`Source`]. The worker's two halves live in [`SearchAdapter`].
     src: [Source; NSRC],
+
+    /// This owner's memo of the built [`scope::SourceScopeSnapshot`] (`search/scope.rs`). Interior
+    /// mutable because `snapshot`/`snapshot_with_directory` are reached through `&self`.
+    scope_cache: scope::ScopeCache,
 }
 
 impl Default for SearchState {
@@ -573,6 +577,7 @@ impl Default for SearchState {
             settle_us: 0,
             armed: false,
             src: [const { Source::EMPTY }; NSRC],
+            scope_cache: scope::ScopeCache::default(),
         }
     }
 }
@@ -598,14 +603,14 @@ impl SearchState {
     }
 
     pub(crate) fn snapshot(&self) -> view::SearchSnapshot {
-        self.snapshot_with_scope(scope::snapshot())
+        self.snapshot_with_scope(self.scope_cache.snapshot())
     }
 
     pub(crate) fn snapshot_with_directory(
         &self,
         directory: crate::stores::browse::DirectoryView<'_>,
     ) -> view::SearchSnapshot {
-        self.snapshot_with_scope(scope::snapshot_with_directory(directory))
+        self.snapshot_with_scope(self.scope_cache.snapshot_with_directory(directory))
     }
 
     fn snapshot_with_scope(&self, scope: scope::SourceScopeSnapshot) -> view::SearchSnapshot {
@@ -635,7 +640,7 @@ impl SearchState {
         cmd: crate::stores::search::SearchCmd,
         directory: crate::stores::browse::DirectoryView<'_>,
     ) -> bool {
-        scope::snapshot_with_directory(directory);
+        self.scope_cache.snapshot_with_directory(directory);
         run_with_optional_directory(self, adapter, cmd, Some(directory))
     }
 

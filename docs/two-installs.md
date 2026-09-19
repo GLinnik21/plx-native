@@ -1,5 +1,11 @@
 # Two installs on one television
 
+**This document predates the nightly flavour.** A third flavour, `FLAVOR=nightly`
+(`com.beb.plxnative.nightly`, port 8912), has since landed, and nightly is the one flavour that
+feeds a codegen input — `PLX_CHANNEL` / `PLX_NIGHTLY_DATE` into `build.rs`'s reported version. See
+`docs/agent-reference.md` for the current account; the body below still only describes stable and
+debug.
+
 **Status, 2026-08-21: BUILT ENTIRELY OFF-DEVICE. NOTHING BELOW HAS BEEN ON A TELEVISION.**
 
 Everything here is either a fact provable on a desk — a make variable, a `/proc/self/exe` read, a

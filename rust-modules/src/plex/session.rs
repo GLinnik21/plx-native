@@ -18,6 +18,29 @@
 //! **Nothing here carries a timestamp**, deliberately: this TV's wall clock runs ~3 h skewed
 //! (`docs/agent-reference.md`), so a stored "last seen" would be a number that cannot be compared with
 //! anything and would invite an expiry rule built on it.
+//!
+//! ## The live read cache
+//!
+//! [`peek`] (and [`load`] on a hit) answers from an in-memory cache rather than [`IO`] — see
+//! [`CACHE`] for the mechanism. The invariants that make it safe to trust:
+//!
+//! - The cache holds a value only when this module has proof the record equals it: a completed
+//!   read under [`IO`], or a `Durable` write under `IO`. Anything else drops it.
+//! - Only this module writes the session domain of the persisted record; every
+//!   `persistence::commit_*`/`write_session`/`commit_cleared` caller here ends by calling exactly
+//!   one of `install_locked(...)` or `drop_cache_locked()`.
+//! - Readers never take `IO` on a hit. A miss takes `IO`, reads, installs, releases. `CACHE` is
+//!   never held across `IO`.
+//! - Writers never read from the cache; they read the authority under `IO` (fence correctness),
+//!   then install their own outcome over it.
+//! - A `Locked`/`Blocked` read is transient: served for `LOCKED_RETRY` (about a second), then
+//!   re-read on the next call rather than latched forever.
+//! - [`clear`] (sign-out) drops the cached `Arc` immediately — it holds the very account/server
+//!   tokens sign-out means to get rid of.
+//! - Other domains of the same record (consent) are not in this cache and their writes never
+//!   touch it. `async_persistence`'s own `CACHE`/`LOCKED_STATE` are a separate, currently-unwired
+//!   engine (see its doc) — when it is wired, its coordinator must install into and drop THIS
+//!   cache rather than keep a second copy of the session live.
 use super::origin::Origin;
 use super::probe::Location;
 use serde::de::DeserializeOwned;
@@ -206,6 +229,9 @@ fn auth_paths() -> Vec<std::path::PathBuf> {
 pub(crate) fn redirect_for_test(p: Option<std::path::PathBuf>) {
     let _io = io();
     *TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()) = p;
+    // A test swapping the scratch file changes what `peek` answers just as surely as a write
+    // does — a cache primed against the old file must not survive the swap. See `CACHE`.
+    drop_cache_locked();
 }
 
 /// Snapshot the current [`TEST_FILE`] redirect so a caller can restore it exactly with
@@ -1709,9 +1735,14 @@ pub fn current_profile_key() -> String {
 /// takes it can be parked for as long as the flash takes. That is affordable because of who the
 /// readers are — a keypress (`screens::account_menu`'s mount), a boot, and one read-out that was already
 /// doing an `fs::read` per frame (the legacy Library's failed-source labels; the owned screen now
-/// uses retained views). **Do not add a per-frame
-/// reader of this file**; the answer for that is a snapshot keyed on something cheap, the way
-/// `search::recents` caches by [`current_gen`].
+/// uses retained views). **A per-frame reader is fine now**: [`peek`] itself is cached (see
+/// [`CACHE`]), so a hit never reaches this lock at all. `search::recents` still keys its own store
+/// by [`current_gen`] rather than [`peek`] because it is a pending-write buffer, not a read of this
+/// file — see its own doc. The cache exists because the rule was broken once: the detail page's
+/// per-frame preview tick called `peek().trailer_autoplay()` directly against the *uncached*
+/// `peek` that existed then, and on the television that wait for this lock is a `recv(2)` round
+/// trip to the storage helper over a Unix socket — measured at ~27 ms/frame, the whole gap between
+/// 60 fps and the 26 fps the page actually drew (2026-09-18).
 static IO: Mutex<()> = Mutex::new(());
 
 fn io() -> std::sync::MutexGuard<'static, ()> {
@@ -1720,15 +1751,166 @@ fn io() -> std::sync::MutexGuard<'static, ()> {
     IO.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// One cached answer this process has proved about the persisted session — the arm a
+/// [`ReadState`] lands in is [`refresh_locked`]'s doc.
+enum Cached {
+    /// Nothing has been read or written yet this process.
+    Unloaded,
+    /// [`ReadState::Ready`], `Missing` or `Cleared`: a settled fact about the file. Good until the
+    /// next write installs or drops it.
+    Settled(std::sync::Arc<ReadState>),
+    /// [`ReadState::Locked`] or `Blocked`: a transient failure (a helper timeout, a keymanager
+    /// hiccup), not a fact about the file — served only until `retry_at`, never latched forever.
+    Transient {
+        state: std::sync::Arc<ReadState>,
+        retry_at: std::time::Instant,
+    },
+}
+
+/// **The live read cache** — what [`peek`] answers from memory instead of taking [`IO`]. A hit is
+/// one uncontended `Mutex` lock and an `Arc` clone; a miss takes `IO`, reads via
+/// [`refresh_locked`], installs, and releases. See the module doc for the full invariant list;
+/// the two that matter for reasoning about a deadlock: this lock is never held across `IO` in
+/// either direction, and a writer always re-reads the authority under `IO` rather than trusting
+/// whatever is cached, so a miss can never overwrite a newer write. `player::preview`'s own
+/// `MACHINE` mutex is always taken before this one, and nothing reachable while holding this lock
+/// calls back into `preview` or takes `IO` — the same rule [`IO`]'s own doc states for `update`'s
+/// closure, unchanged by the cache.
+static CACHE: Mutex<Cached> = Mutex::new(Cached::Unloaded);
+
+/// How long a [`ReadState::Locked`]/[`ReadState::Blocked`] answer is served from [`CACHE`] before
+/// the next reader tries the disk again. These two states are transient by definition (see
+/// [`ReadState`]'s doc), so the interval only needs to be short enough that a real recovery is felt
+/// quickly, and long enough that a per-frame caller never pays for the retry more than about once
+/// a second.
+const LOCKED_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The `Session` every non-`Ready` read answers with, shared so a Locked/Blocked retry window does
+/// not allocate a fresh default every time.
+fn empty_session() -> std::sync::Arc<Session> {
+    static EMPTY: std::sync::OnceLock<std::sync::Arc<Session>> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(|| std::sync::Arc::new(Session::default())).clone()
+}
+
+/// The `Arc<Session>` a [`ReadState`] answers with — [`empty_session`] for anything but `Ready`.
+fn session_of(state: &ReadState) -> std::sync::Arc<Session> {
+    match state {
+        ReadState::Ready { session, .. } => session.clone(),
+        ReadState::Missing | ReadState::Locked | ReadState::Blocked | ReadState::Cleared => {
+            empty_session()
+        }
+    }
+}
+
+/// Which [`Cached`] arm a fresh [`ReadState`] belongs in — shared by [`refresh_locked`] (a read)
+/// and [`install_locked`] (a write's proven outcome). `now` anchors a `Transient` arm's
+/// `retry_at`; it must be the same clock reading the caller used to decide a read was needed, not
+/// a fresh `Instant::now()` taken here — `peek_at`'s tests advance a simulated clock past
+/// `LOCKED_RETRY` without an actual sleep, and anchoring to wall-clock time instead would let a
+/// `retry_at` computed a few nanoseconds after `now` outlive the deadline the test just asked for.
+fn cached_arm(state: std::sync::Arc<ReadState>, now: std::time::Instant) -> Cached {
+    match &*state {
+        ReadState::Locked | ReadState::Blocked => Cached::Transient {
+            state,
+            retry_at: now + LOCKED_RETRY,
+        },
+        ReadState::Ready { .. } | ReadState::Missing | ReadState::Cleared => Cached::Settled(state),
+    }
+}
+
+/// A cache hit as of `now`, if one exists. Never takes [`IO`].
+fn cached_at(now: std::time::Instant) -> Option<std::sync::Arc<ReadState>> {
+    match &*CACHE.lock().unwrap_or_else(|e| e.into_inner()) {
+        Cached::Unloaded => None,
+        Cached::Settled(state) => Some(state.clone()),
+        Cached::Transient { state, retry_at } if now < *retry_at => Some(state.clone()),
+        Cached::Transient { .. } => None,
+    }
+}
+
+/// Read the authority (the caller must already hold [`IO`]), install the result into [`CACHE`],
+/// and return it. Publishes identities on a `Ready` read — the same hook [`load`] and every write
+/// already carry, so a cache-filling read is covered by the scrubber exactly as an uncached one
+/// always was. `now` is [`cached_arm`]'s retry anchor — the same reading the caller used to decide
+/// a miss, so `peek_at`'s simulated clock stays self-consistent across a miss it causes.
+fn refresh_locked(now: std::time::Instant) -> std::sync::Arc<ReadState> {
+    let state = std::sync::Arc::new(read_live_locked());
+    if let ReadState::Ready { session, .. } = &*state {
+        publish_identities(session);
+    }
+    #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+    crate::log("session: authority read reason=miss");
+    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = cached_arm(state.clone(), now);
+    state
+}
+
+/// Install a proven [`ReadState`] — a completed read, or the outcome of a write that IS provably
+/// the record (`Durable`, or on the `TEST_FILE` path a legacy persist that returned `Some(_)`) —
+/// as the new cache content. The caller must already hold [`IO`]; see the module doc's invariants.
+/// Always anchored to real wall-clock time: none of this function's callers are exercised through
+/// `peek_at`'s simulated clock, only real reads and writes.
+fn install_locked(state: std::sync::Arc<ReadState>) {
+    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = cached_arm(state, std::time::Instant::now());
+}
+
+/// Drop whatever is cached: a write whose outcome is not provably the record (`Uncertain`,
+/// `Failed`, `ProtectionFailed`, or a failed legacy fallback), a sign-out, or a test fixture
+/// redirecting the file out from under the cache. The caller must already hold [`IO`].
+fn drop_cache_locked() {
+    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Cached::Unloaded;
+}
+
 /// Read the persisted session and nothing else — **no minting, no write.** For readers that merely
-/// want to know what the session says (the account surfaces): [`load`]'s client-id minting means a
-/// read can turn into a `save`, so a file that momentarily fails to parse would be overwritten with
-/// a bare client_id — a silent sign-out. That is an acceptable trade on the boot path, which must
-/// end up with an id; it is not one on a path a keypress can reach. Falls back to the
-/// pre-relocation path (migration), same as `load`.
-pub fn peek() -> Session {
+/// want to know what the session says (the account surfaces, and now every per-frame reader too):
+/// [`load`]'s client-id minting means a read can turn into a `save`, so a file that momentarily
+/// fails to parse would be overwritten with a bare client_id — a silent sign-out. That is an
+/// acceptable trade on the boot path, which must end up with an id; it is not one on a path a
+/// keypress (or a frame) can reach. Falls back to the pre-relocation path (migration), same as
+/// [`load`].
+///
+/// **Cached** — see [`CACHE`]. Returns the same `Arc<Session>` across repeated calls as long as
+/// nothing in this process has written since the last one; a hit never takes [`IO`], a miss does,
+/// exactly once, and installs the result for the next caller.
+pub fn peek() -> std::sync::Arc<Session> {
+    peek_impl(std::time::Instant::now())
+}
+
+/// [`peek`], parameterized on "now" so a test can simulate [`LOCKED_RETRY`] elapsing without an
+/// actual one-second sleep: capture an `Instant`, call this with it, then call it again with that
+/// same instant plus `LOCKED_RETRY` (or more) to observe the retry.
+#[cfg(test)]
+pub(crate) fn peek_at(now: std::time::Instant) -> std::sync::Arc<Session> {
+    peek_impl(now)
+}
+
+fn peek_impl(now: std::time::Instant) -> std::sync::Arc<Session> {
+    if let Some(state) = cached_at(now) {
+        return session_of(&state);
+    }
     let _io = io();
-    peek_locked()
+    // Two callers can both miss and then take turns on `IO`: by the time this one finally gets
+    // the lock, the caller ahead of it may have already installed the answer. Re-check before
+    // paying for another read of storage — the whole reason this cache exists is that a read is a
+    // `recv(2)` round trip to the storage helper (~27 ms/frame), so serving the second miss from
+    // the first one's fill rather than redoing it is not an optimization, it is the point.
+    if let Some(state) = cached_at(now) {
+        return session_of(&state);
+    }
+    session_of(&refresh_locked(now))
+}
+
+#[cfg(test)]
+pub(crate) fn cache_is_empty_for_test() -> bool {
+    matches!(&*CACHE.lock().unwrap_or_else(|e| e.into_inner()), Cached::Unloaded)
+}
+
+/// Drop [`CACHE`] from a test, outside any `IO`-holding call — for a fixture that changes what
+/// [`peek`] ought to answer without going through [`save`]/[`update`]/[`clear`] (writing bytes
+/// directly to a redirected scratch or canonical file). See the module doc's test-isolation note.
+#[cfg(test)]
+pub(crate) fn invalidate_for_test() {
+    let _io = io();
+    drop_cache_locked();
 }
 
 /// **Forget one profile's recorded favourite libraries.**
@@ -1752,14 +1934,18 @@ pub(crate) fn forget_pins_for_test(user: &str) {
     }
 }
 
-/// [`peek`] with the lock already held — the read half every entry point here shares.
+/// [`peek`] with the lock already held — the read half every entry point here shares. Used only
+/// where an owned, mutable `Session` is genuinely needed ([`forget_pins_for_test`]); everything
+/// else wants the cached, `Arc`-shared [`peek`].
 fn peek_locked() -> Session {
-    session_from_read(read_live_locked())
+    session_from_read(&read_live_locked())
 }
 
-fn session_from_read(read: ReadState) -> Session {
+/// An owned clone out of a [`ReadState`] — the one place that pays a full `Session` clone rather
+/// than an `Arc` bump, for a caller that needs to mutate or mint into it.
+fn session_from_read(read: &ReadState) -> Session {
     match read {
-        ReadState::Ready { session, .. } => session,
+        ReadState::Ready { session, .. } => (**session).clone(),
         ReadState::Missing | ReadState::Locked | ReadState::Blocked | ReadState::Cleared => {
             Session::default()
         }
@@ -1778,7 +1964,7 @@ struct SecureEnvelope {
 enum ReadState {
     Missing,
     Ready {
-        session: Session,
+        session: std::sync::Arc<Session>,
         plaintext: bool,
     },
     /// A recognized encrypted file whose device key is temporarily or permanently unavailable.
@@ -1802,13 +1988,13 @@ enum ReadState {
 fn read_locked() -> ReadState {
     match persistence::load() {
         persistence::CanonicalRead::Opened { session, .. } => ReadState::Ready {
-            session,
+            session: std::sync::Arc::new(session),
             plaintext: false,
         },
         persistence::CanonicalRead::Data { payload, .. } => {
             match serde_json::from_str::<Session>(&payload) {
                 Ok(session) => ReadState::Ready {
-                    session,
+                    session: std::sync::Arc::new(session),
                     plaintext: true,
                 },
                 Err(error) => {
@@ -1833,6 +2019,8 @@ fn read_locked() -> ReadState {
 /// state. On ARM `read_legacy_locked` is absent by configuration, so the canonical store is the
 /// only authority a live read can consult.
 fn read_live_locked() -> ReadState {
+    #[cfg(test)]
+    READS_FOR_TEST.with(|c| c.set(c.get() + 1));
     #[cfg(test)]
     if TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
         // A redirected scratch path is an explicit host fixture. It is also deliberately not
@@ -1863,9 +2051,9 @@ fn read_legacy_locked() -> ReadState {
                     crate::log("session: secure file is present but its device key is unavailable");
                     return ReadState::Locked;
                 };
-                return serde_json::from_slice(&plain)
+                return serde_json::from_slice::<Session>(&plain)
                     .map(|session| ReadState::Ready {
-                        session,
+                        session: std::sync::Arc::new(session),
                         plaintext: false,
                     })
                     .unwrap_or(ReadState::Locked);
@@ -1875,9 +2063,9 @@ fn read_legacy_locked() -> ReadState {
             crate::log("session: unsupported or damaged secure envelope is locked");
             return ReadState::Locked;
         }
-        if let Ok(session) = serde_json::from_slice(&bytes) {
+        if let Ok(session) = serde_json::from_slice::<Session>(&bytes) {
             return ReadState::Ready {
-                session,
+                session: std::sync::Arc::new(session),
                 plaintext: true,
             };
         }
@@ -1968,7 +2156,7 @@ fn read_identity(read: &ReadState) -> Vec<u8> {
         // into or out of Cleared must be detectable by `DeferredLoad::apply`'s identity check, not
         // silently matched against whichever of those two buckets it happens to share a vec! with.
         ReadState::Cleared => vec![2],
-        ReadState::Ready { session, .. } => serde_json::to_vec(session).expect("Session serialization"),
+        ReadState::Ready { session, .. } => serde_json::to_vec(&**session).expect("Session serialization"),
     }
 }
 impl DeferredLoad {
@@ -1976,8 +2164,24 @@ impl DeferredLoad {
     /// a writer between capture and attachment is not overwritten by an obsolete snapshot.
     pub(crate) fn apply(self) -> Result<(), &'static str> {
         let _io = io();
-        if read_identity(&read_live_locked()) != self.expected { return Err("session changed during capture"); }
-        if self.save { save_locked(&self.session); }
+        let read = std::sync::Arc::new(read_live_locked());
+        if read_identity(&read) != self.expected {
+            // Refused, exactly like `update_with_outcome`'s own refusal path: install the record
+            // this capture lost the race against, rather than leaving the cache empty for the
+            // next `peek()` to pay for the read this call already just took under `IO`.
+            install_locked(read);
+            return Err("session changed during capture");
+        }
+        if self.save {
+            // `save_locked` installs (or drops) the cache itself, from the write's own proven
+            // outcome — see its module doc.
+            save_locked(&self.session);
+        } else {
+            // No write happens on this path, but the read above IS the verified record: install
+            // it so the boot path's first `peek()` does not pay a third storage read for a fact
+            // this call already established under `IO`.
+            install_locked(read);
+        }
         publish_identities(&self.session);
         Ok(())
     }
@@ -1989,7 +2193,7 @@ pub(crate) fn load_capturing_entropy() -> (Session, Option<[u8; 16]>, DeferredLo
     let read = read_live_locked();
     let expected = read_identity(&read);
     let mut captured = None;
-    let (session, save) = prepare_load(read, || {
+    let (session, save) = prepare_load(&read, || {
         let bytes = random_bytes();
         captured = Some(bytes);
         client_id_from_entropy(bytes)
@@ -1998,16 +2202,49 @@ pub(crate) fn load_capturing_entropy() -> (Session, Option<[u8; 16]>, DeferredLo
     (session, captured, deferred)
 }
 
+/// Whether a cached [`ReadState`] answers [`load_with_id`] with no `IO` at all: an established,
+/// non-empty `client_id` that is not sitting in a plaintext file — the two things `prepare_load`
+/// would otherwise decide to re-save over. Anything else must fall through to the ordinary
+/// read-modify-write, so a save is never built from a read that was not taken in the same `IO`
+/// critical section as the write it might cause — the no-lost-update invariant `IO`'s own doc
+/// states, which caching must not weaken.
+fn established(read: &ReadState) -> bool {
+    matches!(
+        read,
+        ReadState::Ready { session, plaintext: false } if !session.client_id.is_empty()
+    )
+}
+
 fn load_with_id(mint: impl FnOnce() -> String) -> Session {
+    let now = std::time::Instant::now();
+    if let Some(read) = cached_at(now) {
+        if established(&read) {
+            let (s, save) = prepare_load(&read, mint);
+            debug_assert!(!save, "an established, protected record must never need a resave");
+            publish_identities(&s);
+            return s;
+        }
+    }
     let _io = io();
-    let read = read_live_locked();
-    let (s, save) = prepare_load(read, mint);
+    // The same race `peek_impl` guards against: another caller may have installed an established
+    // record while this one waited for `IO`, in which case re-reading storage here would be a
+    // second, needless read of a record already proved.
+    if let Some(read) = cached_at(now) {
+        if established(&read) {
+            let (s, save) = prepare_load(&read, mint);
+            debug_assert!(!save, "an established, protected record must never need a resave");
+            publish_identities(&s);
+            return s;
+        }
+    }
+    let read = refresh_locked(now);
+    let (s, save) = prepare_load(&read, mint);
     if save { save_locked(&s); }
     publish_identities(&s);
     s
 }
 
-fn prepare_load(read: ReadState, mint: impl FnOnce() -> String) -> (Session, bool) {
+fn prepare_load(read: &ReadState, mint: impl FnOnce() -> String) -> (Session, bool) {
     // A cleared tenure is grouped with Missing here, deliberately not with Locked/Blocked: it is
     // not "a persisted session exists" (there is nothing to preserve), and — the actual fix this
     // exists for — it must not be `locked`, which is what drives locked/blocked UI/boot framing.
@@ -2021,7 +2258,7 @@ fn prepare_load(read: ReadState, mint: impl FnOnce() -> String) -> (Session, boo
         }
     );
     let mut s = match read {
-        ReadState::Ready { session, .. } => session,
+        ReadState::Ready { session, .. } => (**session).clone(),
         ReadState::Missing | ReadState::Locked | ReadState::Blocked | ReadState::Cleared => {
             let mut fresh = Session::default();
             // Product default is on. `Default` for a bool is off, and this is the path that
@@ -2071,13 +2308,23 @@ pub(crate) fn update_with_outcome(
     edit: impl FnOnce(&Session) -> Option<Session>,
 ) -> Option<async_persistence::LiveWrite> {
     let _io = io();
-    let cur = session_from_read(read_live_locked());
+    let read = std::sync::Arc::new(read_live_locked());
+    let cur = session_of(&read);
     if cur.client_id.is_empty() {
+        // Nothing readable to modify. Install this fresh truth anyway — it is what makes `peek()`
+        // show a concurrent external change afterwards, exactly as an uncached re-read always did.
+        install_locked(read);
         return None;
     }
     match edit(&cur) {
         Some(next) => Some(save_locked_outcome(&next)),
-        None => None,
+        None => {
+            // Refused by the caller's own policy: install the record it refused OVER, not
+            // whatever used to be cached — a stale hit here would show a change that never
+            // happened.
+            install_locked(read);
+            None
+        }
     }
 }
 
@@ -2102,12 +2349,15 @@ pub(crate) fn replace_after_reauthentication_with_outcome(
     edit: impl FnOnce(&Session) -> Session,
 ) -> Result<Option<async_persistence::LiveWrite>, ()> {
     let _io = io();
-    let cur = session_from_read(read_live_locked());
+    let read = std::sync::Arc::new(read_live_locked());
+    let cur = session_of(&read);
     if !cur.client_id.is_empty() && !fence(&cur) {
+        install_locked(read);
         return Err(());
     }
     let next = edit(&cur);
     if next.account_token.is_empty() {
+        install_locked(read);
         return Ok(None);
     }
     Ok(Some(save_locked_with_authority(&next, SaveAuthority::FreshReauthentication)))
@@ -2165,6 +2415,9 @@ fn save_locked_with_authority(
     s: &Session,
     authority: SaveAuthority,
 ) -> async_persistence::LiveWrite {
+    // Every caller of this function holds `IO` already (it is private and reached only through
+    // the entry points that took it) — which is what makes installing this write's outcome into
+    // `CACHE` below safe. See the module doc's cache invariants.
     #[cfg(test)]
     {
         *LAST_WRITE_AUTHORITY.lock().unwrap_or_else(|e| e.into_inner()) = Some(authority);
@@ -2174,7 +2427,9 @@ fn save_locked_with_authority(
     publish_identities(s);
     #[cfg(test)]
     if TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
-        return async_persistence::LiveWrite::legacy(save_legacy_locked(s));
+        let legacy = save_legacy_locked(s);
+        install_or_drop_after_write(s, legacy);
+        return async_persistence::LiveWrite::legacy(legacy);
     }
     let protected_before = has_protected_authority();
     let commit = persistence::write_session(s, authority);
@@ -2198,13 +2453,49 @@ fn save_locked_with_authority(
     }
     let protected_after = has_protected_authority();
     if durable {
+        let protection = match &commit {
+            persistence::CanonicalCommit::Durable { protection, .. } => *protection,
+            _ => unreachable!(),
+        };
+        // A `Durable` commit IS the record now — install it rather than drop it, so the very next
+        // `peek()` (even the caller's own, right after this returns) is served from memory instead
+        // of forcing a re-read of what this call just proved.
+        install_locked(std::sync::Arc::new(ReadState::Ready {
+            session: std::sync::Arc::new(s.clone()),
+            plaintext: protection.is_none(),
+        }));
         return async_persistence::LiveWrite::canonical(
             commit,
             Some(protected_before || protected_after),
         );
     }
     let legacy = save_legacy_fallback_locked(s, protected_before, protected_after);
+    // Unlike the `TEST_FILE` path, a `Some(_)` here is NOT installed: `read_live_locked` only
+    // ever falls through to `read_legacy_locked` when the canonical read comes back `Missing`
+    // (see its doc), and a non-durable canonical write leaves a present-but-uncertain canonical
+    // record behind, never a missing one. So the very next real read would answer from the
+    // canonical file regardless of what this ARM fallback just wrote beside it — trusting the
+    // fallback's own outcome here would cache an answer no subsequent read could ever reproduce.
+    // The disk state after a non-durable canonical commit is genuinely unknown either way.
+    drop_cache_locked();
     async_persistence::LiveWrite::canonical(commit, legacy)
+}
+
+/// The `#[cfg(test)]` `TEST_FILE` path's write outcome, where the legacy file IS the only record
+/// (there is no canonical store to outrank it): `Some(sealed)` is what was actually written
+/// (sealed or plaintext), which IS provably the record, so it is installed; `None` means nothing
+/// landed anywhere, so whatever was cached before is no longer trustworthy and must be dropped
+/// rather than risk serving a value the disk does not hold. **Not** used on the canonical path —
+/// see the comment at its one non-durable call site for why a legacy write there can't be trusted
+/// as the record either way.
+fn install_or_drop_after_write(s: &Session, legacy: Option<bool>) {
+    match legacy {
+        Some(sealed) => install_locked(std::sync::Arc::new(ReadState::Ready {
+            session: std::sync::Arc::new(s.clone()),
+            plaintext: !sealed,
+        })),
+        None => drop_cache_locked(),
+    }
 }
 
 /// The pre-canonical sealed/plaintext write, run only where the canonical commit did NOT land.
@@ -2532,6 +2823,12 @@ fn clear_cleanup_outcome(outcome: persistence::ClearCleanupOutcome) -> ClearOutc
 /// straight back, account token and all.
 pub fn clear() -> ClearOutcome {
     let _io = io();
+    // Signing out changes what `peek` answers exactly as durably as a save does — and it must drop
+    // the cached `Arc<Session>` immediately rather than merely marking it stale: that `Arc` holds
+    // the very account/server tokens sign-out means to get rid of, and leaving it cached would
+    // keep it reachable from `peek()` until some unrelated later write happens to overwrite it.
+    // See the module doc's cache invariants.
+    drop_cache_locked();
 
     // A redirected legacy-fixture test (`TempSession`/`redirect_for_test`) must never reach the
     // real canonical authority — exactly the guard `save_locked_with_authority` and
@@ -2757,6 +3054,10 @@ mod persistence_tests;
 #[path = "session_profile_cache_tests.rs"]
 mod profile_cache_tests;
 
+#[cfg(test)]
+#[path = "session_cache_tests.rs"]
+mod cache_tests;
+
 // Storage-facing capability only. Session owner admission is integrated in Stage B.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[allow(dead_code)]
@@ -2776,6 +3077,30 @@ pub(crate) fn last_write_authority_for_test() -> Option<SaveAuthority> {
 #[cfg(test)]
 pub(crate) fn reset_last_write_authority_for_test() {
     *LAST_WRITE_AUTHORITY.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only witness of how many times [`read_live_locked`] actually ran, on THIS thread — the
+    /// number [`CACHE`] exists to keep flat across repeated per-frame [`peek`] calls with no
+    /// intervening write. Every real read (`peek`, `update`, `clear`'s own re-read, …) funnels
+    /// through `read_live_locked`, so this counts the thing a per-frame caller must not cause.
+    ///
+    /// `thread_local!`, not a process-wide atomic: the host test runner puts every `#[test]` on
+    /// its own thread and runs many concurrently, and a test asserting an exact count wants to
+    /// know what ITS OWN reads did, not what some unrelated test running in parallel on another
+    /// thread also caused — a shared atomic made this counter's answer depend on scheduling.
+    static READS_FOR_TEST: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reads_for_test() -> u32 {
+    READS_FOR_TEST.with(|c| c.get())
+}
+
+#[cfg(test)]
+pub(crate) fn reset_reads_for_test() {
+    READS_FOR_TEST.with(|c| c.set(0));
 }
 
 #[allow(dead_code)]

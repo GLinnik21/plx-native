@@ -90,8 +90,6 @@ pub(crate) const CONTENT_W: f32 = PANEL_W - 2.0 * PAD;
 /// edge. It is a property of the MATERIAL, not taste — a backdrop blur samples a window around its
 /// own rect, and a panel flush to an edge has nothing on one side to sample.
 const EDGE_CLEAR: f32 = 68.0;
-/// The modal scrim's peak alpha — the mock's `scrimStill: 0.46`, shared by all four alerts.
-const SCRIM_A: f32 = theme::alert::SCRIM_A;
 
 // ---- the ladder ------------------------------------------------------------------------------
 //
@@ -465,7 +463,7 @@ impl crate::ui::machine::LogicalState for AboutPanelScreen {
     }
 }
 
-impl<H: crate::screens::registry::AppLike> crate::ui::screen::Screen<H> for AboutPanelScreen {
+impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLike> crate::ui::screen::Screen<H> for AboutPanelScreen {
     fn name(&self) -> &'static str {
         "about"
     }
@@ -493,14 +491,16 @@ impl<H: crate::screens::registry::AppLike> crate::ui::screen::Screen<H> for Abou
     /// by `nav::page_alpha`, which is `Popover::scrim`'s own arithmetic and one factor more than
     /// the page-drawn version could reach.
     fn scrim(&self) -> crate::ui::screen::Scrim {
-        crate::ui::screen::Scrim::dim(SCRIM_A)
+        // the mock's `scrimStill` — the PANEL role every read-only alert shares
+        crate::ui::screen::Scrim::dim(theme::underlay::DIM_PANEL)
     }
     fn draw(&mut self, f: &mut crate::ui::screen::DrawFrame<'_, '_, H>) {
         // **The item is the one that LANDED, not the page's.** The panel is presented over exactly
         // one page and dismissed with it, so in practice they are the same item; reading
         // `metadata::current()` keeps this module's dependency at the store it always had rather
         // than adding a copy of the page's identity to an argument that carries nothing.
-        let Some(d) = metadata::current() else { return };
+        let meta = H::metadata(f.cx);
+        let Some(d) = meta.current() else { return };
         // The container owns the appear spring; `DrawFrame::page_alpha` IS `Surface::motion.appear`
         // for a surface, which is what this panel's own `Popover` used to hold.
         let appear = f.page_alpha;
@@ -827,6 +827,21 @@ mod tests {
         type Views<'a> = ();
         type Init = TestInit;
         type Memory = TestInit;
+    }
+
+    thread_local! {
+        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    }
+
+    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+        TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+    }
+
+    impl crate::screens::registry::MetadataLike for TestHost {
+        fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+            test_store().view()
+        }
     }
 
     const ENTRY: EntryId = EntryId(7);

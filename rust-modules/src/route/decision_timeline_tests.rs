@@ -26,12 +26,12 @@ fn the_machine_id_cache_is_scoped_to_the_server_that_taught_it() {
         "rk-a",
     );
     assert_eq!(
-        ResolveEnv::snapshot(&ps, a, "rk-a").machine_id,
+        ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), a, "rk-a").machine_id,
         "MACHINE-A",
         "its own server reuses it"
     );
     assert_eq!(
-        ResolveEnv::snapshot(&ps, b, "rk-b").machine_id,
+        ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), b, "rk-b").machine_id,
         "",
         "another server must re-ask rather than inherit A's fingerprint"
     );
@@ -44,8 +44,8 @@ fn the_machine_id_cache_is_scoped_to_the_server_that_taught_it() {
         },
         "rk-b",
     );
-    assert_eq!(ResolveEnv::snapshot(&ps, a, "rk-a").machine_id, "MACHINE-A");
-    assert_eq!(ResolveEnv::snapshot(&ps, b, "rk-b").machine_id, "");
+    assert_eq!(ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), a, "rk-a").machine_id, "MACHINE-A");
+    assert_eq!(ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), b, "rk-b").machine_id, "");
 }
 
 /// **The one that had to ship in the same commit as `cur_sid`.** The `/:/timeline` report runs

@@ -209,6 +209,7 @@ impl PlayerScreen {
         ps: &crate::route::PlaybackSession,
         now: u32,
         measure: &dyn crate::ui::machine::Measure,
+        meta: crate::metadata::MetadataView<'_>,
     ) -> Vec<(u32, Rect)> {
         let mut stops = Vec::new();
         crate::ui::player_hud::draw_hud(
@@ -224,6 +225,7 @@ impl PlayerScreen {
             self.transport,
             &mut stops,
             measure,
+            meta,
         );
         stops
     }
@@ -324,7 +326,7 @@ const REPAIR_CANCEL: u32 = 40_000;
 const REPAIR_CONFIRM: u32 = REPAIR_CANCEL + 1;
 const REPAIR_BODY: &str = "Use Homebrew Channel’s root access to update PlxNative’s sandbox with LG’s native profile. This requires a rooted TV. Close and reopen PlxNative afterward.";
 
-impl<H: PlayerLike> Machine<H> for PlayerScreen {
+impl<H: PlayerLike + crate::screens::registry::MetadataLike> Machine<H> for PlayerScreen {
     type Ev = ScreenEvent<H>;
     /// **The transport's key/click ladder, as the receiving end of the phase-12 contract freeze.**
     ///
@@ -432,7 +434,7 @@ impl<H: PlayerLike> Machine<H> for PlayerScreen {
                 let ps = H::session(cx);
                 match &input.kind {
                     InputKind::Key { sym, wcode, edge, .. } => {
-                        self.handle_key(ps, consts::classify(*sym, *wcode), *edge, input.at.ms, fx)
+                        self.handle_key(ps, consts::classify(*sym, *wcode), *edge, input.at.ms, fx, H::metadata(cx))
                     }
                     InputKind::Click { hit, x, .. } => {
                         self.handle_click(ps, *hit, *x, input.at.ms, fx)
@@ -624,6 +626,7 @@ impl PlayerScreen {
         edge: Edge,
         now: u32,
         fx: &mut Effects<'_, H>,
+        meta: crate::metadata::MetadataView<'_>,
     ) -> Handled {
         use consts::Key;
         // **A terminal failure owns the whole frame, so almost nothing may be driven on it.**
@@ -681,7 +684,7 @@ impl PlayerScreen {
             }
             Key::Left { .. } | Key::Right { .. } => {
                 match edge {
-                    Edge::Down => self.key_scrub_fresh(ps, key, now),
+                    Edge::Down => self.key_scrub_fresh(ps, key, now, meta),
                     Edge::Repeat => self.key_scrub_repeat(now),
                     Edge::Up => self.key_scrub_release(now, fx),
                 }
@@ -767,6 +770,7 @@ impl PlayerScreen {
         ps: &crate::route::PlaybackSession,
         key: consts::Key,
         now: u32,
+        meta: crate::metadata::MetadataView<'_>,
     ) {
         let fwd = matches!(key, consts::Key::Right { .. });
         let dur = crate::player::duration_ns();
@@ -794,7 +798,7 @@ impl PlayerScreen {
                     (self.hud.nav.btn + if fwd { 1 } else { -1 }).clamp(0, self.slot.items() - 1);
             }
             input::ScrubPress::Tabs => {
-                let max_tab = if crate::ui::chapters_panel::has_chapters() { 1 } else { 0 };
+                let max_tab = if crate::ui::chapters_panel::has_chapters(meta) { 1 } else { 0 };
                 self.hud.nav.tab =
                     (self.hud.nav.tab + if fwd { 1 } else { -1 }).clamp(0, max_tab);
             }
@@ -963,8 +967,8 @@ impl PlayerScreen {
 /// screen answers `Handled::Yes` for), so `HudNav` stays the single source of truth for WHICH of
 /// these is highlighted — these groups exist so the engine's hit map and stop bookkeeping have real
 /// geometry to test a click or a simulator mouse against, not so the engine drives the ring itself.
-impl<H: PlayerLike> Focusable<H> for PlayerScreen {
-    fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+impl<H: PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for PlayerScreen {
+    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         if self.repair_alert.visible() {
             out.push(GroupSpec { id: GROUP_REPAIR, kind: GroupKind::Row { wrap: false }, seat: Seat::First,
                 reachable: AxisMask::BOTH, edge: [EdgeRule::Stop; 4], extent: self.repair_rect(false).union(self.repair_rect(true)), len: 2, elem: crate::ui::screen::ElemKind::Control });
@@ -991,7 +995,7 @@ impl<H: PlayerLike> Focusable<H> for PlayerScreen {
             len: row_len,
             elem: crate::ui::screen::ElemKind::Control,
         });
-        let has_ch = crate::ui::chapters_panel::has_chapters();
+        let has_ch = crate::ui::chapters_panel::has_chapters(H::metadata(cx));
         out.push(GroupSpec {
             id: GROUP_TABS,
             kind: GroupKind::Row { wrap: false },
@@ -1042,7 +1046,7 @@ impl<H: PlayerLike> Focusable<H> for PlayerScreen {
         }
         Step::Edge
     }
-    fn place(&self, key: &u32, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+    fn place(&self, key: &u32, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
         use player_hud::{ELEM_FAILURE_OK, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
         if self.repair_alert.visible() {
             if !matches!(*key, REPAIR_CANCEL | REPAIR_CONFIRM) { return None; }
@@ -1060,7 +1064,7 @@ impl<H: PlayerLike> Focusable<H> for PlayerScreen {
             }
             e if (ELEM_TAB_BASE..ELEM_FAILURE_OK).contains(&e) => player_hud::tab_hit_rect(
                 (e - ELEM_TAB_BASE) as i32,
-                crate::ui::chapters_panel::has_chapters(),
+                crate::ui::chapters_panel::has_chapters(H::metadata(cx)),
             )?,
             e if e == ELEM_FAILURE_OK => player_hud::failure_ok_hit_rect(),
             _ => return None,
@@ -1111,7 +1115,7 @@ impl LogicalState for PlayerScreen {
     }
 }
 
-impl<H: PlayerLike> Screen<H> for PlayerScreen {
+impl<H: PlayerLike + crate::screens::registry::MetadataLike> Screen<H> for PlayerScreen {
     fn name(&self) -> &'static str {
         WORD
     }
@@ -1150,7 +1154,7 @@ impl<H: PlayerLike> Screen<H> for PlayerScreen {
         // what the element means — including the scrubber, whose meaning needs the click's `x`
         // and so cannot be carried by a bare `ScreenEvent::Activate` at all.
         if (hud_up || self.lifted) && !self.repair_alert.visible() {
-            for (elem, rect) in self.draw_hud(ps, now, f.measure) {
+            for (elem, rect) in self.draw_hud(ps, now, f.measure, H::metadata(f.cx)) {
                 f.stop(
                     crate::ui::Painter::root(),
                     Stop {
@@ -2107,6 +2111,18 @@ mod repair_confirmation_tests {
     }
     impl PlayerLike for TestHost {
         fn session<'a>(cx: &Cx<'a, Self>) -> &'a crate::route::PlaybackSession { cx.views }
+    }
+    thread_local! {
+        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    }
+    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+        TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+    }
+    impl crate::screens::registry::MetadataLike for TestHost {
+        fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+            test_store().view()
+        }
     }
     fn context(ps: &crate::route::PlaybackSession, elem: Option<u32>) -> Cx<'_, TestHost> {
         let mut cx = Cx { views: ps, tick: Tick::default(), measure: &crate::ui::fixture::FixtureMeasure,

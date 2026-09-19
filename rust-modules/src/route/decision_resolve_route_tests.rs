@@ -362,7 +362,7 @@ fn quality_changed_during_resolve_cannot_land_the_old_contract() {
 
     // This is the reducer half of a quality edit after ResolveEnv was snapshotted.
     begin_user_contract_boundary();
-    assert_eq!(pump_play(&mut ps), None);
+    assert_eq!(pump_play(&mut ps, &mut crate::stores::metadata::MetadataStore::default()), None);
     assert!(
         url(&ps).is_empty(),
         "the stale plan must never become the applied URL"
@@ -1288,7 +1288,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
     });
 
     assert_eq!(
-        pump_play(&mut ps),
+        pump_play(&mut ps, &mut crate::stores::metadata::MetadataStore::default()),
         None,
         "the superseded plan may not be installed"
     );
@@ -1306,7 +1306,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         },
         rk: "refused-rk".into(),
     });
-    assert_eq!(pump_play(&mut ps), None, "a refusal has no playable URL");
+    assert_eq!(pump_play(&mut ps, &mut crate::stores::metadata::MetadataStore::default()), None, "a refusal has no playable URL");
     assert!(
         play_refused(&ps),
         "its server verdict still reaches the error read-out"

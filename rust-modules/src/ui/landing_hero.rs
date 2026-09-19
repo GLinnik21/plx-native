@@ -11,16 +11,6 @@ pub(crate) const MID_WEIGHT: f32 = 0.55;
 /// bottom ramp and the feathered corner. 1.35 is the video-bound row the legibility table grades.
 pub(crate) const PREVIEW_FIELD: f32 = 1.35;
 
-/// How much of the preview wedge survives once only the Play/Resume pill needs protecting —
-/// full-trailer mode, once the logo and synopsis have both faded out. The pill already carries its
-/// own legibility treatment (`ControlGround::Unkeyed`) independent of any scrim, so this value is
-/// not load-bearing for the one thing left on screen; it exists so the transition from
-/// "background" to "full" reads as the ambient darkening lifting, not as a hard cut. Starting
-/// conservative (closer to [`PREVIEW_FIELD`] than to 0) — tune on a device pass against real
-/// trailer content per `docs/trailer-ux-plan.md` §2.4(c); there is no anchor-table row for this
-/// combination yet.
-pub(crate) const PROMOTED_FIELD: f32 = 0.4;
-
 pub(crate) fn stack_top(title_h: f32, meta_h: f32, synopsis_h: f32) -> f32 {
     TEXT_BOTTOM - (title_h + theme::space::MD + meta_h + synopsis_h)
 }

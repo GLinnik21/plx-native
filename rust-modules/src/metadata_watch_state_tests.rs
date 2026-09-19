@@ -30,17 +30,17 @@ fn a_mounted_detail_page_follows_a_corrected_credit() {
     // what a build without the rule published: the household's own server wearing the account
     // holder's handle
     crate::plex::describe_server(house, "Mac mini", "admin", false);
-    set_current_for_test(Some(Detail {
+    set_current_for_test(test_state(), Some(Detail {
         sid: house,
         rk: "42".into(),
         ..Default::default()
     }));
-    assert_eq!(current().unwrap().source(), "admin");
+    assert_eq!(current(test_state()).unwrap().source(), "admin");
 
     // the roster refresh re-grades it, with nothing touching the mounted page
     crate::plex::describe_server(house, "Mac mini", "", false);
     assert_eq!(
-        current().unwrap().source(),
+        current(test_state()).unwrap().source(),
         "",
         "the page re-asks the registry rather than carrying a copy taken at fetch time"
     );
@@ -48,14 +48,14 @@ fn a_mounted_detail_page_follows_a_corrected_credit() {
     // and a share is still credited, so this is not a blanket clear
     let friend = crate::plex::register_for_test("md-friend", "127.0.0.1", 2, "t", "cid");
     crate::plex::describe_server(friend, "nas-home", "friend", false);
-    set_current_for_test(Some(Detail {
+    set_current_for_test(test_state(), Some(Detail {
         sid: friend,
         rk: "318".into(),
         ..Default::default()
     }));
-    assert_eq!(current().unwrap().source(), "friend");
+    assert_eq!(current(test_state()).unwrap().source(), "friend");
 
-    set_current_for_test(None);
+    set_current_for_test(test_state(), None);
     crate::plex::reset_servers_for_test();
 }
 
@@ -64,32 +64,32 @@ fn an_optimistic_watch_flip_reaches_the_item_its_episodes_and_the_season_tabs_co
     let _serial = crate::testlock::serial();
 
     // the loaded item itself — the hero's own toggle
-    set_current_for_test(Some(Detail {
+    set_current_for_test(test_state(), Some(Detail {
         sid: SRV_A,
         rk: "42".into(),
         resume_ms: 900_000,
         ..Default::default()
     }));
-    assert!(set_watched_local(SRV_A, "42", true));
-    assert!(current().unwrap().watched);
+    assert!(set_watched_local(test_state(), SRV_A, "42", true));
+    assert!(current(test_state()).unwrap().watched);
     assert_eq!(
-        current().unwrap().resume_ms,
+        current(test_state()).unwrap().resume_ms,
         0,
         "a watched item stops offering to resume"
     );
 
     // …and the SHARE's 42 is a different film, so neither its press nor ours reaches the other
     assert!(
-        !set_watched_local(SRV_B, "42", false),
+        !set_watched_local(test_state(), SRV_B, "42", false),
         "another server's key names nothing here"
     );
     assert!(
-        current().unwrap().watched,
+        current(test_state()).unwrap().watched,
         "and leaves this page exactly as it was"
     );
 
     // an EPISODE of the loaded show — the filmstrip's context menu
-    set_current_for_test(Some(Detail {
+    set_current_for_test(test_state(), Some(Detail {
         sid: SRV_A,
         rk: "show".into(),
         is_show: true,
@@ -126,10 +126,10 @@ fn an_optimistic_watch_flip_reaches_the_item_its_episodes_and_the_season_tabs_co
     }));
 
     assert!(
-        set_watched_local(SRV_A, "e2", true),
+        set_watched_local(test_state(), SRV_A, "e2", true),
         "an episode of the loaded season"
     );
-    let d = current().unwrap();
+    let d = current(test_state()).unwrap();
     assert!(d.episodes[1].watched);
     assert_eq!(
         d.episodes[1].resume_ms, 0,
@@ -147,29 +147,29 @@ fn an_optimistic_watch_flip_reaches_the_item_its_episodes_and_the_season_tabs_co
 
     // idempotent: pressing watched on an already-watched episode must not double-count the
     // season, which would make a part-watched season read as finished
-    assert!(set_watched_local(SRV_A, "e2", true));
+    assert!(set_watched_local(test_state(), SRV_A, "e2", true));
     assert_eq!(
-        current().unwrap().seasons[1].viewed_leaf_count,
+        current(test_state()).unwrap().seasons[1].viewed_leaf_count,
         2,
         "the count follows the FLIP"
     );
 
     // …and the reverse, clamped at zero rather than going negative
     for _ in 0..5 {
-        assert!(set_watched_local(SRV_A, "e2", false));
-        assert!(set_watched_local(SRV_A, "e1", false));
+        assert!(set_watched_local(test_state(), SRV_A, "e2", false));
+        assert!(set_watched_local(test_state(), SRV_A, "e1", false));
     }
     assert_eq!(
-        current().unwrap().seasons[1].viewed_leaf_count,
+        current(test_state()).unwrap().seasons[1].viewed_leaf_count,
         0,
         "never a negative remainder"
     );
 
     assert!(
-        !set_watched_local(SRV_A, "not-here", true),
+        !set_watched_local(test_state(), SRV_A, "not-here", true),
         "an rk on neither the item nor its row"
     );
-    clear();
+    clear(test_state(), test_adapter());
 }
 
 /// The THIRD store this page holds, and the one the two arms above cannot reach: a **Related
@@ -203,7 +203,7 @@ fn an_optimistic_watch_flip_reaches_the_related_shelf_the_menu_was_opened_on() {
     };
     // a SHOW page, so the loaded item and its episodes are both populated and both must be left
     // exactly as they were by a press on a tile that is neither
-    set_current_for_test(Some(Detail {
+    set_current_for_test(test_state(), Some(Detail {
         sid: SRV_A,
         rk: "show".into(),
         is_show: true,
@@ -218,10 +218,10 @@ fn an_optimistic_watch_flip_reaches_the_related_shelf_the_menu_was_opened_on() {
     // …and the tile is reached even though the page's own rk did not match and the rk is on no
     // episode — the two arms that both return early
     assert!(
-        set_watched_local(SRV_A, "r1", true),
+        set_watched_local(test_state(), SRV_A, "r1", true),
         "the Related tile is a hit, not a miss"
     );
-    let d = current().unwrap();
+    let d = current(test_state()).unwrap();
     assert!(
         d.related[1].watched && !d.related[1].unwatched,
         "the tick the menu just promised"
@@ -235,22 +235,22 @@ fn an_optimistic_watch_flip_reaches_the_related_shelf_the_menu_was_opened_on() {
     assert!(!d.episodes[0].watched, "…nor is any episode of it");
 
     // the way back, from the second row a part-watched tile offers
-    assert!(set_watched_local(SRV_A, "r1", false));
-    let d = current().unwrap();
+    assert!(set_watched_local(test_state(), SRV_A, "r1", false));
+    let d = current(test_state()).unwrap();
     assert!(d.related[1].unwatched && !d.related[1].watched);
 
     // A SHARE's `r0` is a different film that happens to carry the same number. The row's own
     // `sid` is what keeps the press off it — a bare-key walk would flip the tile here.
     assert!(
-        !set_watched_local(SRV_B, "r0", true),
+        !set_watched_local(test_state(), SRV_B, "r0", true),
         "another server's key names nothing on this shelf"
     );
     assert!(
-        current().unwrap().related[0].resume_frac().is_some(),
+        current(test_state()).unwrap().related[0].resume_frac().is_some(),
         "…and the tile is untouched"
     );
 
-    clear();
+    clear(test_state(), test_adapter());
 }
 
 /// `cached_playing` is the fast path that SKIPS the PMS fetch, so a false hit is the worst of
@@ -264,7 +264,7 @@ fn the_playing_item_cache_hits_only_for_the_same_item_on_the_same_server() {
         id: 7,
         ..Default::default()
     }];
-    set_current_for_test(Some(Detail {
+    set_current_for_test(test_state(), Some(Detail {
         sid: SRV_A,
         rk: "42".into(),
         audio: audio.clone(),
@@ -273,7 +273,7 @@ fn the_playing_item_cache_hits_only_for_the_same_item_on_the_same_server() {
         ..Default::default()
     }));
 
-    let hit = cached_playing(SRV_A, "42").expect("the loaded page IS this item");
+    let hit = cached_playing(test_state(), SRV_A, "42").expect("the loaded page IS this item");
     assert_eq!(
         (hit.sid, hit.rk.as_str()),
         (SRV_A, "42"),
@@ -282,27 +282,27 @@ fn the_playing_item_cache_hits_only_for_the_same_item_on_the_same_server() {
     assert_eq!(hit.audio.first().map(|s| s.id), Some(7));
 
     assert!(
-        cached_playing(SRV_B, "42").is_none(),
+        cached_playing(test_state(), SRV_B, "42").is_none(),
         "the SHARE's 42 is a different film"
     );
-    assert!(cached_playing(SRV_A, "43").is_none());
+    assert!(cached_playing(test_state(), SRV_A, "43").is_none());
     assert!(
-        cached_playing(crate::plex::ServerId::UNSET, "42").is_none(),
+        cached_playing(test_state(), crate::plex::ServerId::UNSET, "42").is_none(),
         "unscoped names neither"
     );
 
     // …and the pre-existing rule is untouched: a page with no streams is not a usable cache
     // entry, whatever its identity says (it would hand playback an empty track list).
-    set_current_for_test(Some(Detail {
+    set_current_for_test(test_state(), Some(Detail {
         sid: SRV_A,
         rk: "42".into(),
         ..Default::default()
     }));
     assert!(
-        cached_playing(SRV_A, "42").is_none(),
+        cached_playing(test_state(), SRV_A, "42").is_none(),
         "no streams loaded yet — go and fetch"
     );
-    clear();
+    clear(test_state(), test_adapter());
 }
 
 /// The season-scope watched rule. Pure (no crate global, so no `testlock` here) and worth its

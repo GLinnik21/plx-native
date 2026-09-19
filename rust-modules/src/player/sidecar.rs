@@ -162,8 +162,8 @@ pub(crate) fn reset() {
 /// session, or on another Plex client. The embedded twin is `route::pick_dp_subtitle`, which
 /// leaves an external selection off because nothing could render it; now something can.
 /// Direct play only (the caller's gate): a transcode start keeps subtitles off, as before.
-pub(crate) fn restore_server_selection(server: crate::plex::ServerId) {
-    let Some(item) = crate::metadata::playing() else {
+pub(crate) fn restore_server_selection(server: crate::plex::ServerId, meta: crate::metadata::MetadataView<'_>) {
+    let Some(item) = meta.playing() else {
         return;
     };
     if let Some(s) = item.subs.iter().find(|s| s.selected && s.sidecar_renderable()) {

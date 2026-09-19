@@ -5064,8 +5064,9 @@ pub(super) struct QueueInfo {
     pub(super) rows: Vec<crate::plex::QueueRow>,
 }
 
-/// The queued next episode. Main-thread only, and — like `metadata::playing()` — it hands out a
-/// `&'static` the Up Next control reads across a frame, so `apply_plan` (main thread) staying its
+/// The queued next episode. Main-thread only, and — like `metadata::playing()` (via
+/// `MetadataView`, which hands out a `&'a` borrow of the owner's state) — it hands out a
+/// reference the Up Next control reads across a frame, so `apply_plan` (main thread) staying its
 /// only writer is what keeps that reference sound. A caller that STARTS the next episode must
 /// clone first: `request_play` clears this before the new plan lands.
 pub(crate) fn up_next(ps: &PlaybackSession) -> Option<&UpNext> {
@@ -5176,7 +5177,7 @@ impl ResolveEnv {
     /// carries the server it came from (`PmsMovie`/`UpNext`/`Detail` all hold one now), so a play
     /// raised off a merged shelf resolves against the server that shelf's row belongs to rather
     /// than whichever server happens to be current when the worker gets around to asking.
-    fn snapshot(ps: &PlaybackSession, sid: ServerId, rk: &str) -> ResolveEnv {
+    fn snapshot(ps: &PlaybackSession, meta: crate::metadata::MetadataView<'_>, sid: ServerId, rk: &str) -> ResolveEnv {
         let s = ps;
         ResolveEnv {
             sid,
@@ -5188,9 +5189,9 @@ impl ResolveEnv {
             },
             audio_sid: cur_audio_sid(ps),
             sub_sid: cur_sub_sid(ps),
-            cached_item: crate::metadata::cached_playing(sid, rk),
+            cached_item: meta.cached_playing(sid, rk),
             quality: quality(),
-            src_kbps: resolve_src_kbps(crate::metadata::current(), sid, rk),
+            src_kbps: resolve_src_kbps(meta.current(), sid, rk),
             omit_queue_continuous: false,
             preview: false,
         }
@@ -5337,6 +5338,7 @@ pub(crate) fn surface_sid() -> ServerId {
 /// PlayQueue, the resume point) belongs to the former.
 pub(crate) fn request_play(
     ps: &mut PlaybackSession,
+    meta: &mut crate::stores::metadata::MetadataStore,
     sid: ServerId,
     rk: &str,
     part: &str,
@@ -5347,6 +5349,7 @@ pub(crate) fn request_play(
 ) -> bool {
     request_play_inner(
         ps,
+        meta,
         PlaybackRequest {
             sid,
             rk: rk.to_owned(),
@@ -5367,6 +5370,7 @@ pub(crate) fn request_play(
 /// zero. The caller keeps the detail page mounted.
 pub(crate) fn request_preview(
     ps: &mut PlaybackSession,
+    meta: &mut crate::stores::metadata::MetadataStore,
     sid: ServerId,
     rk: &str,
     part: &str,
@@ -5376,6 +5380,7 @@ pub(crate) fn request_preview(
 ) -> bool {
     request_play_inner(
         ps,
+        meta,
         PlaybackRequest {
             sid,
             rk: rk.to_owned(),
@@ -5397,6 +5402,7 @@ pub(crate) fn request_preview(
 /// a replacement timeline lease still waits for any stop announced before its publication.
 fn request_play_inner(
     ps: &mut PlaybackSession,
+    meta: &mut crate::stores::metadata::MetadataStore,
     request: PlaybackRequest,
     retry: Option<RetryContext>,
     trace_generation: Option<u32>,
@@ -5465,7 +5471,7 @@ fn request_play_inner(
     // …and the outgoing item's track/marker/chapter store, for exactly the reason above: it stays
     // the PREVIOUS leaf's until this resolve lands. See `metadata::retire_playing_item`.
     if !request.preview {
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RetirePlayingItem);
+        meta.run(crate::stores::metadata::MetadataCmd::RetirePlayingItem);
         crate::player::reset_audio_track();
         crate::player::reset_subtitle();
     }
@@ -5474,7 +5480,7 @@ fn request_play_inner(
     // and makes the landing stale instead of installing an old plan beneath a new checkmark.
     let contract_revision = desired_contract_revision();
     // captured HERE, on the main thread, and moved into the worker — see ResolveEnv
-    let mut env = ResolveEnv::snapshot(ps, sid, rk);
+    let mut env = ResolveEnv::snapshot(ps, meta.view(), sid, rk);
     env.omit_queue_continuous = crate::metadata::context_omits_queue_continuous(ctx);
     env.preview = request.preview;
     if let Some(retry) = retry {
@@ -5572,7 +5578,7 @@ fn current_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
     }
 }
 
-pub(crate) fn retry_current_play(ps: &mut PlaybackSession, resume_ns: i64) -> bool {
+pub(crate) fn retry_current_play(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, resume_ns: i64) -> bool {
     let Some(request) = ps.request.clone() else {
         crate::player::log("playback retry: no Plex request descriptor");
         return false;
@@ -5581,14 +5587,14 @@ pub(crate) fn retry_current_play(ps: &mut PlaybackSession, resume_ns: i64) -> bo
         "playback retry: resolving item again at quality {}",
         quality().label(),
     ));
-    request_play_inner(ps, request, Some(current_retry_context(ps, resume_ns)), None, true)
+    request_play_inner(ps, meta, request, Some(current_retry_context(ps, resume_ns)), None, true)
 }
 
 /// ASYNC twins of `play_movie` / `play_episode`: identical HUD strings and inputs. On `true`, the
 /// network work runs on a worker and the caller flips the route THIS frame; an empty or Busy request
 /// returns `false` and leaves the current route alone. `app.rs` drains `pump_play` once a frame and
 /// starts the engine when the plan lands.
-pub(crate) fn request_play_movie(ps: &mut PlaybackSession, m: &PmsMovie) -> bool {
+pub(crate) fn request_play_movie(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, m: &PmsMovie) -> bool {
     if m.part.is_empty() {
         return false;
     }
@@ -5611,6 +5617,7 @@ pub(crate) fn request_play_movie(ps: &mut PlaybackSession, m: &PmsMovie) -> bool
     // tests, and any row parsed before a registry existed, carry `UNSET`.
     request_play(
         ps,
+        meta,
         item_sid(m.sid),
         &m.rk,
         &m.part,
@@ -5642,7 +5649,7 @@ pub(crate) fn item_sid(sid: ServerId) -> ServerId {
 ///
 /// The HUD strings mirror the episode layout `draw_hud` uses once `now_playing` lands, so the
 /// pre-roll doesn't change shape underneath the user when it does.
-pub(crate) fn request_play_up_next(ps: &mut PlaybackSession, u: UpNext) -> bool {
+pub(crate) fn request_play_up_next(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, u: UpNext) -> bool {
     let ctx = crate::ui::fmt::episode_kicker(u.season, u.index, &u.ep_title);
     let title = if u.show_title.is_empty() {
         &u.ep_title
@@ -5657,7 +5664,7 @@ pub(crate) fn request_play_up_next(ps: &mut PlaybackSession, u: UpNext) -> bool 
     } else {
         surface_sid()
     };
-    request_play(ps, sid, &u.rk, &u.part, &u.vcodec, &u.acodec, title, &ctx)
+    request_play(ps, meta, sid, &u.rk, &u.part, &u.vcodec, &u.acodec, title, &ctx)
 }
 
 /// Supersede an in-flight resolve (BACK during a load). The landing is dropped by generation.
@@ -5680,7 +5687,7 @@ pub(crate) fn cancel_play(ps: &mut PlaybackSession) {
 /// MAIN THREAD, once a frame. Returns the generation-owned resume point when a playable fresh plan
 /// was installed. `Some(0)` means start from the beginning; `None` means no playable landing. A
 /// stale landing (and its resume) is dropped.
-pub(crate) fn pump_play(ps: &mut PlaybackSession) -> Option<i64> {
+pub(crate) fn pump_play(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore) -> Option<i64> {
     let taken = PLAY_SLOT.lock().unwrap_or_else(|e| e.into_inner()).take();
     let Some(PlayLanding {
         gen,
@@ -5713,7 +5720,7 @@ pub(crate) fn pump_play(ps: &mut PlaybackSession) -> Option<i64> {
             crate::player::log(
                 "playback resolve: desired contract changed in flight; discarding and resolving the latest contract",
             );
-            let _ = request_play_inner(ps, request, Some(retry), Some(trace_generation), false);
+            let _ = request_play_inner(ps, meta, request, Some(retry), Some(trace_generation), false);
         } else {
             cancel_playback_request(ps, has_url(ps));
         }
@@ -5736,7 +5743,7 @@ pub(crate) fn pump_play(ps: &mut PlaybackSession) -> Option<i64> {
     if !is_preview(ps) {
         ACTIVE_TRACE_GENERATION.store(trace_generation, Ordering::SeqCst);
     }
-    let _start = apply_plan(ps, plan, &rk);
+    let _start = apply_plan(ps, meta, plan, &rk);
     if let Some(resources) = refused_resources {
         retire_plan_resources(resources);
     }
@@ -5771,7 +5778,7 @@ pub(crate) fn pump_play(ps: &mut PlaybackSession) -> Option<i64> {
 /// to set and are carried across it explicitly — the HUD strings, the `/identity` cache when this
 /// plan learned no id, and the codec quartet when the plan resolved no video codec — and each says
 /// below why it stays.
-fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) -> Option<RouteStartTransaction> {
+fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, plan: Plan, rk: &str) -> Option<RouteStartTransaction> {
     // ACTIVE_ENCODER is the final server-resource owner, even when there is no encoder. A raw
     // Part URL opens/adopts its Streaming Resource under the logical playback id; retaining that
     // id lets scrobble_stop exact-close it while PlaybackSession::tsession stays empty and Direct remains
@@ -5785,7 +5792,7 @@ fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) -> Option<RouteSta
         String::new()
     };
     let resolve_failed = plan.url.is_empty() && plan.verdict.is_none();
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::InstallPlaying(
+    meta.run(crate::stores::metadata::MetadataCmd::InstallPlaying(
         plan.playing,
     ));
     // main thread only — `up_next()`/`with_queue()` lend out of this (see their docs). The rows
@@ -5920,7 +5927,7 @@ fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) -> Option<RouteSta
         // It rides outside the plan on purpose: a sidecar is no demuxer ordinal and no burn, so
         // nothing in the route contract changes; the track menu reads the selection back from
         // `sidecar::selected_stream_id`.
-        crate::player::sidecar::restore_server_selection(cur_sid(ps));
+        crate::player::sidecar::restore_server_selection(cur_sid(ps), meta.view());
     }
     // A landing is a DISCRETE change to what is on screen, so it owes the present gate a poke —
     // `ui::idle::invalidate`'s call-site list is that module's correctness argument. The caller

@@ -41,6 +41,23 @@ impl Host for TestHost {
     type Memory = PageMemory;
 }
 
+thread_local! {
+    // TEST ONLY: see `screens::detail::tests`'s `TEST_METADATA` for why this lives here rather
+    // than being threaded as a parameter — same free-helper-fn shape, same reasoning.
+    static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+        std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+}
+
+fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+    TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+}
+
+impl crate::screens::registry::MetadataLike for TestHost {
+    fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+        test_store().view()
+    }
+}
+
 fn cx<'a>(measure: &'a dyn crate::ui::machine::Measure, elem: Option<u32>) -> Cx<'a, TestHost> {
     Cx {
         views: (),
@@ -78,8 +95,11 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         preview_played_for: None,
         preview_started_for: None,
         preview_had_picture: false,
+        trailer_ctl: super::trailer::Transport::IDLE,
         restore_intent: None,
+        teardown_cleared: false,
         refresh: DetailRefreshPhase::None,
+        refresh_gen: 0,
         scroll: Spring::at(0.0),
         scroll_target: 0.0,
         episode_scroll: Spring::at(0.0),
@@ -108,8 +128,9 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         spin_ms: 0.0,
         spin_phase: crate::ui::motion::Phase::default(),
         layout: std::cell::Cell::new(None),
+        spot_facts: SpotFacts::default(),
     };
-    screen.sync_keys();
+    screen.sync_keys(test_store().view());
     screen
 }
 
@@ -156,12 +177,12 @@ fn fixture(sid: ServerId) -> Detail {
 
 fn install(d: Detail) -> crate::testlock::Serial {
     let guard = crate::testlock::serial();
-    crate::metadata::set_current_for_test(Some(d));
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(d));
     guard
 }
 
 fn clear() {
-    crate::metadata::set_current_for_test(None);
+    crate::metadata::set_current_for_test(test_store().state_mut(), None);
 }
 
 #[test]
@@ -183,8 +204,9 @@ fn populated_detail_geometry_uses_recorded_metrics() {
     let _serial = install(d);
     crate::ui::rec::assert_measured_geometry(|measure| {
         let mut s = bare(sid, "show");
-        s.about_rows.update(s.detail().unwrap());
-        s.season_metrics.update(s.detail().unwrap(), measure);
+        let meta = test_store().view();
+        s.about_rows.update(s.detail(meta).unwrap());
+        s.season_metrics.update(s.detail(meta).unwrap(), measure);
         let context = cx(measure, None);
         let mut groups = Vec::new();
         Focusable::<TestHost>::groups(&s, &context, &mut groups);
@@ -193,9 +215,9 @@ fn populated_detail_geometry_uses_recorded_metrics() {
         for g in groups {
             bits.extend([g.extent.x, g.extent.y, g.extent.w, g.extent.h].map(f32::to_bits));
         }
-        assert!(s.tracks_available());
+        assert!(s.tracks_available(meta));
         let mut elems = vec![about::CARD_ELEM, about::LANGUAGES_ELEM];
-        let (controls, n) = hero::hero_ctls(s.hero_set());
+        let (controls, n) = hero::hero_ctls(s.hero_set(meta));
         elems.extend(controls[..n].iter().map(|ctl| ctl.elem()));
         elems.extend(s.keys.iter().map(|key| key.elem));
         for elem in elems {
@@ -239,7 +261,7 @@ fn expect_move(outcome: Outcome<u32>, expectation: &str) -> FocusKey<u32> {
 
 fn scroll_to(screen: &mut DetailScreen, section: i32) {
     let top = {
-        let detail = screen.detail().expect("fixture detail must be mounted");
+        let detail = screen.detail(test_store().view()).expect("fixture detail must be mounted");
         screen.section_top(section, detail, &crate::ui::fixture::FixtureMeasure)
     };
     screen.scroll.jump(top);
@@ -311,7 +333,7 @@ fn detail_focus_navigation_walks_the_filmstrip_through_tabs_and_both_rows() {
     let _guard = install(fixture(sid));
     let mut screen = bare(sid, "show");
     let measure = crate::ui::fixture::FixtureMeasure;
-    let detail = crate::metadata::current().expect("fixture detail must be mounted");
+    let detail = test_store().view().current().expect("fixture detail must be mounted");
     screen.season_metrics.update(detail, &measure);
     let context = cx(&measure, None);
     let owner = InputOwner::Entry(EntryId(8));

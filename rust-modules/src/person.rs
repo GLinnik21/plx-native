@@ -212,9 +212,11 @@ pub(crate) struct Person {
     /// Biography, from plex.tv. Empty until the profile fetch lands — and STAYS empty for a person
     /// plex.tv has no record of. Drawn only when non-empty.
     pub(crate) bio: String,
-    /// The departments, already shortened + prettified for display: `"Actor, Producer"`. See
-    /// [`roles_line`].
-    pub(crate) roles: String,
+    /// The departments, already shortened + prettified for display, in flow order and capped at
+    /// [`MAX_ROLES`] — `["Actor", "Producer"]`, one entry per department. See [`roles_line`]; a
+    /// caller joins them with whatever separator its own line uses (the header's dotted run, the
+    /// bio panel's `", "`).
+    pub(crate) roles: Vec<String>,
     /// ISO `YYYY-MM-DD` birth / death dates and the birthplace, verbatim from plex.tv — the SCREEN
     /// formats them (`ui::fmt::pretty_date`), because how a date reads is a display decision.
     /// `died` is empty for someone living, which is why the page tests "non-empty", never "unknown".
@@ -847,7 +849,7 @@ fn open(
         name: name.to_string(),
         thumb: thumb.to_string(),
         bio: String::new(),
-        roles: String::new(),
+        roles: Vec::new(),
         born: String::new(),
         died: String::new(),
         birthplace: String::new(),
@@ -904,7 +906,11 @@ fn seed_dev_profile(p: &mut Person) {
         text
     };
     if p.roles.is_empty() {
-        p.roles = "Actress \u{b7} Singer \u{b7} Songwriter".to_string();
+        p.roles = vec![
+            "Actress".to_string(),
+            "Singer".to_string(),
+            "Songwriter".to_string(),
+        ];
     }
     if p.born.is_empty() {
         p.born = "1987-01-08".to_string();
@@ -1168,6 +1174,12 @@ fn seed_dev_credits(state: &mut PersonState) -> bool {
         })
         .collect();
     p.credited = true;
+    // Gated: `personcredits` is a `dev::CONTROLLED` name (a controlled/recorded boot may carry
+    // it), and `ci/check-package.py`'s dev-trigger-catalog check greps a release binary for that
+    // exact vocabulary. This function is already unreachable without `devtriggers` (`arg` above
+    // is always `None`), but the log line's literal `/tmp/plxnative-personcredits` would still
+    // have shipped in the bytes regardless of whether the branch ever ran.
+    #[cfg(feature = "devtriggers")]
     crate::log(&format!(
         "person: DEV credits seeded ({} groups, {} held) — /tmp/plxnative-personcredits",
         p.credits.len(),
@@ -1246,7 +1258,7 @@ fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
             crate::log(&format!(
                 "person: profile guid={} roles='{}' born={} died={} bio={}B",
                 p.guid,
-                p.roles,
+                p.roles.join(", "),
                 !p.born.is_empty(),
                 !p.died.is_empty(),
                 p.bio.len()
@@ -1358,13 +1370,15 @@ fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
     }
 }
 
-/// The roles line: the person's departments, most-credited first, prettified and capped at
-/// [`MAX_ROLES`]. Pure, so the wire→display mapping is host-testable.
+/// The roles list: the person's departments, most-credited first, prettified and capped at
+/// [`MAX_ROLES`]. Pure, so the wire→display mapping is host-testable. Returns one entry per
+/// department — the CALLER joins them (the header's dotted run, the bio panel's `", "`), because
+/// two screens want two different separators for the same list.
 ///
 /// `CreditType.title` is the display name — **except** when the provider has none, where it repeats
 /// the raw slug (`"costume-makeup"`, live on Peter Sallis). A leading lower-case letter is what
 /// gives that away, so those are un-slugged and title-cased rather than printed as typed.
-pub(crate) fn roles_line(prof: &crate::plex::discover::PersonProfile) -> String {
+pub(crate) fn roles_line(prof: &crate::plex::discover::PersonProfile) -> Vec<String> {
     prof.credit_types
         .iter()
         .filter_map(|c| {
@@ -1377,8 +1391,7 @@ pub(crate) fn roles_line(prof: &crate::plex::discover::PersonProfile) -> String 
             (!pretty.is_empty()).then_some(pretty)
         })
         .take(MAX_ROLES)
-        .collect::<Vec<_>>()
-        .join(", ")
+        .collect()
 }
 
 /// A department name as the provider hands it over → the display form.
@@ -3095,18 +3108,21 @@ mod tests {
             ct("producer", "Producer"),
             ct("music", "Composer"), // past the cap
         ];
-        assert_eq!(roles_line(&prof), "Actor, Writer, Producer");
+        assert_eq!(
+            roles_line(&prof),
+            vec!["Actor".to_string(), "Writer".to_string(), "Producer".to_string()]
+        );
 
         prof.credit_types = vec![ct("costume-makeup", "costume-makeup"), ct("art", "")];
         assert_eq!(
             roles_line(&prof),
-            "Costume Makeup, Art",
+            vec!["Costume Makeup".to_string(), "Art".to_string()],
             "a raw slug reached the screen"
         );
 
         assert_eq!(
             roles_line(&crate::plex::discover::PersonProfile::default()),
-            ""
+            Vec::<String>::new()
         );
     }
     /// **A wait nothing can end is not a wait.** `facts_pending` drives the header's placeholder
