@@ -389,6 +389,27 @@ fn warn_key_refused(len: usize) {
 static RESIDENCY_LOST: AtomicU64 = AtomicU64::new(0);
 static RESIDENCY_REARMED: AtomicU64 = AtomicU64::new(0);
 
+/// The interval throttle's clock, and the `(lost, rearmed)` pair the LAST emitted line actually
+/// reported — the second half is what lets [`log_residency_settled`] tell "nothing changed since
+/// we last said so" from "the totals moved and the throttle window swallowed it".
+struct ResidencyLog {
+    at: Option<std::time::Instant>,
+    lost: u64,
+    rearmed: u64,
+}
+static RESIDENCY_LOG: Mutex<ResidencyLog> = Mutex::new(ResidencyLog { at: None, lost: 0, rearmed: 0 });
+
+/// Pure half of the interval throttle in [`log_residency`] — is a transition-triggered line due,
+/// given the instant of the last one actually written (`None` before the first) and now? Split
+/// out so the throttle's edges (first call always due, the instant it reopens) are host-testable
+/// without a real Mutex or a real elapsed second.
+fn interval_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    match last {
+        None => true,
+        Some(t) => now.duration_since(t) >= Duration::from_secs(1),
+    }
+}
+
 /// The only place these two counts reach the event log, for the same reason issue #107 itself was
 /// invisible: the route heartbeat's `evicted_hot=` counts HOT evictions only (a key wanted again in
 /// the same frame), so on-device verification of the fix could report "I did not see a skeleton"
@@ -402,29 +423,61 @@ static RESIDENCY_REARMED: AtomicU64 = AtomicU64::new(0);
 /// does not go silent after one line — a long session should keep producing fresh readings — so it
 /// is a minimum-interval throttle (about one second, monotonic so a skewed wall clock never lies
 /// about it) rather than a one-shot. The first call in a process is let through unthrottled, so a
-/// short session still leaves evidence. The throttle governs only the LINE: both atomics above are
-/// incremented on every real transition regardless of whether this call emits.
+/// short session still leaves evidence.
+///
+/// **The throttle bounds the LINE, not the truth**: the two atomics above are incremented on
+/// every real transition regardless of whether a call here emits, so the TOTALS are always exact
+/// — but a lone eviction whose re-arm lands inside the same one-second window used to leave the
+/// re-arm permanently unwritten, because nothing ever asked again. A device session that captured
+/// exactly `lost=1 rearmed=0` because the fix's own recovery path completed in under a second is
+/// indistinguishable, on that reading alone, from a re-arm that never fires at all — which is the
+/// one distinction this instrument exists to make. [`log_residency_settled`] is the other half:
+/// called once a frame, it bypasses this interval outright and emits whenever the totals have
+/// moved since the last line, which is what guarantees the final state always lands even when
+/// every individual transition inside a burst was throttled away.
 fn log_residency() {
-    static LAST: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+    let lost = RESIDENCY_LOST.load(Ordering::Relaxed);
+    let rearmed = RESIDENCY_REARMED.load(Ordering::Relaxed);
     let now = std::time::Instant::now();
-    let mut last = match LAST.lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    let due = match *last {
-        None => true,
-        Some(t) => now.duration_since(t) >= Duration::from_secs(1),
-    };
-    if !due {
+    let mut st = RESIDENCY_LOG.lock().unwrap_or_else(|e| e.into_inner());
+    if !interval_due(st.at, now) {
         return;
     }
-    *last = Some(now);
-    drop(last);
-    crate::log(&format!(
-        "posters: residency lost={} rearmed={}",
-        RESIDENCY_LOST.load(Ordering::Relaxed),
-        RESIDENCY_REARMED.load(Ordering::Relaxed)
-    ));
+    st.at = Some(now);
+    st.lost = lost;
+    st.rearmed = rearmed;
+    drop(st);
+    crate::log(&format!("posters: residency lost={lost} rearmed={rearmed}"));
+}
+
+/// The settle half of the instrument (see [`log_residency`]'s doc for the gap it closes): called
+/// once a frame from [`begin_frame`], unconditionally, for every screen — not from
+/// `PosterSource::idle`, which reaches this module only through `screens/home/mod.rs`'s prefetch
+/// gate (`prefetch_armed(..) && source_idle()`) and would therefore never fire for an eviction
+/// burst on Detail or a library grid, nor for a Home frame where prefetch happens to be disarmed.
+/// `begin_frame` already runs first, every frame, on the main thread, regardless of screen — the
+/// same unconditional seam `invalidate_due_retries` uses for its own end-of-frame housekeeping.
+///
+/// Emits only when the store this frame found QUIET (nothing `P_WANT`/`P_LOADING`/`P_DECODED`)
+/// AND the totals moved since the last line actually written: a settle event with nothing new to
+/// say costs nothing, and re-checking every frame is cheap because the caller already pays for
+/// the same slot scan. Bypasses [`interval_due`] outright — a settle event is by definition rare
+/// enough (bounded by bursts, not by transitions) that it does not need the throttle bursts do.
+fn log_residency_settled(store_idle_this_frame: bool) {
+    if !store_idle_this_frame {
+        return;
+    }
+    let lost = RESIDENCY_LOST.load(Ordering::Relaxed);
+    let rearmed = RESIDENCY_REARMED.load(Ordering::Relaxed);
+    let mut st = RESIDENCY_LOG.lock().unwrap_or_else(|e| e.into_inner());
+    if st.lost == lost && st.rearmed == rearmed {
+        return;
+    }
+    st.at = Some(std::time::Instant::now());
+    st.lost = lost;
+    st.rearmed = rearmed;
+    drop(st);
+    crate::log(&format!("posters: residency lost={lost} rearmed={rearmed}"));
 }
 
 /// Test-visible read of the two totals above, so a test grades the counters through the same
@@ -435,6 +488,26 @@ fn residency_counts_for_test() -> (u64, u64) {
         RESIDENCY_LOST.load(Ordering::Relaxed),
         RESIDENCY_REARMED.load(Ordering::Relaxed),
     )
+}
+
+/// Test-visible read of the `(lost, rearmed)` pair the last emitted line actually reported, so a
+/// test can grade [`log_residency_settled`]'s "did the log line's content change" decision
+/// directly, the same way [`residency_counts_for_test`] grades the underlying totals.
+#[cfg(test)]
+fn residency_last_emitted_for_test() -> (u64, u64) {
+    let st = RESIDENCY_LOG.lock().unwrap_or_else(|e| e.into_inner());
+    (st.lost, st.rearmed)
+}
+
+/// Force the interval throttle's clock back to "no line written yet", so a test's first call
+/// through [`log_residency`] is deterministically unthrottled regardless of what an earlier test
+/// (serialized the same way, through [`crate::testlock::serial`]) wrote a moment before. Leaves
+/// the process-wide totals alone — those are graded by delta, exactly as [`reset_key_memo`]
+/// leaves `plex::reset_servers_for_test` to the registry it resets.
+#[cfg(test)]
+fn reset_residency_log_for_test() {
+    let mut st = RESIDENCY_LOG.lock().unwrap_or_else(|e| e.into_inner());
+    st.at = None;
 }
 
 /// The clearLogo transcode request box (was two bare literals inside the old `logo_tex`).
@@ -700,12 +773,18 @@ fn store_idle() -> bool {
 // `ui::widgets::resolve_tex_wh`, go through `poster_get_wh`.)
 
 /// MAIN thread, once per frame, first: a new frame — nothing is "touched" yet (evict-protection
-/// is per frame, see [`victim`]).
+/// is per frame, see [`victim`]). Also where the residency instrument's settle snapshot is
+/// checked (see [`log_residency_settled`]'s doc for why THIS seam and not `PosterSource::idle`):
+/// the slot scan below is the same one [`idle_of`] would run, so this is the store's one
+/// once-a-frame, screen-agnostic read of whether it is quiet.
 pub(crate) fn begin_frame() {
     let now = crate::app::clock::now();
     let mut g = store();
     g.frame = g.frame.wrapping_add(1);
     invalidate_due_retries(&mut g.slots, now);
+    let settled = idle_of(&g.slots);
+    drop(g);
+    log_residency_settled(settled);
 }
 
 /// MAIN thread, once per frame (§3.3 step 3, the adapter's results): every slot a worker has
@@ -1522,6 +1601,110 @@ mod tests {
         assert_eq!(rearmed2, rearmed1 + 1, "the EVICTED->WANT re-arm must count exactly once");
 
         store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// The pure decision behind [`log_residency`]'s interval throttle: due before any line has
+    /// ever been written, not due an instant after one was, due again once a full second has
+    /// passed. Split out and tested the same way [`idle_of`] is, so the edges do not depend on a
+    /// real elapsed second or a real Mutex.
+    #[test]
+    fn the_interval_throttle_only_waits_out_its_own_window() {
+        let t0 = std::time::Instant::now();
+        assert!(interval_due(None, t0), "the first line in a process is never throttled");
+        assert!(
+            !interval_due(Some(t0), t0),
+            "immediately after a line, the same instant must not be due again"
+        );
+        assert!(
+            !interval_due(Some(t0), t0 + Duration::from_millis(999)),
+            "one millisecond short of the window must still be throttled"
+        );
+        assert!(
+            interval_due(Some(t0), t0 + Duration::from_secs(1)),
+            "a full second later the window has reopened"
+        );
+    }
+
+    /// Reproduces the exact field defect this fix closes (Codex review on PR #182): a device
+    /// session that read `lost=1 rearmed=0`, `lost=5 rearmed=0`, `lost=13 rearmed=0` and nothing
+    /// else was reported as "the re-arm branch never fires" — but every one of those lines was
+    /// written by an EVICTION, and [`log_residency`]'s interval throttle can swallow a re-arm
+    /// that lands inside the same one-second window as the eviction that preceded it, which is
+    /// exactly the ordinary one-eviction-then-recovery case. This drives that sequence directly:
+    /// an eviction (unthrottled, since it is the first line) immediately followed by its re-arm
+    /// (throttled, since under a second has passed) must leave `rearmed` stale in the last
+    /// emitted line — proving the gap is real — and then a settled frame
+    /// ([`log_residency_settled`], as [`begin_frame`] calls it every frame regardless of screen)
+    /// must catch the totals up, because that path does not consult the interval at all.
+    #[test]
+    fn a_rearm_inside_the_throttle_window_still_reaches_the_log_once_the_store_settles() {
+        use crate::ui::tex::Source as _;
+
+        let (_fresh, sid, _) = one_server();
+        reset_residency_log_for_test();
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            set_key(slot, &path);
+            slot.state = P_READY;
+        }
+
+        // The eviction: the first line in the (just reset) throttle window, so it writes.
+        SOURCE.unresident(PosterKey(0));
+        let (lost1, rearmed1) = residency_counts_for_test();
+        assert_eq!(
+            residency_last_emitted_for_test(),
+            (lost1, rearmed1),
+            "the unthrottled first line must report the eviction it just recorded"
+        );
+
+        // The re-arm, immediately after: real time between these two calls is microseconds, so
+        // the interval throttle finds the window still open and suppresses the line.
+        let (hit, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None, "a freshly re-armed slot has no pixels yet");
+        let (lost2, rearmed2) = residency_counts_for_test();
+        assert_eq!(rearmed2, rearmed1 + 1, "the re-arm itself is never missed - only the LINE is");
+        assert_eq!(
+            residency_last_emitted_for_test(),
+            (lost1, rearmed1),
+            "the throttled re-arm must leave the last WRITTEN line stale - this is the bug"
+        );
+
+        // The store is quiet (P_WANT, not fetching or decoding) - a settled frame must catch the
+        // line up regardless of the interval, because the totals moved since the last line.
+        log_residency_settled(true);
+        assert_eq!(
+            residency_last_emitted_for_test(),
+            (lost2, rearmed2),
+            "a settle snapshot must report the re-arm even though the interval throttle just \
+             suppressed it"
+        );
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// A settle snapshot must never write a line when nothing changed - `log_residency_settled`
+    /// runs every frame the store is quiet, and most quiet frames follow another quiet frame.
+    #[test]
+    fn a_settled_frame_with_nothing_new_writes_no_second_line() {
+        let _g = crate::testlock::serial();
+        reset_residency_log_for_test();
+        let (lost, rearmed) = residency_counts_for_test();
+        {
+            let mut st = RESIDENCY_LOG.lock().unwrap_or_else(|e| e.into_inner());
+            st.at = Some(std::time::Instant::now());
+            st.lost = lost;
+            st.rearmed = rearmed;
+        }
+        // Nothing transitioned since - the recorded pair already matches the live totals, so this
+        // must be a no-op (observable only through the pair staying put; a real double-write
+        // would be indistinguishable here, but `log_residency_settled`'s own equality check is
+        // what `residency_last_emitted_for_test` is pinning).
+        log_residency_settled(true);
+        assert_eq!(residency_last_emitted_for_test(), (lost, rearmed));
     }
 
     /// The LRU's two clauses, in order: an EMPTY slot is always preferred (a fresh store must fill

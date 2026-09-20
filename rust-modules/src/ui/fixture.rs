@@ -1054,6 +1054,12 @@ impl Rig<FixtureHost> for FixtureRig {
         let mut ph = super::machine::PresentHandle(present);
         let us = self.us;
         self.cache.prepare(b, &mut self.uploader, &mut ph, || us);
+        // The rig owns a bare `TexCache` with no `Source` behind it (see the module doc above the
+        // smoke test), so there is nowhere to FORWARD an eviction notification — but the queue
+        // still has to be DRAINED, or `has_pending` latches true forever the first time this
+        // cache evicts past its 8-slot cap, and every later frame looks like it still has upload
+        // work pending.
+        self.cache.take_unresident().for_each(drop);
     }
 
     fn ls2_pump(&mut self) {
@@ -1848,6 +1854,46 @@ fn a_poster_result_is_accepted_in_the_drain_and_uploaded_in_prepare() {
     assert!(r2.presented, "queued prepare work forces a present even with nothing else to draw");
     assert!(rig.cache.resolve(PosterKey(11)).is_some(), "uploaded in prepare");
     assert!(!rig.cache.has_pending(), "prepare drained its own queue");
+    d.budget.note_queued(false);
+}
+
+/// The rig's cache is bare (`TexCache::new(8)`, no `Source` behind it) and its `Rig::prepare`
+/// calls `TexCache::prepare` directly rather than through `ui::tex`'s free-function wrapper —
+/// the wrapper is what drains `take_unresident` and forwards each key to a `Source` on the
+/// product path. Push a 9th distinct poster through a cap-8 cache and `evict_for` queues an
+/// eviction notification with nowhere to go: if `Rig::prepare` never drains it, `has_pending`
+/// never reports false again, which would force every later frame in a long-running fixture test
+/// to look like it still has upload work pending.
+#[test]
+fn a_bare_cache_driven_past_capacity_does_not_latch_pending_forever() {
+    let _g = crate::testlock::serial();
+    let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
+    let mut rig = FixtureRig::new();
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+    let r1 = d.frame(&mut rig, tick(0), vec![], vec![], &mut NoTap);
+    assert!(r1.presented, "boot always presents the first frame");
+
+    // One distinct key per frame, nine total — the 9th must evict the 1st under the 8-slot cap.
+    for i in 0..9u32 {
+        rig.cache.accept(PosterReady {
+            key: PosterKey(100 + i),
+            result: Ok(Decoded { w: 4, h: 4, rgba: vec![0; 64].into_boxed_slice() }),
+        });
+        d.budget.note_queued(rig.cache.has_pending());
+        let r = d.frame(&mut rig, tick(16 * (i + 1)), vec![], vec![], &mut NoTap);
+        assert!(r.presented, "queued prepare work forces a present");
+    }
+
+    assert_eq!(
+        rig.cache.resident_count(),
+        8,
+        "the 9th upload evicted the LRU victim under the 8-slot cap"
+    );
+    assert!(
+        !rig.cache.has_pending(),
+        "the 9th poster's eviction notification must be drained by prepare, not left to latch \
+         has_pending forever with no Source to forward it to"
+    );
     d.budget.note_queued(false);
 }
 

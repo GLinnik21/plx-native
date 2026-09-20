@@ -379,8 +379,12 @@ impl<K: Copy + Eq + Hash> TexCache<K> {
 
     /// Take keys the cache rejected or released. The product wrappers forward these to
     /// [`Source::unresident`] immediately after releasing the cache borrow, so the callback may
-    /// inspect application state without coupling this library cache to it.
-    fn take_unresident(&mut self) -> impl Iterator<Item = K> + '_ {
+    /// inspect application state without coupling this library cache to it. `pub(crate)`, not
+    /// private: a caller that owns a BARE cache and drives `prepare` directly instead of through
+    /// the free-function wrapper above (`ui::fixture`'s `FixtureRig`, which owns no `Source` to
+    /// forward to) still has to drain this queue itself, or `has_pending` never reports false
+    /// again once the cache first evicts past its cap.
+    pub(crate) fn take_unresident(&mut self) -> impl Iterator<Item = K> + '_ {
         self.unresident.drain(..)
     }
 
