@@ -5448,7 +5448,8 @@ def run_fps_suite(scenes, cfg, token, include_player, skipped=()):
     # is OFF and the sound is OFF for EVERY device run, fps scenes included — rendering continues
     # with the LCD off. The 2026-09-06 "panel ON for fps" form is superseded.
     print("    panel rule: run this suite with the television's panel OFF and the sound OFF "
-          "(tools/tv-session.sh screen off; mute from the remote) — the owner's standing directive")
+          "(tools/tv-session.sh screen off; tools/tv-session.sh sound off) — the owner's "
+          "standing directive")
     results = []
     for s in scenes:
         try:

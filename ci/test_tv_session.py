@@ -546,5 +546,140 @@ class HeartbeatWords(unittest.TestCase):
         self.assertIn("RC:0", out)
 
 
+class SoundSubcommand(unittest.TestCase):
+    """Host regression for `tv-session.sh sound off|on|status`.
+
+    `tv()` is the one thing here that would touch a television — a real ssh round trip — so it is
+    stubbed to return canned setMuted/getVolume replies, in the same collapsed single-line JSON
+    shape `script -qc luna-send` prints on the real set (see cmd_screen's own note on why the
+    reply is matched on collapsed text rather than a glob over embedded newlines).
+    `require_lock`/`advise_lock` are stubbed too: the real ones try to reach the actual configured
+    TV over ssh to reconcile the lock, which host tests must never do (see EnsureBinary/
+    GuestIdentity above for the same discipline).
+    """
+
+    @staticmethod
+    def _fake_make(bin_dir):
+        (bin_dir / "make").write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' debug com.beb.plxnative.debug /app /run /events 8911 fake-host\n",
+            encoding="utf-8",
+        )
+        for command in bin_dir.iterdir():
+            command.chmod(0o755)
+
+    def _run(self, want, *, set_ok=True, get_ok=True, get_muted="true", volume="12"):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "tools").mkdir()
+            script_link = root / "tools" / "tv-session.sh"
+            script_link.symlink_to(SCRIPT)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            self._fake_make(bin_dir)
+
+            set_return = "true" if set_ok else "false"
+            get_return = "true" if get_ok else "false"
+            body = textwrap.dedent(
+                f"""\
+                require_lock() {{ return 0; }}
+                advise_lock() {{ return 0; }}
+                ensure_awake() {{ return 0; }}
+                tv() {{
+                  case "$1" in
+                    *setMuted*)
+                      printf '{{"returnValue": {set_return}}}\\n'
+                      ;;
+                    *getVolume*)
+                      printf '{{"returnValue": {get_return}, "muted": {get_muted}, "volume": {volume}}}\\n'
+                      ;;
+                  esac
+                }}
+                cmd_sound {want}
+                echo "RC:$?"
+                """
+            )
+            harness = 'source "$1" selftest\n' + body
+            environment = os.environ.copy()
+            environment["PATH"] = f"{bin_dir}:{environment['PATH']}"
+            result = subprocess.run(
+                ["bash", "-c", harness, "sound-subcommand", str(script_link)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=environment,
+                check=False,
+                timeout=10,
+            )
+            return result.stdout
+
+    def test_off_confirms_the_mute_via_a_readback(self):
+        out = self._run("off", get_muted="true")
+        self.assertIn("RC:0", out)
+        self.assertIn("sound off", out)
+
+    def test_on_confirms_the_unmute_via_a_readback(self):
+        out = self._run("on", get_muted="false")
+        self.assertIn("RC:0", out)
+        self.assertIn("sound on", out)
+
+    def test_status_reports_the_flag_without_ever_calling_setmuted(self):
+        # The stub only answers setMuted at all under the *setMuted* case above; if `status` ever
+        # called it, this would still pass by accident, so the real assertion is in the command
+        # itself: `status` must reach RC:0 from getVolume alone.
+        out = self._run("status", get_muted="true", volume="7")
+        self.assertIn("RC:0", out)
+        self.assertIn("muted=true", out)
+        self.assertIn("volume=7", out)
+
+    def test_setmuted_refusal_fails_closed(self):
+        out = self._run("off", set_ok=False)
+        self.assertIn("RC:1", out)
+        self.assertIn("refused", out)
+
+    def test_getvolume_refusal_fails_closed(self):
+        out = self._run("off", get_ok=False)
+        self.assertIn("RC:1", out)
+        self.assertIn("getVolume refused", out)
+
+    def test_a_mute_that_does_not_stick_is_not_reported_as_success(self):
+        # setMuted reports success, but the independent getVolume readback disagrees -- the
+        # command must trust the readback, not setMuted's own returnValue (this is the whole
+        # reason cmd_sound reads back at all, mirroring ensure_binary's own discipline for a
+        # deploy: a call claiming success is not proof of the state it claims to have set).
+        out = self._run("off", get_muted="false")
+        self.assertIn("RC:1", out)
+        self.assertIn("did not stick", out)
+
+    def test_unknown_argument_is_a_usage_error_not_a_silent_default(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "tools").mkdir()
+            script_link = root / "tools" / "tv-session.sh"
+            script_link.symlink_to(SCRIPT)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            self._fake_make(bin_dir)
+
+            harness = 'source "$1" selftest\ncmd_sound bogus\necho "AFTER:$?"\n'
+            environment = os.environ.copy()
+            environment["PATH"] = f"{bin_dir}:{environment['PATH']}"
+            result = subprocess.run(
+                ["bash", "-c", harness, "sound-usage", str(script_link)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=environment,
+                check=False,
+                timeout=10,
+            )
+            # cmd_sound's usage branch is `exit 2`, ending the whole sourced process rather than
+            # returning to the caller -- so "AFTER:" must never print, same contract cmd_up's own
+            # usage exits are held to elsewhere in this file.
+            self.assertEqual(result.returncode, 2, result.stdout)
+            self.assertNotIn("AFTER:", result.stdout)
+            self.assertIn("usage: tv-session.sh sound off|on|status", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
