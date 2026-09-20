@@ -202,13 +202,13 @@ fn retry_due(s: &Pslot, now: u32) -> bool {
 }
 
 /// **The residency thrash guard (Codex P1 review on PR #182, `lookup`'s P_EVICTED branch).**
-/// Without it, every draw OR warm probe of an evicted key moves it straight back to `P_WANT`
-/// unconditionally: a working set that genuinely cannot fit under
-/// [`tex::TEX_RESIDENT_BYTES_MAX`] then has the render cache evict key A to make room, A's very
-/// next probe re-arm it, A's eventual upload evict key B, B's next probe re-arm IT, and so on with
-/// no bound — continuous fetch/decode/upload every frame instead of settling. Home's recurring
-/// backdrop prefetch (`Touch::Warm`) counts as a probe here too, so even off-screen art can drive
-/// the cycle.
+/// A `Touch::Warm` probe never reaches this guard at all — it is turned away before the branch
+/// even looks at the cooldown (see the branch itself) — so what is left for this guard to bound is
+/// narrower than the original review reads: a working set that genuinely cannot fit under
+/// [`tex::TEX_RESIDENT_BYTES_MAX`] still has the render cache evict key A to make room, a DRAW of A
+/// re-arm it, A's eventual upload evict key B, a DRAW of B re-arm IT, and so on with no bound —
+/// continuous fetch/decode/upload every frame instead of settling, driven entirely by on-screen
+/// demand rather than off-screen prefetch.
 ///
 /// The guard is two pure decisions, both keyed off wall-clock ticks so they cost nothing under the
 /// store lock and are host-testable without a real elapsed second (mirrors [`retry_due`] and the
@@ -705,17 +705,21 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     return (None, Warm::Known);
                 }
             }
-            // Render-cache pressure is not source demand. Its callback parks the slot in
-            // EVICTED, and only a real draw or the explicitly quota-gated prefetch path starts
-            // the disk-first replacement. That separation is what prevents an off-screen key
-            // from cycling evict -> refetch -> evict merely because it remains in the source LRU.
-            //
-            // The thrash guard (see `evict_was_rapid`'s doc) sits right here: a key's first
-            // eviction always re-arms on this very probe (no cooldown was set for it), but a key
-            // that is being re-evicted rapidly — genuine byte pressure the store cannot resolve by
-            // itself — waits out a bounded backoff instead of re-arming on every single probe,
-            // which is what let two over-budget keys evict each other every frame forever.
+            // Render-cache pressure is not source demand: its callback parks the slot in EVICTED,
+            // and mere retention in the source LRU schedules no work. Only a Draw probe may even
+            // consider re-arming an existing EVICTED slot; Warm leaves it dormant unconditionally,
+            // below, before either of the DRAW-only mechanisms that follow ever run. This prevents
+            // speculative resurrection of that slot, but does not prevent cycling when the drawn
+            // working set exceeds the residency budget — that remaining DRAW-vs-DRAW case is what
+            // the cooldown gate right after this one bounds (see `evict_was_rapid`'s doc): a key's
+            // first eviction always re-arms on its very next draw (no cooldown was set for it),
+            // but a key that is being re-evicted rapidly — genuine byte pressure the store cannot
+            // resolve by itself — waits out a bounded backoff instead of re-arming on every single
+            // draw, which is what let two over-budget on-screen keys evict each other forever.
             if g.slots[i].state == P_EVICTED {
+                if touch == Touch::Warm {
+                    return (None, Warm::Known);
+                }
                 let now = crate::app::clock::now();
                 if !evict_cooldown_due(g.slots[i].evict_cooldown_until, now) {
                     // Still cooling down from a rapid re-eviction. The demand is real and is not
@@ -729,10 +733,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                 RESIDENCY_REARMED.fetch_add(1, Ordering::Relaxed);
                 log_residency();
                 CV.notify_one();
-                return (
-                    None,
-                    if touch == Touch::Warm { Warm::Claimed } else { Warm::Known },
-                );
+                return (None, Warm::Known);
             }
             let hit = (g.slots[i].state == P_READY).then_some(PosterKey(i as u32));
             return (hit, Warm::Known);
@@ -1552,7 +1553,10 @@ mod tests {
 
     /// The whole product loop, using the installed [`PosterSource`], the thread-local product
     /// cache and the global poster store: resident → byte-pressure release → dormant EVICTED → a
-    /// real warm probe → WANT + condition-variable wake → worker publication → resident again.
+    /// real DRAW probe → WANT + condition-variable wake → worker publication → resident again. A
+    /// warm probe would leave the slot dormant (see
+    /// [`a_warm_probe_of_an_evicted_slot_leaves_it_dormant`]) — this exercises the recovery path
+    /// that still works, a real draw.
     #[test]
     fn a_ready_source_hit_recovers_after_its_texture_is_evicted() {
         struct StubUp {
@@ -1624,7 +1628,7 @@ mod tests {
             let (mut g, timeout) = CV
                 .wait_timeout_while(g, Duration::from_secs(1), |s| s.slots[0].state != P_WANT)
                 .unwrap_or_else(|e| e.into_inner());
-            assert!(!timeout.timed_out(), "the warm probe must wake a waiting poster worker");
+            assert!(!timeout.timed_out(), "the draw probe must wake a waiting poster worker");
             let slot = &mut g.slots[0];
             slot.state = P_LOADING;
             drop(g);
@@ -1644,9 +1648,9 @@ mod tests {
         });
         armed_rx.recv().unwrap();
         assert_eq!(
-            tex::warm_on(srv.raw(), SRC, 2, 2, false),
-            Warm::Claimed,
-            "demand re-arms the dormant source slot"
+            tex::resolve_on(srv.raw(), SRC, 2, 2, false),
+            0,
+            "the re-armed slot has no texture yet - a draw re-arms the dormant source slot"
         );
         worker.join().unwrap();
         assert_eq!(store().slots[0].state, P_DECODED, "the woken worker published pixels");
@@ -1799,6 +1803,56 @@ mod tests {
         assert!(evict_cooldown_due(None, 0), "no cooldown was ever set - never gated");
         assert!(!evict_cooldown_due(Some(1_000), 999), "one millisecond short is still cooling");
         assert!(evict_cooldown_due(Some(1_000), 1_000), "the deadline itself has cleared");
+    }
+
+    /// A second half of the same PR #182 P1: [`evict_cooldown_due_only_after_its_own_deadline`]
+    /// and [`a_key_evicted_and_reevicted_in_rapid_succession_does_not_rearm_without_bound`] bound
+    /// how OFTEN a DRAW may re-arm an evicted key; this proves a `Touch::Warm` probe of the same
+    /// key may never re-arm it AT ALL, regardless of cooldown state — resurrecting an evicted key
+    /// speculatively is exactly what let an off-screen prefetch alternate evict/refetch/evict
+    /// against on-screen demand (Home's recurring backdrop prefetch, named in the review). The
+    /// slot here has no eviction history (`evict_cooldown_until` is `None`, i.e. never cooling), so
+    /// this isolates the touch-type gate from the cooldown gate: a warm probe is refused even when
+    /// nothing else would have refused it. The second half proves the fix is a narrowing, not a
+    /// removal: a real draw of the same slot still re-arms.
+    #[test]
+    fn a_warm_probe_of_an_evicted_slot_leaves_it_dormant() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            set_key(slot, &path);
+            slot.state = P_EVICTED;
+        }
+        let (_, rearmed0) = residency_counts_for_test();
+
+        let (hit, warm) = lookup(sid, &path, Touch::Warm);
+        assert_eq!(hit, None, "an evicted slot has no pixels to hand back");
+        assert_eq!(warm, Warm::Known, "a warm probe must not claim a slot it leaves dormant");
+        assert_eq!(
+            store().slots[0].state,
+            P_EVICTED,
+            "a warm probe must not re-arm an evicted slot"
+        );
+        let (_, rearmed1) = residency_counts_for_test();
+        assert_eq!(rearmed1, rearmed0, "a warm probe must not increment the re-arm counter");
+
+        // The same slot, probed by a real draw, still re-arms - the fix narrows WHICH touch
+        // re-arms an evicted slot, it does not remove re-arming itself.
+        let (hit, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None, "a freshly re-armed slot has no pixels yet");
+        assert_eq!(store().slots[0].state, P_WANT, "a draw probe still re-arms the dormant slot");
+        let (_, rearmed2) = residency_counts_for_test();
+        assert_eq!(
+            rearmed2,
+            rearmed0 + 1,
+            "the draw's EVICTED->WANT re-arm must count exactly once"
+        );
+
+        store().slots = [Pslot::ZERO; PT_CAP];
     }
 
     /// The pure decision behind [`log_residency`]'s interval throttle: due before any line has
