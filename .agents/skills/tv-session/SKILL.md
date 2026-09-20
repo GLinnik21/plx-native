@@ -44,9 +44,25 @@ tools/tv-session.sh key down down ok        # key tokens through the real handle
 tools/tv-session.sh click 960 540           # authored 1920x1080 coords
 tools/tv-session.sh shot [out.png]          # panel capture (video plane included)
 tools/tv-session.sh log [--flavor <f>] [regex]   # the on-device event log
+tools/tv-session.sh screen off|on           # blank/restore the PANEL only (app keeps running)
+tools/tv-session.sh sound off|on|status     # mute/unmute the TELEVISION (independent of the panel)
 tools/tv-session.sh wan off [TTL]|on|status  # cut the SET's uplink (LAN intact), self-restoring
 tools/tv-session.sh down [--flavor <f>]     # hand the TV back
 ```
+
+`screen off` blanks the picture while the app keeps running and playback keeps decoding — a PANEL
+state, not an app state (see the owner's panel rule below). `sound off`/`on` calls
+`com.webos.service.audio/setMuted` and reads `getVolume` back to confirm rather than trusting the
+call's own result; `sound status` only reads `getVolume`. This is the sanctioned way to mute the
+set — no lane needs the raw luna-send/`PLX_TV_LOCK_BYPASS` route for it. Neither `screen` nor
+`sound` is restored automatically by `down`; a lane that muted or blanked the panel for its own
+reasons is the one that knows when to undo it.
+
+**The panel rule (the owner's standing directive, restated 2026-09-07):** run every device tier —
+playback, fps scenes, `shot`, capture — with the panel OFF and the sound OFF; the set is in a
+living room, and rendering continues with the LCD off. `tools/tv-session.sh screen off` and
+`tools/tv-session.sh sound off` are both it. See `docs/agent-reference.md` (Tier 2) for the full
+history of this rule.
 
 `wan off` is the offline-mode test condition: a netfilter chain on the television rejects every
 v4 packet leaving the LAN and every DNS query, an `unreachable 2000::/3` route cuts public v6

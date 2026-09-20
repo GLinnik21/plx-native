@@ -1211,10 +1211,12 @@ ON for fps, on the reasoning that `ui::idle` gates presents on what the panel sh
 and the one number still owed is a same-session `fps=` comparison of one scene screen-on vs
 screen-off, to be taken at the next device session and written here. `tests/run.py --fps` says so
 in its banner; the command is `tools/tv-session.sh screen off` (a PANEL state, not an app state —
-the app keeps running and playback keeps decoding); there is still NO luna tooling for the sound
-half (do not guess a method — `power/turnOff` is the standing example of a plausible name this
-firmware answers `Unknown method` to; settle it from the set's `api-permissions.d` under the lock),
-so muting is the physical remote until then. The **`tv-session` skill** is
+the app keeps running and playback keeps decoding). The sound half is now the same shape of
+command: `tools/tv-session.sh sound off|on|status` calls `com.webos.service.audio/setMuted` and
+reads `getVolume` back to confirm — this is the sanctioned path, so no lane needs
+`PLX_TV_LOCK_BYPASS` to mute the television. The two luna calls were exercised by hand on the set
+(2026-09-19); the subcommand wrapping them is host-tested only and still owes a first device run.
+The **`tv-session` skill** is
 the bring-up/observe/drive loop; **`profile-tv`** handles a live but slow or stuck process and the
 three-layer graphics profile; **`crash-triage`** handles a death; **`bind-tv-lib-abi`** covers new
 FFI into the TV's own libraries. **`./tests/run.py` needs a gitignored `tests/manifest.local.json`**
