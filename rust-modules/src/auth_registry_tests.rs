@@ -5,6 +5,158 @@ use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
 
+fn install_stored_source(source: &SourceRef, policy: CredentialPolicy) -> ServerId {
+    let origin = source.origin().expect("stored source has a well-formed origin");
+    let id = crate::plex::register_pinned_with_client_id_and_policy(
+        &source.machine_id,
+        &origin,
+        &source.token,
+        source.resolve_pin().as_ref(),
+        "stored-install-test",
+        crate::plex::ConnectionFacts::new(
+            source.tier,
+            crate::plex::IpVersion::of_host(&source.address),
+        ),
+        policy,
+    );
+    crate::plex::describe_server(id, &source.name, &source.shared_by, grant_of(source));
+    id
+}
+
+/// Shipping policy must be exercised through the same registry effects the boot owner emits,
+/// not through the explicit-policy fixture above. One legacy plaintext source remains visible as
+/// recovery metadata, but neither the primary activation nor roster install may make it current.
+#[cfg(not(feature = "devtriggers"))]
+#[test]
+fn shipping_cold_boot_degrades_gracefully_with_only_a_plaintext_stored_source() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let mut stored = source("cold-http", true, "stored-token");
+    stored.origin_url = "http://192.0.2.10:32400".into();
+
+    assert!(execute_session_registry(&owner::RegistryPlan::Primary {
+        server: server_ref(&stored),
+        token: stored.token.clone(),
+    }));
+    assert!(execute_session_registry(&owner::RegistryPlan::Install {
+        sources: vec![stored],
+        primary: Some(0),
+        replace: false,
+    }));
+
+    let ids = crate::plex::server_ids().collect::<Vec<_>>();
+    assert_eq!(ids.len(), 1, "boot retains one recovery record, not duplicate clients");
+    assert!(!crate::plex::current_server().is_set());
+    assert!(crate::plex::client_opt().is_none(), "ordinary callers degrade without panicking");
+    let recovery = crate::plex::client_for(ids[0]).expect("recovery metadata stays addressable");
+    assert!(
+        recovery.image_transcode_path("/thumb", 2, 2, false).ends_with("X-Plex-Token="),
+        "the retained plaintext origin carries no credential"
+    );
+    assert_eq!(crate::plex::server_probe_result(ids[0]), Some(Outcome::InsecureOnly));
+    crate::plex::reset_servers_for_test();
+}
+
+/// Endpoint recovery reuses the retained slot. Re-pointing it to verified HTTPS makes the build
+/// policy admit its credential, restores CURRENT, and lets the ordinary endpoint effect publish
+/// the successful refresh verdict.
+#[cfg(not(feature = "devtriggers"))]
+#[test]
+fn shipping_recovery_repoints_plaintext_metadata_to_https_and_refreshes_normally() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let mut stored = source("recover-http", true, "profile-token");
+    stored.origin_url = "http://192.0.2.10:32400".into();
+    assert!(execute_session_registry(&owner::RegistryPlan::Install {
+        sources: vec![stored.clone()],
+        primary: Some(0),
+        replace: false,
+    }));
+    let id = crate::plex::server_ids().next().expect("recovery slot");
+    let expected = ClientLifecycle::capture(crate::plex::client_for(id).unwrap()).logical(id.raw());
+
+    let mut repaired = stored;
+    repaired.origin_url = "https://192-0-2-10.example.test:32400".into();
+    repaired.tier = Some(probe::Location::Local);
+    assert!(execute_session_registry(&owner::RegistryPlan::Endpoint { expected, source: repaired }));
+
+    assert_eq!(crate::plex::server_ids().collect::<Vec<_>>(), vec![id]);
+    assert_eq!(crate::plex::current_server(), id);
+    let active = crate::plex::client_opt().expect("the HTTPS re-point is credential-eligible");
+    assert!(active.origin().is_tls());
+    assert!(
+        active
+            .image_transcode_path("/thumb", 2, 2, false)
+            .ends_with("X-Plex-Token=profile-token")
+    );
+    assert_eq!(crate::plex::server_probe_result(id), Some(Outcome::Reachable));
+    crate::plex::reset_servers_for_test();
+}
+
+#[test]
+fn stored_credential_policy_https_only_does_not_activate_plaintext_with_its_credential() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let mut previously_live = source("stored-http", true, "previous-token");
+    previously_live.origin_url = "https://stored.example.test:32400".into();
+    install_stored_source(&previously_live, CredentialPolicy::HttpsOnly);
+    assert!(crate::plex::client_opt().is_some());
+
+    let mut stored = source("stored-http", true, "stored-token");
+    stored.origin_url = "http://192.0.2.10:32400".into();
+
+    let id = install_stored_source(&stored, CredentialPolicy::HttpsOnly);
+
+    assert!(crate::plex::client_opt().is_none(), "plaintext must not become the current credentialed client");
+    assert_eq!(crate::plex::server_probe_result(id), Some(Outcome::InsecureOnly));
+    crate::plex::reset_servers_for_test();
+}
+
+#[test]
+fn stored_credential_policy_covers_legacy_address_and_port_that_synthesizes_http() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let legacy = source("legacy-http", true, "legacy-token");
+    assert!(legacy.origin_url.is_empty());
+    assert!(!legacy.origin().expect("legacy fallback").is_tls());
+
+    let id = install_stored_source(&legacy, CredentialPolicy::HttpsOnly);
+
+    assert!(crate::plex::client_opt().is_none(), "the synthesized HTTP origin is governed by the same gate");
+    assert_eq!(crate::plex::server_probe_result(id), Some(Outcome::InsecureOnly));
+    crate::plex::reset_servers_for_test();
+}
+
+#[test]
+fn stored_credential_policy_allow_plaintext_keeps_dev_installation_usable() {
+    let _g = crate::testlock::serial();
+    let stored = source("dev-http", true, "developer-token");
+
+    crate::plex::reset_servers_for_test();
+    install_stored_source(&stored, CredentialPolicy::HttpsOnly);
+    assert!(crate::plex::client_opt().is_none(), "the store policy rejects the same source");
+
+    crate::plex::reset_servers_for_test();
+    let id = install_stored_source(&stored, CredentialPolicy::AllowPlaintext);
+    assert_eq!(crate::plex::current_server(), id);
+    assert!(crate::plex::client_opt().is_some(), "developer builds keep plaintext support");
+    crate::plex::reset_servers_for_test();
+}
+
+#[test]
+fn stored_credential_policy_rejection_retains_insecure_recovery_metadata() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let stored = source("recover-http", false, "stored-token");
+
+    let id = install_stored_source(&stored, CredentialPolicy::HttpsOnly);
+
+    assert_eq!(crate::plex::server_ids().collect::<Vec<_>>(), vec![id]);
+    assert_eq!(crate::plex::server_facts(id).map(|f| f.name.as_str()), Some("recover-http"));
+    assert_eq!(crate::plex::server_probe_result(id), Some(Outcome::InsecureOnly));
+    crate::plex::reset_servers_for_test();
+}
+
 /// #95 step 8 / A2: the boot primary install (`install_captured_registry`, what
 /// `RegistryPlan::DevInstall` and the boot gate's `install_pms_owned` both call) derives the
 /// IP family from the ADVERTISED ADDRESS, not `origin.host()` — a `plex.direct` origin's host

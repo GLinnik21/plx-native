@@ -63,7 +63,7 @@
 //! inside one process.
 
 use super::client::Client;
-use super::origin::{Origin, ResolvePin};
+use super::origin::{CredentialPolicy, Origin, ResolvePin};
 use super::probe::{Location, Outcome};
 use super::IpVersion;
 use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU8, AtomicUsize, Ordering};
@@ -385,6 +385,11 @@ static COUNT: AtomicUsize = AtomicUsize::new(0);
 /// can remove one share without retiring every slot number above it; inactive clients stay leaked
 /// but resolve to nothing, and their token is blanked before this bit is cleared.
 static ACTIVE: AtomicU32 = AtomicU32::new(0);
+/// Which active roster slots may carry their credential under the policy that admitted their
+/// current origin. An ineligible stored origin remains ACTIVE as recovery metadata (so Sources
+/// and the endpoint rediscovery loop retain it), but never becomes CURRENT and its `Client`
+/// carries an empty token. A later eligible re-point flips this bit in the same registry write.
+static CREDENTIAL_ELIGIBLE: AtomicU32 = AtomicU32::new(0);
 /// Monotone epoch of the active roster's identity. It moves when a slot appears/disappears or is
 /// re-pointed, even when the active COUNT stays the same, so cached fan-out stores can distinguish
 /// `{0,1}` from `{0,2}` and can discard work aimed at a superseded origin.
@@ -480,13 +485,16 @@ pub fn current() -> ServerId {
 }
 
 /// Point `client()` at another registered server. `false` (and no change) for an id that names
-/// no client — retargeting to nothing would turn every `client()` into a panic.
+/// no client or only recovery metadata whose origin cannot carry a credential in this build —
+/// retargeting to either would make the hot-path `client()` answer unusable connection state.
 pub fn set_current(id: ServerId) -> bool {
     // `CURRENT` is a crate global; a test that flips it outside `crate::testlock::serial()` lands
     // in the middle of some other module's test — see `lib.rs::testlock`.
     #[cfg(test)]
     crate::testlock::assert_held("the plex server registry (set_current)");
-    let ok = client_for(id).is_some();
+    let ok = id.index().is_some_and(|i| {
+        client_for(id).is_some() && CREDENTIAL_ELIGIBLE.load(Ordering::Acquire) & (1u32 << i) != 0
+    });
     if ok {
         // Release, pairing with `current()`'s Acquire: publishes the slot store that
         // `client_for` above just proved visible TO US, so it is visible to every later reader.
@@ -495,8 +503,9 @@ pub fn set_current(id: ServerId) -> bool {
     ok
 }
 
-/// The CURRENT server's `Client`. Panics if nothing has been installed — unchanged contract
-/// (and unchanged message) from the singleton this replaced.
+/// The CURRENT server's `Client`. Panics unless at least one credential-eligible server has been
+/// installed and selected; recovery-only origins deliberately do not satisfy that precondition.
+/// The panic message is retained for compatibility with the singleton this replaced.
 pub fn client() -> &'static Client {
     client_opt().expect("plex::install not called")
 }
@@ -825,14 +834,27 @@ fn populated(id: ServerId) -> Option<&'static Client> {
 
 /// Publish one populated slot into the active profile's roster. Pointer/token writes happen first;
 /// the Release bit is what makes them reachable through [`client_for`].
-fn activate(id: ServerId) {
+fn activate(id: ServerId, credential_eligible: bool) {
     let Some(i) = id.index() else { return };
     let bit = 1u32 << i;
+    if credential_eligible {
+        CREDENTIAL_ELIGIBLE.fetch_or(bit, Ordering::Release);
+    } else {
+        CREDENTIAL_ELIGIBLE.fetch_and(!bit, Ordering::Release);
+    }
     if ACTIVE.fetch_or(bit, Ordering::Release) & bit == 0 {
         ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
     }
-    if !current().is_set() {
+    if credential_eligible && !current().is_set() {
         CURRENT.store(id.0 as u32, Ordering::Release);
+    } else if !credential_eligible && current() == id {
+        let usable = ACTIVE.load(Ordering::Acquire) & CREDENTIAL_ELIGIBLE.load(Ordering::Acquire);
+        let next = if usable == 0 {
+            ServerId::UNSET
+        } else {
+            ServerId(usable.trailing_zeros() as u16)
+        };
+        CURRENT.store(next.0 as u32, Ordering::Release);
     }
 }
 
@@ -854,9 +876,10 @@ fn activate(id: ServerId) {
 /// nothing everywhere by construction — [`describe`], [`set_current`] and [`client_for`] all turn
 /// it away — so every caller degrades correctly without a full-table branch of its own.
 ///
-/// Does NOT steal `current` from an established server — only the first registration sets it
-/// (otherwise there is nothing for `client()` to answer with). Use [`set_current`] to switch,
-/// or [`install`], which is the session path and always retargets.
+/// Does NOT steal `current` from an established server — only the first credential-eligible
+/// registration sets it (otherwise there is nothing usable for `client()` to answer with). Use
+/// [`set_current`] to switch, or [`install`], which is the session path and retargets whenever
+/// the supplied origin is credential-eligible.
 pub fn register(machine_id: &str, host: &str, port: i32, token: &str) -> ServerId {
     register_origin(machine_id, &Origin::http(host, port), token, None, ConnectionFacts::default())
 }
@@ -881,9 +904,14 @@ pub fn register(machine_id: &str, host: &str, port: i32, token: &str) -> ServerI
 /// registration time, so there is no plain, connection-less variant to keep in sync.
 pub(crate) fn register_captured_origin_with_connection(machine_id: &str, origin: &Origin,
     token: &str, pin: Option<&ResolvePin>, client_id: &str, connection: ConnectionFacts) -> ServerId {
-    let id = register_lazy(machine_id, origin, token, pin, connection, &|| client_id.to_owned());
+    let policy = CredentialPolicy::build();
+    let id = register_lazy(
+        machine_id, origin, token, pin, connection, policy, &|| client_id.to_owned(),
+    );
     #[cfg(not(test))]
-    super::serverinfo::refresh(id);
+    if policy.may_carry_credential(origin) {
+        super::serverinfo::refresh(id);
+    }
     id
 }
 
@@ -899,12 +927,13 @@ pub(crate) fn register_origin(
     pin: Option<&ResolvePin>,
     connection: ConnectionFacts,
 ) -> ServerId {
+    let policy = CredentialPolicy::build();
     // The playback identity (`X-Plex-Client-Identifier`) is the persisted login identity, so it
     // comes from the session file — read LAZILY, i.e. only when a `Client` is actually built.
     // `session::load` can WRITE (it mints + persists the uuid when there is none), and the
     // commonest call here by far is the profile switch, which only swaps a token; the singleton
     // this replaced read the file exactly once, and so does this.
-    let id = register_lazy(machine_id, origin, token, pin, connection, &|| {
+    let id = register_lazy(machine_id, origin, token, pin, connection, policy, &|| {
         super::session::load().client_id
     });
     // Every server the app actually talks to arrives through THIS function (the `_with_client_id`
@@ -914,7 +943,9 @@ pub(crate) fn register_origin(
     // CURRENT server; a shared server registered beside it would have stayed permanently
     // `Unknown`, and the failure read-out blames a missing Pass on a known-free server only.
     // A worker fetch, single-flighted per server; nothing waits on it.
-    super::serverinfo::refresh(id);
+    if policy.may_carry_credential(origin) {
+        super::serverinfo::refresh(id);
+    }
     id
 }
 
@@ -965,7 +996,28 @@ pub(crate) fn register_pinned_with_client_id(
     client_id: &str,
     connection: ConnectionFacts,
 ) -> ServerId {
-    register_lazy(machine_id, origin, token, pin, connection, &|| client_id.to_owned())
+    register_lazy(
+        machine_id,
+        origin,
+        token,
+        pin,
+        connection,
+        CredentialPolicy::build(),
+        &|| client_id.to_owned(),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn register_pinned_with_client_id_and_policy(
+    machine_id: &str,
+    origin: &Origin,
+    token: &str,
+    pin: Option<&ResolvePin>,
+    client_id: &str,
+    connection: ConnectionFacts,
+    policy: CredentialPolicy,
+) -> ServerId {
+    register_lazy(machine_id, origin, token, pin, connection, policy, &|| client_id.to_owned())
 }
 
 fn register_lazy(
@@ -974,6 +1026,7 @@ fn register_lazy(
     token: &str,
     pin: Option<&ResolvePin>,
     connection: ConnectionFacts,
+    policy: CredentialPolicy,
     client_id: &dyn Fn() -> String,
 ) -> ServerId {
     // The registry's SLOTS/COUNT/ACTIVE/CURRENT tables are crate globals — a test reaching this
@@ -996,6 +1049,8 @@ fn register_lazy(
         _ => String::new(),
     };
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let credential_eligible = policy.may_carry_credential(origin);
+    let admitted_token = if credential_eligible { token } else { "" };
     let n = COUNT.load(Ordering::Acquire);
     let floor = FLOOR.load(Ordering::Acquire).min(n);
     // Search every populated slot in THIS account's window, including one deactivated by a profile
@@ -1007,6 +1062,8 @@ fn register_lazy(
 
     if let Some(id) = found {
         let c = populated(id).expect("the matched slot is populated");
+        let bit = 1u32 << id.index().expect("a populated slot has an index");
+        let was_eligible = CREDENTIAL_ELIGIBLE.load(Ordering::Acquire) & bit != 0;
         // Keep an id we already know: a legacy address-keyed call must not blank it.
         let mid = if machine_id.is_empty() {
             c.machine_id()
@@ -1043,15 +1100,15 @@ fn register_lazy(
             PROBES[id.0 as usize].store(PROBE_UNKNOWN, Ordering::Release);
             publish(
                 id,
-                Client::new(id, mid, origin.clone(), token, &client_id())
+                Client::new(id, mid, origin.clone(), admitted_token, &client_id())
                     .with_resolve_pin(pin.cloned()),
             );
             ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
         } else {
-            c.set_token(token); // in place — every reference already handed out follows along
-                                // The slot set did not change, but its lifecycle did. Catalog source tables key their
-                                // reconciliation on this generation so they can release an old single-flight and
-                                // re-arm with the new per-profile credential even on a same-origin retoken.
+            c.set_token(admitted_token); // every reference already handed out follows along
+            // The slot set did not change, but its lifecycle did. Catalog source tables key their
+            // reconciliation on this generation so they can release an old single-flight and
+            // re-arm with the new per-profile credential even on a same-origin retoken.
             ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
         }
         // Applied AFTER either branch, against the slot's now-current `Client` — a re-point
@@ -1062,7 +1119,14 @@ fn register_lazy(
         if let Some(fresh) = populated(id) {
             fresh.apply_connection(connection);
         }
-        activate(id);
+        activate(id, credential_eligible);
+        if credential_eligible {
+            if !was_eligible {
+                PROBES[id.0 as usize].store(PROBE_UNKNOWN, Ordering::Release);
+            }
+        } else {
+            PROBES[id.0 as usize].store(probe_code(Outcome::InsecureOnly), Ordering::Release);
+        }
         return id;
     }
 
@@ -1076,14 +1140,17 @@ fn register_lazy(
     PROBES[n].store(PROBE_UNKNOWN, Ordering::Release);
     publish(
         id,
-        Client::new(id, machine_id, origin.clone(), token, &client_id())
+        Client::new(id, machine_id, origin.clone(), admitted_token, &client_id())
             .with_resolve_pin(pin.cloned()),
     );
     COUNT.store(n + 1, Ordering::Release); // after the pointer: a visible count implies a live slot
     if let Some(fresh) = populated(id) {
         fresh.apply_connection(connection);
     }
-    activate(id);
+    activate(id, credential_eligible);
+    if !credential_eligible {
+        PROBES[n].store(probe_code(Outcome::InsecureOnly), Ordering::Release);
+    }
     // Address only — the machineIdentifier is a permanent household fingerprint (see `app::diagnostics`)
     // and the event log is what users send us. `log_form` rather than `base`, for the reason the
     // re-point line above gives.
@@ -1095,8 +1162,8 @@ fn register_lazy(
     id
 }
 
-/// Install for a (re)login / profile switch — the SESSION path, unchanged single-server
-/// behaviour. **Signature grew a [`ConnectionFacts`] parameter (#95 step 8)**: the caller who
+/// Install for a (re)login / profile switch — the SESSION path. **Signature grew a
+/// [`ConnectionFacts`] parameter (#95 step 8)**: the caller who
 /// already knows which tier won discovery, and at what address, now hands it to the same write
 /// that registers the server rather than setting it in a second call this function's old callers
 /// sometimes skipped. `ConnectionFacts::default()` reproduces the exact old behaviour (nothing
@@ -1106,12 +1173,12 @@ fn register_lazy(
 /// so the same address is the same server: a second call for it swaps the token in place exactly
 /// as the old singleton did — which is every install this app makes today, and why nothing about
 /// a single-server session changed. A call naming a DIFFERENT address now registers a second slot
-/// and makes it current, where the singleton kept the FIRST server's address and quietly applied
-/// the new token to it (a mis-target no caller could see, because the address was frozen).
+/// and makes it current when its origin is credential-eligible. An ineligible stored origin is
+/// retained tokenless with an [`Outcome::InsecureOnly`] result, so ordinary endpoint discovery
+/// can repair it without ever making that origin the credentialed current client.
 pub fn install(origin: &Origin, token: &str, pin: Option<&ResolvePin>, connection: ConnectionFacts) {
     let id = register_origin("", origin, token, pin, connection);
-    set_current(id); // the session path always retargets: this is now the server we are using
-                     // (`register` already refreshed this server's self-description — see its doc.)
+    set_current(id); // eligible session installs retarget; recovery-only metadata is refused
 }
 
 /// **Profile switch.** Blank every live token and hide every non-current slot before the new
@@ -1172,7 +1239,7 @@ pub(crate) fn finish_profile_switch(installed: &[ServerId]) {
             continue;
         }
         exact |= 1u32 << i;
-        if !first.is_set() {
+        if !first.is_set() && CREDENTIAL_ELIGIBLE.load(Ordering::Acquire) & (1u32 << i) != 0 {
             first = id;
         }
     }
@@ -1180,7 +1247,8 @@ pub(crate) fn finish_profile_switch(installed: &[ServerId]) {
     let old_current = current();
     let keep_current = old_current
         .index()
-        .is_some_and(|i| exact & (1u32 << i) != 0);
+        .is_some_and(|i| exact & (1u32 << i) != 0
+            && CREDENTIAL_ELIGIBLE.load(Ordering::Acquire) & (1u32 << i) != 0);
     let next = if keep_current { old_current } else { first };
 
     // Every installed slot was already activated, so publishing the new CURRENT first cannot
@@ -1225,6 +1293,7 @@ pub(crate) fn revoke_all() {
     // slot the floor has already killed, which is the one state `client()`'s `expect` would take.
     CURRENT.store(ServerId::UNSET.0 as u32, Ordering::Release);
     ACTIVE.store(0, Ordering::Release);
+    CREDENTIAL_ELIGIBLE.store(0, Ordering::Release);
     FLOOR.store(n, Ordering::Release);
     ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
     if n > floor {
@@ -1261,6 +1330,7 @@ pub(crate) fn reset_for_test() {
     }
     COUNT.store(0, Ordering::Release);
     ACTIVE.store(0, Ordering::Release);
+    CREDENTIAL_ELIGIBLE.store(0, Ordering::Release);
     ROSTER_GEN.store(1, Ordering::Release);
     FACTS_GEN.store(1, Ordering::Release);
     // The floor goes back with the count, or every test after one that signed out would register

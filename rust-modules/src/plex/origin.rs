@@ -109,9 +109,13 @@ pub const DEFAULT_PORT: i32 = 32400;
 /// developer build (`devtriggers`) is [`CredentialPolicy::AllowPlaintext`]: the rule exists so a
 /// lane with no TLS server of its own can still exercise the credentialed path against a plain
 /// `dev::DevServer`. Nothing about WHICH origin is eligible ever depends on where the policy came
-/// from — a pure function receives it as a parameter, and only the two live edges that talk to the
-/// real registry (`auth::resolve_roster_live_while`, `auth::probe_profile_resource_live`) call
-/// [`build`](CredentialPolicy::build) themselves.
+/// from — a pure function receives it as a parameter. [`build`](CredentialPolicy::build) itself is
+/// no longer just the two discovery live edges (`auth::resolve_roster_live_while`,
+/// `auth::probe_profile_resource_live`): the registry asks it too, at every write that admits an
+/// origin — `servers::register_origin`, `servers::register_captured_origin_with_connection` and
+/// `servers::register_pinned_with_client_id` — so a stored origin is graded by the same rule a
+/// discovered one is, and the transport boundary (`http::credential_transport_allowed`) still asks
+/// it a third time, per request, as the backstop if either ever admitted one wrongly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialPolicy {
     /// A store build: only a TLS origin may ever carry a credential.
