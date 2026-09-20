@@ -1225,9 +1225,11 @@ impl SourceRef {
     /// **This is a well-formedness check, not a credential-eligibility one.** A `true` answer says
     /// only that there is an address, a dialable port and a non-empty token written down — it says
     /// nothing about whether THIS BUILD may put that token on THIS origin's transport. Issue #95:
-    /// a stored `http://` entry is fully `dialable`, and a plaintext credential over it is refused
-    /// or not solely by [`CredentialPolicy`](super::CredentialPolicy) at the point of the actual
-    /// probe or request — never here.
+    /// a stored `http://` entry is fully `dialable`. Issue #107 closed the gap that used to sit
+    /// between here and that answer — a plaintext credential over it is refused or not by
+    /// [`CredentialPolicy`](super::CredentialPolicy), asked again at registration
+    /// (`servers::register_origin` and its sibling entry points, before the entry can ever become
+    /// the current client) and again at the point of the actual request — never here.
     pub fn dialable(&self) -> bool {
         self.origin().is_some() && !self.token.is_empty()
     }
