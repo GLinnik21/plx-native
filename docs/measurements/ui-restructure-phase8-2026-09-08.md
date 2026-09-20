@@ -1,6 +1,6 @@
 # UI restructure Phase 8: implementation checkpoint
 
-The controlling specification remains `~/.claude/plans/ui-plxnative-structured-phoenix.md` v4.
+The controlling specification remains `docs/ui-restructure-spec-v4.md` (moved into the repository 2026-09-20; it was `~/.claude/plans/ui-plxnative-structured-phoenix.md`).
 This is a progress record, not a replacement or reduced definition of done.
 
 ## Correction to "Review follow-up" below — 2026-09-09
