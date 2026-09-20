@@ -194,18 +194,23 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
             (Some(want), _) => (f.reconcile(want, cx), By::Restore),
             (None, FocusTarget::Elem(k)) => (k, By::Restore),
             (None, FocusTarget::ContainerGroup(g)) => {
-                let Some(spec) = groups
-                    .iter()
-                    .find(|s| s.id == g)
-                    .or_else(|| groups.iter().find(|s| s.len > 0))
-                else {
+                let Some(spec) = resolve_group(&groups, g) else {
                     return Outcome::Nothing;
                 };
-                if spec.len == 0 {
-                    return Outcome::Nothing;
-                }
                 let from = head_of(spec.extent);
                 (self.seat_in(f, &groups, spec, from, cx), By::Restore)
+            }
+            // A page being shown for the first time in this visit: bypass `seat_in` entirely so
+            // `Seat::Remembered` (the table default) cannot read a sibling page's cursor back —
+            // this is `Seat::First`'s own arm, reused rather than reinvented, because the
+            // question here ("ignore what's remembered") is the container's, not the group's
+            // policy, and only the container knows a page has never been seen (`FocusTarget`'s
+            // doc on `screen.rs`).
+            (None, FocusTarget::FirstInGroup(g)) => {
+                let Some(spec) = resolve_group(&groups, g) else {
+                    return Outcome::Nothing;
+                };
+                (f.seat(spec.id, head_of(spec.extent), cx), By::Restore)
             }
         };
         let group = f.group_of(&key.elem, cx);
@@ -400,6 +405,15 @@ fn side(dir: Dir) -> usize {
         Dir::Left => 2,
         Dir::Right => 3,
     }
+}
+
+/// The `ContainerGroup`/`FirstInGroup` group lookup, shared: the named group, or the engine's
+/// last-resort fallback to the first non-empty group (logged once by the caller's `fell_back`
+/// path elsewhere) — `None` for no candidate at all, and `None` again for a candidate that is
+/// empty, since a `spec.len == 0` group has nowhere for either target to land.
+fn resolve_group(groups: &[GroupSpec], g: GroupId) -> Option<&GroupSpec> {
+    let spec = groups.iter().find(|s| s.id == g).or_else(|| groups.iter().find(|s| s.len > 0))?;
+    (spec.len > 0).then_some(spec)
 }
 
 /// A source placement at a group's head (its top-left corner), for `Seat::First` and a fresh
@@ -1097,5 +1111,74 @@ mod tests {
         let groups = [mk(0, from), up];
         assert!(geometric(&groups, GroupId(0), from, Dir::Down).is_none());
         assert_eq!(geometric(&groups, GroupId(0), from, Dir::Up).map(|g| g.id), Some(GroupId(3)));
+    }
+
+    /// **Regression: a PUSH must not read a group's remembered cursor.** Traced to the Settings
+    /// family, where every nested page shares one `EntryId` (the surface's own) and every page's
+    /// table shares `GroupId(0)` (`RouteSurface::run_inner`, `FocusTarget`'s doc on `screen.rs`).
+    /// A push used to ask `enter` for `FocusTarget::ContainerGroup`, whose `Seat::Remembered` arm
+    /// in `seat_in` reads `remembered_in(entry, group)` back unconditionally — the OUTGOING
+    /// page's row, because the incoming page presents the identical `(EntryId, GroupId)` key. On
+    /// a real TV: OK on Settings' second row pushed Legal already seated on Legal's own second
+    /// row. `FirstInGroup` is the fix, and this proves the three-way split it creates has to hold
+    /// exactly: `FirstInGroup` lands on the group's first element even with a non-empty
+    /// remembered cursor recorded for that very key; `ContainerGroup` on the SAME engine state
+    /// must still land on the remembered element, because an ordinary re-entry (Left off a
+    /// neighbouring group back into this table) has to keep working; and an explicit `restored`
+    /// key must outrank both — the pop path's `FocusTarget::Elem`, already correct and not to be
+    /// disturbed by this fix.
+    #[test]
+    fn first_in_group_ignores_a_remembered_cursor_while_container_group_and_restored_still_use_it() {
+        rig!(m, v, cx);
+        let mut t = Tree::new(E);
+        let rects: Vec<Rect> = (0..4).map(|i| Rect::new(600.0, 100.0 + i as f32 * 80.0, 700.0, 70.0)).collect();
+        t.group(2, GroupKind::Column, Seat::Remembered, rects);
+
+        // Three independent engines, each seeded with the SAME remembered cursor at row 2 (left
+        // behind by a previous page sharing this exact `(EntryId, GroupId)` key, or by an earlier
+        // visit to this same page) — independent because `enter` itself records the landing it
+        // picks (spec §7.3 step 5), so re-using one engine across the three calls would let an
+        // earlier assertion's landing overwrite the very cursor the next one means to read.
+        let seeded = || {
+            let mut e = FocusEngine::new();
+            e.restore_remembered(E, &[(GroupId(2), key(E, 2, 2).elem)]);
+            e
+        };
+
+        let mut fresh = seeded();
+        let Outcome::Moved { to: fresh_to, .. } =
+            fresh.enter(OWNER, &t, FocusTarget::FirstInGroup(GroupId(2)), None, &cx)
+        else {
+            panic!("FirstInGroup must seat");
+        };
+        assert_eq!(
+            fresh_to,
+            key(E, 2, 0),
+            "a page shown for the first time must ignore the remembered cursor and seat at the group's head"
+        );
+
+        let mut reentry = seeded();
+        let Outcome::Moved { to: reentry_to, .. } =
+            reentry.enter(OWNER, &t, FocusTarget::ContainerGroup(GroupId(2)), None, &cx)
+        else {
+            panic!("ContainerGroup must seat");
+        };
+        assert_eq!(
+            reentry_to,
+            key(E, 2, 2),
+            "an ordinary re-entry (Seat::Remembered's own policy) must still read the remembered cursor"
+        );
+
+        let mut restored = seeded();
+        let want = key(E, 2, 3);
+        let Outcome::Moved { to: restored_to, .. } =
+            restored.enter(OWNER, &t, FocusTarget::ContainerGroup(GroupId(2)), Some(want), &cx)
+        else {
+            panic!("an explicit restored key must seat");
+        };
+        assert_eq!(
+            restored_to, want,
+            "an explicit restored key outranks both the remembered cursor and the group's Seat policy"
+        );
     }
 }

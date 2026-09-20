@@ -435,3 +435,75 @@ fn left_at_the_surfaces_own_root_dismisses_it() {
         "a surface dismissal is not the platform's BACK"
     );
 }
+
+/// **Regression, end to end: OK on Settings' second row must not reopen Legal already seated on
+/// Legal's own second row.** Traced to every page in this family sharing the surface's outer
+/// `EntryId` and `GroupId(0)` (`RouteSurface::run_inner`, `FocusTarget`'s doc on `screen.rs`): a
+/// push used to ask the engine for `FocusTarget::ContainerGroup`, whose `Seat::Remembered` policy
+/// read `remembered_in(entry, GroupId(0))` back regardless of which page was ASKING — so the row
+/// the Settings root's own table remembered (from the real DOWN press below) leaked straight into
+/// the freshly pushed Legal index. On a real TV this put focus on Legal's second row instead of
+/// its first the moment OK was pressed on Settings' second row.
+///
+/// This drives a REAL `Down` press rather than the `seat` helper used elsewhere in this file:
+/// `Dispatcher::set_focus` deliberately remembers no group (`ui/dispatch.rs`'s doc on `set_focus`),
+/// which is exactly the state that makes `Seat::Remembered` a no-op and hides this bug — the
+/// `settings_test_support.rs` helpers have no focus engine at all and create an empty remembered
+/// snapshot, so neither can observe this regression; only a real key through the real engine
+/// leaves a real remembered cursor for `ContainerGroup` to (wrongly) read back.
+///
+/// Fixture choice: the SIGNED-OUT root, like every other test in this file — its second row
+/// (`elem: 1`) is Legal notices. A signed-in root prepends Favourites and moves Legal to index 2,
+/// which would still prove the same thing but is not what `opened()` boots here.
+#[test]
+fn a_real_push_seats_the_new_page_fresh_and_a_pop_restores_the_row_that_opened_it() {
+    let _g = crate::testlock::serial();
+    let _sess = scratch_session("composed-push-seat-regression");
+    let (mut d, mut rig, id) = opened();
+    assert!(
+        path(&d, id).starts_with("settings/root:"),
+        "{}",
+        path(&d, id)
+    );
+
+    // Mounting the surface already seats row 0 (its own `Enter::Fresh`); one real DOWN moves
+    // focus — and the engine's remembered cursor for `(id, GroupId(0))` — to row 1.
+    frame(&mut d, &mut rig, 16, vec![key(Key::Down, tick(16))]);
+    let legal_row = d.focus().expect("a row is focused after a real DOWN");
+    assert_eq!(legal_row.elem, 1, "row 1 is Legal notices in the signed-out fixture");
+
+    frame(&mut d, &mut rig, 32, vec![key(Key::Ok, tick(32))]);
+    assert!(
+        path(&d, id).contains("/legal:"),
+        "OK on Legal notices pushed the index: {}",
+        path(&d, id)
+    );
+    assert_eq!(
+        d.focus().map(|k| k.elem),
+        Some(0),
+        "the pushed Legal index must seat on ITS OWN first row, not Settings root's remembered \
+         row 1 — the leak `ContainerGroup`'s `Seat::Remembered` used to produce"
+    );
+
+    // The leak, when present, survives an idle frame too — the seat is not a one-frame fluke.
+    frame(&mut d, &mut rig, 48, vec![]);
+    assert_eq!(
+        d.focus().map(|k| k.elem),
+        Some(0),
+        "…and the fresh seat holds after an idle frame"
+    );
+
+    frame(&mut d, &mut rig, 64, vec![key(Key::Back, tick(64))]);
+    let p = path(&d, id);
+    assert!(!p.contains("/legal:"), "BACK popped the index off the surface's stack: {p}");
+    assert!(
+        p.starts_with("settings/root:"),
+        "…and landed back on the Settings root: {p}"
+    );
+    assert_eq!(
+        d.focus(),
+        Some(legal_row),
+        "BACK restores the parent to the row that opened it, unaffected by this fix (the pop \
+         path's own `FocusTarget::Elem`)"
+    );
+}

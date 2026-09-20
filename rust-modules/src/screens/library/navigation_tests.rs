@@ -58,7 +58,9 @@ impl Fixture {
         let sid = crate::plex::ServerId::UNSET;
         let sections = (0..libraries)
             .map(|i| crate::stores::browse::SectionView {
-                borrowed: libraries == 1,
+                // `SectionView` no longer carries an ownership bit at all (issue #100/#165 — see
+                // `screens/library/tests.rs`'s `a_single_favourite_library_draws_no_selector`), so
+                // there is nothing left here to vary with the library count.
                 sid: Some(sid),
                 key: i as i64 + 1,
                 kind: SecKind::Movie,
@@ -210,7 +212,6 @@ fn shows_requested_before_discovery_stays_loading_and_never_fetches_the_foreign_
     let sid = crate::plex::ServerId::UNSET;
     fixture.sections = vec![
         crate::stores::browse::SectionView {
-            borrowed: false,
             sid: Some(sid),
             key: 1,
             kind: SecKind::Movie,
@@ -222,7 +223,6 @@ fn shows_requested_before_discovery_stays_loading_and_never_fetches_the_foreign_
             },
         },
         crate::stores::browse::SectionView {
-            borrowed: false,
             sid: Some(sid),
             key: 2,
             kind: SecKind::Show,
@@ -353,6 +353,11 @@ fn source_controls_and_document_groups_match_bare_shelves_full_and_failed_conten
         (0, 0, 0, false),
         (2, 0, 2, false),
         (2, 12, 2, false),
+        // A SINGLE favourite (issue #100/#165) never contributes a selector group any more —
+        // `SectionView` carries no ownership bit to make it ambiguous, see
+        // `screens/library/tests.rs`'s `a_single_favourite_library_draws_no_selector`. This tuple
+        // keeps the 1-library case in the census below, now asserting its ABSENCE rather than its
+        // presence.
         (1, 12, 0, false),
         (2, 0, 2, true),
     ] {
@@ -369,7 +374,7 @@ fn source_controls_and_document_groups_match_bare_shelves_full_and_failed_conten
         let mut groups = Vec::new();
         page.groups(&fixture.cx(&engine), &mut groups);
         let mut expected = Vec::new();
-        if libraries > 0 {
+        if libraries > 1 {
             expected.push(LIBRARY_GROUP);
         }
         expected.extend(page.shelves.iter().map(|shelf| shelf.group));

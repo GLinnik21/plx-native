@@ -192,7 +192,6 @@ pub(super) fn two_library_directory(
 ) -> crate::stores::browse::DirectorySnapshot {
     let section = |key, section, title: &str, pinned| {
         crate::stores::browse::SectionView {
-            borrowed: false,
             sid: Some(sid),
             key,
             kind: crate::stores::browse::SecKind::Movie,

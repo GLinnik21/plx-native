@@ -78,7 +78,6 @@ impl Fixture {
 
     fn section(section: usize, key: i64, title: &str, current: bool) -> crate::stores::browse::SectionView {
         crate::stores::browse::SectionView {
-            borrowed: false,
             sid: Some(crate::plex::ServerId::from_raw(0)),
             key,
             kind: SecKind::Movie,

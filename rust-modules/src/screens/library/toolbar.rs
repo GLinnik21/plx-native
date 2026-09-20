@@ -44,19 +44,6 @@ impl LibraryScreen {
             crate::ui::widgets::STRIP_GAP_WIDE, cx.measure)
     }
 
-    pub(super) fn source_chip<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<Chip> {
-        if self.libraries.len() != 1 { return None; }
-        let directory = H::directory(cx);
-        let section = self.pending.section().map(|target| target.index)
-            .or_else(|| self.libraries.first().map(|(_, section)| *section))?;
-        let section = directory.sections().get(section)?;
-        let owner = section.sid.and_then(|sid| directory.sources().iter().find(|(id, _)| *id == sid))
-            .map(|(_, source)| source.handle.as_str()).unwrap_or("");
-        Some(Chip { name: c"Library",
-            value: CString::new(format!(" · {}", section.row.title)).unwrap_or_default(),
-            note: (!owner.is_empty()).then(|| CString::new(format!("  {owner}")).unwrap_or_default()) })
-    }
-
     pub(super) fn toolbar_chip<H: LibraryLike>(&self, elem: u32, cx: &Cx<'_, H>) -> Chip {
         let listing = H::listing(cx);
         let queued = self.pending.grid().filter(|(target, _)| target.matches(listing)).map(|(_, action)| action);

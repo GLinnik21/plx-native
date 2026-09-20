@@ -1156,10 +1156,6 @@ impl BrowseState {
             SecFetch::Ready
         }
     }
-    fn section_sid_is_borrowed(&self, index: usize) -> bool {
-        self.sections.get(index).and_then(|section| self.sources.get(section.src))
-            .map(|source| !source.owned).unwrap_or(false)
-    }
     fn source_groups(&self) -> Vec<SrcGroup> {
         self.sources.iter().map(|source| SrcGroup {
             name: source.name.clone(), handle: source.handle.clone(), state: source.state,
@@ -2131,7 +2127,7 @@ fn activate_source_of(_i: usize) {
 //
 // The consequence is the property B was written for: the strip is a constant width at one friend
 // or at ten. Put source in the strip instead and three friends measure 2133px against a 1540 track.
-// Source lives in the Library chip instead, so adding people never reshapes this strip.
+// Source rides inside the library pill's own label instead, so adding people never reshapes this strip.
 //
 // **What DOES reshape it is the favourite switch, and that is the change of 2026-09-05.** Movies
 // and TV Shows were permanent destinations — `tab_count` was a constant 2 and `tabs_gen` a

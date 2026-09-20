@@ -74,11 +74,21 @@ fn owned_library_overscan_probe_covers_every_legacy_edge() {
         InstanceId(1),
         SecKind::Movie,
     );
-    let chip_width = crate::ui::value_chip::ValueChip::width(
+    // A singleton library draws no selector at all since issue #100/#165 (`LibraryScreen::sync`
+    // clears `self.libraries` outright below two candidates), so there is no more solo "chip" rect
+    // to probe here — the document head's real geometry, for any drawn row, is the shared pill
+    // strip. Two favourites is the smallest row that ever reaches the screen.
+    let pill_lays = crate::ui::widgets::strip_layout_measured(
+        ["Cinema".to_string(), "Cinema 2".to_string()].into_iter(),
+        MARGIN_X + crate::ui::widgets::STRIP_PAD,
+        crate::ui::theme::size::BODY,
+        crate::ui::widgets::STRIP_GAP_WIDE,
         &measure,
-        c"Library",
-        c" · Cinema",
-        None,
+    );
+    let pill_rect = crate::ui::widgets::strip_pill_rect(
+        &pill_lays[0],
+        CONTENT_TOP,
+        crate::ui::widgets::StatusOverlay::CTRL_H,
     );
     let control_width = crate::ui::value_chip::ValueChip::width(
         &measure,
@@ -100,8 +110,8 @@ fn owned_library_overscan_probe_covers_every_legacy_edge() {
             Rect::new(Layout::grid_x(COLS - 1), bare.row_y(0, 0.0), CARD_W, CARD_H),
         ),
         (
-            "library chip (document head)",
-            Rect::new(MARGIN_X, CONTENT_TOP, chip_width, crate::ui::widgets::StatusOverlay::CTRL_H),
+            "library pill strip (document head)",
+            pill_rect,
         ),
         (
             "library shelf heading (first)",

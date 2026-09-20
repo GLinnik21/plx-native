@@ -267,7 +267,6 @@ mod tests {
             "retained-machine", "127.0.0.1", 9, "retained", "scope");
         let directory = crate::stores::browse::DirectorySnapshot::fixture(3, 0, vec![
             crate::stores::browse::SectionView {
-                borrowed: false,
                 sid: Some(sid),
                 key: 12,
                 kind: crate::stores::browse::SecKind::Movie,
@@ -298,7 +297,6 @@ mod tests {
             7,
             0,
             vec![crate::stores::browse::SectionView {
-                borrowed: false,
                 sid: Some(sid),
                 key: 12,
                 kind: crate::stores::browse::SecKind::Movie,
@@ -345,7 +343,6 @@ mod tests {
             "shared-key-scope", "127.0.0.1", 9, "shared", "scope");
         let directory = |title: &str| crate::stores::browse::DirectorySnapshot::fixture(4, 0, vec![
             crate::stores::browse::SectionView {
-                borrowed: false,
                 sid: Some(sid),
                 key: 12,
                 kind: crate::stores::browse::SecKind::Movie,

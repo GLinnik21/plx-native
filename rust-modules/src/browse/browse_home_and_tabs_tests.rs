@@ -568,7 +568,7 @@ fn switching_off_a_types_last_favourite_takes_its_pill_and_renumbers_the_rest() 
     );
 }
 /// **A pill is a TYPE, never a person.** The strip names your own libraries; a friend's film
-/// library gets no pill of its own (the toolbar chip under it says whose), but a type only they
+/// library gets no pill of its own (the pill's own label says whose), but a type only they
 /// have does — otherwise that content is unreachable from the strip at all. And the selection
 /// capsule for a borrowed library rests on its TYPE's pill, so nothing is ever homeless.
 #[test]
@@ -844,7 +844,7 @@ fn only_a_changed_row_costs_the_tab_cache_a_re_measure() {
         "…and the next one folds onto it again, costing nothing"
     );
 }
-/// **The Source chip cannot switch tabs, because it is scoped to the tab's own TYPE.**
+/// **The Sources panel cannot switch tabs, because it is scoped to the tab's own TYPE.**
 ///
 /// Owner-reported on the device build: picking a library in the Sources panel could land on one
 /// of a different type, which moves the selected section — and the tab is derived from the

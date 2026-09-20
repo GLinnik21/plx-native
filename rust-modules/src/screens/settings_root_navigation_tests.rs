@@ -272,6 +272,17 @@ fn a_pop_from_legal_restores_focus_to_the_row_that_opened_it() {
 /// group, never the remembered list — a remembered entry belongs to the page being LEFT, and
 /// reusing it for the page being ENTERED would seat the Legal index on whatever numeric row
 /// happened to be focused on the root.
+///
+/// **Asserting the emitted REQUEST used to be the whole test, and that was never enough.** Every
+/// page in this family shares the surface's outer `EntryId` and `GroupId(0)`, so
+/// `FocusTarget::ContainerGroup(GroupId(0))` and the fixed `FocusTarget::FirstInGroup(GroupId(0))`
+/// below are requests for the exact same group — the difference is invisible at this level and
+/// only shows up one step later, inside `FocusEngine::enter`, where `ContainerGroup` resolves
+/// through the group's `Seat::Remembered` policy and reads the OUTGOING page's row back for the
+/// page being entered (`ui/focus.rs`'s `seat_in`). A version of this test that stopped at the
+/// emitted effect would have kept passing on the old, buggy `ContainerGroup` request forever,
+/// because the request LOOKED right; it just fed a policy that made it wrong two steps later. So
+/// this asserts the new target by name, not merely "some fresh focus target came out".
 #[test]
 fn a_push_seats_the_new_page_fresh_rather_than_from_the_remembered_list() {
     let _g = crate::testlock::serial();
@@ -305,8 +316,10 @@ fn a_push_seats_the_new_page_fresh_rather_than_from_the_remembered_list() {
         _ => None,
     });
     assert!(
-        matches!(seat, Some(FocusTarget::ContainerGroup(GroupId(0)))),
-        "a push seats the destination's own group 0, not a remembered element: {seat:?}"
+        matches!(seat, Some(FocusTarget::FirstInGroup(GroupId(0)))),
+        "a push seats the destination's own group 0 FIRST-in-group, ignoring any remembered \
+         cursor for it (not `ContainerGroup`, whose `Seat::Remembered` would read the outgoing \
+         page's row back): {seat:?}"
     );
 }
 

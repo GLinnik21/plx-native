@@ -270,6 +270,12 @@ pub(crate) fn encode(effect: &Fx<super::super::bridge::AppHost>) -> Result<Value
                             crate::ui::screen::Enter::Fresh { focus:target } => json!({"fresh":match target {
                                 crate::ui::screen::FocusTarget::Elem(key) => json!({"elem":focus(*key)}),
                                 crate::ui::screen::FocusTarget::ContainerGroup(group) => json!({"group":group.0}),
+                                // Distinct from `ContainerGroup`'s encoding on purpose: the two
+                                // resolve differently against the SAME remembered cursor (a
+                                // never-seen page vs. a plain re-entry), so a replay that could
+                                // not tell them apart from the recording would silently grade the
+                                // wrong seat — `FocusTarget`'s doc on `screen.rs` has the incident.
+                                crate::ui::screen::FocusTarget::FirstInGroup(group) => json!({"first_in_group":group.0}),
                             }}),
                         },
                         ScreenEvent::WillLeave(leave) => json!(match leave {

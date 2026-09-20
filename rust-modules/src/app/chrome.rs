@@ -167,7 +167,6 @@ mod tests {
 
     fn directory(kinds: &[SecKind]) -> DirectorySnapshot {
         DirectorySnapshot::fixture(7, 0, kinds.iter().enumerate().map(|(i, &kind)| SectionView {
-            borrowed: i >= 2,
             sid: Some(crate::plex::ServerId::from_raw((i / 2) as u16)),
             key: i as i64 + 1,
             kind,

@@ -399,6 +399,16 @@ impl RouteSurface {
             self.push.target = 1.0;
         }
         self.push.vel = 0.0;
+        // **Every page in this family shares the surface's OUTER `EntryId`, and every page's
+        // table shares `GroupId(0)`** (module doc, and `FocusTarget`'s own doc on `screen.rs`).
+        // That makes `(EntryId, GroupId(0))` the same `Seat::Remembered` key for Root, Legal,
+        // Privacy and every other page here — harmless on a POP, where the key IS meant to name
+        // whichever page is being returned to and the `remembered` list above already looked up
+        // its saved row, but wrong on a PUSH: the destination has never been entered, so
+        // `ContainerGroup` would hand `seat_in` the OUTGOING page's remembered row instead of the
+        // new page's first row (the reported bug: OK on row 2 opened Legal already seated on
+        // Legal's row 2). `FirstInGroup` is the same group with the remembered cursor ignored, and
+        // it is used on every arm below EXCEPT the one that found a saved elem to restore.
         let focus = match (popping, self.inner.top().map(|e| e.id)) {
             (true, Some(eid)) => self
                 .remembered
@@ -410,8 +420,8 @@ impl RouteSurface {
                         elem: *elem,
                     })
                 })
-                .unwrap_or(FocusTarget::ContainerGroup(GroupId(0))),
-            _ => FocusTarget::ContainerGroup(GroupId(0)),
+                .unwrap_or(FocusTarget::FirstInGroup(GroupId(0))),
+            _ => FocusTarget::FirstInGroup(GroupId(0)),
         };
         fx.push(Fx::Deliver(
             MachineId::Instance(self.id),
@@ -1048,7 +1058,7 @@ impl RootPage {
         if signed_in && multi_user {
             system = system.row(
                 Row::new("Automatically Sign In")
-                    .detail("Skip the profile list and enter as this profile when the app starts.")
+                    .detail("Skip the profile list when the app starts.")
                     .toggle(auto_sign_in),
             );
             actions.push(Action::AutoSignIn);
@@ -1056,7 +1066,7 @@ impl RootPage {
         if signed_in {
             system = system.row(
                 Row::new("Play trailers automatically")
-                    .detail("After a few seconds on a title, play its trailer in the background. This is also the sound control.")
+                    .detail("After a moment on a title, play its trailer with sound.")
                     .toggle(trailer_autoplay),
             );
             actions.push(Action::TrailerAutoplay);

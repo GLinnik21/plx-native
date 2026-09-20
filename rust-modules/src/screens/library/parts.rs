@@ -335,21 +335,40 @@ impl GridPart {
     #[cfg(test)]
     pub(super) fn reset_publication_ops(&mut self) { self.test_ops = PublicationOps::default(); }
 
-    /// The cell's drawn rect. The scale is the live pop times the live press for the focused cell
-    /// ([`treatment_scale`](Self::treatment_scale), the same number its treatment is drawn at),
-    /// the live shrink for the one that just lost focus, and rest for everybody else — see
-    /// [`pop_scale`](Self::pop_scale) for what a focused cell the pop has not adopted means.
+    /// The cell's drawn rect, scaled by [`tile_scale`](Self::tile_scale) — the live pop times the
+    /// live press for the focused cell, the live shrink for the one that just lost focus, and rest
+    /// for everybody else. This function and the unfocused branch of [`Part::draw`] MUST read that
+    /// one function rather than each keep their own copy of the branch; see its doc for the defect
+    /// that a second copy caused.
     pub(super) fn rect_at(&self, index: usize, focused: bool, press: f32) -> Rect {
         let row = index / COLS;
         let col = index % COLS;
-        let scale = if focused {
+        let scale = self.tile_scale(index, focused, press);
+        Rect::new(Layout::grid_x(col), self.layout.row_y(row, self.scroll), CARD_W, CARD_H).scaled(scale)
+    }
+
+    /// **The one scale a cell draws at — for its RECT and for its TREATMENT, always together.**
+    /// Live pop×press while focused ([`treatment_scale`](Self::treatment_scale)), live shrink for
+    /// the cell that just lost focus, rest for everybody else.
+    ///
+    /// This exists because `Part::draw`'s unfocused tile used to keep its own inline copy of this
+    /// same branch for the RECT while handing [`card_row::draw_tile`]'s renderer a hardcoded `1.0`
+    /// for the TREATMENT — exactly the disagreement [`treatment_scale`](Self::treatment_scale)'s
+    /// own doc already warns about for the focused cell, just uncaught on the unfocused one.
+    /// `draw_tile` derives the corner radius and the card-shadow ramp from its `s` argument
+    /// (`ui/card_row.rs`'s `tile_radius`/the shadow `f`), so a tile mid-shrink was drawn with its
+    /// radius and shadow already AT REST while its rectangle was still gliding down under the live
+    /// shrink spring — the "abrupt" unfocus the owner reported in the All grid, unlike a Home
+    /// shelf, whose own `draw_tile` call has always taken `RowMotion`'s live scale for both. One
+    /// function, called from both the rect and the renderer, is what makes that impossible again.
+    fn tile_scale(&self, index: usize, focused: bool, press: f32) -> f32 {
+        if focused {
             self.treatment_scale(index, press)
         } else if self.shrink.0 == Some(index) {
             self.shrink.1.pos
         } else {
             1.0
-        };
-        Rect::new(Layout::grid_x(col), self.layout.row_y(row, self.scroll), CARD_W, CARD_H).scaled(scale)
+        }
     }
 
     /// The focused cell's LIVE scale: the pop spring's position while the pop belongs to this
@@ -368,7 +387,9 @@ impl GridPart {
     /// label's anchor at the unscaled card bottom), so handing it anything else is not a
     /// refinement of the treatment but a rect and a treatment that disagree —
     /// `a_pressed_grid_tile_hands_the_card_renderer_the_scale_its_rect_was_built_from` is the
-    /// account.
+    /// account. [`tile_scale`](Self::tile_scale) is this same rule generalised past the focused
+    /// cell: it calls here when `focused`, and answers the shrink/rest cases the same invariant
+    /// covers for every other cell.
     pub(super) fn treatment_scale(&self, index: usize, press: f32) -> f32 {
         self.pop_scale(index) * if press > 0.0 { press } else { 1.0 }
     }
@@ -504,7 +525,12 @@ impl<H: LibraryLike> Part<H> for GridPart {
             let Some(item) = view.item(index) else { continue };
             let selected = focus.is_some_and(|key| key.elem == self.elems[index]);
             if selected { continue; }
-            card_row::draw_tile(p, Art::Poster(Some(item)), self.rect_at(index, false, 1.0), 1.0, &GRID_STYLE, item.resume_frac());
+            // The SAME scale for the rect and for the renderer's `s` (`tile_scale`'s whole
+            // point): a shrinking tile's corner radius and shadow now ramp down with its size,
+            // exactly as a shelf tile's do, instead of a hardcoded 1.0 leaving them at rest while
+            // the rect kept gliding.
+            let scale = self.tile_scale(index, false, 1.0);
+            card_row::draw_tile(p, Art::Poster(Some(item)), self.rect_at(index, false, 1.0), scale, &GRID_STYLE, item.resume_frac());
         }
         self.draw_focused(f, focus);
         self.record_stops(f);
@@ -546,6 +572,41 @@ mod pop_tests {
         assert!(new > CARD_W + 0.1 && new < full - 0.1, "the new tile starts growing from rest: {new}");
         for _ in 0..120 { g.tick(Some(4), dt); }
         assert_eq!(g.rect_at(3, false, 1.0).w, CARD_W, "a settled neighbour costs nothing");
+    }
+
+    /// **The width-only check above cannot see this defect.** Owner report, real TV: in the All
+    /// grid a tile GAINING focus lifts smoothly, but the tile LOSING it settles back down
+    /// abruptly — unlike a Home shelf, which animates smoothly in both directions. The mechanism
+    /// is that `Part::draw`'s unfocused branch built the outgoing tile's RECT from the live shrink
+    /// spring (via `rect_at`/`tile_scale`) but handed [`card_row::draw_tile`]'s renderer a
+    /// constant `1.0` for the TREATMENT — and `draw_tile` derives the corner radius and the card
+    /// shadow's ramp from that `s` argument alone, so the tile's outline and shadow snapped to
+    /// rest in one frame while its rectangle kept gliding down under the spring. The test above
+    /// only reads `rect_at`'s own WIDTH, which never carried this bug — the rect was always built
+    /// from the live spring — so it stays green with the defect fully shipped. This asserts on
+    /// [`tile_scale`](GridPart::tile_scale) directly, the value now handed to BOTH call sites, and
+    /// that `rect_at`'s width is exactly `CARD_W` times that same number.
+    #[test]
+    fn an_unfocusing_grid_tile_draws_its_shrinking_rect_and_treatment_at_the_same_scale() {
+        let mut g = GridPart::new(EntryId(7), GroupId(3));
+        g.elems = (1..=12).collect();
+        let dt = 1.0 / 60.0;
+        g.tick(Some(3), dt); // adopted at full scale: 3 is the resting focused tile
+        for _ in 0..60 { g.tick(Some(3), dt); }
+        g.pop_from_rest(4); // focus leaves 3 for 4: 3 now shrinks back toward rest
+        g.tick(Some(4), dt);
+        let scale = g.tile_scale(3, false, 1.0);
+        assert!(scale > 1.0 && scale < RowStyle::HOME.focus_scale,
+            "mid-shrink, the outgoing tile's own scale sits strictly between rest and full: {scale}");
+        let rect = g.rect_at(3, false, 1.0);
+        assert!((rect.w - CARD_W * scale).abs() < 0.001,
+            "rect_at's width must be CARD_W times the exact same scale tile_scale answers: rect.w={} scale={scale}", rect.w);
+        // The old call site's bug was indistinguishable from "already at rest": confirm this
+        // frame's scale genuinely is not 1.0, so a renderer that received it instead of the old
+        // hardcoded constant draws a visibly different (still-elevated) tile.
+        assert!((1.0_f32 - scale).abs() > 0.01, "a fresh mid-shrink tile must not already read as rest");
+        for _ in 0..120 { g.tick(Some(4), dt); }
+        assert_eq!(g.tile_scale(3, false, 1.0), 1.0, "…and once settled, the shared scale agrees it is at rest");
     }
 
     /// The other half of the same design, and — unlike the test above — written AFTER it rather

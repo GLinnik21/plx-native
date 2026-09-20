@@ -226,7 +226,6 @@ mod contract_tests {
     fn section(sid: crate::plex::ServerId, section: usize, pinned: bool)
         -> crate::stores::browse::SectionView {
         crate::stores::browse::SectionView {
-            borrowed: false,
             sid: Some(sid),
             key: section as i64 + 1,
             kind: crate::stores::browse::SecKind::Movie,

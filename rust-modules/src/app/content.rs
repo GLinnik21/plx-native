@@ -886,7 +886,6 @@ mod library_publication_tests {
         let sid = crate::plex::ServerId::from_raw(3);
         let directory = crate::stores::browse::DirectorySnapshot::fixture(7, 0, vec![
             crate::stores::browse::SectionView {
-                borrowed: false,
                 sid: Some(sid),
                 key: 11,
                 kind: crate::stores::browse::SecKind::Movie,

@@ -316,8 +316,11 @@ not built, the strip has three pills, the headings carry no annotation.
 **People in content, machines in settings.** The handle (`friend`) on every browsing surface; the
 machine name (`nas-home`) only in the Sources list and the failure read-out.
 
-- **A — the Sources list is a LIBRARY TOOLBAR CHIP**, not a row in the account popover. `Library ·
-  Film Club  friend ▾`, opening a 640-wide panel. The canvas gave it **two levels** switched by
+- **A — the Sources list is reached through the library pill strip's `MORE` pill**, not a row in
+  the account popover. Zero or one eligible library draws no selector at all, for every profile,
+  owned or borrowed; two or more draw the strip, with a `MORE` pill once the row overflows, and
+  only `MORE` opens a 640-wide panel — issue #100/#165: a borrowed singleton no longer keeps a dead
+  picker. The canvas gave it **two levels** switched by
   Browse / On Home pills at the panel top (the track menu's own swap); **the shipped panel has one**
   — it is the picker, and nothing else. The second level became its own route on 2026-09-05, when
   the switch stopped governing Home alone: *Favorite libraries*, which is also the
@@ -351,10 +354,11 @@ machine name (`nas-home`) only in the Sources list and the failure read-out.
   same screen-space anchor as Home's and the sign-in failure's (`StatusOverlay::page`), with only
   the head of the document beside it — no sort/filter chips, no count, no
   A–Z rail. **The head is whichever form it would take on a healthy page**, which since issue #68
-  (2026-09-06) is not always the chip: `Layout::failed` takes `head_on()` and `draw_document` asks
-  `lib_row_on()` first, so a dead library that shares its type with another favourite draws the
-  library ROW beside the read-out. That is the useful answer anyway — the row is how you leave the
-  library that cannot be reached — but "only the Source chip" is no longer what you will see.
+  (2026-09-06) is never a chip — there is none any more: `Layout::failed` builds the head with the
+  same eligible-library rule `draw_document` uses, so a dead library that shares its type with
+  another favourite draws the library pill strip beside the read-out. That is the useful answer
+  anyway — the strip is how you leave the library that cannot be reached — but there is no "Source
+  chip" left to qualify.
 - **E — `Shared by friend`** as the last run on the detail hero's date/runtime line, plus an **Also
   available** button in the actions row when a second pinned source holds the film. **OK navigates**
   to that server's page rather than swapping the copy in place, which is also what settles the
@@ -521,7 +525,7 @@ could not see the bug:
   for a freshly constructed/legacy client; discovery and session restore now publish the measured
   tier after each registration or re-point.
 
-## 10. The section table goes multi-server, and gets its Source chip (deliverable A)
+## 10. The section table goes multi-server, and gets its library pill strip (deliverable A)
 
 Step 1's registry now has its first real consumer, and deliverable A of the design is drawn.
 
@@ -550,15 +554,16 @@ Step 1's registry now has its first real consumer, and deliverable A of the desi
   Store a `Pill`, never a `usize`. The
   selected type resolves owned-first, then to the first usable shared section; the Source panel
   selects alternatives.
-- **The Source chip and its panel** are `ui/library.rs`; the row model is pure and host-tested. The
+- **The library pill strip and its Sources panel** are `screens/library/toolbar.rs` (the strip) and
+  `screens/library/mod.rs` (the panel); the row model is pure and host-tested. The
   panel had two levels (`Browse` ⟷ `On Home`) until 2026-09-05 and is now a PICKER and nothing else
   — one level, one tick, no words. The editor was its own route (*Favorite libraries*,
   `ui::onboard`) until phase 5b (2026-09-07); reached from Settings it is now a PAGE of the
   Settings family (`SettingsPage::Favourites`, hosting `screens::onboard`'s owned `OnboardScreen`)
   rather than a second value the page alphabet takes — deliverable A above has the mechanism, and
   first-run alone still arrives as `AppArg::Onboard`. Either way it remains the one surface listing
-  every GRANTED library, so a non-favourite has a way back. The chip itself now heads the Library's
-  document rather than leading a toolbar. `TableView` gained the two things it was missing for it: a drawn `Section::accessory`
+  every GRANTED library, so a non-favourite has a way back. The pill strip itself now heads the
+  Library's document rather than leading a toolbar. `TableView` gained the two things it was missing for it: a drawn `Section::accessory`
   (declared but never painted before) and `Section::dim`.
 - **The roster's own facts** (machine name, owner handle, owned) live beside the registry as
   `plex::ServerFacts`, merged rather than replaced so plex.tv and a server naming itself over `GET /`

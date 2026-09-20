@@ -83,7 +83,6 @@ impl Fixture {
             1,
             0,
             vec![crate::stores::browse::SectionView {
-                borrowed: false,
                 sid: Some(sid),
                 key: 1,
                 kind: SecKind::Movie,
@@ -338,7 +337,6 @@ fn a_late_listing_keeps_its_bookmark_seed_pending_until_the_card_is_placeable() 
         // Two favorite rows make the document's first block available before its grid arrives.
         let mut sections = fixture.directory.view().sections().to_vec();
         sections.push(crate::stores::browse::SectionView {
-            borrowed: true,
             sid: Some(crate::plex::ServerId::from_raw(1)),
             key: 2,
             kind: SecKind::Movie,
@@ -388,7 +386,6 @@ fn switch_diagnostic_requests_type_sort_filter_and_rail_actions() {
     let mut fixture = Fixture::new();
     let mut sections = fixture.directory.view().sections().to_vec();
     sections.push(crate::stores::browse::SectionView {
-        borrowed: false,
         sid: Some(crate::plex::ServerId::from_raw(0)),
         key: 2,
         kind: SecKind::Show,

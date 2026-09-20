@@ -226,8 +226,13 @@ fn the_remembered_seats_are_part_of_the_hash() {
         })
     };
     assert!(matches!(seat_of(&a), Some(FocusTarget::Elem(k)) if k == legal_row));
+    // `unseated` never remembered a row for the entry it's popping back to, so `request` falls
+    // to its default arm — `FirstInGroup`, not `ContainerGroup`, since `ContainerGroup` would
+    // resolve through `Seat::Remembered` and could read back whatever the shared entry's group 0
+    // last held (Legal's own row, still live in the engine at this point in the test), which is
+    // exactly the cross-page leak this surface's own `remembered` bookkeeping exists to avoid.
     assert!(matches!(
         seat_of(&b),
-        Some(FocusTarget::ContainerGroup(GroupId(0)))
+        Some(FocusTarget::FirstInGroup(GroupId(0)))
     ));
 }

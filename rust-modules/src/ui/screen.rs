@@ -84,10 +84,30 @@ pub enum Enter<K> {
 }
 
 /// "Mount with focus on the strip" is expressible.
+///
+/// `ContainerGroup` and `FirstInGroup` name the SAME group and can resolve through the SAME
+/// `Seat::Remembered` policy, yet they must not be interchangeable: only the container mounting a
+/// page knows whether that page has been seen before. A table's `Seat` is a property of the
+/// GROUP — it says how to seat a cursor that lands there by direction, by a `Link`, or by a plain
+/// re-entry within the still-live screen — and rightly stays `Remembered` for all of those. But
+/// `Enter::Fresh` means the screen is being shown for the first time in this visit, and a
+/// remembered cursor cannot belong to a page nobody has looked at yet: every nested Settings page
+/// shares one `EntryId` with its siblings (the surface's own, `RouteSurface::run_inner`) and every
+/// one of their tables shares `GroupId(0)`, so `Seat::Remembered`'s `(EntryId, GroupId)` key is
+/// literally the SAME key across a push from Root into Legal — pushing OK on Settings' second row
+/// then had Legal open already seated on ITS second row, because `seat_in`'s remembered arm read
+/// the outgoing page's cursor back for the incoming one. `FirstInGroup` is the container's way to
+/// say "ignore whatever is remembered here, this is new" without weakening `Seat::Remembered` for
+/// every ordinary re-entry that still needs it (`ui/focus.rs`'s `enter`, the `FirstInGroup` arm).
 #[derive(Clone, Copy, Debug)]
 pub enum FocusTarget<K> {
     Elem(FocusKey<K>),
+    /// Seat by the group's own `Seat` policy (`Seat::Remembered` included) — a plain re-entry.
     ContainerGroup(GroupId),
+    /// Seat at the group's first selectable element, ignoring any remembered cursor for it — a
+    /// page being shown for the first time in this visit, where a remembered cursor cannot be
+    /// ITS memory however the `(EntryId, GroupId)` key happens to compare.
+    FirstInGroup(GroupId),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -546,11 +546,15 @@ impl<H: DirectoryLike> Machine<H> for OnboardScreen {
             // **First run corrects its own entry point** (the identical problem
             // `ConsentPage::first_run` solves for the sign-in's own first screen — see that
             // constructor's doc for the general shape). The container's generic mount path always
-            // asks for `ContainerGroup(TABLE_GROUP)` on a fresh entry (`family.rs`'s own doc, and
-            // `containers/stack.rs`'s `Self::fresh`) — right for every OTHER mode this screen has
-            // (the Settings editor really does want to land on its list), wrong for first run,
-            // whose whole point is that the one action pill IS the interaction and the reading
-            // list beside it is only what you may read FIRST.
+            // asks for `TABLE_GROUP` on a fresh entry, as whichever `FocusTarget` shape names
+            // "never seen before" — `containers/stack.rs`'s `Self::fresh` currently sends
+            // `FirstInGroup(TABLE_GROUP)`, because a fresh mount can reuse a stale `EntryId` and so
+            // must not trust that group's remembered cursor (see `Self::fresh`'s own doc and
+            // `FocusTarget`'s doc on `screen.rs`), but `ContainerGroup(TABLE_GROUP)` said the same
+            // thing before that change and this arm accepts either shape for exactly that reason —
+            // right for every OTHER mode this screen has (the Settings editor really does want to
+            // land on its list), wrong for first run, whose whole point is that the one action pill
+            // IS the interaction and the reading list beside it is only what you may read FIRST.
             //
             // **This is NOT done at construction, unlike `ConsentPage::first_run`, and that is a
             // deliberate departure from the fix that screen made rather than an oversight.**
@@ -589,13 +593,20 @@ impl<H: DirectoryLike> Machine<H> for OnboardScreen {
             // one mount already names the band, so it falls to the catch-all below instead of
             // looping.
             ScreenEvent::Enter(Enter::Fresh {
-                focus: FocusTarget::ContainerGroup(g),
+                focus: FocusTarget::ContainerGroup(g) | FocusTarget::FirstInGroup(g),
             }) if !self.settings && *g != BAND_GROUP => {
                 let me = fx.from();
                 fx.push(Fx::Deliver(
                     me,
                     Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
-                        focus: FocusTarget::ContainerGroup(BAND_GROUP),
+                        // `FirstInGroup`, not `ContainerGroup`: this correction is itself firing
+                        // inside the handling of an `Enter::Fresh` — "never seen before" — so by
+                        // `FocusTarget`'s own rule (`screen.rs`) a remembered cursor for
+                        // `BAND_GROUP` cannot be ITS memory either, whichever shape the default
+                        // seat arrived as. The `*g != BAND_GROUP` guard above still stops this from
+                        // re-firing on its own correction once the second `Enter` already names
+                        // the band.
+                        focus: FocusTarget::FirstInGroup(BAND_GROUP),
                     })),
                 ));
                 Handled::Yes
@@ -1282,53 +1293,83 @@ mod tests {
             .any(|st| matches!(st.fx, Fx::App(AppFx::Loop(LoopReq::OnboardDone)))));
     }
 
-    /// **First run corrects a mismatched default seat to the band** — the `ScreenEvent::Enter`
-    /// arm's own doc has the full mechanism and why it cannot run at construction the way
-    /// `ConsentPage::first_run`'s does. This drives `step` directly rather than through a real
-    /// dispatcher, so it can only prove the LOCAL half: given the container's own default `Enter`
-    /// (`ContainerGroup(TABLE_GROUP)`), first run answers with a corrective `Enter` naming the
-    /// band, addressed to `fx.from()`; an `Enter` that already names the band is left alone
-    /// (proving the guard that stops this from re-firing on its own correction); and the Settings
-    /// editor — which really does want the table — never corrects at all. Whether that corrective
-    /// `Enter`, once it actually reaches a live dispatcher, wins the seat over the container's own
-    /// default is a claim about `ui/dispatch.rs`'s queue ordering that no unit test against `step`
-    /// alone can settle; the comment above traces it, but only a `ui-sim`/device boot of first run
-    /// landing focus on "Start watching" rather than the library list closes the loop for real.
+    /// **First run corrects a mismatched default seat to the band, whichever `FocusTarget` shape
+    /// the container's default `Enter` carries** — the `ScreenEvent::Enter` arm's own doc has the
+    /// full mechanism and why it cannot run at construction the way `ConsentPage::first_run`'s
+    /// does. This drives `step` directly rather than through a real dispatcher, so it can only
+    /// prove the LOCAL half: given the container's default `Enter` naming `TABLE_GROUP` — driven
+    /// here as BOTH `ContainerGroup` (what `NavStack::fresh` sent before `FirstInGroup` existed)
+    /// and `FirstInGroup` (what it sends today) — first run answers with a corrective `Enter`
+    /// naming the band as `FirstInGroup` (never `ContainerGroup`: the correction is itself firing
+    /// on an `Enter::Fresh`, so by `FocusTarget`'s own rule on `screen.rs` a remembered cursor for
+    /// `BAND_GROUP` cannot be ITS memory either), addressed to `fx.from()`; an `Enter` that already
+    /// names the band, in either shape, is left alone (proving the guard that stops this from
+    /// re-firing on its own correction); and the Settings editor — which really does want the
+    /// table — never corrects at all. Driving both input shapes is the point: the arm used to
+    /// match `ContainerGroup` alone, so `NavStack::fresh`'s later switch to `FirstInGroup` silently
+    /// stopped the correction from ever firing on first run while a test that drove only the old
+    /// shape stayed green throughout the regression. Whether that corrective `Enter`, once it
+    /// actually reaches a live dispatcher, wins the seat over the container's own default is a
+    /// claim about `ui/dispatch.rs`'s queue ordering that no unit test against `step` alone can
+    /// settle; the comment above traces it, but only a `ui-sim`/device boot of first run landing
+    /// focus on "Start watching" rather than the library list closes the loop for real.
     #[test]
     fn first_run_corrects_a_default_seat_on_the_table_to_the_band() {
-        let _g = crate::testlock::serial();
-        let mut browse = BrowseFixture::new();
-        let hubs_snap = crate::pms::HubsSnapshot::empty_for_test();
-        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
-        let default_seat = ScreenEvent::Enter(Enter::Fresh {
-            focus: FocusTarget::ContainerGroup(TABLE_GROUP),
-        });
-        let (handled, effs) = step_ev(&mut s, &default_seat, None, browse.capture());
-        assert_eq!(handled, Handled::Yes);
-        assert!(
-            effs.iter().any(|st| matches!(
-                st.fx,
-                Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
-                    focus: FocusTarget::ContainerGroup(g)
-                }))) if g == BAND_GROUP
-            )),
-            "a default seat on the table must be answered with a corrective Enter naming the band"
-        );
+        for (label, default_seat) in [
+            (
+                "ContainerGroup",
+                ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(TABLE_GROUP) }),
+            ),
+            (
+                "FirstInGroup",
+                ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::FirstInGroup(TABLE_GROUP) }),
+            ),
+        ] {
+            let _g = crate::testlock::serial();
+            let mut browse = BrowseFixture::new();
+            let hubs_snap = crate::pms::HubsSnapshot::empty_for_test();
+            let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+            let (handled, effs) = step_ev(&mut s, &default_seat, None, browse.capture());
+            assert_eq!(handled, Handled::Yes, "default seat shape: {label}");
+            assert!(
+                effs.iter().any(|st| matches!(
+                    st.fx,
+                    Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
+                        focus: FocusTarget::FirstInGroup(g)
+                    }))) if g == BAND_GROUP
+                )),
+                "a default seat on the table (as {label}) must be answered with a corrective Enter naming the band as FirstInGroup"
+            );
 
-        // The correction must not loop: once the seat already names the band, step answers with
-        // nothing further of its own.
-        let already_band = ScreenEvent::Enter(Enter::Fresh {
-            focus: FocusTarget::ContainerGroup(BAND_GROUP),
-        });
-        let (_, effs) = step_ev(&mut s, &already_band, None, browse.capture());
-        assert!(effs.is_empty(), "an Enter that already names the band must not be re-corrected");
+            // The correction must not loop: once the seat already names the band — in either
+            // shape — step answers with nothing further of its own.
+            for (already_label, already_band) in [
+                (
+                    "ContainerGroup",
+                    ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(BAND_GROUP) }),
+                ),
+                (
+                    "FirstInGroup",
+                    ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::FirstInGroup(BAND_GROUP) }),
+                ),
+            ] {
+                let (_, effs) = step_ev(&mut s, &already_band, None, browse.capture());
+                assert!(
+                    effs.is_empty(),
+                    "an Enter that already names the band (as {already_label}) must not be re-corrected"
+                );
+            }
 
-        // Settings mode wants exactly the default it is given — the list — so it must never
-        // correct anything.
-        browse.seed_pins(&[true, true]);
-        let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
-        let (_, effs) = step_ev(&mut s, &default_seat, None, browse.capture());
-        assert!(effs.is_empty(), "the Settings editor's default seat on the table is the one it wants");
+            // Settings mode wants exactly the default it is given — the list — so it must never
+            // correct anything.
+            browse.seed_pins(&[true, true]);
+            let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
+            let (_, effs) = step_ev(&mut s, &default_seat, None, browse.capture());
+            assert!(
+                effs.is_empty(),
+                "the Settings editor's default seat on the table (as {label}) is the one it wants"
+            );
+        }
     }
 
     /// **Ported from TWO old tests with byte-identical bodies** —

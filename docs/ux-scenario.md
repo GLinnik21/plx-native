@@ -625,8 +625,10 @@ full-screen sheet. All three are modal while open: they take every key, and BACK
   closes. Subtitles offers the item's subtitle tracks plus *Off*; both text and image (PGS/VobSub)
   subtitles render. Audio offers the item's audio tracks. Switching is a **server-side** selection,
   so it persists as the item's preference rather than lasting only this session.
-- **More** opens an *Options* popover — one row today, **Stats for nerds**, an On/Off toggle that
-  overlays live playback statistics. LEFT/RIGHT are deliberately swallowed here: it is one column.
+- **More** opens a popover led by the **Quality** ladder — Auto plus the fixed rungs — with an
+  *Options* section beneath it: **Stats for nerds**, an On/Off toggle that overlays live playback
+  statistics, plus **Send diagnostics** when that row is enabled. LEFT/RIGHT are deliberately
+  swallowed here: it is one column.
 
 The app exposes **no subtitle appearance settings**, and its client-rendered subtitles do not read
 the television's own subtitle settings — stated here because that is what makes the second half of
