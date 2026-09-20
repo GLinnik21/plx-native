@@ -113,8 +113,8 @@ pub use models::*;
 pub use params::*;
 #[cfg(test)]
 pub(crate) use servers::{
-    register_with_client_id as register_for_test, reset_for_test as reset_servers_for_test,
-    write_held_for_test,
+    register_pinned_with_client_id_and_policy, register_with_client_id as register_for_test,
+    reset_for_test as reset_servers_for_test, write_held_for_test,
 };
 // Only reached from `auth::register_observed_origin`'s `#[cfg(test)]` arm and from test files, so
 // a plain `cargo check --lib` (which builds no test code at all) sees no caller.

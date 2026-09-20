@@ -30,11 +30,12 @@ token gets a **401** from it, and its section key `1` is a different library fro
 `1`. So this layer is keyed on servers, not on one host and port.
 
 `client()` and `client_opt()` still mean what they always did, they just mean **the CURRENT
-server** now — which is why nothing outside `plex/` changed when the `OnceLock<Client>` singleton
-became a table. `client_for(id)` is the multi-server addition; `register_origin(machine_id,
-&Origin, token, Option<&ResolvePin>, ConnectionFacts)` puts a server in the table. **`install(&Origin,
-token, Option<&ResolvePin>, ConnectionFacts)` is the SESSION path** (boot, QR login, profile switch)
-and always retargets — it grew the fourth parameter in #95 step 8: `ConnectionFacts{tier, ip}` is
+credential-eligible server** now — which is why nothing outside `plex/` changed when the
+`OnceLock<Client>` singleton became a table. `client_for(id)` is the multi-server addition;
+`register_origin(machine_id, &Origin, token, Option<&ResolvePin>, ConnectionFacts)` puts a server
+in the table. **`install(&Origin, token, Option<&ResolvePin>, ConnectionFacts)` is the SESSION
+path** (boot, QR login, profile switch) and retargets when the origin may carry a credential — it
+grew the fourth parameter in #95 step 8: `ConnectionFacts{tier, ip}` is
 applied to the published `Client` INSIDE the same registration write that creates or re-points its
 slot, never as a separate post-hoc `set_link`/`set_connection` call a caller could forget or a
 re-point could race. `None` in either field means **leave unchanged**, not "set unknown" — a
