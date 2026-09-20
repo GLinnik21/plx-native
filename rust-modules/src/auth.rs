@@ -444,6 +444,14 @@ pub(crate) struct CandidateActivation {
     name: String,
     credit: String,
     owned: bool,
+    /// The grant EVIDENCE beside the credit — plex.tv's `home` and `ownerId`, carried so the
+    /// registry slot this activation publishes can answer "is this our household's server?"
+    /// rather than only "does this account own it?". Defaulted on a legacy observation for the
+    /// same reason, and with the same self-correction, as `SourceRef::owner_id` documents.
+    #[serde(default)]
+    home: bool,
+    #[serde(default)]
+    owner_id: i64,
     #[serde(with = "observation::origin")]
     origin: Origin,
     address: String,
@@ -560,6 +568,7 @@ pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan) -> bool {
             apply_candidate_activation(CandidateActivation {
                 machine_id: source.machine_id.clone(), token: source.token.clone(),
                 name: source.name.clone(), credit: source.shared_by.clone(), owned: source.owned,
+                home: source.home, owner_id: source.owner_id,
                 origin, address: source.address.clone(),
                 location, ipv6: *ipv6,
             });
@@ -578,7 +587,7 @@ pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan) -> bool {
             let id = register_observed_origin(&source.machine_id, &origin, &source.token,
                 source.resolve_pin().as_ref(), connection);
             if id.raw() != expected.sid { return false; }
-            crate::plex::describe_server(id, &source.name, &source.shared_by, source.owned);
+            crate::plex::describe_server(id, &source.name, &source.shared_by, grant_of(source));
             crate::plex::publish_probe_result(id, Outcome::Reachable);
         }
         owner::RegistryPlan::Probe(probe) => publish_settled_probe(probe),
@@ -623,7 +632,7 @@ pub(crate) fn install_captured_registry(origin: &Origin, address: &str, token: &
         );
         let id = register(&source.machine_id, &origin, &source.token,
             source.resolve_pin().as_ref(), connection);
-        crate::plex::describe_server(id, &source.name, &source.shared_by, source.owned);
+        crate::plex::describe_server(id, &source.name, &source.shared_by, grant_of(source));
     }
 }
 
@@ -772,7 +781,9 @@ fn apply_candidate_activation(candidate: CandidateActivation) {
     if crate::plex::client_for(id).is_some() {
         crate::plex::publish_probe_result(id, Outcome::Reachable);
     }
-    crate::plex::describe_server(id, &candidate.name, &candidate.credit, candidate.owned);
+    crate::plex::describe_server(id, &candidate.name, &candidate.credit, crate::plex::GrantEvidence {
+        owned: candidate.owned, home: candidate.home, owner_id: candidate.owner_id,
+    });
 }
 
 fn merge_profile_delta(session: &mut Session, delta: ProfileDelta) {
@@ -1931,13 +1942,20 @@ fn candidate_activation(
     c: &Candidate,
     origin: &Origin,
     credit: &str,
+    evidence: crate::plex::GrantEvidence,
 ) -> CandidateActivation {
     CandidateActivation {
         machine_id: plan.machine_id.clone(),
         token: plan.token.clone(),
         name: plan.name.clone(),
         credit: credit.to_owned(),
+        // `owned` still comes from the PLAN — it is what the plan was built to dial under — while
+        // `home`/`ownerId` come from the paired wire row, exactly as the credit does. A plan
+        // deliberately carries only what is needed to DIAL, and the pairing by `clientIdentifier`
+        // is the one identity that cannot drift.
         owned: plan.owned,
+        home: evidence.home,
+        owner_id: evidence.owner_id,
         origin: origin.clone(),
         address: c.address.clone(),
         location: c.location,
@@ -2160,6 +2178,12 @@ fn resolve_roster_using(
                     // two fields (`home`, `ownerId`) that a probe plan has no business carrying.
                     shared_by: credit_of(r, household),
                     owned: plan.owned,
+                    // The CREDIT above is a decided answer; these two are the EVIDENCE it was
+                    // decided from, carried so a later consumer can re-ask the household question
+                    // against a roster this ingest did not have. An empty credit cannot be
+                    // un-read: it means owned, household AND unnamed outside share alike.
+                    home: r.home,
+                    owner_id: r.owner_id,
                     // **The origin that ANSWERED** — `probe_server` hands back the very value it
                     // dialled, so what is written down here has been verified and not merely
                     // derived. It comes from the candidate's URL (`dial_target` → `Candidate::origin`)
@@ -2257,6 +2281,35 @@ fn credit_for_machine(resources: &[Resource], machine_id: &str, household: &[i64
         .unwrap_or_default()
 }
 
+/// [`credit_for_machine`]'s sibling for the grant EVIDENCE — plex.tv's `home` and `ownerId` for
+/// the machine a [`ProbePlan`] names, paired out of the same response by the same
+/// `clientIdentifier`.
+///
+/// It is separate from `credit_for_machine` rather than folded into it because the two answers
+/// have different lifetimes at the call site: a credit is graded against the household roster and
+/// is a decided STRING, while this is raw wire evidence that outlives any particular roster and is
+/// re-graded downstream. An id that names no row carries no evidence, which degrades to exactly
+/// what raw `owned` already said — the same "absence is the safe direction" the credit rule takes.
+fn evidence_for_machine(resources: &[Resource], machine_id: &str) -> crate::plex::GrantEvidence {
+    if machine_id.is_empty() {
+        return crate::plex::GrantEvidence::default();
+    }
+    resources
+        .iter()
+        .find(|r| r.is_server() && r.client_identifier == machine_id)
+        .map(|r| crate::plex::GrantEvidence::of(r.grant()))
+        .unwrap_or_default()
+}
+
+/// The grant evidence a persisted [`SourceRef`] carries, for the registry describers.
+fn grant_of(source: &SourceRef) -> crate::plex::GrantEvidence {
+    crate::plex::GrantEvidence {
+        owned: source.owned,
+        home: source.home,
+        owner_id: source.owner_id,
+    }
+}
+
 /// Test seam for the pre-racing acceptance fixtures. The injected dial runs synchronously and the
 /// gap is elided; the racing coordinator has its own focused tests for completion order/refusal.
 /// `policy` is explicit, like every other pure call in this path — most callers want `HttpsOnly`
@@ -2324,6 +2377,8 @@ fn source_from_reach(
         name: plan.name.clone(),
         shared_by: credit_of(res, household),
         owned: plan.owned,
+        home: res.home,
+        owner_id: res.owner_id,
         origin_url: origin.base(),
         address: c.address.clone(),
         port: c.port,
@@ -2396,10 +2451,11 @@ fn discover_and_store(ac: &AccountClient, epoch: u64, output: &dyn owner::Observ
     ));
     let mut activate = |plan: &ProbePlan, c: &Candidate, origin: &Origin| {
         let credit = credit_for_machine(&resources, &plan.machine_id, &[]);
+        let evidence = evidence_for_machine(&resources, &plan.machine_id);
         output.progress(AuthProgress::Registry(RegistryProgress::Activate {
             epoch,
             expected: None,
-            candidate: candidate_activation(plan, c, origin, &credit),
+            candidate: candidate_activation(plan, c, origin, &credit, evidence),
         }));
     };
     let mut observe = |plan: &ProbePlan, outcome: Outcome, tier: Option<probe::Location>, address: Option<String>| {
@@ -2536,6 +2592,10 @@ fn refreshed_sources(
         // stops being credited — see `plex::servers::owner_credit` on why absence is the safe way
         // to be wrong.
         cached.shared_by = credit_of(r, household);
+        // Assigned, not merged, for the same reason the credit is: this is the path a Plex Home
+        // profile switch takes, and the stored evidence belongs to whichever profile wrote it.
+        cached.home = r.home;
+        cached.owner_id = r.owner_id;
         if cached.dialable() {
             out.push(cached);
         }
@@ -2550,6 +2610,10 @@ fn same_sources(a: &[SourceRef], b: &[SourceRef]) -> bool {
                 && a.name == b.name
                 && a.shared_by == b.shared_by
                 && a.owned == b.owned
+                // The carried household evidence, or a roster whose ONLY change is that plex.tv
+                // now names an owner would compare equal and never be republished.
+                && a.home == b.home
+                && a.owner_id == b.owner_id
                 && a.address == b.address
                 && a.port == b.port
                 && a.token == b.token
@@ -2618,10 +2682,11 @@ fn server_roster_worker_with_output(sess: Session, epoch: u64, expected: Session
     };
     let mut activate = |plan: &ProbePlan, c: &Candidate, origin: &Origin| {
         let credit = credit_for_machine(&resources, &plan.machine_id, &household);
+        let evidence = evidence_for_machine(&resources, &plan.machine_id);
         output.progress(AuthProgress::Registry(RegistryProgress::Activate {
             epoch,
             expected: Some(expected.clone()),
-            candidate: candidate_activation(plan, c, origin, &credit),
+            candidate: candidate_activation(plan, c, origin, &credit, evidence),
         }));
     };
     let mut settled = Vec::new();
@@ -2697,6 +2762,8 @@ fn apply_refreshed_endpoint(
         name: source.name.clone(),
         shared_by: source.shared_by.clone(),
         owned: source.owned,
+        home: source.home,
+        owner_id: source.owner_id,
         extensions: source.extensions.clone(),
     };
     let changed = source.address != next.address
@@ -2856,7 +2923,7 @@ fn install_roster(sources: &[SourceRef], primary: Option<usize>) -> Vec<ServerId
         //
         // `owned` comes from the roster rather than from an empty handle: a share whose
         // `sourceTitle` plex.tv did not send is still a share.
-        crate::plex::describe_server(id, &s.name, &s.shared_by, s.owned);
+        crate::plex::describe_server(id, &s.name, &s.shared_by, grant_of(s));
         if primary == Some(i) {
             crate::plex::set_current(id);
         }

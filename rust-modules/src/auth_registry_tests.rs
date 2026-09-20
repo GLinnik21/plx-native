@@ -577,3 +577,115 @@ fn endpoint_refresh_early_exit_does_not_widen_an_existing_insecure_only_verdict(
         "an early exit with nothing dialled must not overwrite a real verdict"
     );
 }
+
+/// **The evidence a credit cannot carry.** Same mixed roster as
+/// [`a_home_admins_server_seen_by_a_managed_profile_credits_nobody`], asking the other half of
+/// the question: after the refresh, can anything downstream still tell the two apart?
+///
+/// It could not. Both grants are `owned:false` and both are credited `""` — the household's own
+/// server because nobody outside the house owns it, a share plex.tv never named for the opposite
+/// reason — so an empty credit means *owned*, *household* and *unnamed outside share* alike, and
+/// `owned` alone reads a managed profile's own household library as a stranger's. Carrying
+/// plex.tv's `home`/`ownerId` beside raw `owned` is what makes the verdict recoverable, and the
+/// serde round trip is here because the record is PERSISTED: evidence that survives the refresh
+/// and not the file is evidence the next boot does not have.
+#[test]
+fn a_managed_profiles_household_server_and_a_friends_share_stay_distinguishable() {
+    const ADMIN_ID: i64 = 111_111;
+    const MANAGED_ID: i64 = 222_222;
+    const FRIEND_ID: i64 = 987_654;
+    let household = [ADMIN_ID, MANAGED_ID];
+
+    let stored = vec![
+        source("aaaa1111", true, "own-tok"),
+        source("bbbb2222", false, "share-tok"),
+    ];
+    let resources = vec![
+        resource(
+            r#"{"name":"Mac mini","clientIdentifier":"aaaa1111","provides":"server",
+                "owned":false,"home":true,"sourceTitle":"admin","ownerId":111111,
+                "accessToken":"kid-own"}"#,
+        ),
+        resource(
+            r#"{"name":"nas-home","clientIdentifier":"bbbb2222","provides":"server",
+                "owned":false,"home":false,"sourceTitle":"friend","ownerId":987654,
+                "accessToken":"kid-share"}"#,
+        ),
+    ];
+
+    let next = refreshed_sources(&stored, &[], &resources, &household);
+
+    // the premise: raw `owned` cannot separate them, and it is left alone
+    assert!(!next[0].owned && !next[1].owned, "plex.tv owns neither, to this profile");
+
+    for (index, expected) in [(0usize, true), (1, false)] {
+        // the round trip the boot path actually takes: the file, and back
+        let json = serde_json::to_string(&next[index]).expect("a source serializes");
+        let back: SourceRef = serde_json::from_str(&json).expect("and comes back");
+        assert_eq!((back.home, back.owner_id), (next[index].home, next[index].owner_id));
+        assert_eq!(
+            crate::plex::is_household(
+                crate::plex::GrantEvidence {
+                    owned: back.owned, home: back.home, owner_id: back.owner_id,
+                }
+                .grant(),
+                &household,
+            ),
+            expected,
+            "source {index} ({}) after the round trip", back.machine_id,
+        );
+    }
+    assert_eq!(next[0].owner_id, ADMIN_ID, "the household server names the admin");
+    assert_eq!(next[1].owner_id, FRIEND_ID, "the share names its own owner");
+    assert!(next[0].home && !next[1].home, "plex.tv's own flag is carried verbatim");
+}
+
+/// A roster refresh whose ONLY change is the household evidence must be judged CHANGED, or it is
+/// graded equal to the stale one and never republished — the correction would land in
+/// `refreshed_sources` and stop there, invisible for the life of the process.
+#[test]
+fn a_roster_that_only_learned_whose_household_it_is_counts_as_changed() {
+    let before = vec![source("aaaa1111", false, "kid-own")];
+    let mut after = before.clone();
+    assert!(same_sources(&before, &after), "the fixture starts identical");
+
+    after[0].owner_id = 111_111;
+    assert!(!same_sources(&before, &after), "a newly named owner is a change");
+
+    let mut home_only = before.clone();
+    home_only[0].home = true;
+    assert!(!same_sources(&before, &home_only), "so is plex.tv's own home flag");
+}
+
+/// Endpoint recovery may use the INSTALL OWNER's account token merely to relearn a connection
+/// list, so it must not copy that response's grant facts over the watching profile's. The
+/// household evidence is a grant fact and is preserved exactly as `owned`/`shared_by` are — a
+/// recovery that adopted the owner's `ownerId` would tell a managed profile its own household
+/// server had changed hands.
+#[test]
+fn endpoint_recovery_keeps_the_watching_profiles_household_evidence() {
+    let mut s = Session {
+        sources: vec![SourceRef {
+            home: true,
+            owner_id: 111_111,
+            ..source("aaaa1111", false, "kid-own")
+        }],
+        ..Default::default()
+    };
+    let fresh = SourceRef {
+        address: "10.0.0.42".into(),
+        port: 32401,
+        home: false,
+        owner_id: 999_999,
+        token: "owner-tok".into(),
+        ..source("aaaa1111", false, "owner-tok")
+    };
+
+    let (next, changed) = apply_refreshed_endpoint(&mut s, "aaaa1111", &fresh)
+        .expect("the machine is in the profile");
+
+    assert!(changed, "the route facts really did move");
+    assert_eq!(next.address, "10.0.0.42");
+    assert_eq!((next.home, next.owner_id), (true, 111_111), "grant facts stay the profile's");
+    assert_eq!(next.token, "kid-own", "…for the same reason the token does");
+}

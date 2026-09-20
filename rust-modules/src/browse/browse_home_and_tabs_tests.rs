@@ -133,6 +133,123 @@ fn apply_pins_writes_the_whole_batch_in_one_record() {
         "one commit is still a recorded answer"
     );
 }
+/// **An explicit answer that a DEFAULT has caught up with is still an answer.**
+///
+/// Codex review finding 1 (2026-09-20) against the household-grading work, and the sequence is
+/// the whole of it: before the Plex Home roster lands, a friend's films read On; the viewer
+/// switches them Off; the roster arrives, the household turns out to have films of its own and
+/// the LIVE pin moves to Off as well. `apply_pins` used to INFER "the viewer touched this row"
+/// from "the row disagrees with the live pin", so the commit saw `Off == Off`, read the row as
+/// untouched and wrote nothing — and an unrecorded row goes on re-deriving, which is how an
+/// explicit Off comes back On the day the household stops having films of its own.
+///
+/// The command carries the rows ANSWERED now (`screens::onboard`'s `draft != entry_pins`), so a
+/// row whose value the world agreed with is recorded exactly like one it did not.
+#[test]
+fn an_answer_the_live_pin_already_agrees_with_is_recorded_anyway() {
+    let _g = crate::testlock::serial();
+    let t = TempPins::new("answer-agrees");
+    t.watching("u-owner");
+    let mut browse = TestBrowse::default();
+    seed_two_servers(&mut browse);
+    assert!(
+        !browse.pinned(2),
+        "the friend's films are Off by DEFAULT here — nobody's answer yet"
+    );
+
+    // The one commit, carrying the one row the viewer answered: Off, which is what the live pin
+    // already reads because a roster correction got there first.
+    browse.state.apply_pins(&[(2, false)]);
+
+    let user = crate::plex::session::current_profile_key();
+    assert_eq!(
+        crate::plex::session::peek().pins_for(&user).and_then(|r| r.answer("nas-home", 1)),
+        Some(false),
+        "the answer was written down rather than mistaken for the default it agreed with"
+    );
+
+    // …and why it matters: the household loses its only Movies library, so a friend's films are
+    // now a type the household has none of and `default_on` would raise them. The never-empty
+    // floor is not in play — the household's TV library is still on.
+    browse.seed_sources(vec![
+        a_source("mac-mini", "", true),
+        a_source("nas-home", "friend", true),
+    ]);
+    browse.append_sections(0, vec![(2, "TV Shows".into(), SecKind::Show)]);
+    browse.append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+    assert_eq!(
+        (browse.pinned(0), browse.pinned(1)),
+        (true, false),
+        "the explicit Off outlived the default that would otherwise have brought it back"
+    );
+}
+/// **After a commit, what the table SHOWS is what the commit SAVED.**
+///
+/// Codex review finding 2 (2026-09-20), and it is the provenance change's own doing: once
+/// `record_pins` writes only the rows somebody answered, the untouched rows the never-empty floor
+/// had RAISED keep their raised value on screen while the record keeps the older answer — so the
+/// next resolve, or the next boot, silently puts one back down with no user action behind it.
+/// A plain account owner, three of their own machines, and no share anywhere near it.
+#[test]
+fn a_commit_leaves_the_table_showing_what_it_saved() {
+    let _g = crate::testlock::serial();
+    let t = TempPins::new("commit-reconcile");
+    t.watching("u-owner");
+    let user = crate::plex::session::current_profile_key();
+    let lib = |machine: &str, key| crate::plex::session::PinnedLib {
+        machine_id: machine.into(),
+        key,
+        extensions: Default::default(),
+    };
+    assert!(
+        crate::plex::session::update(|s| {
+            let mut next = s.clone();
+            next.set_pins_for(
+                &user,
+                crate::plex::session::HomePins {
+                    user: user.clone(),
+                    asked: true,
+                    on: vec![lib("laptop", 1)],
+                    off: vec![lib("mac-mini", 1), lib("study-nas", 1)],
+                    extensions: Default::default(),
+                },
+            );
+            Some(next)
+        }),
+        "the three recorded answers really are on disk, or this test grades nothing"
+    );
+
+    // The only machine that was On leaves the roster. Nothing is left on, so the never-empty
+    // floor raises the FIRST source's libraries: row 0 reads On without anybody having said so.
+    let mut browse = TestBrowse::default();
+    browse.seed_sources(vec![
+        a_source("mac-mini", "", true),
+        a_source("study-nas", "", true),
+    ]);
+    browse.append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+    browse.append_sections(1, vec![(1, "Cinema".into(), SecKind::Movie)]);
+    assert_eq!(
+        (browse.pinned(0), browse.pinned(1)),
+        (true, false),
+        "the floor raised the first source's library over two recorded Offs"
+    );
+
+    // The viewer switches the other one on and leaves the raised row alone.
+    browse.state.apply_pins(&[(1, true)]);
+
+    let saved = crate::plex::session::peek();
+    let recorded = saved.pins_for(&user).and_then(|r| r.answer("mac-mini", 1));
+    assert_eq!(
+        (browse.pinned(0), recorded),
+        (false, Some(false)),
+        "the raised row went back to what the record says, instead of disagreeing with it until \
+         the next resolve"
+    );
+    assert!(
+        browse.pinned(1),
+        "…and the answer that was just given is not undone by the same reconcile"
+    );
+}
 /// **A selection outlives the run.** Every flip was in-memory until 2026-08-21, so the answer
 /// was gone by the next boot and the ownership default came back — which reads as the switch
 /// not working rather than as nothing having been written down.
@@ -169,7 +286,11 @@ fn a_recorded_answer_reaches_home_before_that_servers_sections_do() {
     t.watching("u-owner");
     let mut browse = TestBrowse::default();
     seed_two_servers(&mut browse);
-    browse.state.record_pins(true); // `Start watching` on the defaults: ours On, the friend's Off
+    // The friend's library, turned on and then off again — an ANSWER about it rather than the
+    // default it happens to agree with. Only a row somebody moved is written down now
+    // (`plex::pins::answers`), so a fixture that wants a record has to make the decision.
+    assert!(browse.state.toggle_pin(2) && browse.state.toggle_pin(2));
+    assert!(!browse.pinned(2), "back where it started, but now on the record");
 
     // the next boot, before the share's section worker has landed
     let boot = |browse: &mut TestBrowse| {
@@ -205,8 +326,7 @@ fn a_recorded_answer_reaches_home_before_that_servers_sections_do() {
     // the other direction, so this is a JOIN and not a blanket "a share is off"
     t.watching("u-owner");
     seed_two_servers(&mut browse);
-    assert!(browse.state.toggle_pin(2));
-    browse.state.record_pins(true);
+    assert!(browse.state.toggle_pin(2)); // the toggle IS the write; nothing else is needed
     boot(&mut browse);
     assert!(
         browse.state.library_pins().contains(&(1, 1, true)),
@@ -266,21 +386,28 @@ fn a_flip_made_while_a_share_is_absent_does_not_erase_its_answer() {
 /// **THE requirement: the selection is per PROFILE.** It hung off the `Session` — one per
 /// install — so a household could hold exactly one opinion about a friend's films, and
 /// switching profile left the previous person's shelves on the front door.
+///
+/// **Seeded as a MANAGED profile sees the house**, which is what the two people switching here
+/// actually are. `seed_two_servers` is the admin's view — `mac-mini` `owned:true` — and that made
+/// this test quietly unable to reach the case it is about: two profiles in one Plex Home, both of
+/// whom plex.tv answers `owned:false` on the family server, indistinguishable from the friend's
+/// share beside it on the raw flag alone. Every expectation below is unchanged, and that IS the
+/// assertion: a managed profile's per-profile selection behaves exactly as the admin's does.
 #[test]
 fn two_profiles_keep_their_own_home_selections_across_a_switch() {
     let _g = crate::testlock::serial();
     let t = TempPins::new("profiles");
     let mut browse = TestBrowse::default();
 
-    // Dad wants the friend's films on Home and does not want his own TV shows there.
+    // Dad wants the friend's films on Home and does not want the household's TV shows there.
     t.watching("u-dad");
-    seed_two_servers(&mut browse);
+    seed_two_servers_managed(&mut browse);
     assert!(browse.state.toggle_pin(2) && browse.state.toggle_pin(1));
     assert_eq!((browse.pinned(0), browse.pinned(1), browse.pinned(2)), (true, false, true));
 
     // The kid switches in. Never asked, so the defaults — NOT dad's answer.
     t.watching("u-kid");
-    seed_two_servers(&mut browse);
+    seed_two_servers_managed(&mut browse);
     assert_eq!(
         (browse.pinned(0), browse.pinned(1), browse.pinned(2)),
         (true, true, false),
@@ -291,7 +418,7 @@ fn two_profiles_keep_their_own_home_selections_across_a_switch() {
 
     // …and back, with dad's answer intact rather than overwritten by the kid's.
     t.watching("u-dad");
-    seed_two_servers(&mut browse);
+    seed_two_servers_managed(&mut browse);
     assert_eq!(
         (browse.pinned(0), browse.pinned(1), browse.pinned(2)),
         (true, false, true),
@@ -312,7 +439,9 @@ fn the_first_run_question_is_asked_once_per_profile() {
         "two sources, and nobody has asked this profile"
     );
 
-    browse.state.record_pins(true); // what `Start watching` — and BACK, which commits the same thing — does
+    // What `Start watching` — and BACK, which commits the same thing — does with nothing touched:
+    // it records that the question was PUT, and no answers, because the viewer gave none.
+    browse.state.record_pins(true, &[]);
     assert!(!browse.first_run_asks(), "asked once, never again");
     t.watching("u-kid");
     assert!(
@@ -925,4 +1054,178 @@ fn the_sources_panel_offers_only_libraries_of_the_tab_being_browsed() {
             "a row of another type is reachable"
         );
     }
+}
+/// **The tab destination, on the roster a managed profile actually gets.**
+///
+/// Two Movies libraries, one on the household's own server and one on a friend's share, both
+/// pinned, neither remembered — the tie [`BrowseState::section_of_kind`] breaks. The friend's is
+/// seeded FIRST on purpose: under the old `!owned` tiebreak every row of this roster scored the
+/// same (plex.tv says `owned:false` about the family server too), so `min_by_key` kept the first
+/// it met and the Movies tab opened on a stranger's shelf, permanently, with no control anywhere
+/// that would move it. That is GitHub #68's mechanism — *"I have two TV Shows libraries … only my
+/// Animes are being displayed"* — still open for every profile but the admin's.
+#[test]
+fn the_movies_tab_prefers_the_households_library_over_a_friends() {
+    let _g = crate::testlock::serial();
+    let t = TempPins::new("tab-household");
+    t.watching("u-managed");
+    let mut browse = TestBrowse::default();
+    // the friend's server first in the table, so arrival order and the right answer disagree
+    browse.seed_sources(vec![
+        a_source("nas-home", "friend", true),
+        a_household_source("mac-mini"),
+    ]);
+    browse.append_sections(0, vec![(1, "Film Club".into(), SecKind::Movie)]);
+    browse.append_sections(1, vec![(1, "Movies".into(), SecKind::Movie)]);
+
+    // both are favourites, or the tiebreak is not what is being graded. The friend's is turned on
+    // deliberately — a recorded answer, so the re-resolve below cannot take it back off.
+    assert!(browse.pinned(1), "the household's films default On");
+    assert!(browse.state.toggle_pin(0), "…and the friend's is switched on");
+
+    let tab = browse.state.tab_of_kind(SecKind::Movie).expect("a Movies pill");
+    assert_eq!(
+        browse.state.tab_section(tab).map(|s| browse.section_title(s)),
+        Some("Movies"),
+        "the tab lands on the household's library, not on whichever answered first"
+    );
+
+    // …and a REMEMBERED choice still wins outright: the tiebreak is only ever consulted when the
+    // profile has not already said. Nothing about the household may second-guess that.
+    crate::plex::session::update(|session| {
+        let mut next = session.clone();
+        let user = crate::plex::session::current_profile_key();
+        next.last_library.retain(|l| l.user != user);
+        let mut libs = crate::plex::session::LastLibrary { user, ..Default::default() };
+        libs.libs.push(crate::plex::session::TypedLib {
+            kind: SecKind::Movie.wire().to_string(),
+            machine_id: "nas-home".into(),
+            key: 1,
+            extensions: Default::default(),
+        });
+        next.last_library.push(libs);
+        Some(next)
+    });
+    browse.state.resolve_pins();
+    assert_eq!(
+        browse.state.tab_section(tab).map(|s| browse.section_title(s)),
+        Some("Film Club"),
+        "the library this profile chose, household or not"
+    );
+}
+
+/// **`/api/v2/home/users` landing on its own re-resolves the whole pin table.**
+///
+/// The roster is the one input to the household verdict that is not in the server registry, and it
+/// arrives on its own schedule — a managed profile's first boot routinely computes its defaults
+/// before it lands. Nothing used to notice: `discovery_needs_pump` read the registry and never the
+/// session, so a roster that changed no `ServerFacts` never reached the sync those defaults are
+/// derived in, and the misgrading stood until something unrelated happened to move a fact.
+///
+/// The test drives the real gate, not just the sync: the other pump reasons are quieted first, so
+/// `discovery_needs_pump` answering `true` can only be the roster.
+#[test]
+fn a_home_roster_arriving_late_re_resolves_the_pin_table() {
+    struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
+    impl Drop for Fresh {
+        fn drop(&mut self) {
+            crate::plex::reset_servers_for_test();
+        }
+    }
+    let _g = Fresh(crate::testlock::serial());
+    let t = TempPins::new("late-roster");
+    t.watching("u-managed");
+    crate::plex::reset_servers_for_test();
+
+    // Both grants arrive `owned:false` — the family server included, which is what plex.tv tells
+    // a managed profile. `home:false` on both, because this account is a Plex Home admin's and
+    // that flag was measured `false` on every grant it has; `ownerId` is the whole signal.
+    let house = crate::plex::register_for_test("mac-mini", "127.0.0.1", 41001, "tok", "cid");
+    let friend = crate::plex::register_for_test("nas-home", "127.0.0.1", 41002, "tok", "cid");
+    let grant = |owner_id| crate::plex::GrantEvidence { owned: false, home: false, owner_id };
+    crate::plex::describe_server(house, "Mac mini", "", grant(ADMIN_ID));
+    crate::plex::describe_server(friend, "nas-home", "friend", grant(ADMIN_ID + 1));
+
+    let mut browse = TestBrowse::default();
+    browse.sync_roster();
+    browse.append_sections(
+        0,
+        vec![
+            (1, "Movies".into(), SecKind::Movie),
+            (2, "TV Shows".into(), SecKind::Show),
+        ],
+    );
+    browse.append_sections(1, vec![(1, "Film Club".into(), SecKind::Movie)]);
+
+    // Before the roster: the house cannot be told from the share, so nothing is the household's,
+    // no type is the household's either, and EVERY library defaults On — the friend's films on
+    // the family's front door, unasked.
+    assert_eq!(
+        (browse.pinned(0), browse.pinned(1), browse.pinned(2)),
+        (true, true, true),
+        "an un-enumerable house grades every grant as an outsider's"
+    );
+
+    // The viewer answers ONE row: the household's TV shows, off. Everything else is a default.
+    assert!(browse.state.toggle_pin(1));
+
+    // Quiet every other reason the discovery pump has to run, so the gate below can only be
+    // answering the roster.
+    for index in 0..2 {
+        let source = browse.state.source_mut(index).expect("a synced source");
+        source.sections_done = true;
+        source.counts_done = true;
+    }
+    assert!(
+        !browse.state.discovery_needs_pump(&browse.adapter),
+        "nothing is owed before the roster lands, or this proves nothing"
+    );
+
+    // `/api/v2/home/users` lands: the admin and the managed user, and no zeroes.
+    let member = |id| crate::plex::session::HomeUserRef { id, ..Default::default() };
+    assert!(crate::plex::session::update(|session| {
+        let mut next = session.clone();
+        next.home_users = vec![member(ADMIN_ID), member(ADMIN_ID + 7)];
+        Some(next)
+    }));
+    assert_eq!(
+        crate::plex::session::peek().household_ids(),
+        vec![ADMIN_ID, ADMIN_ID + 7],
+        "the roster enumerates the house, and carries no zero and no watching-user id"
+    );
+
+    assert!(
+        browse.state.discovery_needs_pump(&browse.adapter),
+        "the roster arrival is itself a reason to sync — the trigger this lane added"
+    );
+    browse.sync_roster();
+
+    assert_eq!(
+        (browse.pinned(0), browse.pinned(1), browse.pinned(2)),
+        (true, false, false),
+        "the house's films stay On, the friend's films fall to Off — and the one ANSWER stands"
+    );
+    assert!(
+        browse.state.sources()[0].household && !browse.state.sources()[1].household,
+        "the sources themselves were reclassified, which is what moved the pins"
+    );
+
+    // A recorded answer is not a default and is not corrected: the household's TV shows would
+    // default On now, and they are Off because somebody said so.
+    let session = crate::plex::session::peek();
+    let record = session
+        .pins_for(&crate::plex::session::current_profile_key())
+        .expect("the answer reached the disk");
+    assert_eq!(record.answer("mac-mini", 2), Some(false), "the decision");
+    assert_eq!(
+        (record.answer("mac-mini", 1), record.answer("nas-home", 1)),
+        (None, None),
+        "…and the rows nobody moved were never written down, which is what let them be corrected"
+    );
+
+    // Idempotent: a second sync against the same roster is not a change.
+    assert!(
+        !browse.state.discovery_needs_pump(&browse.adapter),
+        "the correction settles rather than re-firing every frame"
+    );
 }

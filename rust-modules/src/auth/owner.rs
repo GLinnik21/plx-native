@@ -685,7 +685,11 @@ pub(super) fn write_tier(w: &mut Canon, tier: Option<crate::plex::probe::Locatio
 pub(super) fn write_sources(w: &mut Canon, sources: &[crate::plex::session::SourceRef]) {
     w.seq(sources.len());
     for s in sources {
+        // The carried household EVIDENCE joins the canonical digest beside raw `owned`. It has to:
+        // a state whose only difference is that plex.tv now names the grant's owner is a different
+        // state, and a digest blind to it would grade the correction as no change at all.
         w.str(&s.machine_id).str(&s.name).str(&s.shared_by).bool(s.owned)
+            .bool(s.home).u64(s.owner_id as u64)
             .str(&s.address).u64(s.port as u64).str(&s.token).str(&s.origin_url);
         write_tier(w, s.tier);
     }
@@ -1784,6 +1788,7 @@ impl SessionMachine {
                         source: crate::plex::session::SourceRef {
                             machine_id: candidate.machine_id.clone(), token: candidate.token.clone(),
                             name: candidate.name.clone(), shared_by: candidate.credit.clone(), owned: candidate.owned,
+                            home: candidate.home, owner_id: candidate.owner_id,
                             origin_url: candidate.origin.base(), address: candidate.address.clone(),
                             port: i64::from(candidate.origin.port()), tier: Some(candidate.location),
                             extensions: Default::default(),

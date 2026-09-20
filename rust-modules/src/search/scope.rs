@@ -17,7 +17,24 @@ pub(crate) struct ScopeSource {
     pub(crate) name: String,
     pub(crate) libraries: Vec<String>,
     pub(crate) handle: String,
+    /// plex.tv's raw `owned` — this ACCOUNT owns the server. Kept raw; the household question is
+    /// [`ScopeSource::household`]'s.
     pub(crate) owned: bool,
+    /// plex.tv's `home` on the grant, carried from the registry's `ServerFacts`. Evidence for
+    /// [`household`](Self::household).
+    pub(crate) home: bool,
+    /// plex.tv's `ownerId` on the grant, carried from the registry's `ServerFacts`. Evidence for
+    /// [`household`](Self::household).
+    pub(crate) owner_id: i64,
+    /// **Is this our household's server?** — [`crate::plex::is_household`] on the evidence above
+    /// plus the Plex Home roster, cached at publication like every other fact here.
+    ///
+    /// Search is grant-scoped and does not filter on it (`plex/CLAUDE.md`: a browsing preference
+    /// is not an authorization boundary); it is carried so the scope line can stop calling a
+    /// managed profile's own household server somebody else's. That is exactly what reads it:
+    /// `screens/search/render.rs`'s source line names a household server like an owned one and
+    /// counts only genuine shares as shares. Nothing filters on it, and nothing should.
+    pub(crate) household: bool,
     pub(crate) live: bool,
 }
 
@@ -212,19 +229,42 @@ impl ScopeCache {
     }
 }
 
+/// One published slot's grant evidence: the registry's when it has described the slot, else the
+/// registration-order fallback that `owned` alone already used. An undescribed slot carries no
+/// third-party evidence, which is not a guess — the only registration that does not describe is
+/// the session path, whose server is the account's own.
+fn grant_of(
+    facts: Option<&'static crate::plex::ServerFacts>,
+    registered_first: bool,
+) -> crate::plex::GrantEvidence {
+    match facts {
+        Some(f) => crate::plex::GrantEvidence {
+            owned: f.owned,
+            home: f.home,
+            owner_id: f.owner_id,
+        },
+        None => crate::plex::GrantEvidence { owned: registered_first, home: false, owner_id: 0 },
+    }
+}
+
 fn build() -> SourceScopeSnapshot {
     let first = crate::plex::server_ids().next();
+    let household = crate::plex::session::peek().household_ids();
     let sources = crate::plex::server_ids()
         .map(|sid| {
             let facts = crate::plex::server_facts(sid);
+            // Registration order is the only honest ownership answer before the roster has
+            // described a slot; the session server is registered first.
+            let grant = grant_of(facts, Some(sid) == first);
             ScopeSource {
                 sid,
                 name: facts.map(|f| f.name.clone()).unwrap_or_default(),
                 libraries: Vec::new(),
                 handle: facts.map(|f| f.handle.clone()).unwrap_or_default(),
-                // Registration order is the only honest ownership answer before the roster has
-                // described a slot; the session server is registered first.
-                owned: facts.map(|f| f.owned).unwrap_or(Some(sid) == first),
+                owned: grant.owned,
+                home: grant.home,
+                owner_id: grant.owner_id,
+                household: crate::plex::is_household(grant.grant(), &household),
                 // A browse source that has not been adopted has not failed yet.
                 live: true,
             }
@@ -239,14 +279,19 @@ fn build_with_directory(
     directory: crate::stores::browse::DirectoryView<'_>,
 ) -> SourceScopeSnapshot {
     let first = crate::plex::server_ids().next();
+    let household = crate::plex::session::peek().household_ids();
     let sources = crate::plex::server_ids().map(|sid| {
         let facts = crate::plex::server_facts(sid);
+        let grant = grant_of(facts, Some(sid) == first);
         ScopeSource {
             sid,
             name: facts.map(|f| f.name.clone()).unwrap_or_default(),
             libraries: directory.library_titles(sid).map(str::to_owned).collect(),
             handle: facts.map(|f| f.handle.clone()).unwrap_or_default(),
-            owned: facts.map(|f| f.owned).unwrap_or(Some(sid) == first),
+            owned: grant.owned,
+            home: grant.home,
+            owner_id: grant.owner_id,
+            household: crate::plex::is_household(grant.grant(), &household),
             live: directory.sources().iter().find(|source| source.0 == sid)
                 .map(|source| source.1.reachable()).unwrap_or(true),
         }
@@ -257,6 +302,53 @@ fn build_with_directory(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Search carries the household verdict too, and still does not filter on it.**
+    ///
+    /// The scope publication is where the Search screen's source line comes from, and it read the
+    /// same raw `owned` every other surface did — so a Plex Home managed profile's own household
+    /// server sat in its own scope as an outsider's. The evidence is carried through the registry
+    /// facts and graded once at publication.
+    ///
+    /// Search stays GRANT-scoped by design (`plex/CLAUDE.md`: a browsing preference is not an
+    /// authorization boundary), so `household` changes only what the scope line SAYS — see
+    /// `screens/search/render.rs`. This is the publication-side test that proves the value is
+    /// carried and graded right before any of that reads it.
+    #[test]
+    fn a_published_scope_tells_a_household_server_from_a_share() {
+        const ADMIN_ID: i64 = 111_111;
+        const FRIEND_ID: i64 = 987_654;
+        let _serial = crate::testlock::serial();
+        let _reset = Reset;
+        let _session = crate::plex::session::TempSession::new("scope-household");
+        crate::plex::session::save(&crate::plex::session::Session {
+            client_id: "cid-test".into(),
+            home_users: vec![crate::plex::session::HomeUserRef {
+                id: ADMIN_ID,
+                uuid: "u-admin".into(),
+                admin: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        crate::plex::reset_servers_for_test();
+        let house = crate::plex::register_for_test("scope-house", "127.0.0.1", 1, "t", "scope");
+        let share = crate::plex::register_for_test("scope-share", "127.0.0.1", 2, "t", "scope");
+        crate::plex::describe_server(house, "Mac mini", "", crate::plex::GrantEvidence {
+            owned: false, home: true, owner_id: ADMIN_ID,
+        });
+        crate::plex::describe_server(share, "nas-home", "friend", crate::plex::GrantEvidence {
+            owned: false, home: false, owner_id: FRIEND_ID,
+        });
+
+        let scope = ScopeCache::default().snapshot();
+
+        assert_eq!(
+            scope.sources().iter().map(|s| (s.owned, s.household)).collect::<Vec<_>>(),
+            [(false, true), (false, false)],
+            "raw `owned` stays the wire fact; the verdict is the derived one",
+        );
+    }
 
     #[test]
     fn source_scope_uses_the_supplied_directory_instead_of_browse_globals() {
@@ -422,7 +514,7 @@ mod tests {
         assert!(!old.sources()[1].owned);
         assert!(old.sources()[0].live && old.sources()[1].live);
 
-        crate::plex::describe_server(share, "renamed-share", "new-friend", false);
+        crate::plex::describe_server(share, "renamed-share", "new-friend", crate::plex::GrantEvidence::outside());
         stores.browse.borrow_mut().append_section_for_test(
             1, 9, "Archive", crate::browse::SecKind::Movie);
         stores.capture_browse(&mut directory);
@@ -494,7 +586,7 @@ mod tests {
         let before = read_key_with_directory(directory.view());
         assert!(old.sources().iter().all(|source| source.live));
 
-        crate::plex::describe_server(share, "renamed-share", "new-friend", false);
+        crate::plex::describe_server(share, "renamed-share", "new-friend", crate::plex::GrantEvidence::outside());
         let described = cache.snapshot_with_directory(directory.view());
         let after = read_key_with_directory(directory.view());
         assert!(!old.same_publication(&described), "a described source is a new sentence");

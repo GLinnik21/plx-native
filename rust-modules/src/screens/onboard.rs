@@ -6,7 +6,10 @@
 //! differs). The type is generic over the bundle's host, which is what lets one impl serve both.
 //!
 //! The draft model is unchanged: every toggle edits `draft`, nothing is written until the one
-//! action commits `BrowseCmd::ApplyPins`, and BACK/Cancel is a pure discard.
+//! action commits `BrowseCmd::ApplyPins`, and BACK/Cancel is a pure discard. What that command
+//! carries is the rows this session ANSWERED ([`OnboardScreen::answered`]) rather than the rows it
+//! showed — the store cannot recover that from the values alone, and used to lose an answer the
+//! world had caught up with.
 
 use std::borrow::Cow;
 use std::ffi::CStr;
@@ -158,7 +161,7 @@ impl OnboardScreen {
             acts: Vec::new(),
             table_gen: u32::MAX,
             table_epoch: directory.epoch().unwrap_or(0),
-            entry_pins: if settings { base.clone() } else { Vec::new() },
+            entry_pins: base.clone(),
             draft: base,
             phase_ms: 0.0,
             phase_clock: crate::ui::motion::Phase::default(),
@@ -187,16 +190,34 @@ impl OnboardScreen {
         }
     }
 
+    /// **The rows this editing session ANSWERED** — the provenance the store used to have to
+    /// guess at, and the payload of the one `BrowseCmd::ApplyPins` [`commit`](Self::commit) sends.
+    ///
+    /// `entry_pins` is what each row read when this editor opened, kept in step with live drift
+    /// for every row the draft still agrees with (`draft_rows`), so `draft != entry_pins` is
+    /// exactly "the viewer moved this one". Everything else is a value nobody chose and must stay
+    /// unrecorded, to go on re-deriving from its default (`plex::pins::answers`).
+    ///
+    /// **This is the half a store cannot reconstruct.** Browse used to infer the same thing by
+    /// comparing the whole visible draft against the live pins — which reads a row the viewer
+    /// switched Off as untouched the moment a roster correction moves the live pin to Off as
+    /// well, and drops the answer. Only the screen holding the draft knows which rows were
+    /// pressed, so only the screen can say.
+    fn answered(&self) -> Vec<(usize, bool)> {
+        self.draft
+            .iter()
+            .filter(|(section, now)| {
+                self.entry_pins
+                    .iter()
+                    .find(|(s, _)| s == section)
+                    .is_some_and(|(_, was)| was != now)
+            })
+            .copied()
+            .collect()
+    }
+
     fn dirty(&self) -> bool {
-        if !self.settings {
-            return true;
-        }
-        self.entry_pins.iter().any(|(section, was)| {
-            self.draft
-                .iter()
-                .find(|(s, _)| s == section)
-                .is_some_and(|(_, now)| now != was)
-        })
+        !self.settings || !self.answered().is_empty()
     }
 
     /// The band holds a control unless this is a pristine Settings editor. Reads the CACHED
@@ -234,22 +255,34 @@ impl OnboardScreen {
         self.table_epoch = epoch;
         let fresh = snapshot_pins(directory);
         self.draft = fresh.clone();
-        if self.settings {
-            self.entry_pins = fresh;
-        }
+        // Both mounts, for `draft_rows`' reason: `entry_pins` is the "has the viewer touched this
+        // row" baseline, and a first-run editor needs one as much as the Settings editor does.
+        self.entry_pins = fresh;
     }
 
+    /// The retained directory's rows with this editor's draft laid over them.
+    ///
+    /// **A row the viewer has not touched follows the live pin; a row they have does not.**
+    /// `entry_pins` is what each row was when this editor opened, so `entry == draft` is exactly
+    /// "untouched" and the value underneath it may still be re-derived; once they differ the draft
+    /// is an answer and nothing may move it but another press.
+    ///
+    /// It was gated on `self.settings` and is not any more, and the ungating is the point. A
+    /// FIRST-RUN draft opens on whatever the defaults were at that instant, and for a Plex Home
+    /// managed profile that instant is routinely *before* `/api/v2/home/users` lands — so the
+    /// draft held a table computed from "nothing here is ours", the roster arrived and corrected
+    /// the live pins underneath it, and the commit then wrote the stale values back as though the
+    /// viewer had chosen every one of them. Untouched is untouched on both mounts; the only thing
+    /// `settings` still decides is whether *Done* is offered ([`Self::dirty`]).
     fn draft_rows(&mut self, directory: DirectoryView<'_>) -> Vec<SrcRow> {
         let mut rows: Vec<_> = directory.sections().iter().map(|section| section.row.clone()).collect();
         for r in &rows {
             match self.draft.iter().position(|(s, _)| *s == r.section) {
                 None => {
                     self.draft.push((r.section, r.pinned));
-                    if self.settings {
-                        self.entry_pins.push((r.section, r.pinned));
-                    }
+                    self.entry_pins.push((r.section, r.pinned));
                 }
-                Some(di) if self.settings => {
+                Some(di) => {
                     if let Some(ei) = self.entry_pins.iter().position(|(s, _)| *s == r.section) {
                         if self.entry_pins[ei].1 == self.draft[di].1 && self.entry_pins[ei].1 != r.pinned {
                             self.entry_pins[ei].1 = r.pinned;
@@ -257,7 +290,6 @@ impl OnboardScreen {
                         }
                     }
                 }
-                Some(_) => {}
             }
         }
         let last = self.draft.iter().filter(|(_, on)| *on).count() == 1;
@@ -319,9 +351,11 @@ impl OnboardScreen {
         // libraries exist, so that half of the sentence cannot go stale under a queued command.
         let total = directory.section_count();
         let on = self.draft.iter().filter(|(_, pinned)| *pinned).count();
+        // The ANSWERED rows, not the visible ones ([`Self::answered`]): an empty batch is a real
+        // commit and says so — the question was put and the viewer left every default alone.
         fx.push(Fx::App(AppFx::Store(
             StoreId::Browse,
-            StoreCmd::Browse(BrowseCmd::ApplyPins(self.draft.clone())),
+            StoreCmd::Browse(BrowseCmd::ApplyPins(self.answered())),
         )));
         crate::log(&format!("onboard: Home selection recorded — {on} of {total} libraries on"));
         self.leave(fx);
@@ -1008,10 +1042,11 @@ mod tests {
         assert!(
             effs.iter().any(|st| matches!(
                 &st.fx,
-                Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(edits))))
-                    if edits == &vec![(0, false), (1, true)]
+                Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(answers))))
+                    if answers == &vec![(0, false)]
             )),
-            "commit emits the toggled draft as an ApplyPins store command"
+            "commit emits the ANSWERED row as an ApplyPins store command — section 1 was never \
+             touched, so it is not this profile's answer and must keep re-deriving"
         );
         assert!(
             browse.pinned(0),
@@ -1050,11 +1085,11 @@ mod tests {
         assert!(
             effs.iter().any(|st| matches!(
                 &st.fx,
-                Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(edits))))
-                    if edits == &vec![(0, false), (1, true)]
+                Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(answers))))
+                    if answers == &vec![(0, false)]
             )),
-            "Done emits the toggled draft as an ApplyPins store command rather than applying it \
-             itself"
+            "Done emits the ANSWERED row as an ApplyPins store command rather than applying it \
+             itself, and the untouched row is not one of this profile's answers"
         );
         assert!(
             browse.pinned(0),
@@ -1127,10 +1162,13 @@ mod tests {
         assert!(
             effs.iter().any(|st| matches!(
                 &st.fx,
-                Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(edits))))
-                    if edits == &vec![(0, true), (1, true), (2, true)]
+                Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(answers))))
+                    if answers.is_empty()
             )),
-            "the queued command carries the FRESH table's own state, never the pre-reset decision"
+            "the queued command carries no answer at all — the pre-reset decision was discarded \
+             with the indices it was made against, and nothing has been touched since. It is \
+             still a commit: `asked` is recorded, and the fresh table's rows go on re-deriving \
+             their own defaults rather than being frozen as though somebody had chosen them"
         );
     }
 
@@ -1529,6 +1567,44 @@ mod tests {
                 .pins_for(&crate::plex::session::current_profile_key())
                 .is_none(),
             "…and must record nothing — nothing here is an answer the user gave"
+        );
+    }
+
+    /// **Codex review finding 1 (2026-09-20).** The COMMIT half of the drift race the test above
+    /// takes through Cancel, and the reason `BrowseCmd::ApplyPins` carries the rows ANSWERED
+    /// rather than the rows shown.
+    ///
+    /// The viewer toggles a row; the live pin then drifts, on its own, onto the value they chose —
+    /// `resolve_pins` re-deriving a still-unrecorded default as the Plex Home roster lands is
+    /// exactly this. Browse used to reconstruct "the viewer touched this" by comparing the
+    /// command's rows against the live pins, so a row the world had agreed with arrived looking
+    /// untouched and was left unrecorded: it goes on re-deriving, and comes back On the next time
+    /// the default moves. This screen has the provenance (`entry_pins` vs `draft`, the same
+    /// comparison `dirty` is built on) and now sends it.
+    #[test]
+    fn a_commit_carries_a_toggled_row_the_live_pin_has_caught_up_with() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::new("commit-after-drift");
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true, true]);
+        let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
+        s.toggle_row(0, browse.capture()); // the answer: section 0 Off
+
+        // …and now the live pin arrives at the same value by itself.
+        browse.set_pinned(0, false);
+        s.rebuild(true, browse.capture());
+
+        let effs = commit_now(&mut s, browse.capture());
+        let carried = effs.iter().find_map(|st| match &st.fx {
+            Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(rows)))) => {
+                Some(rows.clone())
+            }
+            _ => None,
+        });
+        assert_eq!(
+            carried,
+            Some(vec![(0, false)]),
+            "the commit carries the answered row — and only it — however the live pin has moved"
         );
     }
 

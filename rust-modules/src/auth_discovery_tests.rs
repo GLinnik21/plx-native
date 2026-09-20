@@ -1894,3 +1894,31 @@ fn a_refused_token_is_reported_as_authorization_not_as_silence() {
         assert!(message.contains("connection"));
     }
 }
+
+/// **Discovery writes the grant evidence down beside the credit.** The sign-in ingest is one of
+/// three that produce a `SourceRef` (`resolve_roster_using`, `source_from_reach`,
+/// `refreshed_sources`), and a session whose roster carried only `owned` could not answer "is
+/// this our household's server" on any later boot — the credit is an empty string for the
+/// household's own server and for a share plex.tv never named alike.
+///
+/// The verdict here is the ordinary single-account one (we own ours, the share is outside), which
+/// is the point: the evidence is plex.tv's, carried verbatim, and it is a later roster that
+/// re-grades it rather than this ingest.
+#[test]
+fn a_sign_in_roster_carries_plex_tvs_household_evidence_verbatim() {
+    let d = Dialled::new(vec![
+        ("192.168.0.10", 200, identity_json("aaaa1111")),
+        ("203.0.113.9", 200, identity_json("bbbb2222")),
+    ]);
+    let Resolved::Reached(roster) =
+        resolve_roster(&a_two_server_account(), &[], CredentialPolicy::AllowPlaintext, &|o| d.dial(o))
+    else {
+        panic!("both servers answer");
+    };
+
+    assert_eq!(
+        roster.iter().map(|s| (s.machine_id.as_str(), s.owned, s.home, s.owner_id)).collect::<Vec<_>>(),
+        [("aaaa1111", true, false, 0), ("bbbb2222", false, false, 987_654)],
+        "`ownerId:null` is 0 and never matches a household member; the share names its owner",
+    );
+}

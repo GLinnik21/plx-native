@@ -62,7 +62,9 @@ impl Observation {
                     RegistryProgress::Activate { epoch, expected, candidate } => {
                         w.u8(0).u64(*epoch); w.option(expected.as_ref(), write_identity);
                         w.str(&candidate.machine_id).str(&candidate.token).str(&candidate.name)
-                            .str(&candidate.credit).bool(candidate.owned).str(&candidate.origin.base())
+                            .str(&candidate.credit).bool(candidate.owned)
+                            .bool(candidate.home).u64(candidate.owner_id as u64)
+                            .str(&candidate.origin.base())
                             .str(&candidate.address);
                         owner::write_tier(w, Some(candidate.location)); w.bool(candidate.ipv6);
                     }

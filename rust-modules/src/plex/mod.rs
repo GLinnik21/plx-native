@@ -60,7 +60,7 @@ pub(crate) mod origin;
 pub(crate) mod probe;
 
 // Which libraries feed Home, PER PROFILE. Pure policy over the section table and one profile's
-// persisted answer — no store, no screen — so the ownership default, the recorded answer and the
+// persisted answer — no store, no screen — so the household default, the recorded answer and the
 // never-empty floor are graded on the host rather than observed on a television.
 pub(crate) mod pins;
 
@@ -92,7 +92,8 @@ pub use servers::{
     describe_name as describe_server_name, facts as server_facts, ids as server_ids, install,
     facts_gen as server_facts_gen, is_household, owner_credit,
     probe_result as server_probe_result, publish_probe_result, register,
-    roster_gen as server_roster_gen, same_item, set_current, Grant, ServerFacts,
+    roster_gen as server_roster_gen, same_item, set_current, Grant, GrantEvidence,
+    ServerFacts,
     ServerId, MAX_SERVERS,
 };
 // Sign-out. `pub(crate)` like the function itself: retiring the whole table is `auth::sign_out`'s
