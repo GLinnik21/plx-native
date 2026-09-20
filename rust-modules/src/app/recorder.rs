@@ -2017,7 +2017,16 @@ mod tests {
         // household a server belongs to is no longer byte-identical to one that does not. The
         // predecessor 0x7609_c82f_0914_2f33 is kept in this comment for the same reason every
         // value above it is: it is what the recordings made before the change were graded under.
-        assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0x6c07_e505_2de6_63b8);
+        //
+        // **The unsaved-login answer moves it to 0xb2a6_c39d_095e_c1b6.** `ControlledHomeInitV3{…
+        // session:SessionInitV2 …}` became `ControlledHomeInitV4{… session:SessionInitV3 …}`:
+        // `SessionInit` gained `persistence_warning_answered:bool`, folded into the digest by
+        // `w.bool(self.persistence_warning_answered)`, so an authorization that has already
+        // answered its one unsaved-login (AUTH-03) warning is no longer byte-identical to one that
+        // has not. The predecessor 0x6c07_e505_2de6_63b8 is kept in this comment for the same
+        // reason every value above it is: it is what the recordings made before the change were
+        // graded under.
+        assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0xb2a6_c39d_095e_c1b6);
     }
 
     /// The gate at the REAL hubs landing site, through the recording the driver loads: a result

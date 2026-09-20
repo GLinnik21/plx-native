@@ -122,7 +122,17 @@ pub(crate) fn validate_admission(value: &serde_json::Value, client: u32) -> Resu
 /// `SessionInitV2`, and hence the `ControlledHomeInitV3` that carries it. Without the bump a
 /// recording made before the change would replay against a session that now distinguishes a Plex
 /// Home managed profile's own household server from a stranger's share, and grade it `SAME`.
-pub(crate) const SHAPE: &str = "ControlledHomeInitV3{version:u32,session:SessionInitV2,consent:Consent,home:HubsInitialV1,clock_start:u32,entropy:Captured(Option<[u8;16]>)|Seeded(u32),primary_client:u32,automated:bool,settings:Option<root|privacy|legal>,triggers:[str]};HomeEffectsV1{from:MachineId,kind:Fx,payload:complete_supported_payload};OwnedInputV1{ms:u32,dt_us:u32,source:Source,body:InputKind};DiscoveryResultV1{epoch:u32,source:u32,sid:u16,client:u32,token_gen:u32,name:str,what:Sections|Counts}";
+///
+/// **V4 / `SessionInitV3` (the unsaved-login answer).** `SessionInit` gained
+/// `persistence_warning_answered:bool`, folded into the digest right after `held_handoff` by
+/// `w.bool(self.persistence_warning_answered)` — whether THIS authorization has already had its
+/// one unsaved-login (AUTH-03) warning answered, so a later storage failure releases its held
+/// handoff instead of asking again. Same reasoning as V3: the field census moved inside a type
+/// that is spelled here as a NAME, so the term itself has to move too, hence `SessionInitV3` and
+/// the `ControlledHomeInitV4` that carries it. Without the bump a recording made before the
+/// change would replay against a session that now answers the warning once instead of every time,
+/// and grade it `SAME`.
+pub(crate) const SHAPE: &str = "ControlledHomeInitV4{version:u32,session:SessionInitV3,consent:Consent,home:HubsInitialV1,clock_start:u32,entropy:Captured(Option<[u8;16]>)|Seeded(u32),primary_client:u32,automated:bool,settings:Option<root|privacy|legal>,triggers:[str]};HomeEffectsV1{from:MachineId,kind:Fx,payload:complete_supported_payload};OwnedInputV1{ms:u32,dt_us:u32,source:Source,body:InputKind};DiscoveryResultV1{epoch:u32,source:u32,sid:u16,client:u32,token_gen:u32,name:str,what:Sections|Counts}";
 #[cfg(test)]
 pub(crate) const PRE_SETTINGS_SHAPE: &str = "ControlledHomeInitV1{version:u32,session:SessionInit,consent:Consent,home:HubsInitialV1,clock_start:u32,entropy:Captured(Option<[u8;16]>)|Seeded(u32),primary_client:u32,automated:bool,triggers:[str]};HomeEffectsV1{from:MachineId,kind:Fx,payload:complete_supported_payload};OwnedInputV1{ms:u32,dt_us:u32,source:Source,body:InputKind};DiscoveryResultV1{epoch:u32,source:u32,sid:u16,client:u32,token_gen:u32,name:str,what:Sections|Counts}";
 

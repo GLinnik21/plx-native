@@ -589,6 +589,13 @@ pub(crate) struct SessionInit {
     pub persistence_warning: Option<PersistenceWarning>,
     /// A Ready handoff whose fresh write is admitted but not yet released to the owner/UI.
     pub held_handoff: Option<HeldHandoff>,
+    /// Whether THIS authorization has already had one unsaved-login (AUTH-03) warning answered.
+    /// Authorization succeeding and credentials being savable are different conditions: once the
+    /// user has answered for this authorization, a later storage failure (Discovery then Final,
+    /// or a retry) must release its own held handoff rather than raise the same question again.
+    /// Per-authorization, so it is cleared everywhere `persistence_warning`/`held_handoff` reset
+    /// together — a new sign-in must start with a fresh, unanswered question.
+    pub persistence_warning_answered: bool,
     /// The disk identity a fresh credential write replaced at admission, until that write proves
     /// durable. A definite failure restores it: the record never changed, and fencing the next
     /// fresh write on the identity that never landed would refuse every retry this run.
@@ -628,7 +635,8 @@ impl SessionInit {
             code_replaced: false, qr_gen: 0, next_qr: 0, epoch: 1, next_req: 0,
             pending: BTreeMap::new(), pending_commit: None, persistence_purpose: None,
             commit_phase: CommitPhase { admitted: false, durable: false, proves_saved_login: false }, admitted_persistence: None,
-            persistence_warning: None, held_handoff: None, unconfirmed_fresh_prior: None, pending_erase: None, inbox: VecDeque::new(), pump_pending: false,
+            persistence_warning: None, held_handoff: None, persistence_warning_answered: false,
+            unconfirmed_fresh_prior: None, pending_erase: None, inbox: VecDeque::new(), pump_pending: false,
             active_profile: None, profile_scope: ProfileScope(0),
             delete_leftovers: 0, incident: None, incidents_seen: Vec::new(), next_incident: 0,
             link_trouble: false }
@@ -805,6 +813,7 @@ impl LogicalState for SessionInit {
             });
         });
         w.option(self.held_handoff.as_ref(), |w, held| { w.u64(held.epoch).u32(held.req); });
+        w.bool(self.persistence_warning_answered);
         w.option(self.pending_commit.as_ref(), |w, commit| {
             w.u32(commit.req).u64(commit.epoch).u64(commit.arrival).bool(commit.terminal)
                 .bool(commit.writes_credentials);
@@ -1182,11 +1191,20 @@ impl SessionMachine {
             if released { self.release_held_handoff(emit); }
             if superseded || released { self.replace_publication(); }
         } else if admitted.fresh {
-            // The final write's own non-durable completion replaces a Discovery warning still
-            // showing (`Discovery` and `Final` never coexist: an unacknowledged Discovery warning
-            // blocks `take_ready`), so the newer one wins by direct overwrite.
-            self.state.persistence_warning = Some(PersistenceWarning { key: correlation_key, site: admitted.site });
-            self.replace_publication();
+            if self.state.persistence_warning_answered {
+                // This authorization already had its one unsaved-login question answered
+                // (AUTH-03's field bug: a device unwritable on BOTH Discovery and Final used to
+                // ask it twice). Storage failing again must not ask it a second time — release
+                // whatever handoff this completion was holding so entry proceeds regardless.
+                let released = self.state.held_handoff == Some(HeldHandoff { epoch: completion.epoch, req: completion.req });
+                if released { self.release_held_handoff(emit); self.replace_publication(); }
+            } else {
+                // The final write's own non-durable completion replaces a Discovery warning still
+                // showing (`Discovery` and `Final` never coexist: an unacknowledged Discovery warning
+                // blocks `take_ready`), so the newer one wins by direct overwrite.
+                self.state.persistence_warning = Some(PersistenceWarning { key: correlation_key, site: admitted.site });
+                self.replace_publication();
+            }
         }
         true
     }
@@ -1288,12 +1306,16 @@ impl SessionMachine {
             emit(SessionFx::Coordinator(CoordinatorAction::SignInCompleted));
         }
         if delta.activate_profile {
-            if commit.fresh && admit_revision.is_some() {
+            if commit.fresh && admit_revision.is_some() && !self.state.persistence_warning_answered {
                 // The fresh write is admitted but not yet confirmed durable: hold the handoff
                 // rather than announce Ready/publish the profile until a completion (or an
                 // acknowledged warning) releases it — the AUTH-03 gate.
                 self.state.held_handoff = Some(HeldHandoff { epoch: commit.epoch, req: commit.req });
             } else if self.state.persistence_warning.is_none() {
+                // `persistence_warning_answered` true means this authorization already spent its
+                // one Continue: nothing is left to wait for, so a fresh write lands here exactly
+                // like a routine one — publish immediately rather than hold a handoff whose
+                // completion (or loss) would otherwise be the only way out.
                 // 0.6.6 parity (`discovery-warning-not-cleared-on-retry-or-fresh-success`): a
                 // ROUTINE `activate_profile` commit (StartSwitch, resume_stored, …) must not free
                 // a handoff still held behind an unacknowledged warning — that release is
@@ -1340,6 +1362,10 @@ impl SessionMachine {
         emit: &mut impl FnMut(SessionFx)) -> bool {
         if self.state.persistence_warning.map(|warning| warning.key) != Some(key) { return false; }
         self.state.persistence_warning = None;
+        // This authorization's unsaved-login question is answered now: storage may never gate
+        // entry a second time for it (AUTH-03's field bug). A later failure — Discovery then
+        // Final, or a retry — releases the handoff itself instead of asking again.
+        self.state.persistence_warning_answered = true;
         if self.state.held_handoff.is_some() {
             self.release_held_handoff(emit);
         }
@@ -1619,6 +1645,7 @@ impl SessionMachine {
         self.state.authorized_in_flow = false;
         self.state.persistence_warning = None;
         self.state.held_handoff = None;
+        self.state.persistence_warning_answered = false;
         self.state.code_replaced = false;
         emit(SessionFx::BackReply { to: reply, resumed: true });
         self.replace_publication();
@@ -1643,6 +1670,7 @@ impl SessionMachine {
         self.state.authorized_in_flow = false;
         self.state.persistence_warning = None;
         self.state.held_handoff = None;
+        self.state.persistence_warning_answered = false;
         self.state.signin_active = false;
         self.state.apply_pending = false;
         self.state.code_replaced = false;
@@ -1958,6 +1986,7 @@ impl SessionMachine {
             // clears both, the same way the fresh-attempt branch below already does.
             self.state.persistence_warning = None;
             self.state.held_handoff = None;
+            self.state.persistence_warning_answered = false;
         } else {
             self.state.persisted = self.state.committed_credentials.merge_into(&self.state.persisted);
             self.state.phase = Phase::Creating;
@@ -1970,6 +1999,7 @@ impl SessionMachine {
             self.state.authorized_in_flow = false;
             self.state.persistence_warning = None;
             self.state.held_handoff = None;
+            self.state.persistence_warning_answered = false;
             self.state.apply_pending = false;
             self.state.code_replaced = false;
             self.state.qr_gen = 0;
@@ -2005,6 +2035,7 @@ impl SessionMachine {
         self.state.phase = Phase::Error;
         self.state.persistence_warning = None;
         self.state.held_handoff = None;
+        self.state.persistence_warning_answered = false;
         self.state.link_trouble = false;
         // A token plex.tv refused is not an authorization in flight any more: without this, the
         // retry decision (`retry_kind`) kept offering a discovery-only pass that presents the same
@@ -2635,6 +2666,132 @@ mod tests {
         assert!(owner.state.held_handoff.is_none());
     }
 
+    // Field regression: an unrooted webOS 4.4.3 device unwritable on BOTH the Discovery and
+    // Final layers used to demand two separate "Couldn't save your sign-in" acknowledgements.
+    // One Continue must suffice for the whole authorization.
+    #[test]
+    fn one_continue_enters_when_discovery_and_final_storage_are_unavailable() {
+        use crate::plex::session::async_persistence::{
+            CompletionOutcome, Failure, PersistenceCompletion,
+        };
+        let mut owner = SessionMachine::from_init(discovering_after_authorization());
+        let req = owner.state.next_req;
+        let epoch = owner.state.epoch;
+        let signed_in = qr_event(&owner, req, 1, super::super::LoginProgress::SignedIn {
+            epoch, server: local_server(), sources: Vec::new(),
+            users: vec![UserTile { title: "Synthetic user".into(), ..Default::default() }],
+        }, true);
+        step(&mut owner, SessionEvent::Result(signed_in));
+        step(&mut owner, SessionEvent::Commit(CommitReply { req, epoch, arrival: 1,
+            admission: CommitAdmission::Admitted {
+                revision: 1, purpose: PersistencePurpose::Discovery,
+            } }));
+        let failed = CompletionOutcome::Failed(Failure::Storage(
+            crate::storage::StoreError::HelperUnavailable));
+        step(&mut owner, SessionEvent::Persistence(PersistenceCompletion {
+            req, epoch, arrival: 1, revision: 1,
+            purpose: PersistencePurpose::Discovery, outcome: failed,
+        }));
+        let discovery_warning = owner.publication().persistence_warning.unwrap();
+        assert_eq!(discovery_warning.site, PersistenceWarningSite::Discovery);
+        assert!(owner.state.held_handoff.is_none());
+        step(&mut owner, SessionEvent::Command(Command::AcknowledgePersistenceWarning {
+            key: discovery_warning.key,
+        }));
+        assert!(owner.needs_ready_commit());
+        let effects = step(&mut owner, SessionEvent::Command(Command::TakeReady));
+        let final_req = effects.iter().find_map(|fx| match fx {
+            SessionFx::Commit { req, plan, .. }
+                if plan.purpose == PersistencePurpose::Final => Some(*req),
+            _ => None,
+        }).expect("accepted Continue must reach the final commit");
+        // The authorization already answered its one Continue, so the Final commit's own reply
+        // must publish immediately rather than hold a handoff behind a completion that may never
+        // arrive — see `one_continue_survives_a_lost_final_completion` for that failure mode alone.
+        let commit_effects = step(&mut owner, SessionEvent::Commit(CommitReply {
+            req: final_req, epoch, arrival: 0,
+            admission: CommitAdmission::Admitted {
+                revision: 2, purpose: PersistencePurpose::Final,
+            },
+        }));
+        assert!(owner.state.held_handoff.is_none(),
+            "an already-answered authorization must not hold a handoff on the Final commit");
+        let effects = step(&mut owner, SessionEvent::Persistence(PersistenceCompletion {
+            req: final_req, epoch, arrival: 0, revision: 2,
+            purpose: PersistencePurpose::Final, outcome: failed,
+        }));
+        assert!(!effects.iter().any(|fx| matches!(fx, SessionFx::Ready { .. })),
+            "Ready already fired at the commit reply; a later completion must not repeat it");
+        let entered_after_one_continue = commit_effects.iter().chain(effects.iter())
+            .any(|fx| matches!(fx, SessionFx::Ready { .. }));
+        let second_warning = owner.publication().persistence_warning;
+        // Distinguish the duplicate-warning trap from an infinite owner-level dead end.
+        if let Some(warning) = second_warning {
+            assert_eq!(warning.site, PersistenceWarningSite::Final);
+            assert_ne!(warning.key, discovery_warning.key);
+            let effects = step(&mut owner, SessionEvent::Command(
+                Command::AcknowledgePersistenceWarning { key: warning.key }));
+            assert_eq!(effects.iter().filter(|fx| matches!(fx, SessionFx::Ready { .. })).count(), 1);
+        }
+        assert!(entered_after_one_continue && second_warning.is_none(),
+            "one Continue must enter the app without asking the same unsaved-login question again");
+    }
+
+    // Field regression, the OTHER half of the fix above: holding the Final handoff until its own
+    // completion arrives means a completion that is lost (worker died, channel dropped, app
+    // backgrounded mid-write) strands an already-answered authorization forever — no warning to
+    // acknowledge (there is none) and no handoff ever released. Once the one Continue is spent,
+    // the Final commit's own reply is where entry must happen; nothing downstream may be load-
+    // bearing for it.
+    #[test]
+    fn one_continue_survives_a_lost_final_completion() {
+        use crate::plex::session::async_persistence::{
+            CompletionOutcome, Failure, PersistenceCompletion,
+        };
+        let mut owner = SessionMachine::from_init(discovering_after_authorization());
+        let req = owner.state.next_req;
+        let epoch = owner.state.epoch;
+        let signed_in = qr_event(&owner, req, 1, super::super::LoginProgress::SignedIn {
+            epoch, server: local_server(), sources: Vec::new(),
+            users: vec![UserTile { title: "Synthetic user".into(), ..Default::default() }],
+        }, true);
+        step(&mut owner, SessionEvent::Result(signed_in));
+        step(&mut owner, SessionEvent::Commit(CommitReply { req, epoch, arrival: 1,
+            admission: CommitAdmission::Admitted {
+                revision: 1, purpose: PersistencePurpose::Discovery,
+            } }));
+        let failed = CompletionOutcome::Failed(Failure::Storage(
+            crate::storage::StoreError::HelperUnavailable));
+        step(&mut owner, SessionEvent::Persistence(PersistenceCompletion {
+            req, epoch, arrival: 1, revision: 1,
+            purpose: PersistencePurpose::Discovery, outcome: failed,
+        }));
+        let discovery_warning = owner.publication().persistence_warning.unwrap();
+        step(&mut owner, SessionEvent::Command(Command::AcknowledgePersistenceWarning {
+            key: discovery_warning.key,
+        }));
+        assert!(owner.state.persistence_warning_answered,
+            "acknowledging must record that this authorization already answered");
+        let effects = step(&mut owner, SessionEvent::Command(Command::TakeReady));
+        let final_req = effects.iter().find_map(|fx| match fx {
+            SessionFx::Commit { req, plan, .. }
+                if plan.purpose == PersistencePurpose::Final => Some(*req),
+            _ => None,
+        }).expect("accepted Continue must reach the final commit");
+        // No `SessionEvent::Persistence` follows this reply at all — the completion is LOST.
+        let effects = step(&mut owner, SessionEvent::Commit(CommitReply {
+            req: final_req, epoch, arrival: 0,
+            admission: CommitAdmission::Admitted {
+                revision: 2, purpose: PersistencePurpose::Final,
+            },
+        }));
+        assert!(effects.iter().any(|fx| matches!(fx, SessionFx::Ready { .. })),
+            "an already-answered authorization must enter on the Final commit reply itself, \
+             not wait on a completion that may never arrive");
+        assert!(owner.state.held_handoff.is_none(),
+            "nothing may still be held once Ready has already been announced");
+    }
+
     /// AUTH-04. Port of 0.6.6's
     /// `a_routine_save_of_a_reopened_session_does_not_spend_fresh_reauthentication_authority`
     /// (`plex/session.rs:8761`): a DISCOVERY failure must not spend the fresh authority the FINAL
@@ -2689,14 +2846,19 @@ mod tests {
         let final_req = owner.state.next_req;
         let admitted = CommitReply { req: final_req, epoch, arrival: 0,
             admission: CommitAdmission::Admitted { revision: 2, purpose: PersistencePurpose::Final } };
-        step(&mut owner, SessionEvent::Commit(admitted));
+        // This authorization already answered its one Continue (the discovery warning above), so
+        // the final commit's own reply publishes immediately rather than hold a handoff behind a
+        // completion that may never arrive (`one_continue_survives_a_lost_final_completion`).
+        let effects = step(&mut owner, SessionEvent::Commit(admitted));
+        assert!(effects.iter().any(|fx| matches!(fx, SessionFx::Ready { .. })),
+            "an already-answered authorization releases Ready on the final commit reply itself");
         let durable = PersistenceCompletion { req: final_req, epoch, arrival: 0, revision: 2,
             purpose: PersistencePurpose::Final,
             outcome: CompletionOutcome::Durable(Operation::Write {
                 outcome: PersistOutcome::PersistedPlaintext, verified: true, protection: None }) };
         let effects = step(&mut owner, SessionEvent::Persistence(durable));
-        assert!(effects.iter().any(|fx| matches!(fx, SessionFx::Ready { .. })),
-            "a durably confirmed fresh write DOES release its held handoff as Ready");
+        assert!(!effects.iter().any(|fx| matches!(fx, SessionFx::Ready { .. })),
+            "Ready already fired at the commit reply; the later durable completion must not repeat it");
 
         // A LATER, ordinary Ready-op commit (a ready profile re-applying itself) must never carry
         // fresh authority again — the flag was spent once and stays spent.
