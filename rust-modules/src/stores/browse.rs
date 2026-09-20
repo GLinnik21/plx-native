@@ -67,7 +67,8 @@ pub(crate) enum BrowseCmd {
     /// editor happened to be showing.
     ///
     /// The distinction is provenance, and only the screen holding the draft has it
-    /// (`screens::onboard`'s `answered`, i.e. `draft != entry_pins`). A row missing from this list
+    /// (`screens::onboard`'s `answered`, which is the set of rows a press actually moved, recorded
+    /// by the press rather than recovered from the values afterwards). A row missing from this list
     /// is a value nobody chose: it keeps re-deriving from its default rather than being frozen as
     /// though it were a decision (`plex::pins::answers`). An EMPTY list is still a commit — the
     /// question was put and every default was left alone.

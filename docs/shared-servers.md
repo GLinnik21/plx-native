@@ -672,14 +672,20 @@ selection CAN be emptied without any toggle — pin only a friend's library, the
 from the roster). Only the rows a viewer ANSWERED are recorded (`pins::answers`): a default
 nobody chose keeps re-deriving, which is what lets a Home roster landing after the first-run screen
 correct a classification it arrived too late to inform, without touching an answer anybody gave.
-Which rows those are is carried BY the commit — `BrowseCmd::ApplyPins` holds the rows the editor
-was answered about (`draft != entry_pins`), not the rows it showed. The store used to reconstruct
-it by comparing the draft against the live pins, which reads an answer the roster had caught up
-with as a default and drops it; and because only the answered rows are recorded, the commit ends
-by re-resolving the whole table (the same reconcile a reclassification runs) so what is displayed
-after it is what was saved. `browse.rs` is the plumbing around them, and a selection PERSISTS: every flip was
-in-memory before 2026-08-21, so a selection made in the Sources panel was gone by the next boot and
-the default came back, which reads as the switch not working. Since 2026-09-04 the write
+Which rows those are is carried BY the commit — `BrowseCmd::ApplyPins` holds the rows a press
+actually MOVED (`screens::onboard`'s `touched`, recorded at the toggle), not the rows the editor
+showed and not a comparison of any kind. The store inferred it from "the row disagrees with the
+live pin" and the screen then inferred it from "the draft disagrees with `entry_pins`"; both drop
+an answer the world drifted onto, one layer apart, which is why the provenance is written down
+where it happens. And because only the answered rows are recorded, a commit that produced a record
+ends by re-resolving the whole table (the same reconcile a reclassification runs), so what is
+displayed after it is what was saved. A commit the session REFUSED produces no record and is not
+reconciled at all: the record still standing is the one the commit meant to replace, so resolving
+against it would put the viewer's answer back the way it was. The answer stands in memory for the
+run instead, which is `session::update`'s own contract for the refusal. `browse.rs` is the plumbing
+around them, and a selection PERSISTS: every flip was in-memory before 2026-08-21, so a selection
+made in the Sources panel was gone by the next boot and the default came back, which reads as the
+switch not working. Since 2026-09-04 the write
 is `browse::apply_pins`, once, when the Home editor's `Done`/`Start watching` commits its draft — a
 flip edits the in-memory draft and nothing is written until then (`toggle_pin`, the old per-press
 write, is a test-only fixture now).

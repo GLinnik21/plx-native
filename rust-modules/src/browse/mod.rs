@@ -1431,7 +1431,18 @@ impl BrowseState {
     /// previous answer off `self.recorded` would read a copy taken at the last resolve, and a
     /// concurrent writer between those two points would have its answer dropped rather than
     /// merged, which is precisely the lost update `session::update` exists to prevent.
-    fn record_pins(&mut self, asked: bool, touched: &[bool]) {
+    ///
+    /// **It reports the record THIS call produced, and `None` is a real answer.**
+    /// `session::update` refuses the whole read-modify-write when the live read is unusable — a
+    /// Locked/Blocked record the keymanager will not open, or no file at all — and the closure
+    /// above never runs, so there is no candidate record to speak of and `self.recorded` keeps
+    /// whatever the last resolve put there. A caller must not mistake that standing record for
+    /// something this call produced: it is the answer this call was REPLACING (see
+    /// [`apply_pins`](Self::apply_pins)). The session's contract for the refusal is that the
+    /// caller keeps its change in memory for the run, which is what the in-memory table already
+    /// holds.
+    fn record_pins(&mut self, asked: bool, touched: &[bool])
+        -> Option<crate::plex::session::HomePins> {
         let libraries = self.lib_refs();
         let on: Vec<bool> = self.sections.iter().map(|section| section.pinned).collect();
         let user = crate::plex::session::current_profile_key();
@@ -1446,9 +1457,10 @@ impl BrowseState {
             written = Some(record);
             Some(next)
         });
-        if let Some(record) = written {
-            self.recorded = Some(record);
+        if let Some(record) = &written {
+            self.recorded = Some(record.clone());
         }
+        written
     }
     /// The editor's one commit: apply the rows it ANSWERED, and record exactly those.
     ///
@@ -1461,17 +1473,22 @@ impl BrowseState {
     /// value a roster correction then moved the LIVE pin to as well, before the commit, arrives
     /// agreeing with the table and reads as untouched. Left unrecorded it goes on re-deriving, so
     /// the day the default moves again (the household loses its last library of that type) an
-    /// explicit Off comes back On with nothing to appeal to. `screens::onboard` already computes
-    /// `draft != entry_pins` for `dirty`, and that IS the provenance, so it sends it.
+    /// explicit Off comes back On with nothing to appeal to. `screens::onboard` holds the draft,
+    /// so it is the one place that can record which rows a press moved (its `touched`), and it
+    /// sends that.
     ///
     /// An answer that agrees with the live pin therefore still moves nothing on screen and is
     /// still written down; an empty batch is still a commit (`asked`, no answers).
     ///
-    /// **And the table is reconciled with the record afterwards**, through the same
+    /// **And the table is reconciled with the record THIS COMMIT PRODUCED**, through the same
     /// [`reconcile_pins`](Self::reconcile_pins) a reclassification uses. Recording only the
     /// answered rows means the unanswered ones keep re-deriving — including one the never-empty
     /// floor had RAISED, which would otherwise keep its raised value on screen while the record
     /// says otherwise, and go back down at the next resolve with no user action behind it.
+    ///
+    /// **A commit that produced no record is not reconciled**, and the difference is the whole of
+    /// it: [`record_pins`](Self::record_pins) answers `None` when `session::update` refused the
+    /// cycle, and the record still standing then is the one this commit meant to replace.
     fn apply_pins(&mut self, answers: &[(usize, bool)]) {
         let mut touched = vec![false; self.sections.len()];
         let mut changed = false;
@@ -1487,17 +1504,34 @@ impl BrowseState {
                 *slot = true;
             }
         }
-        self.record_pins(true, &touched);
+        let produced = self.record_pins(true, &touched);
         if changed {
             self.repoint_cur();
             self.bump_sections_gen();
             crate::ui::idle::invalidate();
         }
-        // The record `record_pins` just wrote, not a re-read of the session: it is the authority
-        // that write produced (merged under `session::update`'s own lock), and a re-read could
-        // answer from before it on a write the keymanager refused.
-        let record = self.recorded.clone();
-        self.reconcile_pins(record);
+        // The record THIS commit produced, never a re-read of the session: `record_pins` merged it
+        // under `session::update`'s own lock, so a re-read could answer from before it. It is the
+        // candidate that write took, not proof the write reached disk — `record_pins` takes it
+        // inside the closure, before the durable outcome is known — but it is the record this run
+        // resolves against either way, which is exactly what the reconcile needs.
+        match produced {
+            Some(record) => {
+                self.reconcile_pins(Some(record));
+            }
+            // **A commit that produced NO record is not reconciled at all.** `session::update`
+            // refuses the read-modify-write outright when the live read is unusable (a Locked or
+            // Blocked record the keymanager will not open, or no file yet), so its closure never
+            // ran. `self.recorded` then still holds the answer this commit was REPLACING, and
+            // reconciling against that restores precisely what the viewer just changed — they
+            // press Done and watch the row come back. The session's contract for the refusal is
+            // that the caller keeps its change in memory for the run, so the table keeps the
+            // answer and the record is left exactly as it was.
+            None => crate::log(
+                "browse: the session refused this commit — the selection stands for this run, \
+                 and nothing was recorded",
+            ),
+        }
     }
     fn retry_discovery(&mut self) {
         for source in &mut self.sources {

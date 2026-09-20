@@ -70,6 +70,22 @@ pub(crate) struct OnboardScreen {
     table_epoch: u32,
     entry_pins: Vec<(usize, bool)>,
     draft: Vec<(usize, bool)>,
+    /// **The sections this editing session PRESSED** — the provenance itself, recorded by
+    /// [`toggle_row`](Self::toggle_row) rather than derived from any comparison.
+    ///
+    /// It was `draft != entry_pins` until 2026-09-20, which is the same inference the store
+    /// removed from `browse::apply_pins` and it survived here. The comparison needs a baseline
+    /// that stays true, and [`draft_rows`](Self::draft_rows) can only keep one for a row NOBODY
+    /// has touched — so once a row was edited its baseline froze, and a Plex Home roster landing
+    /// while the editor was open left it stale: toggle a row Off, let the live default drift Off
+    /// underneath it, toggle it back On, and `draft == entry_pins` again reads as "never
+    /// answered". The row the viewer pressed twice was then recorded nowhere and went straight
+    /// back to the drifted default.
+    ///
+    /// Section ids and not row indices, because a landing re-orders rows and this must survive
+    /// one; cleared with `draft`/`entry_pins` whenever the table's identity changes
+    /// ([`reseed_if_table_identity_changed`](Self::reseed_if_table_identity_changed)).
+    touched: Vec<usize>,
     /// The empty-roster spinner clock, in ms — cached each tick from
     /// [`phase_clock`](Self::phase_clock)'s `advance`.
     phase_ms: f32,
@@ -163,6 +179,7 @@ impl OnboardScreen {
             table_epoch: directory.epoch().unwrap_or(0),
             entry_pins: base.clone(),
             draft: base,
+            touched: Vec::new(),
             phase_ms: 0.0,
             phase_clock: crate::ui::motion::Phase::default(),
             pop: CtlPop::new(),
@@ -193,31 +210,41 @@ impl OnboardScreen {
     /// **The rows this editing session ANSWERED** — the provenance the store used to have to
     /// guess at, and the payload of the one `BrowseCmd::ApplyPins` [`commit`](Self::commit) sends.
     ///
-    /// `entry_pins` is what each row read when this editor opened, kept in step with live drift
-    /// for every row the draft still agrees with (`draft_rows`), so `draft != entry_pins` is
-    /// exactly "the viewer moved this one". Everything else is a value nobody chose and must stay
-    /// unrecorded, to go on re-deriving from its default (`plex::pins::answers`).
+    /// It is [`touched`](Self::touched) — the sections a press moved — carrying each one's
+    /// CURRENT draft value. Everything else is a value nobody chose and must stay unrecorded, to
+    /// go on re-deriving from its default (`plex::pins::answers`).
     ///
     /// **This is the half a store cannot reconstruct.** Browse used to infer the same thing by
     /// comparing the whole visible draft against the live pins — which reads a row the viewer
     /// switched Off as untouched the moment a roster correction moves the live pin to Off as
     /// well, and drops the answer. Only the screen holding the draft knows which rows were
-    /// pressed, so only the screen can say.
+    /// pressed, so only the screen can say. It said it with a comparison of its own
+    /// (`draft != entry_pins`) until 2026-09-20, and that comparison had the same blind spot one
+    /// layer in: see [`touched`](Self::touched).
+    ///
+    /// A row pressed twice back onto the value it opened with is therefore an answer, and
+    /// deliberately: somebody chose it, so freezing it is the honest record. [`dirty`](Self::dirty)
+    /// stays on the net difference instead, so *Done* still goes away when an edit is undone.
     fn answered(&self) -> Vec<(usize, bool)> {
         self.draft
             .iter()
-            .filter(|(section, now)| {
+            .filter(|(section, _)| self.touched.contains(section))
+            .copied()
+            .collect()
+    }
+
+    /// Whether this editor has anything to offer *Done* for: the draft DIFFERS from what the rows
+    /// read when it opened. Not [`answered`](Self::answered) — a viewer who toggles a row and
+    /// toggles it back has answered (they pressed it), but has nothing left to show, and a band
+    /// control that stays behind an undone edit is a control for a change nobody can see.
+    fn dirty(&self) -> bool {
+        !self.settings
+            || self.draft.iter().any(|(section, now)| {
                 self.entry_pins
                     .iter()
                     .find(|(s, _)| s == section)
                     .is_some_and(|(_, was)| was != now)
             })
-            .copied()
-            .collect()
-    }
-
-    fn dirty(&self) -> bool {
-        !self.settings || !self.answered().is_empty()
     }
 
     /// The band holds a control unless this is a pristine Settings editor. Reads the CACHED
@@ -255,17 +282,24 @@ impl OnboardScreen {
         self.table_epoch = epoch;
         let fresh = snapshot_pins(directory);
         self.draft = fresh.clone();
-        // Both mounts, for `draft_rows`' reason: `entry_pins` is the "has the viewer touched this
-        // row" baseline, and a first-run editor needs one as much as the Settings editor does.
+        // Every press this session made was about section ids from the OLD table; a reset is what
+        // makes them mean a different library, or none.
+        self.touched.clear();
+        // Both mounts, for `draft_rows`' reason: `entry_pins` is the "what did this row read when
+        // the editor opened" baseline `dirty` compares against, and a first-run editor needs one as
+        // much as the Settings editor does. Which rows were PRESSED is `touched`'s, not this.
         self.entry_pins = fresh;
     }
 
     /// The retained directory's rows with this editor's draft laid over them.
     ///
     /// **A row the viewer has not touched follows the live pin; a row they have does not.**
-    /// `entry_pins` is what each row was when this editor opened, so `entry == draft` is exactly
-    /// "untouched" and the value underneath it may still be re-derived; once they differ the draft
-    /// is an answer and nothing may move it but another press.
+    /// [`touched`](Self::touched) says which is which, and it says so because the press recorded
+    /// it: an untouched row's value is still being re-derived underneath the draft and rides that
+    /// drift into `entry_pins` too, while a pressed row is an answer and nothing may move it but
+    /// another press. This asked `entry == draft` until 2026-09-20 — which reads a row pressed
+    /// back onto the value it opened with as untouched, and then quietly overwrites that press
+    /// with whatever the live default has since drifted to.
     ///
     /// It was gated on `self.settings` and is not any more, and the ungating is the point. A
     /// FIRST-RUN draft opens on whatever the defaults were at that instant, and for a Plex Home
@@ -284,7 +318,7 @@ impl OnboardScreen {
                 }
                 Some(di) => {
                     if let Some(ei) = self.entry_pins.iter().position(|(s, _)| *s == r.section) {
-                        if self.entry_pins[ei].1 == self.draft[di].1 && self.entry_pins[ei].1 != r.pinned {
+                        if !self.touched.contains(&r.section) {
                             self.entry_pins[ei].1 = r.pinned;
                             self.draft[di].1 = r.pinned;
                         }
@@ -324,6 +358,11 @@ impl OnboardScreen {
                 return;
             }
             self.draft[idx].1 = !on;
+            // The press IS the provenance ([`Self::touched`]): recorded here, where it happened,
+            // and never recovered afterwards from what the value ended up equal to.
+            if !self.touched.contains(&section) {
+                self.touched.push(section);
+            }
             self.rebuild(true, directory);
         }
     }
@@ -1106,8 +1145,8 @@ mod tests {
     /// `entry_pins` against `draft`. An UNTOUCHED row's live pin can drift out from under
     /// `entry_pins` purely from `resolve_pins` re-deriving its still-unrecorded default as a
     /// second source lands — which must not read as "dirty" the moment the world changes around
-    /// it. `draft_rows` rides such drift into `entry_pins` for any row the draft still agrees with
-    /// (i.e. the user never touched).
+    /// it. `draft_rows` rides such drift into `entry_pins` for any row no press has moved
+    /// (`touched`).
     #[test]
     fn an_untouched_rows_live_drift_is_absorbed_into_entry_not_read_as_an_edit() {
         let _g = crate::testlock::serial();
@@ -1130,6 +1169,54 @@ mod tests {
         assert!(
             !s.dirty(),
             "an untouched row's drift is not something Done should offer to commit either"
+        );
+    }
+
+    /// **A row pressed TWICE, with the default drifting in between, is still an answer.**
+    ///
+    /// Review finding (2026-09-20) against the provenance work: `answered()` derived "the viewer
+    /// moved this row" from `draft != entry_pins`, and `draft_rows` only rode live drift into
+    /// `entry_pins` for a row the draft still AGREED with — so a dirty row's baseline froze at
+    /// whatever it read when the editor opened. A roster landing mid-edit then made that frozen
+    /// baseline stale, and the sequence below netted out to "nothing answered": the viewer pressed
+    /// the row twice, left it On, and it came back Off.
+    ///
+    /// The fix is the same one the store took: the touched set is RECORDED by the press
+    /// (`toggle_row`), never re-derived from a comparison. `dirty()` stays on the net difference,
+    /// so Done still disappears when an edit is undone.
+    #[test]
+    fn a_row_toggled_back_after_its_default_drifted_is_still_an_answer() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::new("drift-under-a-dirty-row");
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true, true]);
+        let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
+
+        // 1. Off — an edit, so this row's baseline is now stale the moment the world moves.
+        s.toggle_row(0, browse.capture());
+        // 2. The Plex Home roster lands while the editor is open and the live default for this
+        //    row drifts Off on its own, with no press behind it.
+        browse.set_pinned(0, false);
+        s.rebuild(true, browse.capture());
+        // 3. …and the viewer changes their mind and puts it back On.
+        s.toggle_row(0, browse.capture());
+        assert!(
+            s.draft_rows(browse.capture())[0].pinned,
+            "the draft shows what was pressed — a touched row does not ride the live default"
+        );
+
+        let effs = commit_now(&mut s, browse.capture());
+        let answers = effs.iter().find_map(|st| match &st.fx {
+            Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(a)))) => {
+                Some(a.clone())
+            }
+            _ => None,
+        });
+        assert_eq!(
+            answers,
+            Some(vec![(0, true)]),
+            "the row the viewer pressed twice is an answer, or the store records nothing for it \
+             and `apply_pins`' reconcile immediately derives the drifted Off default back"
         );
     }
 
@@ -1533,7 +1620,7 @@ mod tests {
     /// the live pin AND recorded `asked: true` — a Cancel press persisting an answer nobody gave.)
     ///
     /// The draft model survived the migration unchanged — `draft_rows`'s untouched-row sync is
-    /// still gated on `entry_pins == draft` and still skips a touched row for exactly that reason —
+    /// still gated on the press set (`touched`) and still skips a pressed row for exactly that reason —
     /// so under the new architecture BACK/Cancel has nothing to restore in the first place: nothing
     /// is ever written before `commit`. This is what keeps it that way: the drifted value (`false`)
     /// is chosen to differ from the row's `entry_pins` snapshot (`true`), the one choice under
@@ -1579,8 +1666,8 @@ mod tests {
     /// exactly this. Browse used to reconstruct "the viewer touched this" by comparing the
     /// command's rows against the live pins, so a row the world had agreed with arrived looking
     /// untouched and was left unrecorded: it goes on re-deriving, and comes back On the next time
-    /// the default moves. This screen has the provenance (`entry_pins` vs `draft`, the same
-    /// comparison `dirty` is built on) and now sends it.
+    /// the default moves. This screen has the provenance (the rows a press moved, `touched`) and
+    /// now sends it.
     #[test]
     fn a_commit_carries_a_toggled_row_the_live_pin_has_caught_up_with() {
         let _g = crate::testlock::serial();

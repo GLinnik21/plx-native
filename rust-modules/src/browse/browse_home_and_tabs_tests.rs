@@ -143,8 +143,9 @@ fn apply_pins_writes_the_whole_batch_in_one_record() {
 /// untouched and wrote nothing — and an unrecorded row goes on re-deriving, which is how an
 /// explicit Off comes back On the day the household stops having films of its own.
 ///
-/// The command carries the rows ANSWERED now (`screens::onboard`'s `draft != entry_pins`), so a
-/// row whose value the world agreed with is recorded exactly like one it did not.
+/// The command carries the rows ANSWERED now (`screens::onboard`'s `touched`, the set its own
+/// presses filled in), so a row whose value the world agreed with is recorded exactly like one it
+/// did not.
 #[test]
 fn an_answer_the_live_pin_already_agrees_with_is_recorded_anyway() {
     let _g = crate::testlock::serial();
@@ -248,6 +249,58 @@ fn a_commit_leaves_the_table_showing_what_it_saved() {
     assert!(
         browse.pinned(1),
         "…and the answer that was just given is not undone by the same reconcile"
+    );
+}
+/// **A commit the SESSION REFUSED leaves the viewer's answer on screen.**
+///
+/// The other half of the reconcile above, and the regression it arrived with. `session::update`
+/// refuses the whole read-modify-write when the live read is unusable — a Locked/Blocked record
+/// whose device key the keymanager will not hand over, or no file at all — so its closure never
+/// runs and this commit produces NO record. An unconditional reconcile then ran against the
+/// record standing from the last resolve, which is the answer this commit was replacing: the
+/// viewer switched a library off, pressed Done, and watched the row come back on by itself.
+///
+/// `session::update`'s own contract for that refusal is explicit: the caller keeps its change in
+/// memory for the run. So the table keeps the answer, nothing is recorded, and the next resolve
+/// is the first thing entitled to move the row again.
+#[test]
+fn a_commit_the_session_refuses_leaves_the_answer_on_screen() {
+    let _g = crate::testlock::serial();
+    let t = TempPins::new("refused-commit");
+    t.watching("u-owner");
+    let mut browse = TestBrowse::default();
+    seed_two_servers(&mut browse);
+    assert_eq!(
+        (browse.pinned(0), browse.pinned(1)),
+        (true, true),
+        "two libraries of this account's own, both on Home"
+    );
+
+    // The device key is unavailable: what is on disk identifies itself as a secure envelope this
+    // build cannot open, which is the `ReadState::Locked` every keymanager failure lands on. The
+    // file is written directly rather than through `save`, exactly as a keymanager going away
+    // under a record this process already wrote would leave it.
+    std::fs::write(
+        t.path(),
+        br#"{"format":"plxnative-secure-session","version":99,"sealed":{}}"#,
+    )
+    .expect("the locked fixture");
+    crate::plex::session::invalidate_for_test();
+
+    // One of them switched off, and Done pressed.
+    browse.state.apply_pins(&[(1, false)]);
+
+    assert_eq!(
+        (browse.pinned(0), browse.pinned(1), browse.pinned(2)),
+        (true, false, false),
+        "the answer stands: a commit that produced no record must not be reconciled against the \
+         record it was replacing, which restores exactly what the viewer just changed"
+    );
+    assert!(
+        crate::plex::session::peek()
+            .pins_for(&crate::plex::session::current_profile_key())
+            .is_none(),
+        "…and nothing was recorded — the answer is this RUN's, and the record is untouched"
     );
 }
 /// **A selection outlives the run.** Every flip was in-memory until 2026-08-21, so the answer
