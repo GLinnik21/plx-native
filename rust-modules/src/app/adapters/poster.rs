@@ -381,6 +381,62 @@ fn warn_key_refused(len: usize) {
     }
 }
 
+/// Process-wide counts of the two halves of issue #107's fix: a `P_READY` slot the render cache
+/// could no longer keep resident (`PosterSource::unresident` demoting it to `P_EVICTED`), and a
+/// later demand re-arming that dormant slot back to `P_WANT` (the `P_EVICTED` branch of
+/// [`lookup`]). Both increment on every real transition, never on a call that finds the slot
+/// already past it, so the two numbers are an exact tally, not a sample.
+static RESIDENCY_LOST: AtomicU64 = AtomicU64::new(0);
+static RESIDENCY_REARMED: AtomicU64 = AtomicU64::new(0);
+
+/// The only place these two counts reach the event log, for the same reason issue #107 itself was
+/// invisible: the route heartbeat's `evicted_hot=` counts HOT evictions only (a key wanted again in
+/// the same frame), so on-device verification of the fix could report "I did not see a skeleton"
+/// and nothing more — never whether eviction fired at all, or whether a fired eviction was
+/// followed by a working re-arm. Those are two different failures a screenshot cannot tell apart,
+/// and this line is what lets a future field report on #107 tell them apart after the fact.
+///
+/// Throttled for the reason [`warn_key_refused`] gives for its own latch: `unresident` and the
+/// re-arm branch are both per-tile, per-frame paths, and a fast scroll evicts dozens of keys a
+/// second, so a line per transition would bury `/tmp/plxnative-events.log`. Unlike that latch this
+/// does not go silent after one line — a long session should keep producing fresh readings — so it
+/// is a minimum-interval throttle (about one second, monotonic so a skewed wall clock never lies
+/// about it) rather than a one-shot. The first call in a process is let through unthrottled, so a
+/// short session still leaves evidence. The throttle governs only the LINE: both atomics above are
+/// incremented on every real transition regardless of whether this call emits.
+fn log_residency() {
+    static LAST: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+    let now = std::time::Instant::now();
+    let mut last = match LAST.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let due = match *last {
+        None => true,
+        Some(t) => now.duration_since(t) >= Duration::from_secs(1),
+    };
+    if !due {
+        return;
+    }
+    *last = Some(now);
+    drop(last);
+    crate::log(&format!(
+        "posters: residency lost={} rearmed={}",
+        RESIDENCY_LOST.load(Ordering::Relaxed),
+        RESIDENCY_REARMED.load(Ordering::Relaxed)
+    ));
+}
+
+/// Test-visible read of the two totals above, so a test grades the counters through the same
+/// atomics [`log_residency`] reads rather than a reimplementation of them.
+#[cfg(test)]
+fn residency_counts_for_test() -> (u64, u64) {
+    (
+        RESIDENCY_LOST.load(Ordering::Relaxed),
+        RESIDENCY_REARMED.load(Ordering::Relaxed),
+    )
+}
+
 /// The clearLogo transcode request box (was two bare literals inside the old `logo_tex`).
 /// `minSize=1` means COVER, not fit, so a 1:1 source comes back ~600×600 and a 5:1 one ~1200×240 —
 /// both comfortably above anything [`crate::ui::hero_logo`] draws (900×268 worst case), so a hero
@@ -507,6 +563,8 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
             if g.slots[i].state == P_EVICTED {
                 g.slots[i].state = P_WANT;
                 drop(g);
+                RESIDENCY_REARMED.fetch_add(1, Ordering::Relaxed);
+                log_residency();
                 CV.notify_one();
                 return (
                     None,
@@ -592,6 +650,7 @@ impl tex::Source for PosterSource {
     }
     fn unresident(&self, key: PosterKey) {
         let mut g = store();
+        let mut lost = false;
         if let Some(s) = g.slots.get_mut(key.0 as usize) {
             // READY is the only state whose truth depends on render-cache residency. The cache
             // calls this synchronously for both a rejected decoded result and pressure eviction,
@@ -599,7 +658,13 @@ impl tex::Source for PosterSource {
             // READY for a key the cache could not make resident.
             if s.state == P_READY {
                 s.state = P_EVICTED;
+                lost = true;
             }
+        }
+        drop(g);
+        if lost {
+            RESIDENCY_LOST.fetch_add(1, Ordering::Relaxed);
+            log_residency();
         }
     }
     fn idle(&self) -> bool {
@@ -1413,6 +1478,49 @@ mod tests {
         );
 
         tex::shutdown(&mut uploader);
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// The two counters behind `posters: residency lost=… rearmed=…` (issue #107): the route
+    /// heartbeat's `evicted_hot=` cannot distinguish "eviction never fired" from "eviction fired
+    /// and the re-arm worked", so these are graded directly rather than through the log line's
+    /// throttle. `one_server` takes [`crate::testlock::serial`], which is what keeps this test's
+    /// deltas exact against the other tests in this file that drive real eviction through the
+    /// installed cache (`a_rejected_decode_cannot_leave_the_real_source_claiming_ready`,
+    /// `a_ready_source_hit_recovers_after_its_texture_is_evicted`).
+    #[test]
+    fn residency_transitions_are_counted_exactly_once_each() {
+        use crate::ui::tex::Source as _;
+
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            set_key(slot, &path);
+            slot.state = P_READY;
+        }
+        let (lost0, rearmed0) = residency_counts_for_test();
+
+        SOURCE.unresident(PosterKey(0));
+        assert_eq!(store().slots[0].state, P_EVICTED, "unresident demotes a READY slot");
+        let (lost1, rearmed1) = residency_counts_for_test();
+        assert_eq!(lost1, lost0 + 1, "a real READY->EVICTED transition must count exactly once");
+        assert_eq!(rearmed1, rearmed0, "unresident never touches the re-arm counter");
+
+        // A slot already EVICTED has no READY truth left to revoke - must not count again.
+        SOURCE.unresident(PosterKey(0));
+        let (lost2, _) = residency_counts_for_test();
+        assert_eq!(lost2, lost1, "a slot that was already EVICTED must not be counted twice");
+
+        let (hit, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None, "a freshly re-armed slot has no pixels yet");
+        assert_eq!(store().slots[0].state, P_WANT, "lookup re-arms the dormant slot");
+        let (_, rearmed2) = residency_counts_for_test();
+        assert_eq!(rearmed2, rearmed1 + 1, "the EVICTED->WANT re-arm must count exactly once");
+
         store().slots = [Pslot::ZERO; PT_CAP];
     }
 

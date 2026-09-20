@@ -5295,7 +5295,7 @@ impl PersonOwnerGateFixture {
         "store-seams.txt": 0,
         "threads.txt": 0,
         "ticks.txt": 2,
-        "wall.txt": 2,
+        "wall.txt": 3,
     }
 
     def test_allowlist_counts_match_the_pinned_table(self):
