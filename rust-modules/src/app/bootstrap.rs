@@ -113,7 +113,16 @@ pub(crate) fn validate_admission(value: &serde_json::Value, client: u32) -> Resu
     Ok(())
 }
 
-pub(crate) const SHAPE: &str = "ControlledHomeInitV2{version:u32,session:SessionInit,consent:Consent,home:HubsInitialV1,clock_start:u32,entropy:Captured(Option<[u8;16]>)|Seeded(u32),primary_client:u32,automated:bool,settings:Option<root|privacy|legal>,triggers:[str]};HomeEffectsV1{from:MachineId,kind:Fx,payload:complete_supported_payload};OwnedInputV1{ms:u32,dt_us:u32,source:Source,body:InputKind};DiscoveryResultV1{epoch:u32,source:u32,sid:u16,client:u32,token_gen:u32,name:str,what:Sections|Counts}";
+/// The controlled-boot init census.
+///
+/// **V3 / `SessionInitV2` (household evidence).** `SourceRef` gained `home:bool` and
+/// `ownerId:i64` — plex.tv's raw grant evidence, carried beside `owned` rather than instead of it
+/// — and `write_sources` folds both into the canonical digest. `SessionInit` is spelled here as a
+/// NAME, so the field census moving inside it is invisible unless the term itself moves: hence
+/// `SessionInitV2`, and hence the `ControlledHomeInitV3` that carries it. Without the bump a
+/// recording made before the change would replay against a session that now distinguishes a Plex
+/// Home managed profile's own household server from a stranger's share, and grade it `SAME`.
+pub(crate) const SHAPE: &str = "ControlledHomeInitV3{version:u32,session:SessionInitV2,consent:Consent,home:HubsInitialV1,clock_start:u32,entropy:Captured(Option<[u8;16]>)|Seeded(u32),primary_client:u32,automated:bool,settings:Option<root|privacy|legal>,triggers:[str]};HomeEffectsV1{from:MachineId,kind:Fx,payload:complete_supported_payload};OwnedInputV1{ms:u32,dt_us:u32,source:Source,body:InputKind};DiscoveryResultV1{epoch:u32,source:u32,sid:u16,client:u32,token_gen:u32,name:str,what:Sections|Counts}";
 #[cfg(test)]
 pub(crate) const PRE_SETTINGS_SHAPE: &str = "ControlledHomeInitV1{version:u32,session:SessionInit,consent:Consent,home:HubsInitialV1,clock_start:u32,entropy:Captured(Option<[u8;16]>)|Seeded(u32),primary_client:u32,automated:bool,triggers:[str]};HomeEffectsV1{from:MachineId,kind:Fx,payload:complete_supported_payload};OwnedInputV1{ms:u32,dt_us:u32,source:Source,body:InputKind};DiscoveryResultV1{epoch:u32,source:u32,sid:u16,client:u32,token_gen:u32,name:str,what:Sections|Counts}";
 

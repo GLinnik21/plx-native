@@ -78,7 +78,6 @@ pub(super) fn directory_policy_fixture(
 ) -> crate::stores::browse::DirectorySnapshot {
     let section = |sid, key, section, title: &str, pinned| {
         crate::stores::browse::SectionView {
-            borrowed: false,
             sid: Some(sid),
             key,
             kind: crate::stores::browse::SecKind::Movie,

@@ -1139,7 +1139,33 @@ pub struct SourceRef {
     /// The one string the browsing UI ever says about a source: "Shared by friend".
     pub shared_by: String,
     /// False ⇒ shared with us. A preference (ours sorts first, ours is `current`), never a wall.
+    ///
+    /// **It is plex.tv's wire flag, not "is this our household's server"** — those are different
+    /// questions and `false` answers both of them for a Plex Home managed profile's own household
+    /// server. [`home`](Self::home) and [`owner_id`](Self::owner_id) are carried beside it so the
+    /// second question can be asked; see [`super::servers::is_household`].
     pub owned: bool,
+    /// plex.tv's `home` on the grant, carried verbatim — see [`super::account::Resource::home`].
+    ///
+    /// **Absent from every file written before this field existed, and `false` is what those
+    /// files mean.** Read the note on [`owner_id`](Self::owner_id) for why that default is safe:
+    /// the two fields are one decision.
+    #[serde(default)]
+    pub home: bool,
+    /// plex.tv's `ownerId` on the grant, carried verbatim: the account that owns the server, `0`
+    /// on our own and `0` when plex.tv named nobody.
+    ///
+    /// **The legacy default is the whole reason this doc sentence exists.** A `SourceRef`
+    /// deserialized from a file written before these two fields came back `home:false,
+    /// owner_id:0` — and with `owned` also `false` (a share, or a managed profile's own household
+    /// server) [`super::servers::is_household`] then answers exactly what raw `owned` answers,
+    /// which is TODAY's behaviour and not a new one. That is deliberate and it is the intended
+    /// reading: the record self-corrects on the next `/api/v2/resources` fetch, which every boot
+    /// and every profile switch performs. It is written down here because the failure it can
+    /// cause is silent — a household server read as an outside share — and a reader of the
+    /// deserializer must be able to see that the default was chosen rather than defaulted into.
+    #[serde(rename = "ownerId", default)]
+    pub owner_id: i64,
     /// The address that answered `/identity` with the right `machineIdentifier` — not the first
     /// one advertised. An unmatched share's advertised local address may be this only through its
     /// TLS URI, after certificate and machine-identity verification; its plaintext form is gated.
@@ -1310,7 +1336,15 @@ impl LastLibrary {
 }
 
 /// **One profile's FAVOURITE libraries** — the first-run route's record (`Shared Sources.dc.html`
-/// deliverable F), and what the Library's Sources panel writes back every time a switch is flipped.
+/// deliverable F), and what the Favorite libraries editor writes back when its one action commits.
+///
+/// **Not a write per switch**, which this said until the editor grew a draft: a flip edits the
+/// draft and nothing reaches this record until `Done`/`Start watching` sends one `ApplyPins`. Nor
+/// is it a write of the whole table any more — only the rows the viewer ANSWERED become entries
+/// (`pins::answers`), so a default nobody chose stays absent from both lists below and keeps
+/// re-deriving. Which rows those are rides on the `ApplyPins` command itself: an answer is not
+/// recognised by disagreeing with the live pin, or one given just as a roster correction moved
+/// the pin onto the same value would be read as a default and lost.
 ///
 /// It recorded the answer to "what goes on your Home?" until 2026-09-05 and the persisted key is
 /// still `home_pins`, deliberately: renaming it would break ROLLBACK rather than upgrade, since the
@@ -1321,7 +1355,7 @@ impl LastLibrary {
 /// pinned" list cannot tell *turned off* from *not answered about*, and the two must not be one
 /// value: libraries arrive over time — a share whose server was slow to answer, a library the
 /// owner created last week — and one that lands after the question was put has to fall on its own
-/// DEFAULT (yours On, a friend's Off), not silently Off because it was absent from a list written
+/// DEFAULT (the household's On, a friend's Off), not silently Off because it was absent from a
 /// before it existed. That is also exactly what makes the design's "a share arriving later does
 /// not reopen this screen" honest: it appears, unpinned, and the user finds it in the Sources
 /// panel rather than being asked again.
@@ -2017,7 +2051,7 @@ pub(crate) fn invalidate_for_test() {
 
 /// **Forget one profile's recorded favourite libraries.**
 ///
-/// For a fixture that must resolve against the OWNERSHIP DEFAULTS rather than against an answer
+/// For a fixture that must resolve against the HOUSEHOLD DEFAULTS rather than against an answer
 /// somebody recorded earlier — `browse::seed_two_source_table_for_test` and its registered twin,
 /// whose whole contract ("four libraries projecting to two library-type pills") is a statement
 /// about a table with no recorded pins behind it.

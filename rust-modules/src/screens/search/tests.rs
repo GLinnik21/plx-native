@@ -780,9 +780,9 @@ fn shared_shelf(fixture: &mut Fixture) -> [crate::plex::ServerId; 3] {
     let own = crate::plex::register_for_test("own-machine", "127.0.0.1", 1, "own", "annotation");
     let a = crate::plex::register_for_test("share-a", "127.0.0.1", 2, "a", "annotation");
     let b = crate::plex::register_for_test("share-b", "127.0.0.1", 3, "b", "annotation");
-    crate::plex::describe_server(own, "own-machine", "", true);
-    crate::plex::describe_server(a, "share-a", "friend", false);
-    crate::plex::describe_server(b, "share-b", "other", false);
+    crate::plex::describe_server(own, "own-machine", "", crate::plex::GrantEvidence::ours());
+    crate::plex::describe_server(a, "share-a", "friend", crate::plex::GrantEvidence::outside());
+    crate::plex::describe_server(b, "share-b", "other", crate::plex::GrantEvidence::outside());
     let item = |sid| Item::Media(crate::pms::PmsMovie { sid, rk: format!("annotated-{sid:?}"),
         title: "Synthetic result".into(), ..Default::default() });
     fixture.query("annotated").shelves(vec![

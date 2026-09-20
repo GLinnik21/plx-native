@@ -510,7 +510,7 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
     crate::plex::reset_servers_for_test();
     let a = crate::plex::register_for_test("endpoint-a", "127.0.0.1", 9, "synthetic", "cid");
     let b = crate::plex::register_for_test("endpoint-b", "127.0.0.1", 10, "synthetic", "cid");
-    crate::plex::describe_server(a, "Synthetic", "Synthetic share", false);
+    crate::plex::describe_server(a, "Synthetic", "Synthetic share", crate::plex::GrantEvidence::outside());
     let expected = [b, a]; // Home's own-first observation order, deliberately not slot order.
     crate::pms::with_refused_fetches_for_test(|| {
         let mut rig = Bridge::for_test(|| 0);

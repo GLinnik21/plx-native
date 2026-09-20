@@ -190,7 +190,82 @@ pub struct ServerFacts {
     /// through unedited. Not derivable from an empty handle in either direction: a share whose
     /// `sourceTitle` plex.tv did not send is still a share, and a Plex Home managed user does not
     /// "own" the household server they watch every day.
+    ///
+    /// **It is the WIRE fact and not the household verdict**, which is why it sits beside
+    /// [`ServerFacts::home`] and [`ServerFacts::owner_id`] rather than being replaced by one:
+    /// every consumer that legitimately wants "does this account own it" keeps reading this, and
+    /// a consumer asking "is this our household's" asks [`is_household`] with all three.
     pub owned: bool,
+    /// plex.tv's `home` on the resource, carried through unedited — see [`Grant::home`]. Evidence
+    /// for [`is_household`], never a verdict on its own.
+    pub home: bool,
+    /// plex.tv's `ownerId` — the account that owns the server, `0` on our own and `0` when
+    /// plex.tv sent none. Evidence for [`is_household`], compared against the Home roster.
+    pub owner_id: i64,
+}
+
+/// **The grant evidence a describer publishes**, as opposed to the CREDIT it publishes beside it.
+///
+/// [`Grant`] is the borrowed wire row, alive only as long as the `/api/v2/resources` response it
+/// points into; this is its durable, owned reduction — the three fields [`is_household`] reads,
+/// with the handle deliberately left out because a describer's handle is already a *credit*
+/// ([`owner_credit`]'s answer) and not the raw `sourceTitle` the rule takes.
+///
+/// It exists so the registry cannot publish a partial grant. `describe` used to take `owned: bool`
+/// alone, and everything downstream that asked "is this our household's server?" had nothing else
+/// to reason with — so a Plex Home managed profile's own household server read as a stranger's on
+/// every surface but the credit. Carrying all three together, in one value, is what makes that
+/// unforgettable at a call site rather than a field somebody remembers to set.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct GrantEvidence {
+    /// plex.tv's `owned` — see [`ServerFacts::owned`].
+    pub owned: bool,
+    /// plex.tv's `home` — see [`Grant::home`].
+    pub home: bool,
+    /// plex.tv's `ownerId` — see [`Grant::owner_id`].
+    pub owner_id: i64,
+}
+
+impl GrantEvidence {
+    /// The evidence half of a wire row, dropping only the handle.
+    pub fn of(g: Grant<'_>) -> Self {
+        Self { owned: g.owned, home: g.home, owner_id: g.owner_id }
+    }
+
+    /// What this carried evidence says as a [`Grant`], for [`is_household`]. `source_title` is
+    /// empty because the rule does not read it — [`owner_credit`] does, and a credit has already
+    /// been decided by the time evidence is carried.
+    pub fn grant(&self) -> Grant<'static> {
+        Grant { owned: self.owned, home: self.home, owner_id: self.owner_id, source_title: "" }
+    }
+
+    /// Our own server: owned, with nobody else's id on it.
+    pub fn ours() -> Self {
+        Self { owned: true, ..Self::default() }
+    }
+
+    /// A grant this account does not own and about which plex.tv volunteered no household
+    /// evidence — the shape a legacy record deserializes to, and what a test means by "a share".
+    pub fn outside() -> Self {
+        Self::default()
+    }
+
+    /// **The household's own server as a member who does not own it sees it** — a Plex Home
+    /// managed or Guest profile looking at the family machine. `owned:false`, because plex.tv says
+    /// so; `home:true`, because the grant reaches this account through its own Plex Home; and
+    /// `owner_id` the admin's, which is the signal [`is_household`] actually decides on.
+    ///
+    /// Pass `0` for a caller with no roster to name one from. `home` then carries the case alone —
+    /// which is [`is_household`]'s un-enumerable-roster arm, not a weaker version of the same
+    /// answer; read that function's doc before relying on it.
+    ///
+    /// It exists because [`GrantEvidence::outside`] is a CLAIM, and writing it where a household
+    /// server was meant made an assertion pass for the wrong reason: before this type, `false`
+    /// only meant "not owned", which is true of the household's server too, so the two cases were
+    /// spelled identically and a fixture could not say which it meant.
+    pub fn household(owner_id: i64) -> Self {
+        Self { owned: false, home: true, owner_id }
+    }
 }
 
 /// One `/api/v2/resources` row reduced to **whose server it is** — the four fields the credit rule
@@ -551,7 +626,14 @@ pub fn commit_reachability_if_current<R>(
         let merged = ServerFacts {
             name: pick(name, old.map(|f| f.name.as_str())),
             handle: old.map(|f| f.handle.clone()).unwrap_or_default(),
+            // The grant EVIDENCE is carried through whole, for the same reason the credit is: a
+            // server naming itself over `GET /` learned a machine name and nothing whatever about
+            // whose grant this is. Dropping `home`/`owner_id` here would un-household the
+            // household's own server the moment its friendly name arrived — the `owned` bug
+            // `describe_name` documents, two fields over.
             owned: old.map(|f| f.owned).unwrap_or(true),
+            home: old.map(|f| f.home).unwrap_or(false),
+            owner_id: old.map(|f| f.owner_id).unwrap_or(0),
         };
         FACTS[i].store(Box::into_raw(Box::new(merged)), Ordering::Release);
     }
@@ -617,9 +699,12 @@ fn current_lifecycle_index(
 ///
 /// A no-op for an id that names no client: describing a slot nothing dials would leave a row in
 /// the Sources list that cannot be browsed.
-pub fn describe(id: ServerId, name: &str, handle: &str, owned: bool) {
+/// `grant` is the EVIDENCE ([`GrantEvidence`]), authoritative like the credit and for the same
+/// reason: every caller here holds a roster row plex.tv has just answered with, and the case that
+/// matters is the one where the stored answer was wrong.
+pub fn describe(id: ServerId, name: &str, handle: &str, grant: GrantEvidence) {
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    describe_locked(id, name, Some(handle), owned);
+    describe_locked(id, name, Some(handle), grant);
 }
 
 /// The body of [`describe`] and [`describe_name`], with the caller holding [`WRITE`].
@@ -632,21 +717,26 @@ pub fn describe(id: ServerId, name: &str, handle: &str, owned: bool) {
 /// The read-modify-write is inside the critical section for the ordinary reason: [`describe_name`]
 /// reads `facts` and writes back a value derived from it, and an authoritative describe landing
 /// between the two would be overwritten by the stale credit it had just replaced.
-fn describe_locked(id: ServerId, name: &str, credit: Option<&str>, owned: bool) {
+fn describe_locked(id: ServerId, name: &str, credit: Option<&str>, grant: GrantEvidence) {
     let Some(i) = id.index().filter(|_| client_for(id).is_some()) else {
         return;
     };
     let old = facts(id);
     let merged = ServerFacts {
         name: pick(name, old.map(|f| f.name.as_str())),
-        handle: match (owned, credit) {
+        handle: match (grant.owned, credit) {
             (true, _) => String::new(),
             (false, Some(c)) => c.to_owned(),
             (false, None) => old.map(|f| f.handle.clone()).unwrap_or_default(),
         },
-        // `owned` has no "unknown", so the newest answer wins — but a describer that only learned
-        // a name passes the flag it read back, which is what makes that a no-op rather than a lie.
-        owned,
+        // The grant has no "unknown" spelling, so the newest answer wins whole — but a describer
+        // that only learned a name passes back the evidence it read, which is what makes that a
+        // no-op rather than a lie. All three move together: `home` and `owner_id` are the same
+        // answer about the same grant that `owned` is, and a half-updated trio would let a stale
+        // `ownerId` outlive the `owned` that was corrected beside it.
+        owned: grant.owned,
+        home: grant.home,
+        owner_id: grant.owner_id,
     };
     FACTS[i].store(Box::into_raw(Box::new(merged)), Ordering::Release);
     // The PUBLISHED FACTS moved, which every cached projection of them has to be able to notice —
@@ -686,8 +776,10 @@ fn describe_locked(id: ServerId, name: &str, credit: Option<&str>, owned: bool) 
 /// shape of the `owned` bug this function was written to close, one field over.
 pub fn describe_name(id: ServerId, name: &str) {
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    let owned = facts(id).map(|f| f.owned).unwrap_or(true);
-    describe_locked(id, name, None, owned);
+    let grant = facts(id)
+        .map(|f| GrantEvidence { owned: f.owned, home: f.home, owner_id: f.owner_id })
+        .unwrap_or_else(GrantEvidence::ours);
+    describe_locked(id, name, None, grant);
 }
 
 /// `new` when it says something, else whatever was already known.
@@ -1653,7 +1745,7 @@ mod tests {
         );
 
         // plex.tv first (owner known, no machine name in this path), then the server itself
-        describe(b, "", "friend", false);
+        describe(b, "", "friend", GrantEvidence::outside());
         describe_name(b, "nas-home");
         let f = facts(b).expect("described");
         assert_eq!(
@@ -1662,7 +1754,7 @@ mod tests {
         );
 
         // and the other order, on the other slot
-        describe(a, "mac-mini", "", true);
+        describe(a, "mac-mini", "", GrantEvidence::ours());
         describe_name(a, "");
         let f = facts(a).expect("described");
         assert_eq!(
@@ -1671,7 +1763,7 @@ mod tests {
         );
 
         // a slot nothing dials is never described — a Sources row you cannot browse
-        describe(ServerId::from_raw(9), "ghost", "nobody", false);
+        describe(ServerId::from_raw(9), "ghost", "nobody", GrantEvidence::outside());
         assert!(facts(ServerId::from_raw(9)).is_none());
         assert!(
             facts(ServerId::UNSET).is_none(),
@@ -1728,7 +1820,7 @@ mod tests {
         let _g = fresh();
         let a = reg("mach-A", "10.0.0.1", "tok-a");
         let b = reg("mach-B", "10.0.0.2", "tok-b");
-        describe(b, "nas-home", "friend", false);
+        describe(b, "nas-home", "friend", GrantEvidence::outside());
         // the reference a worker took before the sign-out, which nothing can take back
         let inflight: &'static Client = client_for(b).unwrap();
         assert_eq!(token_of(inflight), "tok-b");
@@ -1869,7 +1961,7 @@ mod tests {
         assert!(std::ptr::eq(client(), client_for(after).unwrap()));
 
         // and a description of the retired slot is still refused — it dials nothing
-        describe(before, "ghost", "nobody", false);
+        describe(before, "ghost", "nobody", GrantEvidence::outside());
         assert!(facts(before).is_none());
     }
 
@@ -1881,7 +1973,7 @@ mod tests {
     fn a_registration_that_does_not_fit_is_refused_rather_than_aliased_onto_the_current_server() {
         let _g = fresh();
         let ours = reg("mach-ours", "10.0.0.1", "tok-ours");
-        describe(ours, "Mac mini", "", true);
+        describe(ours, "Mac mini", "", GrantEvidence::ours());
         for i in 1..MAX_SERVERS {
             reg(&format!("mach-{i}"), &format!("10.0.1.{i}"), "tok");
         }
@@ -1896,7 +1988,7 @@ mod tests {
         assert_eq!(count(), MAX_SERVERS, "nothing was appended");
 
         // the call site's very next line, verbatim — and it must land on nobody
-        describe(refused, "nas-home", "friend", false);
+        describe(refused, "nas-home", "friend", GrantEvidence::outside());
         let f = facts(ours).expect("our own server is still described");
         assert_eq!(
             (f.name.as_str(), f.handle.as_str(), f.owned),
@@ -1922,8 +2014,8 @@ mod tests {
         let b = reg("mach-B", "10.0.0.2", "tok-b");
         // the case the bug was invisible in: a share plex.tv sent no `sourceTitle` for, so there is
         // no handle to derive anything from — and it is a share all the same
-        describe(a, "", "", false);
-        describe(b, "", "friend", false);
+        describe(a, "", "", GrantEvidence::outside());
+        describe(b, "", "friend", GrantEvidence::outside());
 
         describe_name(a, "nas-home");
         describe_name(b, "nas-loft");
@@ -2074,10 +2166,10 @@ mod tests {
         let a = reg("mach-A", "10.0.0.1", "tok-a");
 
         // what a build without the rule persisted, replayed by `install_roster` at boot
-        describe(a, "Mac mini", "admin", false);
+        describe(a, "Mac mini", "admin", GrantEvidence::outside());
         assert_eq!(facts(a).map(|f| f.handle.as_str()), Some("admin"));
 
-        describe(a, "Mac mini", "", true);
+        describe(a, "Mac mini", "", GrantEvidence::ours());
         assert_eq!(
             facts(a).map(|f| (f.handle.as_str(), f.owned)),
             Some(("", true)),
@@ -2087,11 +2179,42 @@ mod tests {
         // and it is not a blanket ban on the merge: the machine NAME still merges, because that
         // one really does arrive from two describers in either order
         let b = reg("mach-B", "10.0.0.2", "tok-b");
-        describe(b, "nas-home", "friend", false);
-        describe(b, "", "friend", false);
+        describe(b, "nas-home", "friend", GrantEvidence::outside());
+        describe(b, "", "friend", GrantEvidence::outside());
         assert_eq!(
             facts(b).map(|f| (f.name.as_str(), f.handle.as_str())),
             Some(("nas-home", "friend"))
+        );
+    }
+
+    /// **A name-only describer may not un-household a server**, for the same reason it may not
+    /// un-attribute one: a server naming itself over `GET /` learned a machine name and nothing
+    /// whatever about whose grant this is.
+    ///
+    /// The `owned` bug this guards against is a shipped one (see [`describe_name`]); `home` and
+    /// `owner_id` are the same fact about the same grant, and dropping them would turn a managed
+    /// profile's own household server into an outsider's the moment its friendly name landed.
+    #[test]
+    fn a_name_only_describer_carries_the_grant_evidence_through() {
+        let _g = fresh();
+        let a = reg("mach-A", "10.0.0.1", "tok-a");
+
+        // a managed profile's view of its own household server: owned by nobody it knows of
+        describe(a, "Mac mini", "", GrantEvidence { owned: false, home: true, owner_id: 111_111 });
+        describe_name(a, "nas-loft");
+
+        assert_eq!(
+            facts(a).map(|f| (f.name.as_str(), f.owned, f.home, f.owner_id)),
+            Some(("nas-loft", false, true, 111_111)),
+            "the name is the only thing that describer knew"
+        );
+
+        // the authoritative describer still REPLACES all three, whichever way they move
+        describe(a, "nas-loft", "friend", GrantEvidence { owned: false, home: false, owner_id: 987_654 });
+        assert_eq!(
+            facts(a).map(|f| (f.home, f.owner_id)),
+            Some((false, 987_654)),
+            "a re-grade is not a merge: stale evidence must not outlive the `owned` beside it"
         );
     }
 
@@ -2114,11 +2237,11 @@ mod tests {
         let a = reg("mach-A", "10.0.0.1", "tok-a");
 
         // the stale publication: an older build's persisted `sourceTitle`, replayed at boot
-        describe(a, "Mac mini", "admin", false);
+        describe(a, "Mac mini", "admin", GrantEvidence::outside());
         assert_eq!(facts(a).map(|f| f.handle.as_str()), Some("admin"));
 
         // the corrected roster's very next boot — same call shape, empty credit
-        describe(a, "Mac mini", "", false);
+        describe(a, "Mac mini", "", GrantEvidence::outside());
         assert_eq!(
             facts(a).map(|f| (f.handle.as_str(), f.owned)),
             Some(("", false)),
@@ -2127,13 +2250,13 @@ mod tests {
 
         // a share whose handle plex.tv stops sending loses the credit by the same route
         let b = reg("mach-B", "10.0.0.2", "tok-b");
-        describe(b, "nas-home", "friend", false);
-        describe(b, "nas-home", "", false);
+        describe(b, "nas-home", "friend", GrantEvidence::outside());
+        describe(b, "nas-home", "", GrantEvidence::outside());
         assert_eq!(facts(b).map(|f| f.handle.as_str()), Some(""));
 
         // …while the describer that knows only a NAME still cannot un-attribute anybody
         let c = reg("mach-C", "10.0.0.3", "tok-c");
-        describe(c, "", "friend", false);
+        describe(c, "", "friend", GrantEvidence::outside());
         describe_name(c, "nas-loft");
         assert_eq!(
             facts(c).map(|f| (f.name.as_str(), f.handle.as_str(), f.owned)),

@@ -29,7 +29,7 @@ fn a_mounted_detail_page_follows_a_corrected_credit() {
 
     // what a build without the rule published: the household's own server wearing the account
     // holder's handle
-    crate::plex::describe_server(house, "Mac mini", "admin", false);
+    crate::plex::describe_server(house, "Mac mini", "admin", crate::plex::GrantEvidence::outside());
     set_current_for_test(test_state(), Some(Detail {
         sid: house,
         rk: "42".into(),
@@ -38,7 +38,7 @@ fn a_mounted_detail_page_follows_a_corrected_credit() {
     assert_eq!(current(test_state()).unwrap().source(), "admin");
 
     // the roster refresh re-grades it, with nothing touching the mounted page
-    crate::plex::describe_server(house, "Mac mini", "", false);
+    crate::plex::describe_server(house, "Mac mini", "", crate::plex::GrantEvidence::outside());
     assert_eq!(
         current(test_state()).unwrap().source(),
         "",
@@ -47,7 +47,7 @@ fn a_mounted_detail_page_follows_a_corrected_credit() {
 
     // and a share is still credited, so this is not a blanket clear
     let friend = crate::plex::register_for_test("md-friend", "127.0.0.1", 2, "t", "cid");
-    crate::plex::describe_server(friend, "nas-home", "friend", false);
+    crate::plex::describe_server(friend, "nas-home", "friend", crate::plex::GrantEvidence::outside());
     set_current_for_test(test_state(), Some(Detail {
         sid: friend,
         rk: "318".into(),

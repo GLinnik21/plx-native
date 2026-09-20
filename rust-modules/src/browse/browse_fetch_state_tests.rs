@@ -155,7 +155,7 @@ fn two_servers_both_have_a_section_one_and_the_table_tells_them_apart() {
         (browse.section_title(0), browse.section_title(2)),
         ("Movies", "Film Club")
     );
-    // and the chip's annotation follows the section being browsed, not the account
+    // and the pill label's handle run follows the section being browsed, not the account
     assert_eq!(browse.state.sources()[theirs.src].handle, "friend");
     assert_eq!(browse.state.sources()[ours.src].handle, "",
         "your own libraries carry no owner at all");

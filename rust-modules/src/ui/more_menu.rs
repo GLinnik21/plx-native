@@ -19,9 +19,10 @@
 //!
 //! # Two sections, and the two row idioms they are each drawn in
 //!
-//! **Options** holds switches. Its row carries [`Row::toggle`], so it states itself as the WORD
-//! `On`/`Off` at the row's trailing edge. It is a STATE, not a destination: a chevron would promise
-//! a page behind the row and there is none.
+//! **Quality leads.** It is the primary playback control this popover exists to reach — a rung
+//! picked here re-routes the picture that is on screen right now (see below). **Options** trails
+//! it: the diagnostics switch is an overflow affordance, something a viewer reaches for once, to
+//! photograph a bug, not a control anyone returns to.
 //!
 //! **Quality** is the [`crate::route::Quality`] ladder — Original, fixed rungs, and Auto once its
 //! playback readiness gate opens — and its rows carry
@@ -30,6 +31,10 @@
 //! and no row says both**, which is why a rung's rate rides inside its own label rather than in a
 //! trailing value beside the mark. (The Options row drew as a PAIR OF MARKS for one day, a ring
 //! ticked when on; those assets were deleted the same evening — see [`crate::ui::icons`].)
+//!
+//! **Options** holds switches. Its row carries [`Row::toggle`], so it states itself as the WORD
+//! `On`/`Off` at the row's trailing edge. It is a STATE, not a destination: a chevron would promise
+//! a page behind the row and there is none.
 //!
 //! A flat popover with a header per section, deliberately, rather than a Quality row that drills
 //! into a second page: `docs/parity-gaps.md`'s standing decision is that this app has **no
@@ -101,8 +106,8 @@ impl MoreMenuState {
         let initial = initial_selection(&rows, quality);
         // TWO sections, built in ROWS order — see `rows_for`: `TableView::sel` is one flat index over
         // both, so the split here is presentational and the ORDER is the contract.
-        let mut options = Section::new("Options");
         let mut quality_sec = Section::new("Quality");
+        let mut options = Section::new("Options");
         for a in &rows {
             match a {
                 Action::SetQuality(_) => quality_sec = quality_sec.row(row_for(ps, *a)),
@@ -111,7 +116,7 @@ impl MoreMenuState {
         }
         let mut table = TableView::new();
         table.compact = true; // a short action list — BODY labels, like the profile menu
-        table.set_sections(vec![options, quality_sec], initial, false);
+        table.set_sections(vec![quality_sec, options], initial, false);
         // `rows` *is* the index→action map, so it must stay one-to-one with what was built above.
         debug_assert_eq!(rows.len() as i32, table.n_rows());
         MoreMenuState { table, rows }
@@ -121,11 +126,14 @@ impl MoreMenuState {
         Self::open_focused(ps, None)
     }
 
-    /// The existing overflow menu, focused directly on the active quality row.
+    /// The existing overflow menu, focused directly on the ACTIVE quality rung.
     ///
-    /// The terminal playback screen has no transport discs, so OK enters the one useful recovery
-    /// section explicitly rather than parking on "Stats for nerds". It is still the SAME TableView
-    /// and action map as the ordinary `…` menu; only the initial cursor differs.
+    /// The terminal playback screen has no transport discs, so OK must enter the ladder on the rung
+    /// that is actually playing — a viewer arriving here is fixing a bad decision, not browsing the
+    /// list. An ordinary `…` open already lands on the ladder's head (Quality leads Options now, so
+    /// row 0 is the first rung), but "head" and "active" agree only when the active rung happens to
+    /// be first; this entry point cannot assume that. It is still the SAME TableView and action map
+    /// as the ordinary `…` menu; only the initial cursor differs.
     pub(crate) fn new_quality(ps: &crate::route::PlaybackSession) -> Self {
         Self::open_focused(ps, Some(crate::route::quality()))
     }
@@ -322,15 +330,14 @@ where
 /// be a row here too — there is none, and the debug assert in [`MoreMenuState::open_focused`] is
 /// what would catch one being added on one side only.
 fn rows_for() -> Vec<Action> {
-    let mut v = vec![Action::ToggleStats];
+    let mut v: Vec<Action> = crate::route::available_quality_ladder()
+        .iter()
+        .map(|q| Action::SetQuality(*q))
+        .collect();
+    v.push(Action::ToggleStats);
     if crate::lab::menu_row_enabled() {
         v.push(Action::SendDiagnostics);
     }
-    v.extend(
-        crate::route::available_quality_ladder()
-            .iter()
-            .map(|q| Action::SetQuality(*q)),
-    );
     v
 }
 
@@ -504,17 +511,15 @@ mod tests {
     #[test]
     fn a_selection_maps_to_its_row() {
         let rows = rows_for();
-        assert_eq!(action_at(&rows, 0), Action::ToggleStats);
-        // …and the Quality section follows the Options one, in the available ladder order.
-        // `sel` is ONE flat index over both sections, so this is the join that a section split
-        // could quietly break: row 1 must be the ladder's head, not its second rung.
-        assert_eq!(
-            action_at(&rows, 1),
-            Action::SetQuality(crate::route::Quality::Auto)
-        );
+        // Quality leads Options — see this module's doc — so row 0 is the ladder's head, not the
+        // Stats toggle. `sel` is ONE flat index over both sections, so this is the join that a
+        // section split could quietly break: get either side's push order wrong and a press
+        // commits its neighbour.
         for (i, q) in crate::route::available_quality_ladder().iter().enumerate() {
-            assert_eq!(action_at(&rows, 1 + i as i32), Action::SetQuality(*q));
+            assert_eq!(action_at(&rows, i as i32), Action::SetQuality(*q));
         }
+        let n = crate::route::available_quality_ladder().len() as i32;
+        assert_eq!(action_at(&rows, n), Action::ToggleStats);
     }
 
     #[test]
@@ -526,13 +531,36 @@ mod tests {
                 .position(|a| *a == Action::SetQuality(*q))
                 .expect("every available quality has a row");
             assert_eq!(initial_selection(&rows, Some(*q)), i as i32);
-            assert!(i > 0, "quality recovery must skip the Options section");
         }
         assert_eq!(
             initial_selection(&rows, None),
             0,
-            "ordinary … starts at Options"
+            "ordinary … starts at the top row — which is now the ladder's head, since Quality \
+             leads Options"
         );
+    }
+
+    /// **Quality must stay entirely ahead of Options in the flat row order.** The two `TableView`
+    /// sections are built by one pass over [`rows_for`]'s list (see
+    /// [`MoreMenuState::open_focused`]), so this is the one test that actually guards "Quality
+    /// first, Options after" as a property of the list rather than of a couple of hand-picked
+    /// indices — get a future row added on the wrong side of the split and nothing here fails
+    /// loudly; `on_ok` just returns the wrong `Action` for the row a viewer pressed.
+    #[test]
+    fn every_quality_rung_sits_ahead_of_the_stats_toggle() {
+        let rows = rows_for();
+        let stats_i = rows
+            .iter()
+            .position(|a| *a == Action::ToggleStats)
+            .expect("the toggle is always in the menu");
+        for (i, a) in rows.iter().enumerate() {
+            if matches!(a, Action::SetQuality(_)) {
+                assert!(
+                    i < stats_i,
+                    "{a:?} at row {i} must come before Stats for nerds at row {stats_i}"
+                );
+            }
+        }
     }
 
     /// Out-of-range must be `None`, never a neighbouring action: `sel` survives a rebuild, so a
@@ -575,12 +603,13 @@ mod focus_tests {
         })
     }
 
-    /// A three-row menu (`Stats for nerds` plus two synthetic quality rungs), built the same way
-    /// [`MoreMenuState::open_focused`] does but without a `PlaybackSession` — no row here reads
-    /// one.
+    /// A three-row menu (two synthetic quality rungs, then `Stats for nerds`) — mirrors the real
+    /// menu's order (Quality leads, Options trails; this module's doc) rather than contradicting
+    /// it, built the same way [`MoreMenuState::open_focused`] does but without a `PlaybackSession`
+    /// — no row here reads one.
     fn three_row_menu() -> MoreMenuState {
-        let mut sec = Section::new("Options");
-        for label in ["Stats for nerds", "Rung A", "Rung B"] {
+        let mut sec = Section::new("Quality");
+        for label in ["Rung A", "Rung B", "Stats for nerds"] {
             sec = sec.row(Row::new(label));
         }
         let mut table = TableView::new();
@@ -589,9 +618,9 @@ mod focus_tests {
         MoreMenuState {
             table,
             rows: vec![
-                Action::ToggleStats,
                 Action::SetQuality(crate::route::Quality::Original),
                 Action::SetQuality(crate::route::Quality::Auto),
+                Action::ToggleStats,
             ],
         }
     }

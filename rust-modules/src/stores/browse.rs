@@ -62,7 +62,16 @@ pub(crate) enum BrowseCmd {
     #[cfg(test)]
     SetCur(usize),
     RecheckShares,
-    /// The Home editor's draft commit: one record for the whole session.
+    /// The Home editor's draft commit: one record for the whole session, carrying **the rows the
+    /// viewer ANSWERED** — `(section index, the value they left it at)` — and not the rows the
+    /// editor happened to be showing.
+    ///
+    /// The distinction is provenance, and only the screen holding the draft has it
+    /// (`screens::onboard`'s `answered`, which is the set of rows a press actually moved, recorded
+    /// by the press rather than recovered from the values afterwards). A row missing from this list
+    /// is a value nobody chose: it keeps re-deriving from its default rather than being frozen as
+    /// though it were a decision (`plex::pins::answers`). An EMPTY list is still a commit — the
+    /// question was put and every default was left alone.
     ApplyPins(Vec<(usize, bool)>),
     RetryDiscovery,
     /// The profile/account switch: wipe everything and supersede everything in flight.

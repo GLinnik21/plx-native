@@ -434,7 +434,7 @@ pub(super) fn tile<H: SearchLike>(
             .scope()
             .sources()
             .iter()
-            .find(|source| source.sid == sid && !source.owned)
+            .find(|source| source.sid == sid && !source.household)
             .map_or("", |source| source.handle.as_str());
         let fact = subtitle(model.kind, item, handle);
         card_row::draw_focused(
@@ -638,7 +638,7 @@ fn subtitle(kind: Kind, item: &Item, handle: &str) -> String {
 }
 
 fn source_label(source: &ScopeSource) -> String {
-    if source.owned {
+    if source.household {
         return if source.name.is_empty() {
             "your server".into()
         } else {
@@ -671,7 +671,7 @@ fn join(names: &[String]) -> String {
     }
 }
 fn name_set(sources: &[&ScopeSource]) -> String {
-    let shares: Vec<_> = sources.iter().filter(|source| !source.owned).collect();
+    let shares: Vec<_> = sources.iter().filter(|source| !source.household).collect();
     if shares.len() <= 2 {
         return join(
             &sources
@@ -692,7 +692,7 @@ fn name_set(sources: &[&ScopeSource]) -> String {
         .sum::<usize>();
     let mut names: Vec<_> = sources
         .iter()
-        .filter(|source| source.owned)
+        .filter(|source| source.household)
         .map(|source| source_label(source))
         .collect();
     names.push(if libraries > 0 {
@@ -711,7 +711,7 @@ fn scope_text(sources: &[ScopeSource]) -> Option<String> {
         let mut line = format!("Searching {}", name_set(&live));
         let mut shares = live
             .iter()
-            .filter(|source| !source.owned && !source.handle.is_empty());
+            .filter(|source| !source.household && !source.handle.is_empty());
         if let (2, Some(source), None) = (live.len(), shares.next(), shares.next()) {
             if source_label(source) != source.handle {
                 line.push_str(" · ");
@@ -742,6 +742,9 @@ mod tests {
             libraries: Vec::new(),
             handle: String::new(),
             owned: true,
+            home: false,
+            owner_id: 0,
+            household: true,
             live: true,
         }
     }
@@ -752,6 +755,27 @@ mod tests {
             libraries: vec![lib.into()],
             handle: handle.into(),
             owned: false,
+            home: false,
+            owner_id: 0,
+            household: false,
+            live: true,
+        }
+    }
+    /// A managed/Guest profile's own household server: plex.tv sends it `owned: false` (the
+    /// account does not own it) but it is the viewer's own family server, not a stranger's share —
+    /// `is_household` (`plex/servers.rs:272`) is true and `owner_credit` deliberately returns no
+    /// handle for it (`plex/servers.rs:253-280`'s doc table). It must take the same branch `own`
+    /// does: named when it has a name, "your server" when it does not.
+    fn household(name: &str) -> ScopeSource {
+        ScopeSource {
+            sid: crate::plex::ServerId::UNSET,
+            name: name.into(),
+            libraries: Vec::new(),
+            handle: String::new(),
+            owned: false,
+            home: true,
+            owner_id: 111_111,
+            household: true,
             live: true,
         }
     }
@@ -930,6 +954,58 @@ mod tests {
             "nas-home unreachable"
         );
         assert_eq!(scope_text(&[]), None);
+    }
+
+    /// A managed/Guest profile's household server was the whole bug: `source_label`/`name_set` read
+    /// raw `owned`, which plex.tv sends `false` for a household grant, so with no other source in
+    /// scope the line fell through to the library-count branch and, with an empty handle, read the
+    /// literal "a shared server" — describing the viewer's own family server as a stranger's. The
+    /// fix reads `household` instead, so a lone household source takes the same branch `own` does.
+    #[test]
+    fn a_household_profiles_only_source_is_named_not_read_as_a_shared_server() {
+        assert_eq!(
+            scope_text(&[household("nas-home")]).unwrap(),
+            "Searching nas-home"
+        );
+        assert_eq!(
+            scope_text(&[household("")]).unwrap(),
+            "Searching your server"
+        );
+    }
+
+    /// With a household source AND a genuine friend's share in scope, only the friend is a "share":
+    /// the friend keeps its handle attribution and its place in the shared-library count, while the
+    /// household source is named exactly like an owned server and never counted as shared. This is
+    /// the case the doc table at `plex/servers.rs:253-280` draws the line on — household and a
+    /// friend's share are graded differently — and the wording must not blur it.
+    #[test]
+    fn a_household_source_is_named_while_a_friends_share_stays_credited_and_counted() {
+        assert_eq!(
+            scope_text(&[household("nas-home"), share("Film Club", "friend")]).unwrap(),
+            "Searching nas-home and Film Club · friend"
+        );
+        let many = vec![
+            household("nas-home"),
+            share("A", "ann"),
+            share("B", "bob"),
+            share("C", "cat"),
+        ];
+        assert_eq!(
+            scope_text(&many).unwrap(),
+            "Searching nas-home and 3 shared libraries",
+            "the household source must not inflate — or hide inside — the shared-library count"
+        );
+    }
+
+    /// An unnamed, unhandled friend's share must still read as "a shared server" even when a
+    /// household source is also in scope — the household branch must not accidentally swallow the
+    /// external-share fallback wording.
+    #[test]
+    fn an_unnamed_friends_share_still_reads_as_a_shared_server_beside_a_household_source() {
+        assert_eq!(
+            scope_text(&[household("nas-home"), share("", "")]).unwrap(),
+            "Searching nas-home and a shared server"
+        );
     }
 
     #[test]

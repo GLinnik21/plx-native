@@ -5,7 +5,7 @@ use crate::ui::machine::{Host, InputOwner, FocusRead, PressRead, Tick};
 use crate::ui::screen::ScreenArg;
 
 #[derive(Clone)]
-struct Arg;
+pub(super) struct Arg;
 impl LogicalState for Arg {
     fn write(&self, _: &mut Canon) {}
     fn probe(&self, _: &mut String) {}
@@ -16,9 +16,9 @@ impl ScreenArg for Arg {
     fn title(&self) -> Option<&str> { None }
     fn same_instance(&self, _: &Self) -> bool { true }
 }
-struct HostFixture;
+pub(super) struct HostFixture;
 #[derive(Clone, Copy)]
-struct Views<'a> {
+pub(super) struct Views<'a> {
     listing: crate::stores::browse::ListingView<'a>,
     directory: crate::stores::browse::DirectoryView<'a>,
     hubs: crate::stores::browse::HubsView<'a>,
@@ -351,7 +351,7 @@ fn a_fully_discovered_missing_kind_finishes_its_fade_and_has_no_foreign_grid() {
     let _guard = crate::testlock::serial();
     let mut fixture = Fixture::new();
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, vec![
-        crate::browse::view::SectionView { borrowed: false, sid: Some(crate::plex::ServerId::from_raw(0)), key: 1,
+        crate::browse::view::SectionView { sid: Some(crate::plex::ServerId::from_raw(0)), key: 1,
             kind: SecKind::Movie, row: crate::browse::SrcRow { section: 0, title: "Cinema".into(),
                 pinned: true, current: true, ..Default::default() } }]);
     let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Show);
@@ -538,10 +538,12 @@ fn pending_semantic_commits_change_the_library_state_hash() {
     }
 }
 
-struct Fixture {
+// `pub(super)`, not private: `selector_matrix_tests.rs` (a sibling test module) reuses this
+// harness wholesale rather than duplicating it, per the guide at the top of that file.
+pub(super) struct Fixture {
     stores: Option<crate::stores::Stores>,
     listing: crate::stores::browse::ListingSnapshot,
-    directory: crate::stores::browse::DirectorySnapshot,
+    pub(super) directory: crate::stores::browse::DirectorySnapshot,
     hubs: crate::stores::browse::HubsSnapshot,
     measure: FixtureMeasure,
 }
@@ -705,13 +707,13 @@ impl Fixture {
         fixture
     }
 
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let sid = crate::plex::ServerId::from_raw(0);
         let listing = crate::browse::view::ListingSnapshot::fixture(sid, (0..36).map(|i|
             Some(crate::pms::PmsMovie { sid, rk: format!("{}", i + 1), title: format!("s{i:04x}"), ..Default::default() })).collect(),
             vec![("A".into(), 18), ("Z".into(), 18)]);
         let directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, vec![
-            crate::browse::view::SectionView { borrowed: false, sid: Some(sid), key: 1, kind: SecKind::Movie,
+            crate::browse::view::SectionView { sid: Some(sid), key: 1, kind: SecKind::Movie,
                 row: crate::browse::SrcRow { section: 0, title: "Cinema".into(), pinned: true, current: true, ..Default::default() } }]);
         Self {
             stores: None,
@@ -721,12 +723,12 @@ impl Fixture {
             measure: FixtureMeasure,
         }
     }
-    fn cx(&self, focus: Option<FocusKey<u32>>) -> Cx<'_, HostFixture> {
+    pub(super) fn cx(&self, focus: Option<FocusKey<u32>>) -> Cx<'_, HostFixture> {
         Cx { views: Views { listing: self.listing.view(), directory: self.directory.view(), hubs: self.hubs.view() },
             tick: Tick::default(), measure: &self.measure, focus: FocusRead { current: focus , ..Default::default() },
             press: PressRead::default(), owner: OWNER }
     }
-    fn screen(&self) -> LibraryScreen {
+    pub(super) fn screen(&self) -> LibraryScreen {
         let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Movie);
         page.sync(&self.cx(None));
         page
@@ -885,7 +887,7 @@ fn sort_chosen_during_section_fade_commits_to_the_incoming_library() {
     let mut fixture = Fixture::new();
     let sid = crate::plex::ServerId::from_raw(0);
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, (0..2).map(|i|
-        crate::browse::view::SectionView { borrowed: false, sid: Some(sid), key: i as i64 + 1, kind: SecKind::Movie,
+        crate::browse::view::SectionView { sid: Some(sid), key: i as i64 + 1, kind: SecKind::Movie,
             row: crate::browse::SrcRow { section: i, title: format!("s{i:04x}"), pinned: true, current: i == 0, ..Default::default() } }).collect());
     let mut page = fixture.screen();
     let mut output = Vec::new();
@@ -911,26 +913,42 @@ fn sort_chosen_during_section_fade_commits_to_the_incoming_library() {
         }))) if *target == incoming && key == "titleSort")), "leaving flushes selection and semantic sort in one addressed store command");
 }
 
+/// Issue #100/#165: a Guest or managed profile's own household server always arrives from
+/// `/resources` with `owned: false` (`plex/account.rs:1128-1157`), so on such a profile EVERY
+/// section it sees would once have read as `borrowed`. The 0.6.x server picker's old singleton
+/// exception — carried forward wholesale into the restructure by `3c2de7ad` — read that as "still
+/// ambiguous" and left the legacy `Library · <name> ⌄` chip up, opening the old Sources popover.
+/// That is exactly the symptom the owner saw on a real TV's TV Shows page under `--guest`, and
+/// exactly the gap the maintainer named on #100: "the picker only handles multiple servers, not
+/// multiple libraries per section."
+///
+/// The fix is stronger than "ownership no longer decides this": `SectionView` carries no
+/// ownership bit at all any more, so there is nothing left FOR ownership to decide — a lone
+/// favourite clears the selector unconditionally, on every profile, because the published view
+/// has no field left to ask the old exception's question. Before the `borrowed` field's deletion
+/// this test proved the weaker claim by looping over `[true, false]`; with the field gone the loop
+/// has nothing to vary, so this now asserts the one remaining case directly.
 #[test]
-fn singleton_borrowed_library_opens_sources_and_uses_value_chip_geometry() {
+fn a_single_favourite_library_draws_no_selector() {
     let _guard = crate::testlock::serial();
     let mut fixture = Fixture::new();
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, vec![
-        crate::browse::view::SectionView { borrowed: true, sid: Some(crate::plex::ServerId::from_raw(0)), key: 1,
+        crate::browse::view::SectionView { sid: Some(crate::plex::ServerId::from_raw(0)), key: 1,
             kind: SecKind::Movie, row: crate::browse::SrcRow { section: 0, title: "Cinema".into(),
                 pinned: true, current: true, ..Default::default() } }]);
-    let mut page = fixture.screen();
-    assert_eq!(page.libraries.len(), 1);
-    let elem = page.libraries[0].0;
-    let cx = fixture.cx(Some(page.key(elem)));
-    let rect = page.place(&elem, &cx, At::Drawn).unwrap().rest_rect;
-    assert_eq!(rect.w, crate::ui::value_chip::ValueChip::width(cx.measure, c"Library", c" · Cinema", None));
-    let mut output = Vec::new();
-    let mut present = crate::ui::present::Present::new();
-    page.activate(elem, false, &cx, &mut Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present));
-    assert!(output.iter().any(|effect| matches!(&effect.fx,
-        Fx::App(AppFx::Library(LibraryReq::Menu { kind: crate::screens::registry::LibraryMenuKind::Sources, anchor, .. }))
-            if *anchor == [rect.x.to_bits(), rect.y.to_bits(), rect.w.to_bits(), rect.h.to_bits()])));
+    let page = fixture.screen();
+    assert!(page.libraries.is_empty(), "a lone favourite must clear the selector");
+    assert!(!page.layout.libraries, "no row height is reserved for it");
+    let cx = fixture.cx(None);
+    let mut groups = Vec::new();
+    page.groups(&cx, &mut groups);
+    assert!(!groups.iter().any(|group| group.id == LIBRARY_GROUP),
+        "no selector focus group is offered");
+    let mut draw = DrawFrame::new(&cx, crate::ui::Painter::root());
+    page.record_stops(&mut draw);
+    let stops = draw.into_stops();
+    assert!(!stops.iter().any(|stop| region_of_elem(stop.key.elem) == Some(KeyRegion::Library)),
+        "no pointer stop is registered for the selector row");
 }
 
 #[test]
@@ -939,7 +957,7 @@ fn favorite_library_row_uses_shared_strip_geometry_and_incoming_type() {
     let mut fixture = Fixture::new();
     let sid = crate::plex::ServerId::from_raw(0);
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, (0..4).map(|i|
-        crate::browse::view::SectionView { borrowed: false, sid: Some(sid), key: i as i64 + 1,
+        crate::browse::view::SectionView { sid: Some(sid), key: i as i64 + 1,
             kind: if i < 2 { SecKind::Movie } else { SecKind::Show },
             row: crate::browse::SrcRow { section: i, title: format!("Library {i}"), pinned: true,
                 current: i == 0, ..Default::default() } }).collect());

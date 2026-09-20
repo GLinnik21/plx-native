@@ -316,8 +316,11 @@ not built, the strip has three pills, the headings carry no annotation.
 **People in content, machines in settings.** The handle (`friend`) on every browsing surface; the
 machine name (`nas-home`) only in the Sources list and the failure read-out.
 
-- **A — the Sources list is a LIBRARY TOOLBAR CHIP**, not a row in the account popover. `Library ·
-  Film Club  friend ▾`, opening a 640-wide panel. The canvas gave it **two levels** switched by
+- **A — the Sources list is reached through the library pill strip's `MORE` pill**, not a row in
+  the account popover. Zero or one eligible library draws no selector at all, for every profile,
+  owned or borrowed; two or more draw the strip, with a `MORE` pill once the row overflows, and
+  only `MORE` opens a 640-wide panel — issue #100/#165: a borrowed singleton no longer keeps a dead
+  picker. The canvas gave it **two levels** switched by
   Browse / On Home pills at the panel top (the track menu's own swap); **the shipped panel has one**
   — it is the picker, and nothing else. The second level became its own route on 2026-09-05, when
   the switch stopped governing Home alone: *Favorite libraries*, which is also the
@@ -351,10 +354,11 @@ machine name (`nas-home`) only in the Sources list and the failure read-out.
   same screen-space anchor as Home's and the sign-in failure's (`StatusOverlay::page`), with only
   the head of the document beside it — no sort/filter chips, no count, no
   A–Z rail. **The head is whichever form it would take on a healthy page**, which since issue #68
-  (2026-09-06) is not always the chip: `Layout::failed` takes `head_on()` and `draw_document` asks
-  `lib_row_on()` first, so a dead library that shares its type with another favourite draws the
-  library ROW beside the read-out. That is the useful answer anyway — the row is how you leave the
-  library that cannot be reached — but "only the Source chip" is no longer what you will see.
+  (2026-09-06) is never a chip — there is none any more: `Layout::failed` builds the head with the
+  same eligible-library rule `draw_document` uses, so a dead library that shares its type with
+  another favourite draws the library pill strip beside the read-out. That is the useful answer
+  anyway — the strip is how you leave the library that cannot be reached — but there is no "Source
+  chip" left to qualify.
 - **E — `Shared by friend`** as the last run on the detail hero's date/runtime line, plus an **Also
   available** button in the actions row when a second pinned source holds the film. **OK navigates**
   to that server's page rather than swapping the copy in place, which is also what settles the
@@ -521,7 +525,7 @@ could not see the bug:
   for a freshly constructed/legacy client; discovery and session restore now publish the measured
   tier after each registration or re-point.
 
-## 10. The section table goes multi-server, and gets its Source chip (deliverable A)
+## 10. The section table goes multi-server, and gets its library pill strip (deliverable A)
 
 Step 1's registry now has its first real consumer, and deliverable A of the design is drawn.
 
@@ -541,24 +545,29 @@ Step 1's registry now has its first real consumer, and deliverable A of the desi
   probe per library — with a 10 s per-source backoff. Entering Library only selects a type and view
   state; it performs no HTTP. A dead share becomes a recoverable failed source without parking SDL.
 - **Pinning** is the design's one control and, since 2026-09-05, governs the whole app rather than
-  Home alone (above): your own libraries start favourite, a friend's start favourite only if you
-  have no owned library of that type, and the last favourite cannot be turned off.
-  `pinned_libraries()` is its read side.
+  Home alone (above): your HOUSEHOLD's libraries start favourite, a friend's start favourite only
+  if the household has no library of that type, and the last favourite cannot be turned off.
+  `pinned_libraries()` is its read side. The household and not the account, because plex.tv grades
+  a Plex Home managed profile's own family server `owned:false` — read on ownership, such a profile
+  had nothing of its own, no type of its own, and therefore every library it could see starting
+  favourite, a stranger's included.
 - **The tab strip's vocabulary is permanent; its LENGTH is not.** A library pill names a type, never
   a discovered row, so it survives reset and failed/delayed discovery — but a type with no favourite
   library draws no pill at all, so the row is `Home … Search` with two to four stops in between.
   Store a `Pill`, never a `usize`. The
-  selected type resolves owned-first, then to the first usable shared section; the Source panel
+  selected type resolves to the library this profile last chose, else household-first, then to the
+  first usable outside section; the Source panel
   selects alternatives.
-- **The Source chip and its panel** are `ui/library.rs`; the row model is pure and host-tested. The
+- **The library pill strip and its Sources panel** are `screens/library/toolbar.rs` (the strip) and
+  `screens/library/mod.rs` (the panel); the row model is pure and host-tested. The
   panel had two levels (`Browse` ⟷ `On Home`) until 2026-09-05 and is now a PICKER and nothing else
   — one level, one tick, no words. The editor was its own route (*Favorite libraries*,
   `ui::onboard`) until phase 5b (2026-09-07); reached from Settings it is now a PAGE of the
   Settings family (`SettingsPage::Favourites`, hosting `screens::onboard`'s owned `OnboardScreen`)
   rather than a second value the page alphabet takes — deliverable A above has the mechanism, and
   first-run alone still arrives as `AppArg::Onboard`. Either way it remains the one surface listing
-  every GRANTED library, so a non-favourite has a way back. The chip itself now heads the Library's
-  document rather than leading a toolbar. `TableView` gained the two things it was missing for it: a drawn `Section::accessory`
+  every GRANTED library, so a non-favourite has a way back. The pill strip itself now heads the
+  Library's document rather than leading a toolbar. `TableView` gained the two things it was missing for it: a drawn `Section::accessory`
   (declared but never painted before) and `Section::dim`.
 - **The roster's own facts** (machine name, owner handle, owned) live beside the registry as
   `plex::ServerFacts`, merged rather than replaced so plex.tv and a server naming itself over `GET /`
@@ -657,12 +666,26 @@ put must fall on its own DEFAULT, not silently Off because it was absent from a 
 it existed. That is also what makes the canvas's "a share arriving later does not reopen this
 screen" honest rather than merely quiet.
 
-The rules are `plex::pins` — pure, no store, host-graded: the ownership default, the recorded
+The rules are `plex::pins` — pure, no store, host-graded: the HOUSEHOLD default, the recorded
 answer, the "more than one source, once per profile" gate, and a **never-empty floor** (a recorded
 selection CAN be emptied without any toggle — pin only a friend's library, then lose the friend
-from the roster). `browse.rs` is the plumbing around them, and a selection PERSISTS: every flip was
-in-memory before 2026-08-21, so a selection made in the Sources panel was gone by the next boot and
-the ownership default came back, which reads as the switch not working. Since 2026-09-04 the write
+from the roster). Only the rows a viewer ANSWERED are recorded (`pins::answers`): a default
+nobody chose keeps re-deriving, which is what lets a Home roster landing after the first-run screen
+correct a classification it arrived too late to inform, without touching an answer anybody gave.
+Which rows those are is carried BY the commit — `BrowseCmd::ApplyPins` holds the rows a press
+actually MOVED (`screens::onboard`'s `touched`, recorded at the toggle), not the rows the editor
+showed and not a comparison of any kind. The store inferred it from "the row disagrees with the
+live pin" and the screen then inferred it from "the draft disagrees with `entry_pins`"; both drop
+an answer the world drifted onto, one layer apart, which is why the provenance is written down
+where it happens. And because only the answered rows are recorded, a commit that produced a record
+ends by re-resolving the whole table (the same reconcile a reclassification runs), so what is
+displayed after it is what was saved. A commit the session REFUSED produces no record and is not
+reconciled at all: the record still standing is the one the commit meant to replace, so resolving
+against it would put the viewer's answer back the way it was. The answer stands in memory for the
+run instead, which is `session::update`'s own contract for the refusal. `browse.rs` is the plumbing
+around them, and a selection PERSISTS: every flip was in-memory before 2026-08-21, so a selection
+made in the Sources panel was gone by the next boot and the default came back, which reads as the
+switch not working. Since 2026-09-04 the write
 is `browse::apply_pins`, once, when the Home editor's `Done`/`Start watching` commits its draft — a
 flip edits the in-memory draft and nothing is written until then (`toggle_pin`, the old per-press
 write, is a test-only fixture now).
@@ -676,9 +699,13 @@ Four places, all recorded so the next reader does not "fix" them back:
    the shipped Sources panel draws nothing, on its own stated rule that an empty handle is *the
    absence of an owner rather than an anonymous one*. The route and the panel must agree, and they
    do — that rule is the one that stays.
-3. **A borrowed-only account gets every library On.** The canvas's "a friend's arrives Off" has no
-   answer for an account with no server of its own; taken literally it opens the app on nothing.
-   With nothing of your own to prefer, a borrowed library is simply a library.
+3. **An account with no server of its HOUSEHOLD'S gets every library On.** The canvas's "a friend's
+   arrives Off" has no answer for such an account; taken literally it opens the app on nothing.
+   With nothing of the household's to prefer, a borrowed library is simply a library. The
+   household and not the account, and the distinction is the whole managed-profile fix: plex.tv
+   answers a Plex Home managed profile `owned:false` about the family server, so read on ownership
+   this exemption was satisfied by *every* managed and Guest profile in existence — which is how a
+   genuine friend's share came up favourite on the family's Home beside the family's own.
 4. **Focus opens on *Start watching*.** The canvas says so twice in prose and draws it that way —
    but a stale comment in its own `renderVals` claims focus opens on row index 2, "the first shared
    library". The prose and the artwork agree with each other, so the comment is the odd one out.
@@ -733,7 +760,7 @@ name a record has:
   Home's own pump, and `session.rs` forbids a per-frame file read.
 - **`pins::carry_forward`** — a record is written from the section table, and `set_pins_for`
   replaces a profile's entry wholesale, so one switch flipped on a boot the share missed would
-  otherwise have erased the share's answer and let the ownership default back in. The merge grain is
+  otherwise have erased the share's answer and let the default back in. The merge grain is
   the MACHINE: a server the table holds has just been answered about in full (a library it has since
   lost is correctly dropped); one it does not hold has not been answered about at all.
 
@@ -907,18 +934,34 @@ Then, per cache:
   `pms::roster` groups Home's shelves by it, and `metadata::alt_copies` turns it into the
   "This account" row. For the household server that is now the right answer; for an unnamed external
   share it is wrong, and it was wrong before this change too (`ServerFacts::owned` has always
-  documented that a share with no `sourceTitle` is still a share). Fixing it properly means a
-  three-state `Owned | Household | External` relation carried on `ServerFacts` and `SourceRef`
-  instead of two booleans — a bigger change than the reported bug needs, and one that would also
-  want `owned` to stop meaning "this ACCOUNT owns it" on the four surfaces that read it for
-  ordering and default pinning. Recorded here rather than done.
+  documented that a share with no `sourceTitle` is still a share). This paragraph used to say the
+  proper fix meant a three-state `Owned | Household | External` relation *carried* on `ServerFacts`
+  and `SourceRef`, and named the blocker: the evidence that would grade a stored entry was never
+  written down. **That blocker is gone.** `GrantEvidence` — `owned`, `home`, `ownerId` — now rides
+  `ServerFacts`, `SourceRef` and `CandidateActivation`, and the three states are simply *derived*
+  from it: `owned` is Owned, else `is_household` is Household, else External. A stored relation
+  would add nothing a `match` on those three fields does not already give, and it would go stale
+  the moment the Home roster changed under it, which is precisely why the verdict is derived and
+  only the evidence is kept. What the pins and the tab destination read is that derivation
+  (`BrowseSource::household`), and `owned` has stopped meaning "prefer this" on both of them. So
+  what is left here is genuinely only the two empty-credit READERS above — a scoped follow-up whose
+  cost is teaching those two surfaces the third state, not a data-model change — and it stays a
+  follow-up because it changes what "This account" says on a user-facing row, which nobody has
+  asked for. `screens::alt_sources_tests`'
+  `an_unnamed_external_share_is_drawn_like_the_household_and_that_is_the_open_bug` pins the current
+  behaviour so the follow-up has a red test waiting for it.
 - **A session file written by an earlier build** has the raw handle already persisted in
   `SourceRef::shared_by`. It is corrected the first time the roster is re-derived — a sign-in, a
   `refresh_roster` (every boot, for the account owner) or any profile switch that is not the
   no-network "same profile" fast path — because `refreshed_sources` now *assigns* the credit rather
-  than merging it, and `describe` now publishes that assignment. There is no offline migration, and
-  there cannot be a good one: the evidence that would grade a stored entry (`ownerId`, `home`) was
-  never written down.
+  than merging it, and `describe` now publishes that assignment. There is no offline migration for
+  a file that old, and there cannot be a good one: the evidence that would grade a stored entry
+  (`ownerId`, `home`) was not written down at the time, and nothing offline can reconstruct it.
+  **New records do carry it** — `SourceRef` and `CandidateActivation` persist all three fields,
+  `#[serde(default)]`, so the gap is genuinely confined to sessions written before they existed.
+  Such a session deserializes to `owned:false, home:false, ownerId:0`, which `is_household` grades
+  as an outsider's until the first online roster re-derive corrects it — the safe direction, and
+  the same one every other unknown here falls in.
 - **The `/tmp/plxnative-servers` dev trigger still derives `owned` as `handle.is_empty()`**
   (`app.rs`), which is the derivation `ServerFacts::owned` documents as wrong. It is left alone
   because there the operator states the handle by hand and means it; but it cannot express an

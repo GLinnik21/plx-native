@@ -31,6 +31,20 @@ fn alt_restamp_owners() -> bool {
 fn sid(n: u16) -> ServerId {
     ServerId::from_raw(n)
 }
+/// The Plex Home admin's plex.tv account id, as a managed profile's `/api/v2/resources` reports
+/// it on the family server. Synthetic — no real account id belongs in a public repository.
+const ADMIN_ID: i64 = 4_242;
+/// **What plex.tv says about the household's own server**, seen by a profile that does not own it.
+///
+/// It was `GrantEvidence::outside()` here, under a comment that called the same server "the
+/// household's own" — a contradiction that was invisible while the evidence was a lone `false`,
+/// because `false` only meant "not owned", which is true of a household server as well. `outside`
+/// makes a claim, and the claim was wrong: the assertion below wanted the credit to go away
+/// BECAUSE this machine is the house's, and stating the opposite meant it passed for the right
+/// value and the wrong reason. See [`crate::plex::GrantEvidence::household`].
+fn house_evidence() -> crate::plex::GrantEvidence {
+    crate::plex::GrantEvidence::household(ADMIN_ID)
+}
 /// A copy on server `s`, in `library`, owned by `owner` (`""` = this account), at class `res`.
 fn copy(s: u16, library: &str, owner: &str, rk: &str, res: &str) -> AltCopy {
     AltCopy {
@@ -401,8 +415,8 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
 
     // what a build without the rule published: the household's own server wearing the account
     // holder's handle, and the panel's rows stamped from it
-    crate::plex::describe_server(house, "Mac mini", "admin", false);
-    crate::plex::describe_server(friend, "nas-home", "friend", false);
+    crate::plex::describe_server(house, "Mac mini", "admin", house_evidence());
+    crate::plex::describe_server(friend, "nas-home", "friend", crate::plex::GrantEvidence::outside());
     alt_install(
         house,
         "4",
@@ -421,7 +435,7 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
     );
 
     // the roster refresh re-grades the household's own server, with NO new resolve
-    crate::plex::describe_server(house, "Mac mini", "", false);
+    crate::plex::describe_server(house, "Mac mini", "", house_evidence());
     assert!(alt_restamp_owners(), "the credit moved");
 
     let after = rows(copies(), house, "4");
@@ -442,13 +456,13 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
     // **An OPEN panel is a materialised table, not a view of the store.** Without the rebuild it
     // keeps both its old text and its old ORDER — and the order is not cosmetic, `owner` is the
     // own-before-a-friend's tiebreak — until the user closes and reopens it.
-    crate::plex::describe_server(house, "Mac mini", "admin", false);
+    crate::plex::describe_server(house, "Mac mini", "admin", house_evidence());
     alt_restamp_owners();
     let mut p = panel(house, "4");
     // the page's own copy is `(house, "4")`, so its row wears the tick and leads
     assert_eq!(drawn(&p), ["admin", "friend"]);
 
-    crate::plex::describe_server(house, "Mac mini", "", false);
+    crate::plex::describe_server(house, "Mac mini", "", house_evidence());
     alt_restamp_owners();
     assert!(p.refresh(test_store().view()), "the correction reached the drawn table");
     assert_eq!(
@@ -464,6 +478,83 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
     assert!(
         !p.refresh(test_store().view()),
         "…and a refresh with nothing to say rebuilds nothing"
+    );
+}
+
+/// **An empty credit means three things, and this panel still reads two of them as one.**
+///
+/// The companion to the test above, and the case it deliberately does NOT cover: a share from
+/// somebody genuinely outside the household whom plex.tv did not name. Its credit is empty for a
+/// reason that has nothing to do with the household — `sourceTitle` was absent, which
+/// `ServerFacts::owned` has always documented does not make a share ours — and `alt_copies` turns
+/// every empty credit into the "This account" row regardless.
+///
+/// So the assertion here is that the household server and the unnamed share are drawn the SAME,
+/// and that is recorded as wrong rather than as satisfactory. It is one of the two empty-credit
+/// readers (`pms::roster`'s Home grouping is the other) that `docs/shared-servers.md` carries as a
+/// scoped follow-up: fixing it means teaching this panel the three-state relation, which is
+/// derivable from the evidence now but is a change to what "This account" MEANS on a user-facing
+/// row, and nobody has asked for that yet.
+///
+/// What this test does pin down is the half that IS now decided: the two servers are told apart by
+/// their evidence at the registry, so the fix has something to read when it is written.
+#[test]
+fn an_unnamed_external_share_is_drawn_like_the_household_and_that_is_the_open_bug() {
+    struct Fresh(#[allow(dead_code)] crate::testlock::Serial);
+    impl Drop for Fresh {
+        fn drop(&mut self) {
+            test_store().run(crate::stores::metadata::MetadataCmd::Clear);
+            crate::plex::reset_servers_for_test();
+        }
+    }
+    let _g = Fresh(crate::testlock::serial());
+    crate::plex::reset_servers_for_test();
+    let house = crate::plex::register_for_test("alt-house", "127.0.0.1", 1, "t", "cid");
+    let named = crate::plex::register_for_test("alt-friend", "127.0.0.1", 2, "t", "cid");
+    let unnamed = crate::plex::register_for_test("alt-stranger", "127.0.0.1", 3, "t", "cid");
+
+    crate::plex::describe_server(house, "Mac mini", "", house_evidence());
+    crate::plex::describe_server(named, "nas-home", "friend", crate::plex::GrantEvidence::outside());
+    // plex.tv granted this account the server and sent no `sourceTitle` with it. Nothing about
+    // that says the machine is the household's — the credit is absent, not empty-because-ours.
+    crate::plex::describe_server(unnamed, "box", "", crate::plex::GrantEvidence::outside());
+
+    // the registry CAN tell them apart: same empty credit, different grant evidence
+    let evidence = |id| {
+        crate::plex::server_facts(id)
+            .map(|f| (f.handle.clone(), f.owned, f.home, f.owner_id))
+            .expect("a described slot")
+    };
+    assert_eq!(evidence(house), (String::new(), false, true, ADMIN_ID));
+    assert_eq!(evidence(unnamed), (String::new(), false, false, 0));
+    assert!(
+        crate::plex::is_household(house_evidence().grant(), &[]),
+        "the house is the household's, on the evidence"
+    );
+    assert!(
+        !crate::plex::is_household(crate::plex::GrantEvidence::outside().grant(), &[]),
+        "…and the unnamed share is not, on the same evidence"
+    );
+
+    // the PANEL, however, collapses both to one row text — the scoped follow-up, stated
+    alt_install(
+        house,
+        "4",
+        vec![
+            copy(0, "Movies", "", "4", "1080"),
+            copy(1, "Film Club", "friend", "318", "1080"),
+            copy(2, "Archive", "", "77", "1080"),
+        ],
+    );
+    let drawn: Vec<String> = rows(test_store().view().alt_copies(house, "4"), house, "4")
+        .iter()
+        .map(|r| r.detail.clone())
+        .collect();
+    assert_eq!(
+        drawn,
+        [OWN_ACCOUNT, OWN_ACCOUNT, "friend"],
+        "the unnamed share reads as this account, exactly as the household's does — the \
+         empty-credit bug `docs/shared-servers.md` carries, unchanged and out of scope here"
     );
 }
 
@@ -486,8 +577,8 @@ fn a_resolve_that_landed_after_the_correction_is_regraded_on_the_way_in() {
     crate::plex::reset_servers_for_test();
     let house = crate::plex::register_for_test("alt-late-house", "127.0.0.1", 1, "t", "cid");
     let friend = crate::plex::register_for_test("alt-late-friend", "127.0.0.1", 2, "t", "cid");
-    crate::plex::describe_server(house, "Mac mini", "admin", false);
-    crate::plex::describe_server(friend, "nas-home", "friend", false);
+    crate::plex::describe_server(house, "Mac mini", "admin", house_evidence());
+    crate::plex::describe_server(friend, "nas-home", "friend", crate::plex::GrantEvidence::outside());
 
     // the worker's list, stamped while the old credit was still published
     let in_flight = vec![
@@ -496,7 +587,7 @@ fn a_resolve_that_landed_after_the_correction_is_regraded_on_the_way_in() {
     ];
 
     // …then the correction lands, and the epoch that saw it is already spent
-    crate::plex::describe_server(house, "Mac mini", "", false);
+    crate::plex::describe_server(house, "Mac mini", "", house_evidence());
     alt_restamp_owners();
 
     // …and only now does the resolve arrive

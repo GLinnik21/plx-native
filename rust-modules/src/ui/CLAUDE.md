@@ -33,7 +33,7 @@ kill. Full design + migration status: `docs/ui-system-migration.md`.
    `size::DIAGNOSTIC` 20 — the *size* axis of the design system.
    `CAPTION` (24) is the **couch legibility floor for ordinary product content**; `MICRO` exists
    solely for one-line de-emphasized labels — an episode's air date, a rating row's provider
-   caption, the Source chip's handle — never for content. `DIAGNOSTIC` belongs only to the
+   caption, a track's file path in the tracks panel — never for content. `DIAGNOSTIC` belongs only to the
    deliberately opened `app::diagnostics` engineering instrument: its fixed schema and complete values
    matter more than couch-copy scale, and it must never migrate into chrome or prose. The hero
    SYNOPSIS is the case that proves

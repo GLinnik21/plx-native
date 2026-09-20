@@ -341,7 +341,14 @@ impl<H: Host> NavStack<H> {
 
     fn fresh(focus_group: GroupId) -> Enter<H::Elem> {
         Enter::Fresh {
-            focus: FocusTarget::ContainerGroup(focus_group),
+            // A pushed page has never been seen: `FirstInGroup` ignores any cursor remembered
+            // for this `(EntryId, GroupId)`, which a `ContainerGroup`'s `Seat::Remembered` would
+            // otherwise read back — a page that shares neither entry nor group with anything else
+            // does not need the distinction, but `Push` mints a fresh `EntryId` per page here, so
+            // this arm cannot itself observe the leak `FocusTarget`'s doc on `screen.rs`
+            // describes; it is fixed here anyway because `Enter::Fresh` means "never seen" for
+            // every caller of this constructor, not just the ones a collision can currently bite.
+            focus: FocusTarget::FirstInGroup(focus_group),
         }
     }
 

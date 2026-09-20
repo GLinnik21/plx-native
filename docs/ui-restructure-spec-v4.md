@@ -211,7 +211,7 @@ pub enum ScreenEvent<H: Host> { Mount, Enter(Enter), Cover, Uncover, WillLeave(L
                                 Tick(Tick), Timer(TimerId), Async(RequestId, H::Msg), StoreChanged(StoreOrd, u32 /*gen*/),
                                 FocusMoved{from: Option<FocusKey<H::Elem>>, to: FocusKey<H::Elem>, by: By /*Dir|Pointer|Restore|Reconcile*/}, App(H::Msg) }
                                 // the library names no application type: async payloads and store notices arrive as H::Msg / ordinals
-pub enum Enter { Fresh{focus: FocusTarget}, Restored }      // FocusTarget = Elem(FocusKey) | ContainerGroup(GroupId) — "mount with focus on the strip" is expressible
+pub enum Enter { Fresh{focus: FocusTarget}, Restored }      // FocusTarget = Elem(FocusKey) | ContainerGroup(GroupId) | FirstInGroup(GroupId) — "mount with focus on the strip" is expressible; FirstInGroup bypasses a group's own Seat::Remembered for a page never seen before (a 2026-09-20 fix: every nested Settings page shares one EntryId and GroupId(0), so ContainerGroup on a push could read the outgoing page's remembered row back)
 pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn name(&self) -> &'static str;                       // the heartbeat word — byte-identical to today's route word (§15.3)
     fn state(&self) -> &dyn LogicalState;                 // legacy pages implement it over a snapshot writer, never a borrow

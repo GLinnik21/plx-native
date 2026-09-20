@@ -6,7 +6,10 @@
 //! differs). The type is generic over the bundle's host, which is what lets one impl serve both.
 //!
 //! The draft model is unchanged: every toggle edits `draft`, nothing is written until the one
-//! action commits `BrowseCmd::ApplyPins`, and BACK/Cancel is a pure discard.
+//! action commits `BrowseCmd::ApplyPins`, and BACK/Cancel is a pure discard. What that command
+//! carries is the rows this session ANSWERED ([`OnboardScreen::answered`]) rather than the rows it
+//! showed — the store cannot recover that from the values alone, and used to lose an answer the
+//! world had caught up with.
 
 use std::borrow::Cow;
 use std::ffi::CStr;
@@ -67,6 +70,22 @@ pub(crate) struct OnboardScreen {
     table_epoch: u32,
     entry_pins: Vec<(usize, bool)>,
     draft: Vec<(usize, bool)>,
+    /// **The sections this editing session PRESSED** — the provenance itself, recorded by
+    /// [`toggle_row`](Self::toggle_row) rather than derived from any comparison.
+    ///
+    /// It was `draft != entry_pins` until 2026-09-20, which is the same inference the store
+    /// removed from `browse::apply_pins` and it survived here. The comparison needs a baseline
+    /// that stays true, and [`draft_rows`](Self::draft_rows) can only keep one for a row NOBODY
+    /// has touched — so once a row was edited its baseline froze, and a Plex Home roster landing
+    /// while the editor was open left it stale: toggle a row Off, let the live default drift Off
+    /// underneath it, toggle it back On, and `draft == entry_pins` again reads as "never
+    /// answered". The row the viewer pressed twice was then recorded nowhere and went straight
+    /// back to the drifted default.
+    ///
+    /// Section ids and not row indices, because a landing re-orders rows and this must survive
+    /// one; cleared with `draft`/`entry_pins` whenever the table's identity changes
+    /// ([`reseed_if_table_identity_changed`](Self::reseed_if_table_identity_changed)).
+    touched: Vec<usize>,
     /// The empty-roster spinner clock, in ms — cached each tick from
     /// [`phase_clock`](Self::phase_clock)'s `advance`.
     phase_ms: f32,
@@ -158,8 +177,9 @@ impl OnboardScreen {
             acts: Vec::new(),
             table_gen: u32::MAX,
             table_epoch: directory.epoch().unwrap_or(0),
-            entry_pins: if settings { base.clone() } else { Vec::new() },
+            entry_pins: base.clone(),
             draft: base,
+            touched: Vec::new(),
             phase_ms: 0.0,
             phase_clock: crate::ui::motion::Phase::default(),
             pop: CtlPop::new(),
@@ -187,16 +207,44 @@ impl OnboardScreen {
         }
     }
 
+    /// **The rows this editing session ANSWERED** — the provenance the store used to have to
+    /// guess at, and the payload of the one `BrowseCmd::ApplyPins` [`commit`](Self::commit) sends.
+    ///
+    /// It is [`touched`](Self::touched) — the sections a press moved — carrying each one's
+    /// CURRENT draft value. Everything else is a value nobody chose and must stay unrecorded, to
+    /// go on re-deriving from its default (`plex::pins::answers`).
+    ///
+    /// **This is the half a store cannot reconstruct.** Browse used to infer the same thing by
+    /// comparing the whole visible draft against the live pins — which reads a row the viewer
+    /// switched Off as untouched the moment a roster correction moves the live pin to Off as
+    /// well, and drops the answer. Only the screen holding the draft knows which rows were
+    /// pressed, so only the screen can say. It said it with a comparison of its own
+    /// (`draft != entry_pins`) until 2026-09-20, and that comparison had the same blind spot one
+    /// layer in: see [`touched`](Self::touched).
+    ///
+    /// A row pressed twice back onto the value it opened with is therefore an answer, and
+    /// deliberately: somebody chose it, so freezing it is the honest record. [`dirty`](Self::dirty)
+    /// stays on the net difference instead, so *Done* still goes away when an edit is undone.
+    fn answered(&self) -> Vec<(usize, bool)> {
+        self.draft
+            .iter()
+            .filter(|(section, _)| self.touched.contains(section))
+            .copied()
+            .collect()
+    }
+
+    /// Whether this editor has anything to offer *Done* for: the draft DIFFERS from what the rows
+    /// read when it opened. Not [`answered`](Self::answered) — a viewer who toggles a row and
+    /// toggles it back has answered (they pressed it), but has nothing left to show, and a band
+    /// control that stays behind an undone edit is a control for a change nobody can see.
     fn dirty(&self) -> bool {
-        if !self.settings {
-            return true;
-        }
-        self.entry_pins.iter().any(|(section, was)| {
-            self.draft
-                .iter()
-                .find(|(s, _)| s == section)
-                .is_some_and(|(_, now)| now != was)
-        })
+        !self.settings
+            || self.draft.iter().any(|(section, now)| {
+                self.entry_pins
+                    .iter()
+                    .find(|(s, _)| s == section)
+                    .is_some_and(|(_, was)| was != now)
+            })
     }
 
     /// The band holds a control unless this is a pristine Settings editor. Reads the CACHED
@@ -234,30 +282,48 @@ impl OnboardScreen {
         self.table_epoch = epoch;
         let fresh = snapshot_pins(directory);
         self.draft = fresh.clone();
-        if self.settings {
-            self.entry_pins = fresh;
-        }
+        // Every press this session made was about section ids from the OLD table; a reset is what
+        // makes them mean a different library, or none.
+        self.touched.clear();
+        // Both mounts, for `draft_rows`' reason: `entry_pins` is the "what did this row read when
+        // the editor opened" baseline `dirty` compares against, and a first-run editor needs one as
+        // much as the Settings editor does. Which rows were PRESSED is `touched`'s, not this.
+        self.entry_pins = fresh;
     }
 
+    /// The retained directory's rows with this editor's draft laid over them.
+    ///
+    /// **A row the viewer has not touched follows the live pin; a row they have does not.**
+    /// [`touched`](Self::touched) says which is which, and it says so because the press recorded
+    /// it: an untouched row's value is still being re-derived underneath the draft and rides that
+    /// drift into `entry_pins` too, while a pressed row is an answer and nothing may move it but
+    /// another press. This asked `entry == draft` until 2026-09-20 — which reads a row pressed
+    /// back onto the value it opened with as untouched, and then quietly overwrites that press
+    /// with whatever the live default has since drifted to.
+    ///
+    /// It was gated on `self.settings` and is not any more, and the ungating is the point. A
+    /// FIRST-RUN draft opens on whatever the defaults were at that instant, and for a Plex Home
+    /// managed profile that instant is routinely *before* `/api/v2/home/users` lands — so the
+    /// draft held a table computed from "nothing here is ours", the roster arrived and corrected
+    /// the live pins underneath it, and the commit then wrote the stale values back as though the
+    /// viewer had chosen every one of them. Untouched is untouched on both mounts; the only thing
+    /// `settings` still decides is whether *Done* is offered ([`Self::dirty`]).
     fn draft_rows(&mut self, directory: DirectoryView<'_>) -> Vec<SrcRow> {
         let mut rows: Vec<_> = directory.sections().iter().map(|section| section.row.clone()).collect();
         for r in &rows {
             match self.draft.iter().position(|(s, _)| *s == r.section) {
                 None => {
                     self.draft.push((r.section, r.pinned));
-                    if self.settings {
-                        self.entry_pins.push((r.section, r.pinned));
-                    }
+                    self.entry_pins.push((r.section, r.pinned));
                 }
-                Some(di) if self.settings => {
+                Some(di) => {
                     if let Some(ei) = self.entry_pins.iter().position(|(s, _)| *s == r.section) {
-                        if self.entry_pins[ei].1 == self.draft[di].1 && self.entry_pins[ei].1 != r.pinned {
+                        if !self.touched.contains(&r.section) {
                             self.entry_pins[ei].1 = r.pinned;
                             self.draft[di].1 = r.pinned;
                         }
                     }
                 }
-                Some(_) => {}
             }
         }
         let last = self.draft.iter().filter(|(_, on)| *on).count() == 1;
@@ -292,6 +358,11 @@ impl OnboardScreen {
                 return;
             }
             self.draft[idx].1 = !on;
+            // The press IS the provenance ([`Self::touched`]): recorded here, where it happened,
+            // and never recovered afterwards from what the value ended up equal to.
+            if !self.touched.contains(&section) {
+                self.touched.push(section);
+            }
             self.rebuild(true, directory);
         }
     }
@@ -319,9 +390,11 @@ impl OnboardScreen {
         // libraries exist, so that half of the sentence cannot go stale under a queued command.
         let total = directory.section_count();
         let on = self.draft.iter().filter(|(_, pinned)| *pinned).count();
+        // The ANSWERED rows, not the visible ones ([`Self::answered`]): an empty batch is a real
+        // commit and says so — the question was put and the viewer left every default alone.
         fx.push(Fx::App(AppFx::Store(
             StoreId::Browse,
-            StoreCmd::Browse(BrowseCmd::ApplyPins(self.draft.clone())),
+            StoreCmd::Browse(BrowseCmd::ApplyPins(self.answered())),
         )));
         crate::log(&format!("onboard: Home selection recorded — {on} of {total} libraries on"));
         self.leave(fx);
@@ -546,11 +619,15 @@ impl<H: DirectoryLike> Machine<H> for OnboardScreen {
             // **First run corrects its own entry point** (the identical problem
             // `ConsentPage::first_run` solves for the sign-in's own first screen — see that
             // constructor's doc for the general shape). The container's generic mount path always
-            // asks for `ContainerGroup(TABLE_GROUP)` on a fresh entry (`family.rs`'s own doc, and
-            // `containers/stack.rs`'s `Self::fresh`) — right for every OTHER mode this screen has
-            // (the Settings editor really does want to land on its list), wrong for first run,
-            // whose whole point is that the one action pill IS the interaction and the reading
-            // list beside it is only what you may read FIRST.
+            // asks for `TABLE_GROUP` on a fresh entry, as whichever `FocusTarget` shape names
+            // "never seen before" — `containers/stack.rs`'s `Self::fresh` currently sends
+            // `FirstInGroup(TABLE_GROUP)`, because a fresh mount can reuse a stale `EntryId` and so
+            // must not trust that group's remembered cursor (see `Self::fresh`'s own doc and
+            // `FocusTarget`'s doc on `screen.rs`), but `ContainerGroup(TABLE_GROUP)` said the same
+            // thing before that change and this arm accepts either shape for exactly that reason —
+            // right for every OTHER mode this screen has (the Settings editor really does want to
+            // land on its list), wrong for first run, whose whole point is that the one action pill
+            // IS the interaction and the reading list beside it is only what you may read FIRST.
             //
             // **This is NOT done at construction, unlike `ConsentPage::first_run`, and that is a
             // deliberate departure from the fix that screen made rather than an oversight.**
@@ -589,13 +666,20 @@ impl<H: DirectoryLike> Machine<H> for OnboardScreen {
             // one mount already names the band, so it falls to the catch-all below instead of
             // looping.
             ScreenEvent::Enter(Enter::Fresh {
-                focus: FocusTarget::ContainerGroup(g),
+                focus: FocusTarget::ContainerGroup(g) | FocusTarget::FirstInGroup(g),
             }) if !self.settings && *g != BAND_GROUP => {
                 let me = fx.from();
                 fx.push(Fx::Deliver(
                     me,
                     Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
-                        focus: FocusTarget::ContainerGroup(BAND_GROUP),
+                        // `FirstInGroup`, not `ContainerGroup`: this correction is itself firing
+                        // inside the handling of an `Enter::Fresh` — "never seen before" — so by
+                        // `FocusTarget`'s own rule (`screen.rs`) a remembered cursor for
+                        // `BAND_GROUP` cannot be ITS memory either, whichever shape the default
+                        // seat arrived as. The `*g != BAND_GROUP` guard above still stops this from
+                        // re-firing on its own correction once the second `Enter` already names
+                        // the band.
+                        focus: FocusTarget::FirstInGroup(BAND_GROUP),
                     })),
                 ));
                 Handled::Yes
@@ -997,10 +1081,11 @@ mod tests {
         assert!(
             effs.iter().any(|st| matches!(
                 &st.fx,
-                Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(edits))))
-                    if edits == &vec![(0, false), (1, true)]
+                Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(answers))))
+                    if answers == &vec![(0, false)]
             )),
-            "commit emits the toggled draft as an ApplyPins store command"
+            "commit emits the ANSWERED row as an ApplyPins store command — section 1 was never \
+             touched, so it is not this profile's answer and must keep re-deriving"
         );
         assert!(
             browse.pinned(0),
@@ -1039,11 +1124,11 @@ mod tests {
         assert!(
             effs.iter().any(|st| matches!(
                 &st.fx,
-                Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(edits))))
-                    if edits == &vec![(0, false), (1, true)]
+                Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(answers))))
+                    if answers == &vec![(0, false)]
             )),
-            "Done emits the toggled draft as an ApplyPins store command rather than applying it \
-             itself"
+            "Done emits the ANSWERED row as an ApplyPins store command rather than applying it \
+             itself, and the untouched row is not one of this profile's answers"
         );
         assert!(
             browse.pinned(0),
@@ -1060,8 +1145,8 @@ mod tests {
     /// `entry_pins` against `draft`. An UNTOUCHED row's live pin can drift out from under
     /// `entry_pins` purely from `resolve_pins` re-deriving its still-unrecorded default as a
     /// second source lands — which must not read as "dirty" the moment the world changes around
-    /// it. `draft_rows` rides such drift into `entry_pins` for any row the draft still agrees with
-    /// (i.e. the user never touched).
+    /// it. `draft_rows` rides such drift into `entry_pins` for any row no press has moved
+    /// (`touched`).
     #[test]
     fn an_untouched_rows_live_drift_is_absorbed_into_entry_not_read_as_an_edit() {
         let _g = crate::testlock::serial();
@@ -1084,6 +1169,54 @@ mod tests {
         assert!(
             !s.dirty(),
             "an untouched row's drift is not something Done should offer to commit either"
+        );
+    }
+
+    /// **A row pressed TWICE, with the default drifting in between, is still an answer.**
+    ///
+    /// Review finding (2026-09-20) against the provenance work: `answered()` derived "the viewer
+    /// moved this row" from `draft != entry_pins`, and `draft_rows` only rode live drift into
+    /// `entry_pins` for a row the draft still AGREED with — so a dirty row's baseline froze at
+    /// whatever it read when the editor opened. A roster landing mid-edit then made that frozen
+    /// baseline stale, and the sequence below netted out to "nothing answered": the viewer pressed
+    /// the row twice, left it On, and it came back Off.
+    ///
+    /// The fix is the same one the store took: the touched set is RECORDED by the press
+    /// (`toggle_row`), never re-derived from a comparison. `dirty()` stays on the net difference,
+    /// so Done still disappears when an edit is undone.
+    #[test]
+    fn a_row_toggled_back_after_its_default_drifted_is_still_an_answer() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::new("drift-under-a-dirty-row");
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true, true]);
+        let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
+
+        // 1. Off — an edit, so this row's baseline is now stale the moment the world moves.
+        s.toggle_row(0, browse.capture());
+        // 2. The Plex Home roster lands while the editor is open and the live default for this
+        //    row drifts Off on its own, with no press behind it.
+        browse.set_pinned(0, false);
+        s.rebuild(true, browse.capture());
+        // 3. …and the viewer changes their mind and puts it back On.
+        s.toggle_row(0, browse.capture());
+        assert!(
+            s.draft_rows(browse.capture())[0].pinned,
+            "the draft shows what was pressed — a touched row does not ride the live default"
+        );
+
+        let effs = commit_now(&mut s, browse.capture());
+        let answers = effs.iter().find_map(|st| match &st.fx {
+            Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(a)))) => {
+                Some(a.clone())
+            }
+            _ => None,
+        });
+        assert_eq!(
+            answers,
+            Some(vec![(0, true)]),
+            "the row the viewer pressed twice is an answer, or the store records nothing for it \
+             and `apply_pins`' reconcile immediately derives the drifted Off default back"
         );
     }
 
@@ -1116,10 +1249,13 @@ mod tests {
         assert!(
             effs.iter().any(|st| matches!(
                 &st.fx,
-                Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(edits))))
-                    if edits == &vec![(0, true), (1, true), (2, true)]
+                Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(answers))))
+                    if answers.is_empty()
             )),
-            "the queued command carries the FRESH table's own state, never the pre-reset decision"
+            "the queued command carries no answer at all — the pre-reset decision was discarded \
+             with the indices it was made against, and nothing has been touched since. It is \
+             still a commit: `asked` is recorded, and the fresh table's rows go on re-deriving \
+             their own defaults rather than being frozen as though somebody had chosen them"
         );
     }
 
@@ -1282,53 +1418,83 @@ mod tests {
             .any(|st| matches!(st.fx, Fx::App(AppFx::Loop(LoopReq::OnboardDone)))));
     }
 
-    /// **First run corrects a mismatched default seat to the band** — the `ScreenEvent::Enter`
-    /// arm's own doc has the full mechanism and why it cannot run at construction the way
-    /// `ConsentPage::first_run`'s does. This drives `step` directly rather than through a real
-    /// dispatcher, so it can only prove the LOCAL half: given the container's own default `Enter`
-    /// (`ContainerGroup(TABLE_GROUP)`), first run answers with a corrective `Enter` naming the
-    /// band, addressed to `fx.from()`; an `Enter` that already names the band is left alone
-    /// (proving the guard that stops this from re-firing on its own correction); and the Settings
-    /// editor — which really does want the table — never corrects at all. Whether that corrective
-    /// `Enter`, once it actually reaches a live dispatcher, wins the seat over the container's own
-    /// default is a claim about `ui/dispatch.rs`'s queue ordering that no unit test against `step`
-    /// alone can settle; the comment above traces it, but only a `ui-sim`/device boot of first run
-    /// landing focus on "Start watching" rather than the library list closes the loop for real.
+    /// **First run corrects a mismatched default seat to the band, whichever `FocusTarget` shape
+    /// the container's default `Enter` carries** — the `ScreenEvent::Enter` arm's own doc has the
+    /// full mechanism and why it cannot run at construction the way `ConsentPage::first_run`'s
+    /// does. This drives `step` directly rather than through a real dispatcher, so it can only
+    /// prove the LOCAL half: given the container's default `Enter` naming `TABLE_GROUP` — driven
+    /// here as BOTH `ContainerGroup` (what `NavStack::fresh` sent before `FirstInGroup` existed)
+    /// and `FirstInGroup` (what it sends today) — first run answers with a corrective `Enter`
+    /// naming the band as `FirstInGroup` (never `ContainerGroup`: the correction is itself firing
+    /// on an `Enter::Fresh`, so by `FocusTarget`'s own rule on `screen.rs` a remembered cursor for
+    /// `BAND_GROUP` cannot be ITS memory either), addressed to `fx.from()`; an `Enter` that already
+    /// names the band, in either shape, is left alone (proving the guard that stops this from
+    /// re-firing on its own correction); and the Settings editor — which really does want the
+    /// table — never corrects at all. Driving both input shapes is the point: the arm used to
+    /// match `ContainerGroup` alone, so `NavStack::fresh`'s later switch to `FirstInGroup` silently
+    /// stopped the correction from ever firing on first run while a test that drove only the old
+    /// shape stayed green throughout the regression. Whether that corrective `Enter`, once it
+    /// actually reaches a live dispatcher, wins the seat over the container's own default is a
+    /// claim about `ui/dispatch.rs`'s queue ordering that no unit test against `step` alone can
+    /// settle; the comment above traces it, but only a `ui-sim`/device boot of first run landing
+    /// focus on "Start watching" rather than the library list closes the loop for real.
     #[test]
     fn first_run_corrects_a_default_seat_on_the_table_to_the_band() {
-        let _g = crate::testlock::serial();
-        let mut browse = BrowseFixture::new();
-        let hubs_snap = crate::pms::HubsSnapshot::empty_for_test();
-        let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
-        let default_seat = ScreenEvent::Enter(Enter::Fresh {
-            focus: FocusTarget::ContainerGroup(TABLE_GROUP),
-        });
-        let (handled, effs) = step_ev(&mut s, &default_seat, None, browse.capture());
-        assert_eq!(handled, Handled::Yes);
-        assert!(
-            effs.iter().any(|st| matches!(
-                st.fx,
-                Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
-                    focus: FocusTarget::ContainerGroup(g)
-                }))) if g == BAND_GROUP
-            )),
-            "a default seat on the table must be answered with a corrective Enter naming the band"
-        );
+        for (label, default_seat) in [
+            (
+                "ContainerGroup",
+                ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(TABLE_GROUP) }),
+            ),
+            (
+                "FirstInGroup",
+                ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::FirstInGroup(TABLE_GROUP) }),
+            ),
+        ] {
+            let _g = crate::testlock::serial();
+            let mut browse = BrowseFixture::new();
+            let hubs_snap = crate::pms::HubsSnapshot::empty_for_test();
+            let mut s = OnboardScreen::first_run(EntryId(0), browse.capture(), hubs_snap.view());
+            let (handled, effs) = step_ev(&mut s, &default_seat, None, browse.capture());
+            assert_eq!(handled, Handled::Yes, "default seat shape: {label}");
+            assert!(
+                effs.iter().any(|st| matches!(
+                    st.fx,
+                    Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
+                        focus: FocusTarget::FirstInGroup(g)
+                    }))) if g == BAND_GROUP
+                )),
+                "a default seat on the table (as {label}) must be answered with a corrective Enter naming the band as FirstInGroup"
+            );
 
-        // The correction must not loop: once the seat already names the band, step answers with
-        // nothing further of its own.
-        let already_band = ScreenEvent::Enter(Enter::Fresh {
-            focus: FocusTarget::ContainerGroup(BAND_GROUP),
-        });
-        let (_, effs) = step_ev(&mut s, &already_band, None, browse.capture());
-        assert!(effs.is_empty(), "an Enter that already names the band must not be re-corrected");
+            // The correction must not loop: once the seat already names the band — in either
+            // shape — step answers with nothing further of its own.
+            for (already_label, already_band) in [
+                (
+                    "ContainerGroup",
+                    ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::ContainerGroup(BAND_GROUP) }),
+                ),
+                (
+                    "FirstInGroup",
+                    ScreenEvent::Enter(Enter::Fresh { focus: FocusTarget::FirstInGroup(BAND_GROUP) }),
+                ),
+            ] {
+                let (_, effs) = step_ev(&mut s, &already_band, None, browse.capture());
+                assert!(
+                    effs.is_empty(),
+                    "an Enter that already names the band (as {already_label}) must not be re-corrected"
+                );
+            }
 
-        // Settings mode wants exactly the default it is given — the list — so it must never
-        // correct anything.
-        browse.seed_pins(&[true, true]);
-        let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
-        let (_, effs) = step_ev(&mut s, &default_seat, None, browse.capture());
-        assert!(effs.is_empty(), "the Settings editor's default seat on the table is the one it wants");
+            // Settings mode wants exactly the default it is given — the list — so it must never
+            // correct anything.
+            browse.seed_pins(&[true, true]);
+            let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
+            let (_, effs) = step_ev(&mut s, &default_seat, None, browse.capture());
+            assert!(
+                effs.is_empty(),
+                "the Settings editor's default seat on the table (as {label}) is the one it wants"
+            );
+        }
     }
 
     /// **Ported from TWO old tests with byte-identical bodies** —
@@ -1454,7 +1620,7 @@ mod tests {
     /// the live pin AND recorded `asked: true` — a Cancel press persisting an answer nobody gave.)
     ///
     /// The draft model survived the migration unchanged — `draft_rows`'s untouched-row sync is
-    /// still gated on `entry_pins == draft` and still skips a touched row for exactly that reason —
+    /// still gated on the press set (`touched`) and still skips a pressed row for exactly that reason —
     /// so under the new architecture BACK/Cancel has nothing to restore in the first place: nothing
     /// is ever written before `commit`. This is what keeps it that way: the drifted value (`false`)
     /// is chosen to differ from the row's `entry_pins` snapshot (`true`), the one choice under
@@ -1488,6 +1654,44 @@ mod tests {
                 .pins_for(&crate::plex::session::current_profile_key())
                 .is_none(),
             "…and must record nothing — nothing here is an answer the user gave"
+        );
+    }
+
+    /// **Codex review finding 1 (2026-09-20).** The COMMIT half of the drift race the test above
+    /// takes through Cancel, and the reason `BrowseCmd::ApplyPins` carries the rows ANSWERED
+    /// rather than the rows shown.
+    ///
+    /// The viewer toggles a row; the live pin then drifts, on its own, onto the value they chose —
+    /// `resolve_pins` re-deriving a still-unrecorded default as the Plex Home roster lands is
+    /// exactly this. Browse used to reconstruct "the viewer touched this" by comparing the
+    /// command's rows against the live pins, so a row the world had agreed with arrived looking
+    /// untouched and was left unrecorded: it goes on re-deriving, and comes back On the next time
+    /// the default moves. This screen has the provenance (the rows a press moved, `touched`) and
+    /// now sends it.
+    #[test]
+    fn a_commit_carries_a_toggled_row_the_live_pin_has_caught_up_with() {
+        let _g = crate::testlock::serial();
+        let _t = TempSession::new("commit-after-drift");
+        let mut browse = BrowseFixture::new();
+        browse.seed_pins(&[true, true]);
+        let mut s = OnboardScreen::settings(EntryId(0), browse.capture());
+        s.toggle_row(0, browse.capture()); // the answer: section 0 Off
+
+        // …and now the live pin arrives at the same value by itself.
+        browse.set_pinned(0, false);
+        s.rebuild(true, browse.capture());
+
+        let effs = commit_now(&mut s, browse.capture());
+        let carried = effs.iter().find_map(|st| match &st.fx {
+            Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::ApplyPins(rows)))) => {
+                Some(rows.clone())
+            }
+            _ => None,
+        });
+        assert_eq!(
+            carried,
+            Some(vec![(0, false)]),
+            "the commit carries the answered row — and only it — however the live pin has moved"
         );
     }
 

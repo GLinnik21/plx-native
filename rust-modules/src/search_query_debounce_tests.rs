@@ -11,7 +11,6 @@ fn initial_query_scope_comes_from_the_retained_directory() {
     let sid = ServerId::from_raw(3);
     let directory = crate::stores::browse::DirectorySnapshot::fixture(9, 0, vec![
         crate::stores::browse::SectionView {
-            borrowed: false,
             sid: Some(sid),
             key: 41,
             kind: crate::stores::browse::SecKind::Movie,
@@ -40,7 +39,6 @@ fn equal_generation_browse_owners_replace_the_favourite_snapshot() {
         9,
         0,
         vec![crate::stores::browse::SectionView {
-            borrowed: false,
             sid: Some(sid),
             key,
             kind: crate::stores::browse::SecKind::Movie,

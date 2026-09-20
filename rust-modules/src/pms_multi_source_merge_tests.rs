@@ -671,7 +671,7 @@ fn a_corrected_credit_restamps_the_shelves_home_already_built() {
 
     // what a build without the rule published: the household's own server, wearing the account
     // holder's handle, with shelves already merged from it
-    crate::plex::describe_server(s, "Mac mini", "admin", false);
+    crate::plex::describe_server(s, "Mac mini", "admin", crate::plex::GrantEvidence::outside());
     seed(&mut o.state, vec![src(
         0,
         "admin",
@@ -681,7 +681,7 @@ fn a_corrected_credit_restamps_the_shelves_home_already_built() {
     assert_eq!(hub_source(&o.state, 0), "admin");
 
     // the roster refresh re-grades it — and there is deliberately NO landing after this
-    crate::plex::describe_server(s, "Mac mini", "", false);
+    crate::plex::describe_server(s, "Mac mini", "", crate::plex::GrantEvidence::outside());
     sync_roster(&mut o.state);
 
     assert_eq!(

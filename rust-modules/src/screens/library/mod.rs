@@ -25,6 +25,8 @@ mod navigation_tests;
 mod shelf_action_tests;
 #[cfg(test)]
 mod foreign_replacement_tests;
+#[cfg(test)]
+mod selector_matrix_tests;
 
 use std::borrow::Cow;
 use crate::browse::{SecFetch, SecKind};
@@ -286,20 +288,29 @@ impl LibraryScreen {
                     LIBRARY_GROUP, self.libraries.len());
                 self.libraries.push((elem, index));
             }
-            let widths: Vec<_> = self.library_lays(cx).iter().map(|lay|
-                crate::ui::widgets::strip_pill_rect(lay, 0.0, crate::ui::widgets::StatusOverlay::CTRL_H).w).collect();
-            let selected = self.libraries.iter().position(|(_, index)| *index == current).unwrap_or(0);
-            let more = std::ffi::CString::new(format!("+{}", widths.len().saturating_sub(1))).unwrap_or_default();
-            let more_w = cx.measure.width(&more, crate::ui::theme::size::BODY, true) + 2.0 * crate::ui::widgets::STRIP_PAD;
-            let (start, len) = layout::library_window(&widths, selected, layout::GRID_RIGHT - MARGIN_X,
-                crate::ui::widgets::STRIP_GAP_WIDE, more_w, layout::MAX_LIBRARY_PILLS);
-            if len < self.libraries.len() {
-                self.libraries = self.libraries[start..start + len].to_vec();
-                self.libraries.push((MORE, usize::MAX));
-            }
-            if self.libraries.len() == 1 && !directory.sections()[current].borrowed
-                && !(self.readout == Readout::Failed && directory.sources().len() > 1) {
+            // A SINGLE candidate never draws a selector, whatever owns the section it names.
+            // The prior rule kept the row up for a `borrowed` singleton — carried forward
+            // wholesale from the 0.6.x server picker by `3c2de7ad` — so a Guest or managed
+            // profile, whose own household server always arrives `owned: false`
+            // (`plex/account.rs`), saw a lone `Library · <name> ⌄` chip on every section with one
+            // favourite: issue #100/#165, reported as a stray "Sources" control on a real TV. A
+            // single library carries nothing to disambiguate for ANY profile, so ownership must
+            // not decide this; only the CANDIDATE COUNT does, and only 2+ ever reaches the
+            // overflow window below.
+            if self.libraries.len() <= 1 {
                 self.libraries.clear();
+            } else {
+                let widths: Vec<_> = self.library_lays(cx).iter().map(|lay|
+                    crate::ui::widgets::strip_pill_rect(lay, 0.0, crate::ui::widgets::StatusOverlay::CTRL_H).w).collect();
+                let selected = self.libraries.iter().position(|(_, index)| *index == current).unwrap_or(0);
+                let more = std::ffi::CString::new(format!("+{}", widths.len().saturating_sub(1))).unwrap_or_default();
+                let more_w = cx.measure.width(&more, crate::ui::theme::size::BODY, true) + 2.0 * crate::ui::widgets::STRIP_PAD;
+                let (start, len) = layout::library_window(&widths, selected, layout::GRID_RIGHT - MARGIN_X,
+                    crate::ui::widgets::STRIP_GAP_WIDE, more_w, layout::MAX_LIBRARY_PILLS);
+                if len < self.libraries.len() {
+                    self.libraries = self.libraries[start..start + len].to_vec();
+                    self.libraries.push((MORE, usize::MAX));
+                }
             }
         }
         if let Some(kind) = self.wanted_kind.filter(|kind|
@@ -473,12 +484,14 @@ impl LibraryScreen {
     }
 
     fn activate<H: LibraryLike>(&mut self, elem: u32, held: bool, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
-        let source_chip = self.source_chip(cx).is_some() && self.libraries.first().is_some_and(|(key, _)| *key == elem);
-        if [SORT, FILTER, MORE].contains(&elem) || source_chip {
+        // A singleton never reaches this screen at all any more (`self.libraries` is cleared in
+        // `sync`), so `MORE` is the only remaining way into the Sources menu — an ordinary library
+        // pill below always requests a section transition, never a menu.
+        if [SORT, FILTER, MORE].contains(&elem) {
             if let (Some(target), Some(placed)) = (self.requested_address(cx), <Self as Focusable<H>>::place(self, &elem, cx, At::SpringTarget)) {
                 let r = placed.rest_rect;
                 fx.push(Fx::App(AppFx::Library(LibraryReq::Menu {
-                    kind: if source_chip || elem == MORE { crate::screens::registry::LibraryMenuKind::Sources }
+                    kind: if elem == MORE { crate::screens::registry::LibraryMenuKind::Sources }
                         else if elem == SORT { crate::screens::registry::LibraryMenuKind::Sort }
                         else { crate::screens::registry::LibraryMenuKind::Filter },
                     anchor: [r.x.to_bits(), r.y.to_bits(), r.w.to_bits(), r.h.to_bits()], target,
@@ -952,9 +965,8 @@ impl LibraryScreen {
     }
     fn library_rect<H: LibraryLike>(&self, index: usize, cx: &Cx<'_, H>) -> Rect {
         let y = CONTENT_TOP - self.scroll.pos - self.shelves.first().map_or(0.0, |row| row.motion.lift());
-        if let Some(chip) = self.source_chip(cx) {
-            return Rect::new(MARGIN_X, y, chip.width(cx.measure), 52.0);
-        }
+        // Geometry always comes from the shared pill strip now: a singleton never reaches this
+        // (`self.libraries` is empty), so there is no separate chip-width branch to keep in sync.
         self.library_lays(cx).get(index).map(|lay|
             crate::ui::widgets::strip_pill_rect(lay, y, crate::ui::widgets::StatusOverlay::CTRL_H))
             .unwrap_or(Rect::new(MARGIN_X, y, 0.0, 0.0))

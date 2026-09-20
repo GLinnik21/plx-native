@@ -83,23 +83,20 @@ impl LibraryScreen {
     fn draw_document<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
         let env = Env::inert();
-        let source_chip = self.source_chip(f.cx);
-        if source_chip.is_none() && !self.libraries.is_empty() {
+        // A single favourite never reaches this row at all — `sync` clears `self.libraries`
+        // outright when there is nothing to disambiguate (issue #100/#165), for every profile,
+        // owned or borrowed. What remains is always the pill strip.
+        if !self.libraries.is_empty() {
             self.library_capsules.draw(p, self.library_rect(0, f.cx).y, crate::ui::widgets::StatusOverlay::CTRL_H,
                 crate::ui::widgets::TabGround::Plated { pop: self.library_pop.scale_with(0, f.press.scale) });
         }
-        for (index, (elem, section)) in self.libraries.iter().enumerate() {
+        for (index, (_, section)) in self.libraries.iter().enumerate() {
             let label = self.library_label(*section, f.cx);
             let rect = self.library_rect(index, f.cx);
             if !on_axis(rect.y, rect.h, SCR_H, 0.0) { continue; }
-            if let Some(chip) = &source_chip {
-                ValueChip::new(chip.name, &chip.value, chip.note.as_deref(), rect)
-                    .focused(f.focus.current.is_some_and(|key| key.elem == *elem)).draw(&env, p);
-            } else {
-                let (focused, selected) = self.library_capsules.mixes((rect.x, rect.w));
-                TabPill::new(label.as_ptr(), theme::size::BODY, rect).plated()
-                    .mix(focused, selected).draw(&env, p);
-            }
+            let (focused, selected) = self.library_capsules.mixes((rect.x, rect.w));
+            TabPill::new(label.as_ptr(), theme::size::BODY, rect).plated()
+                .mix(focused, selected).draw(&env, p);
         }
         crate::ui::profile::phase("lb.shelves", || {
             for (index, row) in self.shelves.iter().enumerate() {

@@ -192,6 +192,15 @@ const RESOLUTION_SHAPE: &str = "ProductResolutionV1{fo:Option<(entry:u32,elem:u3
 /// and closing and nothing between. Every committed fixture is invalidated by each bump, which is
 /// the cost this pin exists to make visible rather than silent — `tools/plxnative-rec rerecord` is
 /// the verb (`tests/fixtures/replay/README.md`).
+///
+/// **The household-evidence bump** is `super::bootstrap::SHAPE`'s, `ControlledHomeInitV2` →
+/// `ControlledHomeInitV3` with `session:SessionInit` → `session:SessionInitV2`. `SourceRef` now
+/// carries plex.tv's `home` and `ownerId` beside raw `owned`, and `owner::write_sources` folds
+/// both into the session digest — so a session that has learned whose household a server belongs
+/// to is no longer byte-identical to one that has not. The term for `SessionInit` had to move as
+/// well as the term around it: the init shape names that type rather than spelling its fields, so
+/// a census that only said `ControlledHomeInitV3` would be claiming the change was in the
+/// envelope when it is in the session.
 pub(crate) fn state_fp() -> u64 {
     let mut shapes: Vec<&str> = APP_SHAPES.to_vec();
     shapes.push(super::bootstrap::CONTENT_SHAPE);
@@ -2000,7 +2009,15 @@ mod tests {
         // AppFrameV2 adds Session's cached digest. AppFrameV4 adds the physical Consent owner;
         // both predecessor censuses remain pinned separately below, and recordings on either
         // combined shape are explicitly refused.
-        assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0x7609_c82f_0914_2f33);
+        //
+        // **Household evidence moves it to 0x6c07_e505_2de6_63b8.** `ControlledHomeInitV2{…
+        // session:SessionInit …}` became `ControlledHomeInitV3{… session:SessionInitV2 …}`:
+        // `SourceRef` now carries plex.tv's `home`/`ownerId` beside raw `owned` and
+        // `owner::write_sources` folds them into the session digest, so a session that knows whose
+        // household a server belongs to is no longer byte-identical to one that does not. The
+        // predecessor 0x7609_c82f_0914_2f33 is kept in this comment for the same reason every
+        // value above it is: it is what the recordings made before the change were graded under.
+        assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0x6c07_e505_2de6_63b8);
     }
 
     /// The gate at the REAL hubs landing site, through the recording the driver loads: a result
