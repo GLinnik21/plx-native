@@ -8,9 +8,15 @@
 //!
 //! A slot's lifecycle: EMPTY → WANT (claimed by a draw's miss or a prefetch) → LOADING (a worker
 //! fetches + decodes off the lock) → DECODED (pixels waiting on the main thread) → READY (the
-//! pixels were handed to the cache by [`drain_decoded`]; the cache uploads them in PREPARE) or
-//! FAILED / RETRY (a transient fetch parked under bounded backoff). A READY slot recycled by
-//! [`victim`] frees its cache entry on the way out.
+//! pixels were handed to the cache by [`drain_decoded`]; the cache uploads them in PREPARE),
+//! EVICTED (the render cache could not keep that key resident, through rejection or pressure), or
+//! FAILED / RETRY (a transient fetch parked under bounded backoff). EVICTED is deliberately
+//! dormant until a draw or prefetch asks for that key again: losing residency alone must not
+//! refetch an off-screen image and immediately evict useful resident art. The source cannot offer
+//! another upload from retained pixels because ownership moved to the render cache and retaining
+//! a second CPU copy of the entire 44 MiB GL pool would defeat the memory ceiling; a later demand
+//! therefore takes the ordinary disk-first fetch path. A READY slot recycled by [`victim`] frees
+//! its cache entry on the way out.
 //!
 //! Rust port of the old src/posters.c; rewritten on std::sync (a `Mutex<Store>` + `Condvar` +
 //! two `task::spawn` workers). The decoded-pixel pointer is stored as an address (usize) so the
@@ -88,6 +94,10 @@ const P_DECODED: c_int = 3;
 /// The pixels were handed to the render cache; whether they are UPLOADED yet is the cache's.
 const P_READY: c_int = 5;
 const P_FAILED: c_int = 6;
+/// The render cache could not keep this key resident, through rejection or pressure. No pixels
+/// are retained here and no fetch starts until the key is demanded again; see the module
+/// lifecycle note for why.
+const P_EVICTED: c_int = 8;
 /// A fetch that failed for a reason that can change — the address race's plaintext window, a
 /// refused or timed-out connect, a 5xx — parked until [`Pslot::retry_at`]. Settled for the LRU
 /// like `P_FAILED`, but a DRAW that finds it due puts it back to `P_WANT`. `P_FAILED` is kept for
@@ -415,8 +425,9 @@ fn logo_probe(srv: ServerId, rk: &str) -> Option<PosterKey> {
 }
 
 /// The slot a miss claims, as a PURE function of what the store looks like: the first EMPTY, else
-/// the least-recently-used SETTLED (`P_READY`/`P_FAILED`/`P_RETRY`) slot the current frame has not touched,
-/// else `None` — "everything is either in flight or on screen; skip this request".
+/// the least-recently-used SETTLED (`P_READY`/`P_EVICTED`/`P_FAILED`/`P_RETRY`) slot the current
+/// frame has not touched, else `None` — "everything is either in flight or on screen; skip this
+/// request".
 ///
 /// Extracted from [`lookup`] because the PREFETCH's entire safety argument is a claim about this
 /// function — that a warmed slot (LRU age 0, no frame stamp) is always a more attractive victim than
@@ -435,7 +446,7 @@ fn victim(slots: &[Pslot; PT_CAP], frame: c_uint) -> Option<usize> {
     let mut pick = None;
     for i in 0..PT_CAP {
         let s = &slots[i];
-        if (s.state == P_READY || s.state == P_FAILED || s.state == P_RETRY)
+        if (s.state == P_READY || s.state == P_FAILED || s.state == P_RETRY || s.state == P_EVICTED)
             && s.frame != frame
             && s.use_ < oldest
         {
@@ -488,6 +499,19 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     CV.notify_one();
                     return (None, Warm::Known);
                 }
+            }
+            // Render-cache pressure is not source demand. Its callback parks the slot in
+            // EVICTED, and only a real draw or the explicitly quota-gated prefetch path starts
+            // the disk-first replacement. That separation is what prevents an off-screen key
+            // from cycling evict -> refetch -> evict merely because it remains in the source LRU.
+            if g.slots[i].state == P_EVICTED {
+                g.slots[i].state = P_WANT;
+                drop(g);
+                CV.notify_one();
+                return (
+                    None,
+                    if touch == Touch::Warm { Warm::Claimed } else { Warm::Known },
+                );
             }
             let hit = (g.slots[i].state == P_READY).then_some(PosterKey(i as u32));
             return (hit, Warm::Known);
@@ -565,6 +589,18 @@ impl tex::Source for PosterSource {
     }
     fn logo_warm(&self, srv: u16, rk: &str) -> Warm {
         logo_warm(ServerId::from_raw(srv), rk)
+    }
+    fn unresident(&self, key: PosterKey) {
+        let mut g = store();
+        if let Some(s) = g.slots.get_mut(key.0 as usize) {
+            // READY is the only state whose truth depends on render-cache residency. The cache
+            // calls this synchronously for both a rejected decoded result and pressure eviction,
+            // before application code can probe or recycle the key. Thus the source never answers
+            // READY for a key the cache could not make resident.
+            if s.state == P_READY {
+                s.state = P_EVICTED;
+            }
+        }
     }
     fn idle(&self) -> bool {
         store_idle()
@@ -1233,6 +1269,153 @@ mod tests {
         }
     }
 
+    /// A rejected decode used to leave the source in READY while the cache remembered the key as
+    /// failed. No later probe could re-arm either half, so the tile drew its skeleton forever.
+    #[test]
+    fn a_rejected_decode_cannot_leave_the_real_source_claiming_ready() {
+        let (_fresh, sid, _) = one_server();
+        tex::install(&SOURCE);
+        tex::reset_for_test(16);
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            set_key(slot, &path);
+            slot.state = P_DECODED;
+            slot.px = 0;
+            slot.pw = 0;
+            slot.ph = 0;
+        }
+
+        drain_decoded();
+
+        assert_eq!(
+            store().slots[0].state,
+            P_EVICTED,
+            "a cache rejection must synchronously revoke the source's READY claim"
+        );
+    }
+
+    /// The whole product loop, using the installed [`PosterSource`], the thread-local product
+    /// cache and the global poster store: resident → byte-pressure release → dormant EVICTED → a
+    /// real warm probe → WANT + condition-variable wake → worker publication → resident again.
+    #[test]
+    fn a_ready_source_hit_recovers_after_its_texture_is_evicted() {
+        struct StubUp {
+            next: u32,
+        }
+        impl Uploader for StubUp {
+            fn upload(&mut self, d: &Decoded) -> Tex {
+                self.next += 1;
+                Tex {
+                    id: self.next,
+                    w: d.w,
+                    h: d.h,
+                }
+            }
+            fn warm(&mut self, _: Tex) {}
+            fn free(&mut self, _: Tex) {}
+        }
+
+        const BYTES: usize = 16;
+        const SRC: &str = "/library/metadata/42/thumb";
+        let (_fresh, srv, _) = one_server();
+        tex::install(&SOURCE);
+        tex::reset_for_test(BYTES);
+        let path = key_for(srv, SRC, 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            g.quit = false;
+            let slot = &mut g.slots[0];
+            slot.state = P_READY;
+            slot.srv = srv;
+            set_key(slot, &path);
+        }
+
+        let decoded = |key| PosterReady {
+            key,
+            result: Ok(Decoded {
+                w: 2,
+                h: 2,
+                rgba: vec![0; BYTES].into_boxed_slice(),
+            }),
+        };
+        tex::accept(decoded(PosterKey(0)));
+        let mut budget = crate::ui::frame::Budget::new();
+        budget.begin_frame(0);
+        let mut present = crate::ui::present::Present::new();
+        let mut present_handle = crate::ui::machine::PresentHandle::of(&mut present);
+        let mut uploader = StubUp { next: 0 };
+        assert_eq!(
+            tex::prepare(&mut budget, &mut uploader, &mut present_handle, || 0),
+            1
+        );
+        assert_ne!(tex::resolve_on(srv.raw(), SRC, 2, 2, false), 0);
+
+        tex::accept(decoded(PosterKey(1)));
+        budget.begin_frame(20_000);
+        let mut present_handle = crate::ui::machine::PresentHandle::of(&mut present);
+        assert_eq!(
+            tex::prepare(&mut budget, &mut uploader, &mut present_handle, || 20_000),
+            1,
+            "the second upload must evict the first by bytes through the product wrapper"
+        );
+        assert_eq!(store().slots[0].state, P_EVICTED);
+
+        let (armed_tx, armed_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let g = store();
+            armed_tx.send(()).unwrap();
+            let (mut g, timeout) = CV
+                .wait_timeout_while(g, Duration::from_secs(1), |s| s.slots[0].state != P_WANT)
+                .unwrap_or_else(|e| e.into_inner());
+            assert!(!timeout.timed_out(), "the warm probe must wake a waiting poster worker");
+            let slot = &mut g.slots[0];
+            slot.state = P_LOADING;
+            drop(g);
+
+            unsafe extern "C" {
+                fn malloc(size: usize) -> *mut std::ffi::c_void;
+            }
+            let px = unsafe { malloc(BYTES) as *mut c_uchar };
+            assert!(!px.is_null());
+            unsafe { std::ptr::write_bytes(px, 0, BYTES) };
+            let mut g = store();
+            let slot = &mut g.slots[0];
+            slot.px = px as usize;
+            slot.pw = 2;
+            slot.ph = 2;
+            slot.state = P_DECODED;
+        });
+        armed_rx.recv().unwrap();
+        assert_eq!(
+            tex::warm_on(srv.raw(), SRC, 2, 2, false),
+            Warm::Claimed,
+            "demand re-arms the dormant source slot"
+        );
+        worker.join().unwrap();
+        assert_eq!(store().slots[0].state, P_DECODED, "the woken worker published pixels");
+
+        drain_decoded();
+        budget.begin_frame(40_000);
+        let mut present_handle = crate::ui::machine::PresentHandle::of(&mut present);
+        assert_eq!(
+            tex::prepare(&mut budget, &mut uploader, &mut present_handle, || 40_000),
+            1
+        );
+        assert_ne!(
+            tex::resolve_on(srv.raw(), SRC, 2, 2, false),
+            0,
+            "the same source key becomes resident again"
+        );
+
+        tex::shutdown(&mut uploader);
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
     /// The LRU's two clauses, in order: an EMPTY slot is always preferred (a fresh store must fill
     /// before it evicts anything), and only once there is none does the oldest SETTLED slot go.
     #[test]
@@ -1541,7 +1724,7 @@ mod tests {
             idle_of(&[Pslot::ZERO; PT_CAP]),
             "an untouched store is idle"
         );
-        for st in [P_READY, P_FAILED] {
+        for st in [P_READY, P_EVICTED, P_FAILED] {
             let slots = [Pslot {
                 state: st,
                 ..Pslot::ZERO
