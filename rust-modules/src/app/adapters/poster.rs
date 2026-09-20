@@ -148,6 +148,23 @@ struct Pslot {
     retry_wake_sent: bool,
     /// Transient failures in a row for THIS key — the backoff's exponent; cleared on a claim.
     attempts: u8,
+    /// The app-clock tick of this slot's most recent READY→EVICTED transition (residency
+    /// pressure, [`PosterSource::unresident`] — never a fresh claim). `None` until the first
+    /// eviction. Compared against [`EVICT_THRASH_WINDOW_MS`] on the NEXT eviction to tell an
+    /// isolated, ordinary LRU turnover from a continuation of an ongoing thrash episode; see
+    /// [`evict_was_rapid`].
+    evicted_at: Option<u32>,
+    /// Consecutive RAPID re-evictions (see [`evict_was_rapid`]) — the residency thrash guard's
+    /// exponent, mirroring `attempts` above but for byte-pressure churn rather than a transient
+    /// fetch failure. Reset to 0 the instant an eviction is NOT rapid, so an ordinary, occasional
+    /// LRU turnover never accumulates backoff it does not deserve.
+    evict_attempts: u8,
+    /// The app-clock tick before which [`lookup`] refuses to re-arm this EVICTED slot — `None`
+    /// means no cooldown is owed. Set only once `evict_attempts` shows an ongoing thrash episode:
+    /// the FIRST eviction of a key always re-arms on its very next demand, which is the recovery
+    /// [`lookup`]'s P_EVICTED branch exists for and the case
+    /// `a_ready_source_hit_recovers_after_its_texture_is_evicted` pins. See [`evict_backoff`].
+    evict_cooldown_until: Option<u32>,
 }
 impl Pslot {
     const ZERO: Pslot = Pslot {
@@ -163,6 +180,9 @@ impl Pslot {
         retry_at: None,
         retry_wake_sent: false,
         attempts: 0,
+        evicted_at: None,
+        evict_attempts: 0,
+        evict_cooldown_until: None,
     };
 }
 
@@ -179,6 +199,62 @@ fn retry_backoff(attempts: u8) -> Duration {
 /// comparison wraps, like every `app::clock` comparison.
 fn retry_due(s: &Pslot, now: u32) -> bool {
     s.state == P_RETRY && s.retry_at.is_some_and(|t| now.wrapping_sub(t) < u32::MAX / 2)
+}
+
+/// **The residency thrash guard (Codex P1 review on PR #182, `lookup`'s P_EVICTED branch).**
+/// Without it, every draw OR warm probe of an evicted key moves it straight back to `P_WANT`
+/// unconditionally: a working set that genuinely cannot fit under
+/// [`tex::TEX_RESIDENT_BYTES_MAX`] then has the render cache evict key A to make room, A's very
+/// next probe re-arm it, A's eventual upload evict key B, B's next probe re-arm IT, and so on with
+/// no bound — continuous fetch/decode/upload every frame instead of settling. Home's recurring
+/// backdrop prefetch (`Touch::Warm`) counts as a probe here too, so even off-screen art can drive
+/// the cycle.
+///
+/// The guard is two pure decisions, both keyed off wall-clock ticks so they cost nothing under the
+/// store lock and are host-testable without a real elapsed second (mirrors [`retry_due`] and the
+/// residency log's own throttle):
+///
+/// - [`evict_was_rapid`]: was the PREVIOUS eviction of this key recent enough that this new one is
+///   a continuation of an ongoing churn episode, rather than an isolated, ordinary LRU turnover?
+///   Ten seconds comfortably exceeds one fetch+decode+upload round trip (the window this guard has
+///   to see through) while staying well short of "the user browsed away and came back", so a slot
+///   that settles for a while always gets treated as fresh again.
+/// - [`evict_backoff`]: given consecutive rapid re-evictions, how long does the NEXT re-arm wait?
+///   Deliberately its own schedule rather than a reuse of [`retry_backoff`] — that one paces
+///   retries against a server that may be down, capped at 30 s; this one paces retries against a
+///   cache that is merely full, and a screen whose working set has genuinely settled should feel
+///   that within a few seconds, not thirty.
+///
+/// **Why a visible tile is never starved.** A key's FIRST eviction always has `evicted_at == None`
+/// beforehand, so [`evict_was_rapid`] answers `false`, `evict_attempts` stays 0, and no cooldown is
+/// set at all — the ordinary one-eviction-then-recovery case this PR exists to fix re-arms on the
+/// very next demand, exactly as before. Only a key that is evicted AGAIN inside the thrash window —
+/// proof that something is still churning it — pays a cooldown, and that cooldown is bounded
+/// ([`evict_backoff`] caps at 8 s): the key always gets another turn, just not on every single
+/// frame while the pressure that evicted it persists.
+const EVICT_THRASH_WINDOW_MS: u32 = 10_000;
+
+/// Pure half of the guard: given the tick of a key's previous eviction (`None` before its first),
+/// does a new eviction at `now` land inside the thrash window?
+fn evict_was_rapid(prev: Option<u32>, now: u32) -> bool {
+    prev.is_some_and(|t| now.wrapping_sub(t) < EVICT_THRASH_WINDOW_MS)
+}
+
+/// How long the NEXT re-arm of a key waits after its `n`th consecutive RAPID re-eviction (see
+/// [`evict_was_rapid`]): 250 ms, 500 ms, 1 s, 2 s, 4 s, then 8 s for good. `n == 0` never reaches
+/// this — see the guard's module doc for why a key's first eviction sets no cooldown at all.
+fn evict_backoff(evict_attempts: u8) -> Duration {
+    let millis = 250u64 << evict_attempts.saturating_sub(1).min(5);
+    Duration::from_millis(millis.min(8_000))
+}
+
+/// Has a P_EVICTED slot's cooldown cleared? Wrap-safe like [`retry_due`]; `None` (no cooldown was
+/// ever set) is always due.
+fn evict_cooldown_due(cooldown_until: Option<u32>, now: u32) -> bool {
+    match cooldown_until {
+        None => true,
+        Some(t) => now.wrapping_sub(t) < u32::MAX / 2,
+    }
 }
 
 /// Wake the present gate once a scheduled retry's main-thread deadline arrives. The loop calls this
@@ -633,7 +709,21 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
             // EVICTED, and only a real draw or the explicitly quota-gated prefetch path starts
             // the disk-first replacement. That separation is what prevents an off-screen key
             // from cycling evict -> refetch -> evict merely because it remains in the source LRU.
+            //
+            // The thrash guard (see `evict_was_rapid`'s doc) sits right here: a key's first
+            // eviction always re-arms on this very probe (no cooldown was set for it), but a key
+            // that is being re-evicted rapidly — genuine byte pressure the store cannot resolve by
+            // itself — waits out a bounded backoff instead of re-arming on every single probe,
+            // which is what let two over-budget keys evict each other every frame forever.
             if g.slots[i].state == P_EVICTED {
+                let now = crate::app::clock::now();
+                if !evict_cooldown_due(g.slots[i].evict_cooldown_until, now) {
+                    // Still cooling down from a rapid re-eviction. The demand is real and is not
+                    // lost — the next probe after the cooldown clears re-arms exactly as usual —
+                    // but honoring THIS one would just re-enter the cycle the cooldown exists to
+                    // break.
+                    return (None, Warm::Known);
+                }
                 g.slots[i].state = P_WANT;
                 drop(g);
                 RESIDENCY_REARMED.fetch_add(1, Ordering::Relaxed);
@@ -679,6 +769,11 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         s.retry_at = None;
         s.retry_wake_sent = false;
         s.attempts = 0;
+        // A recycled slot is a DIFFERENT key's identity now — the eviction-thrash history above
+        // belongs to whatever image used to live here, not to this one.
+        s.evicted_at = None;
+        s.evict_attempts = 0;
+        s.evict_cooldown_until = None;
     }
     drop(g);
     // free the evicted resources off-lock (this is the GL/main thread): the cache's texture for
@@ -732,6 +827,19 @@ impl tex::Source for PosterSource {
             if s.state == P_READY {
                 s.state = P_EVICTED;
                 lost = true;
+                // The thrash guard's bookkeeping (see `evict_was_rapid`'s doc): a rapid re-eviction
+                // (this key was evicted before, inside the thrash window) escalates the backoff
+                // `lookup`'s P_EVICTED branch will honor on the next probe; an isolated one leaves
+                // no cooldown at all, so the very next demand re-arms it as before.
+                let now = crate::app::clock::now();
+                s.evict_attempts = if evict_was_rapid(s.evicted_at, now) {
+                    s.evict_attempts.saturating_add(1)
+                } else {
+                    0
+                };
+                s.evicted_at = Some(now);
+                s.evict_cooldown_until = (s.evict_attempts > 0)
+                    .then(|| now.wrapping_add(evict_backoff(s.evict_attempts).as_millis() as u32));
             }
         }
         drop(g);
@@ -1601,6 +1709,96 @@ mod tests {
         assert_eq!(rearmed2, rearmed1 + 1, "the EVICTED->WANT re-arm must count exactly once");
 
         store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// **P1 (Codex review on PR #182, `lookup`'s P_EVICTED branch, poster.rs:564).** Without the
+    /// thrash guard, every draw that finds a key EVICTED moves it straight back to `P_WANT`
+    /// unconditionally, with no memory of how recently it was evicted before. A working set that
+    /// genuinely cannot fit under the render cache's byte budget then has this key evicted,
+    /// re-armed, evicted again, re-armed again — forever, once frames keep drawing it — instead of
+    /// settling. This drives exactly that: a slot evicted and (synthetically, via the same
+    /// `SOURCE.unresident` callback the render cache calls under real byte pressure) re-evicted in
+    /// rapid succession, every cycle immediately followed by a draw. Pre-fix, EVERY cycle rearms —
+    /// no bound at all. Post-fix, only the first (uncooled) eviction rearms; the rest are refused
+    /// until their cooldown clears, which real time never does inside a tight loop.
+    #[test]
+    fn a_key_evicted_and_reevicted_in_rapid_succession_does_not_rearm_without_bound() {
+        use crate::ui::tex::Source as _;
+
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            set_key(slot, &path);
+            slot.state = P_READY;
+        }
+        let (_, rearmed0) = residency_counts_for_test();
+
+        const CYCLES: u32 = 20;
+        let mut rearms = 0u32;
+        for _ in 0..CYCLES {
+            // Stand-in for the render cache's own byte-pressure eviction (real pressure needs a
+            // live GL cache no host test links; this callback IS the seam it calls through).
+            SOURCE.unresident(PosterKey(0));
+            let (hit, _) = lookup(sid, &path, Touch::Draw);
+            assert_eq!(hit, None, "an evicted slot never has pixels the same probe that finds it");
+            if store().slots[0].state == P_WANT {
+                rearms += 1;
+                // Simulate the fetch/decode/upload this rearm triggers completing immediately —
+                // the fast round trip a thrash needs, not the slow one a network stall would add.
+                store().slots[0].state = P_READY;
+            }
+        }
+        let (_, rearmed_final) = residency_counts_for_test();
+        assert_eq!(
+            rearmed_final - rearmed0,
+            rearms as u64,
+            "the rearm counter must track exactly the transitions this loop drove"
+        );
+
+        assert!(
+            rearms < CYCLES,
+            "a key evicted and re-evicted in rapid succession must eventually back off instead \
+             of rearming every single cycle (got {rearms} rearms out of {CYCLES} cycles - with \
+             no bound this is the P1 thrash: continuous fetch/decode/upload instead of settling)"
+        );
+        assert_eq!(
+            rearms, 1,
+            "the FIRST eviction must still rearm instantly (the bug PR #182 itself fixes); every \
+             eviction after it lands inside the thrash window and must be cooled down"
+        );
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// The pure decisions behind the residency thrash guard (see `evict_was_rapid`'s module doc):
+    /// a key's first-ever eviction is never rapid (nothing to compare against), one that lands
+    /// inside the thrash window is, and one that lands outside it is treated as fresh again - the
+    /// guard must not let a key that settles for a while accumulate backoff it no longer deserves.
+    #[test]
+    fn evict_was_rapid_only_flags_a_reeviction_inside_the_thrash_window() {
+        assert!(!evict_was_rapid(None, 0), "a key's first-ever eviction has nothing to compare");
+        assert!(
+            evict_was_rapid(Some(0), EVICT_THRASH_WINDOW_MS - 1),
+            "one millisecond inside the window is still rapid"
+        );
+        assert!(
+            !evict_was_rapid(Some(0), EVICT_THRASH_WINDOW_MS),
+            "the window's own edge is no longer rapid"
+        );
+    }
+
+    /// The pure decision behind the thrash guard's cooldown gate: no cooldown ever set is always
+    /// due (the ordinary, non-thrashing case), and a set cooldown is due only once its deadline has
+    /// actually passed - mirrors [`retry_due`]'s own wrap-safe "has this deadline passed" shape.
+    #[test]
+    fn evict_cooldown_due_only_after_its_own_deadline() {
+        assert!(evict_cooldown_due(None, 0), "no cooldown was ever set - never gated");
+        assert!(!evict_cooldown_due(Some(1_000), 999), "one millisecond short is still cooling");
+        assert!(evict_cooldown_due(Some(1_000), 1_000), "the deadline itself has cleared");
     }
 
     /// The pure decision behind [`log_residency`]'s interval throttle: due before any line has
