@@ -1168,7 +1168,7 @@ cmd_sound() {
       [ "$seen_muted" = true ] || {
         bad "setMuted true did not stick -- getVolume reports muted=${seen_muted:-unknown}"; return 1
       }
-      ok "sound off (muted, volume ${vol:-?} unchanged)"
+      ok "sound off (muted, volume ${vol:-?})"
       ;;
     on)
       [ "$seen_muted" = false ] || {
