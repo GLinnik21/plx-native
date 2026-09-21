@@ -2839,7 +2839,8 @@ pub(crate) fn run(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAd
 /// a landed fetch into CURRENT and returns true when a fresh item was published. A stale landing —
 /// superseded by a newer request, by a blocking load, or by `clear()` when the page closed — is
 /// dropped.
-pub(crate) fn pump_detail(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>) -> bool {
+pub(crate) fn pump_detail_with_gate(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>,
+    gate: &crate::ui::landgate::Gate) -> bool {
     use crate::ui::landing::Lane;
     use std::sync::atomic::Ordering;
     let want = adapter.detail_want.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -2847,13 +2848,13 @@ pub(crate) fn pump_detail(state: &mut MetadataState, adapter: &std::sync::Arc<Me
     // `ui::landgate`); off one it is the same call. The gate wraps the QUEUE drain and not the
     // supersede/install below, so a held frame leaves the record in the landing untouched.
     let out = if crate::app::bootstrap::stores::active() {
-        crate::stores::take_landings(crate::stores::StoreId::Metadata, || {
+        crate::stores::take_landings(gate, crate::stores::StoreId::Metadata, || {
             crate::app::bootstrap::stores::poll_apply("metadata", 0,
                 || record::drain_live(adapter, &want), |replies| record::supply(adapter, replies, &want))
                 .into_iter().collect::<Vec<_>>()
         }).into_iter().flat_map(|drain| drain.landed).collect()
     } else {
-        crate::stores::take_landings(crate::stores::StoreId::Metadata, || {
+        crate::stores::take_landings(gate, crate::stores::StoreId::Metadata, || {
             let mut out = Vec::new();
             adapter.detail_landing_ref().take_for(&|_| true, &|key| want.as_ref().is_none_or(|wanted| key == wanted), &mut out);
             out
@@ -2874,6 +2875,12 @@ pub(crate) fn pump_detail(state: &mut MetadataState, adapter: &std::sync::Arc<Me
         fresh |= install_landed_detail(state, adapter, d);
     }
     fresh
+}
+
+#[cfg(test)]
+pub(crate) fn pump_detail(state: &mut MetadataState,
+    adapter: &std::sync::Arc<MetadataAdapter>) -> bool {
+    pump_detail_with_gate(state, adapter, crate::ui::landgate::fixture_gate())
 }
 
 /// Install a landed fetch: a `None` (the fetch failed or panicked) keeps the previously loaded
@@ -3258,26 +3265,34 @@ fn resolve_alt_sources(
 /// `pump_detail` and `pump_season` are folded, so the Detail page hears one `StoreChanged` and
 /// repaints from its own arm. `alt_sources::install` used to call `idle::invalidate()` from inside
 /// the data layer instead, which is the shape phase 4 replaced.
-pub(crate) fn pump_alt_sources(state: &mut MetadataState, adapter: &MetadataAdapter) -> bool {
-    pump_alt_sources_with_library(state, adapter, None)
+pub(crate) fn pump_alt_sources_with_gate(state: &mut MetadataState, adapter: &MetadataAdapter,
+    gate: &crate::ui::landgate::Gate) -> bool {
+    pump_alt_sources_with_library(state, adapter, None, gate)
 }
 
-pub(crate) fn pump_alt_sources_with_directory(
+#[cfg(test)]
+pub(crate) fn pump_alt_sources(state: &mut MetadataState, adapter: &MetadataAdapter) -> bool {
+    pump_alt_sources_with_gate(state, adapter, crate::ui::landgate::fixture_gate())
+}
+
+pub(crate) fn pump_alt_sources_with_directory_and_gate(
     state: &mut MetadataState,
     adapter: &MetadataAdapter,
     directory: crate::stores::browse::DirectoryView<'_>,
+    gate: &crate::ui::landgate::Gate,
 ) -> bool {
     let library = directory.current()
         .and_then(|section| directory.sections().get(section))
         .map(|section| section.row.title.as_str())
         .unwrap_or("");
-    pump_alt_sources_with_library(state, adapter, Some(library))
+    pump_alt_sources_with_library(state, adapter, Some(library), gate)
 }
 
 fn pump_alt_sources_with_library(
     state: &mut MetadataState,
     adapter: &MetadataAdapter,
     library: Option<&str>,
+    gate: &crate::ui::landgate::Gate,
 ) -> bool {
     use std::sync::atomic::Ordering;
     let mut changed = false;
@@ -3300,7 +3315,7 @@ fn pump_alt_sources_with_library(
     // the landing GATE (§3.3 step 3): a replay takes this on its recorded frame. The roster and
     // facts re-stamps above are NOT gated — they follow other stores' landings, which are gated
     // where those land.
-    let taken = crate::stores::take_landing(crate::stores::StoreId::Metadata, || {
+    let taken = crate::stores::take_landing(gate, crate::stores::StoreId::Metadata, || {
         adapter.alt_slot.lock().unwrap_or_else(|e| e.into_inner()).take()
     });
     let Some(r) = taken else { return changed };
@@ -3628,10 +3643,11 @@ pub(crate) fn season_loading(adapter: &MetadataAdapter) -> bool {
 /// Main-thread pump: apply a landed season fetch to `state.current`, discarding stale generations
 /// (a newer request is in flight) and results for a different item. Returns true when the episode
 /// list just changed — the detail page resets its episode focus/scroll on it.
-pub(crate) fn pump_season(state: &mut MetadataState, adapter: &MetadataAdapter) -> bool {
+pub(crate) fn pump_season_with_gate(state: &mut MetadataState, adapter: &MetadataAdapter,
+    gate: &crate::ui::landgate::Gate) -> bool {
     use std::sync::atomic::Ordering;
     // the landing GATE (§3.3 step 3): a replay takes this on its recorded frame
-    let res = crate::stores::take_landing(crate::stores::StoreId::Metadata, || {
+    let res = crate::stores::take_landing(gate, crate::stores::StoreId::Metadata, || {
         adapter.season_result
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -3674,6 +3690,12 @@ pub(crate) fn pump_season(state: &mut MetadataState, adapter: &MetadataAdapter) 
             false
         }
     }
+}
+
+
+#[cfg(test)]
+pub(crate) fn pump_season(state: &mut MetadataState, adapter: &MetadataAdapter) -> bool {
+    pump_season_with_gate(state, adapter, crate::ui::landgate::fixture_gate())
 }
 
 #[cfg(test)]

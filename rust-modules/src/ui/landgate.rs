@@ -27,15 +27,16 @@
 //! * A landing the recording never saw at all is delivered at once and counted as `extra`.
 //! * A recorded landing that never arrives is counted as `missing` when the replay ends.
 //!
-//! **The wait is REPLAY-ONLY, bounded and taken at most once per (frame, store)**, so a store
+//! **The wait is REPLAY-ONLY, bounded and taken at most once per (frame, owner, store)**, so a store
 //! whose landing is due at a site that will not produce it cannot spend the budget twice on one
 //! frame. It is a stop-gap for one specific reason, worth saying plainly: the honest end state is
 //! §5.5's closed replay, where the recorded payload is INJECTED and no fetch happens at all. That
 //! needs every store's result codec and its client bindings, which this lane does not build; until
 //! it exists, a replay's stores fetch live and this is what keeps their frames comparable.
 //!
-//! The gate is per STORE ORDINAL: the schedule is that store's `(frame, count)` pairs, and every
-//! arrival at any of its sites consumes one unit. The COUNT is load-bearing and a boolean was
+//! Each [`Gate`] belongs to one `Stores` owner, and is keyed per STORE ORDINAL inside that owner:
+//! the schedule is that store's `(frame, count)` pairs, and every arrival at any of its sites
+//! consumes one unit. The COUNT is load-bearing and a boolean was
 //! measured wrong first — `person` has one mailbox per fetch and took four answers over four
 //! frames when the recording was made and over three when it was replayed, so a per-frame boolean
 //! let one replay frame consume two arrivals for one cursor step, after which every later landing
@@ -47,7 +48,7 @@
 //! their recorded frames exactly as they did. Gating a whole `pump()` would have suppressed the
 //! spawn that produces the very landing being waited for.
 //!
-//! **Cost outside a recording or a replay is one relaxed `AtomicBool` load** ([`ARMED`]): the
+//! **Cost outside a recording or a replay is one relaxed `AtomicBool` load** (`Gate`'s armed flag): the
 //! helpers return the closure's own answer and never take the lock.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -122,42 +123,47 @@ enum Phase {
 }
 
 /// The fast path's only cost: `false` in every ordinary build and every ordinary boot.
-static ARMED: AtomicBool = AtomicBool::new(false);
+pub(crate) struct Gate {
+    armed: AtomicBool,
+    state: Mutex<State>,
+}
 
-static STATE: Mutex<State> = Mutex::new(State {
-    mode: Mode::Off,
-    frame: 0,
-    lands: BTreeMap::new(),
-    sched: BTreeMap::new(),
-    waited: BTreeSet::new(),
-    diffs: Vec::new(),
-});
+impl Default for Gate {
+    fn default() -> Self {
+        Self {
+            armed: AtomicBool::new(false),
+            state: Mutex::new(State { mode: Mode::Off, frame: 0, lands: BTreeMap::new(),
+                sched: BTreeMap::new(), waited: BTreeSet::new(), diffs: Vec::new() }),
+        }
+    }
+}
 
-fn with<T>(f: impl FnOnce(&mut State) -> T) -> T {
-    let mut s = STATE.lock().unwrap_or_else(|e| e.into_inner());
+impl Gate {
+fn with<T>(&self, f: impl FnOnce(&mut State) -> T) -> T {
+    let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
     f(&mut s)
 }
 
 /// Arm the RECORDING half: from here every consumed landing is stamped with its frame.
-pub fn arm_recording() {
-    with(|s| {
+pub fn arm_recording(&self) {
+    self.with(|s| {
         *s = State { mode: Mode::Recording, frame: 0, lands: BTreeMap::new(), sched: BTreeMap::new(),
             waited: BTreeSet::new(), diffs: Vec::new() };
     });
-    ARMED.store(true, Ordering::Relaxed);
+    self.armed.store(true, Ordering::Relaxed);
 }
 
 /// Arm the REPLAY half with the recorded schedule: `sched[ord]` is that ordinal's recorded
 /// `(frame, arrivals on it)` pairs, in order.
 #[cfg(test)]
-pub fn arm_replay(sched: Vec<Vec<(u64, u32)>>) {
-    arm_sparse_replay(sched.into_iter().enumerate().map(|(i,queue)| (i as u32,queue)).collect());
+pub fn arm_replay(&self, sched: Vec<Vec<(u64, u32)>>) {
+    self.arm_sparse_replay(sched.into_iter().enumerate().map(|(i,queue)| (i as u32,queue)).collect());
 }
 
 /// Schedule storage is proportional to recorded entries, never the numeric ordinal. This is
 /// the same landing policy as the dense fixture spelling, with full-width identities retained.
-pub fn arm_sparse_replay(sched: BTreeMap<u32,Vec<(u64,u32)>>) {
-    with(|s| {
+pub fn arm_sparse_replay(&self, sched: BTreeMap<u32,Vec<(u64,u32)>>) {
+    self.with(|s| {
         *s = State {
             mode: Mode::Replaying,
             frame: 0,
@@ -167,24 +173,24 @@ pub fn arm_sparse_replay(sched: BTreeMap<u32,Vec<(u64,u32)>>) {
             diffs: Vec::new(),
         };
     });
-    ARMED.store(true, Ordering::Relaxed);
+    self.armed.store(true, Ordering::Relaxed);
 }
 
 /// Disarm: the ordinary state, and what a host test restores.
-pub fn disarm() {
-    ARMED.store(false, Ordering::Relaxed);
-    with(|s| {
+pub fn disarm(&self) {
+    self.armed.store(false, Ordering::Relaxed);
+    self.with(|s| {
         *s = State { mode: Mode::Off, frame: 0, lands: BTreeMap::new(), sched: BTreeMap::new(),
             waited: BTreeSet::new(), diffs: Vec::new() };
     });
 }
 
 /// The frame the loop is about to run. Called once per iteration, before any landing site.
-pub fn begin_frame(f: u64) {
-    if !ARMED.load(Ordering::Relaxed) {
+pub fn begin_frame(&self, f: u64) {
+    if !self.armed.load(Ordering::Relaxed) {
         return;
     }
-    with(|s| {
+    self.with(|s| {
         s.frame = f;
         s.lands.clear();
         s.waited.clear();
@@ -193,17 +199,17 @@ pub fn begin_frame(f: u64) {
 
 /// May this store consume a landing on this frame? `true` unless a replay is still waiting for
 /// the frame the recording delivered this store's next landing on.
-pub fn held(ord: StoreOrd) -> bool {
-    phase(ord) == Phase::Hold
+pub fn held(&self, ord: StoreOrd) -> bool {
+    self.phase(ord) == Phase::Hold
 }
 
 /// The gate's whole answer for one site: hold, wait, or take. Claims the store's per-frame WAIT
 /// budget as a side effect, so only the first site of a store to find itself due can spend it.
-fn phase(ord: StoreOrd) -> Phase {
-    if !ARMED.load(Ordering::Relaxed) {
+fn phase(&self, ord: StoreOrd) -> Phase {
+    if !self.armed.load(Ordering::Relaxed) {
         return Phase::Free;
     }
-    with(|s| {
+    self.with(|s| {
         if s.mode != Mode::Replaying {
             return Phase::Free;
         }
@@ -240,11 +246,11 @@ fn wait_for<T>(mut f: impl FnMut() -> Option<T>) -> Option<T> {
 
 /// This store consumed one batch on this frame. Each consumed batch advances its count once;
 /// supplied-result ingress reports the same batch boundary without polling a live mailbox.
-pub fn landed(ord: StoreOrd) {
-    if !ARMED.load(Ordering::Relaxed) {
+pub fn landed(&self, ord: StoreOrd) {
+    if !self.armed.load(Ordering::Relaxed) {
         return;
     }
-    with(|s| {
+    self.with(|s| {
         let i = ord.0;
         if s.mode == Mode::Recording {
             *s.lands.entry(i).or_default() += 1;
@@ -272,29 +278,29 @@ pub fn landed(ord: StoreOrd) {
 
 /// Consume a one-slot mailbox under the gate: `None` while held, and a `Some` answer is the
 /// frame's landing for this store.
-pub fn take<T>(ord: StoreOrd, mut f: impl FnMut() -> Option<T>) -> Option<T> {
-    if !ARMED.load(Ordering::Relaxed) {
+pub fn take<T>(&self, ord: StoreOrd, mut f: impl FnMut() -> Option<T>) -> Option<T> {
+    if !self.armed.load(Ordering::Relaxed) {
         return f();
     }
-    let got = match phase(ord) {
+    let got = match self.phase(ord) {
         Phase::Hold => return None,
-        Phase::Due => wait_for(f),
+        Phase::Due => Self::wait_for(f),
         Phase::Free => f(),
     };
     if got.is_some() {
-        landed(ord);
+        self.landed(ord);
     }
     got
 }
 
 /// The same for a site that drains a QUEUE: an empty answer is not a landing.
-pub fn take_all<T>(ord: StoreOrd, mut f: impl FnMut() -> Vec<T>) -> Vec<T> {
-    if !ARMED.load(Ordering::Relaxed) {
+pub fn take_all<T>(&self, ord: StoreOrd, mut f: impl FnMut() -> Vec<T>) -> Vec<T> {
+    if !self.armed.load(Ordering::Relaxed) {
         return f();
     }
-    let got = match phase(ord) {
+    let got = match self.phase(ord) {
         Phase::Hold => return Vec::new(),
-        Phase::Due => wait_for(|| {
+        Phase::Due => Self::wait_for(|| {
             let v = f();
             if v.is_empty() { None } else { Some(v) }
         })
@@ -302,17 +308,17 @@ pub fn take_all<T>(ord: StoreOrd, mut f: impl FnMut() -> Vec<T>) -> Vec<T> {
         Phase::Free => f(),
     };
     if !got.is_empty() {
-        landed(ord);
+        self.landed(ord);
     }
     got
 }
 
 /// RECORDING: `(ordinal, arrivals)` for the frame just finished, for the recorder's records.
-pub fn take_frame_lands() -> Vec<(StoreOrd, u32)> {
-    if !ARMED.load(Ordering::Relaxed) {
+pub fn take_frame_lands(&self) -> Vec<(StoreOrd, u32)> {
+    if !self.armed.load(Ordering::Relaxed) {
         return Vec::new();
     }
-    with(|s| {
+    self.with(|s| {
         let mut out = Vec::new();
         for (i, landed) in s.lands.iter_mut() {
             let n = std::mem::take(landed);
@@ -326,25 +332,25 @@ pub fn take_frame_lands() -> Vec<(StoreOrd, u32)> {
 
 /// REPLAY: the mismatches observed since the last drain, and whether any were dropped by the
 /// buffer's bound (the count the driver keeps is its own).
-pub fn take_diffs() -> Vec<(u64, u32, Diff)> {
-    if !ARMED.load(Ordering::Relaxed) {
+pub fn take_diffs(&self) -> Vec<(u64, u32, Diff)> {
+    if !self.armed.load(Ordering::Relaxed) {
         return Vec::new();
     }
-    with(|s| std::mem::take(&mut s.diffs))
+    self.with(|s| std::mem::take(&mut s.diffs))
 }
 
 /// REPLAY, at the end: every recorded landing this run never produced.
 #[cfg(test)]
-pub fn unmatched() -> Vec<(u32, u64)> {
-    unmatched_counts().into_iter().flat_map(|(ord,frame,count)| std::iter::repeat_n((ord,frame),count as usize)).collect()
+pub fn unmatched(&self) -> Vec<(u32, u64)> {
+    self.unmatched_counts().into_iter().flat_map(|(ord,frame,count)| std::iter::repeat_n((ord,frame),count as usize)).collect()
 }
 
 /// Missing counts remain aggregated: a corrupt large count cannot request that many entries.
-pub fn unmatched_counts() -> Vec<(u32,u64,u32)> {
-    if !ARMED.load(Ordering::Relaxed) {
+pub fn unmatched_counts(&self) -> Vec<(u32,u64,u32)> {
+    if !self.armed.load(Ordering::Relaxed) {
         return Vec::new();
     }
-    with(|s| {
+    self.with(|s| {
         let mut out = Vec::new();
         for (i, q) in s.sched.iter_mut() {
             while let Some((at, left)) = q.pop_front() {
@@ -354,9 +360,45 @@ pub fn unmatched_counts() -> Vec<(u32,u64,u32)> {
         out
     })
 }
+}
 
-/// A test's promise that the gate is disarmed again even if its assertions panic — the state is
-/// process-global, so an armed gate left behind would hold another module's pumps.
+// Compatibility owner for focused gate tests and data-layer fixtures that do not construct a
+// production `Stores` aggregate. The application never routes Bridge landings through this value.
+#[cfg(test)]
+static FIXTURE_GATE: std::sync::LazyLock<Gate> = std::sync::LazyLock::new(Gate::default);
+#[cfg(test)]
+pub(crate) fn fixture_gate() -> &'static Gate { &FIXTURE_GATE }
+
+#[cfg(test)]
+pub fn arm_recording() { FIXTURE_GATE.arm_recording(); }
+#[cfg(test)]
+pub fn arm_replay(sched: Vec<Vec<(u64, u32)>>) { FIXTURE_GATE.arm_replay(sched); }
+#[cfg(test)]
+pub fn arm_sparse_replay(sched: BTreeMap<u32,Vec<(u64,u32)>>) { FIXTURE_GATE.arm_sparse_replay(sched); }
+#[cfg(test)]
+pub fn disarm() { FIXTURE_GATE.disarm(); }
+#[cfg(test)]
+pub fn begin_frame(f: u64) { FIXTURE_GATE.begin_frame(f); }
+#[cfg(test)]
+pub fn held(ord: StoreOrd) -> bool { FIXTURE_GATE.held(ord) }
+#[cfg(test)]
+fn phase(ord: StoreOrd) -> Phase { FIXTURE_GATE.phase(ord) }
+#[cfg(test)]
+pub fn landed(ord: StoreOrd) { FIXTURE_GATE.landed(ord); }
+#[cfg(test)]
+pub fn take<T>(ord: StoreOrd, f: impl FnMut() -> Option<T>) -> Option<T> { FIXTURE_GATE.take(ord, f) }
+#[cfg(test)]
+pub fn take_all<T>(ord: StoreOrd, f: impl FnMut() -> Vec<T>) -> Vec<T> { FIXTURE_GATE.take_all(ord, f) }
+#[cfg(test)]
+pub fn take_frame_lands() -> Vec<(StoreOrd, u32)> { FIXTURE_GATE.take_frame_lands() }
+#[cfg(test)]
+pub fn take_diffs() -> Vec<(u64, u32, Diff)> { FIXTURE_GATE.take_diffs() }
+#[cfg(test)]
+pub fn unmatched() -> Vec<(u32, u64)> { FIXTURE_GATE.unmatched() }
+#[cfg(test)]
+pub fn unmatched_counts() -> Vec<(u32,u64,u32)> { FIXTURE_GATE.unmatched_counts() }
+
+/// A fixture's promise that its compatibility gate is disarmed again even if assertions panic.
 #[cfg(test)]
 pub(crate) struct Armed;
 #[cfg(test)]

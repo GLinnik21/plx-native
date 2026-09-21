@@ -1070,21 +1070,23 @@ impl Bridge {
         self.stores.gen(id)
     }
 
+    pub(crate) fn landgate(&self) -> &crate::ui::landgate::Gate { &self.stores.landgate }
+
     /// The `MetadataStore`'s own async detail landing — `app/run.rs`'s route-unconditional pump.
     pub(crate) fn metadata_pump_detail(&mut self) -> bool {
-        self.stores.metadata.pump_detail()
+        self.stores.metadata.pump_detail_with_gate(&self.stores.landgate)
     }
 
     /// The `MetadataStore`'s own async season landing — `app/run.rs`'s route-unconditional pump.
     pub(crate) fn metadata_pump_season(&mut self) -> bool {
-        self.stores.metadata.pump_season()
+        self.stores.metadata.pump_season_with_gate(&self.stores.landgate)
     }
 
     /// The `MetadataStore`'s cross-source alt-sources resolve, scoped by this owner's retained
     /// Browse directory — `app/run.rs`'s route-unconditional pump.
     pub(crate) fn metadata_pump_alt_sources(&mut self) -> bool {
         let directory = self.directory.view();
-        self.stores.metadata.pump_alt_sources_with_directory(directory)
+        self.stores.metadata.pump_alt_sources_with_directory(directory, &self.stores.landgate)
     }
 
     /// Refresh only the retained directory at synchronous application boundaries that must make
@@ -1379,12 +1381,12 @@ impl Rig<AppHost> for Bridge {
                 Handled::Yes
             }
             AppMsg::StoreWork(crate::stores::StoreWork::BrowseDiscovery) => {
-                self.stores.browse.borrow_mut().discover_pump().endpoints.emit(fx);
+                self.stores.browse.borrow_mut().discover_pump_with_gate(&self.stores.landgate).endpoints.emit(fx);
                 Handled::Yes
             }
             AppMsg::StoreWork(crate::stores::StoreWork::Browse) => {
-                self.stores.browse.borrow_mut()
-                    .step(&crate::stores::StoreEv::Pump { dt: parts.tick.dt() }, &cx, fx)
+                self.stores.browse.borrow_mut().pump_with_gate(&self.stores.landgate).endpoints.emit(fx);
+                Handled::Yes
             }
             AppMsg::StoreWork(crate::stores::StoreWork::Search { dt_us }) => {
                 self.stores.search_pump(*dt_us as f32 / 1_000_000.0, self.directory.view());
@@ -1634,7 +1636,7 @@ impl Bridge {
     /// relaxed atomic load and the same call.
     fn take_hubs_results(&self) -> AppResults {
         let mut results =
-            crate::ui::landgate::take_all(StoreId::Hubs.ord(), || self.stores.hubs.take_results());
+            self.stores.landgate.take_all(StoreId::Hubs.ord(), || self.stores.hubs.take_results());
         results.sort_by_key(|result| result.request_id());
         results.into_iter().map(|result| (
             crate::ui::machine::Addr {
@@ -1659,7 +1661,7 @@ impl Bridge {
         }
         results.extend(self.take_hubs_results());
         if self.home_io.is_some() {
-            if let Some(result) = crate::ui::landgate::take(StoreId::Browse.ord(),
+            if let Some(result) = self.stores.landgate.take(StoreId::Browse.ord(),
                 || self.stores.browse.borrow_mut().take_discovery()) {
                 results.push((crate::ui::machine::Addr {
                     to: MachineId::Store(StoreId::Browse.ord()),

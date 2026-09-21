@@ -50,10 +50,10 @@ pub(super) fn recorder_end_frame(
 ) -> bool {
     rec.measurements(bridge);
     rec.content_end();
-    rec.end_frame_with(&|| super::recorder::state_hash(
+    rec.end_frame_with_gate(&|| super::recorder::state_hash(
         press, route, overlay, focus, tree, bridge.session_subhash(), bridge.consent_subhash(),
         bridge.initial_subhash(),
-    ), &|id| bridge.store_gen(id))
+    ), &|id| bridge.store_gen(id), bridge.landgate())
 }
 
 /// The per-iteration values that cross a phase boundary. Reset at the top of every iteration
@@ -121,7 +121,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         // published at the TOP because a landing site is reachable from the dev scenarios below
         // as well as from `land_results` and the dispatcher's own frame. One relaxed atomic load
         // unless `plxnative-rec` or `plxnative-recplay` is armed.
-        app.rec.begin_frame();
+        app.rec.begin_frame(app.bridge.landgate());
         // REPLAY (`plxnative-recplay`): this frame runs on the recorded tick — set BEFORE
         // ingest, whose key arms stamp `last_input` from the clock — and the frame's recorded
         // inputs are re-injected through the same synthesis the remote FIFO uses, so the poll
@@ -198,17 +198,19 @@ pub(crate) unsafe fn run(app: &mut App) {
             app.pages.nav.tabs.stack.transition.page_alpha(), app.pages.nav.tabs.stack.transition.in_flight())); }
         app.rec.prepare_resources(&mut app.bridge);
         let (_word, tree_report) = if let Some(results) = supplied {
+            let mut stores = std::collections::BTreeSet::new();
+            for (address, _) in &results {
+                if let crate::ui::machine::MachineId::Store(ord) = address.to {
+                    stores.insert(ord.0);
+                }
+            }
+            for ord in stores {
+                app.bridge.landgate().landed(crate::ui::machine::StoreOrd(ord));
+            }
             super::bridge::frame_with_results(&mut app.pages, &mut app.bridge, tick,
                 std::mem::take(&mut app.inputs), || {
                     // One consumed batch per supported store, exactly as the live suppliers
                     // stamp it. No mailbox is polled and no worker is needed for these facts.
-                    let mut stores = std::collections::BTreeSet::new();
-                    for (address, _) in &results {
-                        if let crate::ui::machine::MachineId::Store(ord) = address.to {
-                            stores.insert(ord.0);
-                        }
-                    }
-                    for ord in stores { crate::ui::landgate::landed(crate::ui::machine::StoreOrd(ord)); }
                     results
                 }, &mut app.rec)
         } else { super::bridge::frame_with_tap(
@@ -1738,7 +1740,7 @@ pub(super) fn request_local_erasure(rec: &mut super::recorder::Recplay,
         rec.refuse("replay cannot authorize local erasure");
         return false;
     }
-    let failed = super::finish_recording(rec);
+    let failed = super::finish_recording(rec, bridge.landgate());
     bridge.recording_retired_for_erasure(failed);
     delete_all_local_data_and_sign_out(pages);
     true
@@ -2967,6 +2969,7 @@ mod lifecycle_regression_tests {
         let segments=sink.segments.clone();
         let manifest=Header::new(super::super::recorder::state_fp(),&initial).to_json().to_string();
         app.rec=super::super::recorder::Recplay::recording_with_sink(&initial,Box::new(sink)).unwrap();
+        app.rec.arm_landgate(app.bridge.landgate());
         app.boot_initial=Some(initial);
         app.rec.prepare_resources(&mut app.bridge);
         app.rec.tick(100,0.016);
@@ -2982,7 +2985,7 @@ mod lifecycle_regression_tests {
             std::mem::take(&mut app.inputs),Vec::new(),&mut app.rec,false);
         app.rec.measurements(&app.bridge);
         app.rec.end_frame(&||0);
-        app.rec.finish();
+        app.rec.finish(app.bridge.landgate());
         let recording=Recording::parse(&manifest,
             &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(),super::super::recorder::state_fp()).unwrap();
         let inputs=&recording.frames[0].inputs;

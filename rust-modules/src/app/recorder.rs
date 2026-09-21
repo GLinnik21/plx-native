@@ -724,8 +724,9 @@ impl Recplay {
         for request in requests { self.observe_effect("Cache", "App", request); }
         if let Some(reason) = failure { self.refuse(reason); }
     }
-    pub(crate) fn abort_startup(&mut self) -> Result<(), &'static str> {
-        crate::ui::landgate::disarm();
+    pub(crate) fn abort_startup(&mut self, gate: &crate::ui::landgate::Gate)
+        -> Result<(), &'static str> {
+        gate.disarm();
         match std::mem::replace(self,Self::Off) {
             Self::Recording(record) => record.w.abort().map_err(|_| "recording startup rollback incomplete"),
             Self::Off => Ok(()),
@@ -805,7 +806,6 @@ impl Recplay {
             }
             super::bootstrap::Preflight::Replay { recording, mode, .. } => {
                 validate_resolution_recording(&recording)?;
-                crate::ui::landgate::arm_sparse_replay(recording.land_schedule());
                 Ok(Self::Replaying(Replay { resolution:ResolutionReplay { mode, ..Default::default() }, rec: recording, at: 0, graded: 0, diverged: 0,
                     present_diffs: 0, result_diffs: 0, land_diffs: 0, result_at: 0, effect_at: 0,
                     input_at: 0, input_diffs: 0, effect_diffs: 0, started: false, failure: None }))
@@ -836,7 +836,6 @@ impl Recplay {
         header.features = features();
         header.triggers = initial.triggers.clone();
         let w = Writer::open(sink, &header, 0).map_err(|_| "cannot open recording")?;
-        crate::ui::landgate::arm_recording();
         Ok(Self::Recording(Rec { w, f:0, focus:None, events:false, spent_ns:0, failure:None }))
     }
 
@@ -852,12 +851,20 @@ impl Recplay {
 
     /// The loop's frame index, published to `ui::landgate` before any landing site runs. One
     /// relaxed atomic load when neither trigger is armed.
-    pub(crate) fn begin_frame(&self) {
+    pub(crate) fn begin_frame(&self, gate: &crate::ui::landgate::Gate) {
         match self {
-            Recplay::Recording(r) => crate::ui::landgate::begin_frame(r.f),
-            Recplay::Replaying(r) => crate::ui::landgate::begin_frame(
+            Recplay::Recording(r) => gate.begin_frame(r.f),
+            Recplay::Replaying(r) => gate.begin_frame(
                 r.rec.frames.get(r.at).map_or(r.at as u64, |f| f.f),
             ),
+            Recplay::Off => {}
+        }
+    }
+
+    pub(crate) fn arm_landgate(&self, gate: &crate::ui::landgate::Gate) {
+        match self {
+            Recplay::Recording(_) => gate.arm_recording(),
+            Recplay::Replaying(r) => gate.arm_sparse_replay(r.rec.land_schedule()),
             Recplay::Off => {}
         }
     }
@@ -967,10 +974,20 @@ impl Recplay {
 
     /// [`Self::end_frame`], but with an explicit per-store generation lookup — the production
     /// path (`app::run::recorder_end_frame`) supplies `Bridge::store_gen`.
+    #[cfg(test)]
     pub(crate) fn end_frame_with(
         &mut self,
         hash: &dyn Fn() -> u64,
         store_gen: &dyn Fn(crate::stores::StoreId) -> u32,
+    ) -> bool {
+        self.end_frame_with_gate(hash, store_gen, crate::ui::landgate::fixture_gate())
+    }
+
+    pub(crate) fn end_frame_with_gate(
+        &mut self,
+        hash: &dyn Fn() -> u64,
+        store_gen: &dyn Fn(crate::stores::StoreId) -> u32,
+        gate: &crate::ui::landgate::Gate,
     ) -> bool {
         match self {
             Recplay::Off => false,
@@ -981,7 +998,7 @@ impl Recplay {
                 // The frame's LANDING SCHEDULE (§3.3 step 3): one record per store that consumed
                 // a mailbox this frame, whichever of its sites did it. Written before `st`, so a
                 // reader sees the arrival above the state it produced.
-                for (ord, n) in crate::ui::landgate::take_frame_lands() {
+                for (ord, n) in gate.take_frame_lands() {
                     let gen = crate::stores::StoreId::from_ord(ord).map_or(0, store_gen);
                     r.w.land(r.f, ord.0, gen, n);
                     r.events = true;
@@ -1017,7 +1034,7 @@ impl Recplay {
                 // Landings the gate could not place on their recorded frame. `late` means the
                 // worker was slower here than it was when recorded (holding cannot conjure a
                 // result); `extra` means the recording had none left for that store.
-                for (frame, ord, why) in crate::ui::landgate::take_diffs() {
+                for (frame, ord, why) in gate.take_diffs() {
                     r.land_diffs += 1;
                     crate::log(&format!("replay: land diverge f={frame} store={ord} reason={}", why.name()));
                 }
@@ -1057,7 +1074,7 @@ impl Recplay {
                 if r.at >= r.rec.frames.len() {
                     // Recorded landings this run never produced. They can only be known at the
                     // end: until the recording is exhausted, "not yet" and "never" look alike.
-                    for (ord, frame, count) in crate::ui::landgate::unmatched_counts() {
+                    for (ord, frame, count) in gate.unmatched_counts() {
                         r.land_diffs += u64::from(count);
                         crate::log(&format!(
                             "replay: land diverge f={frame} store={ord} reason={}",
@@ -1097,9 +1114,9 @@ impl Recplay {
         }
     }
 
-    pub(crate) fn finish(self) -> bool {
+    pub(crate) fn finish(self, gate: &crate::ui::landgate::Gate) -> bool {
         let mut failed = self.outcome_failed();
-        crate::ui::landgate::disarm();
+        gate.disarm();
         if let Recplay::Recording(r) = self {
             if r.w.finish().is_err() {
                 failed = true;
@@ -1218,6 +1235,46 @@ pub(crate) fn enc_lifecycle(code: u32) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_bridge_recorders_own_their_landing_lifecycle() {
+        let _serial = crate::testlock::serial();
+        crate::ui::landgate::disarm();
+        let initial = super::super::bootstrap::Initial::synthetic_home(
+            1, 32517, Some("root".into())).unwrap();
+        let first_bridge = super::super::bridge::Bridge::for_test(|| 0);
+        let second_bridge = super::super::bridge::Bridge::for_test(|| 0);
+        let mut first = Recplay::recording_with_sink(
+            &initial, Box::new(crate::ui::rec::MemSink::default())).unwrap();
+        let mut second = Recplay::recording_with_sink(
+            &initial, Box::new(crate::ui::rec::MemSink::default())).unwrap();
+        first.arm_landgate(first_bridge.landgate());
+        second.arm_landgate(second_bridge.landgate());
+        first.begin_frame(first_bridge.landgate());
+        second.begin_frame(second_bridge.landgate());
+        let browse = crate::stores::StoreId::Browse.ord();
+        first_bridge.landgate().landed(browse);
+        second_bridge.landgate().landed(browse);
+
+        assert!(!first.end_frame_with_gate(&|| 0, &|_| 0, first_bridge.landgate()));
+        assert_eq!(second_bridge.landgate().take_frame_lands(), vec![(browse, 1)],
+            "ending one Bridge must not drain the other owner's StoreId cursor");
+        assert!(crate::ui::landgate::take_frame_lands().is_empty(),
+            "constructing or running an owned recorder must not arm the fixture gate");
+
+        assert!(!first.finish(first_bridge.landgate()));
+        first_bridge.landgate().landed(browse);
+        assert!(first_bridge.landgate().take_frame_lands().is_empty(),
+            "finishing must disarm the same owner gate that begin/end used");
+        second.begin_frame(second_bridge.landgate());
+        second_bridge.landgate().landed(browse);
+        assert_eq!(second_bridge.landgate().take_frame_lands(), vec![(browse, 1)],
+            "finishing the first recorder must leave the second owner armed");
+        second.abort_startup(second_bridge.landgate()).unwrap();
+        second_bridge.landgate().landed(browse);
+        assert!(second_bridge.landgate().take_frame_lands().is_empty(),
+            "startup abort must disarm its own owner gate too");
+    }
 
     #[test]
     fn product_pre_resolution_wire_shape_is_refused_before_boot() {
@@ -1389,7 +1446,7 @@ mod tests {
         let mut rec=Recplay::recording_with_sink(&initial,Box::new(sink)).unwrap();
         let expected=product_settings_run(&mut rec,false,false);
         assert_eq!(rec.failure(),None);
-        rec.finish();
+        rec.finish(crate::ui::landgate::fixture_gate());
         let recording=Recording::parse(&manifest,&segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(),state_fp()).unwrap();
         (recording,expected)
     }
@@ -1429,7 +1486,7 @@ mod tests {
         let mut rec=Recplay::recording_with_sink(&initial,Box::new(sink)).unwrap();
         let mut queries=Vec::new();
         let expected=product_settings_run_with_queries(&mut rec,false,false,&mut queries);
-        rec.finish();
+        rec.finish(crate::ui::landgate::fixture_gate());
         let recording=Recording::parse(&manifest,&segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(),state_fp()).unwrap();
         let mut replay=replay_for_test(recording,ReplayMode::Resolve);
         let mut replay_queries=Vec::new();
@@ -1504,7 +1561,7 @@ mod tests {
         assert_eq!(focuses[1],focuses[3],"return must remember the trailing answer");
         assert_eq!(focuses[3],focuses[5],"second round trip");
         assert!(!queries.is_empty(),"real consent geometry queries the capability");
-        rec.finish();
+        rec.finish(crate::ui::landgate::fixture_gate());
         let recording=Recording::parse(&manifest,&segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(),state_fp()).unwrap();
         for mode in [ReplayMode::Targets,ReplayMode::Resolve] {
             for changed in [false,true] {
@@ -1609,7 +1666,7 @@ mod tests {
         rec.tick(16, 0.016);
         Tap::focus(&mut rec, 2, Some((1, 2, Some(3))));
         rec.end_frame(&|| 8);
-        rec.finish();
+        rec.finish(crate::ui::landgate::fixture_gate());
         let rows: Vec<Value> = segments.borrow().iter().flat_map(|s| s.split(|b| *b == b'\n'))
             .filter(|s| !s.is_empty()).map(|s| serde_json::from_slice(s).unwrap()).collect();
         let focus: Vec<_> = rows.iter().filter(|v| v["t"] == "fo").collect();
@@ -1635,7 +1692,7 @@ mod tests {
         pages.frame_with(&mut bridge, Tick::default(), Vec::new(), Vec::new(), &mut rec, false);
         rec.tick(1, 0.016);
         rec.end_frame(&||0);
-        rec.finish();
+        rec.finish(crate::ui::landgate::fixture_gate());
         assert_eq!(*segments.borrow(), bytes, "later frames/shutdown cannot recreate recording bytes");
         assert_eq!(bridge.auth_read().0.phase, crate::auth::Phase::Deleted);
     }
@@ -1661,7 +1718,9 @@ mod tests {
             rec.tick(0, 0.0);
             rec.end_frame(&||0);
             assert_eq!(rec.failure().is_some(), midwrite, "midwrite failure reaches the production frame tail");
-            assert!(super::super::finish_recording(&mut rec), "storage error must fail application outcome");
+            assert!(super::super::finish_recording(
+                &mut rec, crate::ui::landgate::fixture_gate()),
+                "storage error must fail application outcome");
             assert!(matches!(rec, Recplay::Off), "failed writer is still retired");
             let mut rec = Recplay::recording_with_sink(&initial, Box::new(Disk(midwrite))).unwrap();
             rec.tick(0, 0.0);
@@ -2045,20 +2104,19 @@ mod tests {
         let seg = b"{\"f\":0,\"t\":\"tick\",\"ms\":0,\"dt_us\":16000}\n                    {\"f\":1,\"t\":\"tick\",\"ms\":16,\"dt_us\":16000}\n                    {\"f\":2,\"t\":\"tick\",\"ms\":32,\"dt_us\":16000}\n                    {\"f\":2,\"t\":\"land\",\"ord\":1,\"gen\":3,\"n\":1}\n";
         let rec = Recording::parse(&manifest, &[seg.as_slice()], state_fp()).unwrap();
         assert_eq!(rec.land_schedule(), std::collections::BTreeMap::from([(1,vec![(2,1)])]));
-        let _armed = crate::ui::landgate::Armed;
-        crate::ui::landgate::arm_sparse_replay(rec.land_schedule());
+        rig.landgate().arm_sparse_replay(rec.land_schedule());
         // the worker's answer is in the mailbox from frame 0
         rig.queue_hubs_landing_for_test(Some(4));
         let mut seen = Vec::new();
         for f in 0..4u64 {
-            crate::ui::landgate::begin_frame(f);
+            rig.landgate().begin_frame(f);
             if !rig.take_hubs_results_for_test().is_empty() {
                 seen.push(f);
             }
         }
         assert_eq!(seen, vec![2], "the live arrival waited for its recorded frame");
-        assert!(crate::ui::landgate::take_diffs().is_empty());
-        assert!(crate::ui::landgate::unmatched().is_empty());
+        assert!(rig.landgate().take_diffs().is_empty());
+        assert!(rig.landgate().unmatched().is_empty());
     }
 
     /// …and a landing the recording never saw is delivered at once and counted, so the gate can
@@ -2069,13 +2127,12 @@ mod tests {
         let mut rig = super::super::bridge::Bridge::for_test(|| 0);
         rig.seed_hubs_for_test(1, crate::pms::HubState::Ready);
         let _ = rig.take_hubs_results_for_test();
-        let _armed = crate::ui::landgate::Armed;
-        crate::ui::landgate::arm_replay(vec![]);
+        rig.landgate().arm_replay(vec![]);
         rig.queue_hubs_landing_for_test(Some(4));
-        crate::ui::landgate::begin_frame(5);
+        rig.landgate().begin_frame(5);
         assert_eq!(rig.take_hubs_results_for_test().len(), 1);
         assert_eq!(
-            crate::ui::landgate::take_diffs(),
+            rig.landgate().take_diffs(),
             vec![(5, crate::stores::StoreId::Hubs.ord().0, crate::ui::landgate::Diff::Extra)]
         );
     }

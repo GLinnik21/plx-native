@@ -426,8 +426,9 @@ impl super::BrowseState {
         }
     }
 
-    pub(crate) fn hubs_land(&mut self, adapter: &Arc<super::BrowseAdapter>) -> bool {
-        let taken = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
+    pub(crate) fn hubs_land(&mut self, adapter: &Arc<super::BrowseAdapter>,
+        gate: &crate::ui::landgate::Gate) -> bool {
+        let taken = crate::stores::take_landing(gate, crate::stores::StoreId::Browse, || {
             adapter.hubs.result.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         let Some(result) = taken else {

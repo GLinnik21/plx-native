@@ -145,30 +145,38 @@ impl BrowseStore {
         changed
     }
 
-    pub(crate) fn pump(&mut self) -> super::StoreOutcome {
+    pub(crate) fn pump_with_gate(&mut self, gate: &crate::ui::landgate::Gate) -> super::StoreOutcome {
         if !self.state.pump_needs_work(&self.adapter) {
             return Default::default();
         }
         let roster_changed = self.sync_roster();
         let source_gen = self.state.source_list_gen();
-        let mut outcome = self.state.pump_owned(&self.adapter);
+        let mut outcome = self.state.pump_owned_with_gate(&self.adapter, gate);
         outcome.changed |= roster_changed || source_gen != self.state.source_list_gen();
         if outcome.changed {
             self.bump();
         }
         outcome
     }
+    #[cfg(test)]
+    pub(crate) fn pump(&mut self) -> super::StoreOutcome {
+        self.pump_with_gate(crate::ui::landgate::fixture_gate())
+    }
 
-    pub(crate) fn discover_pump(&mut self) -> super::StoreOutcome {
+    pub(crate) fn discover_pump_with_gate(&mut self, gate: &crate::ui::landgate::Gate) -> super::StoreOutcome {
         if !self.state.discovery_needs_pump(&self.adapter) {
             return Default::default();
         }
         let roster_changed = self.sync_roster();
         let source_gen = self.state.source_list_gen();
-        let mut outcome = self.state.discover_pump_owned(&self.adapter);
+        let mut outcome = self.state.discover_pump_owned_with_gate(&self.adapter, gate);
         outcome.changed |= roster_changed || source_gen != self.state.source_list_gen();
         if outcome.changed { self.bump(); }
         outcome
+    }
+    #[cfg(test)]
+    pub(crate) fn discover_pump(&mut self) -> super::StoreOutcome {
+        self.discover_pump_with_gate(crate::ui::landgate::fixture_gate())
     }
 
     pub(crate) fn listing_snapshot(&mut self) -> ListingSnapshot {
@@ -432,7 +440,7 @@ impl<H: super::StoreEffectHost> Machine<H> for BrowseStore {
                 self.run(c.clone());
             }
             StoreEv::Pump { .. } => {
-                self.pump().endpoints.emit(fx);
+                self.pump_with_gate(&crate::ui::landgate::Gate::default()).endpoints.emit(fx);
             }
         }
         Handled::Yes

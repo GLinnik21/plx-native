@@ -111,12 +111,13 @@ impl SearchStore {
     }
 
     /// Route-unconditional landing/spawn pass for this owner's adapter.
-    pub(crate) fn pump_with_directory(
+    pub(crate) fn pump_with_directory_and_gate(
         &mut self,
         dt: f32,
         directory: crate::stores::browse::DirectoryView<'_>,
+        gate: &crate::ui::landgate::Gate,
     ) -> bool {
-        let changed = self.state.pump_with_directory(&self.adapter, dt, directory);
+        let changed = self.state.pump_with_directory_and_gate(&self.adapter, dt, directory, gate);
         if changed {
             self.bump();
         }

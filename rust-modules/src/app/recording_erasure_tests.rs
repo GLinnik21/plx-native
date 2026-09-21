@@ -42,6 +42,7 @@ fn owned_recording_files_are_erased_after_quiescence_and_leftovers_are_acked() {
             client_id: "synthetic-erasure".into(),
             ..Default::default()
         }));
+        rec.arm_landgate(bridge.landgate());
         bridge.session_adapter =
             super::super::adapters::session::SessionAdapter::live_recording_resources_for_test(
                 &mt,
@@ -99,7 +100,7 @@ fn owned_recording_files_are_erased_after_quiescence_and_leftovers_are_acked() {
         );
         rec.tick(1, 0.016);
         rec.end_frame(&|| 0);
-        assert!(!rec.finish());
+        assert!(!rec.finish(crate::ui::landgate::fixture_gate()));
         assert!(
             !recording.exists(),
             "subsequent frames and shutdown cannot recreate erased data"

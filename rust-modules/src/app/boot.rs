@@ -342,9 +342,10 @@ pub(crate) unsafe fn boot(
 }
 
 pub(super) fn apply_deferred_capture(rec: &mut super::recorder::Recplay,
+    gate: &crate::ui::landgate::Gate,
     deferred: crate::plex::session::DeferredLoad) -> Result<(), &'static str> {
     if let Err(reason) = deferred.apply() {
-        rec.abort_startup()?;
+        rec.abort_startup(gate)?;
         return Err(reason);
     }
     Ok(())
@@ -1309,9 +1310,10 @@ pub(crate) unsafe fn construct(
         let replay = preflight.replay();
         app.rec = super::recorder::Recplay::controlled(preflight, &initial)
             .map_err(|reason| { log(&format!("rec: REFUSED — {reason}")); 1 })?;
+        app.rec.arm_landgate(app.bridge.landgate());
         log("bootstrap: captured pre-effect initial state");
         if let Some(deferred) = deferred {
-            apply_deferred_capture(&mut app.rec, deferred)
+            apply_deferred_capture(&mut app.rec, app.bridge.landgate(), deferred)
                 .map_err(|reason| { log(&format!("rec: REFUSED — {reason}")); 1 })?;
             log("bootstrap: captured session persistence applied");
         }
