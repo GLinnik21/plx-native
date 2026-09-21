@@ -30,6 +30,42 @@ pub struct Remote {
     buf: String,
 }
 
+#[cfg(feature = "devtriggers")]
+#[derive(Debug, PartialEq, Eq)]
+struct HangProbe {
+    ms: u64,
+    raw: bool,
+}
+
+#[cfg(feature = "devtriggers")]
+impl HangProbe {
+    fn parse(token: &str) -> Option<Self> {
+        let (ms, raw) = if let Some(ms) = token.strip_prefix("hang:") {
+            (ms, false)
+        } else {
+            (token.strip_prefix("hang-raw:")?, true)
+        };
+        if ms.is_empty() || !ms.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        Some(Self {
+            ms: ms.parse::<u64>().ok()?.min(5000),
+            raw,
+        })
+    }
+
+    fn run(self) {
+        let _guard = if self.raw {
+            None
+        } else {
+            Some(crate::task::assert_may_block(
+                const { &crate::task::BlockingLabel::new("dev hang probe") },
+            ))
+        };
+        std::thread::sleep(std::time::Duration::from_millis(self.ms));
+    }
+}
+
 impl Remote {
     /// Create + open the control FIFO non-blocking. `O_RDWR` keeps a writer end open
     /// on our side so reads never hit EOF between host writes (the standard self-pipe
@@ -93,8 +129,8 @@ impl Remote {
         }
     }
 
-    /// Drain all pending bytes and call `f` once per complete whitespace-delimited
-    /// token. A trailing partial token (no terminating whitespace yet) is retained for
+    /// Drain all pending bytes, executing dev hang probes inline and calling `f` once per
+    /// other complete whitespace-delimited token. A trailing partial token is retained for
     /// the next frame so a split write is never mis-parsed.
     pub fn drain(&mut self, mut f: impl FnMut(&str)) {
         let mut tmp = [0u8; 512];
@@ -135,6 +171,12 @@ impl Remote {
                 let ready = self.buf[..=i].to_string();
                 self.buf = self.buf[i + 1..].to_string();
                 for tok in ready.split_whitespace() {
+                    // The app drains here on the frame thread, inside its FrameScope.
+                    #[cfg(feature = "devtriggers")]
+                    if let Some(probe) = HangProbe::parse(tok) {
+                        probe.run();
+                        continue;
+                    }
                     f(tok);
                 }
             }
@@ -155,6 +197,61 @@ impl Drop for Remote {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn hang_probe_parses_and_clamps_milliseconds() {
+        for (prefix, raw) in [("hang:", false), ("hang-raw:", true)] {
+            for (input, ms) in [
+                ("0", 0),
+                ("1", 1),
+                ("0050", 50),
+                ("5000", 5000),
+                ("5001", 5000),
+                ("18446744073709551615", 5000),
+            ] {
+                assert_eq!(
+                    HangProbe::parse(&format!("{prefix}{input}")),
+                    Some(HangProbe { ms, raw })
+                );
+            }
+            for bad in [
+                "",
+                "-1",
+                "+1",
+                "1.0",
+                "1ms",
+                " 1",
+                "1 ",
+                "1:2",
+                "abc",
+                "１",
+                "18446744073709551616",
+            ] {
+                assert_eq!(HangProbe::parse(&format!("{prefix}{bad}")), None);
+            }
+        }
+        for bad in ["hang", "hang-raw", "hangraw:1", "HANG:1", "up", "xhang:1"] {
+            assert_eq!(HangProbe::parse(bad), None);
+        }
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    #[should_panic(expected = "main-thread block: dev hang probe")]
+    fn hang_probe_from_fifo_uses_the_frame_guard() {
+        let _frame = crate::task::FrameScope::enter();
+        drain_buffer("hang:1\n");
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn raw_hang_probe_from_fifo_bypasses_the_frame_guard() {
+        let _frame = crate::task::FrameScope::enter();
+        let (tokens, tail) = drain_buffer("hang-raw:1\nup\n");
+        assert_eq!(tokens, ["up"]);
+        assert!(tail.is_empty());
+    }
 
     /// Run `drain` over a pre-loaded buffer with **no FIFO**: fd = -1 makes the `read(2)` fail
     /// with EBADF on the first call, so `drain` falls straight through to the tokenizer — which

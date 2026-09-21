@@ -107,6 +107,7 @@ Keymanager and LS2 calls. It panics only in tests and records elapsed time once 
 in debug and release builds. Use cached reads and the bounded `storage_worker` queue, then observe the landing
 on the frame thread and call `idle::invalidate()` only when visible content changed. Boot's synchronous loads run before the frame scope; a new blocking exception
 must be explicit and justified through `task::allow_blocking`, never added to a tick.
+To see it fire on the TV, hold the TV lock and, after the first present in a `devtriggers` build, run `tools/tv-session.sh key hang:1000` for the once-per-label block log plus watchdog hang/ended logs, or `key hang-raw:1000` for the watchdog's unlabeled path (both capped at 5000 ms).
 
 The release-enabled `task::watchdog` independently checks loop progress every 100 ms. It reports
 once after more than 250 ms without progress and once on recovery, using the innermost static
