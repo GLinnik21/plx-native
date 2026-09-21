@@ -739,8 +739,8 @@ impl Bridge {
         }
     }
 
-    /// Return Browse/Search publication changes so the frame can coalesce them with notices.
-    fn capture_views(&mut self, d: &mut Dispatcher<AppHost>) -> (bool, bool) {
+    /// Return publication changes so the frame can coalesce them with store notices.
+    fn capture_views(&mut self, _d: &mut Dispatcher<AppHost>) -> (bool, bool, bool) {
         let directory_before = self.directory.clone();
         let hubs_before = (self.section_hubs.view().id(), self.section_hubs.view().revision());
         // One owner borrow, in the load-bearing order: directory capture resolves profile pins
@@ -763,13 +763,8 @@ impl Bridge {
         let before = (self.hubs.view().generation, self.hubs.view().state);
         self.hubs = self.stores.hubs.snapshot();
         let after = (self.hubs.view().generation, self.hubs.view().state);
-        if before != after {
-            // This is queued before input deliveries. Key projections catch up to the newly
-            // captured publication before any action or draw can read it, including status-only
-            // landings which the legacy pump's catalog-generation notice cannot see.
-            d.store_changed(StoreId::Hubs.ord(), after.0);
-        }
-        (browse_changed, search_changed)
+        let hubs_changed = before != after;
+        (browse_changed, hubs_changed, search_changed)
     }
 
     pub(crate) fn update_home_chrome(&mut self, d: &mut Dispatcher<AppHost>,
@@ -1720,19 +1715,26 @@ fn frame_ingest(
         let outcome = rig.stores.browse_discover_pump();
         execute_endpoint_outcomes(d, outcome.endpoints);
     }
-    let (browse_changed, search_changed) = rig.capture_views(d);
+    let (browse_changed, hubs_changed, search_changed) = rig.capture_views(d);
     rig.capture_chrome(d);
     rig.deliver_home_commands(d);
     rig.deliver_library_commands(d);
     let mut search_notified = false;
     let mut browse_notified = false;
+    let mut hubs_notified = false;
     for (id, gen) in rig.stores.take_notices() {
         search_notified |= id == StoreId::Search;
         browse_notified |= id == StoreId::Browse;
+        hubs_notified |= id == StoreId::Hubs;
         d.store_changed(id.ord(), gen);
     }
     if browse_changed && !browse_notified {
         d.store_changed(StoreId::Browse.ord(), rig.stores.gen(StoreId::Browse));
+    }
+    // Hubs publications include status-only landings that the catalog generation may not see.
+    // Announce that captured change, but do not double-deliver its ordinary queued notice.
+    if hubs_changed && !hubs_notified {
+        d.store_changed(StoreId::Hubs.ord(), rig.stores.gen(StoreId::Hubs));
     }
     // Search can still change through a producer outside the dispatcher queue. Announce that
     // captured change, but do not double-deliver an ordinary queued Search notice.
