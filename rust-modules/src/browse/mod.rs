@@ -1890,23 +1890,25 @@ impl BrowseState {
             source.retry_cd = SRC_RETRY_CD;
         }
     }
-    fn land_discovery_owned(
+    fn land_discovery_owned_with_gate(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
+        gate: &crate::ui::landgate::Gate,
     ) -> crate::stores::StoreOutcome {
-        let taken = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
+        let taken = crate::stores::take_landing(gate, crate::stores::StoreId::Browse, || {
             adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         let Some((epoch, source, landing)) = taken else { return Default::default() };
         self.apply_discovery(epoch, source, landing, None, adapter)
     }
-    fn land_directory_owned<T>(
+    fn land_directory_owned_with_gate<T>(
         &mut self,
+        gate: &crate::ui::landgate::Gate,
         flag: &AtomicBool,
         mail: &Mutex<Option<DirectoryResult<T>>>,
         apply: impl FnOnce(&mut SecState, Vec<T>),
     ) -> bool {
-        let taken = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
+        let taken = crate::stores::take_landing(gate, crate::stores::StoreId::Browse, || {
             mail.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         let Some(result) = taken else { return false };
@@ -1925,6 +1927,16 @@ impl BrowseState {
             }
             false
         }).unwrap_or(false)
+    }
+    #[cfg(test)]
+    fn land_discovery_owned(&mut self, adapter: &Arc<BrowseAdapter>)
+        -> crate::stores::StoreOutcome {
+        self.land_discovery_owned_with_gate(adapter, crate::ui::landgate::fixture_gate())
+    }
+    #[cfg(test)]
+    fn land_directory_owned<T>(&mut self, flag: &AtomicBool,
+        mail: &Mutex<Option<DirectoryResult<T>>>, apply: impl FnOnce(&mut SecState, Vec<T>)) -> bool {
+        self.land_directory_owned_with_gate(crate::ui::landgate::fixture_gate(), flag, mail, apply)
     }
     fn maybe_spawn_owned(&mut self, adapter: &Arc<BrowseAdapter>) {
         if adapter.fetching.load(Ordering::SeqCst) || self.retry_cd > 0 {
@@ -2018,41 +2030,50 @@ impl BrowseState {
     ) {
         self.maybe_discover_owned(adapter, launch);
     }
-    pub(crate) fn discover_pump_owned(
+    pub(crate) fn discover_pump_owned_with_gate(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
+        gate: &crate::ui::landgate::Gate,
     ) -> crate::stores::StoreOutcome {
-        let outcome = self.land_discovery_owned(adapter);
+        let outcome = self.land_discovery_owned_with_gate(adapter, gate);
         self.maybe_discover_owned(adapter, &mut execute_discovery);
         outcome
     }
-    pub(crate) fn pump_owned(
+    #[cfg(test)]
+    pub(crate) fn discover_pump_owned(&mut self, adapter: &Arc<BrowseAdapter>)
+        -> crate::stores::StoreOutcome {
+        self.discover_pump_owned_with_gate(adapter, crate::ui::landgate::fixture_gate())
+    }
+    pub(crate) fn pump_owned_with_gate(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
+        gate: &crate::ui::landgate::Gate,
     ) -> crate::stores::StoreOutcome {
         let mut changed = false;
         self.retry_cd = self.retry_cd.saturating_sub(1);
-        let discovery = self.land_discovery_owned(adapter);
+        let discovery = self.land_discovery_owned_with_gate(adapter, gate);
         changed |= discovery.changed;
         let endpoints = discovery.endpoints;
         self.maybe_discover_owned(adapter, &mut execute_discovery);
-        changed |= self.hubs_land(adapter);
+        changed |= self.hubs_land(adapter, gate);
         changed |= self.hubs_tick_all(adapter);
-        changed |= self.land_directory_owned(
+        changed |= self.land_directory_owned_with_gate(
+            gate,
             &adapter.genre_fetching, &adapter.genre_result, |state, list| {
             state.genres_done = true;
             if state.genres.is_empty() {
                 state.genres = Arc::new(list);
             }
         });
-        changed |= self.land_directory_owned(
+        changed |= self.land_directory_owned_with_gate(
+            gate,
             &adapter.letters_fetching, &adapter.letter_result, |state, list| {
                 state.letters_done = true;
                 if state.letters.is_empty() {
                     state.letters = Arc::new(list);
                 }
             });
-        let page = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
+        let page = crate::stores::take_landing(gate, crate::stores::StoreId::Browse, || {
             adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         if let Some(result) = page {
@@ -2105,6 +2126,11 @@ impl BrowseState {
         }
         self.maybe_spawn_owned(adapter);
         crate::stores::StoreOutcome { changed, endpoints }
+    }
+    #[cfg(test)]
+    pub(crate) fn pump_owned(&mut self, adapter: &Arc<BrowseAdapter>)
+        -> crate::stores::StoreOutcome {
+        self.pump_owned_with_gate(adapter, crate::ui::landgate::fixture_gate())
     }
 }
 
