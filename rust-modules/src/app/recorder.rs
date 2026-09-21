@@ -2104,20 +2104,19 @@ mod tests {
         let seg = b"{\"f\":0,\"t\":\"tick\",\"ms\":0,\"dt_us\":16000}\n                    {\"f\":1,\"t\":\"tick\",\"ms\":16,\"dt_us\":16000}\n                    {\"f\":2,\"t\":\"tick\",\"ms\":32,\"dt_us\":16000}\n                    {\"f\":2,\"t\":\"land\",\"ord\":1,\"gen\":3,\"n\":1}\n";
         let rec = Recording::parse(&manifest, &[seg.as_slice()], state_fp()).unwrap();
         assert_eq!(rec.land_schedule(), std::collections::BTreeMap::from([(1,vec![(2,1)])]));
-        let _armed = crate::ui::landgate::Armed;
-        crate::ui::landgate::arm_sparse_replay(rec.land_schedule());
+        rig.landgate().arm_sparse_replay(rec.land_schedule());
         // the worker's answer is in the mailbox from frame 0
         rig.queue_hubs_landing_for_test(Some(4));
         let mut seen = Vec::new();
         for f in 0..4u64 {
-            crate::ui::landgate::begin_frame(f);
+            rig.landgate().begin_frame(f);
             if !rig.take_hubs_results_for_test().is_empty() {
                 seen.push(f);
             }
         }
         assert_eq!(seen, vec![2], "the live arrival waited for its recorded frame");
-        assert!(crate::ui::landgate::take_diffs().is_empty());
-        assert!(crate::ui::landgate::unmatched().is_empty());
+        assert!(rig.landgate().take_diffs().is_empty());
+        assert!(rig.landgate().unmatched().is_empty());
     }
 
     /// …and a landing the recording never saw is delivered at once and counted, so the gate can
@@ -2128,13 +2127,12 @@ mod tests {
         let mut rig = super::super::bridge::Bridge::for_test(|| 0);
         rig.seed_hubs_for_test(1, crate::pms::HubState::Ready);
         let _ = rig.take_hubs_results_for_test();
-        let _armed = crate::ui::landgate::Armed;
-        crate::ui::landgate::arm_replay(vec![]);
+        rig.landgate().arm_replay(vec![]);
         rig.queue_hubs_landing_for_test(Some(4));
-        crate::ui::landgate::begin_frame(5);
+        rig.landgate().begin_frame(5);
         assert_eq!(rig.take_hubs_results_for_test().len(), 1);
         assert_eq!(
-            crate::ui::landgate::take_diffs(),
+            rig.landgate().take_diffs(),
             vec![(5, crate::stores::StoreId::Hubs.ord().0, crate::ui::landgate::Diff::Extra)]
         );
     }
