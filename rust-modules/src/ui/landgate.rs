@@ -284,7 +284,7 @@ pub fn take<T>(&self, ord: StoreOrd, mut f: impl FnMut() -> Option<T>) -> Option
     }
     let got = match self.phase(ord) {
         Phase::Hold => return None,
-        Phase::Due => wait_for(f),
+        Phase::Due => Self::wait_for(f),
         Phase::Free => f(),
     };
     if got.is_some() {
@@ -300,7 +300,7 @@ pub fn take_all<T>(&self, ord: StoreOrd, mut f: impl FnMut() -> Vec<T>) -> Vec<T
     }
     let got = match self.phase(ord) {
         Phase::Hold => return Vec::new(),
-        Phase::Due => wait_for(|| {
+        Phase::Due => Self::wait_for(|| {
             let v = f();
             if v.is_empty() { None } else { Some(v) }
         })
