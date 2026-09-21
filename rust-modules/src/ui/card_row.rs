@@ -20,6 +20,39 @@ use std::os::raw::c_char;
 
 pub(crate) const MAX_ROW_ITEMS: usize = 24; // == home MAX_ITEMS
 
+/// The speed above which a scrolling document stops asking for art it does not already have.
+/// A conservative admission policy, not a measured upload cost.
+///
+/// **What reports, and what deliberately does not.** Every axis that moves a DOCUMENT carrying
+/// art reports into ONE per-frame signal, so a fast document cannot be overridden by a still
+/// child: the page scrolls via [`Spring::step_scroll`](crate::ui::Spring::step_scroll), a
+/// shelf's own horizontal `scroll_x` below, and Search, which drives its scroll through
+/// `motion::spring` and so reports by hand. The shelf is not an optional member — walking focus
+/// along a Home row moves `scroll_x` alone while the grid's vertical spring holds at its target,
+/// which is precisely a fast reveal of art the slots do not have yet.
+///
+/// Chrome does NOT report, and that is a decision rather than an omission: the Library's A-Z
+/// rail, the tab strips, and the text panels (person bio, tracks, the document reader) carry no
+/// art of their own, and they animate while the page beneath them holds still. Letting one of
+/// them raise the signal would decline posters for a document that is not moving at all.
+const PREFETCH_MAX_SCROLL_PX_S: f32 = 120.0;
+thread_local! {
+    static SCROLL_SPEED: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+}
+/// Reset at the top of every iteration (`app::run`), before any spring has stepped.
+pub(crate) fn begin_motion_frame() { SCROLL_SPEED.with(|s| s.set(0.0)); }
+/// Report one axis's speed. An unknown speed reads as INFINITE rather than zero: a document
+/// whose velocity cannot be established must not authorize work on the strength of it.
+pub(crate) fn note_scroll(velocity: f32) {
+    let speed = if velocity.is_finite() { velocity.abs() } else { f32::INFINITY };
+    SCROLL_SPEED.with(|s| s.set(s.get().max(speed)));
+}
+/// The one fast-scroll predicate, so every consumer answers from the same threshold and the
+/// same frame signal rather than keeping a second opinion beside it.
+pub(crate) fn scrolling_fast() -> bool {
+    SCROLL_SPEED.with(|s| s.get() > PREFETCH_MAX_SCROLL_PX_S)
+}
+
 /// A card row's motion + geometry. [`RowStyle::HOME`] is the single value both the home grid and the
 /// detail Related row pass, so the two rows are indistinguishable in look and animation.
 #[derive(Clone, Copy)]
@@ -234,7 +267,7 @@ impl CardRow {
                     sty.gap,
                     SCR_W - 2.0 * sty.margin_x,
                 );
-                self.scroll_x.step(want, sty.k_scroll, dt);
+                self.scroll_x.step_scroll(want, sty.k_scroll, dt);
             }
         }
         self.lift.step(
@@ -1359,6 +1392,41 @@ mod tests {
     }
 
     const DT: f32 = 1.0 / 60.0;
+
+    /// **P2 (Codex review and the doc audit on PR #187, found independently).** A shelf is the one
+    /// axis that can reveal a screenful of new art with NO document-level vertical motion at all:
+    /// walking focus right along a Home row moves `scroll_x` alone while the grid's own spring
+    /// sits at its target. If the shelf did not report, `scrolling_fast` would read false through
+    /// exactly the reveal the gate exists for, and every uncached tile passing under the cursor
+    /// would claim a slot. The settle half matters just as much — a signal that never falls back
+    /// below the threshold would decline art forever.
+    #[test]
+    fn a_shelf_reports_its_own_horizontal_scroll_to_the_motion_signal() {
+        let mut row = CardRow::new();
+        let sty = RowStyle::HOME;
+
+        // Focus jumps eight tiles along a 24-tile row: the shelf must travel to reveal them.
+        begin_motion_frame();
+        assert!(!scrolling_fast(), "a frame begins with no motion claimed");
+        row.update(24, Some(8), &sty, DT);
+        assert!(
+            scrolling_fast(),
+            "a shelf revealing eight tiles in one frame is a fast scroll ({} px/s)",
+            row.scroll_x.vel.abs()
+        );
+
+        // Let it arrive, then confirm the signal actually falls silent at rest.
+        for _ in 0..600 {
+            row.update(24, Some(8), &sty, DT);
+        }
+        begin_motion_frame();
+        row.update(24, Some(8), &sty, DT);
+        assert!(
+            !scrolling_fast(),
+            "a settled shelf must stop declining art (still reporting {} px/s)",
+            row.scroll_x.vel.abs()
+        );
+    }
     /// The full clearance a HOME shelf's heading needs over a popped tile — asked of
     /// [`heading_lift_max`] rather than restating its three terms, because a screen now RESERVES
     /// this same number in its layout (the home grid's `row_reveal_band`) and a test that re-derived it

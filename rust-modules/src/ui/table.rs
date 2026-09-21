@@ -625,7 +625,7 @@ impl TableView {
             sc = top + 2.0 * rh - visible_h;
         }
         sc = sc.clamp(0.0, max_scroll);
-        self.scroll.step(sc, 300.0, dt);
+        self.scroll.step_scroll(sc, 300.0, dt);
     }
 
     /// The highlight springs as `(top position, top velocity, bottom position, bottom velocity)`.

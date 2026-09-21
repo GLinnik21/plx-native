@@ -95,7 +95,7 @@ impl ChaptersState {
         let sel = self.sel.min((n(meta) - 1).max(0));
         self.sel = sel;
         let sctgt = scroll_target(sel);
-        self.scroll.step(sctgt, 220.0, dt);
+        self.scroll.step_scroll(sctgt, 220.0, dt);
         crate::ui::anim::probe("chapters.scroll", self.scroll.pos, self.scroll.vel, sctgt, dt);
         self.scale.step(CARD_FOCUS_SCALE, 300.0, dt);
         crate::ui::anim::probe(

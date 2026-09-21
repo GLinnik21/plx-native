@@ -112,6 +112,10 @@ const P_EVICTED: c_int = 8;
 /// an HTTP answer that is not transient, or bytes the decoder could not read.
 const P_RETRY: c_int = 7;
 
+/// Speculation may occupy one worker, never both. That leaves capacity for a visible miss that
+/// arrives after the prefetch began; workers cannot interrupt a fetch already off-lock.
+const PREFETCH_OUTSTANDING_MAX: usize = 1;
+
 /// How a store lookup treats the slot it lands on. The difference IS the prefetch's safety story.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Touch {
@@ -144,6 +148,8 @@ struct Pslot {
     ph: c_int,
     px: usize, // decoded RGBA ptr as address (0 = none) — keeps Pslot Send
     state: c_int,
+    /// A draw has asked for this key. Workers serve visible work before speculative warms.
+    visible: bool,
     use_: c_uint,  // LRU clock
     gen: c_uint,   // bumped on eviction; stale-decode guard
     frame: c_uint, // last frame poster_get touched it (evict-protect)
@@ -188,6 +194,7 @@ impl Pslot {
         ph: 0,
         px: 0,
         state: P_EMPTY,
+        visible: false,
         use_: 0,
         gen: 0,
         frame: 0,
@@ -715,9 +722,12 @@ fn victim(slots: &[Pslot; PT_CAP], frame: c_uint) -> Option<usize> {
 type Hit = Option<PosterKey>;
 
 /// MAIN thread. The one store lookup behind [`poster_get`], [`poster_get_wh`] and [`poster_warm`]:
-/// hit → the READY texture + its size, miss → claim a slot and enqueue the fetch. `touch` is the ONLY
-/// difference between the paths: LRU bookkeeping on every hit, plus — for a P_EVICTED slot — whether
-/// the touch is even eligible to recover it at all (see that branch below).
+/// hit → the READY texture + its size; miss → claim a slot and enqueue the fetch, IF the request is
+/// admitted. Three things decide, and `touch` is only the first: `touch` itself (LRU bookkeeping on
+/// every hit, and whether a P_EVICTED slot is eligible to recover at all), the speculation bound
+/// [`warm_admissible`] for a Warm, and the document's scroll speed
+/// ([`crate::ui::card_row::scrolling_fast`]) for a Draw. A refused request claims nothing and
+/// records nothing; the next frame asks again.
 fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // The array's own precondition, checked before a slot can be claimed for a key that could
     // never match its probe again. `Warm::Known` (not `Full`) so a prefetch loop walks on to the
@@ -725,6 +735,15 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     if !is_fetchable(key_s) {
         return (None, Warm::Known);
     }
+    // A DRAW may not START poster work while the document is scrolling fast, and that holds at
+    // EVERY point work begins — the fresh miss far below, but equally the two re-arm transitions
+    // inside the matching-slot loop. Those matter more than the miss rather than less: a fast
+    // scroll is exactly what evicts textures, so scrolling back across the same rows finds
+    // P_EVICTED slots, and re-arming each one is a full fetch, decode and upload that the gate
+    // would never see if it only guarded the miss. A HIT is deliberately untouched: art that is
+    // already resident still draws and still takes its LRU touch, so declining never blanks a
+    // tile that had its picture.
+    let decline = touch == Touch::Draw && crate::ui::card_row::scrolling_fast();
     let mut g = store();
     // hit?
     for i in 0..PT_CAP {
@@ -734,6 +753,10 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                 let (c, f) = (g.clock, g.frame);
                 g.slots[i].use_ = c;
                 g.slots[i].frame = f;
+                // Promotion is monotone: a warm never demotes a key a draw is waiting on. If it
+                // is still queued, the next worker rescan will now choose it before speculation.
+                g.slots[i].visible = true;
+                if g.slots[i].state == P_WANT { CV.notify_one(); }
             }
             // a parked transient failure is SCHEDULED by the first draw that finds it, and goes
             // back in the queue by the first draw after its wait — on a DRAW only, so a tile
@@ -744,7 +767,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     let wait = retry_backoff(g.slots[i].attempts).as_millis() as u32;
                     g.slots[i].retry_at = Some(now.wrapping_add(wait));
                     g.slots[i].retry_wake_sent = false;
-                } else if retry_due(&g.slots[i], now) {
+                } else if retry_due(&g.slots[i], now) && !decline {
                     g.slots[i].state = P_WANT;
                     g.slots[i].retry_at = None;
                     g.slots[i].retry_wake_sent = false;
@@ -778,6 +801,11 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     // paces how often that cycle is allowed to turn.
                     return (None, Warm::Known);
                 }
+                if decline {
+                    // The same deferral the cooldown just made, for the same reason: the slot
+                    // stays EVICTED and the first draw at a settled speed re-arms it as usual.
+                    return (None, Warm::Known);
+                }
                 g.slots[i].state = P_WANT;
                 g.slots[i].evict_wake_sent = false;
                 drop(g);
@@ -789,6 +817,39 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
             let hit = (g.slots[i].state == P_READY).then_some(PosterKey(i as u32));
             return (hit, Warm::Known);
         }
+    }
+    // Admit speculation only into a quiet visible queue, and never enough of it to occupy both
+    // workers. `Full` tells the caller this frame's one prefetch attempt is spent without claiming
+    // a slot.
+    if touch == Touch::Warm && !warm_admissible(&g.slots) {
+        return (None, Warm::Full);
+    }
+    // A MISS while the document is scrolling fast claims nothing at all — no slot, no worker,
+    // no fetch, no decode, no upload. The tile draws its placeholder and asks again next frame;
+    // the demand is deferred, never dropped, exactly like the eviction cooldown above. Art
+    // resolves as the view slows, which is also the reference clients' idiom.
+    //
+    // **Why the request is declined outright rather than merely paced.** Every weaker bound was
+    // measured on the dev set against a 1000-movie mock library (`fps:library-scroll`, panel
+    // off, two runs each, dropped frames after warmup):
+    //
+    // |                                                     | drops      | median fps |
+    // |-----------------------------------------------------|------------|------------|
+    // | a9d4e8a2, no gate                                    | 90, 97     | 55         |
+    // | slot + cache caps 64 -> 160                          | 226, 231   | 50         |
+    // | rate-limit the uploads after decode                  | 172, 156   | 53, 55     |
+    // | allow ONE visible request in flight while scrolling  | 204, 196   | 55, 54     |
+    // | **decline the request outright**                     | **21, 23** | **60**     |
+    //
+    // One in flight is the informative row: it paced the pipeline perfectly — `budget=` read
+    // 15-18 admitted and ZERO refused, against the ungated 15-18 admitted and 11-15 refused —
+    // and still cost twice the baseline's dropped frames. Pacing the work does not make it
+    // affordable. The two downstream bounds were worse than doing nothing at all, because by
+    // then the fetch and the decode are already paid for and the refused pixels only accumulate
+    // in `TexCache::pending` at 375 KB each. The request is the last point at which this work
+    // can still be declined for free.
+    if decline {
+        return (None, Warm::Full);
     }
     // miss: prefer EMPTY, else LRU-evict a settled slot not used this frame
     let idx = match victim(&g.slots, g.frame) {
@@ -814,6 +875,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         set_key(s, key_s);
         s.srv = srv; // captured HERE, on the main thread — the worker asks no one which server
         s.state = P_WANT;
+        s.visible = touch == Touch::Draw;
         s.use_ = use_;
         s.frame = frame;
         s.pw = 0;
@@ -917,14 +979,34 @@ fn idle_of(slots: &[Pslot; PT_CAP]) -> bool {
         .any(|s| matches!(s.state, P_WANT | P_LOADING | P_DECODED))
 }
 
-/// MAIN thread. Is the store QUIET — nothing wanted, fetching, or waiting to upload? The prefetch
-/// gate, and the honest answer to "never compete with a texture the user is waiting on".
-///
-/// It has to be a GATE rather than a priority because [`poster_worker`] claims the first `P_WANT`
-/// slot **by slot index**, and indices come from "first EMPTY, else LRU victim" ([`victim`]) — i.e.
-/// arbitrarily. With two workers a prefetch in a low index is picked ahead of a visible poster in a
-/// high one. The way to stay off the critical path is not to rank requests, it is to only ISSUE one
-/// on a frame where nothing else is outstanding.
+/// The next queued slot a worker claims. Kept pure so queue ordering is host-testable.
+fn next_wanted(slots: &[Pslot; PT_CAP]) -> Option<usize> {
+    #[cfg(test)]
+    if std::env::var_os("PLX_TEST_FIFO_POSTER_QUEUE").is_some() {
+        return (0..PT_CAP).find(|&i| slots[i].state == P_WANT);
+    }
+    (0..PT_CAP)
+        .find(|&i| slots[i].state == P_WANT && slots[i].visible)
+        .or_else(|| (0..PT_CAP).find(|&i| slots[i].state == P_WANT))
+}
+
+#[inline]
+fn outstanding(s: &Pslot) -> bool {
+    matches!(s.state, P_WANT | P_LOADING | P_DECODED)
+}
+
+/// Whether one speculative claim can enter without starving the visible set.
+fn warm_admissible(slots: &[Pslot; PT_CAP]) -> bool {
+    if slots.iter().any(|s| outstanding(s) && s.visible) {
+        return false;
+    }
+    slots.iter().filter(|s| outstanding(s) && !s.visible).count() < PREFETCH_OUTSTANDING_MAX
+}
+
+/// MAIN thread. Is the store QUIET — nothing wanted, fetching, or waiting to upload? Hero warming
+/// uses this conservative whole-pipeline gate. Other speculative warms (an up-next episode
+/// thumbnail, a hero logo) are bounded separately by [`warm_admissible`] and ordered by
+/// [`next_wanted`].
 ///
 /// Cost: one 64-slot scan per frame under the mutex — the draw already does dozens.
 fn store_idle() -> bool {
@@ -1143,14 +1225,7 @@ fn poster_worker() {
                 if g.quit {
                     return;
                 }
-                let mut found = None;
-                for i in 0..PT_CAP {
-                    if g.slots[i].state == P_WANT {
-                        found = Some(i);
-                        break;
-                    }
-                }
-                if let Some(i) = found {
+                if let Some(i) = next_wanted(&g.slots) {
                     break i;
                 }
                 let res = CV.wait_timeout(g, Duration::from_millis(50));
@@ -1725,6 +1800,126 @@ mod tests {
         );
 
         tex::shutdown(&mut uploader);
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// A DRAW that misses while the document is scrolling fast claims no slot at all, and the
+    /// very same draw claims one the moment the document settles. The demand is deferred, never
+    /// dropped: nothing about the miss is recorded, so the next frame simply asks again.
+    #[test]
+    fn a_fast_scroll_declines_a_visible_miss_and_a_settle_takes_it() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/4242/thumb", 2, 2, 0);
+        store().slots = [Pslot::ZERO; PT_CAP];
+
+        crate::ui::card_row::begin_motion_frame();
+        crate::ui::card_row::note_scroll(1000.0);
+        assert!(crate::ui::card_row::scrolling_fast(), "the fixture is a fast scroll");
+        let (hit, warm) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None, "a fast-scrolling miss resolves to no poster");
+        assert_eq!(warm, Warm::Full, "and reports the attempt spent");
+        assert!(store().slots.iter().all(|s| s.state == P_EMPTY),
+            "no slot is claimed, so no worker, fetch, decode or upload follows");
+
+        // The settle is the whole difference — same key, same store, same call.
+        crate::ui::card_row::begin_motion_frame();
+        assert!(!crate::ui::card_row::scrolling_fast());
+        let (_, warm) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(warm, Warm::Claimed, "a settled document claims the slot");
+        assert_eq!(store().slots[0].state, P_WANT, "and queues it for a worker");
+        assert!(store().slots[0].visible, "as visible demand, not speculation");
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// **P2 (Codex review on PR #187).** The fresh-miss gate above is the LEAST important of the
+    /// three places a draw starts poster work, because a fast scroll is the very thing that
+    /// evicts textures: scroll down hard, and the rows behind you lose residency; scroll back,
+    /// and every tile you pass finds its own slot parked at `P_EVICTED` with no cooldown set
+    /// (a first eviction never cools). Re-arming each one is a full fetch, decode and upload —
+    /// the work the gate exists to refuse — reached through a branch that returns long before
+    /// the miss path. The deferral is the cooldown's, not a drop: the slot stays `P_EVICTED`
+    /// and the first settled draw re-arms it exactly as it always did.
+    #[test]
+    fn a_fast_scroll_declines_to_re_arm_an_evicted_slot() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/4243/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            set_key(slot, &path);
+            slot.state = P_EVICTED;
+            // No eviction history, so the cooldown gate would admit this re-arm. That isolates
+            // the scroll gate: nothing else in this branch is refusing.
+            slot.evict_cooldown_until = None;
+        }
+        let (_, rearmed0) = residency_counts_for_test();
+
+        crate::ui::card_row::begin_motion_frame();
+        crate::ui::card_row::note_scroll(1000.0);
+        let (hit, warm) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None, "an evicted slot has no pixels to hand back");
+        assert_eq!(warm, Warm::Known, "the slot is known, merely left dormant");
+        assert_eq!(
+            store().slots[0].state,
+            P_EVICTED,
+            "a fast scroll must not re-arm an evicted slot: that is a whole fetch and upload"
+        );
+        let (_, rearmed1) = residency_counts_for_test();
+        assert_eq!(rearmed1, rearmed0, "and must not count as a re-arm");
+
+        crate::ui::card_row::begin_motion_frame();
+        let (_, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(store().slots[0].state, P_WANT, "a settled draw re-arms it exactly as before");
+        let (_, rearmed2) = residency_counts_for_test();
+        assert_eq!(rearmed2, rearmed0 + 1, "and the settle is what the counter records");
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// The same narrowing for the other existing-slot re-arm: a `P_RETRY` slot whose backoff has
+    /// expired goes back in the queue on the next DRAW, and that draw is subject to the same
+    /// admission as any other. The wait is not restarted and the attempt count is untouched — the
+    /// slot simply stays parked and due, so the first settled draw takes it.
+    #[test]
+    fn a_fast_scroll_declines_to_re_queue_a_due_retry() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/4244/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            set_key(slot, &path);
+            slot.state = P_RETRY;
+            slot.attempts = 1;
+            // Scheduled at tick 0, so it is due for any plausible reading of the app clock.
+            slot.retry_at = Some(0);
+        }
+
+        crate::ui::card_row::begin_motion_frame();
+        crate::ui::card_row::note_scroll(1000.0);
+        let (hit, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None, "a parked retry has no pixels");
+        assert_eq!(
+            store().slots[0].state,
+            P_RETRY,
+            "a fast scroll must not re-queue a due retry"
+        );
+        assert_eq!(
+            store().slots[0].retry_at,
+            Some(0),
+            "and must not reschedule it: the wait already elapsed, it is the draw that was refused"
+        );
+        assert_eq!(store().slots[0].attempts, 1, "a refusal is not an attempt");
+
+        crate::ui::card_row::begin_motion_frame();
+        let (_, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(store().slots[0].state, P_WANT, "a settled draw re-queues it");
+        assert_eq!(store().slots[0].retry_at, None, "clearing the elapsed wait");
+
         store().slots = [Pslot::ZERO; PT_CAP];
     }
 
@@ -2618,5 +2813,36 @@ mod tests {
                 "one slot in state {st} is enough to hold the gate shut"
             );
         }
+    }
+
+    #[test]
+    fn a_visible_claim_preempts_an_older_prefetch_backlog() {
+        let mut slots = [Pslot::ZERO; PT_CAP];
+        for slot in slots.iter_mut().take(12) {
+            slot.state = P_WANT;
+            slot.visible = false;
+        }
+        slots[47].state = P_WANT;
+        slots[47].visible = true;
+
+        assert_eq!(next_wanted(&slots), Some(47),
+            "a tile being drawn must outrank every queued lookahead claim");
+    }
+
+    #[test]
+    fn prefetch_admission_leaves_one_worker_for_visible_work() {
+        let mut slots = [Pslot::ZERO; PT_CAP];
+        assert!(warm_admissible(&slots), "an idle queue may look ahead");
+
+        slots[9].state = P_LOADING;
+        slots[9].visible = false;
+        assert!(!warm_admissible(&slots),
+            "one speculative fetch spends the entire prefetch allowance");
+
+        slots[9] = Pslot::ZERO;
+        slots[41].state = P_WANT;
+        slots[41].visible = true;
+        assert!(!warm_admissible(&slots),
+            "visible work closes prefetch admission regardless of slot index");
     }
 }

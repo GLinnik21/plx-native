@@ -537,6 +537,9 @@ impl SearchScreen {
             crate::ui::motion::spring(&mut self.owner_alpha.pos, &mut self.owner_alpha.vel, owner,
                 k_scale, tick, &mut present);
         }
+        // Search drives its scroll through `motion::spring` rather than `Spring::step_scroll`,
+        // so it reports into the shared motion signal itself.
+        crate::ui::card_row::note_scroll(self.scroll.vel);
         if !settled && self.owner_alpha.pos < OWNER_FLOOR {
             self.owner_row = target_row;
             self.owner.clear(); self.owner.push_str(handle);

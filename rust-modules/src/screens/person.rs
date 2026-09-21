@@ -1031,7 +1031,7 @@ impl PersonScreen {
         let live = self.live_flow(p, cur);
         let settled = self.settled_flow(p, cur);
         let want = scroll_target(&self.scroll, &live, &settled);
-        self.scroll.scroll.step(want, K_SCROLL, dt);
+        self.scroll.scroll.step_scroll(want, K_SCROLL, dt);
 
         let settling =
             (self.scroll.scroll.pos - want).abs() > 0.25 || self.scroll.scroll.vel.abs() > 0.5;

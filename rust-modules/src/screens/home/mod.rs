@@ -659,7 +659,7 @@ impl HomeScreen {
         }
         self.grid
             .scroll_y
-            .step(self.grid.scroll_target, K_SCROLL, dt);
+            .step_scroll(self.grid.scroll_target, K_SCROLL, dt);
         self.layout_grid();
     }
 
