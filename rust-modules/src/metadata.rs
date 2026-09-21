@@ -2670,7 +2670,7 @@ pub(crate) fn detail_generation_for_test(adapter: &MetadataAdapter) -> u32 {
 pub(crate) fn land_detail_for_test(state: &mut MetadataState, adapter: &std::sync::Arc<MetadataAdapter>, sid: crate::plex::ServerId, rk: &str, gen: u32, detail: Option<Detail>) -> bool {
     crate::testlock::assert_held("the detail store (land_detail_for_test)");
     land_detail(adapter, sid, rk, gen, detail);
-    pump_detail(state, adapter, &crate::ui::landgate::Gate::default())
+    pump_detail(state, adapter)
 }
 
 fn detail_addr(gen: u32) -> crate::ui::machine::Addr {
