@@ -479,14 +479,15 @@ fn pre_boot_diagnostics() -> crate::telemetry::native::Guard {
 /// real phases (pre-boot diagnostics, `boot`, this), never the steps inside any one of them.
 unsafe fn run_and_shutdown(app: &mut App) -> c_int {
     run::run(app);
-    let failed = finish_recording(&mut app.rec) || app.bridge.controlled_failure().is_some();
+    let failed = finish_recording(&mut app.rec, app.bridge.landgate())
+        || app.bridge.controlled_failure().is_some();
     app.glass.sources.borrow_mut().clear();
     run::shutdown(&mut app.player.session, &mut app.adapters.player);
     i32::from(failed)
 }
 
-fn finish_recording(rec: &mut recorder::Recplay) -> bool {
-    std::mem::replace(rec, recorder::Recplay::Off).finish()
+fn finish_recording(rec: &mut recorder::Recplay, gate: &crate::ui::landgate::Gate) -> bool {
+    std::mem::replace(rec, recorder::Recplay::Off).finish(gate)
 }
 
 /// Simulator tooling emits the entire typed contract, never a patched household auth file.
