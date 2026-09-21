@@ -1718,7 +1718,9 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   TAP (both edges at once); **`okdown` / `okup` are the split halves**, which is the only way to
   drive a press-and-**hold** — `okdown`, sleep past `press::LONG_MS` (500 ms), `okup` opens the
   item context menu;
-  With `devtriggers`, `hang:<ms>` stalls the frame thread under the `dev hang probe` guard and `hang-raw:<ms>` sleeps without a label; both accept unsigned decimal u64 milliseconds capped at 5000, via `tools/tv-session.sh key hang:1000` or `key hang-raw:1000` with the existing TV lock.
+  With `devtriggers`, `hang:<ms>` stalls the frame thread under the `dev hang probe` guard and
+  `hang-raw:<ms>` sleeps without a label; both accept unsigned decimal u64 milliseconds capped at
+  5000, via `tools/tv-session.sh key hang:1000` or `key hang-raw:1000` with the existing TV lock.
   `tools/stream-screen.py` is the host driver — its page maps browser clicks on the streamed
   picture to `ck:` tokens (hover is deliberately NOT forwarded — it used to park app focus on a
   tab pill so the next ENTER opened the library). The one real trigger here is

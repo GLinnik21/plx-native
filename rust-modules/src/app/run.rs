@@ -567,6 +567,15 @@ unsafe fn drain_sdl(app: &mut App, fr: &mut Frame) {
 }
 
 unsafe fn ingress_token(app: &mut App, fr: &mut Frame, token: &str) -> bool {
+    #[cfg(feature = "devtriggers")]
+    if let Some(probe) = crate::remote::HangProbe::parse(token) {
+        // FIFO, LAB and replay all enter here on the frame thread inside FrameScope.
+        // Earlier keys/clicks may still be in SDL: handle and record them before the stall.
+        drain_sdl(app, fr);
+        app.rec.input(super::recorder::enc_token(token));
+        probe.run();
+        return true;
+    }
     // Keys and clicks use SDL's existing synthesis while coexistence lasts. Consume those
     // before a following direct text token, rather than moving all text ahead of all keys.
     if super::bridge::search_owns_input(&app.pages) { drain_sdl(app, fr); }
@@ -2910,6 +2919,72 @@ mod lifecycle_regression_tests {
         app.ev[..4].copy_from_slice(&et.to_ne_bytes());
         unsafe {
             ingest_sdl_event(app, fr);
+        }
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    #[should_panic(expected = "main-thread block: dev hang probe")]
+    fn hang_probe_dispatch_uses_frame_guard() {
+        let _serial = crate::testlock::serial();
+        let mut app = app();
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        let _scope = crate::task::FrameScope::enter();
+        unsafe { ingress_token(&mut app, &mut fr, "hang:1"); }
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn hang_probe_dispatch_raw_bypasses_frame_guard() {
+        let _serial = crate::testlock::serial();
+        let mut app = app();
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        let _scope = crate::task::FrameScope::enter();
+        assert!(unsafe { ingress_token(&mut app, &mut fr, "hang-raw:1") });
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn hang_probe_dispatch_preserves_key_order() {
+        let _serial = crate::testlock::serial();
+        // Only SDL's event subsystem: no window, renderer, boot or device.
+        assert_eq!(unsafe { SDL_Init(0x4000) }, 0);
+        struct Events;
+        impl Drop for Events {
+            fn drop(&mut self) { unsafe { SDL_Quit(); } }
+        }
+        let _events = Events;
+        for fifo in [true, false] {
+            let mut app = app();
+            super::super::bridge::show_page(&mut app.pages,
+                AppArg::Settings(crate::screens::family::SettingsPage::Root));
+            frame(&mut app, 0);
+            let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+            if fifo {
+                app.remote = Some(crate::remote::Remote::buffered_for_test("down\nhang:1\nup\n"));
+            }
+            // The labelled probe's guard panic is the observation boundary BEFORE sleeping.
+            // No final drain can make an incorrectly ordered dispatch pass this assertion.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _scope = crate::task::FrameScope::enter();
+                unsafe {
+                    if fifo {
+                        ingest(&mut app, &mut fr);
+                    } else {
+                        // LAB delivers commands to precisely this same entry point.
+                        assert!(ingress_token(&mut app, &mut fr, "down"));
+                        assert!(app.inputs.is_empty(), "key should still be pending in SDL");
+                        ingress_token(&mut app, &mut fr, "hang:1");
+                        ingress_token(&mut app, &mut fr, "up");
+                    }
+                }
+            }));
+            let panic = result.expect_err("labelled probe must reach its frame guard");
+            let message = panic.downcast_ref::<String>().map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied()).unwrap_or("");
+            assert!(message.contains("main-thread block: dev hang probe"), "{message}");
+            assert_eq!(app.inputs.len(), 2,
+                "both earlier key edges must be handled before the probe (fifo={fifo})");
         }
     }
 

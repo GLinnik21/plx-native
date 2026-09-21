@@ -32,14 +32,14 @@ pub struct Remote {
 
 #[cfg(feature = "devtriggers")]
 #[derive(Debug, PartialEq, Eq)]
-struct HangProbe {
+pub(crate) struct HangProbe {
     ms: u64,
     raw: bool,
 }
 
 #[cfg(feature = "devtriggers")]
 impl HangProbe {
-    fn parse(token: &str) -> Option<Self> {
+    pub(crate) fn parse(token: &str) -> Option<Self> {
         let (ms, raw) = if let Some(ms) = token.strip_prefix("hang:") {
             (ms, false)
         } else {
@@ -54,7 +54,7 @@ impl HangProbe {
         })
     }
 
-    fn run(self) {
+    pub(crate) fn run(self) {
         let _guard = if self.raw {
             None
         } else {
@@ -67,6 +67,11 @@ impl HangProbe {
 }
 
 impl Remote {
+    #[cfg(all(test, feature = "devtriggers", feature = "hostsim"))]
+    pub(crate) fn buffered_for_test(tokens: &str) -> Self {
+        Self { fd: -1, buf: tokens.to_owned() }
+    }
+
     /// Create + open the control FIFO non-blocking. `O_RDWR` keeps a writer end open
     /// on our side so reads never hit EOF between host writes (the standard self-pipe
     /// trick). Returns `None` on any failure — the app then just runs without a remote:
@@ -129,8 +134,8 @@ impl Remote {
         }
     }
 
-    /// Drain all pending bytes, executing dev hang probes inline and calling `f` once per
-    /// other complete whitespace-delimited token. A trailing partial token is retained for
+    /// Drain all pending bytes and call `f` once per complete whitespace-delimited
+    /// token. A trailing partial token (no terminating whitespace yet) is retained for
     /// the next frame so a split write is never mis-parsed.
     pub fn drain(&mut self, mut f: impl FnMut(&str)) {
         let mut tmp = [0u8; 512];
@@ -171,12 +176,6 @@ impl Remote {
                 let ready = self.buf[..=i].to_string();
                 self.buf = self.buf[i + 1..].to_string();
                 for tok in ready.split_whitespace() {
-                    // The app drains here on the frame thread, inside its FrameScope.
-                    #[cfg(feature = "devtriggers")]
-                    if let Some(probe) = HangProbe::parse(tok) {
-                        probe.run();
-                        continue;
-                    }
                     f(tok);
                 }
             }
@@ -238,18 +237,10 @@ mod tests {
 
     #[cfg(feature = "devtriggers")]
     #[test]
-    #[should_panic(expected = "main-thread block: dev hang probe")]
-    fn hang_probe_from_fifo_uses_the_frame_guard() {
+    fn drain_passes_hang_probes_through_without_running_them() {
         let _frame = crate::task::FrameScope::enter();
-        drain_buffer("hang:1\n");
-    }
-
-    #[cfg(feature = "devtriggers")]
-    #[test]
-    fn raw_hang_probe_from_fifo_bypasses_the_frame_guard() {
-        let _frame = crate::task::FrameScope::enter();
-        let (tokens, tail) = drain_buffer("hang-raw:1\nup\n");
-        assert_eq!(tokens, ["up"]);
+        let (tokens, tail) = drain_buffer("down\nhang:1\nhang-raw:1\nup\n");
+        assert_eq!(tokens, ["down", "hang:1", "hang-raw:1", "up"]);
         assert!(tail.is_empty());
     }
 
