@@ -91,8 +91,10 @@ The same choice also covers a **sign-in problem report** when signing in fails. 
 network (the app's own sign-in work refused, stopped or left unfinished), which of those fixed
 internal kinds it was — the connection's `link` class, an `http_status` or network error number
 (`curl_rc`) when there is one, how long the connection went `unanswered` and how long sign-in had
-been `failing_for` (both bucketed), how many codes were shown (`code_generation`, capped), whether
-the report was `consent`ed to as a standing choice or as a one-off, the app version and when it
+been `failing_for` (both bucketed), how many codes were shown (`code_generation`, capped), and, when
+a sign-in could not be saved, a `persistence` failure class, the `keymanager_stage` a key-service
+step stopped at and the key service's own numeric `service_error_code`. It also carries whether the
+report was `consent`ed to as a standing choice or as a one-off, the app version and when it
 happened. It never includes your account name, tokens, PIN, sign-in code or network addresses. With
 crash reports on, it is sent automatically, carries the Crash report ID, and the sign-in screen
 shows the random **Report ID** of that one report. With them off, or not yet decided, the sign-in

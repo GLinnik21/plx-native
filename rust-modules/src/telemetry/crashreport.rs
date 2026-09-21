@@ -921,7 +921,7 @@ fn write_mark(reported_bytes: u64) -> bool {
     };
     let stored = crate::paths::telemetry_crashmark_candidates()
         .iter()
-        .any(|p| crate::plex::session::write_atomic(p, &json));
+        .any(|p| crate::plex::session::write_atomic(p, &json).is_ok());
     if !stored {
         // Loud, because the consequence is re-reporting the same crash on every boot until it
         // succeeds — bounded by the deterministic `event_id`, which Sentry dedupes, but still a

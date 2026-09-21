@@ -619,7 +619,11 @@ struct Note {
 }
 
 /// The support line a person reads out or photographs: what is running, on which firmware and
-/// set, and which failure — codes only, never an address or an account.
+/// set, and which failure — codes only, never an address or an account. The trailing segment is
+/// [`crate::telemetry::incident::storage_evidence_line`] — the persistence class, key-manager
+/// stage and service error code, read from the SAME [`auth::owner::IncidentOffer::context`] this
+/// screen's report would send, so a photograph of this line and the report Sentry receives can
+/// never disagree about what failed.
 fn support_line(offer: &auth::owner::IncidentOffer) -> String {
     use crate::telemetry::incident::LinkClass;
     let set = crate::webos::device().set_line();
@@ -628,13 +632,15 @@ fn support_line(offer: &auth::owner::IncidentOffer) -> String {
         LinkClass::Unknown => offer.key.kind.code().to_string(),
         link => format!("{}.{}", offer.key.kind.code(), link.code()),
     };
+    let storage = crate::telemetry::incident::storage_evidence_line(offer.context.as_ref());
     format!(
-        "{} {} \u{b7} {} \u{b7} {} \u{b7} {}",
+        "{} {} \u{b7} {} \u{b7} {} \u{b7} {} \u{b7} {}",
         crate::plex::identity::PRODUCT,
         crate::plex::identity::VERSION,
         crate::webos::info().release_line(),
         set,
-        code
+        code,
+        storage
     )
 }
 
@@ -3206,6 +3212,46 @@ mod tests {
             "41de 4cd3 88e4 0416 54de 38f2 787c 3922"
         );
         assert_eq!(report_id_line("0123abcd"), "Report ID: 0123 abcd");
+    }
+
+    /// **The Details card's support line names the same storage evidence `event_body` would
+    /// send** — one source, two projections (spec: `telemetry::incident::storage_evidence_line`).
+    /// An offer with no persistence/key-manager/service evidence still shows the fixed `unknown`
+    /// triple rather than dropping the segment, and an offer with none at all (a Declined incident
+    /// keeps no context) reads identically.
+    #[test]
+    fn support_line_carries_the_same_storage_evidence_event_body_would_send() {
+        let plain = incident(
+            auth::owner::IncidentState::NotNow,
+            crate::telemetry::incident::IncidentKind::PinCreate,
+        );
+        assert!(
+            support_line(&plain).ends_with("persistence:unknown keymgr:unknown svc:unknown"),
+            "{}",
+            support_line(&plain)
+        );
+
+        let mut with_evidence = plain.clone();
+        let mut ctx = crate::auth::synthetic_incident();
+        ctx.kind = crate::telemetry::incident::IncidentKind::SaveFailed;
+        ctx.persistence = Some(crate::telemetry::incident::PersistenceFailure::WriteFailed);
+        ctx.keymanager_stage = Some(crate::storage::wire::KeymanagerStage::Begin);
+        ctx.service_error_code = Some(-17);
+        with_evidence.key.kind = ctx.kind;
+        with_evidence.context = Some(ctx);
+        assert!(
+            support_line(&with_evidence)
+                .ends_with("persistence:write_failed keymgr:begin svc:-17"),
+            "{}",
+            support_line(&with_evidence)
+        );
+
+        let mut declined = plain.clone();
+        declined.context = None;
+        assert!(
+            support_line(&declined).ends_with("persistence:unknown keymgr:unknown svc:unknown"),
+            "a declined offer keeps no context, and the line still reads unknown, not blank"
+        );
     }
 
     fn screen_with(phase: Phase, state: auth::owner::IncidentState,

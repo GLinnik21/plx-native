@@ -214,9 +214,9 @@ fn write_atomic_refuses_a_symlink_planted_at_the_runtime_dir_candidate() {
     let target = dir.join("auth.json");
     symlink(&victim, &target).unwrap();
 
-    let ok = write_atomic(&target, br#"{"account_token":"leak"}"#);
+    let result = write_atomic(&target, br#"{"account_token":"leak"}"#);
     assert!(
-        !ok,
+        result.is_err(),
         "write_atomic must refuse to write through a pre-existing symlink at the candidate path"
     );
     assert_eq!(
@@ -230,6 +230,49 @@ fn write_atomic_refuses_a_symlink_planted_at_the_runtime_dir_candidate() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `write_atomic` used to collapse every failure to a bare `false`, which is what left the field
+/// log saying only "could not persist to ANY candidate path" — unable to tell EACCES from EROFS
+/// from ENOENT. It now returns the [`WriteFailure`] the OS actually gave, and
+/// `write_atomic_diagnosed` pairs it with the path and the parent directory's stat, which is what
+/// a candidate's [`CandidateDiagnostic`] carries into the field log.
+#[test]
+fn write_atomic_reports_the_errno_and_parent_stat_per_candidate() {
+    use std::os::unix::fs::MetadataExt;
+    let _g = crate::testlock::serial();
+    let base = std::env::temp_dir().join(format!("plxnative-write-atomic-diag-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+
+    // ENOENT: the parent directory this candidate names does not exist at all — the create
+    // itself is what fails, and there is no parent to stat.
+    let missing_parent = base.join("does-not-exist").join("session.json");
+    let enoent = write_atomic_diagnosed(&missing_parent, b"{}").unwrap_err();
+    assert_eq!(enoent.path, missing_parent);
+    assert!(enoent.parent.is_none(), "stat on a missing parent must not fabricate one");
+    assert_eq!(enoent.failure, WriteFailure::CreateFailed(libc::ENOENT));
+    assert_eq!(enoent.failure.errno(), Some(libc::ENOENT));
+
+    // A destination that is already a directory is refused before any syscall could fail — no
+    // errno — but its (existing) parent is still reported, uid/gid/mode.
+    let as_dir = base.join("already-a-dir");
+    std::fs::create_dir_all(&as_dir).unwrap();
+    let not_owned = write_atomic_diagnosed(&as_dir, b"{}").unwrap_err();
+    assert_eq!(not_owned.failure, WriteFailure::NotOwned);
+    assert_eq!(not_owned.failure.errno(), None);
+    let parent_meta = std::fs::metadata(&base).unwrap();
+    let parent = not_owned.parent.expect("the base directory exists and is stat-able");
+    assert_eq!(parent.uid, parent_meta.uid());
+    assert_eq!(parent.gid, parent_meta.gid());
+    assert_eq!(parent.mode, parent_meta.mode() & 0o7777);
+
+    // The ordinary success case still lands a whole file — `Ok(())` rather than `true`.
+    let ok_path = base.join("session.json");
+    assert!(write_atomic(&ok_path, b"{\"a\":1}").is_ok());
+    assert_eq!(std::fs::read(&ok_path).unwrap(), b"{\"a\":1}");
+
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 // ---- The CANONICAL half (AUTH-08/AUTH-09): `clear()` must commit a canonical Cleared record,
