@@ -1025,7 +1025,7 @@ pub(crate) fn media_resolving(p: &Person, sid: ServerId) -> bool {
 /// Returns true when the store just changed — the screen re-clamps its focus and rebuilds its
 /// cached header strings on it.
 impl PersonState {
-    pub(crate) fn pump(&mut self, adapter: &Arc<PersonAdapter>) -> bool {
+    pub(crate) fn pump_with_gate(&mut self, adapter: &Arc<PersonAdapter>, gate: &crate::ui::landgate::Gate) -> bool {
         let mut changed = sync_roster(self, adapter);
         for i in 0..NFETCH {
             if self.retry_cd[i] > 0 {
@@ -1039,11 +1039,11 @@ impl PersonState {
                     adapter.fetch[i].take()
                 });
                 if reply.is_some() {
-                    crate::ui::landgate::landed(crate::stores::StoreId::Person.ord());
+                    gate.landed(crate::stores::StoreId::Person.ord());
                 }
                 reply
             } else {
-                crate::stores::take_landing(crate::stores::StoreId::Person, || {
+                crate::stores::take_landing(gate, crate::stores::StoreId::Person, || {
                     adapter.fetch[i].take()
                 })
             };
@@ -1067,6 +1067,11 @@ impl PersonState {
             changed |= seed_dev_credits(self);
         }
         changed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pump(&mut self, adapter: &Arc<PersonAdapter>) -> bool {
+        self.pump_with_gate(adapter, crate::ui::landgate::fixture_gate())
     }
 }
 
