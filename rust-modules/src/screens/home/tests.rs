@@ -301,6 +301,127 @@ fn a_failed_home_stands_on_the_page_readout_lines() {
     assert_eq!([hit.x, hit.y, hit.w, hit.h], [drawn.x, drawn.y, drawn.w, drawn.h]);
 }
 
+/// **P2 (Codex review on PR #188).** The dive scales a shelf's RETAINED horizontal offset by the
+/// same fraction (`Grid::eff_scroll` is `scroll_x * snap`), so returning to the hero from the far
+/// right of a row sweeps that row's cards the full offset across the screen while the shelf's own
+/// spring sits perfectly still. At snap 0.9 the vertical term is measured at 88 px/s — under the
+/// 120 px/s threshold on its own — so this is an A/B on the horizontal term alone: the identical
+/// frame at the identical snap position, differing only in whether a shelf carries an offset.
+///
+/// `restore_scroll` is given `card_row::MAX_ROW_ITEMS` rather than the fixture's own three elements because
+/// the clamp is what the caller passes: three tiles fit on screen, so a real three-item row has no
+/// scroll headroom and the offset would clamp to 0, testing nothing. The motion math reads only
+/// `scroll_x`, so a row's element count is not otherwise part of this.
+#[test]
+fn a_retained_shelf_offset_makes_the_late_dive_read_as_fast() {
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+
+    let late_dive_frame = |offset: f32| {
+        let mut s = screen(snapshot.view());
+        s.snap.jump(0.9);
+        s.snap_target = 1.0;
+        s.grid.shelves[0].restore_scroll(offset, card_row::MAX_ROW_ITEMS, &RowStyle::HOME);
+        s.layout_grid();
+        crate::ui::card_row::begin_motion_frame();
+        step(&mut s, snapshot.view(), None,
+            &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }));
+        (crate::ui::card_row::scrolling_fast(), s.grid.shelves[0].scroll_x())
+    };
+
+    let (settled_fast, settled_x) = late_dive_frame(0.0);
+    assert_eq!(settled_x, 0.0, "the control row carries no offset");
+    assert!(
+        !settled_fast,
+        "the vertical term alone is 88 px/s at snap 0.9 and must read as settled, otherwise \
+         this test proves nothing about the horizontal one"
+    );
+
+    let (offset_fast, offset_x) = late_dive_frame(4_000.0);
+    assert!(offset_x > 100.0, "the row must really hold an offset (clamped to {offset_x})");
+    assert!(
+        offset_fast,
+        "a {offset_x} px offset swept by the same snap step is a fast reveal and must decline art"
+    );
+}
+
+/// **P1 (Codex review on PR #188).** `grid_origin` cannot simply BE what `layout_grid` calls:
+/// `base_y` is serialised into `LogicalState`, so reassociating `(top + flow) - scroll * snap`
+/// into `(top - scroll * snap) + flow` hash-diverges every committed replay recording, and 26%
+/// of realistic triples differ in the last bits. Nothing in `make check` replays those
+/// recordings, so that would have gone unnoticed. The two expressions are held together here
+/// instead, EXACTLY rather than approximately: at row 0 `flow` is 0.0, so the two forms are
+/// bit-identical, and this is what stops the motion report drifting from the layout it claims
+/// to describe if the dive's geometry is ever changed.
+#[test]
+fn the_dive_report_reads_the_same_origin_the_layout_does() {
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+
+    // Mid-dive with a scrolled grid is the case the two forms disagree on for later rows.
+    for (snap, scroll) in [(0.0, 0.0), (0.37, 211.0), (0.5, 617.0), (0.93, 149.0), (1.0, 430.0)] {
+        s.snap.jump(snap);
+        s.grid.scroll_y.jump(scroll);
+        s.layout_grid();
+        assert_eq!(
+            s.grid_origin().to_bits(),
+            s.grid.shelves[0].base_y.to_bits(),
+            "the reported origin must be row 0's base_y bit for bit (snap={snap}, scroll={scroll})"
+        );
+    }
+}
+
+/// **P2 (Codex review on PR #187).** The hero-to-grid dive moves every shelf on screen by
+/// `GRID_TOP_Y - PEEK_Y` = 617 px while `snap` itself only travels 0 -> 1, so the spring's own
+/// velocity is a couple of FRACTIONS per second against a threshold in pixels. Both the grid's
+/// `scroll_y` and every shelf's `scroll_x` can hold perfectly still through the dive, so before
+/// the fix `scrolling_fast()` stayed false across the single largest reveal of poster art the
+/// application performs, and admitted exactly the work the gate exists to defer.
+#[test]
+fn the_hero_to_grid_dive_reports_as_document_motion() {
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+    s.snap.jump(0.0);
+    s.snap_target = 1.0;
+
+    crate::ui::card_row::begin_motion_frame();
+    assert!(!crate::ui::card_row::scrolling_fast(), "a frame begins with nothing claimed");
+    step(&mut s, snapshot.view(), None, &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }));
+    assert!(
+        s.snap.vel.abs() < 10.0,
+        "the spring's OWN velocity is in fractions/s ({}) - reporting it would read as still",
+        s.snap.vel.abs()
+    );
+    assert!(
+        crate::ui::card_row::scrolling_fast(),
+        "but the dive it realises is hundreds of px/s and must read as fast"
+    );
+
+    // Settled at the grid: the dive is over and art must be admitted again.
+    for i in 0..600 {
+        step(&mut s, snapshot.view(), None,
+            &ScreenEvent::Tick(Tick { ms: 32 + i * 16, dt_us: 16_667 }));
+    }
+    crate::ui::card_row::begin_motion_frame();
+    step(&mut s, snapshot.view(), None,
+        &ScreenEvent::Tick(Tick { ms: 99_999, dt_us: 16_667 }));
+    assert!(
+        !crate::ui::card_row::scrolling_fast(),
+        "a settled grid must stop declining art"
+    );
+}
+
 #[test]
 fn no_shelves_means_no_grid_snap() {
     assert_eq!(pinned_snap(1.0, 0), 0.0);
