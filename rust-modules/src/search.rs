@@ -647,18 +647,26 @@ impl SearchState {
     /// Test-only compatibility pump for fixtures without a retained directory.
     #[cfg(test)]
     pub(crate) fn pump(&mut self, adapter: &Arc<SearchAdapter>, dt: f32) -> bool {
-        pump_with_optional_directory(self, adapter, dt, None)
+        pump_with_optional_directory(self, adapter, dt, None, &crate::ui::landgate::Gate::default())
     }
 
     /// Advance the debounce and land whatever arrived under this frame's retained directory policy.
     /// Returns whether anything changed, so the caller can re-clamp focus.
-    pub(crate) fn pump_with_directory(
+    pub(crate) fn pump_with_directory_and_gate(
         &mut self,
         adapter: &Arc<SearchAdapter>,
         dt: f32,
         directory: crate::stores::browse::DirectoryView<'_>,
+        gate: &crate::ui::landgate::Gate,
     ) -> bool {
-        pump_with_optional_directory(self, adapter, dt, Some(directory))
+        pump_with_optional_directory(self, adapter, dt, Some(directory), gate)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pump_with_directory(&mut self, adapter: &Arc<SearchAdapter>, dt: f32,
+        directory: crate::stores::browse::DirectoryView<'_>) -> bool {
+        self.pump_with_directory_and_gate(adapter, dt, directory,
+            crate::ui::landgate::fixture_gate())
     }
 
     /// Publish a bounded catalog through the real retained-view boundary, without network work.
@@ -885,6 +893,7 @@ fn pump_with_optional_directory(
     adapter: &Arc<SearchAdapter>,
     dt: f32,
     directory: Option<crate::stores::browse::DirectoryView<'_>>,
+    gate: &crate::ui::landgate::Gate,
 ) -> bool {
     let live = slots();
     let visible = crate::plex::server_roster_gen();
@@ -952,7 +961,7 @@ fn pump_with_optional_directory(
         // the landing GATE (§3.3 step 3, `ui::landgate`): under a replay a source's answer is
         // taken on the frame the recording took it on. The debounce above and `maybe_spawn` below
         // are outside it, so the query still goes out when it went out.
-        let taken = crate::stores::take_landing(crate::stores::StoreId::Search, || {
+        let taken = crate::stores::take_landing(gate, crate::stores::StoreId::Search, || {
             adapter.fetch[i].slot.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         if let Some(m) = taken {
