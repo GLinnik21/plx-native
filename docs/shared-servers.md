@@ -243,8 +243,11 @@ offline." One online sign-in and one online pick per profile are the whole preco
 load offline as they do online. Profile avatars are not: the server proxies them from plex.tv, so
 they used to be blank circles on the one screen every boot shows. `rust-modules/src/imgcache.rs`
 is a small bounded on-disk cache — the foundation, used for avatars only today — that the poster
-worker reads before any fetch (the key carries plex.tv's cache-buster, so a file is current by
-construction) and fills on a miss; sign-out empties it. Cast headshots (`metadata-static.plex.tv`, also proxied) are still online-only.
+worker reads before any fetch and fills on a miss; sign-out empties it. The key deliberately
+EXCLUDES the query: plex.tv stamps an avatar's `?c=` with the time it answered the roster request
+rather than with a version of the picture — one session file held five values for three unchanged
+faces, two of them stamped in the same second — so keying on it made every online boot a miss and
+every refresh a new file. Staleness is handled by file age instead (`REFRESH_AFTER`). Cast headshots (`metadata-static.plex.tv`, also proxied) are still online-only.
 
 **That plaintext endpoint is useful reachability evidence, not a stable authenticated route.**
 §2(c) shows that the TV can reach it, but a public build still needs one of the server's advertised
