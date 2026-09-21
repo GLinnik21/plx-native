@@ -68,12 +68,8 @@ impl std::fmt::Debug for Load {
     }
 }
 
-fn flavor() -> Flavor {
-    if crate::paths::flavour() == Some("debug") {
-        Flavor::Debug
-    } else {
-        Flavor::Stable
-    }
+pub(crate) fn flavor() -> Result<Flavor, ClientError> {
+    Flavor::from_app_id(crate::paths::app_id()).ok_or(ClientError::Invalid)
 }
 
 fn service_name() -> String {
@@ -147,7 +143,7 @@ pub(crate) fn load_with(transport: &mut dyn Transport) -> Result<Load, ClientErr
         } => {
             let bytes = serde_json::to_vec(&value).map_err(|_| ClientError::Corrupt)?;
             let state =
-                CanonicalState::decode(&bytes, flavor()).map_err(|_| ClientError::Corrupt)?;
+                CanonicalState::decode(&bytes, flavor()?).map_err(|_| ClientError::Corrupt)?;
             if db_rev.parse::<u64>().ok().map(|value| value.to_string()) != Some(db_rev.clone()) {
                 return Err(ClientError::Corrupt);
             }
@@ -241,12 +237,20 @@ pub(crate) fn install_activation_hint(hint: fn(&str)) -> Result<(), fn(&str)> {
 
 /// The helper is a dynamic LS2 service: nothing starts it but a call to it (0.6.6's
 /// `activate_storage_helper`). Without this a television with no running helper never answers.
-#[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+#[cfg(all(
+    target_os = "linux",
+    target_arch = "arm",
+    not(feature = "hostsim"),
+    not(test)
+))]
 fn activate(service: &str) {
     crate::webos::activate_storage_helper(service);
 }
 
-#[cfg(all(target_os = "linux", not(all(target_arch = "arm", not(feature = "hostsim"), not(test)))))]
+#[cfg(all(
+    target_os = "linux",
+    not(all(target_arch = "arm", not(feature = "hostsim"), not(test)))
+))]
 fn activate(_service: &str) {}
 
 #[cfg(not(target_os = "linux"))]

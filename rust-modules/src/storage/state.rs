@@ -13,21 +13,16 @@ pub(crate) const MAX_LOGICAL_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_ENCODED_BYTES: usize = 512 * 1024;
 pub(crate) const LEDGER_CAPACITY: usize = 16;
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum Flavor {
-    Stable,
-    Debug,
-}
-
-impl Flavor {
-    pub(crate) fn object_id(self) -> &'static str {
-        match self {
-            Self::Stable => "plxstate.stable",
-            Self::Debug => "plxstate.debug",
-        }
-    }
-}
+// Install identities come from the packaging manifest via build.rs, shared by both binaries.
+// Compatibility: plxstate.stable/debug are live DB8 keys and must never change. The allowlist
+// landed in 6f78842e (2026-09-17), before nightly in 1c96bb7e (2026-09-19). Nightly now uses
+// plxstate.night (14 bytes): on webOS 4.10.2, the earlier 16-byte ID failed get with -995
+// (generated base64 ID), and the 18-byte ID failed put with -3968 ("Invalid _id length").
+// Neither ID ever stored anything, so there is nothing to migrate.
+// Flavor is serialized as snake_case. An old binary rejects the unknown "nightly" variant
+// (decode returns Invalid, not empty state); separate object IDs keep stable/debug from reading
+// nightly records in normal use, so neither existing namespace is rewritten on downgrade.
+include!(concat!(env!("OUT_DIR"), "/install_identities.rs"));
 
 /// Full random 128 bits, without UUID version/variant bit truncation.
 #[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -997,8 +992,10 @@ mod tests {
     fn exact_ids_and_key_names() {
         assert_eq!(Flavor::Stable.object_id().as_bytes(), b"plxstate.stable");
         assert_eq!(Flavor::Debug.object_id().as_bytes(), b"plxstate.debug");
+        assert_eq!(Flavor::Nightly.object_id().as_bytes(), b"plxstate.night");
         assert_eq!(Flavor::Stable.object_id().len(), 15);
         assert_eq!(Flavor::Debug.object_id().len(), 14);
+        assert_eq!(Flavor::Nightly.object_id().len(), 14);
         assert_eq!(Generation([0; 16]).key_name(), "a.AAAAAAAAAAAAAAAAAAAAAA");
         assert_eq!(Generation([255; 16]).key_name(), "a._____________________w");
     }
@@ -1715,5 +1712,66 @@ mod tests {
         assert!(active.public.scopes.is_null());
         assert!(active.public.ids.is_null());
         assert_eq!(active.migrations.consent, cleared.migrations.consent);
+    }
+}
+
+#[cfg(test)]
+mod install_identity_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_flavors_are_invalid_and_cross_flavor_reads_are_rejected() {
+        assert_eq!(Flavor::from_app_id("com.beb.plxnative.typo"), None);
+        let state = CanonicalState::new(Flavor::Nightly, Generation([1; 16]));
+        let bytes = state.encode().unwrap();
+        assert_eq!(
+            CanonicalState::decode(&bytes, Flavor::Stable).unwrap_err(),
+            StateError::FlavorMismatch
+        );
+        assert_eq!(
+            CanonicalState::decode(&bytes, Flavor::Debug).unwrap_err(),
+            StateError::FlavorMismatch
+        );
+        assert_eq!(
+            CanonicalState::decode(&bytes, Flavor::Nightly)
+                .unwrap()
+                .flavor,
+            Flavor::Nightly
+        );
+        let mut value = serde_json::to_value(state).unwrap();
+        value["flavor"] = serde_json::json!("future");
+        assert_eq!(
+            CanonicalState::decode(&serde_json::to_vec(&value).unwrap(), Flavor::Stable)
+                .unwrap_err(),
+            StateError::Invalid
+        );
+    }
+
+    #[test]
+    fn all_install_identities_have_distinct_object_ids() {
+        // Keep the original regression against the pre-nightly schema as well as the full manifest.
+        for name in ["stable", "debug", "nightly"] {
+            let _: Flavor = serde_json::from_value(serde_json::json!(name)).unwrap();
+        }
+        let identities: Vec<Value> =
+            serde_json::from_str(include_str!("../../../ci/install-identities.json")).unwrap();
+        let ids: Vec<_> = identities
+            .iter()
+            .map(|identity| {
+                let flavor = Flavor::from_app_id(identity["app_id"].as_str().unwrap()).unwrap();
+                assert_eq!(serde_json::to_value(flavor).unwrap(), identity["name"]);
+                assert_eq!(flavor.object_id(), identity["object_id"].as_str().unwrap());
+                // Device: webOS 4.10.2 DB8 put requires 1..=15 bytes; 16 is generated, 17+ fails -3968.
+                assert!(
+                    (1..=15).contains(&flavor.object_id().len()),
+                    "DB8 custom IDs must be 1..=15 bytes: {flavor:?}"
+                );
+                flavor.object_id()
+            })
+            .collect();
+        assert_eq!(
+            ids.iter().collect::<std::collections::HashSet<_>>().len(),
+            ids.len()
+        );
     }
 }

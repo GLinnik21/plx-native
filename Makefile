@@ -111,7 +111,8 @@ tv-lock-require:
 # registered app called `com.beb.plxnative.stabel` on the television (LG's id charset accepts it,
 # so nothing downstream objects) and the symptom is a mystery tile on a TV rather than a message on
 # a terminal. `$(error)` at parse time costs one line.
-FLAVORS      = stable debug nightly
+FLAVORS     := $(shell python3 ci/flavor.py --list)
+$(if $(strip $(FLAVORS)),,$(error ci/flavor.py --list produced no flavours — is python3 available and does ci/flavor.py import?))
 FLAVOR      ?= debug
 $(if $(filter $(FLAVOR),$(FLAVORS)),,$(error unknown FLAVOR "$(FLAVOR)" — one of: $(FLAVORS)))
 
@@ -709,7 +710,7 @@ $(FFABI_STAMP): ci/ffabi-assert.c $(FFMPEG_INC)/libavformat/avformat.h Makefile
 # `rerun-if-changed` cannot save that — it is only consulted when make decides to invoke cargo at
 # all, and this target is an ordinary timestamp comparison.
 RUST_INPUTS := $(shell find rust-modules/src assets -type f 2>/dev/null)
-$(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs rust-modules/.cargo/config.toml Makefile $(FFABI_STAMP)
+$(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs ci/install-identities.json rust-modules/.cargo/config.toml Makefile $(FFABI_STAMP)
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
 	  PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
@@ -734,7 +735,7 @@ $(RUST_LIB): LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.l
 # invocations share nothing, so neither can observe the other's fingerprint state.
 STORAGE_TDIR = $(RUST_TDIR)-storage
 STORAGE_BIN = rust-modules/$(STORAGE_TDIR)/$(RUST_TARGET)/release/plxnative-storage
-pkg/plxnative-storage: LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs Makefile ci/arm-cc.py ci/check-link-evidence.py
+pkg/plxnative-storage: LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modules/Cargo.lock rust-modules/build.rs ci/install-identities.json Makefile ci/arm-cc.py ci/check-link-evidence.py
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" $(RUST_ENV) \
 	  CARGO_TARGET_ARM_UNKNOWN_LINUX_GNUEABI_LINKER='$(CC)' \
 	  cargo +$(RUST_NIGHTLY) rustc --release --target $(RUST_TARGET) \
@@ -911,7 +912,7 @@ LICENSE_FILES = LICENSE LICENSING.md TRADEMARKS.md $(wildcard licenses/*.txt)
 # cannot drift — one code path, asked twice. Gitignored: it derives from pkg/appinfo.json, which
 # stays the single source of the version and of every field that must NOT differ between flavours
 # (only `id` and `title` may, and ci/flavor.py's selftest asserts exactly that set).
-pkg/.flavor/$(FLAVOR)/appinfo.json: pkg/appinfo.json ci/flavor.py ci/mkipk.py
+pkg/.flavor/$(FLAVOR)/appinfo.json: pkg/appinfo.json ci/flavor.py ci/install-identities.json ci/mkipk.py
 	@mkdir -p $(dir $@)
 	python3 ci/mkipk.py --emit-appinfo $(FLAVOR) $@
 
@@ -1292,7 +1293,7 @@ check: lint
 	python3 ci/test_deploy_manifest.py
 	python3 ci/test_verify_deploy.py
 	python3 ci/test_link_evidence.py
-	python3 ci/test_storage_service_package.py
+	RUST_NIGHTLY=$(RUST_NIGHTLY) python3 ci/test_storage_service_package.py
 	cd rust-modules && PATH="$$HOME/.cargo/bin:$$PATH" cargo +$(RUST_NIGHTLY) test --bin plxnative-storage
 	python3 ci/test_packaged_elf.py
 	python3 ci/test_check_elf.py

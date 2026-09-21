@@ -1,6 +1,7 @@
 use crate::{
     backend::Backend,
     keymanager::{self, Rpc},
+    runtime,
     state::Flavor,
     wire,
 };
@@ -11,8 +12,6 @@ use std::{
 use wire::{Capabilities, ErrorCode, Request, Response, PROTOCOL};
 #[path = "bus.rs"]
 mod bus;
-#[path = "runtime.rs"]
-mod runtime;
 
 impl Rpc for bus::Bus {
     fn call(
@@ -34,19 +33,12 @@ pub fn run() -> Result<(), ErrorCode> {
     }
     let executable = std::env::current_exe().map_err(|_| ErrorCode::Invalid)?;
     let app_id = runtime::app_identity(&executable)?;
+    let flavor = Flavor::from_app_id(app_id).ok_or(ErrorCode::Invalid)?;
     let service = format!("{app_id}.storage");
     // Acquiring this name precedes any stale-file removal, serializing conforming helpers.
     let rpc = bus::Bus::register(&service)?;
     let runtime = runtime::Runtime::publish(app_id)?;
-    let mut backend = Backend::new(
-        rpc,
-        if app_id.ends_with(".debug") {
-            Flavor::Debug
-        } else {
-            Flavor::Stable
-        },
-        service,
-    );
+    let mut backend = Backend::new(rpc, flavor, service);
     let mut idle = Instant::now();
     while idle.elapsed() < Duration::from_secs(30) {
         backend.rpc.pump();

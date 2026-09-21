@@ -7,6 +7,9 @@ mod backend;
 #[path = "../storage_service/keymanager.rs"]
 #[cfg_attr(not(all(target_os = "linux", target_arch = "arm")), allow(dead_code))]
 mod keymanager;
+#[path = "../storage_service/runtime.rs"]
+#[cfg_attr(not(all(target_os = "linux", target_arch = "arm")), allow(dead_code))]
+mod runtime;
 #[path = "../storage/state.rs"]
 #[allow(dead_code)] // Shared engine also exposes adapter APIs unused by this executable.
 mod state;

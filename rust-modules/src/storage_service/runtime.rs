@@ -1,17 +1,8 @@
 //! One independently published rendezvous per installed service identity.
-use super::wire::{Descriptor, ErrorCode, DESCRIPTOR_NAME, PROTOCOL, SOCKET_NAME};
-use std::{
-    fs::{self, File, OpenOptions},
-    io::{Read, Write},
-    os::{
-        fd::AsRawFd,
-        unix::{
-            fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
-            net::{UnixListener, UnixStream},
-        },
-    },
-    path::{Path, PathBuf},
-};
+use super::wire::ErrorCode;
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
+use super::wire::{Descriptor, DESCRIPTOR_NAME, PROTOCOL, SOCKET_NAME};
+use std::path::Path;
 
 pub fn app_identity(executable: &Path) -> Result<&str, ErrorCode> {
     if executable.file_name().and_then(|n| n.to_str()) != Some("plxnative-storage") {
@@ -26,12 +17,28 @@ pub fn app_identity(executable: &Path) -> Result<&str, ErrorCode> {
     {
         return Err(ErrorCode::Invalid);
     }
-    match dir.file_name().and_then(|n| n.to_str()) {
-        Some("com.beb.plxnative.storage") => Ok("com.beb.plxnative"),
-        Some("com.beb.plxnative.debug.storage") => Ok("com.beb.plxnative.debug"),
-        _ => Err(ErrorCode::Invalid),
-    }
+    let app_id = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(|name| name.strip_suffix(".storage"))
+        .ok_or(ErrorCode::Invalid)?;
+    super::state::Flavor::from_app_id(app_id).ok_or(ErrorCode::Invalid)?;
+    Ok(app_id)
 }
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
+    os::{
+        fd::AsRawFd,
+        unix::{
+            fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+            net::{UnixListener, UnixStream},
+        },
+    },
+    path::PathBuf,
+};
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
 pub fn random_hex() -> Result<String, ErrorCode> {
     let mut bytes = [0; 16];
     File::open("/dev/urandom")
@@ -39,6 +46,7 @@ pub fn random_hex() -> Result<String, ErrorCode> {
         .map_err(|_| ErrorCode::Unavailable)?;
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
 fn safe_metadata(path: &Path, socket: bool) -> Result<fs::Metadata, ErrorCode> {
     let m = fs::symlink_metadata(path).map_err(|_| ErrorCode::Unavailable)?;
     if m.uid() != unsafe { libc::getuid() }
@@ -55,6 +63,7 @@ fn safe_metadata(path: &Path, socket: bool) -> Result<fs::Metadata, ErrorCode> {
     Ok(m)
 }
 
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
 pub struct Runtime {
     pub listener: UnixListener,
     pub descriptor: Descriptor,
@@ -63,6 +72,7 @@ pub struct Runtime {
     socket_inode: (u64, u64),
     descriptor_inode: (u64, u64),
 }
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
 impl Runtime {
     pub fn publish(app_id: &str) -> Result<Self, ErrorCode> {
         let path = PathBuf::from(format!("/tmp/{app_id}.storage-runtime"));
@@ -168,6 +178,7 @@ impl Runtime {
         }
     }
 }
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
 pub fn authenticate(stream: &UnixStream) -> Result<(), ErrorCode> {
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
@@ -189,6 +200,7 @@ pub fn authenticate(stream: &UnixStream) -> Result<(), ErrorCode> {
     }
     Ok(())
 }
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
 impl Drop for Runtime {
     fn drop(&mut self) {
         let anchored = PathBuf::from(format!("/proc/self/fd/{}", self.directory.as_raw_fd()));
@@ -205,5 +217,41 @@ impl Drop for Runtime {
         }
         // Leave the empty private directory: its ownership is the next activation's guard.
         let _ = &self.path;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nightly_app_identity() {
+        assert_eq!(app_identity(Path::new("/media/developer/apps/usr/palm/services/com.beb.plxnative.nightly.storage/plxnative-storage")), Ok("com.beb.plxnative.nightly"));
+    }
+
+    #[test]
+    fn rejects_foreign_or_malformed_install_paths() {
+        for path in [
+            "/usr/palm/services/com.beb.plxnative.typo.storage/plxnative-storage",
+            "/usr/palm/services/com.beb.plxnative.nightly/plxnative-storage",
+            "/usr/palm/applications/com.beb.plxnative.nightly.storage/plxnative-storage",
+            "/usr/palm/services/com.beb.plxnative.nightly.storage/other",
+            "plxnative-storage",
+        ] {
+            assert_eq!(app_identity(Path::new(path)), Err(ErrorCode::Invalid));
+        }
+    }
+
+    #[test]
+    fn packaged_app_identity() {
+        let Ok(paths) = std::env::var("PLX_TEST_PACKAGED_HELPERS") else {
+            return;
+        };
+        for path in paths.lines() {
+            assert!(
+                app_identity(Path::new(path)).is_ok(),
+                "rejected packaged helper: {path}"
+            );
+        }
     }
 }
