@@ -112,6 +112,10 @@ const P_EVICTED: c_int = 8;
 /// an HTTP answer that is not transient, or bytes the decoder could not read.
 const P_RETRY: c_int = 7;
 
+/// Speculation may occupy one worker, never both. That leaves capacity for a visible miss that
+/// arrives after the prefetch began; workers cannot interrupt a fetch already off-lock.
+const PREFETCH_OUTSTANDING_MAX: usize = 1;
+
 /// How a store lookup treats the slot it lands on. The difference IS the prefetch's safety story.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Touch {
@@ -144,6 +148,8 @@ struct Pslot {
     ph: c_int,
     px: usize, // decoded RGBA ptr as address (0 = none) — keeps Pslot Send
     state: c_int,
+    /// A draw has asked for this key. Workers serve visible work before speculative warms.
+    visible: bool,
     use_: c_uint,  // LRU clock
     gen: c_uint,   // bumped on eviction; stale-decode guard
     frame: c_uint, // last frame poster_get touched it (evict-protect)
@@ -188,6 +194,7 @@ impl Pslot {
         ph: 0,
         px: 0,
         state: P_EMPTY,
+        visible: false,
         use_: 0,
         gen: 0,
         frame: 0,
@@ -734,6 +741,10 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                 let (c, f) = (g.clock, g.frame);
                 g.slots[i].use_ = c;
                 g.slots[i].frame = f;
+                // Promotion is monotone: a warm never demotes a key a draw is waiting on. If it
+                // is still queued, the next worker rescan will now choose it before speculation.
+                g.slots[i].visible = true;
+                if g.slots[i].state == P_WANT { CV.notify_one(); }
             }
             // a parked transient failure is SCHEDULED by the first draw that finds it, and goes
             // back in the queue by the first draw after its wait — on a DRAW only, so a tile
@@ -790,6 +801,12 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
             return (hit, Warm::Known);
         }
     }
+    // Admit speculation only into a quiet visible queue, and never enough of it to occupy both
+    // workers. `Full` tells the caller this frame's one prefetch attempt is spent without claiming
+    // a slot.
+    if touch == Touch::Warm && !warm_admissible(&g.slots) {
+        return (None, Warm::Full);
+    }
     // miss: prefer EMPTY, else LRU-evict a settled slot not used this frame
     let idx = match victim(&g.slots, g.frame) {
         Some(i) => i,
@@ -814,6 +831,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         set_key(s, key_s);
         s.srv = srv; // captured HERE, on the main thread — the worker asks no one which server
         s.state = P_WANT;
+        s.visible = touch == Touch::Draw;
         s.use_ = use_;
         s.frame = frame;
         s.pw = 0;
@@ -917,14 +935,34 @@ fn idle_of(slots: &[Pslot; PT_CAP]) -> bool {
         .any(|s| matches!(s.state, P_WANT | P_LOADING | P_DECODED))
 }
 
-/// MAIN thread. Is the store QUIET — nothing wanted, fetching, or waiting to upload? The prefetch
-/// gate, and the honest answer to "never compete with a texture the user is waiting on".
-///
-/// It has to be a GATE rather than a priority because [`poster_worker`] claims the first `P_WANT`
-/// slot **by slot index**, and indices come from "first EMPTY, else LRU victim" ([`victim`]) — i.e.
-/// arbitrarily. With two workers a prefetch in a low index is picked ahead of a visible poster in a
-/// high one. The way to stay off the critical path is not to rank requests, it is to only ISSUE one
-/// on a frame where nothing else is outstanding.
+/// The next queued slot a worker claims. Kept pure so queue ordering is host-testable.
+fn next_wanted(slots: &[Pslot; PT_CAP]) -> Option<usize> {
+    #[cfg(test)]
+    if std::env::var_os("PLX_TEST_FIFO_POSTER_QUEUE").is_some() {
+        return (0..PT_CAP).find(|&i| slots[i].state == P_WANT);
+    }
+    (0..PT_CAP)
+        .find(|&i| slots[i].state == P_WANT && slots[i].visible)
+        .or_else(|| (0..PT_CAP).find(|&i| slots[i].state == P_WANT))
+}
+
+#[inline]
+fn outstanding(s: &Pslot) -> bool {
+    matches!(s.state, P_WANT | P_LOADING | P_DECODED)
+}
+
+/// Whether one speculative claim can enter without starving the visible set.
+fn warm_admissible(slots: &[Pslot; PT_CAP]) -> bool {
+    if slots.iter().any(|s| outstanding(s) && s.visible) {
+        return false;
+    }
+    slots.iter().filter(|s| outstanding(s) && !s.visible).count() < PREFETCH_OUTSTANDING_MAX
+}
+
+/// MAIN thread. Is the store QUIET — nothing wanted, fetching, or waiting to upload? Hero warming
+/// uses this conservative whole-pipeline gate. Other speculative warms (an up-next episode
+/// thumbnail, a hero logo) are bounded separately by [`warm_admissible`] and ordered by
+/// [`next_wanted`].
 ///
 /// Cost: one 64-slot scan per frame under the mutex — the draw already does dozens.
 fn store_idle() -> bool {
@@ -1143,14 +1181,7 @@ fn poster_worker() {
                 if g.quit {
                     return;
                 }
-                let mut found = None;
-                for i in 0..PT_CAP {
-                    if g.slots[i].state == P_WANT {
-                        found = Some(i);
-                        break;
-                    }
-                }
-                if let Some(i) = found {
+                if let Some(i) = next_wanted(&g.slots) {
                     break i;
                 }
                 let res = CV.wait_timeout(g, Duration::from_millis(50));
@@ -2618,5 +2649,36 @@ mod tests {
                 "one slot in state {st} is enough to hold the gate shut"
             );
         }
+    }
+
+    #[test]
+    fn a_visible_claim_preempts_an_older_prefetch_backlog() {
+        let mut slots = [Pslot::ZERO; PT_CAP];
+        for slot in slots.iter_mut().take(12) {
+            slot.state = P_WANT;
+            slot.visible = false;
+        }
+        slots[47].state = P_WANT;
+        slots[47].visible = true;
+
+        assert_eq!(next_wanted(&slots), Some(47),
+            "a tile being drawn must outrank every queued lookahead claim");
+    }
+
+    #[test]
+    fn prefetch_admission_leaves_one_worker_for_visible_work() {
+        let mut slots = [Pslot::ZERO; PT_CAP];
+        assert!(warm_admissible(&slots), "an idle queue may look ahead");
+
+        slots[9].state = P_LOADING;
+        slots[9].visible = false;
+        assert!(!warm_admissible(&slots),
+            "one speculative fetch spends the entire prefetch allowance");
+
+        slots[9] = Pslot::ZERO;
+        slots[41].state = P_WANT;
+        slots[41].visible = true;
+        assert!(!warm_admissible(&slots),
+            "visible work closes prefetch admission regardless of slot index");
     }
 }

@@ -42,7 +42,7 @@ pub enum Warm {
     Known,
     /// a slot was claimed and the fetch enqueued — this frame's one prefetch is spent
     Claimed,
-    /// every slot is in flight or evict-protected; try again on a later frame
+    /// the source refused this prefetch for capacity, protection, or admission policy; try later
     Full,
 }
 
