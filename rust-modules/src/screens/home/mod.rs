@@ -750,11 +750,25 @@ impl HomeScreen {
         // without this the whole reveal admitted exactly the poster work the gate exists to defer
         // (Codex review on PR #187). Report the REALISED displacement, never the spring's own
         // velocity, for the same reason `Spring::step_scroll` reports both.
+        //
+        // The dive scales the shelves' RETAINED HORIZONTAL offsets by the same fraction:
+        // `Grid::eff_scroll` is `scroll_x * snap`, so a row left sitting at a large offset sweeps
+        // its cards that far across the screen as `snap` runs 0 -> 1 while its own spring never
+        // moves and reports nothing. Near the end of the dive the vertical term alone falls under
+        // the threshold while the horizontal one is still hundreds of px/s, which is a fast reveal
+        // admitting work (Codex P2 on PR #188). Both axes are reported; `note_scroll` keeps the
+        // larger, so the document's fastest axis is the one the gate answers from.
+        let snap_before = self.snap.pos;
         let origin_before = self.grid_origin();
         self.snap
             .step(pinned_snap(self.snap_target, self.rows.len()), K_SNAP, dt);
         if dt > 0.0 {
             card_row::note_scroll((self.grid_origin() - origin_before) / dt);
+            let dsnap = (self.snap.pos - snap_before).abs();
+            let widest = (0..self.rows.len())
+                .map(|row| self.grid.shelves[row].scroll_x().abs())
+                .fold(0.0f32, f32::max);
+            card_row::note_scroll(widest * dsnap / dt);
         }
         // ONE answer for "is the dive still running", read by the present gate below. See
         // `SNAP_REST_POS`/`SNAP_REST_VEL` for why both terms are needed.

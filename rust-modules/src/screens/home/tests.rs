@@ -301,6 +301,53 @@ fn a_failed_home_stands_on_the_page_readout_lines() {
     assert_eq!([hit.x, hit.y, hit.w, hit.h], [drawn.x, drawn.y, drawn.w, drawn.h]);
 }
 
+/// **P2 (Codex review on PR #188).** The dive scales a shelf's RETAINED horizontal offset by the
+/// same fraction (`Grid::eff_scroll` is `scroll_x * snap`), so returning to the hero from the far
+/// right of a row sweeps that row's cards the full offset across the screen while the shelf's own
+/// spring sits perfectly still. At snap 0.9 the vertical term is measured at 88 px/s — under the
+/// 120 px/s threshold on its own — so this is an A/B on the horizontal term alone: the identical
+/// frame at the identical snap position, differing only in whether a shelf carries an offset.
+///
+/// `restore_scroll` is given `card_row::MAX_ROW_ITEMS` rather than the fixture's own three elements because
+/// the clamp is what the caller passes: three tiles fit on screen, so a real three-item row has no
+/// scroll headroom and the offset would clamp to 0, testing nothing. The motion math reads only
+/// `scroll_x`, so a row's element count is not otherwise part of this.
+#[test]
+fn a_retained_shelf_offset_makes_the_late_dive_read_as_fast() {
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+
+    let late_dive_frame = |offset: f32| {
+        let mut s = screen(snapshot.view());
+        s.snap.jump(0.9);
+        s.snap_target = 1.0;
+        s.grid.shelves[0].restore_scroll(offset, card_row::MAX_ROW_ITEMS, &RowStyle::HOME);
+        s.layout_grid();
+        crate::ui::card_row::begin_motion_frame();
+        step(&mut s, snapshot.view(), None,
+            &ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_667 }));
+        (crate::ui::card_row::scrolling_fast(), s.grid.shelves[0].scroll_x())
+    };
+
+    let (settled_fast, settled_x) = late_dive_frame(0.0);
+    assert_eq!(settled_x, 0.0, "the control row carries no offset");
+    assert!(
+        !settled_fast,
+        "the vertical term alone is 88 px/s at snap 0.9 and must read as settled, otherwise \
+         this test proves nothing about the horizontal one"
+    );
+
+    let (offset_fast, offset_x) = late_dive_frame(4_000.0);
+    assert!(offset_x > 100.0, "the row must really hold an offset (clamped to {offset_x})");
+    assert!(
+        offset_fast,
+        "a {offset_x} px offset swept by the same snap step is a fast reveal and must decline art"
+    );
+}
+
 /// **P1 (Codex review on PR #188).** `grid_origin` cannot simply BE what `layout_grid` calls:
 /// `base_y` is serialised into `LogicalState`, so reassociating `(top + flow) - scroll * snap`
 /// into `(top - scroll * snap) + flow` hash-diverges every committed replay recording, and 26%
