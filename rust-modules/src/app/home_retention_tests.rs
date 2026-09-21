@@ -462,6 +462,42 @@ fn home_worker_results_cross_the_addressed_dispatcher_ingest_once() {
 }
 
 #[test]
+fn one_home_landing_notifies_the_home_screen_once() {
+    use crate::ui::dispatch::Tap;
+
+    #[derive(Default)]
+    struct HubsNotices(u32);
+
+    impl Tap<AppHost> for HubsNotices {
+        fn effect(&mut self, _frame: u64, stamped: &crate::ui::machine::Stamped<AppHost>) {
+            if matches!(
+                &stamped.fx,
+                Fx::Deliver(
+                    MachineId::Instance(_),
+                    Delivery::Screen(ScreenEvent::StoreChanged(store, _)),
+                ) if *store == StoreId::Hubs.ord()
+            ) {
+                self.0 += 1;
+            }
+        }
+    }
+
+    let _guard = crate::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    rig.stores.hubs.seed_for_test(2, crate::pms::HubState::Ready);
+    let mut tap = HubsNotices::default();
+    frame_with_tap(&mut d, &mut rig, AppArg::Home, tick(0), vec![], &mut tap);
+    let baseline = tap.0;
+
+    rig.stores.hubs.queue_test_landing(Some(5));
+    frame_with_tap(&mut d, &mut rig, AppArg::Home, tick(1), vec![], &mut tap);
+    frame_with_tap(&mut d, &mut rig, AppArg::Home, tick(2), vec![], &mut tap);
+
+    assert_eq!(tap.0, baseline + 1, "one Hubs landing must notify Home exactly once");
+}
+
+#[test]
 fn supplied_home_results_use_the_dispatcher_without_consuming_live_arrivals() {
     let _guard = crate::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
