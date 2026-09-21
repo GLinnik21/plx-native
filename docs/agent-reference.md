@@ -526,8 +526,10 @@ which the linking section explains is load-bearing rather than tidy.
   the tree — see `no_log_call_site_interpolates_viewing_content`. Adding a `log(&format!(…))` that
   interpolates an item title, a search query or subtitle text will fail `make check`.
   Identities come from `plex::session::publish_identities`, PUSHED on load/save; the scrubber must
-  never call `session::peek()` from the log path — it takes the session lock and reads files, which
-  deadlocked the whole `auth` test block and put five `read`s on every log line.
+  never call `session::peek()` from the log path — it is now cache-served, with a refresh queued to
+  `storage_worker` and no direct file I/O, but worker startup holds `storage_worker::SHARED` across
+  `task::spawn`, whose refusal logs. A `peek()` that schedules a refresh from that log tries to take
+  `SHARED` again and deadlocks; `CACHE` and `REFRESH` are released before queue admission.
 - `rust-modules/src/stores/` — **the data stores behind ONE vocabulary and ONE step** (restructure
   phase 4, 2026-09-07; `docs/stores-as-machines.md`): `StoreCmd` is the complete set of mutations
   of `browse`/`pms`/`metadata`/`search`/`person`/`viewstate`. Browse, Hubs, Metadata, Person,
