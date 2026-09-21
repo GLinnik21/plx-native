@@ -72,6 +72,166 @@ fn a_save_lands_whole_and_leaves_no_temporary_behind() {
     assert!(!t.file().exists() && !t.tmp().exists());
 }
 
+// ---- The runtime-dir fallback (2026-09-20 field report) --------------------------------------
+//
+// An unrooted webOS 4.4.3 set (Dev Mode, no ssh) signed in successfully and then logged
+// `session: could not persist to ANY candidate path`: none of `/media/developer`,
+// `/media/internal` or the app dir accepted the write on that jail. The one path known to be
+// writable on that exact television was the runtime root under `/tmp` (the event log was
+// reaching it). `paths::session_candidates()` now offers `in_runtime_dir("auth.json")` as the
+// LAST candidate on a device install for exactly this jail. These exercise the real
+// `save_legacy_fallback_locked`/`read_legacy_locked` loops `auth_paths()` feeds in production —
+// not a hand-rolled stand-in for them — against a candidate list shaped exactly like
+// `session_candidates()`'s new order, via `TEST_CANDIDATES` (distinct from `TempSession`'s single
+// `TEST_FILE`, which cannot represent "several candidates, some unwritable").
+//
+// Sets its own candidates rather than going through `TempSession`/`redirect_for_test`, so
+// `TEST_FILE` stays `None` throughout — RAII takes `TEST_CANDIDATES` back to `None` on drop,
+// exactly as `TempSession` does for `TEST_FILE`.
+struct TempCandidates {
+    base: std::path::PathBuf,
+}
+
+impl TempCandidates {
+    /// Two "durable" candidates (standing in for `/media/developer`, `/media/internal`), chmod'd
+    /// unwritable — and one "runtime" candidate, world-writable + sticky exactly like the real
+    /// `/tmp` this fallback resolves to on device (see `paths::ensure_runtime_dir`).
+    fn new(tag: &str) -> (TempCandidates, Vec<std::path::PathBuf>) {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!(
+            "plxnative-runtime-fallback-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let durable_a = base.join("media-developer");
+        let durable_b = base.join("media-internal");
+        let runtime = base.join("tmp-runtime");
+        for d in [&durable_a, &durable_b, &runtime] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        std::fs::set_permissions(&durable_a, std::fs::Permissions::from_mode(0o500)).unwrap();
+        std::fs::set_permissions(&durable_b, std::fs::Permissions::from_mode(0o500)).unwrap();
+        std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o1777)).unwrap();
+        let candidates = vec![
+            durable_a.join("id-auth.json"),
+            durable_b.join(".id-auth.json"),
+            runtime.join("auth.json"),
+        ];
+        (TempCandidates { base }, candidates)
+    }
+}
+
+impl Drop for TempCandidates {
+    fn drop(&mut self) {
+        redirect_candidates_for_test(None);
+        // The two "durable" dirs are unwritable (no entries were ever created inside them), so
+        // removing the writable `base` they sit under does not need their own mode restored.
+        let _ = std::fs::remove_dir_all(&self.base);
+    }
+}
+
+/// RED before the fix: with `in_runtime_dir("auth.json")` absent from `session_candidates()` on a
+/// device install, this exact jail shape (every durable candidate refuses the write) had nothing
+/// left to try — `save_legacy_fallback_locked` returned `None` and the field report's own log
+/// line fired. Watched failing here first, against the real function, before asserting the fixed
+/// behaviour below.
+#[test]
+fn every_durable_candidate_unwritable_and_no_fallback_offered_fails_the_save() {
+    let _g = crate::testlock::serial();
+    let (_guard, candidates) = TempCandidates::new("watch-fail");
+    let durable_only = candidates[..2].to_vec();
+    redirect_candidates_for_test(Some(durable_only));
+
+    let outcome = save_legacy_fallback_locked(&signed_in(), false, false);
+    assert!(
+        outcome.is_none(),
+        "setup/regression: every durable candidate must refuse the write, matching the field \
+         report, when no fallback candidate is offered"
+    );
+}
+
+/// The fix: with the runtime-dir candidate offered LAST, the same unwritable-durable jail now
+/// persists the session — at mode 0600 — and the session reloads from disk across a simulated
+/// process restart (no in-memory state carried over; `read_legacy_locked` re-resolves
+/// `auth_paths()` and re-reads from disk exactly as a fresh boot would).
+#[test]
+fn runtime_dir_candidate_persists_and_reloads_when_every_durable_candidate_is_unwritable() {
+    use std::os::unix::fs::PermissionsExt;
+    let _g = crate::testlock::serial();
+    let (_guard, candidates) = TempCandidates::new("persist-reload");
+    redirect_candidates_for_test(Some(candidates.clone()));
+
+    let session = signed_in();
+    let outcome = save_legacy_fallback_locked(&session, false, false);
+    assert!(
+        outcome.is_some(),
+        "the runtime-dir candidate must accept the write when every durable one refuses"
+    );
+    assert!(
+        candidates[2].exists(),
+        "the session must land on the runtime-dir candidate"
+    );
+    assert!(
+        !candidates[0].exists() && !candidates[1].exists(),
+        "the unwritable durable candidates must stay untouched"
+    );
+
+    let mode = std::fs::metadata(&candidates[2]).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "credentials at rest, even on the fallback candidate");
+
+    match read_legacy_locked() {
+        ReadState::Ready { session: reloaded, plaintext } => {
+            assert_eq!(reloaded.client_id, session.client_id);
+            assert_eq!(reloaded.account_token, session.account_token);
+            assert!(plaintext, "no key manager on host, so this must read back plaintext");
+        }
+        _ => panic!(
+            "the session did not reload from the runtime-dir candidate across a simulated \
+             process restart"
+        ),
+    }
+}
+
+/// The generic write path (0600, `O_NOFOLLOW`, the pre-existing-file owner check) already applies
+/// to whatever path it is handed — this pins that it also holds for the runtime-dir candidate
+/// specifically, since that candidate sits under `/tmp`: a host bind mount shared across jails,
+/// world-writable, where another uid can plant an entry ahead of the app.
+#[test]
+fn write_atomic_refuses_a_symlink_planted_at_the_runtime_dir_candidate() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let _g = crate::testlock::serial();
+    let dir = std::env::temp_dir().join(format!(
+        "plxnative-runtime-symlink-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // World-writable + sticky, exactly like the real runtime root (`paths::ensure_runtime_dir`).
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o1777)).unwrap();
+
+    let victim = dir.join("victim.json");
+    std::fs::write(&victim, b"not credentials").unwrap();
+    let target = dir.join("auth.json");
+    symlink(&victim, &target).unwrap();
+
+    let ok = write_atomic(&target, br#"{"account_token":"leak"}"#);
+    assert!(
+        !ok,
+        "write_atomic must refuse to write through a pre-existing symlink at the candidate path"
+    );
+    assert_eq!(
+        std::fs::read(&victim).unwrap(),
+        b"not credentials",
+        "the symlink's target must be left untouched"
+    );
+    assert!(
+        std::fs::symlink_metadata(&target).unwrap().file_type().is_symlink(),
+        "the symlink itself must be left in place, not replaced"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ---- The CANONICAL half (AUTH-08/AUTH-09): `clear()` must commit a canonical Cleared record,
 // and a Cleared record must present like Missing (not Locked/Blocked) while still shadowing a
 // reappearing legacy file. --------------------------------------------------------------------

@@ -455,8 +455,22 @@ pub(crate) fn in_runtime_dir(name: &str) -> PathBuf {
 /// Under the production jail that path does not exist, and the app dir itself is `root:5000 0755`
 /// — not writable by the jailed uid. `/media/internal` is `mount rw` in that profile and is the
 /// only persistent writable location there, so it is the second candidate. The app dir is third
-/// on the theory that a future layout may make it writable; the legacy in-app-dir path is last and
-/// is read-only in practice (migration).
+/// on the theory that a future layout may make it writable; the legacy in-app-dir path comes next
+/// and is read-only in practice (migration).
+///
+/// **The runtime directory is the LAST candidate on a device install, after every durable path
+/// above, and that order is load-bearing.** A 2026-09-20 report from an unrooted webOS 4.4.3 set
+/// (Dev Mode, no ssh) signed in successfully and then hit `session: could not persist to ANY
+/// candidate path` — none of `/media/developer`, `/media/internal` or the app dir accepted the
+/// write on that jail. But the app's own event log was reaching
+/// `/tmp/<app id>/plxnative-events.log` on that same television: `/tmp` is `mount rw, mode 1777`
+/// in both jail profiles and the per-install runtime root under it is app-owned (see
+/// [`runtime_dir`]), so it is the one thing this jail class guarantees is writable. It is offered
+/// last, never first, because `/tmp` is swept on reboot — a save that lands only here is NOT
+/// durable, and every candidate ahead of it that DOES survive a reboot must keep winning exactly
+/// as before. (`session::save_legacy_fallback_locked`'s caller already reports a save this
+/// uncertain through the same non-durable/`Uncertain` class an unconfirmed canonical commit uses,
+/// so landing here is never mistaken for a durable save.)
 pub(crate) fn session_candidates() -> Vec<PathBuf> {
     let mut v = Vec::new();
     // A steerable build gets its own identity, first. Without this every concurrent simulator
@@ -491,6 +505,16 @@ pub(crate) fn session_candidates() -> Vec<PathBuf> {
     // the one entry that was not made flavour-aware with them.
     if flavour().is_none() {
         v.push(PathBuf::from(LEGACY_APP_DIR).join("auth.json"));
+    }
+    // A device install (never `ENV_STEERABLE`) gets the runtime directory too — but only here,
+    // strictly after every candidate above, so an install whose durable jail path IS writable
+    // (today's ordinary case) sees no change at all. A steerable build already has this same path
+    // FIRST for a different reason (see above) and must not get it a second time, or two entries
+    // in this list would resolve to the identical file. `app_id()` differs per flavour, and so
+    // does `runtime_dir()` (see [`resolve_runtime_dir`]), so two installs on one television still
+    // do not share this fallback either.
+    if !ENV_STEERABLE {
+        v.push(in_runtime_dir("auth.json"));
     }
     v
 }
@@ -903,6 +927,47 @@ mod tests {
             c[0].display()
         );
         assert!(c.iter().all(|p| p.is_absolute()));
+    }
+
+    /// The runtime-dir fallback (2026-09-20 field report: every durable candidate refused the
+    /// write on an unrooted webOS 4.4.3 set) must be the LAST candidate on a device install — so
+    /// a set whose durable jail path IS writable, which is every set this list already served,
+    /// keeps landing on that durable candidate first and sees no change in behaviour. A steerable
+    /// build (the simulator) keeps its own copy of this same path FIRST instead, for the
+    /// concurrency reason [`super::session_candidates`] documents, and must not also carry a
+    /// second, redundant copy of it at the end.
+    #[test]
+    fn the_runtime_dir_fallback_is_last_on_a_device_install_and_not_duplicated() {
+        let c = super::session_candidates();
+        let runtime_path = super::in_runtime_dir("auth.json");
+        let hits: Vec<usize> = c
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| **p == runtime_path)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "the runtime-dir candidate must appear exactly once: {c:?}"
+        );
+        if super::ENV_STEERABLE {
+            assert_eq!(
+                hits[0], 0,
+                "a steerable build's own instance-root candidate must stay first: {c:?}"
+            );
+        } else {
+            assert_eq!(
+                hits[0],
+                c.len() - 1,
+                "a device install's runtime-dir fallback must be strictly LAST, after every \
+                 durable candidate: {c:?}"
+            );
+            assert!(
+                c.len() >= 2,
+                "the runtime-dir fallback must not be the ONLY candidate a device install offers"
+            );
+        }
     }
 
     /// `hostsim-suite-fails-on-polluted-canonical-root`: an un-redirected test must never resolve
