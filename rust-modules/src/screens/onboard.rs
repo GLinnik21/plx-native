@@ -20,7 +20,8 @@ use crate::ui::frame::Budget;
 use crate::ui::machine::{
     Canon, Cx, Delivery, Edge, Effects, EntryId, Fx, GroupId, Handled, InputEvent, InputKind, Key, LogicalState, Machine, NavOp,
 };
-use crate::ui::route_screen::{RouteGround, RouteLayout};
+use crate::ui::route_screen::RouteLayout;
+use super::family::SessionGround as RouteGround;
 use crate::ui::screen::{DrawFrame, Enter, FocusSource, FocusTarget, HitSource, Part, RenderStrategy, Screen, ScreenEvent};
 use crate::ui::source_list::{self, Level, SrcAction, Tail};
 use crate::ui::table::TableView;
@@ -519,6 +520,9 @@ impl<H: DirectoryLike> Machine<H> for OnboardScreen {
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
             ScreenEvent::Tick(t) => {
+                if self.ground.refresh() {
+                    fx.invalidate(crate::ui::present::Provenance::Landing(crate::ui::machine::MachineId::Session));
+                }
                 let dt = t.dt();
                 fx.push(Fx::App(AppFx::StoreWork(StoreWork::BrowseDiscovery)));
                 let directory = H::directory(cx);

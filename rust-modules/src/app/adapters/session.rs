@@ -623,7 +623,7 @@ impl SessionAdapter {
                     }
                 }
                 for operation in &plan.registry {
-                    if !crate::auth::execute_session_registry(operation) {
+                    if !crate::auth::execute_session_registry(operation, &plan.registry_client_id) {
                         return permit.reply(CommitAdmission::StaleAuthority);
                     }
                 }
@@ -659,7 +659,7 @@ impl SessionAdapter {
                 for operation in &plan.registry {
                     if matches!(operation, RegistryPlan::Endpoint { expected, .. }
                         if resources.native_endpoints.contains_key(&expected.sid))
-                        && !crate::auth::execute_session_registry(operation) {
+                        && !crate::auth::execute_session_registry(operation, &plan.registry_client_id) {
                         return permit.reply(CommitAdmission::StaleAuthority);
                     }
                 }
@@ -1101,7 +1101,7 @@ mod tests {
     fn queued_plan(disk: &crate::plex::session::Session) -> CommitPlan {
         let mut next = disk.clone();
         next.account_token = "new-credential".into();
-        CommitPlan { expected_disk: crate::auth::owner::Identity::of(disk),
+        CommitPlan { registry_client_id: disk.client_id.clone(), expected_disk: crate::auth::owner::Identity::of(disk),
             credentials: Some(crate::auth::owner::CredentialPatch::of(&next)),
             lifecycle: None, registry: Vec::new(), writes_durable: true,
             purpose: crate::plex::session::async_persistence::PersistencePurpose::Final,
@@ -1205,6 +1205,24 @@ mod tests {
     }
 
     #[test]
+    fn session_refresh_login_capture_recovers_identity_without_unrevoking() {
+        let _serial = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("revoked-login-capture");
+        let id = crate::plex::session::load().client_id;
+        crate::plex::session::revoke_cached_session();
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
+        {
+            let _frame = crate::task::FrameScope::enter();
+            assert!(adapter.begin_capture(1, 1, SessionReadRequest::LoginClientId).is_none());
+        }
+        crate::storage_worker::drain_for_test();
+        assert!(matches!(adapter.take_capture().unwrap().value,
+            SessionReadValue::LoginClientId(captured) if captured == id));
+        assert!(crate::plex::session::peek().client_id.is_empty());
+    }
+
+    #[test]
     fn a_cold_login_capture_persists_its_id_off_thread_and_reuses_it() {
         let _serial = crate::testlock::serial();
         let _session = crate::plex::session::TempSession::new("cold-login-stable-id");
@@ -1248,6 +1266,42 @@ mod tests {
     }
 
     #[test]
+    fn post_sign_out_registration_uses_login_capture_not_disk_validation_identity() {
+        use crate::auth::owner::{CommitDelta, Identity, Pending, PendingCommit,
+            RegistryPlan, SessionInit, SessionMachine, StreamPhase};
+        let _serial = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("registry-capture-vs-validation");
+        crate::plex::reset_servers_for_test();
+        let disk = crate::plex::session::peek();
+        crate::plex::session::revoke_cached_session();
+        let mut init = SessionInit::captured((*disk).clone());
+        init.epoch = 1;
+        init.pending.insert(1, Pending { key: SessionWorkKey { epoch: 1, op: SessionOp::Ready },
+            expected: Identity::of(&disk), lifecycle: None, last_arrival: Some(0),
+            phase: StreamPhase::Running, capture: None,
+            admission: crate::auth::owner::AdmissionState::NotRequested });
+        init.pending_commit = Some(PendingCommit { req: 1, epoch: 1, arrival: 0, terminal: true,
+            writes_credentials: false, receipt: None, delta: CommitDelta::default(),
+            admitted_revision: None, purpose: None, fresh: false });
+        let owner = SessionMachine::from_init(init);
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
+        let plan = CommitPlan { registry_client_id: "captured-login-id".into(),
+            expected_disk: Identity::of(&disk), credentials: None, lifecycle: None,
+            registry: vec![RegistryPlan::Activate { source: crate::plex::session::SourceRef {
+                machine_id: "synthetic-machine".into(), origin_url: "https://server.example.test:32400".into(),
+                address: "192.0.2.1".into(), port: 32400, token: "synthetic-token".into(),
+                tier: Some(crate::plex::probe::Location::Local), ..Default::default()
+            }, ipv6: false }], writes_durable: false,
+            purpose: crate::plex::session::async_persistence::PersistencePurpose::Background,
+            authority: crate::plex::session::SaveAuthority::Routine };
+        assert!(adapter.commit(owner.commit_permit(1, 1, 0).unwrap(), &plan).admission.accepted());
+        assert_eq!(crate::plex::client_opt().unwrap().client_id_for_test(), "captured-login-id",
+            "registration must use the login identity, not the OCC disk fence");
+        crate::plex::reset_servers_for_test();
+    }
+
+    #[test]
     fn the_bridge_takes_the_live_durability_verdict_exactly_once() {
         use crate::auth::owner::{CommitDelta, CredentialPatch, Identity, Pending, PendingCommit,
             SessionInit, SessionMachine, StreamPhase};
@@ -1272,7 +1326,7 @@ mod tests {
 
         let mut next = (*disk).clone();
         next.account_token = "synthetic-new-token".into();
-        let plan = CommitPlan { expected_disk: Identity::of(&disk),
+        let plan = CommitPlan { registry_client_id: disk.client_id.clone(), expected_disk: Identity::of(&disk),
             credentials: Some(CredentialPatch::of(&next)), lifecycle: None, registry: Vec::new(),
             purpose: crate::plex::session::async_persistence::PersistencePurpose::Final,
             writes_durable: true, authority: crate::plex::session::SaveAuthority::Routine };
@@ -1341,7 +1395,7 @@ mod tests {
 
         let mut next = (*disk).clone();
         next.account_token = "synthetic-new-token".into();
-        let plan = CommitPlan { expected_disk: Identity::of(&disk),
+        let plan = CommitPlan { registry_client_id: disk.client_id.clone(), expected_disk: Identity::of(&disk),
             credentials: Some(CredentialPatch::of(&next)), lifecycle: None, registry: Vec::new(),
             purpose: crate::plex::session::async_persistence::PersistencePurpose::Final,
             writes_durable: true, authority: crate::plex::session::SaveAuthority::Routine };
@@ -1559,7 +1613,7 @@ mod tests {
 
         let mut next = (*disk).clone();
         next.account_token = "synthetic-uncertain-token".into();
-        let plan = CommitPlan { expected_disk: Identity::of(&disk),
+        let plan = CommitPlan { registry_client_id: disk.client_id.clone(), expected_disk: Identity::of(&disk),
             credentials: Some(CredentialPatch::of(&next)), lifecycle: None, registry: Vec::new(),
             purpose: crate::plex::session::async_persistence::PersistencePurpose::Final,
             writes_durable: true, authority: crate::plex::session::SaveAuthority::Routine };
@@ -1701,7 +1755,7 @@ mod tests {
         let mut next = (*disk).clone();
         next.client_id = "cid-fresh".into();
         next.account_token = "acct".into();
-        let plan = CommitPlan { expected_disk: Identity::of(&disk),
+        let plan = CommitPlan { registry_client_id: disk.client_id.clone(), expected_disk: Identity::of(&disk),
             credentials: Some(CredentialPatch::of(&next)), lifecycle: None, registry: Vec::new(),
             purpose: PersistencePurpose::Final, writes_durable: true,
             authority: crate::plex::session::SaveAuthority::FreshReauthentication };
@@ -1776,7 +1830,7 @@ mod tests {
 
             let mut next = (*disk).clone();
             next.account_token = "synthetic-new-token".into();
-            let plan = CommitPlan { expected_disk: expected,
+            let plan = CommitPlan { registry_client_id: disk.client_id.clone(), expected_disk: expected,
                 credentials: Some(CredentialPatch::of(&next)), lifecycle: None, registry: Vec::new(),
                 purpose: crate::plex::session::async_persistence::PersistencePurpose::Final,
                 writes_durable: true, authority };
@@ -1807,7 +1861,7 @@ mod tests {
         a.fixture_resources().disk.playback_quality = Some(crate::plex::session::PlaybackQuality::Original);
         let mut next = disk.clone();
         next.account_token = "synthetic-new-token".into();
-        let plan = CommitPlan { expected_disk: Identity::of(&disk),
+        let plan = CommitPlan { registry_client_id: disk.client_id.clone(), expected_disk: Identity::of(&disk),
             credentials: Some(CredentialPatch::of(&next)), registry: Vec::new(), lifecycle: None,
             purpose: crate::plex::session::async_persistence::PersistencePurpose::Final,
             writes_durable: true, authority: crate::plex::session::SaveAuthority::Routine };
@@ -1842,7 +1896,7 @@ mod tests {
         adapter.capture(1, 1, SessionReadRequest::Endpoint { sid: 0 });
         let mut changed = disk.clone();
         changed.account_token = "synthetic-new-token".into();
-        let plan = CommitPlan { expected_disk: Identity::of(&disk),
+        let plan = CommitPlan { registry_client_id: disk.client_id.clone(), expected_disk: Identity::of(&disk),
             credentials: Some(CredentialPatch::of(&changed)), lifecycle: Some(lifecycle),
             purpose: crate::plex::session::async_persistence::PersistencePurpose::Final,
             writes_durable: true, authority: crate::plex::session::SaveAuthority::Routine,

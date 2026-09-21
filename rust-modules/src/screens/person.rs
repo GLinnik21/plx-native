@@ -2,7 +2,9 @@
 //! shelves, biography panel and animation, while navigation and focus are now explicit contracts:
 //! the engine is the only cursor, card keys preserve item identity across store reshapes, and page
 //! changes leave through `ContentReq` effects. Filmography is a separate modal `Screen`; this page
-//! presents it and never imports or stores a sibling screen.
+//! presents it and never imports or stores a sibling screen. The Person owner observes the
+//! visible session generation and retires credential-bound metadata on identity changes; its
+//! normal store landing rebuilds this page and the filmography without reopening either.
 //!
 //! **The biography sheet left in phase 10** (`screens::person_bio`, `ContentPanel::Bio`): it is a
 //! `Style::Alert` surface on the container tree, so its input, its phase and its teardown are the

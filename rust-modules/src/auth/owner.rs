@@ -222,6 +222,8 @@ pub(crate) struct HeldHandoff { pub epoch: u64, pub req: u32 }
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct CommitPlan {
+    /// Identity captured for this login, independent of the old disk identity used for OCC.
+    pub registry_client_id: String,
     pub expected_disk: Identity,
     pub credentials: Option<CredentialPatch>,
     pub registry: Vec<RegistryPlan>,
@@ -1090,7 +1092,8 @@ impl SessionMachine {
         let authority = if std::mem::take(&mut self.state.authorized_in_flow) {
             crate::plex::session::SaveAuthority::FreshReauthentication
         } else { crate::plex::session::SaveAuthority::Routine };
-        let plan = CommitPlan { expected_disk: self.state.disk_identity.clone(),
+        let plan = CommitPlan { registry_client_id: self.state.persisted.client_id.clone(),
+            expected_disk: self.state.disk_identity.clone(),
             credentials: Some(patch.clone()), lifecycle: None,
             registry: vec![RegistryPlan::Install { sources: next.sources.clone(), primary: None, replace: false }],
             purpose: PersistencePurpose::Final, writes_durable: true, authority };
@@ -1107,7 +1110,8 @@ impl SessionMachine {
         let registry = vec![RegistryPlan::DevInstall { primary: primary.clone(), extras: extras.clone(),
             client_id: self.state.persisted.client_id.clone() }];
         let Some(req) = self.allocate(SessionOp::DevBoundary, None) else { return false };
-        self.begin_commit(req, 0, true, CommitPlan { expected_disk: self.state.disk_identity.clone(),
+        self.begin_commit(req, 0, true, CommitPlan { registry_client_id: self.state.persisted.client_id.clone(),
+            expected_disk: self.state.disk_identity.clone(),
             credentials: None, lifecycle: None, registry,
             purpose: PersistencePurpose::Background, writes_durable: false,
             authority: crate::plex::session::SaveAuthority::Routine }, CommitDelta {
@@ -1127,7 +1131,8 @@ impl SessionMachine {
         self.state.error.clear();
         let req = self.allocate(SessionOp::DevBoundary, None).expect("two-slot preflight");
         let login_req = self.allocate(SessionOp::Login, None).expect("two-slot preflight");
-        self.begin_commit(req, 0, true, CommitPlan { expected_disk: self.state.disk_identity.clone(),
+        self.begin_commit(req, 0, true, CommitPlan { registry_client_id: self.state.persisted.client_id.clone(),
+            expected_disk: self.state.disk_identity.clone(),
             credentials: None, lifecycle: None, registry: vec![RegistryPlan::Revoke],
             purpose: PersistencePurpose::Background, writes_durable: false,
             authority: crate::plex::session::SaveAuthority::Routine }, CommitDelta {
@@ -1150,7 +1155,8 @@ impl SessionMachine {
         if self.state.phase != Phase::Idle || !self.state.persisted.can_go_local()
             || self.state.pending_commit.is_some() { return false; }
         let Some(req) = self.allocate(SessionOp::Ready, None) else { return false };
-        let plan = CommitPlan { expected_disk: self.state.disk_identity.clone(),
+        let plan = CommitPlan { registry_client_id: self.state.persisted.client_id.clone(),
+            expected_disk: self.state.disk_identity.clone(),
             credentials: None, lifecycle: None,
             registry: vec![RegistryPlan::Install { sources: self.state.persisted.sources.clone(),
                 primary: None, replace: false }],
@@ -1575,7 +1581,8 @@ impl SessionMachine {
             registry.push(RegistryPlan::Install {
                 sources: self.state.persisted.sources.clone(), primary: None, replace: false,
             });
-            let plan = CommitPlan { expected_disk: self.state.disk_identity.clone(),
+            let plan = CommitPlan { registry_client_id: self.state.persisted.client_id.clone(),
+                expected_disk: self.state.disk_identity.clone(),
                 credentials: None, lifecycle: None, registry,
                 purpose: PersistencePurpose::Background, writes_durable: false,
                 authority: crate::plex::session::SaveAuthority::Routine };
@@ -1802,7 +1809,8 @@ impl SessionMachine {
             && self.state.authorized_in_flow {
             crate::plex::session::SaveAuthority::FreshReauthentication
         } else { crate::plex::session::SaveAuthority::Routine };
-        let mut plan = CommitPlan { expected_disk: self.state.disk_identity.clone(),
+        let mut plan = CommitPlan { registry_client_id: self.state.persisted.client_id.clone(),
+            expected_disk: self.state.disk_identity.clone(),
             credentials: None, registry: Vec::new(), lifecycle: pending.lifecycle,
             purpose, writes_durable: false, authority };
         match &**data {

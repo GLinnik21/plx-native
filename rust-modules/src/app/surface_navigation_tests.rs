@@ -673,7 +673,7 @@ fn account_to_settings_never_unfreezes_the_host() {
     press(&mut d, &mut rig, Key::Down);
     assert_eq!(
         d.focus().map(|k| (k.entry, k.elem)),
-        Some((menu_entry, 1)),
+        Some((menu_entry, crate::screens::account_menu::Action::Settings as u32)),
         "the engine walked the menu's own rows"
     );
     press(&mut d, &mut rig, Key::Ok);

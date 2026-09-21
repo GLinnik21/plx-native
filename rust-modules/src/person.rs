@@ -315,6 +315,8 @@ pub(crate) struct PersonState {
     generation: u32,
     retry_cd: [u32; NFETCH],
     dev_held: usize,
+    session_watch: crate::plex::session::VisibleSessionWatch,
+    session_identity: (String, String),
 }
 
 impl Default for PersonState {
@@ -324,6 +326,8 @@ impl Default for PersonState {
             generation: 0,
             retry_cd: [0; NFETCH],
             dev_held: usize::MAX,
+            session_watch: Default::default(),
+            session_identity: Default::default(),
         }
     }
 }
@@ -840,6 +844,10 @@ fn open(
     {
         return;
     }
+    let _ = state.session_watch.changed();
+    if let Some(session) = crate::plex::session::peek_settled() {
+        state.session_identity = (session.client_id.clone(), session.account_token.clone());
+    }
     state.supersede(adapter);
     let srcs = sources(sid, key, name);
     state.current = Some(Person {
@@ -1026,7 +1034,22 @@ pub(crate) fn media_resolving(p: &Person, sid: ServerId) -> bool {
 /// cached header strings on it.
 impl PersonState {
     pub(crate) fn pump_with_gate(&mut self, adapter: &Arc<PersonAdapter>, gate: &crate::ui::landgate::Gate) -> bool {
-        let mut changed = sync_roster(self, adapter);
+        let mut session_changed = false;
+        if self.session_watch.changed() {
+            if let Some(session) = crate::plex::session::peek_settled() {
+                let identity = (session.client_id.clone(), session.account_token.clone());
+                if self.session_identity != identity {
+                    self.session_identity = identity;
+                    self.supersede(adapter);
+                    if let Some(person) = &mut self.current {
+                        person.profiled = false;
+                        person.credited = false;
+                        session_changed = true;
+                    }
+                }
+            }
+        }
+        let mut changed = sync_roster(self, adapter) || session_changed;
         for i in 0..NFETCH {
             if self.retry_cd[i] > 0 {
                 self.retry_cd[i] -= 1;
@@ -1468,19 +1491,21 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize) 
     // worker matches a credit row by either id space
     let guid = p.guid.clone();
     if i == F_PROFILE || i == F_CREDITS {
+        let controlled = crate::app::bootstrap::stores::active();
+        let session = crate::plex::session::peek_settled();
+        if !controlled && session.as_ref().is_none_or(|s| s.client_id.is_empty()) { return; }
         let profile = i == F_PROFILE;
         adapter.fetch[i].claim();
         let worker_adapter = Arc::clone(adapter);
-        let controlled = crate::app::bootstrap::stores::active();
         let spawned = crate::app::bootstrap::stores::admit(serde_json::json!({
             "store":"person","slot":i,"gen":generation,"arg":arg,"guid":guid}), ||
             crate::task::spawn_small("person", move || {
             // filled OUTSIDE the guard so a panicking fetch still lands — as a FAILURE (None), not
             // as an empty biography / an empty filmography
             let what = if profile {
-                Landing::Profile(if controlled { None } else { catch_unwind(|| fetch_profile(&arg[0])).unwrap_or(None) })
+                Landing::Profile(if controlled { None } else { catch_unwind(|| fetch_profile(&arg[0], session.as_deref().expect("settled spawn identity"))).unwrap_or(None) })
             } else {
-                Landing::Credits(if controlled { None } else { catch_unwind(|| fetch_credits(&arg[0])).unwrap_or(None) })
+                Landing::Credits(if controlled { None } else { catch_unwind(|| fetch_credits(&arg[0], session.as_deref().expect("settled spawn identity"))).unwrap_or(None) })
             };
             worker_adapter.land(i, generation, what);
         }));
@@ -1563,12 +1588,10 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize) 
     }
 }
 
-/// WORKER THREAD: the blocking plex.tv biography request. The identity is taken from the live
-/// session snapshot. `peek` never mints or persists an identity and never waits for the storage
-/// helper; a stale or unloaded snapshot schedules the shared background refresh.
+/// WORKER THREAD: the blocking plex.tv biography request, using the settled identity captured
+/// before spawning. Storage recovery is observed by the owner before retrying these requests.
 #[cfg(not(test))]
-fn fetch_profile(guid: &str) -> Option<crate::plex::discover::PersonProfile> {
-    let s = crate::plex::session::peek();
+fn fetch_profile(guid: &str, s: &crate::plex::session::Session) -> Option<crate::plex::discover::PersonProfile> {
     let tok = (!s.account_token.is_empty()).then_some(s.account_token.as_str());
     crate::plex::account::AccountClient::new(&s.client_id, tok).person_profile(guid)
 }
@@ -1576,15 +1599,14 @@ fn fetch_profile(guid: &str) -> Option<crate::plex::discover::PersonProfile> {
 /// WORKER THREAD: the blocking plex.tv filmography request. [`fetch_profile`]'s twin in every
 /// respect — same identity, same session read, same host — so the two share a spawn arm.
 #[cfg(not(test))]
-fn fetch_credits(guid: &str) -> Option<Vec<crate::plex::discover::CreditGroup>> {
-    let s = crate::plex::session::peek();
+fn fetch_credits(guid: &str, s: &crate::plex::session::Session) -> Option<Vec<crate::plex::discover::CreditGroup>> {
     let tok = (!s.account_token.is_empty()).then_some(s.account_token.as_str());
     crate::plex::account::AccountClient::new(&s.client_id, tok).person_credits(guid)
 }
 
 /// HOST SUITE: [`fetch_profile`]'s cut, for its reason — this reaches libcurl.
 #[cfg(test)]
-fn fetch_credits(_guid: &str) -> Option<Vec<crate::plex::discover::CreditGroup>> {
+fn fetch_credits(_guid: &str, _session: &crate::plex::session::Session) -> Option<Vec<crate::plex::discover::CreditGroup>> {
     None
 }
 
@@ -1597,7 +1619,7 @@ fn fetch_credits(_guid: &str) -> Option<Vec<crate::plex::discover::CreditGroup>>
 /// [`PersonState::pump`] and [`roles_line`],
 /// which is where the logic worth testing actually lives.
 #[cfg(test)]
-fn fetch_profile(_guid: &str) -> Option<crate::plex::discover::PersonProfile> {
+fn fetch_profile(_guid: &str, _session: &crate::plex::session::Session) -> Option<crate::plex::discover::PersonProfile> {
     None
 }
 
@@ -2038,6 +2060,25 @@ mod tests {
         fn loading(&self) -> bool { self.state.view().loading() }
         fn hold_off(&mut self) { self.state.retry_cd = [RETRY_FRAMES; NFETCH]; }
         fn supersede(&mut self) { self.state.supersede(&self.adapter); }
+    }
+
+    #[test]
+    fn session_refresh_retries_person_metadata_after_storage_recovers() {
+        let _g = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("person-session-refresh");
+        crate::plex::reset_servers_for_test();
+        let saved = crate::plex::session::peek();
+        crate::plex::session::install_transient_for_test(true);
+        let mut owner = Owner::default();
+        owner.open(S0, "1001", "", "Synthetic person", "");
+        owner.state.current.as_mut().unwrap().profiled = true;
+        owner.state.current.as_mut().unwrap().credited = true;
+        let old_generation = owner.gen();
+        crate::plex::session::save(&saved);
+        assert!(owner.pump());
+        assert!(owner.gen() > old_generation, "old credential-bound replies must be retired");
+        assert!(!owner.current().unwrap().profiled);
+        assert!(!owner.current().unwrap().credited);
     }
 
     #[test]

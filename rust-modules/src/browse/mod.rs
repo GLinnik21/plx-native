@@ -532,6 +532,7 @@ impl Default for SecState {
 /// sibling [`BrowseAdapter`]; everything whose identity belongs to a Browse instance lives here.
 #[derive(Clone)]
 pub(crate) struct BrowseState {
+    session_generation: u64,
     sources: Vec<BrowseSource>,
     sections: Vec<BrowseSection>,
     states: Vec<SecState>,
@@ -637,12 +638,14 @@ impl Default for BrowseState {
             remembered: Vec::new(),
             recorded: None,
             pending_pins: None,
+            session_generation: crate::plex::session::visible_generation(),
         }
     }
 }
 
 impl BrowseState {
     pub(crate) fn discovery_needs_pump(&self, adapter: &BrowseAdapter) -> bool {
+        if self.session_generation != crate::plex::session::visible_generation() { return true; }
         if adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
             return true;
         }
@@ -1406,7 +1409,7 @@ impl BrowseState {
     /// "something happened that can invalidate an already-resolved table".
     ///
     /// Two callers reach it, and they are the two ways that can happen: a Plex Home roster landing
-    /// reclassifies a SOURCE (`sync_roster_owned`), and the Home editor's commit replaces this
+    /// or session-cache recovery refreshes a SOURCE/record (`sync_roster_owned`), and the Home editor's commit replaces this
     /// profile's RECORD (`apply_pins`). Both end in the same question — what does
     /// `pins::resolve` say about every row now — so they ask it the same way rather than each
     /// keeping a version of the answer. A row that moves without `bump_sections_gen` +
@@ -1683,6 +1686,9 @@ impl BrowseState {
         self.reset_with(|| adapter.clear());
     }
     pub(crate) fn sync_roster_owned(&mut self) -> RosterSync {
+        let generation = crate::plex::session::visible_generation();
+        let session_changed = self.session_generation != generation;
+        self.session_generation = generation;
         let live: Vec<ServerId> = crate::plex::server_ids().collect();
         // The Plex Home roster, read ONCE for the whole sync: `peek()` is a write-through cache
         // over the persisted session (`plex/CLAUDE.md`), so this is a lock and an `Arc` clone
@@ -1789,7 +1795,7 @@ impl BrowseState {
         if self.sources.len() != known {
             crate::log(&format!("browse: roster now {} source(s)", self.sources.len()));
         }
-        if reclassified {
+        if reclassified || session_changed {
             // **A source changed sides, so the WHOLE pin table is re-resolved** — `pins::resolve`
             // is a whole-table function on purpose (its own doc: the never-empty floor is a
             // question about the table, not about a row), and one source's reclassification moves
@@ -1804,7 +1810,9 @@ impl BrowseState {
             // without a cache of its own. It bumps only when a row actually MOVED — a
             // reclassification that moves none publishes nothing new to the section table, and
             // the source facts it did move have their own generation, bumped above.
-            self.reconcile_pins_from(&session, &crate::plex::session::current_profile_key());
+            if crate::plex::session::peek_settled().is_some() {
+                self.reconcile_pins_from(&session, &crate::plex::session::current_profile_key());
+            }
             changed = true;
         }
         RosterSync { changed, retire_adapter }
@@ -2891,6 +2899,7 @@ pub(crate) fn seed_registered_table_for_owner_test(
         let client = crate::plex::client_for(sid).expect("registered fixture source");
         let source = state.source_mut(index).unwrap();
         source.sid = sid;
+        source.machine_id = client.machine_id().to_owned();
         source.client_addr = client as *const _ as usize;
         source.token_gen = client.token_gen();
         crate::plex::describe_server(sid, &source.name, &source.handle,

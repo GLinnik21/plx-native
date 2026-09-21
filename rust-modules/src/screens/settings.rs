@@ -40,7 +40,8 @@ use crate::ui::machine::{
 };
 use crate::ui::motion;
 use crate::ui::present::Provenance;
-use crate::ui::route_screen::{RouteGround, RouteLayout};
+use crate::ui::route_screen::RouteLayout;
+use super::family::SessionGround as RouteGround;
 use crate::ui::screen::{
     At, Dir, DrawFrame, Enter, FocusSource, FocusTarget, Focusable, GroupSpec, HitSource, Mounter,
     Placed, RenderStrategy, ReturnState, Screen, ScreenEvent, Step,
@@ -595,6 +596,9 @@ impl<H: DirectoryLike> Machine<H> for RouteSurface {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
+                if self.ground.refresh() {
+                    fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session));
+                }
                 self.tick(*t, cx, fx);
                 Handled::Yes
             }
@@ -954,6 +958,8 @@ pub(crate) struct RootPage {
     table: TableView,
     rows: Vec<Action>,
     state: RootState,
+    session_watch: crate::plex::session::VisibleSessionWatch,
+    session_snapshot: std::sync::Arc<crate::plex::session::Session>,
     pending_auto: Option<(bool, crate::storage_worker::TypedTicket<bool>)>,
     pending_trailer: Option<(bool, crate::storage_worker::TypedTicket<bool>)>,
 }
@@ -976,33 +982,14 @@ impl LogicalState for RootState {
     }
 }
 
-/// Does this television have an account? — asked by [`RootPage::rebuild`], so twice per Settings
-/// open (construction, then `ScreenEvent::Enter`) and once more on every return from a child page.
-///
-/// **Through [`peek`](crate::plex::session::peek), never [`load`](crate::plex::session::load).**
-/// The two differ in exactly one respect and it is the one that matters on a press path: `load`
-/// mints a `client_id` when there is none and re-persists a plaintext session, so a READ turns
-/// into `write_atomic` — a temp file, `sync_all`, a rename and a second `sync_all` on the
-/// directory. That is the boot path's bargain, and `session.rs` says so in as many words ("it is
-/// not one on a path a keypress can reach", "do not add a per-frame reader of this file"). This
-/// call site was on the wrong side of it: on a television whose key manager is unusable — which
-/// is this one — every open of the Settings modal paid two flash writes with four fsyncs on the
-/// frame that mounts it, worth 150-180 ms of `navcommit` in the sessions where the flash was slow
-/// (`fps:modal-ramp`, device-measured 2026-09-09;
-/// `opening_settings_never_writes_the_session_file` is the account).
-fn signed_in() -> bool {
-    crate::plex::session::peek()
-        .account(crate::plex::session::current().as_ref())
-        .signed_in
-}
-
-
 impl RootPage {
     fn new(entry: EntryId, directory: crate::stores::browse::DirectoryView<'_>) -> Self {
         let mut s = Self {
             entry,
             table: TableView::new(),
             rows: Vec::new(),
+            session_watch: Default::default(),
+            session_snapshot: Default::default(),
             pending_auto: None, pending_trailer: None,
             state: RootState {
                 sel: 0,
@@ -1015,8 +1002,11 @@ impl RootPage {
     }
 
     fn rebuild(&mut self, sel: i32, directory: crate::stores::browse::DirectoryView<'_>) {
-        let sess = crate::plex::session::peek();
-        let signed_in = signed_in();
+        if let Some(snapshot) = crate::plex::session::peek_settled() {
+            self.session_snapshot = snapshot;
+        }
+        let sess = &self.session_snapshot;
+        let signed_in = sess.account(crate::plex::session::current().as_ref()).signed_in;
         let auto_sign_in = self.pending_auto.as_ref().map_or_else(|| sess.auto_sign_in(), |(value, _)| *value);
         let trailer_autoplay = self.pending_trailer.as_ref().map_or_else(|| sess.trailer_autoplay(), |(value, _)| *value);
         let multi_user = sess.home_users.len() > 1;
@@ -1148,12 +1138,18 @@ impl Machine<InnerHost> for RootPage {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
-                let mut landed = false;
+                let mut landed = self.session_watch.changed();
                 for pending in [&mut self.pending_auto, &mut self.pending_trailer] {
                     if pending.as_ref().is_some_and(|(_, ticket)| !matches!(ticket.try_recv(),
                         Err(std::sync::mpsc::TryRecvError::Empty))) {
-                        *pending = None;
-                        landed = true;
+                        // Read AFTER the receipt: the worker may have installed Locked/Blocked
+                        // while this Tick was polling. Retain a consumed receipt's local value
+                        // until authority settles; subsequent polls see Disconnected.
+                        if let Some(snapshot) = crate::plex::session::peek_settled() {
+                            self.session_snapshot = snapshot;
+                            *pending = None;
+                            landed = true;
+                        }
                     }
                 }
                 if landed { self.rebuild(self.table.sel, cx.views); fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session)); }

@@ -223,6 +223,9 @@ pub(crate) fn decode_ip(c: u8) -> Option<IpVersion> {
 use super::identity::{device_name, DEVICE, MODEL, PROVIDES};
 
 impl Client {
+    #[cfg(test)]
+    pub(crate) fn client_id_for_test(&self) -> &str { &self.client_id }
+
     pub(crate) fn capture_generation_seed() -> u32 { GEN_SEQ.load(Relaxed) }
 
     /// Called only before constructing controlled resources in an empty registry.
@@ -239,7 +242,7 @@ impl Client {
     /// but `session::load` reads a file and can WRITE one (it mints + persists the uuid on first
     /// boot), which was tolerable behind a `OnceLock` singleton built exactly once and is not on
     /// a registry that constructs a `Client` per server and re-points slots. The registry does
-    /// that read once per registration instead, so this constructor touches no filesystem and no
+    /// receives a captured identity (or consults the non-blocking cache), so this constructor touches no filesystem and no
     /// global but the generation counter.
     pub(super) fn new(
         id: ServerId,
@@ -248,6 +251,7 @@ impl Client {
         token: &str,
         client_id: &str,
     ) -> Client {
+        debug_assert!(!client_id.is_empty(), "Client requires a captured device identity");
         let generation = next_gen();
         Client {
             id,

@@ -1280,6 +1280,9 @@ fn a_home_roster_arriving_late_re_resolves_the_pin_table() {
     assert!(browse.state.toggle_pin(1));
     crate::storage_worker::drain_for_test();
 
+    // Observe the completed preference publication before isolating the later roster arrival.
+    browse.sync_roster();
+
     // Quiet every other reason the discovery pump has to run, so the gate below can only be
     // answering the roster.
     for index in 0..2 {

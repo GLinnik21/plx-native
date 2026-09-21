@@ -37,12 +37,12 @@ fn shipping_cold_boot_degrades_gracefully_with_only_a_plaintext_stored_source() 
     assert!(execute_session_registry(&owner::RegistryPlan::Primary {
         server: server_ref(&stored),
         token: stored.token.clone(),
-    }));
+    }, "registry-test-client"));
     assert!(execute_session_registry(&owner::RegistryPlan::Install {
         sources: vec![stored],
         primary: Some(0),
         replace: false,
-    }));
+    }, "registry-test-client"));
 
     let ids = crate::plex::server_ids().collect::<Vec<_>>();
     assert_eq!(ids.len(), 1, "boot retains one recovery record, not duplicate clients");
@@ -71,14 +71,14 @@ fn shipping_recovery_repoints_plaintext_metadata_to_https_and_refreshes_normally
         sources: vec![stored.clone()],
         primary: Some(0),
         replace: false,
-    }));
+    }, "registry-test-client"));
     let id = crate::plex::server_ids().next().expect("recovery slot");
     let expected = ClientLifecycle::capture(crate::plex::client_for(id).unwrap()).logical(id.raw());
 
     let mut repaired = stored;
     repaired.origin_url = "https://192-0-2-10.example.test:32400".into();
     repaired.tier = Some(probe::Location::Local);
-    assert!(execute_session_registry(&owner::RegistryPlan::Endpoint { expected, source: repaired }));
+    assert!(execute_session_registry(&owner::RegistryPlan::Endpoint { expected, source: repaired }, "registry-test-client"));
 
     assert_eq!(crate::plex::server_ids().collect::<Vec<_>>(), vec![id]);
     assert_eq!(crate::plex::current_server(), id);
@@ -840,4 +840,29 @@ fn endpoint_recovery_keeps_the_watching_profiles_household_evidence() {
     assert_eq!(next.address, "10.0.0.42");
     assert_eq!((next.home, next.owner_id), (true, 111_111), "grant facts stay the profile's");
     assert_eq!(next.token, "kid-own", "…for the same reason the token does");
+}
+
+#[test]
+fn post_sign_out_registration_keeps_captured_login_client_id() {
+    let _g = crate::testlock::serial();
+    let _session = crate::plex::session::TempSession::new("registration-after-sign-out");
+    crate::plex::reset_servers_for_test();
+    crate::plex::session::revoke_cached_session();
+    let captured = crate::plex::session::load_login_client_id();
+    assert!(!captured.is_empty());
+    assert!(crate::plex::session::peek().client_id.is_empty());
+    let mut fresh = source("new-login-server", true, "synthetic-token");
+    fresh.origin_url = "https://server.example.test:32400".into();
+    fresh.tier = Some(probe::Location::Local);
+    assert!(execute_session_registry(&owner::RegistryPlan::Activate {
+        source: fresh.clone(), ipv6: false,
+    }, &captured));
+    let client = crate::plex::client_opt().unwrap();
+    assert_eq!(client.client_id_for_test(), captured,
+        "early activation must use the login capture even while CACHE is revoked");
+    assert!(execute_session_registry(&owner::RegistryPlan::Install {
+        sources: vec![fresh], primary: Some(0), replace: false,
+    }, &captured));
+    assert!(std::ptr::eq(client, crate::plex::client_opt().unwrap()));
+    crate::plex::reset_servers_for_test();
 }

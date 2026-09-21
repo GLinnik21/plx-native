@@ -12,7 +12,7 @@
 //! Two things stay here that a reader may expect to find elsewhere, and both are deliberate:
 //!
 //! **The rows are a function of the account state, and that state is the persisted session** —
-//! `Session::account`, read fresh at [`ScreenEvent::Mount`]. It used to be
+//! `Session::account`, read at mount and refreshed when the visible session changes. It used to be
 //! `session::current().is_some()`, which is a *sentinel*, not a fact: the single-user (no Plex
 //! Home) path leaves the active profile an empty `UserRef`, so every surface deciding on its
 //! emptiness told a signed-in owner they were signed out. `peek`, not `load`: a menu opening must
@@ -182,8 +182,9 @@ pub(crate) struct AccountMenuScreen {
     header: String,
     rows: &'static [Action],
     table: TableView,
-    /// Has the session been read yet? The rows are a snapshot taken ONCE, at `Mount` — a roster
-    /// landing under an open menu must not renumber the rows the user is aiming at.
+    /// Rebuild on visible session landings as well as the initial mount. Focus keys name
+    /// actions, not row positions, so a landing cannot turn an armed Settings press into Sign out.
+    session_watch: crate::plex::session::VisibleSessionWatch,
     built: bool,
 }
 
@@ -195,18 +196,18 @@ impl AccountMenuScreen {
             rows: &[],
             table: TableView::new(),
             built: false,
+            session_watch: Default::default(),
         }
     }
 
-    /// The one read of the persisted session, at `Mount`. `peek`, never `load`.
+    /// Capture a settled session without blocking storage.
     fn build(&mut self) {
         if self.built {
             return;
         }
+        let Some(sess) = crate::plex::session::peek_settled() else { return };
         self.built = true;
-        // Capture the live session cache once per open. A missing or stale entry schedules
-        // the shared background refresh; mounting the account menu never waits on storage.
-        let sess = crate::plex::session::peek();
+        let selected = action_at(self.rows, self.table.sel);
         let cur = crate::plex::session::current();
         let acc = sess.account(cur.as_ref());
         self.rows = rows_for(&acc);
@@ -217,10 +218,15 @@ impl AccountMenuScreen {
         }
         // small one-word action list — BODY labels, not menu-size HEADLINE bold
         self.table.compact = true;
-        self.table.set_sections(vec![sec], 0, false);
+        let sel = self.rows.iter().position(|a| *a == selected).unwrap_or(0) as i32;
+        self.table.set_sections(vec![sec], sel, false);
         // `rows` *is* the index→action map, so it must stay one-to-one with what was built above;
         // a row appended here and not to `rows_for` is exactly the drift this replaced.
         debug_assert_eq!(self.rows.len() as i32, self.table.n_rows());
+    }
+
+    fn row_of(&self, elem: u32) -> Option<usize> {
+        self.rows.iter().position(|action| *action as u32 == elem)
     }
 
     fn frame(&self) -> Rect {
@@ -230,7 +236,7 @@ impl AccountMenuScreen {
     /// Commit the focused row. **Every action dismisses**, exactly as the legacy `on_ok` did by
     /// closing before it returned; what differs per action is the request the loop then performs.
     fn activate<H: AppLike>(&mut self, elem: u32, fx: &mut Effects<'_, H>) {
-        let act = action_at(self.rows, elem as i32);
+        let act = self.row_of(elem).map_or(Action::None, |row| self.rows[row]);
         // The five that need the LOOP: three flip `app.route` after an `auth` call, one presents
         // another surface (whose `Style` is the application's to choose, not a screen's), and one
         // reaches `crate::lab`. None of them is expressible as a `Fx::Nav`, which is why they are
@@ -261,15 +267,22 @@ impl<H: AppLike> Machine<H> for AccountMenuScreen {
         match ev {
             ScreenEvent::Mount => self.build(),
             ScreenEvent::Tick(tick) => {
+                if self.session_watch.changed() { self.built = false; }
+                if !self.built {
+                    self.build();
+                    if self.built { fx.invalidate(crate::ui::present::Provenance::Landing(crate::ui::machine::MachineId::Session)); }
+                }
                 self.table.sel = cx
                     .focus
                     .current
                     .filter(|key| key.entry == self.entry)
-                    .map(|key| key.elem as i32)
+                    .and_then(|key| self.row_of(key.elem).map(|row| row as i32))
                     .unwrap_or(self.table.sel);
                 self.table.update(tick.dt(), self.frame().h);
             }
-            ScreenEvent::FocusMoved { to, .. } => self.table.sel = to.elem as i32,
+            ScreenEvent::FocusMoved { to, .. } => {
+                if let Some(row) = self.row_of(to.elem) { self.table.sel = row as i32; }
+            }
             ScreenEvent::Activate(elem) => self.activate(*elem, fx),
             ScreenEvent::PressCommit(_) => {
                 if let Some(key) = cx.focus.current {
@@ -307,32 +320,31 @@ impl<H: AppLike> Focusable<H> for AccountMenuScreen {
         });
     }
     fn group_of(&self, elem: &u32, _: &Cx<'_, H>) -> Option<GroupId> {
-        ((*elem as usize) < self.rows.len()).then_some(GroupId(0))
+        self.row_of(*elem).map(|_| GroupId(0))
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _: &Cx<'_, H>) -> Step<u32> {
+        let Some(row) = self.row_of(key.elem) else { return Step::Edge };
         let next = match dir {
-            Dir::Up => (key.elem as usize).checked_sub(1),
-            Dir::Down => Some(key.elem as usize + 1),
+            Dir::Up => row.checked_sub(1),
+            Dir::Down => Some(row + 1),
             _ => None,
         };
         match next.filter(|i| *i < self.rows.len()) {
             Some(i) => Step::Move(FocusKey {
                 entry: self.entry,
-                elem: i as u32,
+                elem: self.rows[i] as u32,
             }),
             None => Step::Edge,
         }
     }
     fn place(&self, elem: &u32, _: &Cx<'_, H>, _: At) -> Option<Placed> {
-        if (*elem as usize) >= self.rows.len() {
-            return None;
-        }
-        let rect = self.table.row_frame(self.frame(), *elem as i32)?;
+        let row = self.row_of(*elem)?;
+        let rect = self.table.row_frame(self.frame(), row as i32)?;
         Some(Placed {
             rect,
             rest_rect: rect,
             clip: self.frame(),
-            index: Some(*elem),
+            index: Some(row as u32),
         })
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
@@ -341,14 +353,14 @@ impl<H: AppLike> Focusable<H> for AccountMenuScreen {
         } else {
             FocusKey {
                 entry: self.entry,
-                elem: 0,
+                elem: self.rows.first().copied().unwrap_or(Action::None) as u32,
             }
         }
     }
     fn seat(&self, _: GroupId, _: Placed, _: &Cx<'_, H>) -> FocusKey<u32> {
         FocusKey {
             entry: self.entry,
-            elem: self.table.sel.max(0) as u32,
+            elem: action_at(self.rows, self.table.sel) as u32,
         }
     }
 }
@@ -385,7 +397,8 @@ impl<H: AppLike> Screen<H> for AccountMenuScreen {
         crate::ui::profile::phase("glass.foreground", || {
             self.table.draw(p, r, measure);
         });
-        for elem in 0..self.rows.len() as u32 {
+        for action in self.rows {
+            let elem = *action as u32;
             if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {
                 f.stop(
                     p,
@@ -448,6 +461,52 @@ mod tests {
             ..Default::default()
         }
     }
+    #[test]
+    fn session_refresh_rebuilds_an_open_account_menu() {
+        use crate::ui::machine::{InputOwner, MachineId, Tick};
+        let _serial = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("account-menu-refresh");
+        let mut saved = local(Session { client_id: "synthetic-client".into(),
+            account_token: "synthetic-token".into(), ..Default::default() });
+        saved.home_users = vec![HomeUserRef { title: "Synthetic owner".into(), admin: true,
+            ..Default::default() }];
+        crate::plex::session::install_transient_for_test(true);
+        let mut menu = AccountMenuScreen::new(EntryId(0));
+        menu.build();
+        assert!(!menu.rows.contains(&Action::SignOut));
+        crate::plex::session::save(&saved);
+        let cx = Cx::<super::super::family::InnerHost> {
+            views: crate::stores::browse::DirectoryView::empty_for_test(),
+            tick: Tick::default(), measure: &crate::ui::fixture::FixtureMeasure,
+            press: Default::default(), focus: Default::default(),
+            owner: InputOwner::Entry(EntryId(0)),
+        };
+        let mut out = Vec::new();
+        let mut present = crate::ui::present::Present::new();
+        let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
+        menu.step(&ScreenEvent::Tick(Tick::default()), &cx, &mut fx);
+        assert!(menu.rows.contains(&Action::SignOut));
+        assert!(!menu.rows.contains(&Action::SignIn));
+        assert_eq!(menu.header, "Synthetic owner");
+    }
+
+    #[test]
+    fn session_refresh_preserves_action_identity_when_rows_move() {
+        let _serial = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("account-action-identity");
+        let mut menu = AccountMenuScreen::new(EntryId(0));
+        menu.build();
+        let settings_key = Action::Settings as u32;
+        assert_eq!(menu.row_of(settings_key), Some(1));
+        crate::plex::session::save(&local(Session { client_id: "synthetic-client".into(),
+            account_token: "synthetic-token".into(), ..Default::default() }));
+        menu.built = false;
+        menu.build();
+        assert_eq!(menu.row_of(settings_key), Some(2));
+        assert_eq!(menu.row_of(Action::SignIn as u32), None,
+            "an old Sign in key cannot become the new Sign out action");
+    }
+
     /// A session that can reach its server, i.e. one the app actually boots into Home on.
     fn local(mut s: Session) -> Session {
         s.server = ServerRef {

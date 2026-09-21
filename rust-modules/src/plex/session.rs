@@ -34,6 +34,8 @@
 //! - `peek` never takes `IO`. A miss schedules one refresh on the bounded persistence FIFO and
 //!   returns the last snapshot immediately. The worker reads and installs under `IO`; `CACHE`
 //!   is never held across `IO`. Queued and in-flight reads cannot overwrite a later revocation.
+//!   Cached views poll `VisibleSessionWatch` on Tick; `peek_settled` distinguishes recovery in
+//!   progress from an authoritative empty session, so pending preferences need not flash defaults.
 //! - Writers never read from the cache; they read the authority under `IO` (fence correctness),
 //!   then install their own outcome over it.
 //! - A `Locked`/`Blocked` read is transient: served for `LOCKED_RETRY` (about a second) after it
@@ -2142,11 +2144,43 @@ fn cache_revoked() -> bool {
 }
 
 /// Separate from the I/O fence: Locked/Blocked/Missing all serve the same empty session.
-/// Each bridge observes this counter independently on its frame thread.
+/// Bridges and cached session-derived views observe this counter independently on the frame thread.
 static VISIBLE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+pub(crate) fn install_transient_for_test(locked: bool) {
+    crate::testlock::assert_held("session read fixture");
+    let _io = io();
+    install_locked(std::sync::Arc::new(if locked { ReadState::Locked } else { ReadState::Blocked }));
+}
 
 pub(crate) fn visible_generation() -> u64 {
     VISIBLE_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Per-consumer cursor for cached session-derived views. Poll on Tick, including while storage
+/// is unavailable: peek schedules the bounded retry without blocking the frame.
+#[derive(Default)]
+pub(crate) struct VisibleSessionWatch(Option<(u64, bool)>);
+impl VisibleSessionWatch {
+    pub(crate) fn changed(&mut self) -> bool {
+        let generation = visible_generation();
+        let key = (generation, peek_settled().is_some());
+        let changed = self.0 != Some(key);
+        self.0 = Some(key);
+        changed
+    }
+}
+
+/// A settled visible authority, or None while a read is unloaded/Locked/Blocked. Local revocation
+/// is settled for UI purposes: retaining a pre-sign-out account would be misleading.
+pub(crate) fn peek_settled() -> Option<std::sync::Arc<Session>> {
+    let _ = peek();
+    match &*CACHE.lock().unwrap_or_else(|e| e.into_inner()) {
+        Cached::Settled(state) => Some(session_of(state)),
+        Cached::Revoked => Some(empty_session()),
+        Cached::Unloaded | Cached::Transient { .. } => None,
+    }
 }
 
 fn same_visible_session(previous: &Cached, next: &Cached) -> bool {

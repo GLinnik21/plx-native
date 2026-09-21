@@ -256,7 +256,10 @@ a dead source is **absent** from Home and states itself in its own library secti
   - `peek` never takes `IO`, including on a miss. It returns the previous snapshot and schedules
     one refresh on `storage_worker`'s bounded FIFO. The worker reads and installs under `IO`,
     then advances a visible-session generation only if the served content changed. The bridge
-    observes it and invalidates on the frame thread; unchanged retries remain quiet. A queued
+    observes it and invalidates on the frame thread. Cached views also observe it through
+    `VisibleSessionWatch` (or include `visible_generation()` in their cache key) and rebuild;
+    invalidating drawing alone cannot refresh a retained value. `peek_settled()` keeps transient
+    reads distinct from an authoritative empty session. Unchanged retries remain quiet. A queued
     read cannot overwrite a newer write or sign-out.
   - Writers never read the cache to decide what to write — they always re-read the authority under
     `IO` first (the fence/OCC check), then install their own proven outcome. A miss can therefore
