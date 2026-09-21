@@ -301,6 +301,36 @@ fn a_failed_home_stands_on_the_page_readout_lines() {
     assert_eq!([hit.x, hit.y, hit.w, hit.h], [drawn.x, drawn.y, drawn.w, drawn.h]);
 }
 
+/// **P1 (Codex review on PR #188).** `grid_origin` cannot simply BE what `layout_grid` calls:
+/// `base_y` is serialised into `LogicalState`, so reassociating `(top + flow) - scroll * snap`
+/// into `(top - scroll * snap) + flow` hash-diverges every committed replay recording, and 26%
+/// of realistic triples differ in the last bits. Nothing in `make check` replays those
+/// recordings, so that would have gone unnoticed. The two expressions are held together here
+/// instead, EXACTLY rather than approximately: at row 0 `flow` is 0.0, so the two forms are
+/// bit-identical, and this is what stops the motion report drifting from the layout it claims
+/// to describe if the dive's geometry is ever changed.
+#[test]
+fn the_dive_report_reads_the_same_origin_the_layout_does() {
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    let mut s = screen(snapshot.view());
+
+    // Mid-dive with a scrolled grid is the case the two forms disagree on for later rows.
+    for (snap, scroll) in [(0.0, 0.0), (0.37, 211.0), (0.5, 617.0), (0.93, 149.0), (1.0, 430.0)] {
+        s.snap.jump(snap);
+        s.grid.scroll_y.jump(scroll);
+        s.layout_grid();
+        assert_eq!(
+            s.grid_origin().to_bits(),
+            s.grid.shelves[0].base_y.to_bits(),
+            "the reported origin must be row 0's base_y bit for bit (snap={snap}, scroll={scroll})"
+        );
+    }
+}
+
 /// **P2 (Codex review on PR #187).** The hero-to-grid dive moves every shelf on screen by
 /// `GRID_TOP_Y - PEEK_Y` = 617 px while `snap` itself only travels 0 -> 1, so the spring's own
 /// velocity is a couple of FRACTIONS per second against a threshold in pixels. Both the grid's

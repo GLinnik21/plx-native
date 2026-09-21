@@ -627,19 +627,28 @@ impl HomeScreen {
         env
     }
 
-    /// The y the grid's flow hangs from — every shelf's `base_y` is this plus its own flow. It is
-    /// its own function because the fast-scroll motion signal has to report the displacement this
-    /// expression REALISES (see the `snap` step in `tick`), and a motion report derived from a
-    /// second copy of the layout would drift from it silently.
+    /// Where the grid's flow hangs, for the fast-scroll motion signal (see the `snap` step in
+    /// `tick`). It is row 0's `base_y`, and [`Self::layout_grid`] must keep evaluating that in its
+    /// own order rather than calling this: **`base_y` is serialised into `LogicalState`**
+    /// (`CardRow::write_motion`), so its float evaluation order is load-bearing for every
+    /// committed replay recording, and `(top + flow) - scroll * snap` is not bit-identical to
+    /// `(top - scroll * snap) + flow` — 26% of realistic (snap, scroll, row) triples differ
+    /// (Codex P1 on PR #188). Nothing in `make check` replays those recordings, so the divergence
+    /// would not have surfaced until someone re-recorded one.
+    ///
+    /// At row 0 the two forms ARE bit-identical, `flow` being 0.0, which is what lets
+    /// `the_dive_report_reads_the_same_origin_the_layout_does` pin them together exactly. The
+    /// report only needs a px/s magnitude against a 120 px/s threshold, so row 0 is the whole
+    /// document's motion as far as the gate is concerned.
     fn grid_origin(&self) -> f32 {
         PEEK_Y + (GRID_TOP_Y - PEEK_Y) * self.snap.pos - self.grid.scroll_y.pos * self.snap.pos
     }
 
     fn layout_grid(&mut self) {
-        let top = self.grid_origin();
+        let top = PEEK_Y + (GRID_TOP_Y - PEEK_Y) * self.snap.pos;
         let mut flow = 0.0;
         for row in 0..MAX_HUBS {
-            self.grid.shelves[row].base_y = top + flow;
+            self.grid.shelves[row].base_y = top + flow - self.grid.scroll_y.pos * self.snap.pos;
             flow += card_row::ROW_PITCH_FIXED + self.grid.shelves[row].under_band();
         }
     }
