@@ -52,8 +52,13 @@ pub enum Warm {
 /// the library never names an application type. Installed once at boot ([`install`]).
 pub trait Source {
     /// A DRAW's probe: `Some(key)` once the source has handed the cache this key's pixels (the
-    /// texture may still be waiting for upload); `None` while empty, in flight or failed. A miss
-    /// claims a slot and starts the fetch. Touches the source's LRU.
+    /// texture may still be waiting for upload). A miss claims a slot and starts the fetch —
+    /// UNLESS the source declines the request, which it may do for its own admission reasons
+    /// (today: a document scrolling faster than the source's art threshold, and a slot cooling
+    /// down from rapid re-eviction). So `None` means empty, DEFERRED, in flight or failed, and
+    /// the cache must go on drawing its placeholder without inferring that work is under way —
+    /// asking again next frame is how a deferred request is eventually honoured. Touches the
+    /// source's LRU.
     fn probe(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> Option<PosterKey>;
     /// The prefetch twin: start the fetch, take nothing, protect nothing.
     fn warm(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> Warm;

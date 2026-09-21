@@ -242,7 +242,7 @@ This is not a live viewport tracker. Images once requested visibly can remain hi
 
 Retain the point fix's conservative behavior and make its reservations explicit:
 
-1. No new speculative admission while any Visible acquisition is Queued, Running, or Decoded. A new visible request always remains eligible for available capacity and slots.
+1. No new speculative admission while any Visible acquisition is Queued, Running, or Decoded. A visible request remains eligible for whatever capacity and slots exist — **except while the document is scrolling fast**, where `poster.rs`'s scroll gate declines it before admission is reached at all. That refusal is deliberate and measured, and the typed queue must keep it rather than merely rank it: pacing the visible request instead (one in flight, perfect pacing — zero refusals recorded) still cost twice the ungated baseline's dropped frames, because by the time a request is being ordered its fetch and decode are already owed. See the measured table at that gate in `lookup`.
 2. At most **one** speculative obligation exists across queued warms, still-unpromoted decoded warms, file refresh, and speculative-started busy workers. Count an attempt once, even if both its slot and flight describe it. Hold a speculative-start reservation until that worker actually finishes, even if the request is promoted, retired, or its cached pixels were published. A promotion therefore cannot accidentally authorize a second speculative fetch while the first worker is still busy.
 3. A surviving-worker count below two disables speculation entirely. With zero workers, return `NoWorker` rather than parking forever in Queued. This improves the refusal behavior explicitly; it does not retry thread creation on each draw.
 4. Before starting queued speculation, `claim_next` rechecks that no visible acquisition is outstanding. Admission and claim are distinct: visible work may have arrived in between. A queued speculative request occupies no worker and is bounded to one record. Do not spawn another worker to evade this policy.
@@ -270,7 +270,7 @@ Draining Visible decoded results first improves the next handoff, but `TexCache:
 
 ## 4. Migration and verification
 
-This document is the entire current change. The steps below are future work in isolated development, not authorization to edit this live tree. Each verified piece lands as one squash commit. A policy change is compared with the already-patched visible-first baseline, not the old broken index-only scheduler.
+This document was the entire change at `8eea8340`; `ce48077f` then added the fast-scroll request gate on top of it. The steps below are future work in isolated development, not authorization to edit this live tree. Each verified piece lands as one squash commit. A policy change is compared with the visible-first baseline **and** that gate — not the old broken index-only scheduler, and no longer visible-first alone. The distinction is operational, not bookkeeping: during a fast scroll there is now no visible queue to order, so any queue-ordering A/B has to be gathered below `PREFETCH_MAX_SCROLL_PX_S` or with the gate explicitly disarmed and said so.
 
 | Piece | Scope | Evidence required before landing | Reversion |
 |---|---|---|---|

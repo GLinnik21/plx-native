@@ -722,9 +722,12 @@ fn victim(slots: &[Pslot; PT_CAP], frame: c_uint) -> Option<usize> {
 type Hit = Option<PosterKey>;
 
 /// MAIN thread. The one store lookup behind [`poster_get`], [`poster_get_wh`] and [`poster_warm`]:
-/// hit → the READY texture + its size, miss → claim a slot and enqueue the fetch. `touch` is the ONLY
-/// difference between the paths: LRU bookkeeping on every hit, plus — for a P_EVICTED slot — whether
-/// the touch is even eligible to recover it at all (see that branch below).
+/// hit → the READY texture + its size; miss → claim a slot and enqueue the fetch, IF the request is
+/// admitted. Three things decide, and `touch` is only the first: `touch` itself (LRU bookkeeping on
+/// every hit, and whether a P_EVICTED slot is eligible to recover at all), the speculation bound
+/// [`warm_admissible`] for a Warm, and the document's scroll speed
+/// ([`crate::ui::card_row::scrolling_fast`]) for a Draw. A refused request claims nothing and
+/// records nothing; the next frame asks again.
 fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // The array's own precondition, checked before a slot can be claimed for a key that could
     // never match its probe again. `Warm::Known` (not `Full`) so a prefetch loop walks on to the
@@ -732,6 +735,15 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     if !is_fetchable(key_s) {
         return (None, Warm::Known);
     }
+    // A DRAW may not START poster work while the document is scrolling fast, and that holds at
+    // EVERY point work begins — the fresh miss far below, but equally the two re-arm transitions
+    // inside the matching-slot loop. Those matter more than the miss rather than less: a fast
+    // scroll is exactly what evicts textures, so scrolling back across the same rows finds
+    // P_EVICTED slots, and re-arming each one is a full fetch, decode and upload that the gate
+    // would never see if it only guarded the miss. A HIT is deliberately untouched: art that is
+    // already resident still draws and still takes its LRU touch, so declining never blanks a
+    // tile that had its picture.
+    let decline = touch == Touch::Draw && crate::ui::card_row::scrolling_fast();
     let mut g = store();
     // hit?
     for i in 0..PT_CAP {
@@ -755,7 +767,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     let wait = retry_backoff(g.slots[i].attempts).as_millis() as u32;
                     g.slots[i].retry_at = Some(now.wrapping_add(wait));
                     g.slots[i].retry_wake_sent = false;
-                } else if retry_due(&g.slots[i], now) {
+                } else if retry_due(&g.slots[i], now) && !decline {
                     g.slots[i].state = P_WANT;
                     g.slots[i].retry_at = None;
                     g.slots[i].retry_wake_sent = false;
@@ -787,6 +799,11 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     // enforce. It does not stop the cycle: under sustained pressure the key can be
                     // evicted and cooled down again the moment it lands, indefinitely — it only
                     // paces how often that cycle is allowed to turn.
+                    return (None, Warm::Known);
+                }
+                if decline {
+                    // The same deferral the cooldown just made, for the same reason: the slot
+                    // stays EVICTED and the first draw at a settled speed re-arms it as usual.
                     return (None, Warm::Known);
                 }
                 g.slots[i].state = P_WANT;
@@ -831,7 +848,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // then the fetch and the decode are already paid for and the refused pixels only accumulate
     // in `TexCache::pending` at 375 KB each. The request is the last point at which this work
     // can still be declined for free.
-    if touch == Touch::Draw && crate::ui::card_row::scrolling_fast() {
+    if decline {
         return (None, Warm::Full);
     }
     // miss: prefer EMPTY, else LRU-evict a settled slot not used this frame
@@ -1811,6 +1828,97 @@ mod tests {
         assert_eq!(warm, Warm::Claimed, "a settled document claims the slot");
         assert_eq!(store().slots[0].state, P_WANT, "and queues it for a worker");
         assert!(store().slots[0].visible, "as visible demand, not speculation");
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// **P2 (Codex review on PR #187).** The fresh-miss gate above is the LEAST important of the
+    /// three places a draw starts poster work, because a fast scroll is the very thing that
+    /// evicts textures: scroll down hard, and the rows behind you lose residency; scroll back,
+    /// and every tile you pass finds its own slot parked at `P_EVICTED` with no cooldown set
+    /// (a first eviction never cools). Re-arming each one is a full fetch, decode and upload —
+    /// the work the gate exists to refuse — reached through a branch that returns long before
+    /// the miss path. The deferral is the cooldown's, not a drop: the slot stays `P_EVICTED`
+    /// and the first settled draw re-arms it exactly as it always did.
+    #[test]
+    fn a_fast_scroll_declines_to_re_arm_an_evicted_slot() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/4243/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            set_key(slot, &path);
+            slot.state = P_EVICTED;
+            // No eviction history, so the cooldown gate would admit this re-arm. That isolates
+            // the scroll gate: nothing else in this branch is refusing.
+            slot.evict_cooldown_until = None;
+        }
+        let (_, rearmed0) = residency_counts_for_test();
+
+        crate::ui::card_row::begin_motion_frame();
+        crate::ui::card_row::note_scroll(1000.0);
+        let (hit, warm) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None, "an evicted slot has no pixels to hand back");
+        assert_eq!(warm, Warm::Known, "the slot is known, merely left dormant");
+        assert_eq!(
+            store().slots[0].state,
+            P_EVICTED,
+            "a fast scroll must not re-arm an evicted slot: that is a whole fetch and upload"
+        );
+        let (_, rearmed1) = residency_counts_for_test();
+        assert_eq!(rearmed1, rearmed0, "and must not count as a re-arm");
+
+        crate::ui::card_row::begin_motion_frame();
+        let (_, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(store().slots[0].state, P_WANT, "a settled draw re-arms it exactly as before");
+        let (_, rearmed2) = residency_counts_for_test();
+        assert_eq!(rearmed2, rearmed0 + 1, "and the settle is what the counter records");
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// The same narrowing for the other existing-slot re-arm: a `P_RETRY` slot whose backoff has
+    /// expired goes back in the queue on the next DRAW, and that draw is subject to the same
+    /// admission as any other. The wait is not restarted and the attempt count is untouched — the
+    /// slot simply stays parked and due, so the first settled draw takes it.
+    #[test]
+    fn a_fast_scroll_declines_to_re_queue_a_due_retry() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/4244/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            set_key(slot, &path);
+            slot.state = P_RETRY;
+            slot.attempts = 1;
+            // Scheduled at tick 0, so it is due for any plausible reading of the app clock.
+            slot.retry_at = Some(0);
+        }
+
+        crate::ui::card_row::begin_motion_frame();
+        crate::ui::card_row::note_scroll(1000.0);
+        let (hit, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None, "a parked retry has no pixels");
+        assert_eq!(
+            store().slots[0].state,
+            P_RETRY,
+            "a fast scroll must not re-queue a due retry"
+        );
+        assert_eq!(
+            store().slots[0].retry_at,
+            Some(0),
+            "and must not reschedule it: the wait already elapsed, it is the draw that was refused"
+        );
+        assert_eq!(store().slots[0].attempts, 1, "a refusal is not an attempt");
+
+        crate::ui::card_row::begin_motion_frame();
+        let (_, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(store().slots[0].state, P_WANT, "a settled draw re-queues it");
+        assert_eq!(store().slots[0].retry_at, None, "clearing the elapsed wait");
 
         store().slots = [Pslot::ZERO; PT_CAP];
     }
