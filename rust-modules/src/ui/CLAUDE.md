@@ -119,7 +119,9 @@ tests opt into private signals and drive the detector with synthetic timestamps.
 only after the first present completes, excluding initial shader/font warm-up. A freeze after
 that point is reported once even if no further frame presents; after the loop resumes, the
 watchdog reports the total stall duration and the label captured when the stall was detected.
-With `threadcheck`, the first hang also publishes a purple runtime warning. The FRAME thread
+With `threadcheck`, the first hang also publishes a purple runtime warning.
+Controlled recording/replay boots suppress the warning's forced presents and pixels, so real-time
+linger cannot change per-frame replay grades. Logging and fatal enforcement remain active. The FRAME thread
 paints it, so it appears when the stall ENDS and lingers for about three seconds. It never appears
 WHILE the stall is happening: the stuck main thread cannot draw. At >=2000 ms the observer sends SIGABRT once per stall to the main pthread
 captured at loop start, so crashtrace records the interrupted main thread, not the observer.

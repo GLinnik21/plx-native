@@ -69,6 +69,19 @@ pub(super) fn guard(label: &'static str) {
     s.0 = Some(Warning { kind: "BLOCK", ms: 0, label, until: Some(now().saturating_add(LINGER_MS)) });
 }
 
+/// Publish a warning without starting the watchdog or sleeping; restore even after an assertion.
+#[cfg(test)]
+pub(crate) fn with_warning_for_test(f: impl FnOnce()) {
+    crate::testlock::assert_held("runtime warning fixture");
+    struct Restore(Option<Warning>);
+    impl Drop for Restore {
+        fn drop(&mut self) { WARNING.lock().unwrap_or_else(|e| e.into_inner()).0 = self.0; }
+    }
+    let _restore = Restore(WARNING.lock().unwrap_or_else(|e| e.into_inner()).0);
+    hang(300, "warning fixture");
+    f();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

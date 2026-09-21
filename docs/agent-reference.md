@@ -536,7 +536,9 @@ which the linking section explains is load-bearing rather than tidy.
   once above 250 ms and once on recovery, polling every 100 ms after the first present.
   Developer builds (`threadcheck`) write the fatal guard log and abort before an unallowed call executes.
   The watchdog publishes a purple warning, painted only when the frame thread can draw, lingering
-  three seconds after recovery. At >=2000 ms it sends SIGABRT once to the main pthread captured
+  three seconds after recovery. Controlled recording/replay boots suppress only this warning's
+  forced presents and pixels; checker logs and fatal enforcement remain active.
+  At >=2000 ms it sends SIGABRT once to the main pthread captured
   at loop start, preserving the interrupted thread's registers. Guard `abort()` records the abort
   path instead; the label identifies its guarded call. The host harness never starts the observer.
   Developer draw/swap scopes label stalls `frame draw` / `gl present` without invoking or

@@ -1982,7 +1982,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // …and the lab upload's toast, which expires on a clock rather than a spring.
         crate::lab::update(fr.now);
         #[cfg(feature = "threadcheck")]
-        crate::ui::runtime_warning::update();
+        crate::ui::runtime_warning::update(app.boot_initial.is_some());
         // The Up Next countdown and the control row's focus pop are the PLAYER INSTANCE's and
         // are stepped from its own `Tick` for the reason `TransportRow::step` gives — the row is
         // not drawn on every frame of the route, so a spring advanced in the draw would run at a
@@ -2320,7 +2320,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                                                      // player, where the two branches above diverge and this one must not.
                     crate::lab::draw(app.diagnostics.frame_if_shown());
                     #[cfg(feature = "threadcheck")]
-                    crate::ui::runtime_warning::draw();
+                    crate::ui::runtime_warning::draw(app.boot_initial.is_some());
                 });
             });
     (vx, vy, vw, vh)
@@ -2679,6 +2679,10 @@ pub(crate) unsafe fn shutdown(
 /// kinds through the same synthesis the remote FIFO uses, direct tokens through the dispatcher.
 /// An unknown kind is logged once per kind rather than silently skipped.
 unsafe fn replay_inject(app: &mut App, fr: &mut Frame, v: &serde_json::Value) {
+    if let Some(token) = super::recorder::direct_token(v) {
+        if !ingress_token(app, fr, token) { app.rec.refuse("recorded direct token was not accepted"); }
+        return;
+    }
     if app.boot_initial.is_some() {
         match super::recorder::decode_input(v) {
             Ok(input) if input.source == crate::ui::machine::Source::Script => {
@@ -2929,6 +2933,45 @@ mod lifecycle_regression_tests {
         app.ev[..4].copy_from_slice(&et.to_ne_bytes());
         unsafe {
             ingest_sdl_event(app, fr);
+        }
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn a_recorded_raw_hang_probe_replays_without_missing_input() {
+        use super::super::{bootstrap::{Initial, Preflight}, recorder::{Recplay, ReplayMode, state_fp}};
+        use crate::ui::{dispatch::Tap, rec::{Header, MemSink, Recording}};
+        let _serial = crate::testlock::serial();
+        let mut app = app();
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        let initial = Initial::synthetic_home(1, 32517, None).unwrap();
+        let sink = MemSink::default();
+        let segments = sink.segments.clone();
+        let manifest = Header::new(state_fp(), &initial).to_json().to_string();
+        app.rec = Recplay::recording_with_sink(&initial, Box::new(sink)).unwrap();
+        app.rec.tick(initial.clock_start, 0.0);
+        {
+            let _frame = crate::task::FrameScope::enter();
+            assert!(unsafe { ingress_token(&mut app, &mut fr, "hang-raw:1") });
+        }
+        app.rec.end_frame(&|| 7);
+        std::mem::replace(&mut app.rec, Recplay::Off).finish(crate::ui::landgate::fixture_gate());
+        let recording = Recording::parse(&manifest,
+            &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(), state_fp()).unwrap();
+        assert_eq!(recording.frames[0].inputs[0]["tok"], "hang-raw:1");
+        for controlled in [false, true] {
+            let recording = Recording { header: recording.header.clone(), frames: recording.frames.clone(),
+                metrics: recording.metrics.clone(), stopped_at: recording.stopped_at };
+            app.boot_initial = controlled.then(|| initial.clone());
+            app.rec = Recplay::controlled(Preflight::Replay {
+                initial: initial.clone(), recording, mode: ReplayMode::Resolve }, &initial).unwrap();
+            for value in app.rec.replay_inputs() {
+                let _frame = crate::task::FrameScope::enter();
+                unsafe { replay_inject(&mut app, &mut fr, &value); }
+            }
+            Tap::focus(&mut app.rec, 0, None);
+            assert!(app.rec.end_frame(&|| 7));
+            assert!(!app.rec.outcome_failed(), "the injected probe must consume its recorded input, controlled={controlled}");
         }
     }
 
