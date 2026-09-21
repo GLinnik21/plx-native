@@ -161,10 +161,16 @@ struct Pslot {
     evict_attempts: u8,
     /// The app-clock tick before which [`lookup`] refuses to re-arm this EVICTED slot — `None`
     /// means no cooldown is owed. Set only once `evict_attempts` shows an ongoing thrash episode:
-    /// the FIRST eviction of a key always re-arms on its very next demand, which is the recovery
-    /// [`lookup`]'s P_EVICTED branch exists for and the case
+    /// the FIRST eviction of a key always re-arms on its very next Draw probe, which is the
+    /// recovery [`lookup`]'s P_EVICTED branch exists for and the case
     /// `a_ready_source_hit_recovers_after_its_texture_is_evicted` pins. See [`evict_backoff`].
     evict_cooldown_until: Option<u32>,
+    /// Mirrors `retry_wake_sent`, for the same reason: latches that THIS `evict_cooldown_until`
+    /// deadline has already requested its one present, so [`invalidate_due_evictions`] does not
+    /// invalidate every frame for an off-screen slot nothing draws. Reset whenever a fresh
+    /// cooldown is armed ([`PosterSource::unresident`]) or the slot's eviction history is
+    /// otherwise cleared (recovery, recycle) — a new deadline is something to wake for again.
+    evict_wake_sent: bool,
 }
 impl Pslot {
     const ZERO: Pslot = Pslot {
@@ -183,6 +189,7 @@ impl Pslot {
         evicted_at: None,
         evict_attempts: 0,
         evict_cooldown_until: None,
+        evict_wake_sent: false,
     };
 }
 
@@ -217,21 +224,25 @@ fn retry_due(s: &Pslot, now: u32) -> bool {
 /// - [`evict_was_rapid`]: was the PREVIOUS eviction of this key recent enough that this new one is
 ///   a continuation of an ongoing churn episode, rather than an isolated, ordinary LRU turnover?
 ///   Ten seconds comfortably exceeds one fetch+decode+upload round trip (the window this guard has
-///   to see through) while staying well short of "the user browsed away and came back", so a slot
-///   that settles for a while always gets treated as fresh again.
+///   to see through), so a slot that settles for that long always gets treated as fresh again —
+///   the window is sized against the round trip, not against how a person actually browses, so a
+///   user who leaves a screen and comes back inside ten seconds can still land inside an ongoing
+///   episode and pay whatever cooldown was already running, with no sustained overload involved.
 /// - [`evict_backoff`]: given consecutive rapid re-evictions, how long does the NEXT re-arm wait?
 ///   Deliberately its own schedule rather than a reuse of [`retry_backoff`] — that one paces
 ///   retries against a server that may be down, capped at 30 s; this one paces retries against a
 ///   cache that is merely full, and a screen whose working set has genuinely settled should feel
 ///   that within a few seconds, not thirty.
 ///
-/// **Why a visible tile is never starved.** A key's FIRST eviction always has `evicted_at == None`
+/// **What the bound actually guarantees.** A key's FIRST eviction always has `evicted_at == None`
 /// beforehand, so [`evict_was_rapid`] answers `false`, `evict_attempts` stays 0, and no cooldown is
 /// set at all — the ordinary one-eviction-then-recovery case this PR exists to fix re-arms on the
-/// very next demand, exactly as before. Only a key that is evicted AGAIN inside the thrash window —
-/// proof that something is still churning it — pays a cooldown, and that cooldown is bounded
-/// ([`evict_backoff`] caps at 8 s): the key always gets another turn, just not on every single
-/// frame while the pressure that evicted it persists.
+/// very next Draw probe, exactly as before. Only a key that is evicted AGAIN inside the thrash
+/// window — proof that something is still churning it — pays a cooldown, and that cooldown is
+/// bounded ([`evict_backoff`] caps at 8 s): a Draw probe of the key is guaranteed another turn to
+/// ATTEMPT recovery within that bound. That is narrower than it may sound — it is eligibility for
+/// another attempt, not a promise the attempt loads successfully, and not durable residency: under
+/// sustained pressure the texture can be evicted again the instant it lands.
 const EVICT_THRASH_WINDOW_MS: u32 = 10_000;
 
 /// Pure half of the guard: given the tick of a key's previous eviction (`None` before its first),
@@ -257,6 +268,15 @@ fn evict_cooldown_due(cooldown_until: Option<u32>, now: u32) -> bool {
     }
 }
 
+/// Is an EVICTED slot's cooldown deadline due for its one wake — as opposed to [`evict_cooldown_due`],
+/// which also answers `true` for a slot that never had a cooldown at all? A slot with no deadline has
+/// nothing to expire and needs no proactive wake — its very next Draw probe already re-arms it, same
+/// as today. Only a slot an [`evict_backoff`] deadline is ticking against needs [`invalidate_due_evictions`]
+/// to ask for the frame that lets it recover on a quiet screen; mirrors [`retry_due`]'s wrap-safe shape.
+fn evict_wake_due(s: &Pslot, now: u32) -> bool {
+    s.state == P_EVICTED && s.evict_cooldown_until.is_some_and(|t| now.wrapping_sub(t) < u32::MAX / 2)
+}
+
 /// Wake the present gate once a scheduled retry's main-thread deadline arrives. The loop calls this
 /// even while a settled screen skips draws; the draw it requests is what probes the slot again and
 /// moves it back to `P_WANT`.
@@ -264,6 +284,25 @@ fn invalidate_due_retries(slots: &mut [Pslot; PT_CAP], now: u32) {
     let mut due = false;
     for s in slots.iter_mut().filter(|s| !s.retry_wake_sent && retry_due(s, now)) {
         s.retry_wake_sent = true; // latch the whole batch; one frame probes every visible slot
+        due = true;
+    }
+    if due {
+        crate::ui::idle::invalidate();
+    }
+}
+
+/// The eviction-cooldown twin of [`invalidate_due_retries`], and the fix for the gap the
+/// adjudication on PR #182 flagged: nothing previously asked the screen to draw again when a
+/// cooldown deadline passed, so on a quiet screen a slot recovered only when something ELSE
+/// happened to trigger a frame — later than its own deadline, sometimes much later. Same shape,
+/// same reason for the `evict_wake_sent` latch: without it, an expired cooldown on a slot nothing
+/// draws would invalidate every loop iteration forever, undoing the idle behaviour the app depends
+/// on. The wake only ever asks for one present; it does not itself re-arm anything — re-arming
+/// stays Draw-only, through `lookup`'s P_EVICTED branch, exactly as before.
+fn invalidate_due_evictions(slots: &mut [Pslot; PT_CAP], now: u32) {
+    let mut due = false;
+    for s in slots.iter_mut().filter(|s| !s.evict_wake_sent && evict_wake_due(s, now)) {
+        s.evict_wake_sent = true;
         due = true;
     }
     if due {
@@ -669,7 +708,8 @@ type Hit = Option<PosterKey>;
 
 /// MAIN thread. The one store lookup behind [`poster_get`], [`poster_get_wh`] and [`poster_warm`]:
 /// hit → the READY texture + its size, miss → claim a slot and enqueue the fetch. `touch` is the ONLY
-/// difference between the paths, and it is entirely about the LRU bookkeeping.
+/// difference between the paths: LRU bookkeeping on every hit, plus — for a P_EVICTED slot — whether
+/// the touch is even eligible to recover it at all (see that branch below).
 fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // The array's own precondition, checked before a slot can be claimed for a key that could
     // never match its probe again. `Warm::Known` (not `Full`) so a prefetch loop walks on to the
@@ -724,11 +764,14 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                 if !evict_cooldown_due(g.slots[i].evict_cooldown_until, now) {
                     // Still cooling down from a rapid re-eviction. The demand is real and is not
                     // lost — the next probe after the cooldown clears re-arms exactly as usual —
-                    // but honoring THIS one would just re-enter the cycle the cooldown exists to
-                    // break.
+                    // but honoring THIS one would undo the rate limit the cooldown exists to
+                    // enforce. It does not stop the cycle: under sustained pressure the key can be
+                    // evicted and cooled down again the moment it lands, indefinitely — it only
+                    // paces how often that cycle is allowed to turn.
                     return (None, Warm::Known);
                 }
                 g.slots[i].state = P_WANT;
+                g.slots[i].evict_wake_sent = false;
                 drop(g);
                 RESIDENCY_REARMED.fetch_add(1, Ordering::Relaxed);
                 log_residency();
@@ -775,6 +818,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         s.evicted_at = None;
         s.evict_attempts = 0;
         s.evict_cooldown_until = None;
+        s.evict_wake_sent = false;
     }
     drop(g);
     // free the evicted resources off-lock (this is the GL/main thread): the cache's texture for
@@ -831,7 +875,7 @@ impl tex::Source for PosterSource {
                 // The thrash guard's bookkeeping (see `evict_was_rapid`'s doc): a rapid re-eviction
                 // (this key was evicted before, inside the thrash window) escalates the backoff
                 // `lookup`'s P_EVICTED branch will honor on the next probe; an isolated one leaves
-                // no cooldown at all, so the very next demand re-arms it as before.
+                // no cooldown at all, so the very next Draw probe re-arms it as before.
                 let now = crate::app::clock::now();
                 s.evict_attempts = if evict_was_rapid(s.evicted_at, now) {
                     s.evict_attempts.saturating_add(1)
@@ -841,6 +885,9 @@ impl tex::Source for PosterSource {
                 s.evicted_at = Some(now);
                 s.evict_cooldown_until = (s.evict_attempts > 0)
                     .then(|| now.wrapping_add(evict_backoff(s.evict_attempts).as_millis() as u32));
+                // A fresh eviction is a fresh deadline (or none at all) to wake for — whatever an
+                // earlier cooldown's expiry already latched no longer applies.
+                s.evict_wake_sent = false;
             }
         }
         drop(g);
@@ -891,6 +938,7 @@ pub(crate) fn begin_frame() {
     let mut g = store();
     g.frame = g.frame.wrapping_add(1);
     invalidate_due_retries(&mut g.slots, now);
+    invalidate_due_evictions(&mut g.slots, now);
     let settled = idle_of(&g.slots);
     drop(g);
     log_residency_settled(settled);
@@ -1853,6 +1901,277 @@ mod tests {
         );
 
         store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// **Deterministic deadline progression (adjudication on PR #182, item 2).** The tight-loop
+    /// test above ([`a_key_evicted_and_reevicted_in_rapid_succession_does_not_rearm_without_bound`])
+    /// never lets real time move — the host clock stub is frozen — so it proves the FIRST cooldown
+    /// blocks a rearm but nothing about what happens once that cooldown's own deadline arrives,
+    /// which is the schedule's whole point. This drives the app clock explicitly instead
+    /// (`crate::app::clock::set_replay`, the same seam the recorded-replay driver uses), so a
+    /// `Touch::Warm` probe can be checked on both sides of the deadline: still dormant a tick
+    /// before it, and — because Warm is refused unconditionally, before the cooldown gate is even
+    /// reached — still dormant a tick after it too.
+    #[test]
+    fn a_touch_warm_probe_of_a_cooling_slot_stays_dormant_before_and_after_expiry() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            set_key(slot, &path);
+            slot.state = P_EVICTED;
+            slot.evict_attempts = 1;
+            slot.evicted_at = Some(0);
+            slot.evict_cooldown_until = Some(250); // evict_backoff(1)
+        }
+
+        crate::app::clock::set_replay(100); // before the deadline
+        let (hit, warm) = lookup(sid, &path, Touch::Warm);
+        assert_eq!(hit, None);
+        assert_eq!(warm, Warm::Known);
+        assert_eq!(store().slots[0].state, P_EVICTED, "a warm probe stays dormant before expiry");
+
+        crate::app::clock::set_replay(250); // exactly at the deadline
+        let (hit, warm) = lookup(sid, &path, Touch::Warm);
+        assert_eq!(hit, None);
+        assert_eq!(warm, Warm::Known);
+        assert_eq!(
+            store().slots[0].state,
+            P_EVICTED,
+            "a warm probe stays dormant even once the cooldown has cleared - only a Draw probe \
+             may recover an EVICTED slot"
+        );
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// The Draw-probe half of the same deadline: refused one tick short, honored at the deadline
+    /// itself - mirrors [`evict_cooldown_due_only_after_its_own_deadline`]'s edges, but through
+    /// `lookup` end to end (the re-arm counter, the state transition) rather than the pure
+    /// predicate alone.
+    #[test]
+    fn a_touch_draw_probe_only_rearms_once_the_cooldown_deadline_arrives() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            set_key(slot, &path);
+            slot.state = P_EVICTED;
+            slot.evict_attempts = 1;
+            slot.evicted_at = Some(0);
+            slot.evict_cooldown_until = Some(250);
+        }
+        let (_, rearmed0) = residency_counts_for_test();
+
+        crate::app::clock::set_replay(249);
+        let (hit, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None);
+        assert_eq!(
+            store().slots[0].state,
+            P_EVICTED,
+            "one millisecond short of the deadline must still refuse to rearm"
+        );
+        let (_, rearmed1) = residency_counts_for_test();
+        assert_eq!(rearmed1, rearmed0, "a refused rearm must not count");
+
+        crate::app::clock::set_replay(250);
+        let (hit, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None, "a freshly rearmed slot has no pixels yet");
+        assert_eq!(store().slots[0].state, P_WANT, "the deadline itself rearms it");
+        let (_, rearmed2) = residency_counts_for_test();
+        assert_eq!(rearmed2, rearmed0 + 1, "the rearm must count exactly once");
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// The escalation the tight-loop test cannot see: driving the app clock forward by exactly
+    /// each deadline (never one tick less, per [`a_touch_draw_probe_only_rearms_once_the_cooldown_deadline_arrives`])
+    /// and completing the recovery immediately each time - the fast round trip a thrash needs -
+    /// must walk [`evict_backoff`]'s own schedule (250ms, 500ms, 1s, 2s, 4s, 8s) and then hold at
+    /// its 8s cap, exactly like [`the_retry_backoff_doubles_from_one_second_and_caps`] proves for
+    /// the unrelated transient-fetch schedule.
+    #[test]
+    fn repeated_completed_recoveries_escalate_the_cooldown_to_its_cap() {
+        use crate::ui::tex::Source as _;
+
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        let mut now: u32 = 0;
+        crate::app::clock::set_replay(now);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            set_key(slot, &path);
+            slot.state = P_READY;
+        }
+
+        // A fresh key's FIRST eviction never cools (`evicted_at` was `None`) - it rearms on the
+        // very next Draw probe, the ordinary one-eviction-then-recovery case. This primes
+        // `evicted_at` so the NEXT eviction (immediately after, same tick) is the first the
+        // thrash guard can see as a continuation.
+        SOURCE.unresident(PosterKey(0));
+        assert_eq!(
+            store().slots[0].evict_cooldown_until,
+            None,
+            "a key's first-ever eviction never cools"
+        );
+        let (hit, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None);
+        assert_eq!(store().slots[0].state, P_WANT);
+        store().slots[0].state = P_READY;
+
+        let schedule_ms: [u32; 8] = [250, 500, 1_000, 2_000, 4_000, 8_000, 8_000, 8_000];
+        for &wait in schedule_ms.iter() {
+            SOURCE.unresident(PosterKey(0)); // rapid: inside the thrash window every time
+            let cooldown = store().slots[0]
+                .evict_cooldown_until
+                .expect("a rapid re-eviction always sets a cooldown");
+            assert_eq!(
+                cooldown,
+                now.wrapping_add(wait),
+                "the escalation schedule must reach {wait}ms and cap there"
+            );
+
+            crate::app::clock::set_replay(now.wrapping_add(wait) - 1);
+            let (hit, _) = lookup(sid, &path, Touch::Draw);
+            assert_eq!(hit, None);
+            assert_eq!(
+                store().slots[0].state,
+                P_EVICTED,
+                "one tick short of {wait}ms must still refuse to rearm"
+            );
+
+            now = now.wrapping_add(wait);
+            crate::app::clock::set_replay(now);
+            let (hit, _) = lookup(sid, &path, Touch::Draw);
+            assert_eq!(hit, None);
+            assert_eq!(store().slots[0].state, P_WANT, "the deadline itself rearms it");
+            store().slots[0].state = P_READY; // the fast recovery a thrash needs
+        }
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// The other side of [`evict_was_rapid_only_flags_a_reeviction_inside_the_thrash_window`]:
+    /// mid-escalation, a gap past [`EVICT_THRASH_WINDOW_MS`] before the NEXT eviction must reset
+    /// `evict_attempts` to 0 and set no cooldown at all - the key is treated exactly like one
+    /// evicted for the first time, because as far as the guard can tell, it was: nothing has
+    /// churned it in ten whole seconds.
+    #[test]
+    fn an_eviction_gap_past_the_thrash_window_resets_the_escalation() {
+        use crate::ui::tex::Source as _;
+
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        crate::app::clock::set_replay(0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            set_key(slot, &path);
+            slot.state = P_READY;
+            slot.evicted_at = Some(0);
+            slot.evict_attempts = 5; // mid-escalation from an earlier thrash episode
+        }
+
+        // The window's own edge - not one millisecond less - counts as settled.
+        crate::app::clock::set_replay(EVICT_THRASH_WINDOW_MS);
+        SOURCE.unresident(PosterKey(0));
+        {
+            let g = store();
+            assert_eq!(g.slots[0].evict_attempts, 0, "a settled gap must clear the escalation");
+            assert_eq!(
+                g.slots[0].evict_cooldown_until, None,
+                "a reset episode's first eviction never cools"
+            );
+        }
+
+        let (hit, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None);
+        assert_eq!(
+            store().slots[0].state,
+            P_WANT,
+            "the reset key rearms on its very next Draw probe, exactly like a fresh key"
+        );
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// The pure decision behind [`invalidate_due_evictions`]: only a slot an active cooldown
+    /// deadline is ticking against is ever due for a wake - a slot with no cooldown (`None`) has
+    /// nothing to expire and needs none, since its very next Draw probe already re-arms it: a
+    /// proactive wake for it would just be [`invalidate_due_retries`]'s own P_RETRY continuous-
+    /// invalidation bug, reintroduced for P_EVICTED. Mirrors [`a_retry_slot_is_due_when_its_wait_is_over`]'s
+    /// shape, including the wrap.
+    #[test]
+    fn an_evicted_slot_is_due_for_a_wake_only_once_its_cooldown_deadline_arrives() {
+        let mut s = Pslot {
+            state: P_EVICTED,
+            ..Pslot::ZERO
+        };
+        assert!(!evict_wake_due(&s, 1_000), "no cooldown at all = nothing to wake for");
+        s.evict_cooldown_until = Some(6_000);
+        assert!(!evict_wake_due(&s, 1_000));
+        assert!(evict_wake_due(&s, 6_000));
+        assert!(evict_wake_due(&s, 9_000));
+        s.evict_cooldown_until = Some(u32::MAX - 100);
+        assert!(evict_wake_due(&s, 50), "the tick wraps like every app::clock comparison");
+        s.state = P_READY;
+        assert!(!evict_wake_due(&s, 60_000), "only an EVICTED slot can be due for this wake");
+    }
+
+    /// **Requirement 1's wiring, end to end: exactly one redraw request per expiry, not one per
+    /// frame.** Mirrors [`a_due_parked_retry_invalidates_the_frame_gate`] exactly, because
+    /// [`invalidate_due_evictions`] is the identical mechanism applied to `P_EVICTED` instead of
+    /// `P_RETRY`, for the identical reason: without the `evict_wake_sent` latch, an expired,
+    /// off-screen EVICTED slot would invalidate every loop iteration forever, since nothing draws
+    /// it to consume the wake — undoing the idle behaviour the app depends on.
+    #[test]
+    fn a_due_evicted_slot_invalidates_the_frame_gate_exactly_once() {
+        let _g = crate::testlock::serial();
+        crate::ui::idle::reset_for_test();
+        let mut slots = [Pslot::ZERO; PT_CAP];
+        slots[3] = Pslot {
+            state: P_EVICTED,
+            evict_cooldown_until: Some(2_000),
+            ..Pslot::ZERO
+        };
+        slots[4] = Pslot {
+            state: P_EVICTED,
+            evict_cooldown_until: Some(2_000),
+            ..Pslot::ZERO
+        };
+
+        invalidate_due_evictions(&mut slots, 1_999);
+        assert_eq!(
+            crate::ui::idle::take_local_damage(),
+            0,
+            "a cooling slot must leave the screen settled before its deadline"
+        );
+
+        invalidate_due_evictions(&mut slots, 2_000);
+        assert_eq!(
+            crate::ui::idle::take_local_damage(),
+            1,
+            "the deadline must wake exactly one draw that can probe the slot again"
+        );
+
+        invalidate_due_evictions(&mut slots, 2_001);
+        assert_eq!(
+            crate::ui::idle::take_local_damage(),
+            0,
+            "an off-screen expired slot must not hold the present gate awake - the latch makes \
+             this ONE redraw request, not a request every frame"
+        );
     }
 
     /// The pure decision behind [`log_residency`]'s interval throttle: due before any line has
