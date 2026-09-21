@@ -10,13 +10,21 @@
 //! fetches + decodes off the lock) → DECODED (pixels waiting on the main thread) → READY (the
 //! pixels were handed to the cache by [`drain_decoded`]; the cache uploads them in PREPARE),
 //! EVICTED (the render cache could not keep that key resident, through rejection or pressure), or
-//! FAILED / RETRY (a transient fetch parked under bounded backoff). EVICTED is deliberately
-//! dormant until a draw or prefetch asks for that key again: losing residency alone must not
-//! refetch an off-screen image and immediately evict useful resident art. The source cannot offer
-//! another upload from retained pixels because ownership moved to the render cache and retaining
-//! a second CPU copy of the entire 44 MiB GL pool would defeat the memory ceiling; a later demand
-//! therefore takes the ordinary disk-first fetch path. A READY slot recycled by [`victim`] frees
-//! its cache entry on the way out.
+//! FAILED / RETRY (a transient fetch parked under bounded backoff). EVICTED does NOT re-arm on
+//! a prefetch: [`lookup`]'s `P_EVICTED` branch answers a `Touch::Warm` probe with dormancy before
+//! the cooldown gate is even reached, so a background prefetch walking past an evicted key never
+//! revives it. Only a `Touch::Draw` probe re-arms the slot — so a poster or backdrop that lost
+//! residency off-screen does not quietly reappear before something asks to show it again; the pop
+//! that eviction caused stays on screen until the draw that wants the key re-requests it. The
+//! source cannot offer another upload from retained pixels because ownership moved to the render
+//! cache and retaining a second CPU copy of the entire 44 MiB GL pool would defeat the memory
+//! ceiling; a later demand therefore pays a full network refetch, decode and upload, not a disk
+//! read — `imgcache`'s disk tier holds only plex.tv avatars (`classify` answers `None` for an
+//! ordinary server-relative transcode path; `class_of` matches only a plex.tv avatar URL), so a
+//! poster, backdrop or hero logo has no disk fallback to land on. That real cost is why re-arming
+//! is rate-limited rather than free: it is the reason the residency thrash guard, the 250 ms–8 s
+//! cooldown backoff and the Draw-only gate above exist at all. A READY slot recycled by
+//! [`victim`] frees its cache entry on the way out.
 //!
 //! Rust port of the old src/posters.c; rewritten on std::sync (a `Mutex<Store>` + `Condvar` +
 //! two `task::spawn` workers). The decoded-pixel pointer is stored as an address (usize) so the
