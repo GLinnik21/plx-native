@@ -275,6 +275,55 @@ fn write_atomic_reports_the_errno_and_parent_stat_per_candidate() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// The success-path defect this change fixes: `save_legacy_fallback_locked` accumulates a
+/// [`CandidateDiagnostic`] per refused candidate but used to reach [`log_candidate_diagnostics`]
+/// only on the total-failure paths — both success arms `return`ed before it ran. That threw the
+/// refusal evidence away on exactly the shape
+/// `runtime_dir_candidate_persists_and_reloads_when_every_durable_candidate_is_unwritable` above
+/// exercises: durable candidates refuse, the runtime-dir one accepts — which is the common case on
+/// the jail the 2026-09-20 field report came from, and the one case where "why did the durable
+/// ones refuse" is the whole question worth answering.
+///
+/// This suite has no facility to capture `crate::log`'s own output (it goes to a shared, on-disk
+/// event log via `scrub_local` and `lab::record`; building a capture for that under time pressure
+/// is out of scope here). Instead this proves what has to be true for the fixed call to say
+/// anything real: replaying `write_atomic_diagnosed` against the same two candidates the real loop
+/// tries (and is refused by) first shows each produces a genuine, non-empty [`CandidateDiagnostic`]
+/// — a real errno, a real path — i.e. there IS evidence, not an empty vector, for the success arm
+/// to log; and the real `save_legacy_fallback_locked`, run against the identical jail shape, still
+/// succeeds via the later candidate. It does NOT prove `log_candidate_diagnostics` was actually
+/// invoked on that success arm, nor the resulting log line's wording — that wiring is only checked
+/// by reading the call site this change added, not by this test.
+#[test]
+fn refused_candidates_produce_evidence_when_a_later_one_still_succeeds() {
+    let _g = crate::testlock::serial();
+    let (_guard, candidates) = TempCandidates::new("evidence-survives-success");
+    redirect_candidates_for_test(Some(candidates.clone()));
+
+    let session = signed_in();
+    let json = serde_json::to_vec_pretty(&session).unwrap();
+
+    // The same two durable candidates the real loop tries (and is refused by) first: prove each
+    // produces a genuine CandidateDiagnostic, not a bare bool, so there is real evidence to log.
+    let first = write_atomic_diagnosed(&candidates[0], &json).unwrap_err();
+    let second = write_atomic_diagnosed(&candidates[1], &json).unwrap_err();
+    assert_eq!(first.path, candidates[0]);
+    assert_eq!(second.path, candidates[1]);
+    assert!(
+        first.failure.errno().is_some(),
+        "a refusal must carry a real errno to be worth logging"
+    );
+    assert!(second.failure.errno().is_some());
+
+    // The real function, in the identical jail shape, still succeeds via the runtime-dir
+    // candidate — this is the success arm whose early `return` used to discard the evidence just
+    // shown to exist above.
+    let outcome = save_legacy_fallback_locked(&session, false, false);
+    assert!(outcome.is_some(), "the runtime-dir candidate must still accept the write");
+    assert!(candidates[2].exists(), "the session must land on the runtime-dir candidate");
+    assert!(!candidates[0].exists() && !candidates[1].exists());
+}
+
 // ---- The CANONICAL half (AUTH-08/AUTH-09): `clear()` must commit a canonical Cleared record,
 // and a Cleared record must present like Missing (not Locked/Blocked) while still shadowing a
 // reappearing legacy file. --------------------------------------------------------------------

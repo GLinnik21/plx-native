@@ -2694,6 +2694,12 @@ fn save_legacy_fallback_locked(
                         remove_temp_siblings(&stale);
                         let _ = std::fs::remove_file(stale);
                     }
+                    if !failures.is_empty() {
+                        crate::log(
+                            "session: protected write succeeded on a later candidate; earlier ones refused",
+                        );
+                        log_candidate_diagnostics("protected write refused before the later success", &failures);
+                    }
                     return Some(true);
                 }
                 Err(diagnostic) => failures.push(diagnostic),
@@ -2717,7 +2723,15 @@ fn save_legacy_fallback_locked(
     let mut failures = Vec::new();
     for path in auth_paths() {
         match write_atomic_diagnosed(&path, &json) {
-            Ok(()) => return Some(false),
+            Ok(()) => {
+                if !failures.is_empty() {
+                    crate::log(
+                        "session: plaintext write succeeded on a later candidate; earlier ones refused",
+                    );
+                    log_candidate_diagnostics("plaintext write refused before the later success", &failures);
+                }
+                return Some(false);
+            }
             Err(diagnostic) => failures.push(diagnostic),
         }
     }
