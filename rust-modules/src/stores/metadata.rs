@@ -302,11 +302,6 @@ impl MetadataStore {
         changed
     }
 
-    #[cfg(test)]
-    pub(crate) fn pump_season(&mut self) -> bool {
-        self.pump_season_with_gate(crate::ui::landgate::fixture_gate())
-    }
-
     /// The cross-source alt-sources resolve, scoped by the Bridge's retained Browse directory.
     pub(crate) fn pump_alt_sources_with_directory(
         &mut self,
