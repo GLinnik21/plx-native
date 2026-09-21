@@ -2023,4 +2023,30 @@ mod tests {
             write.classify(),
         );
     }
+
+    /// Third sibling of the two tests above, for the `CanonicalCommit::Uncertain` arm — the one
+    /// the runtime-dir fallback (`paths::session_candidates`) actually produces in the field: the
+    /// 2026-09-20 report's own log line (`session: canonical write is uncertain stage=… errno=…`)
+    /// is this exact variant, immediately followed by the legacy write that now also tries the
+    /// runtime directory. A save that lands ONLY there is not durable — `/tmp` is swept on
+    /// reboot — and this pins that `classify()` already reports it as `Uncertain`, the same
+    /// non-durable class ANY legacy-only success under an unconfirmed canonical commit gets, never
+    /// as `Durable`, regardless of which candidate in `session_candidates()` the legacy write
+    /// actually landed on.
+    #[test]
+    fn an_uncertain_canonical_commit_never_reports_durable_even_when_the_runtime_dir_fallback_succeeds() {
+        let write = LiveWrite::canonical(
+            CanonicalCommit::Uncertain { stage: CommitStage::Rename, errno: 13 },
+            Some(false), // the runtime-dir candidate's own write: plaintext, no key manager
+        );
+        assert!(
+            matches!(
+                write.classify(),
+                CompletionOutcome::Uncertain { stage: CommitStage::Rename, errno: 13 }
+            ),
+            "an uncertain canonical commit must report Uncertain, not Durable, even though the \
+             runtime-dir fallback accepted the write: {:?}",
+            write.classify(),
+        );
+    }
 }

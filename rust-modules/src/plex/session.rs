@@ -198,12 +198,34 @@ pub(crate) fn fallback_file_for_test() -> std::path::PathBuf {
     fallback_file()
 }
 
+/// A whole CANDIDATE LIST a test wants `auth_paths()` to answer, distinct from [`TEST_FILE`]'s
+/// single scratch path. [`TEST_FILE`] can only ever stand for the ONE file a fixture like
+/// [`TempSession`] owns; it cannot represent "several candidates, some unwritable, in a specific
+/// order" — exactly the shape [`crate::paths::session_candidates`] itself has, and exactly what
+/// the runtime-dir fallback regression needs to exercise the real search-and-fall-through loops
+/// in [`save_legacy_fallback_locked`]/[`read_legacy_locked`] rather than a hand-rolled stand-in
+/// for them.
+#[cfg(test)]
+static TEST_CANDIDATES: Mutex<Option<Vec<std::path::PathBuf>>> = Mutex::new(None);
+
 #[cfg(test)]
 fn auth_paths() -> Vec<std::path::PathBuf> {
+    if let Some(list) = TEST_CANDIDATES.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        return list;
+    }
     match TEST_FILE.lock().unwrap_or_else(|e| e.into_inner()).clone() {
         Some(p) => vec![p],
         None => vec![fallback_file()],
     }
+}
+
+/// Point [`auth_paths`] at a whole candidate LIST of a test's own, or back at the ordinary
+/// [`TEST_FILE`]/[`fallback_file`] resolution with `None` — the multi-candidate sibling of
+/// [`redirect_for_test`], for a fixture that needs several paths (some unwritable) in a specific
+/// order rather than one scratch file.
+#[cfg(test)]
+fn redirect_candidates_for_test(v: Option<Vec<std::path::PathBuf>>) {
+    *TEST_CANDIDATES.lock().unwrap_or_else(|e| e.into_inner()) = v;
 }
 
 /// Point this module's file at `p`, or back at [`fallback_file`] with `None`.
