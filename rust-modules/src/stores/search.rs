@@ -124,12 +124,6 @@ impl SearchStore {
         changed
     }
 
-    #[cfg(test)]
-    pub(crate) fn pump_with_directory(&mut self, dt: f32,
-        directory: crate::stores::browse::DirectoryView<'_>) -> bool {
-        self.pump_with_directory_and_gate(dt, directory, crate::ui::landgate::fixture_gate())
-    }
-
     /// Test-only compatibility pump for fixtures without a retained directory.
     #[cfg(test)]
     pub(crate) fn pump(&mut self, dt: f32) -> bool {
