@@ -76,8 +76,8 @@ impl PersonStore {
     }
 
     /// Route-unconditional landing/spawn pass for this owner's adapter.
-    pub(crate) fn pump(&mut self) -> bool {
-        let changed = self.state.pump(&self.adapter);
+    pub(crate) fn pump(&mut self, gate: &crate::ui::landgate::Gate) -> bool {
+        let changed = self.state.pump_with_gate(&self.adapter, gate);
         if changed {
             self.bump();
         }
@@ -141,7 +141,7 @@ impl<H: Host> Machine<H> for PersonStore {
                 self.run(command.clone());
             }
             StoreEv::Pump { .. } => {
-                self.pump();
+                self.pump(&crate::ui::landgate::Gate::default());
             }
         }
         Handled::Yes
