@@ -83,6 +83,25 @@ impl ViewStateStore {
     }
 
     /// Route-unconditional landing pass for this owner's adapter.
+    pub(crate) fn pump_with_gate(
+        &mut self,
+        gate: &crate::ui::landgate::Gate,
+        browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
+        hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> super::StoreOutcome,
+        person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+        search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
+        metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
+    ) -> super::EndpointRefreshSet {
+        let busy = self.state.is_busy();
+        let endpoints = self.state.pump_with_gate(&self.adapter, gate,
+            browse, hubs, person, search, metadata);
+        if busy != self.state.is_busy() {
+            self.bump();
+        }
+        endpoints
+    }
+
+    #[cfg(test)]
     pub(crate) fn pump(
         &mut self,
         browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
@@ -91,12 +110,8 @@ impl ViewStateStore {
         search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
         metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
     ) -> super::EndpointRefreshSet {
-        let busy = self.state.is_busy();
-        let endpoints = self.state.pump(&self.adapter, browse, hubs, person, search, metadata);
-        if busy != self.state.is_busy() {
-            self.bump();
-        }
-        endpoints
+        self.pump_with_gate(crate::ui::landgate::fixture_gate(), browse, hubs, person, search,
+            metadata)
     }
 
     pub(crate) fn take_detail_refresh(&mut self) -> Option<DetailRefresh> {
