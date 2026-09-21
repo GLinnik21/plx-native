@@ -27,9 +27,10 @@ perturb the artifact whose sha256 every user's television verifies at install ti
 descriptors come out byte-identical to the tracked files, the package built from them is the
 package that was always built.
 
-The id is spelled in three languages that cannot see each other — here, `paths::STABLE_APP_ID` in
-Rust, and `APPID_STABLE` in the Makefile. `--selftest` reads the other two and compares, because
-"three copies of one string" is only safe while something checks.
+The install list and storage identities live in `ci/install-identities.json`; `build.rs`
+generates the Rust storage schema from it. The stable app id also anchors `paths::STABLE_APP_ID`
+and `APPID_STABLE` in the Makefile; `--selftest` checks those existing path conventions against
+the manifest.
 """
 from __future__ import annotations
 
@@ -43,12 +44,12 @@ import version_rule  # noqa: E402  — ci/version_rule.py, the shared "next X.Y.
 
 ROOT = Path(__file__).resolve().parent.parent
 
-#: The app id users install. Everything else is this plus a dotted suffix.
-STABLE_ID = "com.beb.plxnative"
-
-#: The flavours the Makefile will accept. A typo here would mint a fourth registered app on the
-#: television whose only symptom is a mystery tile, which is why the Makefile whitelists too.
-FLAVORS = ("stable", "debug", "nightly")
+# The packaging boundary owns the install identities. build.rs generates the Rust Flavor
+# schema and lookups from this same data: adding an install must also reach both storage peers.
+INSTALL_IDENTITIES = json.loads((ROOT / "ci/install-identities.json").read_text())
+FLAVORS = tuple(identity["name"] for identity in INSTALL_IDENTITIES)
+STABLE_ID = next(identity["app_id"] for identity in INSTALL_IDENTITIES
+                 if identity["name"] == "stable")
 
 
 def _release_line_content() -> "str | None":
@@ -65,7 +66,8 @@ def app_id(flavor: str) -> str:
     """`com.beb.plxnative` for stable, `com.beb.plxnative.<flavour>` otherwise."""
     if flavor not in FLAVORS:
         raise SystemExit(f"unknown flavour {flavor!r} — one of: {', '.join(FLAVORS)}")
-    return STABLE_ID if flavor == "stable" else f"{STABLE_ID}.{flavor}"
+    return next(identity["app_id"] for identity in INSTALL_IDENTITIES
+                if identity["name"] == flavor)
 
 
 def appinfo_for(flavor: str) -> dict:
@@ -188,8 +190,8 @@ def _selftest() -> int:
     mk = (ROOT / "Makefile").read_text()
     check(re.search(rf"(?m)^APPID_STABLE\s*=\s*{re.escape(STABLE_ID)}\s*$", mk) is not None,
           "Makefile APPID_STABLE agrees")
-    mk_flavors = re.search(r"(?m)^FLAVORS\s*=\s*(.+)$", mk)
-    check(mk_flavors is not None and tuple(mk_flavors.group(1).split()) == FLAVORS,
+    mk_flavors = re.search(r"(?m)^FLAVORS\s*:=\s*(.+)$", mk)
+    check(mk_flavors is not None and mk_flavors.group(1) == "$(shell python3 ci/flavor.py --list)",
           f"Makefile FLAVORS agrees ({' '.join(FLAVORS)})")
 
     # The capture listener's port is the one value spelled in BOTH Rust and make with no shared
@@ -256,6 +258,9 @@ def _selftest() -> int:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--list"]:
+        print(" ".join(FLAVORS))
+        sys.exit(0)
     if sys.argv[1:2] == ["--selftest"]:
         print("== flavour transform ==")
         sys.exit(_selftest())

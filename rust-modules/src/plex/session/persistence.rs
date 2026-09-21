@@ -543,7 +543,7 @@ pub(crate) fn commit_session_with(
         HelperLoad::Missing => None,
         HelperLoad::Present(snapshot) => expected(snapshot),
     };
-    helper_commit_with(transport, expectation, operation, mutation)
+    helper_commit_for_app_with(transport, expectation, operation, mutation)
 }
 
 pub(crate) fn commit_session_with_authority(
@@ -574,11 +574,25 @@ fn helper_commit(
     operation: Generation,
     mutation: WireMutation,
 ) -> CanonicalCommit {
-    helper_commit_with(&mut client::NativeTransport, expected, operation, mutation)
+    helper_commit_for_app_with(&mut client::NativeTransport, expected, operation, mutation)
+}
+
+fn helper_commit_for_app_with(
+    transport: &mut dyn client::Transport,
+    expected: Option<(&str, state::Expected)>,
+    operation: Generation,
+    mutation: WireMutation,
+) -> CanonicalCommit {
+    let flavor = match client::flavor() {
+        Ok(flavor) => flavor,
+        Err(error) => return CanonicalCommit::Failed(helper_error(error)),
+    };
+    helper_commit_with(transport, flavor, expected, operation, mutation)
 }
 
 fn helper_commit_with(
     transport: &mut dyn client::Transport,
+    flavor: state::Flavor,
     expected: Option<(&str, state::Expected)>,
     operation: Generation,
     mutation: WireMutation,
@@ -591,17 +605,10 @@ fn helper_commit_with(
             verified,
             protection,
             ..
-        }) => match serde_json::to_vec(&value).ok().and_then(|bytes| {
-            state::CanonicalState::decode(
-                &bytes,
-                if crate::paths::flavour() == Some("debug") {
-                    state::Flavor::Debug
-                } else {
-                    state::Flavor::Stable
-                },
-            )
+        }) => match serde_json::to_vec(&value)
             .ok()
-        }) {
+            .and_then(|bytes| state::CanonicalState::decode(&bytes, flavor).ok())
+        {
             Some(_) => CanonicalCommit::Durable {
                 revision: applied.revision,
                 verified,
@@ -1133,7 +1140,7 @@ impl MigrationStore for HelperMigration<'_> {
             Ok(operation) => operation,
             Err(_) => return CanonicalCommit::Failed(StoreError::HelperUnavailable),
         };
-        helper_commit_with(
+        helper_commit_for_app_with(
             self.transport,
             match &loaded {
                 HelperLoad::Missing => None,
@@ -1384,5 +1391,59 @@ pub(crate) fn cleanup_after_confirmed_clear() -> ClearCleanupOutcome {
         ClearCleanupOutcome::Confirmed
     } else {
         ClearCleanupOutcome::LegacyRetireFailed
+    }
+}
+
+#[cfg(test)]
+mod commit_flavor_tests {
+    use super::*;
+
+    fn commit_response(response_flavor: state::Flavor) -> CanonicalCommit {
+        let state = state::CanonicalState::new(response_flavor, Generation([1; 16]));
+        let mut transport = |request| {
+            assert!(matches!(
+                request,
+                crate::storage::wire::Request::Commit { .. }
+            ));
+            Ok(Response::Commit {
+                status: CommitStatus::Committed,
+                db_rev: Some("1".into()),
+                state: Some(serde_json::to_value(&state).unwrap()),
+                applied: Some(state::Applied {
+                    revision: 7,
+                    epoch: state.epoch,
+                    auth_generation: state.auth_generation,
+                }),
+                verified: true,
+                protection: None,
+            })
+        };
+        helper_commit_with(
+            &mut transport,
+            state::Flavor::Nightly,
+            None,
+            Generation([2; 16]),
+            WireMutation::ClearTenure {},
+        )
+    }
+
+    #[test]
+    fn nightly_commit_accepts_nightly_state() {
+        assert!(matches!(
+            commit_response(state::Flavor::Nightly),
+            CanonicalCommit::Durable {
+                revision: 7,
+                verified: true,
+                protection: None
+            }
+        ));
+    }
+
+    #[test]
+    fn nightly_commit_rejects_stable_state() {
+        assert!(matches!(
+            commit_response(state::Flavor::Stable),
+            CanonicalCommit::Failed(StoreError::InvalidSchema)
+        ));
     }
 }
