@@ -114,6 +114,8 @@ pub(crate) unsafe fn run(app: &mut App) {
         let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
         let first_controlled_frame = app.boot_initial.is_some() && app.prev == 0;
         let fr = &mut fr;
+        // One motion signal per iteration, reset before any spring steps into it.
+        crate::ui::card_row::begin_motion_frame();
         app.instr.mark(crate::diag::heartbeat::Phase::Top);
         // The frame index the LANDING SCHEDULE stamps against (§3.3 step 3, `ui::landgate`),
         // published at the TOP because a landing site is reachable from the dev scenarios below

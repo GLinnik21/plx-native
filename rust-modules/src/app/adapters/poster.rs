@@ -807,6 +807,33 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     if touch == Touch::Warm && !warm_admissible(&g.slots) {
         return (None, Warm::Full);
     }
+    // A MISS while the document is scrolling fast claims nothing at all — no slot, no worker,
+    // no fetch, no decode, no upload. The tile draws its placeholder and asks again next frame;
+    // the demand is deferred, never dropped, exactly like the eviction cooldown above. Art
+    // resolves as the view slows, which is also the reference clients' idiom.
+    //
+    // **Why the request is declined outright rather than merely paced.** Every weaker bound was
+    // measured on the dev set against a 1000-movie mock library (`fps:library-scroll`, panel
+    // off, two runs each, dropped frames after warmup):
+    //
+    // |                                                     | drops      | median fps |
+    // |-----------------------------------------------------|------------|------------|
+    // | a9d4e8a2, no gate                                    | 90, 97     | 55         |
+    // | slot + cache caps 64 -> 160                          | 226, 231   | 50         |
+    // | rate-limit the uploads after decode                  | 172, 156   | 53, 55     |
+    // | allow ONE visible request in flight while scrolling  | 204, 196   | 55, 54     |
+    // | **decline the request outright**                     | **21, 23** | **60**     |
+    //
+    // One in flight is the informative row: it paced the pipeline perfectly — `budget=` read
+    // 15-18 admitted and ZERO refused, against the ungated 15-18 admitted and 11-15 refused —
+    // and still cost twice the baseline's dropped frames. Pacing the work does not make it
+    // affordable. The two downstream bounds were worse than doing nothing at all, because by
+    // then the fetch and the decode are already paid for and the refused pixels only accumulate
+    // in `TexCache::pending` at 375 KB each. The request is the last point at which this work
+    // can still be declined for free.
+    if touch == Touch::Draw && crate::ui::card_row::scrolling_fast() {
+        return (None, Warm::Full);
+    }
     // miss: prefer EMPTY, else LRU-evict a settled slot not used this frame
     let idx = match victim(&g.slots, g.frame) {
         Some(i) => i,
@@ -1756,6 +1783,35 @@ mod tests {
         );
 
         tex::shutdown(&mut uploader);
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// A DRAW that misses while the document is scrolling fast claims no slot at all, and the
+    /// very same draw claims one the moment the document settles. The demand is deferred, never
+    /// dropped: nothing about the miss is recorded, so the next frame simply asks again.
+    #[test]
+    fn a_fast_scroll_declines_a_visible_miss_and_a_settle_takes_it() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/4242/thumb", 2, 2, 0);
+        store().slots = [Pslot::ZERO; PT_CAP];
+
+        crate::ui::card_row::begin_motion_frame();
+        crate::ui::card_row::note_scroll(1000.0);
+        assert!(crate::ui::card_row::scrolling_fast(), "the fixture is a fast scroll");
+        let (hit, warm) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None, "a fast-scrolling miss resolves to no poster");
+        assert_eq!(warm, Warm::Full, "and reports the attempt spent");
+        assert!(store().slots.iter().all(|s| s.state == P_EMPTY),
+            "no slot is claimed, so no worker, fetch, decode or upload follows");
+
+        // The settle is the whole difference — same key, same store, same call.
+        crate::ui::card_row::begin_motion_frame();
+        assert!(!crate::ui::card_row::scrolling_fast());
+        let (_, warm) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(warm, Warm::Claimed, "a settled document claims the slot");
+        assert_eq!(store().slots[0].state, P_WANT, "and queues it for a worker");
+        assert!(store().slots[0].visible, "as visible demand, not speculation");
+
         store().slots = [Pslot::ZERO; PT_CAP];
     }
 

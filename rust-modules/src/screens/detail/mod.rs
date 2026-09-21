@@ -2942,7 +2942,7 @@ impl DetailScreen {
                     episodes::GAP,
                     crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X,
                 );
-                self.episode_scroll.step(target, K_STRIP_SCROLL, dt);
+                self.episode_scroll.step_scroll(target, K_STRIP_SCROLL, dt);
             }
             let tab_focus = match focused {
                 Some(Located::Season(i)) => Some(i),
@@ -2967,7 +2967,7 @@ impl DetailScreen {
             self.ground.step(target, AmbientWash::K, dt);
         }
 
-        self.scroll.step(self.scroll_target, K_SCROLL, dt);
+        self.scroll.step_scroll(self.scroll_target, K_SCROLL, dt);
 
         if self.pending_season.is_some() {
             // Spelled as an assignment, not `+= dt`: bit-for-bit identical arithmetic to the

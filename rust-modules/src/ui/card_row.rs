@@ -20,6 +20,27 @@ use std::os::raw::c_char;
 
 pub(crate) const MAX_ROW_ITEMS: usize = 24; // == home MAX_ITEMS
 
+/// The speed above which a scrolling document stops asking for art it does not already have.
+/// A conservative admission policy, not a measured upload cost: every scrolling axis reports
+/// into ONE per-frame signal, so a fast document cannot be overridden by a still child.
+const PREFETCH_MAX_SCROLL_PX_S: f32 = 120.0;
+thread_local! {
+    static SCROLL_SPEED: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+}
+/// Reset at the top of every iteration (`app::run`), before any spring has stepped.
+pub(crate) fn begin_motion_frame() { SCROLL_SPEED.with(|s| s.set(0.0)); }
+/// Report one axis's speed. An unknown speed reads as INFINITE rather than zero: a document
+/// whose velocity cannot be established must not authorize work on the strength of it.
+pub(crate) fn note_scroll(velocity: f32) {
+    let speed = if velocity.is_finite() { velocity.abs() } else { f32::INFINITY };
+    SCROLL_SPEED.with(|s| s.set(s.get().max(speed)));
+}
+/// The one fast-scroll predicate, so every consumer answers from the same threshold and the
+/// same frame signal rather than keeping a second opinion beside it.
+pub(crate) fn scrolling_fast() -> bool {
+    SCROLL_SPEED.with(|s| s.get() > PREFETCH_MAX_SCROLL_PX_S)
+}
+
 /// A card row's motion + geometry. [`RowStyle::HOME`] is the single value both the home grid and the
 /// detail Related row pass, so the two rows are indistinguishable in look and animation.
 #[derive(Clone, Copy)]

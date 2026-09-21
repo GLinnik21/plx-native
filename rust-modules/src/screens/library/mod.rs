@@ -773,7 +773,7 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                         let col = focused.and_then(|key| row.elems.iter().position(|elem| *elem == key.elem));
                         row.motion.update(row.elems.len(), col, if row.landscape { &RowStyle::EPISODE } else { &RowStyle::HOME }, dt);
                     }
-                    self.scroll.step(self.scroll_target, K_SCROLL, dt);
+                    self.scroll.step_scroll(self.scroll_target, K_SCROLL, dt);
                     let grid_focus = focused.filter(|key| key.entry == self.entry)
                         .and_then(|key| self.pair.detail.index_of(key.elem));
                     self.pair.detail.tick(grid_focus, dt);
