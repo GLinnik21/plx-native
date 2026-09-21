@@ -519,6 +519,29 @@ pub(crate) fn event_body(
     body
 }
 
+/// The storage-failure fields as one short, fixed-shape line — the screen's projection of the
+/// SAME typed evidence [`event_body`] serialises into `contexts.incident.persistence` /
+/// `.keymanager_stage` / `.service_error_code`. `screens::login::support_line` appends this to the
+/// failure read-out's Details card, the one place a locked-out person can photograph it without a
+/// shell.
+///
+/// Every one of the three is independently absent-or-present, so the line always names all three
+/// slots and never grows or shrinks with what happened to be captured: `None` renders as the fixed
+/// `unknown` class, exactly like every other closed value in this module, rather than being
+/// omitted — an omission would itself be a signal, and a signal is exactly what an *unexpected*
+/// input must never become able to send. `ctx: None` (no evidence was ever retained for this
+/// incident — a declined report keeps nothing, see `auth::owner::incident`) renders identically to
+/// evidence that carries none of the three: `unknown` all the way across either way.
+pub(crate) fn storage_evidence_line(ctx: Option<&IncidentContext>) -> String {
+    let persistence = ctx.and_then(|c| c.persistence).map_or("unknown", PersistenceFailure::code);
+    let keymanager_stage =
+        ctx.and_then(|c| c.keymanager_stage).map_or("unknown", keymanager_stage_code);
+    let service_error_code = ctx
+        .and_then(|c| c.service_error_code)
+        .map_or_else(|| "unknown".to_string(), |code| code.to_string());
+    format!("persistence:{persistence} keymgr:{keymanager_stage} svc:{service_error_code}")
+}
+
 fn granted() -> bool {
     consent::report_permission_now(ONBOARDING_REPORT_SCOPE) == Permission::Granted
 }
@@ -867,6 +890,18 @@ mod tests {
             }
             assert!(notice.contains(&format!("`{key}`")), "PRIVACY.md does not name `{key}`");
         }
+        // The save-failure trio ships too, but `dns_context`-shaped fixtures above never set it —
+        // a context that HAS gone through `with_persistence` is the one that would have caught
+        // `persistence`/`keymanager_stage`/`service_error_code` missing from the notice.
+        let save_ctx = IncidentContext::new(IncidentKind::SaveFailed, None)
+            .with_persistence(&CompletionOutcome::Failed(Failure::Protection(protection_failure(Some(-3961)))));
+        let save_v = event_body("a", "", None, save_ctx, ConsentKind::OneOff);
+        for key in keys(&save_v["contexts"]["incident"]) {
+            if key == "type" {
+                continue;
+            }
+            assert!(notice.contains(&format!("`{key}`")), "PRIVACY.md does not name `{key}`");
+        }
     }
 
     #[test]
@@ -932,6 +967,51 @@ mod tests {
         let ctx = IncidentContext { occurred_at_ms: 0, ..dns_context() };
         let v = event_body("a", "", None, ctx, ConsentKind::OneOff);
         assert!(v.get("timestamp").is_none(), "{v}");
+    }
+
+    /// **An absent value cannot widen the screen's line — it can only ever render as the fixed
+    /// `unknown` class.** `storage_evidence_line` is what `screens::login::support_line` appends
+    /// to the failure read-out's Details card, the one place a locked-out person without a shell
+    /// can read (and photograph) this evidence; its shape must not change with what it is fed.
+    ///
+    /// No context at all (a Declined offer keeps none — `auth::owner::incident`'s doc) renders
+    /// byte-for-byte identically to evidence that carries none of the three fields, and evidence
+    /// that carries every field never produces anything longer than three short `key:value`
+    /// tokens — never a raw string, a path or anything the value's own `Display` did not put
+    /// there.
+    #[test]
+    fn storage_evidence_line_never_widens_on_an_absent_or_unexpected_input() {
+        let unknown_all = "persistence:unknown keymgr:unknown svc:unknown";
+        assert_eq!(storage_evidence_line(None), unknown_all);
+        assert_eq!(
+            storage_evidence_line(Some(&IncidentContext::new(IncidentKind::SaveFailed, None))),
+            unknown_all,
+            "evidence with none of the three fields set must read exactly like no evidence at all"
+        );
+
+        let full = IncidentContext::new(IncidentKind::SaveFailed, None)
+            .with_persistence(&CompletionOutcome::Failed(Failure::Protection(protection_failure(Some(-3961)))));
+        assert_eq!(
+            storage_evidence_line(Some(&full)),
+            "persistence:protection keymgr:finish svc:-3961"
+        );
+
+        // A service code at the extremes of `i32` is still ONLY its `Display`, never anything
+        // that could grow the line's shape (no separators, no extra tokens, no text run in).
+        for extreme in [i32::MIN, i32::MAX, 0] {
+            let ctx = IncidentContext {
+                persistence: Some(PersistenceFailure::Protection),
+                keymanager_stage: Some(KeymanagerStage::Finish),
+                service_error_code: Some(extreme),
+                ..IncidentContext::new(IncidentKind::SaveFailed, None)
+            };
+            let line = storage_evidence_line(Some(&ctx));
+            assert_eq!(line, format!("persistence:protection keymgr:finish svc:{extreme}"));
+            assert!(
+                line.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b':' | b' ' | b'_' | b'-')),
+                "{line:?} contains a character no typed class or numeric code could produce"
+            );
+        }
     }
 
     /// **No identity or content slot, in any body shape.** Every key at every depth is walked

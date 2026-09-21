@@ -214,9 +214,9 @@ fn write_atomic_refuses_a_symlink_planted_at_the_runtime_dir_candidate() {
     let target = dir.join("auth.json");
     symlink(&victim, &target).unwrap();
 
-    let ok = write_atomic(&target, br#"{"account_token":"leak"}"#);
+    let result = write_atomic(&target, br#"{"account_token":"leak"}"#);
     assert!(
-        !ok,
+        result.is_err(),
         "write_atomic must refuse to write through a pre-existing symlink at the candidate path"
     );
     assert_eq!(
@@ -230,6 +230,98 @@ fn write_atomic_refuses_a_symlink_planted_at_the_runtime_dir_candidate() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// `write_atomic` used to collapse every failure to a bare `false`, which is what left the field
+/// log saying only "could not persist to ANY candidate path" — unable to tell EACCES from EROFS
+/// from ENOENT. It now returns the [`WriteFailure`] the OS actually gave, and
+/// `write_atomic_diagnosed` pairs it with the path and the parent directory's stat, which is what
+/// a candidate's [`CandidateDiagnostic`] carries into the field log.
+#[test]
+fn write_atomic_reports_the_errno_and_parent_stat_per_candidate() {
+    use std::os::unix::fs::MetadataExt;
+    let _g = crate::testlock::serial();
+    let base = std::env::temp_dir().join(format!("plxnative-write-atomic-diag-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+
+    // ENOENT: the parent directory this candidate names does not exist at all — the create
+    // itself is what fails, and there is no parent to stat.
+    let missing_parent = base.join("does-not-exist").join("session.json");
+    let enoent = write_atomic_diagnosed(&missing_parent, b"{}").unwrap_err();
+    assert_eq!(enoent.path, missing_parent);
+    assert!(enoent.parent.is_none(), "stat on a missing parent must not fabricate one");
+    assert_eq!(enoent.failure, WriteFailure::CreateFailed(libc::ENOENT));
+    assert_eq!(enoent.failure.errno(), Some(libc::ENOENT));
+
+    // A destination that is already a directory is refused before any syscall could fail — no
+    // errno — but its (existing) parent is still reported, uid/gid/mode.
+    let as_dir = base.join("already-a-dir");
+    std::fs::create_dir_all(&as_dir).unwrap();
+    let not_owned = write_atomic_diagnosed(&as_dir, b"{}").unwrap_err();
+    assert_eq!(not_owned.failure, WriteFailure::NotOwned);
+    assert_eq!(not_owned.failure.errno(), None);
+    let parent_meta = std::fs::metadata(&base).unwrap();
+    let parent = not_owned.parent.expect("the base directory exists and is stat-able");
+    assert_eq!(parent.uid, parent_meta.uid());
+    assert_eq!(parent.gid, parent_meta.gid());
+    assert_eq!(parent.mode, parent_meta.mode() & 0o7777);
+
+    // The ordinary success case still lands a whole file — `Ok(())` rather than `true`.
+    let ok_path = base.join("session.json");
+    assert!(write_atomic(&ok_path, b"{\"a\":1}").is_ok());
+    assert_eq!(std::fs::read(&ok_path).unwrap(), b"{\"a\":1}");
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The success-path defect this change fixes: `save_legacy_fallback_locked` accumulates a
+/// [`CandidateDiagnostic`] per refused candidate but used to reach [`log_candidate_diagnostics`]
+/// only on the total-failure paths — both success arms `return`ed before it ran. That threw the
+/// refusal evidence away on exactly the shape
+/// `runtime_dir_candidate_persists_and_reloads_when_every_durable_candidate_is_unwritable` above
+/// exercises: durable candidates refuse, the runtime-dir one accepts — which is the common case on
+/// the jail the 2026-09-20 field report came from, and the one case where "why did the durable
+/// ones refuse" is the whole question worth answering.
+///
+/// This suite has no facility to capture `crate::log`'s own output (it goes to a shared, on-disk
+/// event log via `scrub_local` and `lab::record`; building a capture for that under time pressure
+/// is out of scope here). Instead this proves what has to be true for the fixed call to say
+/// anything real: replaying `write_atomic_diagnosed` against the same two candidates the real loop
+/// tries (and is refused by) first shows each produces a genuine, non-empty [`CandidateDiagnostic`]
+/// — a real errno, a real path — i.e. there IS evidence, not an empty vector, for the success arm
+/// to log; and the real `save_legacy_fallback_locked`, run against the identical jail shape, still
+/// succeeds via the later candidate. It does NOT prove `log_candidate_diagnostics` was actually
+/// invoked on that success arm, nor the resulting log line's wording — that wiring is only checked
+/// by reading the call site this change added, not by this test.
+#[test]
+fn refused_candidates_produce_evidence_when_a_later_one_still_succeeds() {
+    let _g = crate::testlock::serial();
+    let (_guard, candidates) = TempCandidates::new("evidence-survives-success");
+    redirect_candidates_for_test(Some(candidates.clone()));
+
+    let session = signed_in();
+    let json = serde_json::to_vec_pretty(&session).unwrap();
+
+    // The same two durable candidates the real loop tries (and is refused by) first: prove each
+    // produces a genuine CandidateDiagnostic, not a bare bool, so there is real evidence to log.
+    let first = write_atomic_diagnosed(&candidates[0], &json).unwrap_err();
+    let second = write_atomic_diagnosed(&candidates[1], &json).unwrap_err();
+    assert_eq!(first.path, candidates[0]);
+    assert_eq!(second.path, candidates[1]);
+    assert!(
+        first.failure.errno().is_some(),
+        "a refusal must carry a real errno to be worth logging"
+    );
+    assert!(second.failure.errno().is_some());
+
+    // The real function, in the identical jail shape, still succeeds via the runtime-dir
+    // candidate — this is the success arm whose early `return` used to discard the evidence just
+    // shown to exist above.
+    let outcome = save_legacy_fallback_locked(&session, false, false);
+    assert!(outcome.is_some(), "the runtime-dir candidate must still accept the write");
+    assert!(candidates[2].exists(), "the session must land on the runtime-dir candidate");
+    assert!(!candidates[0].exists() && !candidates[1].exists());
 }
 
 // ---- The CANONICAL half (AUTH-08/AUTH-09): `clear()` must commit a canonical Cleared record,

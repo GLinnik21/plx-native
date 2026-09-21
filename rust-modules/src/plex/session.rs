@@ -2684,18 +2684,29 @@ fn save_legacy_fallback_locked(
         let Ok(protected) = serde_json::to_vec_pretty(&envelope) else {
             return None;
         };
+        let mut failures = Vec::new();
         for winner in auth_paths() {
-            if write_atomic(&winner, &protected) {
-                // A successful migration must not leave an older plaintext token file at a
-                // lower-priority jail path where another uid can recover it.
-                for stale in auth_paths().into_iter().filter(|p| p != &winner) {
-                    remove_temp_siblings(&stale);
-                    let _ = std::fs::remove_file(stale);
+            match write_atomic_diagnosed(&winner, &protected) {
+                Ok(()) => {
+                    // A successful migration must not leave an older plaintext token file at a
+                    // lower-priority jail path where another uid can recover it.
+                    for stale in auth_paths().into_iter().filter(|p| p != &winner) {
+                        remove_temp_siblings(&stale);
+                        let _ = std::fs::remove_file(stale);
+                    }
+                    if !failures.is_empty() {
+                        crate::log(
+                            "session: protected write succeeded on a later candidate; earlier ones refused",
+                        );
+                        log_candidate_diagnostics("protected write refused before the later success", &failures);
+                    }
+                    return Some(true);
                 }
-                return Some(true);
+                Err(diagnostic) => failures.push(diagnostic),
             }
         }
         crate::log("session: key manager succeeded but the protected file could not be written");
+        log_candidate_diagnostics("protected write refused", &failures);
         return None;
     }
     // Never turn an already protected session back into plaintext because a service was
@@ -2707,14 +2718,27 @@ fn save_legacy_fallback_locked(
     // Try each candidate; the first that accepts the write wins. A total failure is still
     // non-fatal — but it is LOGGED, because the symptom (sign in again, every boot, forever) is
     // otherwise indistinguishable from a server-side auth problem and impossible to report.
+    // `auth_paths()` — i.e. `paths::session_candidates()` — decides how many candidates that is;
+    // this loop makes no assumption about the count.
+    let mut failures = Vec::new();
     for path in auth_paths() {
-        if write_atomic(&path, &json) {
-            return Some(false);
+        match write_atomic_diagnosed(&path, &json) {
+            Ok(()) => {
+                if !failures.is_empty() {
+                    crate::log(
+                        "session: plaintext write succeeded on a later candidate; earlier ones refused",
+                    );
+                    log_candidate_diagnostics("plaintext write refused before the later success", &failures);
+                }
+                return Some(false);
+            }
+            Err(diagnostic) => failures.push(diagnostic),
         }
     }
     crate::log(
         "session: could not persist to ANY candidate path — login will not survive a reboot",
     );
+    log_candidate_diagnostics("plaintext write refused", &failures);
     None
 }
 
@@ -2734,7 +2758,7 @@ fn save_legacy_locked(s: &Session) -> Option<bool> {
             return None;
         };
         for winner in auth_paths() {
-            if write_atomic(&winner, &protected) {
+            if write_atomic(&winner, &protected).is_ok() {
                 for stale in auth_paths().into_iter().filter(|p| p != &winner) {
                     remove_temp_siblings(&stale);
                     let _ = std::fs::remove_file(stale);
@@ -2748,7 +2772,7 @@ fn save_legacy_locked(s: &Session) -> Option<bool> {
         return None;
     }
     for path in auth_paths() {
-        if write_atomic(&path, &json) {
+        if write_atomic(&path, &json).is_ok() {
             return Some(false);
         }
     }
@@ -2793,39 +2817,150 @@ fn has_protected_authority() -> bool {
 /// growing a second implementation of this. It is a generic 0600 atomic write that happens to live
 /// beside its first caller; the alternative was two copies of a routine whose whole value is that
 /// its failure modes have already been found once, on the file holding the credentials.
-pub(crate) fn write_atomic(path: &std::path::Path, json: &[u8]) -> bool {
+///
+/// Returns the [`WriteFailure`] the OS actually gave, rather than a bare no: a caller trying
+/// several candidates (session save's own fallback, the crash watermark, the telemetry spool) used
+/// to be left with "none of them took it" and nothing that could tell EACCES (a jail whose
+/// permissions changed) from EROFS (a mount gone read-only) from ENOENT (a directory a factory
+/// reset removed) apart — see [`save_legacy_fallback_locked`], the one caller that now reports the
+/// difference.
+pub(crate) fn write_atomic(path: &std::path::Path, json: &[u8]) -> Result<(), WriteFailure> {
     use std::io::Write;
     use std::os::unix::fs::MetadataExt;
     let Some(parent) = path.parent() else {
-        return false;
+        return Err(WriteFailure::InvalidPath);
     };
     if let Ok(meta) = std::fs::symlink_metadata(path) {
         if !meta.file_type().is_file() || meta.uid() != unsafe { libc::geteuid() } {
-            return false;
+            return Err(WriteFailure::NotOwned);
         }
     }
-    let Some((tmp, mut f)) = create_private_temp(path) else {
-        return false;
-    };
-    let written = f.write_all(json).is_ok() && f.sync_all().is_ok();
+    let (tmp, mut f) = create_private_temp(path)?;
+    let write_result = f.write_all(json).and_then(|()| f.sync_all());
     drop(f); // the rename must not race our own open handle on a filesystem that cares
-    if written && std::fs::rename(&tmp, path).is_ok() {
-        if let Ok(dir) = std::fs::File::open(parent) {
-            let _ = dir.sync_all();
-        }
-        remove_temp_siblings(path);
-        return true;
+    if let Err(e) = write_result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(WriteFailure::WriteFailed(e.raw_os_error().unwrap_or(0)));
     }
-    // Leave no half-written credentials behind under a name the next writer would overwrite
-    // anyway — and none at all if this candidate turned out to be unwritable.
-    let _ = std::fs::remove_file(&tmp);
-    false
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        // Leave no half-written credentials behind under a name the next writer would overwrite
+        // anyway — and none at all if this candidate turned out to be unwritable.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(WriteFailure::RenameFailed(e.raw_os_error().unwrap_or(0)));
+    }
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
+    remove_temp_siblings(path);
+    Ok(())
 }
 
-fn create_private_temp(path: &std::path::Path) -> Option<(std::path::PathBuf, std::fs::File)> {
+/// Why one candidate refused an atomic write. Errno-bearing where the OS actually returned one —
+/// [`Self::errno`] — so a reader (the field log today; the failure read-out's Details card,
+/// `screens::login::support_line`) can tell EACCES from EROFS from ENOENT instead of a bare no.
+/// Never sent over the network: no path, uid, gid or mode belongs in `telemetry::incident`'s closed
+/// vocabulary (see that module's doc), so this type stays local to the write path and its callers'
+/// own logging.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WriteFailure {
+    /// The path has no parent directory, or no file name, to build a sibling temp name from — a
+    /// degenerate candidate, not a syscall failure.
+    InvalidPath,
+    /// A file already exists at the destination under a uid this process does not own, or is not a
+    /// regular file. Refused before any write was attempted, so there is no errno.
+    NotOwned,
+    /// The private temp file could not be created; the errno from the `open(2)` that failed.
+    CreateFailed(i32),
+    /// Every random temp suffix this attempt tried already existed on disk.
+    Exhausted,
+    /// The write or its `fsync` failed; the errno from whichever failed.
+    WriteFailed(i32),
+    /// The rename into place failed; the errno from `rename(2)`.
+    RenameFailed(i32),
+}
+
+impl WriteFailure {
+    /// The OS errno this failure carries, when it carries one — `None` for a refusal this process
+    /// made itself before any syscall had a chance to fail.
+    pub(crate) fn errno(self) -> Option<i32> {
+        match self {
+            Self::CreateFailed(e) | Self::WriteFailed(e) | Self::RenameFailed(e) => Some(e),
+            Self::InvalidPath | Self::NotOwned | Self::Exhausted => None,
+        }
+    }
+}
+
+/// The parent directory's owner and mode at the moment a candidate was tried — the other half of
+/// what makes a "could not persist" line actionable: an errno alone does not say whether the
+/// directory is simply not this process's, or is not writable by anyone, or does not exist.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ParentStat {
+    pub uid: u32,
+    pub gid: u32,
+    pub mode: u32,
+}
+
+/// One candidate [`write_atomic`] tried: where, what its parent directory looked like, and why it
+/// refused. Built for the field log ([`save_legacy_fallback_locked`]) — local diagnostic evidence
+/// only, never folded into `telemetry::incident::IncidentContext`.
+#[derive(Debug, Clone)]
+pub(crate) struct CandidateDiagnostic {
+    pub path: std::path::PathBuf,
+    /// `None` when even `stat` on the parent failed (it does not exist, or a component above it
+    /// is not searchable).
+    pub parent: Option<ParentStat>,
+    pub failure: WriteFailure,
+}
+
+fn parent_stat(path: &std::path::Path) -> Option<ParentStat> {
+    use std::os::unix::fs::MetadataExt;
+    let parent = path.parent()?;
+    let meta = std::fs::metadata(parent).ok()?;
+    Some(ParentStat { uid: meta.uid(), gid: meta.gid(), mode: meta.mode() & 0o7777 })
+}
+
+/// [`write_atomic`], plus the [`CandidateDiagnostic`] a failure is worth keeping.
+fn write_atomic_diagnosed(path: &std::path::Path, json: &[u8]) -> Result<(), CandidateDiagnostic> {
+    write_atomic(path, json).map_err(|failure| CandidateDiagnostic {
+        path: path.to_path_buf(),
+        parent: parent_stat(path),
+        failure,
+    })
+}
+
+/// One line per failed candidate — path, parent uid/gid/mode (octal) or `unknown` when `stat`
+/// itself failed, and the errno or the refusal class when there is no errno. The format a person
+/// can read off a log, or a future on-screen diagnostic, without guessing what each number means.
+fn log_candidate_diagnostics(context: &str, failures: &[CandidateDiagnostic]) {
+    for d in failures {
+        let parent = d.parent.map_or_else(
+            || "parent=unknown".to_string(),
+            |p| format!("parent_uid={} parent_gid={} parent_mode={:03o}", p.uid, p.gid, p.mode),
+        );
+        let class = match d.failure {
+            WriteFailure::InvalidPath => "invalid_path",
+            WriteFailure::NotOwned => "not_owned",
+            WriteFailure::CreateFailed(_) => "create_failed",
+            WriteFailure::Exhausted => "exhausted",
+            WriteFailure::WriteFailed(_) => "write_failed",
+            WriteFailure::RenameFailed(_) => "rename_failed",
+        };
+        let errno = d.failure.errno().map_or_else(|| "none".to_string(), |e| e.to_string());
+        crate::log(&format!(
+            "session: {context} path={} {parent} cause={class} errno={errno}",
+            d.path.display()
+        ));
+    }
+}
+
+fn create_private_temp(
+    path: &std::path::Path,
+) -> Result<(std::path::PathBuf, std::fs::File), WriteFailure> {
     use std::os::unix::fs::OpenOptionsExt;
     for attempt in 0..16u64 {
-        let tmp = random_tmp_path(path, attempt)?;
+        let Some(tmp) = random_tmp_path(path, attempt) else {
+            return Err(WriteFailure::InvalidPath);
+        };
         match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -2833,12 +2968,12 @@ fn create_private_temp(path: &std::path::Path) -> Option<(std::path::PathBuf, st
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(&tmp)
         {
-            Ok(file) => return Some((tmp, file)),
+            Ok(file) => return Ok((tmp, file)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(_) => return None,
+            Err(e) => return Err(WriteFailure::CreateFailed(e.raw_os_error().unwrap_or(0))),
         }
     }
-    None
+    Err(WriteFailure::Exhausted)
 }
 
 fn random_tmp_path(path: &std::path::Path, attempt: u64) -> Option<std::path::PathBuf> {
