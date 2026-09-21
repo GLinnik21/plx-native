@@ -101,6 +101,23 @@ reserved so a key that opens a page still mounts it in the same frame → presen
 prepare under the `frame::Budget` → draw. Nothing is ever dropped from that queue; an overrun is
 CARRIED to the next frame and rides the heartbeat as `carried=`.
 
+**Frames must not wait on storage or synchronous LS2 calls.** The app loop, bridge and dispatcher
+enter `task::FrameScope`; `task::assert_may_block` guards session I/O, helper transactions,
+Keymanager and LS2 calls. It panics only in tests and records elapsed time once per label
+in debug and release builds. Use cached reads and the bounded `storage_worker` queue, then observe the landing
+on the frame thread and call `idle::invalidate()` only when visible content changed. Boot's synchronous loads run before the frame scope; a new blocking exception
+must be explicit and justified through `task::allow_blocking`, never added to a tick.
+
+The release-enabled `task::watchdog` independently checks loop progress every 100 ms. It reports
+once after more than 250 ms without progress and once on recovery, using the innermost static
+`BlockingLabel` scope or `unlabeled`. The frame entrance increments one atomic counter; the
+watchdog owns the clock, so durations are sampled rather than exact frame timings. Static label
+descriptors keep scope publication allocation-free. The host harness disables the observer;
+tests opt into private signals and drive the detector with synthetic timestamps. Timing starts
+only after the first present completes, excluding initial shader/font warm-up. A freeze after
+that point is reported once even if no further frame presents; after the loop resumes, the
+watchdog reports the total stall duration and the label captured when the stall was detected.
+
 **Damage is not an effect in the queue.** `fx.invalidate(provenance)` calls `Present::note` at
 once, because a draw-phase report has to survive into the frame it belongs to. `Provenance` is
 recorded, so a replay diff can say *why* a frame presented. Workers get exactly one documented

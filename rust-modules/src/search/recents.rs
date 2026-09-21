@@ -36,8 +36,8 @@ fn with_store<R>(f: impl FnOnce(&mut Store) -> R) -> R {
     let generation = crate::plex::session::current_gen();
     if guard.as_ref().map(|s| s.generation) != Some(generation) {
         let who = crate::plex::session::current_profile_key();
-        // Copy before reading disk: a worker may drain this entry while peek waits for IO.
-        // Taking PENDING across peek would invert flush's IO -> PENDING lock order.
+        // Copy before taking the session snapshot: a worker may drain this entry concurrently.
+        // Keep the pending-store lock separate from the session snapshot lock.
         let pending = PENDING.lock().unwrap_or_else(|e| e.into_inner())
             .iter().find(|p| p.who == who).cloned();
         let session = crate::plex::session::peek();

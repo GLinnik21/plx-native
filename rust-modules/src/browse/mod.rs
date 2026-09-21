@@ -548,6 +548,26 @@ pub(crate) struct BrowseState {
     retry_cd: u32,
     remembered: Vec<(SecKind, String, i64)>,
     recorded: Option<crate::plex::session::HomePins>,
+    pending_pins: Option<(String, std::sync::Arc<std::sync::Mutex<PinWrite>>)>,
+}
+
+/// Shared by a cloned Browse snapshot, so consuming a receipt never makes another clone
+/// mistake a successful write for a disconnected worker. Failed writes keep the local choice.
+struct PinWrite {
+    ticket: crate::storage_worker::TypedTicket<bool>,
+    saved: Option<bool>,
+}
+impl PinWrite {
+    fn saved(&mut self) -> bool {
+        if self.saved.is_none() {
+            self.saved = match self.ticket.try_recv() {
+                Ok(saved) => Some(saved),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(false),
+            };
+        }
+        self.saved == Some(true)
+    }
 }
 
 /// Worker-facing half of one Browse store. Every spawned job captures this adapter, so a result
@@ -616,6 +636,7 @@ impl Default for BrowseState {
             retry_cd: 0,
             remembered: Vec::new(),
             recorded: None,
+            pending_pins: None,
         }
     }
 }
@@ -885,7 +906,7 @@ impl BrowseState {
         }
         let user = crate::plex::session::current_profile_key();
         let wire = kind.wire();
-        crate::plex::session::update(|current| {
+        crate::plex::session::queue_update(move |current| {
             let mut next = current.clone();
             let slot = match next
                 .last_library
@@ -1341,9 +1362,23 @@ impl BrowseState {
             self.set_cur(index);
         }
     }
+    /// A directory refresh must not replace the pending (or failed) local choice with the
+    /// older persisted snapshot. Successful receipts recapture the cache after the worker fill.
+    fn pin_record_for(&mut self, session: &crate::plex::session::Session, user: &str)
+        -> Option<crate::plex::session::HomePins> {
+        if let Some((pending_user, write)) = &self.pending_pins {
+            if pending_user == user && !write.lock().unwrap_or_else(|e| e.into_inner()).saved() {
+                return self.recorded.clone();
+            }
+            self.pending_pins = None;
+            return crate::plex::session::peek().pins_for(user).cloned();
+        }
+        session.pins_for(user).cloned()
+    }
+
     fn resolve_pins_from(&mut self, session: &crate::plex::session::Session, user: &str) -> bool {
         self.load_remembered(session, user);
-        let record = session.pins_for(user).cloned();
+        let record = self.pin_record_for(session, user);
         self.resolve_pins_with(record)
     }
     /// Re-derive every row from `record` and the never-empty floor, and report whether the table
@@ -1392,7 +1427,8 @@ impl BrowseState {
         user: &str,
     ) -> bool {
         self.load_remembered(session, user);
-        self.reconcile_pins(session.pins_for(user).cloned())
+        let record = self.pin_record_for(session, user);
+        self.reconcile_pins(record)
     }
     fn resolve_pins(&mut self) {
         let session = crate::plex::session::peek();
@@ -1426,41 +1462,39 @@ impl BrowseState {
     /// the live pins; everything else keeps whatever it had already answered and is otherwise
     /// left unrecorded, to go on re-deriving (`plex::pins::answers`).
     ///
-    /// **The derivation of `answers` happens INSIDE `update`**, against the record that write is
-    /// about to replace — the same reason `carry_forward` is already computed there. Reading the
-    /// previous answer off `self.recorded` would read a copy taken at the last resolve, and a
-    /// concurrent writer between those two points would have its answer dropped rather than
-    /// merged, which is precisely the lost update `session::update` exists to prevent.
-    ///
-    /// **It reports the record THIS call produced, and `None` is a real answer.**
-    /// `session::update` refuses the whole read-modify-write when the live read is unusable — a
-    /// Locked/Blocked record the keymanager will not open, or no file at all — and the closure
-    /// above never runs, so there is no candidate record to speak of and `self.recorded` keeps
-    /// whatever the last resolve put there. A caller must not mistake that standing record for
-    /// something this call produced: it is the answer this call was REPLACING (see
-    /// [`apply_pins`](Self::apply_pins)). The session's contract for the refusal is that the
-    /// caller keeps its change in memory for the run, which is what the in-memory table already
-    /// holds.
+    /// The returned record is the local pending selection. The worker recomputes the merge
+    /// against the current authority under IO, so unrelated edits made while it was queued
+    /// survive. A missing session or a refused queue returns `None`; the visible selection
+    /// still stands for this run, without claiming it was saved.
     fn record_pins(&mut self, asked: bool, touched: &[bool])
         -> Option<crate::plex::session::HomePins> {
         let libraries = self.lib_refs();
         let on: Vec<bool> = self.sections.iter().map(|section| section.pinned).collect();
         let user = crate::plex::session::current_profile_key();
-        let mut written = None;
-        crate::plex::session::update(|session| {
+        let snapshot = crate::plex::session::peek();
+        if snapshot.client_id.is_empty() { return None; }
+        let previous = self.recorded.as_ref().or_else(|| snapshot.pins_for(&user));
+        let answers = crate::plex::pins::answers(&libraries, &on, touched, previous);
+        let fresh = crate::plex::pins::record(&user, asked, &libraries, &answers);
+        let record = crate::plex::pins::carry_forward(fresh, previous, &libraries);
+        let owned: Vec<_> = libraries.iter().map(|lib|
+            (lib.machine_id.to_owned(), lib.key, lib.household, lib.household_type)).collect();
+        let touched = touched.to_vec();
+        let pending_user = user.clone();
+        let ticket = crate::plex::session::queue_update_ticket(move |session| {
+            let libraries: Vec<_> = owned.iter().map(|(machine_id, key, household, household_type)|
+                crate::plex::pins::LibRef { machine_id, key: *key, household: *household, household_type: *household_type }).collect();
             let previous = session.pins_for(&user);
-            let answers = crate::plex::pins::answers(&libraries, &on, touched, previous);
+            let answers = crate::plex::pins::answers(&libraries, &on, &touched, previous);
             let fresh = crate::plex::pins::record(&user, asked, &libraries, &answers);
-            let record = crate::plex::pins::carry_forward(fresh, previous, &libraries);
+            let merged = crate::plex::pins::carry_forward(fresh, previous, &libraries);
             let mut next = session.clone();
-            next.set_pins_for(&user, record.clone());
-            written = Some(record);
+            next.set_pins_for(&user, merged);
             Some(next)
-        });
-        if let Some(record) = &written {
-            self.recorded = Some(record.clone());
-        }
-        written
+        }).ok()?;
+        self.pending_pins = Some((pending_user, std::sync::Arc::new(std::sync::Mutex::new(PinWrite { ticket, saved: None }))));
+        self.recorded = Some(record.clone());
+        Some(record)
     }
     /// The editor's one commit: apply the rows it ANSWERED, and record exactly those.
     ///
@@ -1510,23 +1544,13 @@ impl BrowseState {
             self.bump_sections_gen();
             crate::ui::idle::invalidate();
         }
-        // The record THIS commit produced, never a re-read of the session: `record_pins` merged it
-        // under `session::update`'s own lock, so a re-read could answer from before it. It is the
-        // candidate that write took, not proof the write reached disk — `record_pins` takes it
-        // inside the closure, before the durable outcome is known — but it is the record this run
-        // resolves against either way, which is exactly what the reconcile needs.
+        // Reconcile the pending selection immediately. Until its receipt lands, a captured
+        // older session must not undo the viewer's edits. This is not a durability claim.
         match produced {
             Some(record) => {
                 self.reconcile_pins(Some(record));
             }
-            // **A commit that produced NO record is not reconciled at all.** `session::update`
-            // refuses the read-modify-write outright when the live read is unusable (a Locked or
-            // Blocked record the keymanager will not open, or no file yet), so its closure never
-            // ran. `self.recorded` then still holds the answer this commit was REPLACING, and
-            // reconciling against that restores precisely what the viewer just changed — they
-            // press Done and watch the row come back. The session's contract for the refusal is
-            // that the caller keeps its change in memory for the run, so the table keeps the
-            // answer and the record is left exactly as it was.
+            // A missing identity or full queue cannot justify undoing the visible selection.
             None => crate::log(
                 "browse: the session refused this commit — the selection stands for this run, \
                  and nothing was recorded",

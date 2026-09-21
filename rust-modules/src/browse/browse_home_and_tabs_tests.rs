@@ -5,6 +5,47 @@ use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
 
+#[test]
+fn a_pending_pin_choice_survives_a_directory_refresh() {
+    pin_choice_survives_refresh(false);
+}
+
+#[test]
+fn a_failed_pin_write_keeps_the_choice_for_this_run() {
+    pin_choice_survives_refresh(true);
+}
+
+fn pin_choice_survives_refresh(fail: bool) {
+    let _serial = crate::testlock::serial();
+    let t = TempPins::new("pending-pin-refresh");
+    t.watching("u-owner");
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let _blocker = crate::storage_worker::submit(move || {
+        entered_tx.send(()).unwrap();
+        let _ = release_rx.recv();
+    }).unwrap();
+    entered_rx.recv().unwrap();
+    let mut browse = TestBrowse::default();
+    seed_two_servers(&mut browse);
+    {
+        let _frame = crate::task::FrameScope::enter();
+        browse.state.apply_pins(&[(2, true)]);
+        assert!(browse.pinned(2), "the pending choice is visible immediately");
+        if !fail {
+            browse.state.resolve_pins();
+            assert!(browse.pinned(2), "an older directory snapshot must not undo a queued choice");
+        }
+    }
+    if fail {
+        std::fs::write(t.path(), br#"{"format":"plxnative-secure-session","version":99,"sealed":{}}"#).unwrap();
+    }
+    release_tx.send(()).unwrap();
+    crate::storage_worker::drain_for_test();
+    browse.state.resolve_pins();
+    assert!(browse.pinned(2));
+}
+
 /// **The first-run defaults, and the one rule the control has.**
 ///
 /// This asserted `(true, true, true)` — every granted library on — for as long as deliverable F
@@ -30,15 +71,18 @@ fn your_own_libraries_start_on_home_and_a_friends_does_not() {
         browse.state.toggle_pin(2),
         "…and a friend's can be turned on, which is what makes it a decision"
     );
+    crate::storage_worker::drain_for_test();
     assert_eq!(browse.state.pinned_count(), 3);
     assert!(
         browse.state.toggle_pin(0) && browse.state.toggle_pin(1),
         "your own can be unpinned — a preference, not a mistake"
     );
+    crate::storage_worker::drain_for_test();
     assert_eq!(browse.state.pinned_count(), 1);
 
     assert!(browse.pinned(2) && browse.state.pinned_count() == 1);
     assert!(!browse.state.toggle_pin(2), "the last pinned library is refused");
+    crate::storage_worker::drain_for_test();
     assert!(browse.pinned(2), "…and refused means UNCHANGED, not toggled twice");
     assert_eq!(browse.state.pinned_count(), 1);
 }
@@ -120,6 +164,7 @@ fn apply_pins_writes_the_whole_batch_in_one_record() {
     assert_eq!((browse.pinned(0), browse.pinned(1), browse.pinned(2)), (true, true, false));
 
     browse.state.apply_pins(&[(2, true), (1, false)]);
+    crate::storage_worker::drain_for_test();
     assert_eq!(
         (browse.pinned(0), browse.pinned(1), browse.pinned(2)),
         (true, false, true),
@@ -161,6 +206,7 @@ fn an_answer_the_live_pin_already_agrees_with_is_recorded_anyway() {
     // The one commit, carrying the one row the viewer answered: Off, which is what the live pin
     // already reads because a roster correction got there first.
     browse.state.apply_pins(&[(2, false)]);
+    crate::storage_worker::drain_for_test();
 
     let user = crate::plex::session::current_profile_key();
     assert_eq!(
@@ -237,6 +283,7 @@ fn a_commit_leaves_the_table_showing_what_it_saved() {
 
     // The viewer switches the other one on and leaves the raised row alone.
     browse.state.apply_pins(&[(1, true)]);
+    crate::storage_worker::drain_for_test();
 
     let saved = crate::plex::session::peek();
     let recorded = saved.pins_for(&user).and_then(|r| r.answer("mac-mini", 1));
@@ -289,6 +336,7 @@ fn a_commit_the_session_refuses_leaves_the_answer_on_screen() {
 
     // One of them switched off, and Done pressed.
     browse.state.apply_pins(&[(1, false)]);
+    crate::storage_worker::drain_for_test();
 
     assert_eq!(
         (browse.pinned(0), browse.pinned(1), browse.pinned(2)),
@@ -314,6 +362,7 @@ fn a_selection_survives_the_table_being_rebuilt() {
     let mut browse = TestBrowse::default();
     seed_two_servers(&mut browse);
     assert!(browse.state.toggle_pin(2) && browse.state.toggle_pin(1)); // the share On, one of ours Off
+    crate::storage_worker::drain_for_test();
     assert_eq!((browse.pinned(0), browse.pinned(1), browse.pinned(2)), (true, false, true));
 
     // …and now the table is wiped and re-discovered, which is what a profile switch, a
@@ -343,6 +392,7 @@ fn a_recorded_answer_reaches_home_before_that_servers_sections_do() {
     // default it happens to agree with. Only a row somebody moved is written down now
     // (`plex::pins::answers`), so a fixture that wants a record has to make the decision.
     assert!(browse.state.toggle_pin(2) && browse.state.toggle_pin(2));
+    crate::storage_worker::drain_for_test();
     assert!(!browse.pinned(2), "back where it started, but now on the record");
 
     // the next boot, before the share's section worker has landed
@@ -380,6 +430,7 @@ fn a_recorded_answer_reaches_home_before_that_servers_sections_do() {
     t.watching("u-owner");
     seed_two_servers(&mut browse);
     assert!(browse.state.toggle_pin(2)); // the toggle IS the write; nothing else is needed
+    crate::storage_worker::drain_for_test();
     boot(&mut browse);
     assert!(
         browse.state.library_pins().contains(&(1, 1, true)),
@@ -412,6 +463,7 @@ fn a_flip_made_while_a_share_is_absent_does_not_erase_its_answer() {
     let mut browse = TestBrowse::default();
     seed_two_servers(&mut browse);
     assert!(browse.state.toggle_pin(2), "the friend's library goes on Home");
+    crate::storage_worker::drain_for_test();
     assert_eq!((browse.pinned(0), browse.pinned(1), browse.pinned(2)), (true, true, true));
 
     // a boot the share missed entirely, on which one of our own is turned off
@@ -427,6 +479,7 @@ fn a_flip_made_while_a_share_is_absent_does_not_erase_its_answer() {
         ],
     );
     assert!(browse.state.toggle_pin(1));
+    crate::storage_worker::drain_for_test();
     assert!(
         browse.state.library_pins().contains(&(1, 1, true)),
         "the absent share is still recorded On"
@@ -456,6 +509,7 @@ fn two_profiles_keep_their_own_home_selections_across_a_switch() {
     t.watching("u-dad");
     seed_two_servers_managed(&mut browse);
     assert!(browse.state.toggle_pin(2) && browse.state.toggle_pin(1));
+    crate::storage_worker::drain_for_test();
     assert_eq!((browse.pinned(0), browse.pinned(1), browse.pinned(2)), (true, false, true));
 
     // The kid switches in. Never asked, so the defaults — NOT dad's answer.
@@ -467,6 +521,7 @@ fn two_profiles_keep_their_own_home_selections_across_a_switch() {
         "a switch switches the shelves"
     );
     assert!(browse.state.toggle_pin(0), "…and the kid answers for themselves");
+    crate::storage_worker::drain_for_test();
     assert_eq!((browse.pinned(0), browse.pinned(1), browse.pinned(2)), (false, true, false));
 
     // …and back, with dad's answer intact rather than overwritten by the kid's.
@@ -495,6 +550,7 @@ fn the_first_run_question_is_asked_once_per_profile() {
     // What `Start watching` — and BACK, which commits the same thing — does with nothing touched:
     // it records that the question was PUT, and no answers, because the viewer gave none.
     browse.state.record_pins(true, &[]);
+    crate::storage_worker::drain_for_test();
     assert!(!browse.first_run_asks(), "asked once, never again");
     t.watching("u-kid");
     assert!(
@@ -1135,6 +1191,7 @@ fn the_movies_tab_prefers_the_households_library_over_a_friends() {
     // deliberately — a recorded answer, so the re-resolve below cannot take it back off.
     assert!(browse.pinned(1), "the household's films default On");
     assert!(browse.state.toggle_pin(0), "…and the friend's is switched on");
+    crate::storage_worker::drain_for_test();
 
     let tab = browse.state.tab_of_kind(SecKind::Movie).expect("a Movies pill");
     assert_eq!(
@@ -1221,6 +1278,7 @@ fn a_home_roster_arriving_late_re_resolves_the_pin_table() {
 
     // The viewer answers ONE row: the household's TV shows, off. Everything else is a default.
     assert!(browse.state.toggle_pin(1));
+    crate::storage_worker::drain_for_test();
 
     // Quiet every other reason the discovery pump has to run, so the gate below can only be
     // answering the roster.

@@ -247,18 +247,22 @@ a dead source is **absent** from Home and states itself in its own library secti
   which is what makes it safe to call every frame (`player::preview::enabled` does). The invariants
   that keep it correct, all in `session.rs`'s module doc and worth knowing before touching either
   the cache or a write path:
-  - The cache holds a value only when the module has proof the record equals it: a completed read
-    under `IO`, or a `Durable` write under `IO`. Anything else drops it.
+  - Cached records come from completed reads or durable writes under `IO`. `Revoked` separately
+    suppresses credentials immediately during a queued sign-out, even if its disk clear fails.
+    Reads and preference edits preserve it; only an explicit proven credential write ends it.
   - Only `session.rs` writes the session domain of the record; every `persistence::commit_*`/
-    `write_session`/`commit_cleared` caller in that file ends by calling exactly one of
-    `install_locked(...)` or `drop_cache_locked()` — never neither, never both.
-  - Readers never take `IO` on a cache hit. A miss takes `IO`, reads, installs, releases; `CACHE`
-    is never held across an `IO` call in either direction.
+    `write_session`/`commit_cleared` caller updates the cache through a read install, proven-write
+    install, cache drop, or local revocation. Read installs cannot undo revocation.
+  - `peek` never takes `IO`, including on a miss. It returns the previous snapshot and schedules
+    one refresh on `storage_worker`'s bounded FIFO. The worker reads and installs under `IO`,
+    then advances a visible-session generation only if the served content changed. The bridge
+    observes it and invalidates on the frame thread; unchanged retries remain quiet. A queued
+    read cannot overwrite a newer write or sign-out.
   - Writers never read the cache to decide what to write — they always re-read the authority under
     `IO` first (the fence/OCC check), then install their own proven outcome. A miss can therefore
     never overwrite a newer concurrent write.
   - A `Locked`/`Blocked` read (keymanager unavailable, a helper hiccup) is cached only
-    transiently, for `LOCKED_RETRY` (about a second) — never latched forever the way a naive
+    transiently, for `LOCKED_RETRY` (about a second) after completion — never latched forever the way a naive
     per-field cache once was (the bug PR #120's stopgap shipped and this cache replaced).
   - Sign-out (`clear()`) drops the cached `Arc` immediately; the tokens it held must not remain
     reachable in memory after a sign-out just because nothing had overwritten the cache yet.

@@ -413,6 +413,8 @@ fn live_load_and_update_use_the_canonical_authority() {
         persistence::write_session(&session, SaveAuthority::Routine),
         persistence::CanonicalCommit::Durable { revision: 1, .. }
     ));
+    let _ = super::peek();
+    crate::storage_worker::drain_for_test();
     assert_eq!(
         super::peek().account_token,
         "synthetic-account",

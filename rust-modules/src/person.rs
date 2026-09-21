@@ -1563,16 +1563,9 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize) 
     }
 }
 
-/// WORKER THREAD: the blocking plex.tv biography request. The identity it presents is the persisted
-/// login session's — the same `client_id` (+ account token when signed in) every other plex.tv call
-/// in the app carries, via the same [`AccountClient`](crate::plex::account::AccountClient). Reading
-/// the session here rather than passing it in keeps this off the main thread's critical path; it is
-/// one small file read per person page.
-///
-/// **`peek`, not `load`, and "off the main thread" is why rather than an excuse.** `load` re-persists
-/// a plaintext session, and it takes `session::IO` across that write — a temp file, `sync_all`, a
-/// rename and a second `sync_all` — so a worker calling it PARKS the next main-thread `peek` for as
-/// long as the flash takes. This reader only reads: it wants a `client_id` and a token.
+/// WORKER THREAD: the blocking plex.tv biography request. The identity is taken from the live
+/// session snapshot. `peek` never mints or persists an identity and never waits for the storage
+/// helper; a stale or unloaded snapshot schedules the shared background refresh.
 #[cfg(not(test))]
 fn fetch_profile(guid: &str) -> Option<crate::plex::discover::PersonProfile> {
     let s = crate::plex::session::peek();

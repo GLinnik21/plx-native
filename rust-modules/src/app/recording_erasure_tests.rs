@@ -71,6 +71,7 @@ fn owned_recording_files_are_erased_after_quiescence_and_leftovers_are_acked() {
             &mut rec,
             false,
         );
+        bridge.settle_session_io_for_test(&mut pages);
         assert_eq!(bridge.auth_read().0.phase, crate::auth::Phase::Deleted);
         assert_eq!(bridge.auth_read().0.delete_leftovers, usize::from(partial));
         assert!(bridge

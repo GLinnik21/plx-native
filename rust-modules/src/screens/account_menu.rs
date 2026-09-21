@@ -204,10 +204,8 @@ impl AccountMenuScreen {
             return;
         }
         self.built = true;
-        // The persisted session is the file of record — a roster refresh or a sign-out anywhere in
-        // the app lands THERE, and the in-memory profile carries no account state at all — so the
-        // menu reads it per open (a few hundred bytes, once per key press) instead of trusting a
-        // snapshot.
+        // Capture the live session cache once per open. A missing or stale entry schedules
+        // the shared background refresh; mounting the account menu never waits on storage.
         let sess = crate::plex::session::peek();
         let cur = crate::plex::session::current();
         let acc = sess.account(cur.as_ref());

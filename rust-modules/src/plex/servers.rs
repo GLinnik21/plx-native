@@ -928,13 +928,10 @@ pub(crate) fn register_origin(
     connection: ConnectionFacts,
 ) -> ServerId {
     let policy = CredentialPolicy::build();
-    // The playback identity (`X-Plex-Client-Identifier`) is the persisted login identity, so it
-    // comes from the session file — read LAZILY, i.e. only when a `Client` is actually built.
-    // `session::load` can WRITE (it mints + persists the uuid when there is none), and the
-    // commonest call here by far is the profile switch, which only swaps a token; the singleton
-    // this replaced read the file exactly once, and so does this.
+    // Boot/credential completion has already supplied the install identity. Registration also
+    // runs inside frames, so a new or re-pointed slot may only consult the cached snapshot.
     let id = register_lazy(machine_id, origin, token, pin, connection, policy, &|| {
-        super::session::load().client_id
+        super::session::peek().client_id.clone()
     });
     // Every server the app actually talks to arrives through THIS function (the `_with_client_id`
     // seam below is the test one and deliberately does not), so it is the single place that keeps

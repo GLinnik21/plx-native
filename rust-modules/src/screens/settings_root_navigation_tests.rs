@@ -89,6 +89,7 @@ fn a_multi_user_root_toggles_automatically_sign_in_in_place() {
         Some(row),
     );
     step(&mut s, ScreenEvent::Activate(row.elem), Some(row));
+    crate::storage_worker::drain_for_test();
     assert_eq!(
         name(&s),
         word::SETTINGS,
@@ -97,9 +98,10 @@ fn a_multi_user_root_toggles_automatically_sign_in_in_place() {
     assert_eq!(s.inner.depth(), 1);
     assert!(
         crate::plex::session::peek().auto_sign_in(),
-        "OK commits the switch immediately"
+        "the queued switch is durable after the worker completes"
     );
     step(&mut s, ScreenEvent::Activate(row.elem), Some(row));
+    crate::storage_worker::drain_for_test();
     assert!(!crate::plex::session::peek().auto_sign_in());
     assert_eq!(s.inner.depth(), 1);
 }

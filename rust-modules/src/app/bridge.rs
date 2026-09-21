@@ -266,6 +266,7 @@ impl ConsentMachine {
 
 /// What the bridge lends the dispatcher, and what it collects for the loop.
 pub(crate) struct Bridge {
+    session_cache_generation: u64,
     home_io: Option<super::bootstrap::HomeIo>,
     recorded_clients: std::collections::BTreeMap<u32, &'static crate::plex::Client>,
     initial_subhash: u64,
@@ -494,6 +495,7 @@ impl Bridge {
         consent_adapter: super::adapters::consent::ConsentAdapter,
         reads: StorePublications, stores: crate::stores::Stores) -> Self {
         Self {
+            session_cache_generation: crate::plex::session::visible_generation(),
             home_io: None,
             recorded_clients: std::collections::BTreeMap::new(),
             initial_subhash: 0,
@@ -532,6 +534,15 @@ impl Bridge {
             effect_return: ReturnState::default(),
             held: Vec::new(),
             now_us,
+        }
+    }
+
+    /// Observe storage landings on the frame thread, alongside store/adapter publications.
+    pub(crate) fn land_session_cache(&mut self) {
+        let generation = crate::plex::session::visible_generation();
+        if self.session_cache_generation != generation {
+            self.session_cache_generation = generation;
+            crate::ui::idle::invalidate();
         }
     }
 
@@ -1498,10 +1509,11 @@ impl Bridge {
         match effect {
             SessionFx::Commit { req, epoch, arrival, plan } => {
                 if let Some(permit) = self.session.commit_permit(req, epoch, arrival) {
-                    let reply = self.session_adapter.commit(permit, &plan);
-                    deliver(SessionEvent::Commit(reply));
-                    // The live writer is synchronous, so its real durability verdict is already
-                    // known. Deliver it as a typed completion on the ordinary effect path; the
+                    if let Some(reply) = self.session_adapter.begin_commit(permit, &plan) {
+                        deliver(SessionEvent::Commit(reply));
+                    }
+                    // Fixture/immediate resources can finish here. Live writes land through
+                    // take_live_results after the worker completes; in either case the
                     // owner fences it before it may stand as saved-login evidence. A verdict that
                     // the owner has already superseded is dropped by that fence, not here.
                     if let Some(completion) = self.session_adapter.take_live_completion() {
@@ -1519,7 +1531,9 @@ impl Bridge {
             }
             SessionFx::Capture { req, epoch, request } => {
                 if self.session.read_is_current(req, epoch, request) {
-                    deliver(SessionEvent::Read(self.session_adapter.capture(req, epoch, request)));
+                    if let Some(reply) = self.session_adapter.begin_capture(req, epoch, request) {
+                        deliver(SessionEvent::Read(reply));
+                    }
                 }
             }
             SessionFx::Work { req, key, admission, input } => {
@@ -1547,8 +1561,9 @@ impl Bridge {
             // may already have advanced the epoch, but cannot skip deleting old credentials.
             SessionFx::Erase { epoch, all_local, .. } => {
                 self.session_ready = None;
-                let leftovers = self.session_adapter.erase(all_local, &mut self.stores.metadata);
-                deliver(SessionEvent::Erased { epoch, leftovers });
+                if let Some(leftovers) = self.session_adapter.begin_erase(epoch, all_local, &mut self.stores.metadata) {
+                    deliver(SessionEvent::Erased { epoch, leftovers });
+                }
             }
             SessionFx::Incident { id, lane, report } => {
                 let delivery = self.session_adapter.report_incident(id, lane, report);
@@ -1617,6 +1632,7 @@ pub(crate) fn frame_with_tap(
     inputs: Vec<InputEvent<u32>>,
     tap: &mut dyn crate::ui::dispatch::Tap<AppHost>,
 ) -> (&'static str, FrameReport) {
+    let _frame_scope = crate::task::FrameScope::enter();
     if matches!(d.top_arg(), Some(AppArg::Login | AppArg::Profiles)) && rig.session.needs_ready_commit() {
         execute_session_command(d, crate::auth::SessionCmd::TakeReady);
     }
@@ -1647,12 +1663,47 @@ impl Bridge {
         )).collect()
     }
 
+    #[cfg(test)]
+    pub(crate) fn settle_session_io_for_test(&mut self, d: &mut Dispatcher<AppHost>) {
+        for _ in 0..32 {
+            if !self.session_adapter.persistence_pending() { return; }
+            crate::storage_worker::drain_for_test();
+            frame_with_tap(d, self, Tick::default(), Vec::new(), &mut NoTap);
+        }
+        panic!("session persistence did not settle");
+    }
+
     fn take_live_results(&mut self) -> AppResults {
         // Landing sequence within auth is authoritative. Do not sort it by request ID:
         // profile Ready and its late roster can be separated by other requests' progress.
         let mut results: AppResults = self.session_adapter.take_results().into_iter()
             .map(|envelope| (envelope.addr, AppMsg::Session(crate::auth::owner::SessionEvent::Result(envelope))))
             .collect();
+        if let Some(reply) = self.session_adapter.take_capture() {
+            results.push((reply.addr, AppMsg::Session(crate::auth::owner::SessionEvent::Read(reply))));
+        }
+        self.session_adapter.cancel_superseded_commits(|req, epoch, arrival|
+            self.session.commit_is_current(req, epoch, arrival));
+        if let Some(completed) = self.session_adapter.take_committed() {
+            let disk_event = completed.disk_event();
+            let disk_addr = crate::ui::machine::Addr { to: MachineId::Session,
+                req: crate::ui::machine::RequestId(completed.req) };
+            if let Some(permit) = self.session.commit_permit(completed.req, completed.epoch, completed.arrival) {
+                let reply = self.session_adapter.finish_commit(permit, completed);
+                let addr = crate::ui::machine::Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(reply.req) };
+                results.push((addr, AppMsg::Session(crate::auth::owner::SessionEvent::Commit(reply))));
+                if let Some(completion) = self.session_adapter.take_live_completion() {
+                    results.push((addr, AppMsg::Session(crate::auth::owner::SessionEvent::Persistence(completion))));
+                }
+            }
+            // Losing the permit forbids registry/profile publication, not accounting for a
+            // durable write that already happened. Never strand the owner's next disk fence.
+            if let Some(event) = disk_event { results.push((disk_addr, AppMsg::Session(event))); }
+        }
+        if let Some(event) = self.session_adapter.take_erased(&mut self.stores.metadata) {
+            results.push((crate::ui::machine::Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(0) },
+                AppMsg::Session(event)));
+        }
         // What became of the report whose Report ID the sign-in screen shows: held, delivered or
         // dropped.
         if let Some((id, delivery)) = self.session_adapter.take_incident_delivery() {
@@ -1707,6 +1758,7 @@ fn frame_ingest(
     take: impl FnOnce(&mut Bridge) -> AppResults,
     tap: &mut dyn crate::ui::dispatch::Tap<AppHost>,
 ) -> (&'static str, FrameReport) {
+    let _frame_scope = crate::task::FrameScope::enter();
     #[cfg(test)]
     crate::testlock::assert_held("the store pump behind an app::bridge frame");
     // Library used to be the only route that pumped Browse. Onboard schedules the roster-only
@@ -1714,6 +1766,8 @@ fn frame_ingest(
     // a discovery result and the directory publication are observed in one frame. Controlled
     // execution instead recaptures at its addressed result delivery above, preserving recording.
     if rig.home_io.is_none() {
+        crate::storage_worker::pump_retained();
+        rig.land_session_cache();
         let outcome = rig.stores.browse_discover_pump();
         execute_endpoint_outcomes(d, outcome.endpoints);
     }

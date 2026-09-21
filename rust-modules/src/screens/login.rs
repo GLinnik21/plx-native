@@ -2502,6 +2502,7 @@ mod tests {
         instance: InstanceId,
         m: &crate::ui::fixture::FixtureMeasure,
     ) -> (Handled, Vec<Stamped<SessionHost>>) {
+        let _frame_scope = crate::task::FrameScope::enter();
         let cx = cx_with(m, snapshot);
         let mut present = Present::new();
         let mut buf: Vec<Stamped<SessionHost>> = Vec::new();

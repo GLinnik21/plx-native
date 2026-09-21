@@ -3,6 +3,9 @@
 //! A missing helper, a stale rendezvous, a refused activation and a corrupt canonical object are
 //! all unavailable storage — never an empty database.  Only the helper may decide that DB8 has no
 //! canonical object, after an authenticated `Hello` on the same stream as the `Load` reply.
+//! A helper that never connects gets one startup window. After that expires, each call tries
+//! once and returns unavailable immediately on failure, with activation hints rate-limited.
+//! A successful connection restores the normal startup policy.
 
 use super::{
     state::{self, CanonicalState, Expected, Flavor, Generation},
@@ -255,15 +258,55 @@ fn activate(_service: &str) {}
 
 #[cfg(not(target_os = "linux"))]
 fn transact(_command: Request) -> Result<Response, ClientError> {
+    let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("storage helper transact") });
     Err(ClientError::Unavailable)
 }
 
+/// Startup wait policy, kept separate from sockets so deadline and recovery are host-testable.
+#[derive(Default)]
+struct StartGate {
+    failed: bool,
+    last_hint: Option<Instant>,
+}
+
+impl StartGate {
+    /// Called only after a connect attempt: a failed start never prevents trying a live helper.
+    fn wait_after_failed_connect(&mut self, now: Instant, until: Instant) -> bool {
+        self.failed |= now >= until;
+        !self.failed
+    }
+
+    /// Re-hint at most once per startup window, even if several callers keep trying storage.
+    fn hint_due(&mut self, now: Instant) -> bool {
+        if self
+            .last_hint
+            .is_some_and(|last| now.saturating_duration_since(last) < START_DEADLINE)
+        {
+            return false;
+        }
+        self.last_hint = Some(now);
+        true
+    }
+
+    fn connected(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// Shared by loads, commits and reconciliation. Never held across I/O, activation or sleep.
+static START_GATE: std::sync::Mutex<StartGate> = std::sync::Mutex::new(StartGate {
+    failed: false,
+    last_hint: None,
+});
+
 #[cfg(target_os = "linux")]
 fn transact(command: Request) -> Result<Response, ClientError> {
+    let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("storage helper transact") });
     let until = Instant::now() + START_DEADLINE;
     let mut hinted = false;
     loop {
         if let Ok((mut stream, descriptor)) = connect(&runtime_path()) {
+            START_GATE.lock().unwrap_or_else(|e| e.into_inner()).connected();
             stream
                 .set_read_timeout(Some(IO_DEADLINE))
                 .map_err(|_| ClientError::Unavailable)?;
@@ -294,14 +337,26 @@ fn transact(command: Request) -> Result<Response, ClientError> {
             wire::write_frame(&mut stream, &command).map_err(|_| ClientError::Protocol)?;
             return wire::read_frame(&mut stream).map_err(|_| ClientError::Protocol);
         }
-        if !hinted {
-            match ACTIVATION_HINT.get() {
+        let (wait, hint) = {
+            let mut gate = START_GATE.lock().unwrap_or_else(|e| e.into_inner());
+            let now = Instant::now();
+            (gate.wait_after_failed_connect(now, until), !hinted && gate.hint_due(now))
+        };
+        if hint {
+            let activate_helper = || match ACTIVATION_HINT.get() {
                 Some(hint) => hint(&service_name()),
                 None => activate(&service_name()),
+            };
+            if wait {
+                activate_helper();
+            } else {
+                // The native fallback hint itself waits for LS2. A memoized failure must
+                // return immediately even when that hint needs another platform round trip.
+                let _ = crate::storage_worker::submit(activate_helper);
             }
             hinted = true;
         }
-        if Instant::now() >= until {
+        if !wait {
             return Err(ClientError::Unavailable);
         }
         std::thread::sleep(Duration::from_millis(25));
@@ -409,6 +464,75 @@ fn hex_128(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_start_makes_later_calls_return_without_waiting() {
+        let mut gate = StartGate::default();
+        let now = Instant::now();
+        let until = now + START_DEADLINE;
+        assert!(
+            gate.wait_after_failed_connect(now, until),
+            "the first call allows startup time"
+        );
+        assert!(!gate.wait_after_failed_connect(until, until));
+
+        let next = until + Duration::from_millis(25);
+        assert!(
+            !gate.wait_after_failed_connect(next, next + START_DEADLINE),
+            "a failed start must not buy another twelve-second wait"
+        );
+        let later = next + START_DEADLINE * 10;
+        assert!(
+            !gate.wait_after_failed_connect(later, later + START_DEADLINE),
+            "elapsed time alone must not forget an unreachable helper"
+        );
+    }
+
+    #[test]
+    fn a_successful_connect_resets_the_failed_start() {
+        let mut gate = StartGate::default();
+        let now = Instant::now();
+        assert!(!gate.wait_after_failed_connect(now, now));
+        assert!(!gate.wait_after_failed_connect(now, now + START_DEADLINE));
+
+        gate.connected();
+        assert!(
+            gate.wait_after_failed_connect(now, now + START_DEADLINE),
+            "a recovered helper gets the normal startup window if it later restarts"
+        );
+    }
+
+    #[test]
+    fn activation_hints_are_rate_limited_without_reopening_the_start_window() {
+        let mut gate = StartGate::default();
+        let now = Instant::now();
+        assert!(
+            gate.hint_due(now),
+            "the first failed connect hints activation immediately"
+        );
+        assert!(!gate.hint_due(now + START_DEADLINE / 2));
+        assert!(!gate.wait_after_failed_connect(now + START_DEADLINE, now + START_DEADLINE));
+
+        let next = now + START_DEADLINE;
+        assert!(
+            gate.hint_due(next),
+            "a later call may re-hint a missing helper"
+        );
+        assert!(
+            !gate.hint_due(next),
+            "other callers share the hint rate limit"
+        );
+        assert!(
+            !gate.wait_after_failed_connect(next, next + START_DEADLINE),
+            "re-hinting must not restart the blocking wait"
+        );
+
+        gate.connected();
+        assert!(
+            gate.hint_due(next),
+            "a recovered helper may be activated again if it restarts"
+        );
+    }
 
     #[test]
     fn generation_and_expectation_never_cross_a_json_float() {

@@ -954,6 +954,8 @@ pub(crate) struct RootPage {
     table: TableView,
     rows: Vec<Action>,
     state: RootState,
+    pending_auto: Option<(bool, crate::storage_worker::TypedTicket<bool>)>,
+    pending_trailer: Option<(bool, crate::storage_worker::TypedTicket<bool>)>,
 }
 
 struct RootState {
@@ -1001,6 +1003,7 @@ impl RootPage {
             entry,
             table: TableView::new(),
             rows: Vec::new(),
+            pending_auto: None, pending_trailer: None,
             state: RootState {
                 sel: 0,
                 auto_sign_in: false,
@@ -1014,8 +1017,8 @@ impl RootPage {
     fn rebuild(&mut self, sel: i32, directory: crate::stores::browse::DirectoryView<'_>) {
         let sess = crate::plex::session::peek();
         let signed_in = signed_in();
-        let auto_sign_in = sess.auto_sign_in();
-        let trailer_autoplay = sess.trailer_autoplay();
+        let auto_sign_in = self.pending_auto.as_ref().map_or_else(|| sess.auto_sign_in(), |(value, _)| *value);
+        let trailer_autoplay = self.pending_trailer.as_ref().map_or_else(|| sess.trailer_autoplay(), |(value, _)| *value);
         let multi_user = sess.home_users.len() > 1;
         self.state.auto_sign_in = auto_sign_in;
         self.state.trailer_autoplay = trailer_autoplay;
@@ -1106,11 +1109,19 @@ impl RootPage {
         };
         match action {
             Action::AutoSignIn => {
-                crate::plex::session::set_auto_sign_in(!self.state.auto_sign_in);
+                let on = !self.state.auto_sign_in;
+                if let Ok(ticket) = crate::plex::session::queue_update_ticket(move |current|
+                    (current.auto_sign_in() != on).then(|| current.with_auto_sign_in(on))) {
+                    self.pending_auto = Some((on, ticket));
+                }
                 self.rebuild(self.table.sel, directory);
             }
             Action::TrailerAutoplay => {
-                crate::plex::session::set_trailer_autoplay(!self.state.trailer_autoplay);
+                let on = !self.state.trailer_autoplay;
+                if let Ok(ticket) = crate::plex::session::queue_update_ticket(move |current|
+                    (current.trailer_autoplay() != on).then(|| current.with_trailer_autoplay(on))) {
+                    self.pending_trailer = Some((on, ticket));
+                }
                 self.rebuild(self.table.sel, directory);
             }
             Action::Favourites => fx.push(Fx::Nav(NavOp::Push(SettingsPage::Favourites))),
@@ -1137,6 +1148,16 @@ impl Machine<InnerHost> for RootPage {
                 Handled::Yes
             }
             ScreenEvent::Tick(t) => {
+                let mut landed = false;
+                for pending in [&mut self.pending_auto, &mut self.pending_trailer] {
+                    if pending.as_ref().is_some_and(|(_, ticket)| !matches!(ticket.try_recv(),
+                        Err(std::sync::mpsc::TryRecvError::Empty))) {
+                        *pending = None;
+                        landed = true;
+                    }
+                }
+                if landed { self.rebuild(self.table.sel, cx.views); fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session)); }
+
                 self.table
                     .update(t.dt(), RouteLayout::screen().sectioned_table().h);
                 Handled::Yes

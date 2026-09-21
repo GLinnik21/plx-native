@@ -3,6 +3,7 @@ use super::*;
 
 fn frame(rig: &mut Bridge, d: &mut Dispatcher<AppHost>) {
     d.frame_with(rig, Tick::default(), Vec::new(), Vec::new(), &mut NoTap, false);
+    rig.settle_session_io_for_test(d);
 }
 
 fn dev_fixture() -> Bridge {
@@ -408,6 +409,7 @@ fn clean_login_replacement_checks_disk_identity_and_keeps_best_effort_ack_contra
         let results = records.into_iter().map(|r| (r.addr,
             AppMsg::Session(crate::auth::owner::SessionEvent::Result(r)))).collect();
         d.frame_with(&mut rig, Tick::default(), Vec::new(), results, &mut NoTap, false);
+        rig.settle_session_io_for_test(&mut d);
         let state = rig.session.snapshot_init();
         if disk_case == 1 {
             // AUTH-03/AUTH-04 (fresh-reauthentication-authority) narrowed

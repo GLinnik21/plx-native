@@ -1387,11 +1387,12 @@ pub(crate) fn restore_subtitle_tone(tone: crate::plex::session::SubtitleTone) {
     SUBTITLE_TONE.store(tone.index(), Relaxed);
 }
 
-/// Select a tone. MAIN THREAD (it writes the session). Takes effect on the next drawn frame —
+/// Select a tone on the main thread and retain its persistence work for the shared worker.
+/// Takes effect on the next drawn frame —
 /// the draws read the atomic — so there is nothing to reload and no cue store to touch.
 pub(crate) fn set_subtitle_tone(tone: crate::plex::session::SubtitleTone) {
     SUBTITLE_TONE.store(tone.index(), Relaxed);
-    let _ = crate::plex::session::set_subtitle_tone(tone);
+    let _ = crate::storage_worker::submit_retained(move || crate::plex::session::set_subtitle_tone(tone));
     // the picker's checkmark moves on this — see `route::persist_quality_choice`
     crate::ui::idle::invalidate();
 }
