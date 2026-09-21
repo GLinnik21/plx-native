@@ -324,6 +324,7 @@ mod tests {
             .map(|r| (r.addr, AppMsg::Session(SessionEvent::Result(r))))
             .collect();
         d.frame_with(rig, Tick::default(), Vec::new(), results, &mut NoTap, false);
+        rig.settle_session_io_for_test(d);
     }
 
     fn command(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, cmd: SessionCmd) {

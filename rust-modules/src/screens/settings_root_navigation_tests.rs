@@ -89,6 +89,7 @@ fn a_multi_user_root_toggles_automatically_sign_in_in_place() {
         Some(row),
     );
     step(&mut s, ScreenEvent::Activate(row.elem), Some(row));
+    crate::storage_worker::drain_for_test();
     assert_eq!(
         name(&s),
         word::SETTINGS,
@@ -97,9 +98,10 @@ fn a_multi_user_root_toggles_automatically_sign_in_in_place() {
     assert_eq!(s.inner.depth(), 1);
     assert!(
         crate::plex::session::peek().auto_sign_in(),
-        "OK commits the switch immediately"
+        "the queued switch is durable after the worker completes"
     );
     step(&mut s, ScreenEvent::Activate(row.elem), Some(row));
+    crate::storage_worker::drain_for_test();
     assert!(!crate::plex::session::peek().auto_sign_in());
     assert_eq!(s.inner.depth(), 1);
 }
@@ -540,4 +542,46 @@ fn the_logical_state_follows_the_inner_stack() {
         probe.starts_with("settings/root:") && probe.contains("/legal:"),
         "the probe names the path the surface is standing on, got {probe:?}"
     );
+}
+
+#[test]
+fn session_refresh_rebuilds_root_without_navigation() {
+    let _g = crate::testlock::serial();
+    let _sess = multi_user_session("root-session-refresh");
+    let saved = crate::plex::session::peek();
+    crate::plex::session::install_transient_for_test(true);
+    let mut root = RootPage::new(EntryId(0), cx(None).views);
+    assert!(!root.rows.iter().any(|a| matches!(a, Action::AutoSignIn)));
+    crate::plex::session::save(&saved.with_auto_sign_in(true));
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
+    root.step(&ScreenEvent::Tick(Tick::default()), &cx(None), &mut fx);
+    assert!(root.state.auto_sign_in, "a landed session must rebuild cached toggle values");
+    assert!(root.rows.iter().any(|a| matches!(a, Action::AutoSignIn)),
+        "a landed roster must restore the multi-user row");
+}
+
+#[test]
+fn session_refresh_keeps_optimistic_setting_through_transient_completion() {
+    let _g = crate::testlock::serial();
+    let _sess = multi_user_session("root-pending-refresh");
+    let saved = crate::plex::session::peek();
+    let mut root = RootPage::new(EntryId(0), cx(None).views);
+    let ticket = crate::storage_worker::submit_retained(|| false);
+    crate::storage_worker::drain_for_test();
+    root.pending_auto = Some((true, ticket));
+    root.rebuild(0, cx(None).views);
+    crate::plex::session::install_transient_for_test(false);
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
+    root.step(&ScreenEvent::Tick(Tick::default()), &cx(None), &mut fx);
+    assert!(root.state.auto_sign_in, "transient completion must not erase the optimistic value");
+    assert!(root.rows.iter().any(|a| matches!(a, Action::AutoSignIn)),
+        "transient storage must not remove the pending toggle");
+    crate::plex::session::save(&saved);
+    root.step(&ScreenEvent::Tick(Tick::default()), &cx(None), &mut fx);
+    assert!(!root.state.auto_sign_in, "settled authority resolves the refused write");
+    assert!(root.pending_auto.is_none());
 }

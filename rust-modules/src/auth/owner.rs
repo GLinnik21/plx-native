@@ -222,6 +222,8 @@ pub(crate) struct HeldHandoff { pub epoch: u64, pub req: u32 }
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct CommitPlan {
+    /// Identity captured for this login, independent of the old disk identity used for OCC.
+    pub registry_client_id: String,
     pub expected_disk: Identity,
     pub credentials: Option<CredentialPatch>,
     pub registry: Vec<RegistryPlan>,
@@ -469,6 +471,9 @@ pub(crate) enum SessionEvent {
     Command(Command),
     Result(SessionEnvelope),
     Commit(CommitReply),
+    /// Resource evidence is delivered even when its original authority permit is gone.
+    DiskWrite { before: Identity, after: Identity,
+        outcome: crate::plex::session::async_persistence::CompletionOutcome },
     Read(SessionReadReply),
     Pump,
     Admission(AdmissionReply),
@@ -1009,9 +1014,20 @@ impl SessionMachine {
         }
     }
 
+    /// Physical completion remains evidence even after its authority permit was superseded.
+    /// Advance only the comparison fence; never publish obsolete credentials as trusted state.
+    fn observe_disk_write(&mut self, before: &Identity, after: &Identity,
+        outcome: crate::plex::session::async_persistence::CompletionOutcome) -> bool {
+        use crate::plex::session::async_persistence::{CompletionOutcome, Operation};
+        if self.state.disk_identity != *before || before == after
+            || !matches!(outcome, CompletionOutcome::Durable(Operation::Write { .. })) { return false; }
+        self.state.disk_identity = after.clone();
+        true
+    }
+
     /// Read-only authorization at effect execution, after any carried cancellation command.
-    /// The Bridge borrows this owner while the adapter performs the synchronous commit; no
-    /// second epoch/decision counter is copied into that adapter.
+    /// The bridge checks before admission and again when the worker completes. Supersession
+    /// cancels pending work; a write already completed still reports its physical disk evidence.
     pub fn commit_is_current(&self, req: u32, epoch: u64, arrival: u64) -> bool {
         self.state.epoch == epoch
             && self.state.pending.contains_key(&req)
@@ -1076,7 +1092,8 @@ impl SessionMachine {
         let authority = if std::mem::take(&mut self.state.authorized_in_flow) {
             crate::plex::session::SaveAuthority::FreshReauthentication
         } else { crate::plex::session::SaveAuthority::Routine };
-        let plan = CommitPlan { expected_disk: self.state.disk_identity.clone(),
+        let plan = CommitPlan { registry_client_id: self.state.persisted.client_id.clone(),
+            expected_disk: self.state.disk_identity.clone(),
             credentials: Some(patch.clone()), lifecycle: None,
             registry: vec![RegistryPlan::Install { sources: next.sources.clone(), primary: None, replace: false }],
             purpose: PersistencePurpose::Final, writes_durable: true, authority };
@@ -1093,7 +1110,8 @@ impl SessionMachine {
         let registry = vec![RegistryPlan::DevInstall { primary: primary.clone(), extras: extras.clone(),
             client_id: self.state.persisted.client_id.clone() }];
         let Some(req) = self.allocate(SessionOp::DevBoundary, None) else { return false };
-        self.begin_commit(req, 0, true, CommitPlan { expected_disk: self.state.disk_identity.clone(),
+        self.begin_commit(req, 0, true, CommitPlan { registry_client_id: self.state.persisted.client_id.clone(),
+            expected_disk: self.state.disk_identity.clone(),
             credentials: None, lifecycle: None, registry,
             purpose: PersistencePurpose::Background, writes_durable: false,
             authority: crate::plex::session::SaveAuthority::Routine }, CommitDelta {
@@ -1113,7 +1131,8 @@ impl SessionMachine {
         self.state.error.clear();
         let req = self.allocate(SessionOp::DevBoundary, None).expect("two-slot preflight");
         let login_req = self.allocate(SessionOp::Login, None).expect("two-slot preflight");
-        self.begin_commit(req, 0, true, CommitPlan { expected_disk: self.state.disk_identity.clone(),
+        self.begin_commit(req, 0, true, CommitPlan { registry_client_id: self.state.persisted.client_id.clone(),
+            expected_disk: self.state.disk_identity.clone(),
             credentials: None, lifecycle: None, registry: vec![RegistryPlan::Revoke],
             purpose: PersistencePurpose::Background, writes_durable: false,
             authority: crate::plex::session::SaveAuthority::Routine }, CommitDelta {
@@ -1136,7 +1155,8 @@ impl SessionMachine {
         if self.state.phase != Phase::Idle || !self.state.persisted.can_go_local()
             || self.state.pending_commit.is_some() { return false; }
         let Some(req) = self.allocate(SessionOp::Ready, None) else { return false };
-        let plan = CommitPlan { expected_disk: self.state.disk_identity.clone(),
+        let plan = CommitPlan { registry_client_id: self.state.persisted.client_id.clone(),
+            expected_disk: self.state.disk_identity.clone(),
             credentials: None, lifecycle: None,
             registry: vec![RegistryPlan::Install { sources: self.state.persisted.sources.clone(),
                 primary: None, replace: false }],
@@ -1440,8 +1460,9 @@ impl SessionMachine {
 
     fn discard_owned_envelopes(&mut self, emit: &mut impl FnMut(SessionFx)) {
         let mut receipts: Vec<_> = self.state.inbox.drain(..).map(|record| Receipt::of(&record)).collect();
-        if let Some(receipt) = self.state.pending_commit.take().and_then(|commit| commit.receipt) {
-            receipts.push(receipt);
+        if let Some(commit) = self.state.pending_commit.take() {
+            emit(SessionFx::Cancel { requests: vec![commit.req], epoch: self.state.epoch });
+            if let Some(receipt) = commit.receipt { receipts.push(receipt); }
         }
         // Keep pump_pending: the marker may still be an App effect or a carried typed event.
         // Carried envelope receipts are not ours yet and therefore are NOT acknowledged here.
@@ -1560,7 +1581,8 @@ impl SessionMachine {
             registry.push(RegistryPlan::Install {
                 sources: self.state.persisted.sources.clone(), primary: None, replace: false,
             });
-            let plan = CommitPlan { expected_disk: self.state.disk_identity.clone(),
+            let plan = CommitPlan { registry_client_id: self.state.persisted.client_id.clone(),
+                expected_disk: self.state.disk_identity.clone(),
                 credentials: None, lifecycle: None, registry,
                 purpose: PersistencePurpose::Background, writes_durable: false,
                 authority: crate::plex::session::SaveAuthority::Routine };
@@ -1787,7 +1809,8 @@ impl SessionMachine {
             && self.state.authorized_in_flow {
             crate::plex::session::SaveAuthority::FreshReauthentication
         } else { crate::plex::session::SaveAuthority::Routine };
-        let mut plan = CommitPlan { expected_disk: self.state.disk_identity.clone(),
+        let mut plan = CommitPlan { registry_client_id: self.state.persisted.client_id.clone(),
+            expected_disk: self.state.disk_identity.clone(),
             credentials: None, registry: Vec::new(), lifecycle: pending.lifecycle,
             purpose, writes_durable: false, authority };
         match &**data {
@@ -2243,6 +2266,7 @@ impl<H: SessionHost> crate::ui::machine::Machine<H> for SessionMachine {
             }
             SessionEvent::Result(envelope) => self.ingest(envelope, &mut emit),
             SessionEvent::Commit(reply) => self.apply_commit_reply(*reply, &mut emit),
+            SessionEvent::DiskWrite { before, after, outcome } => self.observe_disk_write(before, after, *outcome),
             SessionEvent::Persistence(completion) => self.apply_persistence_completion(*completion, &mut emit),
             SessionEvent::Read(reply) => self.apply_read(reply, &mut emit),
             SessionEvent::Admission(reply) => self.apply_admission(*reply, &mut emit),
@@ -3017,6 +3041,22 @@ mod tests {
     /// A fresh write admitted over a READABLE record whose write then definitely failed leaves
     /// that record on disk, so the next fresh write must be fenced on it rather than on the
     /// identity that never landed (otherwise every retry this run is `StaleAuthority`).
+    #[test]
+    fn a_durable_superseded_write_advances_only_the_disk_fence() {
+        use crate::plex::session::async_persistence::{CompletionOutcome, Operation, PersistOutcome};
+        let mut owner = SessionMachine::from_init(captured_session());
+        let before = owner.state.disk_identity.clone();
+        let mut after = before.clone();
+        after.account_token = "superseded-durable-token".into();
+        let trusted = Identity::of(&owner.state.persisted);
+        let outcome = CompletionOutcome::Durable(Operation::Write {
+            outcome: PersistOutcome::PersistedPlaintext, verified: true, protection: None });
+        assert!(owner.observe_disk_write(&before, &after, outcome));
+        assert!(owner.state.disk_identity == after);
+        assert!(Identity::of(&owner.state.persisted) == trusted, "disk evidence is not login authority");
+        assert!(!owner.observe_disk_write(&before, &after, outcome), "duplicate receipt is inert");
+    }
+
     #[test]
     fn a_failed_fresh_write_restores_the_disk_identity_it_never_replaced() {
         use crate::plex::session::async_persistence::{

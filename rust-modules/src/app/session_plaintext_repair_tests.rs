@@ -20,6 +20,7 @@ mod tests {
     fn frame(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, records: Vec<crate::auth::owner::SessionEnvelope>) {
         let results = records.into_iter().map(|r| (r.addr, AppMsg::Session(SessionEvent::Result(r)))).collect();
         d.frame_with(rig, Tick::default(), Vec::new(), results, &mut NoTap, false);
+        rig.settle_session_io_for_test(d);
     }
 
     #[test]

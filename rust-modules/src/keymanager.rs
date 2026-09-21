@@ -189,11 +189,13 @@ fn abort_modern(client: &mut platform::Client, handle: &str) {
 }
 
 fn call(uri: &str, payload: &Value) -> Option<Value> {
+    let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("keymanager round trip") });
     let mut client = platform::Client::new().ok()?;
     call_with(&mut client, uri, payload)
 }
 
 fn call_with(client: &mut platform::Client, uri: &str, payload: &Value) -> Option<Value> {
+    let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("keymanager round trip") });
     client
         .call(uri, &payload.to_string())
         .ok()

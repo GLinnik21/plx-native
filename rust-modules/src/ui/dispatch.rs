@@ -731,6 +731,7 @@ where
         tap: &mut dyn Tap<H>,
         draw: bool,
     ) -> FrameReport {
+        let _frame_scope = crate::task::FrameScope::enter();
         self.frame += 1;
         self.last_tick = tick;
         self.prepared = false;
@@ -1149,6 +1150,7 @@ where
     /// legacy loop draws its own pages and reserves this call for the dispatcher's surfaces
     /// and its OWNED pages).
     pub fn draw(&mut self, rig: &mut dyn Rig<H>, pages: bool) -> FrameReport {
+        let _frame_scope = crate::task::FrameScope::enter();
         let tick = self.last_tick;
         if !self.prepared {
             self.prepare_pass(rig, tick);

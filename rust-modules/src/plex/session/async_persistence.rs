@@ -1044,7 +1044,7 @@ pub(crate) fn clear() -> Result<Receipt, AdmissionError> {
 /// Consent may delegate to this receipt; it must not announce independent durability.
 ///
 /// **Not yet wired to the live sign-out path, and that is a decision, not an oversight.**
-/// `plex::session::clear()` is the entry point `app::adapters::session::erase()` actually calls,
+/// `plex::session::clear()` is the entry point the adapter's queued clear actually calls,
 /// and it stays a synchronous, [`super::IO`]-locked implementation — `commit_cleared` then, on a
 /// durable commit, `persistence::cleanup_after_confirmed_clear` — for the same reason `save()`'s
 /// live write path is still synchronous: routing sign-out through this coordinator would admit it

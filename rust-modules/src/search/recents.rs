@@ -1,5 +1,5 @@
 //! Profile-scoped recent Search terms, independent of text measurement and rendering.
-//! Session reads are cached by profile generation; writes use the session's atomic worker door.
+//! Session reads are cached by profile and visible-session generation; writes use the session's atomic worker door.
 //! Query/server resets do not erase history. Snapshots retain their original profile's terms.
 use std::sync::{Arc, Mutex};
 
@@ -24,6 +24,7 @@ impl RecentsSnapshot {
 }
 
 struct Store {
+    session_generation: u64,
     generation: u32,
     who: String,
     account: Account,
@@ -34,17 +35,22 @@ static STORE: Mutex<Option<Store>> = Mutex::new(None);
 fn with_store<R>(f: impl FnOnce(&mut Store) -> R) -> R {
     let mut guard = STORE.lock().unwrap_or_else(|e| e.into_inner());
     let generation = crate::plex::session::current_gen();
-    if guard.as_ref().map(|s| s.generation) != Some(generation) {
+    let session_generation = crate::plex::session::visible_generation();
+    let settled = crate::plex::session::peek_settled();
+    if settled.is_none() && guard.as_ref().is_some_and(|s| s.generation == generation) {
+        return f(guard.as_mut().unwrap());
+    }
+    if guard.as_ref().map(|s| (s.generation, s.session_generation)) != Some((generation, session_generation)) {
         let who = crate::plex::session::current_profile_key();
-        // Copy before reading disk: a worker may drain this entry while peek waits for IO.
-        // Taking PENDING across peek would invert flush's IO -> PENDING lock order.
+        // Copy before taking the session snapshot: a worker may drain this entry concurrently.
+        // Keep the pending-store lock separate from the session snapshot lock.
         let pending = PENDING.lock().unwrap_or_else(|e| e.into_inner())
             .iter().find(|p| p.who == who).cloned();
-        let session = crate::plex::session::peek();
+        let session = settled.unwrap_or_default();
         let account = Account::of(&session);
         let terms = pending.filter(|p| p.account == account).map(|p| p.terms)
             .unwrap_or_else(|| sanitize(session.recents_for(&who).to_vec()));
-        *guard = Some(Store { generation, who, account, terms: Arc::new(terms) });
+        *guard = Some(Store { session_generation, generation, who, account, terms: Arc::new(terms) });
     }
     f(guard.as_mut().expect("profile cache is populated"))
 }
@@ -234,6 +240,20 @@ mod tests {
             *STORE.lock().unwrap_or_else(|e| e.into_inner()) = None;
             PENDING.lock().unwrap_or_else(|e| e.into_inner()).clear();
         }
+    }
+
+    #[test]
+    fn session_refresh_recovers_history_without_a_profile_switch() {
+        let _guard = crate::testlock::serial();
+        let session = crate::plex::session::TempSession::new("recents-session-refresh");
+        let _caches = ClearCaches;
+        session.watching("test-user");
+        let mut saved = (*crate::plex::session::peek()).clone();
+        saved.set_recents_for("test-user", vec!["Synthetic title".into()]);
+        crate::plex::session::install_transient_for_test(true);
+        assert!(snapshot().terms().is_empty());
+        crate::plex::session::save(&saved);
+        assert_eq!(snapshot().terms(), &["Synthetic title"]);
     }
 
     #[test]

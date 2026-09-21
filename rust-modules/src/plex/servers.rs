@@ -928,21 +928,13 @@ pub(crate) fn register_origin(
     connection: ConnectionFacts,
 ) -> ServerId {
     let policy = CredentialPolicy::build();
-    // The playback identity (`X-Plex-Client-Identifier`) is the persisted login identity, so it
-    // comes from the session file — read LAZILY, i.e. only when a `Client` is actually built.
-    // `session::load` can WRITE (it mints + persists the uuid when there is none), and the
-    // commonest call here by far is the profile switch, which only swaps a token; the singleton
-    // this replaced read the file exactly once, and so does this.
+    // Boot/credential completion has already supplied the install identity. Registration also
+    // runs inside frames, so a new or re-pointed slot may only consult the cached snapshot.
     let id = register_lazy(machine_id, origin, token, pin, connection, policy, &|| {
-        super::session::load().client_id
+        super::session::peek().client_id.clone()
     });
-    // Every server the app actually talks to arrives through THIS function (the `_with_client_id`
-    // seam below is the test one and deliberately does not), so it is the single place that keeps
-    // each server's self-description — version + Plex Pass, issue #22's blind spot — fresh
-    // without every caller remembering to. It used to sit in `install`, which reached only the
-    // CURRENT server; a shared server registered beside it would have stayed permanently
-    // `Unknown`, and the failure read-out blames a missing Pass on a known-free server only.
-    // A worker fetch, single-flighted per server; nothing waits on it.
+    // Both this cached-identity path and the captured-identity path refresh the server's
+    // self-description. The worker is single-flighted per server; registration never waits.
     if policy.may_carry_credential(origin) {
         super::serverinfo::refresh(id);
     }
@@ -957,8 +949,8 @@ pub(crate) fn register_origin(
 ///
 /// **Two reasons a host test must come through here, and the second one cost a red CI run.**
 ///
-/// 1. The public [`register`] resolves the device id through `session::load`, which MINTS AND
-///    PERSISTS a uuid when there is none. A host test must not write one.
+/// 1. The public [`register`] resolves the device id through `session::peek`; a cache miss can
+///    queue a storage refresh. Pure registry tests supply the id instead.
 /// 2. [`register`] also fires [`serverinfo::refresh`](super::serverinfo::refresh), which spawns a
 ///    worker that really opens a socket. Tests of the registry must not acquire that unrelated
 ///    network side effect or depend on worker scheduling. (`stream::http_stream_boxed` now zeros
@@ -1035,6 +1027,9 @@ fn register_lazy(
     // exists to catch.
     #[cfg(test)]
     crate::testlock::assert_held("the plex server registry (register)");
+    let client_id = client_id();
+    // A transient/revoked session has no install identity. Never publish a malformed client.
+    if client_id.is_empty() { return ServerId::UNSET; }
     // Recorded BEFORE the client is published, so no request made through the new pointer can
     // reach `curlio` ahead of the table entry it will look for. Once per (host, port); the
     // log line below names the pin only when it is new, so a token-only re-registration of the
@@ -1100,7 +1095,7 @@ fn register_lazy(
             PROBES[id.0 as usize].store(PROBE_UNKNOWN, Ordering::Release);
             publish(
                 id,
-                Client::new(id, mid, origin.clone(), admitted_token, &client_id())
+                Client::new(id, mid, origin.clone(), admitted_token, &client_id)
                     .with_resolve_pin(pin.cloned()),
             );
             ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
@@ -1140,7 +1135,7 @@ fn register_lazy(
     PROBES[n].store(PROBE_UNKNOWN, Ordering::Release);
     publish(
         id,
-        Client::new(id, machine_id, origin.clone(), admitted_token, &client_id())
+        Client::new(id, machine_id, origin.clone(), admitted_token, &client_id)
             .with_resolve_pin(pin.cloned()),
     );
     COUNT.store(n + 1, Ordering::Release); // after the pointer: a visible count implies a live slot
@@ -1381,6 +1376,14 @@ mod tests {
 
     fn reg(machine_id: &str, host: &str, token: &str) -> ServerId {
         register_with_client_id(machine_id, host, 32400, token, "test-client-id")
+    }
+
+    #[test]
+    fn registration_refuses_an_empty_client_identifier() {
+        let _g = fresh();
+        assert_eq!(register_with_client_id("synthetic-machine", "127.0.0.1", 9,
+            "synthetic-token", ""), ServerId::UNSET);
+        assert!(client_opt().is_none());
     }
 
     /// **The offline fix's registry half.** A pinned registration publishes the pin on the

@@ -1008,9 +1008,8 @@ pub(crate) fn delete_all_local_data(meta: &mut crate::stores::metadata::Metadata
     // thin `recents::clear()` wrapper this used to call): recent Search terms
     // live INSIDE the session file (`crate::search::recents`'s doc — "profile-scoped … the
     // session's atomic worker door"), and the adapter already deleted that file
-    // SYNCHRONOUSLY. An explicit clear here would spawn its own async save
-    // (`recents::clear`'s `task::spawn_small("recents-save", …)`) racing the synchronous
-    // deletion — the worse of the two orders resurrects a stub session file
+    // before this completion sweep. An explicit clear here would queue its own save
+    // racing the ordered credential deletion — the worse of the two orders resurrects a stub session file
     // AFTER "delete everything" already removed it. Letting the file deletion alone answer
     // for recents removes that race rather than leaving it to chance ordering.
     //

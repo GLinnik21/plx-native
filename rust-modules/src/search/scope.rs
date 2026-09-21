@@ -78,6 +78,7 @@ struct Key {
     sections_gen: u32,
     source_list_gen: u32,
     profile_gen: u32,
+    session_gen: u64,
 }
 
 struct Cache {
@@ -138,6 +139,7 @@ pub(crate) struct ScopeCache {
 /// Read every registry input used by a standalone Search fixture. Production adds the retained
 /// Browse directory generations through [`read_key_with_directory`].
 fn read_key() -> Key {
+    let _ = crate::plex::session::peek();
     let mut roster = [ServerId::UNSET; MAX_SERVERS];
     let mut facts = [0; MAX_SERVERS];
     let mut roster_len = 0;
@@ -155,10 +157,12 @@ fn read_key() -> Key {
         sections_gen: 0,
         source_list_gen: 0,
         profile_gen: crate::plex::session::current_gen(),
+        session_gen: crate::plex::session::visible_generation(),
     }
 }
 
 fn read_key_with_directory(directory: crate::stores::browse::DirectoryView<'_>) -> Key {
+    let _ = crate::plex::session::peek();
     let mut key = read_registry_key();
     key.sections_gen = directory.sections_gen();
     key.source_list_gen = directory.source_list_gen();
@@ -183,6 +187,7 @@ fn read_registry_key() -> Key {
         sections_gen: 0,
         source_list_gen: 0,
         profile_gen: crate::plex::session::current_gen(),
+        session_gen: crate::plex::session::visible_generation(),
     }
 }
 
@@ -302,6 +307,27 @@ fn build_with_directory(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_refresh_rebuilds_search_household_scope() {
+        let _serial = crate::testlock::serial();
+        let _reset = Reset;
+        let _session = crate::plex::session::TempSession::new("scope-session-refresh");
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test("scope-house", "127.0.0.1", 9, "t", "scope");
+        crate::plex::describe_server(sid, "Synthetic house", "", crate::plex::GrantEvidence {
+            owned: false, home: false, owner_id: 123,
+        });
+        crate::plex::session::install_transient_for_test(true);
+        let cache = ScopeCache::default();
+        assert!(!cache.snapshot().sources()[0].household);
+        crate::plex::session::save(&crate::plex::session::Session {
+            client_id: "synthetic-client".into(), home_users: vec![crate::plex::session::HomeUserRef {
+                id: 123, ..Default::default()
+            }], ..Default::default()
+        });
+        assert!(cache.snapshot().sources()[0].household);
+    }
 
     /// **Search carries the household verdict too, and still does not filter on it.**
     ///

@@ -37,7 +37,9 @@
 //! its own spinner too.
 //!
 //! The constructor and each `Tick` consume one immutable [`auth::SessionRead`] publication through
-//! [`AuthLike`]. The QR code, bitmap and generation therefore come from one retained snapshot; draw,
+//! [`AuthLike`]. Its login client-id capture resolves on the storage worker when the visible
+//! cache is empty (including local revocation), so a transient peek is never latched as the ID.
+//! The QR code, bitmap and generation therefore come from one retained snapshot; draw,
 //! prepare and focus geometry read only the screen's cached fields. Commands travel as typed
 //! [`auth::SessionCmd`] effects. A stalled-wait clock is reset only by its matching accepted
 //! [`AppMsg::RestartReply`], never when the request is merely emitted.
@@ -2502,6 +2504,7 @@ mod tests {
         instance: InstanceId,
         m: &crate::ui::fixture::FixtureMeasure,
     ) -> (Handled, Vec<Stamped<SessionHost>>) {
+        let _frame_scope = crate::task::FrameScope::enter();
         let cx = cx_with(m, snapshot);
         let mut present = Present::new();
         let mut buf: Vec<Stamped<SessionHost>> = Vec::new();

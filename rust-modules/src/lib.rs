@@ -157,6 +157,7 @@ pub(crate) mod testlock {
 
     impl Drop for Serial {
         fn drop(&mut self) {
+            crate::storage_worker::drain_for_test();
             OWNER.store(NOBODY, Ordering::SeqCst);
         }
     }

@@ -57,6 +57,7 @@ fn pill_index(
 pub(crate) struct ChromeSnapshot {
     tabs_generation: Option<u32>,
     profile_generation: Option<u32>,
+    session_watch: crate::plex::session::VisibleSessionWatch,
     labels: Vec<String>,
     keys: Vec<u32>,
     widths: Vec<f32>,
@@ -93,7 +94,8 @@ impl ChromeSnapshot {
             self.tabs_generation = Some(generation);
         }
         let generation = captured.map_or_else(crate::plex::session::current_gen, |(profile, _)| profile.generation);
-        if self.profile_generation != Some(generation) {
+        let session_changed = captured.is_none() && self.session_watch.changed();
+        if self.profile_generation != Some(generation) || session_changed {
             let current = captured.map_or_else(crate::plex::session::current, |(profile, _)| profile.user.clone());
             let account = if let Some((_, saved)) = captured { saved.account(current.as_ref()) }
                 else { crate::plex::session::peek().account(current.as_ref()) };
@@ -173,6 +175,25 @@ mod tests {
             row: SrcRow { section: i, title: format!("Library {i}"), pinned: true,
                 ..Default::default() },
         }).collect())
+    }
+
+    #[test]
+    fn session_refresh_rebuilds_the_profile_chip_without_a_profile_switch() {
+        let _serial = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("chrome-session-refresh");
+        let mut snapshot = ChromeSnapshot::default();
+        let directory = directory(&[]);
+        crate::plex::session::install_transient_for_test(true);
+        snapshot.refresh(&crate::ui::fixture::FixtureMeasure, directory.view());
+        assert_eq!(snapshot.name.to_str().unwrap(), "Sign in");
+        crate::plex::session::save(&crate::plex::session::Session {
+            client_id: "synthetic-client".into(), account_token: "synthetic-token".into(),
+            home_users: vec![crate::plex::session::HomeUserRef {
+                title: "Synthetic owner".into(), admin: true, ..Default::default()
+            }], ..Default::default()
+        });
+        snapshot.refresh(&crate::ui::fixture::FixtureMeasure, directory.view());
+        assert_eq!(snapshot.name.to_str().unwrap(), "Synthetic owner");
     }
 
     #[test]

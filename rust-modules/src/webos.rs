@@ -410,18 +410,29 @@ pub(crate) fn go_home() {
     // legs are even eligible. Without it a reader cannot tell a forced run from an ordinary one,
     // and the device evidence for this change is read by somebody who did not write it.
     crate::log(&format!("gohome: request mode={mode}"));
-    if mode == "probe" {
-        ls2_probe();
-        return;
+    if mode == "minimize" { minimize(); return; }
+    if HOME_PENDING.swap(true, std::sync::atomic::Ordering::AcqRel) { return; }
+    let probe = mode == "probe";
+    let sam_only = mode == "sam";
+    if !crate::task::spawn_small("platform home", move || {
+        if probe { ls2_probe(); }
+        else if !launch_home() {
+            if sam_only { crate::log("gohome: no fallback — the trigger forced SAM only"); }
+            else { HOME_MINIMIZE.store(true, std::sync::atomic::Ordering::Release); }
+        }
+        HOME_PENDING.store(false, std::sync::atomic::Ordering::Release);
+    }) {
+        HOME_PENDING.store(false, std::sync::atomic::Ordering::Release);
+        if !probe && !sam_only { minimize(); }
     }
-    if mode != "minimize" && launch_home() {
-        return;
-    }
-    if mode == "sam" {
-        crate::log("gohome: no fallback — the trigger forced SAM only");
-        return;
-    }
-    minimize();
+}
+
+static HOME_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static HOME_MINIMIZE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// LS2 waits on its own context off-thread; only the SDL fallback returns to the frame thread.
+pub(crate) fn poll_home() {
+    if HOME_MINIMIZE.swap(false, std::sync::atomic::Ordering::AcqRel) { minimize(); }
 }
 
 /// How long one root press speaks for. Comfortably longer than [`ls2::BUDGET`], so a burst of taps
@@ -901,6 +912,7 @@ pub(crate) mod ls2 {
         /// `Err` never means "the method said no" — a refusal comes back as the platform's own JSON
         /// in the `Ok`, for the caller to grade.
         pub(crate) fn call(&self, uri: &str, payload: &str, budget: Duration) -> Result<String, Fail> {
+            let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("LS2 round trip") });
             let setup = |stage| Fail::Setup {
                 stage,
                 detail: String::new(),

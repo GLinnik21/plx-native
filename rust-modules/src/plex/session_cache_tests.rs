@@ -170,8 +170,8 @@ fn a_non_durable_write_drops_the_cache() {
     let _ = peek();
     assert_eq!(
         reads_for_test(),
-        1,
-        "after the cache was dropped, the next peek must read the authority exactly once"
+        0,
+        "after a cache drop, peek must leave the authority read to the worker"
     );
 }
 
@@ -201,8 +201,8 @@ fn clear_drops_the_cached_session() {
     assert!(peek().client_id.is_empty(), "signed out: peek must answer the default session");
     assert_eq!(
         reads_for_test(),
-        1,
-        "the post-clear peek must read the (now-cleared) authority exactly once"
+        0,
+        "the post-clear peek must not read storage on this thread"
     );
 }
 
@@ -279,7 +279,7 @@ fn peek_from_another_thread_does_not_take_io() {
         .expect("the other thread must not panic");
 }
 
-/// Two callers can both find `CACHE` empty and then take turns on `IO`; the one that gets there
+/// Two synchronous `peek_at` callers can find `CACHE` empty and take turns on `IO`; the one there
 /// second must not blindly re-read storage once it finally has the lock — the caller ahead of it
 /// may have already installed the answer. Modelled with the same `update(...)`-holds-`IO` trick
 /// as the test above: the worker's own miss check runs (and is confirmed a real miss) BEFORE this
@@ -420,4 +420,24 @@ fn redirecting_the_fixture_drops_the_cache() {
         "cid-2",
         "redirecting to a fresh fixture must not leave a stale cached answer from the old one"
     );
+}
+
+#[test]
+fn an_uncertain_clear_cannot_be_undone_by_a_queued_preference_or_load() {
+    let _serial = crate::testlock::serial();
+    let _root = TempCanonicalRoot::new("uncertain-clear-revoked");
+    redirect_for_test(None);
+    save(&signed_in());
+    let record = _root.dir.join("session.json");
+    let previous = std::fs::read(&record).unwrap();
+    crate::storage::inject_next_commit_failure_for_test(crate::storage::CommitStage::ParentSync);
+    assert_eq!(clear(), ClearOutcome::NotDurable);
+    crate::storage::clear_injected_commit_failure_for_test();
+    // An uncertain parent sync cannot prove which rename survives. Exercise the permitted
+    // old-record outcome rather than assuming that this process's current rename is durable.
+    std::fs::write(&record, previous).unwrap();
+    let receipt = queue_update_ticket(|s| Some(s.with_auto_sign_in(true))).unwrap();
+    assert!(!receipt.wait_blocking().unwrap());
+    let _ = load();
+    assert!(peek().account_token.is_empty());
 }

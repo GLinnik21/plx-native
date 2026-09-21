@@ -5,7 +5,7 @@
 //! but does not join: process termination must never be the mechanism that makes a save durable.
 
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
 /// Shared persistence queue bound. Domain adapters must submit immutable snapshots and never
 /// perform disk I/O inline on the caller.
@@ -56,16 +56,84 @@ pub(crate) struct Executor {
     writer: Writer<Job, ()>,
 }
 
-static SHARED: OnceLock<Result<Executor, ()>> = OnceLock::new();
+static SHARED: Mutex<Option<Executor>> = Mutex::new(None);
 
 pub(crate) fn submit<R: Send + 'static>(
     operation: impl FnOnce() -> R + Send + 'static,
 ) -> Result<TypedTicket<R>, SubmitError> {
-    let executor = match SHARED.get_or_init(|| Executor::start(CAPACITY).map_err(|_| ())) {
-        Ok(executor) => executor,
-        Err(()) => return Err(SubmitError::StartFailed),
-    };
-    executor.submit(operation)
+    submit_shared(&SHARED, || Executor::start(CAPACITY), operation)
+}
+
+/// A refused thread start is retryable. Serialize short queue admissions so Full means the
+/// bounded command queue is full, not that another caller was briefly admitting its command.
+fn submit_shared<R: Send + 'static>(
+    shared: &Mutex<Option<Executor>>,
+    start: impl FnOnce() -> Result<Executor, std::io::Error>,
+    operation: impl FnOnce() -> R + Send + 'static,
+) -> Result<TypedTicket<R>, SubmitError> {
+    // This lock protects queue construction/admission only, never a callback or disk I/O.
+    // The worker releases it before taking session::IO (whose nested order is IO -> CACHE).
+    let mut slot = shared.lock().unwrap_or_else(|error| error.into_inner());
+    if slot.is_none() {
+        *slot = Some(start().map_err(|_| SubmitError::StartFailed)?);
+    }
+    let result = slot.as_ref().expect("worker initialized").submit(operation);
+    if matches!(result, Err(SubmitError::Stopped)) { *slot = None; }
+    result
+}
+
+/// User edits retain their pending intent when the bounded executor is full or cannot start.
+/// The frame pump retries admission; dropping a receipt does not discard an accepted edit.
+/// This backlog holds pending user actions, not running threads. Ordinary background producers
+/// still use `submit` and its bounded backpressure.
+struct Retained {
+    jobs: std::collections::VecDeque<Job>,
+    retry_at: Option<std::time::Instant>,
+}
+static RETAINED: Mutex<Retained> = Mutex::new(Retained {
+    jobs: std::collections::VecDeque::new(), retry_at: None,
+});
+
+pub(crate) fn submit_retained<R: Send + 'static>(operation: impl FnOnce() -> R + Send + 'static)
+    -> TypedTicket<R> {
+    let (reply, result) = mpsc::channel();
+    let (done, worker) = mpsc::channel();
+    let job: Job = Box::new(move || {
+        let _done = done;
+        let _ = reply.send(operation());
+    });
+    let mut retained = RETAINED.lock().unwrap_or_else(|e| e.into_inner());
+    retained.jobs.push_back(job);
+    pump_retained_locked(&mut retained);
+    TypedTicket { result, worker }
+}
+
+pub(crate) fn pump_retained() {
+    pump_retained_locked(&mut RETAINED.lock().unwrap_or_else(|e| e.into_inner()));
+}
+
+fn pump_retained_locked(retained: &mut Retained) {
+    if retained.retry_at.is_some_and(|at| std::time::Instant::now() < at) { return; }
+    retained.retry_at = None;
+    while let Some(job) = retained.jobs.pop_front() {
+        let held = std::sync::Arc::new(Mutex::new(Some(job)));
+        let queued = held.clone();
+        match submit(move || {
+            let job = queued.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(job) = job { job(); }
+        }) {
+            Ok(_) => {},
+            Err(error) => {
+                if let Some(job) = held.lock().unwrap_or_else(|e| e.into_inner()).take() {
+                    retained.jobs.push_front(job);
+                }
+                if error != SubmitError::Full {
+                    retained.retry_at = Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
+                }
+                break;
+            }
+        }
+    }
 }
 
 /// Wait until every job accepted before this call has finished. Test redirects are process-wide;
@@ -74,10 +142,11 @@ pub(crate) fn submit<R: Send + 'static>(
 #[cfg(test)]
 pub(crate) fn drain_for_test() {
     loop {
+        pump_retained();
         match submit(|| ()) {
             Ok(ticket) => {
                 let _ = ticket.wait_blocking();
-                return;
+                if RETAINED.lock().unwrap_or_else(|e| e.into_inner()).jobs.is_empty() { return; }
             }
             Err(SubmitError::Full) => std::thread::yield_now(),
             Err(SubmitError::Stopped | SubmitError::StartFailed) => return,
@@ -219,6 +288,32 @@ impl<C: Send + 'static, R: Send + 'static> Writer<C, R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_shared_worker_start_can_be_retried() {
+        let shared = Mutex::new(None);
+        assert!(matches!(submit_shared(&shared,
+            || Err(std::io::Error::other("EAGAIN fixture")), || ()), Err(SubmitError::StartFailed)));
+        let ticket = submit_shared(&shared, || Executor::start(1), || 7).unwrap();
+        assert_eq!(ticket.wait_blocking().unwrap(), 7);
+    }
+
+    #[test]
+    fn concurrent_submitters_do_not_report_a_spurious_full_queue() {
+        let shared = Mutex::new(None);
+        let held = shared.lock().unwrap();
+        let (started, entered) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let handle = scope.spawn(|| {
+                started.send(()).unwrap();
+                submit_shared(&shared, || Executor::start(2), || 7)
+            });
+            entered.recv().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            drop(held);
+            assert_eq!(handle.join().unwrap().unwrap().wait_blocking().unwrap(), 7);
+        });
+    }
 
     #[test]
     fn typed_executor_serializes_domain_jobs_and_returns_typed_results() {

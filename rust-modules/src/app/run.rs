@@ -99,7 +99,10 @@ impl Frame {
 /// `app.adapters.player.mt()`. Threading a second `&MainThread` beside `&mut App` would have
 /// needed a second token, and minting one is the hole `MainThread::assume` documents.
 pub(crate) unsafe fn run(app: &mut App) {
+    let watchdog = crate::task::watchdog::LoopWatch::start();
     while app.running {
+        watchdog.advance();
+        let _frame_scope = crate::task::FrameScope::enter();
         #[cfg(all(feature = "hostsim", target_os = "linux"))]
         let wslg_frame_budget = app.wslg_frame_pacing.then(crate::system::WslgFrameBudget::begin);
         // Resolve the control row ONCE per iteration, before the event pump, and pass this
@@ -133,6 +136,7 @@ pub(crate) unsafe fn run(app: &mut App) {
             }
         }
         crate::system::ls2_pump();
+        crate::webos::poll_home();
         ingest(app, fr);
         app.instr.mark(crate::diag::heartbeat::Phase::Ingest); // ingest
 
@@ -261,6 +265,7 @@ pub(crate) unsafe fn run(app: &mut App) {
             #[cfg(all(feature = "hostsim", target_os = "linux"))]
             wslg_frame_budget,
         );
+        if fr.present { watchdog.presented(); }
         report(app, fr);
         heartbeat(app, fr);
     }

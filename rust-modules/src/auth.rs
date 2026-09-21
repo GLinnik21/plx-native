@@ -546,7 +546,7 @@ impl ClientLifecycle {
 
 /// Native registry effects executed only by the Session resource adapter, after its borrowed
 /// owner permit and (for an endpoint) exact captured Client lifecycle have been validated.
-pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan) -> bool {
+pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan, client_id: &str) -> bool {
     match plan {
         owner::RegistryPlan::DevInstall { primary, extras, client_id } => {
             install_captured_registry(&primary.origin(), &primary.address, &primary.token,
@@ -560,7 +560,8 @@ pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan) -> bool {
                 server.tier,
                 crate::plex::IpVersion::of_host(&server.address),
             );
-            crate::plex::install(&server.origin(), token, server.resolve_pin().as_ref(), connection);
+            let id = register_observed_origin("", &server.origin(), token, server.resolve_pin().as_ref(), connection, client_id);
+            crate::plex::set_current(id);
         }
         owner::RegistryPlan::Activate { source, ipv6 } => {
             let Some(origin) = source.origin() else { return false };
@@ -571,11 +572,11 @@ pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan) -> bool {
                 home: source.home, owner_id: source.owner_id,
                 origin, address: source.address.clone(),
                 location, ipv6: *ipv6,
-            });
+            }, client_id);
         }
         owner::RegistryPlan::Install { sources, primary, replace } => {
             if *replace { crate::plex::revoke_for_profile_switch(); }
-            let installed = install_roster(sources, *primary);
+            let installed = install_roster(sources, *primary, client_id);
             if *replace { crate::plex::finish_profile_switch(&installed); }
         }
         owner::RegistryPlan::Endpoint { expected, source } => {
@@ -585,7 +586,7 @@ pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan) -> bool {
                 crate::plex::IpVersion::of_host(&source.address),
             );
             let id = register_observed_origin(&source.machine_id, &origin, &source.token,
-                source.resolve_pin().as_ref(), connection);
+                source.resolve_pin().as_ref(), connection, client_id);
             if id.raw() != expected.sid { return false; }
             crate::plex::describe_server(id, &source.name, &source.shared_by, grant_of(source));
             crate::plex::publish_probe_result(id, Outcome::Reachable);
@@ -597,7 +598,7 @@ pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan) -> bool {
 }
 
 /// Shared resource installer. Dev boot supplies its captured device identity so registration
-/// cannot mint/read a session file; Account installation retains the existing lazy-ID behavior.
+/// cannot mint/read a session file; legacy boot callers can use the already-loaded session cache.
 ///
 /// `address` is the advertised address BEHIND `origin` (#95 step 8 / R3(a)): `origin.host()` is
 /// usually a `plex.direct` certificate NAME that `IpVersion::of_host` cannot parse, so deriving
@@ -616,7 +617,7 @@ pub(crate) fn install_captured_registry(origin: &Origin, address: &str, token: &
             crate::plex::register_captured_origin_with_connection(machine, origin, token, pin, cid,
                 connection)
         } else {
-            register_observed_origin(machine, origin, token, pin, connection)
+            register_observed_origin(machine, origin, token, pin, connection, &session::peek().client_id)
         }
     };
     let primary_connection =
@@ -730,38 +731,20 @@ pub(crate) enum LoginProgress {
     },
 }
 
-/// Register one accepted observed origin. Host tests use the registry's explicit no-I/O seam;
-/// shipping builds retain `register_origin`'s server-info refresh and persisted client identity.
-///
-/// `connection` (#95 step 8) is applied atomically, inside the SAME registration write, on
-/// whichever branch below runs — never as a separate call after this function returns, which is
-/// what let a re-point publish a fresh `Client` between "registered" and "connection applied" and
-/// briefly (or, if the caller forgot the follow-up, permanently) report it as unknown.
+/// Register with the identity captured by the owner, including before a fresh login is durable.
 fn register_observed_origin(
     machine_id: &str,
     origin: &Origin,
     token: &str,
     pin: Option<&crate::plex::ResolvePin>,
     connection: crate::plex::ConnectionFacts,
+    client_id: &str,
 ) -> ServerId {
-    #[cfg(not(test))]
-    {
-        crate::plex::register_origin(machine_id, origin, token, pin, connection)
-    }
-    #[cfg(test)]
-    {
-        crate::plex::register_pinned_with_client_id(
-            machine_id,
-            origin,
-            token,
-            pin,
-            "auth-observation-test",
-            connection,
-        )
-    }
+    crate::plex::register_captured_origin_with_connection(
+        machine_id, origin, token, pin, client_id, connection)
 }
 
-fn apply_candidate_activation(candidate: CandidateActivation) {
+fn apply_candidate_activation(candidate: CandidateActivation, client_id: &str) {
     let pin = crate::plex::ResolvePin::for_origin(&candidate.origin, &candidate.address);
     let connection = crate::plex::ConnectionFacts::new(
         Some(candidate.location),
@@ -777,6 +760,7 @@ fn apply_candidate_activation(candidate: CandidateActivation) {
         &candidate.token,
         pin.as_ref(),
         connection,
+        client_id,
     );
     if crate::plex::client_for(id).is_some() {
         crate::plex::publish_probe_result(id, Outcome::Reachable);
@@ -2893,7 +2877,7 @@ fn reconcile_primary(server: &mut ServerRef, found: &[SourceRef]) -> bool {
 /// `&'static Client` rely on.
 ///
 /// Owned entries are registered FIRST even when `primary` is `None` — see [`registration_order`].
-fn install_roster(sources: &[SourceRef], primary: Option<usize>) -> Vec<ServerId> {
+fn install_roster(sources: &[SourceRef], primary: Option<usize>, client_id: &str) -> Vec<ServerId> {
     let order = registration_order(sources);
     let mut installed = Vec::with_capacity(order.len());
     for &i in &order {
@@ -2907,7 +2891,7 @@ fn install_roster(sources: &[SourceRef], primary: Option<usize>) -> Vec<ServerId
         let connection =
             crate::plex::ConnectionFacts::new(s.tier, crate::plex::IpVersion::of_host(&s.address));
         let id = register_observed_origin(&s.machine_id, &origin, &s.token,
-            s.resolve_pin().as_ref(), connection);
+            s.resolve_pin().as_ref(), connection, client_id);
         if !id.is_set() {
             continue;
         }
