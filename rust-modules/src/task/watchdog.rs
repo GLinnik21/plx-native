@@ -18,6 +18,8 @@ use std::{
 
 const HANG_THRESHOLD_MS: u64 = 250;
 const POLL_MS: u64 = 100;
+#[cfg(feature = "threadcheck")]
+const MAX_POLL_GAP_MS: u64 = 4 * POLL_MS;
 
 #[derive(Debug, PartialEq, Eq)]
 enum Event {
@@ -61,6 +63,37 @@ impl Detector {
             return Some(Event::Began { ms: elapsed, label });
         }
         None
+    }
+}
+
+/// Developer policy layered over the release detector; no clock, UI or signal side effects.
+#[cfg(feature = "threadcheck")]
+#[derive(Default)]
+struct DevObserver {
+    last_poll: Option<u64>,
+    detector: Detector,
+    kill: super::runtime_check::KillLatch,
+}
+#[cfg(feature = "threadcheck")]
+struct Observation {
+    event: Option<Event>,
+    kill: bool,
+    reset_warning: bool,
+    elapsed: Option<u64>,
+}
+#[cfg(feature = "threadcheck")]
+impl DevObserver {
+    fn poll(&mut self, now: u64, progress: Option<usize>, label: &'static str, log_only: bool) -> Observation {
+        // A late observer cannot distinguish a stopped process, system suspend, debugger stop
+        // or its own scheduling starvation from a main-thread stall. Discard that interval.
+        if self.last_poll.replace(now).is_some_and(|previous| now.saturating_sub(previous) > MAX_POLL_GAP_MS) {
+            self.detector = Detector { advanced: progress.map(|counter| (counter, now)), announced: None };
+            self.kill.poll(None, log_only);
+            return Observation { event: None, kill: false, reset_warning: true, elapsed: None };
+        }
+        let event = self.detector.observe(now, progress, label);
+        let elapsed = self.detector.announced.and_then(|_| self.detector.advanced.map(|(_, at)| now.saturating_sub(at)));
+        Observation { event, kill: self.kill.poll(elapsed, log_only), reset_warning: false, elapsed }
     }
 }
 
@@ -108,7 +141,7 @@ thread_local! {
     static LABEL: Cell<&'static BlockingLabel> = const { Cell::new(&UNLABELED) };
 }
 
-pub(super) struct LabelScope {
+pub(crate) struct LabelScope {
     previous: &'static BlockingLabel,
     _thread: PhantomData<Rc<()>>,
 }
@@ -119,6 +152,16 @@ pub(super) fn enter_label(label: &'static BlockingLabel) -> LabelScope {
         if let Some(signals) = watched.get() { signals.publish_label(label); }
     });
     LabelScope { previous, _thread: PhantomData }
+}
+
+// Dedicated label-only entry points: neither asserts nor grants permission to block.
+#[cfg(feature = "threadcheck")]
+pub(crate) fn draw_scope() -> LabelScope {
+    enter_label(const { &BlockingLabel::new("frame draw") })
+}
+#[cfg(feature = "threadcheck")]
+pub(crate) fn present_scope() -> LabelScope {
+    enter_label(const { &BlockingLabel::new("gl present") })
 }
 
 impl Drop for LabelScope {
@@ -153,6 +196,17 @@ impl LoopWatch {
         let started = STARTED.get_or_init(|| {
             // task::spawn uses std::thread::Builder::spawn and logs EAGAIN as an error return.
             // Exactly one observer lives for this process; a failed start stays disabled.
+            #[cfg(feature = "threadcheck")]
+            let started = {
+                // Capture on the loop owner, never inside the observer. libc supplies the native
+                // pthread_t ABI (pointer on Darwin, unsigned long on ARM Linux).
+                // fwcompat inventories export both symbols at GLIBC_2.4 across all releases:
+                // libpthread on older firmware, libc after the glibc pthread merge.
+                let main_thread = unsafe { libc::pthread_self() } as usize;
+                let log_only = crate::dev::guard_log_only();
+                super::spawn("main-thread watchdog", move || observe_loop(main_thread, log_only)).is_some()
+            };
+            #[cfg(not(feature = "threadcheck"))]
             let started = super::spawn("main-thread watchdog", observe_loop).is_some();
             if !started { crate::log("main-thread watchdog: unavailable; hang detection disabled"); }
             started
@@ -196,9 +250,15 @@ impl Drop for LoopWatch {
     }
 }
 
-fn observe_loop() {
+fn observe_loop(
+    #[cfg(feature = "threadcheck")] main_thread: usize,
+    #[cfg(feature = "threadcheck")] log_only: bool,
+) {
     let origin = Instant::now();
+    #[cfg(not(feature = "threadcheck"))]
     let mut detector = Detector::default();
+    #[cfg(feature = "threadcheck")]
+    let mut observer = DevObserver::default();
     loop {
         // A new iteration's label publication follows its progress increment. Read in this
         // order so that label cannot be paired with older progress, and timestamp afterwards
@@ -206,8 +266,36 @@ fn observe_loop() {
         let label = SIGNALS.label();
         let progress = SIGNALS.progress();
         let now = origin.elapsed().as_millis().min(u64::MAX as u128) as u64;
-        if let Some(event) = detector.observe(now, progress, label) {
+        #[cfg(feature = "threadcheck")]
+        let observation = observer.poll(now, progress, label, log_only);
+        #[cfg(feature = "threadcheck")]
+        if observation.reset_warning { super::runtime_check::reset_warning(); }
+        #[cfg(feature = "threadcheck")]
+        let event = observation.event;
+        #[cfg(not(feature = "threadcheck"))]
+        let event = detector.observe(now, progress, label);
+        if let Some(event) = event {
             crate::log(&event.line());
+            #[cfg(feature = "threadcheck")]
+            match event {
+                Event::Began { ms, label } => super::runtime_check::hang(ms, label),
+                Event::Ended { ms, .. } => super::runtime_check::end(ms),
+            }
+        }
+        #[cfg(feature = "threadcheck")]
+        {
+            if observation.kill {
+                crate::log(&format!("main-thread hang fatal: {}ms in {}; sending SIGABRT to main thread", observation.elapsed.unwrap(), label));
+                // Recheck progress after logging: recovery while the observer was delayed must
+                // not kill a healthy loop. The loop owner is the process-lifetime main thread.
+                // Logging can itself be delayed by a process stop. Do not signal using a
+                // stale sample; the next poll will rebase and discard its warning as well.
+                let sample_age = origin.elapsed().as_millis().saturating_sub(now as u128);
+                if sample_age <= MAX_POLL_GAP_MS as u128 && SIGNALS.progress() == progress {
+                    let rc = unsafe { libc::pthread_kill(main_thread as libc::pthread_t, libc::SIGABRT) };
+                    if rc != 0 { crate::log(&format!("main-thread hang: pthread_kill failed: {rc}")); }
+                }
+            }
         }
         std::thread::sleep(Duration::from_millis(POLL_MS));
     }
@@ -382,4 +470,88 @@ mod tests {
         assert_eq!(Event::Ended { ms: 1234, label: "LS2 round trip" }.line(),
             "main-thread hang ended: 1234ms in LS2 round trip");
     }
+    #[cfg(feature = "threadcheck")]
+    #[test]
+    fn a_process_freeze_rebases_without_warning_or_kill() {
+        let mut observer = DevObserver::default();
+        observer.poll(0, Some(1), "gl present", false);
+        let paused = observer.poll(30_000, Some(1), "gl present", false);
+        assert!(paused.event.is_none(), "a stopped observer cannot establish a main-thread hang");
+        assert!(!paused.kill);
+        assert!(paused.reset_warning);
+        for now in [30_100, 30_200, 30_250] {
+            let sample = observer.poll(now, Some(1), "gl present", false);
+            assert!(sample.event.is_none());
+            assert!(!sample.kill);
+        }
+        assert_eq!(observer.poll(30_300, Some(1), "gl present", false).event,
+            Some(Event::Began { ms: 300, label: "gl present" }));
+    }
+
+    #[cfg(feature = "threadcheck")]
+    #[test]
+    fn a_freeze_clears_existing_hang_and_rearms_budget() {
+        let mut observer = DevObserver::default();
+        for now in (0..=1900).step_by(100) { observer.poll(now, Some(1), "frame draw", false); }
+        let paused = observer.poll(31_900, Some(1), "frame draw", false);
+        assert!(paused.reset_warning);
+        assert!(paused.event.is_none());
+        assert!(!paused.kill);
+        for now in (32_000..33_900).step_by(100) {
+            assert!(!observer.poll(now, Some(1), "frame draw", false).kill);
+        }
+        assert!(observer.poll(33_900, Some(1), "frame draw", false).kill);
+        assert!(!observer.poll(34_000, Some(1), "frame draw", false).kill);
+    }
+
+    #[cfg(feature = "threadcheck")]
+    #[test]
+    fn the_poll_gap_boundary_is_strictly_over_four_polls() {
+        for (gap, reset) in [(400, false), (401, true)] {
+            let mut observer = DevObserver::default();
+            observer.poll(0, Some(1), "gl present", false);
+            let sample = observer.poll(gap, Some(1), "gl present", false);
+            assert_eq!(sample.reset_warning, reset);
+            assert_eq!(sample.event.is_some(), !reset);
+            assert!(!sample.kill);
+        }
+    }
+
+    #[cfg(feature = "threadcheck")]
+    #[test]
+    fn gpu_phase_labels_do_not_bypass_or_trip_the_blocking_guard() {
+        let signals = signals();
+        let _watch = LoopWatch::attach(signals);
+        let _frame = super::super::FrameScope::enter();
+        {
+            let _draw = draw_scope();
+            assert_eq!(signals.label(), "frame draw");
+            {
+                let _present = present_scope();
+                assert_eq!(signals.label(), "gl present");
+                assert!(std::panic::catch_unwind(|| {
+                    super::super::assert_may_block(const { &BlockingLabel::new("still forbidden") })
+                }).is_err(), "a phase label must not grant allow_blocking");
+            }
+            assert_eq!(signals.label(), "frame draw");
+        }
+        assert_eq!(signals.label(), "unlabeled");
+    }
+
+    #[cfg(feature = "threadcheck")]
+    #[test]
+    fn a_regular_gpu_stall_still_requests_one_kill() {
+        for label in ["frame draw", "gl present"] {
+            for log_only in [false, true] {
+                let mut observer = DevObserver::default();
+                for now in (0..=3000).step_by(100) {
+                    let sample = observer.poll(now, Some(1), label, log_only);
+                    assert!(!sample.reset_warning);
+                    assert_eq!(sample.kill, now == 2000 && !log_only);
+                    assert_eq!(sample.event, (now == 300).then_some(Event::Began { ms: 300, label }));
+                }
+            }
+        }
+    }
+
 }

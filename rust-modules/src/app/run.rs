@@ -495,9 +495,13 @@ unsafe fn present_and_swap(
             // shutdown rather than exiting from inside the frame (see `shot::maybe_capture`).
             app.running = false;
         }
-        #[cfg(feature = "hostsim")]
-        crate::surface::present_supersampled();
-        SDL_GL_SwapWindow(app.win);
+        {
+            #[cfg(feature = "threadcheck")]
+            let _present_scope = crate::task::watchdog::present_scope();
+            #[cfg(feature = "hostsim")]
+            crate::surface::present_supersampled();
+            SDL_GL_SwapWindow(app.win);
+        }
         app.window_activity.presented(fr.player);
         // One increment, then nothing: re-ask EGL for the back buffer's AGE after real
         // presents have happened. The boot reading is 0 by construction. See `egl.rs`.
@@ -1977,6 +1981,8 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         app.diagnostics.update(&app.player.session, fr.now);
         // …and the lab upload's toast, which expires on a clock rather than a spring.
         crate::lab::update(fr.now);
+        #[cfg(feature = "threadcheck")]
+        crate::ui::runtime_warning::update();
         // The Up Next countdown and the control row's focus pop are the PLAYER INSTANCE's and
         // are stepped from its own `Tick` for the reason `TransportRow::step` gives — the row is
         // not drawn on every frame of the route, so a spring advanced in the draw would run at a
@@ -2108,6 +2114,8 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
 /// viewport, glass owners' prepare, the page pass, the surfaces bottom-to-top and the
 /// instruments. Returns the viewport for the host-side screenshot that follows the draw.
 pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32) {
+    #[cfg(feature = "threadcheck")]
+    let _draw_scope = crate::task::watchdog::draw_scope();
             // EXPERIMENT (`/tmp/plxnative-egldamage`), no-op without the trigger. FIRST, before
             // any GL command of this frame: `EGL_KHR_partial_update` only permits a damage
             // region to be declared before rendering begins. See `egl.rs`.
@@ -2311,6 +2319,8 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                                                      // The lab upload read-out, over everything, on every route — including the
                                                      // player, where the two branches above diverge and this one must not.
                     crate::lab::draw(app.diagnostics.frame_if_shown());
+                    #[cfg(feature = "threadcheck")]
+                    crate::ui::runtime_warning::draw();
                 });
             });
     (vx, vy, vw, vh)

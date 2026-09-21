@@ -41,7 +41,7 @@ path = "src/bin/plxnative-storage.rs"
 # On by default, so every ordinary `make`, every `make test` and every on-device harness run
 # behaves exactly as it always has. `make RELEASE=1` passes --no-default-features, which is what
 # CI's release job builds with.
-default = ["devtools", "devtriggers"]
+default = ["devtools", "devtriggers", "threadcheck"]
 # Developer-facing chrome that must not reach a public build. Currently: the on-screen
 # seven-segment counter. Everything gated here must be DRAW-ONLY or otherwise inert — the device
 # is the only test this project has, so a release build must not differ from the tested one in
@@ -57,6 +57,9 @@ devtools = []
 # read back the event log, and `tests/run.py` builds with plain `make` — the harness never builds
 # a release binary, so gating the whole surface costs it nothing.
 devtriggers = []
+# The one deliberate behavioural difference of dev builds: make main-thread violations LOUDER
+# (abort/warning), never change a code path that succeeds. Dropped by --no-default-features.
+threadcheck = []
 # **Cloud Lab Bridge** — the ring buffer, Blue-button upload and authenticated long-poll command
 # channel for a television in LG Cloud Test Lab, where there is no ssh, no console and no way to
 # download a file. See `rust-modules/src/lab/` and `docs/lab-diagnostics.md`.
