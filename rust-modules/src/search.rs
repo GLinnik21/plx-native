@@ -647,7 +647,8 @@ impl SearchState {
     /// Test-only compatibility pump for fixtures without a retained directory.
     #[cfg(test)]
     pub(crate) fn pump(&mut self, adapter: &Arc<SearchAdapter>, dt: f32) -> bool {
-        pump_with_optional_directory(self, adapter, dt, None, &crate::ui::landgate::Gate::default())
+        pump_with_optional_directory(self, adapter, dt, None,
+            crate::ui::landgate::fixture_gate())
     }
 
     /// Advance the debounce and land whatever arrived under this frame's retained directory policy.
@@ -885,7 +886,8 @@ fn favs_match_directory(
 /// Test-only compatibility pump for fixtures without a retained directory.
 #[cfg(test)]
 fn pump(state: &mut SearchState, adapter: &Arc<SearchAdapter>, dt: f32) -> bool {
-    pump_with_optional_directory(state, adapter, dt, None)
+    pump_with_optional_directory(state, adapter, dt, None,
+        crate::ui::landgate::fixture_gate())
 }
 
 fn pump_with_optional_directory(
