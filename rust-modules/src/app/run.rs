@@ -495,9 +495,13 @@ unsafe fn present_and_swap(
             // shutdown rather than exiting from inside the frame (see `shot::maybe_capture`).
             app.running = false;
         }
-        #[cfg(feature = "hostsim")]
-        crate::surface::present_supersampled();
-        SDL_GL_SwapWindow(app.win);
+        {
+            #[cfg(feature = "threadcheck")]
+            let _present_scope = crate::task::watchdog::present_scope();
+            #[cfg(feature = "hostsim")]
+            crate::surface::present_supersampled();
+            SDL_GL_SwapWindow(app.win);
+        }
         app.window_activity.presented(fr.player);
         // One increment, then nothing: re-ask EGL for the back buffer's AGE after real
         // presents have happened. The boot reading is 0 by construction. See `egl.rs`.
@@ -567,6 +571,15 @@ unsafe fn drain_sdl(app: &mut App, fr: &mut Frame) {
 }
 
 unsafe fn ingress_token(app: &mut App, fr: &mut Frame, token: &str) -> bool {
+    #[cfg(feature = "devtriggers")]
+    if let Some(probe) = crate::remote::HangProbe::parse(token) {
+        // FIFO, LAB and replay all enter here on the frame thread inside FrameScope.
+        // Earlier keys/clicks may still be in SDL: handle and record them before the stall.
+        drain_sdl(app, fr);
+        app.rec.input(super::recorder::enc_token(token));
+        probe.run();
+        return true;
+    }
     // Keys and clicks use SDL's existing synthesis while coexistence lasts. Consume those
     // before a following direct text token, rather than moving all text ahead of all keys.
     if super::bridge::search_owns_input(&app.pages) { drain_sdl(app, fr); }
@@ -1968,6 +1981,8 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         app.diagnostics.update(&app.player.session, fr.now);
         // …and the lab upload's toast, which expires on a clock rather than a spring.
         crate::lab::update(fr.now);
+        #[cfg(feature = "threadcheck")]
+        crate::ui::runtime_warning::update(app.boot_initial.is_some());
         // The Up Next countdown and the control row's focus pop are the PLAYER INSTANCE's and
         // are stepped from its own `Tick` for the reason `TransportRow::step` gives — the row is
         // not drawn on every frame of the route, so a spring advanced in the draw would run at a
@@ -2099,6 +2114,8 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
 /// viewport, glass owners' prepare, the page pass, the surfaces bottom-to-top and the
 /// instruments. Returns the viewport for the host-side screenshot that follows the draw.
 pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32) {
+    #[cfg(feature = "threadcheck")]
+    let _draw_scope = crate::task::watchdog::draw_scope();
             // EXPERIMENT (`/tmp/plxnative-egldamage`), no-op without the trigger. FIRST, before
             // any GL command of this frame: `EGL_KHR_partial_update` only permits a damage
             // region to be declared before rendering begins. See `egl.rs`.
@@ -2302,6 +2319,8 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                                                      // The lab upload read-out, over everything, on every route — including the
                                                      // player, where the two branches above diverge and this one must not.
                     crate::lab::draw(app.diagnostics.frame_if_shown());
+                    #[cfg(feature = "threadcheck")]
+                    crate::ui::runtime_warning::draw(app.boot_initial.is_some());
                 });
             });
     (vx, vy, vw, vh)
@@ -2660,6 +2679,10 @@ pub(crate) unsafe fn shutdown(
 /// kinds through the same synthesis the remote FIFO uses, direct tokens through the dispatcher.
 /// An unknown kind is logged once per kind rather than silently skipped.
 unsafe fn replay_inject(app: &mut App, fr: &mut Frame, v: &serde_json::Value) {
+    if let Some(token) = super::recorder::direct_token(v) {
+        if !ingress_token(app, fr, token) { app.rec.refuse("recorded direct token was not accepted"); }
+        return;
+    }
     if app.boot_initial.is_some() {
         match super::recorder::decode_input(v) {
             Ok(input) if input.source == crate::ui::machine::Source::Script => {
@@ -2910,6 +2933,111 @@ mod lifecycle_regression_tests {
         app.ev[..4].copy_from_slice(&et.to_ne_bytes());
         unsafe {
             ingest_sdl_event(app, fr);
+        }
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn a_recorded_raw_hang_probe_replays_without_missing_input() {
+        use super::super::{bootstrap::{Initial, Preflight}, recorder::{Recplay, ReplayMode, state_fp}};
+        use crate::ui::{dispatch::Tap, rec::{Header, MemSink, Recording}};
+        let _serial = crate::testlock::serial();
+        let mut app = app();
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        let initial = Initial::synthetic_home(1, 32517, None).unwrap();
+        let sink = MemSink::default();
+        let segments = sink.segments.clone();
+        let manifest = Header::new(state_fp(), &initial).to_json().to_string();
+        app.rec = Recplay::recording_with_sink(&initial, Box::new(sink)).unwrap();
+        app.rec.tick(initial.clock_start, 0.0);
+        {
+            let _frame = crate::task::FrameScope::enter();
+            assert!(unsafe { ingress_token(&mut app, &mut fr, "hang-raw:1") });
+        }
+        app.rec.end_frame(&|| 7);
+        std::mem::replace(&mut app.rec, Recplay::Off).finish(crate::ui::landgate::fixture_gate());
+        let recording = Recording::parse(&manifest,
+            &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(), state_fp()).unwrap();
+        assert_eq!(recording.frames[0].inputs[0]["tok"], "hang-raw:1");
+        for controlled in [false, true] {
+            let recording = Recording { header: recording.header.clone(), frames: recording.frames.clone(),
+                metrics: recording.metrics.clone(), stopped_at: recording.stopped_at };
+            app.boot_initial = controlled.then(|| initial.clone());
+            app.rec = Recplay::controlled(Preflight::Replay {
+                initial: initial.clone(), recording, mode: ReplayMode::Resolve }, &initial).unwrap();
+            for value in app.rec.replay_inputs() {
+                let _frame = crate::task::FrameScope::enter();
+                unsafe { replay_inject(&mut app, &mut fr, &value); }
+            }
+            Tap::focus(&mut app.rec, 0, None);
+            assert!(app.rec.end_frame(&|| 7));
+            assert!(!app.rec.outcome_failed(), "the injected probe must consume its recorded input, controlled={controlled}");
+        }
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    #[should_panic(expected = "main-thread block: dev hang probe")]
+    fn hang_probe_dispatch_uses_frame_guard() {
+        let _serial = crate::testlock::serial();
+        let mut app = app();
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        let _scope = crate::task::FrameScope::enter();
+        unsafe { ingress_token(&mut app, &mut fr, "hang:1"); }
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn hang_probe_dispatch_raw_bypasses_frame_guard() {
+        let _serial = crate::testlock::serial();
+        let mut app = app();
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        let _scope = crate::task::FrameScope::enter();
+        assert!(unsafe { ingress_token(&mut app, &mut fr, "hang-raw:1") });
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn hang_probe_dispatch_preserves_key_order() {
+        let _serial = crate::testlock::serial();
+        // Only SDL's event subsystem: no window, renderer, boot or device.
+        assert_eq!(unsafe { SDL_Init(0x4000) }, 0);
+        struct Events;
+        impl Drop for Events {
+            fn drop(&mut self) { unsafe { SDL_Quit(); } }
+        }
+        let _events = Events;
+        for fifo in [true, false] {
+            let mut app = app();
+            super::super::bridge::show_page(&mut app.pages,
+                AppArg::Settings(crate::screens::family::SettingsPage::Root));
+            frame(&mut app, 0);
+            let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+            if fifo {
+                app.remote = Some(crate::remote::Remote::buffered_for_test("down\nhang:1\nup\n"));
+            }
+            // The labelled probe's guard panic is the observation boundary BEFORE sleeping.
+            // No final drain can make an incorrectly ordered dispatch pass this assertion.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _scope = crate::task::FrameScope::enter();
+                unsafe {
+                    if fifo {
+                        ingest(&mut app, &mut fr);
+                    } else {
+                        // LAB delivers commands to precisely this same entry point.
+                        assert!(ingress_token(&mut app, &mut fr, "down"));
+                        assert!(app.inputs.is_empty(), "key should still be pending in SDL");
+                        ingress_token(&mut app, &mut fr, "hang:1");
+                        ingress_token(&mut app, &mut fr, "up");
+                    }
+                }
+            }));
+            let panic = result.expect_err("labelled probe must reach its frame guard");
+            let message = panic.downcast_ref::<String>().map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied()).unwrap_or("");
+            assert!(message.contains("main-thread block: dev hang probe"), "{message}");
+            assert_eq!(app.inputs.len(), 2,
+                "both earlier key edges must be handled before the probe (fifo={fifo})");
         }
     }
 

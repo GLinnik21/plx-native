@@ -1252,6 +1252,7 @@ seven-segment counter** (`app.rs`). The fps scenes are unaffected — they grade
 heartbeat in the *event log*, never the pixels. Anything added to this feature must be draw-only:
 the device is the only test this project has, so a release build must not differ from the tested
 one in any way that could change behaviour, only in what it paints.
+`RELEASE=1` also drops `threadcheck`, the default-on main-thread violation checker.
 
 Three traps this cost, all found by measurement rather than reasoning, all silent:
 

@@ -55,6 +55,15 @@ pub(crate) fn assert_may_block(label: &'static BlockingLabel) -> BlockingGuard {
     if cfg!(test) && in_frame && !ALLOWED.with(|depth| depth.get() != 0) {
         panic!("main-thread block: {}", label.text);
     }
+    #[cfg(all(feature = "threadcheck", not(test)))]
+    if in_frame && !ALLOWED.with(|depth| depth.get() != 0) {
+        if super::runtime_check::fatal(true, crate::dev::guard_log_only(), super::runtime_check::Issue::Guard) {
+            // log writes directly to an unbuffered File before aborting this thread.
+            crate::log(&format!("main-thread block: {} (fatal; aborting)", label.text));
+            std::process::abort();
+        }
+        super::runtime_check::guard(label.text);
+    }
     BlockingGuard { label: label.text, started: in_frame.then(Instant::now),
         _label: super::watchdog::enter_label(label), _thread: PhantomData }
 }

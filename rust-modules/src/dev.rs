@@ -49,7 +49,7 @@ pub(crate) mod scenarios;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 25] = [
+const DIAG: [&str; 26] = [
     "plxnative-events.log",
     "plxnative-stderr.log",
     "plxnative-crash.log",
@@ -112,6 +112,7 @@ const DIAG: [&str; 25] = [
     // stays exactly as it is.
     "plxnative-rec",
     "plxnative-recplay",
+    "plxnative-guard", // diagnostic policy only; never changes the boot screen
 ];
 
 /// The triggers a CONTROLLED boot (`app::bootstrap`: the recorder, a replay, an explicit
@@ -248,6 +249,13 @@ pub(crate) fn read(name: &str) -> Option<String> {
 #[cfg(not(feature = "devtriggers"))]
 pub(crate) fn read(_name: &str) -> Option<String> {
     None
+}
+
+/// Boot-latched main-thread checker escape hatch. File content must be exactly `log`.
+#[cfg(feature = "threadcheck")]
+pub(crate) fn guard_log_only() -> bool {
+    static MODE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *MODE.get_or_init(|| read("guard").as_deref() == Some("log"))
 }
 
 /// **`/tmp/plxnative-nowan` — refuse every name lookup, as a dead resolver would.**

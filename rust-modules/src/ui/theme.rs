@@ -1380,3 +1380,10 @@ pub const TEXT_BLOCK_SHADOW_DY: f32 = 12.0;
 /// ground — edgeless, and also back to having no altitude. The BLUR is what removes the edge; the
 /// alpha is what keeps the lift visible from a sofa.
 pub const TEXT_BLOCK_SHADOW_A: f32 = 0.45;
+
+// Purple — developer runtime issues, distinct from product failure states.
+#[cfg(feature = "threadcheck")]
+const PURPLE_700: [f32; 4] = rgb8(0x70, 0x30, 0xa0);
+/// Opaque main-thread checker warning surface (developer builds only).
+#[cfg(feature = "threadcheck")]
+pub(crate) const RUNTIME_WARNING: [f32; 4] = PURPLE_700;

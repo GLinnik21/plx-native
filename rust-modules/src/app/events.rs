@@ -305,6 +305,10 @@ pub(crate) fn remote_synth_lifecycle(code: u32) {
 /// driver re-dispatches them. `txt:` is here because its payload never becomes an SDL event on
 /// this host (`dispatch_remote_token`'s arm says why).
 pub(crate) fn token_is_direct(tok: &str) -> bool {
+    #[cfg(feature = "devtriggers")]
+    if crate::remote::HangProbe::parse(tok).is_some() {
+        return true;
+    }
     tok == "shot"
         || tok == "diag"
         || tok == "diagnostics"
@@ -375,6 +379,17 @@ pub(crate) fn is_input_event(et: u32) -> bool {
 #[cfg(test)]
 mod input_event_tests {
     use super::*;
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn hang_probes_are_direct_recorder_tokens() {
+        for token in ["hang:1", "hang-raw:1", "hang:5001"] {
+            assert!(token_is_direct(token));
+        }
+        for token in ["down", "hang:", "hang:-1", "hang-raw:bad"] {
+            assert!(!token_is_direct(token));
+        }
+    }
 
     /// The boundary `popover::host::input_scope` rests on: every input kind is in, and the
     /// lifecycle events (background/foreground, `0x103`–`0x106`), window events and quit are out.

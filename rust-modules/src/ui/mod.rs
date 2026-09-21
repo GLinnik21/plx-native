@@ -50,6 +50,8 @@ mod input_tests; // RESTRUCTURE (spec §15.1): the dispatcher's input path — e
 pub(crate) mod input; // RESTRUCTURE (spec §2.2): the Input machine — owner of the press (an `App` field)
 #[cfg(feature = "lab-diagnostics")]
 pub mod lab_toast; // the Lab Diagnostics upload read-out (lab builds only — see `crate::lab`)
+#[cfg(feature = "threadcheck")]
+pub(crate) mod runtime_warning;
 pub mod label;
 pub(crate) mod landgate; // RESTRUCTURE (spec §3.3 step 3): a replay delivers a landing on its RECORDED frame
 pub(crate) mod landing; // RESTRUCTURE spike (spec §5.2): the bounded per-addressee result queue

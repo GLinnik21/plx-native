@@ -222,10 +222,11 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   definition, so `TV` comes back as the literal
   `$(strip $(shell cat .tv-host …))` and every ssh built from it fails against a live television.
   Full account (predates nightly): **`docs/two-installs.md`**.
-- **`RELEASE=1`** drops **both** default cargo features: `devtools` (the on-screen counter — the
+- **`RELEASE=1`** drops **all three** default cargo features: `devtools` (the on-screen counter — the
   last completed `fps=` present window, held until an ordinary present repaints it; the feature is
   contracted to be draw-only and never wakes an idle screen) and `devtriggers` (the whole `/tmp` surface, the remote
-  FIFO and the capture listener — see `rust-modules/src/dev.rs`). **It also decides WHICH VERSION
+  FIFO and the capture listener — see `rust-modules/src/dev.rs`),
+  plus `threadcheck` (the main-thread violation checker). **It also decides WHICH VERSION
   THE BINARY SAYS IT IS**: the Makefile exports `PLX_RELEASE`, and `rust-modules/build.rs` publishes
   `PLX_VERSION` as the `Cargo.toml` version exactly for a release build and as the **next MINOR plus
   `-dev`** for every other one — `0.6.0` published, `0.7.0-dev` in the tree. The minor rather than the
@@ -530,6 +531,23 @@ which the linking section explains is load-bearing rather than tidy.
   `storage_worker` and no direct file I/O, but worker startup holds `storage_worker::SHARED` across
   `task::spawn`, whose refusal logs. A `peek()` that schedules a refresh from that log tries to take
   `SHARED` again and deadlocks; `CACHE` and `REFRESH` are released before queue admission.
+- `rust-modules/src/task/blocking.rs` / `watchdog.rs` — frame scopes reject synchronous work.
+  Tests keep catchable panics. Release guards log elapsed time once per label; the watchdog logs
+  once above 250 ms and once on recovery, polling every 100 ms after the first present.
+  Developer builds (`threadcheck`) write the fatal guard log and abort before an unallowed call executes.
+  The watchdog publishes a purple warning, painted only when the frame thread can draw, lingering
+  three seconds after recovery. Controlled recording/replay boots suppress only this warning's
+  forced presents and pixels; checker logs and fatal enforcement remain active.
+  At >=2000 ms it sends SIGABRT once to the main pthread captured
+  at loop start, preserving the interrupted thread's registers. Guard `abort()` records the abort
+  path instead; the label identifies its guarded call. The host harness never starts the observer.
+  Developer draw/swap scopes label stalls `frame draw` / `gl present` without invoking or
+  bypassing the blocking guard; slow GPU frames still count toward the two-second fatal limit.
+  A watchdog poll gap >400 ms discards the uncertain interval, clears warnings and rebases the
+  stall timer and fatal latch: a stopped or starved observer is not evidence against the main thread.
+  Escape hatch: write `log` into `/tmp/plxnative-guard` before launch (sim: instance runtime root).
+  This boot-latched DIAG trigger requires `devtriggers`, keeps the picker unchanged and downgrades
+  both fatal paths to logs plus warnings. Release builds contain none of these new dev paths.
 - `rust-modules/src/stores/` — **the data stores behind ONE vocabulary and ONE step** (restructure
   phase 4, 2026-09-07; `docs/stores-as-machines.md`): `StoreCmd` is the complete set of mutations
   of `browse`/`pms`/`metadata`/`search`/`person`/`viewstate`. Browse, Hubs, Metadata, Person,
@@ -1718,6 +1736,12 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   TAP (both edges at once); **`okdown` / `okup` are the split halves**, which is the only way to
   drive a press-and-**hold** — `okdown`, sleep past `press::LONG_MS` (500 ms), `okup` opens the
   item context menu;
+  With `devtriggers`, `hang:<ms>` stalls the frame thread under the `dev hang probe` guard and
+  `hang-raw:<ms>` sleeps without a label; both accept unsigned decimal u64 milliseconds capped at
+  5000, via `tools/tv-session.sh key hang:1000` or `key hang-raw:1000` with the existing TV lock.
+  With `threadcheck`, `hang` aborts before sleeping; `hang-raw` warns above 250 ms and signals the
+  main thread at >=2000 ms. Write `log` into `/tmp/plxnative-guard` before launching to disable
+  both fatal paths while retaining logs and warnings (`guard=log` is file-content notation).
   `tools/stream-screen.py` is the host driver — its page maps browser clicks on the streamed
   picture to `ck:` tokens (hover is deliberately NOT forwarded — it used to park app focus on a
   tab pill so the next ENTER opened the library). The one real trigger here is

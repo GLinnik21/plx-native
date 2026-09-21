@@ -103,10 +103,12 @@ CARRIED to the next frame and rides the heartbeat as `carried=`.
 
 **Frames must not wait on storage or synchronous LS2 calls.** The app loop, bridge and dispatcher
 enter `task::FrameScope`; `task::assert_may_block` guards session I/O, helper transactions,
-Keymanager and LS2 calls. It panics only in tests and records elapsed time once per label
-in debug and release builds. Use cached reads and the bounded `storage_worker` queue, then observe the landing
+Keymanager and LS2 calls. Tests panic (catchably). In developer builds (`threadcheck`), an unallowed call logs
+`main-thread block: <label> (fatal; aborting)`, then aborts on the frame thread before the call runs.
+Release builds retain elapsed-time logging once per label. Use cached reads and the bounded `storage_worker` queue, then observe the landing
 on the frame thread and call `idle::invalidate()` only when visible content changed. Boot's synchronous loads run before the frame scope; a new blocking exception
 must be explicit and justified through `task::allow_blocking`, never added to a tick.
+To see it fire on the TV, hold the TV lock and, after the first present in a `threadcheck` + `devtriggers` build, run `tools/tv-session.sh key hang:1000` for the guard abort, or `key hang-raw:1000` for the watchdog's unlabeled warning path (both capped at 5000 ms).
 
 The release-enabled `task::watchdog` independently checks loop progress every 100 ms. It reports
 once after more than 250 ms without progress and once on recovery, using the innermost static
@@ -117,6 +119,26 @@ tests opt into private signals and drive the detector with synthetic timestamps.
 only after the first present completes, excluding initial shader/font warm-up. A freeze after
 that point is reported once even if no further frame presents; after the loop resumes, the
 watchdog reports the total stall duration and the label captured when the stall was detected.
+With `threadcheck`, the first hang also publishes a purple runtime warning.
+Controlled recording/replay boots suppress the warning's forced presents and pixels, so real-time
+linger cannot change per-frame replay grades. Logging and fatal enforcement remain active. The FRAME thread
+paints it, so it appears when the stall ENDS and lingers for about three seconds. It never appears
+WHILE the stall is happening: the stuck main thread cannot draw. At >=2000 ms the observer sends SIGABRT once per stall to the main pthread
+captured at loop start, so crashtrace records the interrupted main thread, not the observer.
+Developer draw and swap phases publish label-only scopes (`frame draw`, `gl present`): these
+neither invoke the blocking guard nor grant permission for guarded calls. A legitimately slow
+GPU frame still hits the >=2000 ms fatal threshold by design: a two-second main-thread stall
+is a bug regardless of cause; use the `guard=log` escape hatch below when investigating it.
+If the watchdog itself misses more than four poll intervals (>400 ms), it cannot distinguish
+process freeze, suspend, debugger stop or observer starvation from a main-thread stall. It
+rebases the stall origin, clears any warning, resets the fatal latch and reports nothing for
+that sample. A fresh uninterrupted two-second stall can still become fatal after the rebase.
+A guard's own `abort()` instead records the abort path; its log label identifies the guarded call.
+To investigate without termination, write `log` into `/tmp/plxnative-guard` before launch
+(`/tmp/plxnative-guard=log` notation; simulator: instance runtime directory). This DIAG trigger
+is latched at loop start and downgrades both fatal paths to log plus warning. It requires
+`devtriggers`; it never suppresses the profile picker. Release builds contain neither warning,
+fatal policy nor signal call, and keep the existing guard/watchdog logs.
 
 **Damage is not an effect in the queue.** `fx.invalidate(provenance)` calls `Present::note` at
 once, because a draw-phase report has to survive into the frame it belongs to. `Provenance` is

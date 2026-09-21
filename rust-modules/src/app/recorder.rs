@@ -410,7 +410,7 @@ pub(crate) fn validate_controlled(recording: &Recording, initial: &super::bootst
             return Err("invalid bootstrap frame");
         }
         for input in &frame.inputs {
-            decode_input(input)?;
+            if direct_token(input).is_none() { decode_input(input)?; }
         }
         // Admissions and terminals share a frame when the local spawn is refused. Arrays retain
         // their own order, so establish every synchronous answer before validating that frame's
@@ -561,26 +561,7 @@ impl crate::ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
     fn input(&mut self, _frame: u64, input: &crate::ui::machine::InputEvent<u32>) {
         if matches!(self,Self::Off) { return; }
         match super::bootstrap::effects::input(input) {
-            Ok(encoded) => {
-                if let Self::Replaying(replay) = self {
-                    {
-                        let frame = replay.rec.frames.get(replay.at);
-                        let expected = frame.and_then(|frame|frame.inputs.get(replay.input_at));
-                        let expected_body = expected
-                            .and_then(|value| decode_input(value).ok())
-                            .and_then(|event| super::bootstrap::effects::input(&event).ok());
-                        if expected_body.as_ref() != Some(&encoded) {
-                            replay.input_diffs += 1;
-                            crate::log(&format!("replay: input diverge f={} input_index={} reason={}",
-                                frame.map_or(replay.at as u64, |frame| frame.f), replay.input_at,
-                                if expected.is_some() { "changed" } else { "extra" }));
-                        }
-                        replay.input_at += 1;
-                    }
-                } else {
-                    self.input(encoded);
-                }
-            }
+            Ok(encoded) => self.input(encoded),
             Err(reason) => self.refuse(reason),
         }
     }
@@ -930,12 +911,35 @@ impl Recplay {
         }
     }
 
+    /// One ordered ledger for dispatcher inputs and direct ingress alike. The writer adds
+    /// frame/type metadata; only the payload is compared when that input is replayed.
     pub(crate) fn input(&mut self, encoded: Value) {
-        if let Recplay::Recording(r) = self {
-            let t0 = std::time::Instant::now();
-            r.w.input(r.f, encoded);
-            r.events = true;
-            r.spent_ns += t0.elapsed().as_nanos() as u64;
+        match self {
+            Self::Recording(r) => {
+                let t0 = std::time::Instant::now();
+                r.w.input(r.f, encoded);
+                r.events = true;
+                r.spent_ns += t0.elapsed().as_nanos() as u64;
+            }
+            Self::Replaying(replay) => {
+                let frame = replay.rec.frames.get(replay.at);
+                let expected = frame.and_then(|frame| frame.inputs.get(replay.input_at));
+                let expected_body = expected.and_then(|value| {
+                    if value["kind"] == "owned" {
+                        decode_input(value).ok().and_then(|event| super::bootstrap::effects::input(&event).ok())
+                    } else {
+                        Some(input_payload(value))
+                    }
+                });
+                if expected_body.as_ref() != Some(&encoded) {
+                    replay.input_diffs += 1;
+                    crate::log(&format!("replay: input diverge f={} input_index={} reason={}",
+                        frame.map_or(replay.at as u64, |frame| frame.f), replay.input_at,
+                        if expected.is_some() { "changed" } else { "extra" }));
+                }
+                replay.input_at += 1;
+            }
+            Self::Off => {},
         }
     }
 
@@ -1203,6 +1207,19 @@ pub(crate) fn decode_input(value:&Value) -> Result<crate::ui::machine::InputEven
 
 pub(crate) fn enc_key(sym: u32, wcode: u32, down: bool, repeat: bool) -> Value {
     json!({"kind": "key", "sym": sym, "wcode": wcode, "down": down, "repeat": repeat})
+}
+
+fn input_payload(value: &Value) -> Value {
+    let mut payload = value.clone();
+    if let Some(object) = payload.as_object_mut() { object.remove("f"); object.remove("t"); }
+    payload
+}
+
+/// Direct ingress is replayed through the same token classifier as recording, including during
+/// controlled boots. Keep malformed or SDL-synthesizing tokens out of this envelope.
+pub(crate) fn direct_token(value: &Value) -> Option<&str> {
+    let token = value["tok"].as_str()?;
+    (super::events::token_is_direct(token) && input_payload(value) == enc_token(token)).then_some(token)
 }
 
 pub(crate) fn enc_token(tok: &str) -> Value {
@@ -1759,6 +1776,56 @@ mod tests {
             }
         }
         assert!(super::super::events::text_inputs("", true, Tick { ms: 0, dt_us: 0 }, Source::Sdl).is_empty());
+    }
+
+    #[test]
+    fn direct_and_owned_inputs_share_one_ordered_replay_ledger() {
+        use crate::ui::dispatch::Tap;
+        let _serial = crate::testlock::serial();
+        let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
+        let event = super::super::bridge::script_key(crate::ui::machine::Key::Down,
+            Tick { ms: 16, dt_us: 0 }).remove(0);
+        let payloads = [enc_token("diag"), super::super::bootstrap::effects::input(&event).unwrap(), enc_token("pat:0")];
+        let expected: Vec<_> = payloads.iter().map(|payload| {
+            let mut row = payload.clone(); row["f"] = json!(0); row["t"] = json!("in"); row
+        }).collect();
+        for order in [vec![0, 1, 2], vec![0, 1], vec![0, 0, 1, 2], vec![2, 1, 0], vec![0, 1, 2, 2]] {
+            let mut replay = replay_for_test(Recording { header: Header::new(state_fp(), &initial),
+                frames: vec![crate::ui::rec::Frame { f: 0, inputs: expected.clone(), st: Some(7), ..Default::default() }],
+                metrics: Default::default(), stopped_at: None }, ReplayMode::Resolve);
+            for &index in &order {
+                if index == 1 { Tap::input(&mut replay, 0, &event); }
+                else { replay.input(payloads[index].clone()); }
+            }
+            replay.end_frame(&|| 7);
+            let Recplay::Replaying(replay) = replay else { unreachable!() };
+            assert_eq!(replay.same(), order == [0, 1, 2], "missing/duplicate/reordered/extra direct input must diverge: {order:?}");
+        }
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn controlled_recordings_accept_only_canonical_direct_token_envelopes() {
+        let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
+        let mut header = Header::new(state_fp(), &initial);
+        header.clock_start_ms = initial.clock_start;
+        header.features = features();
+        header.triggers = initial.triggers.clone();
+        let mut recording = Recording { header, frames: vec![
+            crate::ui::rec::Frame { f: 0, tick: Some(Tick { ms: initial.clock_start, dt_us: 0 }),
+                st: Some(7), ..Default::default() },
+            crate::ui::rec::Frame { f: 1, tick: Some(Tick { ms: initial.clock_start + 16, dt_us: 16000 }),
+                st: Some(7), present: Some(false), ..Default::default() },
+        ], metrics: Default::default(), stopped_at: None };
+        for token in ["hang-raw:1", "diag", "pat:0"] {
+            let mut value = enc_token(token); value["f"] = json!(1); value["t"] = json!("in");
+            recording.frames[1].inputs = vec![value];
+            assert_eq!(validate_controlled(&recording, &initial), Ok(()));
+        }
+        for value in [enc_token("down"), enc_token("hang-raw:bad"), json!({"kind":"token","tok":"diag","extra":true})] {
+            recording.frames[1].inputs = vec![value];
+            assert!(validate_controlled(&recording, &initial).is_err());
+        }
     }
 
     #[test]
