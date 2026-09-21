@@ -83,6 +83,9 @@ pub(crate) mod viewstate;
 /// Production store aggregate. All six stores are physical owners here — Browse, Person and
 /// ViewState landed first; Search, Hubs and Metadata completed the port.
 pub(crate) struct Stores {
+    /// The landing schedule belongs to the same application owner as these stores. Two Bridges
+    /// may contain the same `StoreId`; they must not share its replay cursor or wait budget.
+    pub(crate) landgate: crate::ui::landgate::Gate,
     pub(crate) browse: std::rc::Rc<std::cell::RefCell<browse::BrowseStore>>,
     pub(crate) hubs: hubs::HubsStore,
     pub(crate) metadata: metadata::MetadataStore,
@@ -95,6 +98,7 @@ impl Default for Stores {
     fn default() -> Self {
         let browse = std::rc::Rc::new(std::cell::RefCell::new(browse::BrowseStore::default()));
         Self {
+            landgate: Default::default(),
             browse,
             hubs: hubs::HubsStore::default(),
             metadata: metadata::MetadataStore::default(),
@@ -112,7 +116,7 @@ impl Stores {
     }
 
     pub(crate) fn browse_discover_pump(&self) -> StoreOutcome {
-        self.browse.borrow_mut().discover_pump()
+        self.browse.borrow_mut().discover_pump_with_gate(&self.landgate)
     }
 
     pub(crate) fn person_run(&mut self, cmd: person::PersonCmd) -> bool {
@@ -120,7 +124,7 @@ impl Stores {
     }
 
     pub(crate) fn person_pump(&mut self) -> bool {
-        self.person.pump()
+        self.person.pump(&self.landgate)
     }
 
     pub(crate) fn person_view(&self) -> crate::person::PersonView<'_> {
@@ -132,7 +136,7 @@ impl Stores {
     }
 
     pub(crate) fn metadata_pump(&mut self) -> bool {
-        self.metadata.pump()
+        self.metadata.pump(&self.landgate)
     }
 
     pub(crate) fn metadata_view(&self) -> crate::metadata::MetadataView<'_> {
@@ -148,7 +152,7 @@ impl Stores {
     }
 
     pub(crate) fn search_pump(&mut self, dt: f32, directory: browse::DirectoryView<'_>) -> bool {
-        self.search.pump_with_directory(dt, directory)
+        self.search.pump_with_directory_and_gate(dt, directory, &self.landgate)
     }
 
     pub(crate) fn search_snapshot(&self, directory: browse::DirectoryView<'_>) -> search::SearchSnapshot {
@@ -196,7 +200,8 @@ impl Stores {
         let person = &mut self.person;
         let search = &mut self.search;
         let metadata = &mut self.metadata;
-        self.viewstate.borrow_mut().pump(
+        self.viewstate.borrow_mut().pump_with_gate(
+            &self.landgate,
             &mut |cmd| browse.borrow_mut().run(cmd),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
             &mut |cmd| person.run(cmd),
@@ -369,14 +374,16 @@ pub(crate) enum StoreEv<C> {
 //
 // Off a recording and off a replay each is one relaxed atomic load and the closure's own answer.
 
-/// A one-slot mailbox: `None` while the replay is still waiting for this store's recorded frame.
-pub(crate) fn take_landing<T>(id: StoreId, f: impl FnMut() -> Option<T>) -> Option<T> {
-    crate::ui::landgate::take(id.ord(), f)
+/// A one-slot mailbox: `None` while the replay is still waiting for this owner's store's frame.
+pub(crate) fn take_landing<T>(gate: &crate::ui::landgate::Gate, id: StoreId,
+    f: impl FnMut() -> Option<T>) -> Option<T> {
+    gate.take(id.ord(), f)
 }
 
 /// A mailbox drained as a QUEUE: an empty answer is not a landing.
-pub(crate) fn take_landings<T>(id: StoreId, f: impl FnMut() -> Vec<T>) -> Vec<T> {
-    crate::ui::landgate::take_all(id.ord(), f)
+pub(crate) fn take_landings<T>(gate: &crate::ui::landgate::Gate, id: StoreId,
+    f: impl FnMut() -> Vec<T>) -> Vec<T> {
+    gate.take_all(id.ord(), f)
 }
 
 
