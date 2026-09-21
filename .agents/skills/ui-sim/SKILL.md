@@ -1,18 +1,10 @@
 ---
 name: ui-sim
 description: >
-  Verify a UI or Plex-data-layer change on the macOS or Windows/WSLg desktop simulator — build it, boot it to a
-  screen, drive it with keys, screenshot it, and know when the answer does NOT count and you must
-  finish on the television. Use whenever a change needs to be SEEN and a TV is not required or not
-  free: "check this looks right", "screenshot the detail page", "does the library grid still lay
-  out", "iterate on this spacing", "test my change", "run the app locally", "I don't have the TV",
-  "someone else is using the TV", or when several agents need to verify work AT THE SAME TIME.
-  Also covers what the simulator provably cannot answer — frame rates, text rasterization, LG's
-  decoder, the video plane — and hands those to the `tv-session` skill. On macOS, `make sim-macos` DOES
-  stream and demux (`plxnative-clocksink` + a host FFmpeg), so the pipeline between the socket and
-  the decoder is answerable there too. Windows/WSLg's `make sim-wsl` covers UI and Plex browsing.
-  Prefer this over
-  `tv-session` for ordinary UI work; the television is a single shared resource and this is not.
+  Verify UI and Plex data-layer changes in the macOS or Windows/WSLg desktop simulator. Use it for
+  layout, focus, navigation, screenshots, local app runs, and simulator-based validation when a TV
+  is unavailable or unnecessary. It also defines which results still require `tv-session`, including
+  TV frame rate, LG decoding, text rasterization, and the video plane.
 ---
 
 # ui-sim — verify UI work on a desktop, finish on the TV
