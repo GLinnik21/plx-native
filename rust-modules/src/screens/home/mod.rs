@@ -627,11 +627,19 @@ impl HomeScreen {
         env
     }
 
+    /// The y the grid's flow hangs from — every shelf's `base_y` is this plus its own flow. It is
+    /// its own function because the fast-scroll motion signal has to report the displacement this
+    /// expression REALISES (see the `snap` step in `tick`), and a motion report derived from a
+    /// second copy of the layout would drift from it silently.
+    fn grid_origin(&self) -> f32 {
+        PEEK_Y + (GRID_TOP_Y - PEEK_Y) * self.snap.pos - self.grid.scroll_y.pos * self.snap.pos
+    }
+
     fn layout_grid(&mut self) {
-        let top = PEEK_Y + (GRID_TOP_Y - PEEK_Y) * self.snap.pos;
+        let top = self.grid_origin();
         let mut flow = 0.0;
         for row in 0..MAX_HUBS {
-            self.grid.shelves[row].base_y = top + flow - self.grid.scroll_y.pos * self.snap.pos;
+            self.grid.shelves[row].base_y = top + flow;
             flow += card_row::ROW_PITCH_FIXED + self.grid.shelves[row].under_band();
         }
     }
@@ -725,8 +733,20 @@ impl HomeScreen {
         } else {
             self.hero_auto = HERO_AUTO_S;
         }
+        // **The hero-to-grid dive is a document scroll that no scroll spring reports.** `snap` is a
+        // 0..1 FRACTION, so its own velocity is in fractions per second — about 2 at the peak of a
+        // dive, against a threshold in pixels — while `grid_origin` turns that same fraction into
+        // `GRID_TOP_Y - PEEK_Y` = 617 px of vertical travel for every shelf on screen. Both the
+        // grid's `scroll_y` and every shelf's `scroll_x` can sit perfectly still through it, so
+        // without this the whole reveal admitted exactly the poster work the gate exists to defer
+        // (Codex review on PR #187). Report the REALISED displacement, never the spring's own
+        // velocity, for the same reason `Spring::step_scroll` reports both.
+        let origin_before = self.grid_origin();
         self.snap
             .step(pinned_snap(self.snap_target, self.rows.len()), K_SNAP, dt);
+        if dt > 0.0 {
+            card_row::note_scroll((self.grid_origin() - origin_before) / dt);
+        }
         // ONE answer for "is the dive still running", read by the present gate below. See
         // `SNAP_REST_POS`/`SNAP_REST_VEL` for why both terms are needed.
         let snap_moving = (self.snap.pos - self.snap_target).abs() > SNAP_REST_POS
