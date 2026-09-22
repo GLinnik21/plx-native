@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 pub enum Stage {
     Unsupported, RuntimeAbsent, RuntimeInvalid, SocketAbsent, SocketInvalid, Connect,
     PeerCredentials, PeerUidMismatch, DescriptorInvalid, SocketTimeout, HelloRejected,
-    Wire, ActivationContext, ActivationRegister, ActivationAttach, ActivationCall,
+    Wire, BackendUncertain, BackendRejected, ActivationContext, ActivationRegister, ActivationAttach, ActivationCall,
     ActivationSent, BusContext, BusRegister, BusAttach, BusCall, BusPayload, BusTimeout, BusCancel,
     Db8, LoadInvalid, LoadUnavailable, LoadTimeout, LoadAuthentication, LoadProtocol,
     LoadCorrupt, Unknown,
@@ -59,7 +59,11 @@ impl HelperFailure {
         // ActivationSent is only a hint, not a failure that explains the missing socket.
         let activation = self.activation.filter(|detail| matches!(detail.stage,
             Stage::ActivationContext | Stage::ActivationRegister | Stage::ActivationAttach | Stage::ActivationCall));
-        let detail = self.helper.or(activation).unwrap_or(self.observed);
+        // A decoded backend reply proves startup succeeded; keep historical activation evidence
+        // in the report, but do not let it obscure the backend's current verdict on screen.
+        let backend = matches!(self.observed.stage, Stage::BackendUncertain | Stage::BackendRejected)
+            .then_some(self.observed);
+        let detail = self.helper.or(backend).or(activation).unwrap_or(self.observed);
         let fallback = serde_json::to_value(detail.stage).unwrap();
         let name = match detail.stage {
             Stage::RuntimeAbsent => "no runtime dir",
@@ -71,6 +75,8 @@ impl HelperFailure {
             Stage::PeerUidMismatch => "peer uid mismatch",
             Stage::DescriptorInvalid => "descriptor invalid",
             Stage::HelloRejected => "hello rejected",
+            Stage::BackendUncertain => "backend uncertain",
+            Stage::BackendRejected => "backend rejected",
             Stage::ActivationContext => "activate context",
             Stage::ActivationRegister => "activate register",
             Stage::ActivationAttach => "activate attach",

@@ -116,8 +116,8 @@ fn io_failed(stage: Stage, error: std::io::Error) -> ClientError {
 }
 
 fn error(code: ErrorCode) -> ClientError {
-    if !failure::last().is_some_and(|f| matches!(f.observed.stage, Stage::Wire | Stage::HelloRejected)) {
-        failed(Stage::Wire, None, classify_error(code));
+    if !failure::last().is_some_and(|f| matches!(f.observed.stage, Stage::BackendRejected | Stage::HelloRejected)) {
+        failed(Stage::BackendRejected, None, classify_error(code));
         failure::update(|f| f.wire = Some(code));
     }
     classify_error(code)
@@ -204,7 +204,7 @@ pub(crate) fn commit_with(
         digest: String::new(),
         mutation,
     };
-    let digest = state::digest_bytes(&wire::request_digest_bytes(&request).map_err(error)?);
+    let digest = state::digest_bytes(&wire::request_digest_bytes(&request).map_err(|code| failed(Stage::RequestDigest, None, classify_error(code)))?);
     let Request::Commit {
         digest: request_digest,
         ..
@@ -382,15 +382,7 @@ fn transact(command: Request) -> Result<Response, ClientError> {
                 return Err(error);
             }
             wire::write_frame(&mut stream, &command).map_err(|_| failed(Stage::Wire, None, ClientError::Protocol))?;
-            let response = wire::read_frame::<Response>(&mut stream).map_err(|_| failed(Stage::Wire, None, ClientError::Protocol))?;
-            if let Some(code) = response.failure_code() {
-                failed(Stage::Wire, None, classify_error(code));
-                failure::update(|f| f.wire = Some(code));
-                read_helper_failure(&runtime_path(), Some(&descriptor.helper_generation), None);
-            } else {
-                failure::clear();
-            }
-            return Ok(response);
+            return read_response(&mut stream, &runtime_path(), &descriptor.helper_generation);
         }
         let (wait, hint, hint_time) = {
             let mut gate = START_GATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -439,6 +431,23 @@ fn transact(command: Request) -> Result<Response, ClientError> {
         }
         std::thread::sleep(Duration::from_millis(25));
     }
+}
+
+/// Decode and classify the command reply; shared with host transport regression tests.
+fn read_response(stream: &mut impl Read, root: &Path, generation: &str) -> Result<Response, ClientError> {
+    let response = wire::read_frame::<Response>(stream).map_err(|_| failed(Stage::Wire, None, ClientError::Protocol))?;
+    if let Some(code) = response.failure_code() {
+        let stage = match response {
+            Response::Commit { .. } | Response::Reconcile { .. } => Stage::BackendUncertain,
+            _ => Stage::BackendRejected,
+        };
+        failed(stage, None, classify_error(code));
+        failure::update(|f| f.wire = Some(code));
+        read_helper_failure(root, Some(generation), None);
+    } else {
+        failure::clear();
+    }
+    Ok(response)
 }
 
 fn validate_hello(response: Response, descriptor: &Descriptor) -> Result<(), ClientError> {
@@ -610,6 +619,55 @@ fn hex_128(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decoded_uncertain_reply_without_detail_is_not_a_wire_failure() {
+        for response in [
+            Response::Commit { status: wire::CommitStatus::Unavailable, db_rev: None,
+                state: None, applied: None, verified: false, protection: None },
+            Response::Reconcile { status: ReconcileStatus::Unknown, db_rev: None, applied: None, protection: None },
+        ] {
+            let mut bytes = Vec::new();
+            wire::write_frame(&mut bytes, &response).unwrap();
+            failure::remember(Stage::HelloRejected, None);
+            failure::update(|f| f.activation = Some(failure::Detail::new(Stage::ActivationCall, Some(-13))));
+            let root = std::env::temp_dir().join(format!("plx-no-helper-detail-{}", std::process::id()));
+            assert!(read_response(&mut bytes.as_slice(), &root, &"01".repeat(16)).is_ok());
+            let diagnostic = failure::last().unwrap();
+            assert_eq!(diagnostic.helper, None);
+            assert_ne!(diagnostic.observed.stage, Stage::Wire);
+            assert_eq!(diagnostic.observed.stage, Stage::BackendUncertain);
+            assert_eq!(diagnostic.line(), "storage: helper · backend uncertain");
+            assert_eq!(serde_json::to_value(diagnostic).unwrap()["observed"]["stage"], "backend-uncertain");
+        }
+    }
+
+    #[test]
+    fn decoded_rejection_and_bad_json_have_distinct_stages() {
+        let mut bytes = Vec::new();
+        wire::write_frame(&mut bytes, &Response::Error { code: ErrorCode::Authentication }).unwrap();
+        read_response(&mut bytes.as_slice(), Path::new("unused"), "unused").unwrap();
+        assert_eq!(failure::last().unwrap().observed.stage, Stage::BackendRejected);
+        assert_eq!(error(ErrorCode::Authentication), ClientError::Authentication);
+        assert_eq!(failure::last().unwrap().observed.stage, Stage::BackendRejected);
+        let mut malformed = Vec::from(1u32.to_be_bytes());
+        malformed.push(b'{');
+        assert!(read_response(&mut malformed.as_slice(), Path::new("unused"), "unused").is_err());
+        assert_eq!(failure::last().unwrap().observed.stage, Stage::Wire);
+    }
+
+    #[test]
+    fn response_frame_io_failure_is_still_wire() {
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::from_raw_os_error(libc::ECONNRESET))
+            }
+        }
+        failure::clear();
+        assert_eq!(read_response(&mut Broken, Path::new("unused"), "unused").unwrap_err(), ClientError::Protocol);
+        assert_eq!(failure::last().unwrap().observed.stage, Stage::Wire);
+    }
 
     #[test]
     fn helper_failure_peer_and_hello_classification() {
