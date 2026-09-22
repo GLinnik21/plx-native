@@ -386,7 +386,11 @@ pub(crate) fn parse_item(it: &crate::plex::Metadata, sid: ServerId) -> PmsMovie 
 struct HubRow {
     title: String,
     hub_id: String, // locale-independent hubIdentifier ("home.continue", "home.movies.recent", …)
-    key: String, // provider listing path: fallback when hubIdentifier is absent
+    // Provider listing path. Part of an identified hub's identity as well as the fallback when
+    // `hubIdentifier` is absent: PMS reuses one identifier for section-specific Home rows while
+    // publishing distinct keys. Kept verbatim — observed keys carry content-defining query terms
+    // (`type`, `sectionID`, filters/sort), not the parent `/hubs?count=…` request's page size.
+    key: String,
     /// Which SERVER this shelf's items came from, as the owner's handle ("friend") — empty
     /// whenever the row came from the signed-in user's own server, which is every row today.
     /// Empty is the ABSENCE of an annotation, not an empty one: the home shelf heading draws no
@@ -468,11 +472,14 @@ pub(crate) struct HubRef<'a> {
 }
 
 /// Provider identities are tagged: a listing key cannot collide with an identifier that
-/// happens to contain the same bytes. Neither display text nor position participates.
+/// happens to contain the same bytes. An identifier is scoped by both server and its
+/// provider-published listing key: PMS reuses `home.television.recent` for section-specific rows,
+/// while a cross-section row keeps one key even when its leading item's library changes. Neither
+/// display text, item content nor position participates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum HubIdentity<'a> {
     ContinueWatching,
-    Identifier { sid: ServerId, id: &'a str },
+    Identifier { sid: ServerId, id: &'a str, key: &'a str },
     Key { sid: ServerId, key: &'a str },
 }
 
@@ -480,7 +487,9 @@ fn stable_hub_identity<'a>(row: &'a HubRow, items: &[PmsMovie]) -> Option<HubIde
     if row.len == 0 { return None; }
     let sid = items.get(row.start)?.sid;
     if row.hub_id == "home.continue" { Some(HubIdentity::ContinueWatching) }
-    else if !row.hub_id.is_empty() { Some(HubIdentity::Identifier { sid, id: &row.hub_id }) }
+    else if !row.hub_id.is_empty() {
+        Some(HubIdentity::Identifier { sid, id: &row.hub_id, key: &row.key })
+    }
     else if !row.key.is_empty() { Some(HubIdentity::Key { sid, key: &row.key }) }
     else { None }
 }

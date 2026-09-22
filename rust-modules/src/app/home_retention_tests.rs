@@ -13,7 +13,7 @@ fn home_requests_keep_the_emitting_instance_and_captured_return_memory() {
     let mut rig = Bridge::for_test(|| 0);
     let sid = crate::plex::ServerId::UNSET;
     let groups = vec![HomeHubIdentity::ContinueWatching,
-        HomeHubIdentity::Identifier { sid, id: "recent".into() },
+        HomeHubIdentity::Identifier { sid, id: "recent".into(), key: "/hubs/recent".into() },
         HomeHubIdentity::Key { sid, key: "/library/collections/7/children".into() },
         HomeHubIdentity::Ephemeral { generation: 9, ordinal: 0 }];
     let memory = HomeMemory {

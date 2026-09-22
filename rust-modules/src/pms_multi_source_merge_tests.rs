@@ -12,7 +12,7 @@ fn home_group_identity_uses_provider_and_server_not_title_or_position() {
     let mut hub = HubRow { title: "Recent movies".into(), hub_id: id.into(),
         key: String::new(), source: "Alice".into(), start: 0, len: 1 };
     let items = vec![row(0, "a"), row(1, "b"), row(0, "c")];
-    let want = |slot| Some(HubIdentity::Identifier { sid: sid(slot), id });
+    let want = |slot| Some(HubIdentity::Identifier { sid: sid(slot), id, key: "" });
     assert_eq!(stable_hub_identity(&hub, &items), want(0));
     hub.title = "Localized title".into();
     hub.source = "Renamed owner".into();
@@ -22,6 +22,81 @@ fn home_group_identity_uses_provider_and_server_not_title_or_position() {
     assert_eq!(stable_hub_identity(&hub, &items), want(1));
     hub.hub_id.clear();
     assert_eq!(stable_hub_identity(&hub, &items), None);
+}
+
+#[test]
+fn home_keeps_recently_added_rows_for_two_same_type_libraries() {
+    let body = r#"{"MediaContainer":{"Hub":[
+        {"type":"show","hubIdentifier":"home.television.recent",
+         "title":"Recently Added in TV","key":"/hubs/home/recentlyAdded?type=2&sectionID=1",
+         "Metadata":[{"ratingKey":"101","librarySectionID":"1","type":"show",
+                      "title":"TV Show","thumb":"/tv.jpg","art":"/tv-art.jpg"}]},
+        {"type":"show","hubIdentifier":"home.television.recent",
+         "title":"Recently Added in TV HDR","key":"/hubs/home/recentlyAdded?type=2&sectionID=2",
+         "Metadata":[{"ratingKey":"202","librarySectionID":"2","type":"show",
+                      "title":"HDR Show","thumb":"/hdr.jpg","art":"/hdr-art.jpg"}]}
+    ]}}"#;
+    let mc = serde_json::from_str::<crate::plex::Envelope>(body)
+        .expect("the two-library PMS response parses")
+        .media_container;
+    let build = project(&mc, &crate::plex::MediaContainer::default(), sid(0));
+    let (items, hubs, _) = merge(&[src(0, "", HubState::Ready, Some(build))]);
+
+    assert_eq!(hubs.len(), 2, "both same-type library shelves reach Home");
+    assert_eq!(
+        hubs.iter().map(|hub| hub.title.as_str()).collect::<Vec<_>>(),
+        ["Recently Added in TV", "Recently Added in TV HDR"]
+    );
+    assert_eq!(
+        hubs.iter().map(|hub| items[hub.start].sec).collect::<Vec<_>>(),
+        [1, 2],
+        "each shelf still points at its own library section"
+    );
+    assert_ne!(
+        stable_hub_identity(&hubs[0], &items),
+        stable_hub_identity(&hubs[1], &items),
+        "Home must not fold two section shelves that share a hubIdentifier"
+    );
+}
+
+#[test]
+fn a_mixed_section_hub_keeps_its_identity_when_the_leading_library_changes() {
+    let body = |first_section: i64, first_key: &str, second_section: i64, second_key: &str| {
+        format!(r#"{{"MediaContainer":{{"Hub":[{{
+            "type":"show","hubIdentifier":"home.television.recent",
+            "title":"Recently Added TV","key":"/hubs/home/recentlyAdded?type=2",
+            "Metadata":[
+                {{"ratingKey":"{first_key}","librarySectionID":"{first_section}",
+                  "type":"show","title":"First","thumb":"/first.jpg","art":"/first-art.jpg"}},
+                {{"ratingKey":"{second_key}","librarySectionID":"{second_section}",
+                  "type":"show","title":"Second","thumb":"/second.jpg","art":"/second-art.jpg"}}
+            ]
+        }}]}}}}"#)
+    };
+    let projection = |wire: String| {
+        let mc = serde_json::from_str::<crate::plex::Envelope>(&wire)
+            .expect("the mixed-library PMS response parses")
+            .media_container;
+        let build = project(&mc, &crate::plex::MediaContainer::default(), sid(0));
+        let (items, hubs, _) = merge(&[src(0, "", HubState::Ready, Some(build))]);
+        let identity = match stable_hub_identity(&hubs[0], &items) {
+            Some(HubIdentity::Identifier { sid, id, key }) => {
+                (sid, id.to_owned(), key.to_owned())
+            }
+            other => panic!("expected an identified provider hub, got {other:?}"),
+        };
+        (items[hubs[0].start].sec, identity)
+    };
+
+    let first = projection(body(1, "101", 2, "202"));
+    let second = projection(body(2, "202", 1, "101"));
+    assert_eq!((first.0, second.0), (1, 2), "the fixture changes the leading library");
+
+    assert_eq!(
+        first.1,
+        second.1,
+        "content order cannot change the provider-published hub identity"
+    );
 }
 
 #[test]
