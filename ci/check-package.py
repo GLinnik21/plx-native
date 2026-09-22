@@ -168,9 +168,11 @@ DEV_RS = ROOT / "rust-modules/src/dev.rs"
 # Names that are real `plxnative-*` bytes in every configuration ON PURPOSE, so a hit here is not a
 # leak — allowlisted once, with the reason, rather than excluded from the catalog silently.
 RELEASE_LEGITIMATE_TRIGGER_NAMES = {
-    # The four log sinks `dev.rs`'s own module doc calls out as deliberately unconditional: they
-    # are CREATES, never READS, so nothing can arm them as a behaviour switch by writing one.
+    # The unconditional runtime sinks `dev.rs`'s own module doc calls out: they are CREATES, never
+    # READS, so nothing can arm them as a behaviour switch by writing one. The first three are the
+    # C shim's private logs; `plxnative-diag.log` is the storage worker's group-readable snapshot.
     "plxnative-events.log", "plxnative-crash.log", "plxnative-stderr.log",
+    "plxnative-diag.log",
     # The remote-key FIFO (`remote.rs`) is a shipped PRODUCTION feature, not a dev trigger, even
     # though `DIAG` also lists it (so that its presence does not suppress the who's-watching
     # picker the way an actual trigger file would).
@@ -403,8 +405,9 @@ const CONTROLLED: &[&str] = &[
     "rec", "recplay", "focus", "noidle", "token",
 ];
 
-const DIAG: [&str; 5] = [
+const DIAG: [&str; 6] = [
     "plxnative-events.log",
+    "plxnative-diag.log",
     "plxnative-remote",
     "plxnative-noidle",
     "plxnative-overdraw",
@@ -414,7 +417,8 @@ const DIAG: [&str; 5] = [
     got_catalog = parse_dev_trigger_catalog(catalog_fixture)
     want_catalog = {
         "plxnative-rec", "plxnative-recplay", "plxnative-focus", "plxnative-noidle",
-        "plxnative-token", "plxnative-events.log", "plxnative-remote", "plxnative-overdraw",
+        "plxnative-token", "plxnative-events.log", "plxnative-diag.log", "plxnative-remote",
+        "plxnative-overdraw",
     }
     catalog_bad = 0 if got_catalog == want_catalog else 1
     if catalog_bad:
@@ -422,6 +426,18 @@ const DIAG: [&str; 5] = [
               f"want {sorted(want_catalog)}")
     print(f"check-package: parse_dev_trigger_catalog fixture "
           f"{'1/1' if not catalog_bad else '0/1'} correct")
+
+    unconditional_sinks = {
+        "plxnative-events.log", "plxnative-crash.log", "plxnative-stderr.log",
+        "plxnative-diag.log",
+    }
+    missing_sinks = unconditional_sinks - RELEASE_LEGITIMATE_TRIGGER_NAMES
+    sinks_bad = int(bool(missing_sinks))
+    if sinks_bad:
+        print(f"  FAIL — unconditional runtime sinks missing from the release allowlist: "
+              f"{sorted(missing_sinks)}")
+    print(f"check-package: unconditional runtime sink allowlist "
+          f"{len(unconditional_sinks) - len(missing_sinks)}/{len(unconditional_sinks)} correct")
 
     # And a live sanity check against the REAL `dev.rs`: the catalog must not have gone empty (a
     # regex that silently stopped matching would make the binary-grading check pass on EVERY
@@ -473,7 +489,7 @@ const DIAG: [&str; 5] = [
           f"{len(boundary_cases) - boundary_bad}/{len(boundary_cases)} cases correct")
 
     bad += (maintainer_bad + dev_bad + nightly_date_bad + cli_bad + nightly_blob_bad
-            + catalog_bad + int(catalog_vacuous) + boundary_bad)
+            + catalog_bad + sinks_bad + int(catalog_vacuous) + boundary_bad)
     return 1 if bad else 0
 
 
@@ -1088,7 +1104,7 @@ if shipped:
 # written this printed "ok — the packaged binary is a RELEASE build" over CI's dev build on every
 # run, while release.yml's stamp grep carried the property alone. `dev.rs`'s DIAG list is the one
 # place the full names are literals, it is `#[cfg(feature = "devtriggers")]`, and `plxnative-noidle`
-# is not one of the four logs `main.c` writes unconditionally. Measured on the two shipped
+# is not one of the unconditional create-only sinks allowlisted above. Measured on the two shipped
 # artifacts — published v0.3.0 .ipk: 0 occurrences; CI's dev .ipk for 8827d32c: 2.
 #
 # ONE WITNESS NAMES ONLY ITSELF, though: every OTHER `plxnative-*` name `CONTROLLED`/`DIAG` declare

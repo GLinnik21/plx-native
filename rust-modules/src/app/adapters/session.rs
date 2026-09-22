@@ -240,8 +240,14 @@ impl CompletedCommit {
 struct PendingErase {
     epoch: u64,
     all_local: bool,
-    ticket: Option<crate::storage_worker::TypedTicket<bool>>,
+    diagnostics: bool,
+    ticket: Option<crate::storage_worker::TypedTicket<EraseWorkerOutcome>>,
     retry_at: u32,
+}
+
+struct EraseWorkerOutcome {
+    complete: bool,
+    failures: Vec<String>,
 }
 
 pub(crate) struct SessionAdapter {
@@ -713,12 +719,16 @@ impl SessionAdapter {
             for commit in &self.commits { commit.cancelled.store(true, Ordering::Release); }
             crate::plex::revoke_all();
             crate::plex::session::revoke_cached_session();
+            let diagnostics = all_local;
+            #[cfg(test)]
+            let diagnostics = diagnostics && self.resource_test_io.is_none();
+            if diagnostics { crate::storage::diagnostics::disable(); }
             self.erasures.push_back(PendingErase {
-                epoch, all_local, ticket: None, retry_at: crate::app::clock::now(),
+                epoch, all_local, diagnostics, ticket: None, retry_at: crate::app::clock::now(),
             });
             self.submit_erase();
             None
-        } else { Some(self.finish_erase(all_local, meta)) }
+        } else { Some(self.finish_erase(all_local, meta, Vec::new())) }
     }
 
     fn submit_erase(&mut self) {
@@ -726,16 +736,25 @@ impl SessionAdapter {
         let now = crate::app::clock::now();
         // SDL's millisecond counter wraps; the retry is due within the forward half-range.
         if pending.ticket.is_some() || now.wrapping_sub(pending.retry_at) >= u32::MAX / 2 { return; }
-        pending.ticket = crate::storage_worker::submit(|| {
+        let diagnostics = pending.diagnostics;
+        pending.ticket = crate::storage_worker::submit(move || {
             let complete = matches!(crate::plex::session::clear(),
                 crate::plex::session::ClearOutcome::Durable { legacy_swept: true });
             if !complete {
                 crate::log("session: queued clear incomplete; retaining revocation and retrying");
             }
             crate::plex::session::revoke_cached_session();
+            let failures = if diagnostics {
+                crate::storage::diagnostics::finish_disable(crate::paths::runtime_dir())
+                    .err()
+                    .into_iter()
+                    .collect()
+            } else {
+                Vec::new()
+            };
             crate::ui::idle::wake();
             crate::ui::present::wake_from_worker();
-            complete
+            EraseWorkerOutcome { complete, failures }
         }).ok();
         pending.retry_at = now.wrapping_add(STORAGE_RETRY_MS);
     }
@@ -744,27 +763,28 @@ impl SessionAdapter {
         -> Option<crate::auth::owner::SessionEvent> {
         self.submit_erase();
         let pending = self.erasures.front()?;
-        match pending.ticket.as_ref()?.try_recv() {
+        let worker_failures = match pending.ticket.as_ref()?.try_recv() {
             Err(std::sync::mpsc::TryRecvError::Empty) => return None,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 // Keep the request and retry through a restarted shared worker.
                 self.erasures.front_mut()?.ticket = None;
                 return None;
             }
-            Ok(false) => {
+            Ok(outcome) if !outcome.complete => {
                 let pending = self.erasures.front_mut()?;
                 pending.ticket = None;
                 pending.retry_at = crate::app::clock::now().wrapping_add(STORAGE_RETRY_MS);
                 return None;
             }
-            Ok(true) => {}
-        }
+            Ok(outcome) => outcome.failures,
+        };
         let pending = self.erasures.pop_front().expect("pending clear");
-        let leftovers = self.finish_erase(pending.all_local, meta);
+        let leftovers = self.finish_erase(pending.all_local, meta, worker_failures);
         Some(crate::auth::owner::SessionEvent::Erased { epoch: pending.epoch, leftovers })
     }
 
-    fn finish_erase(&mut self, all_local: bool, meta: &mut crate::stores::metadata::MetadataStore) -> usize {
+    fn finish_erase(&mut self, all_local: bool, meta: &mut crate::stores::metadata::MetadataStore,
+        worker_failures: Vec<String>) -> usize {
         let recording_leftovers = if all_local { std::mem::take(&mut self.recording_leftovers) } else { 0 };
         recording_leftovers + match &mut self.resources {
             Resources::Live { .. } => {
@@ -777,7 +797,7 @@ impl SessionAdapter {
                 }
                 crate::imgcache::clear();
                 if all_local {
-                    let leftovers = super::super::input::delete_all_local_data(meta);
+                    let leftovers = super::super::input::delete_all_local_data(meta, worker_failures);
                     if super::super::input::delete_outcome(leftovers.len()).report_leftovers {
                         crate::log(&format!("privacy: local data erased; {} file(s) could not be removed: {}",
                             leftovers.len(), leftovers.join("; ")));
@@ -1134,7 +1154,7 @@ mod tests {
         let mt = unsafe { crate::task::MainThread::assume() };
         let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
         if erase {
-            adapter.erasures.push_back(PendingErase { epoch: 1, all_local: false, ticket: None,
+            adapter.erasures.push_back(PendingErase { epoch: 1, all_local: false, diagnostics: false, ticket: None,
                 retry_at: crate::app::clock::now() });
         } else {
             enqueue_test_commit(&mut adapter, queued_plan(&crate::plex::session::Session::default()));
@@ -1206,7 +1226,7 @@ mod tests {
         let _session = crate::plex::session::TempSession::new("erase-before-commit");
         let mt = unsafe { crate::task::MainThread::assume() };
         let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
-        adapter.erasures.push_back(PendingErase { epoch: 1, all_local: false, ticket: None,
+        adapter.erasures.push_back(PendingErase { epoch: 1, all_local: false, diagnostics: false, ticket: None,
             retry_at: crate::app::clock::now().wrapping_add(STORAGE_RETRY_MS) });
         enqueue_test_commit(&mut adapter, queued_plan(&crate::plex::session::Session::default()));
         adapter.submit_commit();

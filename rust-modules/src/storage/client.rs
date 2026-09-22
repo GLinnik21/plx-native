@@ -282,7 +282,28 @@ fn activate(_service: &str) -> failure::Detail {
 #[cfg(not(target_os = "linux"))]
 fn transact(_command: Request) -> Result<Response, ClientError> {
     let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("storage helper transact") });
+    failure::clear();
+    let _report = TransactionReport::new();
     Err(failed(Stage::Unsupported, None, ClientError::Unavailable))
+}
+
+struct TransactionReport {
+    started: Instant,
+    attempts: u32,
+}
+
+impl TransactionReport {
+    fn new() -> Self { Self { started: Instant::now(), attempts: 0 } }
+    fn attempted(&mut self) { self.attempts = self.attempts.saturating_add(1); }
+}
+
+impl Drop for TransactionReport {
+    fn drop(&mut self) {
+        crate::storage::diagnostics::helper(
+            failure::last(), self.attempts,
+            self.started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+        );
+    }
 }
 
 /// Startup wait policy, kept separate from sockets so deadline and recovery are host-testable.
@@ -332,9 +353,11 @@ static START_GATE: std::sync::Mutex<StartGate> = std::sync::Mutex::new(StartGate
 fn transact(command: Request) -> Result<Response, ClientError> {
     let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("storage helper transact") });
     failure::clear();
+    let mut report = TransactionReport::new();
     let until = Instant::now() + START_DEADLINE;
     let mut hinted = false;
     loop {
+        report.attempted();
         let connected = connect(&runtime_path());
         if let Ok((mut stream, descriptor)) = connected {
             let (activation, attempt) = {
@@ -400,8 +423,13 @@ fn transact(command: Request) -> Result<Response, ClientError> {
                 }
                 let detail = match ACTIVATION_HINT.get() {
                     Some(hint) => {
+                        let started = Instant::now();
                         hint(&service_name());
-                        failure::Detail::new(Stage::ActivationSent, None)
+                        let detail = failure::Detail::new(Stage::ActivationSent, None);
+                        crate::storage::diagnostics::activation(
+                            detail, started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                        );
+                        detail
                     }
                     None => activate(&service_name()),
                 };

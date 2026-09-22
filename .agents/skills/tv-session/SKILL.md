@@ -161,9 +161,14 @@ and idle in front of you.
 
 The stable install keeps `/tmp` byte for byte, so every recipe and every `/tmp/plxnative-…` line
 below stays literally true for the app users get. A flavoured install puts its triggers, its
-`plxnative-remote` FIFO and its three `*.log` files in `/tmp/<app id>` instead. **Every name is
+`plxnative-remote` FIFO and its runtime logs in `/tmp/<app id>` instead. **Every name is
 unchanged — only the directory moved**, so read each `/tmp/plxnative-…` path here as
 `$(make -s print-rundir FLAVOR=…)/plxnative-…`.
+
+`plxnative-diag.log` is the storage worker's allowlisted snapshot on every flavour (0640,
+at most 16 KiB). It records build/uid/gid, fixed-label write probes, activation and helper stages;
+it contains no session data or resolved paths. Events, crash and stderr remain 0600. The diagnostics
+file is exempt from trigger detection and is replaced only when diagnostic status changes.
 
 **Two payloads do not carry the prefix, and that rewrite rule silently misses them:**
 `sample.h264` and `sample.h265`, the raw Annex-B samples the player feeds instead of streaming.

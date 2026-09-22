@@ -951,6 +951,33 @@ which the linking section explains is load-bearing rather than tidy.
   is truncated each launch; **`plxnative-crash.log` is append-only and survives the relaunch** — read it
   after a crash+restart. Note pmlog's wall clock is ~3h skewed on this TV, so correlate by **monotonic
   `SDL_GetTicks`** timestamps (and the SAM `exit_status`), not pmlog time.
+- **Storage diagnostics:** every flavour publishes `plxnative-diag.log` in its runtime root.
+  This is a schema-versioned, at-most-16-KiB snapshot, atomically replaced at mode **0640**;
+  events, crash and stderr remain **0600**. It contains build/uid/gid identity, supplementary
+  groups, fixed-label directory probes, activation status and the latest helper stage outcome.
+  Activation is only the best-effort LS2 wake hint: `activation-rejected`,
+  `activation-timeout` or an activation setup stage does not mean storage failed when
+  `helper stage=complete`; the authenticated helper transaction is
+  authoritative.
+  Probe files are hidden, exclusive creates, one byte, immediately removed; session files are
+  never opened by diagnostics. No paths, helper payloads, account data or raw error text enter
+  this file or telemetry. A dedicated worker retains boot evidence and suppresses semantically
+  duplicate outcomes. `truncated value=true` marks a size cap; `history_truncated=true` marks a
+  bounded helper-outcome history. A failed publication leaves the previous snapshot in place, so
+  check the build identity and sequence when interpreting a file after a relaunch. The group-read
+  bit only helps a shell sharing the file's actual gid; the snapshot does not claim universal SSH
+  access.
+
+  ```text
+  identity schema=1 seq=2 app_id=com.beb.plxnative flavour=stable version=0.6.0 uid=6303 euid=6303 gid=5000 egid=5000
+  groups values=29,44,505,509,777,5000 errno=0 truncated=false
+  dir label=tmp uid=0 gid=0 mode=1777 readonly=false open_errno=0 stat_errno=0 mount_errno=0 create_errno=0 write_errno=0 close_errno=0 unlink_errno=0
+  dir label=runtime uid=6303 gid=5000 mode=0700 readonly=false open_errno=0 stat_errno=0 mount_errno=0 create_errno=0 write_errno=0 close_errno=0 unlink_errno=0
+  activation stage=activation-rejected error_code=-1 elapsed_ms=19
+  helper stage=complete errno=- code=- start_timeout=false activation_stage=- activation_error_code=- reported_stage=- reported_code=- wire_code=- attempts=1 elapsed_ms=31 history_truncated=false
+  history stage=complete errno=- code=- start_timeout=false activation_stage=- activation_error_code=- reported_stage=- reported_code=- wire_code=-
+  truncated value=false
+  ```
 - **The app's own files are located at RUNTIME (`paths.rs`), never by literal.** webOS picks one
   of two install prefixes — `/media/developer/apps/…` (Developer Mode) or `/media/cryptofs/apps/…`
   (Homebrew Channel) — and the two jail profiles disagree about which directories are WRITABLE:
@@ -1465,8 +1492,8 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   saved logs it fails the 60-declared run at a median of 14 and passes the 24-declared one.
 - **`tests/run.py` always cleans the TV on exit** — pass, fail, Ctrl-C, `kill`, or crash: it closes
   the app, clears every `plxnative-*` trigger in that install's runtime root **including the
-  injected PMS token**, and reaps stray ssh clients. Only the three append-only `*.log` files
-  survive. Nothing did this before
+  injected PMS token**, and reaps stray ssh clients. Runtime `*.log` files
+  survive, including the storage diagnostics snapshot. Nothing did this before
   2026-07-28 except the normal path, so an interrupted run left the app playing (scrobbling a
   resume point the next run then inherited) and a live per-server token in world-readable `/tmp`.
   The teardown is armed at the moment the harness commits to driving the TV, so `--list` and a
@@ -1547,7 +1574,7 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   them:** the stable install keeps `/tmp` byte for byte, so every `/tmp/plxnative-*` path written
   out below stays literally true for the app users get, while a flavoured install puts the SAME
   names under `/tmp/<app id>` (`/tmp/com.beb.plxnative.debug/plxnative-library`). Nothing was
-  renamed — not the ~40 triggers, not the `plxnative-remote` FIFO, not the three logs, not
+  renamed — not the ~40 triggers, not the `plxnative-remote` FIFO, not the runtime logs, not
   `dev::DIAG`; only the directory they sit in. `make -s print-rundir FLAVOR=<f>` is how a tool asks
   rather than restating the rule, and the root is created **1777, mkdir THEN an explicit chmod**
   (umask masks mkdir's mode) because root arms triggers there over ssh before the jailed app has

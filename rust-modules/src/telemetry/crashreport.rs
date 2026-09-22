@@ -763,7 +763,7 @@ fn execute(plan: &Plan, fresh: bool, fx: &mut impl Recovery) {
 /// at all, which is indistinguishable from never having uploaded symbols. Sending no image at least
 /// says so.
 pub(crate) fn recover_pending() {
-    recover_pending_at(&crate::paths::in_runtime_dir("plxnative-crash.log"));
+    recover_pending_at(&crate::paths::in_runtime_dir(crate::paths::runtime_file::CRASH));
 }
 
 /// **May this process read crash data at all** — the crash log here, and the native envelopes in
@@ -882,7 +882,7 @@ fn recover_pending_at(path: &std::path::Path) {
 /// private watermark before publishing the new consent keeps those local diagnostics local while
 /// allowing the next crash to be reported normally.
 pub(crate) fn discard_pending_before_opt_in() {
-    let path = crate::paths::in_runtime_dir("plxnative-crash.log");
+    let path = crate::paths::in_runtime_dir(crate::paths::runtime_file::CRASH);
     let Ok(meta) = std::fs::metadata(path) else {
         return;
     };

@@ -973,36 +973,41 @@ pub(crate) fn delete_outcome(leftovers: usize) -> DeleteOutcome {
 ///
 /// Extra local-file sweep after the Session adapter closes telemetry and clears credentials.
 /// Returns paths it could NOT unlink, never a decision to keep the erased account active.
-pub(crate) fn delete_all_local_data(meta: &mut crate::stores::metadata::MetadataStore) -> Vec<String> {
-    let remove = |path: &std::path::Path| match std::fs::remove_file(path) {
+fn remove_local_file(path: &std::path::Path) -> Result<(), String> {
+    match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(format!("{}: {e}", path.display())),
-    };
-    let mut failures = crate::ui::rec::erase_owned_artifacts(&crate::paths::runtime_dir());
+    }
+}
+
+fn erase_runtime_logs(root: &std::path::Path) -> Vec<String> {
+    let mut failures = Vec::new();
+    for name in crate::paths::runtime_file::LOGS {
+        if name == crate::storage::diagnostics::NAME {
+            continue;
+        }
+        if let Err(error) = remove_local_file(&root.join(name)) {
+            failures.push(error);
+        }
+    }
+    failures
+}
+
+pub(crate) fn delete_all_local_data(meta: &mut crate::stores::metadata::MetadataStore,
+    mut failures: Vec<String>) -> Vec<String> {
+    failures.extend(crate::ui::rec::erase_owned_artifacts(&crate::paths::runtime_dir()));
     for path in crate::paths::obsolete_last_place_candidates()
         .into_iter()
         .chain(crate::paths::telemetry_candidates())
         .chain(crate::paths::telemetry_spool_candidates())
         .chain(crate::paths::telemetry_crashmark_candidates())
     {
-        if let Err(e) = remove(&path) {
+        if let Err(e) = remove_local_file(&path) {
             failures.push(e);
         }
     }
-    for name in [
-        "plxnative-events.log",
-        "plxnative-crash.log",
-        "plxnative-stderr.log",
-        "plxnative-anim.log",
-        "plxnative-gst.log",
-        "plxnative-gputime.jsonl",
-        "plxnative-hwcnt.jsonl",
-    ] {
-        if let Err(e) = remove(&crate::paths::in_runtime_dir(name)) {
-            failures.push(e);
-        }
-    }
+    failures.extend(erase_runtime_logs(crate::paths::runtime_dir()));
     meta.run(crate::stores::metadata::MetadataCmd::Clear);
     // No explicit `ClearRecents` here (phase 7 Search cutover retired the legacy screen's own
     // thin `recents::clear()` wrapper this used to call): recent Search terms
@@ -1016,6 +1021,45 @@ pub(crate) fn delete_all_local_data(meta: &mut crate::stores::metadata::Metadata
     // Telemetry was closed by the preceding owner effect, before the credential clear and
     // this sweep. Returning survivors cannot reopen its producer gate or restore an identifier.
     failures
+}
+
+#[cfg(test)]
+mod delete_all_tests {
+    use super::erase_runtime_logs;
+
+    #[test]
+    fn runtime_log_sweep_includes_the_storage_diagnostics_snapshot() {
+        let _serial = crate::testlock::serial();
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::storage::diagnostics::reset_for_test();
+            }
+        }
+        let _restore = Restore;
+        let root = std::env::temp_dir().join(format!(
+            ".plx-delete-runtime-logs-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir(&root).unwrap();
+        for name in crate::paths::runtime_file::LOGS {
+            std::fs::write(root.join(name), name.as_bytes()).unwrap();
+        }
+        let event = root.join(crate::paths::runtime_file::EVENTS);
+        let diagnostics = root.join(crate::storage::diagnostics::NAME);
+
+        crate::storage::diagnostics::disable();
+        crate::storage::diagnostics::finish_disable(&root).unwrap();
+        assert!(erase_runtime_logs(&root).is_empty());
+        assert!(crate::paths::runtime_file::LOGS
+            .iter()
+            .all(|name| !root.join(name).exists()));
+        assert!(!event.exists());
+        assert!(!diagnostics.exists());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 // (`key_item_menu` stood here — the item menu's own arm of the loop's key ladder: OK committed
