@@ -3,7 +3,7 @@
 //! The production executor is the application's one bounded FIFO in [`crate::storage_worker`];
 //! the local executors below exist only to prove lifecycle and revision behavior without a TV.
 
-use super::persistence::{self, CanonicalCommit, ProtectionFailure};
+use super::persistence::{self, CanonicalCommit, HelperEvidence, ProtectionFailure};
 use super::{SaveAuthority, Session};
 use crate::storage::wire::{AuthPreservation, ProtectionOutcome};
 use crate::storage::{CommitStage, StoreError};
@@ -102,6 +102,7 @@ pub(crate) enum Failure {
     Admission(SubmitError),
     Persistence(PersistOutcome),
     Storage(StoreError),
+    Helper(crate::storage::wire::failure::HelperFailure, [Option<i32>; 8]),
     Protection(ProtectionFailure),
     WorkerDropped,
     Superseded,
@@ -113,11 +114,24 @@ pub(crate) enum CompletionOutcome {
     Uncertain {
         stage: CommitStage,
         errno: i32,
+        helper: Option<HelperEvidence>,
     },
     Failed(Failure),
     ProtectionUncertain(ProtectionFailure),
     /// The disk callback may have run, but a later admitted clear revoked this process tenure.
     Superseded,
+}
+
+impl CompletionOutcome {
+    /// The warning and report consume the same completion-owned diagnostic, regardless of
+    /// whether the helper failed outright or could not establish the commit's durability.
+    pub(crate) fn helper_evidence(&self) -> (Option<crate::storage::wire::failure::HelperFailure>, [Option<i32>; 8]) {
+        match self {
+            Self::Uncertain { helper: Some((failure, errnos)), .. }
+            | Self::Failed(Failure::Helper(failure, errnos)) => (Some(*failure), *errnos),
+            _ => (None, [None; 8]),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -218,7 +232,7 @@ impl Receipt {
 pub(crate) enum LatestStatus {
     Pending,
     Durable,
-    Uncertain { stage: CommitStage, errno: i32 },
+    Uncertain { stage: CommitStage, errno: i32, helper: Option<HelperEvidence> },
     Failed(Failure),
     ProtectionUncertain(ProtectionFailure),
 }
@@ -347,7 +361,7 @@ impl PersistenceCompletion {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CommitDetail {
     Durable,
-    Uncertain { stage: CommitStage, errno: i32 },
+    Uncertain { stage: CommitStage, errno: i32, helper: Option<HelperEvidence> },
     Failed(StoreError),
 }
 
@@ -382,8 +396,8 @@ impl DiskOutcome {
                 protection,
                 commit,
             } => match commit {
-                Some(CommitDetail::Uncertain { stage, errno }) => {
-                    CompletionOutcome::Uncertain { stage, errno }
+                Some(CommitDetail::Uncertain { stage, errno, helper }) => {
+                    CompletionOutcome::Uncertain { stage, errno, helper }
                 }
                 Some(CommitDetail::Failed(error)) => {
                     CompletionOutcome::Failed(Failure::Storage(error))
@@ -402,16 +416,16 @@ impl DiskOutcome {
                     CommitDetail::Durable => CompletionOutcome::Durable(Operation::Clear {
                         cleanup_failed: outcome.cleanup_failed,
                     }),
-                    CommitDetail::Uncertain { stage, errno } => {
-                        CompletionOutcome::Uncertain { stage, errno }
+                    CommitDetail::Uncertain { stage, errno, helper } => {
+                        CompletionOutcome::Uncertain { stage, errno, helper }
                     }
                     CommitDetail::Failed(error) => {
                         CompletionOutcome::Failed(Failure::Storage(error))
                     }
                 },
                 ClearDurability::Uncertain => match commit {
-                    CommitDetail::Uncertain { stage, errno } => {
-                        CompletionOutcome::Uncertain { stage, errno }
+                    CommitDetail::Uncertain { stage, errno, helper } => {
+                        CompletionOutcome::Uncertain { stage, errno, helper }
                     }
                     CommitDetail::Failed(error) => {
                         CompletionOutcome::Failed(Failure::Storage(error))
@@ -452,6 +466,8 @@ pub(crate) struct LiveWrite {
     /// The canonical authority's own verdict, when this path consulted it. `None` only where the
     /// canonical store was deliberately bypassed (the `TEST_FILE` legacy-fixture path).
     pub(crate) commit: Option<CanonicalCommit>,
+    helper_failure: Option<crate::storage::wire::failure::HelperFailure>,
+    candidate_errnos: [Option<i32>; 8],
 }
 
 impl LiveWrite {
@@ -460,7 +476,7 @@ impl LiveWrite {
     pub(crate) fn legacy(sealed: Option<bool>) -> Self {
         Self {
             outcome: Self::outcome_of(sealed),
-            commit: None,
+            commit: None, helper_failure: None, candidate_errnos: [None; 8],
         }
     }
 
@@ -468,8 +484,14 @@ impl LiveWrite {
     pub(crate) fn canonical(commit: CanonicalCommit, sealed: Option<bool>) -> Self {
         Self {
             outcome: Self::outcome_of(sealed),
-            commit: Some(commit),
+            commit: Some(commit), helper_failure: None,
+            candidate_errnos: super::candidate_errnos(),
         }
+    }
+
+    pub(crate) fn with_helper_failure(mut self, failure: Option<crate::storage::wire::failure::HelperFailure>) -> Self {
+        self.helper_failure = failure;
+        self
     }
 
     fn outcome_of(sealed: Option<bool>) -> PersistOutcome {
@@ -485,9 +507,18 @@ impl LiveWrite {
     /// **This is not a second decision site.** It rewrites the write into the same [`DiskOutcome`]
     /// the asynchronous path builds and hands it to [`DiskOutcome::classify`], so the two paths
     /// cannot drift: there is exactly one set of match arms in the crate turning a durability
-    /// verdict into a [`CompletionOutcome`], and it is `classify`'s.
+    /// verdict into a [`CompletionOutcome`], and it is `classify`'s. The helper diagnostic
+    /// snapshot only enriches a non-durable verdict after classification; it cannot change durability.
     pub(crate) fn classify(&self) -> CompletionOutcome {
-        self.disk_outcome().classify()
+        let outcome = self.disk_outcome().classify();
+        match (outcome, self.helper_failure) {
+            (CompletionOutcome::Failed(Failure::Storage(StoreError::HelperUnavailable
+                | StoreError::HelperAuthentication | StoreError::HelperProtocol)), Some(failure)) =>
+                CompletionOutcome::Failed(Failure::Helper(failure, self.candidate_errnos)),
+            (CompletionOutcome::Uncertain { stage, errno, helper: Some((failure, _)) }, _) =>
+                CompletionOutcome::Uncertain { stage, errno, helper: Some((failure, self.candidate_errnos)) },
+            _ => outcome,
+        }
     }
 
     fn disk_outcome(&self) -> DiskOutcome {
@@ -505,13 +536,14 @@ impl LiveWrite {
                 protection: *protection,
                 commit: Some(CommitDetail::Durable),
             },
-            Some(CanonicalCommit::Uncertain { stage, errno }) => DiskOutcome::Write {
+            Some(CanonicalCommit::Uncertain { stage, errno, helper }) => DiskOutcome::Write {
                 outcome: self.outcome,
                 verified: false,
                 protection: None,
                 commit: Some(CommitDetail::Uncertain {
                     stage: *stage,
                     errno: *errno,
+                    helper: *helper,
                 }),
             },
             Some(CanonicalCommit::Failed(error)) => DiskOutcome::Write {
@@ -885,8 +917,8 @@ impl CompletionGuard {
 
     fn finish_outcome(&mut self, outcome: CompletionOutcome) -> CompletionOutcome {
         match outcome {
-            CompletionOutcome::Uncertain { stage, errno } => crate::log(&format!(
-                "session: async persistence uncertain revision={} stage={stage:?} errno={errno}",
+            CompletionOutcome::Uncertain { stage, errno, helper } => crate::log(&format!(
+                "session: async persistence uncertain revision={} stage={stage:?} errno={errno} helper={helper:?}",
                 self.revision
             )),
             CompletionOutcome::Failed(failure) => crate::log(&format!(
@@ -899,8 +931,8 @@ impl CompletionGuard {
         }
         *self.status.lock().unwrap_or_else(|e| e.into_inner()) = match outcome {
             CompletionOutcome::Durable(_) => LatestStatus::Durable,
-            CompletionOutcome::Uncertain { stage, errno } => {
-                LatestStatus::Uncertain { stage, errno }
+            CompletionOutcome::Uncertain { stage, errno, helper } => {
+                LatestStatus::Uncertain { stage, errno, helper }
             }
             CompletionOutcome::Failed(failure) => LatestStatus::Failed(failure),
             CompletionOutcome::ProtectionUncertain(evidence) => {
@@ -1113,11 +1145,11 @@ fn execute_write(snapshot: Session, authority: SaveAuthority) -> DiskOutcome {
             },
             commit: Some(CommitDetail::Durable),
         },
-        CanonicalCommit::Uncertain { stage, errno } => DiskOutcome::Write {
+        CanonicalCommit::Uncertain { stage, errno, helper } => DiskOutcome::Write {
             outcome: PersistOutcome::WriteFailed,
             verified: false,
             protection: None,
-            commit: Some(CommitDetail::Uncertain { stage, errno }),
+            commit: Some(CommitDetail::Uncertain { stage, errno, helper }),
         },
         CanonicalCommit::ProtectionFailed(evidence) => DiskOutcome::ProtectionFailed(evidence),
         CanonicalCommit::Failed(error) => DiskOutcome::Write {
@@ -1138,9 +1170,9 @@ fn execute_clear() -> DiskOutcome {
             super::retire_marked_fallbacks_locked();
             (ClearDurability::Durable, CommitDetail::Durable)
         },
-        CanonicalCommit::Uncertain { stage, errno } => (
+        CanonicalCommit::Uncertain { stage, errno, helper } => (
             ClearDurability::Uncertain,
-            CommitDetail::Uncertain { stage, errno },
+            CommitDetail::Uncertain { stage, errno, helper },
         ),
         CanonicalCommit::Failed(error) => (ClearDurability::Failed, CommitDetail::Failed(error)),
         CanonicalCommit::ProtectionFailed(evidence) => {
@@ -1175,6 +1207,24 @@ mod tests {
     use super::*;
     use crate::storage_worker::{SubmitErrorGeneric, Writer};
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn uncertain_write_and_clear_keep_helper_evidence_without_becoming_failed_or_durable() {
+        use crate::storage::wire::failure::{HelperFailure, Stage};
+        let helper = Some((HelperFailure::new(Stage::Db8, Some(-3963)), [None; 8]));
+        let commit = CommitDetail::Uncertain { stage: CommitStage::Readback, errno: 0, helper };
+        for disk in [
+            DiskOutcome::Write { outcome: PersistOutcome::WriteFailed, verified: false,
+                protection: None, commit: Some(commit) },
+            DiskOutcome::Write { outcome: PersistOutcome::PersistedPlaintext, verified: false,
+                protection: None, commit: Some(commit) },
+            DiskOutcome::Clear { outcome: ClearOutcome { durability: ClearDurability::Uncertain,
+                cleanup_failed: false }, commit },
+        ] {
+            assert_eq!(disk.classify(), CompletionOutcome::Uncertain {
+                stage: CommitStage::Readback, errno: 0, helper });
+        }
+    }
 
     #[test]
     fn routine_write_without_fallback_reads_canonical_only_for_the_commit() {
@@ -2082,13 +2132,13 @@ mod tests {
     #[test]
     fn an_uncertain_canonical_commit_never_reports_durable_even_when_the_runtime_dir_fallback_succeeds() {
         let write = LiveWrite::canonical(
-            CanonicalCommit::Uncertain { stage: CommitStage::Rename, errno: 13 },
+            CanonicalCommit::Uncertain { stage: CommitStage::Rename, errno: 13, helper: None },
             Some(false), // the runtime-dir candidate's own write: plaintext, no key manager
         );
         assert!(
             matches!(
                 write.classify(),
-                CompletionOutcome::Uncertain { stage: CommitStage::Rename, errno: 13 }
+                CompletionOutcome::Uncertain { stage: CommitStage::Rename, errno: 13, helper: None }
             ),
             "an uncertain canonical commit must report Uncertain, not Durable, even though the \
              runtime-dir fallback accepted the write: {:?}",

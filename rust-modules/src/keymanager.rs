@@ -278,7 +278,7 @@ mod platform {
                     ));
                     Err(())
                 }
-                Err(crate::webos::ls2::Fail::Setup { stage, detail }) => {
+                Err(crate::webos::ls2::Fail::Setup { stage, detail, .. }) => {
                     crate::log(&format!("keymanager: call failed stage={stage} ({detail})"));
                     Err(())
                 }

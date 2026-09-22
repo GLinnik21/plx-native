@@ -54,6 +54,9 @@ pub(crate) struct ProtectionFailure {
     pub(crate) db8_commit_verified: bool,
 }
 
+/// Payload-free evidence owned by the completion, including any legacy candidate errno numbers.
+pub(crate) type HelperEvidence = (crate::storage::wire::failure::HelperFailure, [Option<i32>; 8]);
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum CanonicalCommit {
     Durable {
@@ -64,6 +67,7 @@ pub(crate) enum CanonicalCommit {
     Uncertain {
         stage: CommitStage,
         errno: i32,
+        helper: Option<HelperEvidence>,
     },
     Failed(StoreError),
     ProtectionFailed(ProtectionFailure),
@@ -270,7 +274,7 @@ fn commit(record: Record) -> CanonicalCommit {
             protection: None,
         },
         Ok(CommitReceipt::Uncertain { stage, errno }) => {
-            CanonicalCommit::Uncertain { stage, errno }
+            CanonicalCommit::Uncertain { stage, errno, helper: None }
         }
         Err(error) => CanonicalCommit::Failed(error),
     }
@@ -609,6 +613,7 @@ fn helper_commit_with(
     operation: Generation,
     mutation: WireMutation,
 ) -> CanonicalCommit {
+    crate::storage::wire::failure::clear();
     match client::commit_with(transport, expected, operation, mutation) {
         Ok(Response::Commit {
             status: CommitStatus::Committed,
@@ -652,6 +657,7 @@ fn helper_commit_with(
         }) => CanonicalCommit::Uncertain {
             stage: CommitStage::Readback,
             errno: 0,
+            helper: crate::storage::wire::failure::last().map(|failure| (failure, [None; 8])),
         },
         Ok(Response::Error { code }) => {
             crate::log(&format!(
@@ -1428,8 +1434,43 @@ pub(crate) fn cleanup_after_confirmed_clear() -> ClearCleanupOutcome {
 }
 
 #[cfg(test)]
+pub(crate) fn uncertain_helper_reply_for_test(reconcile: bool) -> super::async_persistence::CompletionOutcome {
+    use crate::storage::wire::{failure, ReconcileStatus};
+    let mut transport = |request| {
+        if reconcile && matches!(request, crate::storage::wire::Request::Commit { .. }) {
+            return Err(client::ClientError::Unavailable);
+        }
+        failure::remember(failure::Stage::Wire, None);
+        failure::update(|f| f.helper = Some(failure::Detail::new(failure::Stage::Db8, Some(-3963))));
+        Ok(if reconcile {
+            Response::Reconcile { status: ReconcileStatus::Unknown, db_rev: None, applied: None, protection: None }
+        } else {
+            Response::Commit { status: CommitStatus::Unavailable, db_rev: None, state: None,
+                applied: None, verified: false, protection: None }
+        })
+    };
+    let commit = helper_commit_with(&mut transport, state::Flavor::Stable, None,
+        Generation([2; 16]), WireMutation::ClearTenure {});
+    assert!(matches!(commit, CanonicalCommit::Uncertain { .. }));
+    // The diagnostic must travel with the commit, not a later thread-local observation.
+    failure::clear();
+    super::async_persistence::LiveWrite::canonical(commit, None).classify()
+}
+
+#[cfg(test)]
 mod commit_flavor_tests {
     use super::*;
+
+    #[test]
+    fn uncertain_reply_without_evidence_does_not_borrow_a_previous_failure() {
+        use crate::storage::wire::failure::{self, Stage};
+        failure::remember(Stage::Db8, Some(-3963));
+        let mut transport = |_request| Ok(Response::Commit { status: CommitStatus::Unavailable,
+            db_rev: None, state: None, applied: None, verified: false, protection: None });
+        let commit = helper_commit_with(&mut transport, state::Flavor::Stable, None,
+            Generation([2; 16]), WireMutation::ClearTenure {});
+        assert!(matches!(commit, CanonicalCommit::Uncertain { helper: None, .. }));
+    }
 
     fn commit_response(response_flavor: state::Flavor) -> CanonicalCommit {
         let state = state::CanonicalState::new(response_flavor, Generation([1; 16]));

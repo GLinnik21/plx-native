@@ -151,33 +151,63 @@ impl Runtime {
         })
     }
 
-    /// Publish one payload-free failure stage for rooted diagnostics. It is transient, private to
+    pub fn clear_failure(&self) {
+        let path = PathBuf::from(format!("/proc/self/fd/{}", self.directory.as_raw_fd())).join("last-error");
+        if safe_metadata(&path, false).is_ok() { let _ = fs::remove_file(path); }
+    }
+
+    /// Publish one payload-free failure stage for app diagnostics. It is transient, private to
     /// the app UID, and never participates in protocol decisions.
     pub fn record_failure(&self, stage: &str) {
-        const NAME: &str = "last-error";
-        if stage.len() > 64 || !stage.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
-            return;
-        }
-        let anchored = PathBuf::from(format!("/proc/self/fd/{}", self.directory.as_raw_fd()));
-        let path = anchored.join(NAME);
-        match fs::symlink_metadata(&path) {
-            Ok(_) if safe_metadata(&path, false).is_err() => return,
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return,
-        }
-        let mut options = OpenOptions::new();
-        options
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-        if let Ok(mut file) = options.open(path) {
-            let _ = file.write_all(stage.as_bytes());
-        }
+        record_failure_in(&self.directory, &self.descriptor.helper_generation, stage);
     }
 }
+
+// Process-start snapshot: never read a later activation's nonce on a failure path.
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
+static START_ATTEMPT: std::sync::OnceLock<Option<super::wire::activation::Attempt>> = std::sync::OnceLock::new();
+
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
+pub fn capture_start_attempt(app_id: &str) {
+    START_ATTEMPT.get_or_init(|| super::wire::activation::Attempt::capture(
+        Path::new(&format!("/tmp/{app_id}.storage-runtime"))));
+}
+
+/// Also used by BusCancel immediately before exit, when destructors cannot publish a failure.
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
+pub fn record_start_failure(app_id: &str) {
+    if let (Some(Some(attempt)), Some(failure)) = (START_ATTEMPT.get(), super::wire::failure::last()) {
+        attempt.record_failure(Path::new(&format!("/tmp/{app_id}.storage-runtime")), failure.observed);
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
+fn record_failure_in(directory: &File, generation: &str, stage: &str) {
+    const NAME: &str = "last-error";
+    let detail = super::wire::failure::last().map(|f| f.observed)
+        .or_else(|| super::wire::failure::parse_last_error(stage.as_bytes()));
+    let Some(detail) = detail else { return; };
+    let Ok(bytes) = serde_json::to_vec(&super::wire::failure::Record { helper_generation: generation.into(), detail }) else { return; };
+    let anchored = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
+    let path = anchored.join(NAME);
+    match fs::symlink_metadata(&path) {
+        Ok(_) if safe_metadata(&path, false).is_err() => return,
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return,
+    }
+    let mut options = OpenOptions::new();
+    options
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    if let Ok(mut file) = options.open(path) {
+        let _ = file.write_all(&bytes);
+    }
+}
+
 #[cfg(all(target_os = "linux", target_arch = "arm"))]
 pub fn authenticate(stream: &UnixStream) -> Result<(), ErrorCode> {
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
@@ -204,6 +234,11 @@ pub fn authenticate(stream: &UnixStream) -> Result<(), ErrorCode> {
 impl Drop for Runtime {
     fn drop(&mut self) {
         let anchored = PathBuf::from(format!("/proc/self/fd/{}", self.directory.as_raw_fd()));
+        // Do not remove a successor's diagnostic if the rendezvous has been replaced.
+        if safe_metadata(&anchored.join(DESCRIPTOR_NAME), false)
+            .is_ok_and(|m| (m.dev(), m.ino()) == self.descriptor_inode) {
+            self.clear_failure();
+        }
         for (name, socket, identity) in [
             (SOCKET_NAME, true, self.socket_inode),
             (DESCRIPTOR_NAME, false, self.descriptor_inode),
@@ -215,7 +250,7 @@ impl Drop for Runtime {
                 }
             }
         }
-        // Leave the empty private directory: its ownership is the next activation's guard.
+        // Keep the private directory and activation diagnostics; its ownership guards the next start.
         let _ = &self.path;
     }
 }

@@ -1,4 +1,9 @@
 //! Private local protocol. No request can choose a DB8 owner, kind, ID, or arbitrary method.
+#[path = "failure.rs"]
+pub mod failure;
+#[path = "activation.rs"]
+#[allow(dead_code)] // Client activation and helper startup share this host-testable file protocol.
+pub mod activation;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{self, Read, Write};
@@ -259,6 +264,17 @@ pub enum Response {
         #[serde(default)]
         db8_commit_verified: bool,
     },
+}
+impl Response {
+    /// Shared service publication and client retention policy for helper diagnostics.
+    pub fn failure_code(&self) -> Option<ErrorCode> {
+        match self {
+            Self::Error { code } => Some(*code),
+            Self::Commit { status: CommitStatus::Unavailable, .. }
+                | Self::Reconcile { status: ReconcileStatus::Unknown, .. } => Some(ErrorCode::Unavailable),
+            _ => None,
+        }
+    }
 }
 impl std::fmt::Debug for Response {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

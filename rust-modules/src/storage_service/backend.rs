@@ -11,7 +11,23 @@ use serde_json::{json, Value};
 
 static LAST_ERROR_STAGE: std::sync::Mutex<&'static str> = std::sync::Mutex::new("none");
 
+/// Keep the lower-level bus/DB8 stage and numeric code when an outer operation fails too.
+fn ensure_failure(stage: failure::Stage) {
+    if failure::last().is_none() { failure::remember(stage, None); }
+}
+
+fn record_put_failure(result: &Result<Value, ErrorCode>) {
+    match result {
+        Ok(reply) if reply["returnValue"] == false => { db8_failure(reply); }
+        Err(_) => ensure_failure(failure::Stage::Db8),
+        _ => (),
+    }
+}
+
 fn remember_stage(stage: &'static str) {
+    if let Some(detail) = failure::parse_last_error(stage.as_bytes()) {
+        ensure_failure(detail.stage);
+    }
     *LAST_ERROR_STAGE.lock().unwrap_or_else(|e| e.into_inner()) = stage;
 }
 
@@ -51,6 +67,11 @@ fn load_stage(error: ErrorCode) -> ErrorCode {
         ErrorCode::Corrupt => "load_corrupt",
     };
     stage_error(stage, error)
+}
+
+fn db8_failure(reply: &Value) -> ErrorCode {
+    failure::remember(failure::Stage::Db8, reply["errorCode"].as_i64().and_then(|n| i32::try_from(n).ok()));
+    ErrorCode::Unavailable
 }
 
 pub struct Backend<R> {
@@ -115,16 +136,19 @@ impl<R: Rpc> Backend<R> {
         if result["returnValue"] == true {
             Ok(())
         } else {
-            Err(ErrorCode::Unavailable)
+            Err(db8_failure(&result))
         }
     }
     pub fn load(&mut self) -> Result<Option<(u64, CanonicalState)>, ErrorCode> {
+        self.load_inner().map_err(load_stage)
+    }
+    fn load_inner(&mut self) -> Result<Option<(u64, CanonicalState)>, ErrorCode> {
         let reply = self.rpc.call(
             "luna://com.palm.db/get",
             &json!({"ids":[self.flavor.object_id()]}),
         )?;
         if reply["returnValue"] != true {
-            return Err(ErrorCode::Unavailable);
+            return Err(db8_failure(&reply));
         }
         let objects = reply["results"].as_array().ok_or(ErrorCode::Corrupt)?;
         if objects.is_empty() {
@@ -175,6 +199,7 @@ impl<R: Rpc> Backend<R> {
         Ok(Some((rev, state)))
     }
     pub fn dispatch(&mut self, request: Request) -> Response {
+        failure::clear();
         remember_stage("none");
         self.keymanager_error = None;
         let result = check_frame_size(&request)
@@ -184,7 +209,16 @@ impl<R: Rpc> Backend<R> {
             check_frame_size(&response).map_err(|error| stage_error("response_size", error))?;
             Ok(response)
         }) {
-            Ok(r) => r,
+            Ok(r) => {
+                // A matching ledger/candidate was not established, even if every RPC succeeded.
+                // Authentication, readback and put paths below record a more specific cause first.
+                match &r {
+                    Response::Commit { status: CommitStatus::Unavailable, .. } => ensure_failure(failure::Stage::ReadbackLedger),
+                    Response::Reconcile { status: ReconcileStatus::Unknown, .. } => ensure_failure(failure::Stage::ReconcileLedger),
+                    _ => (),
+                }
+                r
+            }
             Err(code) => {
                 if let Some((failure, preservation)) = self.keymanager_error.take() {
                     return Response::KeymanagerError {
@@ -292,7 +326,10 @@ impl<R: Rpc> Backend<R> {
                         let protection = applied.as_ref().and_then(|_| protection_outcome(&state));
                         (status, Some(rev.to_string()), applied, protection)
                     }
-                    None => (ReconcileStatus::Unknown, None, None, None),
+                    None => {
+                        ensure_failure(failure::Stage::ReconcileLoad);
+                        (ReconcileStatus::Unknown, None, None, None)
+                    },
                 };
                 Ok(Response::Reconcile {
                     status,
@@ -344,6 +381,9 @@ impl<R: Rpc> Backend<R> {
                         Err(_) => false,
                     };
                     if !authenticated {
+                        // A failed open records LoadAuthentication; an intact but wrong plaintext
+                        // is a different failure and must not be described as a wire problem.
+                        ensure_failure(failure::Stage::PlaintextMismatch);
                         return receipt(CommitStatus::Unavailable, Some(*rev), None);
                     }
                 }
@@ -468,6 +508,7 @@ impl<R: Rpc> Backend<R> {
         let put = self
             .rpc
             .call("luna://com.palm.db/put", &json!({"objects":[object]}));
+        record_put_failure(&put);
         if matches!(&put, Ok(reply) if reply["returnValue"] == false) {
             // An explicit DB8 rejection proves this newly created generation was not installed.
             // A lost/malformed acknowledgement never supplies that proof.
@@ -568,7 +609,8 @@ impl<R: Rpc> Backend<R> {
         }
     }
     fn authenticate_current_auth(&mut self, state: &CanonicalState) -> Result<String, ErrorCode> {
-        let opened = self.open_auth(state)?.ok_or(ErrorCode::Authentication)?;
+        let opened = self.open_auth(state).and_then(|opened| opened.ok_or(ErrorCode::Authentication))
+            .inspect_err(|_| ensure_failure(failure::Stage::LoadAuthentication))?;
         // A successfully decoded but incorrect plaintext is not authentication proof. This
         // digest survives helper restarts, rejected ACL repairs, and later public operations.
         if let Some(expected) = state.operations.iter().rev().find_map(|entry| {
@@ -583,6 +625,7 @@ impl<R: Rpc> Backend<R> {
             }
         }) {
             if plaintext_digest(&opened) != *expected {
+                ensure_failure(failure::Stage::PlaintextMismatch);
                 return Err(ErrorCode::Corrupt);
             }
         }
@@ -620,9 +663,10 @@ impl<R: Rpc> Backend<R> {
         let encoded = String::from_utf8(repaired.encode().map_err(translate)?)
             .map_err(|_| ErrorCode::Invalid)?;
         let object = json!({"_id":self.flavor.object_id(),"_kind":format!("{}:1", self.service),"_rev":rev,"state":encoded});
-        let _ = self
+        let put = self
             .rpc
             .call("luna://com.palm.db/put", &json!({"objects":[object]}));
+        record_put_failure(&put);
         match self.load() {
             Ok(Some((revision, current))) if current == repaired => {
                 let opened = self.open_auth(&current)?;
@@ -681,14 +725,16 @@ impl<R: Rpc> Backend<R> {
         revision: Option<u64>,
         state: &CanonicalState,
     ) -> Result<Value, ErrorCode> {
-        let encoded = String::from_utf8(state.encode().map_err(translate)?)
-            .map_err(|_| ErrorCode::Invalid)?;
+        let encoded = String::from_utf8(state.encode().map_err(|error| stage_error("encode", translate(error)))?)
+            .map_err(|_| stage_error("encode_json", ErrorCode::Invalid))?;
         let mut object = json!({"_id":self.flavor.object_id(),"_kind":format!("{}:1",self.service),"state":encoded});
         if let Some(rev) = revision {
             object["_rev"] = json!(rev);
         }
-        self.rpc
-            .call("luna://com.palm.db/put", &json!({"objects":[object]}))
+        let result = self.rpc
+            .call("luna://com.palm.db/put", &json!({"objects":[object]}));
+        record_put_failure(&result);
+        result
     }
     /// Resume from persisted evidence alone. Authenticate the staged bytes first, then promote
     /// them and their original ledger receipt in one exact-revision CAS. A timeout never proves
@@ -1117,6 +1163,7 @@ fn receipt(
     rev: Option<u64>,
     state: Option<&CanonicalState>,
 ) -> Result<Response, ErrorCode> {
+    if matches!(status, CommitStatus::Unavailable) { ensure_failure(failure::Stage::ReadbackLedger); }
     Ok(Response::Commit {
         status,
         db_rev: rev.map(|v| v.to_string()),
@@ -1134,6 +1181,83 @@ fn receipt(
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+    #[test]
+    fn replay_authentication_uncertainty_records_its_cause() {
+        let mut b = crypto_backend();
+        let request = changing_request(fallback_auth());
+        assert!(matches!(b.dispatch(request.clone()), Response::Commit { status: CommitStatus::Committed, .. }));
+        b.rpc.readback_failure = Some(("/begin", ErrorCode::Unavailable));
+        let Request::Commit { operation_id, digest, .. } = request.clone() else { panic!() };
+        for replay in [request, Request::Reconcile { operation_id, digest }] {
+            assert!(matches!(b.dispatch(replay),
+                Response::Commit { status: CommitStatus::Unavailable, .. }
+                | Response::Reconcile { status: ReconcileStatus::Unknown, .. }));
+            assert_eq!(failure::last().map(|f| f.observed.stage), Some(failure::Stage::LoadAuthentication));
+        }
+    }
+
+    #[test]
+    fn structured_uncertainty_keeps_readback_and_reconcile_causes() {
+        for (readback, stage) in [
+            (Ok(record(9)), failure::Stage::ReadbackLedger),
+            (Ok(json!({"returnValue":true,"results":[]})), failure::Stage::ReadbackLedger),
+            (Ok(json!({"returnValue":true,"results":[{}]})), failure::Stage::LoadCorrupt),
+            (Err(ErrorCode::Timeout), failure::Stage::LoadTimeout),
+        ] {
+            let mut b = backend(vec![Ok(record(9)), Ok(json!({"returnValue":true})), readback]);
+            assert!(matches!(b.dispatch(changing_request(WireMutation::UpdateConsent {
+                payload: json!({"consent":true,"scopes":[],"ids":[]}),
+            })), Response::Commit { status: CommitStatus::Unavailable, .. }));
+            assert_eq!(failure::last().unwrap().observed.stage, stage);
+        }
+        for (record, stage) in [
+            (record(9), failure::Stage::ReconcileLedger),
+            (json!({"returnValue":true,"results":[]}), failure::Stage::ReconcileLoad),
+        ] {
+            let mut b = backend(vec![Ok(record)]);
+            assert!(matches!(b.dispatch(Request::Reconcile { operation_id: "02".repeat(16), digest: "03".repeat(32) }),
+                Response::Reconcile { status: ReconcileStatus::Unknown, .. }));
+            assert_eq!(failure::last().unwrap().observed.stage, stage);
+        }
+    }
+
+    #[test]
+    fn repair_and_promotion_puts_keep_db8_rejection_codes() {
+        failure::clear();
+        let mut b = backend(vec![Ok(json!({"returnValue":false,"errorCode":-3963}))]);
+        let state = CanonicalState::new(Flavor::Stable, Generation([1; 16]));
+        b.put_state(Some(9), &state).unwrap();
+        assert_eq!(failure::last().unwrap().observed, failure::Detail::new(failure::Stage::Db8, Some(-3963)));
+        // The outer readback fallback must not discard the DB8 code.
+        receipt(CommitStatus::Unavailable, None, None).unwrap();
+        assert_eq!(failure::last().unwrap().observed, failure::Detail::new(failure::Stage::Db8, Some(-3963)));
+    }
+
+    #[test]
+    fn rejected_put_retains_db8_diagnostic_for_structured_commit() {
+        failure::clear();
+        let mut b = backend(vec![
+            Ok(record(9)),
+            Ok(json!({"returnValue":false,"errorCode":-3963})),
+            Ok(record(9)),
+        ]);
+        let response = b.dispatch(changing_request(WireMutation::UpdateConsent {
+            payload: json!({"consent":true,"scopes":[],"ids":[]}),
+        }));
+        assert!(matches!(response, Response::Commit { status: CommitStatus::Unavailable, .. }));
+        assert_eq!(failure::last().unwrap().observed,
+            failure::Detail::new(failure::Stage::Db8, Some(-3963)));
+        assert_eq!(response.failure_code(), Some(ErrorCode::Unavailable));
+        assert_eq!(failure::last().unwrap().line(), "storage: helper · db8 (-3963)");
+        let unknown = Response::Reconcile {
+            status: ReconcileStatus::Unknown, db_rev: None, applied: None, protection: None,
+        };
+        assert_eq!(unknown.failure_code(), Some(ErrorCode::Unavailable));
+        for status in [CommitStatus::Committed, CommitStatus::Conflict] {
+            assert_eq!(receipt(status, None, None).unwrap().failure_code(), None);
+        }
+    }
+
     // Reproduce the old device's physical representation without ever interpreting strings.
     fn add_db8_array_ids(value: &mut Value) {
         match value {
@@ -1235,6 +1359,21 @@ mod tests {
             "state":String::from_utf8(state.encode().unwrap()).unwrap()
         }]})
     }
+    #[test]
+    fn helper_failure_db8_negative_setup_and_load_keep_numeric_code_only() {
+        for setup in [true, false] {
+            failure::clear();
+            let mut b = backend(vec![Ok(json!({"returnValue":false,"errorCode":-3963,
+                "errorText":"private-fixture", "host":"private-host"}))]);
+            let error = if setup { b.setup().err() } else { b.load().err() };
+            assert_eq!(error, Some(ErrorCode::Unavailable));
+            let detail = failure::last().unwrap().observed;
+            assert_eq!(detail, failure::Detail::new(failure::Stage::Db8, Some(-3963)));
+            let text = serde_json::to_string(&detail).unwrap();
+            assert!(!text.contains("private"));
+        }
+    }
+
     #[test]
     fn old_db8_ledger_ids_load_and_next_commit_rewrites_an_opaque_document() {
         let (record, current) = device_record();

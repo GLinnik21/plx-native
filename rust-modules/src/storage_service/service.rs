@@ -36,8 +36,12 @@ pub fn run() -> Result<(), ErrorCode> {
     let flavor = Flavor::from_app_id(app_id).ok_or(ErrorCode::Invalid)?;
     let service = format!("{app_id}.storage");
     // Acquiring this name precedes any stale-file removal, serializing conforming helpers.
-    let rpc = bus::Bus::register(&service)?;
-    let runtime = runtime::Runtime::publish(app_id)?;
+    runtime::capture_start_attempt(app_id);
+    let rpc = bus::Bus::register(&service).inspect_err(|_| runtime::record_start_failure(app_id))?;
+    let runtime = runtime::Runtime::publish(app_id).inspect_err(|_| {
+        wire::failure::remember(wire::failure::Stage::RuntimeInvalid, None);
+        runtime::record_start_failure(app_id);
+    })?;
     let mut backend = Backend::new(rpc, flavor, service);
     let mut idle = Instant::now();
     while idle.elapsed() < Duration::from_secs(30) {
@@ -48,6 +52,7 @@ pub fn run() -> Result<(), ErrorCode> {
                 if runtime::authenticate(&stream).is_err() {
                     continue;
                 }
+                runtime.clear_failure();
                 stream
                     .set_read_timeout(Some(Duration::from_secs(8)))
                     .map_err(|_| ErrorCode::Unavailable)?;
@@ -67,8 +72,15 @@ pub fn run() -> Result<(), ErrorCode> {
                 }
                 // Setup and capability probing are bounded outgoing requests; neither advertises
                 // a keymanager success on old firmware nor silently selects weaker protection.
+                wire::failure::clear();
                 let db8 = backend.setup().is_ok();
+                if !db8 { runtime.record_failure("none"); }
+                // A capability probe must not overwrite the DB8 failure being diagnosed.
+                let setup_failure = wire::failure::last();
                 let keymanager = keymanager::available(&mut backend.rpc);
+                if let Some(failure) = setup_failure {
+                    wire::failure::remember(failure.observed.stage, failure.observed.code);
+                } else { wire::failure::clear(); }
                 let response = Response::Hello {
                     protocol: PROTOCOL,
                     nonce: runtime.descriptor.nonce.clone(),
@@ -78,6 +90,7 @@ pub fn run() -> Result<(), ErrorCode> {
                 if wire::write_frame(&mut stream, &response).is_err() {
                     continue;
                 }
+                if db8 { wire::failure::clear(); }
                 let reply = match wire::read_frame::<Request>(&mut stream) {
                     Ok(request) if db8 => backend.dispatch(request),
                     Ok(_) => Response::Error {
@@ -87,7 +100,7 @@ pub fn run() -> Result<(), ErrorCode> {
                         code: ErrorCode::Protocol,
                     },
                 };
-                if matches!(reply, Response::Error { .. }) {
+                if reply.failure_code().is_some() {
                     runtime.record_failure(crate::backend::last_error_stage());
                 }
                 let _ = wire::write_frame(&mut stream, &reply);
