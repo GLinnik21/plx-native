@@ -68,7 +68,7 @@ fn home_group_falls_back_to_provider_key_not_label_or_position() {
     hub.start = 1;
     assert_eq!(stable_hub_identity(&hub, &items), Some(HubIdentity::Key { sid: sid(1), key }));
     hub.hub_id = key.into();
-    assert_eq!(stable_hub_identity(&hub, &items), Some(HubIdentity::Identifier { sid: sid(1), id: key }));
+    assert_eq!(stable_hub_identity(&hub, &items), Some(HubIdentity::Identifier { sid: sid(1), id: key, key }));
     hub.hub_id.clear();
     hub.key.clear();
     assert_eq!(stable_hub_identity(&hub, &items), None);

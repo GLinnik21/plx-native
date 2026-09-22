@@ -522,14 +522,16 @@ pub(crate) struct FilmographyMemory {
     pub(crate) preview: Option<(String, String)>,
 }
 
-/// Owned provider identity used by Home's stable group and element registries.
+/// Owned provider identity used by Home's stable group and element registries. Provider
+/// identifiers include their listing key because one server can reuse an identifier for distinct
+/// rows while a mixed-library row must not derive identity from whichever item happens to lead it.
 ///
 /// A provider which publishes no identity receives an explicitly ephemeral identity scoped to
 /// that publication generation. Neither its title nor its position is claimed as stable.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum HomeHubIdentity {
     ContinueWatching,
-    Identifier { sid: crate::plex::ServerId, id: String },
+    Identifier { sid: crate::plex::ServerId, id: String, key: String },
     Key { sid: crate::plex::ServerId, key: String },
     Ephemeral { generation: u32, ordinal: u32 },
 }
@@ -700,13 +702,15 @@ fn write_library_identity(identity: &LibraryIdentity, c: &mut crate::ui::machine
 fn write_home_hub(hub: &HomeHubIdentity, c: &mut crate::ui::machine::Canon) {
     match hub {
         HomeHubIdentity::ContinueWatching => { c.u32(0); }
-        HomeHubIdentity::Identifier { sid, id } => { c.u32(1).u32(u32::from(sid.raw())).str(id); }
+        HomeHubIdentity::Identifier { sid, id, key } => {
+            c.u32(1).u32(u32::from(sid.raw())).str(id).str(key);
+        }
         HomeHubIdentity::Key { sid, key } => { c.u32(2).u32(u32::from(sid.raw())).str(key); }
         HomeHubIdentity::Ephemeral { generation, ordinal } => { c.u32(3).u32(*generation).u32(*ordinal); }
     }
 }
 
-pub(crate) const PAGE_MEMORY_SHAPE: &str = "PageMemory{None,Detail:{spot:Spot{section:i32,col:i32,ep_text:bool,saved_col:[i32;7],season:Option<i64>},next_elem:u32,keys:[{identity:DetailIdentity{Season(sid:u32,show:str,rk:str),Episode(sid:u32,rk:str,text:bool),Related(sid:u32,rk:str),Cast(sid:u32,key:str,guid:str,name:str,role:str),Extra(sid:u32,rk:str),Slot(u32)},elem:u32}]},Person:{next_card_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Filmography:{next_elem:u32,department:String,keys:[{department:String,catalog_id:Option<String>,elem:u32}],preview:Option<(String,String)>},Home:{next_group:u32,next_elem:u32,groups:[{identity:HomeHubIdentity{ContinueWatching,Identifier{sid:ServerId,id:String},Key{sid:ServerId,key:String},Ephemeral{generation:u32,ordinal:u32}},group:u32}],items:[{identity:HomeItemIdentity{Item{hub:HomeHubIdentity,sid:ServerId,rk:String},Slot{hub:HomeHubIdentity,generation:u32,ordinal:u32}},elem:u32,last_row:u32,last_col:u32}],carousel:Option<(ServerId,String)>,strip_chosen:bool,scroll_y:f32,row_scroll:[(group:u32,scroll:f32)]},Library:{next_elem:u32,section:Option<{sid:ServerId,key:i64}>,scroll:f32,keys:[{identity:LibraryIdentity,elem:u32,last_group:u32,last_index:u32}],shelf_scroll:[(hub:String,scroll:f32)],epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,viewports:[LibraryViewport{epoch:u32,section:{sid:u32,key:u64},scroll:f32,shelves:[(id:str,x:f32)]}]}}";
+pub(crate) const PAGE_MEMORY_SHAPE: &str = "PageMemory{None,Detail:{spot:Spot{section:i32,col:i32,ep_text:bool,saved_col:[i32;7],season:Option<i64>},next_elem:u32,keys:[{identity:DetailIdentity{Season(sid:u32,show:str,rk:str),Episode(sid:u32,rk:str,text:bool),Related(sid:u32,rk:str),Cast(sid:u32,key:str,guid:str,name:str,role:str),Extra(sid:u32,rk:str),Slot(u32)},elem:u32}]},Person:{next_card_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Filmography:{next_elem:u32,department:String,keys:[{department:String,catalog_id:Option<String>,elem:u32}],preview:Option<(String,String)>},Home:{next_group:u32,next_elem:u32,groups:[{identity:HomeHubIdentity{ContinueWatching,Identifier{sid:ServerId,id:String,key:String},Key{sid:ServerId,key:String},Ephemeral{generation:u32,ordinal:u32}},group:u32}],items:[{identity:HomeItemIdentity{Item{hub:HomeHubIdentity,sid:ServerId,rk:String},Slot{hub:HomeHubIdentity,generation:u32,ordinal:u32}},elem:u32,last_row:u32,last_col:u32}],carousel:Option<(ServerId,String)>,strip_chosen:bool,scroll_y:f32,row_scroll:[(group:u32,scroll:f32)]},Library:{next_elem:u32,section:Option<{sid:ServerId,key:i64}>,scroll:f32,keys:[{identity:LibraryIdentity,elem:u32,last_group:u32,last_index:u32}],shelf_scroll:[(hub:String,scroll:f32)],epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,viewports:[LibraryViewport{epoch:u32,section:{sid:u32,key:u64},scroll:f32,shelves:[(id:str,x:f32)]}]}}";
 
 /// Effects cross the screen/loop boundary; screens do not poll one another's pending latches.
 pub(crate) enum ContentReq {
@@ -1877,8 +1881,13 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 /// **Home modal cover state** (0x0e66_311c_e4f1_0769 → this): `screens::home::SHAPE` gains
 /// `covered:bool`. Compact surfaces keep their host page ticking, so the recorder must distinguish
 /// a Home whose hero timer is paused beneath a surface from the same visible state while active.
+///
+/// **Home hub identity keyed by listing key** (0x285a_3a99_d1e2_f068 → this): `HomeHubIdentity::Identifier`
+/// gains the provider-published listing key, keeping mixed-section hubs stable when their leading
+/// item changes libraries while still distinguishing section-specific rows. Recorded fixtures need
+/// `tools/plxnative-rec rerecord` like any other shape-pin bump before replay is trusted.
 #[cfg(test)]
-const SCREEN_SHAPES_PIN: u64 = 0x285a_3a99_d1e2_f068;
+const SCREEN_SHAPES_PIN: u64 = 0xd48c_db30_5492_1e33;
 
 #[cfg(test)]
 mod arg_tests {

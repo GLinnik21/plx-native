@@ -373,9 +373,10 @@ impl HomeScreen {
     fn hub_identity(view: HubsView<'_>, row: usize, hub: HubRef<'_>) -> HomeHubIdentity {
         match hub.identity {
             Some(HubIdentity::ContinueWatching) => HomeHubIdentity::ContinueWatching,
-            Some(HubIdentity::Identifier { sid, id }) => HomeHubIdentity::Identifier {
+            Some(HubIdentity::Identifier { sid, id, key }) => HomeHubIdentity::Identifier {
                 sid,
                 id: id.to_owned(),
+                key: key.to_owned(),
             },
             Some(HubIdentity::Key { sid, key }) => HomeHubIdentity::Key {
                 sid,
@@ -2008,8 +2009,8 @@ fn write_hub_identity(identity: &HomeHubIdentity, c: &mut Canon) {
         HomeHubIdentity::ContinueWatching => {
             c.u32(0);
         }
-        HomeHubIdentity::Identifier { sid, id } => {
-            c.u32(1).u32(u32::from(sid.raw())).str(id);
+        HomeHubIdentity::Identifier { sid, id, key } => {
+            c.u32(1).u32(u32::from(sid.raw())).str(id).str(key);
         }
         HomeHubIdentity::Key { sid, key } => {
             c.u32(2).u32(u32::from(sid.raw())).str(key);
