@@ -219,6 +219,43 @@ pub(crate) struct PersistenceWarning {
     pub helper: Option<crate::storage::wire::failure::HelperFailure>,
     #[serde(default)]
     pub candidate_errnos: [Option<i32>; 8],
+    /// Closed evidence for the warning; retained independently of the consent-gated report.
+    #[serde(default)]
+    pub persistence: Option<PersistenceEvidence>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PersistenceEvidence {
+    class: crate::telemetry::incident::PersistenceFailure,
+    keymanager_stage: Option<crate::storage::wire::KeymanagerStage>,
+    service_error_code: Option<i32>,
+}
+
+impl PersistenceWarning {
+    pub(crate) fn from_outcome(key: PersistenceWarningKey, site: PersistenceWarningSite,
+        outcome: &crate::plex::session::async_persistence::CompletionOutcome) -> Self {
+        let context = IncidentContext {
+            kind: crate::telemetry::incident::IncidentKind::SaveFailed,
+            ..IncidentContext::internal(InternalClass::CommitRefused)
+        }.with_persistence(outcome);
+        Self {
+            key, site, helper: context.helper, candidate_errnos: context.candidate_errnos,
+            persistence: context.persistence.map(|class| PersistenceEvidence {
+                class, keymanager_stage: context.keymanager_stage, service_error_code: context.service_error_code,
+            }),
+        }
+    }
+
+    /// Both the original offer and a later explicit one-off use this same closed snapshot.
+    pub(super) fn incident_context(self) -> Option<IncidentContext> {
+        let evidence = self.persistence?;
+        Some(IncidentContext {
+            kind: crate::telemetry::incident::IncidentKind::SaveFailed,
+            persistence: Some(evidence.class), helper: self.helper, candidate_errnos: self.candidate_errnos,
+            keymanager_stage: evidence.keymanager_stage, service_error_code: evidence.service_error_code,
+            ..IncidentContext::internal(InternalClass::CommitRefused)
+        })
+    }
 }
 
 /// A Ready handoff whose fresh final write has been admitted but not yet confirmed durable, or
@@ -823,6 +860,7 @@ impl LogicalState for SessionInit {
                 PersistenceWarningSite::Discovery => 0,
                 PersistenceWarningSite::Final => 1,
             });
+            w.option(warning.persistence, |w, evidence| { w.str(&serde_json::to_string(&evidence).unwrap()); });
             w.option(warning.helper, |w, helper| { w.str(&serde_json::to_string(&helper).unwrap()); });
             for errno in warning.candidate_errnos { w.option(errno, |w, n| { w.u32(n as u32); }); }
         });
@@ -1234,19 +1272,15 @@ impl SessionMachine {
                 // The final write's own non-durable completion replaces a Discovery warning still
                 // showing (`Discovery` and `Final` never coexist: an unacknowledged Discovery warning
                 // blocks `take_ready`), so the newer one wins by direct overwrite.
-                let (helper, candidate_errnos) = completion.outcome.helper_evidence();
+                let warning = PersistenceWarning::from_outcome(correlation_key, admitted.site, &completion.outcome);
                 self.retire_save_incident();
-                self.state.persistence_warning = Some(PersistenceWarning {
-                    key: correlation_key, site: admitted.site, helper, candidate_errnos,
-                });
-                if helper.is_some() {
-                    // The reducer reads no clock. This is the exact fenced completion, not a
-                    // later read of process-global diagnostics.
-                    let context = IncidentContext {
-                        kind: crate::telemetry::incident::IncidentKind::SaveFailed,
-                        ..IncidentContext::internal(InternalClass::CommitRefused)
-                    }.with_persistence(&completion.outcome);
-                    self.raise_incident(IncidentFlow::SignIn, context);
+                self.state.persistence_warning = Some(warning);
+                if warning.helper.is_some() {
+                    // The reducer reads no clock. Both report paths use this fenced completion's
+                    // local warning evidence, not later process-global diagnostics.
+                    if let Some(context) = warning.incident_context() {
+                        self.raise_incident(IncidentFlow::SignIn, context);
+                    }
                 }
                 self.replace_publication();
             }
@@ -2724,6 +2758,59 @@ mod tests {
     }
 
     #[test]
+    fn declined_warning_reconstructs_every_persistence_class_and_its_evidence() {
+        use crate::plex::session::async_persistence::{CompletionOutcome as O, Failure as F, Operation, PersistOutcome};
+        use crate::plex::session::persistence::ProtectionFailure;
+        use crate::storage::wire::{AuthPreservation, ErrorCode, KeymanagerFailure, KeymanagerFailureCategory,
+            KeymanagerOperation, KeymanagerStage};
+        use crate::storage::wire::failure::{HelperFailure, Stage};
+        use crate::telemetry::incident::{IncidentKind, PersistenceFailure as P};
+        let protection = ProtectionFailure {
+            failure: KeymanagerFailure { operation: KeymanagerOperation::Seal, stage: KeymanagerStage::Finish,
+                code: ErrorCode::Unavailable, category: KeymanagerFailureCategory::ServiceRejected, service_code: Some(-3961) },
+            preservation: AuthPreservation::Unchanged, db8_commit_verified: false,
+        };
+        let helper = HelperFailure::new(Stage::Db8, Some(-3963));
+        let mut errnos = [None; 8];
+        errnos[0] = Some(libc::EACCES);
+        for (outcome, class) in [
+            (O::Failed(F::Admission(crate::storage_worker::SubmitError::Full)), P::Admission),
+            (O::Failed(F::Persistence(PersistOutcome::WriteFailed)), P::WriteFailed),
+            (O::Failed(F::Storage(crate::storage::StoreError::HelperUnavailable)), P::Storage),
+            (O::Failed(F::Helper(helper, errnos)), P::Storage),
+            (O::Uncertain { stage: crate::storage::CommitStage::Readback, errno: 0, helper: Some((helper, errnos)) }, P::CommitUncertain),
+            (O::Uncertain { stage: crate::storage::CommitStage::ParentSync, errno: 5, helper: None }, P::CommitUncertain),
+            (O::Failed(F::Protection(protection)), P::Protection),
+            (O::ProtectionUncertain(ProtectionFailure { preservation: AuthPreservation::Uncertain, ..protection }), P::ProtectionUncertain),
+            (O::Failed(F::WorkerDropped), P::WorkerDropped),
+        ] {
+            let mut owner = SessionMachine::from_init(discovering_after_authorization());
+            let expected = IncidentContext { kind: IncidentKind::SaveFailed,
+                ..IncidentContext::internal(InternalClass::CommitRefused) }.with_persistence(&outcome);
+            assert_eq!(expected.persistence, Some(class));
+            let warning = PersistenceWarning::from_outcome(
+                PersistenceWarningKey { epoch: owner.state.epoch, req: 1 }, PersistenceWarningSite::Final, &outcome);
+            // Replay/serialization must preserve the same local evidence as the live warning.
+            owner.state.persistence_warning = Some(serde_json::from_value(serde_json::to_value(warning).unwrap()).unwrap());
+            owner.raise_incident(IncidentFlow::SignIn, expected);
+            let id = owner.state.incident.as_ref().unwrap().id;
+            step(&mut owner, SessionEvent::Command(Command::ResolveIncident {
+                id, permission: crate::telemetry::consent::Permission::Declined, revision: 1 }));
+            assert!(owner.state.incident.as_ref().unwrap().context.is_none());
+            let effects = step(&mut owner, SessionEvent::Command(Command::ReportIncident { id }));
+            let rebuilt = effects.iter().find_map(|effect| match effect {
+                SessionFx::Incident { lane: IncidentLane::OneOff, report: IncidentReport::Retained(context), .. } => Some(*context),
+                _ => None,
+            }).expect("classified warning must reconstruct its report");
+            assert_eq!(rebuilt, expected, "class {class:?}");
+        }
+        for outcome in [O::Superseded, O::Failed(F::Superseded), O::Durable(Operation::Clear { cleanup_failed: false })] {
+            assert!(PersistenceWarning::from_outcome(PersistenceWarningKey { epoch: 1, req: 1 },
+                PersistenceWarningSite::Final, &outcome).incident_context().is_none());
+        }
+    }
+
+    #[test]
     fn uncertain_db8_reply_reaches_the_warning_and_incident_report() {
         use crate::plex::session::{persistence, async_persistence::{CompletionOutcome, PersistenceCompletion}};
         use crate::storage::wire::failure::{Detail, Stage};
@@ -2754,6 +2841,19 @@ mod tests {
             assert_eq!(body["contexts"]["incident"]["persistence"], "commit_uncertain");
             assert_eq!(body["contexts"]["incident"]["helper"]["helper"]["stage"], "db8");
             assert_eq!(body["contexts"]["incident"]["helper"]["helper"]["code"], -3963);
+            let offer = owner.state.incident.clone().unwrap();
+            let retained = offer.context.unwrap();
+            step(&mut owner, SessionEvent::Command(Command::ResolveIncident {
+                id: offer.id, permission: crate::telemetry::consent::Permission::Declined, revision: 1 }));
+            assert!(owner.state.incident.as_ref().unwrap().context.is_none());
+            let effects = step(&mut owner, SessionEvent::Command(Command::ReportIncident { id: offer.id }));
+            let rebuilt = effects.iter().find_map(|effect| match effect {
+                SessionFx::Incident { lane: IncidentLane::OneOff, report: IncidentReport::Retained(context), .. } => Some(*context),
+                _ => None,
+            }).expect("one-off save report must use the visible warning evidence");
+            assert_eq!(rebuilt.persistence, retained.persistence);
+            assert_eq!(rebuilt.helper, retained.helper);
+            assert_eq!(rebuilt, retained);
         }
     }
 
@@ -3212,7 +3312,7 @@ mod tests {
         // Manufacture a showing warning directly (no restart), keeping `admitted_persistence`
         // fenced so the very next completion below is accepted as this same operation's verdict.
         owner.state.persistence_warning = Some(PersistenceWarning {
-            key: PersistenceWarningKey { epoch, req }, site: PersistenceWarningSite::Discovery, helper: None, candidate_errnos: [None; 8] });
+            key: PersistenceWarningKey { epoch, req }, site: PersistenceWarningSite::Discovery, helper: None, candidate_errnos: [None; 8], persistence: None });
         owner.state.admitted_persistence = Some(AdmittedPersistence {
             req, epoch, arrival: 0, revision: 1, purpose: Some(PersistencePurpose::Discovery),
             fresh: true, site: PersistenceWarningSite::Discovery });

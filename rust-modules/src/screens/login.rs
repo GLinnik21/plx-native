@@ -2038,13 +2038,11 @@ mod tests {
     fn uncertain_db8_reply_appears_on_the_login_warning_stage_line() {
         for reconcile in [false, true] {
             let outcome = crate::plex::session::persistence::uncertain_helper_reply_for_test(reconcile);
-            let (helper, candidate_errnos) = outcome.helper_evidence();
             let mut screen = bare_screen(Phase::Ready, 0.0);
-            screen.persistence_warning = Some(auth::owner::PersistenceWarning {
-                key: auth::owner::PersistenceWarningKey { epoch: 1, req: 1 },
-                site: auth::owner::PersistenceWarningSite::Final,
-                helper, candidate_errnos,
-            });
+            screen.persistence_warning = Some(auth::owner::PersistenceWarning::from_outcome(
+                auth::owner::PersistenceWarningKey { epoch: 1, req: 1 },
+                auth::owner::PersistenceWarningSite::Final, &outcome,
+            ));
             assert_eq!(screen.report_note().unwrap().text.to_str().unwrap(), "storage: helper · db8 (-3963)");
         }
     }
@@ -2059,7 +2057,7 @@ mod tests {
             site: auth::owner::PersistenceWarningSite::Final,
             helper: Some(HelperFailure { start_timeout: true,
                 ..HelperFailure::new(Stage::RuntimeAbsent, Some(libc::ENOENT)) }),
-            candidate_errnos: [None; 8],
+            candidate_errnos: [None; 8], persistence: None,
         });
         assert!(screen.report_note().unwrap().text.to_string_lossy().contains("storage: start-timeout · no runtime dir"));
         screen.persistence_warning.as_mut().unwrap().helper = None;
@@ -2666,7 +2664,7 @@ mod tests {
         let warning = auth::owner::PersistenceWarning {
             key,
             site: auth::owner::PersistenceWarningSite::Final,
-            helper: None, candidate_errnos: [None; 8],
+            helper: None, candidate_errnos: [None; 8], persistence: None,
         };
         let mut screen = bare_screen(Phase::Ready, 0.0);
         screen.persistence_warning = Some(warning);

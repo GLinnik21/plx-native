@@ -40,7 +40,8 @@
 //!   `IncidentKind::Internal`, and an ending the report does not cover retires what is held.
 //! * **Declined forgets the report context.** *Details → Send report* builds one at press time
 //!   from the key ([`IncidentReport::AtPress`]), or from the still-visible save warning’s closed
-//!   diagnostic snapshot. That snapshot is needed for the local read-out regardless of consent.
+//!   failure classification and diagnostic snapshot. The local warning keeps only those closed
+//!   fields regardless of consent; both report paths reconstruct the same evidence from them.
 //! * **A stalled wait is offered through Details only** (`IncidentKind::alert_eligible`,
 //!   `IncidentKind::standing_eligible`): the QR code is still on screen, possibly mid-scan, so no
 //!   permission puts the alert over it, and none sends it automatically. Granted and undetermined
@@ -112,7 +113,7 @@ pub(crate) struct IncidentOffer {
     /// Owner-allocated, never reused in a launch — fences a reply for a superseded offer.
     pub id: u32,
     pub key: IncidentKey,
-    /// The closed evidence. `None` once Dropped: a No keeps nothing.
+    /// The report context. `None` once Dropped; the visible warning keeps its closed failure evidence.
     pub context: Option<IncidentContext>,
     pub state: IncidentState,
 }
@@ -334,15 +335,11 @@ impl SessionMachine {
         let report = match held.context {
             Some(context) => IncidentReport::Retained(context),
             None => {
-                match self.state.persistence_warning.filter(|_| held.key.kind == IncidentKind::SaveFailed) {
-                    Some(warning) if warning.helper.is_some() => IncidentReport::Retained(IncidentContext {
-                        kind: IncidentKind::SaveFailed, helper: warning.helper,
-                        candidate_errnos: warning.candidate_errnos,
-                        persistence: Some(crate::telemetry::incident::PersistenceFailure::Storage),
-                        ..IncidentContext::internal(crate::telemetry::incident::InternalClass::CommitRefused)
-                    }),
-                    _ => IncidentReport::AtPress(held.key),
-                }
+                self.state.persistence_warning
+                    .filter(|_| held.key.kind == IncidentKind::SaveFailed)
+                    .and_then(|warning| warning.incident_context())
+                    .map(IncidentReport::Retained)
+                    .unwrap_or(IncidentReport::AtPress(held.key))
             },
         };
         let key = held.key;
