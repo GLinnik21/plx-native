@@ -1074,8 +1074,14 @@ pub(crate) fn start_bootstrap(
     opener: Box<dyn persistence::LegacyOpener + Send>,
 ) -> Result<crate::storage_worker::TypedTicket<persistence::Bootstrap>, SubmitError> {
     crate::storage_worker::submit(move || {
+        let _io = super::io();
         let mut opener = opener;
-        persistence::bootstrap(&mut *opener)
+        let result = persistence::bootstrap(&mut *opener);
+        super::retire_after_canonical_read_locked(&result.state);
+        if matches!(result.migration, Some(CanonicalCommit::Durable { .. })) {
+            super::retire_marked_fallbacks_locked();
+        }
+        result
     })
 }
 
@@ -1084,7 +1090,13 @@ pub(crate) fn status() -> Status {
 }
 
 fn execute_write(snapshot: Session, authority: SaveAuthority) -> DiskOutcome {
-    match persistence::write_session(&snapshot, authority) {
+    let _io = super::io();
+    let generation = super::CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed);
+    let commit = persistence::write_session(&snapshot, authority);
+    if matches!(commit, CanonicalCommit::Durable { .. }) {
+        super::canonical_write_completed_locked(&snapshot, authority, generation);
+    }
+    match commit {
         CanonicalCommit::Durable {
             protection,
             verified,
@@ -1118,8 +1130,14 @@ fn execute_write(snapshot: Session, authority: SaveAuthority) -> DiskOutcome {
 }
 
 fn execute_clear() -> DiskOutcome {
+    let _io = super::io();
+    super::revoke_cached_session();
+    super::persist_fallback_revocation_locked();
     let (durability, commit) = match persistence::commit_cleared() {
-        CanonicalCommit::Durable { .. } => (ClearDurability::Durable, CommitDetail::Durable),
+        CanonicalCommit::Durable { .. } => {
+            super::retire_marked_fallbacks_locked();
+            (ClearDurability::Durable, CommitDetail::Durable)
+        },
         CanonicalCommit::Uncertain { stage, errno } => (
             ClearDurability::Uncertain,
             CommitDetail::Uncertain { stage, errno },
@@ -1157,6 +1175,34 @@ mod tests {
     use super::*;
     use crate::storage_worker::{SubmitErrorGeneric, Writer};
     use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[test]
+    fn routine_write_without_fallback_reads_canonical_only_for_the_commit() {
+        let _serial = crate::testlock::serial();
+        let files = crate::plex::session::test_support::TempSession::new("routine-write-read-count");
+        struct ResetCanonical;
+        impl Drop for ResetCanonical {
+            fn drop(&mut self) {
+                persistence::READ_FOR_TEST.with(|hook| hook.set(None));
+                crate::paths::redirect_persistent_state_root_for_test(None);
+            }
+        }
+        let _reset = ResetCanonical;
+        crate::paths::redirect_persistent_state_root_for_test(Some(files.dir.join("canonical")));
+        std::thread_local! {
+            static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        }
+        READS.with(|count| count.set(0));
+        persistence::READ_FOR_TEST.with(|hook| hook.set(Some(|| {
+            READS.with(|count| count.set(count.get() + 1));
+            persistence::CanonicalRead::Missing
+        })));
+        assert!(!files.file().exists(), "no fallback candidate to retire");
+        let result = execute_write(crate::plex::session::test_support::signed_in(), SaveAuthority::Routine);
+        assert!(matches!(result, DiskOutcome::Write { commit: Some(CommitDetail::Durable), .. }));
+        assert_eq!(READS.with(|count| count.get()), 1,
+            "only the commit's own canonical read is needed; no discarded pre-read");
+    }
 
     impl Coordinator {
         /// Lifecycle fixtures submit a complete synthetic value through the production guards.

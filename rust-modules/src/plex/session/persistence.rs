@@ -145,7 +145,17 @@ fn load_legacy_json_at(root: PathBuf) -> CanonicalRead {
     }
 }
 
+#[cfg(test)]
+std::thread_local! {
+    pub(super) static READ_FOR_TEST: std::cell::Cell<Option<fn() -> CanonicalRead>> =
+        const { std::cell::Cell::new(None) };
+}
+
 pub(crate) fn load() -> CanonicalRead {
+    #[cfg(test)]
+    if let Some(read) = READ_FOR_TEST.with(|hook| hook.get()) {
+        return read();
+    }
     #[cfg(all(
         target_os = "linux",
         target_arch = "arm",
@@ -351,14 +361,16 @@ pub(crate) fn migrate_exact(source: &Path, payload: &[u8]) -> (CanonicalCommit, 
     (commit_data(payload), source.to_path_buf())
 }
 
-pub(crate) fn migrate_session(
-    source: &Path,
-    session: &super::Session,
-) -> (CanonicalCommit, PathBuf) {
-    (
-        commit_session(session, true, super::SaveAuthority::Routine),
-        source.to_path_buf(),
-    )
+/// Import an already decoded migration input through the same backend used by bootstrap.
+pub(crate) fn migrate_session(session: &super::Session) -> CanonicalCommit {
+    #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
+    {
+        commit_session(session, true, super::SaveAuthority::Routine)
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test))))]
+    {
+        write_session(session, super::SaveAuthority::Routine)
+    }
 }
 
 fn acl_only_envelope(envelope: &str) -> bool {
@@ -1040,6 +1052,8 @@ pub(crate) trait LegacyOpener {
 }
 
 pub(crate) enum LegacySession {
+    /// A neutralized sign-out candidate; neither an import nor a canonical clear request.
+    Missing,
     Data(super::Session),
     Cleared,
 }
@@ -1059,11 +1073,18 @@ fn decode_legacy_at_depth(
     if depth > 2 {
         return Err(StoreError::InvalidSchema);
     }
-    let value: serde_json::Value =
+    let mut value: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|_| StoreError::InvalidSchema)?;
+    if value.is_null() {
+        return Ok(LegacySession::Missing);
+    }
     if !value.is_object() {
         return Err(StoreError::InvalidSchema);
     }
+    value
+        .as_object_mut()
+        .unwrap()
+        .remove(super::FALLBACK_MARKER);
     match value.get("format").and_then(serde_json::Value::as_str) {
         Some("plxnative-record") => {
             match crate::storage::parse_record(bytes, RecordKey::Session)?.state {
@@ -1196,6 +1217,7 @@ pub(crate) fn bootstrap_with(
             cleanup_failed: false,
         };
     }
+    let fallback_revoked = super::fallback_revoked_at(candidates);
     for candidate in candidates {
         let bytes = match crate::storage::read_owned_bytes(candidate) {
             Ok(None) => continue,
@@ -1203,7 +1225,9 @@ pub(crate) fn bootstrap_with(
             Ok(Some((_, false))) => return blocked_bootstrap(StoreError::RecordUnsafeMode),
             Err(error) => return blocked_bootstrap(error),
         };
+        if fallback_revoked && super::marked_fallback(&bytes) { continue; }
         let legacy = match decode_legacy_session(&bytes, opener) {
+            Ok(LegacySession::Missing) => continue,
             Ok(value) => value,
             Err(error) => return blocked_bootstrap(error),
         };
@@ -1229,6 +1253,11 @@ fn finish_import(
     source: Option<(&Path, &[u8])>,
 ) -> Bootstrap {
     let receipt = match &legacy {
+        LegacySession::Missing => return Bootstrap {
+            state: CanonicalRead::Missing,
+            migration: None,
+            cleanup_failed: false,
+        },
         LegacySession::Data(session) => store.import(session),
         LegacySession::Cleared => store.clear(),
     };
@@ -1343,7 +1372,7 @@ pub(crate) fn bootstrap(opener: &mut dyn LegacyOpener) -> Bootstrap {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClearCleanupOutcome {
     /// The authority read back `Cleared` and every recognized legacy migration candidate was
-    /// retired (or was already absent).
+    /// retired (removed or neutralized with a synced tombstone), or was already absent.
     Confirmed,
     /// The authority did NOT read back `Cleared` at the moment of this call — the caller's premise
     /// that the clear already committed durably could not be confirmed here. No legacy sweep was
@@ -1351,13 +1380,14 @@ pub(crate) enum ClearCleanupOutcome {
     AuthorityNotConfirmed,
     /// The authority read back `Cleared`, but at least one recognized legacy migration candidate
     /// could not be retired (an unreadable, non-regular, or otherwise un-removable file). The
-    /// clear itself is real; the residue is safe and will be swept again on the next sign-out or
-    /// bootstrap.
+    /// clear itself is real, but a marked fallback residue could reopen if the helper later
+    /// becomes unreachable. Report this failure and retry retirement on the next sign-out.
     LegacyRetireFailed,
 }
 
 /// Called only after ClearTenure reports durable. Re-read the authority before removing legacy
-/// residues; failure to retire a source remains visible but cannot reopen the cleared account.
+/// residues. Failed retirement remains visible: canonical Cleared shadows a residue only while
+/// the authority can answer, so a marked fallback must also be removed or neutralized.
 pub(crate) fn cleanup_after_confirmed_clear() -> ClearCleanupOutcome {
     if !matches!(load(), CanonicalRead::Cleared { .. }) {
         return ClearCleanupOutcome::AuthorityNotConfirmed;
@@ -1377,12 +1407,15 @@ pub(crate) fn cleanup_after_confirmed_clear() -> ClearCleanupOutcome {
         insert_arm_canonical_wrapper(&mut candidates);
         candidates
     };
-    let mut complete = true;
+    let mut complete = super::retry_pending_retirements_locked();
     for candidate in candidates {
         match crate::storage::read_owned_bytes(&candidate) {
             Ok(None) => {}
             Ok(Some((bytes, true))) => {
-                complete &= retire_exact_candidate(&candidate, &bytes);
+                // Preserve the exact-source fence used by migration retirement.
+                complete &= matches!(crate::storage::read_owned_bytes(&candidate),
+                    Ok(Some((ref current, true))) if current == &bytes)
+                    && super::retire_session_candidate(&candidate);
             }
             _ => complete = false,
         }
