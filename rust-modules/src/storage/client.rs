@@ -30,6 +30,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use wire::failure::{self, Stage};
+
 const START_DEADLINE: Duration = Duration::from_secs(12);
 const IO_DEADLINE: Duration = Duration::from_secs(8);
 const DESCRIPTOR_MAX: u64 = 4096;
@@ -102,7 +104,26 @@ fn wire_expectation(expected: Option<(&str, Expected)>) -> Expectation {
     }
 }
 
+fn failed(stage: Stage, errno: Option<i32>, error: ClientError) -> ClientError {
+    let activation = failure::last().and_then(|f| f.activation);
+    failure::remember(stage, errno);
+    failure::update(|f| f.activation = activation);
+    error
+}
+
+fn io_failed(stage: Stage, error: std::io::Error) -> ClientError {
+    failed(stage, error.raw_os_error(), ClientError::Unavailable)
+}
+
 fn error(code: ErrorCode) -> ClientError {
+    if !failure::last().is_some_and(|f| matches!(f.observed.stage, Stage::Wire | Stage::HelloRejected)) {
+        failed(Stage::Wire, None, classify_error(code));
+        failure::update(|f| f.wire = Some(code));
+    }
+    classify_error(code)
+}
+
+fn classify_error(code: ErrorCode) -> ClientError {
     match code {
         ErrorCode::Authentication => ClientError::Authentication,
         ErrorCode::Protocol => ClientError::Protocol,
@@ -246,20 +267,22 @@ pub(crate) fn install_activation_hint(hint: fn(&str)) -> Result<(), fn(&str)> {
     not(feature = "hostsim"),
     not(test)
 ))]
-fn activate(service: &str) {
-    crate::webos::activate_storage_helper(service);
+fn activate(service: &str) -> failure::Detail {
+    crate::webos::activate_storage_helper(service)
 }
 
 #[cfg(all(
     target_os = "linux",
     not(all(target_arch = "arm", not(feature = "hostsim"), not(test)))
 ))]
-fn activate(_service: &str) {}
+fn activate(_service: &str) -> failure::Detail {
+    failure::Detail::new(Stage::Unsupported, None)
+}
 
 #[cfg(not(target_os = "linux"))]
 fn transact(_command: Request) -> Result<Response, ClientError> {
     let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("storage helper transact") });
-    Err(ClientError::Unavailable)
+    Err(failed(Stage::Unsupported, None, ClientError::Unavailable))
 }
 
 /// Startup wait policy, kept separate from sockets so deadline and recovery are host-testable.
@@ -267,6 +290,7 @@ fn transact(_command: Request) -> Result<Response, ClientError> {
 struct StartGate {
     failed: bool,
     last_hint: Option<Instant>,
+    activation: Option<failure::Detail>,
 }
 
 impl StartGate {
@@ -297,22 +321,33 @@ impl StartGate {
 static START_GATE: std::sync::Mutex<StartGate> = std::sync::Mutex::new(StartGate {
     failed: false,
     last_hint: None,
+    activation: None,
 });
 
 #[cfg(target_os = "linux")]
 fn transact(command: Request) -> Result<Response, ClientError> {
     let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("storage helper transact") });
+    failure::clear();
     let until = Instant::now() + START_DEADLINE;
     let mut hinted = false;
     loop {
-        if let Ok((mut stream, descriptor)) = connect(&runtime_path()) {
-            START_GATE.lock().unwrap_or_else(|e| e.into_inner()).connected();
+        let connected = connect(&runtime_path());
+        if let Ok((mut stream, descriptor)) = connected {
+            let activation = {
+                let mut gate = START_GATE.lock().unwrap_or_else(|e| e.into_inner());
+                let activation = gate.activation;
+                gate.connected();
+                activation
+            };
+            failure::clear();
+            failure::remember(Stage::HelloRejected, None);
+            failure::update(|f| f.activation = activation);
             stream
                 .set_read_timeout(Some(IO_DEADLINE))
-                .map_err(|_| ClientError::Unavailable)?;
+                .map_err(|e| io_failed(Stage::SocketTimeout, e))?;
             stream
                 .set_write_timeout(Some(IO_DEADLINE))
-                .map_err(|_| ClientError::Unavailable)?;
+                .map_err(|e| io_failed(Stage::SocketTimeout, e))?;
             wire::write_frame(
                 &mut stream,
                 &Request::Hello {
@@ -320,22 +355,23 @@ fn transact(command: Request) -> Result<Response, ClientError> {
                     nonce: descriptor.nonce.clone(),
                 },
             )
-            .map_err(|_| ClientError::Protocol)?;
-            match wire::read_frame::<Response>(&mut stream).map_err(|_| ClientError::Protocol)? {
-                Response::Hello {
-                    protocol,
-                    nonce,
-                    helper_generation,
-                    capabilities,
-                } if protocol == wire::PROTOCOL
-                    && nonce == descriptor.nonce
-                    && helper_generation == descriptor.helper_generation
-                    && capabilities.db8 => {}
-                Response::Error { code } => return Err(error(code)),
-                _ => return Err(ClientError::Protocol),
+            .map_err(|_| failed(Stage::Wire, None, ClientError::Protocol))?;
+            let hello = wire::read_frame::<Response>(&mut stream)
+                .map_err(|_| failed(Stage::HelloRejected, None, ClientError::Protocol))?;
+            if let Err(error) = validate_hello(hello, &descriptor) {
+                read_helper_failure(&runtime_path());
+                return Err(error);
             }
-            wire::write_frame(&mut stream, &command).map_err(|_| ClientError::Protocol)?;
-            return wire::read_frame(&mut stream).map_err(|_| ClientError::Protocol);
+            wire::write_frame(&mut stream, &command).map_err(|_| failed(Stage::Wire, None, ClientError::Protocol))?;
+            let response = wire::read_frame(&mut stream).map_err(|_| failed(Stage::Wire, None, ClientError::Protocol))?;
+            if let Response::Error { code } = &response {
+                failed(Stage::Wire, None, classify_error(*code));
+                failure::update(|f| f.wire = Some(*code));
+                read_helper_failure(&runtime_path());
+            } else {
+                failure::clear();
+            }
+            return Ok(response);
         }
         let (wait, hint) = {
             let mut gate = START_GATE.lock().unwrap_or_else(|e| e.into_inner());
@@ -343,9 +379,15 @@ fn transact(command: Request) -> Result<Response, ClientError> {
             (gate.wait_after_failed_connect(now, until), !hinted && gate.hint_due(now))
         };
         if hint {
-            let activate_helper = || match ACTIVATION_HINT.get() {
-                Some(hint) => hint(&service_name()),
-                None => activate(&service_name()),
+            let activate_helper = || {
+                let detail = match ACTIVATION_HINT.get() {
+                    Some(hint) => {
+                        hint(&service_name());
+                        failure::Detail::new(Stage::ActivationSent, None)
+                    }
+                    None => activate(&service_name()),
+                };
+                START_GATE.lock().unwrap_or_else(|e| e.into_inner()).activation = Some(detail);
             };
             if wait {
                 activate_helper();
@@ -357,9 +399,73 @@ fn transact(command: Request) -> Result<Response, ClientError> {
             hinted = true;
         }
         if !wait {
-            return Err(ClientError::Unavailable);
+            // Keep the connect/authentication/protocol observation beside the historical
+            // control-flow value. Never turn a refused peer into an empty database.
+            let error = start_unavailable(connected.err().unwrap());
+            let activation = START_GATE.lock().unwrap_or_else(|e| e.into_inner()).activation;
+            failure::update(|f| f.activation = activation);
+            read_helper_failure(&runtime_path());
+            return Err(error);
         }
         std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn validate_hello(response: Response, descriptor: &Descriptor) -> Result<(), ClientError> {
+    match response {
+        Response::Hello { protocol, nonce, helper_generation, capabilities }
+            if protocol == wire::PROTOCOL && nonce == descriptor.nonce
+                && helper_generation == descriptor.helper_generation && capabilities.db8 => Ok(()),
+        Response::Error { code } => {
+            let error = failed(Stage::HelloRejected, None, classify_error(code));
+            failure::update(|f| f.wire = Some(code));
+            Err(error)
+        }
+        _ => Err(failed(Stage::HelloRejected, None, ClientError::Protocol)),
+    }
+}
+
+fn peer_rejection(errno: Option<i32>, valid_length: bool, uid_matches: bool, valid_pid: bool) -> Option<failure::Detail> {
+    if errno.is_some() || !valid_length || !valid_pid {
+        Some(failure::Detail::new(Stage::PeerCredentials, errno))
+    } else if !uid_matches {
+        Some(failure::Detail::new(Stage::PeerUidMismatch, None))
+    } else { None }
+}
+
+fn start_unavailable(error: ClientError) -> ClientError {
+    if failure::last().is_none() {
+        let stage = match error {
+            ClientError::Authentication => Stage::PeerCredentials,
+            ClientError::Protocol => Stage::DescriptorInvalid,
+            _ => Stage::Connect,
+        };
+        failure::remember(stage, None);
+    }
+    failure::update(|f| f.start_timeout = true);
+    ClientError::Unavailable
+}
+
+/// Read only a bounded regular file under the same private directory rules as rendezvous.
+/// An old helper's known stage names are accepted; arbitrary file text never leaves this process.
+fn read_helper_failure(root: &Path) {
+    let Ok(directory) = OpenOptions::new().read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC).open(root) else { return; };
+    let Ok(meta) = directory.metadata() else { return; };
+    if !meta.is_dir() || meta.uid() != unsafe { libc::getuid() } || meta.mode() & 0o7777 != 0o700 { return; }
+    #[cfg(target_os = "linux")]
+    let path = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd())).join("last-error");
+    #[cfg(not(target_os = "linux"))]
+    let path = root.join("last-error");
+    let Ok(mut file) = OpenOptions::new().read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK).open(path) else { return; };
+    let Ok(meta) = file.metadata() else { return; };
+    if !meta.is_file() || meta.uid() != unsafe { libc::getuid() } || meta.mode() & 0o7777 != 0o600
+        || meta.nlink() != 1 || meta.len() > DESCRIPTOR_MAX { return; }
+    let mut bytes = Vec::new();
+    if Read::by_ref(&mut file).take(DESCRIPTOR_MAX + 1).read_to_end(&mut bytes).is_err() { return; }
+    if let Some(detail) = failure::parse_last_error(&bytes) {
+        failure::update(|f| f.helper = Some(detail));
     }
 }
 
@@ -369,13 +475,16 @@ fn connect(root: &Path) -> Result<(UnixStream, Descriptor), ClientError> {
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
         .open(root)
-        .map_err(|_| ClientError::Unavailable)?;
-    let directory_meta = directory.metadata().map_err(|_| ClientError::Unavailable)?;
+        .map_err(|e| {
+            let stage = if e.raw_os_error() == Some(libc::ENOENT) { Stage::RuntimeAbsent } else { Stage::RuntimeInvalid };
+            io_failed(stage, e)
+        })?;
+    let directory_meta = directory.metadata().map_err(|e| io_failed(Stage::RuntimeInvalid, e))?;
     if !directory_meta.is_dir()
         || directory_meta.uid() != unsafe { libc::getuid() }
         || directory_meta.mode() & 0o7777 != 0o700
     {
-        return Err(ClientError::Authentication);
+        return Err(failed(Stage::RuntimeInvalid, None, ClientError::Authentication));
     }
     let anchor = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
     let descriptor = read_descriptor(&anchor.join(wire::DESCRIPTOR_NAME))?;
@@ -386,21 +495,22 @@ fn connect(root: &Path) -> Result<(UnixStream, Descriptor), ClientError> {
         || !hex_128(&descriptor.nonce)
         || !hex_128(&descriptor.helper_generation)
     {
-        return Err(ClientError::Protocol);
+        return Err(failed(Stage::DescriptorInvalid, None, ClientError::Protocol));
     }
     let socket = anchor.join(wire::SOCKET_NAME);
-    let socket_meta = std::fs::symlink_metadata(&socket).map_err(|_| ClientError::Unavailable)?;
+    let socket_meta = std::fs::symlink_metadata(&socket).map_err(|e| io_failed(
+        if e.raw_os_error() == Some(libc::ENOENT) { Stage::SocketAbsent } else { Stage::SocketInvalid }, e))?;
     if !socket_meta.file_type().is_socket()
         || socket_meta.uid() != unsafe { libc::getuid() }
         || socket_meta.mode() & 0o7777 != 0o600
     {
-        return Err(ClientError::Authentication);
+        return Err(failed(Stage::SocketInvalid, None, ClientError::Authentication));
     }
-    let stream = UnixStream::connect(socket).map_err(|_| ClientError::Unavailable)?;
+    let stream = UnixStream::connect(socket).map_err(|e| io_failed(Stage::Connect, e))?;
     authenticate(&stream)?;
-    let named_meta = std::fs::symlink_metadata(root).map_err(|_| ClientError::Unavailable)?;
+    let named_meta = std::fs::symlink_metadata(root).map_err(|e| io_failed(Stage::RuntimeInvalid, e))?;
     if (named_meta.dev(), named_meta.ino()) != (directory_meta.dev(), directory_meta.ino()) {
-        return Err(ClientError::Authentication);
+        return Err(failed(Stage::RuntimeInvalid, None, ClientError::Authentication));
     }
     Ok((stream, descriptor))
 }
@@ -410,25 +520,25 @@ fn read_descriptor(path: &Path) -> Result<Descriptor, ClientError> {
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
         .open(path)
-        .map_err(|_| ClientError::Unavailable)?;
-    let meta = file.metadata().map_err(|_| ClientError::Unavailable)?;
+        .map_err(|e| io_failed(Stage::DescriptorInvalid, e))?;
+    let meta = file.metadata().map_err(|e| io_failed(Stage::DescriptorInvalid, e))?;
     if !meta.is_file()
         || meta.uid() != unsafe { libc::getuid() }
         || meta.mode() & 0o7777 != 0o600
         || meta.nlink() != 1
         || meta.len() > DESCRIPTOR_MAX
     {
-        return Err(ClientError::Authentication);
+        return Err(failed(Stage::DescriptorInvalid, None, ClientError::Authentication));
     }
     let mut bytes = Vec::new();
     Read::by_ref(&mut file)
         .take(DESCRIPTOR_MAX + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| ClientError::Unavailable)?;
+        .map_err(|e| io_failed(Stage::DescriptorInvalid, e))?;
     if bytes.len() as u64 > DESCRIPTOR_MAX {
-        return Err(ClientError::Protocol);
+        return Err(failed(Stage::DescriptorInvalid, None, ClientError::Protocol));
     }
-    serde_json::from_slice(&bytes).map_err(|_| ClientError::Protocol)
+    serde_json::from_slice(&bytes).map_err(|_| failed(Stage::DescriptorInvalid, None, ClientError::Protocol))
 }
 
 #[cfg(target_os = "linux")]
@@ -444,12 +554,11 @@ fn authenticate(stream: &UnixStream) -> Result<(), ClientError> {
             &mut length,
         )
     };
-    if result != 0
-        || length as usize != std::mem::size_of::<libc::ucred>()
-        || credentials.uid != unsafe { libc::getuid() }
-        || credentials.pid <= 0
-    {
-        return Err(ClientError::Authentication);
+    let errno = (result != 0).then(|| std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO));
+    if let Some(detail) = peer_rejection(errno,
+        length as usize == std::mem::size_of::<libc::ucred>(),
+        credentials.uid == unsafe { libc::getuid() }, credentials.pid > 0) {
+        return Err(failed(detail.stage, detail.code, ClientError::Authentication));
     }
     Ok(())
 }
@@ -464,6 +573,102 @@ fn hex_128(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn helper_failure_peer_and_hello_classification() {
+        assert_eq!(peer_rejection(Some(libc::EPERM), true, true, true),
+            Some(failure::Detail::new(Stage::PeerCredentials, Some(libc::EPERM))));
+        assert_eq!(peer_rejection(None, true, false, true).unwrap().stage, Stage::PeerUidMismatch);
+        assert_eq!(peer_rejection(None, false, true, true).unwrap().stage, Stage::PeerCredentials);
+        assert_eq!(peer_rejection(None, true, true, false).unwrap().stage, Stage::PeerCredentials);
+        assert!(peer_rejection(None, true, true, true).is_none());
+        let descriptor = Descriptor {
+            protocol: wire::PROTOCOL, socket: wire::SOCKET_NAME.into(), uid: 1, pid: 1,
+            nonce: "01".repeat(16), helper_generation: "02".repeat(16),
+        };
+        for code in [ErrorCode::Unavailable, ErrorCode::Timeout, ErrorCode::Capability,
+            ErrorCode::Authentication, ErrorCode::Protocol, ErrorCode::Corrupt, ErrorCode::Invalid] {
+            failure::clear();
+            assert_eq!(validate_hello(Response::Error { code }, &descriptor), Err(classify_error(code)));
+            let detail = failure::last().unwrap();
+            assert_eq!(detail.observed.stage, Stage::HelloRejected);
+            assert_eq!(detail.wire, Some(code));
+        }
+        for (protocol, nonce, generation, db8) in [
+            (0, descriptor.nonce.clone(), descriptor.helper_generation.clone(), true),
+            (wire::PROTOCOL, "private-fixture".into(), descriptor.helper_generation.clone(), true),
+            (wire::PROTOCOL, descriptor.nonce.clone(), "wrong".into(), true),
+            (wire::PROTOCOL, descriptor.nonce.clone(), descriptor.helper_generation.clone(), false),
+        ] {
+            assert_eq!(validate_hello(Response::Hello { protocol, nonce, helper_generation: generation,
+                capabilities: wire::Capabilities { db8, keymanager: false } }, &descriptor), Err(ClientError::Protocol));
+        }
+    }
+
+    #[test]
+    fn helper_failure_connect_error_kept_at_start_deadline() {
+        // The old loop discarded these observations and returned only Unavailable.
+        for (stage, error, code) in [
+            (Stage::RuntimeAbsent, ClientError::Unavailable, Some(libc::ENOENT)),
+            (Stage::RuntimeInvalid, ClientError::Authentication, None),
+            (Stage::SocketAbsent, ClientError::Unavailable, Some(libc::ENOENT)),
+            (Stage::SocketInvalid, ClientError::Authentication, None),
+            (Stage::Connect, ClientError::Unavailable, Some(libc::ECONNREFUSED)),
+            (Stage::PeerUidMismatch, ClientError::Authentication, None),
+            (Stage::PeerCredentials, ClientError::Authentication, Some(libc::EIO)),
+            (Stage::DescriptorInvalid, ClientError::Protocol, None),
+        ] {
+            failure::clear();
+            let observed = failed(stage, code, error);
+            let mut gate = StartGate::default();
+            let now = Instant::now();
+            assert!(!gate.wait_after_failed_connect(now, now));
+            assert_eq!(start_unavailable(observed), ClientError::Unavailable);
+            let detail = failure::last().unwrap();
+            assert_eq!(detail.observed, failure::Detail::new(stage, code));
+            assert!(detail.start_timeout);
+        }
+    }
+
+    #[test]
+    fn helper_failure_descriptor_validation_and_last_error_are_bounded() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("plx-helper-diag-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = root.join("rendezvous.json");
+        for (mode, bytes, expected) in [
+            (0o644, b"{}".as_slice(), ClientError::Authentication),
+            (0o600, b"not-json".as_slice(), ClientError::Protocol),
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+            failure::clear();
+            assert_eq!(read_descriptor(&path).err(), Some(expected));
+            assert_eq!(failure::last().unwrap().observed.stage, Stage::DescriptorInvalid);
+        }
+        let last = root.join("last-error");
+        let detail = failure::Detail::new(Stage::Db8, Some(-3963));
+        std::fs::write(&last, serde_json::to_vec(&detail).unwrap()).unwrap();
+        std::fs::set_permissions(&last, std::fs::Permissions::from_mode(0o600)).unwrap();
+        read_helper_failure(&root);
+        assert_eq!(failure::last().unwrap().helper, Some(detail));
+        std::fs::write(&last, b"token=private-fixture hostname=private-host").unwrap();
+        failure::remember(Stage::HelloRejected, None);
+        read_helper_failure(&root);
+        assert_eq!(failure::last().unwrap().helper, None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn helper_failure_descriptor_open_keeps_errno() {
+        use super::wire::failure::{self, Stage};
+        failure::clear();
+        let missing = std::env::temp_dir().join(format!("plx-helper-missing-{}", std::process::id()));
+        assert!(read_descriptor(&missing).is_err());
+        assert_eq!(failure::last().map(|f| f.observed),
+            Some(failure::Detail::new(Stage::DescriptorInvalid, Some(libc::ENOENT))));
+    }
 
     #[test]
     fn a_failed_start_makes_later_calls_return_without_waiting() {

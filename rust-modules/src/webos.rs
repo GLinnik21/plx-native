@@ -580,12 +580,17 @@ fn ls2_probe() {
 /// Best-effort dynamic-service activation hint for the storage helper.
 ///
 /// The helper publishes readiness from its startup path, so neither a successful method reply nor
-/// delivery of `/wake` is required; the result is deliberately ignored and the authenticated
+/// delivery of `/wake` is required; the result is retained only as diagnostics and the authenticated
 /// Unix-socket `Hello` is the sole readiness proof.
 #[cfg(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)))]
-pub(crate) fn activate_storage_helper(service: &str) {
+pub(crate) fn activate_storage_helper(service: &str) -> crate::storage::wire::failure::Detail {
+    use crate::storage::wire::failure::{Detail, Stage};
     let uri = format!("luna://{service}/wake");
-    let _ = ls2::call_once(&uri, "{}");
+    match ls2::call_once(&uri, "{}") {
+        Ok(_) | Err(ls2::Fail::Timeout) => Detail::new(Stage::ActivationSent, None),
+        Err(ls2::Fail::Setup { stage, code, .. }) =>
+            crate::storage::wire::failure::activation_failure(stage, code),
+    }
 }
 
 #[cfg(all(not(feature = "hostsim"), not(test)))]
@@ -610,14 +615,14 @@ fn launch_home() -> bool {
         // log that wastes a device session: "SAM did not answer" read the same whether the bus
         // refused this app a registration, the call was never submitted, or the reply really did
         // time out. They are three different bugs and only one of them is about SAM.
-        Err(ls2::Fail::Setup { stage, detail }) if detail.is_empty() => {
+        Err(ls2::Fail::Setup { stage, detail, .. }) if detail.is_empty() => {
             crate::log(&format!("gohome: LS2 setup failed stage={stage} after {ms}ms"));
             false
         }
         // The hub's own words, when it gave any. The register refusal that shipped with this
         // branch (`Can not find service "" permissions`) was legible ONLY in ls-hubd's log,
         // which nobody reading the app's evidence knew to open.
-        Err(ls2::Fail::Setup { stage, detail }) => {
+        Err(ls2::Fail::Setup { stage, detail, .. }) => {
             crate::log(&format!(
                 "gohome: LS2 setup failed stage={stage} after {ms}ms — {detail}"
             ));
@@ -774,7 +779,7 @@ pub(crate) mod ls2 {
     fn app_id_cstring() -> Result<CString, RegisterFail> {
         CString::new(crate::paths::app_id()).map_err(|_| RegisterFail::Setup {
             stage: "app-id",
-            detail: String::new(),
+            detail: String::new(), code: None,
         })
     }
 
@@ -800,16 +805,18 @@ pub(crate) mod ls2 {
     /// and, when the hub gave one, its own message.
     #[derive(Debug)]
     pub(crate) enum RegisterFail {
-        Setup { stage: &'static str, detail: String },
+        Setup { stage: &'static str, detail: String,
+            #[allow(dead_code)] // Numeric diagnostics are consumed by the ARM helper activation path.
+            code: Option<i32> },
     }
 
     impl std::fmt::Display for RegisterFail {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
-                RegisterFail::Setup { stage, detail } if detail.is_empty() => {
+                RegisterFail::Setup { stage, detail, .. } if detail.is_empty() => {
                     write!(f, "setup failed stage={stage}")
                 }
-                RegisterFail::Setup { stage, detail } => {
+                RegisterFail::Setup { stage, detail, .. } => {
                     write!(f, "setup failed stage={stage} ({detail})")
                 }
             }
@@ -834,12 +841,13 @@ pub(crate) mod ls2 {
             unsafe { LSErrorFree(&mut error) };
             return Err(RegisterFail::Setup {
                 stage: "glib-context",
-                detail: String::new(),
+                detail: String::new(), code: None,
             });
         }
         let mut handle = std::ptr::null_mut();
         let registered = unsafe { LSRegister(std::ptr::null(), &mut handle, &mut error) };
         if !registered || handle.is_null() {
+            let code = Some(error.error_code);
             let detail = error_text(&error);
             unsafe {
                 LSErrorFree(&mut error);
@@ -847,11 +855,12 @@ pub(crate) mod ls2 {
             }
             return Err(RegisterFail::Setup {
                 stage: "register",
-                detail,
+                detail, code,
             });
         }
         reset(&mut error);
         if !unsafe { LSGmainContextAttach(handle, context, &mut error) } {
+            let code = Some(error.error_code);
             let detail = error_text(&error);
             reset(&mut error);
             unsafe {
@@ -861,7 +870,7 @@ pub(crate) mod ls2 {
             }
             return Err(RegisterFail::Setup {
                 stage: "attach",
-                detail,
+                detail, code,
             });
         }
         unsafe { LSErrorFree(&mut error) };
@@ -894,7 +903,9 @@ pub(crate) mod ls2 {
     pub(crate) enum Fail {
         /// The bus, glib or the call itself never got as far as being sent. The stage names which,
         /// and `detail` carries the hub's words when it gave any.
-        Setup { stage: &'static str, detail: String },
+        Setup { stage: &'static str, detail: String,
+            #[allow(dead_code)] // Numeric diagnostics are consumed by the ARM helper activation path.
+            code: Option<i32> },
         /// It WAS sent and the budget elapsed with no reply.
         Timeout,
     }
@@ -902,7 +913,7 @@ pub(crate) mod ls2 {
     impl From<RegisterFail> for Fail {
         fn from(f: RegisterFail) -> Self {
             match f {
-                RegisterFail::Setup { stage, detail } => Fail::Setup { stage, detail },
+                RegisterFail::Setup { stage, detail, code } => Fail::Setup { stage, detail, code },
             }
         }
     }
@@ -915,7 +926,7 @@ pub(crate) mod ls2 {
             let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("LS2 round trip") });
             let setup = |stage| Fail::Setup {
                 stage,
-                detail: String::new(),
+                detail: String::new(), code: None,
             };
             let uri = CString::new(uri).map_err(|_| setup("uri"))?;
             let payload = CString::new(payload).map_err(|_| setup("payload"))?;
@@ -939,6 +950,7 @@ pub(crate) mod ls2 {
                 )
             };
             if !called {
+                let code = Some(error.error_code);
                 let detail = error_text(&error);
                 unsafe {
                     LSErrorFree(&mut error);
@@ -946,7 +958,7 @@ pub(crate) mod ls2 {
                 }
                 return Err(Fail::Setup {
                     stage: "call",
-                    detail,
+                    detail, code,
                 });
             }
             let until = Instant::now() + budget;
@@ -1043,7 +1055,7 @@ pub(crate) mod ls2 {
                     Err(Fail::Timeout) => {
                         crate::log(&format!("ls2probe: {label}: getForegroundAppInfo timed out"))
                     }
-                    Err(Fail::Setup { stage, detail }) => crate::log(&format!(
+                    Err(Fail::Setup { stage, detail, .. }) => crate::log(&format!(
                         "ls2probe: {label}: call failed stage={stage} ({detail})"
                     )),
                 }

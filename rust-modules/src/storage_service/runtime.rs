@@ -151,33 +151,62 @@ impl Runtime {
         })
     }
 
-    /// Publish one payload-free failure stage for rooted diagnostics. It is transient, private to
+    pub fn clear_failure(&self) {
+        let path = PathBuf::from(format!("/proc/self/fd/{}", self.directory.as_raw_fd())).join("last-error");
+        if safe_metadata(&path, false).is_ok() { let _ = fs::remove_file(path); }
+    }
+
+    /// Publish one payload-free failure stage for app diagnostics. It is transient, private to
     /// the app UID, and never participates in protocol decisions.
     pub fn record_failure(&self, stage: &str) {
-        const NAME: &str = "last-error";
-        if stage.len() > 64 || !stage.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') {
-            return;
-        }
-        let anchored = PathBuf::from(format!("/proc/self/fd/{}", self.directory.as_raw_fd()));
-        let path = anchored.join(NAME);
-        match fs::symlink_metadata(&path) {
-            Ok(_) if safe_metadata(&path, false).is_err() => return,
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return,
-        }
-        let mut options = OpenOptions::new();
-        options
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-        if let Ok(mut file) = options.open(path) {
-            let _ = file.write_all(stage.as_bytes());
-        }
+        record_failure_in(&self.directory, stage);
     }
 }
+
+/// Registration can fail before a rendezvous exists. Publish diagnostics only, without
+/// creating a socket/descriptor or removing another process's files.
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
+pub fn record_start_failure(app_id: &str) {
+    let path = PathBuf::from(format!("/tmp/{app_id}.storage-runtime"));
+    match fs::DirBuilder::new().mode(0o700).create(&path) {
+        Ok(()) => (),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
+        Err(_) => return,
+    }
+    let Ok(directory) = OpenOptions::new().read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC).open(path) else { return; };
+    let Ok(meta) = directory.metadata() else { return; };
+    if !meta.is_dir() || meta.uid() != unsafe { libc::getuid() } || meta.mode() & 0o7777 != 0o700 { return; }
+    record_failure_in(&directory, "none");
+}
+
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
+fn record_failure_in(directory: &File, stage: &str) {
+    const NAME: &str = "last-error";
+    let detail = super::wire::failure::last().map(|f| f.observed)
+        .or_else(|| super::wire::failure::parse_last_error(stage.as_bytes()));
+    let Some(detail) = detail else { return; };
+    let Ok(bytes) = serde_json::to_vec(&detail) else { return; };
+    let anchored = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
+    let path = anchored.join(NAME);
+    match fs::symlink_metadata(&path) {
+        Ok(_) if safe_metadata(&path, false).is_err() => return,
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return,
+    }
+    let mut options = OpenOptions::new();
+    options
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    if let Ok(mut file) = options.open(path) {
+        let _ = file.write_all(&bytes);
+    }
+}
+
 #[cfg(all(target_os = "linux", target_arch = "arm"))]
 pub fn authenticate(stream: &UnixStream) -> Result<(), ErrorCode> {
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };

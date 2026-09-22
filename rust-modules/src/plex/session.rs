@@ -3268,8 +3268,17 @@ fn save_locked_with_authority(
         install_or_drop_after_write(s, legacy, authority, cache_generation);
         return async_persistence::LiveWrite::legacy(legacy);
     }
+    crate::storage::wire::failure::clear();
+    CANDIDATE_ERRNOS.with(|slot| slot.set([None; 8]));
     let protected_before = has_protected_authority();
     let commit = persistence::write_session(s, authority);
+    let helper_failure = match &commit {
+        persistence::CanonicalCommit::Failed(crate::storage::StoreError::HelperUnavailable
+            | crate::storage::StoreError::HelperAuthentication | crate::storage::StoreError::HelperProtocol) =>
+            Some(crate::storage::wire::failure::last().unwrap_or_else(||
+                crate::storage::wire::failure::HelperFailure::new(crate::storage::wire::failure::Stage::Unknown, None))),
+        _ => None,
+    };
     let durable = matches!(commit, persistence::CanonicalCommit::Durable { .. });
     if !durable {
         match &commit {
@@ -3278,7 +3287,7 @@ fn save_locked_with_authority(
                 crate::log(&format!("session: canonical write is uncertain stage={stage:?} errno={errno}"));
             }
             persistence::CanonicalCommit::Failed(error) => {
-                crate::log(&format!("session: canonical write failed: {error:?}"));
+                crate::log(&format!("session: canonical write failed: {error:?} helper={helper_failure:?}"));
             }
             persistence::CanonicalCommit::ProtectionFailed(failure) => {
                 crate::log(&format!(
@@ -3317,7 +3326,7 @@ fn save_locked_with_authority(
     // next read serves the fallback as Transient, never as settled canonical state. Read installs
     // preserve local Revoked even when this fallback write succeeded.
     drop_cache_locked();
-    async_persistence::LiveWrite::canonical(commit, legacy)
+    async_persistence::LiveWrite::canonical(commit, legacy).with_helper_failure(helper_failure)
 }
 
 /// The `#[cfg(test)]` `TEST_FILE` path's write outcome, where the legacy file IS the only record
@@ -3624,12 +3633,23 @@ fn parent_stat(path: &std::path::Path) -> Option<ParentStat> {
     Some(ParentStat { uid: meta.uid(), gid: meta.gid(), mode: meta.mode() & 0o7777 })
 }
 
-/// [`write_atomic`], plus the [`CandidateDiagnostic`] a failure is worth keeping.
+thread_local! {
+    // This write's bounded errno projection only: paths, identities and modes stay local.
+    static CANDIDATE_ERRNOS: std::cell::Cell<[Option<i32>; 8]> = const { std::cell::Cell::new([None; 8]) };
+}
+pub(crate) fn candidate_errnos() -> [Option<i32>; 8] { CANDIDATE_ERRNOS.with(|slot| slot.get()) }
+
+/// [`write_atomic`], plus the local diagnostic and its numeric-only report projection.
 fn write_atomic_diagnosed(path: &std::path::Path, json: &[u8]) -> Result<(), CandidateDiagnostic> {
-    write_atomic(path, json).map_err(|failure| CandidateDiagnostic {
-        path: path.to_path_buf(),
-        parent: parent_stat(path),
-        failure,
+    write_atomic(path, json).map_err(|failure| {
+        if let Some(errno) = failure.errno() {
+            CANDIDATE_ERRNOS.with(|slot| {
+                let mut values = slot.get();
+                if let Some(empty) = values.iter_mut().find(|n| n.is_none()) { *empty = Some(errno); }
+                slot.set(values);
+            });
+        }
+        CandidateDiagnostic { path: path.to_path_buf(), parent: parent_stat(path), failure }
     })
 }
 

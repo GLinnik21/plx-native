@@ -53,6 +53,11 @@ fn load_stage(error: ErrorCode) -> ErrorCode {
     stage_error(stage, error)
 }
 
+fn db8_failure(reply: &Value) -> ErrorCode {
+    failure::remember(failure::Stage::Db8, reply["errorCode"].as_i64().and_then(|n| i32::try_from(n).ok()));
+    ErrorCode::Unavailable
+}
+
 pub struct Backend<R> {
     pub rpc: R,
     pub flavor: Flavor,
@@ -115,7 +120,7 @@ impl<R: Rpc> Backend<R> {
         if result["returnValue"] == true {
             Ok(())
         } else {
-            Err(ErrorCode::Unavailable)
+            Err(db8_failure(&result))
         }
     }
     pub fn load(&mut self) -> Result<Option<(u64, CanonicalState)>, ErrorCode> {
@@ -124,7 +129,7 @@ impl<R: Rpc> Backend<R> {
             &json!({"ids":[self.flavor.object_id()]}),
         )?;
         if reply["returnValue"] != true {
-            return Err(ErrorCode::Unavailable);
+            return Err(db8_failure(&reply));
         }
         let objects = reply["results"].as_array().ok_or(ErrorCode::Corrupt)?;
         if objects.is_empty() {
@@ -468,6 +473,9 @@ impl<R: Rpc> Backend<R> {
         let put = self
             .rpc
             .call("luna://com.palm.db/put", &json!({"objects":[object]}));
+        if let Ok(reply) = &put {
+            if reply["returnValue"] == false { db8_failure(reply); }
+        }
         if matches!(&put, Ok(reply) if reply["returnValue"] == false) {
             // An explicit DB8 rejection proves this newly created generation was not installed.
             // A lost/malformed acknowledgement never supplies that proof.
@@ -665,6 +673,9 @@ impl<R: Rpc> Backend<R> {
             return Err(translate(error));
         }
         let put = self.put_state(revision, &active);
+        if let Ok(reply) = &put {
+            if reply["returnValue"] == false { db8_failure(reply); }
+        }
         if matches!(&put, Ok(reply) if reply["returnValue"] == false) {
             keymanager::remove_retired(&mut self.rpc, &name);
         }
@@ -1235,6 +1246,21 @@ mod tests {
             "state":String::from_utf8(state.encode().unwrap()).unwrap()
         }]})
     }
+    #[test]
+    fn helper_failure_db8_negative_setup_and_load_keep_numeric_code_only() {
+        for setup in [true, false] {
+            failure::clear();
+            let mut b = backend(vec![Ok(json!({"returnValue":false,"errorCode":-3963,
+                "errorText":"private-fixture", "host":"private-host"}))]);
+            let error = if setup { b.setup().err() } else { b.load().err() };
+            assert_eq!(error, Some(ErrorCode::Unavailable));
+            let detail = failure::last().unwrap().observed;
+            assert_eq!(detail, failure::Detail::new(failure::Stage::Db8, Some(-3963)));
+            let text = serde_json::to_string(&detail).unwrap();
+            assert!(!text.contains("private"));
+        }
+    }
+
     #[test]
     fn old_db8_ledger_ids_load_and_next_commit_rewrites_an_opaque_document() {
         let (record, current) = device_record();

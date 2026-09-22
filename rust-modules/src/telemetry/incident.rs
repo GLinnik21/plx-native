@@ -25,8 +25,8 @@
 //! to keep it that way.
 //!
 //! Ported and generalised from 0.6.6's `telemetry/signin.rs`, which reported sign-in failures only.
-//! Its storage-outcome fields are not carried: they were free-form strings and per-candidate
-//! arrays, and the persistence class plus keymanager stage below is the closed replacement.
+//! Its free-form storage outcomes are replaced by closed persistence/helper stages,
+//! keymanager stages and a bounded array of candidate errno numbers (never candidate paths).
 
 use super::consent::{self, Permission, ONBOARDING_REPORT_SCOPE};
 use crate::net::{RequestError, RequestFailure};
@@ -332,6 +332,10 @@ pub(crate) struct IncidentContext {
     /// one flow. `None` outside the code flow.
     pub code_generation: Option<u8>,
     pub persistence: Option<PersistenceFailure>,
+    #[serde(default)]
+    pub helper: Option<crate::storage::wire::failure::HelperFailure>,
+    #[serde(default)]
+    pub candidate_errnos: [Option<i32>; 8],
     /// The key-service stage a protection failure stopped at.
     pub keymanager_stage: Option<KeymanagerStage>,
     /// The key service's own numeric error code, when it gave one.
@@ -363,7 +367,7 @@ impl IncidentContext {
             unanswered: UnansweredBucket::Zero,
             failing_for: FailingForBucket::None,
             code_generation: None,
-            persistence: None,
+            persistence: None, helper: None, candidate_errnos: [None; 8],
             keymanager_stage: None,
             service_error_code: None,
             occurred_at_ms: now_ms(),
@@ -382,7 +386,7 @@ impl IncidentContext {
             unanswered: UnansweredBucket::Zero,
             failing_for: FailingForBucket::None,
             code_generation: None,
-            persistence: None,
+            persistence: None, helper: None, candidate_errnos: [None; 8],
             keymanager_stage: None,
             service_error_code: None,
             occurred_at_ms: 0,
@@ -417,10 +421,14 @@ impl IncidentContext {
             CompletionOutcome::ProtectionUncertain(p) => (PersistenceFailure::ProtectionUncertain, Some(p)),
             CompletionOutcome::Failed(Failure::Admission(_)) => (PersistenceFailure::Admission, None),
             CompletionOutcome::Failed(Failure::Persistence(_)) => (PersistenceFailure::WriteFailed, None),
-            CompletionOutcome::Failed(Failure::Storage(_)) => (PersistenceFailure::Storage, None),
+            CompletionOutcome::Failed(Failure::Storage(_) | Failure::Helper(..)) => (PersistenceFailure::Storage, None),
             CompletionOutcome::Failed(Failure::Protection(p)) => (PersistenceFailure::Protection, Some(p)),
             CompletionOutcome::Failed(Failure::WorkerDropped) => (PersistenceFailure::WorkerDropped, None),
         };
+        if let CompletionOutcome::Failed(Failure::Helper(failure, errnos)) = outcome {
+            self.helper = Some(*failure);
+            self.candidate_errnos = *errnos;
+        }
         self.persistence = Some(class);
         self.keymanager_stage = protection.map(|p| p.failure.stage);
         self.service_error_code = protection.and_then(|p| p.failure.service_code);
@@ -483,6 +491,10 @@ pub(crate) fn event_body(
     }
     if let Some(code) = ctx.service_error_code {
         incident["service_error_code"] = Value::from(code);
+    }
+    if let Some(helper) = ctx.helper {
+        incident["helper"] = serde_json::to_value(helper).expect("closed helper evidence");
+        incident["candidate_errnos"] = serde_json::to_value(ctx.candidate_errnos).expect("errno array");
     }
     let mut body = serde_json::json!({
         "event_id": event_id,
@@ -662,6 +674,24 @@ mod tests {
 
     fn failure(cause: RequestError, status: Option<u16>, curl_rc: Option<i32>) -> RequestFailure {
         RequestFailure { cause, status, body_limit: None, curl_rc }
+    }
+
+    #[test]
+    fn helper_failure_report_has_closed_stage_and_candidate_errnos() {
+        use crate::storage::wire::failure::{HelperFailure, Stage};
+        let failure = HelperFailure::new(Stage::Connect, Some(libc::ECONNREFUSED));
+        let mut errnos = [None; 8];
+        errnos[0] = Some(libc::EACCES);
+        let context = IncidentContext::new(IncidentKind::SaveFailed, None)
+            .with_persistence(&CompletionOutcome::Failed(Failure::Helper(failure, errnos)));
+        let body = event_body(&"a".repeat(32), "", None, context, ConsentKind::OneOff);
+        assert_eq!(body["contexts"]["incident"]["helper"]["observed"]["stage"], "connect");
+        assert_eq!(body["contexts"]["incident"]["candidate_errnos"][0], libc::EACCES);
+        assert!(body.get("user").is_none());
+        let text = body.to_string();
+        for private in ["token", "hostname", "path", "nonce", "uid", "pid"] {
+            assert!(!text.contains(private), "private slot: {private}");
+        }
     }
 
     #[test]

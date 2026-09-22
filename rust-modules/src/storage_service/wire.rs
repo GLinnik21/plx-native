@@ -1,4 +1,6 @@
 //! Private local protocol. No request can choose a DB8 owner, kind, ID, or arbitrary method.
+#[path = "failure.rs"]
+pub mod failure;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{self, Read, Write};

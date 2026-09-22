@@ -212,7 +212,14 @@ pub(crate) struct PersistenceWarningKey { pub epoch: u64, pub req: u32 }
 /// A fresh-reauthentication write that did NOT confirm durable, surfaced to the owner/UI and held
 /// until the user explicitly acknowledges it — the AUTH-03 gate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PersistenceWarning { pub key: PersistenceWarningKey, pub site: PersistenceWarningSite }
+pub(crate) struct PersistenceWarning {
+    pub key: PersistenceWarningKey,
+    pub site: PersistenceWarningSite,
+    #[serde(default)]
+    pub helper: Option<crate::storage::wire::failure::HelperFailure>,
+    #[serde(default)]
+    pub candidate_errnos: [Option<i32>; 8],
+}
 
 /// A Ready handoff whose fresh final write has been admitted but not yet confirmed durable, or
 /// confirmed NOT durable and awaiting the user's acknowledgement. Nothing is emitted for it until
@@ -816,6 +823,8 @@ impl LogicalState for SessionInit {
                 PersistenceWarningSite::Discovery => 0,
                 PersistenceWarningSite::Final => 1,
             });
+            w.option(warning.helper, |w, helper| { w.str(&serde_json::to_string(&helper).unwrap()); });
+            for errno in warning.candidate_errnos { w.option(errno, |w, n| { w.u32(n as u32); }); }
         });
         w.option(self.held_handoff.as_ref(), |w, held| { w.u64(held.epoch).u32(held.req); });
         w.bool(self.persistence_warning_answered);
@@ -1204,7 +1213,10 @@ impl SessionMachine {
             // describes the session's current state, so holding it would strand an acknowledgement
             // over a problem that already resolved itself.
             let superseded = admitted.fresh && self.state.persistence_warning.is_some();
-            if superseded { self.state.persistence_warning = None; }
+            if superseded {
+                self.state.persistence_warning = None;
+                self.retire_save_incident();
+            }
             // Release only the handoff THIS completion is for — a routine completion arriving
             // while an unrelated fresh handoff is held must not free it.
             let released = self.state.held_handoff == Some(HeldHandoff { epoch: completion.epoch, req: completion.req });
@@ -1222,7 +1234,24 @@ impl SessionMachine {
                 // The final write's own non-durable completion replaces a Discovery warning still
                 // showing (`Discovery` and `Final` never coexist: an unacknowledged Discovery warning
                 // blocks `take_ready`), so the newer one wins by direct overwrite.
-                self.state.persistence_warning = Some(PersistenceWarning { key: correlation_key, site: admitted.site });
+                let (helper, candidate_errnos) = match completion.outcome {
+                    CompletionOutcome::Failed(crate::plex::session::async_persistence::Failure::Helper(detail, errnos)) =>
+                        (Some(detail), errnos),
+                    _ => (None, [None; 8]),
+                };
+                self.retire_save_incident();
+                self.state.persistence_warning = Some(PersistenceWarning {
+                    key: correlation_key, site: admitted.site, helper, candidate_errnos,
+                });
+                if helper.is_some() {
+                    // The reducer reads no clock. This is the exact fenced completion, not a
+                    // later read of process-global diagnostics.
+                    let context = IncidentContext {
+                        kind: crate::telemetry::incident::IncidentKind::SaveFailed,
+                        ..IncidentContext::internal(InternalClass::CommitRefused)
+                    }.with_persistence(&completion.outcome);
+                    self.raise_incident(IncidentFlow::SignIn, context);
+                }
                 self.replace_publication();
             }
         }
@@ -1375,6 +1404,13 @@ impl SessionMachine {
         }
     }
 
+    fn retire_save_incident(&mut self) {
+        if self.state.incident.as_ref().is_some_and(|offer|
+            offer.key.kind == crate::telemetry::incident::IncidentKind::SaveFailed) {
+            self.state.incident = None;
+        }
+    }
+
     /// The AUTH-03 acknowledgement door: clears the warning and, if a handoff is still held for
     /// it, releases it — exactly ONE `SessionFx::Ready` for the flow, through
     /// [`Self::release_held_handoff`], never a second one from here.
@@ -1382,6 +1418,7 @@ impl SessionMachine {
         emit: &mut impl FnMut(SessionFx)) -> bool {
         if self.state.persistence_warning.map(|warning| warning.key) != Some(key) { return false; }
         self.state.persistence_warning = None;
+        self.retire_save_incident();
         // This authorization's unsaved-login question is answered now: storage may never gate
         // entry a second time for it (AUTH-03's field bug). A later failure — Discovery then
         // Final, or a retry — releases the handoff itself instead of asking again.
@@ -2690,6 +2727,49 @@ mod tests {
         assert!(owner.state.held_handoff.is_none());
     }
 
+    #[test]
+    fn helper_failure_warning_and_one_off_are_bound_to_the_completion() {
+        use crate::plex::session::async_persistence::{CompletionOutcome, Failure, PersistenceCompletion};
+        use crate::storage::wire::failure::{HelperFailure, Stage};
+        for permission in [crate::telemetry::consent::Permission::NotDetermined,
+            crate::telemetry::consent::Permission::Declined] {
+            let mut owner = SessionMachine::from_init(discovering_after_authorization());
+            let req = owner.state.next_req;
+            let epoch = owner.state.epoch;
+            let signed_in = qr_event(&owner, req, 1, super::super::LoginProgress::SignedIn {
+                epoch, server: local_server(), sources: Vec::new(),
+                users: vec![UserTile { title: "Synthetic user".into(), ..Default::default() }],
+            }, true);
+            step(&mut owner, SessionEvent::Result(signed_in));
+            step(&mut owner, SessionEvent::Commit(CommitReply { req, epoch, arrival: 1,
+                admission: CommitAdmission::Admitted { revision: 1, purpose: PersistencePurpose::Discovery } }));
+            let failure = HelperFailure::new(Stage::Connect, Some(libc::ECONNREFUSED));
+            let mut errnos = [None; 8];
+            errnos[0] = Some(libc::EACCES);
+            let completion = PersistenceCompletion { req, epoch, arrival: 1, revision: 1,
+                purpose: PersistencePurpose::Discovery,
+                outcome: CompletionOutcome::Failed(Failure::Helper(failure, errnos)) };
+            step(&mut owner, SessionEvent::Persistence(PersistenceCompletion { req: req + 99, ..completion }));
+            assert!(owner.state.persistence_warning.is_none());
+            step(&mut owner, SessionEvent::Persistence(completion));
+            let warning = owner.publication().persistence_warning.unwrap();
+            assert_eq!(warning.helper, Some(failure));
+            let offer = owner.state.incident.clone().unwrap();
+            assert_eq!(offer.context.unwrap().helper, Some(failure));
+            let effects = step(&mut owner, SessionEvent::Command(Command::ResolveIncident {
+                id: offer.id, permission, revision: 1 }));
+            assert!(!effects.iter().any(|fx| matches!(fx, SessionFx::Incident { .. })));
+            assert!(matches!(owner.state.incident.as_ref().unwrap().state,
+                IncidentState::Offered { .. } | IncidentState::Dropped));
+            let effects = step(&mut owner, SessionEvent::Command(Command::ReportIncident { id: offer.id }));
+            assert!(effects.iter().any(|fx| matches!(fx, SessionFx::Incident {
+                lane: IncidentLane::OneOff, report: IncidentReport::Retained(context), ..
+            } if context.helper == Some(failure) && context.candidate_errnos == errnos)));
+            step(&mut owner, SessionEvent::Command(Command::AcknowledgePersistenceWarning { key: warning.key }));
+            assert!(owner.state.incident.is_none());
+        }
+    }
+
     // Field regression: an unrooted webOS 4.4.3 device unwritable on BOTH the Discovery and
     // Final layers used to demand two separate "Couldn't save your sign-in" acknowledgements.
     // One Continue must suffice for the whole authorization.
@@ -3102,7 +3182,7 @@ mod tests {
         // Manufacture a showing warning directly (no restart), keeping `admitted_persistence`
         // fenced so the very next completion below is accepted as this same operation's verdict.
         owner.state.persistence_warning = Some(PersistenceWarning {
-            key: PersistenceWarningKey { epoch, req }, site: PersistenceWarningSite::Discovery });
+            key: PersistenceWarningKey { epoch, req }, site: PersistenceWarningSite::Discovery, helper: None, candidate_errnos: [None; 8] });
         owner.state.admitted_persistence = Some(AdmittedPersistence {
             req, epoch, arrival: 0, revision: 1, purpose: Some(PersistencePurpose::Discovery),
             fresh: true, site: PersistenceWarningSite::Discovery });

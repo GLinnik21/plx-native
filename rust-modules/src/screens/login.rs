@@ -26,12 +26,13 @@
 //! support line, and whose answers are *Close* and — only while a report can still be sent —
 //! *Send report*, which starts focused when it is there on open. While the card stays open its
 //! content follows the incident, retaining valid focus as receipts and answers change. BACK or *Close* puts focus back on
-//! *Details*; *Send report* closes the card too, and the read-out's one status line then says
-//! "Sending report…" beside its spinner. The QR screen's *Details* opens the same card.
+//! *Details*; *Send report* closes the card too. Ordinary failure read-outs then show
+//! "Sending report…" beside its spinner; helper save warnings keep their storage stage visible. The QR screen's *Details* opens the same card.
 //!
 //! **The calm default.** Until somebody acts (or a standing Yes sends one), the failure is the
 //! design system's `StatusOverlay` failed and nothing else: verdict, reason, *Try again* /
-//! *Details*. A report adds at most ONE short status line under the row ([`report_status`]); the
+//! *Details*. A report adds at most ONE short status line under the row ([`report_status`]); a
+//! helper save warning uses that line for its photographable storage stage. The
 //! Report ID lives only inside the Details card. A report still on its way carries the shared inline
 //! spinner beside "Sending report…" wherever that line is drawn — the QR screen's stall line keeps
 //! its own spinner too.
@@ -97,7 +98,7 @@ const REPORT_QUESTION: &CStr = c"Send a report about this sign-in problem?";
 /// names — is not in the body at all. The full field list lives in `PRIVACY.md` and the in-app
 /// Privacy Policy, not here.
 pub(crate) const REPORT_BODY: &str = "The report says which sign-in step failed and how the \
-connection answered, plus the app version. It never includes your account name, tokens, PIN, \
+connection answered, storage failure stages and error numbers, plus the app version. It never includes your account name, tokens, PIN, \
 sign-in code or network addresses.";
 
 /// How long a working phase runs before the read-out grows a way out.
@@ -1001,11 +1002,11 @@ impl LoginScreen {
     }
 
     /// Whether the held incident offers its *Details*: on the failure read-out, and on the QR
-    /// screen while the wait itself is what failed. Never over the save warning, which is a
-    /// different question with its own single answer.
+    /// screen while the wait itself is what failed, or for the helper failure on a save warning.
     fn details_offered(&self) -> bool {
-        if self.persistence_warning.is_some() {
-            return false;
+        if let Some(warning) = self.persistence_warning {
+            return warning.helper.is_some() && self.report.offer.as_ref().is_some_and(|o|
+                o.key.kind == crate::telemetry::incident::IncidentKind::SaveFailed);
         }
         match (&self.report.offer, self.phase) {
             (Some(_), Phase::Error) => true,
@@ -1046,6 +1047,9 @@ impl LoginScreen {
     /// still on its way is `busy` on both screens, which each draw the shared inline spinner
     /// beside it. The Report ID and the support line are never here — they are the Details card's.
     fn report_note(&self) -> Option<Note> {
+        if let Some(helper) = self.persistence_warning.and_then(|warning| warning.helper) {
+            return Some(Note { text: CString::new(helper.line()).unwrap(), busy: false });
+        }
         if !self.details_offered() {
             return None;
         }
@@ -2031,6 +2035,23 @@ mod tests {
     /// re-read on the next launch. Saying "telemetry has been removed" over that is the one
     /// sentence on this screen that could be actively false. Ported verbatim from `ui/login.rs`.
     #[test]
+    fn helper_failure_warning_line_is_only_for_helper_failures() {
+        use crate::storage::wire::failure::{HelperFailure, Stage};
+        let mut screen = bare_screen(Phase::Ready, 0.0);
+        assert!(screen.report_note().is_none());
+        screen.persistence_warning = Some(auth::owner::PersistenceWarning {
+            key: auth::owner::PersistenceWarningKey { epoch: 1, req: 1 },
+            site: auth::owner::PersistenceWarningSite::Final,
+            helper: Some(HelperFailure { start_timeout: true,
+                ..HelperFailure::new(Stage::RuntimeAbsent, Some(libc::ENOENT)) }),
+            candidate_errnos: [None; 8],
+        });
+        assert!(screen.report_note().unwrap().text.to_string_lossy().contains("storage: start-timeout · no runtime dir"));
+        screen.persistence_warning.as_mut().unwrap().helper = None;
+        assert!(screen.report_note().is_none());
+    }
+
+    #[test]
     fn a_partial_wipe_does_not_claim_a_whole_one() {
         let (whole, whole_why) = deleted_readout(0);
         let (partial, partial_why) = deleted_readout(2);
@@ -2630,6 +2651,7 @@ mod tests {
         let warning = auth::owner::PersistenceWarning {
             key,
             site: auth::owner::PersistenceWarningSite::Final,
+            helper: None, candidate_errnos: [None; 8],
         };
         let mut screen = bare_screen(Phase::Ready, 0.0);
         screen.persistence_warning = Some(warning);

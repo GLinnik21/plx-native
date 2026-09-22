@@ -102,6 +102,7 @@ pub(crate) enum Failure {
     Admission(SubmitError),
     Persistence(PersistOutcome),
     Storage(StoreError),
+    Helper(crate::storage::wire::failure::HelperFailure, [Option<i32>; 8]),
     Protection(ProtectionFailure),
     WorkerDropped,
     Superseded,
@@ -452,6 +453,8 @@ pub(crate) struct LiveWrite {
     /// The canonical authority's own verdict, when this path consulted it. `None` only where the
     /// canonical store was deliberately bypassed (the `TEST_FILE` legacy-fixture path).
     pub(crate) commit: Option<CanonicalCommit>,
+    helper_failure: Option<crate::storage::wire::failure::HelperFailure>,
+    candidate_errnos: [Option<i32>; 8],
 }
 
 impl LiveWrite {
@@ -460,7 +463,7 @@ impl LiveWrite {
     pub(crate) fn legacy(sealed: Option<bool>) -> Self {
         Self {
             outcome: Self::outcome_of(sealed),
-            commit: None,
+            commit: None, helper_failure: None, candidate_errnos: [None; 8],
         }
     }
 
@@ -468,8 +471,14 @@ impl LiveWrite {
     pub(crate) fn canonical(commit: CanonicalCommit, sealed: Option<bool>) -> Self {
         Self {
             outcome: Self::outcome_of(sealed),
-            commit: Some(commit),
+            commit: Some(commit), helper_failure: None,
+            candidate_errnos: super::candidate_errnos(),
         }
+    }
+
+    pub(crate) fn with_helper_failure(mut self, failure: Option<crate::storage::wire::failure::HelperFailure>) -> Self {
+        self.helper_failure = failure;
+        self
     }
 
     fn outcome_of(sealed: Option<bool>) -> PersistOutcome {
@@ -485,9 +494,16 @@ impl LiveWrite {
     /// **This is not a second decision site.** It rewrites the write into the same [`DiskOutcome`]
     /// the asynchronous path builds and hands it to [`DiskOutcome::classify`], so the two paths
     /// cannot drift: there is exactly one set of match arms in the crate turning a durability
-    /// verdict into a [`CompletionOutcome`], and it is `classify`'s.
+    /// verdict into a [`CompletionOutcome`], and it is `classify`'s. The helper diagnostic
+    /// snapshot only enriches a failed verdict after classification; it cannot change durability.
     pub(crate) fn classify(&self) -> CompletionOutcome {
-        self.disk_outcome().classify()
+        let outcome = self.disk_outcome().classify();
+        match (outcome, self.helper_failure) {
+            (CompletionOutcome::Failed(Failure::Storage(StoreError::HelperUnavailable
+                | StoreError::HelperAuthentication | StoreError::HelperProtocol)), Some(failure)) =>
+                CompletionOutcome::Failed(Failure::Helper(failure, self.candidate_errnos)),
+            _ => outcome,
+        }
     }
 
     fn disk_outcome(&self) -> DiskOutcome {
