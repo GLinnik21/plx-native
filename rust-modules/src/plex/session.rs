@@ -38,8 +38,9 @@
 //!   progress from an authoritative empty session, so pending preferences need not flash defaults.
 //! - Writers never read from the cache; they read the authority under `IO` (fence correctness),
 //!   then install their own outcome over it.
-//! - A `Locked`/`Blocked` read is transient: served for `LOCKED_RETRY` (about a second) after it
-//!   finishes, then re-read on the next call rather than latched forever.
+//! - A `Locked`/`Blocked` read or fallback `Ready` during helper unavailability is transient:
+//!   served for `LOCKED_RETRY` (about a second) after it finishes, then re-read on the next call
+//!   rather than latched forever.
 //! - [`clear`] (sign-out) drops the cached `Arc` immediately — it holds the very account/server
 //!   tokens sign-out means to get rid of.
 //! - Other domains of the same record (consent) are not in this cache and their writes never
@@ -1929,10 +1930,10 @@ enum Cached {
     Revoked,
     /// Nothing has been read or written yet this process.
     Unloaded,
-    /// [`ReadState::Ready`], `Missing` or `Cleared`: a settled fact about the file. Good until the
+    /// Canonical/migration [`ReadState::Ready`], `Missing` or `Cleared`: a settled fact about the file. Good until the
     /// next write installs or drops it.
     Settled(std::sync::Arc<ReadState>),
-    /// [`ReadState::Locked`] or `Blocked`: a transient failure (a helper timeout, a keymanager
+    /// [`ReadState::Locked`], `Blocked`, or fallback `Ready`: a transient failure (a helper timeout, a keymanager
     /// hiccup), not a fact about the file — served only until `retry_at`, never latched forever.
     Transient {
         state: std::sync::Arc<ReadState>,
@@ -1951,8 +1952,8 @@ enum Cached {
 /// closure, unchanged by the cache.
 static CACHE: Mutex<Cached> = Mutex::new(Cached::Unloaded);
 
-/// How long a [`ReadState::Locked`]/[`ReadState::Blocked`] answer is served from [`CACHE`] before
-/// the next reader tries storage again, measured from the end of the read. These two states are
+/// How long a Locked/Blocked answer or fallback Ready is served from [`CACHE`] before
+/// the next reader tries canonical storage again, measured from the end of the read. These are
 /// transient by definition (see [`ReadState`]'s doc), so the interval only needs to be short enough
 /// that a real recovery is felt quickly, and long enough to limit background retries to about
 /// once a second. Per-frame callers never pay for these reads.
@@ -1983,7 +1984,7 @@ fn session_of(state: &ReadState) -> std::sync::Arc<Session> {
 /// deterministic and a miss in the simulated future cannot move the retry anchor backwards.
 fn cached_arm(state: std::sync::Arc<ReadState>, now: std::time::Instant) -> Cached {
     match &*state {
-        ReadState::Locked | ReadState::Blocked => Cached::Transient {
+        ReadState::Locked | ReadState::Blocked | ReadState::Ready { retry_canonical: true, .. } => Cached::Transient {
             state,
             retry_at: now + LOCKED_RETRY,
         },
@@ -2069,8 +2070,9 @@ pub(crate) fn queue_update_ticket(edit: impl FnOnce(&Session) -> Option<Session>
     }))
 }
 
-/// Read the persisted session and nothing else — **no minting, no write.** For readers that merely
-/// want to know what the session says (the account surfaces, and now every per-frame reader too):
+/// Read the persisted session without minting or preference edits. A worker may migrate a marked
+/// fallback into recovered canonical storage. For readers that merely want to know what the
+/// session says (the account surfaces, and now every per-frame reader too):
 /// [`load`]'s client-id minting means a read can turn into a `save`, so a file that momentarily
 /// fails to parse would be overwritten with a bare client_id — a silent sign-out. That is an
 /// acceptable trade on the boot path, which must end up with an id; it is not one on a path a
@@ -2348,7 +2350,7 @@ mod cache_timing_tests {
             let (started, held) = CHANNELS.lock().unwrap().take().unwrap();
             started.send(()).unwrap();
             let _ = held.recv_timeout(std::time::Duration::from_secs(5));
-            ReadState::Ready { session: std::sync::Arc::new(test_support::signed_in()), plaintext: false }
+            ReadState::Ready { session: std::sync::Arc::new(test_support::signed_in()), plaintext: false, retry_canonical: false }
         })));
         crate::ui::idle::reset_for_test();
         let start = std::time::Instant::now();
@@ -2454,7 +2456,7 @@ mod cache_timing_tests {
         let held = io();
         assert!(peek().client_id.is_empty());
         install_locked(std::sync::Arc::new(ReadState::Ready {
-            session: std::sync::Arc::new(test_support::signed_in()), plaintext: false,
+            session: std::sync::Arc::new(test_support::signed_in()), plaintext: false, retry_canonical: false,
         }));
         drop(held);
         drain_refresh_for_test();
@@ -2474,7 +2476,7 @@ mod cache_timing_tests {
             let (entered, release) = CHANNELS.lock().unwrap().take().unwrap();
             entered.send(()).unwrap();
             let _ = release.recv_timeout(std::time::Duration::from_secs(5));
-            ReadState::Ready { session: std::sync::Arc::new(test_support::signed_in()), plaintext: false }
+            ReadState::Ready { session: std::sync::Arc::new(test_support::signed_in()), plaintext: false, retry_canonical: false }
         })));
         let _ = peek();
         CACHE_READ_FOR_TEST.with(|read| read.set(None));
@@ -2541,11 +2543,11 @@ mod cache_timing_tests {
             ((|| ReadState::Blocked) as fn() -> ReadState, 0),
             ((|| ReadState::Locked) as fn() -> ReadState, 0),
             ((|| ReadState::Ready {
-                session: std::sync::Arc::new(test_support::signed_in()), plaintext: false,
+                session: std::sync::Arc::new(test_support::signed_in()), plaintext: false, retry_canonical: false,
             }) as fn() -> ReadState, 1),
             // A different allocation and ReadState metadata, but the same served content.
             ((|| ReadState::Ready {
-                session: std::sync::Arc::new(test_support::signed_in()), plaintext: true,
+                session: std::sync::Arc::new(test_support::signed_in()), plaintext: true, retry_canonical: false,
             }) as fn() -> ReadState, 0),
         ] {
             crate::ui::idle::reset_for_test();
@@ -2675,6 +2677,8 @@ enum ReadState {
     Ready {
         session: std::sync::Arc<Session>,
         plaintext: bool,
+        /// A fallback served during helper unavailability must keep retrying canonical storage.
+        retry_canonical: bool,
     },
     /// A recognized encrypted file whose device key is temporarily or permanently unavailable.
     /// It must shadow every lower-priority candidate: treating it as corrupt and then writing a
@@ -2694,17 +2698,19 @@ enum ReadState {
 }
 
 /// The canonical authority's answer, retaining whether protected data exists but cannot be opened.
-fn read_locked() -> ReadState {
-    match persistence::load() {
+fn read_locked(canonical: persistence::CanonicalRead) -> ReadState {
+    match canonical {
         persistence::CanonicalRead::Opened { session, .. } => ReadState::Ready {
             session: std::sync::Arc::new(session),
             plaintext: false,
+            retry_canonical: false,
         },
         persistence::CanonicalRead::Data { payload, .. } => {
             match serde_json::from_str::<Session>(&payload) {
                 Ok(session) => ReadState::Ready {
                     session: std::sync::Arc::new(session),
                     plaintext: true,
+                    retry_canonical: false,
                 },
                 Err(error) => {
                     crate::log(&format!("session: canonical record is invalid: {error}"));
@@ -2724,9 +2730,9 @@ fn read_locked() -> ReadState {
     }
 }
 
-/// Prefer the canonical record, but never let a legacy file outrank an unopenable canonical
-/// state. On ARM `read_legacy_locked` is absent by configuration, so the canonical store is the
-/// only authority a live read can consult.
+/// Prefer any present canonical record, including Locked, Pending, invalid and Cleared.
+/// Only transport unavailability permits a fallback-written file; ordinary legacy files are
+/// migration inputs only when canonical is Missing. A recovered canonical record always wins.
 fn read_live_locked() -> ReadState {
     #[cfg(test)]
     READS_FOR_TEST.with(|c| c.set(c.get() + 1));
@@ -2737,23 +2743,94 @@ fn read_live_locked() -> ReadState {
         // scratch bytes, including recovery from states the canonical store cannot represent.
         return read_legacy_locked();
     }
-    match read_locked() {
-        ReadState::Missing => read_legacy_locked(),
-        canonical => canonical,
+    match read_canonical_locked() {
+        persistence::CanonicalRead::Missing => migrate_missing_fallback_locked(read_legacy_locked()),
+        persistence::CanonicalRead::Blocked(crate::storage::StoreError::HelperUnavailable) => {
+            match read_legacy_filtered_locked(true) {
+                ReadState::Ready {
+                    session, plaintext, ..
+                } => ReadState::Ready {
+                    session,
+                    plaintext,
+                    retry_canonical: true,
+                },
+                ReadState::Locked => ReadState::Locked,
+                _ => ReadState::Blocked,
+            }
+        }
+        canonical => read_locked(canonical),
     }
 }
 
-/// The legacy file reader: host/test fixtures, and on ARM the migration INPUT.
-///
-/// It is deliberately available on every target. On ARM a pre-DB8 install has no canonical record
-/// yet, so `read_live_locked` falls through to here exactly once and the bootstrap/migration path
-/// then moves the contents into DB8; removing this reader on ARM would make an existing 0.6.x
-/// `auth.json` unreadable instead of migrated, and would also orphan `keymanager::open`.
+/// A marked file is still fallback storage even if encrypted. Promote it when canonical is
+/// Missing; failed migration keeps the readable snapshot transient so the worker retries it.
+fn migrate_missing_fallback_locked(read: ReadState) -> ReadState {
+    if let ReadState::Ready { session, retry_canonical: true, .. } = &read {
+        if !cache_revoked() {
+            match persistence::migrate_session(session) {
+                persistence::CanonicalCommit::Durable { protection, .. } => {
+                    retire_marked_fallbacks_locked();
+                    return ReadState::Ready {
+                        session: session.clone(), plaintext: protection.is_none(), retry_canonical: false,
+                    };
+                }
+                _ => crate::log("session: fallback migration did not complete; retaining snapshot for retry"),
+            }
+        }
+    }
+    read
+}
+
+/// Canonical reads happen under IO, on boot/storage workers, never through a frame-thread peek.
+fn read_canonical_locked() -> persistence::CanonicalRead {
+    let read = persistence::load();
+    retire_after_canonical_read_locked(&read);
+    read
+}
+
+fn retire_after_canonical_read_locked(read: &persistence::CanonicalRead) {
+    if matches!(read, persistence::CanonicalRead::Data { .. }
+        | persistence::CanonicalRead::Opened { .. } | persistence::CanonicalRead::Cleared { .. }) {
+        retire_marked_fallbacks_locked();
+    }
+}
+
+/// Read migration inputs and fallback-written files on every target, preserving sealed versus
+/// plaintext handling. Missing canonical storage accepts both, so the normal bootstrap can
+/// migrate a fallback too. Marked reads remain transient until canonical migration succeeds,
+/// including sealed snapshots. An unavailable helper accepts only our explicit fallback marker.
+/// A neutralized file (JSON null) is absent in either mode.
 fn read_legacy_locked() -> ReadState {
-    for path in auth_paths() {
+    read_legacy_filtered_locked(false)
+}
+
+const FALLBACK_MARKER: &str = "_plxnative_session_fallback";
+/// An in-place sign-out tombstone, distinct from Session's permissive empty object.
+const SESSION_TOMBSTONE: &[u8] = b"null\n";
+
+fn read_legacy_filtered_locked(fallback_only: bool) -> ReadState {
+    let paths = auth_paths();
+    let revoked = fallback_revoked_at(&paths);
+    for path in paths {
         let Some(bytes) = read_owned_regular(&path) else {
             continue;
         };
+        let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        if value.is_null() {
+            continue;
+        }
+        let marked = value
+            .get(FALLBACK_MARKER)
+            .and_then(serde_json::Value::as_u64)
+            == Some(1);
+        if (fallback_only && !marked) || (marked && revoked) {
+            continue;
+        }
+        if let Some(object) = value.as_object_mut() {
+            object.remove(FALLBACK_MARKER);
+        }
         if let Ok(envelope) = serde_json::from_slice::<SecureEnvelope>(&bytes) {
             if envelope.format == SECURE_FORMAT && envelope.version == 1 {
                 let Some(plain) = crate::keymanager::open(&envelope.sealed) else {
@@ -2764,6 +2841,7 @@ fn read_legacy_locked() -> ReadState {
                     .map(|session| ReadState::Ready {
                         session: std::sync::Arc::new(session),
                         plaintext: false,
+                        retry_canonical: marked,
                     })
                     .unwrap_or(ReadState::Locked);
             }
@@ -2772,10 +2850,11 @@ fn read_legacy_locked() -> ReadState {
             crate::log("session: unsupported or damaged secure envelope is locked");
             return ReadState::Locked;
         }
-        if let Ok(session) = serde_json::from_slice::<Session>(&bytes) {
+        if let Ok(session) = serde_json::from_value::<Session>(value) {
             return ReadState::Ready {
                 session: std::sync::Arc::new(session),
                 plaintext: true,
+                retry_canonical: marked,
             };
         }
     }
@@ -2797,6 +2876,11 @@ fn has_secure_locked() -> bool {
     auth_paths()
         .iter()
         .any(|path| read_owned_regular(path).is_some_and(|b| identifies_secure_envelope(&b)))
+}
+
+fn has_unmarked_secure_locked() -> bool {
+    auth_paths().iter().any(|path| read_owned_regular(path)
+        .is_some_and(|bytes| identifies_secure_envelope(&bytes) && !marked_fallback(&bytes)))
 }
 
 /// Seed a quality only for a genuinely absent file. A parsable legacy file remains distinguishable
@@ -2914,7 +2998,8 @@ impl DeferredLoad {
     }
 }
 
-/// Read/mint inputs only: no save, plaintext migration or identity publication before capture.
+/// Capture read/mint inputs; ordinary saves and identity publication remain deferred.
+/// A marked fallback can migrate during the authority read when canonical storage recovers.
 pub(crate) fn load_capturing_entropy() -> (Session, Option<[u8; 16]>, DeferredLoad) {
     let _io = io();
     let read = read_live_locked();
@@ -2938,7 +3023,7 @@ pub(crate) fn load_capturing_entropy() -> (Session, Option<[u8; 16]>, DeferredLo
 fn established(read: &ReadState) -> bool {
     matches!(
         read,
-        ReadState::Ready { session, plaintext: false } if !session.client_id.is_empty()
+        ReadState::Ready { session, plaintext: false, .. } if !session.client_id.is_empty()
     )
 }
 
@@ -2983,6 +3068,7 @@ fn prepare_load(read: &ReadState, mint: impl FnOnce() -> String) -> (Session, bo
         read,
         ReadState::Ready {
             plaintext: true,
+            retry_canonical: false,
             ..
         }
     );
@@ -3204,6 +3290,7 @@ fn save_locked_with_authority(
     }
     let protected_after = has_protected_authority();
     if durable {
+        canonical_write_completed_locked(s, authority, cache_generation);
         let protection = match &commit {
             persistence::CanonicalCommit::Durable { protection, .. } => *protection,
             _ => unreachable!(),
@@ -3214,6 +3301,7 @@ fn save_locked_with_authority(
         install_write_locked(std::sync::Arc::new(ReadState::Ready {
             session: std::sync::Arc::new(s.clone()),
             plaintext: protection.is_none(),
+            retry_canonical: false,
         }), authority, cache_generation);
         return async_persistence::LiveWrite::canonical(
             commit,
@@ -3221,13 +3309,13 @@ fn save_locked_with_authority(
         );
     }
     let legacy = save_legacy_fallback_locked(s, protected_before, protected_after);
-    // Unlike the `TEST_FILE` path, a `Some(_)` here is NOT installed: `read_live_locked` only
-    // ever falls through to `read_legacy_locked` when the canonical read comes back `Missing`
-    // (see its doc), and a non-durable canonical write leaves a present-but-uncertain canonical
-    // record behind, never a missing one. So the very next real read would answer from the
-    // canonical file regardless of what this ARM fallback just wrote beside it — trusting the
-    // fallback's own outcome here would cache an answer no subsequent read could ever reproduce.
-    // The disk state after a non-durable canonical commit is genuinely unknown either way.
+    if legacy.is_some() {
+        end_fallback_revocation_locked(s, authority, cache_generation, true);
+    }
+    // Re-read canonical before trusting the marked fallback: an uncertain write may actually
+    // have landed, or a present record may outrank it. If the helper is still unavailable, the
+    // next read serves the fallback as Transient, never as settled canonical state. Read installs
+    // preserve local Revoked even when this fallback write succeeded.
     drop_cache_locked();
     async_persistence::LiveWrite::canonical(commit, legacy)
 }
@@ -3241,50 +3329,59 @@ fn save_locked_with_authority(
 /// as the record either way.
 fn install_or_drop_after_write(s: &Session, legacy: Option<bool>, authority: SaveAuthority, generation: u64) {
     match legacy {
-        Some(sealed) => install_write_locked(std::sync::Arc::new(ReadState::Ready {
-            session: std::sync::Arc::new(s.clone()),
-            plaintext: !sealed,
-        }), authority, generation),
+        Some(sealed) => {
+            end_fallback_revocation_locked(s, authority, generation, false);
+            install_write_locked(std::sync::Arc::new(ReadState::Ready {
+                session: std::sync::Arc::new(s.clone()),
+                plaintext: !sealed,
+                retry_canonical: false,
+            }), authority, generation);
+        },
         None => drop_cache_locked(),
     }
+}
+
+/// Tag the existing file representation without changing its encryption or candidate paths.
+/// Readers strip this storage metadata before decoding Session's flattened extension fields.
+fn fallback_bytes(value: &impl Serialize) -> Result<Vec<u8>, serde_json::Error> {
+    let mut value = serde_json::to_value(value)?;
+    value
+        .as_object_mut()
+        .expect("session/envelope object")
+        .insert(FALLBACK_MARKER.into(), 1.into());
+    serde_json::to_vec_pretty(&value)
 }
 
 /// The pre-canonical sealed/plaintext write, run only where the canonical commit did NOT land.
 ///
 /// Split out of [`save_locked_with_authority`] so that function can return the canonical verdict
-/// alongside this one; the body is unchanged, including every refusal to downgrade a protected
-/// record. `Some(true)` sealed, `Some(false)` plaintext, `None` nothing was written.
+/// alongside this one. Files are marked for unavailable-helper reads; every refusal to downgrade
+/// a protected record is retained. `Some(true)` sealed, `Some(false)` plaintext, `None` nothing was written.
 fn save_legacy_fallback_locked(
     s: &Session,
     protected_before: bool,
     protected_after: bool,
 ) -> Option<bool> {
-    if protected_before || protected_after || has_secure_locked() {
+    // Only our marked fallback envelopes may be resealed here. Unmarked legacy secure files
+    // still refuse the entire fallback write, as before; the plaintext arm never downgrades either.
+    if protected_before || protected_after || has_unmarked_secure_locked() {
         crate::log("session: preserving the existing protected record; refusing an unprotected downgrade");
         return None;
     }
-    let Ok(json) = serde_json::to_vec_pretty(s) else {
-        return None;
-    };
-    if let Some(sealed) = crate::keymanager::seal(&json) {
+    if let Some(sealed) = crate::keymanager::seal(&serde_json::to_vec_pretty(s).ok()?) {
         let envelope = SecureEnvelope {
             format: SECURE_FORMAT.to_string(),
             version: 1,
             sealed,
         };
-        let Ok(protected) = serde_json::to_vec_pretty(&envelope) else {
+        let Ok(protected) = fallback_bytes(&envelope) else {
             return None;
         };
         let mut failures = Vec::new();
         for winner in auth_paths() {
             match write_atomic_diagnosed(&winner, &protected) {
                 Ok(()) => {
-                    // A successful migration must not leave an older plaintext token file at a
-                    // lower-priority jail path where another uid can recover it.
-                    for stale in auth_paths().into_iter().filter(|p| p != &winner) {
-                        remove_temp_siblings(&stale);
-                        let _ = std::fs::remove_file(stale);
-                    }
+                    retire_other_fallback_candidates_locked(&winner, true);
                     if !failures.is_empty() {
                         crate::log(
                             "session: protected write succeeded on a later candidate; earlier ones refused",
@@ -3306,6 +3403,9 @@ fn save_legacy_fallback_locked(
         crate::log("session: preserving the existing secure file; refusing a plaintext downgrade");
         return None;
     }
+    let Ok(json) = fallback_bytes(s) else {
+        return None;
+    };
     // Try each candidate; the first that accepts the write wins. A total failure is still
     // non-fatal — but it is LOGGED, because the symptom (sign in again, every boot, forever) is
     // otherwise indistinguishable from a server-side auth problem and impossible to report.
@@ -3315,6 +3415,7 @@ fn save_legacy_fallback_locked(
     for path in auth_paths() {
         match write_atomic_diagnosed(&path, &json) {
             Ok(()) => {
+                retire_other_fallback_candidates_locked(&path, false);
                 if !failures.is_empty() {
                     crate::log(
                         "session: plaintext write succeeded on a later candidate; earlier ones refused",
@@ -3331,6 +3432,19 @@ fn save_legacy_fallback_locked(
     );
     log_candidate_diagnostics("plaintext write refused", &failures);
     None
+}
+
+/// Sealed writes retain the existing sweep of other plaintext migration inputs, so credentials
+/// are not left unprotected elsewhere. Plaintext writes retire only other marked snapshots.
+fn retire_other_fallback_candidates_locked(winner: &std::path::Path, sealed: bool) {
+    let mut complete = retry_pending_retirements_locked();
+    for stale in auth_paths().into_iter().filter(|path| path != winner) {
+        if sealed || read_owned_regular(&stale).is_some_and(|bytes| marked_fallback(&bytes)) {
+            remove_temp_siblings(&stale);
+            complete &= retire_session_candidate(&stale);
+        }
+    }
+    if complete { retry_pending_revocation_removals_locked(); }
 }
 
 #[cfg(test)]
@@ -3371,7 +3485,7 @@ fn save_legacy_locked(s: &Session) -> Option<bool> {
 }
 
 fn has_protected_authority() -> bool {
-    match persistence::load() {
+    match read_canonical_locked() {
         persistence::CanonicalRead::Locked { protection, .. } => protection.is_some_and(|outcome| {
             !matches!(outcome.class, crate::storage::wire::ProtectionClass::Db8AclOnly)
         }),
@@ -3715,6 +3829,9 @@ pub fn clear() -> ClearOutcome {
     // keep it reachable from `peek()` until some unrelated later write happens to overwrite it.
     // See the module doc's cache invariants.
     revoke_cached_session();
+    // Persist revocation before any clear can fail or the process can exit midway through it.
+    // Best effort: the sweep below still requires every candidate to be retired, marker or not.
+    persist_fallback_revocation_locked();
 
     // A redirected legacy-fixture test (`TempSession`/`redirect_for_test`) must never reach the
     // real canonical authority — exactly the guard `save_locked_with_authority` and
@@ -3748,6 +3865,7 @@ pub fn clear() -> ClearOutcome {
     } else {
         Some(match persistence::commit_cleared() {
         persistence::CanonicalCommit::Durable { .. } => {
+            retire_marked_fallbacks_locked();
             // `auth_paths()` above only ever covered `paths::session_candidates()` — the legacy
             // sign-in file and its pre-relocation predecessor. The recognized migration source set
             // is bigger (`paths::session_migration_candidates()`, plus the pre-DB8 canonical JSON
@@ -3807,6 +3925,7 @@ pub fn clear() -> ClearOutcome {
     // location would let `peek`'s search resurrect the stale session on the next boot. The `.tmp`
     // siblings go too — `peek` cannot read one, so it is not a resurrection risk, but a sign-out
     // that leaves a live account token in a file on a rooted television is not a sign-out.
+    let mut legacy_swept = retry_pending_retirements_locked();
     for path in auth_paths() {
         if let Some(bytes) = read_owned_regular(&path) {
             if let Ok(envelope) = serde_json::from_slice::<SecureEnvelope>(&bytes) {
@@ -3816,21 +3935,244 @@ pub fn clear() -> ClearOutcome {
             }
         }
         remove_temp_siblings(&path);
-        let removed = std::fs::remove_file(&path).is_ok();
-        // Durability, not tidiness: on this filesystem an unlink is not durable until the parent
-        // directory entry is synced, and this file's whole reason to exist is that a live account
-        // token in it must not survive a sign-out — including one interrupted by power loss right
-        // after the unlink. `persistence::retire_exact_candidate` two modules over already does
-        // this for the same reason; a bare `remove_file` here was the one place in this function
-        // that did not.
-        if removed {
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::File::open(parent).and_then(|dir| dir.sync_all());
+        legacy_swept &= retire_session_candidate(&path);
+    }
+
+    let mut outcome = canonical_outcome.unwrap_or(ClearOutcome::Durable { legacy_swept: true });
+    if let ClearOutcome::Durable { legacy_swept: complete } = &mut outcome {
+        *complete &= legacy_swept;
+    }
+    outcome
+}
+
+/// Sibling markers are independent of auth.json: a read-only credential inode/directory can
+/// still be revoked through another writable candidate (including the runtime directory).
+/// Every fallback read scans ALL markers before choosing a file, and Missing migration also
+/// skips marked snapshots while revoked. Only a later successful fresh credential write may
+/// remove the markers, after attempting to retire obsolete marked snapshots. Canonical reads and
+/// preference writes never remove them. This protects process restarts, not loss of every
+/// writable directory: if no marker can be synced we cannot protect a surviving snapshot;
+/// the incomplete sweep is logged/reported and remains retryable. A marker stored only in
+/// /tmp cannot survive a device reboot that clears /tmp. A crash before the storage worker
+/// persists the intent is likewise not covered. This barrier does not override canonical data.
+fn fallback_revocation_path(path: &std::path::Path) -> std::path::PathBuf {
+    path.with_extension("session-revoked")
+}
+
+fn fallback_revoked_at(paths: &[std::path::PathBuf]) -> bool {
+    paths.iter().any(|path| match std::fs::symlink_metadata(fallback_revocation_path(path)) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        // Even an unreadable/damaged marker fails closed. Its contents are not credentials.
+        _ => true,
+    })
+}
+
+fn persist_fallback_revocation_locked() -> bool {
+    // A new sign-out supersedes any earlier credential write's permission to remove markers.
+    PENDING_REVOCATION_REMOVALS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    for path in auth_paths() {
+        let marker = fallback_revocation_path(&path);
+        let result = write_atomic(&marker, b"revoked\n").and_then(|()| {
+            // write_atomic swallows parent-sync errors; revocation requires this flush to succeed.
+            std::fs::File::open(marker.parent().expect("candidate parent"))
+                .and_then(|dir| dir.sync_all())
+                .map_err(|error| WriteFailure::WriteFailed(error.raw_os_error().unwrap_or(0)))
+        });
+        match result {
+            Ok(()) => return true,
+            Err(failure) => log_candidate_diagnostics("revocation marker refused", &[
+                CandidateDiagnostic { parent: parent_stat(&marker), path: marker, failure },
+            ]),
+        }
+    }
+    crate::log("session: no durable fallback revocation marker; sign-out cannot survive a restart until cleanup succeeds");
+    false
+}
+
+fn marked_fallback(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(bytes).ok()
+        .is_some_and(|value| value.get(FALLBACK_MARKER).and_then(serde_json::Value::as_u64) == Some(1))
+}
+
+/// Best effort after canonical recovery. No cache mutation and no change to the canonical
+/// verdict: an unsuccessful retirement is logged, while canonical still serves its proven data.
+fn retire_marked_fallbacks_locked() -> bool {
+    let mut complete = retry_pending_retirements_locked();
+    for path in auth_paths() {
+        match std::fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                crate::log(&format!("session: fallback retirement stat failed path={} errno={}",
+                    path.display(), error.raw_os_error().unwrap_or(0)));
+                complete = false;
+                continue;
+            }
+            Ok(meta) if !meta.is_file() => continue,
+            Ok(_) => {}
+        }
+        match read_owned_regular(&path) {
+            Some(bytes) if marked_fallback(&bytes) => complete &= retire_session_candidate(&path),
+            Some(_) => {}
+            None => {
+                crate::log(&format!("session: fallback retirement could not read candidate path={}", path.display()));
+                complete = false;
             }
         }
     }
+    complete && retry_pending_revocation_removals_locked()
+}
 
-    canonical_outcome.unwrap_or(ClearOutcome::Durable { legacy_swept: true })
+/// Retry authorization comes from a proven fresh credential write, never a file mtime (the
+/// device clock can jump). IO serializes this set; a newer sign-out invalidates its tenure and
+/// cancels it before persisting another marker. Across process restart, markers stay fail-closed
+/// until another proven fresh sign-in because this authorization is deliberately process-local.
+static PENDING_REVOCATION_REMOVALS: Mutex<Vec<(std::path::PathBuf, u64)>> = Mutex::new(Vec::new());
+
+fn retry_pending_revocation_removals_locked() -> bool {
+    let pending = PENDING_REVOCATION_REMOVALS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let mut complete = true;
+    for (marker, tenure) in pending {
+        let current = REVOCATION_GENERATION.load(std::sync::atomic::Ordering::Acquire);
+        let retired = if tenure != current {
+            // Discard obsolete permission without touching the marker for a newer sign-out.
+            true
+        } else {
+            match std::fs::remove_file(&marker) {
+                Ok(()) => sync_retired_candidate_parent(&marker),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => sync_retired_candidate_parent(&marker),
+                Err(error) => {
+                    crate::log(&format!("session: revocation retirement failed errno={}",
+                        error.raw_os_error().unwrap_or(0)));
+                    false
+                }
+            }
+        };
+        if retired {
+            PENDING_REVOCATION_REMOVALS.lock().unwrap_or_else(|e| e.into_inner())
+                .retain(|entry| entry != &(marker.clone(), tenure));
+        } else {
+            complete = false;
+        }
+    }
+    complete
+}
+
+fn end_fallback_revocation_locked(s: &Session, authority: SaveAuthority, generation: u64, fallback_written: bool) {
+    let tenure = REVOCATION_GENERATION.load(std::sync::atomic::Ordering::Acquire);
+    if authority != SaveAuthority::FreshReauthentication || s.account_token.is_empty()
+        || CACHE_GENERATION.load(std::sync::atomic::Ordering::Relaxed) != generation { return; }
+    for path in auth_paths() {
+        let marker = fallback_revocation_path(&path);
+        if matches!(std::fs::symlink_metadata(&marker),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound) { continue; }
+        let mut pending = PENDING_REVOCATION_REMOVALS.lock().unwrap_or_else(|e| e.into_inner());
+        pending.retain(|(path, _)| path != &marker);
+        pending.push((marker, tenure));
+    }
+    if fallback_written {
+        // The outage writer already attempted to retire OTHER candidates; keep its new snapshot.
+        retry_pending_revocation_removals_locked();
+    } else {
+        // Canonical sign-in retires all old snapshots before removing the barrier.
+        retire_marked_fallbacks_locked();
+    }
+}
+
+fn canonical_write_completed_locked(s: &Session, authority: SaveAuthority, generation: u64) {
+    retire_marked_fallbacks_locked();
+    end_fallback_revocation_locked(s, authority, generation, false);
+}
+
+/// Sign-out must retire credentials even when a directory refuses unlink but its file is
+/// writable. Only an owned regular file with no other hard links may be changed in place;
+/// validate the opened fd before truncation, and never follow a symlink or create a new file.
+fn neutralize_session_candidate(path: &std::path::Path) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() || meta.uid() != unsafe { libc::geteuid() } || meta.nlink() != 1 {
+        return Err(std::io::Error::from_raw_os_error(libc::EPERM));
+    }
+    file.set_len(0)?;
+    let written = file.write_all(SESSION_TOMBSTONE);
+    // Sync even after a short/failed write: truncation may already have removed credentials.
+    let synced = file.sync_all();
+    written.and(synced)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static RETIRE_PARENT_SYNC_FOR_TEST: std::cell::Cell<Option<fn() -> Option<i32>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn sync_retirement_directory(dir: &std::fs::File) -> std::io::Result<()> {
+    #[cfg(test)]
+    if let Some(errno) = RETIRE_PARENT_SYNC_FOR_TEST.with(|hook| hook.get().and_then(|inject| inject())) {
+        return Err(std::io::Error::from_raw_os_error(errno));
+    }
+    dir.sync_all()
+}
+
+/// IO serializes retirement and this pending set. Only failed parent flushes are queued, so
+/// ordinary canonical reads do not fsync absent candidates. Process-local state is enough for
+/// this retry: after restart, a directory entry restored by power loss is visible as a marked
+/// file again and is retired on the next authoritative read, rather than silently skipped.
+static PENDING_RETIREMENTS: Mutex<Vec<std::path::PathBuf>> = Mutex::new(Vec::new());
+
+fn retry_pending_retirements_locked() -> bool {
+    // Do not hold the set's mutex across sync: the helper updates its entry on completion.
+    let pending = PENDING_RETIREMENTS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let mut complete = true;
+    for path in pending {
+        complete &= sync_retired_candidate_parent(&path);
+    }
+    complete
+}
+
+/// NotFound may be a retry of an unlink whose directory sync failed, not durable absence.
+/// A missing parent is already retired; every other open/sync failure remains retryable.
+fn sync_retired_candidate_parent(path: &std::path::Path) -> bool {
+    let result = path.parent().ok_or_else(|| std::io::Error::from_raw_os_error(libc::EINVAL))
+        .and_then(|parent| match std::fs::File::open(parent) {
+            Ok(dir) => sync_retirement_directory(&dir),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        });
+    if let Err(error) = result {
+        let mut pending = PENDING_RETIREMENTS.lock().unwrap_or_else(|e| e.into_inner());
+        if !pending.iter().any(|candidate| candidate == path) { pending.push(path.to_path_buf()); }
+        drop(pending);
+        crate::log(&format!("session: sign-out unlink sync failed path={} errno={}",
+            path.display(), error.raw_os_error().unwrap_or(0)));
+        return false;
+    }
+    PENDING_RETIREMENTS.lock().unwrap_or_else(|e| e.into_inner()).retain(|candidate| candidate != path);
+    true
+}
+
+/// Shared by both sign-out sweeps. Successful retirement includes a synced tombstone;
+/// failures remain visible, especially when no reachable canonical Cleared record protects us.
+fn retire_session_candidate(path: &std::path::Path) -> bool {
+    match std::fs::remove_file(path) {
+        Ok(()) => sync_retired_candidate_parent(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => sync_retired_candidate_parent(path),
+        Err(unlink) => match neutralize_session_candidate(path) {
+            Ok(()) => true,
+            Err(overwrite) => {
+                crate::log(&format!(
+                    "session: sign-out candidate retirement failed path={} unlink_errno={} neutralize_errno={}",
+                    path.display(), unlink.raw_os_error().unwrap_or(0),
+                    overwrite.raw_os_error().unwrap_or(0)
+                ));
+                false
+            }
+        },
+    }
 }
 
 /// A v4-ish UUID from `/dev/urandom` (no `uuid` crate). Only uniqueness/stability matter — plex.tv

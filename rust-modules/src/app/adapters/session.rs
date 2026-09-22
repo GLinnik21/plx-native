@@ -240,7 +240,7 @@ impl CompletedCommit {
 struct PendingErase {
     epoch: u64,
     all_local: bool,
-    ticket: Option<crate::storage_worker::TypedTicket<()>>,
+    ticket: Option<crate::storage_worker::TypedTicket<bool>>,
     retry_at: u32,
 }
 
@@ -727,12 +727,15 @@ impl SessionAdapter {
         // SDL's millisecond counter wraps; the retry is due within the forward half-range.
         if pending.ticket.is_some() || now.wrapping_sub(pending.retry_at) >= u32::MAX / 2 { return; }
         pending.ticket = crate::storage_worker::submit(|| {
-            if !matches!(crate::plex::session::clear(), crate::plex::session::ClearOutcome::Durable { .. }) {
-                crate::log("session: queued clear was not durable; credentials remain revoked this run");
+            let complete = matches!(crate::plex::session::clear(),
+                crate::plex::session::ClearOutcome::Durable { legacy_swept: true });
+            if !complete {
+                crate::log("session: queued clear incomplete; retaining revocation and retrying");
             }
             crate::plex::session::revoke_cached_session();
             crate::ui::idle::wake();
             crate::ui::present::wake_from_worker();
+            complete
         }).ok();
         pending.retry_at = now.wrapping_add(STORAGE_RETRY_MS);
     }
@@ -748,7 +751,13 @@ impl SessionAdapter {
                 self.erasures.front_mut()?.ticket = None;
                 return None;
             }
-            Ok(()) => {}
+            Ok(false) => {
+                let pending = self.erasures.front_mut()?;
+                pending.ticket = None;
+                pending.retry_at = crate::app::clock::now().wrapping_add(STORAGE_RETRY_MS);
+                return None;
+            }
+            Ok(true) => {}
         }
         let pending = self.erasures.pop_front().expect("pending clear");
         let leftovers = self.finish_erase(pending.all_local, meta);

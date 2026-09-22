@@ -1109,3 +1109,83 @@ mod published_06 {
         );
     }
 }
+
+#[test]
+fn fallback_written_file_migrates_into_recovered_missing_db8() {
+    let _serial = crate::testlock::serial();
+    let file = test_support::TempSession::new("fallback-helper-migration");
+    let expected = fixture();
+    assert!(save_legacy_fallback_locked(&expected, false, false).is_some());
+    let bytes = std::fs::read(file.file()).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&bytes).unwrap()[FALLBACK_MARKER],
+        1
+    );
+    assert_eq!(
+        serde_json::to_value(session_from_read(&read_legacy_locked())).unwrap(),
+        serde_json::to_value(&expected).unwrap()
+    );
+    let mut backend = crate::storage::backend::Backend::new(
+        Db8::default(),
+        state::Flavor::Stable,
+        "com.beb.plxnative.storage".into(),
+    );
+    let mut transport = |request| Ok(backend.dispatch(request));
+    let result = persistence::bootstrap_with(
+        &mut persistence::HelperMigration {
+            transport: &mut transport,
+            major: 4,
+        },
+        &mut opener(),
+        &[file.file().to_path_buf()],
+    );
+    assert!(matches!(
+        result.migration,
+        Some(persistence::CanonicalCommit::Durable { verified: true, .. })
+    ));
+    assert!(!result.cleanup_failed);
+    assert!(!file.file().exists());
+    let CanonicalRead::Opened { session, .. } = persistence::load_helper_with(&mut transport)
+    else {
+        panic!("recovered DB8 must reopen the migrated fallback");
+    };
+    assert_eq!(
+        serde_json::to_value(session).unwrap(),
+        serde_json::to_value(expected).unwrap()
+    );
+    assert_eq!(backend.rpc.puts, 1);
+}
+
+#[test]
+fn neutralized_candidate_is_missing_and_does_not_block_later_migration_inputs() {
+    let expected = fixture();
+    let tombstone = LegacyFile::new("neutralized-input", &serde_json::to_value(&expected).unwrap());
+    neutralize_session_candidate(&tombstone.path).unwrap();
+    let bytes = std::fs::read(&tombstone.path).unwrap();
+    assert!(matches!(persistence::decode_legacy_session(&bytes, &mut opener()),
+        Ok(persistence::LegacySession::Missing)));
+    let mut store = MigrationFixture::default();
+    let empty = persistence::bootstrap_with(&mut store, &mut opener(),
+        std::slice::from_ref(&tombstone.path));
+    assert!(matches!(empty.state, CanonicalRead::Missing));
+    assert!(empty.migration.is_none());
+    assert_eq!(store.commits, 0);
+    let live = LegacyFile::new("after-neutralized-input", &serde_json::to_value(&expected).unwrap());
+    let restored = persistence::bootstrap_with(&mut store, &mut opener(),
+        &[tombstone.path.clone(), live.path.clone()]);
+    assert!(matches!(restored.state, CanonicalRead::Data { .. }));
+    assert_eq!(store.commits, 1);
+    assert!(!live.path.exists());
+}
+
+#[test]
+fn pending_revocation_prevents_missing_canonical_from_importing_a_marked_snapshot() {
+    let source = LegacyFile::new("revoked-migration", &serde_json::from_slice::<Value>(
+        &fallback_bytes(&fixture()).unwrap()).unwrap());
+    write_atomic(&fallback_revocation_path(&source.path), b"revoked\n").unwrap();
+    let mut store = MigrationFixture::default();
+    let result = persistence::bootstrap_with(&mut store, &mut opener(), std::slice::from_ref(&source.path));
+    assert!(matches!(result.state, CanonicalRead::Missing));
+    assert_eq!(store.commits, 0);
+    assert!(source.path.exists());
+}

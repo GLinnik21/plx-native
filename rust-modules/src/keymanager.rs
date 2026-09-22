@@ -100,6 +100,13 @@ pub(crate) fn reset_for_test() {
     crate::log("session protection: host tests use the 0600 plaintext fixture");
 }
 
+// Synthetic LS2 transport for host persistence tests; never compiled into a device build.
+#[cfg(test)]
+std::thread_local! {
+    pub(crate) static RPC_FOR_TEST: std::cell::Cell<Option<fn(&str, &str) -> Result<String, ()>>> =
+        const { std::cell::Cell::new(None) };
+}
+
 fn succeeded(v: &Value) -> bool {
     v.get("returnValue").and_then(Value::as_bool) == Some(true)
 }
@@ -208,10 +215,14 @@ mod platform {
 
     impl Client {
         pub(super) fn new() -> Result<Self, ()> {
+            #[cfg(test)]
+            if super::RPC_FOR_TEST.with(|hook| hook.get().is_some()) { return Ok(Self); }
             Err(())
         }
 
         pub(super) fn call(&mut self, _uri: &str, _payload: &str) -> Result<String, ()> {
+            #[cfg(test)]
+            if let Some(rpc) = super::RPC_FOR_TEST.with(|hook| hook.get()) { return rpc(_uri, _payload); }
             Err(())
         }
     }
