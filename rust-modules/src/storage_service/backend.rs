@@ -1145,6 +1145,31 @@ fn receipt(
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+    #[test]
+    fn rejected_put_retains_db8_diagnostic_for_structured_commit() {
+        failure::clear();
+        let mut b = backend(vec![
+            Ok(record(9)),
+            Ok(json!({"returnValue":false,"errorCode":-3963})),
+            Ok(record(9)),
+        ]);
+        let response = b.dispatch(changing_request(WireMutation::UpdateConsent {
+            payload: json!({"consent":true,"scopes":[],"ids":[]}),
+        }));
+        assert!(matches!(response, Response::Commit { status: CommitStatus::Unavailable, .. }));
+        assert_eq!(failure::last().unwrap().observed,
+            failure::Detail::new(failure::Stage::Db8, Some(-3963)));
+        assert_eq!(response.failure_code(), Some(ErrorCode::Unavailable));
+        assert_eq!(failure::last().unwrap().line(), "storage: helper · db8 (-3963)");
+        let unknown = Response::Reconcile {
+            status: ReconcileStatus::Unknown, db_rev: None, applied: None, protection: None,
+        };
+        assert_eq!(unknown.failure_code(), Some(ErrorCode::Unavailable));
+        for status in [CommitStatus::Committed, CommitStatus::Conflict] {
+            assert_eq!(receipt(status, None, None).unwrap().failure_code(), None);
+        }
+    }
+
     // Reproduce the old device's physical representation without ever interpreting strings.
     fn add_db8_array_ids(value: &mut Value) {
         match value {

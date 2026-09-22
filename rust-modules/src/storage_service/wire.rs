@@ -262,6 +262,17 @@ pub enum Response {
         db8_commit_verified: bool,
     },
 }
+impl Response {
+    /// Shared service publication and client retention policy for helper diagnostics.
+    pub fn failure_code(&self) -> Option<ErrorCode> {
+        match self {
+            Self::Error { code } => Some(*code),
+            Self::Commit { status: CommitStatus::Unavailable, .. }
+                | Self::Reconcile { status: ReconcileStatus::Unknown, .. } => Some(ErrorCode::Unavailable),
+            _ => None,
+        }
+    }
+}
 impl std::fmt::Debug for Response {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("StorageResponse([REDACTED])")

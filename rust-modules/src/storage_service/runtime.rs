@@ -159,34 +159,17 @@ impl Runtime {
     /// Publish one payload-free failure stage for app diagnostics. It is transient, private to
     /// the app UID, and never participates in protocol decisions.
     pub fn record_failure(&self, stage: &str) {
-        record_failure_in(&self.directory, stage);
+        record_failure_in(&self.directory, &self.descriptor.helper_generation, stage);
     }
 }
 
-/// Registration can fail before a rendezvous exists. Publish diagnostics only, without
-/// creating a socket/descriptor or removing another process's files.
 #[cfg(all(target_os = "linux", target_arch = "arm"))]
-pub fn record_start_failure(app_id: &str) {
-    let path = PathBuf::from(format!("/tmp/{app_id}.storage-runtime"));
-    match fs::DirBuilder::new().mode(0o700).create(&path) {
-        Ok(()) => (),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
-        Err(_) => return,
-    }
-    let Ok(directory) = OpenOptions::new().read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC).open(path) else { return; };
-    let Ok(meta) = directory.metadata() else { return; };
-    if !meta.is_dir() || meta.uid() != unsafe { libc::getuid() } || meta.mode() & 0o7777 != 0o700 { return; }
-    record_failure_in(&directory, "none");
-}
-
-#[cfg(all(target_os = "linux", target_arch = "arm"))]
-fn record_failure_in(directory: &File, stage: &str) {
+fn record_failure_in(directory: &File, generation: &str, stage: &str) {
     const NAME: &str = "last-error";
     let detail = super::wire::failure::last().map(|f| f.observed)
         .or_else(|| super::wire::failure::parse_last_error(stage.as_bytes()));
     let Some(detail) = detail else { return; };
-    let Ok(bytes) = serde_json::to_vec(&detail) else { return; };
+    let Ok(bytes) = serde_json::to_vec(&super::wire::failure::Record { helper_generation: generation.into(), detail }) else { return; };
     let anchored = PathBuf::from(format!("/proc/self/fd/{}", directory.as_raw_fd()));
     let path = anchored.join(NAME);
     match fs::symlink_metadata(&path) {
@@ -233,6 +216,11 @@ pub fn authenticate(stream: &UnixStream) -> Result<(), ErrorCode> {
 impl Drop for Runtime {
     fn drop(&mut self) {
         let anchored = PathBuf::from(format!("/proc/self/fd/{}", self.directory.as_raw_fd()));
+        // Do not remove a successor's diagnostic if the rendezvous has been replaced.
+        if safe_metadata(&anchored.join(DESCRIPTOR_NAME), false)
+            .is_ok_and(|m| (m.dev(), m.ino()) == self.descriptor_inode) {
+            self.clear_failure();
+        }
         for (name, socket, identity) in [
             (SOCKET_NAME, true, self.socket_inode),
             (DESCRIPTOR_NAME, false, self.descriptor_inode),

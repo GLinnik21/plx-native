@@ -95,7 +95,7 @@ been `failing_for` (both bucketed), how many codes were shown (`code_generation`
 a sign-in could not be saved, a `persistence` failure class, the `keymanager_stage` a key-service
 step stopped at and the key service's own numeric `service_error_code`. A storage-helper failure
 also carries fixed startup, connection, activation or backend stages, wire/DB8 error codes, and
-up to eight failed storage-candidate errno numbers. It carries no candidate paths or file owners.
+up to eight failed storage-candidate errno numbers. It carries no candidate paths, file owners or helper generation identifiers.
 It also carries whether the report was `consent`ed to as a standing choice or as a one-off, the app version and when it
 happened. It never includes your account name, tokens, PIN, sign-in code or network addresses. With
 crash reports on, it is sent automatically, carries the Crash report ID, and the sign-in screen

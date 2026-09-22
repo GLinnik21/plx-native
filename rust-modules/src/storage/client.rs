@@ -358,16 +358,23 @@ fn transact(command: Request) -> Result<Response, ClientError> {
             .map_err(|_| failed(Stage::Wire, None, ClientError::Protocol))?;
             let hello = wire::read_frame::<Response>(&mut stream)
                 .map_err(|_| failed(Stage::HelloRejected, None, ClientError::Protocol))?;
-            if let Err(error) = validate_hello(hello, &descriptor) {
-                read_helper_failure(&runtime_path());
+            let generation = match &hello {
+                Response::Hello { protocol, nonce, helper_generation, .. }
+                    if *protocol == wire::PROTOCOL && *nonce == descriptor.nonce
+                        && *helper_generation == descriptor.helper_generation => Some(helper_generation.as_str()),
+                _ => None,
+            };
+            // A matching Hello can report DB8 setup failure; it still proves the generation.
+            if let Err(error) = validate_hello(hello.clone(), &descriptor) {
+                read_helper_failure(&runtime_path(), generation);
                 return Err(error);
             }
             wire::write_frame(&mut stream, &command).map_err(|_| failed(Stage::Wire, None, ClientError::Protocol))?;
-            let response = wire::read_frame(&mut stream).map_err(|_| failed(Stage::Wire, None, ClientError::Protocol))?;
-            if let Response::Error { code } = &response {
-                failed(Stage::Wire, None, classify_error(*code));
-                failure::update(|f| f.wire = Some(*code));
-                read_helper_failure(&runtime_path());
+            let response = wire::read_frame::<Response>(&mut stream).map_err(|_| failed(Stage::Wire, None, ClientError::Protocol))?;
+            if let Some(code) = response.failure_code() {
+                failed(Stage::Wire, None, classify_error(code));
+                failure::update(|f| f.wire = Some(code));
+                read_helper_failure(&runtime_path(), Some(&descriptor.helper_generation));
             } else {
                 failure::clear();
             }
@@ -404,7 +411,7 @@ fn transact(command: Request) -> Result<Response, ClientError> {
             let error = start_unavailable(connected.err().unwrap());
             let activation = START_GATE.lock().unwrap_or_else(|e| e.into_inner()).activation;
             failure::update(|f| f.activation = activation);
-            read_helper_failure(&runtime_path());
+            read_helper_failure(&runtime_path(), None);
             return Err(error);
         }
         std::thread::sleep(Duration::from_millis(25));
@@ -447,8 +454,10 @@ fn start_unavailable(error: ClientError) -> ClientError {
 }
 
 /// Read only a bounded regular file under the same private directory rules as rendezvous.
-/// An old helper's known stage names are accepted; arbitrary file text never leaves this process.
-fn read_helper_failure(root: &Path) {
+/// Consume only records bound to the generation established by a matching Hello.
+/// Without that proof, keep the current connection/activation observation.
+fn read_helper_failure(root: &Path, generation: Option<&str>) {
+    let Some(generation) = generation else { return; };
     let Ok(directory) = OpenOptions::new().read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC).open(root) else { return; };
     let Ok(meta) = directory.metadata() else { return; };
@@ -464,7 +473,7 @@ fn read_helper_failure(root: &Path) {
         || meta.nlink() != 1 || meta.len() > DESCRIPTOR_MAX { return; }
     let mut bytes = Vec::new();
     if Read::by_ref(&mut file).take(DESCRIPTOR_MAX + 1).read_to_end(&mut bytes).is_err() { return; }
-    if let Some(detail) = failure::parse_last_error(&bytes) {
+    if let Some(detail) = failure::Record::parse(&bytes, generation) {
         failure::update(|f| f.helper = Some(detail));
     }
 }
@@ -649,14 +658,47 @@ mod tests {
         }
         let last = root.join("last-error");
         let detail = failure::Detail::new(Stage::Db8, Some(-3963));
-        std::fs::write(&last, serde_json::to_vec(&detail).unwrap()).unwrap();
+        std::fs::write(&last, serde_json::to_vec(&failure::Record { helper_generation: "01".repeat(16), detail }).unwrap()).unwrap();
         std::fs::set_permissions(&last, std::fs::Permissions::from_mode(0o600)).unwrap();
-        read_helper_failure(&root);
+        read_helper_failure(&root, Some(&"01".repeat(16)));
         assert_eq!(failure::last().unwrap().helper, Some(detail));
         std::fs::write(&last, b"token=private-fixture hostname=private-host").unwrap();
         failure::remember(Stage::HelloRejected, None);
-        read_helper_failure(&root);
+        read_helper_failure(&root, Some(&"01".repeat(16)));
         assert_eq!(failure::last().unwrap().helper, None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn previous_helper_failure_cannot_override_current_connect_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("plx-helper-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let last = root.join("last-error");
+        std::fs::write(&last, serde_json::to_vec(&failure::Detail::new(Stage::Db8, Some(-3963))).unwrap()).unwrap();
+        std::fs::set_permissions(&last, std::fs::Permissions::from_mode(0o600)).unwrap();
+        failure::remember(Stage::Connect, Some(libc::ECONNREFUSED));
+        read_helper_failure(&root, None);
+        let current = failure::last().unwrap();
+        assert_eq!(current.helper, None);
+        assert_eq!(current.line(), format!("storage: helper · connect refused ({})", libc::ECONNREFUSED));
+        // Legacy unbound records cannot be attributed even after a successful Hello.
+        read_helper_failure(&root, Some(&"02".repeat(16)));
+        assert_eq!(failure::last().unwrap().helper, None);
+        let detail = failure::Detail::new(Stage::Db8, Some(-3963));
+        let record = failure::Record { helper_generation: "01".repeat(16), detail };
+        std::fs::write(&last, serde_json::to_vec(&record).unwrap()).unwrap();
+        // An orphan from an unclean exit, or a successor replacing the file, must not match.
+        for generation in [None, Some("02".repeat(16))] {
+            read_helper_failure(&root, generation.as_deref());
+            assert_eq!(failure::last().unwrap().helper, None);
+        }
+        read_helper_failure(&root, Some(&record.helper_generation));
+        assert_eq!(failure::last().unwrap().helper, Some(detail));
+        assert_eq!(failure::last().unwrap().line(), "storage: helper · db8 (-3963)");
+        let report = serde_json::to_string(&failure::last().unwrap()).unwrap();
+        assert!(!report.contains(&record.helper_generation));
         std::fs::remove_dir_all(root).unwrap();
     }
 

@@ -36,10 +36,7 @@ pub fn run() -> Result<(), ErrorCode> {
     let flavor = Flavor::from_app_id(app_id).ok_or(ErrorCode::Invalid)?;
     let service = format!("{app_id}.storage");
     // Acquiring this name precedes any stale-file removal, serializing conforming helpers.
-    let rpc = bus::Bus::register(&service).map_err(|error| {
-        runtime::record_start_failure(app_id);
-        error
-    })?;
+    let rpc = bus::Bus::register(&service)?;
     let runtime = runtime::Runtime::publish(app_id)?;
     let mut backend = Backend::new(rpc, flavor, service);
     let mut idle = Instant::now();
@@ -99,7 +96,7 @@ pub fn run() -> Result<(), ErrorCode> {
                         code: ErrorCode::Protocol,
                     },
                 };
-                if matches!(reply, Response::Error { .. }) {
+                if reply.failure_code().is_some() {
                     runtime.record_failure(crate::backend::last_error_stage());
                 }
                 let _ = wire::write_frame(&mut stream, &reply);

@@ -23,6 +23,21 @@ impl Detail {
     pub const fn new(stage: Stage, code: Option<i32>) -> Self { Self { stage, code } }
 }
 
+/// Local rendezvous metadata only: never attach the generation to a report or warning.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Record {
+    pub helper_generation: String,
+    pub detail: Detail,
+}
+impl Record {
+    pub fn parse(bytes: &[u8], generation: &str) -> Option<Detail> {
+        if bytes.len() > 4096 { return None; }
+        let record: Self = serde_json::from_slice(bytes).ok()?;
+        (record.helper_generation == generation).then_some(record.detail)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HelperFailure {
@@ -124,6 +139,22 @@ pub fn parse_last_error(bytes: &[u8]) -> Option<Detail> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generation_record_is_bounded_and_closed() {
+        let generation = "01".repeat(16);
+        let detail = Detail::new(Stage::Db8, Some(-3963));
+        let record = Record { helper_generation: generation.clone(), detail };
+        let bytes = serde_json::to_vec(&record).unwrap();
+        assert_eq!(Record::parse(&bytes, &generation), Some(detail));
+        assert_eq!(Record::parse(&bytes, &"02".repeat(16)), None);
+        let mut value = serde_json::to_value(&record).unwrap();
+        value["owner"] = serde_json::json!("private");
+        assert_eq!(Record::parse(&serde_json::to_vec(&value).unwrap(), &generation), None);
+        let mut oversized = bytes;
+        oversized.resize(4097, b' ');
+        assert_eq!(Record::parse(&oversized, &generation), None);
+    }
 
     #[test]
     fn helper_failure_activation_keeps_only_the_stage_and_numeric_code() {
