@@ -163,6 +163,24 @@ impl Runtime {
     }
 }
 
+// Process-start snapshot: never read a later activation's nonce on a failure path.
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
+static START_ATTEMPT: std::sync::OnceLock<Option<super::wire::activation::Attempt>> = std::sync::OnceLock::new();
+
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
+pub fn capture_start_attempt(app_id: &str) {
+    START_ATTEMPT.get_or_init(|| super::wire::activation::Attempt::capture(
+        Path::new(&format!("/tmp/{app_id}.storage-runtime"))));
+}
+
+/// Also used by BusCancel immediately before exit, when destructors cannot publish a failure.
+#[cfg(all(target_os = "linux", target_arch = "arm"))]
+pub fn record_start_failure(app_id: &str) {
+    if let (Some(Some(attempt)), Some(failure)) = (START_ATTEMPT.get(), super::wire::failure::last()) {
+        attempt.record_failure(Path::new(&format!("/tmp/{app_id}.storage-runtime")), failure.observed);
+    }
+}
+
 #[cfg(all(target_os = "linux", target_arch = "arm"))]
 fn record_failure_in(directory: &File, generation: &str, stage: &str) {
     const NAME: &str = "last-error";
@@ -232,7 +250,7 @@ impl Drop for Runtime {
                 }
             }
         }
-        // Leave the empty private directory: its ownership is the next activation's guard.
+        // Keep the private directory and activation diagnostics; its ownership guards the next start.
         let _ = &self.path;
     }
 }

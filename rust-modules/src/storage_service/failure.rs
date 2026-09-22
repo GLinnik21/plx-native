@@ -31,6 +31,7 @@ pub struct Record {
     pub detail: Detail,
 }
 impl Record {
+    #[allow(dead_code)] // App-side reader; the ARM helper only serializes generation records.
     pub fn parse(bytes: &[u8], generation: &str) -> Option<Detail> {
         if bytes.len() > 4096 { return None; }
         let record: Self = serde_json::from_slice(bytes).ok()?;

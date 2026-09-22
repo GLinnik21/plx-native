@@ -291,6 +291,7 @@ struct StartGate {
     failed: bool,
     last_hint: Option<Instant>,
     activation: Option<failure::Detail>,
+    attempt: Option<wire::activation::Attempt>,
 }
 
 impl StartGate {
@@ -309,6 +310,8 @@ impl StartGate {
             return false;
         }
         self.last_hint = Some(now);
+        self.activation = None;
+        self.attempt = None;
         true
     }
 
@@ -322,6 +325,7 @@ static START_GATE: std::sync::Mutex<StartGate> = std::sync::Mutex::new(StartGate
     failed: false,
     last_hint: None,
     activation: None,
+    attempt: None,
 });
 
 #[cfg(target_os = "linux")]
@@ -333,11 +337,12 @@ fn transact(command: Request) -> Result<Response, ClientError> {
     loop {
         let connected = connect(&runtime_path());
         if let Ok((mut stream, descriptor)) = connected {
-            let activation = {
+            let (activation, attempt) = {
                 let mut gate = START_GATE.lock().unwrap_or_else(|e| e.into_inner());
                 let activation = gate.activation;
+                let attempt = gate.attempt.clone();
                 gate.connected();
-                activation
+                (activation, attempt)
             };
             failure::clear();
             failure::remember(Stage::HelloRejected, None);
@@ -355,9 +360,16 @@ fn transact(command: Request) -> Result<Response, ClientError> {
                     nonce: descriptor.nonce.clone(),
                 },
             )
-            .map_err(|_| failed(Stage::Wire, None, ClientError::Protocol))?;
-            let hello = wire::read_frame::<Response>(&mut stream)
-                .map_err(|_| failed(Stage::HelloRejected, None, ClientError::Protocol))?;
+            .map_err(|_| {
+                let error = failed(Stage::Wire, None, ClientError::Protocol);
+                read_helper_failure(&runtime_path(), None, attempt.as_ref().map(|a| a.nonce()));
+                error
+            })?;
+            let hello = wire::read_frame::<Response>(&mut stream).map_err(|_| {
+                let error = failed(Stage::HelloRejected, None, ClientError::Protocol);
+                read_helper_failure(&runtime_path(), None, attempt.as_ref().map(|a| a.nonce()));
+                error
+            })?;
             let generation = match &hello {
                 Response::Hello { protocol, nonce, helper_generation, .. }
                     if *protocol == wire::PROTOCOL && *nonce == descriptor.nonce
@@ -366,7 +378,7 @@ fn transact(command: Request) -> Result<Response, ClientError> {
             };
             // A matching Hello can report DB8 setup failure; it still proves the generation.
             if let Err(error) = validate_hello(hello.clone(), &descriptor) {
-                read_helper_failure(&runtime_path(), generation);
+                read_helper_failure(&runtime_path(), generation, attempt.as_ref().map(|a| a.nonce()));
                 return Err(error);
             }
             wire::write_frame(&mut stream, &command).map_err(|_| failed(Stage::Wire, None, ClientError::Protocol))?;
@@ -374,19 +386,26 @@ fn transact(command: Request) -> Result<Response, ClientError> {
             if let Some(code) = response.failure_code() {
                 failed(Stage::Wire, None, classify_error(code));
                 failure::update(|f| f.wire = Some(code));
-                read_helper_failure(&runtime_path(), Some(&descriptor.helper_generation));
+                read_helper_failure(&runtime_path(), Some(&descriptor.helper_generation), None);
             } else {
                 failure::clear();
             }
             return Ok(response);
         }
-        let (wait, hint) = {
+        let (wait, hint, hint_time) = {
             let mut gate = START_GATE.lock().unwrap_or_else(|e| e.into_inner());
             let now = Instant::now();
-            (gate.wait_after_failed_connect(now, until), !hinted && gate.hint_due(now))
+            let hint = !hinted && gate.hint_due(now);
+            (gate.wait_after_failed_connect(now, until), hint, now)
         };
         if hint {
-            let activate_helper = || {
+            let activate_helper = move || {
+                let attempt = wire::activation::Attempt::begin(&runtime_path());
+                {
+                    let mut gate = START_GATE.lock().unwrap_or_else(|e| e.into_inner());
+                    if gate.last_hint != Some(hint_time) { return; }
+                    gate.attempt = attempt;
+                }
                 let detail = match ACTIVATION_HINT.get() {
                     Some(hint) => {
                         hint(&service_name());
@@ -394,7 +413,8 @@ fn transact(command: Request) -> Result<Response, ClientError> {
                     }
                     None => activate(&service_name()),
                 };
-                START_GATE.lock().unwrap_or_else(|e| e.into_inner()).activation = Some(detail);
+                let mut gate = START_GATE.lock().unwrap_or_else(|e| e.into_inner());
+                if gate.last_hint == Some(hint_time) { gate.activation = Some(detail); }
             };
             if wait {
                 activate_helper();
@@ -409,9 +429,12 @@ fn transact(command: Request) -> Result<Response, ClientError> {
             // Keep the connect/authentication/protocol observation beside the historical
             // control-flow value. Never turn a refused peer into an empty database.
             let error = start_unavailable(connected.err().unwrap());
-            let activation = START_GATE.lock().unwrap_or_else(|e| e.into_inner()).activation;
+            let (activation, attempt) = {
+                let gate = START_GATE.lock().unwrap_or_else(|e| e.into_inner());
+                (gate.activation, gate.attempt.clone())
+            };
             failure::update(|f| f.activation = activation);
-            read_helper_failure(&runtime_path(), None);
+            read_helper_failure(&runtime_path(), None, attempt.as_ref().map(|a| a.nonce()));
             return Err(error);
         }
         std::thread::sleep(Duration::from_millis(25));
@@ -455,9 +478,14 @@ fn start_unavailable(error: ClientError) -> ClientError {
 
 /// Read only a bounded regular file under the same private directory rules as rendezvous.
 /// Consume only records bound to the generation established by a matching Hello.
-/// Without that proof, keep the current connection/activation observation.
-fn read_helper_failure(root: &Path, generation: Option<&str>) {
-    let Some(generation) = generation else { return; };
+/// Before Hello, only a failure echoing the current activation nonce can enrich the observation.
+fn read_helper_failure(root: &Path, generation: Option<&str>, activation_nonce: Option<&str>) {
+    let Some(generation) = generation else {
+        if let Some(detail) = activation_nonce.and_then(|nonce| wire::activation::read_failure(root, nonce)) {
+            failure::update(|f| f.helper = Some(detail));
+        }
+        return;
+    };
     let Ok(directory) = OpenOptions::new().read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC).open(root) else { return; };
     let Ok(meta) = directory.metadata() else { return; };
@@ -660,12 +688,67 @@ mod tests {
         let detail = failure::Detail::new(Stage::Db8, Some(-3963));
         std::fs::write(&last, serde_json::to_vec(&failure::Record { helper_generation: "01".repeat(16), detail }).unwrap()).unwrap();
         std::fs::set_permissions(&last, std::fs::Permissions::from_mode(0o600)).unwrap();
-        read_helper_failure(&root, Some(&"01".repeat(16)));
+        read_helper_failure(&root, Some(&"01".repeat(16)), None);
         assert_eq!(failure::last().unwrap().helper, Some(detail));
         std::fs::write(&last, b"token=private-fixture hostname=private-host").unwrap();
         failure::remember(Stage::HelloRejected, None);
-        read_helper_failure(&root, Some(&"01".repeat(16)));
+        read_helper_failure(&root, Some(&"01".repeat(16)), None);
         assert_eq!(failure::last().unwrap().helper, None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn start_failure_fixture(name: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("plx-start-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+        root
+    }
+
+    fn write_start_fixture(root: &Path, nonce: &str, stage: Stage) {
+        use std::os::unix::fs::PermissionsExt;
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "activation_nonce": nonce,
+            "detail": {"stage": stage, "code": -13},
+        })).unwrap();
+        let path = root.join("start-error");
+        std::fs::write(&path, bytes).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    #[test]
+    fn current_activation_start_failure_survives_connect_failure() {
+        let root = start_failure_fixture("current");
+        let nonce = "01".repeat(16);
+        for stage in [Stage::BusContext, Stage::BusRegister, Stage::BusAttach, Stage::BusCancel] {
+            write_start_fixture(&root, &nonce, stage);
+            failure::remember(Stage::Connect, Some(libc::ECONNREFUSED));
+            start_unavailable(ClientError::Unavailable);
+            read_helper_failure(&root, None, Some(&nonce));
+            let current = failure::last().unwrap();
+            assert_eq!(current.helper, Some(failure::Detail::new(stage, Some(-13))));
+            assert!(current.line().contains("(-13)"));
+            assert!(!serde_json::to_string(&current).unwrap().contains(&nonce));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn earlier_activation_start_failure_is_ignored_after_a_current_record() {
+        let root = start_failure_fixture("earlier");
+        let nonce = "02".repeat(16);
+        // Positive control: ignoring every record would hide the stale-record bug.
+        write_start_fixture(&root, &nonce, Stage::BusRegister);
+        failure::remember(Stage::Connect, Some(libc::ECONNREFUSED));
+        read_helper_failure(&root, None, Some(&nonce));
+        assert_eq!(failure::last().unwrap().helper,
+            Some(failure::Detail::new(Stage::BusRegister, Some(-13))));
+        write_start_fixture(&root, &"01".repeat(16), Stage::BusAttach);
+        failure::remember(Stage::Connect, Some(libc::ECONNREFUSED));
+        read_helper_failure(&root, None, Some(&nonce));
+        let current = failure::last().unwrap();
+        assert_eq!(current.helper, None);
+        assert_eq!(current.line(), format!("storage: helper · connect refused ({})", libc::ECONNREFUSED));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -679,22 +762,22 @@ mod tests {
         std::fs::write(&last, serde_json::to_vec(&failure::Detail::new(Stage::Db8, Some(-3963))).unwrap()).unwrap();
         std::fs::set_permissions(&last, std::fs::Permissions::from_mode(0o600)).unwrap();
         failure::remember(Stage::Connect, Some(libc::ECONNREFUSED));
-        read_helper_failure(&root, None);
+        read_helper_failure(&root, None, None);
         let current = failure::last().unwrap();
         assert_eq!(current.helper, None);
         assert_eq!(current.line(), format!("storage: helper · connect refused ({})", libc::ECONNREFUSED));
         // Legacy unbound records cannot be attributed even after a successful Hello.
-        read_helper_failure(&root, Some(&"02".repeat(16)));
+        read_helper_failure(&root, Some(&"02".repeat(16)), None);
         assert_eq!(failure::last().unwrap().helper, None);
         let detail = failure::Detail::new(Stage::Db8, Some(-3963));
         let record = failure::Record { helper_generation: "01".repeat(16), detail };
         std::fs::write(&last, serde_json::to_vec(&record).unwrap()).unwrap();
         // An orphan from an unclean exit, or a successor replacing the file, must not match.
         for generation in [None, Some("02".repeat(16))] {
-            read_helper_failure(&root, generation.as_deref());
+            read_helper_failure(&root, generation.as_deref(), None);
             assert_eq!(failure::last().unwrap().helper, None);
         }
-        read_helper_failure(&root, Some(&record.helper_generation));
+        read_helper_failure(&root, Some(&record.helper_generation), None);
         assert_eq!(failure::last().unwrap().helper, Some(detail));
         assert_eq!(failure::last().unwrap().line(), "storage: helper · db8 (-3963)");
         let report = serde_json::to_string(&failure::last().unwrap()).unwrap();
@@ -757,7 +840,12 @@ mod tests {
             gate.hint_due(now),
             "the first failed connect hints activation immediately"
         );
+        let root = start_failure_fixture("gate");
+        gate.attempt = wire::activation::Attempt::begin(&root);
+        gate.activation = Some(failure::Detail::new(Stage::ActivationSent, None));
+        assert!(gate.attempt.is_some());
         assert!(!gate.hint_due(now + START_DEADLINE / 2));
+        assert!(gate.attempt.is_some());
         assert!(!gate.wait_after_failed_connect(now + START_DEADLINE, now + START_DEADLINE));
 
         let next = now + START_DEADLINE;
@@ -765,6 +853,9 @@ mod tests {
             gate.hint_due(next),
             "a later call may re-hint a missing helper"
         );
+        // Clear the old attempt before a queued activation worker can publish the new one.
+        assert!(gate.attempt.is_none());
+        assert!(gate.activation.is_none());
         assert!(
             !gate.hint_due(next),
             "other callers share the hint rate limit"
@@ -779,6 +870,7 @@ mod tests {
             gate.hint_due(next),
             "a recovered helper may be activated again if it restarts"
         );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
