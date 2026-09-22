@@ -55,7 +55,11 @@ impl HelperFailure {
     }
     #[allow(dead_code)] // App read-out; the helper shares the diagnostic schema only.
     pub fn line(self) -> String {
-        let detail = self.helper.unwrap_or(self.observed);
+        // A helper diagnosis is closest to the cause, followed by a failed activation.
+        // ActivationSent is only a hint, not a failure that explains the missing socket.
+        let activation = self.activation.filter(|detail| matches!(detail.stage,
+            Stage::ActivationContext | Stage::ActivationRegister | Stage::ActivationAttach | Stage::ActivationCall));
+        let detail = self.helper.or(activation).unwrap_or(self.observed);
         let fallback = serde_json::to_value(detail.stage).unwrap();
         let name = match detail.stage {
             Stage::RuntimeAbsent => "no runtime dir",
@@ -67,6 +71,10 @@ impl HelperFailure {
             Stage::PeerUidMismatch => "peer uid mismatch",
             Stage::DescriptorInvalid => "descriptor invalid",
             Stage::HelloRejected => "hello rejected",
+            Stage::ActivationContext => "activate context",
+            Stage::ActivationRegister => "activate register",
+            Stage::ActivationAttach => "activate attach",
+            Stage::ActivationCall => "activate call",
             _ => fallback.as_str().unwrap(),
         };
         let phase = if self.start_timeout { "start-timeout" } else { "helper" };
@@ -140,6 +148,31 @@ pub fn parse_last_error(bytes: &[u8]) -> Option<Detail> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn activation_failure_precedes_the_resulting_missing_socket() {
+        let mut failure = HelperFailure::new(Stage::SocketAbsent, Some(libc::ENOENT));
+        failure.start_timeout = true;
+        for (stage, label) in [
+            (Stage::ActivationContext, "activate context"),
+            (Stage::ActivationRegister, "activate register"),
+            (Stage::ActivationAttach, "activate attach"),
+            (Stage::ActivationCall, "activate call"),
+        ] {
+            failure.activation = Some(Detail::new(stage, Some(-13)));
+            assert_eq!(failure.line(), format!("storage: start-timeout · {label} (-13)"));
+        }
+        // A current helper's diagnosis is closer to the cause than its activation hint.
+        failure.helper = Some(Detail::new(Stage::Db8, Some(-3963)));
+        assert_eq!(failure.line(), "storage: start-timeout · db8 (-3963)");
+        failure.helper = None;
+        // Delivery and lack of platform support are not LS2 activation failures.
+        for activation in [None, Some(Detail::new(Stage::ActivationSent, None)),
+            Some(Detail::new(Stage::Unsupported, None))] {
+            failure.activation = activation;
+            assert_eq!(failure.line(), format!("storage: start-timeout · no socket ({})", libc::ENOENT));
+        }
+    }
 
     #[test]
     fn generation_record_is_bounded_and_closed() {

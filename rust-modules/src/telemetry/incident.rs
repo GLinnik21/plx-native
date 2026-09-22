@@ -679,13 +679,16 @@ mod tests {
     #[test]
     fn helper_failure_report_has_closed_stage_and_candidate_errnos() {
         use crate::storage::wire::failure::{HelperFailure, Stage};
-        let failure = HelperFailure::new(Stage::Connect, Some(libc::ECONNREFUSED));
+        let mut failure = HelperFailure::new(Stage::Connect, Some(libc::ECONNREFUSED));
+        failure.activation = Some(crate::storage::wire::failure::Detail::new(Stage::ActivationRegister, Some(-13)));
         let mut errnos = [None; 8];
         errnos[0] = Some(libc::EACCES);
         let context = IncidentContext::new(IncidentKind::SaveFailed, None)
             .with_persistence(&CompletionOutcome::Failed(Failure::Helper(failure, errnos)));
         let body = event_body(&"a".repeat(32), "", None, context, ConsentKind::OneOff);
         assert_eq!(body["contexts"]["incident"]["helper"]["observed"]["stage"], "connect");
+        assert_eq!(body["contexts"]["incident"]["helper"]["activation"]["stage"], "activation-register");
+        assert_eq!(body["contexts"]["incident"]["helper"]["activation"]["code"], -13);
         assert_eq!(body["contexts"]["incident"]["candidate_errnos"][0], libc::EACCES);
         assert!(body.get("user").is_none());
         let text = body.to_string();
