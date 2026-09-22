@@ -2035,6 +2035,21 @@ mod tests {
     /// re-read on the next launch. Saying "telemetry has been removed" over that is the one
     /// sentence on this screen that could be actively false. Ported verbatim from `ui/login.rs`.
     #[test]
+    fn uncertain_db8_reply_appears_on_the_login_warning_stage_line() {
+        for reconcile in [false, true] {
+            let outcome = crate::plex::session::persistence::uncertain_helper_reply_for_test(reconcile);
+            let (helper, candidate_errnos) = outcome.helper_evidence();
+            let mut screen = bare_screen(Phase::Ready, 0.0);
+            screen.persistence_warning = Some(auth::owner::PersistenceWarning {
+                key: auth::owner::PersistenceWarningKey { epoch: 1, req: 1 },
+                site: auth::owner::PersistenceWarningSite::Final,
+                helper, candidate_errnos,
+            });
+            assert_eq!(screen.report_note().unwrap().text.to_str().unwrap(), "storage: helper · db8 (-3963)");
+        }
+    }
+
+    #[test]
     fn helper_failure_warning_line_is_only_for_helper_failures() {
         use crate::storage::wire::failure::{HelperFailure, Stage};
         let mut screen = bare_screen(Phase::Ready, 0.0);

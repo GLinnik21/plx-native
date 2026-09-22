@@ -425,9 +425,10 @@ impl IncidentContext {
             CompletionOutcome::Failed(Failure::Protection(p)) => (PersistenceFailure::Protection, Some(p)),
             CompletionOutcome::Failed(Failure::WorkerDropped) => (PersistenceFailure::WorkerDropped, None),
         };
-        if let CompletionOutcome::Failed(Failure::Helper(failure, errnos)) = outcome {
-            self.helper = Some(*failure);
-            self.candidate_errnos = *errnos;
+        let (helper, errnos) = outcome.helper_evidence();
+        if let Some(failure) = helper {
+            self.helper = Some(failure);
+            self.candidate_errnos = errnos;
         }
         self.persistence = Some(class);
         self.keymanager_stage = protection.map(|p| p.failure.stage);
@@ -866,6 +867,7 @@ mod tests {
             ctx().with_persistence(&CompletionOutcome::Uncertain {
                 stage: crate::storage::CommitStage::Rename,
                 errno: 5,
+                helper: None,
             })
             .persistence,
             Some(PersistenceFailure::CommitUncertain)

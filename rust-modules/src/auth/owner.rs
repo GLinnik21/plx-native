@@ -1234,11 +1234,7 @@ impl SessionMachine {
                 // The final write's own non-durable completion replaces a Discovery warning still
                 // showing (`Discovery` and `Final` never coexist: an unacknowledged Discovery warning
                 // blocks `take_ready`), so the newer one wins by direct overwrite.
-                let (helper, candidate_errnos) = match completion.outcome {
-                    CompletionOutcome::Failed(crate::plex::session::async_persistence::Failure::Helper(detail, errnos)) =>
-                        (Some(detail), errnos),
-                    _ => (None, [None; 8]),
-                };
+                let (helper, candidate_errnos) = completion.outcome.helper_evidence();
                 self.retire_save_incident();
                 self.state.persistence_warning = Some(PersistenceWarning {
                     key: correlation_key, site: admitted.site, helper, candidate_errnos,
@@ -2725,6 +2721,40 @@ mod tests {
             "acknowledging releases exactly the ONE held handoff, exactly once");
         assert!(owner.state.persistence_warning.is_none());
         assert!(owner.state.held_handoff.is_none());
+    }
+
+    #[test]
+    fn uncertain_db8_reply_reaches_the_warning_and_incident_report() {
+        use crate::plex::session::{persistence, async_persistence::{CompletionOutcome, PersistenceCompletion}};
+        use crate::storage::wire::failure::{Detail, Stage};
+        for reconcile in [false, true] {
+            let mut owner = SessionMachine::from_init(discovering_after_authorization());
+            let req = owner.state.next_req;
+            let epoch = owner.state.epoch;
+            let signed_in = qr_event(&owner, req, 1, super::super::LoginProgress::SignedIn {
+                epoch, server: local_server(), sources: Vec::new(),
+                users: vec![UserTile { title: "Synthetic user".into(), ..Default::default() }],
+            }, true);
+            step(&mut owner, SessionEvent::Result(signed_in));
+            step(&mut owner, SessionEvent::Commit(CommitReply { req, epoch, arrival: 1,
+                admission: CommitAdmission::Admitted { revision: 1, purpose: PersistencePurpose::Discovery } }));
+            let outcome = persistence::uncertain_helper_reply_for_test(reconcile);
+            assert!(matches!(outcome, CompletionOutcome::Uncertain { .. }));
+            step(&mut owner, SessionEvent::Persistence(PersistenceCompletion { req, epoch, arrival: 1,
+                revision: 1, purpose: PersistencePurpose::Discovery, outcome }));
+            let warning = owner.publication().persistence_warning.unwrap();
+            let helper = warning.helper.expect("uncertain helper reply lost DB8 evidence");
+            assert_eq!(helper.helper, Some(Detail::new(Stage::Db8, Some(-3963))));
+            assert_eq!(helper.line(), "storage: helper · db8 (-3963)");
+            assert_eq!(owner.state.incident.as_ref().unwrap().context.as_ref().unwrap().helper, Some(helper));
+            let context = crate::telemetry::incident::IncidentContext::new(
+                crate::telemetry::incident::IncidentKind::SaveFailed, None).with_persistence(&outcome);
+            let body = crate::telemetry::incident::event_body(&"a".repeat(32), "", None, context,
+                crate::telemetry::incident::ConsentKind::OneOff);
+            assert_eq!(body["contexts"]["incident"]["persistence"], "commit_uncertain");
+            assert_eq!(body["contexts"]["incident"]["helper"]["helper"]["stage"], "db8");
+            assert_eq!(body["contexts"]["incident"]["helper"]["helper"]["code"], -3963);
+        }
     }
 
     #[test]

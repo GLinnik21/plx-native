@@ -3272,6 +3272,8 @@ fn save_locked_with_authority(
     CANDIDATE_ERRNOS.with(|slot| slot.set([None; 8]));
     let protected_before = has_protected_authority();
     let commit = persistence::write_session(s, authority);
+    // Uncertain helper replies already own their evidence in CanonicalCommit. Only the older
+    // StoreError-only failure variants still need this immediate thread-local snapshot.
     let helper_failure = match &commit {
         persistence::CanonicalCommit::Failed(crate::storage::StoreError::HelperUnavailable
             | crate::storage::StoreError::HelperAuthentication | crate::storage::StoreError::HelperProtocol) =>
@@ -3283,8 +3285,8 @@ fn save_locked_with_authority(
     if !durable {
         match &commit {
             persistence::CanonicalCommit::Durable { .. } => unreachable!(),
-            persistence::CanonicalCommit::Uncertain { stage, errno } => {
-                crate::log(&format!("session: canonical write is uncertain stage={stage:?} errno={errno}"));
+            persistence::CanonicalCommit::Uncertain { stage, errno, helper } => {
+                crate::log(&format!("session: canonical write is uncertain stage={stage:?} errno={errno} helper={helper:?}"));
             }
             persistence::CanonicalCommit::Failed(error) => {
                 crate::log(&format!("session: canonical write failed: {error:?} helper={helper_failure:?}"));
@@ -3916,9 +3918,9 @@ pub fn clear() -> ClearOutcome {
             }
             outcome
         }
-        persistence::CanonicalCommit::Uncertain { stage, errno } => {
+        persistence::CanonicalCommit::Uncertain { stage, errno, helper } => {
             crate::log(&format!(
-                "session: canonical clear is uncertain stage={stage:?} errno={errno} — the \
+                "session: canonical clear is uncertain stage={stage:?} errno={errno} helper={helper:?} — the \
                  account token may still be readable from the canonical authority"
             ));
             ClearOutcome::NotDurable
