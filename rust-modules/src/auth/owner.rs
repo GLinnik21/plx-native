@@ -717,6 +717,7 @@ pub(super) fn write_incident_context(w: &mut Canon, context: &crate::telemetry::
 
 pub(super) fn write_user(w: &mut Canon, user: &UserRef) {
     w.u64(user.id as u64).str(&user.uuid).str(&user.title).str(&user.thumb).str(&user.token);
+    w.option(user.plex_tv_token.as_ref(), |w, t| { w.str(t); });
 }
 
 pub(super) fn write_tile(w: &mut Canon, user: &UserTile) {
@@ -1968,6 +1969,12 @@ impl SessionMachine {
                 next.server = server.clone();
                 next.sources = sources.clone();
                 next.home_users = users.iter().map(super::UserTile::to_ref).collect();
+                // A fresh QR sign-in's account token is the owner's plex.tv credential. Keep it
+                // on the owner profile too; rediscovery can belong to a managed active profile
+                // and must not overwrite that profile's switch credential with the owner's.
+                if pending.key.op == SessionOp::Login && !next.account_token.is_empty() {
+                    next.user.plex_tv_token = Some(next.account_token.clone());
+                }
                 let patch = CredentialPatch::of(&next);
                 delta.credentials = Some(patch.clone());
                 plan.credentials = Some(patch);
@@ -2901,6 +2908,26 @@ mod tests {
     }
 
     #[test]
+    fn fresh_owner_sign_in_records_the_account_token_as_its_plex_tv_credential() {
+        let mut owner = SessionMachine::from_init(discovering_after_authorization());
+        let req = owner.state.next_req;
+        let epoch = owner.state.epoch;
+        let signed_in = qr_event(&owner, req, 1, super::super::LoginProgress::SignedIn {
+            epoch, server: local_server(), sources: Vec::new(),
+            users: vec![UserTile { title: "Only user".into(), ..Default::default() }],
+        }, true);
+        let effects = step(&mut owner, SessionEvent::Result(signed_in));
+        let plan = effects.iter().find_map(|fx| match fx {
+            SessionFx::Commit { plan, .. } => Some(plan),
+            _ => None,
+        }).expect("SignedIn must begin its discovery commit");
+        let credentials = plan.credentials.as_ref().expect("fresh sign-in commits credentials");
+        assert!(!credentials.account_token.is_empty());
+        assert_eq!(credentials.user.plex_tv_token.as_deref(),
+            Some(credentials.account_token.as_str()));
+    }
+
+    #[test]
     fn uncertain_db8_reply_reaches_the_warning_and_incident_report() {
         use crate::plex::session::{persistence, async_persistence::{CompletionOutcome, PersistenceCompletion}};
         use crate::storage::wire::failure::{Detail, Stage};
@@ -3515,6 +3542,20 @@ mod tests {
         assert!(restored.persisted.auto_sign_in());
         assert_eq!(restored.hash(), on.hash());
         assert_eq!(SessionMachine::from_init(restored).subhash(), b.subhash());
+    }
+
+    #[test]
+    fn plex_tv_token_changes_user_and_cached_owner_hashes() {
+        let none = captured_session();
+        let mut first = none.clone();
+        first.persisted.user.plex_tv_token = Some("synthetic-plex-tv-token-a".into());
+        let mut second = first.clone();
+        second.persisted.user.plex_tv_token = Some("synthetic-plex-tv-token-b".into());
+
+        assert_ne!(none.hash(), first.hash(), "None and Some plex.tv credentials are distinct canonical state");
+        assert_ne!(first.hash(), second.hash(), "users differing only by plex.tv credential are distinct canonical state");
+        assert_ne!(SessionMachine::from_init(none).subhash(), SessionMachine::from_init(first).subhash(),
+            "cached owner hash must include the optional plex.tv credential");
     }
 
     #[test]

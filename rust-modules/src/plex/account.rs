@@ -20,7 +20,7 @@
 //! than a second client — which is why [`AccountClient::get`] is `pub(super)`.
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 // The lenient wire adapters live once, in `models.rs`, next to the note that explains why every
@@ -29,6 +29,123 @@ use std::time::{Duration, Instant};
 use super::models::{de_bool, de_i64, de_str, de_vec};
 
 const PLEX_TV: &str = "https://plex.tv";
+const AUDIO_PREFERENCES_SUCCESS_TTL: Duration = Duration::from_secs(5 * 60);
+const AUDIO_PREFERENCES_FAILURE_TTL: Duration = Duration::from_secs(45);
+const AUDIO_PREFERENCES_FAILURE_TTL_MAX: Duration = Duration::from_secs(10 * 60);
+
+/// The account-language input consumed by the playback route. `None` is a successful, explicit
+/// "do not auto-select audio" / unset answer, distinct inside the cache from a failed request.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AudioPreferences {
+    pub language: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AudioPreferencesKey { id: i64, uuid: String, generation: u32 }
+
+impl AudioPreferencesKey {
+    fn new(user: &super::session::UserRef, generation: u32) -> Self {
+        Self { id: user.id, uuid: user.uuid.clone(), generation }
+    }
+    fn is_current(&self) -> bool {
+        let current = super::session::current_snapshot();
+        current.generation == self.generation && current.user.as_ref().is_some_and(|user|
+            user.id == self.id && user.uuid == self.uuid)
+    }
+}
+
+#[derive(Clone)]
+struct AudioPreferencesEntry {
+    outcome: AudioPreferencesOutcome,
+    consecutive_failures: u32,
+    expires_at: Instant,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AudioPreferencesOutcome {
+    Available(AudioPreferences),
+    TimedOut,
+    Failed,
+}
+
+#[derive(Clone)]
+struct AudioPreferencesFlight { key: AudioPreferencesKey, id: u64 }
+
+struct AudioPreferencesState {
+    key: Option<AudioPreferencesKey>, entry: Option<AudioPreferencesEntry>,
+    flight: Option<u64>, next_flight: u64,
+}
+struct AudioPreferencesCache { state: Mutex<AudioPreferencesState>, changed: Condvar }
+#[derive(Clone, Copy)]
+enum FetchPath { Play, Warm }
+
+impl AudioPreferencesCache {
+    const fn new() -> Self { Self { state: Mutex::new(AudioPreferencesState {
+        key: None, entry: None, flight: None, next_flight: 0,
+    }), changed: Condvar::new() } }
+
+    fn publish(&self, key: AudioPreferencesKey) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.key.as_ref() != Some(&key) {
+            state.key = Some(key); state.entry = None; state.flight = None;
+            self.changed.notify_all();
+        }
+    }
+    fn clear_profile(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.key.is_some() || state.entry.is_some() || state.flight.is_some() {
+            state.key = None; state.entry = None; state.flight = None;
+            self.changed.notify_all();
+        }
+    }
+    fn reserve(&self, key: AudioPreferencesKey, now: Instant) -> Option<AudioPreferencesFlight> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.key.as_ref() != Some(&key) {
+            state.key = Some(key.clone()); state.entry = None; state.flight = None;
+            self.changed.notify_all();
+        }
+        if state.entry.as_ref().is_some_and(|entry| now < entry.expires_at)
+            || state.flight.is_some() { return None; }
+        state.next_flight = state.next_flight.wrapping_add(1);
+        let id = state.next_flight;
+        state.flight = Some(id);
+        Some(AudioPreferencesFlight { key, id })
+    }
+    fn cancel(&self, flight: &AudioPreferencesFlight) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.key.as_ref() == Some(&flight.key) && state.flight == Some(flight.id) {
+            state.flight = None; self.changed.notify_all();
+        }
+    }
+    fn complete<C>(&self, flight: AudioPreferencesFlight, outcome: AudioPreferencesOutcome,
+        path: FetchPath, completed_at: Instant, still_current: C) -> bool
+    where C: FnOnce() -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.key.as_ref() != Some(&flight.key) || state.flight != Some(flight.id)
+            || !still_current() { return false; }
+        state.flight = None;
+        match (&outcome, path) {
+            (AudioPreferencesOutcome::TimedOut, FetchPath::Play) => {}
+            (AudioPreferencesOutcome::Available(_), _) => state.entry = Some(AudioPreferencesEntry {
+                outcome: outcome.clone(), consecutive_failures: 0,
+                expires_at: completed_at + AUDIO_PREFERENCES_SUCCESS_TTL,
+            }),
+            (AudioPreferencesOutcome::Failed | AudioPreferencesOutcome::TimedOut, _) => {
+                let failures = state.entry.as_ref()
+                    .filter(|entry| matches!(&entry.outcome, AudioPreferencesOutcome::Failed))
+                    .map_or(1, |entry| entry.consecutive_failures.saturating_add(1));
+                let shift = failures.saturating_sub(1).min(31);
+                let ttl = AUDIO_PREFERENCES_FAILURE_TTL.saturating_mul(1_u32 << shift)
+                    .min(AUDIO_PREFERENCES_FAILURE_TTL_MAX);
+                state.entry = Some(AudioPreferencesEntry { outcome: AudioPreferencesOutcome::Failed,
+                    consecutive_failures: failures, expires_at: completed_at + ttl });
+            }
+        }
+        self.changed.notify_all();
+        true
+    }
+}
+static AUDIO_PREFERENCES_CACHE: AudioPreferencesCache = AudioPreferencesCache::new();
 
 /// Identity + optional account token for plex.tv calls. `client_id` is the stable per-device
 /// `X-Plex-Client-Identifier` (persisted across launches — plex.tv keys the authorized-device list
@@ -117,6 +234,43 @@ impl AccountClient {
             crate::net::API, false, None, None);
         note_response_contact(url, &resp);
         resp
+    }
+
+    /// GET /api/v2/user — the active Plex Home profile's account-level audio preference.
+    ///
+    /// The caller supplies the explicit plex.tv credential beside the SAME captured
+    /// [`UserRef`](super::session::UserRef). Constructing the narrow client here prevents an
+    /// arbitrary account client (including one holding a PMS token) from selecting the authority.
+    /// Optional or malformed preference fields merely disable this rung; transport, parse and
+    /// identity failures use the shorter retry cache.
+    pub fn audio_preferences(client_id: &str, credential: &str,
+        expected: &super::session::UserRef, generation: u32)
+        -> AudioPreferencesOutcome
+    {
+        if client_id.is_empty() || credential.is_empty() { return AudioPreferencesOutcome::Failed; }
+        let client = Self::new(client_id, Some(credential));
+        let key = AudioPreferencesKey::new(expected, generation);
+        audio_preferences_cached_at(&AUDIO_PREFERENCES_CACHE, key.clone(),
+            Duration::from_millis(1500), Instant::now,
+            |remaining| client.fetch_audio_preferences(expected, play_timeouts(remaining)),
+            || key.is_current())
+    }
+
+    fn fetch_audio_preferences(&self, expected: &super::session::UserRef,
+        timeouts: crate::net::Timeouts) -> AudioPreferencesOutcome
+    {
+        let url = format!("{PLEX_TV}/api/v2/user");
+        let response = crate::net::request_evidence(&url, &self.headers(), "GET", None,
+            timeouts, false, None, None);
+        note_response_contact(&url, &response);
+        match response {
+            Err(failure) if failure.cause == crate::net::RequestError::TimedOut =>
+                AudioPreferencesOutcome::TimedOut,
+            Err(_) => AudioPreferencesOutcome::Failed,
+            Ok(response) => decode::<AccountUser>("GET", &url, response)
+                .and_then(|dto| dto.audio_preferences_for(expected))
+                .map_or(AudioPreferencesOutcome::Failed, AudioPreferencesOutcome::Available),
+        }
     }
 
     /// Complete responses or safe incomplete-response evidence. No body ceiling is enabled here.
@@ -754,6 +908,162 @@ fn id_shaped(seg: &str) -> bool {
         || (seg.len() >= 8 && seg.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
 }
 
+fn play_timeouts(remaining: Duration) -> crate::net::Timeouts {
+    let millis = remaining.as_millis().max(1).min(i32::MAX as u128) as _;
+    crate::net::Timeouts { total_ms: millis, ..crate::net::API }
+}
+
+fn audio_preferences_cached_at<F, N, C>(cache: &AudioPreferencesCache,
+    key: AudioPreferencesKey, budget: Duration, now: N, fetch: F,
+    still_current: C) -> AudioPreferencesOutcome
+where F: FnOnce(Duration) -> AudioPreferencesOutcome, N: Fn() -> Instant, C: Fn() -> bool {
+    let deadline = now() + budget;
+    let flight = {
+        let mut state = cache.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.key.as_ref() != Some(&key) {
+            state.key = Some(key.clone()); state.entry = None; state.flight = None;
+            cache.changed.notify_all();
+        }
+        loop {
+            if state.key.as_ref() != Some(&key) || !still_current() {
+                return AudioPreferencesOutcome::Failed;
+            }
+            let at = now();
+            if let Some(entry) = &state.entry {
+                if at < entry.expires_at { return entry.outcome.clone(); }
+            }
+            if state.flight.is_some() {
+                if at >= deadline { return AudioPreferencesOutcome::TimedOut; }
+                let (next, _) = cache.changed.wait_timeout(state, deadline - at)
+                    .unwrap_or_else(|e| e.into_inner());
+                state = next;
+                continue;
+            }
+            state.next_flight = state.next_flight.wrapping_add(1);
+            let id = state.next_flight;
+            state.flight = Some(id);
+            break AudioPreferencesFlight { key: key.clone(), id };
+        }
+    };
+    let at = now();
+    let outcome = if at >= deadline { AudioPreferencesOutcome::TimedOut }
+        else { fetch(deadline - at) };
+    let completed_at = now();
+    let outcome = if completed_at >= deadline { AudioPreferencesOutcome::TimedOut } else { outcome };
+    let installed = cache.complete(flight, outcome.clone(), FetchPath::Play, completed_at, still_current);
+    if installed { outcome } else { AudioPreferencesOutcome::Failed }
+}
+
+fn warm_audio_preferences_with<S, F, C>(cache: &'static AudioPreferencesCache,
+    key: AudioPreferencesKey, spawn: S, fetch: F, still_current: C)
+where S: FnOnce(Box<dyn FnOnce() + Send>) -> bool,
+    F: FnOnce() -> AudioPreferencesOutcome + Send + 'static,
+    C: FnOnce() -> bool + Send + 'static {
+    let Some(flight) = cache.reserve(key, Instant::now()) else { return; };
+    let cancel = flight.clone();
+    let spawned = spawn(Box::new(move || {
+        let outcome = fetch();
+        cache.complete(flight, outcome, FetchPath::Warm, Instant::now(), still_current);
+    }));
+    if !spawned { cache.cancel(&cancel); }
+}
+
+pub(crate) fn warm_audio_preferences(client_id: String, credential: String,
+    user: super::session::UserRef, generation: u32) {
+    if client_id.is_empty() || credential.is_empty() { return; }
+    let key = AudioPreferencesKey::new(&user, generation);
+    let current = key.clone();
+    warm_audio_preferences_with(&AUDIO_PREFERENCES_CACHE, key,
+        |job| crate::task::spawn_small("account-audio", job),
+        move || AccountClient::new(&client_id, Some(&credential))
+            .fetch_audio_preferences(&user, crate::net::API),
+        move || current.is_current());
+}
+
+pub(crate) fn publish_audio_preferences_profile(user: Option<&super::session::UserRef>,
+    generation: u32) {
+    match user {
+        Some(user) => AUDIO_PREFERENCES_CACHE.publish(AudioPreferencesKey::new(user, generation)),
+        None => AUDIO_PREFERENCES_CACHE.clear_profile(),
+    }
+}
+
+fn de_soft_i64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(match value {
+        serde_json::Value::Number(n) => n.as_i64(),
+        serde_json::Value::String(s) => s.parse().ok(),
+        _ => None,
+    })
+}
+fn de_soft_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<bool>, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(match value {
+        serde_json::Value::Bool(v) => Some(v),
+        serde_json::Value::Number(n) => n.as_i64().map(|v| v != 0),
+        serde_json::Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" => Some(true), "false" | "0" => Some(false), _ => None,
+        },
+        _ => None,
+    })
+}
+fn de_soft_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(value.as_str().map(str::to_owned))
+}
+fn de_soft_profile<'de, D: serde::Deserializer<'de>>(d: D)
+    -> Result<Option<AccountAudioProfile>, D::Error>
+{
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).ok())
+}
+
+/// Narrow `/api/v2/user` DTO. Every field is soft because this optional fetch must never break
+/// playback when plex.tv adds, removes or malforms a preference field.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct AccountUser {
+    #[serde(deserialize_with = "de_soft_i64")]
+    id: Option<i64>,
+    #[serde(deserialize_with = "de_soft_string")]
+    uuid: Option<String>,
+    #[serde(deserialize_with = "de_soft_profile")]
+    profile: Option<AccountAudioProfile>,
+}
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+struct AccountAudioProfile {
+    #[serde(deserialize_with = "de_soft_bool")]
+    auto_select_audio: Option<bool>,
+    #[serde(deserialize_with = "de_soft_string")]
+    default_audio_language: Option<String>,
+}
+impl AccountUser {
+    fn audio_preferences_for(self, expected: &super::session::UserRef)
+        -> Option<AudioPreferences>
+    {
+        let expected_knows_id = expected.id != 0;
+        let expected_knows_uuid = !expected.uuid.is_empty();
+        let id_matches = expected_knows_id && self.id == Some(expected.id);
+        let uuid_matches = expected_knows_uuid
+            && self.uuid.as_deref() == Some(expected.uuid.as_str());
+        let id_disagrees = expected_knows_id && self.id.is_some_and(|id| id != expected.id);
+        let uuid_disagrees = expected_knows_uuid
+            && self.uuid.as_deref().is_some_and(|uuid| !uuid.is_empty() && uuid != expected.uuid);
+        if id_disagrees || uuid_disagrees
+            || ((expected_knows_id || expected_knows_uuid) && !id_matches && !uuid_matches)
+        {
+            return None;
+        }
+        let profile = self.profile.unwrap_or_default();
+        let language = (profile.auto_select_audio == Some(true))
+            .then_some(profile.default_audio_language).flatten()
+            .map(|language| language.trim().to_owned())
+            .filter(|language| !language.is_empty() && language != "-1");
+        Some(AudioPreferences { language })
+    }
+}
+
 // ---- serde DTOs (only the fields the app consumes; all optional to tolerate shape drift) ----
 
 /// A link PIN (`/api/v2/pins`). `code` feeds both the QR (`app.plex.tv/auth`) and the typed
@@ -931,6 +1241,179 @@ pub struct HomeUser {
 #[cfg(test)]
 mod tests {
     use super::{endpoint_shape, pin_is_gone, AccountClient, Pin, Resource};
+    use std::time::Duration;
+
+    fn audio_user(id: i64, uuid: &str) -> super::super::session::UserRef {
+        super::super::session::UserRef { id, uuid: uuid.into(), token: "profile-token".into(),
+            ..Default::default() }
+    }
+    fn parsed_audio(body: &str, expected: &super::super::session::UserRef)
+        -> Option<super::AudioPreferences>
+    {
+        serde_json::from_str::<super::AccountUser>(body).ok()?.audio_preferences_for(expected)
+    }
+
+    #[test]
+    fn account_audio_preferences_parse_the_measured_user_shape() {
+        let user = audio_user(7, "profile-uuid");
+        let body = r#"{"id":7,"uuid":"profile-uuid","home":true,"homeAdmin":false,
+            "restricted":true,"profile":{"autoSelectAudio":true,
+            "defaultAudioLanguage":"fr","defaultAudioLanguages":null}}"#;
+        assert_eq!(parsed_audio(body, &user),
+            Some(super::AudioPreferences { language: Some("fr".into()) }));
+    }
+
+    #[test]
+    fn account_audio_preferences_require_auto_select_audio() {
+        let user = audio_user(7, "profile-uuid");
+        for body in [
+            r#"{"id":7,"profile":{"autoSelectAudio":false,"defaultAudioLanguage":"fr"}}"#,
+            r#"{"id":7,"profile":{"defaultAudioLanguage":"fr"}}"#,
+        ] {
+            assert_eq!(parsed_audio(body, &user), Some(super::AudioPreferences::default()));
+        }
+    }
+
+    #[test]
+    fn account_audio_preferences_treat_null_or_empty_language_as_unset() {
+        let user = audio_user(7, "profile-uuid");
+        for language in ["null", "\"\"", "\"   \""] {
+            let body = format!(r#"{{"uuid":"profile-uuid","profile":{{"autoSelectAudio":true,"defaultAudioLanguage":{language}}}}}"#);
+            assert_eq!(parsed_audio(&body, &user), Some(super::AudioPreferences::default()));
+        }
+    }
+
+    #[test]
+    fn account_audio_preferences_accept_a_response_when_the_expected_owner_has_no_identity_fields() {
+        let owner = audio_user(0, "");
+        let body = r#"{"id":7,"uuid":"owner-uuid","profile":{"autoSelectAudio":true,
+            "defaultAudioLanguage":"fr"}}"#;
+        assert_eq!(parsed_audio(body, &owner),
+            Some(super::AudioPreferences { language: Some("fr".into()) }));
+    }
+
+    #[test]
+    fn account_audio_preferences_reject_a_mismatching_known_id() {
+        let user = audio_user(7, "");
+        let body = r#"{"id":8,"profile":{"autoSelectAudio":true,"defaultAudioLanguage":"fr"}}"#;
+        assert_eq!(parsed_audio(body, &user), None);
+    }
+
+    #[test]
+    fn account_audio_preferences_reject_a_mismatching_known_uuid() {
+        let user = audio_user(0, "profile-uuid");
+        let body = r#"{"uuid":"other","profile":{"autoSelectAudio":true,"defaultAudioLanguage":"fr"}}"#;
+        assert_eq!(parsed_audio(body, &user), None);
+    }
+
+    fn audio_key(id: i64, generation: u32) -> super::AudioPreferencesKey {
+        super::AudioPreferencesKey { id, uuid: format!("user-{id}"), generation }
+    }
+    fn french() -> super::AudioPreferencesOutcome {
+        super::AudioPreferencesOutcome::Available(super::AudioPreferences {
+            language: Some("fr".into()) })
+    }
+
+    #[test]
+    fn play_timeout_does_not_install_backoff() {
+        let cache = super::AudioPreferencesCache::new();
+        let calls = std::cell::Cell::new(0);
+        let fetch = |_| { calls.set(calls.get() + 1); if calls.get() == 1 {
+            super::AudioPreferencesOutcome::TimedOut } else { french() } };
+        let key = audio_key(1, 1);
+        assert_eq!(super::audio_preferences_cached_at(&cache, key.clone(), Duration::from_secs(1),
+            std::time::Instant::now, fetch, || true), super::AudioPreferencesOutcome::TimedOut);
+        assert_eq!(super::audio_preferences_cached_at(&cache, key, Duration::from_secs(1),
+            std::time::Instant::now, fetch, || true), french());
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn completed_failure_still_backs_off() {
+        let cache = super::AudioPreferencesCache::new();
+        let now = std::cell::Cell::new(std::time::Instant::now());
+        let calls = std::cell::Cell::new(0);
+        let fetch = |_| { calls.set(calls.get() + 1); super::AudioPreferencesOutcome::Failed };
+        let key = audio_key(1, 1);
+        assert_eq!(super::audio_preferences_cached_at(&cache, key.clone(), Duration::from_secs(1),
+            || now.get(), fetch, || true), super::AudioPreferencesOutcome::Failed);
+        now.set(now.get() + Duration::from_secs(44));
+        assert_eq!(super::audio_preferences_cached_at(&cache, key, Duration::from_secs(1),
+            || now.get(), fetch, || true), super::AudioPreferencesOutcome::Failed);
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn waiter_joins_an_inflight_fetch_without_starting_another() {
+        let cache = Box::leak(Box::new(super::AudioPreferencesCache::new()));
+        let key = audio_key(1, 1);
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let worker_calls = calls.clone();
+        let handle = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let worker_handle = handle.clone();
+        super::warm_audio_preferences_with(cache, key.clone(), move |job| {
+            *worker_handle.lock().unwrap() = Some(std::thread::spawn(job)); true
+        }, move || { worker_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            release_rx.recv().unwrap(); french() }, || true);
+        let waiter_calls = calls.clone();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(5)); release_tx.send(()).unwrap();
+        });
+        assert_eq!(super::audio_preferences_cached_at(cache, key, Duration::from_millis(100),
+            std::time::Instant::now, move |_| {
+                waiter_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst); french()
+            }, || true), french());
+        releaser.join().unwrap();
+        handle.lock().unwrap().take().unwrap().join().unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn waiter_expiry_leaves_the_flight_running_and_it_later_populates_cache() {
+        let cache = Box::leak(Box::new(super::AudioPreferencesCache::new()));
+        let key = audio_key(1, 1);
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let handle = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let worker_handle = handle.clone();
+        super::warm_audio_preferences_with(cache, key.clone(), move |job| {
+            *worker_handle.lock().unwrap() = Some(std::thread::spawn(job)); true
+        }, move || { release_rx.recv().unwrap(); french() }, || true);
+        assert_eq!(super::audio_preferences_cached_at(cache, key.clone(), Duration::from_millis(3),
+            std::time::Instant::now, |_| panic!("waiter started a second fetch"), || true),
+            super::AudioPreferencesOutcome::TimedOut);
+        release_tx.send(()).unwrap();
+        handle.lock().unwrap().take().unwrap().join().unwrap();
+        assert_eq!(super::audio_preferences_cached_at(cache, key, Duration::from_millis(3),
+            std::time::Instant::now, |_| panic!("warm result was not cached"), || true), french());
+    }
+
+    #[test]
+    fn stale_key_or_flight_completion_cannot_overwrite_a_newer_key() {
+        let cache = super::AudioPreferencesCache::new();
+        let old = audio_key(1, 1); let new = audio_key(2, 2);
+        let old_flight = cache.reserve(old, std::time::Instant::now()).unwrap();
+        cache.publish(new.clone());
+        let new_flight = cache.reserve(new.clone(), std::time::Instant::now()).unwrap();
+        assert!(!cache.complete(old_flight, french(), super::FetchPath::Warm,
+            std::time::Instant::now(), || false));
+        let german = super::AudioPreferencesOutcome::Available(super::AudioPreferences {
+            language: Some("de".into()) });
+        assert!(cache.complete(new_flight, german.clone(), super::FetchPath::Warm,
+            std::time::Instant::now(), || true));
+        assert_eq!(super::audio_preferences_cached_at(&cache, new, Duration::from_millis(3),
+            std::time::Instant::now, |_| panic!("new result was not cached"), || true), german);
+    }
+
+    #[test]
+    fn spawn_failure_clears_the_flight() {
+        let cache = Box::leak(Box::new(super::AudioPreferencesCache::new()));
+        let key = audio_key(1, 1);
+        super::warm_audio_preferences_with(cache, key.clone(), |_| false,
+            || panic!("refused spawn ran a worker"), || true);
+        assert_eq!(super::audio_preferences_cached_at(cache, key, Duration::from_millis(20),
+            std::time::Instant::now, |_| french(), || true), french());
+    }
 
     #[test]
     fn account_headers_use_the_same_honest_language_source_as_pms() {

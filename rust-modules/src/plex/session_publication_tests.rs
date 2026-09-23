@@ -35,3 +35,25 @@ fn profile_publication_retains_owner_assigned_generation_with_old_read() {
     assert_eq!(b.generation, 3, "resource publishes the supplied scope; it never increments one");
     assert_eq!(b.user.as_ref().unwrap().uuid, "owner-b");
 }
+
+#[test]
+fn live_profile_publication_triggers_the_account_audio_warm_hook() {
+    let _guard = crate::testlock::serial();
+    let old = super::current_snapshot();
+    let mt = unsafe { crate::task::MainThread::assume() };
+    let mut publisher = super::ProfilePublisher::new(&mt);
+    let observed = std::cell::RefCell::new(None);
+    publisher.publish_with_warmer_for_test(Some(super::UserRef {
+        id: 7, uuid: "guest".into(), plex_tv_token: Some("credential".into()),
+        ..Default::default()
+    }), 23, |user, generation| {
+        let user = user.expect("a live signed-in publication");
+        *observed.borrow_mut() = Some((user.id, user.uuid, generation));
+    });
+    publisher.publish(old.user.clone(), old.generation);
+    assert_eq!(*observed.borrow(), Some((7, "guest".into(), 23)));
+
+    let mut scoped = super::ProfilePublisher::scoped(&mt);
+    scoped.publish_with_warmer_for_test(Some(super::UserRef::default()), 24,
+        |_, _| panic!("recording/replay publications must not warm the process-global cache"));
+}

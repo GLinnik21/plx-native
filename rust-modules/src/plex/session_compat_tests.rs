@@ -58,6 +58,94 @@ fn a_session_file_written_before_origins_existed_still_boots_as_plain_http() {
     );
 }
 
+#[test]
+fn a_session_written_before_profile_plex_tv_credentials_loads_without_reauth() {
+    let session: Session = serde_json::from_str(two_server_json()).unwrap();
+    assert!(session.can_go_local());
+    assert_eq!(session.user.plex_tv_token, None);
+}
+
+#[test]
+fn a_malformed_or_empty_profile_plex_tv_credential_is_harmless() {
+    for malformed in ["null", "7", "{}", "[]", r#""""#] {
+        let json = format!(r#"{{"client_id":"c","account_token":"a","user":{{
+            "uuid":"u","token":"pms","plex_tv_token":{malformed}}}}}"#);
+        let session: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(session.user.token, "pms");
+        assert_eq!(session.user.plex_tv_token, None, "{malformed}");
+    }
+}
+
+#[test]
+fn profile_plex_tv_credential_stays_only_in_the_protected_canonical_half() {
+    let mut session = Session::default();
+    session.user.uuid = "managed".into();
+    session.user.plex_tv_token = Some("plex-tv-secret".into());
+    session.remember_profile(ProfileCreds { uuid: "managed".into(),
+        user: session.user.clone(), ..Default::default() });
+    let (public, protected) = split_canonical(&session).unwrap();
+    assert!(!serde_json::to_string(&public).unwrap().contains("plex_tv_token"));
+    assert!(!serde_json::to_string(&public).unwrap().contains("plex-tv-secret"));
+    assert!(protected.contains("plex_tv_token"));
+    let joined = join_canonical(&public, &protected).unwrap();
+    assert_eq!(joined.user.plex_tv_token.as_deref(), Some("plex-tv-secret"));
+    assert_eq!(joined.profiles[0].user.plex_tv_token.as_deref(), Some("plex-tv-secret"));
+
+    assert!(protected_matches(&session, &protected));
+    session.user.plex_tv_token = Some("rotated-secret".into());
+    assert!(!protected_matches(&session, &protected), "credential rotation is a protected change");
+}
+
+#[test]
+fn plex_tv_credential_never_borrows_owner_or_pms_tokens_for_a_managed_profile() {
+    let _serial = crate::testlock::serial();
+    let _temp = super::test_support::TempSession::new("managed-plex-tv-credential");
+    let mut stored = dialable_home(2, "u-1", false);
+    stored.account_token = "owner-account".into();
+    stored.user.token = "managed-pms".into();
+    save(&stored);
+
+    let mut captured = stored.user.clone();
+    captured.plex_tv_token = Some("managed-plex-tv".into());
+    assert_eq!(plex_tv_credential(&captured).as_deref(), Some("managed-plex-tv"));
+    captured.plex_tv_token = None;
+    assert_eq!(plex_tv_credential(&captured), None);
+
+    stored.home_users.clear();
+    save(&stored);
+    assert_eq!(plex_tv_credential(&captured), None,
+        "unknown legacy scope must not borrow the owner or PMS credential");
+}
+
+#[test]
+fn legacy_owner_credential_fallback_requires_admin_scope_and_the_same_stored_user() {
+    let _serial = crate::testlock::serial();
+    let _temp = super::test_support::TempSession::new("legacy-owner-plex-tv-credential");
+    let mut stored = dialable_home(2, "u-0", false);
+    stored.account_token = "owner-account".into();
+    stored.user.token = "owner-pms".into();
+    save(&stored);
+    assert_eq!(plex_tv_credential(&stored.user).as_deref(), Some("owner-account"));
+
+    let mut mismatched = stored.user.clone();
+    mismatched.uuid = "u-other".into();
+    assert_eq!(plex_tv_credential(&mismatched), None);
+}
+
+#[test]
+fn legacy_single_user_owner_with_no_identity_fields_uses_the_account_credential() {
+    let _serial = crate::testlock::serial();
+    let _temp = super::test_support::TempSession::new("legacy-zero-id-owner-plex-tv-credential");
+    let mut stored = dialable_home(0, "", false);
+    stored.account_token = "owner-account".into();
+    stored.user.id = 0;
+    stored.user.uuid.clear();
+    stored.user.plex_tv_token = None;
+    save(&stored);
+
+    assert_eq!(plex_tv_credential(&stored.user).as_deref(), Some("owner-account"));
+}
+
 /// Tier persistence is additive: old files have no field, and a value written by a future
 /// build must not make the PRIMARY fail to parse (which would route a signed-in TV to QR).
 #[test]
