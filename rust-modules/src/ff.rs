@@ -2388,14 +2388,19 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
             // the EOF decision below stays one branch rather than one per transport.
             let read_started = std::time::Instant::now();
             let r = match &mut s.src {
-                Src::Socket { hs, .. } => {
-                    crate::stream::http_read_until(*hs, dst as *mut c_uchar, n, live_deadline)
-                }
+                Src::Socket { hs, .. } => crate::stream::http_read_until(
+                    *hs,
+                    dst as *mut c_uchar,
+                    n,
+                    live_deadline,
+                    &mut crate::checkpoint::NoCheckpoint,
+                ),
                 // The null/length guard `stream::http_read` does for itself.
                 Src::Curl(_) if dst.is_null() || n <= 0 => 0,
                 Src::Curl(cs) => cs.read_until(
                     std::slice::from_raw_parts_mut(dst, n as usize),
                     live_deadline,
+                    &mut crate::checkpoint::NoCheckpoint,
                 ),
                 Src::Idle => return AVERROR_EOF,
             };
@@ -3013,6 +3018,7 @@ fn classify_plaintext_open_failure(error: crate::stream::HttpOpenError) -> HlsEx
         crate::stream::HttpOpenError::Deadline => HlsExit::PrimeExpired,
         crate::stream::HttpOpenError::Status(404) => HlsExit::NotReady,
         crate::stream::HttpOpenError::Aborted => HlsExit::Aborted,
+        crate::stream::HttpOpenError::Stopped => HlsExit::Failed("stopped"),
         crate::stream::HttpOpenError::Status(_) | crate::stream::HttpOpenError::Transport => {
             HlsExit::Failed("HTTP request failed")
         }
@@ -3031,6 +3037,8 @@ fn classify_curl_open_err(e: crate::curlio::OpenErr) -> HlsExit {
     }
     if e == crate::curlio::OpenErr::Aborted {
         HlsExit::Aborted
+    } else if e == crate::curlio::OpenErr::Stopped {
+        HlsExit::Failed("stopped")
     } else {
         HlsExit::Failed("HTTPS request failed")
     }
@@ -3056,7 +3064,7 @@ fn hls_open_source(
     if origin.is_tls() {
         let url = format!("{}{}", origin.base(), request_path);
         if let Some(mut cs) = net.curl.take() {
-            let reopened = cs.reopen_until(&url, deadline);
+            let reopened = cs.reopen_until(&url, deadline, &mut crate::checkpoint::NoCheckpoint);
             if unsafe { crate::aq::aq_is_aborted(aq) } {
                 return Err(HlsExit::Aborted);
             }
@@ -3071,6 +3079,11 @@ fn hls_open_source(
                 Err(crate::curlio::OpenErr::Deadline) => {
                     net.curl = Some(cs);
                     return Err(HlsExit::PrimeExpired);
+                }
+                // A controlled stop keeps the session and never falls through to a fresh dial.
+                Err(e @ crate::curlio::OpenErr::Stopped) => {
+                    net.curl = Some(cs);
+                    return Err(classify_curl_open_err(e));
                 }
                 Err(crate::curlio::OpenErr::Status(status)) => {
                     SHARED.dg_http_status.store(status, Ordering::Relaxed);
@@ -3097,7 +3110,13 @@ fn hls_open_source(
             return Err(HlsExit::Aborted);
         }
         let opened = match deadline {
-            Some(at) => crate::curlio::CurlSource::open_reserved_until(&url, 0, reservation, at),
+            Some(at) => crate::curlio::CurlSource::open_reserved_until(
+                &url,
+                0,
+                reservation,
+                at,
+                &mut crate::checkpoint::NoCheckpoint,
+            ),
             None => crate::curlio::CurlSource::open_reserved(&url, 0, reservation),
         };
         if unsafe { crate::aq::aq_is_aborted(aq) } {
@@ -3127,6 +3146,7 @@ fn hls_open_source(
                 std::ptr::null(),
                 "GET",
                 at,
+                &mut crate::checkpoint::NoCheckpoint,
             )
         } else {
             let result = crate::stream::http_open(
@@ -3186,10 +3206,14 @@ fn hls_source_read(
         return Err(HlsExit::Aborted);
     }
     let read = match src {
-        Src::Socket { hs, .. } => {
-            crate::stream::http_read_until(*hs, dst.as_mut_ptr(), dst.len() as c_int, deadline)
-        }
-        Src::Curl(cs) => cs.read_until(dst, deadline),
+        Src::Socket { hs, .. } => crate::stream::http_read_until(
+            *hs,
+            dst.as_mut_ptr(),
+            dst.len() as c_int,
+            deadline,
+            &mut crate::checkpoint::NoCheckpoint,
+        ),
+        Src::Curl(cs) => cs.read_until(dst, deadline, &mut crate::checkpoint::NoCheckpoint),
         Src::Idle => return Err(HlsExit::Failed("HLS source idle")),
     };
     // The wake used to interrupt a blocked body read is deliberately transport-shaped (EOF for

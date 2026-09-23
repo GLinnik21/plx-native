@@ -22,6 +22,8 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
+use crate::checkpoint::{Checkpoint, NoCheckpoint, Pacer};
+
 static FD_GATE: Mutex<()> = Mutex::new(());
 
 // repr(C) for a stable layout: the player boxes it + hands raw ptrs across threads.
@@ -78,7 +80,10 @@ fn errno() -> c_int {
 }
 
 fn retry_interrupted_recv(result: isize, error: c_int) -> bool {
-    result != HTTP_READ_DEADLINE as isize && result < 0 && error == libc::EINTR
+    result != HTTP_READ_DEADLINE as isize
+        && result != HTTP_READ_STOPPED as isize
+        && result < 0
+        && error == libc::EINTR
 }
 
 /// Case-insensitive search for an ASCII `needle` in a byte haystack — the header-block lookup
@@ -251,36 +256,150 @@ pub(crate) fn hs_status(hs: *const HttpStream) -> c_int {
 /// see it: [`http_read`] has no deadline and retains its historical `-1` error result.
 pub(crate) const HTTP_READ_DEADLINE: c_int = -2;
 
+/// Internal read result for a caller whose [`Checkpoint`] answered
+/// [`Flow::Stop`](crate::checkpoint::Flow::Stop). Distinct from `-1` and [`HTTP_READ_DEADLINE`]: it is neither a
+/// transport failure nor a clock this module owns, so nothing here redials or closes on it.
+pub(crate) const HTTP_READ_STOPPED: c_int = -3;
+
+/// What ended a [`wait_fd`].
+enum FdWait {
+    Ready,
+    /// The caller's absolute deadline passed.
+    Deadline,
+    /// The socket's own inactivity option elapsed while a checkpoint slice was doing the waiting.
+    Idle,
+    Stopped,
+    Error,
+}
+
+/// The socket option `opt` (`SO_RCVTIMEO`/`SO_SNDTIMEO`) as a duration; `None` when unset (zero)
+/// or unreadable, which is what a blocking `recv` treats as "wait forever" too.
+unsafe fn socket_timeout(fd: c_int, opt: c_int) -> Option<std::time::Duration> {
+    let mut tv: libc::timeval = std::mem::zeroed();
+    let mut len = std::mem::size_of::<libc::timeval>() as libc::socklen_t;
+    if libc::getsockopt(
+        fd,
+        libc::SOL_SOCKET,
+        opt,
+        &mut tv as *mut _ as *mut c_void,
+        &mut len,
+    ) < 0
+    {
+        return None;
+    }
+    let d = std::time::Duration::from_secs(tv.tv_sec.max(0) as u64)
+        + std::time::Duration::from_micros(tv.tv_usec.max(0) as u64);
+    (!d.is_zero()).then_some(d)
+}
+
+/// When a checkpoint slice replaces a plain blocking call, `poll` no longer sees the socket's own
+/// inactivity option, so it is carried as an absolute bound from the start of the call — the same
+/// span that option would have granted the blocking call it replaces. Only needed without a caller
+/// deadline: with one, the call was already a `poll` loop that ignores the option.
+unsafe fn idle_bound(fd: c_int, opt: c_int, deadline: Option<Instant>) -> Option<Instant> {
+    if deadline.is_some() {
+        return None;
+    }
+    socket_timeout(fd, opt).and_then(|d| Instant::now().checked_add(d))
+}
+
+/// `poll` `fd` for `events` until it is ready, `deadline` or `idle_at` passes, or the caller's
+/// checkpoint stops the wait. A checkpoint slice's expiry only re-asks the checkpoint and keeps
+/// waiting; it is not a timeout, and it does not move `deadline` or `idle_at`.
+unsafe fn wait_fd(
+    fd: c_int,
+    events: libc::c_short,
+    deadline: Option<Instant>,
+    idle_at: Option<Instant>,
+    pacer: &mut Pacer,
+) -> FdWait {
+    #[derive(Clone, Copy, PartialEq)]
+    enum Bound {
+        Deadline,
+        Idle,
+        Recheck,
+    }
+    loop {
+        if deadline.is_some_and(|at| Instant::now() >= at) {
+            return FdWait::Deadline;
+        }
+        let Ok(slice) = pacer.before_wait() else {
+            return FdWait::Stopped;
+        };
+        // Earliest bound wins; on a tie the caller's deadline, then inactivity, then a recheck.
+        let mut bound: Option<(Instant, Bound)> = None;
+        for (at, kind) in [
+            (deadline, Bound::Deadline),
+            (idle_at, Bound::Idle),
+            (slice, Bound::Recheck),
+        ] {
+            if let Some(at) = at {
+                if bound.is_none_or(|(b, _)| at < b) {
+                    bound = Some((at, kind));
+                }
+            }
+        }
+        let timeout_ms = match bound {
+            None => -1,
+            Some((at, kind)) => {
+                if Instant::now() >= at {
+                    match kind {
+                        Bound::Deadline => return FdWait::Deadline,
+                        Bound::Idle => return FdWait::Idle,
+                        Bound::Recheck => {}
+                    }
+                }
+                crate::checkpoint::wait_ms_until(at, c_int::MAX)
+            }
+        };
+        let mut pfd = libc::pollfd {
+            fd,
+            events,
+            revents: 0,
+        };
+        let ready = libc::poll(&mut pfd, 1, timeout_ms);
+        if ready > 0 {
+            return FdWait::Ready;
+        }
+        if ready < 0 && errno() != libc::EINTR {
+            return FdWait::Error;
+        }
+        // A timeout or EINTR: the top of the loop decides which bound, if any, has passed.
+    }
+}
+
 /// `recv(2)` with an optional absolute wall-clock ceiling. A relative socket timeout is not
 /// enough for an ABR candidate: every successful dribble resets `SO_RCVTIMEO`, so a transfer that
 /// can no longer meet its segment-production budget could still monopolize the demux thread
 /// forever. Polling against the original deadline makes progress consume the budget rather than
 /// renew it.
-unsafe fn recv_until(fd: c_int, dst: *mut c_void, n: usize, deadline: Option<Instant>) -> isize {
-    let Some(deadline) = deadline else {
-        return libc::recv(fd, dst, n, 0);
-    };
+///
+/// The checkpoint is asked before blocking. Unarmed with no deadline, this is the plain blocking
+/// `recv` it always was; otherwise the wait is sliced at its `next_check`.
+unsafe fn recv_until(
+    fd: c_int,
+    dst: *mut c_void,
+    n: usize,
+    deadline: Option<Instant>,
+    pacer: &mut Pacer,
+) -> isize {
+    if deadline.is_none() {
+        match pacer.before_wait() {
+            Err(_) => return HTTP_READ_STOPPED as isize,
+            Ok(None) => return libc::recv(fd, dst, n, 0),
+            Ok(Some(_)) => {}
+        }
+    }
+    let idle_at = idle_bound(fd, libc::SO_RCVTIMEO, deadline);
     loop {
-        let now = Instant::now();
-        if now >= deadline {
-            return HTTP_READ_DEADLINE as isize;
-        }
-        let left_us = deadline.saturating_duration_since(now).as_micros();
-        let timeout_ms = ((left_us.saturating_add(999) / 1_000).min(c_int::MAX as u128)) as c_int;
-        let mut pfd = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        let ready = libc::poll(&mut pfd, 1, timeout_ms.max(1));
-        if ready == 0 {
-            return HTTP_READ_DEADLINE as isize;
-        }
-        if ready < 0 {
-            if errno() == libc::EINTR {
-                continue;
-            }
-            return -1;
+        match wait_fd(fd, libc::POLLIN, deadline, idle_at, pacer) {
+            FdWait::Ready => {}
+            FdWait::Deadline => return HTTP_READ_DEADLINE as isize,
+            FdWait::Stopped => return HTTP_READ_STOPPED as isize,
+            // What the blocking call would have returned at its SO_RCVTIMEO: EAGAIN, or the bytes
+            // that raced the bound in.
+            FdWait::Idle => return libc::recv(fd, dst, n, libc::MSG_DONTWAIT),
+            FdWait::Error => return -1,
         }
         let r = libc::recv(fd, dst, n, libc::MSG_DONTWAIT);
         if r < 0 {
@@ -296,31 +415,28 @@ unsafe fn recv_until(fd: c_int, dst: *mut c_void, n: usize, deadline: Option<Ins
 /// The send-side twin of [`recv_until`]. Requests are normally one tiny write, but an absolute
 /// candidate-open budget is a whole-chain bound: a peer that stops reading cannot renew it through
 /// the relative `SO_SNDTIMEO` on every partial write.
-unsafe fn send_until(fd: c_int, src: *const c_void, n: usize, deadline: Option<Instant>) -> isize {
-    let Some(deadline) = deadline else {
-        return libc::send(fd, src, n, 0);
-    };
+unsafe fn send_until(
+    fd: c_int,
+    src: *const c_void,
+    n: usize,
+    deadline: Option<Instant>,
+    pacer: &mut Pacer,
+) -> isize {
+    if deadline.is_none() {
+        match pacer.before_wait() {
+            Err(_) => return HTTP_READ_STOPPED as isize,
+            Ok(None) => return libc::send(fd, src, n, 0),
+            Ok(Some(_)) => {}
+        }
+    }
+    let idle_at = idle_bound(fd, libc::SO_SNDTIMEO, deadline);
     loop {
-        let now = Instant::now();
-        if now >= deadline {
-            return HTTP_READ_DEADLINE as isize;
-        }
-        let left_us = deadline.saturating_duration_since(now).as_micros();
-        let timeout_ms = ((left_us.saturating_add(999) / 1_000).min(c_int::MAX as u128)) as c_int;
-        let mut pfd = libc::pollfd {
-            fd,
-            events: libc::POLLOUT,
-            revents: 0,
-        };
-        let ready = libc::poll(&mut pfd, 1, timeout_ms.max(1));
-        if ready == 0 {
-            return HTTP_READ_DEADLINE as isize;
-        }
-        if ready < 0 {
-            if errno() == libc::EINTR {
-                continue;
-            }
-            return -1;
+        match wait_fd(fd, libc::POLLOUT, deadline, idle_at, pacer) {
+            FdWait::Ready => {}
+            FdWait::Deadline => return HTTP_READ_DEADLINE as isize,
+            FdWait::Stopped => return HTTP_READ_STOPPED as isize,
+            FdWait::Idle => return libc::send(fd, src, n, libc::MSG_DONTWAIT),
+            FdWait::Error => return -1,
         }
         let sent = libc::send(fd, src, n, libc::MSG_DONTWAIT);
         if sent < 0 {
@@ -334,7 +450,11 @@ unsafe fn send_until(fd: c_int, src: *const c_void, n: usize, deadline: Option<I
 }
 
 /// One raw body byte (buffered first, then socket) — for chunk framing.
-unsafe fn hs_getb(hs: &mut HttpStream, deadline: Option<Instant>) -> Result<Option<u8>, c_int> {
+unsafe fn hs_getb(
+    hs: &mut HttpStream,
+    deadline: Option<Instant>,
+    pacer: &mut Pacer,
+) -> Result<Option<u8>, c_int> {
     if (hs.bpos as usize) < (hs.blen as usize) {
         let b = hs.buf[hs.bpos as usize];
         hs.bpos += 1;
@@ -345,7 +465,7 @@ unsafe fn hs_getb(hs: &mut HttpStream, deadline: Option<Instant>) -> Result<Opti
         return Ok(None);
     }
     let mut b: u8 = 0;
-    let r = recv_until(fd, &mut b as *mut u8 as *mut c_void, 1, deadline);
+    let r = recv_until(fd, &mut b as *mut u8 as *mut c_void, 1, deadline, pacer);
     if r == 1 {
         Ok(Some(b))
     } else {
@@ -364,10 +484,11 @@ unsafe fn hs_getb(hs: &mut HttpStream, deadline: Option<Instant>) -> Result<Opti
 unsafe fn hs_next_chunk(
     hs: &mut HttpStream,
     deadline: Option<Instant>,
+    pacer: &mut Pacer,
 ) -> Result<Option<i64>, c_int> {
     let mut b;
     loop {
-        let Some(next) = hs_getb(hs, deadline)? else {
+        let Some(next) = hs_getb(hs, deadline, pacer)? else {
             return Ok(None);
         };
         b = next;
@@ -386,13 +507,13 @@ unsafe fn hs_next_chunk(
         };
         sz = sz * 16 + d;
         any = true;
-        match hs_getb(hs, deadline)? {
+        match hs_getb(hs, deadline, pacer)? {
             Some(x) => b = x,
             None => return Ok(if any { Some(sz) } else { None }),
         }
     }
     while b != b'\n' {
-        match hs_getb(hs, deadline)? {
+        match hs_getb(hs, deadline, pacer)? {
             Some(x) => b = x,
             None => break,
         }
@@ -405,9 +526,10 @@ unsafe fn hs_next_chunk(
 unsafe fn hs_skip_chunked_trailers(
     hs: &mut HttpStream,
     deadline: Option<Instant>,
+    pacer: &mut Pacer,
 ) -> Result<(), c_int> {
     loop {
-        let Some(b) = hs_getb(hs, deadline)? else {
+        let Some(b) = hs_getb(hs, deadline, pacer)? else {
             // EOF before the terminating blank line: leftover trailer bytes would be parsed as
             // the next status line if we reused. Close rather than keep-alive.
             return Err(-1);
@@ -599,6 +721,9 @@ pub(crate) enum HttpOpenError {
     Status(c_int),
     /// [`http_shutdown`] interrupted this request while it was being opened.
     Aborted,
+    /// The caller's [`Checkpoint`] stopped the connect/send/header wait. The request is retired
+    /// (its socket closed, never redialled); what the stop means belongs to the caller.
+    Stopped,
     /// Invalid input, resolution/connect failure, malformed/truncated headers, or another I/O
     /// failure for which this transport has no more specific fact.
     Transport,
@@ -609,6 +734,7 @@ enum ConnectAttempt {
     Connected,
     TimedOut,
     Failed,
+    Stopped,
 }
 
 /// `connect(2)` bounded by `timeout_ms`. Flips the socket to non-blocking for the handshake,
@@ -627,6 +753,7 @@ unsafe fn connect_timeout_cause(
     sa: *const libc::sockaddr,
     salen: libc::socklen_t,
     timeout_ms: c_int,
+    pacer: &mut Pacer,
 ) -> ConnectAttempt {
     let flags = libc::fcntl(fd, libc::F_GETFL, 0);
     if flags < 0 {
@@ -650,21 +777,37 @@ unsafe fn connect_timeout_cause(
         events: libc::POLLOUT,
         revents: 0,
     };
-    // EINTR must not be treated as a timeout: retry with the remaining budget.
-    let mut left = timeout_ms.max(0); // never negative — that is `poll`'s "wait forever"
-
+    // The budget as an absolute end, so a checkpoint slice's expiry (a recheck, then more
+    // waiting) cannot stretch it. Never negative — that is `poll`'s "wait forever".
+    let mut end = Instant::now() + std::time::Duration::from_millis(timeout_ms.max(0) as u64);
     loop {
-        let r = libc::poll(&mut pfd, 1, left);
+        let Ok(slice) = pacer.before_wait() else {
+            return restore(ConnectAttempt::Stopped);
+        };
+        let now = Instant::now();
+        let (wait_ms, recheck) = if now >= end {
+            (0, false)
+        } else {
+            let left_ms = crate::checkpoint::wait_ms_until(end, c_int::MAX);
+            match slice {
+                Some(at) if at < end => (crate::checkpoint::wait_ms_until(at, left_ms), true),
+                _ => (left_ms, false),
+            }
+        };
+        let r = libc::poll(&mut pfd, 1, wait_ms);
         if r > 0 {
             break;
         }
         if r == 0 {
+            if recheck {
+                continue;
+            }
             return restore(ConnectAttempt::TimedOut); // the host is not answering
         }
         if errno() != libc::EINTR {
             return restore(ConnectAttempt::Failed);
         }
-        left = 0; // a signal ate the wait; poll once more without blocking again
+        end = Instant::now(); // a signal ate the wait; poll once more without blocking again
     }
     // Writable does not imply connected — SO_ERROR carries the verdict.
     let mut err: c_int = 0;
@@ -691,7 +834,9 @@ unsafe fn connect_timeout(
     salen: libc::socklen_t,
     timeout_ms: c_int,
 ) -> c_int {
-    if connect_timeout_cause(fd, sa, salen, timeout_ms) == ConnectAttempt::Connected {
+    let mut none = NoCheckpoint;
+    let mut pacer = Pacer::new(&mut none);
+    if connect_timeout_cause(fd, sa, salen, timeout_ms, &mut pacer) == ConnectAttempt::Connected {
         0
     } else {
         -1
@@ -838,6 +983,7 @@ enum ConnectFailure {
     TimedOut,
     Aborted,
     Transport,
+    Stopped,
 }
 
 /// Dial down the address chain until one answers, within `budget_ms` for the WHOLE walk. Returns
@@ -865,6 +1011,7 @@ unsafe fn connect_any_result(
     hs: &HttpStream,
     head: *const libc::addrinfo,
     budget_ms: c_int,
+    pacer: &mut Pacer,
 ) -> Result<c_int, ConnectFailure> {
     let started = std::time::Instant::now();
     let mut ai = head;
@@ -881,10 +1028,14 @@ unsafe fn connect_any_result(
                        // [0, budget] whatever the clock did — a `u128` cast of a negative budget would otherwise
                        // come back enormous and hand the LAST attempt an unbounded-looking wait.
         let spent = started.elapsed().as_millis().min(budget_ms.max(0) as u128) as c_int;
-        match connect_timeout_cause(fd, a.ai_addr, a.ai_addrlen, budget_ms.max(0) - spent) {
+        match connect_timeout_cause(fd, a.ai_addr, a.ai_addrlen, budget_ms.max(0) - spent, pacer) {
             ConnectAttempt::Connected => return Ok(fd),
             ConnectAttempt::TimedOut => timed_out = true,
             ConnectAttempt::Failed => {}
+            ConnectAttempt::Stopped => {
+                close_owned(hs);
+                return Err(ConnectFailure::Stopped); // the caller's stop, not a dead address
+            }
         }
         close_owned(hs); // published, so it must be RETIRED
         if hs.interrupted() {
@@ -902,7 +1053,7 @@ unsafe fn connect_any_result(
 
 #[cfg(test)]
 unsafe fn connect_any(hs: &HttpStream, head: *const libc::addrinfo, budget_ms: c_int) -> c_int {
-    connect_any_result(hs, head, budget_ms).unwrap_or(-1)
+    connect_any_result(hs, head, budget_ms, &mut Pacer::new(&mut NoCheckpoint)).unwrap_or(-1)
 }
 
 unsafe fn set_socket_timeouts(fd: c_int, recv_timeout_ms: c_int, send_timeout_ms: c_int) {
@@ -950,6 +1101,7 @@ pub(crate) fn http_open(
         MEDIA_SEND_TIMEOUT_MS,
         None,
         false,
+        &mut NoCheckpoint,
     ))
 }
 
@@ -966,7 +1118,18 @@ pub(crate) fn http_open_probe(
     timeout_ms: c_int,
 ) -> c_int {
     legacy_open_result(http_open_with_timeouts(
-        hs, host, port, path, extra, method, timeout_ms, timeout_ms, timeout_ms, None, false,
+        hs,
+        host,
+        port,
+        path,
+        extra,
+        method,
+        timeout_ms,
+        timeout_ms,
+        timeout_ms,
+        None,
+        false,
+        &mut NoCheckpoint,
     ))
 }
 
@@ -976,6 +1139,9 @@ pub(crate) fn http_open_probe(
 ///
 /// The result records the cause at the transport seam, before a higher layer can cross `deadline`
 /// and accidentally reclassify a known HTTP status as timeout.
+///
+/// `checkpoint` is consulted before and during every blocking connect/send/header wait (not DNS,
+/// which is a synchronous `getaddrinfo`); [`HttpOpenError::Stopped`] is its answer, never a redial.
 pub(crate) fn http_open_until_result(
     hs: *mut HttpStream,
     host: *const c_char,
@@ -984,6 +1150,7 @@ pub(crate) fn http_open_until_result(
     extra: *const c_char,
     method: &str,
     deadline: Instant,
+    checkpoint: &mut dyn Checkpoint,
 ) -> Result<(), HttpOpenError> {
     http_open_with_timeouts(
         hs,
@@ -997,6 +1164,7 @@ pub(crate) fn http_open_until_result(
         MEDIA_SEND_TIMEOUT_MS,
         Some(deadline),
         true,
+        checkpoint,
     )
 }
 
@@ -1020,10 +1188,13 @@ fn http_open_with_timeouts(
     send_timeout_ms: c_int,
     open_deadline: Option<Instant>,
     restore_media_timeouts: bool,
+    checkpoint: &mut dyn Checkpoint,
 ) -> Result<(), HttpOpenError> {
     if hs.is_null() || host.is_null() || path.is_null() {
         return Err(HttpOpenError::Transport);
     }
+    let mut pacer = Pacer::new(checkpoint);
+    let pacer = &mut pacer;
     unsafe {
         let hs = &mut *hs;
         if open_deadline.is_some_and(|at| Instant::now() >= at) {
@@ -1065,9 +1236,12 @@ fn http_open_with_timeouts(
                 method,
                 open_deadline,
                 restore_media_timeouts,
+                pacer,
             ) {
                 Ok(()) => return Ok(()),
                 Err(HttpOpenError::Aborted) => return Err(HttpOpenError::Aborted),
+                // A controlled stop is the caller's decision, not a stale keep-alive: no redial.
+                Err(HttpOpenError::Stopped) => return Err(HttpOpenError::Stopped),
                 Err(HttpOpenError::Deadline) => return Err(HttpOpenError::Deadline),
                 Err(HttpOpenError::Status(status)) => return Err(HttpOpenError::Status(status)),
                 Err(HttpOpenError::Transport) => {
@@ -1156,9 +1330,10 @@ fn http_open_with_timeouts(
             }
             None => (base_connect_ms, false),
         };
-        let fd = match connect_any_result(hs, list.head, connect_budget_ms) {
+        let fd = match connect_any_result(hs, list.head, connect_budget_ms, pacer) {
             Ok(fd) => fd,
             Err(ConnectFailure::Aborted) => return Err(HttpOpenError::Aborted),
+            Err(ConnectFailure::Stopped) => return Err(HttpOpenError::Stopped),
             Err(ConnectFailure::TimedOut) if caller_deadline_is_connect_ceiling => {
                 return Err(HttpOpenError::Deadline);
             }
@@ -1192,6 +1367,7 @@ fn http_open_with_timeouts(
             method,
             open_deadline,
             restore_media_timeouts,
+            pacer,
         )
     }
 }
@@ -1206,6 +1382,7 @@ unsafe fn perform_http_request(
     method: &str,
     open_deadline: Option<Instant>,
     restore_media_timeouts: bool,
+    pacer: &mut Pacer,
 ) -> Result<(), HttpOpenError> {
     // build + send the request (default Accept only if caller set none)
     let extra_s: String = if extra.is_null() {
@@ -1233,12 +1410,15 @@ unsafe fn perform_http_request(
             bytes[off..].as_ptr() as *const c_void,
             bytes.len() - off,
             open_deadline,
+            pacer,
         );
         if w <= 0 {
             let error = if hs.interrupted() {
                 HttpOpenError::Aborted
             } else if w == HTTP_READ_DEADLINE as isize {
                 HttpOpenError::Deadline
+            } else if w == HTTP_READ_STOPPED as isize {
+                HttpOpenError::Stopped
             } else {
                 HttpOpenError::Transport
             };
@@ -1258,6 +1438,7 @@ unsafe fn perform_http_request(
             hs.buf.as_mut_ptr().add(hs.blen as usize) as *mut c_void,
             cap - hs.blen as usize,
             open_deadline,
+            pacer,
         );
         // r == 0 is also how an interrupted open surfaces: `http_shutdown` wakes this
         // recv with EOF, so a teardown mid-header costs one syscall, not 15 s of SO_RCVTIMEO.
@@ -1266,6 +1447,8 @@ unsafe fn perform_http_request(
                 HttpOpenError::Aborted
             } else if r == HTTP_READ_DEADLINE as isize {
                 HttpOpenError::Deadline
+            } else if r == HTTP_READ_STOPPED as isize {
+                HttpOpenError::Stopped
             } else {
                 HttpOpenError::Transport
             };
@@ -1382,27 +1565,34 @@ unsafe fn perform_http_request(
 }
 
 pub(crate) fn http_read(hs: *mut HttpStream, dst: *mut c_uchar, n: c_int) -> c_int {
-    http_read_until(hs, dst, n, None)
+    http_read_until(hs, dst, n, None, &mut NoCheckpoint)
 }
 
 /// [`http_read`] with an optional absolute wake. This is intentionally not expressed as a shorter
 /// socket option: `SO_RCVTIMEO` remains an inactivity bound, while ABR composes a current
 /// projection of its playhead-funded reserve and classifies whichever clock actually fired.
+///
+/// `checkpoint` is consulted only when this read would block for fresh bytes (buffered bytes and a
+/// proven end are returned without asking); a stop returns [`HTTP_READ_STOPPED`] with the socket
+/// and any partial chunk framing left as they were.
 pub(crate) fn http_read_until(
     hs: *mut HttpStream,
     dst: *mut c_uchar,
     n: c_int,
     deadline: Option<Instant>,
+    checkpoint: &mut dyn Checkpoint,
 ) -> c_int {
     if hs.is_null() || dst.is_null() || n <= 0 {
         return if n == 0 { 0 } else { -1 };
     }
+    let mut pacer = Pacer::new(checkpoint);
+    let pacer = &mut pacer;
     unsafe {
         let hs = &mut *hs;
         let n = n as usize;
         if hs.chunked != 0 {
             if hs.chunk_left < 0 {
-                match hs_skip_chunked_trailers(hs, deadline) {
+                match hs_skip_chunked_trailers(hs, deadline, pacer) {
                     Ok(()) => {
                         finish_body(hs);
                         return 0;
@@ -1415,8 +1605,8 @@ pub(crate) fn http_read_until(
                 }
             }
             if hs.chunk_left <= 0 {
-                match hs_next_chunk(hs, deadline) {
-                    Ok(Some(0)) => match hs_skip_chunked_trailers(hs, deadline) {
+                match hs_next_chunk(hs, deadline, pacer) {
+                    Ok(Some(0)) => match hs_skip_chunked_trailers(hs, deadline, pacer) {
                         Ok(()) => {
                             finish_body(hs);
                             return 0;
@@ -1457,7 +1647,13 @@ pub(crate) fn http_read_until(
                     hs.bpos += take as c_int;
                     got += take;
                 } else if hs.fd() >= 0 {
-                    let r = recv_until(hs.fd(), dst.add(got) as *mut c_void, want - got, deadline);
+                    let r = recv_until(
+                        hs.fd(),
+                        dst.add(got) as *mut c_void,
+                        want - got,
+                        deadline,
+                        pacer,
+                    );
                     if r < 0 {
                         if retry_interrupted_recv(r, errno()) {
                             continue;
@@ -1526,7 +1722,7 @@ pub(crate) fn http_read_until(
             return HTTP_READ_DEADLINE;
         }
         loop {
-            let r = recv_until(hs.fd(), dst as *mut c_void, n, deadline);
+            let r = recv_until(hs.fd(), dst as *mut c_void, n, deadline, pacer);
             if r < 0 {
                 if retry_interrupted_recv(r, errno()) {
                     continue;
@@ -1690,7 +1886,7 @@ unsafe fn hs_finish_chunked_trailers_dontwait(hs: &mut HttpStream) -> c_int {
     if filled < 0 {
         return filled;
     }
-    match hs_skip_chunked_trailers(hs, Some(Instant::now())) {
+    match hs_skip_chunked_trailers(hs, Some(Instant::now()), &mut Pacer::new(&mut NoCheckpoint)) {
         Ok(()) => {
             finish_body(hs);
             0
@@ -1744,7 +1940,7 @@ pub(crate) fn http_drain_available(hs: *mut HttpStream, dst: &mut [u8]) -> c_int
                 }
             }
             // Size line is in `buf`. Deadline-now keeps `hs_next_chunk` from `recv`.
-            match hs_next_chunk(hs, Some(Instant::now())) {
+            match hs_next_chunk(hs, Some(Instant::now()), &mut Pacer::new(&mut NoCheckpoint)) {
                 Ok(Some(0)) => {
                     hs.chunk_left = -1;
                     return hs_finish_chunked_trailers_dontwait(hs);
@@ -1918,3 +2114,7 @@ mod keepalive_reuse_tests;
 #[cfg(test)]
 #[path = "stream_chunked_drain_tests.rs"]
 mod chunked_drain_tests;
+
+#[cfg(test)]
+#[path = "stream_checkpoint_tests.rs"]
+mod checkpoint_tests;
