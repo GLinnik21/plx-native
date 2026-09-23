@@ -16,6 +16,7 @@
 //! `arm_active_stall_guard` evaluation runs, from inputs it samples itself rather than inputs a
 //! caller hands it.
 use super::*;
+use crate::checkpoint::{Checkpoint, Flow};
 
 /// The acquisition policy for one `hls_demux_segment` fetch. Its payload (`Policy`) is private to
 /// this module, so nothing outside — including `ff` itself — can name `Policy::Active(..)` or
@@ -62,15 +63,15 @@ impl SegmentAcquisition {
     /// inside this call, so a caller cannot pass stale or fabricated inputs. Non-adaptive playback
     /// is this same constructor given `None`; there is deliberately no separate public `fixed()`.
     ///
-    /// **Out of scope, by design, not oversight:** this only ever arms against the terminal
-    /// reserve boundary observed at the next AVIO callback. It does not wake a transport read that
-    /// is currently blocked — the callback has to be re-entered to see a new hold — and it does
-    /// not arm on the HTTP open/connect+headers leg or the `NotReady` wait inside
-    /// `hls_demux_segment`, both of which precede any AVIO read and so precede any body existing.
-    /// FFmpeg's probe reads DO go through this same guarded AVIO `read_cb`, so probing itself is
-    /// covered; only those pre-body legs, and a read already blocked when a hold transition
-    /// arrives, are not. Treating "no observation yet" as a completed zero-byte transfer is also
-    /// out of scope. Those remain the demux loop's and `StallGuard`'s own concerns.
+    /// The guard this evaluation arms is consulted on EVERY blocking leg of the fetch, not only at
+    /// the next AVIO callback: [`SegmentAcquisition::begin`] turns the acquisition into one
+    /// [`AcquisitionRuntime`] that `hls_demux_segment` hands as the transports' [`Checkpoint`]
+    /// through the HTTP open (connect, request, headers), the `NotReady` retry wait, and then —
+    /// moved into the AVIO, never re-armed — FFmpeg's probe and body reads. A wait already blocked
+    /// when the boundary arrives re-asks at least every [`CHECK_SLICE`] while armed.
+    ///
+    /// **Still out of scope:** the synchronous `getaddrinfo` inside a plaintext open's connect
+    /// cannot be interrupted by any checkpoint; the guard is consulted as soon as it returns.
     pub(super) fn for_cursor(controller: Option<&crate::abr::Controller>) -> Self {
         match controller {
             Some(controller) => Self::active(
@@ -105,12 +106,27 @@ impl SegmentAcquisition {
         }
     }
 
-    pub(super) fn into_parts(self) -> (ReserveDeadlineState, Option<StallGuard>) {
-        match self.0 {
+    /// **Start the acquisition.** Consumes the role and returns its reserve deadline (which the
+    /// open loop and then the AVIO compose with transport liveness, as before) and the ONE runtime
+    /// that owns the armed guard for the rest of the fetch. The acquisition clock starts here.
+    /// Nothing re-arms or resets it afterwards: the runtime moves, whole, from the open loop into
+    /// `AvioState`.
+    pub(super) fn begin(self, aq: *mut AuQueue) -> (ReserveDeadlineState, AcquisitionRuntime) {
+        let (reserve_deadline, stall) = match self.0 {
             Policy::Active(active) => (active.reserve_deadline, active.stall),
             Policy::Candidate(deadline) => (deadline, None),
             Policy::Fixed => (ReserveDeadlineState::new(None, false), None),
-        }
+        };
+        (
+            reserve_deadline,
+            AcquisitionRuntime {
+                aq,
+                stall,
+                request_started: std::time::Instant::now(),
+                phase: Phase::Opening,
+                stop: None,
+            },
+        )
     }
 
     /// Test-only escape hatch: build an `Active` acquisition from explicit inputs rather than
@@ -120,5 +136,203 @@ impl SegmentAcquisition {
     #[cfg(test)]
     pub(super) fn for_test(reserve_ms: Option<i64>, at_floor: bool, already_held: bool) -> Self {
         Self::active(reserve_ms, at_floor, already_held)
+    }
+
+    /// [`Self::for_test`] with an explicit reserve deadline, so a test can make the open's own
+    /// deadline expire sooner than [`CHECK_SLICE`] — the one way a transport ends a wait without
+    /// asking its checkpoint again.
+    #[cfg(test)]
+    pub(super) fn for_test_with_deadline(
+        reserve_ms: Option<i64>,
+        at_floor: bool,
+        already_held: bool,
+        reserve_deadline: ReserveDeadlineState,
+    ) -> Self {
+        SegmentAcquisition(Policy::Active(ActiveAcquisition {
+            reserve_deadline,
+            stall: arm_active_stall_guard(reserve_ms, at_floor, already_held),
+        }))
+    }
+}
+
+/// How often an ARMED acquisition re-asks while a transport or retry wait is blocked, at most.
+/// The projected playhead boundary may come sooner; an accepted hold has no projection and is
+/// seen within one slice. Unarmed runtimes never ask again at all (`next_check: None`).
+pub(super) const CHECK_SLICE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Where the fetch is. Only `BodyComplete` changes a decision: a response whose every declared
+/// byte arrived (or whose unsized body reached a confirmed end) is credited, never abandoned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Phase {
+    Opening,
+    RetryWaiting,
+    Body,
+    BodyComplete,
+}
+
+/// Why the runtime answered [`Flow::Stop`]. Latched: every later check stops too, so a
+/// subsequent AVIO callback cannot resume a fetch this runtime has already abandoned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopReason {
+    Teardown,
+    StallAbort,
+}
+
+/// **One active fetch's guard, across every leg that can block.** Built only by
+/// [`SegmentAcquisition::begin`], so it inherits the role's sealed arming: a candidate or a
+/// non-adaptive fetch carries no guard (and therefore never stops except for teardown), an
+/// already-held clock or an unknowable/zero starting reserve arms nothing.
+///
+/// As the transports' [`Checkpoint`] its answer is, in priority order: teardown (the AU lane
+/// aborted) stops; a completed body continues unconditionally; the guard's boundary — an
+/// accepted hold, a hold epoch that moved since arming, or a playhead that has spent the
+/// starting reserve — stops above the floor after asking the main thread to hold the clock, and
+/// at the floor asks once, disarms and continues the SAME operation; otherwise continue, asking
+/// again by the projected boundary or [`CHECK_SLICE`], whichever is sooner. Reserve-deadline and
+/// transport-liveness classification stay with the caller, which composes them into the
+/// transport's own deadline exactly as before.
+pub(super) struct AcquisitionRuntime {
+    aq: *mut AuQueue,
+    stall: Option<StallGuard>,
+    request_started: std::time::Instant,
+    phase: Phase,
+    stop: Option<StopReason>,
+}
+
+impl AcquisitionRuntime {
+    pub(super) fn request_started(&self) -> std::time::Instant {
+        self.request_started
+    }
+
+    /// Move to `phase`. `BodyComplete` is terminal: nothing moves a completed body back.
+    pub(super) fn enter(&mut self, phase: Phase) {
+        if self.phase != Phase::BodyComplete {
+            self.phase = phase;
+        }
+    }
+
+    /// Record body progress. `received` is the end offset of what the transport has RECEIVED
+    /// (`AvioState::note_received`), not what FFmpeg has read. A known length is complete once
+    /// every declared byte arrived; an unknown length (`size < 0`) is complete only at a
+    /// confirmed end (`eof`).
+    pub(super) fn note_body(&mut self, size: i64, received: i64, eof: bool) {
+        if eof || (size >= 0 && received >= size) {
+            self.enter(Phase::BodyComplete);
+        }
+    }
+
+    /// The abort latched for the enclosing FFmpeg operation (`classify_hls_avio_operation`).
+    pub(super) fn stall_aborted(&self) -> bool {
+        self.stop == Some(StopReason::StallAbort)
+    }
+
+    /// The exit a stopped leg BEFORE the AVIO existed returns, or `None` when this runtime never
+    /// stopped. Teardown outranks a latched abort however they interleaved. A pre-body abort
+    /// reports what was really acquired: no body byte and no body read, over the elapsed request.
+    pub(super) fn stopped_exit(&self, audio_expected: bool) -> Option<HlsExit> {
+        if unsafe { crate::aq::aq_is_aborted(self.aq) } || self.stop == Some(StopReason::Teardown) {
+            return Some(HlsExit::Aborted);
+        }
+        self.stall_aborted().then(|| {
+            HlsExit::StallAbort(SegmentTransfer {
+                bytes: 0,
+                active_us: 0,
+                total_us: self.request_started.elapsed().as_micros().max(1) as u64,
+                audio_expected,
+            })
+        })
+    }
+
+    /// **Settle a leg that ended without success** — a deadline, a transport failure, a
+    /// `NotReady`, a stop. The transport's last answer may be stale: a deadline shorter than
+    /// [`CHECK_SLICE`] ends a wait without asking again. So this asks AFRESH, in `check()`'s own
+    /// priority (teardown, completed body, guard boundary — at the floor that requests the hold
+    /// and continues), and only then lets the leg's own classification stand. Returns whether the
+    /// runtime has stopped.
+    pub(super) fn settle_stopped(&mut self) -> bool {
+        Checkpoint::check(self) == Flow::Stop
+    }
+
+    /// [`Self::settle_stopped`] for a leg before the AVIO exists: the latched exit if the runtime
+    /// stopped, otherwise the leg's own `outcome`.
+    pub(super) fn settle(&mut self, outcome: HlsExit, audio_expected: bool) -> HlsExit {
+        self.settle_stopped();
+        self.stopped_exit(audio_expected).unwrap_or(outcome)
+    }
+
+    #[cfg(test)]
+    pub(super) fn armed(&self) -> bool {
+        self.stall.is_some()
+    }
+}
+
+impl Checkpoint for AcquisitionRuntime {
+    fn check(&mut self) -> Flow {
+        let flow = self.evaluate();
+        #[cfg(test)]
+        observe::report(self.phase, flow);
+        flow
+    }
+}
+
+impl AcquisitionRuntime {
+    fn evaluate(&mut self) -> Flow {
+        if self.stop.is_some() {
+            return Flow::Stop;
+        }
+        if unsafe { crate::aq::aq_is_aborted(self.aq) } {
+            self.stop = Some(StopReason::Teardown);
+            return Flow::Stop;
+        }
+        if self.phase == Phase::BodyComplete {
+            return Flow::Continue { next_check: None };
+        }
+        let Some(guard) = self.stall else {
+            return Flow::Continue { next_check: None };
+        };
+        if guard.should_abort(false, SHARED.hls_rebuffering.load(Ordering::Acquire)) {
+            request_terminal_hold();
+            if guard.aborts_fetch() {
+                self.stop = Some(StopReason::StallAbort);
+                return Flow::Stop;
+            }
+            self.stall = None;
+            return Flow::Continue { next_check: None };
+        }
+        let slice = std::time::Instant::now() + CHECK_SLICE;
+        Flow::Continue {
+            next_check: Some(guard.projected_boundary().min(slice)),
+        }
+    }
+}
+
+/// A host-suite seam: a test registers ONE thread and receives every answer an acquisition
+/// runtime on that thread gives, with the phase it gave it in — so it can change the world
+/// strictly AFTER a given `Continue` instead of sleeping and hoping.
+#[cfg(test)]
+pub(super) mod observe {
+    use super::{Flow, Phase};
+    use std::sync::mpsc::SyncSender;
+    use std::sync::Mutex;
+    use std::thread::ThreadId;
+
+    static WATCHED: Mutex<Option<(ThreadId, SyncSender<(Phase, Flow)>)>> = Mutex::new(None);
+
+    pub(in crate::ff) fn watch_this_thread(tx: SyncSender<(Phase, Flow)>) {
+        *WATCHED.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((std::thread::current().id(), tx));
+    }
+
+    pub(in crate::ff) fn unwatch() {
+        *WATCHED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    pub(super) fn report(phase: Phase, flow: Flow) {
+        let watched = WATCHED.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((thread, tx)) = watched.as_ref() {
+            if *thread == std::thread::current().id() {
+                let _ = tx.try_send((phase, flow));
+            }
+        }
     }
 }

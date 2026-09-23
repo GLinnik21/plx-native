@@ -389,6 +389,7 @@ fn plaintext(
                 extra_ptr,
                 method.as_str(),
                 effective,
+                &mut crate::checkpoint::NoCheckpoint,
             ) {
                 Ok(()) => 0,
                 Err(crate::stream::HttpOpenError::Status(status)) => {
@@ -401,8 +402,11 @@ fn plaintext(
                         DeadlineOwner::Liveness => RequestOutcome::Transport,
                     };
                 }
+                // `Stopped` cannot occur: this request has no checkpoint.
                 Err(
-                    crate::stream::HttpOpenError::Aborted | crate::stream::HttpOpenError::Transport,
+                    crate::stream::HttpOpenError::Aborted
+                    | crate::stream::HttpOpenError::Stopped
+                    | crate::stream::HttpOpenError::Transport,
                 ) => {
                     return RequestOutcome::Transport;
                 }
@@ -465,6 +469,7 @@ fn plaintext(
                             chunk.as_mut_ptr(),
                             want as i32,
                             Some(effective),
+                            &mut crate::checkpoint::NoCheckpoint,
                         ),
                         Some(owner),
                     )

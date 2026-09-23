@@ -123,6 +123,8 @@ use std::os::raw::{c_char, c_int, c_long, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Once};
 
+use crate::checkpoint::{self, Checkpoint, NoCheckpoint, Pacer};
+
 pub(crate) type CURL = c_void;
 pub(crate) type CURLM = c_void;
 
@@ -225,6 +227,10 @@ const WAIT_MS: c_int = 200;
 /// Internal result used only by the segmented ABR prime. Ordinary [`CurlSource::read`] callers
 /// retain the public three-way contract (>0 bytes, 0 EOF, -1 failure/teardown).
 pub(crate) const READ_DEADLINE: c_int = -2;
+/// Internal result of a read whose caller's [`Checkpoint`] answered
+/// [`Flow::Stop`](crate::checkpoint::Flow::Stop): neither a transport failure nor teardown. The
+/// transfer is left attached and unlatched, for the caller to retire.
+pub(crate) const READ_STOPPED: c_int = -3;
 
 /// `CURLOPT_CONNECTTIMEOUT`, seconds. Matches `stream.rs`'s `CONNECT_TIMEOUT_MS` intent.
 const CONNECT_TIMEOUT_S: c_long = 15;
@@ -466,6 +472,10 @@ pub(crate) enum OpenErr {
     Aborted,
     /// A caller-owned bounded preflight expired. Ordinary media opens have no such deadline.
     Deadline,
+    /// The caller's [`Checkpoint`] stopped the open. The request has been retired and the source
+    /// is NOT torn down: its multi (and TLS session) and abort pipe are intact, and this is never
+    /// grounds for a fallback open.
+    Stopped,
     /// A `CURLcode` — DNS, TLS, connect, low-speed. Named the way `net.rs` names them.
     Transport(c_int),
     /// A `CURLMcode` from the multi interface itself. This is local transport machinery failing,
@@ -606,15 +616,16 @@ impl CurlSource {
         Self::open_with_reservation(url, at, reservation)
     }
 
-    /// Finish a reserved open inside a caller-owned absolute deadline. ABR candidate setup uses
-    /// this so DNS/TLS/headers spend the same conservation budget as the response body.
-    pub(crate) fn open_reserved_until(
+    /// A reserved open whose every blocking wait consults `checkpoint`, with or without a caller
+    /// deadline — the HLS segment open, which must never drop its acquisition's checkpoint.
+    pub(crate) fn open_reserved_checked(
         url: &str,
         at: i64,
         reservation: OpenReservation,
-        deadline: std::time::Instant,
+        deadline: Option<std::time::Instant>,
+        checkpoint: &mut dyn Checkpoint,
     ) -> Result<Box<CurlSource>, OpenErr> {
-        Self::open_with_reservation_until(url, at, reservation, Some(deadline))
+        Self::open_with_reservation_range_until(url, at, None, reservation, deadline, checkpoint)
     }
 
     /// [`open`](Self::open) with the availability verdict injected, so the host suite can grade
@@ -643,7 +654,14 @@ impl CurlSource {
         reservation: OpenReservation,
         deadline: Option<std::time::Instant>,
     ) -> Result<Box<CurlSource>, OpenErr> {
-        Self::open_with_reservation_range_until(url, at, None, reservation, deadline)
+        Self::open_with_reservation_range_until(
+            url,
+            at,
+            None,
+            reservation,
+            deadline,
+            &mut NoCheckpoint,
+        )
     }
 
     /// Open the finite prefix used by an Original throughput experiment. Unlike an ordinary
@@ -659,7 +677,14 @@ impl CurlSource {
             .ok()
             .and_then(|n| n.checked_sub(1))
             .ok_or(OpenErr::Local)?;
-        Self::open_with_reservation_range_until(url, 0, Some(end), reservation, deadline)
+        Self::open_with_reservation_range_until(
+            url,
+            0,
+            Some(end),
+            reservation,
+            deadline,
+            &mut NoCheckpoint,
+        )
     }
 
     fn open_with_reservation_range_until(
@@ -668,6 +693,7 @@ impl CurlSource {
         range_end: Option<i64>,
         reservation: OpenReservation,
         deadline: Option<std::time::Instant>,
+        checkpoint: &mut dyn Checkpoint,
     ) -> Result<Box<CurlSource>, OpenErr> {
         if !media_url_allowed(url) {
             return Err(OpenErr::Local);
@@ -712,7 +738,7 @@ impl CurlSource {
             readable: false,
             poisoned: false,
         });
-        src.start_range_until(at, range_end, deadline)?;
+        src.start_range_until(at, range_end, deadline, checkpoint)?;
         Ok(src)
     }
 
@@ -723,6 +749,7 @@ impl CurlSource {
         &mut self,
         url: &str,
         deadline: Option<std::time::Instant>,
+        checkpoint: &mut dyn Checkpoint,
     ) -> Result<(), OpenErr> {
         if self.abort.is_set() {
             return Err(OpenErr::Aborted);
@@ -749,7 +776,7 @@ impl CurlSource {
             let mut act = lock_active();
             *act = Some(Arc::clone(&self.abort));
         }
-        self.start_range_until(0, None, deadline)
+        self.start_range_until(0, None, deadline, checkpoint)
     }
 
     /// Attach a fresh easy handle at byte `at` and pump until its headers are complete.
@@ -762,14 +789,18 @@ impl CurlSource {
         at: i64,
         deadline: Option<std::time::Instant>,
     ) -> Result<(), OpenErr> {
-        self.start_range_until(at, None, deadline)
+        self.start_range_until(at, None, deadline, &mut NoCheckpoint)
     }
 
+    /// `checkpoint` is consulted between `curl_multi_wait` slices while the headers are awaited;
+    /// its `next_check` only shortens a wait and never reaches `CURLOPT_TIMEOUT_MS`, which stays the
+    /// caller's deadline alone.
     fn start_range_until(
         &mut self,
         at: i64,
         range_end: Option<i64>,
         deadline: Option<std::time::Instant>,
+        checkpoint: &mut dyn Checkpoint,
     ) -> Result<(), OpenErr> {
         self.stop();
         if self.multi_failed {
@@ -945,6 +976,7 @@ impl CurlSource {
             })
         };
         // Pump until the final response's headers are in, the transfer ends, or teardown fires.
+        let mut pacer = Pacer::new(checkpoint);
         while !self.xfer.headers_done && !self.done {
             if self.abort.is_set() {
                 return Err(OpenErr::Aborted);
@@ -965,6 +997,13 @@ impl CurlSource {
             if wait_ms <= 0 {
                 return Err(OpenErr::Deadline);
             }
+            let Ok(slice) = pacer.before_wait() else {
+                // Retire this request, and nothing more: the abort pipe and `lock_active` belong
+                // to teardown, and the multi stays for the caller's next reopen.
+                self.stop();
+                return Err(OpenErr::Stopped);
+            };
+            let wait_ms = slice.map_or(wait_ms, |at| checkpoint::wait_ms_until(at, wait_ms));
             match multi_wait(self.multi, &self.abort, wait_ms) {
                 Wait::Woken if self.abort.is_set() => return Err(OpenErr::Aborted),
                 Wait::Failed(rc) => {
@@ -1151,21 +1190,26 @@ impl CurlSource {
     /// negative result as an I/O error rather than collapsing a truncated transfer into EOF.
     #[allow(dead_code)] // convenience wrapper retained for transport tests; production passes deadlines
     pub(crate) fn read(&mut self, dst: &mut [u8]) -> c_int {
-        self.read_until(dst, None)
+        self.read_until(dst, None, &mut NoCheckpoint)
     }
 
     /// Deliver bytes until an optional caller-owned absolute wake. This transport does not decide
     /// what the instant proves: ABR passes a current wall projection of its playhead-funded reserve
     /// and retrospectively classifies the owning clock, while bounded probes may pass a true body
     /// deadline. libcurl's low-speed policy remains an independent transport-liveness bound.
+    ///
+    /// `checkpoint` is asked only before a wait for fresh bytes; a stop returns [`READ_STOPPED`]
+    /// with the transfer still attached.
     pub(crate) fn read_until(
         &mut self,
         dst: &mut [u8],
         deadline: Option<std::time::Instant>,
+        checkpoint: &mut dyn Checkpoint,
     ) -> c_int {
         if dst.is_empty() {
             return 0;
         }
+        let mut pacer = Pacer::new(checkpoint);
         loop {
             if self.abort.is_set() || self.poisoned || !self.readable {
                 return -1;
@@ -1204,6 +1248,10 @@ impl CurlSource {
             if wait_ms <= 0 {
                 return READ_DEADLINE;
             }
+            let Ok(slice) = pacer.before_wait() else {
+                return READ_STOPPED;
+            };
+            let wait_ms = slice.map_or(wait_ms, |at| checkpoint::wait_ms_until(at, wait_ms));
             match multi_wait(self.multi, &self.abort, wait_ms) {
                 Wait::Woken if self.abort.is_set() => return -1,
                 Wait::Failed(rc) => {
@@ -1311,6 +1359,26 @@ impl CurlSource {
     /// The last response's HTTP status — the diagnostics read-out's `dg_http_status`.
     pub(crate) fn status(&self) -> c_int {
         self.xfer.status
+    }
+
+    /// What this transfer holds of the body beyond what the reader has taken. With nothing
+    /// buffered, it first takes the one non-blocking transfer step [`read_until`](Self::read_until)
+    /// would take next, so bytes already in the socket count as received here exactly as they
+    /// would there. `finished` is a successful DONE; a failed one is not an end.
+    pub(crate) fn body_receipt(&mut self) -> crate::stream::BodyReceipt {
+        let stepped = self.xfer.pending() == 0
+            && !self.done
+            && self.readable
+            && !self.poisoned
+            && !self.abort.is_set();
+        if stepped {
+            let _ = self.perform();
+        }
+        crate::stream::BodyReceipt {
+            ahead: self.xfer.pending() as i64,
+            finished: self.done && !self.failed,
+            stepped,
+        }
     }
 
     /// Body fully received and already copied out of the multi buffer.
@@ -1445,7 +1513,7 @@ fn sample_throughput_with_reservation(
     let mut chunk = [0u8; 64 * 1024];
     while bytes < target_bytes {
         let want = chunk.len().min(target_bytes - bytes);
-        let n = src.read_until(&mut chunk[..want], Some(body_deadline));
+        let n = src.read_until(&mut chunk[..want], Some(body_deadline), &mut NoCheckpoint);
         last_read = n;
         if n <= 0 {
             break;
@@ -1789,6 +1857,9 @@ mod tests {
         OmitContentRange,
         /// Fail the first seek request with 503, then honour a later retry.
         FailFirstSeek,
+        /// Answer requests before the numbered one normally; from it on, read the request and
+        /// never answer — a server slow to produce headers, held until the test ends.
+        WithholdFrom(usize),
     }
 
     const BODY: &[u8] = b"ABCDEFGH";
@@ -1912,6 +1983,12 @@ mod tests {
             };
             let request_no = requests.fetch_add(1, Ordering::AcqRel) + 1;
             let start = range_start_of(&head);
+            if matches!(mode, RangeMode::WithholdFrom(n) if request_no >= n) {
+                while !stop.load(Ordering::Acquire) {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                return;
+            }
             if mode == RangeMode::DelayedHeaders {
                 std::thread::sleep(std::time::Duration::from_millis(300));
                 let _ = w.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
@@ -2080,7 +2157,8 @@ mod tests {
             let url = format!("http://127.0.0.1:{port}/f.mkv");
             let mut src = CurlSource::open(&url, 0).expect("open");
             assert_eq!(read_all(&mut src), BODY);
-            src.reopen_until(&url, None).expect("reopen");
+            src.reopen_until(&url, None, &mut NoCheckpoint)
+                .expect("reopen");
             assert_eq!(read_all(&mut src), BODY);
             assert_eq!(requests.load(Ordering::Acquire), 2);
             assert_eq!(
@@ -2099,7 +2177,10 @@ mod tests {
             let mut src = CurlSource::open(&url, 0).expect("open");
             assert_eq!(read_all(&mut src), BODY);
             src.abort();
-            assert_eq!(src.reopen_until(&url, None), Err(OpenErr::Aborted));
+            assert_eq!(
+                src.reopen_until(&url, None, &mut NoCheckpoint),
+                Err(OpenErr::Aborted)
+            );
             assert_eq!(requests.load(Ordering::Acquire), 1);
         });
     }
@@ -2472,7 +2553,10 @@ mod tests {
             let started = std::time::Instant::now();
             let deadline = started + std::time::Duration::from_millis(120);
             let mut b = [0u8; 32];
-            assert_eq!(src.read_until(&mut b, Some(deadline)), READ_DEADLINE);
+            assert_eq!(
+                src.read_until(&mut b, Some(deadline), &mut NoCheckpoint),
+                READ_DEADLINE
+            );
             let took = started.elapsed();
             assert!(
                 took >= std::time::Duration::from_millis(80)
@@ -2488,11 +2572,12 @@ mod tests {
         with_server(RangeMode::DelayedBody, |port, _, _| {
             let reservation = CurlSource::reserve_open().expect("reserve");
             let open_deadline = std::time::Instant::now() + std::time::Duration::from_millis(120);
-            let mut src = CurlSource::open_reserved_until(
+            let mut src = CurlSource::open_reserved_checked(
                 &format!("http://127.0.0.1:{port}/f.mkv"),
                 0,
                 reservation,
-                open_deadline,
+                Some(open_deadline),
+                &mut NoCheckpoint,
             )
             .expect("headers arrive inside the open deadline");
 
@@ -2500,7 +2585,7 @@ mod tests {
             let mut got = Vec::new();
             let mut chunk = [0u8; 32];
             loop {
-                let n = src.read_until(&mut chunk, Some(read_deadline));
+                let n = src.read_until(&mut chunk, Some(read_deadline), &mut NoCheckpoint);
                 assert!(n >= 0, "the expired open timeout must not abort the body");
                 if n == 0 {
                     break;
@@ -2511,17 +2596,109 @@ mod tests {
         });
     }
 
+    /// A first open whose server withholds its headers: the caller's checkpoint is consulted
+    /// between `curl_multi_wait` slices, and its Stop ends the open as `Stopped` — neither a
+    /// deadline nor teardown — without a fallback dial.
+    #[test]
+    fn a_checkpoint_stop_ends_a_withheld_first_open_without_a_second_dial() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::WithholdFrom(1), |port, accepts, requests| {
+            let reservation = CurlSource::reserve_open().expect("reserve");
+            let mut cp =
+                checkpoint::TestCheckpoint::stopping_after(3, std::time::Duration::from_millis(20));
+            let started = std::time::Instant::now();
+            let result = CurlSource::open_reserved_checked(
+                &format!("http://127.0.0.1:{port}/f.mkv"),
+                0,
+                reservation,
+                Some(started + std::time::Duration::from_secs(30)),
+                &mut cp,
+            );
+            let took = started.elapsed();
+            assert_eq!(result.err(), Some(OpenErr::Stopped));
+            assert_eq!(cp.calls(), 4, "three Continue answers, then the Stop");
+            assert!(
+                took >= std::time::Duration::from_millis(45)
+                    && took < std::time::Duration::from_secs(5),
+                "the slices were waited, not spun, and the 30 s deadline never mattered: {took:?}"
+            );
+            assert_eq!(accepts.load(Ordering::Acquire), 1);
+            assert_eq!(requests.load(Ordering::Acquire), 1);
+        });
+    }
+
+    /// The reused-session twin: a stopped reopen keeps its multi and abort pipe (no teardown
+    /// latch), retires only the request, and dials nothing new.
+    #[test]
+    fn a_checkpoint_stop_ends_a_withheld_reopen_without_latching_teardown() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::WithholdFrom(2), |port, accepts, requests| {
+            let url = format!("http://127.0.0.1:{port}/f.mkv");
+            let mut src = CurlSource::open(&url, 0).expect("first open");
+            assert_eq!(read_all(&mut src), BODY);
+            let mut cp =
+                checkpoint::TestCheckpoint::stopping_after(3, std::time::Duration::from_millis(20));
+            let started = std::time::Instant::now();
+            let result = src.reopen_until(
+                &url,
+                Some(started + std::time::Duration::from_secs(30)),
+                &mut cp,
+            );
+            assert_eq!(result, Err(OpenErr::Stopped));
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+            assert_eq!(cp.calls(), 4);
+            assert!(!src.abort.is_set(), "a controlled stop is not teardown");
+            assert!(src.easy.is_null(), "the stopped request is retired");
+            assert!(
+                !src.multi.is_null() && !src.multi_failed,
+                "the session survives"
+            );
+            assert_eq!(requests.load(Ordering::Acquire), 2);
+            assert_eq!(accepts.load(Ordering::Acquire), 1, "no fallback dial");
+        });
+    }
+
+    /// A body read parked on a stalled transfer: Continue slices do not return early, Stop returns
+    /// `READ_STOPPED`, and the transfer is still attached afterwards (a later bounded read waits
+    /// again and reports its own deadline rather than a failure).
+    #[test]
+    fn a_checkpoint_stop_ends_a_stalled_read_and_leaves_the_transfer_attached() {
+        let Some(_gate) = curl_gate() else { return };
+        with_server(RangeMode::Stall, |port, _, _| {
+            let mut src =
+                CurlSource::open(&format!("http://127.0.0.1:{port}/f.mkv"), 0).expect("open");
+            let mut cp =
+                checkpoint::TestCheckpoint::stopping_after(5, std::time::Duration::from_millis(20));
+            let mut b = [0u8; 16];
+            let started = std::time::Instant::now();
+            assert_eq!(src.read_until(&mut b, None, &mut cp), READ_STOPPED);
+            let took = started.elapsed();
+            assert_eq!(cp.calls(), 6, "five Continue answers did not return early");
+            assert!(
+                took >= std::time::Duration::from_millis(80)
+                    && took < std::time::Duration::from_secs(5),
+                "stop took {took:?}"
+            );
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(60);
+            assert_eq!(
+                src.read_until(&mut b, Some(deadline), &mut NoCheckpoint),
+                READ_DEADLINE
+            );
+        });
+    }
+
     #[test]
     fn libcurl_firing_the_open_timer_is_still_a_typed_deadline() {
         let Some(_gate) = curl_gate() else { return };
         with_server(RangeMode::DelayedHeaders, |port, _, _| {
             let reservation = CurlSource::reserve_open().expect("reserve");
             let deadline = std::time::Instant::now() + std::time::Duration::from_millis(120);
-            let result = CurlSource::open_reserved_until(
+            let result = CurlSource::open_reserved_checked(
                 &format!("http://127.0.0.1:{port}/f.mkv"),
                 0,
                 reservation,
-                deadline,
+                Some(deadline),
+                &mut NoCheckpoint,
             );
             assert_eq!(result.err(), Some(OpenErr::Deadline));
         });

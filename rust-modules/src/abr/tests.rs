@@ -7747,3 +7747,58 @@ fn the_measured_8300kbps_leg_admits_rung_6000_and_still_refuses_8000_and_12000()
         CandidateVerdict::Ready,
     );
 }
+
+/// An acquisition abandoned before its first body byte has no rate to offer, yet it is exactly
+/// the event the controller's recovery path exists for. The abandoned constructor admits it; the
+/// completed one still refuses zero evidence; and the completed estimate does not move.
+#[test]
+fn a_zero_byte_abandoned_acquisition_reaches_the_controller_without_moving_the_estimate() {
+    let buffer = sample(8_000, 400, 12_000).buffer;
+    assert!(SegmentSample::new_with_obligation(0, 0, 1, 2_000, 2_000, buffer).is_none());
+    let abandoned = SegmentSample::abandoned_acquisition(0, 0, 1, 2_000, 2_000, buffer)
+        .expect("a zero-byte abort is still a censored event");
+    assert!(!abandoned.completed());
+    assert!(SegmentSample::abandoned_acquisition(0, 2, 1, 2_000, 2_000, buffer).is_none());
+    let mut c = Controller::starting_at(Rung::P720, None, hd_catalog());
+    for _ in 0..6 {
+        c.observe(sample(8_000, 400, 12_000), 0);
+    }
+    let settled = c.delivery();
+    c.observe(abandoned, 1_000);
+    assert_eq!(c.delivery(), settled);
+}
+
+/// The zero-byte abort's PURPOSE: with the reserve drained, the controller must reach its
+/// recovery decision from that event alone, while every completed-only estimator — capacity,
+/// production, the acquisition bag — is left exactly as it was.
+#[test]
+fn a_zero_byte_abandoned_acquisition_still_drives_the_recovery_decision() {
+    let mut controller = controller_at(Rung::P1080High);
+    observe_without_upshift(&mut controller, sample(40_000, 400, 8_000));
+    let (delivery, production, bag) = (
+        controller.delivery(),
+        controller.telemetry().production,
+        controller.window_len(),
+    );
+    let drained = sample(12_000, 1_500, 8_000);
+    let abort = SegmentSample::abandoned_acquisition(
+        0,
+        0,
+        drained.total_fetch_us(),
+        drained.media_duration_ms(),
+        drained.media_obligation_ms(),
+        drained.buffer,
+    )
+    .expect("a zero-byte abort is a censored event");
+    let Decision::Prime(down) = controller.observe_next(abort) else {
+        panic!("the abandoned zero-byte request must still propose the recovery downshift")
+    };
+    assert_eq!(down.direction, Direction::Down);
+    assert_eq!(controller.delivery(), delivery, "capacity untouched");
+    assert_eq!(
+        controller.telemetry().production,
+        production,
+        "production untouched"
+    );
+    assert_eq!(controller.window_len(), bag, "acquisition bag untouched");
+}

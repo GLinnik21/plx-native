@@ -26,6 +26,7 @@ fn an_absolute_read_deadline_beats_the_socket_inactivity_timeout() {
             &mut byte as *mut u8 as *mut c_void,
             1,
             Some(deadline),
+            &mut Pacer::new(&mut NoCheckpoint),
         )
     };
     let took = started.elapsed();
@@ -59,6 +60,7 @@ fn a_typed_open_reports_the_header_deadline_that_stopped_it() {
         std::ptr::null(),
         "GET",
         started + std::time::Duration::from_millis(80),
+        &mut NoCheckpoint,
     );
     let took = started.elapsed();
 
@@ -242,6 +244,7 @@ fn an_open_stalled_in_the_header_read_is_interruptible() {
                 std::ptr::null(),
                 "GET",
                 t0 + std::time::Duration::from_secs(10),
+                &mut NoCheckpoint,
             );
             (rv, t0.elapsed())
         });
