@@ -677,6 +677,9 @@ mod contract_tests {
     #[test]
     fn controlled_roster_addition_is_one_published_change_even_when_spawn_is_refused() {
         let _guard = crate::testlock::serial();
+        // `sync_roster_owned` also watches the process-global session generation. Keep it settled
+        // so the exact notice count below grades this roster addition, not an async session read.
+        let _session = crate::plex::session::TempSession::new("controlled-roster-spawn-refused");
         crate::plex::reset_servers_for_test();
         let stores = crate::stores::Stores::default();
         let _ = stores.take_notices();

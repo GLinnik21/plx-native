@@ -129,7 +129,7 @@ fn log(m: &str) {
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&crate::paths::in_runtime_dir("plxnative-anim.log"))
+        .open(&crate::paths::in_runtime_dir(crate::paths::runtime_file::ANIMATION))
     {
         let _ = writeln!(f, "{m}");
     }

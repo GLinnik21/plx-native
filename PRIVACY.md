@@ -24,16 +24,18 @@ and its operator. PlxNative’s developer does not receive them.
 ## Data stored on this television
 
 PlxNative has a developer-only input/frame recorder used to reproduce and test bugs. It is not
-part of the app you installed: a release build has the whole `/tmp/plxnative-*` developer-trigger
-surface, including the recorder, compiled out — there is no code path in a release binary that can
-open, write or read a recording, on this television or off it. It exists only in development
-builds used to build and test PlxNative itself, is started only by explicitly arming it on that
-build, and its recordings never leave the device it was made on.
+part of the app you installed: a release build has the developer-trigger inputs, including the
+recorder, compiled out — there is no code path in a release binary that can open, write or read a
+recording, on this television or off it. The unconditional `plxnative-*.log` files are create-only
+diagnostics, not trigger inputs. The recorder exists only in development builds used to build and
+test PlxNative itself, is started only by explicitly arming it on that build, and its recordings
+never leave the device it was made on.
 
 PlxNative stores your Plex account token and a separate token for each server you use, the
 addresses and identifiers of those servers, the profile you selected together with the profile
 names and pictures on your account, your Home library choices, your recent searches, your playback
-quality preference, and a small rotating local log. It also stores your answers to the two
+quality preference, and local technical logs: a small rotating event log and a bounded storage
+status snapshot. It also stores your answers to the two
 optional-reporting questions, the random Crash report ID if you turned crash reports on, the
 random Analytics ID if you turned product analytics on, any report waiting to be sent, and a
 marker recording how much of the crash log has already been read.
@@ -45,9 +47,10 @@ tokens — and with them your optional-reporting answers, both identifiers and a
 because those choices were made by the person who signed in and say nothing about whoever signs
 in next: the next sign-in is asked afresh. Switching between the profiles of one Plex account is
 not a sign-out and keeps them. A queued report is deleted once sent, or at the moment you switch
-its category off or sign out. The log rotates continuously. **webOS gives an application no way to run code as it is removed**, so the
-sign-in and the reporting answers can survive an uninstall — use Delete all local data before
-uninstalling if you want nothing of PlxNative left on the television.
+its category off or sign out. The event log rotates continuously and the storage snapshot is
+replaced when its bounded status changes. **webOS gives an application no way to run code as it
+is removed**, so the sign-in and the reporting answers can survive an uninstall — use Delete all
+local data before uninstalling if you want nothing of PlxNative left on the television.
 
 ## Optional crash reports
 

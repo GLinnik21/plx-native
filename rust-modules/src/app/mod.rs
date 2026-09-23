@@ -514,6 +514,9 @@ fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,c_i
     };
     // Replay preflight and typed decoding precede identity mint, telemetry and bootstrap work.
     let telemetry_guard = (!preflight.controlled()).then(pre_boot_diagnostics);
+    // A live boot's `install:`/`appdir:` preamble above owns the first two event-log lines.
+    // Diagnostics probes `app_dir()` on its worker, so starting it earlier races that preamble.
+    crate::storage::diagnostics::start();
     let main_thread = unsafe { crate::task::MainThread::assume() };
     let mut app = unsafe { boot(pms_host,pms_port,main_thread,preflight) }?;
     if telemetry_guard.is_some() { app.telemetry_guard = telemetry_guard; }

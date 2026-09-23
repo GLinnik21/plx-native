@@ -87,7 +87,7 @@ pub(crate) fn install_panic_logger() {
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&crate::paths::in_runtime_dir("plxnative-crash.log"))
+            .open(&crate::paths::in_runtime_dir(crate::paths::runtime_file::CRASH))
         {
             let _ = writeln!(f, "{line}");
         }

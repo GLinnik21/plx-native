@@ -13,12 +13,13 @@
 //!
 //! So every read goes through here, and here is `#[cfg]`-gated on the `devtriggers` feature. In a
 //! `--no-default-features` build [`flag`] is `false` and [`read`] is `None` at COMPILE time, the
-//! branches behind them fold away, and the binary opens nothing under `/tmp` but its own logs.
+//! branches behind them fold away. Storage and diagnostics still use runtime files; none are
+//! developer triggers.
 //!
 //! Two rules for anything added later:
 //!
 //! 1. **Never open a `/tmp` path directly.** The grep that audits this (`/tmp/plxnative-` outside
-//!    this module and the four unconditional log sinks) is the only thing keeping the property
+//!    this module and the unconditional log sinks) is the only thing keeping the property
 //!    true. The two profiler logs are dev-only and listed in [`DIAG`] below.
 //! 2. **A gate is not always a path.** `any_trigger_present` scans the whole directory and names
 //!    no file at all — it was the one surface a literal-replacement sweep would have missed, and
@@ -26,7 +27,7 @@
 //!    (the capture listener's `INADDR_ANY` socket, the remote FIFO's `mkfifo`) are gated at their
 //!    call sites in `app.rs` for the same reason.
 //!
-//! The four unconditional LOG sinks are deliberately NOT here and stay in every build: they are creates, not
+//! The unconditional LOG sinks are deliberately NOT here and stay in every build: they are creates, not
 //! reads, they are how on-device crash triage works at all, and writing them is not a way for
 //! another process to steer this one.
 //!
@@ -49,7 +50,8 @@ pub(crate) mod scenarios;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 26] = [
+const DIAG: [&str; 27] = [
+    "plxnative-diag.log",
     "plxnative-events.log",
     "plxnative-stderr.log",
     "plxnative-crash.log",
@@ -225,7 +227,7 @@ pub(crate) fn arm_gst_logging() {
     } else {
         spec
     };
-    let log = crate::paths::in_runtime_dir("plxnative-gst.log");
+    let log = crate::paths::in_runtime_dir(crate::paths::runtime_file::GST);
     // SAFETY: single-threaded here by construction — `plex_run` has not yet minted a worker, and
     // this runs before SDL init. `set_var` is only unsound against a concurrent reader.
     std::env::set_var("GST_DEBUG", &spec);
@@ -1046,14 +1048,18 @@ pub(crate) fn any_trigger_present() -> bool {
 /// only: a trigger's CONTENT can be a query or a path and never enters a recording.
 #[cfg(feature = "devtriggers")]
 pub(crate) fn armed_triggers() -> Vec<String> {
-    let mut v: Vec<String> = std::fs::read_dir(crate::paths::runtime_dir())
+    armed_triggers_in(crate::paths::runtime_dir())
+}
+#[cfg(feature = "devtriggers")]
+fn armed_triggers_in(root: &std::path::Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(root)
         .ok()
         .map(|rd| {
             rd.filter_map(|e| e.ok())
                 .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
                 .filter_map(|e| {
                     let n = e.file_name().to_string_lossy().into_owned();
-                    // the three logs share the prefix and are not triggers
+                    // Runtime logs share the prefix and are not triggers
                     (n.starts_with("plxnative-") && !n.ends_with(".log")).then_some(n)
                 })
                 .collect()
@@ -1139,16 +1145,28 @@ mod tests {
     /// than against a copy of the list, so adding another log sink without listing it fails here.
     #[test]
     fn diag_names_every_log_this_app_writes() {
-        for log in [
-            "plxnative-events.log",
-            "plxnative-stderr.log",
-            "plxnative-crash.log",
-            "plxnative-anim.log",
-            "plxnative-gputime.jsonl",
-            "plxnative-hwcnt.jsonl",
-        ] {
+        for log in crate::paths::runtime_file::LOGS {
             assert!(super::DIAG.contains(&log), "{log} is written by this app but absent from DIAG — it would suppress the boot picker forever");
         }
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn storage_diagnostics_is_never_an_armed_trigger() {
+        let _serial = crate::testlock::serial();
+        let root = std::env::temp_dir().join(format!(".plx-diag-trigger-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+        }
+        let _cleanup = Cleanup(root.clone());
+        std::fs::write(root.join(crate::storage::diagnostics::NAME), b"schema=1\n").unwrap();
+        let entry = std::fs::read_dir(&root).unwrap().next().unwrap().unwrap();
+        assert!(!super::is_armed_trigger(&entry));
+        assert!(super::armed_triggers_in(&root).is_empty());
+        std::fs::write(root.join("plxnative-home"), b"").unwrap();
+        assert_eq!(super::armed_triggers_in(&root), vec!["plxnative-home"]);
     }
 
     /// A DIRECTORY whose name matches the trigger prefix must not read as an armed trigger.

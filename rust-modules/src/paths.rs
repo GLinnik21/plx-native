@@ -436,6 +436,31 @@ pub unsafe extern "C" fn plx_runtime_path(
     1
 }
 
+/// Create-only runtime logs. Rust producers and the privacy erasure sweep share these names; the
+/// test below extracts the C boot shim's sinks too, so adding one cannot leave Delete all local
+/// data with a stale second list.
+pub(crate) mod runtime_file {
+    pub(crate) const EVENTS: &str = "plxnative-events.log";
+    pub(crate) const CRASH: &str = "plxnative-crash.log";
+    pub(crate) const STDERR: &str = "plxnative-stderr.log";
+    pub(crate) const STORAGE_DIAGNOSTICS: &str = "plxnative-diag.log";
+    pub(crate) const ANIMATION: &str = "plxnative-anim.log";
+    pub(crate) const GST: &str = "plxnative-gst.log";
+    pub(crate) const GPU_TIME: &str = "plxnative-gputime.jsonl";
+    pub(crate) const HARDWARE_COUNTERS: &str = "plxnative-hwcnt.jsonl";
+
+    pub(crate) const LOGS: [&str; 8] = [
+        EVENTS,
+        CRASH,
+        STDERR,
+        STORAGE_DIAGNOSTICS,
+        ANIMATION,
+        GST,
+        GPU_TIME,
+        HARDWARE_COUNTERS,
+    ];
+}
+
 /// A runtime surface inside [`runtime_dir`], addressed by its bare name (`plxnative-…` included).
 ///
 /// Everything that opens one of these goes through here, so the instance root has a single
@@ -647,6 +672,24 @@ pub(crate) fn obsolete_last_place_candidates() -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn c_boot_log_sinks_are_in_the_shared_runtime_catalog() {
+        let source = include_str!("../../src/main.c");
+        let names: Vec<&str> = source
+            .split("runtime_path(\"")
+            .skip(1)
+            .filter_map(|tail| tail.split_once('"').map(|(name, _)| name))
+            .filter(|name| name.ends_with(".log"))
+            .collect();
+        assert!(!names.is_empty(), "the C boot-log catalog went vacuous");
+        for name in names {
+            assert!(
+                super::runtime_file::LOGS.contains(&name),
+                "C boot log {name} is absent from the shared deletion catalog"
+            );
+        }
+    }
+
     /// `app_dir` must hand back an ABSOLUTE directory and must not panic however it got there.
     ///
     /// This used to say it exercised the LEGACY_APP_DIR fallback, because `read_link` of

@@ -2,7 +2,8 @@
 //!
 //! This module deliberately knows nothing about either owner's JSON schema. A [`Record`]'s
 //! payload is an opaque UTF-8 string: in particular, a secure session envelope is never parsed,
-//! normalised, or re-serialised here.
+//! normalised, or re-serialised here. The diagnostics worker publishes separate allowlisted
+//! helper and directory evidence; it never reads records or session files.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -14,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 // The canonical DB8 engine is introduced before its transport/adapters replace JsonStore.
 pub(crate) mod client;
+pub(crate) mod diagnostics;
 #[allow(dead_code)]
 pub(crate) mod state;
 #[path = "../storage_service/wire.rs"]

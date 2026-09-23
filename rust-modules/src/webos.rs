@@ -577,6 +577,25 @@ fn ls2_probe() {
     ls2::probe();
 }
 
+/// Grade only the allowlisted fields in the LS2 wake reply. The raw platform JSON never enters a
+/// report or the local snapshot.
+#[cfg(any(test, all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"))))]
+fn storage_activation_reply(reply: &str) -> crate::storage::wire::failure::Detail {
+    use crate::storage::wire::failure::{Detail, Stage};
+    if reply.len() > 4096 { return Detail::new(Stage::ActivationInvalidReply, None); }
+    let value = serde_json::from_str::<serde_json::Value>(reply).ok();
+    let accepted = value.as_ref().and_then(|value| value.get("returnValue"))
+        .and_then(serde_json::Value::as_bool);
+    let code = value.as_ref().and_then(|value| value.get("errorCode"))
+        .and_then(serde_json::Value::as_i64)
+        .and_then(|value| i32::try_from(value).ok());
+    match accepted {
+        Some(true) => Detail::new(Stage::ActivationAccepted, code),
+        Some(false) => Detail::new(Stage::ActivationRejected, code),
+        None => Detail::new(Stage::ActivationInvalidReply, code),
+    }
+}
+
 /// Best-effort dynamic-service activation hint for the storage helper.
 ///
 /// The helper publishes readiness from its startup path, so neither a successful method reply nor
@@ -586,11 +605,15 @@ fn ls2_probe() {
 pub(crate) fn activate_storage_helper(service: &str) -> crate::storage::wire::failure::Detail {
     use crate::storage::wire::failure::{Detail, Stage};
     let uri = format!("luna://{service}/wake");
-    match ls2::call_once(&uri, "{}") {
-        Ok(_) | Err(ls2::Fail::Timeout) => Detail::new(Stage::ActivationSent, None),
+    let started = std::time::Instant::now();
+    let detail = match ls2::call_once(&uri, "{}") {
+        Ok(reply) => storage_activation_reply(&reply),
+        Err(ls2::Fail::Timeout) => Detail::new(Stage::ActivationTimeout, None),
         Err(ls2::Fail::Setup { stage, code, .. }) =>
             crate::storage::wire::failure::activation_failure(stage, code),
-    }
+    };
+    crate::storage::diagnostics::activation(detail, started.elapsed().as_millis() as u64);
+    detail
 }
 
 #[cfg(all(not(feature = "hostsim"), not(test)))]
@@ -1078,6 +1101,20 @@ pub(crate) mod ls2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_activation_reply_keeps_only_status_and_numeric_error_code() {
+        use crate::storage::wire::failure::{Detail, Stage};
+        assert_eq!(storage_activation_reply(r#"{"returnValue":true}"#),
+            Detail::new(Stage::ActivationAccepted, None));
+        assert_eq!(storage_activation_reply(
+            r#"{"returnValue":false,"errorCode":-1,"errorText":"private refusal"}"#),
+            Detail::new(Stage::ActivationRejected, Some(-1)));
+        assert_eq!(storage_activation_reply("not json"),
+            Detail::new(Stage::ActivationInvalidReply, None));
+        assert_eq!(storage_activation_reply(&"x".repeat(4097)),
+            Detail::new(Stage::ActivationInvalidReply, None));
+    }
 
     /// The real file off the dev set, verbatim. The parser has to survive the platform's
     /// formatting, not a tidied version of it.

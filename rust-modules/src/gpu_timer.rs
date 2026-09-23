@@ -148,7 +148,7 @@ pub(crate) fn init(filter: &str) -> Result<(), String> {
     let mut ignored = 0;
     unsafe { glGetIntegerv(GL_GPU_DISJOINT_EXT, &mut ignored) };
 
-    let path = crate::paths::in_runtime_dir("plxnative-gputime.jsonl");
+    let path = crate::paths::in_runtime_dir(crate::paths::runtime_file::GPU_TIME);
     let file = OpenOptions::new()
         .create(true)
         .truncate(true)
