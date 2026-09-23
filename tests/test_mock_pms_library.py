@@ -3,12 +3,16 @@ import json
 import hashlib
 import pathlib
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
 import urllib.request
 
 from mock_pms import EXTRA_MEDIA_RK_BASE, Library, MockPms, serve
+
+
+HAS_FFMPEG_AND_FFPROBE = shutil.which("ffmpeg") and shutil.which("ffprobe")
 
 
 def get(pms, path):
@@ -143,6 +147,10 @@ class DoviAndExtraMedia(unittest.TestCase):
         self.assertNotIn(EXTRA_MEDIA_RK_BASE, lib.items)
         self.assertLess(max(lib.items), EXTRA_MEDIA_RK_BASE)
 
+    @unittest.skipUnless(
+        HAS_FFMPEG_AND_FFPROBE,
+        "needs ffmpeg+ffprobe; the host CI runner has neither — the field mapping is covered by the pure tests above",
+    )
     def test_extra_media_container_and_content_type_come_from_the_file_extension(self):
         with tempfile.TemporaryDirectory() as tmp:
             mp4 = pathlib.Path(tmp) / "clip.mp4"
@@ -174,6 +182,10 @@ class DoviAndExtraMedia(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
+    @unittest.skipUnless(
+        HAS_FFMPEG_AND_FFPROBE,
+        "needs ffmpeg+ffprobe; the host CI runner has neither — the field mapping is covered by the pure tests above",
+    )
     def test_startup_prints_ratingkey_to_filename_for_every_extra_media_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             clip = pathlib.Path(tmp) / "clip.mp4"
