@@ -210,6 +210,7 @@ fn a_grant_verified_only_over_plaintext_reports_the_shared_insecure_only_copy() 
             (None, settled_probe_for_test("srv", Outcome::InsecureOnly,
                 Some(probe::Location::Local), Some("10.0.0.5".into())))
         }
+        fn gap(&mut self) {}
     }
 
     let mut a = SessionAdapter::fixture();
@@ -405,6 +406,7 @@ fn a_refused_profile_resources_request_does_not_blame_the_connection() {
         fn probe(&mut self, _: &Resource, _: &[i64]) -> (Option<SourceRef>, SettledProbe) {
             unreachable!("no resources, nothing to probe")
         }
+        fn gap(&mut self) {}
     }
 
     let run = |evidence: CallEvidence| -> String {

@@ -252,6 +252,7 @@ impl ProfileWorkIo for OnlineSwitchIo {
     fn admit(&mut self, _: &SourceRef, _: &str) -> crate::plex::EndpointAdmission {
         crate::plex::EndpointAdmission::Usable
     }
+    fn gap(&mut self) {}
 }
 
 /// A captured-in-place [`owner::ObservationSink`] — no worker/adapter plumbing, since this
@@ -290,6 +291,7 @@ impl ProfileWorkIo for FailedFreshProbeIo {
     fn admit(&mut self, _: &SourceRef, _: &str) -> crate::plex::EndpointAdmission {
         panic!("a failed identity probe has no endpoint to authenticate")
     }
+    fn gap(&mut self) {}
 }
 
 #[test]
@@ -343,6 +345,7 @@ impl ProfileWorkIo for ScriptedAdmissionIo {
         self.checked.push((source.machine_id.clone(), source.token.clone()));
         self.admissions.pop_front().expect("one admission result per reached source")
     }
+    fn gap(&mut self) {}
 }
 
 fn run_scripted_admission(io: &mut ScriptedAdmissionIo) -> Vec<AuthProgress> {
@@ -451,6 +454,7 @@ impl ProfileWorkIo for MultiEndpointAdmissionIo {
         self.checked.push((source.origin_url.clone(), source.token.clone()));
         self.admissions.pop_front().unwrap()
     }
+    fn gap(&mut self) {}
 }
 
 #[test]
@@ -498,6 +502,7 @@ impl ProfileWorkIo for ExpiredBudgetIo {
         crate::plex::EndpointAdmission::Usable
     }
     fn admission_budget(&self) -> Duration { Duration::ZERO }
+    fn gap(&mut self) {}
 }
 
 #[test]
@@ -554,6 +559,7 @@ impl ProfileWorkIo for StalledLosingProbeIo {
         }
     }
     fn admission_budget(&self) -> Duration { Duration::from_millis(100) }
+    fn gap(&mut self) {}
 }
 
 #[test]
@@ -604,6 +610,7 @@ impl ProfileWorkIo for DiesDuringSecondaryIo {
         assert_eq!(source.machine_id, "a", "secondary servers are not authenticated for liveness");
         crate::plex::EndpointAdmission::Usable
     }
+    fn gap(&mut self) {}
 }
 
 struct LivenessSink {
@@ -663,6 +670,7 @@ impl ProfileWorkIo for UnavailableSecondaryIo {
                 Some(winner.address)))
         }
     }
+    fn gap(&mut self) {}
 }
 
 #[test]

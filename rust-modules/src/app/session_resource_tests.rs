@@ -90,6 +90,9 @@ mod tests {
                 ),
             )
         }
+        fn gap(&mut self) {
+            assert_eq!(self.probes, 1);
+        }
     }
 
     #[test]
@@ -254,6 +257,9 @@ mod tests {
             _: &[i64],
         ) -> (Option<SourceRef>, crate::auth::SettledProbe) {
             panic!("offline worker probed")
+        }
+        fn gap(&mut self) {
+            panic!("offline worker waited between probes")
         }
     }
 

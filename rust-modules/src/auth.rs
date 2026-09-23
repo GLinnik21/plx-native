@@ -1581,6 +1581,7 @@ const PROBE_DEADLINES: ProbeDeadlines = ProbeDeadlines {
     local: Duration::from_secs(5),
     remote: Duration::from_secs(10),
 };
+const SERVER_GAP: Duration = Duration::from_secs(4);
 // Authenticated admission starts only after identity probing has produced a candidate. Endpoint
 // fallbacks share this ceiling, while each sections request keeps its local/remote attempt cap.
 const ADMISSION_BUDGET: Duration = Duration::from_secs(20);
@@ -2175,6 +2176,7 @@ fn resolve_roster_using_admission(
     probe_one: &mut dyn FnMut(&ProbePlan, &[String]) -> Reach,
     admit: &mut dyn FnMut(&SourceRef) -> crate::plex::EndpointAdmission,
     activate: &mut dyn FnMut(&ProbePlan, &Candidate, &Origin),
+    between_servers: &mut dyn FnMut(),
     observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>, Option<String>),
 ) -> Resolved {
     let mut servers: Vec<&Resource> = resources.iter().filter(|r| r.is_server()).collect();
@@ -2188,7 +2190,10 @@ fn resolve_roster_using_admission(
     let mut found: Vec<SourceRef> = Vec::new();
     let mut refused = false;
     let mut insecure = false;
-    for r in servers {
+    for (server_index, r) in servers.into_iter().enumerate() {
+        if server_index != 0 {
+            between_servers();
+        }
         let plan = probe::plan(r, policy);
         let mut rejected_origins = Vec::new();
         let reach = loop {
@@ -2273,10 +2278,12 @@ fn resolve_roster_using(
     household: &[i64],
     policy: CredentialPolicy,
     probe_one: &mut dyn FnMut(&ProbePlan) -> Reach,
+    between_servers: &mut dyn FnMut(),
     observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>, Option<String>),
 ) -> Resolved {
     resolve_roster_using_admission(resources, household, policy, &mut |plan, _| probe_one(plan),
         &mut |_| crate::plex::EndpointAdmission::Usable, &mut |_, _, _| {},
+        between_servers,
         observe)
 }
 
@@ -2362,6 +2369,7 @@ fn resolve_roster(
         household,
         policy,
         &mut probe_one,
+        &mut || {},
         &mut |_, _, _, _| {},
     )
 }
@@ -2390,12 +2398,25 @@ fn resolve_roster_live_while(
         probe_server_racing(&plan, Arc::clone(&dial), &spawn, PROBE_DEADLINES,
             &mut |_, _, _| {})
     };
-    let mut admission_deadline = None;
+    let admission_deadline = std::cell::Cell::new(None);
     let mut admit = |source: &SourceRef| {
         if !live() { return crate::plex::EndpointAdmission::Transport; }
-        let deadline = *admission_deadline.get_or_insert_with(||
-            Instant::now().checked_add(ADMISSION_BUDGET).unwrap_or_else(Instant::now));
+        let deadline = admission_deadline.get().unwrap_or_else(|| {
+            let deadline = Instant::now().checked_add(ADMISSION_BUDGET).unwrap_or_else(Instant::now);
+            admission_deadline.set(Some(deadline));
+            deadline
+        });
         crate::plex::admit_source_until(source, client_id, deadline)
+    };
+    let mut between_servers = || {
+        if !live() { return; }
+        let started = Instant::now();
+        std::thread::sleep(SERVER_GAP);
+        if let Some(deadline) = admission_deadline.get() {
+            admission_deadline.set(Some(
+                deadline.checked_add(started.elapsed()).unwrap_or(deadline),
+            ));
+        }
     };
     resolve_roster_using_admission(
         resources,
@@ -2404,6 +2425,7 @@ fn resolve_roster_live_while(
         &mut probe_one,
         &mut admit,
         activate,
+        &mut between_servers,
         observe,
     )
 }
@@ -3255,6 +3277,7 @@ pub(crate) trait ProfileWorkIo {
         self.admit(source, client_id)
     }
     fn admission_budget(&self) -> Duration { ADMISSION_BUDGET }
+    fn gap(&mut self);
 }
 
 struct LiveProfileWorkIo<S> { switch: Option<S> }
@@ -3304,6 +3327,7 @@ impl<S: FnOnce(&AccountClient, &str, Option<&str>) -> SwitchOutcome> ProfileWork
         -> crate::plex::EndpointAdmission {
         crate::plex::admit_source_until(source, client_id, deadline)
     }
+    fn gap(&mut self) { std::thread::sleep(SERVER_GAP); }
 }
 
 /// Both the live resource executor and preserved worker-policy tests enter this same body.
@@ -3580,6 +3604,8 @@ pub(crate) fn profile_switch_worker_with_io(
         if probed[i] {
             continue;
         }
+        if !output.live() { return; }
+        io.gap();
         if !output.live() { return; }
         let (mut winner, mut settled) = io.probe_after(&resources[i], &household, &[]);
         if !output.live() { return; }

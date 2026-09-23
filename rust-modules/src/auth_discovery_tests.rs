@@ -218,7 +218,7 @@ fn relay_only_server_gets_a_fresh_probe_budget_after_direct_timeouts_and_is_admi
             admissions += 1;
             crate::plex::EndpointAdmission::Usable
         },
-        &mut |_, _, _| {}, &mut |_, _, _, _| {},
+        &mut |_, _, _| {}, &mut || {}, &mut |_, _, _, _| {},
     );
 
     assert!(matches!(resolved, Resolved::Reached(ref found)
@@ -285,7 +285,7 @@ fn discovery_retries_the_same_server_via_relay_after_direct_admission_times_out(
     let resolved = resolve_roster_using_admission(
         &[resource], &[], CredentialPolicy::HttpsOnly, &mut probe_one,
         &mut |_| admissions.next().unwrap(), &mut |_, _, _| {},
-        &mut |_, _, _, _| {},
+        &mut || {}, &mut |_, _, _, _| {},
     );
     let Resolved::Reached(found) = resolved else { panic!("relay admission must retain the server") };
     assert_eq!(probes, 2);
@@ -725,6 +725,7 @@ fn issue_95_resolve_roster_only_ever_records_an_https_origin() {
             &[],
             CredentialPolicy::HttpsOnly,
             &mut probe_one,
+            &mut || {},
             &mut |_, _, _, _| {},
         );
     let Resolved::Reached(roster) = resolved else {
@@ -761,6 +762,7 @@ fn issue_95_without_a_relay_a_plaintext_only_answer_is_not_reached() {
             &[],
             CredentialPolicy::HttpsOnly,
             &mut probe_one,
+            &mut || {},
             &mut |_, _, _, _| {},
         );
     assert!(
@@ -909,6 +911,7 @@ fn a_pinned_winner_is_recorded_as_the_plex_direct_origin_not_the_dialled_address
             &[],
             CredentialPolicy::HttpsOnly,
             &mut probe_one,
+            &mut || {},
             &mut |_, _, _, _| {},
         );
     let Resolved::Reached(roster) = resolved else {
@@ -1067,6 +1070,7 @@ fn e2e_real_curl_resolve_roster_only_ever_records_the_pinned_https_origin() {
         &[],
         CredentialPolicy::HttpsOnly,
         &mut probe_one,
+        &mut || {},
         &mut |_, _, _, _| {},
     );
     let Resolved::Reached(roster) = resolved else {
@@ -1130,6 +1134,7 @@ fn e2e_real_curl_tls_failure_with_a_verified_plaintext_answer_yields_insecure_on
         &[],
         CredentialPolicy::HttpsOnly,
         &mut probe_one,
+        &mut || {},
         &mut |_, _, _, _| {},
     );
     match &resolved {
@@ -1192,7 +1197,7 @@ fn a_candidate_whose_label_does_not_encode_its_own_address_gets_no_pin() {
 }
 
 #[test]
-fn servers_are_probed_in_owned_then_public_match_order_without_a_gap_hook() {
+fn servers_are_serial_owned_then_public_match_with_one_gap_between_each() {
     let resources = vec![
         resource(
             r#"{"name":"unmatched","clientIdentifier":"shared-u","provides":"server",
@@ -1208,6 +1213,7 @@ fn servers_are_probed_in_owned_then_public_match_order_without_a_gap_hook() {
         ),
     ];
     let mut order = Vec::new();
+    let mut gaps = 0;
     let resolved = resolve_roster_using(
         &resources,
         &[],
@@ -1216,10 +1222,15 @@ fn servers_are_probed_in_owned_then_public_match_order_without_a_gap_hook() {
             order.push(plan.machine_id.clone());
             Reach::No
         },
+        &mut || gaps += 1,
         &mut |_, _, _, _| {},
     );
     assert!(matches!(resolved, Resolved::None { refused: false, .. }));
     assert_eq!(order, ["owned", "shared-m", "shared-u"]);
+    assert_eq!(
+        gaps, 2,
+        "three serial servers have exactly two inter-server gaps"
+    );
 }
 
 #[test]
@@ -1253,6 +1264,7 @@ fn every_server_settlement_publishes_its_specific_state_and_winning_tier() {
             "denied" => Reach::Refused,
             _ => Reach::No,
         },
+        &mut || {},
         &mut |plan, outcome, tier, address| observed.push((plan.machine_id.clone(), outcome, tier, address)),
     );
 
