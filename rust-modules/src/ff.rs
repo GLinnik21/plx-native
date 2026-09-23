@@ -1610,6 +1610,7 @@ impl Src {
             Src::Idle => crate::stream::BodyReceipt {
                 ahead: 0,
                 finished: false,
+                stepped: false,
             },
         }
     }
@@ -2246,11 +2247,21 @@ impl AvioState {
     /// (`Src::body_receipt`). PMS pauses a sized response and then bursts the remainder; once
     /// that burst is in hand, a hold must not abandon it. An unsized body completes only on the
     /// transport's proven end. Called before every guard decision `read_cb` makes.
+    ///
+    /// A receipt that took a transfer step received body bytes the later read only copies out, so
+    /// the step's time is counted here, once, as body time — the same accounting those bytes
+    /// would have had had the read itself received them. Nothing else in the query is body work.
     fn note_received(&mut self) {
         if self.acquisition.is_none() {
             return;
         }
+        let asked = std::time::Instant::now();
         let receipt = self.src.body_receipt();
+        if receipt.stepped {
+            self.body_active_us = self
+                .body_active_us
+                .saturating_add(asked.elapsed().as_micros().max(1) as u64);
+        }
         let bounced = self.bounce.len().saturating_sub(self.bounce_pos) as i64;
         let received = self
             .off

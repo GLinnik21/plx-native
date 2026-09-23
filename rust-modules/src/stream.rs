@@ -1819,6 +1819,10 @@ pub(crate) struct BodyReceipt {
     /// The transport proved the body's end: every declared byte, the chunked terminator, or a
     /// successful transfer. Never a failure, which is not an end.
     pub(crate) finished: bool,
+    /// Answering took a transfer step (curl's `perform`): bytes were received — on https,
+    /// decrypted — by the query itself, and the read that later copies them out will not see
+    /// that work. The caller counts the query's time as body transfer time exactly then.
+    pub(crate) stepped: bool,
 }
 
 /// [`BodyReceipt`] for the plaintext socket. `recv` reads straight into the caller's buffer, so
@@ -1829,6 +1833,7 @@ pub(crate) fn http_body_receipt(hs: *const HttpStream) -> BodyReceipt {
     let nothing = BodyReceipt {
         ahead: 0,
         finished: false,
+        stepped: false,
     };
     if hs.is_null() {
         return nothing;
@@ -1838,6 +1843,7 @@ pub(crate) fn http_body_receipt(hs: *const HttpStream) -> BodyReceipt {
         return BodyReceipt {
             ahead: 0,
             finished: true,
+            stepped: false,
         };
     }
     if hs.chunked != 0 {
@@ -1856,6 +1862,7 @@ pub(crate) fn http_body_receipt(hs: *const HttpStream) -> BodyReceipt {
     BodyReceipt {
         ahead,
         finished: false,
+        stepped: false,
     }
 }
 

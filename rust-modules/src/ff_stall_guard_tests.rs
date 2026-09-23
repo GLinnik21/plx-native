@@ -1722,6 +1722,75 @@ fn a_hold_still_abandons_a_remainder_still_on_the_wire() {
     }
 }
 
+/// The transfer step a receipt takes is body work, counted once. `read_cb`'s completion query may
+/// run curl's `perform` — receiving (on https, decrypting) a burst into the transfer buffer —
+/// before the timed read that then only copies from it. That step's time belongs in
+/// `body_active_us` alongside the bytes it received, or the capacity observation is inflated and
+/// body work lands in the fixed-overhead term. Armed and unarmed fetches alike.
+#[test]
+fn transfer_work_a_receipt_takes_is_counted_in_body_time() {
+    use std::io::{Read, Write};
+    const BODY: usize = 8 << 20;
+    let Some(_gate) = curl_gate() else { return };
+    let _reset = SharedHoldReset::at(PLAYHEAD_NS);
+    let mut undercounted = Vec::new();
+    for reserve in [Some(6_000), None] {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback server");
+        let port = listener.local_addr().unwrap().port();
+        let (send_body, body_cue) = std::sync::mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept");
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 512];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let n = socket.read(&mut chunk).expect("read request");
+                if n == 0 {
+                    return;
+                }
+                request.extend_from_slice(&chunk[..n]);
+            }
+            let headers = format!("HTTP/1.1 200 OK\r\nContent-Length: {BODY}\r\n\r\n");
+            socket.write_all(headers.as_bytes()).expect("headers");
+            socket.flush().expect("flush");
+            let _ = body_cue.recv();
+            // Blocks once the socket buffers fill; the reader is dropped before the join, which
+            // ends the write.
+            let _ = socket.write_all(&vec![0x47u8; BODY]);
+        });
+        let cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/segment.ts"), 0)
+            .expect("fixture: the open must succeed");
+        let _ = send_body.send(());
+        // Let the burst fill the kernel's buffers while the transfer buffer is empty.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let mut aq = crate::aq::aq_new(1 << 20);
+        let mut state = avio_state_for(
+            Src::Curl(cs),
+            &mut *aq,
+            BODY as i64,
+            SegmentAcquisition::for_test(reserve, false, false),
+        );
+        let op = &mut state as *mut AvioState as *mut c_void;
+        let mut dst = [0u8; 4];
+        let started = std::time::Instant::now();
+        assert_eq!(read_cb(op, dst.as_mut_ptr(), 4), 4, "fixture: 4 body bytes");
+        let wall_us = started.elapsed().as_micros() as u64;
+        // The read_cb is the receipt's transfer step plus a 4-byte copy; the step dominates.
+        if state.body_active_us.saturating_mul(2) < wall_us {
+            undercounted.push(format!(
+                "reserve={reserve:?}: body_active_us={} of a {wall_us} us read",
+                state.body_active_us
+            ));
+        }
+        drop(state);
+        crate::aq::aq_destroy(&mut *aq);
+        server.join().expect("loopback server");
+    }
+    assert!(
+        undercounted.is_empty(),
+        "the transfer step a receipt took must be counted as body time: {undercounted:#?}"
+    );
+}
+
 // -- seams onto production state, so each scenario above reads the same before and after --------
 
 /// An HLS AVIO over `src` carrying `acquisition` exactly as `hls_input` would build it: the
