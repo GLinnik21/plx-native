@@ -717,6 +717,7 @@ pub(super) fn write_incident_context(w: &mut Canon, context: &crate::telemetry::
 
 pub(super) fn write_user(w: &mut Canon, user: &UserRef) {
     w.u64(user.id as u64).str(&user.uuid).str(&user.title).str(&user.thumb).str(&user.token);
+    w.option(user.plex_tv_token.as_ref(), |w, t| { w.str(t); });
 }
 
 pub(super) fn write_tile(w: &mut Canon, user: &UserTile) {
@@ -3541,6 +3542,20 @@ mod tests {
         assert!(restored.persisted.auto_sign_in());
         assert_eq!(restored.hash(), on.hash());
         assert_eq!(SessionMachine::from_init(restored).subhash(), b.subhash());
+    }
+
+    #[test]
+    fn plex_tv_token_changes_user_and_cached_owner_hashes() {
+        let none = captured_session();
+        let mut first = none.clone();
+        first.persisted.user.plex_tv_token = Some("synthetic-plex-tv-token-a".into());
+        let mut second = first.clone();
+        second.persisted.user.plex_tv_token = Some("synthetic-plex-tv-token-b".into());
+
+        assert_ne!(none.hash(), first.hash(), "None and Some plex.tv credentials are distinct canonical state");
+        assert_ne!(first.hash(), second.hash(), "users differing only by plex.tv credential are distinct canonical state");
+        assert_ne!(SessionMachine::from_init(none).subhash(), SessionMachine::from_init(first).subhash(),
+            "cached owner hash must include the optional plex.tv credential");
     }
 
     #[test]
