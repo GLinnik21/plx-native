@@ -211,10 +211,12 @@ impl AcquisitionRuntime {
         }
     }
 
-    /// Record body progress. A known length is complete once every declared byte arrived; an
-    /// unknown length (`size < 0`) is complete only at a confirmed end (`eof`).
-    pub(super) fn note_body(&mut self, size: i64, delivered: i64, eof: bool) {
-        if eof || (size >= 0 && delivered >= size) {
+    /// Record body progress. `received` is the end offset of what the transport has RECEIVED
+    /// (`AvioState::note_received`), not what FFmpeg has read. A known length is complete once
+    /// every declared byte arrived; an unknown length (`size < 0`) is complete only at a
+    /// confirmed end (`eof`).
+    pub(super) fn note_body(&mut self, size: i64, received: i64, eof: bool) {
+        if eof || (size >= 0 && received >= size) {
             self.enter(Phase::BodyComplete);
         }
     }

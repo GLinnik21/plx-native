@@ -1601,6 +1601,19 @@ enum Src {
 }
 
 impl Src {
+    /// What the transport has RECEIVED of the current body beyond what FFmpeg has read — the
+    /// one completion question both sources answer (`stream::BodyReceipt`).
+    fn body_receipt(&mut self) -> crate::stream::BodyReceipt {
+        match self {
+            Src::Socket { hs, .. } => crate::stream::http_body_receipt(*hs),
+            Src::Curl(cs) => cs.body_receipt(),
+            Src::Idle => crate::stream::BodyReceipt {
+                ahead: 0,
+                finished: false,
+            },
+        }
+    }
+
     fn take_curl(&mut self) -> Option<Box<crate::curlio::CurlSource>> {
         match std::mem::replace(self, Src::Idle) {
             Src::Curl(cs) => Some(cs),
@@ -2228,6 +2241,26 @@ impl AvioState {
         self.bounce_pos < self.bounce.len()
     }
 
+    /// **Credit the acquisition with every body byte already RECEIVED**, not merely read: what
+    /// FFmpeg consumed (`off`), plus the park drain's bounce, plus what the transport holds ahead
+    /// (`Src::body_receipt`). PMS pauses a sized response and then bursts the remainder; once
+    /// that burst is in hand, a hold must not abandon it. An unsized body completes only on the
+    /// transport's proven end. Called before every guard decision `read_cb` makes.
+    fn note_received(&mut self) {
+        if self.acquisition.is_none() {
+            return;
+        }
+        let receipt = self.src.body_receipt();
+        let bounced = self.bounce.len().saturating_sub(self.bounce_pos) as i64;
+        let received = self
+            .off
+            .saturating_add(bounced)
+            .saturating_add(receipt.ahead);
+        if let Some(acquisition) = &mut self.acquisition {
+            acquisition.note_body(self.size, received, receipt.finished);
+        }
+    }
+
     fn transfer_finished(&self) -> bool {
         match &self.src {
             Src::Idle => true,
@@ -2414,8 +2447,8 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
             }
             // The abort rule, evaluated where the numbers are — through the same runtime check
             // the open and the transport waits consult. See `StallGuard`.
+            s.note_received();
             if let Some(acquisition) = &mut s.acquisition {
-                acquisition.note_body(s.size, s.off, false);
                 if crate::checkpoint::Checkpoint::check(acquisition)
                     == crate::checkpoint::Flow::Stop
                 {
@@ -2493,8 +2526,10 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
             }
             // Every unsuccessful read is SETTLED by a fresh check before it is classified: a
             // deadline shorter than the checkpoint slice ends the wait without asking again, and a
-            // stopped wait has already latched why.
+            // stopped wait has already latched why. What the transport received during the wait
+            // is credited first, so the fresh check sees the same completion the read would have.
             if r < 0 {
+                s.note_received();
                 if let Some(acquisition) = &mut s.acquisition {
                     if acquisition.settle_stopped() {
                         return avio_stopped(s);

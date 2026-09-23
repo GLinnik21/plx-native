@@ -282,6 +282,44 @@ fn a_blocked_body_read_stops_on_request_and_keeps_its_connection() {
     assert!(!server.finish());
 }
 
+/// Bytes already in the socket's kernel queue are RECEIVED: a read hands them over without
+/// consulting its checkpoint, the same as bytes in the header buffer. Asking first let a hold that
+/// landed after `read_cb`'s own check stop a transfer whose remainder had already arrived.
+#[test]
+fn bytes_already_queued_in_the_kernel_are_returned_before_the_checkpoint_is_asked() {
+    for deadline in [None, Some(Instant::now() + BOUND)] {
+        let server = Scripted::start(vec![
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\n".to_vec(),
+            b"abc".to_vec(),
+        ]);
+        let mut hs = http_stream_boxed();
+        assert_eq!(
+            open_with(
+                &mut *hs,
+                server.port,
+                Instant::now() + BOUND,
+                &mut NoCheckpoint
+            ),
+            Ok(())
+        );
+        server.wait_written(0);
+        server.go.send(()).unwrap();
+        server.wait_written(1);
+        // Loopback delivery is synchronous with the write; this only rules out a slow scheduler.
+        std::thread::sleep(Duration::from_millis(20));
+        let mut cp = TestCheckpoint::stopping_after(0, SLICE);
+        let mut buf = [0u8; 16];
+        let n = http_read_until(&mut *hs, buf.as_mut_ptr(), 16, deadline, &mut cp);
+        assert_eq!(
+            (n, cp.calls()),
+            (3, 0),
+            "deadline={deadline:?}: queued bytes must be delivered without asking the checkpoint"
+        );
+        assert_eq!(&buf[..3], b"abc");
+        assert!(!server.finish());
+    }
+}
+
 #[test]
 fn a_chunked_body_split_across_checkpoint_slices_survives() {
     let parts: Vec<Vec<u8>> = vec![

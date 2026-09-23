@@ -153,6 +153,7 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
     fn drive_two_reads_across_a_terminal_hold(policy: SegmentAcquisition) -> bool {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback server");
         let port = listener.local_addr().unwrap().port();
+        let (finish, finish_cue) = std::sync::mpsc::channel::<()>();
         let server = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().expect("accept");
             let mut request = Vec::new();
@@ -164,12 +165,15 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
                 }
                 request.extend_from_slice(&chunk[..n]);
             }
-            // The whole body is available immediately: this test controls the terminal hold
-            // itself, between two synchronous `read_cb` calls, rather than a server pause.
+            // The prefix is available immediately; this test controls the terminal hold itself,
+            // between two synchronous `read_cb` calls. The remainder stays on the server until
+            // the test is done: a remainder already RECEIVED would be complete, not abortable.
             socket
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCDEFGH")
-                .expect("headers+body");
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD")
+                .expect("headers+prefix");
             socket.flush().expect("flush");
+            let _ = finish_cue.recv();
+            let _ = socket.write_all(b"EFGH");
         });
 
         SHARED
@@ -215,6 +219,7 @@ fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_polic
         let second = read_cb(op, dst.as_mut_ptr(), dst.len() as c_int);
         let aborted = second == AVERROR_EOF && avio_stall_aborted(&state);
         drop(state);
+        let _ = finish.send(());
 
         SHARED
             .hls_rebuffering
@@ -1523,6 +1528,198 @@ fn the_retry_wait_keeps_its_end_across_rechecks_and_ends_on_a_stop() {
     );
     assert!(started.elapsed() < std::time::Duration::from_secs(1));
     crate::aq::aq_destroy(&mut *aq);
+}
+
+// -- a body the transport already HOLDS is complete, whatever FFmpeg has read ----------------
+//
+// PMS pauses a sized response for its JIT encoder and then bursts the remainder. The burst can
+// land entirely in the transport — the socket's header buffer or kernel queue, curl's transfer
+// buffer — while FFmpeg has consumed only a prefix through AVIO. A hold accepted then must not
+// abandon an object that is already fully downloaded: that is a needless downshift and a longer
+// rebuffer, paid for bytes that were already here.
+
+#[derive(Clone, Copy, Debug)]
+enum HeldTransport {
+    Socket,
+    Curl,
+}
+
+/// Where the 8-byte body is when the hold lands after FFmpeg has read its first 4 bytes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum BodyArrival {
+    /// In the same write as the headers: it is in the transport's own buffer after the open.
+    WithHeaders,
+    /// Written after the open and before the first read: in the kernel queue (socket) or pulled
+    /// into curl's buffer by the first read's transfer step.
+    AfterOpen,
+    /// Only the first 4 bytes exist; the rest is still on the server. The control.
+    Withheld,
+}
+
+struct HeldBodyRead {
+    second: c_int,
+    stall_aborted: bool,
+    bytes: [u8; 4],
+}
+
+/// Open an 8-byte response on `transport`, read 4 bytes through `read_cb`, publish an accepted
+/// hold, and read again. `None` when the host has no libcurl for the curl leg.
+fn read_across_a_hold_with_the_body(
+    transport: HeldTransport,
+    arrival: BodyArrival,
+) -> Option<HeldBodyRead> {
+    use std::io::{Read, Write};
+    let _serial = match transport {
+        HeldTransport::Socket => crate::testlock::serial(),
+        HeldTransport::Curl => curl_gate()?,
+    };
+    let _reset = SharedHoldReset::at(PLAYHEAD_NS);
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback server");
+    let port = listener.local_addr().unwrap().port();
+    let (send_body, body_cue) = std::sync::mpsc::channel::<()>();
+    let (body_sent, body_sent_cue) = std::sync::mpsc::channel::<()>();
+    let (finish, finish_cue) = std::sync::mpsc::channel::<()>();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().expect("accept");
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 512];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let n = socket.read(&mut chunk).expect("read request");
+            if n == 0 {
+                return;
+            }
+            request.extend_from_slice(&chunk[..n]);
+        }
+        let headers: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\n";
+        match arrival {
+            BodyArrival::WithHeaders => {
+                socket
+                    .write_all(&[headers, b"ABCDEFGH"].concat())
+                    .expect("response");
+            }
+            BodyArrival::AfterOpen => {
+                socket.write_all(headers).expect("headers");
+                socket.flush().expect("flush");
+                let _ = body_cue.recv();
+                socket.write_all(b"ABCDEFGH").expect("body");
+            }
+            BodyArrival::Withheld => {
+                socket
+                    .write_all(&[headers, b"ABCD"].concat())
+                    .expect("prefix");
+            }
+        }
+        socket.flush().expect("flush");
+        let _ = body_sent.send(());
+        let _ = finish_cue.recv();
+        if arrival == BodyArrival::Withheld {
+            let _ = socket.write_all(b"EFGH");
+        }
+    });
+
+    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut hs = crate::stream::http_stream_boxed();
+    let src = match transport {
+        HeldTransport::Socket => {
+            let host = CString::new("127.0.0.1").unwrap();
+            let path = CString::new("/segment.ts").unwrap();
+            assert_eq!(
+                crate::stream::http_open(
+                    &mut *hs,
+                    host.as_ptr(),
+                    port as c_int,
+                    path.as_ptr(),
+                    std::ptr::null(),
+                    "GET",
+                ),
+                0,
+            );
+            Src::Socket {
+                hs: &mut *hs,
+                host,
+                port: port as c_int,
+                path,
+            }
+        }
+        HeldTransport::Curl => Src::Curl(
+            crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/segment.ts"), 0)
+                .expect("fixture: the open must succeed"),
+        ),
+    };
+    let _ = send_body.send(());
+    body_sent_cue
+        .recv()
+        .expect("fixture: the server wrote its bytes");
+    let mut state = avio_state_for(
+        src,
+        &mut *aq,
+        8,
+        SegmentAcquisition::for_test(Some(6_000), false, false),
+    );
+    let op = &mut state as *mut AvioState as *mut c_void;
+    let mut dst = [0u8; 4];
+    assert_eq!(
+        read_cb(op, dst.as_mut_ptr(), 4),
+        4,
+        "fixture: the first 4 bytes must arrive cleanly"
+    );
+    assert_eq!(&dst, b"ABCD");
+
+    publish_accepted_hold();
+    let mut bytes = [0u8; 4];
+    let second = read_cb(op, bytes.as_mut_ptr(), 4);
+    let stall_aborted = avio_stall_aborted(&state);
+    drop(state);
+    let _ = finish.send(());
+    crate::stream::http_close(&mut *hs);
+    crate::aq::aq_destroy(&mut *aq);
+    server.join().expect("loopback server");
+    Some(HeldBodyRead {
+        second,
+        stall_aborted,
+        bytes,
+    })
+}
+
+#[test]
+fn a_hold_delivers_a_remainder_the_transport_already_holds() {
+    let mut abandoned = Vec::new();
+    for transport in [HeldTransport::Socket, HeldTransport::Curl] {
+        for arrival in [BodyArrival::WithHeaders, BodyArrival::AfterOpen] {
+            let Some(read) = read_across_a_hold_with_the_body(transport, arrival) else {
+                continue;
+            };
+            if !(read.second == 4 && &read.bytes == b"EFGH" && !read.stall_aborted) {
+                abandoned.push(format!(
+                    "{transport:?}/{arrival:?}: got {} (stall_aborted={})",
+                    read.second, read.stall_aborted
+                ));
+            }
+        }
+    }
+    assert!(
+        abandoned.is_empty(),
+        "the whole body is already in the transport, so the read after a hold must deliver \
+         it: {abandoned:#?}"
+    );
+}
+
+/// The control: bytes still on the wire are not complete, and the same hold abandons them.
+#[test]
+fn a_hold_still_abandons_a_remainder_still_on_the_wire() {
+    for transport in [HeldTransport::Socket, HeldTransport::Curl] {
+        let Some(read) = read_across_a_hold_with_the_body(transport, BodyArrival::Withheld) else {
+            continue;
+        };
+        assert!(
+            read.second == AVERROR_EOF && read.stall_aborted,
+            "{transport:?}: 4 of 8 bytes still on the server must stall-abort — got {} \
+             (stall_aborted={})",
+            read.second,
+            read.stall_aborted,
+        );
+    }
 }
 
 // -- seams onto production state, so each scenario above reads the same before and after --------

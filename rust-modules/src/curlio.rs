@@ -1361,6 +1361,25 @@ impl CurlSource {
         self.xfer.status
     }
 
+    /// What this transfer holds of the body beyond what the reader has taken. With nothing
+    /// buffered, it first takes the one non-blocking transfer step [`read_until`](Self::read_until)
+    /// would take next, so bytes already in the socket count as received here exactly as they
+    /// would there. `finished` is a successful DONE; a failed one is not an end.
+    pub(crate) fn body_receipt(&mut self) -> crate::stream::BodyReceipt {
+        if self.xfer.pending() == 0
+            && !self.done
+            && self.readable
+            && !self.poisoned
+            && !self.abort.is_set()
+        {
+            let _ = self.perform();
+        }
+        crate::stream::BodyReceipt {
+            ahead: self.xfer.pending() as i64,
+            finished: self.done && !self.failed,
+        }
+    }
+
     /// Body fully received and already copied out of the multi buffer.
     pub(crate) fn body_complete(&self) -> bool {
         self.done && self.xfer.pending() == 0

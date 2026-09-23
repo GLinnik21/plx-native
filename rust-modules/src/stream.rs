@@ -374,8 +374,11 @@ unsafe fn wait_fd(
 /// forever. Polling against the original deadline makes progress consume the budget rather than
 /// renew it.
 ///
-/// The checkpoint is asked before blocking. Unarmed with no deadline, this is the plain blocking
-/// `recv` it always was; otherwise the wait is sliced at its `next_check`.
+/// Bytes the kernel has already queued were RECEIVED before this call, and are handed over
+/// without asking anyone — the same standing `http_read_until` gives its header buffer. Only then
+/// is the checkpoint asked, before blocking: asking first let a hold stop a transfer whose
+/// remainder had already arrived. Unarmed with no deadline, the wait is the plain blocking `recv`
+/// it always was; otherwise it is sliced at its `next_check`.
 unsafe fn recv_until(
     fd: c_int,
     dst: *mut c_void,
@@ -383,6 +386,14 @@ unsafe fn recv_until(
     deadline: Option<Instant>,
     pacer: &mut Pacer,
 ) -> isize {
+    let queued = libc::recv(fd, dst, n, libc::MSG_DONTWAIT);
+    if queued >= 0 {
+        return queued;
+    }
+    let e = errno();
+    if e != libc::EAGAIN && e != libc::EWOULDBLOCK && e != libc::EINTR {
+        return queued;
+    }
     if deadline.is_none() {
         match pacer.before_wait() {
             Err(_) => return HTTP_READ_STOPPED as isize,
@@ -1795,6 +1806,57 @@ pub(crate) fn http_body_done(hs: *const HttpStream) -> bool {
         return true;
     }
     unsafe { (*hs).body_is_done() }
+}
+
+/// **What a transport holds of the current response body beyond what its reader has taken** —
+/// the one question `ff.rs`'s acquisition asks both transports before it may abandon a fetch.
+/// A body is complete when it is RECEIVED, not when FFmpeg has read it: PMS bursts a paused
+/// remainder, and a burst sitting in a buffer is already paid for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct BodyReceipt {
+    /// Body bytes received and not yet read — never framing, never past a declared length.
+    pub(crate) ahead: i64,
+    /// The transport proved the body's end: every declared byte, the chunked terminator, or a
+    /// successful transfer. Never a failure, which is not an end.
+    pub(crate) finished: bool,
+}
+
+/// [`BodyReceipt`] for the plaintext socket. `recv` reads straight into the caller's buffer, so
+/// what it holds ahead is the header block's leftover bytes plus the kernel's receive queue
+/// (`FIONREAD`). A chunked body counts nothing ahead: its buffered bytes are interleaved with
+/// framing, and its end is the terminator [`finish_body`] records.
+pub(crate) fn http_body_receipt(hs: *const HttpStream) -> BodyReceipt {
+    let nothing = BodyReceipt {
+        ahead: 0,
+        finished: false,
+    };
+    if hs.is_null() {
+        return nothing;
+    }
+    let hs = unsafe { &*hs };
+    if hs.body_is_done() {
+        return BodyReceipt {
+            ahead: 0,
+            finished: true,
+        };
+    }
+    if hs.chunked != 0 {
+        return nothing;
+    }
+    let buffered = (hs.blen - hs.bpos).max(0) as i64;
+    let fd = hs.fd();
+    let mut queued: c_int = 0;
+    if fd < 0 || unsafe { libc::ioctl(fd, libc::FIONREAD as _, &mut queued) } < 0 {
+        queued = 0;
+    }
+    let mut ahead = buffered + queued.max(0) as i64;
+    if hs.content_length >= 0 {
+        ahead = ahead.min((hs.content_length - hs.consumed).max(0));
+    }
+    BodyReceipt {
+        ahead,
+        finished: false,
+    }
 }
 
 unsafe fn hs_compact_buf(hs: &mut HttpStream) {
