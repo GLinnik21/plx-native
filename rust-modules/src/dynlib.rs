@@ -465,13 +465,21 @@ mod tests {
         #[cfg(not(target_os = "macos"))]
         let lib = "libthread_db.so.1";
         let _g = crate::testlock::serial();
-        if Handle::open_loaded(&[lib]).is_some() {
+        // Mapped-ness is read with a raw NOLOAD `dlopen`, never through the function under
+        // test: an `open_loaded` that lost its NOLOAD would otherwise load the library here and
+        // skip itself.
+        let is_mapped = || {
+            let c = CString::new(lib).unwrap();
+            !unsafe { dlopen(c.as_ptr(), RTLD_NOW | libc::RTLD_NOLOAD) }.is_null()
+        };
+        if is_mapped() {
             return; // something in this test process already mapped it; nothing to grade
         }
         assert!(
             Handle::open_loaded(&[lib]).is_none(),
-            "open_loaded loaded {lib}"
+            "open_loaded answered for {lib}, which is not mapped"
         );
+        assert!(!is_mapped(), "open_loaded loaded {lib}");
         assert!(
             Handle::open(&[lib]).is_some(),
             "{lib} must exist to grade NOLOAD"
