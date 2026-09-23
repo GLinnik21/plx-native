@@ -455,35 +455,69 @@ mod tests {
         assert!(h.sym("malloc").is_some_and(|p| !p.is_null()));
     }
 
+    /// Libraries that ship with the base system but that a test process has no reason to map.
+    /// A LIST, because no single one is on every host: the GitHub Ubuntu runner has no
+    /// `libthread_db.so.1`. glibc ships the rest in `libc6` itself (`libanl`/`libutil` survive
+    /// 2.34's merge as compat stubs; `libBrokenLocale`, the NSS modules and `libresolv` never
+    /// moved).
+    #[cfg(target_os = "macos")]
+    const UNMAPPED_CANDIDATES: &[&str] = &[
+        "/usr/lib/libpanel.5.4.dylib",
+        "/usr/lib/libform.5.4.dylib",
+        "/usr/lib/libmenu.5.4.dylib",
+    ];
+    #[cfg(not(target_os = "macos"))]
+    const UNMAPPED_CANDIDATES: &[&str] = &[
+        "libthread_db.so.1",
+        "libBrokenLocale.so.1",
+        "libanl.so.1",
+        "libnss_dns.so.2",
+        "libnss_files.so.2",
+        "libutil.so.1",
+        "libresolv.so.2",
+    ];
+
     /// The half that needs `RTLD_NOLOAD`: a library that EXISTS but nothing loaded is not
     /// answered — and is still not mapped afterwards, so `open_loaded` did not load it either.
     /// Only then does a real `open` load it, after which `open_loaded` finds it.
+    ///
+    /// Grades the first candidate that is not mapped AND exists. Never skips: a host where none
+    /// qualifies FAILS with the list tried, because a skip would make the NOLOAD mutation guard
+    /// vacuous on exactly the machine (CI) that is meant to enforce it.
     #[test]
     fn open_loaded_does_not_load_an_existing_library() {
-        #[cfg(target_os = "macos")]
-        let lib = "/usr/lib/libpanel.5.4.dylib";
-        #[cfg(not(target_os = "macos"))]
-        let lib = "libthread_db.so.1";
         let _g = crate::testlock::serial();
         // Mapped-ness is read with a raw NOLOAD `dlopen`, never through the function under
         // test: an `open_loaded` that lost its NOLOAD would otherwise load the library here and
-        // skip itself.
-        let is_mapped = || {
+        // pass itself off as "already mapped".
+        let is_mapped = |lib: &str| {
             let c = CString::new(lib).unwrap();
             !unsafe { dlopen(c.as_ptr(), RTLD_NOW | libc::RTLD_NOLOAD) }.is_null()
         };
-        if is_mapped() {
-            return; // something in this test process already mapped it; nothing to grade
+        let mut tried = Vec::new();
+        for &lib in UNMAPPED_CANDIDATES {
+            if is_mapped(lib) {
+                tried.push(format!("{lib}: already mapped"));
+                continue;
+            }
+            assert!(
+                Handle::open_loaded(&[lib]).is_none(),
+                "open_loaded answered for {lib}, which is not mapped"
+            );
+            assert!(!is_mapped(lib), "open_loaded loaded {lib}");
+            // Existence is learned only now, by loading it for real; a missing one is the next
+            // candidate's turn.
+            if Handle::open(&[lib]).is_none() {
+                tried.push(format!("{lib}: not present"));
+                continue;
+            }
+            assert!(
+                Handle::open_loaded(&[lib]).is_some(),
+                "open_loaded missed {lib} once it was mapped"
+            );
+            eprintln!("open_loaded NOLOAD graded against {lib}");
+            return;
         }
-        assert!(
-            Handle::open_loaded(&[lib]).is_none(),
-            "open_loaded answered for {lib}, which is not mapped"
-        );
-        assert!(!is_mapped(), "open_loaded loaded {lib}");
-        assert!(
-            Handle::open(&[lib]).is_some(),
-            "{lib} must exist to grade NOLOAD"
-        );
-        assert!(Handle::open_loaded(&[lib]).is_some());
+        panic!("no candidate library is present and unmapped on this host: {tried:?}");
     }
 }
