@@ -454,4 +454,28 @@ mod tests {
         assert_eq!(name, mapped);
         assert!(h.sym("malloc").is_some_and(|p| !p.is_null()));
     }
+
+    /// The half that needs `RTLD_NOLOAD`: a library that EXISTS but nothing loaded is not
+    /// answered — and is still not mapped afterwards, so `open_loaded` did not load it either.
+    /// Only then does a real `open` load it, after which `open_loaded` finds it.
+    #[test]
+    fn open_loaded_does_not_load_an_existing_library() {
+        #[cfg(target_os = "macos")]
+        let lib = "/usr/lib/libpanel.5.4.dylib";
+        #[cfg(not(target_os = "macos"))]
+        let lib = "libthread_db.so.1";
+        let _g = crate::testlock::serial();
+        if Handle::open_loaded(&[lib]).is_some() {
+            return; // something in this test process already mapped it; nothing to grade
+        }
+        assert!(
+            Handle::open_loaded(&[lib]).is_none(),
+            "open_loaded loaded {lib}"
+        );
+        assert!(
+            Handle::open(&[lib]).is_some(),
+            "{lib} must exist to grade NOLOAD"
+        );
+        assert!(Handle::open_loaded(&[lib]).is_some());
+    }
 }

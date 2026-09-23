@@ -105,9 +105,11 @@ type FnSurfaceAttrib = unsafe extern "C" fn(*mut c_void, *mut c_void, c_int, c_i
 /// actually run on. `libEGL.so.1` is webOS 6+ (and 1.x). Neither is linked.
 const EGL_SONAMES: &[&str] = &["libEGLfk.so.2", "libEGL.so.1", "libEGL.so"];
 
-/// A resolved EGL entry point, or `None`. **`dlsym` only**: the process's own scope first, then
-/// an EGL somebody already mapped (`RTLD_NOLOAD` — SDL `dlopen`s EGL `RTLD_LOCAL`, which
-/// `RTLD_DEFAULT` cannot see). Never a fresh load, and never `SDL_GL_GetProcAddress`.
+/// A resolved EGL entry point, or `None`. **`dlsym`**: the process's own scope first, then an
+/// EGL somebody already mapped (`RTLD_NOLOAD` — SDL `dlopen`s EGL `RTLD_LOCAL`, which
+/// `RTLD_DEFAULT` cannot see); an unexported extension entry point is asked of that same EGL's
+/// own `eglGetProcAddress` ([`resolve_with`]). Never a fresh load, and never
+/// `SDL_GL_GetProcAddress`.
 ///
 /// Why never SDL's lookup: it is a lookup for the *client API* SDL is on, not for EGL. On a GLX
 /// backend it is `glXGetProcAddressARB`, and GLX 1.4 §3.3.12 is explicit that a non-NULL answer
@@ -122,18 +124,48 @@ const EGL_SONAMES: &[&str] = &["libEGLfk.so.2", "libEGL.so.1", "libEGL.so"];
 /// Never a fresh load for the same reason from the other side: an EGL nobody else loaded has no
 /// current context of ours to describe. Only the library SDL made the context with can answer.
 fn resolve(name: &str, lib: &mut Option<Handle>) -> Option<*mut c_void> {
-    if let Some(p) = Handle::self_handle().sym(name).filter(|p| !p.is_null()) {
+    let mut global = |n: &str| Handle::self_handle().sym(n).filter(|p| !p.is_null());
+    let mut mapped = |n: &str| {
+        if lib.is_none() {
+            *lib = Handle::open_loaded(EGL_SONAMES).map(|(h, soname)| {
+                crate::log(&format!(
+                    "egl: RTLD_DEFAULT had no EGL; using the mapped {soname}"
+                ));
+                h
+            });
+        }
+        lib.as_ref()?.sym(n).filter(|p| !p.is_null())
+    };
+    resolve_with(name, &mut global, &mut mapped)
+}
+
+/// [`resolve`] over injectable scopes, so a host test can hold the boundary.
+///
+/// Core entry points come from `dlsym` and nowhere else. An **extension** entry point
+/// (`…KHR`/`…EXT`) that the provider does not export is asked of that provider's OWN
+/// `eglGetProcAddress` — itself found by `dlsym` in the same scopes, so it is the real EGL's
+/// lookup, never a client-API one. That is how webOS 10.2.0 reaches the fence: its Mesa-style
+/// `libEGL.so.1` exports `eglGetProcAddress` and the core API but no `eglCreateSyncKHR` family
+/// (`tools/fwcompat.py --lib libEGL.so.1`), where every Mali release exports them directly.
+/// Restricted to extension names because `eglGetProcAddress`, like `glXGetProcAddress`, may
+/// answer non-NULL for a name it does not implement — acceptable only for an entry point whose
+/// extension the caller then checks in `EGL_EXTENSIONS`, as [`fence`] does.
+fn resolve_with(
+    name: &str,
+    global: &mut dyn FnMut(&str) -> Option<*mut c_void>,
+    mapped: &mut dyn FnMut(&str) -> Option<*mut c_void>,
+) -> Option<*mut c_void> {
+    if let Some(p) = global(name).or_else(|| mapped(name)) {
         return Some(p);
     }
-    if lib.is_none() {
-        *lib = Handle::open_loaded(EGL_SONAMES).map(|(h, soname)| {
-            crate::log(&format!(
-                "egl: RTLD_DEFAULT had no EGL; using the mapped {soname}"
-            ));
-            h
-        });
+    if !(name.ends_with("KHR") || name.ends_with("EXT")) {
+        return None;
     }
-    lib.as_ref()?.sym(name).filter(|p| !p.is_null())
+    let gpa = global("eglGetProcAddress").or_else(|| mapped("eglGetProcAddress"))?;
+    let gpa: FnGetProcAddress = unsafe { std::mem::transmute(gpa) };
+    let c = std::ffi::CString::new(name).ok()?;
+    let p = unsafe { gpa(c.as_ptr()) };
+    (!p.is_null()).then_some(p)
 }
 
 /// The EGL context current on this thread and its display — the precondition for asking EGL
@@ -746,6 +778,59 @@ mod tests {
             QUERIES.load(Ordering::SeqCst),
             0,
             "eglQueryString was called with no current EGL context"
+        );
+    }
+
+    // A proc-address lookup that answers for ANY name — what `glXGetProcAddress` does, and what
+    // `eglGetProcAddress` is allowed to do. The resolver must never use it for a core entry point.
+    extern "C" fn any_name_gpa(_name: *const c_char) -> *mut c_void {
+        0xdead_0000_usize as *mut c_void
+    }
+    fn nothing(_: &str) -> Option<*mut c_void> {
+        None
+    }
+
+    /// The resolver boundary. A core entry point nobody exports stays unresolved even when an
+    /// `eglGetProcAddress` that answers for anything is reachable — the shape of the CI crash,
+    /// where two "egl" functions were really GL dispatch stubs — while an extension entry point
+    /// the provider does not export (webOS 10.2.0's `eglCreateSyncKHR`) is found through that
+    /// provider's own `eglGetProcAddress`.
+    #[test]
+    fn core_entry_points_never_come_from_a_proc_address_lookup() {
+        let mut mapped =
+            |n: &str| (n == "eglGetProcAddress").then_some(any_name_gpa as *mut c_void);
+        for core in [
+            "eglGetCurrentDisplay",
+            "eglGetCurrentContext",
+            "eglQueryString",
+        ] {
+            assert_eq!(
+                resolve_with(core, &mut nothing, &mut mapped),
+                None,
+                "{core}"
+            );
+        }
+        assert_eq!(
+            resolve_with("eglCreateSyncKHR", &mut nothing, &mut mapped),
+            Some(0xdead_0000_usize as *mut c_void)
+        );
+        // Nothing mapped at all (macOS; GLX without an EGL loaded): nothing resolves.
+        assert_eq!(
+            resolve_with("eglCreateSyncKHR", &mut nothing, &mut nothing),
+            None
+        );
+    }
+
+    /// An exported symbol wins over the proc-address route, from the process scope first.
+    #[test]
+    fn exported_symbols_come_first() {
+        let exported = dummy as *mut c_void;
+        let mut global = |n: &str| (n == "eglCreateSyncKHR").then_some(exported);
+        let mut mapped =
+            |n: &str| (n == "eglGetProcAddress").then_some(any_name_gpa as *mut c_void);
+        assert_eq!(
+            resolve_with("eglCreateSyncKHR", &mut global, &mut mapped),
+            Some(exported)
         );
     }
 
