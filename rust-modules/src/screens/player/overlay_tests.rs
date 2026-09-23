@@ -511,8 +511,9 @@ fn the_player_panels_dim_through_the_container_from_the_playing_items_corners() 
 
 /// **Issue #162's census, for the four panels over the player**: every row a panel's `Focusable`
 /// declares — what the D-pad walks — is clickable with the pointer over its whole visible rect,
-/// against the map the panel's own paint-free `record_stops` fills, and the click is delivered
-/// straight to the panel as the `Activate` it spends like an OK.
+/// against the map the panel's own paint-free `record_stops` fills. It grades the HIT MAP only —
+/// what a click there spends is `activate_commits_the_bare_rows_directly`'s — and with the empty
+/// test metadata the Tracks and Chapters panels declare no rows, so for those two it is vacuous.
 #[test]
 fn every_panel_row_the_dpad_reaches_is_clickable_with_the_pointer() {
     use crate::ui::hit::{pointer_gaps, HitMap};
