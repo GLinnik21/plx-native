@@ -198,8 +198,8 @@ fn a_grant_verified_only_over_plaintext_reports_the_shared_insecure_only_copy() 
                 id: 1, uuid: "u-kid".into(), title: "Kid".into(), auth_token: "kid-token".into(),
             })
         }
-        fn resources(&mut self, _: &AccountClient) -> Option<Vec<Resource>> {
-            Some(vec![Resource {
+        fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+            Ok(vec![Resource {
                 name: "srv".into(), client_identifier: "srv".into(), provides: "server".into(),
                 owned: true, access_token: "srv-token".into(), ..Default::default()
             }])
@@ -363,4 +363,77 @@ fn all_auth_worker_bodies_are_observation_only() {
             );
         }
     }
+}
+
+/// #132: the roster worker's grading. A refused identity (a managed profile's 401) and an answer
+/// with nobody in it are plex.tv's VERDICT — `Some(vec![])` — which the owner reads out as
+/// "switching isn't available"; no answer at all, a 5xx or an unreadable body is `None`, read out
+/// as a connection problem. Before this, all of these were one `None`.
+#[test]
+fn roster_grading_tells_a_refused_identity_from_no_answer() {
+    use crate::net::{RequestError, RequestFailure};
+    let user = HomeUser { uuid: "synthetic-user".into(), title: "Synthetic".into(), ..Default::default() };
+    assert_eq!(grade_roster(Ok(vec![user])).map(|users| users.len()), Some(1));
+    assert_eq!(grade_roster(Ok(Vec::new())).map(|users| users.len()), Some(0));
+    assert_eq!(grade_roster(Err(Ok(401))).map(|users| users.len()), Some(0));
+    assert_eq!(grade_roster(Err(Ok(403))).map(|users| users.len()), Some(0));
+    assert!(grade_roster(Err(Ok(503))).is_none());
+    assert!(grade_roster(Err(Ok(200))).is_none(), "an unreadable 200 is no verdict");
+    assert!(grade_roster(Err(Err(RequestFailure { cause: RequestError::TimedOut, status: None,
+        body_limit: None, curl_rc: Some(28) }))).is_none());
+}
+
+/// #132: a switched profile whose token plex.tv then REFUSES is not a connection fault. The
+/// refusal says so; a request that got no answer keeps the connection wording.
+#[test]
+fn a_refused_profile_resources_request_does_not_blame_the_connection() {
+    use crate::auth::owner::{SessionArrival, SessionOp, SessionWorkKey};
+    use crate::app::adapters::session::SessionAdapter;
+    use crate::net::{RequestError, RequestFailure};
+    use crate::plex::account::{CallEvidence, SwitchedUser};
+    use crate::ui::machine::RequestId;
+
+    struct FailingResourcesIo(Option<CallEvidence>);
+    impl ProfileWorkIo for FailingResourcesIo {
+        fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
+            SwitchOutcome::Switched(SwitchedUser {
+                id: 1, uuid: "u-kid".into(), title: "Kid".into(), auth_token: "kid-token".into(),
+            })
+        }
+        fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, CallEvidence> {
+            Err(self.0.take().expect("one resources request"))
+        }
+        fn probe(&mut self, _: &Resource, _: &[i64]) -> (Option<SourceRef>, SettledProbe) {
+            unreachable!("no resources, nothing to probe")
+        }
+        fn gap(&mut self) {}
+    }
+
+    let run = |evidence: CallEvidence| -> String {
+        let mut a = SessionAdapter::fixture();
+        let stored = cached_session(None);
+        let expected = SessionIdentity::of(&stored);
+        let tile = UserTile { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() };
+        let mut io = FailingResourcesIo(Some(evidence));
+        a.launch(RequestId(1), SessionWorkKey { epoch: 1, op: SessionOp::ProfileSwitch }, true,
+            |job| { job(); true }, move |output| {
+                profile_switch_worker_with_io(1, expected, stored, tile, None, false,
+                    &output, &mut io);
+            }).unwrap();
+        let results = a.take_results();
+        let SessionArrival::Data(data) = &results[0].outcome else { panic!("missing failure result") };
+        match &**data {
+            observation::Observation::ProfileSwitch(ProfileSwitchProgress {
+                outcome: ProfileSwitchOutcomeProgress::Failed { error, pin_denied: false }, ..
+            }) => error.clone(),
+            _ => panic!("expected a banner failure"),
+        }
+    };
+
+    let refused = run(Ok(401));
+    assert!(!refused.contains("connection"), "a 401 is an answer: {refused}");
+    assert!(refused.contains("Kid"), "the refusal names the profile: {refused}");
+    let silent = run(Err(RequestFailure { cause: RequestError::TimedOut, status: None,
+        body_limit: None, curl_rc: Some(28) }));
+    assert!(silent.contains("check the connection"), "no answer keeps the connection copy: {silent}");
 }

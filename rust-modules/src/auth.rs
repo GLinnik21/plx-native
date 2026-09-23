@@ -55,7 +55,7 @@ pub(crate) fn run_session_work(key: owner::SessionWorkKey,
 /// adapter metadata and only main can apply the terminal observation.
 pub(crate) fn endpoint_worker_with_io(epoch: u64, session: Session, expected: owner::Identity,
     lifecycle: owner::ServerLifecycle, machine_id: String, output: &dyn owner::ObservationSink,
-    resources: impl FnOnce(&AccountClient) -> Option<Vec<Resource>>,
+    resources: impl FnOnce(&AccountClient) -> Result<Vec<Resource>, CallEvidence>,
     probe: impl FnOnce(&Resource, &[i64]) -> (Option<SourceRef>, SettledProbe)) {
     let (fresh, probe) = probe_endpoint_work(ServerId::from_raw(lifecycle.sid), &machine_id, &session,
         resources, probe, &|| output.live());
@@ -322,7 +322,10 @@ fn may_resume(from: Picker, stored_is_protected: bool) -> bool {
 /// identity*, not *no credential in the process*: **no picker action routes into catalog content**
 /// — which is the precise claim, since background pumps and those avatar requests do still consume
 /// the retained client — and the only ways off the screen are choosing a tile (which re-points the
-/// registry) and *Sign out* (which revokes).
+/// registry) and *Sign out* (which revokes). One exception, and it is not a PIN bypass: a picker
+/// with NO tiles whose roster request has ended (`owner`'s `roster_dead_end`) offered nobody to
+/// hand the remote to, so BACK resumes the stored session from it rather than strand the person
+/// on *Sign out* (#132).
 fn detaches_active_profile(from: Picker) -> bool {
     match from {
         Picker::ChangeProfile => true,
@@ -386,21 +389,47 @@ fn remember_unprotected_active(sess: &mut Session) {
     });
 }
 
-fn home_roster_worker_with_output(epoch: u64, expected: SessionIdentity, cid: String,
-    token: String, output: &dyn owner::ObservationSink) {
-    if !output.live() { return; }
-    let ac = AccountClient::new(&cid, Some(&token));
-    let users = match ac.home_users() {
-        Some(users) if !users.is_empty() => {
+/// A roster answer, graded for the owner and logged with what the request observed.
+///
+/// - `Some(tiles)` — a roster.
+/// - `Some(vec![])` — plex.tv's VERDICT that this identity has no roster to offer: it answered
+///   with nobody, or refused the identity (401/403 — a managed Plex Home profile's token, #132).
+///   The owner never commits it over a cached roster; with none cached, the picker says
+///   switching isn't available from this profile.
+/// - `None` — no verdict: no answer, a 5xx, a body that would not read. The owner keeps whatever
+///   is cached; with none, the picker says to check the connection.
+///
+/// Both failure lines carry the status (`describe_evidence`): a failure that leaves no line is
+/// how #132's first report came to read "nothing in the log".
+fn grade_roster(answer: Result<Vec<HomeUser>, CallEvidence>) -> Option<Vec<UserTile>> {
+    match answer {
+        Ok(users) if !users.is_empty() => {
             let users: Vec<UserTile> = users.iter().map(UserTile::of).collect();
             log(&format!("auth: roster refreshed n={}", users.len()));
             Some(users)
         }
-        _ => {
-            log("auth: roster refresh failed — keeping cached roster");
-            None
+        Ok(_) => {
+            log("auth: roster answered with no profiles — keeping cached roster");
+            Some(Vec::new())
         }
-    };
+        Err(evidence) => {
+            // "roster refresh failed — keeping cached roster" is matched verbatim by
+            // `tests/run.py`'s offline check: the evidence goes AFTER it.
+            let refused = crate::plex::account::refused_identity(&evidence).is_some();
+            log(&format!("auth: roster refresh {} — keeping cached roster ({}){}",
+                if refused { "refused" } else { "failed" },
+                crate::plex::account::describe_evidence(&evidence),
+                if refused { ": this account cannot list Home profiles" } else { "" }));
+            refused.then(Vec::new)
+        }
+    }
+}
+
+fn home_roster_worker_with_output(epoch: u64, expected: SessionIdentity, cid: String,
+    token: String, output: &dyn owner::ObservationSink) {
+    if !output.live() { return; }
+    let ac = AccountClient::new(&cid, Some(&token));
+    let users = grade_roster(ac.home_users());
     output.terminal(AuthProgress::HomeRoster(HomeRosterProgress {
         epoch,
         expected,
@@ -941,7 +970,7 @@ fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32,
         }
         if !output.progress(LoginProgress::CodeReplacing { epoch }.into()) { return None; }
     }
-    let created = crate::dev::scenarios::signin_trouble_create().unwrap_or_else(|| ac.create_pin_evidence());
+    let created = crate::dev::scenarios::signin_trouble_create().unwrap_or_else(|| ac.create_pin());
     let pin = match created {
         Ok(p) if p.id != 0 && !p.code.is_empty() => p,
         failed => {
@@ -1032,12 +1061,19 @@ fn finish_sign_in(ac: &AccountClient, epoch: u64, server: ServerRef, sources: Ve
     // 4) Plex Home roster → who's-watching, or straight in if there's a single user. The roster is
     // kept on the session so it persists with the creds — the boot picker and every later
     // "Change profile" render from it instantly, online or not.
-    let users: Vec<UserTile> = ac
-        .home_users()
-        .unwrap_or_default()
-        .iter()
-        .map(UserTile::of)
-        .collect();
+    //
+    // A failed fetch still signs in (as a single user) and persists an empty roster, which the
+    // session reads as "unknown" (`Session::account`) — but it now says WHY in the log, in the
+    // same grading the Change-profile refresh uses, rather than a bare `n=0`.
+    let users = match ac.home_users() {
+        Ok(users) => users.iter().map(UserTile::of).collect(),
+        Err(evidence) => {
+            log(&format!("auth: home users {} ({})",
+                if crate::plex::account::refused_identity(&evidence).is_some() { "refused" } else { "unavailable" },
+                crate::plex::account::describe_evidence(&evidence)));
+            Vec::<UserTile>::new()
+        }
+    };
     log(&format!("auth: home users n={}", users.len()));
     // One observation carrying everything the owner needs to commit the session at once —
     // see [`LoginProgress::SignedIn`] for why this used to be three separate `with_ctl` writes and
@@ -2418,7 +2454,7 @@ fn resolved_without_roster(resolved: Resolved) -> Result<Vec<SourceRef>, Discove
 /// same session file it always did (plus a one-entry roster beside it).
 fn discover_and_store(ac: &AccountClient, epoch: u64, output: &dyn owner::ObservationSink) -> Discovery {
     if !output.live() { return Discovery::Cancelled; }
-    let resources = match ac.resources_evidence() {
+    let resources = match ac.resources() {
         Ok(r) => r,
         Err(last) => {
             // No response, or one that would not deserialize: plex.tv is unreachable from here.
@@ -2656,13 +2692,18 @@ fn server_roster_worker_with_output(sess: Session, epoch: u64, expected: Session
     household: Vec<i64>, output: &dyn owner::ObservationSink) {
     if !output.live() { return; }
     let ac = AccountClient::new(&sess.client_id, Some(&sess.account_token));
-    let Some(resources) = ac.resources() else {
-        output.terminal(AuthProgress::ServerRoster(ServerRosterProgress {
-            epoch,
-            expected,
-            outcome: ServerRosterOutcome::Unreachable,
-        }));
-        return;
+    let resources = match ac.resources() {
+        Ok(resources) => resources,
+        Err(evidence) => {
+            log(&format!("auth: server roster refresh could not list resources ({})",
+                crate::plex::account::describe_evidence(&evidence)));
+            output.terminal(AuthProgress::ServerRoster(ServerRosterProgress {
+                epoch,
+                expected,
+                outcome: ServerRosterOutcome::Unreachable,
+            }));
+            return;
+        }
     };
     let mut activate = |plan: &ProbePlan, c: &Candidate, origin: &Origin| {
         let credit = credit_for_machine(&resources, &plan.machine_id, &household);
@@ -2765,7 +2806,7 @@ fn probe_endpoint_work(
     id: ServerId,
     machine_id: &str,
     sess: &Session,
-    resources: impl FnOnce(&AccountClient) -> Option<Vec<Resource>>,
+    resources: impl FnOnce(&AccountClient) -> Result<Vec<Resource>, CallEvidence>,
     probe: impl FnOnce(&Resource, &[i64]) -> (Option<SourceRef>, SettledProbe),
     live: &dyn Fn() -> bool,
 ) -> (Option<SourceRef>, Option<SettledProbe>) {
@@ -2775,12 +2816,16 @@ fn probe_endpoint_work(
     // (`InsecureOnly`/`Unauthorized`) into "Not reachable" once it reached the registry.
     if !live() { return (None, None); }
     let ac = AccountClient::new(&sess.client_id, Some(&sess.account_token));
-    let Some(resources) = resources(&ac) else {
-        log(&format!(
-            "auth: endpoint refresh for source {} could not reach plex.tv",
-            id.raw()
-        ));
-        return (None, None);
+    let resources = match resources(&ac) {
+        Ok(resources) => resources,
+        Err(evidence) => {
+            log(&format!(
+                "auth: endpoint refresh for source {} could not list resources ({})",
+                id.raw(),
+                crate::plex::account::describe_evidence(&evidence)
+            ));
+            return (None, None);
+        }
     };
     let Some(resource) = resources
         .iter()
@@ -3142,7 +3187,7 @@ fn offline_switch_outcome(
 /// and pacing only; cache/PIN/grant/Ready/late-roster decisions stay in the shared worker body.
 pub(crate) trait ProfileWorkIo {
     fn switch(&mut self, account: &AccountClient, uuid: &str, pin: Option<&str>) -> SwitchOutcome;
-    fn resources(&mut self, account: &AccountClient) -> Option<Vec<Resource>>;
+    fn resources(&mut self, account: &AccountClient) -> Result<Vec<Resource>, CallEvidence>;
     fn probe(&mut self, resource: &Resource, household: &[i64]) -> (Option<SourceRef>, SettledProbe);
     fn gap(&mut self);
 }
@@ -3153,7 +3198,7 @@ impl<S: FnOnce(&AccountClient, &str, Option<&str>) -> SwitchOutcome> ProfileWork
     fn switch(&mut self, account: &AccountClient, uuid: &str, pin: Option<&str>) -> SwitchOutcome {
         self.switch.take().expect("one switch request per profile worker")(account, uuid, pin)
     }
-    fn resources(&mut self, account: &AccountClient) -> Option<Vec<Resource>> { account.resources() }
+    fn resources(&mut self, account: &AccountClient) -> Result<Vec<Resource>, CallEvidence> { account.resources() }
     fn probe(&mut self, resource: &Resource, household: &[i64]) -> (Option<SourceRef>, SettledProbe) {
         probe_profile_resource_live(resource, household)
     }
@@ -3222,17 +3267,29 @@ pub(crate) fn profile_switch_worker_with_io(
         }
     };
     if !output.live() { return; }
-    let Some(resources) = io.resources(&AccountClient::new(&cid, Some(&user.auth_token))) else {
-        log("auth: profile resources request failed");
-        output.terminal(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
-            epoch,
-            expected,
-            outcome: ProfileSwitchOutcomeProgress::Failed {
-                error: "Couldn't switch profile — check the connection.".into(),
-                pin_denied: false,
-            },
-        }));
-        return;
+    let resources = match io.resources(&AccountClient::new(&cid, Some(&user.auth_token))) {
+        Ok(resources) => resources,
+        Err(evidence) => {
+            log(&format!("auth: profile resources request failed ({})",
+                crate::plex::account::describe_evidence(&evidence)));
+            // A refusal is an answer, not a dead link: "check the connection" would send the
+            // person to a router that is fine. The PIN was already accepted by this point, so
+            // this is never the PIN flash either.
+            let error = if crate::plex::account::refused_identity(&evidence).is_some() {
+                format!("plex.tv refused {}\u{2019}s sign-in. Try again.", tile.title)
+            } else {
+                "Couldn't switch profile — check the connection.".into()
+            };
+            output.terminal(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+                epoch,
+                expected,
+                outcome: ProfileSwitchOutcomeProgress::Failed {
+                    error,
+                    pin_denied: false,
+                },
+            }));
+            return;
+        }
     };
     let grants = ordered_profile_grants(&resources);
     if grants.is_empty() {

@@ -104,7 +104,7 @@ use crate::ui::screen::{
     Focusable, GroupKind, GroupSpec, HitSource, Hover, Placed, RenderStrategy, Screen, ScreenEvent,
     Seat, Step, Stop,
 };
-use crate::ui::widgets::{self, Art, Button, CtlPop, Spinner};
+use crate::ui::widgets::{self, Art, Button, CtlPop, Spinner, StatusKind, StatusOverlay};
 use crate::ui::{consts::SCR_H, consts::SCR_W, theme, Env, Painter, Rect, View};
 
 use super::registry::{word, AppFx, AppLike, AppMsg, AuthLike};
@@ -116,6 +116,9 @@ use super::registry::{word, AppFx, AppLike, AppMsg, AuthLike};
 // constant out of the LEGACY `ui/profiles.rs`, which is what kept a fully dead 1,250-line
 // module alive in the tree through phase 6 — one `const` holding a whole file hostage.
 pub(crate) const TITLE: &str = "Who's watching?";
+
+/// The verdict over the picker's failed read-out; the owner's `error` is the reason under it.
+const READOUT_CAPTION: &std::ffi::CStr = c"Can\u{2019}t change profile";
 
 const ROW_Y: f32 = 384.0;
 /// Name band offset below `ROW_Y` — derived from the SAME numbers the shelf pops by, so raising
@@ -726,7 +729,7 @@ impl ProfilesScreen {
     }
 
     fn has_spinner(&self, n: usize) -> bool {
-        (n == 0 && !self.pad.open)
+        (n == 0 && !self.pad.open && !self.roster_readout())
             || (self.pad.open && self.pad.submitting)
             || self.phase == Phase::Switching
     }
@@ -782,6 +785,19 @@ impl ProfilesScreen {
         self.error = Arc::clone(&snapshot.error);
         self.pin_denied = snapshot.pin_denied;
         self.flow_epoch = snapshot.flow_epoch;
+    }
+
+    /// **The picker has nobody to offer and has stopped waiting**: no tiles, and the session put
+    /// a reason in `error` while still on this route (`auth::owner::ROSTER_UNREACHABLE` /
+    /// `ROSTER_REFUSED`). Drawn as a failed read-out in place of the loading spinner — which,
+    /// with no failure state to end it, spun forever (#132) — and BACK leaves it
+    /// (`auth::owner`'s `roster_dead_end`).
+    ///
+    /// Not logged here: the screen only sees the state it was mounted on, and a dev-token
+    /// Change profile has already failed by then. The bridge announces the read-out at the
+    /// session's publication boundary (`auth::owner::roster_readout_entered`).
+    fn roster_readout(&self) -> bool {
+        auth::owner::is_roster_readout(self.phase, &self.users, &self.error)
     }
 
     fn tick<H: AuthLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
@@ -1512,7 +1528,10 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
             return;
         }
 
-        if let Ok(t) = CString::new(TITLE) {
+        let readout = self.roster_readout();
+        // The read-out's verdict owns the page; "Who's watching?" over nobody would be a question
+        // the screen has just said it cannot ask.
+        if let Some(t) = (!readout).then(|| CString::new(TITLE).ok()).flatten() {
             p.text(
                 t.as_ptr(),
                 SCR_W as f32 * 0.5,
@@ -1641,8 +1660,18 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
             },
         );
 
-        // roster not here yet (persisted seed empty, refresh in flight) — a spinner, not a blank page
-        if users.is_empty() {
+        if readout {
+            // Nobody to offer and nothing left to wait for: the shared failed read-out — the same
+            // widget, placement and neutral ink as the sign-in screen's (never red). Sign out
+            // stays in the footer; BACK returns to the session behind the picker.
+            let reason = CString::new(self.error.as_ref()).unwrap_or_default();
+            StatusOverlay::new(Rect::FULL, READOUT_CAPTION, StatusKind::Failed)
+                .page()
+                .reason(&reason)
+                .draw_measured(&Env::inert(), p, f.measure);
+        } else if users.is_empty() {
+            // roster not here yet (persisted seed empty, refresh in flight) — a spinner, not a
+            // blank page. It always ends: a failed refresh is the read-out above.
             Spinner::new(SCR_W as f32 * 0.5, ROW_Y + self.row_sty.h * 0.5, 26.0)
                 .phase(self.spin_ms as u32)
                 .tint(theme::TEXT_PRIMARY)
@@ -1650,7 +1679,7 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
         }
 
         // a failed switch (wrong PIN, offline) drops the flow back here with an error
-        if !self.error.is_empty() && self.phase == Phase::Profiles {
+        if !readout && !self.error.is_empty() && self.phase == Phase::Profiles {
             if let Ok(e) = CString::new(self.error.as_ref()) {
                 let ey = crate::text::text_vcenter_y(theme::size::BODY, 0, ERROR_Y);
                 p.text(

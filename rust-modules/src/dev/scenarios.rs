@@ -192,13 +192,14 @@ pub(crate) fn arm_logintest() {
             let sess = crate::plex::session::load();
             let ac = crate::plex::account::AccountClient::new(&sess.client_id, None);
             match ac.create_pin() {
-                Some(p) => crate::log(&format!(
+                Ok(p) => crate::log(&format!(
                     "logintest: create_pin ok id={} code_len={} authToken_null={}",
                     p.id,
                     p.code.len(),
                     p.auth_token.is_none()
                 )),
-                None => crate::log("logintest: create_pin FAILED (transport/TLS/link/deser)"),
+                Err(evidence) => crate::log(&format!("logintest: create_pin FAILED ({})",
+                    crate::plex::account::describe_evidence(&evidence))),
             }
         });
     }

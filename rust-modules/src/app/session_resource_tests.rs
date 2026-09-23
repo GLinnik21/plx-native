@@ -39,8 +39,8 @@ mod tests {
         fn resources(
             &mut self,
             _: &crate::plex::account::AccountClient,
-        ) -> Option<Vec<crate::plex::account::Resource>> {
-            Some(vec![
+        ) -> Result<Vec<crate::plex::account::Resource>, crate::plex::account::CallEvidence> {
+            Ok(vec![
                 serde_json::from_value(serde_json::json!({"clientIdentifier":"resource-server",
                     "name":"Synthetic", "provides":"server", "owned":true,
                     "accessToken":"synthetic-kid-token"}))
@@ -248,7 +248,7 @@ mod tests {
         fn resources(
             &mut self,
             _: &crate::plex::account::AccountClient,
-        ) -> Option<Vec<crate::plex::account::Resource>> {
+        ) -> Result<Vec<crate::plex::account::Resource>, crate::plex::account::CallEvidence> {
             panic!("offline worker fetched resources")
         }
         fn probe(

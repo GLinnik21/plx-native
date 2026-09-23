@@ -302,6 +302,11 @@ pub(crate) struct CommitDelta {
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum DevCommitDelta { Activated, StartAccount { login_req: u32 } }
 
+/// The picker's read-outs when it has no tiles and cannot get any. Neutral wording, drawn as a
+/// failed read-out on the picker itself (`screens/profiles.rs`), never as a sign-in failure.
+pub(crate) const ROSTER_UNREACHABLE: &str = "Couldn\u{2019}t load profiles — check the connection.";
+pub(crate) const ROSTER_REFUSED: &str = "Switching profiles isn\u{2019}t available from this profile.";
+
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum BootstrapAuthority {
     Account { extras: Vec<crate::plex::session::SourceRef> },
@@ -949,8 +954,35 @@ pub(crate) struct ProfileRead {
 #[derive(Clone, Copy)]
 pub(crate) struct SessionRead<'a>(pub &'a SessionSnapshot);
 
+/// [`SessionSnapshot::roster_readout`]'s condition, for a reader that holds the fields rather
+/// than the snapshot (the Profiles screen keeps its own copies between frames).
+pub(crate) fn is_roster_readout(phase: Phase, users: &[UserTile], error: &str) -> bool {
+    phase == Phase::Profiles && users.is_empty() && !error.is_empty()
+}
+
+/// The log line owed when one session step moves the publication INTO the roster read-out
+/// (#132), or `None`. The owner logs nothing itself; the bridge, which runs every session step,
+/// writes this between the publication before and after that step. It is decided HERE — at the
+/// publication boundary — and not by the Profiles screen, because the screen only ever sees the
+/// state it was mounted on: a dev-token Change profile is refused synchronously, so the read-out
+/// already exists at mount and a screen-side "it just changed" gate never fires (TV, PR #212).
+/// A worker's failure line carries the HTTP status; this one carries what the person is told,
+/// and fires on every path in, including the ones that made no request at all.
+pub(crate) fn roster_readout_entered(before: &SessionSnapshot, after: &SessionSnapshot) -> Option<String> {
+    let reason = after.roster_readout()?;
+    if before.roster_readout() == Some(reason) { return None; }
+    Some(format!("profiles: no profiles to offer — {reason} (BACK returns)"))
+}
+
 impl SessionSnapshot {
     pub fn read(&self) -> SessionRead<'_> { SessionRead(self) }
+    /// **#132's read-out**: a picker with nobody to offer and a reason why. The ONE predicate —
+    /// the Profiles screen draws it, stops its spinner on it, and [`roster_readout_entered`]
+    /// announces it; three copies of the condition are how a screen ends up still spinning under
+    /// a read-out it drew.
+    pub fn roster_readout(&self) -> Option<&str> {
+        is_roster_readout(self.phase, &self.users, &self.error).then_some(&*self.error)
+    }
     fn from_state(state: &SessionInit) -> Self {
         Self::from_state_counted(state, None, &mut |_| {})
     }
@@ -1493,7 +1525,7 @@ impl SessionMachine {
                     self.state.phase = Phase::Profiles;
                     self.state.error = "Couldn't switch profile. Try again.".into();
                 }
-                SessionOp::HomeRoster => self.fail_empty_home_roster(emit),
+                SessionOp::HomeRoster => self.fail_empty_home_roster(ROSTER_UNREACHABLE),
                 _ => {}
             }
             self.retire(req, emit);
@@ -1622,7 +1654,22 @@ impl SessionMachine {
     }
 
     fn start_switch(&mut self, picker: Picker, emit: &mut impl FnMut(SessionFx)) -> bool {
-        if !matches!(self.state.authority, BootstrapAuthority::Account { .. }) { return false; }
+        if matches!(self.state.authority, BootstrapAuthority::DevPms { .. }) {
+            // A dev-token session has no account behind it to list a roster with. The account
+            // menu still offers *Change profile* (it reads the on-disk sign-in), and the app has
+            // already routed to the picker by the time this runs — so refusing SILENTLY left that
+            // route with nothing behind it: a spinner that never ends and a BACK that could not
+            // leave (#132, TV session 8). Say so on the picker instead; `back` returns.
+            // `picker` is deliberately not recorded: nothing is detached here, so there is no
+            // picker-kind rule for `back` to apply, and BACK restores this session state exactly.
+            if self.state.phase != Phase::Ready || self.state.pending_erase.is_some() { return false; }
+            let _ = picker;
+            self.state.phase = Phase::Profiles;
+            self.state.users.clear();
+            self.state.error = ROSTER_REFUSED.into();
+            self.replace_publication();
+            return true;
+        }
         if self.state.pending_erase.is_some() { return false; }
         if self.advance_epoch(emit).is_none() { return false; }
         if self.state.persisted.account_token.is_empty() {
@@ -1713,8 +1760,27 @@ impl SessionMachine {
             emit(SessionFx::BackReply { to: reply, resumed: false });
             return true;
         }
+        let dead_end = self.roster_dead_end();
+        if dead_end {
+            if let BootstrapAuthority::DevPms { primary, .. } = &self.state.authority {
+                // Nothing was detached or re-pointed (see `start_switch`): re-announce the dev
+                // session exactly as its activation did.
+                let primary = primary.clone();
+                self.state.phase = Phase::Ready;
+                self.state.error.clear();
+                emit(SessionFx::Ready { epoch: self.state.epoch, scope: self.state.profile_scope,
+                    token: primary.token.clone(), server: primary, install: ReadyInstall::AlreadyInstalled });
+                emit(SessionFx::BackReply { to: reply, resumed: true });
+                self.replace_publication();
+                return true;
+            }
+        }
         let stored = self.state.committed_credentials.merge_into(&self.state.persisted);
-        if !super::resumable(&stored, self.state.picker) || self.state.epoch.checked_add(1).is_none() {
+        // A dead-end picker offered nobody, so the picker-kind rule (`may_resume`: the
+        // Change-profile picker is a root, so BACK cannot skip a PIN) has no boundary to guard.
+        // Only "is there a session to go back to" remains.
+        let resumable = if dead_end { stored.can_go_local() } else { super::resumable(&stored, self.state.picker) };
+        if !resumable || self.state.epoch.checked_add(1).is_none() {
             emit(SessionFx::BackReply { to: reply, resumed: false });
             return true;
         }
@@ -1835,10 +1901,26 @@ impl SessionMachine {
         plans
     }
 
-    fn fail_empty_home_roster(&mut self, emit: &mut impl FnMut(SessionFx)) {
+    /// A roster request ended without tiles. With cached tiles on screen nothing changes — they
+    /// are still the household, and offline switching reads them. With NONE, the picker says so
+    /// on its own route: `Phase::Profiles` with the reason in `error` and no tiles is the
+    /// read-out `screens/profiles.rs` draws, and [`Self::roster_dead_end`] is what lets BACK leave
+    /// it. It used to be `fail_login`, i.e. `Phase::Error` — which the app routes to the SIGN-IN
+    /// screen ("Couldn't sign in", whose Try again starts a new QR sign-in) for a person who is
+    /// signed in, and whose BACK the Change-profile picker's root rule then refused (#132).
+    fn fail_empty_home_roster(&mut self, reason: &str) {
         if self.state.users.is_empty() && self.state.phase == Phase::Profiles {
-            self.fail_login("Couldn't load profiles — check the connection.", None, emit);
+            self.state.error = reason.to_owned();
         }
+    }
+
+    /// Is the picker on screen one that has nobody to offer and is no longer waiting to? Then no
+    /// profile boundary can be crossed from it — nobody can be handed the remote — and BACK
+    /// resumes whatever session is behind it rather than stranding the person on Sign out
+    /// (#132). A picker with tiles, or with a roster request still in flight, is not this.
+    fn roster_dead_end(&self) -> bool {
+        self.state.phase == Phase::Profiles && self.state.users.is_empty()
+            && !self.state.pending.values().any(|pending| pending.key.op == SessionOp::HomeRoster)
     }
 
     fn apply_resource_observation(&mut self, envelope: &SessionEnvelope,
@@ -1854,7 +1936,7 @@ impl SessionMachine {
                 self.state.pin_denied = false;
                 self.state.error = "Couldn't switch profile. Try again.".into();
             } else if pending.key.op == SessionOp::HomeRoster {
-                self.fail_empty_home_roster(emit);
+                self.fail_empty_home_roster(ROSTER_UNREACHABLE);
             }
             self.retire(req, emit);
             self.replace_publication();
@@ -1918,11 +2000,19 @@ impl SessionMachine {
                 });
             }
             Observation::HomeRoster(progress) => {
-                let Some(users) = &progress.users else {
-                    self.fail_empty_home_roster(emit);
-                    self.retire(req, emit);
-                    self.replace_publication();
-                    return true;
+                // `None`: no verdict (no answer, a 5xx, a body that would not read). `Some([])`:
+                // plex.tv's verdict that this account has no roster to offer — it answered with
+                // nobody, or refused the identity (a managed profile's token gets 401 from
+                // `/api/v2/home/users`; see `auth::grade_roster`). Neither is committed: an empty
+                // answer written over a cached roster would erase what offline switching reads.
+                let users = match &progress.users {
+                    Some(users) if !users.is_empty() => users,
+                    graded => {
+                        self.fail_empty_home_roster(if graded.is_none() { ROSTER_UNREACHABLE } else { ROSTER_REFUSED });
+                        self.retire(req, emit);
+                        self.replace_publication();
+                        return true;
+                    }
                 };
                 let mut next = self.state.persisted.clone();
                 next.home_users = users.iter().map(super::UserTile::to_ref).collect();
@@ -3906,5 +3996,177 @@ mod tests {
         assert!(plan.registry.iter().all(|p| matches!(p, RegistryPlan::Probe(_))),
             "NoReachable must never write RegistryPlan::Install — the roster itself is unchanged");
         assert!(plan.credentials.is_none(), "a registry-only commit writes no credentials");
+    }
+
+    /// Issue #132's production half: a signed-in account whose cached roster is EMPTY (a failed
+    /// fetch at sign-in persists an empty vec) presses *Change profile*, and the roster fetch fails
+    /// again — plex.tv refusing the token (401, answered as `Some(vec![])`) or never answering
+    /// (`None`). The picker must read out a failure on ITS OWN route (phase stays `Profiles`, with
+    /// the reason in `error`), not flip to `Phase::Error`, which the profiles screen does not draw
+    /// — that left an endless spinner. And BACK must hand back the still-valid session: no picker
+    /// was ever offered, so no profile boundary was crossed.
+    /// PR #212 review (P2, "the last spinner frame stays visible"): the step that lands a failed
+    /// roster must itself request a frame. Once the read-out replaces the spinner nothing on the
+    /// Profiles screen is moving, so if this step did not damage Present the spinner's final
+    /// frame would sit there until the keepalive redraw.
+    #[test]
+    fn landing_a_failed_roster_requests_the_frame_that_draws_the_readout() {
+        use crate::ui::machine::{Cx, Effects, InputOwner, EntryId, Machine, Tick};
+        let _g = crate::testlock::serial();
+        for users in [None, Some(Vec::new())] {
+            let mut owner = SessionMachine::from_init(local_session());
+            let effects = step(&mut owner, SessionEvent::Command(Command::StartSwitch(Picker::ChangeProfile)));
+            let (req, key) = effects.iter().find_map(|fx| match fx {
+                SessionFx::Work { req, key, input: SessionWork::HomeRoster { .. }, .. } => Some((*req, *key)),
+                _ => None,
+            }).expect("Change profile fetches the Home roster");
+            settle_picker_commit(&mut owner, &effects);
+            let envelope = roster_envelope(&mut owner, req, key, users);
+
+            let publication = owner.publication();
+            let cx = Cx::<OwnerHost> { views: publication.read(), tick: Tick::default(),
+                measure: &crate::ui::fixture::FixtureMeasure, press: Default::default(),
+                focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
+            let mut present = crate::ui::present::Present::new();
+            let _ = present.take(0); // the spinner's last frame has been presented
+            assert!(!present.peek(0), "rig: nothing is owed before the result lands");
+            let mut sink = Vec::new();
+            owner.step(&SessionEvent::Result(envelope), &cx,
+                &mut Effects::new(&mut sink, MachineId::Session, &mut present));
+            assert!(owner.read().0.roster_readout().is_some(), "rig: the read-out is up");
+            assert!(present.peek(0), "the step that raises the read-out must request its frame");
+        }
+    }
+
+    fn empty_roster_change_profile(users: Option<Vec<UserTile>>) -> (SessionMachine, Vec<SessionFx>) {
+        let mut owner = SessionMachine::from_init(local_session());
+        assert!(owner.state.persisted.home_users.is_empty(), "rig: nothing cached to show");
+        let effects = step(&mut owner, SessionEvent::Command(Command::StartSwitch(Picker::ChangeProfile)));
+        let (req, key) = effects.iter().find_map(|fx| match fx {
+            SessionFx::Work { req, key, input: SessionWork::HomeRoster { .. }, .. } => Some((*req, *key)),
+            _ => None,
+        }).expect("Change profile fetches the Home roster");
+        assert_eq!(owner.state.phase, Phase::Profiles);
+        settle_picker_commit(&mut owner, &effects);
+        let envelope = roster_envelope(&mut owner, req, key, users);
+        let effects = step(&mut owner, SessionEvent::Result(envelope));
+        (owner, effects)
+    }
+
+    /// The picker's own registry-only commit is in flight until answered, and a roster result
+    /// arriving behind it is QUEUED rather than applied — settle it the way the adapter would.
+    fn settle_picker_commit(owner: &mut SessionMachine, effects: &[SessionFx]) {
+        let (req, epoch) = effects.iter().find_map(|fx| match fx {
+            SessionFx::Commit { req, epoch, .. } => Some((*req, *epoch)),
+            _ => None,
+        }).expect("rig: the picker commits its registry plan");
+        step(owner, SessionEvent::Commit(CommitReply { req, epoch, arrival: 0,
+            admission: CommitAdmission::RegistryOnly }));
+        assert!(owner.state.pending_commit.is_none(), "rig: nothing is left in flight");
+    }
+
+    fn roster_envelope(owner: &mut SessionMachine, req: u32, key: SessionWorkKey,
+        users: Option<Vec<UserTile>>) -> SessionEnvelope {
+        owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+        SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key, admission: AdmissionId(req), arrival: 1, terminal: true, lifecycle: None,
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::HomeRoster(
+                super::super::HomeRosterProgress { epoch: key.epoch, expected, users }))),
+        }
+    }
+
+    #[test]
+    fn change_profile_with_no_roster_reads_out_the_failure_and_back_resumes_the_session() {
+        let _g = crate::testlock::serial();
+        for (users, reason) in [
+            (None, ROSTER_UNREACHABLE),
+            (Some(Vec::new()), ROSTER_REFUSED),
+        ] {
+            let (mut owner, _) = empty_roster_change_profile(users);
+            assert_eq!(owner.state.phase, Phase::Profiles,
+                "the failure is read out on the picker's own route, not as a sign-in Error");
+            assert!(owner.state.users.is_empty());
+            assert_eq!(owner.state.error, reason);
+            assert!(owner.state.persisted.home_users.is_empty(), "no roster is invented or committed");
+            let reply = ReplyTo { instance: 0, correlation: 7 };
+            let effects = step(&mut owner, SessionEvent::Command(Command::BackAtRoot { reply }));
+            assert!(effects.iter().any(|fx| matches!(fx, SessionFx::BackReply { resumed: true, .. })),
+                "BACK from a picker that never offered a profile resumes the session behind it");
+            assert_eq!(owner.state.phase, Phase::Ready);
+            assert!(owner.state.apply_pending, "the resume goes through the ordinary Ready handoff");
+            assert!(owner.state.error.is_empty());
+        }
+    }
+
+    /// A refused roster must not wipe a CACHED one (it is what offline switching reads), and a
+    /// picker that HAS tiles is still a root: BACK stays refused there.
+    #[test]
+    fn a_refused_roster_keeps_cached_tiles_and_the_picker_stays_a_root() {
+        let _g = crate::testlock::serial();
+        let mut init = local_session();
+        init.persisted.home_users = vec![crate::plex::session::HomeUserRef {
+            uuid: "cached-user".into(), title: "Cached".into(), ..Default::default() }];
+        let mut owner = SessionMachine::from_init(init);
+        let effects = step(&mut owner, SessionEvent::Command(Command::StartSwitch(Picker::ChangeProfile)));
+        let (req, key) = effects.iter().find_map(|fx| match fx {
+            SessionFx::Work { req, key, input: SessionWork::HomeRoster { .. }, .. } => Some((*req, *key)),
+            _ => None,
+        }).unwrap();
+        settle_picker_commit(&mut owner, &effects);
+        let envelope = roster_envelope(&mut owner, req, key, Some(Vec::new()));
+        let effects = step(&mut owner, SessionEvent::Result(envelope));
+        assert!(!effects.iter().any(|fx| matches!(fx, SessionFx::Commit { .. })),
+            "an answer with nobody in it is not committed over the cached roster");
+        assert_eq!(owner.state.users.len(), 1);
+        assert_eq!(owner.state.persisted.home_users.len(), 1);
+        assert!(owner.state.error.is_empty());
+        let reply = ReplyTo { instance: 0, correlation: 7 };
+        let effects = step(&mut owner, SessionEvent::Command(Command::BackAtRoot { reply }));
+        assert!(effects.iter().any(|fx| matches!(fx, SessionFx::BackReply { resumed: false, .. })),
+            "with tiles on screen the Change-profile picker is still the root it always was");
+    }
+
+    /// Issue #132 as TV session 8 actually hit it: a dev-token (`DevPms`) boot, where the account
+    /// menu still offers *Change profile* from the on-disk sign-in. The owner used to refuse the
+    /// switch silently — no roster worker, no log line — while the app routed to the picker
+    /// anyway: an endless spinner with an inert BACK. The refusal is now the same read-out, and
+    /// BACK re-announces the dev session exactly as its activation did.
+    #[test]
+    fn a_dev_session_change_profile_says_it_cannot_switch_and_back_returns() {
+        let _g = crate::testlock::serial();
+        let saved = PersistedSession { client_id: "synthetic-client".into(), ..Default::default() };
+        let mut owner = SessionMachine::from_init(SessionInit::captured_boot(saved, Some(local_server()), Vec::new()));
+        let effects = step(&mut owner, SessionEvent::Command(Command::ActivateDevBootstrap));
+        let (req, epoch) = effects.iter().find_map(|fx| match fx {
+            SessionFx::Commit { req, epoch, .. } => Some((*req, *epoch)),
+            _ => None,
+        }).expect("rig: the dev boundary commits");
+        step(&mut owner, SessionEvent::Commit(CommitReply { req, epoch, arrival: 0,
+            admission: CommitAdmission::RegistryOnly }));
+        assert_eq!(owner.state.phase, Phase::Ready, "rig: the dev session is up");
+
+        let before = owner.publication();
+        step(&mut owner, SessionEvent::Command(Command::StartSwitch(Picker::ChangeProfile)));
+        assert_eq!(owner.state.phase, Phase::Profiles,
+            "the picker the app just routed to must have a state behind it");
+        assert_eq!(owner.state.error, ROSTER_REFUSED);
+        assert!(owner.state.users.is_empty());
+        // TV, PR #212: this read-out exists BEFORE the Profiles screen mounts, so only the step
+        // that entered it can announce it — and it must, once.
+        let entered = owner.publication();
+        assert_eq!(roster_readout_entered(&before, &entered).as_deref(),
+            Some(format!("profiles: no profiles to offer — {ROSTER_REFUSED} (BACK returns)").as_str()));
+        assert_eq!(roster_readout_entered(&entered, &entered), None, "announced once, not per step");
+
+        let reply = ReplyTo { instance: 0, correlation: 7 };
+        let effects = step(&mut owner, SessionEvent::Command(Command::BackAtRoot { reply }));
+        assert_eq!(roster_readout_entered(&entered, &owner.publication()), None, "leaving is not entering");
+        assert!(effects.iter().any(|fx| matches!(fx, SessionFx::BackReply { resumed: true, .. })));
+        assert!(effects.iter().any(|fx| matches!(fx, SessionFx::Ready {
+            install: ReadyInstall::AlreadyInstalled, .. })), "BACK hands the dev session back");
+        assert_eq!(owner.state.phase, Phase::Ready);
+        assert!(owner.state.error.is_empty());
     }
 }

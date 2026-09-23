@@ -61,7 +61,7 @@ mod tests {
         fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
             SwitchOutcome::Refused(403)
         }
-        fn resources(&mut self, _: &AccountClient) -> Option<Vec<Resource>> { panic!("refusal cannot discover") }
+        fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> { panic!("refusal cannot discover") }
         fn probe(&mut self, _: &Resource, _: &[i64]) -> (Option<crate::plex::session::SourceRef>, crate::auth::SettledProbe) { panic!("refusal cannot probe") }
         fn gap(&mut self) { panic!("refusal cannot wait") }
     }
@@ -183,8 +183,8 @@ mod tests {
                 ..Default::default()
             })
         }
-        fn resources(&mut self, _: &AccountClient) -> Option<Vec<Resource>> {
-            Some(vec![
+        fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+            Ok(vec![
                 serde_json::from_str(r#"{"clientIdentifier":"synthetic-server","name":"Synthetic server","provides":"server","owned":true,"accessToken":"synthetic-kid-token"}"#).unwrap(),
                 serde_json::from_str(r#"{"clientIdentifier":"synthetic-share","name":"Synthetic share","provides":"server","owned":false,"accessToken":"synthetic-share-token"}"#).unwrap(),
             ])
@@ -319,7 +319,7 @@ mod tests {
         fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
             SwitchOutcome::Unreachable
         }
-        fn resources(&mut self, _: &AccountClient) -> Option<Vec<Resource>> {
+        fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
             panic!("offline seating must not fetch resources")
         }
         fn probe(&mut self, _: &Resource, _: &[i64]) -> (Option<crate::plex::session::SourceRef>, crate::auth::SettledProbe) {

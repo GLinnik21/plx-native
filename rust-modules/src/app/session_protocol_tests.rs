@@ -357,10 +357,12 @@ fn home_roster_failure_history(cached: bool, failure: u8) {
     assert_eq!(records.len(), if failure == 4 { 0 } else { 2 });
     let results = records.into_iter().map(|r| (r.addr, AppMsg::Session(SessionEvent::Result(r)))).collect();
     d.frame_with(&mut rig, Tick::default(), Vec::new(), results, &mut NoTap, false);
-    assert_eq!(rig.auth_read().0.phase, if cached { Phase::Profiles } else { Phase::Error },
+    // The picker's own read-out (#132), never a sign-in `Phase::Error`: that routed a signed-in
+    // person to "Couldn't sign in", whose Try again starts a new QR sign-in.
+    assert_eq!(rig.auth_read().0.phase, Phase::Profiles,
         "failure kind {failure}, cached={cached}: completed work cannot leave an empty picker loading");
     assert_eq!(rig.auth_read().0.users.len(), usize::from(cached));
-    assert_eq!(&*rig.auth_read().0.error, if cached { "" } else { "Couldn't load profiles — check the connection." });
+    assert_eq!(&*rig.auth_read().0.error, if cached { "" } else { crate::auth::owner::ROSTER_UNREACHABLE });
     assert!(rig.session.snapshot_init().pending.is_empty());
     assert!(rig.take_session_ready().is_none());
     rig.session_adapter.cancel_all();

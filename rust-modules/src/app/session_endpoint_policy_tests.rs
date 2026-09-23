@@ -53,9 +53,9 @@ mod tests {
                         let old_source = session.sources[0].clone();
                         crate::auth::endpoint_worker_with_io(epoch, session, expected, lifecycle, machine_id, &output,
                             |_| match scenario {
-                                1 => None,
-                                2 => Some(Vec::new()),
-                                _ => Some(vec![serde_json::from_value(serde_json::json!({
+                                1 => Err(Ok(503)),
+                                2 => Ok(Vec::new()),
+                                _ => Ok(vec![serde_json::from_value(serde_json::json!({
                                     "clientIdentifier":"synthetic-server", "provides":"server"
                                 })).unwrap()]),
                             },

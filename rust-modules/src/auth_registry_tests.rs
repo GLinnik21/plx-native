@@ -682,7 +682,7 @@ fn probe_endpoint_work_reports_nothing_when_plex_tv_is_unreachable() {
         ServerId::from_raw(0),
         "some-machine",
         &sess,
-        |_ac: &AccountClient| -> Option<Vec<Resource>> { None }, // plex.tv unreachable
+        |_ac: &AccountClient| -> Result<Vec<Resource>, crate::plex::account::CallEvidence> { Err(Ok(503)) }, // plex.tv unreachable
         |_resource, _household| -> (Option<SourceRef>, SettledProbe) {
             panic!("the probe closure must never run when plex.tv could not be reached")
         },
@@ -711,7 +711,7 @@ fn endpoint_refresh_early_exit_does_not_widen_an_existing_insecure_only_verdict(
         sid,
         "insecure-mach",
         &sess,
-        |_ac: &AccountClient| -> Option<Vec<Resource>> { None }, // plex.tv unreachable
+        |_ac: &AccountClient| -> Result<Vec<Resource>, crate::plex::account::CallEvidence> { Err(Ok(503)) }, // plex.tv unreachable
         |_resource, _household| -> (Option<SourceRef>, SettledProbe) {
             panic!("nothing should be dialled once plex.tv itself never answered")
         },

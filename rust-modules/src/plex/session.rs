@@ -4249,11 +4249,13 @@ impl Session {
     /// and therefore never got a profile written at all.
     ///
     /// **`home_users` being empty means "unknown", not "none".** It is only ever filled by a
-    /// sign-in or a "Change profile", and a *failed* fetch persists an empty vec
-    /// (`auth.rs`'s `home_users().unwrap_or_default()`), so "never fetched", "fetch failed" and
-    /// "genuinely empty" are one value. Anything deciding on it must treat empty as "ask" — which
-    /// is why [`Account::can_switch`] keeps the switch row: that row is what re-fetches the roster,
-    /// and hiding it on an empty one would be a one-way door out of a Plex Home created later.
+    /// sign-in or a "Change profile", and a *failed* fetch at sign-in persists an empty vec
+    /// (`auth.rs`'s `finish_sign_in`, which logs the failure's grade), so "never fetched", "fetch
+    /// failed" and "genuinely empty" are one value. Anything deciding on it must treat empty as
+    /// "ask" — which is why [`Account::can_switch`] keeps the switch row: that row is what
+    /// re-fetches the roster, and hiding it on an empty one would be a one-way door out of a Plex
+    /// Home created later. When the re-fetch fails too, the picker reads out why and BACK leaves
+    /// it (#132).
     pub fn account(&self, active: Option<&UserRef>) -> Account {
         let named = |t: &str| Some(t.to_string()).filter(|t| !t.is_empty());
         // the roster hop searches for a NAMED admin, then any named entry — a `find(admin)` whose
