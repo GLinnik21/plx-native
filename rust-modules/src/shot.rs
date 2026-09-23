@@ -145,17 +145,22 @@ pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) -> bool 
     // image harder to compare against a device capture.
     let (w, h) = (vw as usize, vh as usize);
     let mut buf = vec![0u8; w * h * 4];
-    unsafe {
-        glReadPixels(
-            vx,
-            vy,
-            vw,
-            vh,
-            GL_RGBA,
-            GL_UNSIGNED_BYTE,
-            buf.as_mut_ptr() as *mut c_void,
-        )
-    };
+    {
+        // The readback drains the pipeline: GL work, labelled so for the hang watchdog.
+        #[cfg(feature = "threadcheck")]
+        let _readback = crate::task::watchdog::readback_scope();
+        unsafe {
+            glReadPixels(
+                vx,
+                vy,
+                vw,
+                vh,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                buf.as_mut_ptr() as *mut c_void,
+            )
+        };
+    }
 
     // Flip and drop alpha in one pass.
     //

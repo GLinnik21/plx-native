@@ -216,7 +216,13 @@ pub(crate) fn tick(now: u32) {
     // client must not keep pinning the size). The mpeg encoder is fixed at 960x540.
     let want_960 = (FD_MPEG.load(Ordering::Relaxed) >= 0 && MPEG_960.load(Ordering::Relaxed))
         || (FD_JPEG.load(Ordering::Relaxed) >= 0 && JPEG_960.load(Ordering::Relaxed));
-    match crate::gfx::cap_cycle(want_960, &mut buf) {
+    // A GL downscale and readback: GL work, labelled so for the hang watchdog.
+    let cycle = {
+        #[cfg(feature = "threadcheck")]
+        let _readback = crate::task::watchdog::readback_scope();
+        crate::gfx::cap_cycle(want_960, &mut buf)
+    };
+    match cycle {
         Some((w, h, flip)) => {
             let f = Frame {
                 seq: SEQ.fetch_add(1, Ordering::Relaxed),
