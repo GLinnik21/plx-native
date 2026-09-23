@@ -1147,8 +1147,8 @@ you get without waking a television. What it covers today, by module:
     conversion (keyframe detection, parameter-set prepending, truncation instead of panic), and the
     AVIO abort guards (a seek after teardown must not open a second connection — graded on an
     accept COUNT from a counting listener, not a return value).
-  - `route/plan.rs` (8) — direct-play vs transcode **selection policy**: track fallbacks, English
-    over the file's default, the flagged default, part-id parsing, mkv-only direct play.
+  - `route/plan.rs` (8) — direct-play vs transcode **selection policy**: track fallbacks, a real
+    server pick and a show's language over the file's default, the flagged default, part-id parsing, mkv-only direct play.
   - `screens/home/tests.rs` + `ui/card_row.rs` — **focus/geometry/spring math**: every strip
     element decoding to exactly one destination, row stepping staying inside the shelf array, the
     pointer hit column matching the drawn card at every snap phase, and the shelf heading's

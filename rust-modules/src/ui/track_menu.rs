@@ -148,7 +148,7 @@ impl TrackMenuState {
 
     /// Derive the checked tracks from the PLAYBACK state on every open — the route owns the truth
     /// (CUR_AUDIO_SID/CUR_SUB_SID, set by the start-of-play pick and every commit), so the menu can
-    /// never show a stale or desynced checkmark: the auto-picked English/smart-DP track is checked
+    /// never show a stale or desynced checkmark: the auto-picked default/smart-DP track is checked
     /// on first open, a replayed item resets with the playback, and a prior pick round-trips by id.
     /// When no id is recorded (codec-default play), the file's flagged default is checked.
     /// Deliberately does NOT touch `tab`: [`TrackMenuState::new`] sets it directly.
