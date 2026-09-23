@@ -1105,6 +1105,34 @@ pub(crate) fn http_open(
     ))
 }
 
+/// [`http_open`] with its typed result, consulting `checkpoint` before and during every blocking
+/// connect/send/header wait. The HLS segment open's no-deadline branch, so no branch of that open
+/// drops its acquisition's checkpoint.
+pub(crate) fn http_open_result(
+    hs: *mut HttpStream,
+    host: *const c_char,
+    port: c_int,
+    path: *const c_char,
+    extra: *const c_char,
+    method: &str,
+    checkpoint: &mut dyn Checkpoint,
+) -> Result<(), HttpOpenError> {
+    http_open_with_timeouts(
+        hs,
+        host,
+        port,
+        path,
+        extra,
+        method,
+        CONNECT_TIMEOUT_MS,
+        MEDIA_RECV_TIMEOUT_MS,
+        MEDIA_SEND_TIMEOUT_MS,
+        None,
+        false,
+        checkpoint,
+    )
+}
+
 /// [`http_open`] with the whole-chain connect and stalled-I/O ceiling selected by the caller.
 /// Candidate discovery is the one caller that knows whether a connection is local or remote; the
 /// ordinary request path keeps [`CONNECT_TIMEOUT_MS`] and never infers a tier from an address.

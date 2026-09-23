@@ -635,6 +635,18 @@ impl CurlSource {
         )
     }
 
+    /// A reserved open whose every blocking wait consults `checkpoint`, with or without a caller
+    /// deadline — the HLS segment open, which must never drop its acquisition's checkpoint.
+    pub(crate) fn open_reserved_checked(
+        url: &str,
+        at: i64,
+        reservation: OpenReservation,
+        deadline: Option<std::time::Instant>,
+        checkpoint: &mut dyn Checkpoint,
+    ) -> Result<Box<CurlSource>, OpenErr> {
+        Self::open_with_reservation_range_until(url, at, None, reservation, deadline, checkpoint)
+    }
+
     /// [`open`](Self::open) with the availability verdict injected, so the host suite can grade
     /// the no-libcurl path without poisoning a process-global table.
     #[cfg(test)]

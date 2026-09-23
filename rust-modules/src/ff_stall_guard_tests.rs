@@ -445,8 +445,9 @@ fn a_terminal_hold_aborts_only_an_incomplete_response() {
 // These drive the legs that used to precede or outlast that evaluation — the HTTP open waiting
 // for headers, the `NotReady` retry wait, and a body read already blocked when the boundary
 // arrives — through the real `hls_demux_segment`/`read_cb` against a scripted loopback PMS.
-// Synchronisation is causal: the server reports each request it has read, and the transport's
-// own `Pacer::before_wait` reports (via `checkpoint::observe`) that a read is about to block.
+// Synchronisation is causal: the server reports each request it has read, and the acquisition
+// runtime reports (via `acquisition::observe`) every answer it gives, with its phase — so a hold
+// is published strictly AFTER a chosen `Continue`, and only a LATER check can have seen it.
 // A test that the fix does not rescue is bounded by a teardown (AU abort + socket shutdown,
 // exactly what `engine::teardown` does), so a red run fails with a message, never a hang.
 
@@ -461,6 +462,8 @@ enum Reply {
     SendThenWithhold(&'static [u8]),
     /// Hold the headers until [`ScriptedPms::release`], then answer.
     AfterRelease(&'static [u8]),
+    /// Answer with a prefix, hold the rest until released, then send it.
+    PrefixThenRelease(&'static [u8], &'static [u8]),
 }
 
 struct ScriptedPms {
@@ -546,6 +549,14 @@ impl ScriptedPms {
                                     park(&|| false);
                                     return;
                                 }
+                                Reply::PrefixThenRelease(prefix, rest) => {
+                                    let _ = w.write_all(prefix);
+                                    let _ = w.flush();
+                                    let _ = seen_tx.send(n);
+                                    park(&|| rel.load(Ordering::Acquire));
+                                    let _ = w.write_all(rest);
+                                    let _ = w.flush();
+                                }
                                 Reply::AfterRelease(bytes) => {
                                     let _ = seen_tx.send(n);
                                     park(&|| rel.load(Ordering::Acquire));
@@ -624,7 +635,7 @@ impl SharedHoldReset {
 
 impl Drop for SharedHoldReset {
     fn drop(&mut self) {
-        crate::checkpoint::observe::unwatch();
+        acquisition::observe::unwatch();
         SHARED.hls_rebuffering.store(false, Ordering::Release);
         SHARED
             .hls_rebuffer_requested
@@ -646,6 +657,8 @@ const PLAYHEAD_NS: i64 = 5_000_000_000;
 const TEARDOWN_AFTER: std::time::Duration = std::time::Duration::from_secs(3);
 /// How promptly an armed boundary must end a blocked leg: a few 100 ms checkpoint slices.
 const PROMPT: std::time::Duration = std::time::Duration::from_millis(1_500);
+/// A leg deadline shorter than `CHECK_SLICE`: the transport ends on it without asking again.
+const SHORT_DEADLINE: std::time::Duration = std::time::Duration::from_millis(60);
 
 fn segment_on(port: u16) -> (crate::hls::Segment, crate::hls::InheritedAuth) {
     let origin = crate::plex::Origin::http("127.0.0.1", i32::from(port));
@@ -685,13 +698,51 @@ fn describe(result: &Result<HlsSegmentOutput, HlsExit>) -> String {
     }
 }
 
-/// Run the REAL `hls_demux_segment` against `pms`, firing `trigger` once the server has read the
-/// first GET. A fetch still running [`TEARDOWN_AFTER`] later is torn down.
+/// When a [`demux_against`] trigger fires.
+#[derive(Clone, Copy)]
+enum Fire {
+    /// Once the server has read the first GET.
+    OnGet,
+    /// Once the runtime has answered its `n`th `Continue` in `phase` (1-based).
+    AfterContinue(Phase, usize),
+}
+
+/// Run the REAL `hls_demux_segment` against `pms`, firing `trigger` per `fire`. A fetch still
+/// running [`TEARDOWN_AFTER`] later is torn down.
 fn demux_against(
     pms: &mut ScriptedPms,
     acquisition: SegmentAcquisition,
     trigger: impl FnOnce() + Send + 'static,
 ) -> DemuxRun {
+    demux_against_when(pms, acquisition, Fire::OnGet, trigger)
+}
+
+/// Wait on the runtime's answers for the `n`th `Continue` in `phase`.
+fn await_continue(
+    answers: &std::sync::mpsc::Receiver<(Phase, crate::checkpoint::Flow)>,
+    phase: Phase,
+    n: usize,
+) -> bool {
+    let mut seen = 0;
+    while let Ok((at, flow)) = answers.recv_timeout(std::time::Duration::from_secs(5)) {
+        if at == phase && matches!(flow, crate::checkpoint::Flow::Continue { .. }) {
+            seen += 1;
+            if seen == n {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn demux_against_when(
+    pms: &mut ScriptedPms,
+    acquisition: SegmentAcquisition,
+    fire: Fire,
+    trigger: impl FnOnce() + Send + 'static,
+) -> DemuxRun {
+    let (answers_tx, answers) = std::sync::mpsc::sync_channel(256);
+    acquisition::observe::watch_this_thread(answers_tx);
     let (segment, auth) = segment_on(pms.port);
     let mut hs = crate::stream::http_stream_boxed();
     let mut aq = crate::aq::aq_new(1 << 20);
@@ -702,7 +753,10 @@ fn demux_against(
     let seen = pms.seen.take().expect("one run per server");
     let (done_tx, done_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let publisher = std::thread::spawn(move || {
-        let saw_get = seen.recv_timeout(std::time::Duration::from_secs(5)).is_ok();
+        let saw_get = match fire {
+            Fire::OnGet => seen.recv_timeout(std::time::Duration::from_secs(5)).is_ok(),
+            Fire::AfterContinue(phase, n) => await_continue(&answers, phase, n),
+        };
         if saw_get {
             trigger();
         }
@@ -735,6 +789,7 @@ fn demux_against(
     let returned_at = std::time::Instant::now();
     let _ = done_tx.send(());
     let (fired_at, torn_down, seen) = publisher.join().expect("publisher");
+    acquisition::observe::unwatch();
     pms.seen = Some(seen);
     crate::stream::http_close(&mut *hs);
     crate::aq::aq_destroy(&mut *aq);
@@ -819,21 +874,38 @@ fn a_hold_accepted_during_the_not_ready_wait_abandons_the_fetch_without_another_
     let mut pms =
         ScriptedPms::start(|_| Reply::Send(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"));
     let acquisition = SegmentAcquisition::for_test(Some(6_000), false, false);
-    let run = demux_against(&mut pms, acquisition, publish_accepted_hold);
+    // Strictly inside the wait: after the runtime entered it AND answered its first Continue.
+    let fire = Fire::AfterContinue(Phase::RetryWaiting, 1);
+    let run = demux_against_when(&mut pms, acquisition, fire, publish_accepted_hold);
     let requests = pms.requests();
     assert_prompt_zero_byte_stall_abort(&run, "NotReady wait");
     assert_eq!(requests, 1, "no GET may follow the hold");
 }
 
-/// (d) A body read already BLOCKED inside `read_cb` when the hold is accepted: that same
-/// invocation must return with the abort latched, not wait for bytes or the watchdog.
-#[test]
-fn a_hold_accepted_during_a_blocked_body_read_ends_that_read() {
-    let _serial = crate::testlock::serial();
-    let _reset = SharedHoldReset::at(PLAYHEAD_NS);
-    let pms = ScriptedPms::start(|_| {
-        Reply::SendThenWithhold(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD")
-    });
+/// What one blocked second `read_cb` did across a hold published strictly after its runtime's
+/// second `Continue` in the body phase (the read's own top-of-loop check, then the transport's
+/// first ask before blocking).
+struct BlockedRead {
+    second: c_int,
+    latched: bool,
+    torn_down: bool,
+    /// The runtime's answers AFTER the hold was published.
+    after_hold: Vec<(Phase, crate::checkpoint::Flow)>,
+    /// A third `read_cb`, when the second returned bytes.
+    third: Option<c_int>,
+    accepts: usize,
+}
+
+fn blocked_body_read(
+    reply: Reply,
+    acquisition: SegmentAcquisition,
+    watchdog: Option<std::time::Duration>,
+    // Runs on the publisher after the hold; receives the server's release switch.
+    after_hold: impl FnOnce(&std::sync::Arc<AtomicBool>) + Send + 'static,
+) -> BlockedRead {
+    static REPLY: std::sync::Mutex<Option<Reply>> = std::sync::Mutex::new(None);
+    *REPLY.lock().unwrap() = Some(reply);
+    let pms = ScriptedPms::start(|_| REPLY.lock().unwrap().expect("scripted reply"));
     let host = CString::new("127.0.0.1").unwrap();
     let path = CString::new("/segment.ts").unwrap();
     let mut hs = crate::stream::http_stream_boxed();
@@ -859,12 +931,7 @@ fn a_hold_accepted_during_a_blocked_body_read_ends_that_read() {
         port: pms.port as c_int,
         path,
     };
-    let mut state = avio_state_for(
-        src,
-        &mut *aq,
-        8,
-        SegmentAcquisition::for_test(Some(6_000), false, false),
-    );
+    let mut state = avio_state_for(src, &mut *aq, 8, acquisition);
     let op = &mut state as *mut AvioState as *mut c_void;
     let mut dst = [0u8; 4];
     assert_eq!(
@@ -872,49 +939,247 @@ fn a_hold_accepted_during_a_blocked_body_read_ends_that_read() {
         4,
         "fixture: the prefix arrives"
     );
+    state.transport_watchdog = watchdog.map(TransportWatchdog::with_inactivity);
 
-    let (wait_tx, waits) = std::sync::mpsc::sync_channel::<()>(64);
-    crate::checkpoint::observe::watch(std::thread::current().id(), wait_tx);
+    let (answers_tx, answers) = std::sync::mpsc::sync_channel(256);
+    acquisition::observe::watch_this_thread(answers_tx);
+    let released = pms.released.clone();
     let (done_tx, done_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let publisher = std::thread::spawn(move || {
-        // The second read is now inside the transport, about to block for bytes 5..8.
-        let blocked = waits
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .is_ok();
-        if blocked {
+        let continued = await_continue(&answers, Phase::Body, 2);
+        if continued {
             publish_accepted_hold();
+            after_hold(&released);
         }
         let torn_down = done_rx.recv_timeout(TEARDOWN_AFTER).is_err();
         if torn_down {
             crate::aq::aq_abort(aq_addr as *mut AuQueue);
             crate::stream::http_shutdown(hs_addr as *mut HttpStream);
         }
-        (blocked, torn_down)
+        assert!(
+            continued,
+            "fixture: the second read must reach its blocking wait"
+        );
+        (torn_down, answers.try_iter().collect::<Vec<_>>())
     });
     let second = read_cb(op, dst.as_mut_ptr(), 4);
     let _ = done_tx.send(());
-    let (blocked, torn_down) = publisher.join().expect("publisher");
-    crate::checkpoint::observe::unwatch();
+    let (torn_down, after_hold) = publisher.join().expect("publisher");
+    acquisition::observe::unwatch();
+    let third = (second > 0).then(|| read_cb(op, dst.as_mut_ptr(), 4));
     let latched = avio_stall_aborted(&state);
     drop(state);
     crate::stream::http_close(&mut *hs);
     crate::aq::aq_destroy(&mut *aq);
+    let accepts = pms.accepts();
     drop(pms);
-
-    assert!(
-        blocked,
-        "fixture: the second read must reach a blocking wait"
-    );
-    assert!(
-        !torn_down,
-        "the blocked read ignored the hold until teardown ended it (returned {second}, \
-         stall latched: {latched})"
-    );
-    assert_eq!(second, AVERROR_EOF);
-    assert!(
+    BlockedRead {
+        second,
         latched,
+        torn_down,
+        after_hold,
+        third,
+        accepts,
+    }
+}
+
+/// (d) A body read already BLOCKED inside `read_cb` when the hold is accepted — after the
+/// runtime last answered `Continue` — must be ended by a LATER check in that same invocation,
+/// with the abort latched, not by bytes or the watchdog.
+#[test]
+fn a_hold_accepted_during_a_blocked_body_read_ends_that_read() {
+    let _serial = crate::testlock::serial();
+    let _reset = SharedHoldReset::at(PLAYHEAD_NS);
+    let run = blocked_body_read(
+        Reply::SendThenWithhold(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD"),
+        SegmentAcquisition::for_test(Some(6_000), false, false),
+        None,
+        |_| {},
+    );
+    assert!(
+        !run.torn_down,
+        "the blocked read ignored the hold until teardown ended it (returned {}, stall \
+         latched: {})",
+        run.second, run.latched
+    );
+    assert_eq!(run.second, AVERROR_EOF);
+    assert!(
+        run.latched,
         "the abort must be latched for the enclosing FFmpeg operation"
     );
+    assert_eq!(
+        run.after_hold.first(),
+        Some(&(Phase::Body, crate::checkpoint::Flow::Stop)),
+        "a check after the published hold is what stopped it"
+    );
+}
+
+/// MUST-FIX regression (ii): the read's own deadline (here the transport watchdog) is SHORTER
+/// than the checkpoint slice, so the transport ends the wait on its deadline without asking the
+/// runtime again. A hold published after the last `Continue` must still settle the read as the
+/// stall abort, never as a transport failure.
+#[test]
+fn a_hold_before_a_body_reads_short_deadline_settles_as_a_stall_abort() {
+    let _serial = crate::testlock::serial();
+    let _reset = SharedHoldReset::at(PLAYHEAD_NS);
+    let run = blocked_body_read(
+        Reply::SendThenWithhold(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD"),
+        SegmentAcquisition::for_test(Some(6_000), false, false),
+        Some(SHORT_DEADLINE),
+        |_| {},
+    );
+    assert!(!run.torn_down);
+    assert!(
+        run.second == AVERROR_EOF && run.latched,
+        "the deadline wake bypassed the guard: returned {} (AVERROR_IO is {AVERROR_IO}), stall \
+         latched: {}",
+        run.second,
+        run.latched
+    );
+}
+
+/// Floor control for (ii): the same short-deadline wake at the floor asks for the hold once and
+/// keeps the transport classification.
+#[test]
+fn at_the_floor_a_body_reads_short_deadline_keeps_its_transport_classification() {
+    let _serial = crate::testlock::serial();
+    let _reset = SharedHoldReset::at(PLAYHEAD_NS);
+    let run = blocked_body_read(
+        Reply::SendThenWithhold(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD"),
+        SegmentAcquisition::for_test(Some(6_000), true, false),
+        Some(SHORT_DEADLINE),
+        |_| {},
+    );
+    assert!(!run.torn_down);
+    assert_eq!(
+        run.second, AVERROR_IO,
+        "a floor stall is still the transport's to report"
+    );
+    assert!(!run.latched);
+    assert!(
+        SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+        "the hold was requested"
+    );
+}
+
+/// Floor continuation for a blocked body read: the hold is requested once, the SAME read keeps
+/// waiting on the same connection, and returns the rest when PMS sends it.
+#[test]
+fn at_the_floor_a_blocked_body_read_asks_once_and_keeps_reading() {
+    let _serial = crate::testlock::serial();
+    let _reset = SharedHoldReset::at(PLAYHEAD_NS);
+    let run = blocked_body_read(
+        Reply::PrefixThenRelease(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD", b"EFGH"),
+        SegmentAcquisition::for_test(Some(6_000), true, false),
+        None,
+        |released| {
+            let asked_by = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while !SHARED.hls_rebuffer_requested.load(Ordering::Acquire)
+                && std::time::Instant::now() < asked_by
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            // Clear it: a second request would set it again.
+            if SHARED.hls_rebuffer_requested.swap(false, Ordering::AcqRel) {
+                released.store(true, Ordering::Release);
+            }
+        },
+    );
+    assert!(!run.torn_down, "the floor read never asked for the hold");
+    assert_eq!(
+        run.second, 4,
+        "the same read carried on to the rest of the body"
+    );
+    assert!(!run.latched);
+    assert_eq!(
+        run.third,
+        Some(AVERROR_EOF),
+        "then the sized body is complete"
+    );
+    assert!(
+        !SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+        "asked exactly once"
+    );
+    assert_eq!(run.accepts, 1, "one connection");
+}
+
+/// Floor continuation for the `NotReady` wait: asks once, and the wait carries on into its retry
+/// (here PMS then refuses it, which ends the test with an ordinary failure). The retry dials
+/// afresh — the plaintext transport does not keep a non-2xx response's socket — so the
+/// observable is the second GET, not the connection count.
+#[test]
+fn at_the_floor_the_not_ready_wait_asks_once_and_retries() {
+    let _serial = crate::testlock::serial();
+    let _reset = SharedHoldReset::at(PLAYHEAD_NS);
+    let mut pms = ScriptedPms::start(|n| {
+        Reply::Send(if n == 0 {
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+        } else {
+            b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"
+        })
+    });
+    let acquisition = SegmentAcquisition::for_test(Some(6_000), true, false);
+    let fire = Fire::AfterContinue(Phase::RetryWaiting, 1);
+    let run = demux_against_when(&mut pms, acquisition, fire, publish_accepted_hold);
+    assert!(!run.torn_down, "{}", describe(&run.result));
+    assert!(
+        matches!(run.result, Err(HlsExit::Failed("HTTP request failed"))),
+        "the retry ran and PMS refused it: {}",
+        describe(&run.result)
+    );
+    assert!(
+        SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+        "the hold was requested"
+    );
+    assert_eq!(pms.requests(), 2, "the wait carried on into its retry");
+}
+
+/// MUST-FIX regression (i): the open's own deadline is SHORTER than the checkpoint slice, so the
+/// transport ends the header wait on its deadline without asking again. A hold published after
+/// the open's last `Continue` must still settle the open as a zero-byte stall abort, not as the
+/// deadline's own classification.
+#[test]
+fn a_hold_before_an_opens_short_deadline_settles_as_a_stall_abort() {
+    let _serial = crate::testlock::serial();
+    let _reset = SharedHoldReset::at(PLAYHEAD_NS);
+    let mut pms = ScriptedPms::start(|_| Reply::Withhold);
+    let acquisition = SegmentAcquisition::for_test_with_deadline(
+        Some(6_000),
+        false,
+        false,
+        ReserveDeadlineState::new(Some(std::time::Instant::now() + SHORT_DEADLINE), false),
+    );
+    let fire = Fire::AfterContinue(Phase::Opening, 1);
+    let run = demux_against_when(&mut pms, acquisition, fire, publish_accepted_hold);
+    assert_prompt_zero_byte_stall_abort(&run, "open, deadline shorter than a slice");
+}
+
+/// Floor control for (i): at the floor the same wake asks for the hold once and keeps the
+/// deadline's own classification.
+#[test]
+fn at_the_floor_an_opens_short_deadline_keeps_its_classification() {
+    let _serial = crate::testlock::serial();
+    let _reset = SharedHoldReset::at(PLAYHEAD_NS);
+    let mut pms = ScriptedPms::start(|_| Reply::Withhold);
+    let acquisition = SegmentAcquisition::for_test_with_deadline(
+        Some(6_000),
+        true,
+        false,
+        ReserveDeadlineState::new(Some(std::time::Instant::now() + SHORT_DEADLINE), false),
+    );
+    let fire = Fire::AfterContinue(Phase::Opening, 1);
+    let run = demux_against_when(&mut pms, acquisition, fire, publish_accepted_hold);
+    assert!(!run.torn_down, "{}", describe(&run.result));
+    assert!(
+        matches!(run.result, Err(HlsExit::PrimeExpired)),
+        "the floor keeps the deadline's classification: {}",
+        describe(&run.result)
+    );
+    assert!(
+        SHARED.hls_rebuffer_requested.load(Ordering::Acquire),
+        "the hold was requested"
+    );
+    assert_eq!(pms.requests(), 1);
 }
 
 /// (e) A zero-byte pre-body abort through the shared reducer, from both active-cursor callers:

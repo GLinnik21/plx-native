@@ -2491,7 +2491,16 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 s.latch_abort();
                 return AVERROR_EOF;
             }
-            // The runtime stopped the wait in place; it has already latched why.
+            // Every unsuccessful read is SETTLED by a fresh check before it is classified: a
+            // deadline shorter than the checkpoint slice ends the wait without asking again, and a
+            // stopped wait has already latched why.
+            if r < 0 {
+                if let Some(acquisition) = &mut s.acquisition {
+                    if acquisition.settle_stopped() {
+                        return avio_stopped(s);
+                    }
+                }
+            }
             if r == crate::stream::HTTP_READ_STOPPED || r == crate::curlio::READ_STOPPED {
                 return avio_stopped(s);
             }
@@ -3078,11 +3087,11 @@ enum HlsExit {
 
 /// **What a controlled stop means when its checkpoint latched no reason.** A leg ends in a stop
 /// only because its checkpoint answered `Flow::Stop`, and the only checkpoint that ever does, the
-/// acquisition runtime, latches why first — its caller reads that (`stopped_exit`) before this
-/// value can matter. So this is the bug path, and it takes the one classification that asserts
-/// nothing: not `Aborted` (would end the session on no teardown), not `PrimeExpired`/`StallAbort`
-/// (censored reserve evidence nobody observed), not `NotReady` (would retry). A plain failure
-/// ends the segment the way any unexplained transport failure does.
+/// acquisition runtime, latches why first — and its caller settles every failed leg through it
+/// (`settle`) before this value can matter. So this is the bug path, and it takes the one
+/// classification that asserts nothing: not `Aborted` (would end the session on no teardown), not
+/// `PrimeExpired`/`StallAbort` (censored reserve evidence nobody observed), not `NotReady` (would
+/// retry). A plain failure ends the segment the way any unexplained transport failure does.
 const UNLATCHED_STOP: HlsExit = HlsExit::Failed("HLS acquisition stopped without a latched reason");
 
 /// Lookahead of N+1 must not tear down a session that already fed N. Only teardown is fatal.
@@ -3189,16 +3198,13 @@ fn hls_open_source(
         if unsafe { crate::aq::aq_is_aborted(aq) } {
             return Err(HlsExit::Aborted);
         }
-        let opened = match deadline {
-            Some(at) => crate::curlio::CurlSource::open_reserved_until(
-                &url,
-                0,
-                reservation,
-                at,
-                &mut *checkpoint,
-            ),
-            None => crate::curlio::CurlSource::open_reserved(&url, 0, reservation),
-        };
+        let opened = crate::curlio::CurlSource::open_reserved_checked(
+            &url,
+            0,
+            reservation,
+            deadline,
+            &mut *checkpoint,
+        );
         if unsafe { crate::aq::aq_is_aborted(aq) } {
             drop(opened);
             return Err(HlsExit::Aborted);
@@ -3229,24 +3235,15 @@ fn hls_open_source(
                 &mut *checkpoint,
             )
         } else {
-            let result = crate::stream::http_open(
+            crate::stream::http_open_result(
                 hs,
                 host.as_ptr(),
                 origin.port() as c_int,
                 path.as_ptr(),
                 std::ptr::null(),
                 "GET",
-            );
-            if result == 0 {
-                Ok(())
-            } else {
-                let status = crate::stream::hs_status(hs);
-                Err(if status > 0 {
-                    crate::stream::HttpOpenError::Status(status)
-                } else {
-                    crate::stream::HttpOpenError::Transport
-                })
-            }
+                &mut *checkpoint,
+            )
         };
         if unsafe { crate::aq::aq_is_aborted(aq) } {
             return Err(HlsExit::Aborted);
@@ -3771,7 +3768,7 @@ unsafe fn hls_demux_segment(
             return Err(HlsExit::Aborted);
         }
         if reserve_deadline.expire_if_due(SHARED.hls_rebuffering.load(Ordering::Acquire)) {
-            return Err(HlsExit::PrimeExpired);
+            return Err(runtime.settle(HlsExit::PrimeExpired, audio_expected()));
         }
         let attempt = std::time::Instant::now();
         let rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
@@ -3786,12 +3783,9 @@ unsafe fn hls_demux_segment(
             Some(effective.at),
             &mut runtime,
         );
-        // A stop the runtime latched outranks however the transport surfaced it.
-        if opened.is_err() {
-            if let Some(exit) = runtime.stopped_exit(audio_expected()) {
-                return Err(exit);
-            }
-        }
+        // Every unsuccessful open is SETTLED by a fresh check before it is classified: a transport
+        // deadline shorter than the checkpoint slice ends the wait without asking again.
+        let opened = opened.map_err(|error| runtime.settle(error, audio_expected()));
         match opened {
             Ok(opened) => {
                 transport_watchdog.reset();
@@ -3828,7 +3822,7 @@ unsafe fn hls_demux_segment(
                     return Err(HlsExit::Aborted);
                 }
                 if reserve_deadline.expire_if_due(SHARED.hls_rebuffering.load(Ordering::Acquire)) {
-                    return Err(HlsExit::PrimeExpired);
+                    return Err(runtime.settle(HlsExit::PrimeExpired, audio_expected()));
                 }
                 // Never sleep past the deadline. A fixed 250 ms wait against a deadline 40 ms away
                 // overshoots by 210 ms of reserve, every time, for no information — the poll after
@@ -3843,12 +3837,8 @@ unsafe fn hls_demux_segment(
                         .saturating_duration_since(std::time::Instant::now()),
                 );
                 runtime.enter(Phase::RetryWaiting);
-                let waited = hls_wait(aq, wait, Some(effective.at), &mut runtime);
-                if waited.is_err() {
-                    if let Some(exit) = runtime.stopped_exit(audio_expected()) {
-                        return Err(exit);
-                    }
-                }
+                let waited = hls_wait(aq, wait, Some(effective.at), &mut runtime)
+                    .map_err(|error| runtime.settle(error, audio_expected()));
                 match waited {
                     Err(HlsExit::PrimeExpired) => {
                         let current_rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);

@@ -71,8 +71,6 @@ impl<'a> Pacer<'a> {
     /// its `next_check` has passed, and returns the instant the coming wait must wake by to ask
     /// again (`None`: wait as long as the transport's own bounds allow).
     pub(crate) fn before_wait(&mut self) -> Result<Option<Instant>, Stopped> {
-        #[cfg(test)]
-        observe::about_to_wait();
         let ask = match self.due {
             None => true,
             Some(None) => false,
@@ -94,36 +92,6 @@ impl<'a> Pacer<'a> {
 pub(crate) fn wait_ms_until(at: Instant, cap_ms: i32) -> i32 {
     let left_us = at.saturating_duration_since(Instant::now()).as_micros();
     (left_us.saturating_add(999) / 1_000).clamp(1, cap_ms.max(1) as u128) as i32
-}
-
-/// A host-suite seam: a test registers ONE thread and learns each time a transport on that
-/// thread reaches [`Pacer::before_wait`] — i.e. is about to block — so it can change the world
-/// while the wait is provably in progress instead of sleeping and hoping.
-#[cfg(test)]
-pub(crate) mod observe {
-    use std::sync::mpsc::SyncSender;
-    use std::sync::Mutex;
-    use std::thread::ThreadId;
-
-    static WATCHED: Mutex<Option<(ThreadId, SyncSender<()>)>> = Mutex::new(None);
-
-    /// Report every wait of `thread` on `tx` (never blocking the transport: a full channel drops).
-    pub(crate) fn watch(thread: ThreadId, tx: SyncSender<()>) {
-        *WATCHED.lock().unwrap_or_else(|e| e.into_inner()) = Some((thread, tx));
-    }
-
-    pub(crate) fn unwatch() {
-        *WATCHED.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
-
-    pub(super) fn about_to_wait() {
-        let watched = WATCHED.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((thread, tx)) = watched.as_ref() {
-            if *thread == std::thread::current().id() {
-                let _ = tx.try_send(());
-            }
-        }
-    }
 }
 
 /// A host-suite checkpoint: counts its calls, asks again `slice` after each, and stops once

@@ -137,6 +137,22 @@ impl SegmentAcquisition {
     pub(super) fn for_test(reserve_ms: Option<i64>, at_floor: bool, already_held: bool) -> Self {
         Self::active(reserve_ms, at_floor, already_held)
     }
+
+    /// [`Self::for_test`] with an explicit reserve deadline, so a test can make the open's own
+    /// deadline expire sooner than [`CHECK_SLICE`] — the one way a transport ends a wait without
+    /// asking its checkpoint again.
+    #[cfg(test)]
+    pub(super) fn for_test_with_deadline(
+        reserve_ms: Option<i64>,
+        at_floor: bool,
+        already_held: bool,
+        reserve_deadline: ReserveDeadlineState,
+    ) -> Self {
+        SegmentAcquisition(Policy::Active(ActiveAcquisition {
+            reserve_deadline,
+            stall: arm_active_stall_guard(reserve_ms, at_floor, already_held),
+        }))
+    }
 }
 
 /// How often an ARMED acquisition re-asks while a transport or retry wait is blocked, at most.
@@ -225,6 +241,23 @@ impl AcquisitionRuntime {
         })
     }
 
+    /// **Settle a leg that ended without success** — a deadline, a transport failure, a
+    /// `NotReady`, a stop. The transport's last answer may be stale: a deadline shorter than
+    /// [`CHECK_SLICE`] ends a wait without asking again. So this asks AFRESH, in `check()`'s own
+    /// priority (teardown, completed body, guard boundary — at the floor that requests the hold
+    /// and continues), and only then lets the leg's own classification stand. Returns whether the
+    /// runtime has stopped.
+    pub(super) fn settle_stopped(&mut self) -> bool {
+        Checkpoint::check(self) == Flow::Stop
+    }
+
+    /// [`Self::settle_stopped`] for a leg before the AVIO exists: the latched exit if the runtime
+    /// stopped, otherwise the leg's own `outcome`.
+    pub(super) fn settle(&mut self, outcome: HlsExit, audio_expected: bool) -> HlsExit {
+        self.settle_stopped();
+        self.stopped_exit(audio_expected).unwrap_or(outcome)
+    }
+
     #[cfg(test)]
     pub(super) fn armed(&self) -> bool {
         self.stall.is_some()
@@ -233,6 +266,15 @@ impl AcquisitionRuntime {
 
 impl Checkpoint for AcquisitionRuntime {
     fn check(&mut self) -> Flow {
+        let flow = self.evaluate();
+        #[cfg(test)]
+        observe::report(self.phase, flow);
+        flow
+    }
+}
+
+impl AcquisitionRuntime {
+    fn evaluate(&mut self) -> Flow {
         if self.stop.is_some() {
             return Flow::Stop;
         }
@@ -258,6 +300,37 @@ impl Checkpoint for AcquisitionRuntime {
         let slice = std::time::Instant::now() + CHECK_SLICE;
         Flow::Continue {
             next_check: Some(guard.projected_boundary().min(slice)),
+        }
+    }
+}
+
+/// A host-suite seam: a test registers ONE thread and receives every answer an acquisition
+/// runtime on that thread gives, with the phase it gave it in — so it can change the world
+/// strictly AFTER a given `Continue` instead of sleeping and hoping.
+#[cfg(test)]
+pub(super) mod observe {
+    use super::{Flow, Phase};
+    use std::sync::mpsc::SyncSender;
+    use std::sync::Mutex;
+    use std::thread::ThreadId;
+
+    static WATCHED: Mutex<Option<(ThreadId, SyncSender<(Phase, Flow)>)>> = Mutex::new(None);
+
+    pub(in crate::ff) fn watch_this_thread(tx: SyncSender<(Phase, Flow)>) {
+        *WATCHED.lock().unwrap_or_else(|e| e.into_inner()) =
+            Some((std::thread::current().id(), tx));
+    }
+
+    pub(in crate::ff) fn unwatch() {
+        *WATCHED.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    pub(super) fn report(phase: Phase, flow: Flow) {
+        let watched = WATCHED.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((thread, tx)) = watched.as_ref() {
+            if *thread == std::thread::current().id() {
+                let _ = tx.try_send((phase, flow));
+            }
         }
     }
 }
