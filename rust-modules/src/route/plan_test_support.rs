@@ -68,10 +68,9 @@ pub(super) fn sub(id: i64, index: i64, lang: &str, external: bool) -> crate::met
 pub(super) use crate::metadata::{Dovi, DvPresentation};
 
 
-/// The two settings of the `/tmp/plxnative-dv` trigger, named so every assertion below says
-/// which world it is in. `DECLARED` is the armed one — the pipeline is told the stream is
-/// Dolby Vision — and `SILENT` is a build (or a boot) that sends no node, which is also what
-/// `RELEASE=1` compiles in today.
+/// The two inputs of the boot-latched `/tmp/plxnative-nodv` diagnostic, named so assertions state
+/// which signal they exercise. Capability and codec are passed separately; `DECLARED` alone does
+/// not authorize a node on an unsupported/unknown set.
 pub(super) const DECLARED: bool = true;
 
 pub(super) const SILENT: bool = false;
@@ -115,4 +114,3 @@ pub(super) fn p8() -> Dovi {
         ..Dovi::NONE
     }
 }
-

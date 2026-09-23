@@ -434,8 +434,8 @@ fn mde_video_stream_transcode_forbids_remux() {
     crate::plex::reset_servers_for_test();
 }
 
-/// Declared Profile 5 can Original, but a remux copy carries no `DolbyHdrInfo`. MDE's
-/// video=`copy` (the measured P5 shape) must not override `no_video_copy`.
+/// A Profile 5 without confirmed platform support must be re-encoded, and a remux copy carries no
+/// `DolbyHdrInfo`. MDE's video=`copy` (the measured P5 shape) must not override `no_video_copy`.
 #[test]
 #[cfg(feature = "devtriggers")]
 fn mde_transcode_copy_still_refuses_a_profile_5_remux() {
@@ -470,7 +470,7 @@ fn mde_transcode_copy_still_refuses_a_profile_5_remux() {
         requests
             .iter()
             .any(|line| line.contains("/decision?") && line.contains("hasMDE=1")),
-        "declared P5 still asks MDE: {requests:?}"
+        "unsupported/unknown P5 still asks MDE for the encode route: {requests:?}"
     );
     assert!(
         !plan.remux,

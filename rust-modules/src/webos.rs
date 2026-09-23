@@ -1,5 +1,5 @@
-//! Which webOS this television actually is — and the one thing the app ever ASKS the platform to
-//! do, which is to take the screen back ([`go_home`]).
+//! Which webOS this television actually is, the cached playback capabilities it reports
+//! ([`caps`]), and the request which hands the screen back ([`go_home`]).
 //!
 //! # Why the app needs to know, when it never did before
 //!
@@ -29,12 +29,15 @@
 //! bucket (their `library-version` guide — `goldilocks` is 4.0~4.4, `goldilocks2` 4.5~4.10). So
 //! logging it says which of THEIR buckets a report belongs to, not just a number.
 //!
-//! Parsed by hand rather than through a JSON crate: this is a flat object of string values written
-//! by the platform, the crate has no JSON dependency, and a parser that cannot fail is the right
-//! shape for something that must never keep the app from booting.
+//! Parsed by hand because this is a flat object of string values and a parser that cannot fail is
+//! the right shape for something that must never keep the app from booting. This is not a pattern
+//! for service replies: [`caps`] uses `serde_json` and strict types because uncertainty there is a
+//! playback-safety decision. The capability query deliberately does not fill a missing webOS
+//! version; no public version key or anonymous permission for one is evidenced.
 use std::sync::OnceLock;
 
 pub(crate) mod jail_repair;
+pub(crate) mod caps;
 
 const OS_INFO: &str = "/var/run/nyx/os_info.json";
 

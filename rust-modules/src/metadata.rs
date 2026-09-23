@@ -436,16 +436,14 @@ impl Dovi {
     }
 
     /// PURE: **how this stream will be presented** — the ONE predicate behind both halves of the
-    /// Dolby Vision decision, so they cannot drift apart. The direct-play gate
-    /// ([`crate::route::video_direct_plays`]) asks it whether to refuse; the Load payload
-    /// ([`crate::player::engine`]) asks the same value whether to emit a `DolbyHdrInfo` node. One
-    /// call, one answer, two consumers.
+    /// Dolby Vision decision. The direct-play gate and the eventual Load payload receive this
+    /// same value, frozen into route state rather than re-reading capability at different times.
     ///
-    /// `signal` is whether we are willing to declare Dolby Vision for a stream **whose base layer
-    /// we could not show without it** — i.e. Profile 5. It is TRUE in every shipping configuration
-    /// now; `/tmp/plxnative-nodv` ([`dv_withheld`]) is the only thing that clears it, and it exists
-    /// to bisect, not to protect. It stays a parameter rather than a read inside this function so
-    /// the whole rule stays pure and both settings are unit-testable.
+    /// `signal` retains `nodv`'s diagnostic asymmetry: it withholds a Profile-5-style declaration,
+    /// but does not suppress a compatible Profile 8 on a supported set. `capability` must be a
+    /// definite [`Supported`](crate::webos::caps::DvCapability::Supported), and
+    /// `video_is_hevc` closes the old Profile 9 disagreement where the gate declared AVC and the
+    /// payload's H265 guard silently discarded the node.
     ///
     /// The four arms, and why each is where it is:
     ///
@@ -458,9 +456,8 @@ impl Dovi {
     ///   It is deliberately checked BEFORE the declaration arm — which is what keeps the emitted
     ///   node's `trackType` at `"single"` and, with `encryptionType` fixed at `"clear"`, makes the
     ///   pipeline's `dv-dual-svp` secure-video-path flag unreachable. We cannot satisfy that flag.
-    /// - **no node will be sent** (a profile the server never named, or Profile 5 with the
-    ///   trigger unarmed — see the comment on `declare`, which is where the trigger's reach
-    ///   narrowed) → fall back to
+    /// - **no node will be sent** (capability absent/unknown, non-HEVC output, a profile the
+    ///   server never named, or Profile 5 with the trigger armed) → fall back to
     ///   exactly the pre-declaration rule: refuse iff [`base_layer_unusable`](Self::base_layer_unusable).
     ///   That is what makes "keep the refusal for any case where we would not send the node" a
     ///   property of the code rather than of a reviewer's memory. The `profile <= 0` half also
@@ -474,31 +471,24 @@ impl Dovi {
     ///   hint) to the `video/x-h265` caps it was already going to build. The codec string does not
     ///   change; the node is the entire difference between an IPT-PQ stream shown in wrong colours
     ///   and one the panel puts in Dolby Vision mode.
-    pub(crate) fn presentation(&self, signal: bool) -> DvPresentation {
+    pub(crate) fn presentation(
+        &self,
+        signal: bool,
+        capability: crate::webos::caps::DvCapability,
+        video_is_hevc: bool,
+    ) -> DvPresentation {
         if !self.present {
             return DvPresentation::NotDv;
         }
         if self.el_present {
             return DvPresentation::Refuse("dual-layer");
         }
-        // **Whether a node will be sent, and the trigger is no longer the whole answer.** A
-        // stream whose base layer is already a correct picture on its own declares
-        // UNCONDITIONALLY; only one whose base layer is not — Profile 5 — waits behind
-        // [`dv_withheld`]. **Both arms now declare in every shipping configuration**, and the
-        // distinction survives only as a bisect and as the record of why it was ever needed.
-        //
-        // It was needed because a declared **P5 hitched** and a declared P8 did not: P5's display-
-        // management lookup missed for 2 frames in every 12 (`Requested <pts> PTS can not be found
-        // in LUT Buffer`), while a cross-compatible base layer masks the same fault — when the
-        // dynamic metadata is late, an HDR10/HLG/SDR image that was already right is what shows.
-        // That fault was **one 90 kHz tick** in the LUT key and is fixed
-        // ([`crate::player::engine`]'s `pts_nudge_ns`): 3 misses in 90 s on the shipped default,
-        // against 160 in 45 s before. So the asymmetry that put P5 behind a trigger is gone, and
-        // with it the trigger's opt-in polarity.
-        //
-        // Written through [`base_layer_unusable`](Self::base_layer_unusable) rather than a bare
-        // `profile != 5` so the two can no more drift apart here than they can in the gate below.
-        let declare = signal || !self.base_layer_unusable();
+        // Presence of our node enables libpf's DV path even on a television which cannot display
+        // it. libplayerAPIs' own platform metadata does not protect that seam, so only this app's
+        // affirmative configd result may make the declaration eligible.
+        let declare = capability == crate::webos::caps::DvCapability::Supported
+            && video_is_hevc
+            && (signal || !self.base_layer_unusable());
         if !declare || self.profile <= 0 {
             return if self.base_layer_unusable() {
                 DvPresentation::Refuse("no cross-compatible base layer")
@@ -518,10 +508,22 @@ impl Dovi {
         })
     }
 
-    /// [`presentation`](Self::presentation) with the trigger read for you — the form both real
-    /// call sites use, so the gate and the payload are answered from one latched bool.
-    pub(crate) fn presentation_now(&self) -> DvPresentation {
-        self.presentation(!dv_withheld())
+    /// Resolve a fresh decision from the cached platform answer and the boot-latched diagnostic
+    /// signal. Call once at a route boundary; installed playback must retain the returned value.
+    pub(crate) fn presentation_now(&self, video_is_hevc: bool) -> DvPresentation {
+        self.presentation(
+            !dv_withheld(),
+            crate::webos::caps::capability(),
+            video_is_hevc,
+        )
+    }
+
+    pub(crate) fn decision_now(&self, video_is_hevc: bool) -> DvDecision {
+        let capability = crate::webos::caps::capability();
+        DvDecision {
+            capability,
+            presentation: self.presentation(!dv_withheld(), capability, video_is_hevc),
+        }
     }
 }
 
@@ -562,7 +564,36 @@ pub(crate) enum DvPresentation {
     Refuse(&'static str),
 }
 
+/// The platform answer and the presentation derived from it at one route boundary. Both are
+/// copyable so reload, recovery and rollback preserve the installed decision exactly.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct DvDecision {
+    pub(crate) capability: crate::webos::caps::DvCapability,
+    pub(crate) presentation: DvPresentation,
+}
+
+impl DvDecision {
+    pub(crate) const NONE: Self = Self {
+        capability: crate::webos::caps::DvCapability::Unknown,
+        presentation: DvPresentation::NotDv,
+    };
+}
+
+impl Default for DvDecision {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
 impl DvPresentation {
+    pub(crate) const fn label(&self) -> &'static str {
+        match self {
+            Self::NotDv => "base-layer",
+            Self::Declare(_) => "declare",
+            Self::Refuse(_) => "refuse",
+        }
+    }
+
     /// Direct play is refused (and, at `build_stream`, the reason for the log line).
     pub(crate) fn refusal(&self) -> Option<&'static str> {
         match self {
@@ -580,9 +611,9 @@ impl DvPresentation {
 }
 
 crate::dev::latched_flag!(
-    /// `/tmp/plxnative-dvnonode` — with `-dv` also armed, keep the Dolby Vision **direct play**
-    /// but send **no** `DolbyHdrInfo` node. Diagnostic only, and it exists for one question the
-    /// trigger surface could not otherwise ask.
+    /// `/tmp/plxnative-dvnonode` — after a supported route has frozen `Declare`, keep its Dolby
+    /// Vision **direct play** but send **no** `DolbyHdrInfo` node. Diagnostic only: it is the
+    /// explicitly logged exception to gate/payload agreement.
     ///
     /// The two things that changed together the day Profile 5 first direct-played are the
     /// DECLARATION and the 4K HEVC direct play of a file that had never been fed before. Every
@@ -617,18 +648,24 @@ crate::dev::latched_flag!(
     ///   the LUT key and is gone — 3 misses in 90 s on the shipped default, against 160 in 45 s.
     ///   See `player::engine::pts_nudge_ns`.
     ///
-    /// So every Dolby Vision stream the pipeline can feed is now declared by default, and this
-    /// knob only takes it away. Note what it does NOT do: withholding the declaration re-imposes
+    /// So every eligible Dolby Vision stream on a set with confirmed support is declared by
+    /// default, and this knob only takes it away. Note what it does NOT do: withholding re-imposes
     /// the old refusal on Profile 5 (`base_layer_unusable`), so this bisects "declared vs
     /// transcoded", not "declared vs direct-played-undeclared". [`dv_node_suppressed`]
     /// (`/tmp/plxnative-dvnonode`) is the finer instrument for that, and is why both exist.
     ///
-    /// Latched once per process rather than read per call, which is what guarantees the gate and
-    /// the payload cannot disagree WITHIN a session: `tests/run.py` clears `/tmp/plxnative-*`
-    /// between cases, so an unlatched read could legitimately answer differently at the route
-    /// decision and at the Load a few frames later, and direct-play a Profile 5 with no node.
+    /// Latched once per process so route decisions never observe a changing trigger. The stronger
+    /// gate/payload guarantee now comes from storing [`DvDecision`] on the route: neither a later
+    /// capability answer nor a reload re-evaluates the installed play.
     pub(crate) fn dv_withheld = "nodv";
 );
+
+/// Prewarm both payload diagnostics before the first frame scope. Their getters are subsequently
+/// filesystem-free even when preview or payload construction first reaches them during a frame.
+pub(crate) fn prewarm_dv_latches() {
+    let _ = dv_withheld();
+    let _ = dv_node_suppressed();
+}
 
 // `Default` is for TESTS: every field is a zero/empty that means "PMS did not say", so a fixture
 // can name the two or three fields its case is about instead of the fifteen it is not.

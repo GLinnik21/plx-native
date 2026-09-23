@@ -267,15 +267,16 @@ pub(crate) struct PlaybackSession {
     stream_acodec: String,
     /// Direct-play source video frame rate (0 = unknown/transcode → omit from the Load esInfo).
     stream_fps: f64,
-    /// The direct-played file's own Dolby Vision layering, carried for one consumer: the Load
-    /// payload's `DolbyHdrInfo` node ([`crate::metadata::Dovi::presentation`]). Rides the session
-    /// exactly like `stream_fps` and for the same reason — an audio-track switch tears the engine
-    /// down and rebuilds the payload from here, and a payload that lost the node mid-film would
-    /// put the rest of the picture up in the wrong colours.
+    /// The direct-played file's raw Dolby Vision layering, retained for diagnostics. The Load
+    /// payload consumes `stream_dv_decision` below: re-evaluating this record after a late probe
+    /// would make a reload describe a different route from the one which passed the gate.
     ///
     /// `Dovi::NONE` on every transcode and remux: what arrives then is the server's output, and
     /// the only DV file that reaches those paths is one we refused to declare in the first place.
     stream_dovi: crate::metadata::Dovi,
+    /// Capability and presentation frozen when `stream_dovi` entered this physical route. An
+    /// audio switch, reload, Original recovery and rollback all copy this beside the raw record.
+    stream_dv_decision: crate::metadata::DvDecision,
     /// **Does the audio elementary stream we are feeding carry Dolby Atmos?** The Load payload's
     /// `contents.immersive` node turns on it ([`crate::player::engine`]).
     ///
@@ -368,6 +369,7 @@ impl PlaybackSession {
         stream_acodec: String::new(),
         stream_fps: 0.0,
         stream_dovi: crate::metadata::Dovi::NONE,
+        stream_dv_decision: crate::metadata::DvDecision::NONE,
         stream_immersive: false,
         title: [0; 128],
         ctxline: [0; 96],
@@ -434,6 +436,7 @@ impl PlaybackSession {
             stream_acodec,
             stream_fps,
             stream_dovi,
+            stream_dv_decision,
             stream_immersive,
             title,
             ctxline,
@@ -481,6 +484,7 @@ impl PlaybackSession {
             stream_acodec: stream_acodec.clone(),
             stream_fps: *stream_fps,
             stream_dovi: *stream_dovi,
+            stream_dv_decision: *stream_dv_decision,
             stream_immersive: *stream_immersive,
             title: *title,
             ctxline: *ctxline,
@@ -694,6 +698,7 @@ struct AppliedRouteProjection {
     stream_acodec: String,
     stream_fps: f64,
     stream_dovi: crate::metadata::Dovi,
+    stream_dv_decision: crate::metadata::DvDecision,
     stream_immersive: bool,
 }
 
@@ -714,6 +719,7 @@ fn route_projection(ps: &PlaybackSession) -> AppliedRouteProjection {
         stream_acodec: s.stream_acodec.clone(),
         stream_fps: s.stream_fps,
         stream_dovi: s.stream_dovi,
+        stream_dv_decision: s.stream_dv_decision,
         stream_immersive: s.stream_immersive,
     }
 }
@@ -734,6 +740,7 @@ fn install_route_projection(ps: &mut PlaybackSession, projection: &AppliedRouteP
         s.stream_acodec = projection.stream_acodec.clone();
         s.stream_fps = projection.stream_fps;
         s.stream_dovi = projection.stream_dovi;
+        s.stream_dv_decision = projection.stream_dv_decision;
         s.stream_immersive = projection.stream_immersive;
     } };
 }
@@ -3017,6 +3024,7 @@ pub(crate) fn arm_auto_fixture(
             acodec: "aac".into(),
             fps: 0.0,
             dovi: crate::metadata::Dovi::NONE,
+            dv_decision: crate::metadata::DvDecision::NONE,
             immersive: false,
             audio_sid: 0,
             audio_ordinal: None,
@@ -3189,6 +3197,7 @@ fn install_auto_hls(
             s.stream_acodec.clone(),
             s.stream_fps,
             s.stream_dovi,
+            s.stream_dv_decision,
             s.stream_immersive,
         )
     };
@@ -3204,7 +3213,8 @@ fn install_auto_hls(
             s.stream_acodec = previous.7.clone();
             s.stream_fps = previous.8;
             s.stream_dovi = previous.9;
-            s.stream_immersive = previous.10;
+            s.stream_dv_decision = previous.10;
+            s.stream_immersive = previous.11;
         } };
     };
     { let s = &mut *ps; {
@@ -3220,7 +3230,7 @@ fn install_auto_hls(
         s.stream_vcodec = "h264".into();
         s.stream_acodec = "aac".into();
         s.stream_fps = 0.0;
-        s.stream_dovi = crate::metadata::Dovi::NONE;
+        clear_output_dv(s);
         s.stream_immersive = false;
     } };
     let finish = |ps: &mut PlaybackSession, url: String| {
@@ -3349,6 +3359,7 @@ pub(crate) fn recover_auto_to_original_for(
             s.stream_acodec = candidate.acodec.clone();
             s.stream_fps = candidate.fps;
             s.stream_dovi = candidate.dovi;
+            s.stream_dv_decision = candidate.dv_decision;
             s.stream_immersive = candidate.immersive;
         } };
         crate::player::set_audio_track(candidate.audio_ordinal.unwrap_or(-1));
@@ -3442,6 +3453,7 @@ struct PendingOriginal {
     stream_acodec: String,
     stream_fps: f64,
     stream_dovi: crate::metadata::Dovi,
+    stream_dv_decision: crate::metadata::DvDecision,
     stream_immersive: bool,
     /// A manual Original pick can adopt an automatic trial without issuing a second Load. The
     /// first decoded frame then transfers the applied contract to Manual and invalidates the
@@ -3509,6 +3521,7 @@ fn snapshot_route(ps: &PlaybackSession, encoder: String, offset_secs: i64) -> Pe
         stream_acodec: s.stream_acodec.clone(),
         stream_fps: s.stream_fps,
         stream_dovi: s.stream_dovi,
+        stream_dv_decision: s.stream_dv_decision,
         stream_immersive: s.stream_immersive,
         adopted_by_user: false,
         charge_visible_switch_on_commit: false,
@@ -3675,6 +3688,7 @@ pub(crate) fn rollback_original_recovery(ps: &mut PlaybackSession) -> Option<Ori
         s.stream_acodec = pending.stream_acodec.clone();
         s.stream_fps = pending.stream_fps;
         s.stream_dovi = pending.stream_dovi;
+        s.stream_dv_decision = pending.stream_dv_decision;
         s.stream_immersive = pending.stream_immersive;
     } };
     if let Some(rung) = restored_hls {
@@ -3908,6 +3922,27 @@ pub(crate) fn stream_dovi(ps: &PlaybackSession) -> crate::metadata::Dovi {
         crate::metadata::Dovi::NONE
     }
 }
+/// The capability and presentation frozen into this installed route. Unlike the raw DOVI metadata,
+/// this is the value the Load payload must consume without consulting the live capability cache.
+pub(crate) fn stream_dv_presentation(ps: &PlaybackSession) -> crate::metadata::DvPresentation {
+    if ps.stream_vcodec.eq_ignore_ascii_case("hevc") {
+        ps.stream_dv_decision.presentation
+    } else {
+        crate::metadata::DvPresentation::NotDv
+    }
+}
+
+pub(crate) fn stream_dv_decision(ps: &PlaybackSession) -> crate::metadata::DvDecision {
+    ps.stream_dv_decision
+}
+
+/// Server output (HLS encode, progressive encode or container remux) carries no client-frozen
+/// source declaration. Centralizing the paired reset prevents a future route mutation from
+/// clearing the raw metadata while leaving a stale `Declare` behind for Load.
+fn clear_output_dv(session: &mut PlaybackSession) {
+    session.stream_dovi = crate::metadata::Dovi::NONE;
+    session.stream_dv_decision = crate::metadata::DvDecision::NONE;
+}
 /// Is the audio being fed a Dolby Atmos stream? — the Load payload's `contents.immersive` node.
 /// See [`PlaybackSession::stream_immersive`].
 pub(crate) fn stream_immersive(ps: &PlaybackSession) -> bool {
@@ -4004,14 +4039,65 @@ pub(crate) fn set_stream_declaration(
     fps: f64,
     dovi: crate::metadata::Dovi,
     immersive: bool,
-) {
+) -> bool {
+    set_stream_declaration_with_capability(
+        ps,
+        vc,
+        ac,
+        fps,
+        dovi,
+        immersive,
+        crate::webos::caps::capability(),
+    )
+}
+
+fn set_stream_declaration_with_capability(
+    ps: &mut PlaybackSession,
+    vc: &str,
+    ac: &str,
+    fps: f64,
+    dovi: crate::metadata::Dovi,
+    immersive: bool,
+    capability: crate::webos::caps::DvCapability,
+) -> bool {
+    let decision = crate::metadata::DvDecision {
+        capability,
+        presentation: dovi.presentation(
+            !crate::metadata::dv_withheld(),
+            capability,
+            vc.eq_ignore_ascii_case("hevc"),
+        ),
+    };
+    if decision.presentation.refusal().is_some() {
+        crate::player::log(&format!(
+            "playurl: refusing Dolby Vision declaration capability={} presentation={}",
+            decision.capability.label(),
+            decision.presentation.label(),
+        ));
+        return false;
+    }
     { let s = &mut *ps; {
         s.stream_vcodec = vc.to_owned();
         s.stream_acodec = ac.to_owned();
         s.stream_fps = fps;
         s.stream_dovi = dovi;
+        s.stream_dv_decision = decision;
         s.stream_immersive = immersive;
     } }
+    true
+}
+
+#[cfg(test)]
+pub(crate) fn set_stream_declaration_for_test(
+    ps: &mut PlaybackSession,
+    vc: &str,
+    ac: &str,
+    fps: f64,
+    dovi: crate::metadata::Dovi,
+    immersive: bool,
+    capability: crate::webos::caps::DvCapability,
+) -> bool {
+    set_stream_declaration_with_capability(ps, vc, ac, fps, dovi, immersive, capability)
 }
 
 // (`set_source_codecs` stood here: a two-line setter for `src_vcodec`/`src_acodec` whose one
@@ -5211,7 +5297,7 @@ pub(crate) fn playback_preview(d: &crate::metadata::Detail) -> Option<Preview> {
         vcodec,
         d.width,
         d.height,
-        d.dovi.presentation_now(),
+        d.dovi.presentation_now(d.vcodec.eq_ignore_ascii_case("hevc")),
         &d.audio,
     )?;
     // The user's quality ceiling is the LAST gate `build_stream` applies, so it is the last one
@@ -5886,6 +5972,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
             stream_acodec,
             stream_fps: plan.fps,
             stream_dovi: plan.dovi,
+            stream_dv_decision: plan.dv_decision,
             stream_immersive: plan.immersive,
             title,
             ctxline,
@@ -6012,7 +6099,7 @@ fn prepare_original_remux(
         s.stream_vcodec = output_codecs.0.clone();
         s.stream_acodec = output_codecs.1.clone();
         s.stream_fps = 0.0;
-        s.stream_dovi = crate::metadata::Dovi::NONE;
+        clear_output_dv(s);
         s.stream_immersive = false;
     } };
     crate::player::log(&format!(
@@ -6137,7 +6224,7 @@ fn retranscode_as(ps: &mut PlaybackSession, expected: &WorkerTicket, offset_secs
         s.stream_vcodec = output_codecs.0.clone();
         s.stream_acodec = output_codecs.1.clone();
         s.stream_fps = 0.0;
-        s.stream_dovi = crate::metadata::Dovi::NONE;
+        clear_output_dv(s);
         s.stream_immersive = false;
     } };
     crate::player::log(&format!(

@@ -688,7 +688,7 @@ fn build_av_payload(ps: &crate::route::PlaybackSession, video: &str, audio: &str
             crate::route::stream_fps(ps)
         ));
     }
-    let p = with_dolby_hdr_info(&p, video, crate::route::stream_dovi(ps).presentation_now());
+    let p = with_dolby_hdr_info(&p, video, crate::route::stream_dv_presentation(ps));
     with_immersive(&p, audio, crate::route::stream_immersive(ps))
 }
 
@@ -738,11 +738,12 @@ fn with_immersive(p: &str, audio: &str, atmos: bool) -> String {
     p.replace(anchor, &format!(r#"{anchor},"immersive":"ATMOS""#))
 }
 
-/// The `contents.DolbyHdrInfo` node — **the whole of the Dolby Vision fix**, spliced into the
-/// Load payload for a direct play we have decided to declare.
+/// The `contents.DolbyHdrInfo` node, spliced into the Load payload only for a route whose frozen
+/// decision declared Dolby Vision after affirmative platform capability.
 ///
-/// PURE, so the splice is host-testable; the decision arrives as an argument and is the SAME value
-/// `route::build_stream` gated direct play on ([`crate::metadata::Dovi::presentation`]).
+/// PURE, so the splice is host-testable; the decision arrives from route state and is the SAME
+/// frozen value `route::build_stream` gated direct play on
+/// ([`crate::metadata::Dovi::presentation`]).
 ///
 /// **Why this one node is the fix, from the television's own binaries** (decompiled 2026-08-21,
 /// webOS 4.10.2 `libpf`): `CustomPipeline::parseOptionStringSpi` builds the literal key
@@ -760,10 +761,11 @@ fn with_immersive(p: &str, audio: &str, atmos: bool) -> String {
 ///   LG's own Chromium client also reports `codec.video = "H265"` for a Dolby Vision stream. The
 ///   `video == "H265"` guard below is therefore a consistency check, not a translation.
 /// - **`profileId` must be a JSON integer** (`getInt`). Quoting it would leave the `-1` sentinel.
-/// - **nothing declares platform support.** `libplayerAPIs::generateJsonPayloadForPlayer` injects
-///   `platformSupportDolbyVision` / `supportDolbyTVATMOS` itself from its configd cache, at the
-///   tree ROOT as siblings of `option`, and both already read true on this set. Sending our own
-///   would be a second opinion on a question the library answers for itself.
+/// - **the library's injected platform metadata is not a safety gate.** libplayerAPIs injects
+///   `platformSupportDolbyVision` / `supportDolbyTVATMOS` at the root, but libpf enables DV from
+///   our node's presence regardless. We do not duplicate those root fields; `webos::caps` reads
+///   the same public configd key independently and route policy requires an exact `true` before
+///   this function can receive `Declare`.
 ///
 /// The anchor is `"provider":"plxnative"` — the last key of `contents` and, by the test below,
 /// present exactly once in `PAYLOAD_AV`. A `replace` that finds nothing is a silent no-node, which
@@ -1011,14 +1013,16 @@ fn start_bufferfeed_inner(
             Some(Ok(p)) => {
                 url = p.url.clone();
                 crate::route::set_url(ps, &url);
-                crate::route::set_stream_declaration(
+                if !crate::route::set_stream_declaration(
                     ps,
                     &p.vcodec,
                     &p.acodec,
                     p.fps,
                     p.dovi.to_dovi(),
                     p.atmos,
-                );
+                ) {
+                    return Err(crate::route::RouteStartResult::StartFailed);
+                }
                 if let Some([w, h]) = p.source_raster {
                     crate::route::set_stream_source_raster(ps, w, h);
                 }
@@ -2608,7 +2612,7 @@ mod native_lifecycle_host_seam_tests {
 
 #[cfg(test)]
 mod payload_tests {
-    use super::{with_dolby_hdr_info, with_immersive, PAYLOAD_AV, PAYLOAD_H265, PAYLOAD_V};
+    use super::{build_av_payload, with_dolby_hdr_info, with_immersive, SinkEnvelope, PAYLOAD_AV, PAYLOAD_H265, PAYLOAD_V};
     use crate::metadata::Dovi;
 
     fn p5() -> Dovi {
@@ -2619,6 +2623,86 @@ mod payload_tests {
             el_present: false,
             ..Dovi::NONE
         }
+    }
+
+    fn p8() -> Dovi {
+        Dovi {
+            present: true,
+            profile: 8,
+            bl_compat: 1,
+            el_present: false,
+            ..Dovi::NONE
+        }
+    }
+
+    #[test]
+    fn dv_payload_matches_frozen_route_decision() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        assert!(crate::route::set_stream_declaration_for_test(
+            &mut ps,
+            "hevc",
+            "eac3",
+            23.976,
+            p8(),
+            false,
+            crate::webos::caps::DvCapability::Supported,
+        ));
+        let payload = build_av_payload(
+            &ps,
+            "H265",
+            "AC3 PLUS",
+            SinkEnvelope { w: 3840, h: 2160, fps: 60 },
+        );
+        assert!(payload.contains("DolbyHdrInfo"), "{payload}");
+        assert!(payload.contains(r#""profileId":8"#), "{payload}");
+
+        assert!(crate::route::set_stream_declaration_for_test(
+            &mut ps,
+            "hevc",
+            "eac3",
+            23.976,
+            p8(),
+            false,
+            crate::webos::caps::DvCapability::Unsupported,
+        ));
+        let payload = build_av_payload(
+            &ps,
+            "H265",
+            "AC3 PLUS",
+            SinkEnvelope { w: 3840, h: 2160, fps: 60 },
+        );
+        assert!(!payload.contains("DolbyHdrInfo"), "{payload}");
+    }
+
+    #[test]
+    fn late_capability_result_does_not_change_installed_decision() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        assert!(crate::route::set_stream_declaration_for_test(
+            &mut ps,
+            "hevc",
+            "eac3",
+            23.976,
+            p8(),
+            false,
+            crate::webos::caps::DvCapability::Unknown,
+        ));
+        let fresh = p8().presentation(
+            true,
+            crate::webos::caps::DvCapability::Supported,
+            true,
+        );
+        assert!(fresh.declared().is_some(), "a subsequent decision sees Supported");
+        assert_eq!(
+            crate::route::stream_dv_presentation(&ps),
+            crate::metadata::DvPresentation::NotDv,
+        );
+        let payload = build_av_payload(
+            &ps,
+            "H265",
+            "AC3 PLUS",
+            SinkEnvelope { w: 3840, h: 2160, fps: 60 },
+        );
+        assert!(!payload.contains("DolbyHdrInfo"), "{payload}");
     }
 
     /// **Every Load payload must carry the `appId` placeholder, exactly once**, because that key
@@ -2703,7 +2787,7 @@ mod payload_tests {
         // what `build_av_payload` hands it: the AV template with the codec already set to H265,
         // which is what a native HEVC direct play — the only kind that can be Dolby Vision — sends
         let base = PAYLOAD_AV.replace(r#""video":"H264""#, r#""video":"H265""#);
-        let out = with_dolby_hdr_info(&base, "H265", p5().presentation(true));
+        let out = with_dolby_hdr_info(&base, "H265", p5().presentation(true, crate::webos::caps::DvCapability::Supported, true));
         assert!(
             out.contains(r#""provider":"plxnative","DolbyHdrInfo":{"trackType":"single","encryptionType":"clear","profileId":5}}"#),
             "{out}"
@@ -2740,9 +2824,9 @@ mod payload_tests {
             ..Dovi::NONE
         };
         for dv in [
-            Dovi::NONE.presentation(true),
-            p7.presentation(true),
-            p5().presentation(false),
+            Dovi::NONE.presentation(true, crate::webos::caps::DvCapability::Supported, true),
+            p7.presentation(true, crate::webos::caps::DvCapability::Supported, true),
+            p5().presentation(false, crate::webos::caps::DvCapability::Supported, true),
         ] {
             assert_eq!(with_dolby_hdr_info(PAYLOAD_AV, "H265", dv), PAYLOAD_AV);
         }
@@ -2800,7 +2884,7 @@ mod payload_tests {
     fn dolby_vision_and_atmos_are_siblings_inside_contents() {
         let base = PAYLOAD_AV.replace(r#""video":"H264""#, r#""video":"H265""#);
         let out = with_immersive(
-            &with_dolby_hdr_info(&base, "H265", p5().presentation(true)),
+            &with_dolby_hdr_info(&base, "H265", p5().presentation(true, crate::webos::caps::DvCapability::Supported, true)),
             "AC3 PLUS",
             true,
         );
@@ -2825,7 +2909,7 @@ mod payload_tests {
     #[test]
     fn a_declaration_never_rides_a_non_hevc_payload() {
         assert_eq!(
-            with_dolby_hdr_info(PAYLOAD_AV, "H264", p5().presentation(true)),
+            with_dolby_hdr_info(PAYLOAD_AV, "H264", p5().presentation(true, crate::webos::caps::DvCapability::Supported, true)),
             PAYLOAD_AV
         );
     }

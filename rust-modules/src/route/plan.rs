@@ -145,6 +145,7 @@ pub(super) struct AutoOriginalCandidate {
     pub(super) acodec: String,
     pub(super) fps: f64,
     pub(super) dovi: crate::metadata::Dovi,
+    pub(super) dv_decision: crate::metadata::DvDecision,
     pub(super) immersive: bool,
     pub(super) audio_sid: i64,
     pub(super) audio_ordinal: Option<i32>,
@@ -659,6 +660,9 @@ pub(crate) struct Plan {
     /// node. Set on the DIRECT-PLAY branch only, beside `fps` and for the same reason: the
     /// transcode branch's payload describes the server's OUTPUT, which is not this file.
     pub dovi: crate::metadata::Dovi,
+    /// The direct-play declaration resolved from one cached capability snapshot. Payload builds,
+    /// reloads and recovery consume this stored answer; remux/transcode leave it at `NONE`.
+    pub dv_decision: crate::metadata::DvDecision,
     /// Does the direct-played audio track carry Dolby Atmos, for the Load payload's
     /// `contents.immersive` node. Set on the DIRECT-PLAY branch only, for the same reason `dovi`
     /// is: it describes the FILE's own elementary stream.
@@ -830,12 +834,10 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // episode backfilled it). Absent store → default `Dovi`, which is all-zero and refuses
     // nothing.
     let dovi = plan.playing.as_ref().map(|p| p.dovi).unwrap_or_default();
-    // ONE predicate, resolved once: it answers the direct-play gate here and the Load payload's
-    // `DolbyHdrInfo` node later (`engine::build_av_payload`, off `stream_dovi()` + the same
-    // latched trigger). Two predicates is what this used to be, and the pair could disagree —
-    // which for Dolby Vision means either a declared stream we refused to play or, worse, a
-    // Profile 5 direct-played with nothing declared: the wrong colours, back again.
-    let dv = dovi.presentation_now();
+    // Freeze the capability and derived presentation together. A late configd answer affects the
+    // next route only; it cannot change this candidate between the gate and Starfish Load.
+    let dv_decision = dovi.decision_now(vcodec == "hevc");
+    let dv = dv_decision.presentation;
     let video_dp = video_direct_plays(vcodec, src_w, src_h, dv, crate::devcaps::caps());
     // Carried to the session so the quality menu can say whether "Original" means anything for
     // this item without evaluating the gate a second time against a different set of facts.
@@ -858,6 +860,15 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // nobody has been told what it is? Declaring a Profile 5 makes direct play right and leaves a
     // copy of it exactly as wrong as before.
     let no_video_copy = dovi.base_layer_unusable();
+    if dovi.present {
+        crate::player::log(&format!(
+            "dv: capability={} presentation={} profile={} bl_compat={}",
+            dv_decision.capability.label(),
+            dv.label(),
+            dovi.profile,
+            dovi.bl_compat,
+        ));
+    }
     if let Some(why) = dv.refusal() {
         // Worth a line of its own: from the outside this looks like a 4K HEVC file with a normal
         // audio track being sent to the transcoder for no reason, and the DOVI fields that
@@ -1067,6 +1078,11 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
             } else {
                 crate::metadata::Dovi::NONE
             },
+            dv_decision: if direct {
+                dv_decision
+            } else {
+                crate::metadata::DvDecision::NONE
+            },
             immersive,
             audio_sid: asid,
             audio_ordinal,
@@ -1217,6 +1233,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         // Only here: this is the branch that feeds the FILE's own elementary stream, so it is the
         // only one whose Load payload may describe the file's Dolby Vision.
         plan.dovi = dovi;
+        plan.dv_decision = dv_decision;
         // **Dolby Atmos, and it is the same sentence one codec over.** `contents.immersive` tells
         // the pipeline that the E-AC3 it is about to decode carries JOC, which is what raises the
         // television's own Atmos read-out and what puts the sound engine in the right mode.
