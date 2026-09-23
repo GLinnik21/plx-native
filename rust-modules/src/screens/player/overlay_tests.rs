@@ -508,3 +508,50 @@ fn the_player_panels_dim_through_the_container_from_the_playing_items_corners() 
     let bare = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Tracks { tab: 0 });
     assert_eq!(Screen::<TestHost>::scrim(&bare).source, UnderlaySource::Flat, "no envelope: the flat ink");
 }
+
+/// **Issue #162's census, for the four panels over the player**: every row a panel's `Focusable`
+/// declares — what the D-pad walks — is clickable with the pointer over its whole visible rect,
+/// against the map the panel's own paint-free `record_stops` fills. It grades the HIT MAP only —
+/// what a click there spends is `activate_commits_the_bare_rows_directly`'s — and with the empty
+/// test metadata the Tracks and Chapters panels declare no rows, so for those two it is vacuous.
+#[test]
+fn every_panel_row_the_dpad_reaches_is_clickable_with_the_pointer() {
+    use crate::ui::hit::{pointer_gaps, HitMap};
+    use crate::ui::screen::DrawFrame;
+    let _g = crate::testlock::serial();
+    let ps = crate::route::PlaybackSession::IDLE;
+    for kind in [
+        OverlayKind::Tracks { tab: 0 },
+        OverlayKind::Tracks { tab: 1 },
+        OverlayKind::Info,
+        OverlayKind::Chapters,
+        OverlayKind::More { quality: false },
+        OverlayKind::More { quality: true },
+    ] {
+        let page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, kind);
+        let cx = cx();
+        let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+        page.record_stops(&mut f);
+        let mut map = HitMap::new();
+        map.fill(f.into_stops());
+        map.swap();
+        let mut groups = Vec::new();
+        Focusable::<TestHost>::groups(&page, &cx, &mut groups);
+        let mut rows = Vec::new();
+        for g in &groups {
+            for elem in 0..g.len as u32 {
+                let p = Focusable::<TestHost>::place(&page, &elem, &cx, At::Drawn)
+                    .unwrap_or_else(|| panic!("{kind:?}: row {elem} is declared but does not place"));
+                let visible = p.rect.intersect(p.clip);
+                if visible.w > 0.0 && visible.h > 0.0 {
+                    rows.push((FocusKey { entry: ENTRY, elem }, visible));
+                }
+            }
+        }
+        if matches!(kind, OverlayKind::Info | OverlayKind::More { .. }) {
+            assert!(!rows.is_empty(), "{kind:?} always has rows to press");
+        }
+        let gaps = pointer_gaps(&mut map, ENTRY, &rows);
+        assert!(gaps.is_empty(), "{kind:?}: rows the pointer cannot click:\n{}", gaps.join("\n"));
+    }
+}
