@@ -603,6 +603,12 @@ impl PlayerScreen {
             Self::ask(fx, PlayerReq::Transport(None));
             return Handled::Yes;
         };
+        // A click on a control is a fresh interaction with the transport, exactly as a key is: it
+        // re-arms the linger. Without it a pointer that had rested still for most of the 4.5 s
+        // could click a disc whose deferred press (~210 ms) then committed AFTER the auto-hide had
+        // reset `hud.nav` to HOME — opening Subtitles for a click on Audio.
+        self.hud.extend(now, input::HUD_LINGER_MS);
+        self.publish();
         match elem {
             e if e == ELEM_FAILURE_OK => {
                 self.failure_action(ps, fx);
@@ -1562,6 +1568,30 @@ mod step_ladder_tests {
         page.hud.visible_at_press = true;
     }
 
+    /// The census's other half: a control the frame does NOT draw registers no stop, so a click
+    /// there reaches the picture (play/pause) rather than a blind action. A hidden HUD registers
+    /// nothing; with an Info card or Chapters strip over the middle (`transport == false`) only
+    /// the tabs remain.
+    #[test]
+    fn a_control_the_frame_does_not_draw_registers_no_stop() {
+        use crate::ui::player_hud::ELEM_TAB_BASE;
+        use crate::ui::screen::DrawFrame;
+        let _g = crate::testlock::serial();
+        for (transport, hud_drawn, want) in [
+            (true, false, vec![]),
+            (false, false, vec![]),
+            (false, true, vec![ELEM_TAB_BASE]),
+        ] {
+            let mut page = PlayerScreen::new(ENTRY);
+            page.transport = transport;
+            let cx = cx();
+            let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+            page.record_stops(&mut f, hud_drawn);
+            let got: Vec<u32> = f.into_stops().iter().map(|s| s.key.elem).collect();
+            assert_eq!(got, want, "transport={transport} hud_drawn={hud_drawn}");
+        }
+    }
+
     /// **Issue #162's census: every control the D-pad can activate is clickable with the Magic
     /// Remote pointer, all over its drawn rect, and the click acts.**
     ///
@@ -1625,6 +1655,7 @@ mod step_ladder_tests {
                 assert_eq!(handled, Handled::Yes, "{name}: {elem}");
                 assert!(!reqs.is_empty(), "{name}: a click on {elem} asked for nothing");
                 assert!(!reqs.iter().any(|r| matches!(r, PlayerReq::Transport(_))), "{name}: {elem} -> {reqs:?}");
+                assert!(page.hud.until >= 1_000 + input::HUD_LINGER_MS, "{name}: a click re-arms the linger");
                 if (ELEM_ROW_BASE..ELEM_TAB_BASE).contains(&elem) {
                     assert_eq!(page.hud.nav.btn, (elem - ELEM_ROW_BASE) as i32, "{name}: the CLICKED item arms");
                     assert_eq!(reqs, vec![PlayerReq::ArmControlRow]);
