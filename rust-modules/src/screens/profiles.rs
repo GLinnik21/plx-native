@@ -729,7 +729,7 @@ impl ProfilesScreen {
     }
 
     fn has_spinner(&self, n: usize) -> bool {
-        (n == 0 && !self.pad.open)
+        (n == 0 && !self.pad.open && !self.roster_readout())
             || (self.pad.open && self.pad.submitting)
             || self.phase == Phase::Switching
     }

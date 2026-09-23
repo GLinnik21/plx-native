@@ -3272,11 +3272,19 @@ pub(crate) fn profile_switch_worker_with_io(
         Err(evidence) => {
             log(&format!("auth: profile resources request failed ({})",
                 crate::plex::account::describe_evidence(&evidence)));
+            // A refusal is an answer, not a dead link: "check the connection" would send the
+            // person to a router that is fine. The PIN was already accepted by this point, so
+            // this is never the PIN flash either.
+            let error = if crate::plex::account::refused_identity(&evidence).is_some() {
+                format!("plex.tv refused {}'s sign-in. Try again.", tile.title)
+            } else {
+                "Couldn't switch profile — check the connection.".into()
+            };
             output.terminal(AuthProgress::ProfileSwitch(ProfileSwitchProgress {
                 epoch,
                 expected,
                 outcome: ProfileSwitchOutcomeProgress::Failed {
-                    error: "Couldn't switch profile — check the connection.".into(),
+                    error,
                     pin_denied: false,
                 },
             }));

@@ -13,11 +13,13 @@ fn an_empty_roster_with_a_reason_is_a_readout_and_not_the_spinner() {
     let loading = snapshot(Phase::Profiles, Vec::new());
     s.resync(loading.read());
     assert!(!s.roster_readout(), "no reason yet: still loading");
+    assert!(s.has_spinner(0), "loading an empty roster spins");
 
     let mut failed = snapshot(Phase::Profiles, Vec::new());
     failed.error = Arc::from(auth::owner::ROSTER_REFUSED);
     s.resync(failed.read());
     assert!(s.roster_readout(), "a finished, empty roster reads out its reason");
+    assert!(!s.has_spinner(0), "the read-out is still: drawing and ticking share one predicate");
 
     let (handled, fx) = step_ev(&mut s, &key_down(Key::Back, 0, 0), None);
     assert_eq!(handled, Handled::Yes);
