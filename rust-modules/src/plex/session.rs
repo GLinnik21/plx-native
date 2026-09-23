@@ -97,12 +97,33 @@ impl ProfilePublisher {
         }
     }
     pub(crate) fn publish(&mut self, user: Option<UserRef>, generation: u32) {
+        #[cfg(test)]
+        self.publish_with(user, generation, |_, _| {});
+        #[cfg(not(test))]
+        self.publish_with(user, generation, |user, generation| {
+            super::account::publish_audio_preferences_profile(user.as_ref(), generation);
+            let Some(user) = user else { return; };
+            let client_id = peek().client_id.clone();
+            let Some(credential) = plex_tv_credential(&user) else { return; };
+            super::account::warm_audio_preferences(client_id, credential, user, generation);
+        });
+    }
+    fn publish_with<W>(&mut self, user: Option<UserRef>, generation: u32, warm: W)
+    where W: FnOnce(Option<UserRef>, u32) {
         if let Some(scoped) = &mut self.scoped {
             *scoped = std::sync::Arc::new(CurrentProfile { user, generation });
             return;
         }
-        *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) =
-            Some(std::sync::Arc::new(CurrentProfile { user, generation }));
+        {
+            *CURRENT.lock().unwrap_or_else(|e| e.into_inner()) = Some(std::sync::Arc::new(
+                CurrentProfile { user: user.clone(), generation }));
+        }
+        warm(user, generation);
+    }
+    #[cfg(test)]
+    fn publish_with_warmer_for_test<W>(&mut self, user: Option<UserRef>, generation: u32, warm: W)
+    where W: FnOnce(Option<UserRef>, u32) {
+        self.publish_with(user, generation, warm);
     }
 }
 
@@ -121,6 +142,29 @@ pub fn current() -> Option<UserRef> {
 /// The generation assigned by the Session owner and published with this profile.
 pub fn current_gen() -> u32 {
     current_snapshot().generation
+}
+
+/// Credential for a plex.tv call made on behalf of one captured active-profile snapshot.
+///
+/// New sessions carry the profile's own account-service token explicitly. The only fallback is
+/// for legacy owner sessions written before that field existed: the stored and captured profile
+/// must be the same identity, and the persisted roster must prove owner scope. A managed or
+/// unknown legacy profile therefore skips the optional call instead of borrowing either the
+/// owner's account token or its own unrelated PMS token.
+pub(crate) fn plex_tv_credential(snapshot_user: &UserRef) -> Option<String> {
+    if let Some(token) = snapshot_user.plex_tv_token.as_ref()
+        .filter(|token| !token.trim().is_empty())
+    {
+        return Some(token.clone());
+    }
+    let stored = peek();
+    let same_profile = if snapshot_user.uuid.is_empty() {
+        stored.user.uuid.is_empty() && snapshot_user.id == stored.user.id
+    } else {
+        snapshot_user.uuid == stored.user.uuid
+    };
+    (same_profile && stored.active_profile_is_admin())
+        .then(|| stored.account_token.clone()).filter(|token| !token.is_empty())
 }
 
 /// Session file locations, best first — see [`crate::paths::session_candidates`] for why this is a
@@ -1434,8 +1478,9 @@ impl HomePins {
     }
 }
 
-/// The last-selected Plex Home user. `token` is the per-user token PMS scopes watch state by — it
-/// keeps working against the LAN server offline once cached here.
+/// The last-selected Plex Home user. `token` is strictly the per-user PMS token that scopes
+/// server access and watch state; `plex_tv_token` is the distinct credential returned by the
+/// profile switch for account-service calls. Both keep their authority when cached offline.
 #[derive(Serialize, Deserialize, Default, Clone)]
 #[serde(default)] // a missing field costs that field, never the session — see [`HomeUserRef`]
 pub struct UserRef {
@@ -1443,7 +1488,12 @@ pub struct UserRef {
     pub uuid: String,
     pub title: String,
     pub thumb: String,
+    /// Per-(profile, server) PMS credential. Never send this to plex.tv.
     pub token: String,
+    /// The switched profile's plex.tv credential. Old, damaged, or empty values simply disable
+    /// optional account-service reads until the next successful online switch.
+    #[serde(default, deserialize_with = "de_soft_nonempty_string", skip_serializing_if = "Option::is_none")]
+    pub plex_tv_token: Option<String>,
     #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
     pub(crate) extensions: OpaqueExtensions,
 
@@ -1476,6 +1526,14 @@ where
         // a null, an object, a string: not a list, so there is no list. Not an error.
         _ => Vec::new(),
     })
+}
+
+fn de_soft_nonempty_string<'de, D>(d: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(value) = Value::deserialize(d) else { return Ok(None) };
+    Ok(value.as_str().map(str::to_owned).filter(|value| !value.trim().is_empty()))
 }
 
 /// A persisted tier is diagnostic/policy metadata, not a credential gate. Missing, null,
@@ -1706,9 +1764,9 @@ impl Session {
     /// **Is the profile currently watching the one [`Session::account_token`] belongs to?**
     ///
     /// That token is the account OWNER's (the Plex Home admin's). It is written once, by the QR
-    /// sign-in, and a profile switch never replaces it — the switched user's own account token is
-    /// fetched, used for one `/api/v2/resources`, and dropped. So anything asked of plex.tv with it
-    /// is answered ABOUT THE OWNER: every `accessToken` that comes back is the owner's
+    /// sign-in, and a profile switch never replaces it. The switched user's plex.tv credential is
+    /// retained separately on [`UserRef::plex_tv_token`]. Anything asked of plex.tv with the
+    /// session account token is answered ABOUT THE OWNER: every `accessToken` that comes back is the owner's
     /// per-(user, server) grant, and a restricted profile's answer would have been a shorter list.
     /// A caller that installs those tokens while somebody else is watching has swapped identities
     /// under them, which is why this exists as a gate rather than as a display fact.

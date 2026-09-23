@@ -2562,11 +2562,14 @@ fn discover_and_store(ac: &AccountClient, epoch: u64, output: &dyn owner::Observ
 /// worse than wrong, it is a re-grant — [`retoken`] had already blanked and hidden the servers that
 /// profile was not given, and this puts them back.
 ///
-/// Re-keying the answer for the active profile afterwards is not available: the per-user tokens
-/// only exist in a `/api/v2/resources` fetched with THAT user's account token, which the switch
-/// obtains for one request and does not persist. So the honest answer is to skip, and the cost is
-/// named: a share granted while a managed profile is signed in appears when someone next switches
-/// profile (the switch re-keys the whole roster from its own response) or signs in again.
+/// Re-keying the answer for the active profile afterwards is not available: the switch keeps that
+/// user's account token as [`UserRef::plex_tv_token`] in protected storage for account-service
+/// reads such as the audio-language preference, but this function cannot make the live
+/// `/api/v2/resources` round trip that produces per-server tokens. It therefore does not use the
+/// stored credential to re-fetch or re-key the roster here. So the honest answer is to skip, and
+/// the cost is named: a share granted while a managed profile is signed in appears when someone
+/// next switches profile (the switch re-keys the whole roster from its own response) or signs in
+/// again.
 fn refreshed_sources(
     stored: &[SourceRef],
     reached: &[SourceRef],
@@ -3366,12 +3369,14 @@ pub(crate) fn profile_switch_worker_with_io(
         tile.title
     ));
     let server = server_ref(&primary);
+    let plex_tv_token = (!user.auth_token.is_empty()).then(|| user.auth_token.clone());
     let user = UserRef {
         id: user.id,
         uuid: seated_uuid(&user, &tile),
         title: user.title,
         thumb: tile.thumb,
         token: primary.token.clone(),
+        plex_tv_token,
         extensions: Default::default(),
     };
     if !output.live() { return; }

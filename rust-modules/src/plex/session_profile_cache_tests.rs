@@ -197,6 +197,7 @@ fn an_app_written_record_survives_the_parse_that_every_boot_re_saves() {
         title: "Admin".into(),
         thumb: "https://plex.tv/users/x/avatar?c=1".into(),
         token: "user-tok".into(),
+        plex_tv_token: None,
         extensions: Default::default(),
     };
     s.sources = vec![source.clone()];

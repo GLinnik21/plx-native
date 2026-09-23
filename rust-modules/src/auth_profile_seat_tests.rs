@@ -319,3 +319,36 @@ fn online_profile_switch_preserves_the_uuids_existing_cached_extensions() {
          carrying them forward"
     );
 }
+
+/// The three credentials in a profile switch belong to three different authorities. The
+/// account owner authorizes `/switch`, that response authorizes plex.tv as the managed user,
+/// and `/resources` supplies the managed user's per-server PMS credential.
+#[test]
+fn online_profile_switch_keeps_managed_plex_tv_and_pms_tokens_separate() {
+    let mut stored = cached_session(None);
+    stored.account_token = "owner-account-token".into();
+    let expected = SessionIdentity::of(&stored);
+    let tile = UserTile { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() };
+    let mut io = OnlineSwitchIo {
+        seated: crate::plex::account::SwitchedUser {
+            id: 27, uuid: "u-kid".into(), title: "Kid".into(),
+            auth_token: "managed-plex-tv-token".into(),
+        },
+        resource_token: "managed-pms-token".into(),
+    };
+    let sink = CapturingSink::default();
+    profile_switch_worker_with_io(1, expected, stored, tile, None, false, &sink, &mut io);
+
+    let events = sink.0.into_inner();
+    let delta = events.iter().find_map(|event| match event {
+        AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+            outcome: ProfileSwitchOutcomeProgress::Ready { delta, .. }, ..
+        }) => Some(delta),
+        _ => None,
+    }).expect("expected a Ready online-switch outcome");
+    assert_eq!(delta.user.token, "managed-pms-token");
+    assert_eq!(delta.user.plex_tv_token.as_deref(), Some("managed-plex-tv-token"));
+    let cached = delta.cache.as_ref().expect("online switch caches both credentials");
+    assert_eq!(cached.user.token, "managed-pms-token");
+    assert_eq!(cached.user.plex_tv_token.as_deref(), Some("managed-plex-tv-token"));
+}

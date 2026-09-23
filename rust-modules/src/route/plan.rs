@@ -931,8 +931,38 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         .filter(|p| !p.show_rk.is_empty())
         .and_then(|p| client.show_language_prefs(&p.show_rk))
         .unwrap_or_default();
+    // Capture identity and generation as ONE publication. The credential helper keeps plex.tv
+    // and PMS authority separate and permits the owner account-token fallback only for a proven
+    // legacy owner session.
+    let active_profile = crate::plex::session::current_snapshot();
+    let account_audio = match active_profile.user.as_ref() {
+        Some(user) => match crate::plex::session::plex_tv_credential(user) {
+            Some(credential) => {
+                let stored_session = crate::plex::session::peek();
+                if stored_session.client_id.is_empty() {
+                    AccountAudioLanguage::NoCredential
+                } else {
+                    match crate::plex::account::AccountClient::audio_preferences(
+                        &stored_session.client_id, &credential, user, active_profile.generation,
+                    ) {
+                        crate::plex::account::AudioPreferencesOutcome::Available(prefs) => match prefs.language {
+                            Some(language) => AccountAudioLanguage::Set(language),
+                            None => AccountAudioLanguage::NotSet,
+                        },
+                        crate::plex::account::AudioPreferencesOutcome::TimedOut =>
+                            AccountAudioLanguage::TimedOut,
+                        crate::plex::account::AudioPreferencesOutcome::Failed =>
+                            AccountAudioLanguage::Unavailable,
+                    }
+                }
+            }
+            None => AccountAudioLanguage::NoCredential,
+        },
+        None => AccountAudioLanguage::NoCredential,
+    };
     // every audio pick below (direct play, remux, re-encode) ranks against these same prefs
-    let audio_prefs = AudioLangPrefs { show: show_prefs.audio.as_deref() };
+    let audio_prefs = AudioLangPrefs { show: show_prefs.audio.as_deref(),
+        account: account_audio.language() };
     let audio_sel = if rk.is_empty() {
         None
     } else {
@@ -954,6 +984,9 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
                 "no track in it; using the usual order"
             }
         ));
+    }
+    if !rk.is_empty() {
+        crate::player::log(&account_audio_language_log(&account_audio, tracks, audio_sel.as_ref()));
     }
     // the language of the audio that will play — what "shown with foreign audio" is judged by
     let audio_lang: String = audio_sel
@@ -1018,8 +1051,8 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         // track Original will client-render, or 0 so a sidecar / unadvertised codec does not
         // force a burn. MDE and the remux probe always name that sibling (a copy cannot carry
         // TrueHD/DTS). The play-path PUT and start.mkv use `encode_audio_id`: remux still names
-        // the sibling; a re-encode walks the same `audio_intents` ranking (a real pick, then the show
-        // language, then the direct-play pick), so 720p does not copy a foreign AC3 sibling.
+        // the sibling; a re-encode walks the same `audio_intents` ranking (the PMS selection, then
+        // show/account language, then the direct-play pick), so 720p does not copy a foreign AC3.
         server_decision(client, rk, &session, audio_id, subtitle_id)
     };
     let mut directplay = mde.as_ref().is_some_and(|v| v.original);
@@ -1382,7 +1415,8 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // 4K/60 Mbps bound the moment the user touched the scrubber.
     // Remux: the smart-DP sibling MDE and the remux probe already named — `env.audio_sid` is
     // the part default (TrueHD) at resolve start; putting that undoes smart-DP. Re-encode:
-    // `encode_audio_id` (a real pick, else the show language, else that sibling). Subtitle stays
+    // `encode_audio_id` (the PMS selection, else show/account language, else that sibling).
+    // Subtitle stays
     // `env.sub_sid`: a positive id here is a burn, and Original client-renders instead.
     put_selection(env.sid, plan.part_id, encode_audio, env.sub_sid);
     if remux_probed && adaptive {
@@ -1429,15 +1463,83 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
 }
 
 
-/// The Plex language preferences an audio pick honours, most specific first. Today that is the
-/// SHOW's `audioLanguage` (its Advanced dialog, #160); the account's own `defaultAudioLanguage`
-/// belongs after it (#203) and is not read yet. There is deliberately no built-in language: one
+/// The Plex language preferences an audio pick honours, most specific first: the SHOW's
+/// `audioLanguage` (its Advanced dialog, #160), then the active profile's enabled
+/// `defaultAudioLanguage` (#203). There is deliberately no built-in language: one
 /// used to sit here as a hard-coded English, and it opened a French user's French-default MKVs
 /// in English whenever an English track existed (#202).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(super) struct AudioLangPrefs<'a> {
     /// `audioLanguage`, e.g. `"hu-HU"`. `""` / `"-1"` mean "Account default", i.e. unset here.
     pub show: Option<&'a str>,
+    /// The active Plex profile's `defaultAudioLanguage`, e.g. `"fr"`.
+    pub account: Option<&'a str>,
+}
+
+/// What happened while resolving the active profile's plex.tv audio preference. Keeping this
+/// separate from [`AudioLangPrefs`] preserves the reason an account rung was unavailable for the
+/// one per-resolve diagnostic without retaining credentials or identity data.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum AccountAudioLanguage {
+    NoCredential,
+    TimedOut,
+    Unavailable,
+    NotSet,
+    Set(String),
+}
+
+impl AccountAudioLanguage {
+    fn language(&self) -> Option<&str> {
+        match self {
+            Self::Set(language) => Some(language),
+            Self::NoCredential | Self::TimedOut | Self::Unavailable | Self::NotSet => None,
+        }
+    }
+}
+
+/// The account-language resolver diagnostic. This is pure so every emitted outcome stays
+/// host-testable; it intentionally contains only the language code, never account identity.
+fn account_audio_language_log(
+    account: &AccountAudioLanguage,
+    tracks: &[crate::metadata::Stream],
+    audio_sel: Option<&(i32, String, i64)>,
+) -> String {
+    match account {
+        AccountAudioLanguage::NoCredential => {
+            "route: account audio language — no plex.tv credential for this profile".into()
+        }
+        AccountAudioLanguage::Unavailable => {
+            "route: account audio language — unavailable (request failed)".into()
+        }
+        AccountAudioLanguage::TimedOut => {
+            "route: account audio language — unavailable (timed out)".into()
+        }
+        AccountAudioLanguage::NotSet => {
+            "route: account audio language — not set (or auto-select off)".into()
+        }
+        AccountAudioLanguage::Set(lang) => {
+            let picked_language = audio_sel
+                .and_then(|(i, _, _)| usize::try_from(*i).ok())
+                .and_then(|i| tracks.get(i))
+                .is_some_and(|track| lang_matches(lang, &track.lang_code));
+            let matching_track = |track: &crate::metadata::Stream| {
+                lang_matches(lang, &track.lang_code)
+            };
+            let direct_playable_match = tracks.iter().any(|track| {
+                matching_track(track) && crate::plex::is_dp_audio(&track.codec.to_lowercase())
+            });
+            let outcome = if picked_language {
+                "playing that track"
+            } else if direct_playable_match {
+                "outranked by the PMS selection or show preference"
+            } else if tracks.iter().any(matching_track) {
+                "a track in it exists but is not direct-playable; using the usual order"
+            } else {
+                "no track in it; using the usual order"
+            };
+            format!("route: account prefers audio {lang} — {outcome}")
+        }
+    }
 }
 
 impl<'a> AudioLangPrefs<'a> {
@@ -1445,6 +1547,7 @@ impl<'a> AudioLangPrefs<'a> {
     fn in_order(self) -> impl Iterator<Item = &'a str> {
         self.show
             .into_iter()
+            .chain(self.account)
             .map(str::trim)
             .filter(|l| !l.is_empty() && *l != "-1")
     }
@@ -1457,41 +1560,38 @@ impl<'a> AudioLangPrefs<'a> {
 /// differently.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AudioIntent<'a> {
-    /// A real server pick for this part (PMS `Stream.selected` on a stream that is NOT the file's
-    /// `default`): chosen on another Plex client or here in an earlier session. Index into tracks.
-    Pick(usize),
+    /// PMS's selection (`Stream.selected` on a stream that is NOT the file's `default`). It may be
+    /// a manual pick OR PMS's automatic account-language pick; the wire cannot distinguish them.
+    Selection(usize),
     /// A Plex language preference the item has a track in.
     Language(&'a str),
     /// Nothing to honour: the file's own default track, then any direct-playable one.
     FileDefault,
 }
 
-/// Order: a real per-part pick > the Plex language preferences in [`AudioLangPrefs`] order (a
+/// Order: a PMS per-part selection > the Plex language preferences in [`AudioLangPrefs`] order (a
 /// preference with no track in it is left out) > the file's default. A path that cannot carry an
 /// entry moves on to the NEXT one — a French DTS pick with no direct-playable French sibling
 /// falls to the show's language before the file's default, not straight to the default.
 ///
-/// A pick must differ from the file's `default` flag, because PMS reports a selected AUDIO stream
-/// on essentially every part — there is no "nothing selected" state for audio (verified against
-/// the live server: parts this client has never PUT a selection for still come back with the
-/// file's default flagged `selected`). A selection that merely echoes the container default is
-/// not evidence that anyone chose anything (The Morning Show reports its Russian default as
-/// `selected`); honouring it as a pick would let it outrank a show's preferred language. The cost
-/// of the gate is that a choice which LANDS on the default is indistinguishable from no choice at
-/// all — both an account-language preference matching the default and a user here picking the
-/// default-flagged track by hand — so neither round-trips as a pick; it resolves to the default
-/// through [`AudioIntent::FileDefault`] unless a preference points elsewhere.
+/// A selection must differ from the file's `default` flag, because PMS reports a selected AUDIO
+/// stream on essentially every part. Live measurement also shows PMS applying the requesting
+/// profile's `defaultAudioLanguage` to `Stream.selected`: that auto-choice and a manual choice are
+/// indistinguishable, so a selected non-default stream deliberately outranks the show preference.
+/// A selected stream that is ALSO the file default carries no extra intent and resolves through
+/// [`AudioIntent::FileDefault`] unless a more specific readable preference points elsewhere.
 ///
-/// A pick ranks first whatever its codec: the paths differ only in how they CARRY it (direct play
+/// A PMS selection ranks first whatever its codec: the paths differ only in how they CARRY it (direct play
 /// takes a direct-playable sibling in its language, a re-encode encodes the track itself). A
 /// preference below it therefore never wins just because the pick is a DTS.
 fn audio_intents<'a>(tracks: &[crate::metadata::Stream], prefs: AudioLangPrefs<'a>) -> Vec<AudioIntent<'a>> {
-    let pick = tracks.iter().position(|s| s.selected && !s.default).map(AudioIntent::Pick);
+    let selection = tracks.iter().position(|s| s.selected && !s.default)
+        .map(AudioIntent::Selection);
     let langs = prefs
         .in_order()
         .filter(|l| tracks.iter().any(|s| lang_matches(l, &s.lang_code)))
         .map(AudioIntent::Language);
-    pick.into_iter().chain(langs).chain(std::iter::once(AudioIntent::FileDefault)).collect()
+    selection.into_iter().chain(langs).chain(std::iter::once(AudioIntent::FileDefault)).collect()
 }
 
 
@@ -1501,7 +1601,7 @@ fn audio_intents<'a>(tracks: &[crate::metadata::Stream], prefs: AudioLangPrefs<'
 /// unavailable), else the index into `playing().audio`, with that track's Plex stream id so the
 /// timeline can report the truth. [`audio_intents`] ranks what to honour; this takes the first
 /// entry it can carry:
-///   - [`AudioIntent::Pick`]: that track when it is direct-playable, else a direct-playable track
+///   - [`AudioIntent::Selection`]: that track when it is direct-playable, else a direct-playable track
 ///     in ITS language (an English DTS picked on a phone plays as the English AC3 beside it, not
 ///     as the default dub) — the Load payload uses THAT track's codec so there is no mismatch;
 ///   - [`AudioIntent::Language`]: the first direct-playable track in it;
@@ -1551,8 +1651,8 @@ pub(super) fn pick_dp_audio_pref(
     let pick = |i: usize| (i as i32, tracks[i].codec.to_lowercase(), tracks[i].id);
     let dp_at = |s: &crate::metadata::Stream| dp(&s.codec.to_lowercase());
     let honoured = audio_intents(tracks, prefs).into_iter().find_map(|intent| match intent {
-        AudioIntent::Pick(i) if dp_at(&tracks[i]) => Some(i),
-        AudioIntent::Pick(i) => tracks
+        AudioIntent::Selection(i) if dp_at(&tracks[i]) => Some(i),
+        AudioIntent::Selection(i) => tracks
             .iter()
             .position(|s| dp_at(s) && lang_matches(&tracks[i].lang_code, &s.lang_code)),
         AudioIntent::Language(l) => tracks
@@ -1639,7 +1739,7 @@ pub(super) fn lang_matches(a: &str, b: &str) -> bool {
 /// TrueHD/DTS track would ship audio the TV cannot decode. `env_audio_sid` is the session/retry
 /// pick and wins on re-encode when set, including a remux leftover sibling (mid-play quality drop
 /// keeps what is already playing); a cold play zeros it (`request_play`). Otherwise:
-///   - [`AudioIntent::Pick`]: that track itself — a re-encode can transcode a selected DTS to
+///   - [`AudioIntent::Selection`]: that track itself — a re-encode can transcode a selected DTS to
 ///     AC3, so naming the sibling would replace English DTS with a foreign AC3 copy;
 ///   - [`AudioIntent::Language`]: the direct-play pick when it is already in that language (so
 ///     lowering video quality preserves a preferred dub and does not needlessly encode a lossless
@@ -1663,7 +1763,7 @@ fn encode_audio_id(
     audio_intents(tracks, prefs)
         .into_iter()
         .find_map(|intent| match intent {
-            AudioIntent::Pick(i) => Some(tracks[i].id).filter(|&id| id > 0),
+            AudioIntent::Selection(i) => Some(tracks[i].id).filter(|&id| id > 0),
             AudioIntent::Language(l)
                 if tracks.iter().any(|s| s.id == dp_audio_id && lang_matches(l, &s.lang_code)) =>
             {
