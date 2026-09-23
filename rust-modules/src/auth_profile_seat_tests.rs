@@ -577,6 +577,77 @@ fn stalled_losing_remote_probe_does_not_consume_the_healthy_lan_winner_admission
         "authenticated admission starts after the identity race has produced a winner");
 }
 
+struct LaterProbeBudgetIo {
+    admissions: Vec<String>,
+}
+impl ProfileWorkIo for LaterProbeBudgetIo {
+    fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
+        SwitchOutcome::Switched(crate::plex::account::SwitchedUser {
+            uuid: "u-kid".into(), title: "Kid".into(), auth_token: "kid-account-token".into(),
+            ..Default::default()
+        })
+    }
+    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+        Ok(vec![
+            Resource { name: "A".into(), client_identifier: "a".into(), provides: "server".into(),
+                owned: true, access_token: "a-token".into(), ..Default::default() },
+            Resource { name: "B".into(), client_identifier: "b".into(), provides: "server".into(),
+                access_token: "b-token".into(), ..Default::default() },
+        ])
+    }
+    fn probe(&mut self, _: &Resource, _: &[i64]) -> (Option<SourceRef>, SettledProbe) {
+        panic!("the retry-aware probe seam must be used")
+    }
+    fn probe_after(&mut self, resource: &Resource, _: &[i64], _: &[String])
+        -> (Option<SourceRef>, SettledProbe) {
+        let plan = probe::plan(resource, CredentialPolicy::build());
+        if resource.client_identifier == "b" {
+            std::thread::sleep(Duration::from_millis(35));
+            return (None, settled_probe(&plan, Outcome::Unreachable, None, None));
+        }
+        let winner = source("a", true, &resource.access_token);
+        (Some(winner.clone()), settled_probe(&plan, Outcome::Reachable,
+            Some(probe::Location::Remote), Some(winner.address)))
+    }
+    fn probe_cached(&mut self, resource: &Resource, cached: &SourceRef, _: &[i64], _: &[String])
+        -> Option<(Option<SourceRef>, SettledProbe)> {
+        if resource.client_identifier != "b" { return None; }
+        std::thread::sleep(Duration::from_millis(35));
+        let plan = probe::plan(resource, CredentialPolicy::build());
+        let mut winner = cached.clone();
+        winner.token = resource.access_token.clone();
+        Some((Some(winner.clone()), settled_probe(&plan, Outcome::Reachable,
+            Some(probe::Location::Relay), Some(winner.address))))
+    }
+    fn admit_until(&mut self, source: &SourceRef, _: &str, _: Instant)
+        -> crate::plex::EndpointAdmission {
+        self.admissions.push(source.machine_id.clone());
+        if source.machine_id == "a" {
+            std::thread::sleep(Duration::from_millis(45));
+            crate::plex::EndpointAdmission::Timeout
+        } else {
+            crate::plex::EndpointAdmission::Usable
+        }
+    }
+    fn admission_budget(&self) -> Duration { Duration::from_millis(100) }
+    fn gap(&mut self) {}
+}
+
+#[test]
+fn later_direct_and_cached_identity_probes_do_not_consume_the_admission_budget() {
+    let mut stored = cached_session(None);
+    stored.sources.push(source("b", false, "old-b-token"));
+    let sink = CapturingSink::default();
+    let mut io = LaterProbeBudgetIo { admissions: Vec::new() };
+    profile_switch_worker_with_io(1, SessionIdentity::of(&stored), stored,
+        UserTile { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() },
+        None, false, &sink, &mut io);
+    let events = sink.0.into_inner();
+    assert_eq!(io.admissions, ["a", "b"],
+        "only authenticated request time may consume the cross-server admission budget");
+    assert_eq!(ready_primary(&events).map(|server| server.machine_id.as_str()), Some("b"));
+}
+
 struct DiesDuringSecondaryIo {
     live: std::rc::Rc<std::cell::Cell<bool>>,
     probes: Vec<String>,

@@ -88,8 +88,11 @@ impl Observation {
                 match &progress.outcome {
                     ServerRosterOutcome::Unreachable => { w.u8(0); }
                     ServerRosterOutcome::NoReachable { settled } => { w.u8(1); write_probes(w, settled); }
-                    ServerRosterOutcome::Reconcile { resources, found, household, settled } => {
+                    ServerRosterOutcome::Reconcile {
+                        resources, found, admitted_machine_id, household, settled,
+                    } => {
                         w.u8(2); write_resources(w, resources); write_sources(w, found);
+                        w.str(admitted_machine_id);
                         w.seq(household.len()); for id in household { w.u64(*id as u64); }
                         write_probes(w, settled);
                     }

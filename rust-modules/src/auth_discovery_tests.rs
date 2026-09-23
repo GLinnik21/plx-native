@@ -221,8 +221,9 @@ fn relay_only_server_gets_a_fresh_probe_budget_after_direct_timeouts_and_is_admi
         &mut |_, _, _| {}, &mut || {}, &mut |_, _, _, _| {},
     );
 
-    assert!(matches!(resolved, Resolved::Reached(ref found)
+    assert!(matches!(resolved.outcome, Resolved::Reached(ref found)
         if found.len() == 1 && found[0].tier == Some(probe::Location::Relay)));
+    assert_eq!(resolved.admitted_machine_id.as_deref(), Some("race-machine"));
     assert_eq!(admissions, 1, "the relay winner must reach authenticated admission");
     assert_eq!(relay_budgets.lock().unwrap().as_slice(), [policy.remote],
         "the relay identity phase owns a fresh remote probe budget");
@@ -287,7 +288,8 @@ fn discovery_retries_the_same_server_via_relay_after_direct_admission_times_out(
         &mut |_| admissions.next().unwrap(), &mut |_, _, _| {},
         &mut || {}, &mut |_, _, _, _| {},
     );
-    let Resolved::Reached(found) = resolved else { panic!("relay admission must retain the server") };
+    assert_eq!(resolved.admitted_machine_id.as_deref(), Some("machine"));
+    let Resolved::Reached(found) = resolved.outcome else { panic!("relay admission must retain the server") };
     assert_eq!(probes, 2);
     assert_eq!(found[0].origin_url, "https://relay.example.test:443");
 }
@@ -1718,12 +1720,6 @@ fn a_sign_in_to_a_two_server_account_settles_on_one_address_each_ours_first() {
     };
 
     assert_eq!(roster.len(), 2, "a player resource is not a server");
-    assert_eq!(
-        primary_index(&roster),
-        0,
-        "ours is the primary and becomes `current`"
-    );
-
     let own = &roster[0];
     assert!(own.owned && own.machine_id == "aaaa1111");
     assert_eq!(
@@ -1914,7 +1910,6 @@ fn the_three_empty_outcomes_are_distinguished() {
         panic!("the share answered")
     };
     assert_eq!(roster.len(), 1);
-    assert_eq!(primary_index(&roster), 0);
     assert!(
         !roster[0].owned,
         "the primary is a share here, and that is the point"

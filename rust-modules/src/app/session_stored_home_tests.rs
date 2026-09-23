@@ -63,7 +63,8 @@ fn inject_roster_terminal(rig: &mut Bridge, expected: crate::auth::SessionIdenti
             "outcome":{"Reconcile":{
                 "resources":[{"name":"Synthetic", "clientIdentifier":"stored-machine",
                     "provides":"server", "owned":true, "accessToken":"profile-token-b"}],
-                "found":[source("127.0.0.2", "profile-token-b")], "household":[], "settled":[]
+                "found":[source("127.0.0.2", "profile-token-b")],
+                "admitted_machine_id":"stored-machine", "household":[], "settled":[]
             }}
         })).unwrap();
         output.complete(crate::auth::AuthProgress::ServerRoster(roster)).unwrap();

@@ -539,6 +539,8 @@ pub(crate) enum ServerRosterOutcome {
         #[serde(with = "observation::resources")]
         resources: Vec<Resource>,
         found: Vec<SourceRef>,
+        /// Machine in `found` whose profile grant passed authenticated admission.
+        admitted_machine_id: String,
         household: Vec<i64>,
         settled: Vec<SettledProbe>,
     },
@@ -1586,6 +1588,35 @@ const SERVER_GAP: Duration = Duration::from_secs(4);
 // fallbacks share this ceiling, while each sections request keeps its local/remote attempt cap.
 const ADMISSION_BUDGET: Duration = Duration::from_secs(20);
 
+/// Shared authenticated-request budget for discovery and profile switching.
+///
+/// Identity probes and inter-server pacing happen outside [`Self::attempt`], so they cannot spend
+/// this budget. Each authenticated request receives the time still available and is charged only
+/// for its own elapsed wall time.
+struct AdmissionBudget {
+    remaining: Duration,
+}
+
+impl AdmissionBudget {
+    fn new(remaining: Duration) -> Self { Self { remaining } }
+
+    fn exhausted(&self) -> bool { self.remaining.is_zero() }
+
+    fn attempt(
+        &mut self,
+        request: impl FnOnce(Instant) -> crate::plex::EndpointAdmission,
+    ) -> crate::plex::EndpointAdmission {
+        if self.exhausted() {
+            return crate::plex::EndpointAdmission::Timeout;
+        }
+        let started = Instant::now();
+        let deadline = started.checked_add(self.remaining).unwrap_or(started);
+        let outcome = request(deadline);
+        self.remaining = self.remaining.saturating_sub(started.elapsed());
+        outcome
+    }
+}
+
 type ProbeDial = Arc<
     dyn Fn(&Origin, Option<&crate::plex::ResolvePin>, Duration) -> (i32, Vec<u8>) + Send + Sync + 'static,
 >;
@@ -2158,6 +2189,16 @@ enum Resolved {
     Reached(Vec<SourceRef>),
 }
 
+/// A discovery result plus the authenticated evidence that chose its primary.
+///
+/// `Resolved::Reached` intentionally keeps every identity-verified secondary, but only one of
+/// those entries has passed `GET /library/sections`. Keeping that fact beside the roster prevents
+/// a later reconciliation from mistaking an unauthenticated secondary for an eligible primary.
+struct Resolution {
+    outcome: Resolved,
+    admitted_machine_id: Option<String>,
+}
+
 /// The whole of discovery except the two impure edges — fetching `/resources` and holding a socket.
 ///
 /// Everything that decides what the app ends up talking to lives here: which servers are tried and
@@ -2178,16 +2219,17 @@ fn resolve_roster_using_admission(
     activate: &mut dyn FnMut(&ProbePlan, &Candidate, &Origin),
     between_servers: &mut dyn FnMut(),
     observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>, Option<String>),
-) -> Resolved {
+) -> Resolution {
     let mut servers: Vec<&Resource> = resources.iter().filter(|r| r.is_server()).collect();
     if servers.is_empty() {
-        return Resolved::NoServers;
+        return Resolution { outcome: Resolved::NoServers, admitted_machine_id: None };
     }
     // Ours first, then shared servers whose publicAddressMatches says we share the server's NAT.
     // `sort_by_key` is stable, so plex.tv's own order survives inside each group.
     servers.sort_by_key(|r| (!r.owned, !r.public_address_matches));
 
     let mut found: Vec<SourceRef> = Vec::new();
+    let mut admitted_machine_id = None;
     let mut refused = false;
     let mut insecure = false;
     for (server_index, r) in servers.into_iter().enumerate() {
@@ -2208,6 +2250,7 @@ fn resolve_roster_using_admission(
             }
             match admit(&s) {
                 crate::plex::EndpointAdmission::Usable => {
+                    admitted_machine_id = Some(s.machine_id.clone());
                     if let Reach::At(c, origin) = &reach { activate(&plan, c, origin); }
                     break reach;
                 }
@@ -2265,11 +2308,12 @@ fn resolve_roster_using_admission(
             Reach::No => {}
         }
     }
-    if found.is_empty() {
+    let outcome = if found.is_empty() {
         Resolved::None { refused, insecure }
     } else {
         Resolved::Reached(found)
-    }
+    };
+    Resolution { outcome, admitted_machine_id }
 }
 
 #[cfg(test)]
@@ -2284,7 +2328,7 @@ fn resolve_roster_using(
     resolve_roster_using_admission(resources, household, policy, &mut |plan, _| probe_one(plan),
         &mut |_| crate::plex::EndpointAdmission::Usable, &mut |_, _, _| {},
         between_servers,
-        observe)
+        observe).outcome
 }
 
 /// **Whom to CREDIT for one `/api/v2/resources` row** — the app's single "Shared by …" decision,
@@ -2381,7 +2425,7 @@ fn resolve_roster_live_while(
     activate: &mut dyn FnMut(&ProbePlan, &Candidate, &Origin),
     observe: &mut dyn FnMut(&ProbePlan, Outcome, Option<probe::Location>, Option<String>),
     live: &dyn Fn() -> bool,
-) -> Resolved {
+) -> Resolution {
     let policy = CredentialPolicy::build();
     let dial: ProbeDial = Arc::new(get_identity);
     let spawn = |_index: usize, job: ProbeJob| crate::task::spawn_small("probe", job);
@@ -2398,25 +2442,15 @@ fn resolve_roster_live_while(
         probe_server_racing(&plan, Arc::clone(&dial), &spawn, PROBE_DEADLINES,
             &mut |_, _, _| {})
     };
-    let admission_deadline = std::cell::Cell::new(None);
+    let mut admission_budget = AdmissionBudget::new(ADMISSION_BUDGET);
     let mut admit = |source: &SourceRef| {
         if !live() { return crate::plex::EndpointAdmission::Transport; }
-        let deadline = admission_deadline.get().unwrap_or_else(|| {
-            let deadline = Instant::now().checked_add(ADMISSION_BUDGET).unwrap_or_else(Instant::now);
-            admission_deadline.set(Some(deadline));
-            deadline
-        });
-        crate::plex::admit_source_until(source, client_id, deadline)
+        admission_budget.attempt(|deadline|
+            crate::plex::admit_source_until(source, client_id, deadline))
     };
     let mut between_servers = || {
         if !live() { return; }
-        let started = Instant::now();
         std::thread::sleep(SERVER_GAP);
-        if let Some(deadline) = admission_deadline.get() {
-            admission_deadline.set(Some(
-                deadline.checked_add(started.elapsed()).unwrap_or(deadline),
-            ));
-        }
     };
     resolve_roster_using_admission(
         resources,
@@ -2556,15 +2590,17 @@ fn discover_and_store(ac: &AccountClient, client_id: &str, epoch: u64,
     // (the QR flow authorizes the account, never a managed profile), so plex.tv's own `owned`
     // answers for their server and `home`/`ownerId` for the rest; the household refinement lands
     // with `refresh_roster` or the first profile switch, both of which pass the real roster.
-    let resolved = resolve_roster_live_while(&resources, &[], client_id,
+    let resolution = resolve_roster_live_while(&resources, &[], client_id,
         &mut activate, &mut observe, &|| output.live());
     if !output.live() { return Discovery::Cancelled; }
-    let found = match resolved_without_roster(resolved) {
+    let found = match resolved_without_roster(resolution.outcome) {
         Ok(found) => found,
         Err(discovery) => return discovery,
     };
 
-    let primary = primary_index(&found);
+    let primary = resolution.admitted_machine_id.as_deref()
+        .and_then(|machine_id| found.iter().position(|source| source.machine_id == machine_id))
+        .expect("a reached roster has one authenticated primary");
     let p = &found[primary];
     let server = ServerRef {
         name: p.name.clone(),
@@ -2724,19 +2760,25 @@ fn server_ref(source: &SourceRef) -> ServerRef {
     }
 }
 
-/// Follow the stored primary when it still exists; otherwise promote the preferred surviving
-/// grant. Leaving a removed primary in place strands `current` as a tokenless shell after registry
-/// replacement and makes the newly reached servers unusable despite a successful refresh.
-fn reconcile_refresh_primary(server: &mut ServerRef, sources: &[SourceRef]) -> bool {
-    if sources.is_empty() {
+/// Select the one source whose authenticated admission succeeded.
+///
+/// Identity verification alone is not primary evidence: an existing primary may still answer
+/// `/identity` after its profile token has begun returning 401. Secondary grants remain in
+/// `sources`, but neither their fresh identity result nor a cached endpoint can keep or make one
+/// primary without the separately carried admission result.
+fn reconcile_refresh_primary(
+    server: &mut ServerRef,
+    sources: &[SourceRef],
+    admitted_machine_id: &str,
+) -> bool {
+    let Some(next) = sources.iter().find(|source| source.machine_id == admitted_machine_id) else {
         return false;
-    }
-    if sources.iter().any(|s| s.machine_id == server.machine_id) {
+    };
+    if server.machine_id == admitted_machine_id {
         return reconcile_primary(server, sources);
     }
-    let next = &sources[primary_index(sources)];
     log(&format!(
-        "auth: primary grant removed — using {:?} at {}:{}",
+        "auth: using admitted primary {:?} at {}:{}",
         next.name, next.address, next.port
     ));
     *server = server_ref(next);
@@ -2748,8 +2790,12 @@ fn reconcile_refresh_primary(server: &mut ServerRef, sources: &[SourceRef]) -> b
 /// `Session::user.token` is the selected Plex Home user's token for the PRIMARY, so a refresh that
 /// rotates that grant—or promotes another machine—must move it together with `Session::server`.
 /// Owner sessions without a Home user token already fall back to `server.token` and need no copy.
-fn reconcile_refresh_session(s: &mut Session, sources: &[SourceRef]) -> bool {
-    let mut changed = reconcile_refresh_primary(&mut s.server, sources);
+fn reconcile_refresh_session(
+    s: &mut Session,
+    sources: &[SourceRef],
+    admitted_machine_id: &str,
+) -> bool {
+    let mut changed = reconcile_refresh_primary(&mut s.server, sources, admitted_machine_id);
     if !s.user.token.is_empty() && s.user.token != s.server.token {
         s.user.token = s.server.token.clone();
         changed = true;
@@ -2794,7 +2840,7 @@ fn server_roster_worker_with_output(sess: Session, epoch: u64, expected: Session
     // screen off `RegistryProgress::Activate` while candidates settle, and keeps publishing both
     // — so there is nothing here for the extra progress arrival to reach before the terminal
     // commit does the same work. `settled` alone, folded into the terminal outcome, is authoritative.
-    let found = match resolve_roster_live_while(
+    let resolution = resolve_roster_live_while(
         &resources,
         &household,
         &sess.client_id,
@@ -2803,7 +2849,8 @@ fn server_roster_worker_with_output(sess: Session, epoch: u64, expected: Session
             settled.push(settled_probe(plan, outcome, tier, address));
         },
         &|| output.live(),
-    ) {
+    );
+    let found = match resolution.outcome {
         Resolved::Reached(found) => found,
         _ => {
             // R2/A5: a background refresh that found nothing to REGISTER may still have PROBED
@@ -2817,12 +2864,15 @@ fn server_roster_worker_with_output(sess: Session, epoch: u64, expected: Session
             return;
         }
     };
+    let admitted_machine_id = resolution.admitted_machine_id
+        .expect("a reached roster has one authenticated primary");
     output.terminal(AuthProgress::ServerRoster(ServerRosterProgress {
         epoch,
         expected,
         outcome: ServerRosterOutcome::Reconcile {
             resources,
             found,
+            admitted_machine_id,
             household,
             settled,
         },
@@ -3044,12 +3094,6 @@ fn registration_order(sources: &[SourceRef]) -> Vec<usize> {
         .collect();
     order.sort_by_key(|&i| !sources[i].owned);
     order
-}
-
-/// Which reached server is the primary: ours if it answered, else the first that did. A friend's
-/// library is a better app than "no server found" when our own box is off.
-fn primary_index(sources: &[SourceRef]) -> usize {
-    sources.iter().position(|s| s.owned).unwrap_or(0)
 }
 
 /// Re-key a stored roster to a newly switched profile.
@@ -3430,7 +3474,7 @@ pub(crate) fn profile_switch_worker_with_io(
     }
 
     let household = stored.household_ids();
-    let mut admission_deadline = None;
+    let mut admission_budget = AdmissionBudget::new(io.admission_budget());
     let mut order = grants.clone();
     if let Some(pos) = order
         .iter()
@@ -3448,11 +3492,6 @@ pub(crate) fn profile_switch_worker_with_io(
         let mut rejected_origins = Vec::new();
         loop {
             if !output.live() { return; }
-            if admission_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                admission_failures.push((resources[i].name.clone(),
-                    crate::plex::EndpointAdmission::Timeout));
-                break;
-            }
             let (mut winner, mut settled) =
                 io.probe_after(&resources[i], &household, &rejected_origins);
             if !output.live() { return; }
@@ -3478,13 +3517,8 @@ pub(crate) fn profile_switch_worker_with_io(
             let Some(winner) = winner else { break };
             let origin = winner.origin_url.clone();
             if rejected_origins.contains(&origin) { break; }
-            let deadline = *admission_deadline.get_or_insert_with(|| Instant::now()
-                .checked_add(io.admission_budget()).unwrap_or_else(Instant::now));
-            let admission = if Instant::now() >= deadline {
-                crate::plex::EndpointAdmission::Timeout
-            } else {
-                io.admit_until(&winner, &cid, deadline)
-            };
+            let admission = admission_budget.attempt(|deadline|
+                io.admit_until(&winner, &cid, deadline));
             if admission == crate::plex::EndpointAdmission::Usable {
                 selected_mid = Some(winner.machine_id.clone());
                 reached.push(winner);
@@ -3493,6 +3527,7 @@ pub(crate) fn profile_switch_worker_with_io(
             log(&format!("auth: switch '{}' — {:?} did not admit this profile ({admission:?})",
                 tile.title, resources[i].name));
             admission_failures.push((resources[i].name.clone(), admission));
+            if admission_budget.exhausted() { break; }
             rejected_origins.push(origin);
         }
         if selected_mid.is_some() {

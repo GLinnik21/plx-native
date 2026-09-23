@@ -794,9 +794,14 @@ mod tests {
                     "clientIdentifier":source.machine_id, "name":source.name, "provides":"server",
                     "owned":source.owned, "accessToken":source.token
                 })).collect();
+                // The wrong-identity rejection fixture below deliberately carries an impossible
+                // empty reconcile. It still has to deserialize before the owner rejects it.
+                let admitted_machine_id = found.first()
+                    .map(|source| source.machine_id.clone()).unwrap_or_default();
                 let progress = serde_json::from_value(serde_json::json!({
                     "epoch":epoch, "expected":identity, "outcome":{"Reconcile":{
-                        "resources":resources, "found":found, "household":[], "settled":[]
+                        "resources":resources, "found":found,
+                        "admitted_machine_id":admitted_machine_id, "household":[], "settled":[]
                     }}
                 })).unwrap();
                 output.complete(crate::auth::AuthProgress::ServerRoster(progress)).unwrap();
