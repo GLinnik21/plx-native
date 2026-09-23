@@ -463,13 +463,13 @@ pub(crate) unsafe fn construct(
     {
         let r = glGetString(GL_RENDERER);
         let v = glGetString(GL_VERSION);
-        if !r.is_null() && !v.is_null() {
-            log(&format!(
-                "GL: {} / {}",
-                std::ffi::CStr::from_ptr(r).to_string_lossy(),
-                std::ffi::CStr::from_ptr(v).to_string_lossy()
-            ));
+        let renderer = (!r.is_null()).then(|| std::ffi::CStr::from_ptr(r).to_string_lossy());
+        if let (Some(renderer), false) = (&renderer, v.is_null()) {
+            log(&format!("GL: {} / {}", renderer, std::ffi::CStr::from_ptr(v).to_string_lossy()));
         }
+        // A CPU rasterizer's frame time is not a main-thread hang (`task::runtime_check`).
+        #[cfg(feature = "threadcheck")]
+        crate::task::runtime_check::note_renderer(renderer.as_deref());
     }
     // The system on-screen keyboard, PROBED — see `crate::textinput`'s module doc. Both facts
     // on this line are preconditions that fail in complete silence, and nothing in this tree

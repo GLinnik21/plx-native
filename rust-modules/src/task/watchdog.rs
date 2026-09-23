@@ -83,17 +83,18 @@ struct Observation {
 }
 #[cfg(feature = "threadcheck")]
 impl DevObserver {
-    fn poll(&mut self, now: u64, progress: Option<usize>, label: &'static str, log_only: bool) -> Observation {
+    fn poll(&mut self, now: u64, progress: Option<usize>, label: &'static str, policy: super::runtime_check::Policy) -> Observation {
         // A late observer cannot distinguish a stopped process, system suspend, debugger stop
         // or its own scheduling starvation from a main-thread stall. Discard that interval.
         if self.last_poll.replace(now).is_some_and(|previous| now.saturating_sub(previous) > MAX_POLL_GAP_MS) {
             self.detector = Detector { advanced: progress.map(|counter| (counter, now)), announced: None };
-            self.kill.poll(None, log_only);
+            self.kill.poll(None, false, policy);
             return Observation { event: None, kill: false, reset_warning: true, elapsed: None };
         }
         let event = self.detector.observe(now, progress, label);
         let elapsed = self.detector.announced.and_then(|_| self.detector.advanced.map(|(_, at)| now.saturating_sub(at)));
-        Observation { event, kill: self.kill.poll(elapsed, log_only), reset_warning: false, elapsed }
+        let gpu_phase = label == DRAW_LABEL || label == PRESENT_LABEL;
+        Observation { event, kill: self.kill.poll(elapsed, gpu_phase, policy), reset_warning: false, elapsed }
     }
 }
 
@@ -154,14 +155,19 @@ pub(super) fn enter_label(label: &'static BlockingLabel) -> LabelScope {
     LabelScope { previous, _thread: PhantomData }
 }
 
-// Dedicated label-only entry points: neither asserts nor grants permission to block.
+// Dedicated label-only entry points: neither asserts nor grants permission to block. The texts
+// are also how the fatal policy recognises a GPU phase (`runtime_check::Issue::Hang`).
+#[cfg(feature = "threadcheck")]
+const DRAW_LABEL: &str = "frame draw";
+#[cfg(feature = "threadcheck")]
+const PRESENT_LABEL: &str = "gl present";
 #[cfg(feature = "threadcheck")]
 pub(crate) fn draw_scope() -> LabelScope {
-    enter_label(const { &BlockingLabel::new("frame draw") })
+    enter_label(const { &BlockingLabel::new(DRAW_LABEL) })
 }
 #[cfg(feature = "threadcheck")]
 pub(crate) fn present_scope() -> LabelScope {
-    enter_label(const { &BlockingLabel::new("gl present") })
+    enter_label(const { &BlockingLabel::new(PRESENT_LABEL) })
 }
 
 impl Drop for LabelScope {
@@ -267,7 +273,7 @@ fn observe_loop(
         let progress = SIGNALS.progress();
         let now = origin.elapsed().as_millis().min(u64::MAX as u128) as u64;
         #[cfg(feature = "threadcheck")]
-        let observation = observer.poll(now, progress, label, log_only);
+        let observation = observer.poll(now, progress, label, super::runtime_check::policy(log_only));
         #[cfg(feature = "threadcheck")]
         if observation.reset_warning { super::runtime_check::reset_warning(); }
         #[cfg(feature = "threadcheck")]
@@ -304,6 +310,10 @@ fn observe_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "threadcheck")]
+    use super::super::runtime_check::Policy;
+    #[cfg(feature = "threadcheck")]
+    const HW: Policy = Policy { log_only: false, software_gl: false };
 
     fn signals() -> &'static Signals { Box::leak(Box::new(Signals::new())) }
 
@@ -474,17 +484,17 @@ mod tests {
     #[test]
     fn a_process_freeze_rebases_without_warning_or_kill() {
         let mut observer = DevObserver::default();
-        observer.poll(0, Some(1), "gl present", false);
-        let paused = observer.poll(30_000, Some(1), "gl present", false);
+        observer.poll(0, Some(1), "gl present", HW);
+        let paused = observer.poll(30_000, Some(1), "gl present", HW);
         assert!(paused.event.is_none(), "a stopped observer cannot establish a main-thread hang");
         assert!(!paused.kill);
         assert!(paused.reset_warning);
         for now in [30_100, 30_200, 30_250] {
-            let sample = observer.poll(now, Some(1), "gl present", false);
+            let sample = observer.poll(now, Some(1), "gl present", HW);
             assert!(sample.event.is_none());
             assert!(!sample.kill);
         }
-        assert_eq!(observer.poll(30_300, Some(1), "gl present", false).event,
+        assert_eq!(observer.poll(30_300, Some(1), "gl present", HW).event,
             Some(Event::Began { ms: 300, label: "gl present" }));
     }
 
@@ -492,16 +502,16 @@ mod tests {
     #[test]
     fn a_freeze_clears_existing_hang_and_rearms_budget() {
         let mut observer = DevObserver::default();
-        for now in (0..=1900).step_by(100) { observer.poll(now, Some(1), "frame draw", false); }
-        let paused = observer.poll(31_900, Some(1), "frame draw", false);
+        for now in (0..=1900).step_by(100) { observer.poll(now, Some(1), "frame draw", HW); }
+        let paused = observer.poll(31_900, Some(1), "frame draw", HW);
         assert!(paused.reset_warning);
         assert!(paused.event.is_none());
         assert!(!paused.kill);
         for now in (32_000..33_900).step_by(100) {
-            assert!(!observer.poll(now, Some(1), "frame draw", false).kill);
+            assert!(!observer.poll(now, Some(1), "frame draw", HW).kill);
         }
-        assert!(observer.poll(33_900, Some(1), "frame draw", false).kill);
-        assert!(!observer.poll(34_000, Some(1), "frame draw", false).kill);
+        assert!(observer.poll(33_900, Some(1), "frame draw", HW).kill);
+        assert!(!observer.poll(34_000, Some(1), "frame draw", HW).kill);
     }
 
     #[cfg(feature = "threadcheck")]
@@ -509,8 +519,8 @@ mod tests {
     fn the_poll_gap_boundary_is_strictly_over_four_polls() {
         for (gap, reset) in [(400, false), (401, true)] {
             let mut observer = DevObserver::default();
-            observer.poll(0, Some(1), "gl present", false);
-            let sample = observer.poll(gap, Some(1), "gl present", false);
+            observer.poll(0, Some(1), "gl present", HW);
+            let sample = observer.poll(gap, Some(1), "gl present", HW);
             assert_eq!(sample.reset_warning, reset);
             assert_eq!(sample.event.is_some(), !reset);
             assert!(!sample.kill);
@@ -544,14 +554,42 @@ mod tests {
         for label in ["frame draw", "gl present"] {
             for log_only in [false, true] {
                 let mut observer = DevObserver::default();
+                let policy = Policy { log_only, software_gl: false };
                 for now in (0..=3000).step_by(100) {
-                    let sample = observer.poll(now, Some(1), label, log_only);
+                    let sample = observer.poll(now, Some(1), label, policy);
                     assert!(!sample.reset_warning);
                     assert_eq!(sample.kill, now == 2000 && !log_only);
                     assert_eq!(sample.event, (now == 300).then_some(Event::Began { ms: 300, label }));
                 }
             }
         }
+    }
+
+    /// The CI simulator's abort, end to end through the observer: on a software renderer a
+    /// stall sampled in `frame draw` / `gl present` is reported (the `main-thread hang` line
+    /// still fires at 300 ms) but never killed; any other label keeps the two-second kill.
+    #[cfg(feature = "threadcheck")]
+    #[test]
+    fn a_software_renderer_gpu_stall_is_reported_but_not_killed() {
+        let software = Policy { log_only: false, software_gl: true };
+        for label in ["frame draw", "gl present"] {
+            let mut observer = DevObserver::default();
+            for now in (0..=5000).step_by(100) {
+                let sample = observer.poll(now, Some(1), label, software);
+                assert!(!sample.kill, "{label} at {now}ms");
+                assert_eq!(sample.event, (now == 300).then_some(Event::Began { ms: 300, label }));
+            }
+        }
+        for label in ["unlabeled", "dev hang probe"] {
+            let mut observer = DevObserver::default();
+            for now in (0..=3000).step_by(100) {
+                assert_eq!(observer.poll(now, Some(1), label, software).kill, now == 2000, "{label} at {now}ms");
+            }
+        }
+        let mut observer = DevObserver::default();
+        for now in (0..=2000).step_by(100) { assert!(!observer.poll(now, Some(1), "frame draw", software).kill); }
+        assert!(observer.poll(2100, Some(1), "unlabeled", software).kill,
+            "leaving the GPU phase while still stalled is a stall like any other");
     }
 
 }

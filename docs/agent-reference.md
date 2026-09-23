@@ -542,7 +542,10 @@ which the linking section explains is load-bearing rather than tidy.
   at loop start, preserving the interrupted thread's registers. Guard `abort()` records the abort
   path instead; the label identifies its guarded call. The host harness never starts the observer.
   Developer draw/swap scopes label stalls `frame draw` / `gl present` without invoking or
-  bypassing the blocking guard; slow GPU frames still count toward the two-second fatal limit.
+  bypassing the blocking guard; slow GPU frames still count toward the two-second fatal limit on
+  hardware GL. When `GL_RENDERER` names a CPU rasterizer (Apple Software Renderer, llvmpipe,
+  softpipe, swrast, SwiftShader, WARP — the CI simulator), a stall in those two phases logs and
+  warns without SIGABRT; other labels and the blocking guard stay fatal (`task/runtime_check.rs`).
   A watchdog poll gap >400 ms discards the uncertain interval, clears warnings and rebases the
   stall timer and fatal latch: a stopped or starved observer is not evidence against the main thread.
   Escape hatch: write `log` into `/tmp/plxnative-guard` before launch (sim: instance runtime root).
