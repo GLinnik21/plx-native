@@ -122,6 +122,21 @@ relay leg. If nothing eligible verifies, the result is `Reach::InsecureOnly` (pl
 apart from `Unreachable`, that **outranks a 401**. Before this it counted as reached, which was
 issue #95 itself.
 
+**Online primary selection also proves the token after it proves the machine.** `/identity` is
+deliberately unauthenticated, so a fresh identity winner is only a known endpoint. Before sign-in,
+rediscovery or a profile switch may select it as primary, auth sends `GET /library/sections`
+through that source's exact origin, resolve pin, transport policy and per-machine token. A valid
+empty sections container is success; 401/403, timeout, transport refusal and malformed JSON remain
+distinct evidence, and primary selection continues with the next eligible endpoint/server.
+Secondary servers keep the profile-specific grants plex.tv returned live and cached; their identity
+probes refresh endpoint and reachability facts without making every secondary browse before it can
+be registered. Direct identity candidates settle as one race, and a relay fallback receives its own
+local/remote probe opportunity. Authenticated fallback attempts share a separate 20-second budget,
+with each request still capped at 5 seconds for Local and 10 seconds for Remote/Relay. Only time
+inside those authenticated requests is deducted: identity probing (including later direct/cached
+or relay attempts) and inter-server pacing do not spend admission time. Offline cached-profile
+seating keeps its existing PIN/cache contract.
+
 Slots are keyed on `machineIdentifier` because that is the only identity that survives a server
 changing address — and a registration that has *learned* an id **adopts** an address-only slot
 instead of adding a second one for the same machine.

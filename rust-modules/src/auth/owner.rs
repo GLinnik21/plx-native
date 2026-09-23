@@ -1720,8 +1720,7 @@ impl SessionMachine {
         let Some(tile) = self.state.users.get(index).cloned() else { return false };
         if self.state.next_req.checked_add(1).is_none() { return false; }
         if self.advance_epoch(emit).is_none() { return false; }
-        let same_user = pin.is_none() && !tile.protected && !self.state.persisted.user.uuid.is_empty()
-            && tile.uuid == self.state.persisted.user.uuid && !self.state.persisted.pms_token().is_empty();
+        let same_user = super::may_reuse_seated_profile(&self.state.persisted, &tile, pin.as_deref());
         if same_user {
             self.state.error.clear();
             self.state.phase = Phase::Ready;
@@ -1990,21 +1989,33 @@ impl SessionMachine {
             }
             Observation::Login(_) => return false,
             Observation::Registry(progress) => {
-                plan.registry.push(match progress {
-                    super::RegistryProgress::Activate { candidate, .. } => RegistryPlan::Activate {
-                        source: crate::plex::session::SourceRef {
-                            machine_id: candidate.machine_id.clone(), token: candidate.token.clone(),
-                            name: candidate.name.clone(), shared_by: candidate.credit.clone(), owned: candidate.owned,
-                            home: candidate.home, owner_id: candidate.owner_id,
-                            origin_url: candidate.origin.base(), address: candidate.address.clone(),
-                            port: i64::from(candidate.origin.port()), tier: Some(candidate.location),
-                            extensions: Default::default(),
-                        }, ipv6: candidate.ipv6,
-                    },
-                    super::RegistryProgress::Settled { probe, .. } => RegistryPlan::Probe(probe.clone()),
-                    super::RegistryProgress::Install { sources, primary, .. } =>
-                        RegistryPlan::Install { sources: sources.clone(), primary: *primary, replace: false },
-                });
+                if pending.key.op == SessionOp::ServerRoster
+                    && !self.state.persisted.active_profile_is_admin() {
+                    // This operation fetched `/resources` with the ACCOUNT token. Its Activate
+                    // and Install observations therefore carry the account holder's grants, not
+                    // the seated profile's. The identity/epoch checks above prove which request
+                    // this is; the profile predicate decides whether its credentials may cross
+                    // the owner's commit boundary. Settled is credential-free and remains useful.
+                    if let super::RegistryProgress::Settled { probe, .. } = progress {
+                        plan.registry.push(RegistryPlan::Probe(probe.clone()));
+                    }
+                } else {
+                    plan.registry.push(match progress {
+                        super::RegistryProgress::Activate { candidate, .. } => RegistryPlan::Activate {
+                            source: crate::plex::session::SourceRef {
+                                machine_id: candidate.machine_id.clone(), token: candidate.token.clone(),
+                                name: candidate.name.clone(), shared_by: candidate.credit.clone(), owned: candidate.owned,
+                                home: candidate.home, owner_id: candidate.owner_id,
+                                origin_url: candidate.origin.base(), address: candidate.address.clone(),
+                                port: i64::from(candidate.origin.port()), tier: Some(candidate.location),
+                                extensions: Default::default(),
+                            }, ipv6: candidate.ipv6,
+                        },
+                        super::RegistryProgress::Settled { probe, .. } => RegistryPlan::Probe(probe.clone()),
+                        super::RegistryProgress::Install { sources, primary, .. } =>
+                            RegistryPlan::Install { sources: sources.clone(), primary: *primary, replace: false },
+                    });
+                }
             }
             Observation::HomeRoster(progress) => {
                 // `None`: no verdict (no answer, a 5xx, a body that would not read). `Some([])`:
@@ -2044,23 +2055,44 @@ impl SessionMachine {
                     }
                     plan.registry = settled.iter().cloned().map(RegistryPlan::Probe).collect();
                 }
-                super::ServerRosterOutcome::Reconcile { resources, found, household, settled } => {
-                    let mut next = self.state.persisted.clone();
-                    let refreshed = super::refreshed_sources(&next.sources, found, resources, household);
-                    let usable = !refreshed.is_empty();
-                    let sources = if usable { refreshed } else { next.sources.clone() };
-                    let roster_changed = !super::same_sources(&sources, &next.sources);
-                    let moved = usable && super::reconcile_refresh_session(&mut next, &sources);
-                    next.sources = sources;
-                    let repaired = next.refresh_profile_record();
-                    if !(roster_changed || moved || repaired) {
-                        self.retire(req, emit);
-                        return true;
+                super::ServerRosterOutcome::Reconcile {
+                    resources, found, admitted_machine_id, household, settled,
+                } => {
+                    if !self.state.persisted.active_profile_is_admin() {
+                        if settled.is_empty() {
+                            self.retire(req, emit);
+                            return true;
+                        }
+                        plan.registry = settled.iter().cloned().map(RegistryPlan::Probe).collect();
+                    } else {
+                        let mut next = self.state.persisted.clone();
+                        let refreshed = super::refreshed_sources(&next.sources, found, resources, household);
+                        let usable = !refreshed.is_empty();
+                        let sources = if usable { refreshed } else { next.sources.clone() };
+                        let roster_changed = !super::same_sources(&sources, &next.sources);
+                        let moved = super::reconcile_refresh_session(
+                            &mut next, &sources, admitted_machine_id);
+                        next.sources = sources.clone();
+                        let repaired = next.refresh_profile_record();
+                        if !(roster_changed || moved || repaired) {
+                            if settled.is_empty() {
+                                self.retire(req, emit);
+                                return true;
+                            }
+                            plan.registry = settled.iter().cloned().map(RegistryPlan::Probe).collect();
+                        } else {
+                            let patch = CredentialPatch::of(&next);
+                            delta.credentials = Some(patch.clone());
+                            plan.credentials = Some(patch);
+                            let primary = Some(sources.iter()
+                                .position(|source| source.machine_id == *admitted_machine_id)
+                                .expect("the admitted primary is part of the reconciled roster"));
+                            plan.registry = vec![RegistryPlan::Install {
+                                sources: sources.clone(), primary, replace: true,
+                            }];
+                            plan.registry.extend(settled.iter().cloned().map(RegistryPlan::Probe));
+                        }
                     }
-                    let patch = CredentialPatch::of(&next);
-                    delta.credentials = Some(patch.clone());
-                    plan.credentials = Some(patch);
-                    plan.registry = Self::roster_plan(&next, settled);
                 }
             },
             Observation::ProfileSwitch(progress) => match &progress.outcome {
@@ -2087,8 +2119,9 @@ impl SessionMachine {
                 let mut next = self.state.persisted.clone();
                 let sources = super::profile_sources(&next.sources, &progress.reached,
                     &progress.resources, &next.household_ids());
-                let Some(primary) = sources.iter().find(|s| s.machine_id == next.server.machine_id)
-                    .or_else(|| sources.get(super::primary_index(&sources))).cloned() else {
+                let Some(primary) = sources.iter()
+                    .find(|s| s.machine_id == next.server.machine_id && s.dialable())
+                    .or_else(|| sources.iter().find(|s| s.dialable())).cloned() else {
                     self.retire(req, emit);
                     return true;
                 };
@@ -4037,6 +4070,403 @@ mod tests {
         assert!(plan.registry.iter().all(|p| matches!(p, RegistryPlan::Probe(_))),
             "NoReachable must never write RegistryPlan::Install — the roster itself is unchanged");
         assert!(plan.credentials.is_none(), "a registry-only commit writes no credentials");
+    }
+
+    fn roster_refresh_fixture(profile_uuid: &str,
+        home_users: Vec<crate::plex::session::HomeUserRef>) -> SessionMachine {
+        let source = crate::plex::session::SourceRef {
+            machine_id: "profile-machine".into(), name: "Profile server".into(), owned: true,
+            token: "profile-server-token".into(), address: "10.0.0.8".into(), port: 32400,
+            origin_url: "https://10-0-0-8.example.plex.direct:32400".into(),
+            tier: Some(crate::plex::probe::Location::Local), ..Default::default()
+        };
+        let user = UserRef { uuid: profile_uuid.into(), title: "Seated profile".into(),
+            token: "profile-server-token".into(), ..Default::default() };
+        let mut persisted = PersistedSession {
+            client_id: "synthetic-client".into(), account_token: "account-token".into(),
+            server: super::super::server_ref(&source), user: user.clone(),
+            home_users, sources: vec![source.clone()], ..Default::default()
+        };
+        if !profile_uuid.is_empty() {
+            persisted.profiles.push(crate::plex::session::ProfileCreds {
+                uuid: profile_uuid.into(), user, server: persisted.server.clone(),
+                sources: vec![source], pin: None, extensions: Default::default(),
+            });
+        }
+        SessionMachine::from_init(SessionInit::captured(persisted))
+    }
+
+    fn account_refresh_source() -> crate::plex::session::SourceRef {
+        crate::plex::session::SourceRef {
+            machine_id: "account-machine".into(), name: "Account server".into(), owned: true,
+            token: "account-server-token".into(), address: "10.0.0.9".into(), port: 32400,
+            origin_url: "https://10-0-0-9.example.plex.direct:32400".into(),
+            tier: Some(crate::plex::probe::Location::Local), ..Default::default()
+        }
+    }
+
+    fn land_account_roster_refresh(owner: &mut SessionMachine) -> (CommitPlan, CommitPlan) {
+        let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
+        owner.state.pending.get_mut(&req).unwrap().admission =
+            AdmissionState::Accepted(AdmissionId(req));
+        let epoch = owner.state.epoch;
+        let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+        let fresh = account_refresh_source();
+        let activate = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::ServerRoster },
+            admission: AdmissionId(req), arrival: 1, terminal: false, lifecycle: None,
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::Registry(
+                super::super::RegistryProgress::Activate {
+                    epoch, expected: Some(expected.clone()),
+                    candidate: super::super::CandidateActivation {
+                        machine_id: fresh.machine_id.clone(), token: fresh.token.clone(),
+                        name: fresh.name.clone(), credit: String::new(), owned: true,
+                        home: false, owner_id: 0, origin: fresh.origin().unwrap(),
+                        address: fresh.address.clone(), location: crate::plex::probe::Location::Local,
+                        ipv6: false,
+                    },
+                }))),
+        };
+        let activate_effects = step(owner, SessionEvent::Result(activate));
+        let activate_plan = activate_effects.iter().find_map(|effect| match effect {
+            SessionFx::Commit { plan, .. } => Some(plan.clone()), _ => None,
+        }).expect("the progress observation reaches the commit boundary");
+        step(owner, SessionEvent::Commit(CommitReply {
+            req, epoch, arrival: 1, admission: CommitAdmission::RegistryOnly,
+        }));
+
+        let probe = super::super::settled_probe_for_test(&fresh.machine_id,
+            crate::plex::probe::Outcome::Reachable,
+            Some(crate::plex::probe::Location::Local), Some(fresh.address.clone()));
+        let resource = crate::plex::account::Resource {
+            name: fresh.name.clone(), client_identifier: fresh.machine_id.clone(),
+            provides: "server".into(), owned: true, access_token: fresh.token.clone(),
+            ..Default::default()
+        };
+        let reconcile = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::ServerRoster },
+            admission: AdmissionId(req), arrival: 2, terminal: true, lifecycle: None,
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ServerRoster(
+                super::super::ServerRosterProgress { epoch, expected,
+                    outcome: super::super::ServerRosterOutcome::Reconcile {
+                        resources: vec![resource], found: vec![fresh.clone()],
+                        admitted_machine_id: fresh.machine_id, household: Vec::new(),
+                        settled: vec![probe],
+                    },
+                }))),
+        };
+        let reconcile_effects = step(owner, SessionEvent::Result(reconcile));
+        let reconcile_plan = reconcile_effects.iter().find_map(|effect| match effect {
+            SessionFx::Commit { plan, .. } => Some(plan.clone()), _ => None,
+        }).expect("the terminal observation reaches the commit boundary");
+        step(owner, SessionEvent::Commit(CommitReply {
+            req, epoch, arrival: 2, admission: CommitAdmission::RegistryOnly,
+        }));
+        (activate_plan, reconcile_plan)
+    }
+
+    fn assert_non_admin_roster_refresh_is_probe_only(mut owner: SessionMachine) {
+        let before = CredentialPatch::of(&owner.state.persisted);
+        let (activate, reconcile) = land_account_roster_refresh(&mut owner);
+        assert!(activate.credentials.is_none());
+        assert!(activate.registry.is_empty(),
+            "an account-token activation must not add a grant for the seated profile");
+        assert!(reconcile.credentials.is_none(),
+            "the account holder's roster must not replace seated-profile credentials");
+        assert_eq!(reconcile.registry.len(), 1);
+        assert!(matches!(&reconcile.registry[0], RegistryPlan::Probe(probe)
+            if probe.machine_id == "account-machine"
+                && probe.outcome == crate::plex::probe::Outcome::Reachable));
+        assert_eq!(owner.state.persisted.server.machine_id, before.server.machine_id);
+        assert_eq!(owner.state.persisted.server.token, before.server.token);
+        assert_eq!(owner.state.persisted.user.token, before.user.token);
+        assert_eq!(owner.state.persisted.sources[0].token, before.sources[0].token);
+        assert_eq!(owner.state.persisted.profiles[0].server.token, before.profiles[0].server.token);
+        assert_eq!(owner.state.persisted.profiles[0].user.token, before.profiles[0].user.token);
+        assert_eq!(owner.state.persisted.profiles[0].sources[0].token,
+            before.profiles[0].sources[0].token);
+    }
+
+    #[test]
+    fn seated_managed_profile_roster_refresh_keeps_profile_credentials_and_publishes_probes() {
+        let _g = crate::testlock::serial();
+        assert_non_admin_roster_refresh_is_probe_only(roster_refresh_fixture("u-managed", vec![
+            crate::plex::session::HomeUserRef { id: 2, uuid: "u-managed".into(),
+                title: "Managed".into(), admin: false, ..Default::default() },
+        ]));
+    }
+
+    #[test]
+    fn seated_home_member_roster_refresh_keeps_profile_credentials_and_publishes_probes() {
+        let _g = crate::testlock::serial();
+        assert_non_admin_roster_refresh_is_probe_only(roster_refresh_fixture("u-member", vec![
+            crate::plex::session::HomeUserRef { id: 3, uuid: "u-member".into(),
+                title: "Home member".into(), protected: true, admin: false, ..Default::default() },
+        ]));
+    }
+
+    #[test]
+    fn same_user_take_ready_keeps_an_unavailable_secondary_live_and_cached() {
+        let _g = crate::testlock::serial();
+        let primary = crate::plex::session::SourceRef {
+            machine_id: "a".into(), name: "Primary A".into(), owned: true,
+            token: "kid-a-token".into(), address: "10.0.0.8".into(), port: 32400,
+            origin_url: "https://10-0-0-8.example.plex.direct:32400".into(),
+            tier: Some(crate::plex::probe::Location::Local), ..Default::default()
+        };
+        let secondary = crate::plex::session::SourceRef {
+            machine_id: "b".into(), name: "Secondary B".into(),
+            token: "kid-b-token".into(), address: "10.0.0.9".into(), port: 32400,
+            origin_url: "https://10-0-0-9.example.plex.direct:32400".into(),
+            tier: Some(crate::plex::probe::Location::Remote), ..Default::default()
+        };
+        let user = UserRef { uuid: "u-kid".into(), title: "Kid".into(),
+            token: primary.token.clone(), ..Default::default() };
+        let mut persisted = PersistedSession {
+            client_id: "synthetic-client".into(), account_token: "account-token".into(),
+            server: super::super::server_ref(&primary), user: UserRef { uuid: "u-admin".into(),
+                token: "admin-token".into(), ..Default::default() },
+            home_users: vec![crate::plex::session::HomeUserRef { uuid: "u-kid".into(),
+                title: "Kid".into(), admin: false, ..Default::default() }],
+            sources: vec![primary.clone()], ..Default::default()
+        };
+        persisted.remember_profile(crate::plex::session::ProfileCreds {
+            uuid: user.uuid.clone(), user: user.clone(), server: super::super::server_ref(&primary),
+            sources: vec![primary.clone(), secondary.clone()], pin: None,
+            extensions: Default::default(),
+        });
+        let mut init = SessionInit::captured(persisted);
+        init.phase = Phase::Switching;
+        init.users = vec![UserTile { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() }];
+        let mut owner = SessionMachine::from_init(init);
+        let req = owner.allocate(SessionOp::ProfileSwitch, None).unwrap();
+        owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        let epoch = owner.state.epoch;
+        let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+        let mut tokenless_secondary = secondary.clone();
+        tokenless_secondary.token.clear();
+        let ready = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::ProfileSwitch }, admission: AdmissionId(req),
+            arrival: 1, terminal: false, lifecycle: None,
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ProfileSwitch(
+                super::super::ProfileSwitchProgress { epoch, expected,
+                    outcome: super::super::ProfileSwitchOutcomeProgress::Ready {
+                        delta: super::super::ProfileDelta {
+                            server: super::super::server_ref(&primary),
+                            sources: vec![primary.clone(), tokenless_secondary], user: user.clone(),
+                            cache: Some(crate::plex::session::ProfileCreds {
+                                uuid: user.uuid.clone(), user: user.clone(),
+                                server: super::super::server_ref(&primary),
+                                sources: vec![primary.clone(), secondary.clone()], pin: None,
+                                extensions: Default::default(),
+                            }),
+                        },
+                        probes: Vec::new(),
+                    },
+                }))),
+        };
+        let effects = step(&mut owner, SessionEvent::Result(ready));
+        let reply = effects.iter().find_map(|effect| match effect {
+            SessionFx::Commit { req, epoch, arrival, .. } => Some(CommitReply {
+                req: *req, epoch: *epoch, arrival: *arrival, admission: CommitAdmission::RegistryOnly,
+            }),
+            _ => None,
+        }).expect("the profile switch must commit");
+        step(&mut owner, SessionEvent::Commit(reply));
+
+        let next_identity = super::super::SessionIdentity::of(&owner.state.persisted);
+        let resources = vec![
+            crate::plex::account::Resource { name: primary.name.clone(),
+                client_identifier: primary.machine_id.clone(), provides: "server".into(),
+                owned: true, access_token: primary.token.clone(), ..Default::default() },
+            crate::plex::account::Resource { name: secondary.name.clone(),
+                client_identifier: secondary.machine_id.clone(), provides: "server".into(),
+                access_token: secondary.token.clone(), ..Default::default() },
+        ];
+        let roster = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::ProfileSwitch }, admission: AdmissionId(req),
+            arrival: 2, terminal: true, lifecycle: None,
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ProfileRoster(
+                super::super::ProfileRosterProgress { epoch, expected: next_identity,
+                    resources, reached: vec![primary.clone()], probes: Vec::new() }))),
+        };
+        let effects = step(&mut owner, SessionEvent::Result(roster));
+        let reply = effects.iter().find_map(|effect| match effect {
+            SessionFx::Commit { req, epoch, arrival, .. } => Some(CommitReply {
+                req: *req, epoch: *epoch, arrival: *arrival, admission: CommitAdmission::RegistryOnly,
+            }),
+            _ => None,
+        }).expect("the unavailable-secondary roster must commit");
+        step(&mut owner, SessionEvent::Commit(reply));
+
+        step(&mut owner, SessionEvent::Command(Command::SelectProfile { index: 0, pin: None }));
+        let effects = step(&mut owner, SessionEvent::Command(Command::TakeReady));
+        let final_plan = effects.iter().find_map(|effect| match effect {
+            SessionFx::Commit { plan, .. } => Some(plan), _ => None,
+        }).expect("the same-user shortcut must pass through take_ready");
+        let patch = final_plan.credentials.as_ref().expect("take_ready saves the live session");
+        assert_eq!(patch.sources.iter().find(|source| source.machine_id == "b").unwrap().token,
+            "kid-b-token", "B remains live even though its identity probe was unavailable");
+        assert_eq!(patch.profiles.iter().find(|profile| profile.uuid == "u-kid").unwrap()
+            .sources.iter().find(|source| source.machine_id == "b").unwrap().token,
+            "kid-b-token", "take_ready must not overwrite the cached profile with a tokenless B");
+    }
+
+    #[test]
+    fn unknown_roster_profile_refresh_keeps_profile_credentials_and_publishes_probes() {
+        let _g = crate::testlock::serial();
+        assert_non_admin_roster_refresh_is_probe_only(roster_refresh_fixture("u-unknown", vec![
+            crate::plex::session::HomeUserRef { id: 1, uuid: "u-owner".into(),
+                title: "Owner".into(), admin: true, ..Default::default() },
+        ]));
+    }
+
+    fn assert_admin_roster_refresh_accepts_credentials(mut owner: SessionMachine) {
+        let (activate, reconcile) = land_account_roster_refresh(&mut owner);
+        assert!(matches!(&activate.registry[..], [RegistryPlan::Activate { source, .. }]
+            if source.token == "account-server-token"));
+        let patch = reconcile.credentials.as_ref()
+            .expect("an account-owner refresh persists its new grant");
+        assert_eq!(patch.server.machine_id, "account-machine");
+        assert_eq!(patch.server.token, "account-server-token");
+        assert!(patch.user.token.is_empty() || patch.user.token == "account-server-token");
+        assert!(reconcile.registry.iter().any(|plan|
+            matches!(plan, RegistryPlan::Install { sources, .. }
+                if sources.iter().any(|source| source.token == "account-server-token"))));
+    }
+
+    #[test]
+    fn seated_admin_profile_roster_refresh_accepts_refreshed_tokens() {
+        let _g = crate::testlock::serial();
+        assert_admin_roster_refresh_accepts_credentials(roster_refresh_fixture("u-owner", vec![
+            crate::plex::session::HomeUserRef { id: 1, uuid: "u-owner".into(),
+                title: "Owner".into(), admin: true, ..Default::default() },
+        ]));
+    }
+
+    #[test]
+    fn no_home_account_roster_refresh_accepts_refreshed_tokens() {
+        let _g = crate::testlock::serial();
+        assert_admin_roster_refresh_accepts_credentials(roster_refresh_fixture("", Vec::new()));
+    }
+
+    #[test]
+    fn admin_refresh_never_keeps_an_identity_only_cached_primary_current() {
+        let _g = crate::testlock::serial();
+        let users = vec![crate::plex::session::HomeUserRef { id: 1, uuid: "u-owner".into(),
+            title: "Owner".into(), admin: true, ..Default::default() }];
+        let mut owner = roster_refresh_fixture("u-owner", users);
+        let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
+        owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        let epoch = owner.state.epoch;
+        let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+        let admitted = crate::plex::session::SourceRef { machine_id: "preferred-machine".into(),
+            name: "Preferred server".into(), owned: true, token: "preferred-token".into(),
+            address: "10.0.0.9".into(),
+            port: 32400, origin_url: "https://10-0-0-9.example.plex.direct:32400".into(),
+            tier: Some(crate::plex::probe::Location::Remote), ..Default::default() };
+        let identity_only = crate::plex::session::SourceRef {
+            machine_id: "profile-machine".into(), name: "Cached primary".into(), owned: false,
+            token: "fresh-primary-token".into(), address: "10.0.0.8".into(), port: 32400,
+            origin_url: "https://10-0-0-8.example.plex.direct:32400".into(),
+            tier: Some(crate::plex::probe::Location::Local), ..Default::default()
+        };
+        let resources = vec![
+            crate::plex::account::Resource { name: "Cached primary".into(),
+                client_identifier: "profile-machine".into(), provides: "server".into(),
+                access_token: "fresh-primary-token".into(), ..Default::default() },
+            crate::plex::account::Resource { name: admitted.name.clone(),
+                client_identifier: admitted.machine_id.clone(), provides: "server".into(),
+                owned: true, access_token: admitted.token.clone(), ..Default::default() },
+        ];
+        let envelope = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::ServerRoster }, admission: AdmissionId(req),
+            arrival: 1, terminal: true, lifecycle: None,
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ServerRoster(
+                super::super::ServerRosterProgress { epoch, expected,
+                    outcome: super::super::ServerRosterOutcome::Reconcile {
+                        resources, found: vec![admitted.clone(), identity_only],
+                        admitted_machine_id: admitted.machine_id.clone(), household: vec![1],
+                        settled: Vec::new(),
+                    },
+                }))),
+        };
+        let effects = step(&mut owner, SessionEvent::Result(envelope));
+        let plan = effects.iter().find_map(|effect| match effect {
+            SessionFx::Commit { plan, .. } => Some(plan), _ => None,
+        }).expect("the admitted endpoint changes the roster");
+        let patch = plan.credentials.as_ref().unwrap();
+        assert_eq!(patch.server.machine_id, admitted.machine_id);
+        let install = plan.registry.iter().find_map(|plan| match plan {
+            RegistryPlan::Install { sources, primary, replace } => Some((sources, primary, replace)),
+            _ => None,
+        }).expect("refresh installs an admitted roster");
+        assert_eq!(install.1.and_then(|index| install.0.get(index))
+            .map(|source| source.machine_id.as_str()), Some("preferred-machine"));
+        assert!(*install.2);
+    }
+
+    #[test]
+    fn admin_refresh_keeps_a_granted_cached_secondary_live_when_its_probe_misses() {
+        let _g = crate::testlock::serial();
+        let users = vec![crate::plex::session::HomeUserRef { id: 1, uuid: "u-owner".into(),
+            title: "Owner".into(), admin: true, ..Default::default() }];
+        let mut owner = roster_refresh_fixture("u-owner", users);
+        let secondary = crate::plex::session::SourceRef { machine_id: "secondary".into(),
+            name: "Secondary".into(), token: "old-secondary-token".into(),
+            address: "10.0.0.7".into(), port: 32400,
+            origin_url: "https://10-0-0-7.example.plex.direct:32400".into(),
+            tier: Some(crate::plex::probe::Location::Remote), ..Default::default() };
+        owner.state.persisted.sources.push(secondary.clone());
+        owner.state.persisted.refresh_profile_record();
+
+        let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
+        owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        let epoch = owner.state.epoch;
+        let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+        let admitted = crate::plex::session::SourceRef { machine_id: "profile-machine".into(),
+            name: "Profile server".into(), owned: true, token: "fresh-primary-token".into(),
+            address: "10.0.0.18".into(), port: 32400,
+            origin_url: "https://10-0-0-18.example.plex.direct:32400".into(),
+            tier: Some(crate::plex::probe::Location::Local), ..Default::default() };
+        let resources = vec![
+            crate::plex::account::Resource { name: admitted.name.clone(),
+                client_identifier: admitted.machine_id.clone(), provides: "server".into(), owned: true,
+                access_token: admitted.token.clone(), ..Default::default() },
+            crate::plex::account::Resource { name: secondary.name.clone(),
+                client_identifier: secondary.machine_id.clone(), provides: "server".into(),
+                access_token: "fresh-secondary-token".into(), ..Default::default() },
+        ];
+        let envelope = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::ServerRoster }, admission: AdmissionId(req),
+            arrival: 1, terminal: true, lifecycle: None,
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ServerRoster(
+                super::super::ServerRosterProgress { epoch, expected,
+                    outcome: super::super::ServerRosterOutcome::Reconcile {
+                        resources, found: vec![admitted.clone()],
+                        admitted_machine_id: admitted.machine_id, household: vec![1],
+                        settled: Vec::new(),
+                    },
+                }))),
+        };
+        let effects = step(&mut owner, SessionEvent::Result(envelope));
+        let plan = effects.iter().find_map(|effect| match effect {
+            SessionFx::Commit { plan, .. } => Some(plan), _ => None,
+        }).expect("the primary address change commits the refreshed roster");
+        let install = plan.registry.iter().find_map(|plan| match plan {
+            RegistryPlan::Install { sources, primary, replace } => Some((sources, primary, replace)),
+            _ => None,
+        }).expect("the address change replaces the live registry");
+        assert!(install.0.iter().any(|source| source.machine_id == "secondary"
+            && source.token == "fresh-secondary-token"),
+            "a still-granted cached secondary must survive a missed identity probe");
+        assert!(*install.2);
     }
 
     /// Issue #132's production half: a signed-in account whose cached roster is EMPTY (a failed
