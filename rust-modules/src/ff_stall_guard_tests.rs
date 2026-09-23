@@ -122,16 +122,14 @@ fn a_fetch_the_playhead_is_consuming_still_aborts() {
     );
 }
 
-/// **Same-encoder lookahead must observe a terminal hold exactly like the ordinary fetch it
-/// shadows.** Device-measured `pipe_abr_down_collapse`: the link collapsed from 40 Mbps to
+/// The same-encoder lookahead used to not observe terminal holds like the ordinary fetch it
+/// shadows. Device-measured `pipe_abr_down_collapse`: the link collapsed from 40 Mbps to
 /// 500 kbps while on rung 20000; segment 11 (5.4 MB) then ran 86.8 s and froze the picture,
-/// because `hls_prefetch_same_encoder` builds its AVIO policy with NO stall guard at all
+/// because `hls_prefetch_same_encoder` used to build its AVIO policy with no stall guard at all
 /// (`ReserveDeadlineState::new(None, false), None` — ff.rs, the same-encoder lookahead call to
-/// `hls_demux_segment`), while the ordinary branch two lines above arms one via
-/// `arm_active_stall_guard` for the identical active cursor. This drives the real `read_cb`
-/// callback under each policy against the identical terminal-hold-with-bytes-remaining
-/// condition and shows the asymmetry directly: the ordinary policy aborts, the lookahead's
-/// (as constructed today, unconditionally `None`) reads straight through it.
+/// `hls_demux_segment`), while the ordinary branch armed one via `arm_active_stall_guard` for
+/// the identical active cursor. This test now pins that both policies abort under an identical
+/// terminal hold.
 #[test]
 fn the_lookahead_policy_must_abort_under_a_terminal_hold_like_the_ordinary_policy() {
     use std::io::{Read, Write};
