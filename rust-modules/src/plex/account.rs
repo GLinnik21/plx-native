@@ -38,6 +38,10 @@ const AUDIO_PREFERENCES_FAILURE_TTL_MAX: Duration = Duration::from_secs(10 * 60)
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AudioPreferences {
     pub language: Option<String>,
+    /// What plex.tv actually answered, kept only so an unset `language` can say WHY on the route
+    /// log: auto-select off and no language set otherwise read identically.
+    pub auto_select_audio: Option<bool>,
+    pub stated_language: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1056,11 +1060,14 @@ impl AccountUser {
             return None;
         }
         let profile = self.profile.unwrap_or_default();
-        let language = (profile.auto_select_audio == Some(true))
-            .then_some(profile.default_audio_language).flatten()
+        let stated_language = profile.default_audio_language
             .map(|language| language.trim().to_owned())
             .filter(|language| !language.is_empty() && language != "-1");
-        Some(AudioPreferences { language })
+        let language = (profile.auto_select_audio == Some(true))
+            .then(|| stated_language.clone()).flatten();
+        Some(AudioPreferences {
+            language, auto_select_audio: profile.auto_select_audio, stated_language,
+        })
     }
 }
 
@@ -1259,18 +1266,20 @@ mod tests {
         let body = r#"{"id":7,"uuid":"profile-uuid","home":true,"homeAdmin":false,
             "restricted":true,"profile":{"autoSelectAudio":true,
             "defaultAudioLanguage":"fr","defaultAudioLanguages":null}}"#;
-        assert_eq!(parsed_audio(body, &user),
-            Some(super::AudioPreferences { language: Some("fr".into()) }));
+        assert_eq!(parsed_audio(body, &user), Some(french_prefs()));
     }
 
     #[test]
     fn account_audio_preferences_require_auto_select_audio() {
         let user = audio_user(7, "profile-uuid");
-        for body in [
-            r#"{"id":7,"profile":{"autoSelectAudio":false,"defaultAudioLanguage":"fr"}}"#,
-            r#"{"id":7,"profile":{"defaultAudioLanguage":"fr"}}"#,
+        for (body, auto_select_audio) in [
+            (r#"{"id":7,"profile":{"autoSelectAudio":false,"defaultAudioLanguage":"fr"}}"#,
+                Some(false)),
+            (r#"{"id":7,"profile":{"defaultAudioLanguage":"fr"}}"#, None),
         ] {
-            assert_eq!(parsed_audio(body, &user), Some(super::AudioPreferences::default()));
+            assert_eq!(parsed_audio(body, &user), Some(super::AudioPreferences {
+                language: None, auto_select_audio, stated_language: Some("fr".into()),
+            }));
         }
     }
 
@@ -1279,7 +1288,9 @@ mod tests {
         let user = audio_user(7, "profile-uuid");
         for language in ["null", "\"\"", "\"   \""] {
             let body = format!(r#"{{"uuid":"profile-uuid","profile":{{"autoSelectAudio":true,"defaultAudioLanguage":{language}}}}}"#);
-            assert_eq!(parsed_audio(&body, &user), Some(super::AudioPreferences::default()));
+            assert_eq!(parsed_audio(&body, &user), Some(super::AudioPreferences {
+                auto_select_audio: Some(true), ..Default::default()
+            }));
         }
     }
 
@@ -1288,8 +1299,7 @@ mod tests {
         let owner = audio_user(0, "");
         let body = r#"{"id":7,"uuid":"owner-uuid","profile":{"autoSelectAudio":true,
             "defaultAudioLanguage":"fr"}}"#;
-        assert_eq!(parsed_audio(body, &owner),
-            Some(super::AudioPreferences { language: Some("fr".into()) }));
+        assert_eq!(parsed_audio(body, &owner), Some(french_prefs()));
     }
 
     #[test]
@@ -1309,9 +1319,14 @@ mod tests {
     fn audio_key(id: i64, generation: u32) -> super::AudioPreferencesKey {
         super::AudioPreferencesKey { id, uuid: format!("user-{id}"), generation }
     }
+    fn french_prefs() -> super::AudioPreferences {
+        super::AudioPreferences {
+            language: Some("fr".into()), auto_select_audio: Some(true),
+            stated_language: Some("fr".into()),
+        }
+    }
     fn french() -> super::AudioPreferencesOutcome {
-        super::AudioPreferencesOutcome::Available(super::AudioPreferences {
-            language: Some("fr".into()) })
+        super::AudioPreferencesOutcome::Available(french_prefs())
     }
 
     #[test]
@@ -1398,7 +1413,7 @@ mod tests {
         assert!(!cache.complete(old_flight, french(), super::FetchPath::Warm,
             std::time::Instant::now(), || false));
         let german = super::AudioPreferencesOutcome::Available(super::AudioPreferences {
-            language: Some("de".into()) });
+            language: Some("de".into()), ..Default::default() });
         assert!(cache.complete(new_flight, german.clone(), super::FetchPath::Warm,
             std::time::Instant::now(), || true));
         assert_eq!(super::audio_preferences_cached_at(&cache, new, Duration::from_millis(3),
