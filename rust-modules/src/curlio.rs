@@ -616,25 +616,6 @@ impl CurlSource {
         Self::open_with_reservation(url, at, reservation)
     }
 
-    /// Finish a reserved open inside a caller-owned absolute deadline. ABR candidate setup uses
-    /// this so DNS/TLS/headers spend the same conservation budget as the response body.
-    pub(crate) fn open_reserved_until(
-        url: &str,
-        at: i64,
-        reservation: OpenReservation,
-        deadline: std::time::Instant,
-        checkpoint: &mut dyn Checkpoint,
-    ) -> Result<Box<CurlSource>, OpenErr> {
-        Self::open_with_reservation_range_until(
-            url,
-            at,
-            None,
-            reservation,
-            Some(deadline),
-            checkpoint,
-        )
-    }
-
     /// A reserved open whose every blocking wait consults `checkpoint`, with or without a caller
     /// deadline — the HLS segment open, which must never drop its acquisition's checkpoint.
     pub(crate) fn open_reserved_checked(
@@ -2571,11 +2552,11 @@ mod tests {
         with_server(RangeMode::DelayedBody, |port, _, _| {
             let reservation = CurlSource::reserve_open().expect("reserve");
             let open_deadline = std::time::Instant::now() + std::time::Duration::from_millis(120);
-            let mut src = CurlSource::open_reserved_until(
+            let mut src = CurlSource::open_reserved_checked(
                 &format!("http://127.0.0.1:{port}/f.mkv"),
                 0,
                 reservation,
-                open_deadline,
+                Some(open_deadline),
                 &mut NoCheckpoint,
             )
             .expect("headers arrive inside the open deadline");
@@ -2606,11 +2587,11 @@ mod tests {
             let mut cp =
                 checkpoint::TestCheckpoint::stopping_after(3, std::time::Duration::from_millis(20));
             let started = std::time::Instant::now();
-            let result = CurlSource::open_reserved_until(
+            let result = CurlSource::open_reserved_checked(
                 &format!("http://127.0.0.1:{port}/f.mkv"),
                 0,
                 reservation,
-                started + std::time::Duration::from_secs(30),
+                Some(started + std::time::Duration::from_secs(30)),
                 &mut cp,
             );
             let took = started.elapsed();
@@ -2692,11 +2673,11 @@ mod tests {
         with_server(RangeMode::DelayedHeaders, |port, _, _| {
             let reservation = CurlSource::reserve_open().expect("reserve");
             let deadline = std::time::Instant::now() + std::time::Duration::from_millis(120);
-            let result = CurlSource::open_reserved_until(
+            let result = CurlSource::open_reserved_checked(
                 &format!("http://127.0.0.1:{port}/f.mkv"),
                 0,
                 reservation,
-                deadline,
+                Some(deadline),
                 &mut NoCheckpoint,
             );
             assert_eq!(result.err(), Some(OpenErr::Deadline));
