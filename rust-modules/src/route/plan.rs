@@ -990,8 +990,8 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         // track Original will client-render, or 0 so a sidecar / unadvertised codec does not
         // force a burn. MDE and the remux probe always name that sibling (a copy cannot carry
         // TrueHD/DTS). The play-path PUT and start.mkv use `encode_audio_id`: remux still names
-        // the sibling; a re-encode names a real pick, then the show language (English if unset), so 720p
-        // does not copy a foreign AC3 sibling.
+        // the sibling; a re-encode walks the same `audio_intents` ranking (a real pick, then the show
+        // language, then the direct-play pick), so 720p does not copy a foreign AC3 sibling.
         server_decision(client, rk, &session, audio_id, subtitle_id)
     };
     let mut directplay = mde.as_ref().is_some_and(|v| v.original);
@@ -1305,8 +1305,8 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // Remux copies, so this PUT names the smart-DP sibling. A re-encode transcodes a real
     // selected source track (English DTS → AC3) and must not PUT that sibling or a 720p start
     // replaces the pick with a foreign AC3 copy. A selected flag that only echoes default is
-    // not a pick; `encode_audio_id` then keeps a sibling in the show language (English if
-    // unset), or the first track in that language (unselected DTS included).
+    // not a pick; `encode_audio_id` then keeps a sibling in the show language, or the first
+    // track in that language (unselected DTS included), else the direct-play pick.
     let encode_audio = encode_audio_id(remux, audio_id, env.audio_sid, tracks, audio_prefs);
     if remux {
         let achosen = audio_sel
@@ -1348,7 +1348,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // 4K/60 Mbps bound the moment the user touched the scrubber.
     // Remux: the smart-DP sibling MDE and the remux probe already named — `env.audio_sid` is
     // the part default (TrueHD) at resolve start; putting that undoes smart-DP. Re-encode:
-    // `encode_audio_id` (a real pick, else show language/English, else that sibling). Subtitle stays
+    // `encode_audio_id` (a real pick, else the show language, else that sibling). Subtitle stays
     // `env.sub_sid`: a positive id here is a burn, and Original client-renders instead.
     put_selection(env.sid, plan.part_id, encode_audio, env.sub_sid);
     if remux_probed && adaptive {
@@ -1416,23 +1416,26 @@ impl<'a> AudioLangPrefs<'a> {
     }
 }
 
-/// What an audio pick is trying to honour — THE precedence, decided once, here, for every path
-/// that names an audio track: the direct-play pick ([`pick_dp_audio_pref`]) and the remux /
-/// re-encode pick ([`encode_audio_id`]) each resolve this same answer against what they can
-/// carry, so the two cannot rank the same inputs differently.
+/// One thing an audio pick may honour. [`audio_intents`] ranks them — THE precedence, decided
+/// once, here, for every path that names an audio track: the direct-play pick
+/// ([`pick_dp_audio_pref`]) and the remux / re-encode pick ([`encode_audio_id`]) each walk that
+/// same ranking and take the first entry they can carry, so the two cannot rank the same inputs
+/// differently.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AudioIntent<'a> {
     /// A real server pick for this part (PMS `Stream.selected` on a stream that is NOT the file's
     /// `default`): chosen on another Plex client or here in an earlier session. Index into tracks.
     Pick(usize),
-    /// The most specific Plex language preference the item has a track in.
+    /// A Plex language preference the item has a track in.
     Language(&'a str),
     /// Nothing to honour: the file's own default track, then any direct-playable one.
     FileDefault,
 }
 
 /// Order: a real per-part pick > the Plex language preferences in [`AudioLangPrefs`] order (a
-/// preference with no track in it is skipped) > the file's default.
+/// preference with no track in it is left out) > the file's default. A path that cannot carry an
+/// entry moves on to the NEXT one — a French DTS pick with no direct-playable French sibling
+/// falls to the show's language before the file's default, not straight to the default.
 ///
 /// A pick must differ from the file's `default` flag, because PMS reports a selected AUDIO stream
 /// on essentially every part — there is no "nothing selected" state for audio (verified against
@@ -1445,17 +1448,16 @@ enum AudioIntent<'a> {
 /// default-flagged track by hand — so neither round-trips as a pick; it resolves to the default
 /// through [`AudioIntent::FileDefault`] unless a preference points elsewhere.
 ///
-/// A pick is honoured whatever its codec: the paths differ only in how they CARRY it (direct play
+/// A pick ranks first whatever its codec: the paths differ only in how they CARRY it (direct play
 /// takes a direct-playable sibling in its language, a re-encode encodes the track itself). A
 /// preference below it therefore never wins just because the pick is a DTS.
-fn audio_intent<'a>(tracks: &[crate::metadata::Stream], prefs: AudioLangPrefs<'a>) -> AudioIntent<'a> {
-    if let Some(i) = tracks.iter().position(|s| s.selected && !s.default) {
-        return AudioIntent::Pick(i);
-    }
-    prefs
+fn audio_intents<'a>(tracks: &[crate::metadata::Stream], prefs: AudioLangPrefs<'a>) -> Vec<AudioIntent<'a>> {
+    let pick = tracks.iter().position(|s| s.selected && !s.default).map(AudioIntent::Pick);
+    let langs = prefs
         .in_order()
-        .find(|l| tracks.iter().any(|s| lang_matches(l, &s.lang_code)))
-        .map_or(AudioIntent::FileDefault, AudioIntent::Language)
+        .filter(|l| tracks.iter().any(|s| lang_matches(l, &s.lang_code)))
+        .map(AudioIntent::Language);
+    pick.into_iter().chain(langs).chain(std::iter::once(AudioIntent::FileDefault)).collect()
 }
 
 
@@ -1463,12 +1465,13 @@ fn audio_intent<'a>(tracks: &[crate::metadata::Stream], prefs: AudioLangPrefs<'a
 /// (metadata::playing(), loaded by build_stream), returning (list_idx, codec, stream_id):
 /// list_idx -1 = codec-default (demuxer matches by payload codec — only when the track list is
 /// unavailable), else the index into `playing().audio`, with that track's Plex stream id so the
-/// timeline can report the truth. [`audio_intent`] decides what to honour; this carries it:
+/// timeline can report the truth. [`audio_intents`] ranks what to honour; this takes the first
+/// entry it can carry:
 ///   - [`AudioIntent::Pick`]: that track when it is direct-playable, else a direct-playable track
 ///     in ITS language (an English DTS picked on a phone plays as the English AC3 beside it, not
 ///     as the default dub) — the Load payload uses THAT track's codec so there is no mismatch;
 ///   - [`AudioIntent::Language`]: the first direct-playable track in it;
-///   - then, and for [`AudioIntent::FileDefault`], the file's flagged default track if its codec
+///   - [`AudioIntent::FileDefault`]: the file's flagged default track if its codec
 ///     is direct-playable — by EXPLICIT index (matching by codec alone fed the first same-codec
 ///     stream, not the flagged default, when another track of that codec preceded it);
 ///   - then any other direct-playable track (TrueHD/DTS-default item with an AC3 sibling —
@@ -1513,24 +1516,18 @@ pub(super) fn pick_dp_audio_pref(
     }
     let pick = |i: usize| (i as i32, tracks[i].codec.to_lowercase(), tracks[i].id);
     let dp_at = |s: &crate::metadata::Stream| dp(&s.codec.to_lowercase());
-    let honoured = match audio_intent(tracks, prefs) {
+    let honoured = audio_intents(tracks, prefs).into_iter().find_map(|intent| match intent {
         AudioIntent::Pick(i) if dp_at(&tracks[i]) => Some(i),
-        AudioIntent::Pick(i) => {
-            let lang = tracks[i].lang_code.as_str();
-            (!lang.is_empty())
-                .then(|| tracks.iter().position(|s| dp_at(s) && s.lang_code == lang))
-                .flatten()
-        }
+        AudioIntent::Pick(i) => tracks
+            .iter()
+            .position(|s| dp_at(s) && lang_matches(&tracks[i].lang_code, &s.lang_code)),
         AudioIntent::Language(l) => tracks
             .iter()
             .position(|s| dp_at(s) && lang_matches(l, &s.lang_code)),
-        AudioIntent::FileDefault => None,
-    };
+        // the file's flagged default track, if direct-playable (explicit index)
+        AudioIntent::FileDefault => tracks.iter().position(|s| s.default && dp_at(s)),
+    });
     if let Some(i) = honoured {
-        return Some(pick(i));
-    }
-    // the file's flagged default track, if direct-playable (explicit index)
-    if let Some(i) = tracks.iter().position(|s| s.default && dp_at(s)) {
         return Some(pick(i));
     }
     if dp(default_acodec) && !tracks.iter().any(|s| s.default) {
@@ -1541,65 +1538,68 @@ pub(super) fn pick_dp_audio_pref(
     tracks.iter().position(dp_at).map(pick)
 }
 
-/// Does a stream's ISO-639-2 `languageCode` (`"hun"`, `"ger"`/`"deu"`) name the language of a
-/// Plex language preference (`"hu-HU"`, `"de-DE"`, `"pt-BR"`)? Only the primary subtag counts —
-/// a stream says "Portuguese", never "Brazilian". Both the bibliographic and the terminology
-/// three-letter spellings are accepted, because files carry either. The table covers every
-/// language the setting offers (its `enumValues` in `docs/plex-openapi.json`).
-pub(super) fn lang_matches(pref: &str, code: &str) -> bool {
-    let primary = pref.split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
-    let code = code.to_ascii_lowercase();
-    if primary.is_empty() || code.is_empty() {
+/// Every spelling of each language a Plex language setting offers (its `enumValues` in
+/// `docs/plex-openapi.json`): the two-letter tag, then the bibliographic and terminology
+/// three-letter codes, because files carry either.
+const LANG_SPELLINGS: &[&[&str]] = &[
+    &["ar", "ara"],
+    &["bg", "bul"],
+    &["ca", "cat"],
+    &["zh", "chi", "zho"],
+    &["hr", "hrv", "scr"],
+    &["cs", "cze", "ces"],
+    &["da", "dan"],
+    &["nl", "dut", "nld"],
+    &["en", "eng"],
+    &["et", "est"],
+    &["fi", "fin"],
+    &["fr", "fre", "fra"],
+    &["de", "ger", "deu"],
+    &["el", "gre", "ell"],
+    &["he", "heb"],
+    &["hi", "hin"],
+    &["hu", "hun"],
+    &["id", "ind"],
+    &["it", "ita"],
+    &["ja", "jpn"],
+    &["ko", "kor"],
+    &["lv", "lav"],
+    &["lt", "lit"],
+    &["nb", "no", "nob", "nor"],
+    &["fa", "per", "fas"],
+    &["pl", "pol"],
+    &["pt", "por"],
+    &["ro", "rum", "ron"],
+    &["ru", "rus"],
+    &["sk", "slo", "slk"],
+    &["es", "spa"],
+    &["sv", "swe"],
+    &["th", "tha"],
+    &["tr", "tur"],
+    &["uk", "ukr"],
+    &["vi", "vie"],
+];
+
+/// Do two language tags name the same language? Either side may be a Plex preference
+/// (`"hu-HU"`, `"pt-BR"`) or a stream's ISO-639-2 `languageCode` (`"hun"`, `"ger"`/`"deu"`), so the
+/// same test serves a preference against a stream AND a picked stream against its siblings (a
+/// `fre` pick and a `fra` sibling are one language). Only the primary subtag counts — a stream
+/// says "Portuguese", never "Brazilian". An empty tag matches nothing.
+pub(super) fn lang_matches(a: &str, b: &str) -> bool {
+    let primary = |t: &str| t.trim().split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
+    let (a, b) = (primary(a), primary(b));
+    if a.is_empty() || b.is_empty() {
         return false;
     }
-    if code == primary {
-        return true;
-    }
-    let three: &[&str] = match primary.as_str() {
-        "ar" => &["ara"],
-        "bg" => &["bul"],
-        "ca" => &["cat"],
-        "zh" => &["chi", "zho"],
-        "hr" => &["hrv", "scr"],
-        "cs" => &["cze", "ces"],
-        "da" => &["dan"],
-        "nl" => &["dut", "nld"],
-        "en" => &["eng"],
-        "et" => &["est"],
-        "fi" => &["fin"],
-        "fr" => &["fre", "fra"],
-        "de" => &["ger", "deu"],
-        "el" => &["gre", "ell"],
-        "he" => &["heb"],
-        "hi" => &["hin"],
-        "hu" => &["hun"],
-        "id" => &["ind"],
-        "it" => &["ita"],
-        "ja" => &["jpn"],
-        "ko" => &["kor"],
-        "lv" => &["lav"],
-        "lt" => &["lit"],
-        "nb" | "no" => &["nob", "nor"],
-        "fa" => &["per", "fas"],
-        "pl" => &["pol"],
-        "pt" => &["por"],
-        "ro" => &["rum", "ron"],
-        "ru" => &["rus"],
-        "sk" => &["slo", "slk"],
-        "es" => &["spa"],
-        "sv" => &["swe"],
-        "th" => &["tha"],
-        "tr" => &["tur"],
-        "uk" => &["ukr"],
-        "vi" => &["vie"],
-        _ => &[],
-    };
-    three.contains(&code.as_str())
+    a == b
+        || LANG_SPELLINGS
+            .iter()
+            .any(|spellings| spellings.contains(&a.as_str()) && spellings.contains(&b.as_str()))
 }
 
 
-/// Stream id named on the remux/re-encode PUT and start.mkv — [`audio_intent`]'s answer, carried
-/// by an encoder instead of a direct play.
+/// Stream id named on the remux/re-encode PUT and start.mkv — [`audio_intents`]' ranking, carried
+/// by an encoder instead of a direct play (the first entry with a usable id wins).
 ///
 /// A remux COPIES, so this is the smart-DP sibling (`dp_audio_id`) — putting a selected
 /// TrueHD/DTS track would ship audio the TV cannot decode. `env_audio_sid` is the session/retry
@@ -1626,17 +1626,21 @@ fn encode_audio_id(
     if env_audio_sid > 0 {
         return env_audio_sid;
     }
-    let honoured = match audio_intent(tracks, prefs) {
-        AudioIntent::Pick(i) => Some(tracks[i].id),
-        AudioIntent::Language(l) => {
-            if tracks.iter().any(|s| s.id == dp_audio_id && lang_matches(l, &s.lang_code)) {
-                return dp_audio_id;
+    audio_intents(tracks, prefs)
+        .into_iter()
+        .find_map(|intent| match intent {
+            AudioIntent::Pick(i) => Some(tracks[i].id).filter(|&id| id > 0),
+            AudioIntent::Language(l)
+                if tracks.iter().any(|s| s.id == dp_audio_id && lang_matches(l, &s.lang_code)) =>
+            {
+                Some(dp_audio_id)
             }
-            tracks.iter().find(|s| s.id > 0 && lang_matches(l, &s.lang_code)).map(|s| s.id)
-        }
-        AudioIntent::FileDefault => None,
-    };
-    honoured.filter(|&id| id > 0).unwrap_or(dp_audio_id)
+            AudioIntent::Language(l) => {
+                tracks.iter().find(|s| s.id > 0 && lang_matches(l, &s.lang_code)).map(|s| s.id)
+            }
+            AudioIntent::FileDefault => Some(dp_audio_id),
+        })
+        .unwrap_or(dp_audio_id)
 }
 
 

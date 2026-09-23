@@ -549,6 +549,37 @@ fn a_real_pick_outranks_the_show_language_on_every_path() {
     assert_eq!(encode_audio_id(true, dp, 0, &tracks, prefs), 3, "remux copies the sibling");
 }
 
+/// A pick direct play cannot carry hands over to the NEXT entry in the ranking, not straight to
+/// the file's default: French DTS picked, no playable French track, show set to Hungarian →
+/// direct play and remux take the Hungarian AC3; a re-encode still encodes the French pick.
+#[test]
+fn an_uncarriable_pick_falls_to_the_show_language_before_the_default() {
+    let prefs = AudioLangPrefs { show: Some("hu-HU") };
+    let tracks = [
+        trk(1, "ac3", "rus", true),
+        server_selected(trk(2, "dca", "fre", false)),
+        trk(3, "ac3", "hun", false),
+    ];
+    let (_, _, dp) = pick_dp_audio_pref(&tracks, "ac3", prefs).unwrap();
+    assert_eq!(dp, 3, "direct play: the show's Hungarian, not the Russian default");
+    assert_eq!(encode_audio_id(true, dp, 0, &tracks, prefs), 3, "remux copies it");
+    assert_eq!(encode_audio_id(false, dp, 0, &tracks, prefs), 2, "re-encode: the French pick");
+}
+
+/// A picked stream and its sibling may spell one language two ways (`fre` / `fra`); the
+/// sibling still counts as the pick's language.
+#[test]
+fn a_picks_sibling_matches_across_iso_639_spellings() {
+    let tracks = [
+        trk(1, "ac3", "eng", true),
+        server_selected(trk(2, "dca", "fre", false)),
+        trk(3, "ac3", "fra", false),
+    ];
+    assert_eq!(pick_dp_audio(&tracks, "ac3"), Some((2, "ac3".into(), 3)));
+    assert!(lang_matches("fre", "fra") && lang_matches("ger", "deu") && lang_matches("no", "nob"));
+    assert!(!lang_matches("fre", "eng") && !lang_matches("", "") && !lang_matches("xx", "yy"));
+}
+
 /// `""` and `"-1"` are Plex's "Account default": unset, so the file's default wins.
 #[test]
 fn an_account_default_show_setting_is_no_preference() {
