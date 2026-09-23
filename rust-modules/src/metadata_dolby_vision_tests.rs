@@ -1,8 +1,8 @@
 //! `convert_streams`: a Dolby Vision record's survival across multiple video streams.
 
-use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
+use super::*;
 
 /// **A Dolby Vision record must survive a second video stream that has none.** `fps` and `hdr`
 /// take the LAST `streamType: 1` stream in the part and that is harmless for both; the DV
@@ -28,11 +28,13 @@ fn a_dolby_vision_record_is_not_erased_by_a_later_video_stream() {
     // …and, undeclared, must still refuse direct play — the record surviving is what both of
     // those turn on, so the cover-art stream must not be able to blank it
     assert_eq!(
-        dovi.presentation(false),
+        dovi.presentation(false, crate::webos::caps::DvCapability::Supported, true),
         crate::metadata::DvPresentation::Refuse("no cross-compatible base layer")
     );
     assert_eq!(
-        dovi.presentation(true).declared().map(|n| n.profile_id),
+        dovi.presentation(true, crate::webos::caps::DvCapability::Supported, true)
+            .declared()
+            .map(|n| n.profile_id),
         Some(5)
     );
 }

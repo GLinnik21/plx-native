@@ -16,7 +16,7 @@ use super::test_support::apply_plan;
 fn the_codec_gates_verdict_is_what_the_quality_menu_reads() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let caps = crate::devcaps::Caps::assumed();
-    let dv = crate::metadata::Dovi::default().presentation_now();
+    let dv = crate::metadata::Dovi::default().presentation_now(true);
     // The two ends of the gate, at a UHD raster this device's table admits.
     assert!(
         video_direct_plays("hevc", 3840, 2160, dv, &caps),
@@ -187,7 +187,7 @@ fn an_unopened_auto_original_reuses_admission_evidence_instead_of_inventing_zero
 /// diagnostics lie and (for `immersive`) tells the system player that AAC contains Atmos.
 #[test]
 #[cfg(feature = "devtriggers")]
-fn an_original_to_hls_handoff_drops_source_only_dolby_declarations() {
+fn dv_decision_survives_reload_recovery_and_rollback() {
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
     restore_quality(Quality::Auto);
@@ -199,7 +199,21 @@ fn an_original_to_hls_handoff_drops_source_only_dolby_declarations() {
         false,
         (3_840, 2_160),
     );
-    set_stream_declaration(&mut ps, "hevc", "eac3", 23.976, p8(), true);
+    assert!(set_stream_declaration_for_test(
+        &mut ps,
+        "hevc",
+        "eac3",
+        23.976,
+        p8(),
+        true,
+        crate::webos::caps::DvCapability::Supported,
+    ));
+    let frozen = stream_dv_decision(&ps);
+    assert!(frozen.presentation.declared().is_some());
+    assert_eq!(stream_dv_decision(&ps.publication()), frozen, "reload/session copy");
+    let candidate = ps.auto_original.as_mut().expect("fixture Original candidate");
+    candidate.dovi = p8();
+    candidate.dv_decision = frozen;
 
     let hls = fallback_auto_to_hls(&mut ps, 8_000, 120).expect("the watched Original falls back");
     assert!(
@@ -223,11 +237,40 @@ fn an_original_to_hls_handoff_drops_source_only_dolby_declarations() {
         "the route must retire the source E-AC3 JOC/Atmos declaration, not merely hide it",
     );
     assert_eq!(stream_dovi(&ps), crate::metadata::Dovi::NONE);
+    assert_eq!(stream_dv_decision(&ps), crate::metadata::DvDecision::NONE);
     assert!(!stream_immersive(&ps));
+
+    assert_eq!(
+        recover_auto_to_original(&mut ps, 120),
+        Some(AutoOriginalReload::Direct),
+    );
+    assert_eq!(stream_dv_decision(&ps), frozen, "Original recovery candidate");
+    assert_eq!(rollback_seconds(&mut ps), Some(120));
+    assert_eq!(
+        stream_dv_decision(&ps),
+        crate::metadata::DvDecision::NONE,
+        "rollback restores the frozen HLS output declaration",
+    );
+    assert!(set_stream_declaration_for_test(
+        &mut ps,
+        "hevc",
+        "eac3",
+        23.976,
+        p8(),
+        false,
+        crate::webos::caps::DvCapability::Supported,
+    ));
+    clear_output_dv(&mut ps);
+    assert_eq!(
+        stream_dv_decision(&ps),
+        crate::metadata::DvDecision::NONE,
+        "the shared remux/transcode output reset clears the declaration",
+    );
 
     restore_quality(Quality::Original);
     install_active_encoder("");
     reset_session(&mut ps);
+    assert_eq!(stream_dv_decision(&ps), crate::metadata::DvDecision::NONE);
 }
 
 /// **RE-EXPRESSED 2026-08-27**, name and message both. It read
@@ -682,6 +725,7 @@ fn failed_original_then_auto_keeps_the_live_adaptive_route() {
                 acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: crate::metadata::Dovi::NONE,
+                dv_decision: crate::metadata::DvDecision::NONE,
                 immersive: true,
                 audio_sid: 42,
                 audio_ordinal: Some(1),
@@ -776,6 +820,7 @@ fn hls_recovery_restores_the_exact_direct_source_and_rearms_its_watchdog() {
                 acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: crate::metadata::Dovi::NONE,
+                dv_decision: crate::metadata::DvDecision::NONE,
                 immersive: true,
                 audio_sid: 42,
                 audio_ordinal: Some(1),
@@ -851,6 +896,7 @@ fn a_recovery_that_never_opens_can_still_go_back_to_the_encoder_it_replaced() {
                 acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: crate::metadata::Dovi::NONE,
+                dv_decision: crate::metadata::DvDecision::NONE,
                 immersive: true,
                 audio_sid: 42,
                 audio_ordinal: Some(1),
@@ -1026,6 +1072,7 @@ fn a_remux_recovery_keeps_hls_until_frames_and_rolls_back_the_replacement() {
                 acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: crate::metadata::Dovi::NONE,
+                dv_decision: crate::metadata::DvDecision::NONE,
                 immersive: false,
                 audio_sid: 42,
                 audio_ordinal: Some(1),
@@ -1131,6 +1178,7 @@ fn a_missing_whole_file_bitrate_must_not_silently_delete_original_recovery() {
                 acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: crate::metadata::Dovi::NONE,
+                dv_decision: crate::metadata::DvDecision::NONE,
                 immersive: true,
                 audio_sid: 42,
                 audio_ordinal: Some(1),
@@ -1185,6 +1233,7 @@ fn a_recovery_that_opens_spends_the_way_back_rather_than_leaving_it_armed() {
                 acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: crate::metadata::Dovi::NONE,
+                dv_decision: crate::metadata::DvDecision::NONE,
                 immersive: true,
                 audio_sid: 42,
                 audio_ordinal: Some(1),
@@ -1327,6 +1376,7 @@ fn a_quality_change_waits_for_an_original_handoff_to_commit() {
                 acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: crate::metadata::Dovi::NONE,
+                dv_decision: crate::metadata::DvDecision::NONE,
                 immersive: true,
                 audio_sid: 42,
                 audio_ordinal: Some(1),
@@ -1408,6 +1458,7 @@ fn a_quality_change_survives_an_original_handoff_rollback() {
                 acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: crate::metadata::Dovi::NONE,
+                dv_decision: crate::metadata::DvDecision::NONE,
                 immersive: false,
                 audio_sid: 0,
                 audio_ordinal: None,
@@ -1539,6 +1590,7 @@ fn audio_selected_during_original_trial_uses_the_route_that_actually_lands() {
                 acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: crate::metadata::Dovi::NONE,
+                dv_decision: crate::metadata::DvDecision::NONE,
                 immersive: false,
                 audio_sid: 42,
                 audio_ordinal: Some(1),
@@ -1767,6 +1819,7 @@ fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
                 acodec: "aac".into(),
                 fps: 24.0,
                 dovi: crate::metadata::Dovi::NONE,
+                dv_decision: crate::metadata::DvDecision::NONE,
                 immersive: false,
                 audio_sid: 0,
                 audio_ordinal: None,
@@ -1946,6 +1999,7 @@ fn stopping_a_pending_direct_recovery_closes_its_resource_once() {
                 acodec: "aac".into(),
                 fps: 24.0,
                 dovi: crate::metadata::Dovi::NONE,
+                dv_decision: crate::metadata::DvDecision::NONE,
                 immersive: false,
                 audio_sid: 0,
                 audio_ordinal: None,
@@ -2008,6 +2062,7 @@ fn direct_recovery_without_its_server_keeps_hls_instead_of_using_a_logical_alias
                 acodec: "aac".into(),
                 fps: 24.0,
                 dovi: crate::metadata::Dovi::NONE,
+                dv_decision: crate::metadata::DvDecision::NONE,
                 immersive: false,
                 audio_sid: 0,
                 audio_ordinal: None,
@@ -2051,6 +2106,14 @@ fn manually_picking_original_restores_native_dolby_vision_instead_of_retranscodi
                 acodec: "eac3".into(),
                 fps: 23.976,
                 dovi: p8(),
+                dv_decision: crate::metadata::DvDecision {
+                    capability: crate::webos::caps::DvCapability::Supported,
+                    presentation: p8().presentation(
+                        true,
+                        crate::webos::caps::DvCapability::Supported,
+                        true,
+                    ),
+                },
                 immersive: true,
                 audio_sid: 42,
                 audio_ordinal: Some(1),
@@ -2078,6 +2141,7 @@ fn manually_picking_original_restores_native_dolby_vision_instead_of_retranscodi
     );
     assert_eq!(url(&ps), "https://example.invalid/source.mkv");
     assert_eq!(stream_vcodec(&ps), "hevc");
+    assert!(stream_dv_presentation(&ps).declared().is_some());
     assert_eq!(
         stream_dovi(&ps),
         p8(),
@@ -2137,6 +2201,7 @@ fn local_auto_preserves_the_candidate_needed_to_leave_a_fixed_rung() {
                 acodec: "aac".into(),
                 fps: 25.0,
                 dovi: crate::metadata::Dovi::NONE,
+                dv_decision: crate::metadata::DvDecision::NONE,
                 immersive: false,
                 audio_sid: 14_778,
                 audio_ordinal: Some(0),
@@ -2240,6 +2305,7 @@ fn manual_original_after_a_fixed_rung_returns_to_the_native_source() {
                 acodec: "aac".into(),
                 fps: 25.0,
                 dovi: crate::metadata::Dovi::NONE,
+                dv_decision: crate::metadata::DvDecision::NONE,
                 immersive: false,
                 audio_sid: 14_778,
                 audio_ordinal: Some(0),
@@ -2346,6 +2412,7 @@ fn original_to_auto_restarts_the_worker_to_arm_the_watchdog() {
                 acodec: "eac3".into(),
                 fps: 24.0,
                 dovi: crate::metadata::Dovi::NONE,
+                dv_decision: crate::metadata::DvDecision::NONE,
                 immersive: true,
                 audio_sid: 42,
                 audio_ordinal: Some(0),
@@ -2422,6 +2489,7 @@ fn auto_to_an_admitting_fixed_rung_restarts_the_worker_to_remove_the_watchdog() 
                 acodec: "aac".into(),
                 fps: 24.0,
                 dovi: crate::metadata::Dovi::NONE,
+                dv_decision: crate::metadata::DvDecision::NONE,
                 immersive: false,
                 audio_sid: 42,
                 audio_ordinal: Some(0),
@@ -2479,6 +2547,7 @@ fn manual_original_after_a_fixed_rung_with_a_subtitle_returns_to_direct_play() {
                 acodec: "aac".into(),
                 fps: 25.0,
                 dovi: crate::metadata::Dovi::NONE,
+                dv_decision: crate::metadata::DvDecision::NONE,
                 immersive: false,
                 audio_sid: 14_778,
                 audio_ordinal: Some(0),

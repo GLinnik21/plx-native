@@ -1,9 +1,125 @@
 //! Dolby Vision direct-play gating tests: profile 5/7/8 declarations, base-layer
 //! usability, and the device-bound/dimension checks that compose with them.
 
-use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
+use super::*;
+
+#[test]
+fn p8_without_confirmed_dv_support_uses_base_layer() {
+    let caps = crate::devcaps::Caps {
+        hevc: true,
+        hevc_max: (4096, 2176),
+        h264_row: (0, 0, 0),
+        hevc_row: (0, 0, 0),
+        vp9: false,
+        audio: "aac,ac3,eac3".into(),
+    };
+    for bl_compat in [1, 2, 4] {
+        let dovi = Dovi {
+            present: true,
+            profile: 8,
+            bl_compat,
+            el_present: false,
+            ..Dovi::NONE
+        };
+        for capability in [
+            crate::webos::caps::DvCapability::Unknown,
+            crate::webos::caps::DvCapability::Unsupported,
+        ] {
+            for signal in [false, true] {
+                let presentation = dovi.presentation(signal, capability, true);
+                assert_eq!(presentation, DvPresentation::NotDv);
+                assert!(presentation.declared().is_none());
+                assert!(
+                    video_direct_plays("hevc", 3840, 2160, presentation, &caps),
+                    "ccid={bl_compat} capability={capability:?} signal={signal}",
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn p5_without_confirmed_dv_support_requires_video_encode() {
+    let caps = crate::devcaps::Caps {
+        hevc: true,
+        hevc_max: (4096, 2176),
+        h264_row: (0, 0, 0),
+        hevc_row: (0, 0, 0),
+        vp9: false,
+        audio: "aac,ac3,eac3".into(),
+    };
+    for capability in [
+        crate::webos::caps::DvCapability::Unknown,
+        crate::webos::caps::DvCapability::Unsupported,
+    ] {
+        for signal in [false, true] {
+            let presentation = p5().presentation(signal, capability, true);
+            assert!(presentation.refusal().is_some());
+            assert!(presentation.declared().is_none());
+            assert!(!video_direct_plays("hevc", 3840, 1602, presentation, &caps));
+            assert!(
+                p5().base_layer_unusable(),
+                "the remux/directStream video-copy permission must remain withdrawn",
+            );
+        }
+    }
+}
+
+#[test]
+fn supported_dv_preserves_signal_and_layer_rules() {
+    use crate::webos::caps::DvCapability::Supported;
+
+    assert!(p5()
+        .presentation(false, Supported, true)
+        .refusal()
+        .is_some());
+    assert_eq!(
+        p5().presentation(true, Supported, true)
+            .declared()
+            .map(|n| n.profile_id),
+        Some(5),
+    );
+    for signal in [false, true] {
+        for compat in [1, 2, 4] {
+            let p8 = Dovi {
+                bl_compat: compat,
+                ..p8()
+            };
+            assert_eq!(
+                p8.presentation(signal, Supported, true)
+                    .declared()
+                    .map(|n| n.profile_id),
+                Some(8),
+            );
+        }
+        assert_eq!(
+            p7().presentation(signal, Supported, true),
+            DvPresentation::Refuse("dual-layer"),
+        );
+    }
+}
+
+#[test]
+fn non_hevc_never_declares_dolby_vision() {
+    use crate::webos::caps::DvCapability::Supported;
+
+    let p9 = Dovi {
+        present: true,
+        profile: 9,
+        bl_compat: 2,
+        el_present: false,
+        ..Dovi::NONE
+    };
+    let fallback = p9.presentation(true, Supported, false);
+    assert_eq!(fallback, DvPresentation::NotDv);
+    assert!(fallback.declared().is_none());
+
+    let unusable = p5().presentation(true, Supported, false);
+    assert!(unusable.refusal().is_some());
+    assert!(unusable.declared().is_none());
+}
 
 /// **The bug this gate exists for.** Profile 5 is single-layer IPT-PQ with no HDR10 fallback,
 /// so feeding its base layer to an ordinary HEVC decoder produces a picture in visibly wrong
@@ -22,7 +138,13 @@ fn a_profile_5_source_does_not_direct_play_undeclared() {
     };
     // the live P5 item's own shape: 3840x1602 hevc, well inside the bound
     assert!(
-        !video_direct_plays("hevc", 3840, 1602, p5().presentation(SILENT), &caps),
+        !video_direct_plays(
+            "hevc",
+            3840,
+            1602,
+            p5().presentation(SILENT, crate::webos::caps::DvCapability::Supported, true),
+            &caps
+        ),
         "IPT-PQ has no HDR10 base layer"
     );
     // and it is the DV fields doing it, not the size or the codec: the same file without them
@@ -31,11 +153,10 @@ fn a_profile_5_source_does_not_direct_play_undeclared() {
         "hevc",
         3840,
         1602,
-        no_dv().presentation(SILENT),
+        no_dv().presentation(SILENT, crate::webos::caps::DvCapability::Supported, true),
         &caps
     ));
 }
-
 
 /// **The inversion, and the reason the refusal above is now conditional.** Declaring the
 /// stream — one `DolbyHdrInfo` node in the Load payload — is what makes the pipeline set
@@ -53,7 +174,7 @@ fn declaring_dolby_vision_inverts_the_profile_5_refusal() {
         vp9: false,
         audio: "aac,ac3,eac3".into(),
     };
-    let dv = p5().presentation(DECLARED);
+    let dv = p5().presentation(DECLARED, crate::webos::caps::DvCapability::Supported, true);
     assert!(
         video_direct_plays("hevc", 3840, 1602, dv, &caps),
         "a declared P5 is displayable"
@@ -78,7 +199,6 @@ fn declaring_dolby_vision_inverts_the_profile_5_refusal() {
     assert!(!video_direct_plays("hevc", 3840, 1602, dv, &small));
 }
 
-
 /// Profile 7 is dual-layer: the picture is split across a base and an enhancement layer, and
 /// the pipeline feeds ONE elementary stream. Caught by `el_present` alone — the live P7 item
 /// reports `bl_compat = 6`, so a compatibility-id test would wave it straight through.
@@ -95,7 +215,7 @@ fn a_dual_layer_profile_7_source_does_not_direct_play() {
     // and it is refused in BOTH worlds: no payload key can hand the pipeline a layer we do
     // not feed it, so arming the trigger must not open this gate the way it opens P5's
     for signal in [SILENT, DECLARED] {
-        let dv = p7().presentation(signal);
+        let dv = p7().presentation(signal, crate::webos::caps::DvCapability::Supported, true);
         assert!(
             !video_direct_plays("hevc", 3840, 2160, dv, &caps),
             "signal={signal}"
@@ -114,11 +234,9 @@ fn a_dual_layer_profile_7_source_does_not_direct_play() {
     );
 }
 
-
-/// **Profile 8.1 must be UNAFFECTED**, and so must every file with no DOVI record at all.
-/// P8's base layer IS an HDR10 stream, so ignoring the RPU costs the dynamic metadata and
-/// nothing else — the 21-case on-device suite includes a passing P8 case (`dp_hevc_eac3_dovi_p8`)
-/// and this change must not move it.
+/// On a supported set Profile 8.1 declares in either `nodv` signal state, while every file with no
+/// DOVI record remains ordinary video. The unsupported/unknown base-layer case is the dedicated
+/// matrix above.
 #[test]
 fn profile_8_and_plain_files_are_unaffected() {
     let caps = crate::devcaps::Caps {
@@ -131,29 +249,49 @@ fn profile_8_and_plain_files_are_unaffected() {
     };
     for signal in [SILENT, DECLARED] {
         assert!(
-            video_direct_plays("hevc", 3840, 2160, p8().presentation(signal), &caps),
+            video_direct_plays(
+                "hevc",
+                3840,
+                2160,
+                p8().presentation(signal, crate::webos::caps::DvCapability::Supported, true),
+                &caps
+            ),
             "HDR10-compatible base layer (signal={signal})"
         );
         assert!(video_direct_plays(
             "hevc",
             3840,
             2160,
-            no_dv().presentation(signal),
+            no_dv().presentation(signal, crate::webos::caps::DvCapability::Supported, true),
             &caps
         ));
         assert!(video_direct_plays(
             "h264",
             1920,
             1080,
-            no_dv().presentation(signal),
+            no_dv().presentation(signal, crate::webos::caps::DvCapability::Supported, true),
             &caps
         ));
-        assert_eq!(p8().presentation(signal).refusal(), None);
-        assert_eq!(no_dv().presentation(signal).refusal(), None);
+        assert_eq!(
+            p8().presentation(signal, crate::webos::caps::DvCapability::Supported, true)
+                .refusal(),
+            None
+        );
+        assert_eq!(
+            no_dv()
+                .presentation(signal, crate::webos::caps::DvCapability::Supported, true)
+                .refusal(),
+            None
+        );
     }
     // A file with no Dolby Vision at all declares nothing however the trigger is set — the
     // node is a statement about the stream, not a mode the app is in.
-    assert_eq!(no_dv().presentation(DECLARED).declared(), None);
+    assert_eq!(
+        no_dv()
+            .presentation(DECLARED, crate::webos::caps::DvCapability::Supported, true)
+            .declared(),
+        None
+    );
     // P8 declares in BOTH settings, and that is deliberate: its base layer is HDR10 either
     // way, so the node costs nothing and adds the dynamic metadata the RPU carries. The
     // trigger reaches only the profile whose declaration is not yet free — P5, measured to
@@ -161,18 +299,20 @@ fn profile_8_and_plain_files_are_unaffected() {
     // regress if the gate were ever rewritten as a bare `signal &&`.
     for signal in [SILENT, DECLARED] {
         assert_eq!(
-            p8().presentation(signal).declared().map(|n| n.profile_id),
+            p8().presentation(signal, crate::webos::caps::DvCapability::Supported, true)
+                .declared()
+                .map(|n| n.profile_id),
             Some(8),
             "a cross-compatible base layer declares without the trigger: signal={signal}"
         );
     }
     assert_eq!(
-        p5().presentation(SILENT).declared(),
+        p5().presentation(SILENT, crate::webos::caps::DvCapability::Supported, true)
+            .declared(),
         None,
         "P5 stays behind the trigger"
     );
 }
-
 
 /// **Silence must not convict.** Every field of `Dovi` is 0 both when the server omits it and
 /// when the file simply is not Dolby Vision, so a bare `bl_compat == 0` test would refuse
@@ -219,27 +359,30 @@ fn an_unreported_dolby_vision_record_refuses_nothing() {
     // `getInt` has nothing to be given, and a node we cannot fill is not a reason to convict a
     // file that plays. It falls through to `NotDv` — plays as it always has, declares nothing.
     for signal in [SILENT, DECLARED] {
-        assert_eq!(Dovi::default().presentation(signal), DvPresentation::NotDv);
         assert_eq!(
-            bare.presentation(signal),
+            Dovi::default().presentation(signal, crate::webos::caps::DvCapability::Supported, true),
+            DvPresentation::NotDv
+        );
+        assert_eq!(
+            bare.presentation(signal, crate::webos::caps::DvCapability::Supported, true),
             DvPresentation::NotDv,
             "signal={signal}"
         );
-        assert_eq!(contradictory.presentation(signal), DvPresentation::NotDv);
         assert_eq!(
-            el_only.presentation(signal),
+            contradictory.presentation(signal, crate::webos::caps::DvCapability::Supported, true),
+            DvPresentation::NotDv
+        );
+        assert_eq!(
+            el_only.presentation(signal, crate::webos::caps::DvCapability::Supported, true),
             DvPresentation::Refuse("dual-layer")
         );
     }
 }
 
-
 /// **The gate and the payload are one predicate, and this is the property that says so.**
-/// Every shape the server can report, in both trigger settings: whatever the answer, direct
-/// play is allowed exactly when a node will be sent or there was no Dolby Vision to declare,
-/// and refused exactly when there is Dolby Vision we are not declaring. The pair that must
-/// never occur is a direct play with an undeclared DV stream — that IS the wrong-colours bug —
-/// and its mirror, a refusal carrying a node nobody will ever send.
+/// Every capability, evidenced compatible CCID and trigger setting. Direct play and payload agree
+/// on the same frozen presentation; a compatible base-layer play is intentionally allowed without
+/// a node when support is absent or unknown.
 #[test]
 fn the_direct_play_gate_and_the_payload_node_can_never_disagree() {
     let caps = crate::devcaps::Caps {
@@ -250,55 +393,39 @@ fn the_direct_play_gate_and_the_payload_node_can_never_disagree() {
         vp9: false,
         audio: "aac,ac3,eac3".into(),
     };
-    let bare = Dovi {
-        present: true,
-        profile: 0,
-        bl_compat: 0,
-        el_present: false,
-        ..Dovi::NONE
-    };
-    for d in [no_dv(), p5(), p7(), p8(), bare] {
-        for signal in [SILENT, DECLARED] {
-            let dv = d.presentation(signal);
-            let plays = video_direct_plays("hevc", 3840, 1602, dv, &caps);
-            assert_eq!(plays, dv.refusal().is_none(), "{d:?} signal={signal}");
-            assert!(
-                !(dv.refusal().is_some() && dv.declared().is_some()),
-                "{d:?}"
-            );
-            // and a refusal always implies the COPY refusal beside it — `build_stream`'s
-            // `no_video_copy` reads `base_layer_unusable`, and its log line at the refusal
-            // says "(no copy)" in so many words. If a shape could be refused while a copy of
-            // it stayed permitted, the item would come back byte-identical from the server.
-            if dv.refusal().is_some() {
-                assert!(
-                    d.base_layer_unusable(),
-                    "a refusal must also withdraw the copy: {d:?}"
-                );
-            }
-            // **The one that matters, and it is now unconditional.** A direct-played Dolby
-            // Vision stream is a DECLARED one — in either trigger setting, for every shape.
-            // It reads as a strengthening and it is one: while the trigger gated every
-            // declaration this could only be asserted as `== signal`, which quietly permitted
-            // the wrong-colours pair for any profile the trigger happened to be off for. Now
-            // the only undeclared DV is refused DV, so the implication holds outright.
-            if plays && d.present && d.profile > 0 {
-                assert!(dv.declared().is_some(), "{d:?} signal={signal}");
-            }
-            if let Some(n) = dv.declared() {
-                assert_eq!(n.profile_id, d.profile);
-                // `trackType:"dual"` with `encryptionType:"all"` is what sets the pipeline's
-                // `dv-dual-svp` secure-video-path flag, which this app cannot satisfy. No
-                // input may produce that pair.
-                assert!(
-                    !(n.track_type == "dual" && n.encryption_type == "all"),
-                    "dv-dual-svp"
-                );
+    for capability in [
+        crate::webos::caps::DvCapability::Unknown,
+        crate::webos::caps::DvCapability::Unsupported,
+        crate::webos::caps::DvCapability::Supported,
+    ] {
+        for compat in [0, 1, 2, 4, 6] {
+            for signal in [false, true] {
+                let d = Dovi {
+                    present: true,
+                    profile: if compat == 0 { 5 } else { 8 },
+                    bl_compat: compat,
+                    el_present: compat == 6,
+                    ..Dovi::NONE
+                };
+                let presentation = d.presentation(signal, capability, true);
+                let plays = video_direct_plays("hevc", 3840, 1602, presentation, &caps);
+                assert_eq!(plays, presentation.refusal().is_none());
+                assert!(!(presentation.refusal().is_some() && presentation.declared().is_some()));
+                if presentation.refusal().is_some() {
+                    assert!(d.base_layer_unusable());
+                }
+                if let Some(node) = presentation.declared() {
+                    assert_eq!(capability, crate::webos::caps::DvCapability::Supported);
+                    assert_eq!(node.profile_id, d.profile);
+                }
+                if plays && capability != crate::webos::caps::DvCapability::Supported {
+                    assert_eq!(presentation, DvPresentation::NotDv);
+                    assert!(presentation.declared().is_none());
+                }
             }
         }
     }
 }
-
 
 /// The three profiles, through the predicate itself rather than the gate, including the
 /// 8.2 (SDR base) and 8.4 (HLG base) variants: their base layers are ordinary displayable
@@ -309,7 +436,8 @@ fn base_layer_usability_by_profile() {
     assert!(p7().base_layer_unusable());
     assert!(!p8().base_layer_unusable());
     assert_eq!(
-        p5().presentation(SILENT).refusal(),
+        p5().presentation(SILENT, crate::webos::caps::DvCapability::Supported, true)
+            .refusal(),
         Some("no cross-compatible base layer")
     );
     for compat in [1, 2, 4] {
@@ -327,7 +455,6 @@ fn base_layer_usability_by_profile() {
     }
 }
 
-
 /// The detail page's preview must agree with what Play will do, or the facts row promises a
 /// direct play the route then refuses. A P5 item reads `Converts` — which is the honest
 /// answer, since a real re-encode is exactly what the server has to do to make it displayable.
@@ -344,28 +471,55 @@ fn the_preview_calls_a_profile_5_item_a_conversion() {
     }];
     let part = "/library/parts/1/2/movie.mp4";
     assert_eq!(
-        playback_preview_of(part, "hevc", 1920, 1080, p5().presentation(SILENT), &aac),
+        playback_preview_of(
+            part,
+            "hevc",
+            1920,
+            1080,
+            p5().presentation(SILENT, crate::webos::caps::DvCapability::Supported, true),
+            &aac
+        ),
         Some(Preview::Converts),
         "the server must re-encode it — a container remux would copy the same wrong pixels"
     );
     // the identical item without the DV record is a plain direct play, so the preview is
     // reading the new field and not something else that happens to differ
     assert_eq!(
-        playback_preview_of(part, "hevc", 1920, 1080, no_dv().presentation(SILENT), &aac),
+        playback_preview_of(
+            part,
+            "hevc",
+            1920,
+            1080,
+            no_dv().presentation(SILENT, crate::webos::caps::DvCapability::Supported, true),
+            &aac
+        ),
         Some(Preview::DirectPlay)
     );
     assert_eq!(
-        playback_preview_of(part, "hevc", 1920, 1080, p8().presentation(SILENT), &aac),
+        playback_preview_of(
+            part,
+            "hevc",
+            1920,
+            1080,
+            p8().presentation(SILENT, crate::webos::caps::DvCapability::Supported, true),
+            &aac
+        ),
         Some(Preview::DirectPlay)
     );
     // and the page must follow the inversion, or the facts row promises a conversion the
     // route no longer performs — the preview reads the same predicate the gate does
     assert_eq!(
-        playback_preview_of(part, "hevc", 1920, 1080, p5().presentation(DECLARED), &aac),
+        playback_preview_of(
+            part,
+            "hevc",
+            1920,
+            1080,
+            p5().presentation(DECLARED, crate::webos::caps::DvCapability::Supported, true),
+            &aac
+        ),
         Some(Preview::DirectPlay)
     );
 }
-
 
 /// The RESOLUTION half of the gate (issue #22's over-claim class): when `/decision` is
 /// unreachable the fallback never asks PMS, so the profile's `*`-scoped width/height limitation
@@ -387,14 +541,14 @@ fn a_source_beyond_the_device_bound_does_not_direct_play() {
         "h264",
         3840,
         2160,
-        no_dv().presentation(SILENT),
+        no_dv().presentation(SILENT, crate::webos::caps::DvCapability::Supported, true),
         &caps
     ));
     assert!(!video_direct_plays(
         "hevc",
         3840,
         2160,
-        no_dv().presentation(SILENT),
+        no_dv().presentation(SILENT, crate::webos::caps::DvCapability::Supported, true),
         &caps
     ));
     // one axis over is over (per-axis bound, not an area heuristic)
@@ -402,7 +556,7 @@ fn a_source_beyond_the_device_bound_does_not_direct_play() {
         "h264",
         4096,
         1080,
-        no_dv().presentation(SILENT),
+        no_dv().presentation(SILENT, crate::webos::caps::DvCapability::Supported, true),
         &caps
     ));
     // within the bound plays, exactly at it included (1088 IS the table's number)
@@ -410,11 +564,10 @@ fn a_source_beyond_the_device_bound_does_not_direct_play() {
         "h264",
         1920,
         1088,
-        no_dv().presentation(SILENT),
+        no_dv().presentation(SILENT, crate::webos::caps::DvCapability::Supported, true),
         &caps
     ));
 }
-
 
 /// Unknown dimensions fail OPEN (0 = PMS never measured the file — not evidence of 4K, and
 /// yesterday's behavior for it), while the codec half keeps gating regardless.
@@ -432,16 +585,27 @@ fn unknown_dimensions_fail_open_and_the_codec_half_still_gates() {
         "h264",
         0,
         0,
-        no_dv().presentation(SILENT),
+        no_dv().presentation(SILENT, crate::webos::caps::DvCapability::Supported, true),
         &caps
     ));
     assert!(
-        !video_direct_plays("hevc", 1280, 720, no_dv().presentation(SILENT), &caps),
+        !video_direct_plays(
+            "hevc",
+            1280,
+            720,
+            no_dv().presentation(SILENT, crate::webos::caps::DvCapability::Supported, true),
+            &caps
+        ),
         "no decoder row, no direct play"
     );
     assert!(
-        !video_direct_plays("av1", 1280, 720, no_dv().presentation(SILENT), &caps),
+        !video_direct_plays(
+            "av1",
+            1280,
+            720,
+            no_dv().presentation(SILENT, crate::webos::caps::DvCapability::Supported, true),
+            &caps
+        ),
         "the pipeline cannot feed it at any size"
     );
 }
-

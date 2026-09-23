@@ -60,6 +60,7 @@ pub(super) fn test_original_candidate(subtitle_ordinal: Option<i32>) -> AutoOrig
         acodec: "eac3".into(),
         fps: 23.976,
         dovi: crate::metadata::Dovi::NONE,
+        dv_decision: crate::metadata::DvDecision::NONE,
         immersive: true,
         audio_sid: 42,
         audio_ordinal: Some(1),

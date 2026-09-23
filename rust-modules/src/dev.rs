@@ -50,7 +50,7 @@ pub(crate) mod scenarios;
 // `test` as well as the feature: `any_trigger_present` is the only caller and it is cfg'd out of a
 // release build, but the test below asserts this list's contents and runs with default features.
 #[cfg(any(feature = "devtriggers", test))]
-const DIAG: [&str; 27] = [
+const DIAG: [&str; 29] = [
     "plxnative-diag.log",
     "plxnative-events.log",
     "plxnative-stderr.log",
@@ -115,6 +115,10 @@ const DIAG: [&str; 27] = [
     "plxnative-rec",
     "plxnative-recplay",
     "plxnative-guard", // diagnostic policy only; never changes the boot screen
+    // Boot-latched Dolby Vision capability A/B. They alter only the platform answer used by the
+    // route policy, so an experiment must not independently replace Home with the profile picker.
+    "plxnative-dvcaps0",
+    "plxnative-dvcaps1",
 ];
 
 /// The triggers a CONTROLLED boot (`app::bootstrap`: the recorder, a replay, an explicit

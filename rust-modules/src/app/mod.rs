@@ -471,6 +471,9 @@ fn pre_boot_diagnostics() -> crate::telemetry::native::Guard {
     // ABR/pipeline evidence visible for every automated playback, rather than depending on the
     // previous manual toggle surviving into a new session.
     crate::dev::scenarios::pre_boot();
+    // Last: the worker must observe every boot-time environment/trigger mutation above, while a
+    // controlled replay which deliberately skips this preflight keeps the conservative Unknown.
+    crate::webos::caps::start_probe();
     telemetry_guard
 }
 
@@ -514,6 +517,10 @@ fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,c_i
     };
     // Replay preflight and typed decoding precede identity mint, telemetry and bootstrap work.
     let telemetry_guard = (!preflight.controlled()).then(pre_boot_diagnostics);
+    // Unlike the capability worker, these existing diagnostic latches are needed by controlled
+    // replay too. Resolve their filesystem state outside `FrameScope` on every boot so a preview
+    // or synthetic payload cannot perform its first `stat` from a render frame.
+    crate::metadata::prewarm_dv_latches();
     // A live boot's `install:`/`appdir:` preamble above owns the first two event-log lines.
     // Diagnostics probes `app_dir()` on its worker, so starting it earlier races that preamble.
     crate::storage::diagnostics::start();
