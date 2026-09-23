@@ -239,6 +239,9 @@ fn dev_retry_is_inert_outside_error_and_restart_wait_remains_account_only() {
         if phase != Phase::Error { execute_session_command(&mut d, SessionCmd::Retry); }
         execute_session_command(&mut d, SessionCmd::RestartWait { phase, qr_generation: 0,
             reply: ReplyTo { instance: 19, correlation: 1 } });
+        // In `Ready`, StartSwitch is no longer silent (#132): it raises the picker's "isn't
+        // available" read-out, and the BACK below returns from it — so the pair round-trips to
+        // the state it started from, which is what the hash equality below still proves.
         execute_session_command(&mut d, SessionCmd::StartSwitch(crate::auth::Picker::ChangeProfile));
         execute_session_command(&mut d, SessionCmd::SelectProfile { index: 0, pin: None });
         execute_session_command(&mut d, SessionCmd::BackAtRoot { reply: ReplyTo { instance: 19, correlation: 2 } });

@@ -4,6 +4,32 @@ use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
 
+/// #132: an empty picker whose roster request has ENDED with a reason is a read-out, not the
+/// loading spinner — the spinner had no failure state to end it and spun forever. An empty picker
+/// with no reason is still loading; a reason over tiles is the ordinary one-line switch error.
+#[test]
+fn an_empty_roster_with_a_reason_is_a_readout_and_not_the_spinner() {
+    let mut s = bare(Pad::new());
+    let loading = snapshot(Phase::Profiles, Vec::new());
+    s.resync(loading.read());
+    assert!(!s.roster_readout(), "no reason yet: still loading");
+
+    let mut failed = snapshot(Phase::Profiles, Vec::new());
+    failed.error = Arc::from(auth::owner::ROSTER_REFUSED);
+    s.resync(failed.read());
+    assert!(s.roster_readout(), "a finished, empty roster reads out its reason");
+
+    let (handled, fx) = step_ev(&mut s, &key_down(Key::Back, 0, 0), None);
+    assert_eq!(handled, Handled::Yes);
+    assert!(fx.iter().any(|st| matches!(st.fx, Fx::App(AppFx::Session(auth::SessionCmd::BackAtRoot { .. })))),
+        "BACK asks the session to leave; the owner decides (see `roster_dead_end`)");
+
+    let mut switch_failed = snapshot(Phase::Profiles, vec![user("Synthetic", false)]);
+    switch_failed.error = Arc::from("Couldn't switch profile. Try again.");
+    s.resync(switch_failed.read());
+    assert!(!s.roster_readout(), "tiles on screen: the error is the one-line switch failure");
+}
+
 #[test]
 fn selection_pin_and_signout_are_typed_session_commands() {
     let published = snapshot_at(

@@ -132,13 +132,12 @@ impl AccountClient {
     /// POST /api/v2/pins — create a link PIN. `strong=false` yields a short human-typeable `code`
     /// (for the `plex.tv/link` fallback) alongside the QR; the returned `auth_token` is null until
     /// the user authorizes it on another device.
-    pub fn create_pin(&self) -> Option<Pin> {
-        self.create_pin_evidence().ok()
-    }
-
-    /// [`Self::create_pin`], and when it fails, what the request observed — the sign-in flow's
-    /// onboarding report classifies it (`telemetry::incident::classify`).
-    pub fn create_pin_evidence(&self) -> Result<Pin, CallEvidence> {
+    ///
+    /// When it fails, what the request observed — the sign-in flow's onboarding report classifies
+    /// it (`telemetry::incident::classify`). **No account call here answers `Option` any more**:
+    /// an `Option` folded "plex.tv refused this identity" into "plex.tv never answered", which is
+    /// how a managed profile's 401 read as nothing at all (#132). See [`CallEvidence`].
+    pub fn create_pin(&self) -> Result<Pin, CallEvidence> {
         let url = format!("{PLEX_TV}/api/v2/pins?strong=false");
         decode_evidence("POST", &url, self.post_raw(&url))
     }
@@ -165,12 +164,10 @@ impl AccountClient {
     /// the LAN + relay connections so we can pick a local one for offline play; `includeIPv6` adds
     /// the v6 connections, which are *ranked last* rather than used first (`probe.rs`) — we ask for
     /// them so the ranking is choosing between a known set instead of a set plex.tv edited for us.
-    pub fn resources(&self) -> Option<Vec<Resource>> {
-        self.resources_evidence().ok()
-    }
-
-    /// [`Self::resources`], keeping the failed call's evidence for the onboarding report.
-    pub fn resources_evidence(&self) -> Result<Vec<Resource>, CallEvidence> {
+    ///
+    /// A failure keeps its evidence: the onboarding report classifies it, and a refusal
+    /// ([`refused_identity`]) is a statement about the token rather than the network.
+    pub fn resources(&self) -> Result<Vec<Resource>, CallEvidence> {
         self.get_evidence(&format!(
             "{PLEX_TV}/api/v2/resources?includeHttps=1&includeRelay=1&includeIPv6=1"
         ))
@@ -180,9 +177,14 @@ impl AccountClient {
 
     /// GET /api/v2/home/users — the Home (managed) users for the account: the "who's watching"
     /// roster. Requires the (admin) account token.
-    pub fn home_users(&self) -> Option<Vec<HomeUser>> {
-        let hu: HomeUsers = self.get(&format!("{PLEX_TV}/api/v2/home/users"))?;
-        Some(hu.users)
+    ///
+    /// **Graded, because "refused" and "unreachable" are different answers to the person holding
+    /// the remote.** A managed profile's token gets 401 here (TV session 8, #132): that is plex.tv
+    /// saying this identity cannot list the household, and no retry or connection check changes
+    /// it. `Err` keeps the status ([`refused_identity`]) so the roster worker can say so.
+    pub fn home_users(&self) -> Result<Vec<HomeUser>, CallEvidence> {
+        let hu: HomeUsers = self.get_evidence(&format!("{PLEX_TV}/api/v2/home/users"))?;
+        Ok(hu.users)
     }
 
     /// POST /api/v2/home/users/{uuid}/switch[?pin=NNNN] — exchange the admin token for the chosen
@@ -302,6 +304,28 @@ mod evidence_tests {
     use crate::net::{RequestError, RequestFailure, Resp};
 
     const SWITCH: &str = "https://plex.tv/api/v2/home/users/synthetic/switch";
+
+    /// #132: a managed profile's 401 on `/api/v2/home/users` is a verdict about the identity, and
+    /// must stay one through the evidence — an incomplete transfer included — while a timeout or
+    /// an unreadable 200 is not. The log phrase carries the status and never a URL.
+    #[test]
+    fn a_refused_identity_is_told_apart_from_no_answer() {
+        let timed_out = RequestFailure { cause: RequestError::TimedOut, status: None, body_limit: None, curl_rc: Some(28) };
+        let cut_401 = RequestFailure { cause: RequestError::Transport, status: Some(401), body_limit: None, curl_rc: Some(56) };
+        assert_eq!(refused_identity(&Ok(401)), Some(401));
+        assert_eq!(refused_identity(&Ok(403)), Some(403));
+        assert_eq!(refused_identity(&Err(cut_401)), Some(401));
+        assert_eq!(refused_identity(&Ok(200)), None, "an unreadable 200 is not a refusal");
+        assert_eq!(refused_identity(&Ok(503)), None);
+        assert_eq!(refused_identity(&Err(timed_out)), None);
+        assert_eq!(describe_evidence(&Ok(401)), "HTTP 401, identity refused");
+        assert_eq!(describe_evidence(&Ok(200)), "HTTP 200, body unreadable");
+        assert_eq!(describe_evidence(&Ok(503)), "HTTP 503");
+        assert_eq!(describe_evidence(&Err(cut_401)), "HTTP 401, transfer incomplete");
+        assert_eq!(describe_evidence(&Err(timed_out)), "no answer (timed out)");
+        let dns = RequestFailure { cause: RequestError::Transport, status: None, body_limit: None, curl_rc: Some(6) };
+        assert_eq!(describe_evidence(&Err(dns)), "no answer (curl rc=6)");
+    }
 
     fn failure(status: Option<u16>, body_limit: Option<usize>) -> Result<Resp, RequestFailure> {
         Err(RequestFailure { cause: RequestError::Transport, status, body_limit, curl_rc: Some(56) })
@@ -553,6 +577,41 @@ pub enum PinPoll {
 /// (`telemetry::incident::classify`); no body, URL or header is kept.
 pub type CallEvidence = Result<u16, crate::net::RequestFailure>;
 
+/// Is this a status by which plex.tv refused the IDENTITY a request carried (the token
+/// `headers()` attached), as opposed to failing to serve it? One definition, read by the log line
+/// below and by every caller that must tell "this account may not do this" from "no answer" — a
+/// managed Plex Home profile's token gets 401 from `/api/v2/home/users` (#132), and reporting that
+/// as a connection problem sends the person looking for a network fault that does not exist.
+pub fn refuses_identity(status: u16) -> bool {
+    matches!(status, 401 | 403)
+}
+
+/// [`refuses_identity`] over a failed call's evidence: the refusing status, when there is one.
+/// An incomplete transfer still carries the status it received (`RequestFailure::status`).
+pub fn refused_identity(evidence: &CallEvidence) -> Option<u16> {
+    let status = match evidence {
+        Ok(status) => Some(*status),
+        Err(failure) => failure.status,
+    };
+    status.filter(|status| refuses_identity(*status))
+}
+
+/// One event-log phrase for a failed account call's evidence: the HTTP status when a response
+/// arrived, the cause and curl code when none did. Closed evidence only — no URL, body or header.
+pub fn describe_evidence(evidence: &CallEvidence) -> String {
+    match evidence {
+        Ok(status) if (200..300).contains(status) => format!("HTTP {status}, body unreadable"),
+        Ok(status) if refuses_identity(*status) => format!("HTTP {status}, identity refused"),
+        Ok(status) => format!("HTTP {status}"),
+        Err(failure) => match (failure.status, failure.curl_rc) {
+            (Some(status), _) => format!("HTTP {status}, transfer incomplete"),
+            (None, _) if failure.cause == crate::net::RequestError::TimedOut => "no answer (timed out)".into(),
+            (None, Some(rc)) => format!("no answer (curl rc={rc})"),
+            (None, None) => "no answer".into(),
+        },
+    }
+}
+
 /// [`decode`], keeping the evidence of a call that yields nothing.
 fn decode_evidence<T: DeserializeOwned>(verb: &str, url: &str,
     response: Result<crate::net::Resp, crate::net::RequestFailure>) -> Result<T, CallEvidence> {
@@ -631,9 +690,10 @@ fn log_status_failure(verb: &str, url: &str, status: u16) {
     // attached. Downstream that becomes a verdict about a server or a network (see this
     // function's doc for the exact copy), so the distinction has to be drawn in the line that
     // still knows it.
-    let hint = match status {
-        401 | 403 => " — plex.tv refused this identity (token no longer valid?)",
-        _ => "",
+    let hint = if refuses_identity(status) {
+        " — plex.tv refused this identity (token no longer valid?)"
+    } else {
+        ""
     };
     // Tagged for the CLIENT (`account:`) and not for the host, because the host is already in
     // the shape and the two services share this door — `discover.provider.plex.tv` lines would

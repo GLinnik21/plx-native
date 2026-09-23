@@ -72,7 +72,7 @@ mod tests {
                 let SessionWork::Endpoint { session, expected, lifecycle, machine_id } = input
                     else { panic!("wrong worker family") };
                 crate::auth::endpoint_worker_with_io(epoch, session, expected, lifecycle, machine_id, &output,
-                    |_| Some(vec![serde_json::from_value(serde_json::json!({
+                    |_| Ok(vec![serde_json::from_value(serde_json::json!({
                         "clientIdentifier": "synthetic-server", "provides": "server"
                     })).unwrap()]),
                     |resource, _| {

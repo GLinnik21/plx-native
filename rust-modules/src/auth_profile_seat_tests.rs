@@ -233,8 +233,8 @@ impl ProfileWorkIo for OnlineSwitchIo {
             auth_token: self.seated.auth_token.clone(),
         })
     }
-    fn resources(&mut self, _: &AccountClient) -> Option<Vec<Resource>> {
-        Some(vec![Resource {
+    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+        Ok(vec![Resource {
             name: "ours".into(),
             client_identifier: "ours".into(),
             provides: "server".into(),

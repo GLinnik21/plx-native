@@ -198,8 +198,8 @@ fn a_grant_verified_only_over_plaintext_reports_the_shared_insecure_only_copy() 
                 id: 1, uuid: "u-kid".into(), title: "Kid".into(), auth_token: "kid-token".into(),
             })
         }
-        fn resources(&mut self, _: &AccountClient) -> Option<Vec<Resource>> {
-            Some(vec![Resource {
+        fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+            Ok(vec![Resource {
                 name: "srv".into(), client_identifier: "srv".into(), provides: "server".into(),
                 owned: true, access_token: "srv-token".into(), ..Default::default()
             }])
@@ -363,4 +363,22 @@ fn all_auth_worker_bodies_are_observation_only() {
             );
         }
     }
+}
+
+/// #132: the roster worker's grading. A refused identity (a managed profile's 401) and an answer
+/// with nobody in it are plex.tv's VERDICT — `Some(vec![])` — which the owner reads out as
+/// "switching isn't available"; no answer at all, a 5xx or an unreadable body is `None`, read out
+/// as a connection problem. Before this, all of these were one `None`.
+#[test]
+fn roster_grading_tells_a_refused_identity_from_no_answer() {
+    use crate::net::{RequestError, RequestFailure};
+    let user = HomeUser { uuid: "synthetic-user".into(), title: "Synthetic".into(), ..Default::default() };
+    assert_eq!(grade_roster(Ok(vec![user])).map(|users| users.len()), Some(1));
+    assert_eq!(grade_roster(Ok(Vec::new())).map(|users| users.len()), Some(0));
+    assert_eq!(grade_roster(Err(Ok(401))).map(|users| users.len()), Some(0));
+    assert_eq!(grade_roster(Err(Ok(403))).map(|users| users.len()), Some(0));
+    assert!(grade_roster(Err(Ok(503))).is_none());
+    assert!(grade_roster(Err(Ok(200))).is_none(), "an unreadable 200 is no verdict");
+    assert!(grade_roster(Err(Err(RequestFailure { cause: RequestError::TimedOut, status: None,
+        body_limit: None, curl_rc: Some(28) }))).is_none());
 }
