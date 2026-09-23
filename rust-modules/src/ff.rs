@@ -1733,6 +1733,13 @@ fn arm_active_stall_guard(
     })
 }
 
+// `SegmentAcquisition` lives in its own module so its payload is not nameable from `ff` — see
+// `ff_acquisition.rs` for why (the bypass a review round found: everything in `ff` could build
+// `Active { stall: None, .. }` by hand even with the role-typed enum in place).
+#[path = "ff_acquisition.rs"]
+mod acquisition;
+use acquisition::SegmentAcquisition;
+
 /// A rollback-reserve deadline is monotone in one direction: a floor downshift that reaches an
 /// actual internal rebuffer may stop protecting the old cursor, but a later user Resume cannot
 /// make that already-spent reserve exist again. One instance follows the whole segment transaction
@@ -3600,9 +3607,9 @@ unsafe fn hls_demux_segment(
     aq: *mut AuQueue,
     net: &mut HlsNet,
     acodec: &str,
-    mut reserve_deadline: ReserveDeadlineState,
-    stall: Option<StallGuard>,
+    acquisition: SegmentAcquisition,
 ) -> Result<HlsSegmentOutput, HlsExit> {
+    let (mut reserve_deadline, stall) = acquisition.into_parts();
     if crate::aq::aq_is_aborted(aq) {
         return Err(HlsExit::Aborted);
     }
@@ -5285,27 +5292,86 @@ fn original_probe_observation(
     }
 }
 
-unsafe fn hls_prefetch_same_encoder(
+/// **One shared reducer for a `StallAbort` returned against the ACTIVE cursor.** The ordinary
+/// fetch and the same-encoder lookahead observe the identical terminal boundary and must handle
+/// it identically: log it, requeue the segment (exactly once — it is put back here, and nowhere
+/// else, whichever path called this), and hand back a zero-AU output carrying the transfer so
+/// the caller's ordinary controller/transact path can treat it as an abandoned sample. Never call
+/// this against a `Candidate` acquisition's result: a candidate never carries a `StallGuard`, so
+/// it cannot produce `StallAbort`.
+fn hls_stall_abort_outcome(
+    segment: crate::hls::Segment,
+    clock: crate::hls::SegmentClock,
+    transfer: SegmentTransfer,
+    reserve_ms_at_start: i64,
     cursor: &mut HlsCursor,
-    aq: *mut AuQueue,
-    net: &mut HlsNet,
-    acodec: &str,
+) -> (
+    crate::hls::Segment,
+    HlsSegmentOutput,
+    crate::hls::SegmentClock,
+    bool,
+) {
+    crate::player::log(&format!(
+        "abr: stall abort seq={} bytes={} active={}ms reserve={}ms censored=1 \
+         cause=terminal_reserve — abandoning the incomplete fetch so a cheaper rung \
+         can be decided",
+        segment.sequence,
+        transfer.bytes,
+        transfer.active_us / 1_000,
+        reserve_ms_at_start,
+    ));
+    cursor.pending.push_front(segment.clone());
+    (
+        segment,
+        HlsSegmentOutput {
+            aus: Vec::new(),
+            transfer,
+            video_width: 0,
+            video_height: 0,
+            video_tail_ns: -1,
+            audio_tail_ns: None,
+        },
+        clock,
+        true,
+    )
+}
+
+/// The same-encoder lookahead's control flow, generic over the demux call itself so a test can
+/// inject a fake one and prove this flow's WIRING — not a hand-built `AvioState` a regression
+/// could bypass entirely. Production's only caller is [`hls_prefetch_same_encoder`] below, which
+/// closes over the real [`hls_demux_segment`]; a test closes over a fake that records what
+/// [`SegmentAcquisition`] it was handed and can return [`HlsExit::StallAbort`] on demand.
+///
+/// Takes `n1` (the already-dequeued next segment) and `cursor` separately rather than dequeuing
+/// itself, so a test can drive this exact flow without also standing up an `HlsNet`/`AuQueue`
+/// just to satisfy [`hls_cursor_next`].
+fn hls_prefetch_same_encoder_with<F>(
+    cursor: &mut HlsCursor,
+    n1: crate::hls::Segment,
     timeline: crate::hls::SegmentTimeline,
     n_clock: crate::hls::SegmentClock,
+    // The session's adaptive context, exactly as `hls_demux` holds it: `Some(&Controller)` for an
+    // ABR playback, `None` for non-adaptive. Handed straight to `SegmentAcquisition::for_cursor` —
+    // never turned into a bool here — because the lookahead is reading ahead of the SAME active
+    // cursor the ordinary branch is on and must be classified exactly the way that cursor is.
+    controller: Option<&crate::abr::Controller>,
+    demux: F,
 ) -> Result<
     Option<(
         crate::hls::Segment,
         HlsSegmentOutput,
         crate::hls::SegmentClock,
+        bool,
     )>,
     HlsExit,
-> {
-    let n1 = match hls_cursor_next(cursor, aq, net, None) {
-        Ok(Some(segment)) => segment,
-        Ok(None) => return Ok(None),
-        Err(error) if hls_prefetch_is_fatal(&error) => return Err(error),
-        Err(_) => return Ok(None),
-    };
+>
+where
+    F: FnOnce(
+        &crate::hls::Segment,
+        &mut crate::hls::SegmentClock,
+        SegmentAcquisition,
+    ) -> Result<HlsSegmentOutput, HlsExit>,
+{
     let mut peek = timeline;
     peek.commit(n_clock);
     let mut clock = match peek.begin(n1.duration) {
@@ -5315,23 +5381,71 @@ unsafe fn hls_prefetch_same_encoder(
             return Ok(None);
         }
     };
-    match hls_demux_segment(
-        &n1,
-        &cursor.auth,
-        &mut clock,
-        aq,
-        net,
-        acodec,
-        ReserveDeadlineState::new(None, false),
-        None,
-    ) {
-        Ok(output) => Ok(Some((n1, output, clock))),
+    // **The lookahead is still an ACTIVE-cursor fetch and must arm the same guard the ordinary
+    // branch would.** `SegmentAcquisition::for_cursor` is the one constructor that evaluates
+    // `arm_active_stall_guard` from the live buffer/floor/hold state; there is no path through it
+    // that skips the evaluation. (This is precisely what was missing before: the lookahead used
+    // to build `ReserveDeadlineState::new(None, false), None` here unconditionally, which is how
+    // `pipe_abr_down_collapse` never aborted a fetch that had already exhausted the reserve.)
+    let acquisition = SegmentAcquisition::for_cursor(controller);
+    let stall_reserve_ms = acquisition
+        .stall()
+        .map(|guard| guard.reserve_ms_at_start)
+        .unwrap_or(-1);
+    match demux(&n1, &mut clock, acquisition) {
+        Ok(output) => Ok(Some((n1, output, clock, false))),
+        // Do NOT let this escape via `?` (that would exit `hls_demux` entirely) and do NOT
+        // silently requeue-and-`Ok(None)` (that is exactly how the old code swallowed the abort).
+        // Route it through the same reducer the ordinary branch uses, so the caller's main loop
+        // sees an abandoned round — not a completed prefetch, not nothing.
+        Err(HlsExit::StallAbort(transfer)) => Ok(Some(hls_stall_abort_outcome(
+            n1,
+            clock,
+            transfer,
+            stall_reserve_ms,
+            cursor,
+        ))),
         Err(error) if hls_prefetch_is_fatal(&error) => Err(error),
         Err(_) => {
             cursor.pending.push_front(n1);
             Ok(None)
         }
     }
+}
+
+/// Thin production wrapper over [`hls_prefetch_same_encoder_with`]: dequeues the next segment and
+/// closes over the real [`hls_demux_segment`]. All of the actual prefetch decision-making lives
+/// in the function above, which is what the regression test drives.
+unsafe fn hls_prefetch_same_encoder(
+    cursor: &mut HlsCursor,
+    aq: *mut AuQueue,
+    net: &mut HlsNet,
+    acodec: &str,
+    timeline: crate::hls::SegmentTimeline,
+    n_clock: crate::hls::SegmentClock,
+    controller: Option<&crate::abr::Controller>,
+) -> Result<
+    Option<(
+        crate::hls::Segment,
+        HlsSegmentOutput,
+        crate::hls::SegmentClock,
+        bool,
+    )>,
+    HlsExit,
+> {
+    let n1 = match hls_cursor_next(cursor, aq, net, None) {
+        Ok(Some(segment)) => segment,
+        Ok(None) => return Ok(None),
+        Err(error) if hls_prefetch_is_fatal(&error) => return Err(error),
+        Err(_) => return Ok(None),
+    };
+    let auth = cursor.auth.clone();
+    hls_prefetch_same_encoder_with(cursor, n1, timeline, n_clock, controller, |segment, clock, acquisition| {
+        // SAFETY: this closure is only ever invoked (synchronously, within this call) by
+        // `hls_prefetch_same_encoder_with` above, under the same `unsafe` obligations the caller
+        // of this whole function already carries (a live `aq`/`net` for the duration of the call).
+        unsafe { hls_demux_segment(segment, &auth, clock, aq, net, acodec, acquisition) }
+    })
 }
 
 fn hls_demux(
@@ -5488,13 +5602,14 @@ fn hls_demux(
         crate::hls::Segment,
         HlsSegmentOutput,
         crate::hls::SegmentClock,
+        bool,
     )> = None;
 
     'segments: loop {
-        let (segment, output, clock, fetch_abandoned) = if let Some((segment, output, clock)) =
+        let (segment, output, clock, fetch_abandoned) = if let Some(prefetched_round) =
             prefetched.take()
         {
-            (segment, output, clock, false)
+            prefetched_round
         } else {
             let Some(segment) = hls_cursor_next(&mut cursor, aq, &mut net, None)? else {
                 break;
@@ -5507,13 +5622,13 @@ fn hls_demux(
             // would make the depleted state absorbing. An unreadable reserve has no boundary to arm.
             // Above the floor, a later physical B=0 hold abandons the oversized object; at the floor
             // the same event keeps reading because no cheaper response exists.
-            let stall_guard = adaptive.as_ref().and_then(|state| {
-                arm_active_stall_guard(
-                    hls_buffer_snapshot(None).buffered_ms(),
-                    state.2.current().at_floor(),
-                    SHARED.hls_rebuffering.load(Ordering::Acquire),
-                )
-            });
+            // `SegmentAcquisition::for_cursor` decides `Active` vs `Fixed` from the session's own
+            // adaptive context, never per call, and samples the live reserve/hold itself.
+            let acquisition = SegmentAcquisition::for_cursor(adaptive.as_ref().map(|state| &state.2));
+            let stall_reserve_ms = acquisition
+                .stall()
+                .map(|guard| guard.reserve_ms_at_start)
+                .unwrap_or(-1);
             // **An abort is not a failure and not a delivery — it is the observed terminal boundary
             // arriving instead of a segment.** The segment goes back on the cursor unconsumed,
             // nothing is fed and the content timeline does not advance (we delivered no media); what
@@ -5535,35 +5650,12 @@ fn hls_demux(
                     aq,
                     &mut net,
                     acodec,
-                    ReserveDeadlineState::new(None, false),
-                    stall_guard,
+                    acquisition,
                 )
             } {
                 Ok(output) => (segment, output, clock, false),
                 Err(HlsExit::StallAbort(transfer)) => {
-                    crate::player::log(&format!(
-                        "abr: stall abort seq={} bytes={} active={}ms reserve={}ms censored=1 \
-                         cause=terminal_reserve — abandoning the incomplete fetch so a cheaper rung \
-                         can be decided",
-                        segment.sequence,
-                        transfer.bytes,
-                        transfer.active_us / 1_000,
-                        stall_guard.map(|g| g.reserve_ms_at_start).unwrap_or(-1),
-                    ));
-                    cursor.pending.push_front(segment.clone());
-                    (
-                        segment,
-                        HlsSegmentOutput {
-                            aus: Vec::new(),
-                            transfer,
-                            video_width: 0,
-                            video_height: 0,
-                            video_tail_ns: -1,
-                            audio_tail_ns: None,
-                        },
-                        clock,
-                        true,
-                    )
+                    hls_stall_abort_outcome(segment, clock, transfer, stall_reserve_ms, &mut cursor)
                 }
                 Err(other) => return Err(other),
             }
@@ -5585,7 +5677,15 @@ fn hls_demux(
         else {
             if hls_should_prefetch_after_abr(delivered, fetch_abandoned, true) {
                 prefetched = unsafe {
-                    hls_prefetch_same_encoder(&mut cursor, aq, &mut net, acodec, timeline, clock)?
+                    hls_prefetch_same_encoder(
+                        &mut cursor,
+                        aq,
+                        &mut net,
+                        acodec,
+                        timeline,
+                        clock,
+                        None,
+                    )?
                 };
             }
             continue;
@@ -5705,7 +5805,15 @@ fn hls_demux(
             matches!(decision, crate::abr::Decision::Stay),
         ) {
             prefetched = unsafe {
-                hls_prefetch_same_encoder(&mut cursor, aq, &mut net, acodec, timeline, clock)?
+                hls_prefetch_same_encoder(
+                    &mut cursor,
+                    aq,
+                    &mut net,
+                    acodec,
+                    timeline,
+                    clock,
+                    Some(&*controller),
+                )?
             };
         }
         // An upward candidate commit invalidates the HLS half of a terminal Original comparison,
@@ -6504,15 +6612,15 @@ fn hls_demux(
                 aq,
                 &mut net,
                 acodec,
-                candidate_deadline,
-                // Candidate responses never carry a prefix `StallGuard`. PMS may pause a sized
-                // response while its JIT encoder catches up, so a prefix-rate extrapolation is
-                // not proof that the unseen remainder will miss `candidate_deadline` above. When
-                // that reserve clock exists, each `read_until` gets its current wall projection and
-                // the callback classifies the wake against the owning playhead clock. Terminal-floor
-                // recovery has no reserve deadline because the robust rollback guarantee is already
-                // absent (even if a positive remnant remains) and no cheaper response exists.
-                None,
+                // `SegmentAcquisition::Candidate` never carries a prefix `StallGuard`. PMS may
+                // pause a sized response while its JIT encoder catches up, so a prefix-rate
+                // extrapolation is not proof that the unseen remainder will miss
+                // `candidate_deadline` below. When that reserve clock exists, each `read_until`
+                // gets its current wall projection and the callback classifies the wake against
+                // the owning playhead clock. Terminal-floor recovery has no reserve deadline
+                // because the robust rollback guarantee is already absent (even if a positive
+                // remnant remains) and no cheaper response exists.
+                SegmentAcquisition::candidate(candidate_deadline),
             )
         } {
             Ok(output) => output,
@@ -6679,8 +6787,7 @@ fn hls_demux(
                     aq,
                     &mut net,
                     acodec,
-                    repeatable_deadline,
-                    None,
+                    SegmentAcquisition::candidate(repeatable_deadline),
                 )
             } {
                 Ok(output) => output,
