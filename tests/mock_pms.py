@@ -853,10 +853,17 @@ class MockPms:
             return (404, "text/plain", b"mock_pms: no transcoder")
         if p == "/video/:/transcode/universal/decision":
             wanted = q.get("path", "").rsplit("/", 1)[-1]
-            if wanted.isdigit() and int(wanted) in (V1_RATING_KEY, V2_RATING_KEY) \
-                    and getattr(lib, "media_files", None):
+            rk = int(wanted) if wanted.isdigit() else -1
+            item = lib.items.get(rk)
+            part_id = (item.get("Media", [{}])[0].get("Part", [{}])[0].get("id")
+                       if item else None)
+            # Any item backed by a REAL probed file (--media or --extra-media) answers direct
+            # play, the same way a PMS does for a file its own caps accept — not just the two
+            # fixed verification ids. `media_files` is the one place that distinguishes "this rk
+            # has real bytes behind it" from a purely synthetic generated item.
+            if part_id is not None and part_id in getattr(lib, "media_files", {}):
                 # MDE answers with the same measured item plus only its decision fields.
-                row = json.loads(json.dumps(lib.items[int(wanted)]))
+                row = json.loads(json.dumps(item))
                 part = row["Media"][0]["Part"][0]
                 part["decision"] = "directplay"
                 for stream in part["Stream"]:
