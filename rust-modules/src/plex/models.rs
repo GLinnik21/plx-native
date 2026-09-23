@@ -7,7 +7,7 @@ use serde::Deserialize;
 /// `{ "MediaContainer": … }` — every list/detail response.
 #[derive(Deserialize, Default)]
 pub struct Envelope {
-    #[serde(rename = "MediaContainer", default)]
+    #[serde(rename = "MediaContainer")]
     pub media_container: MediaContainer,
 }
 

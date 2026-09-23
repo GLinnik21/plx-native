@@ -128,7 +128,8 @@ a profile switch may select it, auth sends `GET /library/sections` through that 
 origin, resolve pin, transport policy and per-machine token. A valid empty sections container is
 success; 401/403, timeout, transport refusal and malformed JSON remain distinct evidence, and the
 search continues with the next eligible endpoint/server. Cached addresses remain candidates, not
-proof: they regain a credential only after this fresh two-step admission. Offline cached-profile
+proof: a profile's own resource grant may stay in its offline credential cache, but it is projected
+tokenless into the live roster until this fresh two-step admission succeeds. Offline cached-profile
 seating is the explicit exception and keeps its existing PIN/cache contract.
 
 Slots are keyed on `machineIdentifier` because that is the only identity that survives a server

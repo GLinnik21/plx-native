@@ -209,6 +209,40 @@ fn a_reachable_relay_beats_a_direct_proxy_401() {
 }
 
 #[test]
+fn discovery_retries_the_same_server_via_relay_after_direct_admission_times_out() {
+    let resource = resource(
+        r#"{"name":"ours","clientIdentifier":"machine","provides":"server","owned":true,
+            "accessToken":"profile-token","connections":[
+              {"protocol":"https","address":"192.0.2.10","port":32400,
+               "uri":"https://192-0-2-10.h.plex.direct:32400","local":true,"relay":false},
+              {"protocol":"https","address":"relay.example.test","port":443,
+               "uri":"https://relay.example.test:443","local":false,"relay":true}]}"#,
+    );
+    let plan = probe::plan(&resource, CredentialPolicy::HttpsOnly);
+    let direct = plan.candidates.iter().find(|c| c.location != probe::Location::Relay).unwrap().clone();
+    let relay = plan.candidates.iter().find(|c| c.location == probe::Location::Relay).unwrap().clone();
+    let mut probes = 0;
+    let mut probe_one = |_: &ProbePlan, rejected: &[String]| {
+        probes += 1;
+        if probes == 2 {
+            assert_eq!(rejected, ["https://192-0-2-10.h.plex.direct:32400"]);
+        }
+        let candidate = if probes == 1 { direct.clone() } else { relay.clone() };
+        Reach::At(candidate.clone(), candidate.origin().unwrap())
+    };
+    let mut admissions = vec![crate::plex::EndpointAdmission::Timeout,
+        crate::plex::EndpointAdmission::Usable].into_iter();
+    let resolved = resolve_roster_using_admission(
+        &[resource], &[], CredentialPolicy::HttpsOnly, &mut probe_one,
+        &mut |_| admissions.next().unwrap(), &mut |_, _, _| {}, &mut || {},
+        &mut |_, _, _, _| {},
+    );
+    let Resolved::Reached(found) = resolved else { panic!("relay admission must retain the server") };
+    assert_eq!(probes, 2);
+    assert_eq!(found[0].origin_url, "https://relay.example.test:443");
+}
+
+#[test]
 fn a_direct_401_remains_the_reason_when_relay_is_silent() {
     let mut plan = race_plan();
     plan.candidates.truncate(1);

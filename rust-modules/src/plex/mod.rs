@@ -153,22 +153,38 @@ pub(crate) fn endpoint_admission_from_reply(status: i32, body: &[u8]) -> Endpoin
 
 /// Validate a freshly reached source with `GET /library/sections`, using the source's own token,
 /// origin and resolve pin through the ordinary PMS client/transport boundary.
-pub(crate) fn admit_source(source: &session::SourceRef, client_id: &str) -> EndpointAdmission {
+pub(crate) fn admit_source_until(source: &session::SourceRef, client_id: &str,
+    overall_deadline: std::time::Instant) -> EndpointAdmission {
     let Some(origin) = source.origin() else { return EndpointAdmission::Transport };
     if !CredentialPolicy::build().may_carry_credential(&origin) {
         return EndpointAdmission::InsecureOnly;
     }
     let client = Client::new(ServerId::UNSET, &source.machine_id, origin, &source.token, client_id)
         .with_resolve_pin(source.resolve_pin());
-    let deadline = std::time::Instant::now()
-        .checked_add(std::time::Duration::from_secs(10))
-        .unwrap_or_else(std::time::Instant::now);
+    let now = std::time::Instant::now();
+    if now >= overall_deadline { return EndpointAdmission::Timeout; }
+    let attempt_budget = if source.tier == Some(probe::Location::Local) {
+        std::time::Duration::from_secs(5)
+    } else {
+        std::time::Duration::from_secs(10)
+    };
+    let deadline = now
+        .checked_add(attempt_budget)
+        .unwrap_or(overall_deadline)
+        .min(overall_deadline);
     match client.get_json_with_headers_until("/library/sections", &[], deadline) {
         JsonDeadlineOutcome::Response { reply, parsed } =>
             classify_endpoint_response(reply.status, parsed.is_some()),
         JsonDeadlineOutcome::Deadline => EndpointAdmission::Timeout,
         JsonDeadlineOutcome::Transport => EndpointAdmission::Transport,
     }
+}
+
+pub(crate) fn admit_source(source: &session::SourceRef, client_id: &str) -> EndpointAdmission {
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(10))
+        .unwrap_or_else(std::time::Instant::now);
+    admit_source_until(source, client_id, deadline)
 }
 // #95 step 8: connection facts applied AT registration, atomically with the registry write. See
 // `servers::ConnectionFacts`'s doc for why `None` means "leave unchanged" rather than "unknown".

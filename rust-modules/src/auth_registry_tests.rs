@@ -391,7 +391,7 @@ fn endpoint_recovery_cannot_introduce_a_server_outside_the_profile_roster() {
 }
 
 #[test]
-fn profile_activation_keeps_a_cached_surviving_share_ineligible_until_fresh_admission() {
+fn profile_activation_keeps_a_cached_surviving_share_credential_but_not_its_eligibility() {
     let stored = vec![
         source("revoked-primary", true, "old-owner"),
         source("surviving-share", false, "old-share"),
@@ -405,9 +405,13 @@ fn profile_activation_keeps_a_cached_surviving_share_ineligible_until_fresh_admi
 
     assert_eq!(next.len(), 1);
     assert_eq!(next[0].machine_id, "surviving-share");
-    assert!(next[0].token.is_empty(),
-        "a grant plus a cached address is not an authenticated-usable endpoint");
-    assert_eq!(primary_index(&next), 0);
+    assert_eq!(next[0].token, "profile-share",
+        "the profile's own resource grant remains cached for offline seating");
+    let eligible = admitted_profile_sources(&next, &[]);
+    assert!(eligible[0].token.is_empty(),
+        "a cached credential is not current-switch admission eligibility");
+    assert!(eligible.iter().all(|source| !source.dialable()),
+        "the unavailable cached share cannot be selected as primary");
 }
 
 /// **A Plex Home managed user's own household server must not be credited to the admin.**

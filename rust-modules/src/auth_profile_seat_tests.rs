@@ -105,6 +105,22 @@ fn an_unprotected_cached_profile_is_seated_on_the_pick_alone() {
 }
 
 #[test]
+fn healed_non_admin_contamination_cannot_take_the_same_user_shortcut() {
+    let mut stored = cached_session(None);
+    stored.user.uuid = "u-kid".into();
+    stored.home_users = vec![session::HomeUserRef { uuid: "u-kid".into(), admin: false,
+        ..Default::default() }];
+    stored.server.token = "owner-grant".into();
+    stored.user.token = "owner-grant".into();
+    stored.sources[0].token = "owner-grant".into();
+    stored.refresh_profile_record();
+    let resources = vec![Resource { client_identifier: "ours".into(), provides: "server".into(),
+        access_token: "owner-grant".into(), ..Default::default() }];
+    assert!(clear_account_grant_contamination(&mut stored, &resources));
+    assert!(!may_reuse_seated_profile(&stored, &tile("u-kid", false), None));
+}
+
+#[test]
 fn a_profile_this_television_never_seated_online_has_nothing_to_seat() {
     let stored = cached_session(Some("4821"));
     assert!(matches!(
@@ -394,8 +410,12 @@ fn authenticated_sections_timeout_fails_instead_of_reporting_ready() {
 
 #[test]
 fn malformed_authenticated_sections_body_fails_instead_of_reporting_ready() {
-    let malformed = crate::plex::endpoint_admission_from_reply(200, b"not json");
-    assert_eq!(malformed, crate::plex::EndpointAdmission::Malformed);
+    for body in [b"not json".as_slice(), b"{}".as_slice(), b"{\"MediaContainer\":null}".as_slice(),
+        br#"{"error":"unauthorized"}"#.as_slice()] {
+        assert_eq!(crate::plex::endpoint_admission_from_reply(200, body),
+            crate::plex::EndpointAdmission::Malformed, "body={}", String::from_utf8_lossy(body));
+    }
+    let malformed = crate::plex::EndpointAdmission::Malformed;
     let mut io = ScriptedAdmissionIo { servers: vec![("ours", "fresh-kid-token")],
         admissions: [malformed].into(), checked: Vec::new() };
     let events = run_scripted_admission(&mut io);
@@ -470,6 +490,161 @@ fn refused_first_endpoint_then_authenticated_second_reports_ready_on_second() {
         ("https://10-0-0-10.example.plex.direct:32400".into(), "fresh-kid-token".into()),
         ("https://10-0-0-11.example.plex.direct:32400".into(), "fresh-kid-token".into()),
     ]);
+}
+
+struct ExpiredBudgetIo { probes: usize }
+impl ProfileWorkIo for ExpiredBudgetIo {
+    fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
+        SwitchOutcome::Switched(crate::plex::account::SwitchedUser {
+            uuid: "u-kid".into(), title: "Kid".into(), auth_token: "kid-account-token".into(),
+            ..Default::default()
+        })
+    }
+    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+        Ok(vec![Resource { name: "Server".into(), client_identifier: "ours".into(),
+            provides: "server".into(), owned: true, access_token: "fresh-kid-token".into(),
+            ..Default::default() }])
+    }
+    fn probe(&mut self, resource: &Resource, _: &[i64]) -> (Option<SourceRef>, SettledProbe) {
+        self.probes += 1;
+        let plan = probe::plan(resource, CredentialPolicy::build());
+        (None, settled_probe(&plan, Outcome::Unreachable, None, None))
+    }
+    fn admission_budget(&self) -> Duration { Duration::ZERO }
+    fn gap(&mut self) {}
+}
+
+#[test]
+fn exhausted_switch_admission_budget_fails_with_timeout_evidence_before_another_attempt() {
+    let stored = cached_session(None);
+    let sink = CapturingSink::default();
+    let mut io = ExpiredBudgetIo { probes: 0 };
+    profile_switch_worker_with_io(1, SessionIdentity::of(&stored), stored,
+        UserTile { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() },
+        None, false, &sink, &mut io);
+    let events = sink.0.into_inner();
+    assert_eq!(io.probes, 0, "an exhausted overall budget starts no endpoint attempt");
+    assert_eq!(switch_failure_event(&events),
+        Some("Couldn't switch profile — check the connection."));
+}
+
+struct DiesDuringSecondaryIo {
+    live: std::rc::Rc<std::cell::Cell<bool>>,
+    probes: Vec<String>,
+}
+impl ProfileWorkIo for DiesDuringSecondaryIo {
+    fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
+        SwitchOutcome::Switched(crate::plex::account::SwitchedUser {
+            uuid: "u-kid".into(), title: "Kid".into(), auth_token: "kid-account-token".into(),
+            ..Default::default()
+        })
+    }
+    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+        Ok(vec![
+            Resource { name: "A".into(), client_identifier: "a".into(), provides: "server".into(),
+                owned: true, access_token: "a-token".into(), ..Default::default() },
+            Resource { name: "B".into(), client_identifier: "b".into(), provides: "server".into(),
+                access_token: "b-token".into(), ..Default::default() },
+        ])
+    }
+    fn probe(&mut self, resource: &Resource, _: &[i64]) -> (Option<SourceRef>, SettledProbe) {
+        self.probes.push(resource.client_identifier.clone());
+        let plan = probe::plan(resource, CredentialPolicy::build());
+        let winner = source(&resource.client_identifier, resource.owned, &resource.access_token);
+        (Some(winner.clone()), settled_probe(&plan, Outcome::Reachable, None,
+            Some(winner.address)))
+    }
+    fn admit(&mut self, source: &SourceRef, _: &str) -> crate::plex::EndpointAdmission {
+        if source.machine_id == "b" {
+            self.live.set(false);
+            crate::plex::EndpointAdmission::Timeout
+        } else {
+            crate::plex::EndpointAdmission::Usable
+        }
+    }
+    fn gap(&mut self) {}
+}
+
+struct LivenessSink {
+    live: std::rc::Rc<std::cell::Cell<bool>>,
+    events: std::cell::RefCell<Vec<AuthProgress>>,
+}
+impl owner::ObservationSink for LivenessSink {
+    fn live(&self) -> bool { self.live.get() }
+    fn progress(&self, value: AuthProgress) -> bool {
+        self.events.borrow_mut().push(value);
+        self.live.get()
+    }
+    fn terminal(&self, value: AuthProgress) -> bool {
+        self.events.borrow_mut().push(value);
+        self.live.get()
+    }
+}
+
+#[test]
+fn dead_output_stops_the_post_ready_endpoint_retry_loop() {
+    let live = std::rc::Rc::new(std::cell::Cell::new(true));
+    let sink = LivenessSink { live: live.clone(), events: Default::default() };
+    let mut io = DiesDuringSecondaryIo { live, probes: Vec::new() };
+    let stored = cached_session(None);
+    profile_switch_worker_with_io(1, SessionIdentity::of(&stored), stored,
+        UserTile { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() },
+        None, false, &sink, &mut io);
+    assert_eq!(io.probes, ["a", "b"], "no retry may start after output cancellation");
+    assert!(sink.events.into_inner().iter().any(|event| matches!(event,
+        AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+            outcome: ProfileSwitchOutcomeProgress::Ready { .. }, .. }))));
+}
+
+struct UnavailableSecondaryIo;
+impl ProfileWorkIo for UnavailableSecondaryIo {
+    fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
+        SwitchOutcome::Switched(crate::plex::account::SwitchedUser {
+            uuid: "u-kid".into(), title: "Kid".into(), auth_token: "kid-account-token".into(),
+            ..Default::default()
+        })
+    }
+    fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+        Ok(vec![
+            Resource { name: "A".into(), client_identifier: "ours".into(), provides: "server".into(),
+                owned: true, access_token: "fresh-a-token".into(), ..Default::default() },
+            Resource { name: "B".into(), client_identifier: "b".into(), provides: "server".into(),
+                access_token: "fresh-b-token".into(), ..Default::default() },
+        ])
+    }
+    fn probe(&mut self, resource: &Resource, _: &[i64]) -> (Option<SourceRef>, SettledProbe) {
+        let plan = probe::plan(resource, CredentialPolicy::build());
+        if resource.client_identifier == "b" {
+            (None, settled_probe(&plan, Outcome::Unreachable, None, None))
+        } else {
+            let winner = source("ours", true, &resource.access_token);
+            (Some(winner.clone()), settled_probe(&plan, Outcome::Reachable, None,
+                Some(winner.address)))
+        }
+    }
+    fn gap(&mut self) {}
+}
+
+#[test]
+fn unavailable_secondary_grant_stays_in_the_saved_profile_but_not_the_active_roster() {
+    let mut stored = cached_session(None);
+    stored.sources.push(source("b", false, "old-b-token"));
+    let sink = CapturingSink::default();
+    profile_switch_worker_with_io(1, SessionIdentity::of(&stored), stored,
+        UserTile { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() },
+        None, false, &sink, &mut UnavailableSecondaryIo);
+    let events = sink.0.into_inner();
+    let delta = events.iter().find_map(|event| match event {
+        AuthProgress::ProfileSwitch(ProfileSwitchProgress {
+            outcome: ProfileSwitchOutcomeProgress::Ready { delta, .. }, ..
+        }) => Some(delta), _ => None,
+    }).expect("A is freshly admitted");
+    let cached = delta.cache.as_ref().expect("the profile is saved");
+    assert_eq!(cached.sources.iter().find(|source| source.machine_id == "b").unwrap().token,
+        "fresh-b-token");
+    assert!(delta.sources.iter().find(|source| source.machine_id == "b").unwrap().token.is_empty(),
+        "B was not freshly admitted and cannot become active or primary");
+    assert_eq!(delta.server.machine_id, "ours");
 }
 
 /// Copilot review on PR #105, finding 3: the online profile-switch success path built its

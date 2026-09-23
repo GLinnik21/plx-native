@@ -1719,8 +1719,7 @@ impl SessionMachine {
         let Some(tile) = self.state.users.get(index).cloned() else { return false };
         if self.state.next_req.checked_add(1).is_none() { return false; }
         if self.advance_epoch(emit).is_none() { return false; }
-        let same_user = pin.is_none() && !tile.protected && !self.state.persisted.user.uuid.is_empty()
-            && tile.uuid == self.state.persisted.user.uuid && !self.state.persisted.pms_token().is_empty();
+        let same_user = super::may_reuse_seated_profile(&self.state.persisted, &tile, pin.as_deref());
         if same_user {
             self.state.error.clear();
             self.state.phase = Phase::Ready;
@@ -2051,18 +2050,26 @@ impl SessionMachine {
                 }
                 super::ServerRosterOutcome::Reconcile { resources, found, household, settled } => {
                     if !self.state.persisted.active_profile_is_admin() {
-                        if settled.is_empty() {
+                        let mut next = self.state.persisted.clone();
+                        if super::clear_account_grant_contamination(&mut next, resources) {
+                            let patch = CredentialPatch::of(&next);
+                            delta.credentials = Some(patch.clone());
+                            plan.credentials = Some(patch);
+                            plan.registry = Self::roster_plan(&next, settled);
+                        } else if settled.is_empty() {
                             self.retire(req, emit);
                             return true;
+                        } else {
+                            plan.registry = settled.iter().cloned().map(RegistryPlan::Probe).collect();
                         }
-                        plan.registry = settled.iter().cloned().map(RegistryPlan::Probe).collect();
                     } else {
                         let mut next = self.state.persisted.clone();
                         let refreshed = super::refreshed_sources(&next.sources, found, resources, household);
                         let usable = !refreshed.is_empty();
                         let sources = if usable { refreshed } else { next.sources.clone() };
                         let roster_changed = !super::same_sources(&sources, &next.sources);
-                        let moved = usable && super::reconcile_refresh_session(&mut next, &sources);
+                        let moved = !found.is_empty()
+                            && super::reconcile_refresh_session(&mut next, found);
                         next.sources = sources;
                         let repaired = next.refresh_profile_record();
                         if !(roster_changed || moved || repaired) {
@@ -2075,7 +2082,12 @@ impl SessionMachine {
                             let patch = CredentialPatch::of(&next);
                             delta.credentials = Some(patch.clone());
                             plan.credentials = Some(patch);
-                            plan.registry = Self::roster_plan(&next, settled);
+                            let primary = found.iter()
+                                .position(|source| source.machine_id == next.server.machine_id);
+                            plan.registry = vec![RegistryPlan::Install {
+                                sources: found.clone(), primary, replace: true,
+                            }];
+                            plan.registry.extend(settled.iter().cloned().map(RegistryPlan::Probe));
                         }
                     }
                 }
@@ -2102,8 +2114,9 @@ impl SessionMachine {
             },
             Observation::ProfileRoster(progress) => {
                 let mut next = self.state.persisted.clone();
-                let sources = super::profile_sources(&next.sources, &progress.reached,
+                let cached_sources = super::profile_sources(&next.sources, &progress.reached,
                     &progress.resources, &next.household_ids());
+                let sources = super::admitted_profile_sources(&cached_sources, &progress.reached);
                 let Some(primary) = sources.iter()
                     .find(|s| s.machine_id == next.server.machine_id && s.dialable())
                     .or_else(|| sources.iter().find(|s| s.dialable())).cloned() else {
@@ -2114,6 +2127,10 @@ impl SessionMachine {
                 next.server = super::server_ref(&primary);
                 next.user.token = primary.token;
                 next.refresh_profile_record();
+                if let Some(profile) = next.profiles.iter_mut()
+                    .find(|profile| profile.uuid == next.user.uuid) {
+                    profile.sources = cached_sources;
+                }
                 let patch = CredentialPatch::of(&next);
                 delta.credentials = Some(patch.clone());
                 if !self.state.apply_pending { plan.credentials = Some(patch); }
@@ -4158,6 +4175,53 @@ mod tests {
     }
 
     #[test]
+    fn non_admin_roster_refresh_heals_an_account_grant_persisted_as_the_profile_token() {
+        let _g = crate::testlock::serial();
+        let users = vec![crate::plex::session::HomeUserRef { id: 2,
+            uuid: "u-managed".into(), title: "Managed".into(), admin: false,
+            ..Default::default() }];
+        let mut owner = roster_refresh_fixture("u-managed", users);
+        for source in &mut owner.state.persisted.sources {
+            source.token = "account-server-token".into();
+        }
+        owner.state.persisted.server.token = "account-server-token".into();
+        owner.state.persisted.user.token = "account-server-token".into();
+        owner.state.persisted.refresh_profile_record();
+        owner.state.committed_credentials = CredentialPatch::of(&owner.state.persisted);
+
+        let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
+        owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        let epoch = owner.state.epoch;
+        let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+        let resource = crate::plex::account::Resource { name: "Profile server".into(),
+            client_identifier: "profile-machine".into(), provides: "server".into(), owned: true,
+            access_token: "account-server-token".into(), ..Default::default() };
+        let envelope = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::ServerRoster }, admission: AdmissionId(req),
+            arrival: 1, terminal: true, lifecycle: None,
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ServerRoster(
+                super::super::ServerRosterProgress { epoch, expected,
+                    outcome: super::super::ServerRosterOutcome::Reconcile {
+                        resources: vec![resource], found: Vec::new(), household: vec![2], settled: Vec::new(),
+                    },
+                }))),
+        };
+        let effects = step(&mut owner, SessionEvent::Result(envelope));
+        let plan = effects.iter().find_map(|effect| match effect {
+            SessionFx::Commit { plan, .. } => Some(plan), _ => None,
+        }).expect("contamination repair must use the normal commit path");
+        let patch = plan.credentials.as_ref().expect("the repair must be persisted");
+        assert!(patch.server.token.is_empty());
+        assert!(patch.user.token.is_empty());
+        assert!(patch.sources[0].token.is_empty());
+        assert!(patch.profiles[0].server.token.is_empty());
+        assert!(patch.profiles[0].user.token.is_empty());
+        assert!(patch.profiles[0].sources[0].token.is_empty());
+        assert!(matches!(&plan.registry[..], [RegistryPlan::Install { replace: true, .. }]));
+    }
+
+    #[test]
     fn unknown_roster_profile_refresh_keeps_profile_credentials_and_publishes_probes() {
         let _g = crate::testlock::serial();
         assert_non_admin_roster_refresh_is_probe_only(roster_refresh_fixture("u-unknown", vec![
@@ -4193,6 +4257,55 @@ mod tests {
     fn no_home_account_roster_refresh_accepts_refreshed_tokens() {
         let _g = crate::testlock::serial();
         assert_admin_roster_refresh_accepts_credentials(roster_refresh_fixture("", Vec::new()));
+    }
+
+    #[test]
+    fn admin_refresh_never_keeps_a_failed_admission_cached_primary_current() {
+        let _g = crate::testlock::serial();
+        let users = vec![crate::plex::session::HomeUserRef { id: 1, uuid: "u-owner".into(),
+            title: "Owner".into(), admin: true, ..Default::default() }];
+        let mut owner = roster_refresh_fixture("u-owner", users);
+        let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
+        owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
+        let epoch = owner.state.epoch;
+        let expected = super::super::SessionIdentity::of(&owner.state.persisted);
+        let admitted = crate::plex::session::SourceRef { machine_id: "admitted-share".into(),
+            name: "Admitted share".into(), token: "share-token".into(), address: "10.0.0.9".into(),
+            port: 32400, origin_url: "https://10-0-0-9.example.plex.direct:32400".into(),
+            tier: Some(crate::plex::probe::Location::Remote), ..Default::default() };
+        let resources = vec![
+            crate::plex::account::Resource { name: "Cached primary".into(),
+                client_identifier: "profile-machine".into(), provides: "server".into(), owned: true,
+                access_token: "fresh-primary-token".into(), ..Default::default() },
+            crate::plex::account::Resource { name: admitted.name.clone(),
+                client_identifier: admitted.machine_id.clone(), provides: "server".into(),
+                access_token: admitted.token.clone(), ..Default::default() },
+        ];
+        let envelope = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::ServerRoster }, admission: AdmissionId(req),
+            arrival: 1, terminal: true, lifecycle: None,
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ServerRoster(
+                super::super::ServerRosterProgress { epoch, expected,
+                    outcome: super::super::ServerRosterOutcome::Reconcile {
+                        resources, found: vec![admitted.clone()], household: vec![1], settled: Vec::new(),
+                    },
+                }))),
+        };
+        let effects = step(&mut owner, SessionEvent::Result(envelope));
+        let plan = effects.iter().find_map(|effect| match effect {
+            SessionFx::Commit { plan, .. } => Some(plan), _ => None,
+        }).expect("the admitted endpoint changes the roster");
+        let patch = plan.credentials.as_ref().unwrap();
+        assert_eq!(patch.server.machine_id, admitted.machine_id);
+        let install = plan.registry.iter().find_map(|plan| match plan {
+            RegistryPlan::Install { sources, primary, replace } => Some((sources, primary, replace)),
+            _ => None,
+        }).expect("refresh installs an admitted roster");
+        assert_eq!(install.0.iter().map(|source| source.machine_id.as_str()).collect::<Vec<_>>(),
+            ["admitted-share"]);
+        assert_eq!(*install.1, Some(0));
+        assert!(*install.2);
     }
 
     /// Issue #132's production half: a signed-in account whose cached roster is EMPTY (a failed
