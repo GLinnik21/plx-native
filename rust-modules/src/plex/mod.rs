@@ -121,8 +121,9 @@ pub(crate) use servers::{
 #[allow(unused_imports)]
 pub(crate) use servers::register_pinned_with_client_id;
 
-/// Evidence from the authenticated admission request that follows an identity probe. Reaching
-/// `/identity` proves the machine; this proves the exact per-(profile, machine) token can browse it.
+/// Evidence from the authenticated admission request made when an identity winner is considered
+/// for primary. Reaching `/identity` proves the machine; this proves the exact per-(profile,
+/// machine) token can browse it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EndpointAdmission {
     Usable,

@@ -122,15 +122,19 @@ relay leg. If nothing eligible verifies, the result is `Reach::InsecureOnly` (pl
 apart from `Unreachable`, that **outranks a 401**. Before this it counted as reached, which was
 issue #95 itself.
 
-**Online selection also proves the token after it proves the machine.** `/identity` is deliberately
-unauthenticated, so a fresh identity winner is only a known endpoint. Before sign-in, rediscovery or
-a profile switch may select it, auth sends `GET /library/sections` through that source's exact
-origin, resolve pin, transport policy and per-machine token. A valid empty sections container is
-success; 401/403, timeout, transport refusal and malformed JSON remain distinct evidence, and the
-search continues with the next eligible endpoint/server. Cached addresses remain candidates, not
-proof: a profile's own resource grant may stay in its offline credential cache, but it is projected
-tokenless into the live roster until this fresh two-step admission succeeds. Offline cached-profile
-seating is the explicit exception and keeps its existing PIN/cache contract.
+**Online primary selection also proves the token after it proves the machine.** `/identity` is
+deliberately unauthenticated, so a fresh identity winner is only a known endpoint. Before sign-in,
+rediscovery or a profile switch may select it as primary, auth sends `GET /library/sections`
+through that source's exact origin, resolve pin, transport policy and per-machine token. A valid
+empty sections container is success; 401/403, timeout, transport refusal and malformed JSON remain
+distinct evidence, and primary selection continues with the next eligible endpoint/server.
+Secondary servers keep the profile-specific grants plex.tv returned live and cached; their identity
+probes refresh endpoint and reachability facts without making every secondary browse before it can
+be registered. Direct identity candidates settle as one race, and a relay fallback receives its own
+local/remote probe opportunity. Authenticated fallback attempts begin a separate 20-second overall
+budget only once the first identity winner exists, with each request still capped at 5 seconds for
+Local and 10 seconds for Remote/Relay. Offline cached-profile seating keeps its existing PIN/cache
+contract.
 
 Slots are keyed on `machineIdentifier` because that is the only identity that survives a server
 changing address — and a registration that has *learned* an id **adopts** an address-only slot

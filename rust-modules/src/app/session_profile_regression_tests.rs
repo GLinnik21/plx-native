@@ -63,7 +63,6 @@ mod tests {
         }
         fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> { panic!("refusal cannot discover") }
         fn probe(&mut self, _: &Resource, _: &[i64]) -> (Option<crate::plex::session::SourceRef>, crate::auth::SettledProbe) { panic!("refusal cannot probe") }
-        fn gap(&mut self) { panic!("refusal cannot wait") }
     }
 
     #[test]
@@ -206,9 +205,6 @@ mod tests {
                 crate::plex::probe::Outcome::Reachable, Some(crate::plex::probe::Location::Local),
                 Some(address.into())))
         }
-        fn gap(&mut self) {
-            assert_eq!(self.probes, 1, "late share probing occurs after the initial Ready");
-        }
     }
 
     fn online_records(rig: &mut Bridge, d: &mut Dispatcher<AppHost>) -> Vec<SessionEnvelope> {
@@ -325,7 +321,6 @@ mod tests {
         fn probe(&mut self, _: &Resource, _: &[i64]) -> (Option<crate::plex::session::SourceRef>, crate::auth::SettledProbe) {
             panic!("offline seating must not probe")
         }
-        fn gap(&mut self) { panic!("offline seating has no probe gap") }
     }
 
     fn cached_fixture() -> crate::plex::session::Session {

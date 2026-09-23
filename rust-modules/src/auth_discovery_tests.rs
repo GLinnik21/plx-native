@@ -179,6 +179,56 @@ fn relay_is_dialled_only_after_every_nonrelay_candidate_settles() {
 }
 
 #[test]
+fn relay_only_server_gets_a_fresh_probe_budget_after_direct_timeouts_and_is_admitted() {
+    let mut resource = resource(
+        r#"{"name":"ours","clientIdentifier":"race-machine","provides":"server","owned":true,
+            "accessToken":"profile-token","connections":[
+              {"protocol":"https","address":"192.0.2.10","port":32400,
+               "uri":"https://192-0-2-10.h.plex.direct:32400","local":true,"relay":false},
+              {"protocol":"https","address":"relay.example.test","port":443,
+               "uri":"https://relay.example.test:443","local":false,"relay":true}]}"#,
+    );
+    resource.public_address_matches = true;
+    let policy = ProbeDeadlines {
+        local: Duration::from_millis(10),
+        remote: Duration::from_millis(50),
+    };
+    let relay_budgets = Arc::new(Mutex::new(Vec::new()));
+    let relay_budgets_at_dial = Arc::clone(&relay_budgets);
+    let dial: ProbeDial = Arc::new(move |origin, _, budget| {
+        if origin.host() == "relay.example.test" {
+            relay_budgets_at_dial.lock().unwrap().push(budget);
+            if budget == policy.remote {
+                return (200, identity_json("race-machine"));
+            }
+            return (0, Vec::new());
+        }
+        std::thread::sleep(policy.local + Duration::from_millis(5));
+        (0, Vec::new())
+    });
+    let plan = probe::plan(&resource, CredentialPolicy::HttpsOnly);
+    let mut probe_one = move |_: &ProbePlan, _: &[String]| {
+        probe_server_racing(&plan, Arc::clone(&dial), &threaded_spawn, policy,
+            &mut |_, _, _| {})
+    };
+    let mut admissions = 0;
+    let resolved = resolve_roster_using_admission(
+        &[resource], &[], CredentialPolicy::HttpsOnly, &mut probe_one,
+        &mut |_| {
+            admissions += 1;
+            crate::plex::EndpointAdmission::Usable
+        },
+        &mut |_, _, _| {}, &mut |_, _, _, _| {},
+    );
+
+    assert!(matches!(resolved, Resolved::Reached(ref found)
+        if found.len() == 1 && found[0].tier == Some(probe::Location::Relay)));
+    assert_eq!(admissions, 1, "the relay winner must reach authenticated admission");
+    assert_eq!(relay_budgets.lock().unwrap().as_slice(), [policy.remote],
+        "the relay identity phase owns a fresh remote probe budget");
+}
+
+#[test]
 fn a_reachable_relay_beats_a_direct_proxy_401() {
     let mut plan = race_plan();
     plan.candidates.truncate(1);
@@ -234,7 +284,7 @@ fn discovery_retries_the_same_server_via_relay_after_direct_admission_times_out(
         crate::plex::EndpointAdmission::Usable].into_iter();
     let resolved = resolve_roster_using_admission(
         &[resource], &[], CredentialPolicy::HttpsOnly, &mut probe_one,
-        &mut |_| admissions.next().unwrap(), &mut |_, _, _| {}, &mut || {},
+        &mut |_| admissions.next().unwrap(), &mut |_, _, _| {},
         &mut |_, _, _, _| {},
     );
     let Resolved::Reached(found) = resolved else { panic!("relay admission must retain the server") };
@@ -675,7 +725,6 @@ fn issue_95_resolve_roster_only_ever_records_an_https_origin() {
             &[],
             CredentialPolicy::HttpsOnly,
             &mut probe_one,
-            &mut || {},
             &mut |_, _, _, _| {},
         );
     let Resolved::Reached(roster) = resolved else {
@@ -712,7 +761,6 @@ fn issue_95_without_a_relay_a_plaintext_only_answer_is_not_reached() {
             &[],
             CredentialPolicy::HttpsOnly,
             &mut probe_one,
-            &mut || {},
             &mut |_, _, _, _| {},
         );
     assert!(
@@ -861,7 +909,6 @@ fn a_pinned_winner_is_recorded_as_the_plex_direct_origin_not_the_dialled_address
             &[],
             CredentialPolicy::HttpsOnly,
             &mut probe_one,
-            &mut || {},
             &mut |_, _, _, _| {},
         );
     let Resolved::Reached(roster) = resolved else {
@@ -1020,7 +1067,6 @@ fn e2e_real_curl_resolve_roster_only_ever_records_the_pinned_https_origin() {
         &[],
         CredentialPolicy::HttpsOnly,
         &mut probe_one,
-        &mut || {},
         &mut |_, _, _, _| {},
     );
     let Resolved::Reached(roster) = resolved else {
@@ -1084,7 +1130,6 @@ fn e2e_real_curl_tls_failure_with_a_verified_plaintext_answer_yields_insecure_on
         &[],
         CredentialPolicy::HttpsOnly,
         &mut probe_one,
-        &mut || {},
         &mut |_, _, _, _| {},
     );
     match &resolved {
@@ -1147,7 +1192,7 @@ fn a_candidate_whose_label_does_not_encode_its_own_address_gets_no_pin() {
 }
 
 #[test]
-fn servers_are_serial_owned_then_public_match_with_one_gap_between_each() {
+fn servers_are_probed_in_owned_then_public_match_order_without_a_gap_hook() {
     let resources = vec![
         resource(
             r#"{"name":"unmatched","clientIdentifier":"shared-u","provides":"server",
@@ -1163,7 +1208,6 @@ fn servers_are_serial_owned_then_public_match_with_one_gap_between_each() {
         ),
     ];
     let mut order = Vec::new();
-    let mut gaps = 0;
     let resolved = resolve_roster_using(
         &resources,
         &[],
@@ -1172,15 +1216,10 @@ fn servers_are_serial_owned_then_public_match_with_one_gap_between_each() {
             order.push(plan.machine_id.clone());
             Reach::No
         },
-        &mut || gaps += 1,
         &mut |_, _, _, _| {},
     );
     assert!(matches!(resolved, Resolved::None { refused: false, .. }));
     assert_eq!(order, ["owned", "shared-m", "shared-u"]);
-    assert_eq!(
-        gaps, 2,
-        "three serial servers have exactly two inter-server gaps"
-    );
 }
 
 #[test]
@@ -1214,7 +1253,6 @@ fn every_server_settlement_publishes_its_specific_state_and_winning_tier() {
             "denied" => Reach::Refused,
             _ => Reach::No,
         },
-        &mut || {},
         &mut |plan, outcome, tier, address| observed.push((plan.machine_id.clone(), outcome, tier, address)),
     );
 

@@ -1,7 +1,7 @@
-//! serde response DTOs — only the fields the app consumes. Everything is
-//! `#[serde(default)]` to mirror the "all optional" reality of PMS JSON (a trimmed
-//! response never fails to deserialize). `kind` renames the JSON `type` field (a Rust
-//! keyword). These are read-only: the app's own view structs are populated *from* them.
+//! serde response DTOs — only the fields the app consumes. The top-level `MediaContainer` is
+//! required; fields inside it default to mirror the "all optional" reality of PMS JSON (a trimmed
+//! container does not fail to deserialize). `kind` renames the JSON `type` field (a Rust keyword).
+//! These are read-only: the app's own view structs are populated *from* them.
 use serde::Deserialize;
 
 /// `{ "MediaContainer": … }` — every list/detail response.

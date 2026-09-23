@@ -2050,18 +2050,11 @@ impl SessionMachine {
                 }
                 super::ServerRosterOutcome::Reconcile { resources, found, household, settled } => {
                     if !self.state.persisted.active_profile_is_admin() {
-                        let mut next = self.state.persisted.clone();
-                        if super::clear_account_grant_contamination(&mut next, resources) {
-                            let patch = CredentialPatch::of(&next);
-                            delta.credentials = Some(patch.clone());
-                            plan.credentials = Some(patch);
-                            plan.registry = Self::roster_plan(&next, settled);
-                        } else if settled.is_empty() {
+                        if settled.is_empty() {
                             self.retire(req, emit);
                             return true;
-                        } else {
-                            plan.registry = settled.iter().cloned().map(RegistryPlan::Probe).collect();
                         }
+                        plan.registry = settled.iter().cloned().map(RegistryPlan::Probe).collect();
                     } else {
                         let mut next = self.state.persisted.clone();
                         let refreshed = super::refreshed_sources(&next.sources, found, resources, household);
@@ -2114,9 +2107,8 @@ impl SessionMachine {
             },
             Observation::ProfileRoster(progress) => {
                 let mut next = self.state.persisted.clone();
-                let cached_sources = super::profile_sources(&next.sources, &progress.reached,
+                let sources = super::profile_sources(&next.sources, &progress.reached,
                     &progress.resources, &next.household_ids());
-                let sources = super::admitted_profile_sources(&cached_sources, &progress.reached);
                 let Some(primary) = sources.iter()
                     .find(|s| s.machine_id == next.server.machine_id && s.dialable())
                     .or_else(|| sources.iter().find(|s| s.dialable())).cloned() else {
@@ -2127,10 +2119,6 @@ impl SessionMachine {
                 next.server = super::server_ref(&primary);
                 next.user.token = primary.token;
                 next.refresh_profile_record();
-                if let Some(profile) = next.profiles.iter_mut()
-                    .find(|profile| profile.uuid == next.user.uuid) {
-                    profile.sources = cached_sources;
-                }
                 let patch = CredentialPatch::of(&next);
                 delta.credentials = Some(patch.clone());
                 if !self.state.apply_pending { plan.credentials = Some(patch); }
@@ -4175,50 +4163,112 @@ mod tests {
     }
 
     #[test]
-    fn non_admin_roster_refresh_heals_an_account_grant_persisted_as_the_profile_token() {
+    fn same_user_take_ready_keeps_an_unavailable_secondary_live_and_cached() {
         let _g = crate::testlock::serial();
-        let users = vec![crate::plex::session::HomeUserRef { id: 2,
-            uuid: "u-managed".into(), title: "Managed".into(), admin: false,
-            ..Default::default() }];
-        let mut owner = roster_refresh_fixture("u-managed", users);
-        for source in &mut owner.state.persisted.sources {
-            source.token = "account-server-token".into();
-        }
-        owner.state.persisted.server.token = "account-server-token".into();
-        owner.state.persisted.user.token = "account-server-token".into();
-        owner.state.persisted.refresh_profile_record();
-        owner.state.committed_credentials = CredentialPatch::of(&owner.state.persisted);
-
-        let req = owner.allocate(SessionOp::ServerRoster, None).unwrap();
+        let primary = crate::plex::session::SourceRef {
+            machine_id: "a".into(), name: "Primary A".into(), owned: true,
+            token: "kid-a-token".into(), address: "10.0.0.8".into(), port: 32400,
+            origin_url: "https://10-0-0-8.example.plex.direct:32400".into(),
+            tier: Some(crate::plex::probe::Location::Local), ..Default::default()
+        };
+        let secondary = crate::plex::session::SourceRef {
+            machine_id: "b".into(), name: "Secondary B".into(),
+            token: "kid-b-token".into(), address: "10.0.0.9".into(), port: 32400,
+            origin_url: "https://10-0-0-9.example.plex.direct:32400".into(),
+            tier: Some(crate::plex::probe::Location::Remote), ..Default::default()
+        };
+        let user = UserRef { uuid: "u-kid".into(), title: "Kid".into(),
+            token: primary.token.clone(), ..Default::default() };
+        let mut persisted = PersistedSession {
+            client_id: "synthetic-client".into(), account_token: "account-token".into(),
+            server: super::super::server_ref(&primary), user: UserRef { uuid: "u-admin".into(),
+                token: "admin-token".into(), ..Default::default() },
+            home_users: vec![crate::plex::session::HomeUserRef { uuid: "u-kid".into(),
+                title: "Kid".into(), admin: false, ..Default::default() }],
+            sources: vec![primary.clone()], ..Default::default()
+        };
+        persisted.remember_profile(crate::plex::session::ProfileCreds {
+            uuid: user.uuid.clone(), user: user.clone(), server: super::super::server_ref(&primary),
+            sources: vec![primary.clone(), secondary.clone()], pin: None,
+            extensions: Default::default(),
+        });
+        let mut init = SessionInit::captured(persisted);
+        init.phase = Phase::Switching;
+        init.users = vec![UserTile { uuid: "u-kid".into(), title: "Kid".into(), ..Default::default() }];
+        let mut owner = SessionMachine::from_init(init);
+        let req = owner.allocate(SessionOp::ProfileSwitch, None).unwrap();
         owner.state.pending.get_mut(&req).unwrap().admission = AdmissionState::Accepted(AdmissionId(req));
         let epoch = owner.state.epoch;
         let expected = super::super::SessionIdentity::of(&owner.state.persisted);
-        let resource = crate::plex::account::Resource { name: "Profile server".into(),
-            client_identifier: "profile-machine".into(), provides: "server".into(), owned: true,
-            access_token: "account-server-token".into(), ..Default::default() };
-        let envelope = SessionEnvelope {
+        let mut tokenless_secondary = secondary.clone();
+        tokenless_secondary.token.clear();
+        let ready = SessionEnvelope {
             addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
-            key: SessionWorkKey { epoch, op: SessionOp::ServerRoster }, admission: AdmissionId(req),
-            arrival: 1, terminal: true, lifecycle: None,
-            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ServerRoster(
-                super::super::ServerRosterProgress { epoch, expected,
-                    outcome: super::super::ServerRosterOutcome::Reconcile {
-                        resources: vec![resource], found: Vec::new(), household: vec![2], settled: Vec::new(),
+            key: SessionWorkKey { epoch, op: SessionOp::ProfileSwitch }, admission: AdmissionId(req),
+            arrival: 1, terminal: false, lifecycle: None,
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ProfileSwitch(
+                super::super::ProfileSwitchProgress { epoch, expected,
+                    outcome: super::super::ProfileSwitchOutcomeProgress::Ready {
+                        delta: super::super::ProfileDelta {
+                            server: super::super::server_ref(&primary),
+                            sources: vec![primary.clone(), tokenless_secondary], user: user.clone(),
+                            cache: Some(crate::plex::session::ProfileCreds {
+                                uuid: user.uuid.clone(), user: user.clone(),
+                                server: super::super::server_ref(&primary),
+                                sources: vec![primary.clone(), secondary.clone()], pin: None,
+                                extensions: Default::default(),
+                            }),
+                        },
+                        probes: Vec::new(),
                     },
                 }))),
         };
-        let effects = step(&mut owner, SessionEvent::Result(envelope));
-        let plan = effects.iter().find_map(|effect| match effect {
+        let effects = step(&mut owner, SessionEvent::Result(ready));
+        let reply = effects.iter().find_map(|effect| match effect {
+            SessionFx::Commit { req, epoch, arrival, .. } => Some(CommitReply {
+                req: *req, epoch: *epoch, arrival: *arrival, admission: CommitAdmission::RegistryOnly,
+            }),
+            _ => None,
+        }).expect("the profile switch must commit");
+        step(&mut owner, SessionEvent::Commit(reply));
+
+        let next_identity = super::super::SessionIdentity::of(&owner.state.persisted);
+        let resources = vec![
+            crate::plex::account::Resource { name: primary.name.clone(),
+                client_identifier: primary.machine_id.clone(), provides: "server".into(),
+                owned: true, access_token: primary.token.clone(), ..Default::default() },
+            crate::plex::account::Resource { name: secondary.name.clone(),
+                client_identifier: secondary.machine_id.clone(), provides: "server".into(),
+                access_token: secondary.token.clone(), ..Default::default() },
+        ];
+        let roster = SessionEnvelope {
+            addr: Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(req) },
+            key: SessionWorkKey { epoch, op: SessionOp::ProfileSwitch }, admission: AdmissionId(req),
+            arrival: 2, terminal: true, lifecycle: None,
+            outcome: SessionArrival::Data(Arc::new(super::super::observation::Observation::ProfileRoster(
+                super::super::ProfileRosterProgress { epoch, expected: next_identity,
+                    resources, reached: vec![primary.clone()], probes: Vec::new() }))),
+        };
+        let effects = step(&mut owner, SessionEvent::Result(roster));
+        let reply = effects.iter().find_map(|effect| match effect {
+            SessionFx::Commit { req, epoch, arrival, .. } => Some(CommitReply {
+                req: *req, epoch: *epoch, arrival: *arrival, admission: CommitAdmission::RegistryOnly,
+            }),
+            _ => None,
+        }).expect("the unavailable-secondary roster must commit");
+        step(&mut owner, SessionEvent::Commit(reply));
+
+        step(&mut owner, SessionEvent::Command(Command::SelectProfile { index: 0, pin: None }));
+        let effects = step(&mut owner, SessionEvent::Command(Command::TakeReady));
+        let final_plan = effects.iter().find_map(|effect| match effect {
             SessionFx::Commit { plan, .. } => Some(plan), _ => None,
-        }).expect("contamination repair must use the normal commit path");
-        let patch = plan.credentials.as_ref().expect("the repair must be persisted");
-        assert!(patch.server.token.is_empty());
-        assert!(patch.user.token.is_empty());
-        assert!(patch.sources[0].token.is_empty());
-        assert!(patch.profiles[0].server.token.is_empty());
-        assert!(patch.profiles[0].user.token.is_empty());
-        assert!(patch.profiles[0].sources[0].token.is_empty());
-        assert!(matches!(&plan.registry[..], [RegistryPlan::Install { replace: true, .. }]));
+        }).expect("the same-user shortcut must pass through take_ready");
+        let patch = final_plan.credentials.as_ref().expect("take_ready saves the live session");
+        assert_eq!(patch.sources.iter().find(|source| source.machine_id == "b").unwrap().token,
+            "kid-b-token", "B remains live even though its identity probe was unavailable");
+        assert_eq!(patch.profiles.iter().find(|profile| profile.uuid == "u-kid").unwrap()
+            .sources.iter().find(|source| source.machine_id == "b").unwrap().token,
+            "kid-b-token", "take_ready must not overwrite the cached profile with a tokenless B");
     }
 
     #[test]
