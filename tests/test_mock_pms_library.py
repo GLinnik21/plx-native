@@ -3,10 +3,12 @@ import json
 import hashlib
 import pathlib
 import re
+import subprocess
+import tempfile
 import unittest
 import urllib.request
 
-from mock_pms import Library, MockPms, serve
+from mock_pms import EXTRA_MEDIA_RK_BASE, Library, MockPms, serve
 
 
 def get(pms, path):
@@ -98,6 +100,94 @@ class LibraryRail(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+
+class DoviAndExtraMedia(unittest.TestCase):
+    """The DOVI*/container derivation `--extra-media` relies on — the field NAMES a real PMS
+    sends (docs/pms-api.md, verified live 2026-08-21), mapped from ffprobe's own "DOVI
+    configuration record" side-data shape rather than probed against a real DV file here."""
+
+    def test_dovi_wire_maps_the_real_pms_field_names(self):
+        stream = {
+            "side_data_list": [{
+                "side_data_type": "DOVI configuration record",
+                "dv_version_major": 1, "dv_version_minor": 0,
+                "dv_profile": 8, "dv_level": 6,
+                "rpu_present_flag": 1, "el_present_flag": 0, "bl_present_flag": 1,
+                "dv_bl_signal_compatibility_id": 1,
+            }],
+        }
+        self.assertEqual(Library._dovi_wire(stream), {
+            "DOVIPresent": True, "DOVIProfile": 8, "DOVIBLCompatID": 1,
+            "DOVIELPresent": False, "DOVILevel": 6, "DOVIVersion": "1.0",
+            "DOVIBLPresent": True, "DOVIRPUPresent": True,
+        })
+
+    def test_dovi_wire_is_silent_without_a_configuration_record(self):
+        # Silence must not convict (metadata::Dovi's rule): an ordinary SDR/HDR10 stream, one
+        # with no side-data at all, and one whose side-data is unrelated (e.g. embedded cover
+        # art) must all send NONE of the DOVI* keys rather than a false profile/compat id of 0.
+        self.assertEqual(Library._dovi_wire({"side_data_list": []}), {})
+        self.assertEqual(Library._dovi_wire({}), {})
+        self.assertEqual(
+            Library._dovi_wire({"side_data_list": [{"side_data_type": "Something Else"}]}), {})
+
+    def test_resolution_label_buckets_by_decoded_size_not_a_hardcoded_1080p(self):
+        self.assertEqual(Library._resolution_label(3840, 1604), ("4k", "4K"))
+        self.assertEqual(Library._resolution_label(1920, 1080), ("1080", "1080p"))
+        self.assertEqual(Library._resolution_label(1280, 720), ("720", "720p"))
+        self.assertEqual(Library._resolution_label(64, 64), ("sd", "SD"))
+
+    def test_extra_media_ids_never_collide_with_a_large_generated_library_or_the_verify_block(self):
+        lib = Library(movies=1000, shows=50, rail_fixture=True)
+        self.assertNotIn(EXTRA_MEDIA_RK_BASE, lib.items)
+        self.assertLess(max(lib.items), EXTRA_MEDIA_RK_BASE)
+
+    def test_extra_media_container_and_content_type_come_from_the_file_extension(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mp4 = pathlib.Path(tmp) / "clip.mp4"
+            mkv = pathlib.Path(tmp) / "clip.mkv"
+            for out in (mp4, mkv):
+                subprocess.check_call([
+                    "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                    "color=size=64x64:rate=24:duration=1", "-f", "lavfi", "-i",
+                    "sine=frequency=330:duration=1", "-c:v", "libx264", "-c:a", "aac", "-t", "1",
+                    str(out)])
+            server, pms = serve(0, movies=0, extra_media=[mp4, mkv])
+            try:
+                lib = pms.lib
+                rks = sorted(lib.extra_media_files)
+                self.assertEqual(rks, [EXTRA_MEDIA_RK_BASE, EXTRA_MEDIA_RK_BASE + 1])
+                base = f"http://127.0.0.1:{server.server_address[1]}"
+                for rk, want_container, want_ct in (
+                        (rks[0], "mp4", "video/mp4"), (rks[1], "mkv", "video/x-matroska")):
+                    media = lib.items[rk]["Media"][0]
+                    part = media["Part"][0]
+                    self.assertEqual(media["container"], want_container)
+                    self.assertTrue(part["key"].endswith(f"/file.{want_container}"), part["key"])
+                    self.assertEqual(lib.media_content_type[part["id"]], want_ct)
+                    # the actual byte-serving path (Handler._media), not the synthetic-item
+                    # fallback in MockPms.handle — this is the header the app's part probe sees.
+                    with urllib.request.urlopen(base + part["key"], timeout=5) as response:
+                        self.assertEqual(response.headers["Content-Type"], want_ct)
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_startup_prints_ratingkey_to_filename_for_every_extra_media_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = pathlib.Path(tmp) / "clip.mp4"
+            subprocess.check_call([
+                "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                "color=size=64x64:rate=24:duration=1", "-f", "lavfi", "-i",
+                "sine=frequency=330:duration=1", "-c:v", "libx264", "-c:a", "aac", "-t", "1",
+                str(clip)])
+            server, pms = serve(0, movies=0, extra_media=[clip])
+            try:
+                self.assertEqual(pms.lib.extra_media_files, {EXTRA_MEDIA_RK_BASE: clip})
+            finally:
+                server.shutdown()
+                server.server_close()
 
 
 if __name__ == "__main__":
