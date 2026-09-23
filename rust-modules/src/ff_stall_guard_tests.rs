@@ -1722,73 +1722,235 @@ fn a_hold_still_abandons_a_remainder_still_on_the_wire() {
     }
 }
 
+/// A test-only RAII guard: drop always drains [`super::drain_test_elapsed`] so one test's
+/// leftover injected duration can never bleed into the next test that reuses this OS thread. It
+/// does not assert the queue is empty — each test's own exact-sum assertion on `body_active_us`
+/// already catches a duration going unconsumed, and a second panic from this destructor while
+/// that first one unwinds would abort the whole process instead of reporting one clean failure.
+/// Bind ONE guard per test (`let _guard = InjectedElapsed::guard();`) and push every duration
+/// through [`InjectedElapsed::push_us`], which does not itself guard anything — a per-push guard
+/// would drain the queue after every single push, including entries still waiting for a later
+/// production call to consume them.
+struct InjectedElapsed;
+
+impl InjectedElapsed {
+    fn guard() -> InjectedElapsed {
+        InjectedElapsed
+    }
+
+    fn push_us(micros: u64) {
+        super::push_test_elapsed(std::time::Duration::from_micros(micros));
+    }
+}
+
+impl Drop for InjectedElapsed {
+    fn drop(&mut self) {
+        // Drain only — never assert here. A test's own exact-sum assertion already catches an
+        // injected duration going unconsumed (the tally comes up short); panicking a SECOND time
+        // from this destructor while that first assertion is already unwinding would abort the
+        // whole process (Rust aborts on a double panic) instead of reporting one clean failure.
+        let _ = super::drain_test_elapsed();
+    }
+}
+
 /// The transfer step a receipt takes is body work, counted once. `read_cb`'s completion query may
 /// run curl's `perform` — receiving (on https, decrypting) a burst into the transfer buffer —
 /// before the timed read that then only copies from it. That step's time belongs in
 /// `body_active_us` alongside the bytes it received, or the capacity observation is inflated and
-/// body work lands in the fixed-overhead term. Armed and unarmed fetches alike.
+/// body work lands in the fixed-overhead term.
+///
+/// Deterministic, not a wall-clock ratio: the receipt's and the read's own elapsed measurements
+/// are injected (`InjectedElapsed`), so the assertion is an exact sum rather than "close enough"
+/// — a real scheduler can preempt either interval independently and make a wall-clock comparison
+/// flake on a loaded runner without the accounting itself being wrong.
 #[test]
 fn transfer_work_a_receipt_takes_is_counted_in_body_time() {
     use std::io::{Read, Write};
     const BODY: usize = 8 << 20;
     let Some(_gate) = curl_gate() else { return };
     let _reset = SharedHoldReset::at(PLAYHEAD_NS);
-    let mut undercounted = Vec::new();
-    for reserve in [Some(6_000), None] {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback server");
-        let port = listener.local_addr().unwrap().port();
-        let (send_body, body_cue) = std::sync::mpsc::channel::<()>();
-        let server = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().expect("accept");
-            let mut request = Vec::new();
-            let mut chunk = [0u8; 512];
-            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-                let n = socket.read(&mut chunk).expect("read request");
-                if n == 0 {
-                    return;
-                }
-                request.extend_from_slice(&chunk[..n]);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback server");
+    let port = listener.local_addr().unwrap().port();
+    let (send_body, body_cue) = std::sync::mpsc::channel::<()>();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().expect("accept");
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 512];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let n = socket.read(&mut chunk).expect("read request");
+            if n == 0 {
+                return;
             }
-            let headers = format!("HTTP/1.1 200 OK\r\nContent-Length: {BODY}\r\n\r\n");
-            socket.write_all(headers.as_bytes()).expect("headers");
-            socket.flush().expect("flush");
-            let _ = body_cue.recv();
-            // Blocks once the socket buffers fill; the reader is dropped before the join, which
-            // ends the write.
-            let _ = socket.write_all(&vec![0x47u8; BODY]);
-        });
-        let cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/segment.ts"), 0)
-            .expect("fixture: the open must succeed");
-        let _ = send_body.send(());
-        // Let the burst fill the kernel's buffers while the transfer buffer is empty.
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let mut aq = crate::aq::aq_new(1 << 20);
-        let mut state = avio_state_for(
-            Src::Curl(cs),
-            &mut *aq,
-            BODY as i64,
-            SegmentAcquisition::for_test(reserve, false, false),
-        );
-        let op = &mut state as *mut AvioState as *mut c_void;
-        let mut dst = [0u8; 4];
-        let started = std::time::Instant::now();
-        assert_eq!(read_cb(op, dst.as_mut_ptr(), 4), 4, "fixture: 4 body bytes");
-        let wall_us = started.elapsed().as_micros() as u64;
-        // The read_cb is the receipt's transfer step plus a 4-byte copy; the step dominates.
-        if state.body_active_us.saturating_mul(2) < wall_us {
-            undercounted.push(format!(
-                "reserve={reserve:?}: body_active_us={} of a {wall_us} us read",
-                state.body_active_us
-            ));
+            request.extend_from_slice(&chunk[..n]);
         }
-        drop(state);
-        crate::aq::aq_destroy(&mut *aq);
-        server.join().expect("loopback server");
-    }
-    assert!(
-        undercounted.is_empty(),
-        "the transfer step a receipt took must be counted as body time: {undercounted:#?}"
+        let headers = format!("HTTP/1.1 200 OK\r\nContent-Length: {BODY}\r\n\r\n");
+        socket.write_all(headers.as_bytes()).expect("headers");
+        socket.flush().expect("flush");
+        let _ = body_cue.recv();
+        // Blocks once the socket buffers fill; the reader is dropped before the join, which
+        // ends the write.
+        let _ = socket.write_all(&vec![0x47u8; BODY]);
+    });
+    let cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{port}/segment.ts"), 0)
+        .expect("fixture: the open must succeed");
+    let _ = send_body.send(());
+    // Let the burst fill the kernel's buffers while the transfer buffer is empty, so the first
+    // completion query is the one that steps curl's `perform` (`stepped == true`) rather than
+    // finding bytes already waiting in the transfer buffer.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut state = avio_state_for(
+        Src::Curl(cs),
+        &mut *aq,
+        BODY as i64,
+        SegmentAcquisition::for_test(Some(6_000), false, false),
     );
+    let op = &mut state as *mut AvioState as *mut c_void;
+    let mut dst = [0u8; 4];
+    // note_received's stepped receipt, then the successful read: consumed in that order.
+    let _guard = InjectedElapsed::guard();
+    InjectedElapsed::push_us(1_234);
+    InjectedElapsed::push_us(7);
+    assert_eq!(read_cb(op, dst.as_mut_ptr(), 4), 4, "fixture: 4 body bytes");
+    assert_eq!(
+        state.body_active_us, 1_241,
+        "the receipt's stepped-query time (1234us) plus the read's own time (7us) must be the \
+         whole of body_active_us, exactly",
+    );
+    drop(state);
+    crate::aq::aq_destroy(&mut *aq);
+    server.join().expect("loopback server");
+}
+
+/// The control for the test above: a receipt that finds bytes already sitting in the transfer
+/// buffer never takes a transfer step (`stepped == false`), so its query contributes nothing —
+/// only the read that actually copies the bytes out is body time. The plaintext socket transport
+/// is the deterministic way to get `stepped == false`: `stream::http_body_receipt` never sets it,
+/// on any branch (see `stream.rs`), so this needs no timing race to arrange.
+#[test]
+fn a_non_stepping_receipt_contributes_nothing_only_the_read_does() {
+    use std::io::{Read, Write};
+    let _serial = crate::testlock::serial();
+    let _reset = SharedHoldReset::at(PLAYHEAD_NS);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback server");
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().expect("accept");
+        let mut request = Vec::new();
+        let mut chunk = [0u8; 512];
+        while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+            let n = socket.read(&mut chunk).expect("read request");
+            if n == 0 {
+                return;
+            }
+            request.extend_from_slice(&chunk[..n]);
+        }
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCDEFGH")
+            .expect("response");
+        socket.flush().expect("flush");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    });
+    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut hs = crate::stream::http_stream_boxed();
+    let host = CString::new("127.0.0.1").unwrap();
+    let path = CString::new("/segment.ts").unwrap();
+    assert_eq!(
+        crate::stream::http_open(
+            &mut *hs,
+            host.as_ptr(),
+            port as c_int,
+            path.as_ptr(),
+            std::ptr::null(),
+            "GET",
+        ),
+        0,
+    );
+    let src = Src::Socket {
+        hs: &mut *hs,
+        host,
+        port: port as c_int,
+        path,
+    };
+    let mut state = avio_state_for(
+        src,
+        &mut *aq,
+        8,
+        SegmentAcquisition::for_test(Some(6_000), false, false),
+    );
+    let op = &mut state as *mut AvioState as *mut c_void;
+    let mut dst = [0u8; 4];
+    let _guard = InjectedElapsed::guard();
+    InjectedElapsed::push_us(7);
+    assert_eq!(read_cb(op, dst.as_mut_ptr(), 4), 4, "fixture: 4 body bytes");
+    assert_eq!(
+        state.body_active_us, 7,
+        "a non-stepping receipt must contribute nothing; only the 7us read may land",
+    );
+    drop(state);
+    crate::stream::http_close(&mut *hs);
+    crate::aq::aq_destroy(&mut *aq);
+    server.join().expect("loopback server");
+}
+
+/// A failed read must not credit its own (never-measured) duration, and every settlement receipt
+/// asked around it — `note_received` at the top of `read_cb`'s loop, then again in its `if r < 0`
+/// branch — is credited exactly like any other stepping receipt, exactly once each. `read_cb`
+/// only adds the read's OWN timer to `body_active_us` on the success path (`r > 0`); a transport
+/// watchdog that fires ends a withheld body with `READ_DEADLINE` (`r < 0`) without touching
+/// curl's `done`/`readable`/`poisoned`/`abort` flags, so with the transfer buffer already
+/// drained both the query before the blocked read and the settlement query after it genuinely
+/// step — deterministic because the deadline, not a hold published from another thread, is what
+/// ends the read.
+#[test]
+fn a_failed_read_credits_nothing_and_its_settlement_receipt_is_credited_once() {
+    let Some(_gate) = curl_gate() else { return };
+    let _reset = SharedHoldReset::at(PLAYHEAD_NS);
+    static REPLY: std::sync::Mutex<Option<Reply>> = std::sync::Mutex::new(None);
+    *REPLY.lock().unwrap() =
+        Some(Reply::SendThenWithhold(b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nABCD"));
+    let pms = ScriptedPms::start(|_| REPLY.lock().unwrap().expect("scripted reply"));
+    let cs = crate::curlio::CurlSource::open(&format!("http://127.0.0.1:{}/segment.ts", pms.port), 0)
+        .expect("fixture: the open must succeed");
+    let mut aq = crate::aq::aq_new(1 << 20);
+    let mut state = avio_state_for(
+        Src::Curl(cs),
+        &mut *aq,
+        8,
+        SegmentAcquisition::for_test(Some(6_000), false, false),
+    );
+    let op = &mut state as *mut AvioState as *mut c_void;
+    let mut dst = [0u8; 4];
+    assert_eq!(
+        read_cb(op, dst.as_mut_ptr(), 4),
+        4,
+        "fixture: the 4-byte prefix arrives"
+    );
+    let before_second_call = state.body_active_us;
+    // The rest of the body never arrives; a short inactivity watchdog ends the second read on
+    // its own deadline, deterministically, with no hold-publish race against another thread.
+    state.transport_watchdog = Some(TransportWatchdog::with_inactivity(SHORT_DEADLINE));
+
+    // Both queries this call makes find the transfer buffer drained and are stepping: the
+    // top-of-loop `note_received` before the blocked read is attempted, and the settlement
+    // `note_received` asked right after the deadline fails it.
+    let _guard = InjectedElapsed::guard();
+    InjectedElapsed::push_us(101);
+    InjectedElapsed::push_us(202);
+    let second = read_cb(op, dst.as_mut_ptr(), 4);
+    assert!(
+        second < 0,
+        "the withheld body's watchdog deadline must end the read as a failure, got {second}"
+    );
+    assert_eq!(
+        state.body_active_us,
+        before_second_call + 101 + 202,
+        "both stepping receipts around the failed read must be credited exactly once each, and \
+         the failed read itself must credit nothing beyond them",
+    );
+    drop(state);
+    crate::aq::aq_destroy(&mut *aq);
+    drop(pms);
 }
 
 // -- seams onto production state, so each scenario above reads the same before and after --------

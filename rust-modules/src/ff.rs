@@ -2200,6 +2200,45 @@ struct AvioState {
     bounce_pos: usize,
 }
 
+// TEST ONLY: a deterministic stand-in for the two `Instant::elapsed()` calls that measure
+// `body_active_us` — `AvioState::note_received`'s receipt timer and `read_cb`'s read timer. A
+// real scheduler can preempt either interval independently, so a test that compares
+// `body_active_us` to a wall-clock read can flake on a loaded runner even though the accounting
+// is correct (see `ff_stall_guard_tests::transfer_work_a_receipt_takes_is_counted_in_body_time`,
+// pre-seam). Tests push exact durations here and assert exact sums instead. Empty queue (every
+// non-test build, and every test that never pushes) falls straight through to the real clock, so
+// this changes no production behaviour.
+#[cfg(test)]
+thread_local! {
+    static TEST_ELAPSED: std::cell::RefCell<std::collections::VecDeque<std::time::Duration>> =
+        std::cell::RefCell::new(std::collections::VecDeque::new());
+}
+
+#[cfg(test)]
+pub(crate) fn push_test_elapsed(duration: std::time::Duration) {
+    TEST_ELAPSED.with(|queue| queue.borrow_mut().push_back(duration));
+}
+
+/// Drain and return whatever a test left queued, so one test's leftover injection can never leak
+/// into the next one sharing this OS thread.
+#[cfg(test)]
+pub(crate) fn drain_test_elapsed() -> Vec<std::time::Duration> {
+    TEST_ELAPSED.with(|queue| queue.borrow_mut().drain(..).collect())
+}
+
+/// Elapsed time since `started`: the real `Instant::elapsed()`, except under test when a duration
+/// is queued — then that queued value, once, so a test can assert `body_active_us` exactly rather
+/// than by a wall-clock ratio.
+fn elapsed_since(started: std::time::Instant) -> std::time::Duration {
+    #[cfg(test)]
+    {
+        if let Some(queued) = TEST_ELAPSED.with(|queue| queue.borrow_mut().pop_front()) {
+            return queued;
+        }
+    }
+    started.elapsed()
+}
+
 impl AvioState {
     /// **Fold the AU lane's abort into the transport's own.**
     ///
@@ -2260,7 +2299,7 @@ impl AvioState {
         if receipt.stepped {
             self.body_active_us = self
                 .body_active_us
-                .saturating_add(asked.elapsed().as_micros().max(1) as u64);
+                .saturating_add(elapsed_since(asked).as_micros().max(1) as u64);
         }
         let bounced = self.bounce.len().saturating_sub(self.bounce_pos) as i64;
         let received = self
@@ -2580,7 +2619,7 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
             }
             s.body_active_us = s
                 .body_active_us
-                .saturating_add(read_started.elapsed().as_micros().max(1) as u64);
+                .saturating_add(elapsed_since(read_started).as_micros().max(1) as u64);
             if s.first_byte_at.is_none() {
                 s.first_byte_at = Some(std::time::Instant::now());
             }
