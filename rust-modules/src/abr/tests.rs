@@ -7747,3 +7747,23 @@ fn the_measured_8300kbps_leg_admits_rung_6000_and_still_refuses_8000_and_12000()
         CandidateVerdict::Ready,
     );
 }
+
+/// An acquisition abandoned before its first body byte has no rate to offer, yet it is exactly
+/// the event the controller's recovery path exists for. The abandoned constructor admits it; the
+/// completed one still refuses zero evidence; and the completed estimate does not move.
+#[test]
+fn a_zero_byte_abandoned_acquisition_reaches_the_controller_without_moving_the_estimate() {
+    let buffer = sample(8_000, 400, 12_000).buffer;
+    assert!(SegmentSample::new_with_obligation(0, 0, 1, 2_000, 2_000, buffer).is_none());
+    let abandoned = SegmentSample::abandoned_acquisition(0, 0, 1, 2_000, 2_000, buffer)
+        .expect("a zero-byte abort is still a censored event");
+    assert!(!abandoned.completed());
+    assert!(SegmentSample::abandoned_acquisition(0, 2, 1, 2_000, 2_000, buffer).is_none());
+    let mut c = Controller::starting_at(Rung::P720, None, hd_catalog());
+    for _ in 0..6 {
+        c.observe(sample(8_000, 400, 12_000), 0);
+    }
+    let settled = c.delivery();
+    c.observe(abandoned, 1_000);
+    assert_eq!(c.delivery(), settled);
+}
