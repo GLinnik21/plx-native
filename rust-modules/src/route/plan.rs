@@ -553,6 +553,10 @@ pub(crate) struct ResolveEnv {
     pub omit_queue_continuous: bool,
     /// Hero preview. Skip the PlayQueue entirely, and refuse anything that is not a direct play.
     pub preview: bool,
+    /// Test-only replacement for the process cache. Capability is an explicit policy input in
+    /// regressions; no test mutates the production `OnceLock` or makes the whole host a DV set.
+    #[cfg(test)]
+    pub(super) dv_capability: Option<crate::webos::caps::DvCapability>,
 }
 
 
@@ -836,6 +840,19 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     let dovi = plan.playing.as_ref().map(|p| p.dovi).unwrap_or_default();
     // Freeze the capability and derived presentation together. A late configd answer affects the
     // next route only; it cannot change this candidate between the gate and Starfish Load.
+    #[cfg(test)]
+    let dv_decision = match env.dv_capability {
+        Some(capability) => crate::metadata::DvDecision {
+            capability,
+            presentation: dovi.presentation(
+                !crate::metadata::dv_withheld(),
+                capability,
+                vcodec == "hevc",
+            ),
+        },
+        None => dovi.decision_now(vcodec == "hevc"),
+    };
+    #[cfg(not(test))]
     let dv_decision = dovi.decision_now(vcodec == "hevc");
     let dv = dv_decision.presentation;
     let video_dp = video_direct_plays(vcodec, src_w, src_h, dv, crate::devcaps::caps());

@@ -1011,18 +1011,7 @@ fn start_bufferfeed_inner(
         // `route::url()` still wins: a real selection is never overridden by a stale trigger.
         match crate::dev::playurl() {
             Some(Ok(p)) => {
-                url = p.url.clone();
-                crate::route::set_url(ps, &url);
-                if !crate::route::set_stream_declaration(
-                    ps,
-                    &p.vcodec,
-                    &p.acodec,
-                    p.fps,
-                    p.dovi.to_dovi(),
-                    p.atmos,
-                ) {
-                    return Err(crate::route::RouteStartResult::StartFailed);
-                }
+                url = install_synthetic_playurl(ps, &p)?;
                 if let Some([w, h]) = p.source_raster {
                     crate::route::set_stream_source_raster(ps, w, h);
                 }
@@ -1411,6 +1400,28 @@ fn start_bufferfeed_inner(
         stream as i32
     ));
     Ok(route_attempt)
+}
+
+/// Validate and publish the no-Plex synthetic route as one admission step. The URL must remain
+/// absent when declaration policy refuses it: a later PLAY uses URL presence to decide whether to
+/// revisit this validation, so publishing first turns a one-time refusal into a retry bypass.
+fn install_synthetic_playurl(
+    ps: &mut crate::route::PlaybackSession,
+    play: &crate::dev::PlayUrl,
+) -> Result<String, crate::route::RouteStartResult> {
+    if !crate::route::set_stream_declaration(
+        ps,
+        &play.vcodec,
+        &play.acodec,
+        play.fps,
+        play.dovi.to_dovi(),
+        play.atmos,
+    ) {
+        return Err(crate::route::RouteStartResult::StartFailed);
+    }
+    let url = play.url.clone();
+    crate::route::set_url(ps, &url);
+    Ok(url)
 }
 
 /// Arm the demuxer to open+seek to `target_ns` on the NEXT Load, displaying honest content
@@ -2703,6 +2714,39 @@ mod payload_tests {
             SinkEnvelope { w: 3840, h: 2160, fps: 60 },
         );
         assert!(!payload.contains("DolbyHdrInfo"), "{payload}");
+    }
+
+    #[test]
+    fn refused_synthetic_p5_start_cannot_be_retried_past_validation() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let play = crate::dev::PlayUrl {
+            url: "http://192.0.2.1/refused-p5.mkv".into(),
+            vcodec: "hevc".into(),
+            acodec: "eac3".into(),
+            fps: 23.976,
+            dovi: crate::dev::PlayDovi {
+                profile: 5,
+                bl_compat: 0,
+                el_present: false,
+            },
+            atmos: false,
+            auto_source_kbps: 0,
+            auto_hls_base: String::new(),
+            auto_start_hls: false,
+            source_raster: None,
+        };
+
+        for retry in 0..2 {
+            assert_eq!(
+                super::install_synthetic_playurl(&mut ps, &play),
+                Err(crate::route::RouteStartResult::StartFailed),
+                "retry {retry} must stop before Load",
+            );
+            assert!(
+                !crate::route::has_url(&ps),
+                "retry {retry} left the rejected URL installed",
+            );
+        }
     }
 
     /// **Every Load payload must carry the `appId` placeholder, exactly once**, because that key

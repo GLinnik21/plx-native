@@ -2045,6 +2045,46 @@ fn the_preview_tells_a_container_remux_apart_from_a_re_encode() {
 }
 
 #[test]
+fn on_deck_hevc_p5_preview_uses_the_selected_episodes_codec() {
+    let mut show = crate::metadata::Detail {
+        is_show: true,
+        part: String::new(),
+        vcodec: String::new(),
+        width: 3840,
+        height: 1602,
+        dovi: p5(),
+        audio: vec![crate::metadata::Stream {
+            codec: "eac3".into(),
+            ..Default::default()
+        }],
+        on_deck: Some(crate::metadata::Episode {
+            part: "/library/parts/1/2/on-deck.mkv".into(),
+            vcodec: "hevc".into(),
+            acodec: "eac3".into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert!(show.vcodec.is_empty(), "a show deliberately has no file codec");
+    assert_eq!(
+        playback_preview_with_capability_for_test(
+            &show,
+            crate::webos::caps::DvCapability::Supported,
+        ),
+        Some(Preview::DirectPlay),
+    );
+    show.on_deck.as_mut().unwrap().vcodec = "h264".into();
+    assert_eq!(
+        playback_preview_with_capability_for_test(
+            &show,
+            crate::webos::caps::DvCapability::Supported,
+        ),
+        Some(Preview::Converts),
+        "the test must prove the selected episode codec reaches DV policy",
+    );
+}
+
+#[test]
 fn restored_sidecar_is_part_of_the_route_contract() {
     let mut ps = PlaybackSession::IDLE;
     let _guard = fresh_registry(&mut ps);

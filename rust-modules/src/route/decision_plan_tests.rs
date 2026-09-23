@@ -434,8 +434,8 @@ fn mde_video_stream_transcode_forbids_remux() {
     crate::plex::reset_servers_for_test();
 }
 
-/// A Profile 5 without confirmed platform support must be re-encoded, and a remux copy carries no
-/// `DolbyHdrInfo`. MDE's video=`copy` (the measured P5 shape) must not override `no_video_copy`.
+/// A declared Profile 5 can direct-play, but a remux copy carries no `DolbyHdrInfo`. MDE's
+/// video=`copy` (the measured P5 shape) must not override `no_video_copy`.
 #[test]
 #[cfg(feature = "devtriggers")]
 fn mde_transcode_copy_still_refuses_a_profile_5_remux() {
@@ -451,6 +451,7 @@ fn mde_transcode_copy_still_refuses_a_profile_5_remux() {
         "mde-p5-copy-client",
     );
     let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-4k");
+    env.dv_capability = Some(crate::webos::caps::DvCapability::Supported);
     let mut item = fourk_item(sid, vec![eac3_track()]);
     item.dovi = p5();
     env.cached_item = Some(item);
@@ -470,7 +471,7 @@ fn mde_transcode_copy_still_refuses_a_profile_5_remux() {
         requests
             .iter()
             .any(|line| line.contains("/decision?") && line.contains("hasMDE=1")),
-        "unsupported/unknown P5 still asks MDE for the encode route: {requests:?}"
+        "a declared P5 still asks MDE before accepting Original: {requests:?}"
     );
     assert!(
         !plan.remux,
@@ -482,6 +483,63 @@ fn mde_transcode_copy_still_refuses_a_profile_5_remux() {
         "the copy permission has to be withdrawn or PMS copies anyway"
     );
     crate::plex::reset_servers_for_test();
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn unconfirmed_profile_5_forbids_copy_before_mde() {
+    use std::time::Duration;
+
+    for capability in [
+        crate::webos::caps::DvCapability::Unknown,
+        crate::webos::caps::DvCapability::Unsupported,
+    ] {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let _g = fresh_registry(&mut ps);
+        let (port, rx, server) = plan_pms(4, MDE_TRANSCODE_COPY);
+        let sid = crate::plex::register_for_test(
+            "mde-p5-no-copy",
+            "127.0.0.1",
+            port,
+            "token",
+            "mde-p5-no-copy-client",
+        );
+        let mut env = ResolveEnv::snapshot(
+            &ps,
+            crate::stores::metadata::MetadataStore::default().view(),
+            sid,
+            "rk-4k",
+        );
+        env.dv_capability = Some(capability);
+        let mut item = fourk_item(sid, vec![eac3_track()]);
+        item.dovi = p5();
+        env.cached_item = Some(item);
+        let plan = build_stream(
+            "rk-4k",
+            "/library/parts/36013/1/file.mkv",
+            "hevc",
+            "eac3",
+            &env,
+        );
+        let requests = rx
+            .recv_timeout(Duration::from_secs(15))
+            .expect("PMS never saw the resolve");
+        server.join().unwrap();
+
+        let decision = requests
+            .iter()
+            .find(|line| line.contains("/decision?"))
+            .unwrap_or_else(|| panic!("decision missing: {requests:?}"));
+        assert!(decision.contains("directStream=0"), "{capability:?}: {decision}");
+        assert!(!plan.remux, "{capability:?}");
+        assert_eq!(plan.dovi, crate::metadata::Dovi::NONE);
+        assert_eq!(
+            plan.dv_decision.presentation,
+            crate::metadata::DvPresentation::NotDv,
+        );
+        assert!(plan.dv_decision.presentation.declared().is_none());
+        crate::plex::reset_servers_for_test();
+    }
 }
 
 /// Remote Auto used to probe the Part after MDE registered transcode, which 503s, so bootstrap

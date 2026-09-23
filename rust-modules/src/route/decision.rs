@@ -5280,11 +5280,20 @@ impl ResolveEnv {
             src_kbps: resolve_src_kbps(meta.current(), sid, rk),
             omit_queue_continuous: false,
             preview: false,
+            #[cfg(test)]
+            dv_capability: None,
         }
     }
 }
 
 pub(crate) fn playback_preview(d: &crate::metadata::Detail) -> Option<Preview> {
+    playback_preview_with_capability(d, None)
+}
+
+fn playback_preview_with_capability(
+    d: &crate::metadata::Detail,
+    capability: Option<crate::webos::caps::DvCapability>,
+) -> Option<Preview> {
     // A SHOW's container carries no file of its own, so the page answers for the episode its Play
     // button would start — the one the hero is already about. Its frame size and audio list are
     // the show Detail's, which `fetch_item_streams` backfilled from that same episode.
@@ -5292,12 +5301,20 @@ pub(crate) fn playback_preview(d: &crate::metadata::Detail) -> Option<Preview> {
         Some(ep) => (ep.part.as_str(), ep.vcodec.as_str()),
         None => (d.part.as_str(), d.vcodec.as_str()),
     };
+    let presentation = match capability {
+        Some(capability) => d.dovi.presentation(
+            !crate::metadata::dv_withheld(),
+            capability,
+            vcodec.eq_ignore_ascii_case("hevc"),
+        ),
+        None => d.dovi.presentation_now(vcodec.eq_ignore_ascii_case("hevc")),
+    };
     let p = playback_preview_of(
         part,
         vcodec,
         d.width,
         d.height,
-        d.dovi.presentation_now(d.vcodec.eq_ignore_ascii_case("hevc")),
+        presentation,
         &d.audio,
     )?;
     // The user's quality ceiling is the LAST gate `build_stream` applies, so it is the last one
@@ -5318,6 +5335,14 @@ pub(crate) fn playback_preview(d: &crate::metadata::Detail) -> Option<Preview> {
         Preview::Remux if !policy.remux => Preview::Converts,
         _ => p,
     })
+}
+
+#[cfg(test)]
+pub(crate) fn playback_preview_with_capability_for_test(
+    d: &crate::metadata::Detail,
+    capability: crate::webos::caps::DvCapability,
+) -> Option<Preview> {
+    playback_preview_with_capability(d, Some(capability))
 }
 
 static PLAY_GEN: AtomicU32 = AtomicU32::new(0);
