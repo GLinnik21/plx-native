@@ -59,9 +59,14 @@ on the only firmware family this app has ever run on — a black screen with no 
 
 It is also unnecessary. SDL created the GLES2 context **through EGL**, so whichever EGL the
 firmware has is already mapped with its symbols in the global scope.
-`dynlib::Handle::self_handle()` (`RTLD_DEFAULT`) resolves them, with `SDL_GL_GetProcAddress` and a
-SONAME candidate list as fallbacks. **`tools/fwcompat.py` is byte-identical before and after this
+`dynlib::Handle::self_handle()` (`RTLD_DEFAULT`) resolves them, with a SONAME candidate list
+opened `RTLD_NOLOAD` (an EGL already mapped, never a fresh load) as the fallback. **`tools/fwcompat.py` is byte-identical before and after this
 work: OK on 4.4.2 through 11.2.0.**
+
+`SDL_GL_GetProcAddress` was once a second fallback and is not any more: on a GLX backend it is
+`glXGetProcAddressARB`, which returns a GL dispatch stub for any name, and the Linux simulator
+(desktop GL through GLX) crashed on the garbage those `egl*` "stubs" returned. Nothing in `egl.rs`
+calls EGL until `eglGetCurrentContext` reports a current context on the render thread.
 
 ### 1b. What the television said
 

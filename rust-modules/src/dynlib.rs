@@ -114,6 +114,22 @@ impl Handle {
         None
     }
 
+    /// As [`open`], but only a library that is **already mapped** into the process
+    /// (`RTLD_NOLOAD`): the first candidate somebody else already loaded, never a fresh load.
+    ///
+    /// For asking questions of the library another component is using — SDL `dlopen`s EGL
+    /// `RTLD_LOCAL`, so `RTLD_DEFAULT` cannot see it, and loading a second copy (or a different
+    /// implementation under a candidate SONAME) would answer about state that library does not
+    /// own. `RTLD_NOW` because glibc requires one of LAZY/NOW alongside NOLOAD; the mode of an
+    /// already-loaded object is not downgraded by it.
+    pub fn open_loaded<'a>(candidates: &[&'a str]) -> Option<(Handle, &'a str)> {
+        candidates.iter().find_map(|name| {
+            let c = CString::new(*name).ok()?;
+            let h = unsafe { dlopen(c.as_ptr(), RTLD_NOW | libc::RTLD_NOLOAD) };
+            (!h.is_null()).then_some((Handle(h), *name))
+        })
+    }
+
     /// A handle to the process's own global symbol scope (`RTLD_DEFAULT`), for asking "did the
     /// library that actually loaded bring this entry point" about something already linked.
     ///
@@ -421,5 +437,21 @@ mod tests {
     #[test]
     fn first_openable_candidate_wins() {
         assert!(Handle::open(&["libplxnative-nope.so.1", HOST_LIBC[0]]).is_some());
+    }
+
+    /// `open_loaded` answers only for a library that is already mapped, and never loads one:
+    /// the C library every process has is found, a name nothing loaded is not, and the first
+    /// mapped candidate is the one reported.
+    #[test]
+    fn open_loaded_finds_only_what_is_already_mapped() {
+        #[cfg(target_os = "macos")]
+        let mapped = "/usr/lib/libSystem.B.dylib";
+        #[cfg(not(target_os = "macos"))]
+        let mapped = "libc.so.6";
+        assert!(Handle::open_loaded(&["libplxnative-nope.so.1"]).is_none());
+        let (h, name) = Handle::open_loaded(&["libplxnative-nope.so.1", mapped])
+            .expect("the C library is mapped in every process");
+        assert_eq!(name, mapped);
+        assert!(h.sym("malloc").is_some_and(|p| !p.is_null()));
     }
 }
