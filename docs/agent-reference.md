@@ -544,8 +544,9 @@ which the linking section explains is load-bearing rather than tidy.
   Developer draw/swap scopes label stalls `frame draw` / `gl present` without invoking or
   bypassing the blocking guard; slow GPU frames still count toward the two-second fatal limit on
   hardware GL. When `GL_RENDERER` names a CPU rasterizer (Apple Software Renderer, llvmpipe,
-  softpipe, swrast, SwiftShader, WARP — the CI simulator), a stall in those two phases logs and
-  warns without SIGABRT; other labels and the blocking guard stay fatal (`task/runtime_check.rs`).
+  softpipe, swrast, SwiftShader, WARP — the CI simulator), time in those phases and in `gl
+  readback` logs and warns but does not count toward the kill; two seconds outside them and the
+  blocking guard stay fatal (`task/runtime_check.rs`).
   A watchdog poll gap >400 ms discards the uncertain interval, clears warnings and rebases the
   stall timer and fatal latch: a stopped or starved observer is not evidence against the main thread.
   Escape hatch: write `log` into `/tmp/plxnative-guard` before launch (sim: instance runtime root).

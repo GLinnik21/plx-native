@@ -73,6 +73,8 @@ struct DevObserver {
     last_poll: Option<u64>,
     detector: Detector,
     kill: super::runtime_check::KillLatch,
+    /// The last sample taken inside a GPU phase on a software renderer (see `poll`).
+    gpu_sampled_at: Option<u64>,
 }
 #[cfg(feature = "threadcheck")]
 struct Observation {
@@ -89,12 +91,22 @@ impl DevObserver {
         if self.last_poll.replace(now).is_some_and(|previous| now.saturating_sub(previous) > MAX_POLL_GAP_MS) {
             self.detector = Detector { advanced: progress.map(|counter| (counter, now)), announced: None };
             self.kill.poll(None, false, policy);
+            self.gpu_sampled_at = None;
             return Observation { event: None, kill: false, reset_warning: true, elapsed: None };
         }
         let event = self.detector.observe(now, progress, label);
         let elapsed = self.detector.announced.and_then(|_| self.detector.advanced.map(|(_, at)| now.saturating_sub(at)));
-        let gpu_phase = label == DRAW_LABEL || label == PRESENT_LABEL;
-        Observation { event, kill: self.kill.poll(elapsed, gpu_phase, policy), reset_warning: false, elapsed }
+        let gpu_phase = GPU_LABELS.contains(&label);
+        // On a CPU rasterizer the fatal budget is the stall's time OUTSIDE GPU phases: it runs
+        // from the later of the stall's start and the last GPU-phase sample, so a 2100 ms
+        // software draw followed by ordinary post-draw work is not killed on its first
+        // unlabelled sample. Hardware GL keeps the whole stall as the budget.
+        if policy.software_gl && gpu_phase { self.gpu_sampled_at = Some(now); }
+        let budget = elapsed.map(|ms| match (policy.software_gl, self.gpu_sampled_at) {
+            (true, Some(at)) => ms.min(now.saturating_sub(at)),
+            _ => ms,
+        });
+        Observation { event, kill: self.kill.poll(budget, gpu_phase, policy), reset_warning: false, elapsed }
     }
 }
 
@@ -156,14 +168,25 @@ pub(super) fn enter_label(label: &'static BlockingLabel) -> LabelScope {
 }
 
 // Dedicated label-only entry points: neither asserts nor grants permission to block. The texts
-// are also how the fatal policy recognises a GPU phase (`runtime_check::Issue::Hang`).
+// are also how the fatal policy recognises a GPU phase (`runtime_check::Issue::Hang`): every
+// stretch of the frame whose cost is the GL implementation's — drawing, a framebuffer
+// readback, the swap — carries one of them, or a CPU rasterizer's time lands as `unlabeled`.
 #[cfg(feature = "threadcheck")]
 const DRAW_LABEL: &str = "frame draw";
 #[cfg(feature = "threadcheck")]
+const READBACK_LABEL: &str = "gl readback";
+#[cfg(feature = "threadcheck")]
 const PRESENT_LABEL: &str = "gl present";
+#[cfg(feature = "threadcheck")]
+const GPU_LABELS: [&str; 3] = [DRAW_LABEL, READBACK_LABEL, PRESENT_LABEL];
 #[cfg(feature = "threadcheck")]
 pub(crate) fn draw_scope() -> LabelScope {
     enter_label(const { &BlockingLabel::new(DRAW_LABEL) })
+}
+/// A dev capture-stream grab or a simulator screenshot: `glReadPixels` drains the pipeline.
+#[cfg(feature = "threadcheck")]
+pub(crate) fn readback_scope() -> LabelScope {
+    enter_label(const { &BlockingLabel::new(READBACK_LABEL) })
 }
 #[cfg(feature = "threadcheck")]
 pub(crate) fn present_scope() -> LabelScope {
@@ -572,7 +595,7 @@ mod tests {
     #[test]
     fn a_software_renderer_gpu_stall_is_reported_but_not_killed() {
         let software = Policy { log_only: false, software_gl: true };
-        for label in ["frame draw", "gl present"] {
+        for label in GPU_LABELS {
             let mut observer = DevObserver::default();
             for now in (0..=5000).step_by(100) {
                 let sample = observer.poll(now, Some(1), label, software);
@@ -586,10 +609,30 @@ mod tests {
                 assert_eq!(observer.poll(now, Some(1), label, software).kill, now == 2000, "{label} at {now}ms");
             }
         }
+    }
+
+    /// Codex review round 1: the stall clock runs from the iteration's start, so a 2100 ms
+    /// software draw followed by ordinary post-draw work must not be killed on its first
+    /// unlabelled sample. The budget restarts at the last GPU-phase sample; two further seconds
+    /// outside a GPU phase are still fatal, and hardware GL still kills at 2000 ms regardless.
+    #[cfg(feature = "threadcheck")]
+    #[test]
+    fn time_in_a_software_gpu_phase_does_not_spend_the_budget() {
+        let software = Policy { log_only: false, software_gl: true };
         let mut observer = DevObserver::default();
-        for now in (0..=2000).step_by(100) { assert!(!observer.poll(now, Some(1), "frame draw", software).kill); }
-        assert!(observer.poll(2100, Some(1), "unlabeled", software).kill,
-            "leaving the GPU phase while still stalled is a stall like any other");
+        for now in (0..=2100).step_by(100) { assert!(!observer.poll(now, Some(1), "frame draw", software).kill); }
+        for now in (2200..4100).step_by(100) {
+            assert!(!observer.poll(now, Some(1), "unlabeled", software).kill, "post-draw work at {now}ms");
+        }
+        assert!(observer.poll(4100, Some(1), "unlabeled", software).kill, "2000 ms outside a GPU phase");
+        // Progress (the next frame) starts a fresh stall with a fresh budget.
+        assert!(!observer.poll(4200, Some(2), "unlabeled", software).kill);
+        for now in (4300..6200).step_by(100) { assert!(!observer.poll(now, Some(2), "unlabeled", software).kill); }
+        assert!(observer.poll(6200, Some(2), "unlabeled", software).kill);
+
+        let mut hardware = DevObserver::default();
+        for now in (0..=1900).step_by(100) { assert!(!hardware.poll(now, Some(1), "frame draw", HW).kill); }
+        assert!(hardware.poll(2000, Some(1), "unlabeled", HW).kill);
     }
 
 }

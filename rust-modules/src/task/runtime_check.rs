@@ -8,7 +8,7 @@ const LINGER_MS: u64 = 3000;
 #[derive(Clone, Copy)]
 pub(super) enum Issue {
     Guard,
-    /// `gpu_phase`: the stall was sampled inside a `frame draw` / `gl present` scope.
+    /// `gpu_phase`: the stall was sampled inside a GL-work scope (`frame draw`, `gl readback`, `gl present`).
     Hang { ms: u64, gpu_phase: bool },
 }
 
@@ -53,7 +53,7 @@ pub(crate) fn note_renderer(renderer: Option<&str>) {
     let software = renderer.is_some_and(software_renderer);
     SOFTWARE_GL.store(software, Ordering::Release);
     if software {
-        crate::log("threadcheck: software GL renderer; frame draw/present stalls log without SIGABRT");
+        crate::log("threadcheck: software GL renderer; time in GL work does not count toward the hang kill");
     }
 }
 

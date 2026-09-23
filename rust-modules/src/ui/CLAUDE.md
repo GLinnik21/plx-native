@@ -131,10 +131,11 @@ a desktop GPU) a legitimately slow GPU frame still hits the >=2000 ms fatal thre
 a two-second main-thread stall is a bug regardless of cause; use the `guard=log` escape hatch
 below when investigating it. The one exception is a CPU rasterizer: when the boot's `GL_RENDERER`
 is a software renderer (Apple Software Renderer, llvmpipe, softpipe, swrast, SwiftShader, WARP —
-the CI simulator), a stall sampled in `frame draw` / `gl present` logs and warns but never
-signals, because that time is the rasterizer's. Any other label, `unlabeled` included, stays
-fatal there, and so does the blocking guard. `threadcheck: software GL renderer` in the log says
-the exception is armed.
+the CI simulator), time sampled in a GL-work phase — `frame draw`, `gl readback` (the capture
+stream's and the simulator screenshot's `glReadPixels`), `gl present` — logs and warns but does
+not count toward the kill, because that time is the rasterizer's. Two seconds outside those
+phases, `unlabeled` included, stays fatal there, and so does the blocking guard.
+`threadcheck: software GL renderer` in the log says the exception is armed.
 If the watchdog itself misses more than four poll intervals (>400 ms), it cannot distinguish
 process freeze, suspend, debugger stop or observer starvation from a main-thread stall. It
 rebases the stall origin, clears any warning, resets the fatal latch and reports nothing for
