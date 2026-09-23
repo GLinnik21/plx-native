@@ -1289,7 +1289,13 @@ impl Rig<AppHost> for Bridge {
                 hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
                 section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback,
             }, &self.measure);
-            return self.session.step(event, &cx, fx);
+            let handled = self.session.step(event, &cx, fx);
+            // #132: the owner logs nothing, and the Profiles screen cannot see a read-out that
+            // existed before it mounted — so the one step that ENTERED it is announced here.
+            if let Some(line) = crate::auth::owner::roster_readout_entered(&publication, &self.session.publication()) {
+                crate::log(&line);
+            }
+            return handled;
         }
         let store = match msg {
             AppMsg::Store(cmd) => cmd.store(),

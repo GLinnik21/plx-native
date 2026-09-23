@@ -780,18 +780,11 @@ impl ProfilesScreen {
 
     fn resync(&mut self, auth: auth::SessionRead<'_>) {
         let snapshot = auth.0;
-        let was = self.roster_readout();
         self.users = Arc::clone(&snapshot.users);
         self.phase = snapshot.phase;
         self.error = Arc::clone(&snapshot.error);
         self.pin_denied = snapshot.pin_denied;
         self.flow_epoch = snapshot.flow_epoch;
-        if !was && self.roster_readout() {
-            // The owner logs nothing by design, and the worker's line (with its HTTP status) is
-            // not written on every path here — a dev-token session refuses without a request.
-            // One line when the read-out appears, so this screen is never a silent dead end again.
-            crate::log(&format!("profiles: no profiles to offer — {} (BACK returns)", self.error));
-        }
     }
 
     /// **The picker has nobody to offer and has stopped waiting**: no tiles, and the session put
@@ -799,8 +792,12 @@ impl ProfilesScreen {
     /// `ROSTER_REFUSED`). Drawn as a failed read-out in place of the loading spinner — which,
     /// with no failure state to end it, spun forever (#132) — and BACK leaves it
     /// (`auth::owner`'s `roster_dead_end`).
+    ///
+    /// Not logged here: the screen only sees the state it was mounted on, and a dev-token
+    /// Change profile has already failed by then. The bridge announces the read-out at the
+    /// session's publication boundary (`auth::owner::roster_readout_entered`).
     fn roster_readout(&self) -> bool {
-        self.users.is_empty() && self.phase == Phase::Profiles && !self.error.is_empty()
+        auth::owner::is_roster_readout(self.phase, &self.users, &self.error)
     }
 
     fn tick<H: AuthLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {

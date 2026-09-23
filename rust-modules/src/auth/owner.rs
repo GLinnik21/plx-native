@@ -304,8 +304,8 @@ pub(crate) enum DevCommitDelta { Activated, StartAccount { login_req: u32 } }
 
 /// The picker's read-outs when it has no tiles and cannot get any. Neutral wording, drawn as a
 /// failed read-out on the picker itself (`screens/profiles.rs`), never as a sign-in failure.
-pub(crate) const ROSTER_UNREACHABLE: &str = "Couldn't load profiles — check the connection.";
-pub(crate) const ROSTER_REFUSED: &str = "Switching profiles isn't available from this profile.";
+pub(crate) const ROSTER_UNREACHABLE: &str = "Couldn\u{2019}t load profiles — check the connection.";
+pub(crate) const ROSTER_REFUSED: &str = "Switching profiles isn\u{2019}t available from this profile.";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum BootstrapAuthority {
@@ -954,8 +954,35 @@ pub(crate) struct ProfileRead {
 #[derive(Clone, Copy)]
 pub(crate) struct SessionRead<'a>(pub &'a SessionSnapshot);
 
+/// [`SessionSnapshot::roster_readout`]'s condition, for a reader that holds the fields rather
+/// than the snapshot (the Profiles screen keeps its own copies between frames).
+pub(crate) fn is_roster_readout(phase: Phase, users: &[UserTile], error: &str) -> bool {
+    phase == Phase::Profiles && users.is_empty() && !error.is_empty()
+}
+
+/// The log line owed when one session step moves the publication INTO the roster read-out
+/// (#132), or `None`. The owner logs nothing itself; the bridge, which runs every session step,
+/// writes this between the publication before and after that step. It is decided HERE — at the
+/// publication boundary — and not by the Profiles screen, because the screen only ever sees the
+/// state it was mounted on: a dev-token Change profile is refused synchronously, so the read-out
+/// already exists at mount and a screen-side "it just changed" gate never fires (TV, PR #212).
+/// A worker's failure line carries the HTTP status; this one carries what the person is told,
+/// and fires on every path in, including the ones that made no request at all.
+pub(crate) fn roster_readout_entered(before: &SessionSnapshot, after: &SessionSnapshot) -> Option<String> {
+    let reason = after.roster_readout()?;
+    if before.roster_readout() == Some(reason) { return None; }
+    Some(format!("profiles: no profiles to offer — {reason} (BACK returns)"))
+}
+
 impl SessionSnapshot {
     pub fn read(&self) -> SessionRead<'_> { SessionRead(self) }
+    /// **#132's read-out**: a picker with nobody to offer and a reason why. The ONE predicate —
+    /// the Profiles screen draws it, stops its spinner on it, and [`roster_readout_entered`]
+    /// announces it; three copies of the condition are how a screen ends up still spinning under
+    /// a read-out it drew.
+    pub fn roster_readout(&self) -> Option<&str> {
+        is_roster_readout(self.phase, &self.users, &self.error).then_some(&*self.error)
+    }
     fn from_state(state: &SessionInit) -> Self {
         Self::from_state_counted(state, None, &mut |_| {})
     }
@@ -4021,8 +4048,8 @@ mod tests {
     fn change_profile_with_no_roster_reads_out_the_failure_and_back_resumes_the_session() {
         let _g = crate::testlock::serial();
         for (users, reason) in [
-            (None, "Couldn't load profiles — check the connection."),
-            (Some(Vec::new()), "Switching profiles isn't available from this profile."),
+            (None, ROSTER_UNREACHABLE),
+            (Some(Vec::new()), ROSTER_REFUSED),
         ] {
             let (mut owner, _) = empty_roster_change_profile(users);
             assert_eq!(owner.state.phase, Phase::Profiles,
@@ -4087,14 +4114,22 @@ mod tests {
             admission: CommitAdmission::RegistryOnly }));
         assert_eq!(owner.state.phase, Phase::Ready, "rig: the dev session is up");
 
+        let before = owner.publication();
         step(&mut owner, SessionEvent::Command(Command::StartSwitch(Picker::ChangeProfile)));
         assert_eq!(owner.state.phase, Phase::Profiles,
             "the picker the app just routed to must have a state behind it");
-        assert_eq!(owner.state.error, "Switching profiles isn't available from this profile.");
+        assert_eq!(owner.state.error, ROSTER_REFUSED);
         assert!(owner.state.users.is_empty());
+        // TV, PR #212: this read-out exists BEFORE the Profiles screen mounts, so only the step
+        // that entered it can announce it — and it must, once.
+        let entered = owner.publication();
+        assert_eq!(roster_readout_entered(&before, &entered).as_deref(),
+            Some(format!("profiles: no profiles to offer — {ROSTER_REFUSED} (BACK returns)").as_str()));
+        assert_eq!(roster_readout_entered(&entered, &entered), None, "announced once, not per step");
 
         let reply = ReplyTo { instance: 0, correlation: 7 };
         let effects = step(&mut owner, SessionEvent::Command(Command::BackAtRoot { reply }));
+        assert_eq!(roster_readout_entered(&entered, &owner.publication()), None, "leaving is not entering");
         assert!(effects.iter().any(|fx| matches!(fx, SessionFx::BackReply { resumed: true, .. })));
         assert!(effects.iter().any(|fx| matches!(fx, SessionFx::Ready {
             install: ReadyInstall::AlreadyInstalled, .. })), "BACK hands the dev session back");

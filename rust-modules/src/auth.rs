@@ -3276,7 +3276,7 @@ pub(crate) fn profile_switch_worker_with_io(
             // person to a router that is fine. The PIN was already accepted by this point, so
             // this is never the PIN flash either.
             let error = if crate::plex::account::refused_identity(&evidence).is_some() {
-                format!("plex.tv refused {}'s sign-in. Try again.", tile.title)
+                format!("plex.tv refused {}\u{2019}s sign-in. Try again.", tile.title)
             } else {
                 "Couldn't switch profile — check the connection.".into()
             };
