@@ -947,7 +947,10 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
                     ) {
                         crate::plex::account::AudioPreferencesOutcome::Available(prefs) => match prefs.language {
                             Some(language) => AccountAudioLanguage::Set(language),
-                            None => AccountAudioLanguage::NotSet,
+                            None => AccountAudioLanguage::NotSet {
+                                auto_select_audio: prefs.auto_select_audio,
+                                stated_language: prefs.stated_language,
+                            },
                         },
                         crate::plex::account::AudioPreferencesOutcome::TimedOut =>
                             AccountAudioLanguage::TimedOut,
@@ -1484,7 +1487,8 @@ enum AccountAudioLanguage {
     NoCredential,
     TimedOut,
     Unavailable,
-    NotSet,
+    /// plex.tv answered but offered no language to use; the fields say which half was missing.
+    NotSet { auto_select_audio: Option<bool>, stated_language: Option<String> },
     Set(String),
 }
 
@@ -1492,7 +1496,7 @@ impl AccountAudioLanguage {
     fn language(&self) -> Option<&str> {
         match self {
             Self::Set(language) => Some(language),
-            Self::NoCredential | Self::TimedOut | Self::Unavailable | Self::NotSet => None,
+            Self::NoCredential | Self::TimedOut | Self::Unavailable | Self::NotSet { .. } => None,
         }
     }
 }
@@ -1514,9 +1518,14 @@ fn account_audio_language_log(
         AccountAudioLanguage::TimedOut => {
             "route: account audio language — unavailable (timed out)".into()
         }
-        AccountAudioLanguage::NotSet => {
-            "route: account audio language — not set (or auto-select off)".into()
+        AccountAudioLanguage::NotSet { auto_select_audio: Some(true), .. } => {
+            "route: account audio language — not set".into()
         }
+        AccountAudioLanguage::NotSet { auto_select_audio, stated_language } => format!(
+            "route: account audio language — automatic audio selection {} (language {})",
+            if auto_select_audio.is_some() { "off" } else { "not reported" },
+            stated_language.as_deref().unwrap_or("not set"),
+        ),
         AccountAudioLanguage::Set(lang) => {
             let picked_language = audio_sel
                 .and_then(|(i, _, _)| usize::try_from(*i).ok())

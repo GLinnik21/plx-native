@@ -70,9 +70,22 @@ fn account_audio_language_diagnostic_covers_every_outcome() {
         account_audio_language_log(&AccountAudioLanguage::TimedOut, &no_tracks, None),
         "route: account audio language — unavailable (timed out)",
     );
+    let not_set = |auto_select_audio, stated_language: Option<&str>| {
+        AccountAudioLanguage::NotSet {
+            auto_select_audio, stated_language: stated_language.map(str::to_owned),
+        }
+    };
     assert_eq!(
-        account_audio_language_log(&AccountAudioLanguage::NotSet, &no_tracks, None),
-        "route: account audio language — not set (or auto-select off)",
+        account_audio_language_log(&not_set(Some(true), None), &no_tracks, None),
+        "route: account audio language — not set",
+    );
+    assert_eq!(
+        account_audio_language_log(&not_set(Some(false), Some("ru")), &no_tracks, None),
+        "route: account audio language — automatic audio selection off (language ru)",
+    );
+    assert_eq!(
+        account_audio_language_log(&not_set(None, None), &no_tracks, None),
+        "route: account audio language — automatic audio selection not reported (language not set)",
     );
 
     let account = AccountAudioLanguage::Set("fr".into());
