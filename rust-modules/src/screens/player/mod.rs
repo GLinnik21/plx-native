@@ -200,18 +200,15 @@ impl PlayerScreen {
         crate::ui::player_hud::draw_subtitle_bitmap(&mut self.render.subs, hud_up);
     }
 
-    /// The transport, with this instance's own springs, memo and countdown. Returns the hit-testable
-    /// regions it drew this frame (scrubber, control row, bottom tabs) — see [`Self::draw`], which
-    /// registers each through [`DrawFrame::stop`] rather than leaving a caller to re-derive them
-    /// from raw pointer coordinates (restructure phase 12, D2 Part B).
+    /// The transport, with this instance's own springs, memo and countdown. Paint only: what a
+    /// pointer can hit is registered by [`Self::record_stops`], from this screen's `Focusable`.
     pub(crate) fn draw_hud(
         &mut self,
         ps: &crate::route::PlaybackSession,
         now: u32,
         measure: &dyn crate::ui::machine::Measure,
         meta: crate::metadata::MetadataView<'_>,
-    ) -> Vec<(u32, Rect)> {
-        let mut stops = Vec::new();
+    ) {
         crate::ui::player_hud::draw_hud(
             ps,
             &mut self.row,
@@ -223,11 +220,84 @@ impl PlayerScreen {
             self.hud.nav.tab,
             now,
             self.transport,
-            &mut stops,
             measure,
             meta,
         );
-        stops
+    }
+
+    /// **Every element this screen's `Focusable` declares and the frame DRAWS, registered as a
+    /// pointer stop at the rect `place` gives it** — the rect D-pad focus uses, so "reachable by
+    /// the D-pad" and "clickable with the pointer" are one statement (issue #162).
+    ///
+    /// Until #162 the stops were a by-product of painting: `player_hud::draw_hud` pushed each rect
+    /// as it drew, in PAINT order, and the hit map resolves the LAST stop under the pointer. The
+    /// scrubber's grab band (160 px tall) was pushed after the control row it overlaps, so a click
+    /// on the middle of any disc resolved to the scrubber and seeked instead; and a stand-in
+    /// (Skip / Up Next) got one floor-width region, so *Watch Credits* had no stop at all and a
+    /// click on *Next Episode* activated item 0. Here the ORDER of [`Focusable::groups`] is the
+    /// z-order — the scrubber's band first, underneath every control it overlaps — and every item
+    /// of every group is registered, so neither can recur without the census test in this module
+    /// failing.
+    ///
+    /// `hud_drawn` is the draw's own gate (the transport or a panel lifting it is on screen); the
+    /// per-group half is [`Self::group_drawn`].
+    fn record_stops<H: PlayerLike + crate::screens::registry::MetadataLike>(
+        &self,
+        f: &mut DrawFrame<'_, '_, H>,
+        hud_drawn: bool,
+    ) {
+        let ps = H::session(f.cx);
+        let mut groups = Vec::new();
+        Focusable::<H>::groups(self, f.cx, &mut groups);
+        for g in groups.iter().filter(|g| self.group_drawn(g.id, ps, hud_drawn)) {
+            // The repair alert's buttons are ordinary pressable controls (hover parks focus, the
+            // press dips and commits on release); the transport's are `Direct` — see `draw`.
+            let (hover, activate) = if g.id == GROUP_REPAIR {
+                (Hover::Focus, Activate::Press)
+            } else {
+                (Hover::Ignore, Activate::Direct)
+            };
+            for i in 0..g.len as u32 {
+                let elem = Self::elem_of(g.id, i);
+                let Some(p) = Focusable::<H>::place(self, &elem, f.cx, At::Drawn) else { continue };
+                f.stop(
+                    crate::ui::Painter::root(),
+                    Stop {
+                        key: FocusKey { entry: self.entry, elem },
+                        rect: p.rect,
+                        rest_rect: p.rest_rect,
+                        clip: p.clip,
+                        hover,
+                        activate,
+                    },
+                );
+            }
+        }
+    }
+
+    /// Is group `g` on screen this frame — the same gates `player_hud::draw_hud`/`draw_readout`
+    /// paint behind. A failure owns the frame outright; the scrubber and control row are the
+    /// transport's MIDDLE, which an open Info card or Chapters strip hides.
+    fn group_drawn(&self, g: GroupId, ps: &crate::route::PlaybackSession, hud_drawn: bool) -> bool {
+        let failed = player_hud::readout_owns_frame(self.busy);
+        match g {
+            GROUP_REPAIR => self.repair_alert.is_open() && self.repair_alert.settled(),
+            GROUP_FAILURE => !self.repair_alert.visible() && player_hud::failure_ok_drawn(ps, self.busy),
+            GROUP_SCRUB | GROUP_ROW => hud_drawn && !failed && self.transport,
+            GROUP_TABS => hud_drawn && !failed,
+            _ => false,
+        }
+    }
+
+    /// Element `i` of group `g` — the inverse of `group_of`.
+    fn elem_of(g: GroupId, i: u32) -> u32 {
+        match g {
+            GROUP_SCRUB => player_hud::ELEM_SCRUB,
+            GROUP_ROW => player_hud::ELEM_ROW_BASE + i,
+            GROUP_TABS => player_hud::ELEM_TAB_BASE + i,
+            GROUP_FAILURE => player_hud::ELEM_FAILURE_OK,
+            _ => REPAIR_CANCEL + i,
+        }
     }
 
     /// **Everything this page draws from a CLOCK, folded into ONE value** (spec §8.3, §9).
@@ -967,6 +1037,10 @@ impl PlayerScreen {
 /// screen answers `Handled::Yes` for), so `HudNav` stays the single source of truth for WHICH of
 /// these is highlighted — these groups exist so the engine's hit map and stop bookkeeping have real
 /// geometry to test a click or a simulator mouse against, not so the engine drives the ring itself.
+///
+/// **The order `groups` pushes in is the pointer's z-order**, lowest first: `record_stops`
+/// registers in it, and the hit map resolves the last stop under the pointer. The scrubber's tall
+/// grab band therefore comes FIRST, under the control row and tabs it overlaps (issue #162).
 impl<H: PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for PlayerScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         if self.repair_alert.visible() {
@@ -984,7 +1058,9 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for Pl
             len: 1,
             elem: crate::ui::screen::ElemKind::Control,
         });
-        let row_len = if self.slot.is_discs() { self.slot.items().max(1) as usize } else { 1 };
+        // Every item of whatever occupies the row — the Up Next PAIR included, which is two
+        // controls the D-pad walks and so two stops (`ControlSlot::item_rect`).
+        let row_len = self.slot.items().max(1) as usize;
         out.push(GroupSpec {
             id: GROUP_ROW,
             kind: GroupKind::Row { wrap: false },
@@ -1056,11 +1132,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for Pl
         let rect = match *key {
             e if e == ELEM_SCRUB => player_hud::scrub_hit_rect(),
             e if (ELEM_ROW_BASE..ELEM_TAB_BASE).contains(&e) => {
-                if self.slot.is_discs() {
-                    player_hud::disc_hit_rect((e - ELEM_ROW_BASE) as i32)
-                } else {
-                    player_hud::ctrl_row_hit_rect()
-                }
+                self.slot.item_rect(&self.row, (e - ELEM_ROW_BASE) as i32, cx.measure)?
             }
             e if (ELEM_TAB_BASE..ELEM_FAILURE_OK).contains(&e) => player_hud::tab_hit_rect(
                 (e - ELEM_TAB_BASE) as i32,
@@ -1138,68 +1210,35 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Screen<H> for Playe
         let subs_lift = hud_up || self.lifted;
         self.draw_subtitle_bitmap(subs_lift); // PGS/VobSub image subs
         crate::ui::player_hud::draw_subtitles(subs_lift, crate::route::is_transcoding(ps));
-        // Every hit-testable region drawn this frame is REGISTERED through `DrawFrame::stop`
-        // (restructure phase 12, D2 Part B) rather than left for a caller to re-derive from raw
-        // pointer coordinates via `icon_hit`/`scrub_hit`/`failure_quality_hit` — that geometry is
-        // unchanged, only how it reaches the engine's hit map. `Hover::Ignore` on every stop: the
-        // old pointer path never followed the mouse into a HOVER-driven focus change on this
-        // route, and a DRAG is `§7.5`'s own case (no hover, no click) which the hit map answers
-        // whatever this says — so this keeps the shipped behaviour rather than introducing one.
+        // What a pointer can hit is registered AFTER the paint, by `record_stops`, from this
+        // screen's own `Focusable` — the rects D-pad focus uses, in the z-order `groups` states.
+        // `Hover::Ignore` on the transport's stops: the old pointer path never followed the mouse
+        // into a HOVER-driven focus change on this route, and a DRAG is `§7.5`'s own case (no
+        // hover, no click) which the hit map answers whatever this says.
         //
-        // `Activate::Direct` on all of them, and it is not the same statement `ElemKind` makes
+        // `Activate::Direct` on them, and it is not the same statement `ElemKind` makes
         // elsewhere: the transport's control row DOES dip, but its press is the LOOP's
         // (`PlayerReq::ArmControlRow` → `press.begin_ctl` → `activate_player_row` on the
         // spring-back), so letting the dispatcher's own press machine arm it instead would leave
         // that commit-frame dispatch with nothing to fire. Direct delivery, and the screen decides
         // what the element means — including the scrubber, whose meaning needs the click's `x`
         // and so cannot be carried by a bare `ScreenEvent::Activate` at all.
-        if (hud_up || self.lifted) && !self.repair_alert.visible() {
-            for (elem, rect) in self.draw_hud(ps, now, f.measure, H::metadata(f.cx)) {
-                f.stop(
-                    crate::ui::Painter::root(),
-                    Stop {
-                        key: FocusKey { entry: self.entry, elem },
-                        rect,
-                        rest_rect: rect,
-                        clip: Rect::FULL,
-                        hover: Hover::Ignore,
-                        activate: Activate::Direct,
-                    },
-                );
-            }
+        let hud_drawn = (hud_up || self.lifted) && !self.repair_alert.visible();
+        if hud_drawn {
+            self.draw_hud(ps, now, f.measure, H::metadata(f.cx));
         }
         // The read-out is NOT transport chrome — it is drawn whether or not the HUD is up, so a
         // terminal `Error` (which is not `is_busy()`, so it does not pin the HUD) keeps its message
         // instead of vanishing with the 4.5 s linger. AFTER the transport, so it is never dimmed by
         // the scrim; BEFORE the overlay panels, which the container draws above this page.
-        let mut readout_stops = Vec::new();
-        crate::ui::player_hud::draw_readout(ps, self.busy, now, &mut readout_stops, f.measure);
-        if !self.repair_alert.visible() {
-            for (elem, rect) in readout_stops {
-                f.stop(
-                    crate::ui::Painter::root(),
-                    Stop {
-                        key: FocusKey { entry: self.entry, elem },
-                        rect,
-                        rest_rect: rect,
-                        clip: Rect::FULL,
-                        hover: Hover::Ignore,
-                        activate: Activate::Direct,
-                    },
-                );
-            }
-        }
+        crate::ui::player_hud::draw_readout(ps, self.busy, now, f.measure);
         if self.repair_alert.visible() {
             self.repair_alert.draw_scrim();
             self.repair_alert.draw(c"Cancel", c"Repair");
             let frames = self.repair_alert.frames();
             self.repair_frames.set(Some(frames));
-            if self.repair_alert.is_open() && self.repair_alert.settled() {
-                for (elem, rect) in [(REPAIR_CANCEL, frames.0), (REPAIR_CONFIRM, frames.1)] {
-                    f.stop(crate::ui::Painter::root(), Stop { key: FocusKey { entry: self.entry, elem }, rect, rest_rect: rect, clip: Rect::FULL, hover: Hover::Focus, activate: Activate::Press });
-                }
-            }
         }
+        self.record_stops(f, hud_drawn);
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::VideoPlane
@@ -1521,6 +1560,80 @@ mod step_ladder_tests {
 
     fn fresh(page: &mut PlayerScreen) {
         page.hud.visible_at_press = true;
+    }
+
+    /// **Issue #162's census: every control the D-pad can activate is clickable with the Magic
+    /// Remote pointer, all over its drawn rect, and the click acts.**
+    ///
+    /// The element lists below are written out per state rather than read back from `groups`, so
+    /// a control the D-pad reaches but the registration forgets is a failure here, not a shorter
+    /// list. Each is clicked on a grid (`ui::hit::pointer_gaps`) against the map the real
+    /// `record_stops` filled — which is what caught the scrubber's grab band registered ABOVE the
+    /// control row (every disc's middle seeked) and the stand-ins' single floor-width region
+    /// (*Watch Credits* unclickable, *Next Episode* activating item 0). The scrubber itself is
+    /// judged at a point no control covers, since controls sit on top of its band by design.
+    #[test]
+    fn every_control_the_dpad_reaches_is_clickable_with_the_pointer_and_acts() {
+        use crate::metadata::{Marker, MarkerKind};
+        use crate::screens::registry::PlayerLike;
+        use crate::ui::hit::{pointer_gaps, HitMap, PointerKind};
+        use crate::ui::machine::FocusKey;
+        use crate::ui::player_hud::{Busy, ControlSlot, ELEM_FAILURE_OK, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
+        use crate::ui::screen::{At, DrawFrame};
+        let _g = crate::testlock::serial();
+        let marker = |kind| Marker { kind, start_ms: 1_000, end_ms: 2_000, final_seg: false };
+        let skip = player_hud::slot_for(Some(marker(MarkerKind::Intro)), false);
+        let up_next = player_hud::slot_for(Some(marker(MarkerKind::Credits)), true);
+        assert!(matches!(skip, ControlSlot::Skip(_)) && matches!(up_next, ControlSlot::UpNext(_)));
+        let failed = Busy::Readout(crate::ui::widgets::StatusKind::Failed, c"Playback failed");
+        let row = |n: u32| (0..n).map(|i| ELEM_ROW_BASE + i).collect::<Vec<_>>();
+        let cases: [(&str, ControlSlot, Busy, Vec<u32>); 4] = [
+            ("discs", ControlSlot::Discs, Busy::None, [row(3), vec![ELEM_TAB_BASE]].concat()),
+            ("skip", skip, Busy::None, [row(1), vec![ELEM_TAB_BASE]].concat()),
+            ("up next", up_next, Busy::None, [row(2), vec![ELEM_TAB_BASE]].concat()),
+            ("failed", ControlSlot::Discs, failed, vec![ELEM_FAILURE_OK]),
+        ];
+        for (name, slot, busy, controls) in cases {
+            let mut page = PlayerScreen::new(ENTRY);
+            page.slot = slot;
+            page.busy = busy;
+            page.transport = true;
+            let cx = cx();
+            let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+            page.record_stops(&mut f, true);
+            let mut map = HitMap::new();
+            map.fill(f.into_stops());
+            map.swap();
+            let placed: Vec<_> = controls
+                .iter()
+                .map(|&elem| {
+                    let p = Focusable::<TestHost>::place(&page, &elem, &cx, At::Drawn)
+                        .unwrap_or_else(|| panic!("{name}: {elem} is a control the D-pad reaches"));
+                    (FocusKey { entry: ENTRY, elem }, p.rect)
+                })
+                .collect();
+            let gaps = pointer_gaps(&mut map, ENTRY, &placed);
+            assert!(gaps.is_empty(), "{name}: controls the pointer cannot click:\n{}", gaps.join("\n"));
+            if !player_hud::failure_ok_drawn(TestHost::session(&cx), busy) {
+                let band = player_hud::scrub_hit_rect();
+                let hit = map.resolve(Some(ENTRY), PointerKind::Click, band.cx(), band.cy(), None);
+                assert_eq!(hit.activate.map(|(k, _)| k.elem), Some(ELEM_SCRUB), "{name}: the scrubber");
+            }
+            // …and a click on each one ACTS, never falling through to the picture's play/pause.
+            for &elem in &controls {
+                let (handled, reqs) = click(&mut page, elem);
+                assert_eq!(handled, Handled::Yes, "{name}: {elem}");
+                assert!(!reqs.is_empty(), "{name}: a click on {elem} asked for nothing");
+                assert!(!reqs.iter().any(|r| matches!(r, PlayerReq::Transport(_))), "{name}: {elem} -> {reqs:?}");
+                if (ELEM_ROW_BASE..ELEM_TAB_BASE).contains(&elem) {
+                    assert_eq!(page.hud.nav.btn, (elem - ELEM_ROW_BASE) as i32, "{name}: the CLICKED item arms");
+                    assert_eq!(reqs, vec![PlayerReq::ArmControlRow]);
+                }
+                if elem == ELEM_TAB_BASE {
+                    assert_eq!(reqs, vec![PlayerReq::OpenOverlay(overlay::OverlayKind::Info)], "{name}: Info");
+                }
+            }
+        }
     }
 
     /// PAUSE/PLAY/PLAYPAUSE all reach the shared `Transport` request unchanged — the port of

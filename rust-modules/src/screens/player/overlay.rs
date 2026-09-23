@@ -545,6 +545,25 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
     }
 }
 
+impl PlayerOverlayScreen {
+    /// Every visible row registers its own stop (§7.6) — the same per-row geometry
+    /// `Focusable::place` answers for focus movement, so the hit map and the focus engine agree on
+    /// every rect. Each panel's own `*Part::draw` does the registration (it needs the
+    /// module-private row geometry this screen cannot reach directly); the paint happens first, on
+    /// the owned, mutable `Panel`. Paint-free, so issue #162's pointer census runs it on the host.
+    pub(crate) fn record_stops<H>(&self, f: &mut DrawFrame<'_, '_, H>)
+    where
+        H: crate::screens::registry::PlayerLike + crate::screens::registry::MetadataLike,
+    {
+        match &self.panel {
+            Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.draw(f, Rect::FULL),
+            Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.draw(f, Rect::FULL),
+            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.draw(f, Rect::FULL),
+            Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.draw(f, Rect::FULL),
+        }
+    }
+}
+
 /// **Real per-row groups, delegated to whichever panel is ACTIVE** (restructure phase 12, D2 —
 /// see `screens/player/mod.rs`'s own `Focusable` impl for the sibling case). Each panel exposes
 /// its own row geometry through a `*Part` wrapper (`ui::track_menu::TrackMenuPart`,
@@ -665,17 +684,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
             Panel::Chapters(p) => p.draw(ps, appear, measure, H::metadata(f.cx)),
             Panel::More(p) => p.draw(appear, measure),
         }
-        // Every visible row registers its own stop now (§7.6) — the same per-row geometry
-        // `Focusable::place` (above) answers for focus movement, so the hit map and the focus
-        // engine agree on every rect. Each panel's own `*Part::draw` does the registration (it
-        // needs the module-private row geometry this screen cannot reach directly); the actual
-        // paint already happened above, on the owned, mutable `Panel`.
-        match &self.panel {
-            Panel::Tracks(p) => TrackMenuPart { state: p, entry: self.entry, group: Self::GROUP }.draw(f, Rect::FULL),
-            Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.draw(f, Rect::FULL),
-            Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.draw(f, Rect::FULL),
-            Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.draw(f, Rect::FULL),
-        }
+        self.record_stops(f);
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::VideoPlane

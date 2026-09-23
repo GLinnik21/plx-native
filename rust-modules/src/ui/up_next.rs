@@ -247,19 +247,15 @@ pub(crate) fn layout(row: &mut crate::ui::player_hud::TransportRow, measure: &dy
     )
 }
 
-/// Pointer hit-test: which of the row's two buttons is under (cx, cy) — [`BTN_CREDITS`],
-/// [`BTN_NEXT`], or None. The still and its caption are NOT targets: with two actions in the row a
-/// click on the artwork has no single obvious meaning, and guessing one is how a stray click starts
-/// an episode the user did not ask for. The caller has already established that this owns the row.
-pub(crate) fn hit(row: &mut crate::ui::player_hud::TransportRow, cx: f32, cy: f32, measure: &dyn crate::ui::machine::Measure) -> Option<c_int> {
-    let l = layout(row, measure);
-    if l.credits.contains(cx, cy) {
-        Some(BTN_CREDITS)
-    } else if l.next.contains(cx, cy) {
-        Some(BTN_NEXT)
-    } else {
-        None
-    }
+/// [`layout`] without writing the row's width memo — what `ControlSlot::item_rect` places the two
+/// buttons at. Only the two BUTTONS are pointer targets: the still and its caption are not, since
+/// with two actions in the row a click on the artwork has no single obvious meaning, and guessing
+/// one is how a stray click starts an episode the user did not ask for.
+pub(crate) fn layout_peek(row: &crate::ui::player_hud::TransportRow, measure: &dyn crate::ui::machine::Measure) -> Layout {
+    layout_of(
+        crate::ui::player_hud::ctrl_slot_w(row, NEXT_LABEL, measure),
+        crate::ui::widgets::Button::pill_w_measured(CREDITS_LABEL, theme::size::BODY, false, false, measure),
+    )
 }
 
 /// The caption — `"Up Next · S2, E4 · Laura"`. PRIMARY and bold, not secondary: it sits at y≈760

@@ -489,13 +489,11 @@ pub(crate) const CTRL_ROW_W: f32 = 3.0 * BTN_S + 2.0 * BTN_GAP;
 /// the labels are compile-time constants whose width can never change — re-measuring them 2-3× a
 /// frame is exactly the thrash `text::elide`'s memo exists to avoid.
 pub(crate) fn ctrl_slot(row: &mut TransportRow, label: &str, measure: &dyn crate::ui::machine::Measure) -> Rect {
-    const PAD_X: f32 = 34.0;
     let memo = &mut row.widths;
     let w = match memo.iter().find(|(l, _)| l == label) {
         Some((_, w)) => *w,
         None => {
-            let measured = measure.width_str(label, theme::size::BODY, true) + 2.0 * PAD_X;
-            let measured = measured.max(CTRL_ROW_W);
+            let measured = ctrl_slot_measure(label, measure);
             // `text_width` reads 0 until `init_text` has run — don't cache a pre-init measurement
             if measured > CTRL_ROW_W {
                 memo.push((label.to_string(), measured));
@@ -504,6 +502,17 @@ pub(crate) fn ctrl_slot(row: &mut TransportRow, label: &str, measure: &dyn crate
         }
     };
     Rect::new(CTRL_RIGHT - w, CTRL_Y, w, CTRL_H)
+}
+
+/// [`ctrl_slot`]'s width without writing the memo — the cached width when the draw has measured
+/// `label`, else the same measurement it would cache.
+pub(crate) fn ctrl_slot_w(row: &TransportRow, label: &str, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    row.widths.iter().find(|(l, _)| l == label).map_or_else(|| ctrl_slot_measure(label, measure), |(_, w)| *w)
+}
+
+fn ctrl_slot_measure(label: &str, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    const PAD_X: f32 = 34.0;
+    (measure.width_str(label, theme::size::BODY, true) + 2.0 * PAD_X).max(CTRL_ROW_W)
 }
 
 /// What currently occupies the transport's right-hand control row.
@@ -560,23 +569,28 @@ impl ControlSlot {
             ControlSlot::UpNext(m) => Some((m.kind, m.start_ms)),
         }
     }
-    /// Pointer hit-test for whatever occupies the row — ONE entry point, so the click path can
-    /// never consult geometry belonging to a control that is not on screen. It answers with the
-    /// ITEM index rather than a bool because Up Next has two: the click has to park `hud_nav.btn`
-    /// before dispatching, or the shared `activate_ctrl_row` would act on wherever the ring
-    /// happened to be rather than on what was clicked.
+    /// **Item `idx` of whatever occupies the row, at the rect it is DRAWN at** — the one
+    /// geometry `PlayerScreen`'s `Focusable::place` answers with, and therefore the rect its stop
+    /// is registered at, for all three occupants and every item of each (`0..items()`). `None`
+    /// past the occupant's last item.
     ///
-    /// `row` is the transport's own measurement cache: both stand-ins lay out against the same
-    /// slot geometry the draw path measures, and that cache is a `PlayerScreen` field now rather
-    /// than a `static mut`, so the hit-test is handed it exactly as the draw is.
-    pub(crate) fn hit(self, row: &mut TransportRow, cx: f32, cy: f32, measure: &dyn crate::ui::machine::Measure) -> Option<c_int> {
-        match self {
-            ControlSlot::UpNext(_) => crate::ui::up_next::hit(row, cx, cy, measure),
-            ControlSlot::Skip(pr) => crate::screens::player::skip_pill::rect(row, pr, measure)
-                .contains(cx, cy)
-                .then_some(0),
-            ControlSlot::Discs => None,
+    /// Read-only over `row`'s label-width memo ([`ctrl_slot_w`]): `place` is `&self`, and a width
+    /// the draw has not cached yet is measured the same way the draw measures it.
+    pub(crate) fn item_rect(self, row: &TransportRow, idx: c_int, measure: &dyn crate::ui::machine::Measure) -> Option<Rect> {
+        if idx < 0 || idx >= self.items() {
+            return None;
         }
+        Some(match self {
+            ControlSlot::Discs => disc_hit_rect(idx),
+            ControlSlot::Skip(pr) => {
+                let w = ctrl_slot_w(row, pr.label(), measure);
+                Rect::new(CTRL_RIGHT - w, CTRL_Y, w, CTRL_H)
+            }
+            ControlSlot::UpNext(_) => {
+                let l = crate::ui::up_next::layout_peek(row, measure);
+                if idx == crate::ui::up_next::BTN_NEXT { l.next } else { l.credits }
+            }
+        })
     }
 }
 
@@ -689,7 +703,7 @@ pub(crate) fn busy_surface(ps: &crate::route::PlaybackSession, st: crate::player
 /// and the transport is what the user reads the moment the first frame lands. Hiding it there would
 /// blank the HUD through every cold start and every pre-roll — which is why this asks the KIND and
 /// not merely "is a read-out up".
-fn readout_owns_frame(busy: Busy) -> bool {
+pub(crate) fn readout_owns_frame(busy: Busy) -> bool {
     matches!(busy, Busy::Readout(StatusKind::Failed, _))
 }
 
@@ -701,7 +715,7 @@ fn readout_owns_frame(busy: Busy) -> bool {
 /// (PX-PLAYER) retired the loop's player input path — so the precedence that used to be an arm's
 /// HEIGHT is one condition at the top of one function.
 ///
-/// A control that is not drawn must not be activatable — the rule [`ControlSlot::hit`] keeps for
+/// A control that is not drawn must not be activatable — the rule `PlayerScreen::record_stops` keeps for
 /// the pointer, at the row's own altitude. Without this the failure was hidden but
 /// still drivable: `start_playback` stamps a ~4.5 s HUD linger on the way in, so a `/decision`
 /// refusal lands with `hud_visible` true and focus parked on the scrubber, and two blind presses
@@ -855,7 +869,6 @@ pub(crate) fn draw_readout(
     ps: &crate::route::PlaybackSession,
     busy: Busy,
     now: u32,
-    stops: &mut Vec<(u32, Rect)>,
     measure: &dyn crate::ui::machine::Measure,
 ) {
     let Busy::Readout(kind, caption) = busy else {
@@ -869,9 +882,6 @@ pub(crate) fn draw_readout(
         // ("lands at the same y in all three variants, so a user who has seen it once recognises
         // it before reading") and the caption's suffix is re-derived as the reason.
         draw_failed_readout(ps, Painter::root(), measure);
-        if crate::player::error_now(ps).kind != crate::player::FailureKind::JailMissingRtkmem || ps.repair_status == crate::webos::jail_repair::State::Idle {
-            stops.push((ELEM_FAILURE_OK, failure_ok_hit_rect()));
-        }
         return;
     }
     StatusOverlay::new(readout_frame(), caption, kind)
@@ -923,8 +933,8 @@ pub(crate) fn failure_quality_hit(x: f32, y: f32) -> bool {
 
 // ---- element addresses for the Engine's hit map / `Focusable` groups (restructure phase 12) --
 //
-// `PlayerScreen` (`screens/player/mod.rs`) registers one `ui::screen::Stop` per hit-testable
-// region below through `DrawFrame::stop` at draw time, keyed on these addresses, instead of the
+// `PlayerScreen` (`screens/player/mod.rs`) registers one `ui::screen::Stop` per element of its
+// `Focusable` groups (`record_stops`, in z-order, at `place`'s rect), keyed on these addresses, instead of the
 // old `app/run.rs` ladder calling `icon_hit`/`scrub_hit`/`failure_quality_hit` on the raw pointer
 // position by hand. The GEOMETRY those functions describe is unchanged — only how a caller LEARNS
 // it: a registered `Stop` (and its mirror in `PlayerScreen`'s own `Focusable::place`) rather than
@@ -933,8 +943,8 @@ pub(crate) fn failure_quality_hit(x: f32, y: f32) -> bool {
 // not an enum, so `PlayerScreen` can address a control-row/tab-row ITEM by `BASE + index` exactly
 // as `icon_hit`'s `0..BTN_N` scan already did.
 pub(crate) const ELEM_SCRUB: u32 = 0;
-/// `+ 0..BTN_N` for the disc row, or `+ 0` alone for a stand-in ([`ControlSlot::Skip`]/
-/// [`ControlSlot::UpNext`]) — see [`ctrl_row_hit_rect`]'s doc for why a stand-in gets one region.
+/// `+ 0..items()` for whatever occupies the row — the discs, the Skip pill, or both Up Next
+/// buttons, each at its own rect ([`ControlSlot::item_rect`]).
 pub(crate) const ELEM_ROW_BASE: u32 = 10;
 /// `+ 0..=1` — Info, then Chapters when the item has any.
 pub(crate) const ELEM_TAB_BASE: u32 = 20;
@@ -943,8 +953,8 @@ pub(crate) const ELEM_TAB_BASE: u32 = 20;
 pub(crate) const ELEM_FAILURE_OK: u32 = 30;
 
 /// The scrubber's GRAB band — deliberately much taller than the bar itself, because it is a
-/// pointer grab zone. Registered as this page's `ELEM_SCRUB` stop by [`draw_hud`] and mirrored by
-/// `PlayerScreen::place`; it was `scrub_hit`'s own rectangle, spelled inline, until phase 12 made
+/// pointer grab zone. Placed by `PlayerScreen::place` and registered from it as the LOWEST stop, so
+/// every control over the band outranks it (issue #162); it was `scrub_hit`'s own rectangle until phase 12 made
 /// the hit map the one thing that tests it.
 pub(crate) fn scrub_hit_rect() -> Rect {
     Rect::new(SB_X, SCR_H - 270.0, sb_w(), 160.0)
@@ -955,14 +965,13 @@ pub(crate) fn disc_hit_rect(idx: i32) -> Rect {
     Rect::new(btn_x(idx), BTN_Y, BTN_S, BTN_S)
 }
 
-/// **The control row's ONE registered region while a stand-in (Skip/Up Next) owns it.**
+/// **The control row's band at its floor width** ([`CTRL_ROW_W`]) — the row GROUP's extent only.
 ///
-/// The old `icon_hit` never hit-tested a stand-in at all — `!slot.is_discs()` returned `None`
-/// unconditionally, so a stand-in's only affordance was ever the keyboard's deferred OK press
-/// (`PlayerReq::ArmControlRow`), never a pointer click. This keeps that parity rather than
-/// inventing a click path the shipped app never had: one region, at the row's floor width
-/// ([`CTRL_ROW_W`]), which is enough for keyboard-driven focus/hover bookkeeping and is never
-/// consulted by a click handler for a stand-in occupant.
+/// It is not any item's hit region: every item of whatever occupies the row — a disc, the Skip
+/// pill, either Up Next button — is placed and registered at its own drawn rect by
+/// [`ControlSlot::item_rect`]. This one region used to BE the stand-ins' registered stop, which
+/// left *Watch Credits* (drawn left of it) unclickable and made a click on *Next Episode* land on
+/// item 0, *Watch Credits* (issue #162's audit).
 pub(crate) fn ctrl_row_hit_rect() -> Rect {
     Rect::new(CTRL_RIGHT - CTRL_ROW_W, CTRL_Y, CTRL_ROW_W, CTRL_H)
 }
@@ -983,6 +992,14 @@ pub(crate) fn tab_hit_rect(idx: i32, has_chapters: bool) -> Option<Rect> {
     }
     let _ = label;
     None
+}
+
+/// Is the failure read-out's escape ON SCREEN — a failure owns the frame, and it is not the
+/// sandbox failure whose repair is already under way (that read-out offers nothing to press).
+pub(crate) fn failure_ok_drawn(ps: &crate::route::PlaybackSession, busy: Busy) -> bool {
+    readout_owns_frame(busy)
+        && (crate::player::error_now(ps).kind != crate::player::FailureKind::JailMissingRtkmem
+            || ps.repair_status == crate::webos::jail_repair::State::Idle)
 }
 
 /// The failure read-out's own escape, as a `Rect` — see [`FR_QUALITY_HIT`].
@@ -1633,7 +1650,6 @@ pub(crate) fn draw_hud(
     tab: i32,
     now: u32,
     transport: bool,
-    stops: &mut Vec<(u32, Rect)>,
     measure: &dyn crate::ui::machine::Measure,
     meta: crate::metadata::MetadataView<'_>,
 ) {
@@ -1698,11 +1714,9 @@ pub(crate) fn draw_hud(
         match slot {
             ControlSlot::UpNext(_) => {
                 crate::ui::up_next::draw(ps, row, up, p, focus == 1, btn, now, measure);
-                stops.push((ELEM_ROW_BASE, ctrl_row_hit_rect()));
             }
             ControlSlot::Skip(pr) => {
                 crate::screens::player::skip_pill::draw(row, p, pr, focus == 1, measure);
-                stops.push((ELEM_ROW_BASE, ctrl_row_hit_rect()));
             }
             ControlSlot::Discs => {
                 for i in 0..BTN_N {
@@ -1716,11 +1730,9 @@ pub(crate) fn draw_hud(
                         .ground(ControlGround::Unkeyed)
                         .scale(pop)
                         .draw(&e, p);
-                    stops.push((ELEM_ROW_BASE + i as u32, disc_hit_rect(i)));
                 }
             }
         }
-        stops.push((ELEM_SCRUB, scrub_hit_rect()));
 
         draw_playbar(p, Playbar::live(ps, busy, focus, row.since_play_ms(now), now), measure);
     } // end `if transport`
@@ -1747,7 +1759,6 @@ pub(crate) fn draw_hud(
                 .ground(ControlGround::Unkeyed)
                 .draw(&e, p);
         }
-        stops.push((ELEM_TAB_BASE + i as u32, Rect::new(px, py, pw, ph)));
         px += pw + 16.0;
     }
 }
