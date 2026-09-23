@@ -120,6 +120,56 @@ pub(crate) use servers::{
 // a plain `cargo check --lib` (which builds no test code at all) sees no caller.
 #[allow(unused_imports)]
 pub(crate) use servers::register_pinned_with_client_id;
+
+/// Evidence from the authenticated admission request that follows an identity probe. Reaching
+/// `/identity` proves the machine; this proves the exact per-(profile, machine) token can browse it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EndpointAdmission {
+    Usable,
+    Refused(i32),
+    Http(i32),
+    Timeout,
+    Transport,
+    InsecureOnly,
+    Malformed,
+}
+
+fn classify_endpoint_response(status: i32, parsed: bool) -> EndpointAdmission {
+    if matches!(status, 401 | 403) {
+        EndpointAdmission::Refused(status)
+    } else if !(200..300).contains(&status) {
+        EndpointAdmission::Http(status)
+    } else if parsed {
+        EndpointAdmission::Usable
+    } else {
+        EndpointAdmission::Malformed
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn endpoint_admission_from_reply(status: i32, body: &[u8]) -> EndpointAdmission {
+    classify_endpoint_response(status, serde_json::from_slice::<models::Envelope>(body).is_ok())
+}
+
+/// Validate a freshly reached source with `GET /library/sections`, using the source's own token,
+/// origin and resolve pin through the ordinary PMS client/transport boundary.
+pub(crate) fn admit_source(source: &session::SourceRef, client_id: &str) -> EndpointAdmission {
+    let Some(origin) = source.origin() else { return EndpointAdmission::Transport };
+    if !CredentialPolicy::build().may_carry_credential(&origin) {
+        return EndpointAdmission::InsecureOnly;
+    }
+    let client = Client::new(ServerId::UNSET, &source.machine_id, origin, &source.token, client_id)
+        .with_resolve_pin(source.resolve_pin());
+    let deadline = std::time::Instant::now()
+        .checked_add(std::time::Duration::from_secs(10))
+        .unwrap_or_else(std::time::Instant::now);
+    match client.get_json_with_headers_until("/library/sections", &[], deadline) {
+        JsonDeadlineOutcome::Response { reply, parsed } =>
+            classify_endpoint_response(reply.status, parsed.is_some()),
+        JsonDeadlineOutcome::Deadline => EndpointAdmission::Timeout,
+        JsonDeadlineOutcome::Transport => EndpointAdmission::Transport,
+    }
+}
 // #95 step 8: connection facts applied AT registration, atomically with the registry write. See
 // `servers::ConnectionFacts`'s doc for why `None` means "leave unchanged" rather than "unknown".
 // `register_origin` took the `ConnectionFacts` parameter directly rather than keeping a

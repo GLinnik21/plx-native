@@ -391,7 +391,7 @@ fn endpoint_recovery_cannot_introduce_a_server_outside_the_profile_roster() {
 }
 
 #[test]
-fn profile_activation_promotes_a_surviving_share_when_primary_is_revoked() {
+fn profile_activation_keeps_a_cached_surviving_share_ineligible_until_fresh_admission() {
     let stored = vec![
         source("revoked-primary", true, "old-owner"),
         source("surviving-share", false, "old-share"),
@@ -405,7 +405,8 @@ fn profile_activation_promotes_a_surviving_share_when_primary_is_revoked() {
 
     assert_eq!(next.len(), 1);
     assert_eq!(next[0].machine_id, "surviving-share");
-    assert_eq!(next[0].token, "profile-share");
+    assert!(next[0].token.is_empty(),
+        "a grant plus a cached address is not an authenticated-usable endpoint");
     assert_eq!(primary_index(&next), 0);
 }
 

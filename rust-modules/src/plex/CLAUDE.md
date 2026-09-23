@@ -122,6 +122,15 @@ relay leg. If nothing eligible verifies, the result is `Reach::InsecureOnly` (pl
 apart from `Unreachable`, that **outranks a 401**. Before this it counted as reached, which was
 issue #95 itself.
 
+**Online selection also proves the token after it proves the machine.** `/identity` is deliberately
+unauthenticated, so a fresh identity winner is only a known endpoint. Before sign-in, rediscovery or
+a profile switch may select it, auth sends `GET /library/sections` through that source's exact
+origin, resolve pin, transport policy and per-machine token. A valid empty sections container is
+success; 401/403, timeout, transport refusal and malformed JSON remain distinct evidence, and the
+search continues with the next eligible endpoint/server. Cached addresses remain candidates, not
+proof: they regain a credential only after this fresh two-step admission. Offline cached-profile
+seating is the explicit exception and keeps its existing PIN/cache contract.
+
 Slots are keyed on `machineIdentifier` because that is the only identity that survives a server
 changing address — and a registration that has *learned* an id **adopts** an address-only slot
 instead of adding a second one for the same machine.
