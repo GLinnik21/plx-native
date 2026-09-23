@@ -27,7 +27,10 @@
 //! no new `DT_NEEDED`, and no change to the `fwcompat` matrix — the same mechanism
 //! `surface::panel_resolution` uses for the SDL entry points that exist only on some firmwares.
 //! A SONAME candidate list is kept as a fallback for the case where EGL is loaded privately
-//! (`RTLD_LOCAL`) and so is invisible to `RTLD_DEFAULT`.
+//! (`RTLD_LOCAL`) and so is invisible to `RTLD_DEFAULT` — opened `RTLD_NOLOAD`, so it only ever
+//! reaches an EGL that is already mapped. And nothing is asked of EGL at all until
+//! `eglGetCurrentContext` says a context is current on this thread (`current_with`): a desktop
+//! simulator on GLX has no EGL context, and its display handle would mean nothing.
 //!
 //! # What it reports, and why each field is here
 //!
@@ -79,10 +82,6 @@ const GL_EXTENSIONS: c_uint = 0x1F03;
 
 extern "C" {
     fn glGetString(name: c_uint) -> *const c_char;
-    /// On an EGL backend SDL forwards this to `eglGetProcAddress` and then to a `dlsym` on the
-    /// EGL handle **it** opened — which is the one lookup guaranteed to reach the same library
-    /// SDL made our context with, even if that library was opened `RTLD_LOCAL`.
-    fn SDL_GL_GetProcAddress(name: *const c_char) -> *mut c_void;
 }
 
 type FnGetCurrentDisplay = unsafe extern "C" fn() -> *mut c_void;
@@ -106,24 +105,97 @@ type FnSurfaceAttrib = unsafe extern "C" fn(*mut c_void, *mut c_void, c_int, c_i
 /// actually run on. `libEGL.so.1` is webOS 6+ (and 1.x). Neither is linked.
 const EGL_SONAMES: &[&str] = &["libEGLfk.so.2", "libEGL.so.1", "libEGL.so"];
 
-/// A resolved symbol, or `None`. Tries the process's own scope first, then the candidate list.
+/// A resolved EGL entry point, or `None`. **`dlsym`**: the process's own scope first, then an
+/// EGL somebody already mapped (`RTLD_NOLOAD` — SDL `dlopen`s EGL `RTLD_LOCAL`, which
+/// `RTLD_DEFAULT` cannot see); an unexported extension entry point is asked of that same EGL's
+/// own `eglGetProcAddress` ([`resolve_with`]). Never a fresh load, and never
+/// `SDL_GL_GetProcAddress`.
+///
+/// Why never SDL's lookup: it is a lookup for the *client API* SDL is on, not for EGL. On a GLX
+/// backend it is `glXGetProcAddressARB`, and GLX 1.4 §3.3.12 is explicit that a non-NULL answer
+/// "does not guarantee that an extension function is actually supported" — libglvnd hands back a
+/// generated GL dispatch stub for ANY name it does not know. The Linux simulator asks SDL for a
+/// desktop GL 4.1 core context, which SDL's X11 driver creates through GLX, so `eglGetCurrentDisplay`
+/// and `eglQueryString` resolved to two such stubs: calling them runs Mesa's no-op dispatch entry,
+/// a `void` function whose "return value" is whatever was left in the return register. That
+/// garbage went to `CStr::from_ptr` as an extension string, and CI crashed in `strlen` at
+/// `si_addr = 0xfffffffffffff658` (runs 35870896540, 35544331727).
+///
+/// Never a fresh load for the same reason from the other side: an EGL nobody else loaded has no
+/// current context of ours to describe. Only the library SDL made the context with can answer.
 fn resolve(name: &str, lib: &mut Option<Handle>) -> Option<*mut c_void> {
-    if let Some(p) = Handle::self_handle().sym(name).filter(|p| !p.is_null()) {
+    let mut global = |n: &str| Handle::self_handle().sym(n).filter(|p| !p.is_null());
+    let mut mapped = |n: &str| {
+        if lib.is_none() {
+            *lib = Handle::open_loaded(EGL_SONAMES).map(|(h, soname)| {
+                crate::log(&format!(
+                    "egl: RTLD_DEFAULT had no EGL; using the mapped {soname}"
+                ));
+                h
+            });
+        }
+        lib.as_ref()?.sym(n).filter(|p| !p.is_null())
+    };
+    resolve_with(name, &mut global, &mut mapped)
+}
+
+/// [`resolve`] over injectable scopes, so a host test can hold the boundary.
+///
+/// Core entry points come from `dlsym` and nowhere else. An **extension** entry point
+/// (`…KHR`/`…EXT`) that the provider does not export is asked of that provider's OWN
+/// `eglGetProcAddress` — itself found by `dlsym` in the same scopes, so it is the real EGL's
+/// lookup, never a client-API one. That is how webOS 10.2.0 reaches the fence: its Mesa-style
+/// `libEGL.so.1` exports `eglGetProcAddress` and the core API but no `eglCreateSyncKHR` family
+/// (`tools/fwcompat.py --lib libEGL.so.1`), where every Mali release exports them directly.
+/// Restricted to extension names because `eglGetProcAddress`, like `glXGetProcAddress`, may
+/// answer non-NULL for a name it does not implement — acceptable only for an entry point whose
+/// extension the caller then checks in `EGL_EXTENSIONS`, as [`fence`] does.
+fn resolve_with(
+    name: &str,
+    global: &mut dyn FnMut(&str) -> Option<*mut c_void>,
+    mapped: &mut dyn FnMut(&str) -> Option<*mut c_void>,
+) -> Option<*mut c_void> {
+    if let Some(p) = global(name).or_else(|| mapped(name)) {
         return Some(p);
     }
-    if let Ok(c) = std::ffi::CString::new(name) {
-        let p = unsafe { SDL_GL_GetProcAddress(c.as_ptr()) };
-        if !p.is_null() {
-            return Some(p);
-        }
+    if !(name.ends_with("KHR") || name.ends_with("EXT")) {
+        return None;
     }
-    if lib.is_none() {
-        *lib = Handle::open(EGL_SONAMES).map(|(h, soname)| {
-            crate::log(&format!("egl: RTLD_DEFAULT had no EGL; opened {soname}"));
-            h
-        });
+    let gpa = global("eglGetProcAddress").or_else(|| mapped("eglGetProcAddress"))?;
+    let gpa: FnGetProcAddress = unsafe { std::mem::transmute(gpa) };
+    let c = std::ffi::CString::new(name).ok()?;
+    let p = unsafe { gpa(c.as_ptr()) };
+    (!p.is_null()).then_some(p)
+}
+
+/// The EGL context current on this thread and its display — the precondition for asking EGL
+/// ANYTHING about "our" display or surface.
+#[derive(Clone, Copy)]
+struct Current {
+    dpy: *mut c_void,
+    ctx: *mut c_void,
+}
+
+/// Is an EGL context current on this thread, per the EGL we resolved? `None` unless BOTH
+/// `eglGetCurrentContext` and `eglGetCurrentDisplay` answer non-null.
+///
+/// The context is the gate, not the display: `eglGetCurrentDisplay` alone cannot tell "SDL is on
+/// EGL" from "SDL is on GLX and some other EGL happens to be mapped" (EGL 1.4 §3.7.4 returns
+/// `EGL_NO_DISPLAY` only when no context is current — and only for the library that would own
+/// one). A current context in the library we resolved is the one fact that makes every later
+/// `eglQuery*` on its display meaningful. Nothing else in this module calls EGL until it holds a
+/// `Current`, so this is the single check for the probe, the damage experiment and the fence.
+fn current_with(lookup: &mut dyn FnMut(&str) -> Option<*mut c_void>) -> Option<Current> {
+    let get_ctx: FnGetCurrentContext =
+        unsafe { std::mem::transmute(lookup("eglGetCurrentContext")?) };
+    let get_dpy: FnGetCurrentDisplay =
+        unsafe { std::mem::transmute(lookup("eglGetCurrentDisplay")?) };
+    let ctx = unsafe { get_ctx() };
+    if ctx.is_null() {
+        return None;
     }
-    lib.as_ref()?.sym(name).filter(|p| !p.is_null())
+    let dpy = unsafe { get_dpy() };
+    (!dpy.is_null()).then_some(Current { dpy, ctx })
 }
 
 fn cstr(p: *const c_char) -> String {
@@ -140,25 +212,23 @@ fn cstr(p: *const c_char) -> String {
 /// Asking EGL is what makes this a probe of the real surface rather than of a display we created.
 pub(crate) fn probe() {
     let mut lib: Option<Handle> = None;
-    let Some(get_display) = resolve("eglGetCurrentDisplay", &mut lib) else {
-        // Not a fault on a desktop simulator (there is no EGL there at all) and a genuine
-        // surprise on a television, so say which one this is rather than guessing.
-        crate::log("egl: no eglGetCurrentDisplay in this process — EGL capabilities unknown");
+    let Some(Current { dpy, ctx }) = current_with(&mut |name| resolve(name, &mut lib)) else {
+        // Not a fault on a desktop simulator (no EGL at all on macOS; GLX on Linux/X11) and a
+        // genuine surprise on a television, so say which one this is rather than guessing.
+        crate::log(
+            "egl: no current EGL context on this thread — SDL is not on an EGL backend here, \
+             nothing more to ask",
+        );
         log_gl_extensions();
         return;
     };
-    let get_display: FnGetCurrentDisplay = unsafe { std::mem::transmute(get_display) };
-    let dpy = unsafe { get_display() };
     let surface = resolve("eglGetCurrentSurface", &mut lib).map_or(std::ptr::null_mut(), |f| {
         let f: FnGetCurrentSurface = unsafe { std::mem::transmute(f) };
         unsafe { f(EGL_DRAW) }
     });
-    crate::log(&format!("egl: display={dpy:p} draw_surface={surface:p}"));
-    if dpy.is_null() {
-        crate::log("egl: EGL_NO_DISPLAY — SDL is not on an EGL backend here, nothing more to ask");
-        log_gl_extensions();
-        return;
-    }
+    crate::log(&format!(
+        "egl: display={dpy:p} context={ctx:p} draw_surface={surface:p}"
+    ));
 
     if let Some(f) = resolve("eglQueryString", &mut lib) {
         let f: FnQueryString = unsafe { std::mem::transmute(f) };
@@ -231,7 +301,7 @@ pub(crate) fn probe() {
         // Can this surface's CONFIG even offer buffer preservation? Without
         // EGL_SWAP_BEHAVIOR_PRESERVED_BIT the `eglSurfaceAttrib` route is closed by the config,
         // not by policy, and no amount of asking will open it.
-        probe_config(dpy, &mut lib);
+        probe_config(dpy, ctx, &mut lib);
         // Only with `/tmp/plxnative-eglprobe`, because it MUTATES the live surface: ask for
         // EGL_BUFFER_PRESERVED, read back what we got, and put it back the way SDL had it.
         // Empirical, because a config bit and a driver's answer have disagreed before.
@@ -251,22 +321,19 @@ pub(crate) fn probe() {
 }
 
 /// The config behind the current context, and whether it can preserve a swapped buffer.
-fn probe_config(dpy: *mut c_void, lib: &mut Option<Handle>) {
-    let (Some(get_ctx), Some(query_ctx), Some(choose), Some(get_attr)) = (
-        resolve("eglGetCurrentContext", lib),
+fn probe_config(dpy: *mut c_void, ctx: *mut c_void, lib: &mut Option<Handle>) {
+    let (Some(query_ctx), Some(choose), Some(get_attr)) = (
         resolve("eglQueryContext", lib),
         resolve("eglChooseConfig", lib),
         resolve("eglGetConfigAttrib", lib),
     ) else {
         return;
     };
-    let get_ctx: FnGetCurrentContext = unsafe { std::mem::transmute(get_ctx) };
     let query_ctx: FnQueryContext = unsafe { std::mem::transmute(query_ctx) };
     let choose: FnChooseConfig = unsafe { std::mem::transmute(choose) };
     let get_attr: FnGetConfigAttrib = unsafe { std::mem::transmute(get_attr) };
-    let ctx = unsafe { get_ctx() };
     let mut id: c_int = -1;
-    if ctx.is_null() || unsafe { query_ctx(dpy, ctx, EGL_CONFIG_ID, &mut id) } == 0 {
+    if unsafe { query_ctx(dpy, ctx, EGL_CONFIG_ID, &mut id) } == 0 {
         return;
     }
     // Ask for that ONE config by id. `eglChooseConfig` with EGL_CONFIG_ID is the documented way
@@ -552,8 +619,9 @@ fn log_gl_extensions() {
 ///
 /// Resolved the way everything else here is — through the EGL SDL already mapped, so no new
 /// `DT_NEEDED` — and only when the display advertises the extension; the dev set does (webOS 4.5,
-/// Mali r12p0: `EGL_KHR_fence_sync` in the boot `egl extensions:` line). Absent (the simulator has
-/// no EGL at all), [`Fence::insert`] answers `None` and the caller falls back to its frame count.
+/// Mali r12p0: `EGL_KHR_fence_sync` in the boot `egl extensions:` line). Absent — or no EGL
+/// context current at all, as on a simulator (none on macOS, GLX on Linux/X11) —
+/// [`Fence::insert`] answers `None` and the caller falls back to its frame count.
 ///
 /// Polled with `flags = 0`, never `EGL_SYNC_FLUSH_COMMANDS_BIT_KHR`: a flush in the middle of a frame
 /// makes a tiler submit the half-drawn render pass and reload it afterwards, which is the very cost
@@ -573,7 +641,7 @@ pub(crate) mod fence {
 
     /// The display and the three entry points, as addresses: raw pointers are not `Sync`, and
     /// every call is made on the render thread that resolved them anyway.
-    struct Api {
+    pub(super) struct Api {
         dpy: usize,
         create: usize,
         wait: usize,
@@ -585,29 +653,33 @@ pub(crate) mod fence {
     fn api() -> Option<&'static Api> {
         API.get_or_init(|| {
             let mut lib: Option<Handle> = None;
-            let get_display = resolve("eglGetCurrentDisplay", &mut lib)?;
-            let get_display: super::FnGetCurrentDisplay = unsafe { std::mem::transmute(get_display) };
-            let dpy = unsafe { get_display() };
-            if dpy.is_null() {
-                return None;
-            }
-            let query = resolve("eglQueryString", &mut lib)?;
-            let query: super::FnQueryString = unsafe { std::mem::transmute(query) };
-            let ext = super::cstr(unsafe { query(dpy, super::EGL_EXTENSIONS) });
-            if !ext.split_ascii_whitespace().any(|e| e == "EGL_KHR_fence_sync") {
-                crate::log("egl fence: EGL_KHR_fence_sync not advertised — field reads count frames");
-                return None;
-            }
-            let api = Api {
-                dpy: dpy as usize,
-                create: resolve("eglCreateSyncKHR", &mut lib)? as usize,
-                wait: resolve("eglClientWaitSyncKHR", &mut lib)? as usize,
-                destroy: resolve("eglDestroySyncKHR", &mut lib)? as usize,
-            };
-            crate::log("egl fence: EGL_KHR_fence_sync in use for the field read-back");
-            Some(api)
+            api_with(&mut |name| resolve(name, &mut lib))
         })
         .as_ref()
+    }
+
+    /// The binding decision, over an injectable symbol lookup so a host test can stand in for
+    /// the process state CI crashed in. No current EGL context ⇒ `None` with no query issued.
+    pub(super) fn api_with(lookup: &mut dyn FnMut(&str) -> Option<*mut c_void>) -> Option<Api> {
+        let super::Current { dpy, .. } = super::current_with(lookup)?;
+        let query = lookup("eglQueryString")?;
+        let query: super::FnQueryString = unsafe { std::mem::transmute(query) };
+        let ext = super::cstr(unsafe { query(dpy, super::EGL_EXTENSIONS) });
+        if !ext
+            .split_ascii_whitespace()
+            .any(|e| e == "EGL_KHR_fence_sync")
+        {
+            crate::log("egl fence: EGL_KHR_fence_sync not advertised — field reads count frames");
+            return None;
+        }
+        let api = Api {
+            dpy: dpy as usize,
+            create: lookup("eglCreateSyncKHR")? as usize,
+            wait: lookup("eglClientWaitSyncKHR")? as usize,
+            destroy: lookup("eglDestroySyncKHR")? as usize,
+        };
+        crate::log("egl fence: EGL_KHR_fence_sync in use for the field read-back");
+        Some(api)
     }
 
     /// A fence in the GL command stream, destroyed on drop.
@@ -621,8 +693,11 @@ pub(crate) mod fence {
             let a = api()?;
             let create: FnCreate = unsafe { std::mem::transmute(a.create) };
             let attribs = [EGL_NONE];
-            let sync = unsafe { create(a.dpy as *mut c_void, EGL_SYNC_FENCE_KHR, attribs.as_ptr()) };
-            (!sync.is_null()).then_some(Self { sync: sync as usize })
+            let sync =
+                unsafe { create(a.dpy as *mut c_void, EGL_SYNC_FENCE_KHR, attribs.as_ptr()) };
+            (!sync.is_null()).then_some(Self {
+                sync: sync as usize,
+            })
         }
 
         /// Has the GPU passed it? A zero-timeout poll: never waits, never flushes. An error reads
@@ -643,5 +718,129 @@ pub(crate) mod fence {
                 unsafe { destroy(a.dpy as *mut c_void, self.sync as *mut c_void) };
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // The process state CI crashed in: SDL on GLX, so no EGL context is current on this thread,
+    // and the "display" the lookup hands back is register garbage — the exact si_addr of
+    // run 35870896540.
+    const GARBAGE: usize = 0xffff_ffff_ffff_f658_u64 as usize;
+    static QUERIES: AtomicUsize = AtomicUsize::new(0);
+
+    extern "C" fn no_context() -> *mut c_void {
+        std::ptr::null_mut()
+    }
+    extern "C" fn some_context() -> *mut c_void {
+        0x1000 as *mut c_void
+    }
+    extern "C" fn garbage_display() -> *mut c_void {
+        GARBAGE as *mut c_void
+    }
+    extern "C" fn real_display() -> *mut c_void {
+        0x2000 as *mut c_void
+    }
+    extern "C" fn counting_query(_dpy: *mut c_void, _name: c_int) -> *const c_char {
+        QUERIES.fetch_add(1, Ordering::SeqCst);
+        c"EGL_KHR_fence_sync".as_ptr()
+    }
+    extern "C" fn dummy() {}
+
+    /// A symbol table standing in for one EGL library: every name resolves.
+    fn table(
+        ctx: extern "C" fn() -> *mut c_void,
+        dpy: extern "C" fn() -> *mut c_void,
+    ) -> impl FnMut(&str) -> Option<*mut c_void> {
+        move |name| {
+            Some(match name {
+                "eglGetCurrentContext" => ctx as *mut c_void,
+                "eglGetCurrentDisplay" => dpy as *mut c_void,
+                "eglQueryString" => counting_query as *mut c_void,
+                _ => dummy as *mut c_void,
+            })
+        }
+    }
+
+    /// The CI crash: no current EGL context, a non-null display. The fence must be off AND
+    /// `eglQueryString` must never be asked — its answer about a display nobody made current is
+    /// the invalid pointer `CStr::from_ptr` walked into.
+    #[test]
+    fn no_current_context_disables_the_fence_without_a_query() {
+        let _g = crate::testlock::serial();
+        QUERIES.store(0, Ordering::SeqCst);
+        let mut lookup = table(no_context, garbage_display);
+        assert!(fence::api_with(&mut lookup).is_none());
+        assert_eq!(
+            QUERIES.load(Ordering::SeqCst),
+            0,
+            "eglQueryString was called with no current EGL context"
+        );
+    }
+
+    // A proc-address lookup that answers for ANY name — what `glXGetProcAddress` does, and what
+    // `eglGetProcAddress` is allowed to do. The resolver must never use it for a core entry point.
+    extern "C" fn any_name_gpa(_name: *const c_char) -> *mut c_void {
+        0xdead_0000_usize as *mut c_void
+    }
+    fn nothing(_: &str) -> Option<*mut c_void> {
+        None
+    }
+
+    /// The resolver boundary. A core entry point nobody exports stays unresolved even when an
+    /// `eglGetProcAddress` that answers for anything is reachable — the shape of the CI crash,
+    /// where two "egl" functions were really GL dispatch stubs — while an extension entry point
+    /// the provider does not export (webOS 10.2.0's `eglCreateSyncKHR`) is found through that
+    /// provider's own `eglGetProcAddress`.
+    #[test]
+    fn core_entry_points_never_come_from_a_proc_address_lookup() {
+        let mut mapped =
+            |n: &str| (n == "eglGetProcAddress").then_some(any_name_gpa as *mut c_void);
+        for core in [
+            "eglGetCurrentDisplay",
+            "eglGetCurrentContext",
+            "eglQueryString",
+        ] {
+            assert_eq!(
+                resolve_with(core, &mut nothing, &mut mapped),
+                None,
+                "{core}"
+            );
+        }
+        assert_eq!(
+            resolve_with("eglCreateSyncKHR", &mut nothing, &mut mapped),
+            Some(0xdead_0000_usize as *mut c_void)
+        );
+        // Nothing mapped at all (macOS; GLX without an EGL loaded): nothing resolves.
+        assert_eq!(
+            resolve_with("eglCreateSyncKHR", &mut nothing, &mut nothing),
+            None
+        );
+    }
+
+    /// An exported symbol wins over the proc-address route, from the process scope first.
+    #[test]
+    fn exported_symbols_come_first() {
+        let exported = dummy as *mut c_void;
+        let mut global = |n: &str| (n == "eglCreateSyncKHR").then_some(exported);
+        let mut mapped =
+            |n: &str| (n == "eglGetProcAddress").then_some(any_name_gpa as *mut c_void);
+        assert_eq!(
+            resolve_with("eglCreateSyncKHR", &mut global, &mut mapped),
+            Some(exported)
+        );
+    }
+
+    /// The television's case still binds: a current context on a real display.
+    #[test]
+    fn a_current_context_binds_the_fence() {
+        let _g = crate::testlock::serial();
+        QUERIES.store(0, Ordering::SeqCst);
+        let mut lookup = table(some_context, real_display);
+        assert!(fence::api_with(&mut lookup).is_some());
+        assert_eq!(QUERIES.load(Ordering::SeqCst), 1);
     }
 }

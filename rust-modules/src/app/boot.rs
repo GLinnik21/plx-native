@@ -488,11 +488,9 @@ pub(crate) unsafe fn construct(
     // read, logged and used for nothing: `docs/egl-partial-update-and-damage.md` is what it
     // was for. Deliberately NOT a new link dependency; see `egl.rs`'s module doc for why
     // `-lEGL` would kill the process at exec() on the very firmwares this app runs on.
-    if cfg!(all(feature = "hostsim", target_os = "linux")) {
-        log("egl: skipped — Linux host simulator does not require EGL diagnostics");
-    } else {
-        crate::egl::probe();
-    }
+    // No platform carve-out: the probe asks EGL nothing unless an EGL context is current on this
+    // thread (`egl::current_with`), which is what makes it safe on a GLX-backed Linux simulator.
+    crate::egl::probe();
     crate::textinput::bind(win);
     // …and the same handshake for the ROOT press: `webos::go_home`'s fallback leg minimizes
     // this window, and the window is created here, a long way from where BACK is decided.
