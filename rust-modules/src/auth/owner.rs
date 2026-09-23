@@ -4005,6 +4005,39 @@ mod tests {
     /// the reason in `error`), not flip to `Phase::Error`, which the profiles screen does not draw
     /// — that left an endless spinner. And BACK must hand back the still-valid session: no picker
     /// was ever offered, so no profile boundary was crossed.
+    /// PR #212 review (P2, "the last spinner frame stays visible"): the step that lands a failed
+    /// roster must itself request a frame. Once the read-out replaces the spinner nothing on the
+    /// Profiles screen is moving, so if this step did not damage Present the spinner's final
+    /// frame would sit there until the keepalive redraw.
+    #[test]
+    fn landing_a_failed_roster_requests_the_frame_that_draws_the_readout() {
+        use crate::ui::machine::{Cx, Effects, InputOwner, EntryId, Machine, Tick};
+        let _g = crate::testlock::serial();
+        for users in [None, Some(Vec::new())] {
+            let mut owner = SessionMachine::from_init(local_session());
+            let effects = step(&mut owner, SessionEvent::Command(Command::StartSwitch(Picker::ChangeProfile)));
+            let (req, key) = effects.iter().find_map(|fx| match fx {
+                SessionFx::Work { req, key, input: SessionWork::HomeRoster { .. }, .. } => Some((*req, *key)),
+                _ => None,
+            }).expect("Change profile fetches the Home roster");
+            settle_picker_commit(&mut owner, &effects);
+            let envelope = roster_envelope(&mut owner, req, key, users);
+
+            let publication = owner.publication();
+            let cx = Cx::<OwnerHost> { views: publication.read(), tick: Tick::default(),
+                measure: &crate::ui::fixture::FixtureMeasure, press: Default::default(),
+                focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
+            let mut present = crate::ui::present::Present::new();
+            let _ = present.take(0); // the spinner's last frame has been presented
+            assert!(!present.peek(0), "rig: nothing is owed before the result lands");
+            let mut sink = Vec::new();
+            owner.step(&SessionEvent::Result(envelope), &cx,
+                &mut Effects::new(&mut sink, MachineId::Session, &mut present));
+            assert!(owner.read().0.roster_readout().is_some(), "rig: the read-out is up");
+            assert!(present.peek(0), "the step that raises the read-out must request its frame");
+        }
+    }
+
     fn empty_roster_change_profile(users: Option<Vec<UserTile>>) -> (SessionMachine, Vec<SessionFx>) {
         let mut owner = SessionMachine::from_init(local_session());
         assert!(owner.state.persisted.home_users.is_empty(), "rig: nothing cached to show");
