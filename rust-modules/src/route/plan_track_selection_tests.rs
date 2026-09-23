@@ -1,4 +1,4 @@
-//! Audio and subtitle track selection tests: the English-preference/server-selection
+//! Audio and subtitle track selection tests: the server-selection/file-default
 //! ladder, direct-play-eligible fallbacks, and subtitle stream id resolution.
 
 use super::*;
@@ -18,16 +18,46 @@ fn an_empty_track_list_falls_back_to_the_codec_default() {
 }
 
 
+/// **With no Plex language preference, the file's default track wins — English has no say.**
+/// Issue #202: a French MKV whose default-flagged track is French, beside an English one, opened
+/// in English because of a built-in English rung. Both orderings, so the pick is the flag and
+/// not the list position.
 #[test]
-fn english_wins_over_the_files_default_track() {
-    // The Office ships a Russian "kubik" track flagged default; we must not open in it.
-    let tracks = [trk(1, "ac3", "rus", true), trk(2, "ac3", "eng", false)];
-    assert_eq!(pick_dp_audio(&tracks, "ac3"), Some((1, "ac3".into(), 2)));
+fn the_files_default_track_wins_without_a_language_preference() {
+    let tracks = [trk(1, "ac3", "fre", true), trk(2, "ac3", "eng", false)];
+    assert_eq!(pick_dp_audio(&tracks, "ac3"), Some((0, "ac3".into(), 1)));
+    let tracks = [trk(1, "ac3", "eng", false), trk(2, "eac3", "fre", true)];
+    assert_eq!(pick_dp_audio(&tracks, "eac3"), Some((1, "eac3".into(), 2)));
+}
+
+
+/// The re-encode half of #202: a video transcode of the same French file must not swap the
+/// French default for an English track either — it keeps what direct play would have chosen.
+#[test]
+fn a_reencode_without_a_preference_keeps_the_files_default_language() {
+    let tracks = [trk(1, "ac3", "fre", true), trk(2, "dca", "eng", false)];
+    let dp = pick_dp_audio(&tracks, "ac3").map(|(_, _, id)| id).unwrap_or(0);
+    assert_eq!(dp, 1, "direct play takes the French default");
+    assert_eq!(encode_audio_id(false, dp, 0, &tracks, AudioLangPrefs::default()), 1,
+        "a cold re-encode names the French default, not the English DTS");
+}
+
+
+/// A real pick the pipeline cannot decode (French DTS chosen on another client) is answered by a
+/// direct-playable track in THAT language, not by the file's default in another one.
+#[test]
+fn a_non_playable_pick_is_answered_by_a_sibling_in_its_language() {
+    let tracks = [
+        trk(1, "ac3", "eng", true),
+        server_selected(trk(2, "dca", "fre", false)),
+        trk(3, "ac3", "fre", false),
+    ];
+    assert_eq!(pick_dp_audio(&tracks, "ac3"), Some((2, "ac3".into(), 3)));
 }
 
 
 #[test]
-fn the_flagged_default_wins_when_no_english_track_is_direct_playable() {
+fn the_flagged_default_wins_over_an_earlier_track() {
     let tracks = [trk(1, "ac3", "deu", false), trk(2, "ac3", "fra", true)];
     assert_eq!(pick_dp_audio(&tracks, "ac3"), Some((1, "ac3".into(), 2)));
 }
@@ -50,9 +80,9 @@ fn no_direct_playable_track_means_transcode() {
 
 
 #[test]
-fn the_servers_selected_track_outranks_the_english_preference() {
-    // A user picks the second Russian dub on their phone. English is still the
-    // FIRST direct-playable track, so the old ladder handed back English on every play.
+fn the_servers_selected_track_outranks_the_files_default() {
+    // A user picks the second Russian dub on their phone. The file's default is still the
+    // FIRST direct-playable track, which the ladder would otherwise hand back on every play.
     let tracks = [
         trk(2693, "ac3", "rus", true),
         server_selected(trk(2694, "ac3", "rus", false)),
@@ -63,17 +93,18 @@ fn the_servers_selected_track_outranks_the_english_preference() {
 
 
 #[test]
-fn a_selection_that_only_echoes_the_files_default_does_not_beat_english() {
-    // THE gate that keeps the English rung alive. PMS reports a selected audio stream on
-    // every part — for one nobody has touched it is just the container's default flag coming
-    // back (The Morning Show: the Russian default reads `selected`). Treating that as a
-    // choice would reinstate exactly the foreign-dub-on-open bug rung 2 exists to prevent.
+fn a_selection_that_only_echoes_the_files_default_is_not_a_pick() {
+    // PMS reports a selected audio stream on every part — for one nobody has touched it is
+    // just the container's default flag coming back (The Morning Show: the Russian default
+    // reads `selected`). The ladder lands on that default through rung 3 either way; what the
+    // gate protects is a SHOW preference, which an echo must not outrank.
     let tracks = [
         server_selected(trk(10975, "eac3", "rus", true)),
-        trk(10976, "eac3", "eng", false),
+        trk(10976, "eac3", "hun", false),
     ];
+    assert_eq!(pick_dp_audio(&tracks, "eac3"), Some((0, "eac3".into(), 10975)));
     assert_eq!(
-        pick_dp_audio(&tracks, "eac3"),
+        pick_dp_audio_pref(&tracks, "eac3", AudioLangPrefs { show: Some("hu-HU") }),
         Some((1, "eac3".into(), 10976))
     );
 }
@@ -106,54 +137,54 @@ fn a_reencode_keeps_the_selected_dts_instead_of_the_ac3_sibling() {
         .unwrap_or(0);
     assert_eq!(dp, 2663, "smart-DP sibling is the Russian AC3");
     assert_eq!(
-        encode_audio_id(true, dp, 0, &tracks, None),
+        encode_audio_id(true, dp, 0, &tracks, AudioLangPrefs::default()),
         2663,
         "remux copies the sibling"
     );
     assert_eq!(
-        encode_audio_id(false, dp, 0, &tracks, None),
+        encode_audio_id(false, dp, 0, &tracks, AudioLangPrefs::default()),
         2669,
         "cold re-encode keeps the selected DTS"
     );
     assert_eq!(
-        encode_audio_id(false, dp, 2669, &tracks, None),
+        encode_audio_id(false, dp, 2669, &tracks, AudioLangPrefs::default()),
         2669,
         "a retry/session pick of that DTS is kept"
     );
     assert_eq!(
-        encode_audio_id(true, dp, 2669, &tracks, None),
+        encode_audio_id(true, dp, 2669, &tracks, AudioLangPrefs::default()),
         2663,
         "remux still copies the sibling even when a DTS pick is in env"
     );
     assert_eq!(
-        encode_audio_id(false, dp, dp, &tracks, None),
+        encode_audio_id(false, dp, dp, &tracks, AudioLangPrefs::default()),
         dp,
         "retry after remux keeps the sibling already playing"
     );
 }
 
 
-/// A selected flag that only echoes the container default is not a 720p pick. Treating it
-/// as one would open The Morning Show in the Russian default the English rung exists to skip.
+/// A selected flag that only echoes the container default is not a 720p pick: with a show
+/// preference set, treating it as one would name the Russian default over the preferred dub.
 #[test]
 fn a_reencode_does_not_treat_a_default_echo_as_a_pick() {
     let tracks = [
         server_selected(trk(10975, "eac3", "rus", true)),
-        trk(10976, "eac3", "eng", false),
+        trk(10976, "eac3", "hun", false),
     ];
-    let dp = pick_dp_audio(&tracks, "eac3")
+    let dp = pick_dp_audio_pref(&tracks, "eac3", AudioLangPrefs { show: Some("hu-HU") })
         .map(|(_, _, id)| id)
         .unwrap_or(0);
-    assert_eq!(dp, 10976, "smart-DP / pref-lang sibling is English");
+    assert_eq!(dp, 10976, "the show's language picks the Hungarian track");
     assert_eq!(
-        encode_audio_id(true, dp, 0, &tracks, None),
+        encode_audio_id(true, dp, 0, &tracks, AudioLangPrefs { show: Some("hu-HU") }),
         10976,
-        "remux copies English"
+        "remux copies Hungarian"
     );
     assert_eq!(
-        encode_audio_id(false, dp, 0, &tracks, None),
+        encode_audio_id(false, dp, 0, &tracks, AudioLangPrefs { show: Some("hu-HU") }),
         10976,
-        "cold re-encode keeps English, not the echoed Russian default"
+        "cold re-encode keeps Hungarian, not the echoed Russian default"
     );
 }
 
@@ -172,22 +203,22 @@ fn a_reencode_names_selected_dts_not_the_english_ac3_sibling() {
         .unwrap_or(0);
     assert_eq!(dp, 2673, "smart-DP sibling is the English AC3");
     assert_eq!(
-        encode_audio_id(true, dp, 0, &tracks, None),
+        encode_audio_id(true, dp, 0, &tracks, AudioLangPrefs::default()),
         2673,
         "remux copies the English AC3"
     );
     assert_eq!(
-        encode_audio_id(false, dp, 0, &tracks, None),
+        encode_audio_id(false, dp, 0, &tracks, AudioLangPrefs::default()),
         2669,
         "cold re-encode keeps the selected DTS"
     );
 }
 
 
-/// Unselected English DTS beside a Russian AC3 sibling: remux still copies the sibling, but
-/// a re-encode can consume the English track PREF_AUDIO_LANG would have taken if it were DP.
+/// Unselected English DTS beside a Russian AC3 default, no preference: remux copies the
+/// default, and a re-encode keeps it too — nothing asked for English (#202).
 #[test]
-fn a_reencode_names_pref_lang_dts_when_the_sibling_is_foreign() {
+fn a_reencode_keeps_the_default_over_an_unselected_foreign_dts() {
     let tracks = [
         server_selected(trk(2663, "ac3", "rus", true)),
         trk(2669, "dca", "eng", false),
@@ -197,14 +228,14 @@ fn a_reencode_names_pref_lang_dts_when_the_sibling_is_foreign() {
         .unwrap_or(0);
     assert_eq!(dp, 2663, "smart-DP sibling is the Russian AC3");
     assert_eq!(
-        encode_audio_id(true, dp, 0, &tracks, None),
+        encode_audio_id(true, dp, 0, &tracks, AudioLangPrefs::default()),
         2663,
         "remux copies the sibling"
     );
     assert_eq!(
-        encode_audio_id(false, dp, 0, &tracks, None),
-        2669,
-        "cold re-encode names unselected English DTS, not the Russian AC3"
+        encode_audio_id(false, dp, 0, &tracks, AudioLangPrefs::default()),
+        2663,
+        "cold re-encode keeps the Russian default, not the unselected English DTS"
     );
 }
 
@@ -222,7 +253,7 @@ fn a_reencode_keeps_an_english_ac3_sibling_over_truehd() {
         .unwrap_or(0);
     assert_eq!(dp, 2, "smart-DP sibling is the English AC3");
     assert_eq!(
-        encode_audio_id(false, dp, 0, &tracks, None),
+        encode_audio_id(false, dp, 0, &tracks, AudioLangPrefs::default()),
         2,
         "re-encode must not replace the English AC3 with TrueHD"
     );
@@ -242,12 +273,12 @@ fn a_reencode_names_selected_dts_when_there_is_no_ac3_sibling() {
         .unwrap_or(0);
     assert_eq!(dp, 0, "no direct-playable track");
     assert_eq!(
-        encode_audio_id(true, dp, 0, &tracks, None),
+        encode_audio_id(true, dp, 0, &tracks, AudioLangPrefs::default()),
         0,
         "remux has no sibling to name"
     );
     assert_eq!(
-        encode_audio_id(false, dp, 0, &tracks, None),
+        encode_audio_id(false, dp, 0, &tracks, AudioLangPrefs::default()),
         2,
         "cold re-encode names the selected DTS, not 0"
     );
@@ -275,13 +306,13 @@ fn the_audio_ladder_walks_its_rungs_in_order() {
             Some((1, "eac3".into(), 2)),
         ),
         (
-            "rung 1 needs a real pick: the default echoed back is not one",
+            "rung 1 needs a real pick: the default echoed back is not one (rung 3 takes it)",
             vec![
                 server_selected(trk(1, "eac3", "rus", true)),
                 trk(2, "eac3", "eng", false),
             ],
             "eac3",
-            Some((1, "eac3".into(), 2)),
+            Some((0, "eac3".into(), 1)),
         ),
         (
             "rung 1 is skipped when the pick can't direct-play, not obeyed by transcoding",
@@ -291,16 +322,16 @@ fn the_audio_ladder_walks_its_rungs_in_order() {
                 trk(3, "ac3", "eng", false),
             ],
             "ac3",
-            Some((2, "ac3".into(), 3)), // rung 2 (English) still applies
+            Some((2, "ac3".into(), 3)), // rung 2: a DP track in the pick's language
         ),
         (
-            "rung 2: no selection at all → the English preference, as before",
+            "no selection at all → the file's default, never a built-in English (#202)",
             vec![trk(1, "ac3", "rus", true), trk(2, "ac3", "eng", false)],
             "ac3",
-            Some((1, "ac3".into(), 2)),
+            Some((0, "ac3".into(), 1)),
         ),
         (
-            "rung 3: no English → the file's flagged default",
+            "rung 3: the file's flagged default, wherever it sits",
             vec![trk(1, "ac3", "deu", false), trk(2, "ac3", "fra", true)],
             "ac3",
             Some((1, "ac3".into(), 2)),
@@ -404,24 +435,22 @@ fn a_selection_with_no_stream_id_is_left_off_rather_than_half_applied() {
 }
 
 
-/// **A show's preferred audio language beats the English default and the file's flag.** The
-/// reported case: a series set to Hungarian whose episodes carry the Hungarian dub as the FILE
-/// default beside an English track. Rung 1 cannot see a pick that lands on the default, so rung
-/// 2's English won. Differential: `pick_dp_audio` (no preference) still picks English.
+/// **A show's preferred audio language beats the file's flag.** The reported case (#160): a
+/// series set to Hungarian whose episodes carry the Hungarian dub as the FILE default beside an
+/// English track opened in English, through a built-in English rung since removed (#202).
 #[test]
 fn a_shows_preferred_audio_language_is_honoured() {
     let tracks = [trk(1, "ac3", "hun", true), trk(2, "ac3", "eng", false)];
-    assert_eq!(pick_dp_audio(&tracks, "ac3"), Some((1, "ac3".into(), 2)), "the old ladder");
-    assert_eq!(pick_dp_audio_pref(&tracks, "ac3", Some("hu-HU")), Some((0, "ac3".into(), 1)));
-    // …and the other way round: Hungarian second, English default
+    assert_eq!(pick_dp_audio_pref(&tracks, "ac3", AudioLangPrefs { show: Some("hu-HU") }), Some((0, "ac3".into(), 1)));
+    // …and the other way round: Hungarian second, English default — the preference moves it
     let tracks = [trk(1, "ac3", "eng", true), trk(2, "eac3", "hun", false)];
-    assert_eq!(pick_dp_audio_pref(&tracks, "ac3", Some("hu-HU")), Some((1, "eac3".into(), 2)));
+    assert_eq!(pick_dp_audio_pref(&tracks, "ac3", AudioLangPrefs { show: Some("hu-HU") }), Some((1, "eac3".into(), 2)));
     // a preferred track that cannot direct-play does not force a transcode
     let tracks = [trk(1, "ac3", "eng", true), trk(2, "dca", "hun", false)];
-    assert_eq!(pick_dp_audio_pref(&tracks, "ac3", Some("hu-HU")), Some((0, "ac3".into(), 1)));
+    assert_eq!(pick_dp_audio_pref(&tracks, "ac3", AudioLangPrefs { show: Some("hu-HU") }), Some((0, "ac3".into(), 1)));
     // a DIFFERENT track chosen for this episode elsewhere still outranks the show's default
     let tracks = [trk(1, "ac3", "hun", true), server_selected(trk(2, "ac3", "eng", false))];
-    assert_eq!(pick_dp_audio_pref(&tracks, "ac3", Some("hu-HU")), Some((1, "ac3".into(), 2)));
+    assert_eq!(pick_dp_audio_pref(&tracks, "ac3", AudioLangPrefs { show: Some("hu-HU") }), Some((1, "ac3".into(), 2)));
 }
 
 #[test]
@@ -486,17 +515,53 @@ fn show_settings_are_read_out_of_a_setting_list() {
 #[test]
 fn a_show_audio_preference_survives_a_video_transcode() {
     let tracks = [trk(1, "ac3", "hun", true), trk(2, "ac3", "eng", false)];
-    let (_, _, dp) = pick_dp_audio_pref(&tracks, "ac3", Some("hu-HU")).unwrap();
-    assert_eq!(encode_audio_id(false, dp, 0, &tracks, Some("hu-HU")), 1,
+    let (_, _, dp) = pick_dp_audio_pref(&tracks, "ac3", AudioLangPrefs { show: Some("hu-HU") }).unwrap();
+    assert_eq!(encode_audio_id(false, dp, 0, &tracks, AudioLangPrefs { show: Some("hu-HU") }), 1,
         "lowering video quality must not replace the show's chosen audio with English");
 }
 
 #[test]
 fn transcode_show_preference_preserves_overrides_and_missing_language_fallback() {
     let tracks = [trk(1, "ac3", "hun", true), trk(2, "dts", "eng", false)];
-    assert_eq!(encode_audio_id(false, 1, 2, &tracks, Some("hu-HU")), 2);
-    assert_eq!(encode_audio_id(true, 1, 2, &tracks, Some("en-US")), 1);
-    assert_eq!(encode_audio_id(false, 1, 0, &tracks, Some("fr-FR")), 2);
+    assert_eq!(encode_audio_id(false, 1, 2, &tracks, AudioLangPrefs { show: Some("hu-HU") }), 2);
+    assert_eq!(encode_audio_id(true, 1, 2, &tracks, AudioLangPrefs { show: Some("en-US") }), 1);
+    // no track in the show's language: the direct-play pick (the Hungarian default), not English
+    assert_eq!(encode_audio_id(false, 1, 0, &tracks, AudioLangPrefs { show: Some("fr-FR") }), 1);
     let tracks = [trk(1, "ac3", "hun", true), server_selected(trk(2, "dts", "eng", false))];
-    assert_eq!(encode_audio_id(false, 1, 0, &tracks, Some("hu-HU")), 2);
+    assert_eq!(encode_audio_id(false, 1, 0, &tracks, AudioLangPrefs { show: Some("hu-HU") }), 2);
+}
+
+/// **One precedence for every path.** A real pick the pipeline cannot decode (English DTS chosen
+/// on a phone) still outranks the show's language: direct play carries it as the English AC3
+/// sibling, a re-encode names the DTS itself. The direct-play pick used to hand this case to the
+/// show's Hungarian while the re-encode named the DTS — two answers to one question.
+#[test]
+fn a_real_pick_outranks_the_show_language_on_every_path() {
+    let prefs = AudioLangPrefs { show: Some("hu-HU") };
+    let tracks = [
+        trk(1, "ac3", "hun", true),
+        server_selected(trk(2, "dca", "eng", false)),
+        trk(3, "ac3", "eng", false),
+    ];
+    let (_, _, dp) = pick_dp_audio_pref(&tracks, "ac3", prefs).unwrap();
+    assert_eq!(dp, 3, "direct play: the English AC3 beside the picked DTS");
+    assert_eq!(encode_audio_id(false, dp, 0, &tracks, prefs), 2, "re-encode: the picked DTS");
+    assert_eq!(encode_audio_id(true, dp, 0, &tracks, prefs), 3, "remux copies the sibling");
+}
+
+/// `""` and `"-1"` are Plex's "Account default": unset, so the file's default wins.
+#[test]
+fn an_account_default_show_setting_is_no_preference() {
+    use crate::plex::{Setting, ShowLangPrefs};
+    let s = |id: &str, v: &str| Setting { id: id.into(), value: v.into() };
+    assert_eq!(
+        ShowLangPrefs::from_settings(&[s("audioLanguage", "-1")]).and_then(|p| p.audio),
+        None
+    );
+    let tracks = [trk(1, "ac3", "fre", true), trk(2, "ac3", "eng", false)];
+    for show in ["", "-1", " -1 "] {
+        let prefs = AudioLangPrefs { show: Some(show) };
+        assert_eq!(pick_dp_audio_pref(&tracks, "ac3", prefs), Some((0, "ac3".into(), 1)), "{show:?}");
+        assert_eq!(encode_audio_id(false, 1, 0, &tracks, prefs), 1, "{show:?}");
+    }
 }

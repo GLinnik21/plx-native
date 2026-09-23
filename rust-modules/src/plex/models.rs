@@ -228,7 +228,8 @@ impl ShowLangPrefs {
         if a.is_none() && s.is_none() && m.is_none() {
             return None;
         }
-        let lang = |v: Option<&str>| v.filter(|v| !v.is_empty()).map(str::to_string);
+        // `""` and `"-1"` are both "Account default" — unset as far as this struct is concerned
+        let lang = |v: Option<&str>| v.filter(|v| !v.is_empty() && *v != "-1").map(str::to_string);
         Some(ShowLangPrefs {
             audio: lang(a),
             subtitle: lang(s),

@@ -772,12 +772,12 @@ fn a_720p_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
     crate::plex::reset_servers_for_test();
 }
 
-/// 720p with a selected flag that only echoes the Russian default must still PUT English,
-/// the same sibling smart-DP / pref-lang would copy. Treating that echo as a pick would
-/// open The Morning Show in the foreign dub at 720p.
+/// #202 end to end on the re-encode path: a French file whose default (echoed back as
+/// `selected`) is French, beside an English track, with no Plex language preference. The 720p
+/// re-encode must PUT and name the French default — no built-in English outranks the file.
 #[test]
 #[cfg(feature = "devtriggers")]
-fn a_720p_reencode_does_not_put_a_default_echo_over_english() {
+fn a_720p_reencode_keeps_the_files_default_language_over_english() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -800,7 +800,7 @@ fn a_720p_reencode_does_not_put_a_default_echo_over_english() {
             crate::metadata::Stream {
                 id: 10975,
                 index: 0,
-                lang_code: "rus".into(),
+                lang_code: "fre".into(),
                 codec: "eac3".into(),
                 channels: 6,
                 default: true,
@@ -845,25 +845,26 @@ fn a_720p_reencode_does_not_put_a_default_echo_over_english() {
         .unwrap_or_else(|| panic!("play-path PUT was never asked: {requests:?}"));
     assert_eq!(
         query_param(put, "audioStreamID"),
-        Some("10976"),
-        "PUT must keep English, not the echoed Russian default: {put}"
+        Some("10975"),
+        "PUT must keep the French default, not English: {put}"
     );
     assert_eq!(
         query_param(&plan.url, "audioStreamID"),
-        Some("10976"),
-        "start.mkv must name English, not the echoed Russian default: {}",
+        Some("10975"),
+        "start.mkv must name the French default, not English: {}",
         plan.url
     );
-    assert_eq!(plan.audio_sid, 10976);
+    assert_eq!(plan.audio_sid, 10975);
     restore_quality(Quality::Original);
     crate::plex::reset_servers_for_test();
 }
 
-/// 720p can transcode unselected English DTS when the smart-DP sibling is a foreign AC3.
-/// Treating pref-lang as DP-only would keep the Russian copy the encoder does not need.
+/// 720p with no language preference keeps the file's direct-playable default (Russian AC3)
+/// rather than switching to an unselected English DTS: the transcode speaks the language direct
+/// play would have. Only a real pick or a Plex preference moves it (#202).
 #[test]
 #[cfg(feature = "devtriggers")]
-fn a_720p_reencode_puts_pref_lang_dts_not_the_foreign_ac3_sibling() {
+fn a_720p_reencode_keeps_the_default_ac3_over_an_unselected_english_dts() {
     use std::time::Duration;
     let mut ps = crate::route::PlaybackSession::IDLE;
     let _g = fresh_registry(&mut ps);
@@ -931,16 +932,16 @@ fn a_720p_reencode_puts_pref_lang_dts_not_the_foreign_ac3_sibling() {
         .unwrap_or_else(|| panic!("play-path PUT was never asked: {requests:?}"));
     assert_eq!(
         query_param(put, "audioStreamID"),
-        Some("2669"),
-        "PUT must name pref-lang English DTS, not the Russian AC3 sibling: {put}"
+        Some("2663"),
+        "PUT must name the Russian AC3 default, not the unselected English DTS: {put}"
     );
     assert_eq!(
         query_param(&plan.url, "audioStreamID"),
-        Some("2669"),
-        "start.mkv must name that DTS, not the AC3 sibling: {}",
+        Some("2663"),
+        "start.mkv must name the default AC3, not the DTS: {}",
         plan.url
     );
-    assert_eq!(plan.audio_sid, 2669);
+    assert_eq!(plan.audio_sid, 2663);
     restore_quality(Quality::Original);
     crate::plex::reset_servers_for_test();
 }
