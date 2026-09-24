@@ -3779,19 +3779,34 @@ fn random_tmp_path(path: &std::path::Path, attempt: u64) -> Option<std::path::Pa
     Some(path.with_file_name(name))
 }
 
+/// Open `path` for reading without following a symlink at its name, and only if it is a regular
+/// file this process owns. The metadata comes from the SAME descriptor the bytes will be read
+/// from, so a caller that records the file's identity describes what it read. A missing file is
+/// `NotFound`; anything else refused is `PermissionDenied`.
+pub(crate) fn open_owned_regular(
+    path: &std::path::Path,
+) -> std::io::Result<(std::fs::File, std::fs::Metadata)> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    // O_NONBLOCK: a FIFO planted at the name must not block the open (it is refused just below);
+    // it changes nothing for a regular file.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+        .open(path)?;
+    let meta = file.metadata()?;
+    if !meta.file_type().is_file() || meta.uid() != unsafe { libc::geteuid() } {
+        return Err(std::io::ErrorKind::PermissionDenied.into());
+    }
+    Ok((file, meta))
+}
+
+/// The most [`read_owned_regular`] allocates for one file.
+pub(crate) const MAX_OWNED_FILE: u64 = 4 * 1024 * 1024;
+
 pub(crate) fn read_owned_regular(path: &std::path::Path) -> Option<Vec<u8>> {
     use std::io::Read;
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-    let mut file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)
-        .ok()?;
-    let meta = file.metadata().ok()?;
-    if !meta.file_type().is_file() || meta.uid() != unsafe { libc::geteuid() } {
-        return None;
-    }
-    const MAX_FILE: u64 = 4 * 1024 * 1024;
+    let (mut file, _) = open_owned_regular(path).ok()?;
+    const MAX_FILE: u64 = MAX_OWNED_FILE;
     let mut bytes = Vec::new();
     file.by_ref()
         .take(MAX_FILE + 1)

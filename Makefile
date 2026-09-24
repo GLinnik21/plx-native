@@ -610,6 +610,22 @@ ifneq ($(RUST_CFG),$(shell cat $(RUST_STAMP) 2>/dev/null))
 endif
 endif
 
+# `src/app.h` opportunistically pulls in the gitignored `src/config.local.h` via
+# `__has_include`, so its content (or absence) is a silent input to every C translation unit that
+# includes app.h — but `$(wildcard src/*.h)` below only lists files that exist AT PARSE TIME. A
+# `.o` built while config.local.h existed keeps that stale header baked in once the file is
+# deleted: the wildcard simply stops mentioning it, so make sees no prerequisite that changed and
+# leaves the object alone. CONFIG_LOCAL_STAMP records config.local.h's presence+hash (or `absent`)
+# and is rewritten only when that signature changes, so its mtime is a reliable signal the C
+# objects can depend on across the header appearing, changing, or disappearing.
+CONFIG_LOCAL_STAMP = pkg/.config-local-stamp
+CONFIG_LOCAL_SIG   = $(if $(wildcard src/config.local.h),$(shell $(SHA256SUM) src/config.local.h),absent)
+ifneq ($(PURE_QUERY),yes)
+ifneq ($(CONFIG_LOCAL_SIG),$(shell cat $(CONFIG_LOCAL_STAMP) 2>/dev/null))
+  $(shell mkdir -p pkg && printf '%s' '$(CONFIG_LOCAL_SIG)' > $(CONFIG_LOCAL_STAMP))
+endif
+endif
+
 RUST_TARGET = arm-unknown-linux-gnueabi
 RUST_LIB    = rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/release/libplxnative_modules.a
 
@@ -619,8 +635,10 @@ OBJS = $(SRCS:.c=.o)
 
 all: pkg/plxnative pkg/plxnative-storage
 
-# per-file compile; each object depends on ALL headers so a header edit rebuilds all
-src/%.o: src/%.c $(wildcard src/*.h) Makefile
+# per-file compile; each object depends on ALL headers so a header edit rebuilds all, plus the
+# config.local.h presence/hash stamp so its appearance, change or disappearance also rebuilds
+# (see CONFIG_LOCAL_STAMP above)
+src/%.o: src/%.c $(wildcard src/*.h) Makefile $(CONFIG_LOCAL_STAMP)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Rust staticlib (built-in arm-unknown-linux-gnueabi target = soft-float ABI,

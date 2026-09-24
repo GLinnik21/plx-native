@@ -31,22 +31,28 @@ diagnostics, not trigger inputs. The recorder exists only in development builds 
 test PlxNative itself, is started only by explicitly arming it on that build, and its recordings
 never leave the device it was made on.
 
-PlxNative stores your Plex account token and a separate token for each server you use, the
-addresses and identifiers of those servers, the profile you selected together with the profile
-names and pictures on your account, your Home library choices, your recent searches, your playback
-quality preference, and local technical logs: a small rotating event log and a bounded storage
-status snapshot. It also stores your answers to the two
-optional-reporting questions, the random Crash report ID if you turned crash reports on, the
-random Analytics ID if you turned product analytics on, any report waiting to be sent, and a
+PlxNative stores your Plex account token and a separate token for each server you use. For every
+profile on your account you have switched to on this television, it also keeps that profile's own
+server access token(s), so a later switch still works with no internet, and, for a PIN-protected
+profile, a one-way check computed from that PIN rather than the PIN itself. It also keeps the
+addresses and identifiers of those servers, the profile names and pictures on your account —
+pictures are also cached as files so the profile picker still shows faces with no internet — your
+Home library choices, your recent searches, your playback quality preference, and local technical
+logs: a small rotating event log and a bounded storage status snapshot. It also stores your answers
+to the two optional-reporting questions, the random Crash report ID if you turned crash reports on,
+the random Analytics ID if you turned product analytics on, any report waiting to be sent, and a
 marker recording how much of the crash log has already been read.
 It keeps no bookmark of its own for where you stopped watching: playback position is held by your
 Plex Media Server. The Settings screen can sign out and remove PlxNative data from this television.
 
 Those lifetimes differ. Signing out removes the sign-in, the servers registered with it and their
-tokens — and with them your optional-reporting answers, both identifiers and any queued report,
+tokens, every profile's own cached server access token(s) and PIN check, the cached profile
+pictures — and with them your optional-reporting answers, both identifiers and any queued report,
 because those choices were made by the person who signed in and say nothing about whoever signs
 in next: the next sign-in is asked afresh. Switching between the profiles of one Plex account is
-not a sign-out and keeps them. A queued report is deleted once sent, or at the moment you switch
+not a sign-out and keeps all of it, including the server access token(s) and PIN check cached for
+a profile you are not currently using, so that profile can be switched to again with no internet.
+A queued report is deleted once sent, or at the moment you switch
 its category off or sign out. The event log rotates continuously and the storage snapshot is
 replaced when its bounded status changes. **webOS gives an application no way to run code as it
 is removed**, so the sign-in and the reporting answers can survive an uninstall — use Delete all
@@ -82,7 +88,8 @@ classes, coarse raster, rate, HTTP and buffer classes, whether a first picture a
 most 32 typed playback transitions with bucketed elapsed times. It contains no title, ratingKey,
 URL, path, playhead, duration, exact bitrate, server identity, address, token, account or profile,
 and is not joined to the product analytics identifier or `playback_id`. It carries the same Crash
-report ID as a crash report. Buffering, seeking, holding
+report ID as a crash report, and the same television model, SoC, hardware revision, webOS release
+and the `rtkmem`/`install` sandbox facts a crash report carries. Buffering, seeking, holding
 a low quality, or rejecting an adaptive-bitrate candidate does not by itself send a report.
 The closed diagnostic vocabulary includes terminal kinds such as `playback_interrupted` and
 `original_rollback`; HLS direction `refresh`; delivery reason `original_open_rollback`; and

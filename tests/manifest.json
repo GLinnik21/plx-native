@@ -1601,12 +1601,12 @@
       "name": "audio_switch_native",
       "item": "episode_hevc_4k_hdr10_eac3",
       "kind": "episode",
-      "title": "episode · hevc 4K HDR10 / e-ac3 · foreign default + eng — native audio switch (eng auto-picked at start -> the default-language track, row 0)",
+      "title": "episode · hevc 4K HDR10 / e-ac3 · foreign default + eng — native audio switch (file default picked at start -> switch to row 1, the English track)",
       "covers": [
         "audio-switch-native",
         "hevc-stays-174",
         "eac3->eac3",
-        "auto-pick-eng-start"
+        "file-default-picked-at-start"
       ],
       "run_secs": 60,
       "operations": [
@@ -1616,7 +1616,7 @@
         {
           "op": "audio_switch",
           "tab": 0,
-          "row": 0,
+          "row": 1,
           "mode": "native"
         }
       ],

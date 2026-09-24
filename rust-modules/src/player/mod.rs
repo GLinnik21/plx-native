@@ -738,10 +738,9 @@ fn runtime_failure(
 /// to..." — never as a certain diagnosis, matching the community-tier evidence it is built on
 /// (see [`crate::webos::jail_blocks_native_video`]'s doc). Caption and readout are kept short for
 /// legibility from a phone photograph, same bar as every other arm here; the remedy's detail goes
-/// in `detail`. Unlike main's version of this screen, this fork's `Player.repair` flow (see
-/// `webos::jail_repair`) can actually attempt the Homebrew Channel service call that patches the
-/// jail profile, so the remedy text points at that confirmed in-app repair rather than at a bare
-/// reinstall.
+/// in `detail`. `Player.repair` (see `webos::jail_repair`) can actually attempt the Homebrew
+/// Channel service call that patches the jail profile, so the remedy text points at that confirmed
+/// in-app repair rather than at a bare reinstall.
 fn jail_error_shape() -> ErrorShape {
     ErrorShape {
         kind: FailureKind::JailMissingRtkmem,

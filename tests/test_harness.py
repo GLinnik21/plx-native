@@ -872,6 +872,51 @@ class TeardownProcessTable(unittest.TestCase):
         fake.assert_called_once_with(["ps", "-Ao", "pid,command"], capture_output=True)
 
 
+class StoredSessionGate(unittest.TestCase):
+    """A `session: stored` case with no stored sign-in on the install used to call
+    `require_stored_session()` -> `sys.exit()` from inside `run_case`, and `SystemExit` is not an
+    `Exception` — the per-case `except Exception` in main()'s run loop let it straight through and
+    killed the whole batch at the first such case. The fix moves the check in front of the loop
+    (`stored_session_reason` + `partition_stored_sessions`) so an unmet precondition SKIPS just
+    those cases instead."""
+
+    def test_stored_session_reason_is_none_when_a_session_file_is_present(self):
+        with mock.patch.object(run, "ssh") as ssh:
+            ssh.return_value = subprocess.CompletedProcess([], 0)
+            self.assertIsNone(run.stored_session_reason("192.0.2.5"))
+
+    def test_stored_session_reason_names_how_to_fix_it_when_absent(self):
+        with mock.patch.object(run, "ssh") as ssh:
+            ssh.return_value = subprocess.CompletedProcess([], 1)
+            reason = run.stored_session_reason("192.0.2.5")
+        self.assertIn("signed-in session", reason)
+        self.assertIn("sign in on that install once", reason)
+
+    def test_a_stored_case_is_skipped_not_dropped_as_a_systemexit(self):
+        """This is the regression itself: before the fix, the only way main() learned a stored
+        session was missing was `require_stored_session()` raising `SystemExit` from inside the
+        per-case try/except — which does not catch it. `partition_stored_sessions` must instead
+        move the case out of `cases` and into the skip list, raising nothing."""
+        cases = [{"name": "offline_play", "session": "stored"},
+                 {"name": "normal_case"}]
+        remaining, skipped = run.partition_stored_sessions(
+            cases, "needs a signed-in session on com.beb.plxnative")
+        self.assertEqual([c["name"] for c in remaining], ["normal_case"])
+        self.assertEqual([c["name"] for c in skipped], ["offline_play"])
+
+    def test_a_present_session_leaves_every_case_untouched(self):
+        cases = [{"name": "offline_play", "session": "stored"}, {"name": "normal_case"}]
+        remaining, skipped = run.partition_stored_sessions(cases, None)
+        self.assertEqual(remaining, cases)
+        self.assertEqual(skipped, [])
+
+    def test_no_stored_case_in_the_batch_is_untouched_even_with_a_reason(self):
+        cases = [{"name": "normal_case"}]
+        remaining, skipped = run.partition_stored_sessions(cases, "some reason")
+        self.assertEqual(remaining, cases)
+        self.assertEqual(skipped, [])
+
+
 class ItemResolution(unittest.TestCase):
     def test_placeholder_reads_as_absent(self):
         """The stranger's dominant path is `cp` the example, which ships all twelve keys bracketed.

@@ -1287,8 +1287,13 @@ fn menupick_arm(app: &mut App, fr: &mut Frame) {
         let meta = app.bridge.metadata_view();
         match crate::app::bridge::player_overlay_mut(&mut app.pages) {
             Some(surface) => {
-                if let Some(commit) = surface.pick_track_row(&app.player.session, meta, row) {
-                    crate::app::playback::commit_track(&mut app.player.session, commit);
+                match surface.pick_track_row(&app.player.session, meta, row) {
+                    Some(commit) => crate::app::playback::commit_track(&mut app.player.session, commit),
+                    // The menu's own on_ok treats picking the already-active row as a no-op: no
+                    // commit, no route transition line. Without this, a manifest case whose row
+                    // no longer differs from the start pick (e.g. #210's file-default rule) fails
+                    // downstream as "no route transition" with nothing pointing back at menupick.
+                    None => crate::log(&format!("menupick: row {row} already active — no commit")),
                 }
             }
             None => app.scenarios.menupick_row = Some(row),
@@ -1323,23 +1328,46 @@ fn marker_arm(app: &mut App, _fr: &mut Frame) {
     }
 }
 
+/// Whether the replay-after-EOS arm should re-arm the next boot iteration. `handed_off_to_up_next`
+/// is `finish_playback`'s own return — the only live signal that this EOS was a real exit rather
+/// than an Up Next handoff, since the exit's `PopTo` only PARKS the navigation (applied at the
+/// next commit) and `app.route()` still reads `Player` for the rest of the frame either way.
+fn should_replay_after_eos(handed_off_to_up_next: bool, replay_left: u32, playurl_flag: bool) -> bool {
+    !handed_off_to_up_next && replay_left > 0 && playurl_flag
+}
+
 /// `/tmp/plxnative-replay[=N]` — REPLAY AFTER COMPLETION (LG App Self Checklist #46). Called from
-/// `app::run::playback_tick` right after `finish_playback` has left the player on a real EOS (an
-/// Up Next handoff would have RETURNED there instead, which the caller's `matches!` on `Route`
-/// already told apart). Re-arming `auto_tried` sends the next frame back through the `playurl`
-/// entry, which calls `route::clear_url()` and lets `start_bufferfeed` read the trigger again.
-/// The trigger is read once at boot (`replay_left`), so this cannot become an endless loop from a
-/// file appearing mid-run, and `dev::flag` is `false` at COMPILE time in a release build.
-pub(crate) fn maybe_replay_after_eos(app: &mut App) {
-    if app.scenarios.replay_left > 0
-        && !matches!(app.route(), AppArg::Player)
-        && crate::dev::flag("playurl")
-    {
+/// `app::run::playback_tick` right after `finish_playback` has left the player on a real EOS;
+/// `handed_off_to_up_next` is that call's own return value, telling an Up Next handoff apart from
+/// a real exit (see [`should_replay_after_eos`]). Re-arming `auto_tried` sends the next frame back
+/// through the `playurl` entry, which calls `route::clear_url()` and lets `start_bufferfeed` read
+/// the trigger again. The trigger is read once at boot (`replay_left`), so this cannot become an
+/// endless loop from a file appearing mid-run, and `dev::flag` is `false` at COMPILE time in a
+/// release build.
+pub(crate) fn maybe_replay_after_eos(app: &mut App, handed_off_to_up_next: bool) {
+    if should_replay_after_eos(handed_off_to_up_next, app.scenarios.replay_left, crate::dev::flag("playurl")) {
         app.scenarios.replay_left -= 1;
         app.scenarios.auto_tried = false;
         crate::log(&format!(
             "replay: starting the finished stream again ({} left)", app.scenarios.replay_left
         ));
+    }
+}
+
+#[cfg(test)]
+mod replay_after_eos_tests {
+    use super::should_replay_after_eos;
+
+    #[test]
+    fn an_up_next_handoff_never_rearms_the_replay_even_with_budget_and_flag() {
+        assert!(!should_replay_after_eos(true, 3, true));
+    }
+
+    #[test]
+    fn a_real_exit_rearms_only_with_budget_left_and_the_flag_set() {
+        assert!(should_replay_after_eos(false, 1, true));
+        assert!(!should_replay_after_eos(false, 0, true), "no budget left");
+        assert!(!should_replay_after_eos(false, 1, false), "trigger not armed");
     }
 }
 
