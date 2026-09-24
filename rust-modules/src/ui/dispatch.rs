@@ -296,6 +296,10 @@ impl<K: Copy> CxParts<K> {
 #[derive(Debug, Default, Clone)]
 pub struct FrameReport {
     pub presented: bool,
+    /// The frame presented ONLY because the video plane is bound: nothing changed on it. The
+    /// simulator's ingest does not report such a frame to `ui::idle` as damage, which would read,
+    /// to the settled capture, as a screen that never comes to rest under a paused player.
+    pub video_only: bool,
     pub steps_pre: u32,
     pub steps_post: u32,
     pub carried: usize,
@@ -1066,6 +1070,9 @@ where
         report.underlay_moving = self.present.page_moving();
         self.page_quiescent = !report.underlay_moving
             && !crate::ui::idle::page_moving()
+            && !self.budget.has_queued_work();
+        report.video_only = self.present.video_plane()
+            && !self.present.changed()
             && !self.budget.has_queued_work();
         let will_present = self.present.take(tick.ms) || self.budget.has_queued_work();
         tap.present(f, will_present, why);

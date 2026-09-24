@@ -1,0 +1,355 @@
+{
+ "comment": "Every source asset the demo library derives from: pinned URL, sha256, byte size, licence, author and attribution. tools/demo_library.py fetches them into ~/.cache/plxnative-demo and refuses a file whose hash differs.",
+ "assets": {
+  "a-trip-to-the-moon-1902-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/8/83/Voyage_dans_la_Lune_affiche.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Voyage_dans_la_Lune_affiche.jpg",
+   "sha256": "17e7fa652162d6d6284efee9f24e39ec0070d56e57600f79ceff8ecdea98a3e9",
+   "bytes": 151836,
+   "licence": "Public domain",
+   "author": "Georges Melies",
+   "attribution": "Georges Melies"
+  },
+  "big-buck-bunny-backdrop": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/e/e6/Big.Buck.Bunny.-.Landscape.png",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Big.Buck.Bunny.-.Landscape.png",
+   "sha256": "b2c4065bd7d79cbb5e0337dc91aa81e1722dadf53926a12f9d755a4c5e72ea93",
+   "bytes": 2531431,
+   "licence": "CC BY 3.0",
+   "author": "Blender Foundation",
+   "attribution": "(c) copyright Blender Foundation | www.bigbuckbunny.org"
+  },
+  "big-buck-bunny-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/c/c5/Big_buck_bunny_poster_big.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Big_buck_bunny_poster_big.jpg",
+   "sha256": "57bf73fa60189919929a9e413e9e0e37a1a3923375067f11dca7c07254734d4e",
+   "bytes": 534966,
+   "licence": "CC BY 3.0",
+   "author": "Blender Foundation",
+   "attribution": "(c) copyright Blender Foundation | www.bigbuckbunny.org"
+  },
+  "bs-caminandes-3-header": {
+   "url": "https://studio.blender.org/files/public/header/project/2f/89/2f897cfe4d6092c3ce77566de98019e1.jpg",
+   "source_page": "https://studio.blender.org/projects/caminandes-3/",
+   "sha256": "4b3bcb9726b22b7ee511e0379a266482bc4584fbcc0770b90913aab56f4547bf",
+   "bytes": 722417,
+   "licence": "CC BY 4.0",
+   "author": "Blender Studio",
+   "attribution": "© Blender Foundation | studio.blender.org",
+   "notes": "Blender Studio project header artwork. Site terms: \"Unless notified otherwise, all digital content (webpages, video, artwork, 3D data) is available under the Creative Commons Attribution 4.0.\""
+  },
+  "bs-charge-header": {
+   "url": "https://studio.blender.org/files/public/header/project/f6/76/f67601c6f69b2d7f65a5e5d97e73c4d7.png",
+   "source_page": "https://studio.blender.org/projects/charge/",
+   "sha256": "9cc7ed8980295bd28fdad993fdde5e20f510bda237e92dc3bd2fdd12fb59b276",
+   "bytes": 2606674,
+   "licence": "CC BY 4.0",
+   "author": "Blender Studio",
+   "attribution": "© Blender Foundation | studio.blender.org",
+   "notes": "Blender Studio project header artwork. Site terms: \"Unless notified otherwise, all digital content (webpages, video, artwork, 3D data) is available under the Creative Commons Attribution 4.0.\""
+  },
+  "bs-cosmos-laundromat-header": {
+   "url": "https://studio.blender.org/files/public/header/project/b4/02/b4026f8bc93f6dce9c66ceb5d142063b.jpg",
+   "source_page": "https://studio.blender.org/projects/cosmos-laundromat/",
+   "sha256": "d1713af4f56ab3dc387d9f8879050f1b2062b0de202251da8583dd2a1ed57d2f",
+   "bytes": 648864,
+   "licence": "CC BY 4.0",
+   "author": "Blender Studio",
+   "attribution": "© Blender Foundation | studio.blender.org",
+   "notes": "Blender Studio project header artwork. Site terms: \"Unless notified otherwise, all digital content (webpages, video, artwork, 3D data) is available under the Creative Commons Attribution 4.0.\""
+  },
+  "bs-elephants-dream-header": {
+   "url": "https://studio.blender.org/files/public/header/project/8b/d7/8bd7d4c5b572890a86299ff40813a201.png",
+   "source_page": "https://studio.blender.org/projects/elephants-dream/",
+   "sha256": "25cbfb133bf0c40d71d3c9357d8602ae78fba81b47459fca2b28d6f8b588d10a",
+   "bytes": 1382775,
+   "licence": "CC BY 4.0",
+   "author": "Blender Studio",
+   "attribution": "© Blender Foundation | studio.blender.org",
+   "notes": "Blender Studio project header artwork. Site terms: \"Unless notified otherwise, all digital content (webpages, video, artwork, 3D data) is available under the Creative Commons Attribution 4.0.\""
+  },
+  "bs-sintel-header": {
+   "url": "https://studio.blender.org/files/public/header/project/c0/91/c091f1c8d6aacd18e0285989b69587d3.png",
+   "source_page": "https://studio.blender.org/projects/sintel/",
+   "sha256": "124480a28306d64cad3d8c476d25ab35727300df124db4614816a4868c14b0ce",
+   "bytes": 5819379,
+   "licence": "CC BY 4.0",
+   "author": "Blender Studio",
+   "attribution": "© Blender Foundation | studio.blender.org",
+   "notes": "Blender Studio project header artwork. Site terms: \"Unless notified otherwise, all digital content (webpages, video, artwork, 3D data) is available under the Creative Commons Attribution 4.0.\""
+  },
+  "bs-spring-header": {
+   "url": "https://studio.blender.org/files/public/header/project/e5/0f/e50f13c31a485f3a05d4983f1b4ab7ee.png",
+   "source_page": "https://studio.blender.org/projects/spring/",
+   "sha256": "4be70d1908a74b74c099ff5ff476ff359522427762b6e275fcac7bfb0b61a31f",
+   "bytes": 2020967,
+   "licence": "CC BY 4.0",
+   "author": "Blender Studio",
+   "attribution": "© Blender Foundation | studio.blender.org",
+   "notes": "Blender Studio project header artwork. Site terms: \"Unless notified otherwise, all digital content (webpages, video, artwork, 3D data) is available under the Creative Commons Attribution 4.0.\""
+  },
+  "bs-sprite-fright-header": {
+   "url": "https://studio.blender.org/files/public/header/project/ff/3d/ff3d8a8048e767cbc92d6489404924b2.jpg",
+   "source_page": "https://studio.blender.org/projects/sprite-fright/",
+   "sha256": "d4138acb0eb65c3c6dcb4d52f5b9d8a7d96d1928d3ea8d539470b25ca09f6db3",
+   "bytes": 395316,
+   "licence": "CC BY 4.0",
+   "author": "Blender Studio",
+   "attribution": "© Blender Foundation | studio.blender.org",
+   "notes": "Blender Studio project header artwork. Site terms: \"Unless notified otherwise, all digital content (webpages, video, artwork, 3D data) is available under the Creative Commons Attribution 4.0.\""
+  },
+  "caminandes-s01e01": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/6/61/Pablo_Vazquez_-_Caminandes_-_Episode_1_-_Llama_Drama_-_Cover_thumbnail.png",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Pablo_Vazquez_-_Caminandes_-_Episode_1_-_Llama_Drama_-_Cover_thumbnail.png",
+   "sha256": "9f819fcbaef028a7e035bfe6d741f1a59f9dac1f37144fccdb9c994a37beb837",
+   "bytes": 2204102,
+   "licence": "CC BY 3.0",
+   "author": "Pablo Vazquez, Beorn Leonard, Francesco Siddi",
+   "attribution": "Pablo Vazquez, Beorn Leonard, Francesco Siddi"
+  },
+  "caminandes-s01e02": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/a/a8/Blender_Foundation_-_Caminandes_-_Episode_2_-_Gran_Dillama_-_Cover_thumbnail.png",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Blender_Foundation_-_Caminandes_-_Episode_2_-_Gran_Dillama_-_Cover_thumbnail.png",
+   "sha256": "da33c0d444617eb1baa23be78d6ad7df7b60435d6419c67f58c5c6723bbde452",
+   "bytes": 2028595,
+   "licence": "CC BY 3.0",
+   "author": "Blender Foundation",
+   "attribution": "Blender Foundation, caminandes.com"
+  },
+  "caminandes-s01e03": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/a/aa/Blender_Foundation_-_Caminandes_-_Episode_3_-_Llamigos_-_Cover_thumbnail.png",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Blender_Foundation_-_Caminandes_-_Episode_3_-_Llamigos_-_Cover_thumbnail.png",
+   "sha256": "34ad3974a78453d93ba5d4604a11665e1d09845bf5f64e79433b940c13a7887b",
+   "bytes": 3050839,
+   "licence": "CC BY 4.0",
+   "author": "Blender Foundation",
+   "attribution": "Blender Foundation, caminandes.com"
+  },
+  "charge-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/f/fd/Charge-movie_poster.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Charge-movie_poster.jpg",
+   "sha256": "653096ac105f49da889f2892643ad0dfdee7cc43e94ba621a0ca44548612a066",
+   "bytes": 24525092,
+   "licence": "CC BY 4.0",
+   "author": "Blender Studio",
+   "attribution": "Blender Studio"
+  },
+  "cosmos-laundromat-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/c/c5/CosmosLaundromatPoster.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:CosmosLaundromatPoster.jpg",
+   "sha256": "cb96fbda161e10d96c5b130cd57b87d1dcb7879dd64b521fb846b5f0a8ae430f",
+   "bytes": 611553,
+   "licence": "CC BY 4.0",
+   "author": "Andy Goralczyk and the Blender Foundation",
+   "attribution": "CC-BY 2015, Blender Foundation, cloud.blender.org"
+  },
+  "elephants-dream-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/0/0c/ElephantsDreamPoster.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:ElephantsDreamPoster.jpg",
+   "sha256": "7e2fcacbc803ff5b1bf0fcc8a0e568ec7b1e4b4af24f0559dfde56d99329d6cf",
+   "bytes": 5563296,
+   "licence": "CC BY 4.0",
+   "author": "Bassam Kurdali, Andy Goralczyk, and the Blender Foundation",
+   "attribution": "Bassam Kurdali, Andy Goralczyk, and the Blender Foundation"
+  },
+  "his-girl-friday-1940-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/6/6e/His_Girl_Friday_%281940_poster%29.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:His_Girl_Friday_(1940_poster).jpg",
+   "sha256": "2e8df1e6a27d22c958b32350076e9cff3907021335966060087e249f9037a883",
+   "bytes": 2017184,
+   "licence": "Public domain",
+   "author": "Columbia Pictures Corp",
+   "attribution": "Columbia Pictures Corp"
+  },
+  "metropolis-1927-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/7/78/1927_Boris_Bilinski_%281900-1948%29_Plakat_f%C3%BCr_den_Film_Metropolis%2C_Staatliche_Museen_zu_Berlin.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:1927_Boris_Bilinski_(1900-1948)_Plakat_f%C3%BCr_den_Film_Metropolis,_Staatliche_Museen_zu_Berlin.jpg",
+   "sha256": "4f7817f658d50ceb398a516cc5f58589c14ce31492350c534265cd4c75140d1a",
+   "bytes": 450015,
+   "licence": "Public domain",
+   "author": "Boris Konstantinovitch Bilinsky (1900-1948)",
+   "attribution": "Boris Konstantinovitch Bilinsky (1900-1948)"
+  },
+  "night-of-the-living-dead-1968-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/a/a7/Night_Of_The_Living_Dead_%281968%29_-_Poster.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Night_Of_The_Living_Dead_(1968)_-_Poster.jpg",
+   "sha256": "51850554234ba7cf63139537a3f698b03d1d7f657c0c953a3da3224225f8b330",
+   "bytes": 305201,
+   "licence": "Public domain",
+   "author": "Unknown (Image Ten / Continental)",
+   "attribution": "Unknown (Image Ten / Continental)"
+  },
+  "nosferatu-1922-backdrop": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/b/b8/Nosferatu_Doorway_Frame.webp",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Nosferatu_Doorway_Frame.webp",
+   "sha256": "9fd70183b723702d5e391484f3a6f4b2be2ada1dbe3f1434fc1966e70ec8878e",
+   "bytes": 18106,
+   "licence": "Public domain",
+   "author": "Prana Film",
+   "attribution": "Prana Film"
+  },
+  "nosferatu-1922-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/9/95/Max_Schreck_as_Count_Orlok_in_Nosferatu_%E2%80%93_Eine_Symphonie_des_Grauens_%281922%29.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Max_Schreck_as_Count_Orlok_in_Nosferatu_%E2%80%93_Eine_Symphonie_des_Grauens_(1922).jpg",
+   "sha256": "dae09609d64b43f5ded02d40e0a96c8943d1386dd14537e753b13a82711c6838",
+   "bytes": 63348,
+   "licence": "Public domain",
+   "author": "F. W. Murnau (screenshot)",
+   "attribution": "F. W. Murnau (screenshot)"
+  },
+  "plan-9-from-outer-space-1957-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/b/bd/Plan_9_from_Outer_Space%2C_poster%2C_gtfy.07034.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Plan_9_from_Outer_Space,_poster,_gtfy.07034.jpg",
+   "sha256": "a0cfc182b4b8bbda962e9640fbb4ea015b9736f2407a08d4c7bb463d83fe5699",
+   "bytes": 6547403,
+   "licence": "Public domain",
+   "author": "Reynolds Pictures, Inc.",
+   "attribution": "Reynolds Pictures, Inc."
+  },
+  "safety-last-1923-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/5/5e/Safety_last_poster.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Safety_last_poster.jpg",
+   "sha256": "5480c51c50cccaff4d520ebb2cba0cfc48cd3b99738c7386378c31dd9ba40f4d",
+   "bytes": 178772,
+   "licence": "Public domain",
+   "author": "Unknown",
+   "attribution": "Unknown"
+  },
+  "sherlock-holmes-1954-s01e01": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/d/d0/Meg_Lemonnier_in_Sherlock_Holmes_%28The_Case_of_the_Cunningham_Heritage%29.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Meg_Lemonnier_in_Sherlock_Holmes_(The_Case_of_the_Cunningham_Heritage).jpg",
+   "sha256": "eafa6c19341719d5e3ff72e62fb2e97204e4b3884e2c9e5a49ccaf8ef5530a4f",
+   "bytes": 80829,
+   "licence": "Public domain",
+   "author": "Sheldon Reynolds Productions",
+   "attribution": "Sheldon Reynolds Productions"
+  },
+  "sherlock-holmes-1954-s01e02": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/a/a9/Russell_Waters_in_Sherlock_Holmes_%28The_Case_of_the_Pennsylvania_Gun%29.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Russell_Waters_in_Sherlock_Holmes_(The_Case_of_the_Pennsylvania_Gun).jpg",
+   "sha256": "c99e7034b705184bcad8470a691acac641c2cd7f5c11e65b7b16f0d9b445bfa0",
+   "bytes": 67369,
+   "licence": "Public domain",
+   "author": "Sheldon Reynolds Productions",
+   "attribution": "Sheldon Reynolds Productions"
+  },
+  "sherlock-holmes-1954-s01e03": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/0/0c/Peter_Copley_in_Sherlock_Holmes_%28The_Case_of_Lady_Beryl%29.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Peter_Copley_in_Sherlock_Holmes_(The_Case_of_Lady_Beryl).jpg",
+   "sha256": "52dde8542067429077f6b81c9397775d89bc2bc660f8c72f06bc13ab24d07bf1",
+   "bytes": 100571,
+   "licence": "Public domain",
+   "author": "Sheldon Reynolds Productions",
+   "attribution": "Sheldon Reynolds Productions"
+  },
+  "sherlock-holmes-1954-s01e04": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/9/95/Gertrude_Flynn_in_Sherlock_Holmes_%28The_Belligerent_Ghost%29.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Gertrude_Flynn_in_Sherlock_Holmes_(The_Belligerent_Ghost).jpg",
+   "sha256": "61e044a7ea5aad483b5610a33419362eb64758a75a328d18f681203d12487e9a",
+   "bytes": 55917,
+   "licence": "Public domain",
+   "author": "Sheldon Reynolds Productions",
+   "attribution": "Sheldon Reynolds Productions"
+  },
+  "sherlock-holmes-1954-s01e05": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/1/1d/Archie_Duncan_in_Sherlock_Holmes_%28The_Case_of_the_Shy_Ballerina%29.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Archie_Duncan_in_Sherlock_Holmes_(The_Case_of_the_Shy_Ballerina).jpg",
+   "sha256": "4a0642f505c9f958b16b52deda3c13340c0d498d1d52f165debf8cb7fc388bdc",
+   "bytes": 77372,
+   "licence": "Public domain",
+   "author": "Sheldon Reynolds Productions",
+   "attribution": "Sheldon Reynolds Productions"
+  },
+  "sherlock-jr-1924-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/c/c1/Sherlock_jr_poster.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Sherlock_jr_poster.jpg",
+   "sha256": "fb53e6c2554351b7eefc4f36dbf164c6b2055fdea81142a0b7c59ef873d15eee",
+   "bytes": 485230,
+   "licence": "Public domain",
+   "author": "Unknown",
+   "attribution": "Unknown"
+  },
+  "sintel-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/8/8f/Sintel_poster.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Sintel_poster.jpg",
+   "sha256": "7bfeaaa9e69df11188d5520b002196ea127275c482880b84c5b875d5addcb67b",
+   "bytes": 457811,
+   "licence": "CC BY 3.0",
+   "author": "Blender Foundation",
+   "attribution": "(c) copyright Blender Foundation - durian.blender.org"
+  },
+  "sintel-trailer": {
+   "url": "https://download.blender.org/durian/trailer/sintel_trailer-1080p.mp4",
+   "source_page": "https://durian.blender.org/",
+   "sha256": "34bbd52a4b89fdf63c8ace50b268da26653a59508288100cd3c23de276db7931",
+   "bytes": 14621544,
+   "licence": "CC BY 3.0",
+   "author": "Blender Foundation",
+   "attribution": "© copyright Blender Foundation | durian.blender.org",
+   "notes": "The official Sintel trailer, H.264/AAC 1920x1080 24 fps. Served as the Sintel item's media so the player figure shows a real decoded frame."
+  },
+  "spring-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/2/25/Spring2019AlphaPosterBlender.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Spring2019AlphaPosterBlender.jpg",
+   "sha256": "5231033cb35a84606df236372f9d10a39faf33f248259db3fe3f19e1d4fa7a4e",
+   "bytes": 680283,
+   "licence": "CC BY 4.0",
+   "author": "Blender Foundation",
+   "attribution": "Blender Foundation"
+  },
+  "sprite-fright-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/e/e5/Sprite_Fright-movie_poster.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Sprite_Fright-movie_poster.jpg",
+   "sha256": "1bdbcc0813a3b75178188dc0f42ce5fc45f0a68aec75718dd670261bcf9a878f",
+   "bytes": 17569482,
+   "licence": "CC BY 4.0",
+   "author": "Blender Studio",
+   "attribution": "Blender Studio"
+  },
+  "tears-of-steel-backdrop": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/b/bc/Tears_of_Steel_frame_03_3c.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Tears_of_Steel_frame_03_3c.jpg",
+   "sha256": "f567c001e3bcc57da9e9eb23df909078a9491b1a15f744e26ee84459008c9290",
+   "bytes": 4696099,
+   "licence": "CC BY 3.0",
+   "author": "Blender Foundation / Project Mango",
+   "attribution": "Blender Foundation / Project Mango"
+  },
+  "tears-of-steel-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/7/70/Tos-poster.png",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Tos-poster.png",
+   "sha256": "1ef07319b1a913bc6b19f4ea00f95e18790a1954b48a0893c4e3ec93210f68a2",
+   "bytes": 15446569,
+   "licence": "CC BY 3.0",
+   "author": "Blender Foundation / Project Mango",
+   "attribution": "Blender Foundation / Project Mango"
+  },
+  "the-cabinet-of-dr-caligari-1920-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/e/e1/Das_Kabinett_des_Doktor_Caligari_1920_Poster.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Das_Kabinett_des_Doktor_Caligari_1920_Poster.jpg",
+   "sha256": "022553a97f187c0971a426d241bff874926ab15878b123a5bd0e8723502fd425",
+   "bytes": 181206,
+   "licence": "Public domain",
+   "author": "Rudolf Ledl and Fritz Bernhard",
+   "attribution": "Rudolf Ledl and Fritz Bernhard"
+  },
+  "the-general-1926-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/3/36/The_General_%281926%29_-_Movie_Poster.png",
+   "source_page": "https://commons.wikimedia.org/wiki/File:The_General_(1926)_-_Movie_Poster.png",
+   "sha256": "c028a72668c60ccb273047834cea862972678f310ebd33ffeb815809168b736e",
+   "bytes": 300423,
+   "licence": "Public domain",
+   "author": "United Artists Corporation",
+   "attribution": "United Artists Corporation"
+  },
+  "the-kid-1921-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/b/b5/The_Kid_%281921%29_poster.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:The_Kid_(1921)_poster.jpg",
+   "sha256": "9fe233cdd428bbbbc00b7fda77c2fac36722cc779a8ba99d9bb834310fad045a",
+   "bytes": 1366404,
+   "licence": "Public domain",
+   "author": "First National",
+   "attribution": "First National"
+  }
+ }
+}

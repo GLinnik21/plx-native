@@ -263,6 +263,21 @@ fn held_phase_ms() -> Option<u32> {
     HELD_PHASE_MS.with(|h| Some(h.get()).filter(|ms| *ms != u32::MAX))
 }
 
+/// Are the [`Phase`] clocks held ([`hold_phase_clocks`])? A clock-driven view that keeps the loop
+/// awake on its own (`widgets::Spinner` reports from its draw) asks this, so a held picture really
+/// is still. Always `false` without `devtriggers`.
+#[inline]
+pub(crate) fn phase_clocks_held() -> bool {
+    #[cfg(feature = "devtriggers")]
+    {
+        held_phase_ms().is_some()
+    }
+    #[cfg(not(feature = "devtriggers"))]
+    {
+        false
+    }
+}
+
 // --- the differential table -------------------------------------------------------------------
 
 /// How many operand pairs the table holds.

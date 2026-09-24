@@ -1,0 +1,992 @@
+{
+ "comment": "The demo library for the documentation screenshots. Every asset is openly licensed or public domain; tests/demo_library/assets.json records where each came from. Times are PINNED (now = 1790000000) so every run of the mock answers byte-identically.",
+ "now": 1790000000,
+ "server": {
+  "friendlyName": "Demo Library",
+  "machineIdentifier": "demo0000library0000plxnative"
+ },
+ "hero": "spring",
+ "hero_alternatives": [
+  "sintel",
+  "sprite-fright"
+ ],
+ "sections": [
+  {
+   "key": "1",
+   "type": "movie",
+   "title": "Movies"
+  },
+  {
+   "key": "2",
+   "type": "show",
+   "title": "TV Shows"
+  }
+ ],
+ "collections": [
+  "Blender Open Movies",
+  "Silent Classics"
+ ],
+ "movies": [
+  {
+   "id": "spring",
+   "title": "Spring",
+   "year": 2019,
+   "originallyAvailableAt": "2019-04-04",
+   "minutes": 8,
+   "studio": "Blender Studio",
+   "genres": [
+    "Animation",
+    "Fantasy",
+    "Short"
+   ],
+   "directors": [
+    "Andy Goralczyk"
+   ],
+   "writers": [],
+   "cast": [],
+   "summary": "A shepherd girl and her dog climb into the mountains to face the ancient spirits who hold back the thaw, and to keep the cycle of life turning. A wordless fable of fear, loss and renewal, painted in moss, snow and firelight.",
+   "poster": {
+    "asset": "spring-poster"
+   },
+   "art": {
+    "asset": "bs-spring-header",
+    "mode": "extend",
+    "anchor": "right"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "sintel",
+   "title": "Sintel",
+   "year": 2010,
+   "originallyAvailableAt": "2010-09-27",
+   "minutes": 15,
+   "studio": "Blender Foundation",
+   "genres": [
+    "Animation",
+    "Fantasy",
+    "Action",
+    "Short"
+   ],
+   "directors": [
+    "Colin Levy"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Halina Reijn",
+     "role": "Sintel"
+    },
+    {
+     "name": "Thom Hoffman",
+     "role": "Shaman"
+    }
+   ],
+   "summary": "A lone young woman crosses frozen wastes and ruined cities in search of Scales, the baby dragon she rescued and raised before it was taken from her. The closer she comes to the dragons' lair, the less certain she is of what she will find there.",
+   "poster": {
+    "asset": "sintel-poster"
+   },
+   "art": {
+    "asset": "bs-sintel-header",
+    "mode": "cover",
+    "anchor": "right"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ],
+   "media": "sintel-trailer"
+  },
+  {
+   "id": "sprite-fright",
+   "title": "Sprite Fright",
+   "year": 2021,
+   "originallyAvailableAt": "2021-10-29",
+   "minutes": 10,
+   "studio": "Blender Studio",
+   "genres": [
+    "Animation",
+    "Comedy",
+    "Horror",
+    "Short"
+   ],
+   "directors": [
+    "Matthew Luhn"
+   ],
+   "writers": [],
+   "cast": [],
+   "summary": "A group of rowdy teenagers on a weekend in the woods discovers that the forest's tiny, adorable mushroom sprites do not take kindly to litter. An eighties-style creature comedy in which the cute things are the monsters.",
+   "poster": {
+    "asset": "sprite-fright-poster"
+   },
+   "art": {
+    "asset": "bs-sprite-fright-header",
+    "mode": "cover",
+    "anchor": "right"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "charge",
+   "title": "Charge",
+   "year": 2022,
+   "originallyAvailableAt": "2022-12-12",
+   "minutes": 6,
+   "studio": "Blender Studio",
+   "genres": [
+    "Animation",
+    "Action",
+    "Science Fiction",
+    "Short"
+   ],
+   "directors": [
+    "Hjalti Hjalmarsson"
+   ],
+   "writers": [],
+   "cast": [],
+   "summary": "In a frozen, energy-starved future, an old man breaks into a guarded facility to steal a single battery, and meets the machine built to stop him.",
+   "poster": {
+    "asset": "charge-poster"
+   },
+   "art": {
+    "asset": "bs-charge-header",
+    "mode": "cover",
+    "anchor": "right"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "tears-of-steel",
+   "title": "Tears of Steel",
+   "year": 2012,
+   "originallyAvailableAt": "2012-09-26",
+   "minutes": 12,
+   "studio": "Blender Foundation",
+   "genres": [
+    "Science Fiction",
+    "Action",
+    "Short"
+   ],
+   "directors": [
+    "Ian Hubert"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Derek de Lint",
+     "role": "Old Thom"
+    },
+    {
+     "name": "Sergio Hasselbaink",
+     "role": "Barley"
+    },
+    {
+     "name": "Rogier Schippers",
+     "role": "Captain"
+    },
+    {
+     "name": "Vanja Rukavina",
+     "role": "Celia"
+    }
+   ],
+   "summary": "In a future Amsterdam overrun by machines, a band of scientists and soldiers gathers in the Oude Kerk to restage one heartbreaking moment from the past, in the hope that changing it will stop the robots before they ever rise.",
+   "poster": {
+    "asset": "tears-of-steel-poster"
+   },
+   "art": {
+    "asset": "tears-of-steel-backdrop",
+    "mode": "cover",
+    "anchor": "center"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "cosmos-laundromat",
+   "title": "Cosmos Laundromat",
+   "year": 2015,
+   "originallyAvailableAt": "2015-08-10",
+   "minutes": 12,
+   "studio": "Blender Institute",
+   "genres": [
+    "Animation",
+    "Comedy",
+    "Fantasy",
+    "Short"
+   ],
+   "directors": [
+    "Mathieu Auvray"
+   ],
+   "writers": [],
+   "cast": [],
+   "summary": "On a desolate island, a suicidal sheep called Franck meets Victor, a mysterious salesman who offers him the gift of a lifetime: a chance to live a different life, and then another.",
+   "poster": {
+    "asset": "cosmos-laundromat-poster"
+   },
+   "titleSort": "Cosmos Laundromat",
+   "art": {
+    "asset": "bs-cosmos-laundromat-header",
+    "mode": "extend",
+    "anchor": "right"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "big-buck-bunny",
+   "title": "Big Buck Bunny",
+   "year": 2008,
+   "originallyAvailableAt": "2008-05-30",
+   "minutes": 10,
+   "studio": "Blender Foundation",
+   "genres": [
+    "Animation",
+    "Comedy",
+    "Short"
+   ],
+   "directors": [
+    "Sacha Goedegebure"
+   ],
+   "writers": [],
+   "cast": [],
+   "summary": "A gentle giant of a rabbit wakes up to a perfect spring morning, until three bullying rodents flatten his favourite butterfly. Revenge, it turns out, is best served with elaborate traps.",
+   "poster": {
+    "asset": "big-buck-bunny-poster"
+   },
+   "art": {
+    "asset": "big-buck-bunny-backdrop",
+    "mode": "cover",
+    "anchor": "center"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "elephants-dream",
+   "title": "Elephants Dream",
+   "year": 2006,
+   "originallyAvailableAt": "2006-03-24",
+   "minutes": 11,
+   "studio": "Blender Foundation",
+   "genres": [
+    "Animation",
+    "Science Fiction",
+    "Short"
+   ],
+   "directors": [
+    "Bassam Kurdali"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Tygo Gernandt",
+     "role": "Proog"
+    },
+    {
+     "name": "Cas Jansen",
+     "role": "Emo"
+    }
+   ],
+   "summary": "Old Proog leads young Emo through the Machine, an endless world of wires, pistons and impossible rooms that Proog insists is full of wonders. Emo is beginning to see it differently.",
+   "poster": {
+    "asset": "elephants-dream-poster"
+   },
+   "art": {
+    "asset": "bs-elephants-dream-header",
+    "mode": "extend",
+    "anchor": "right"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "nosferatu",
+   "title": "Nosferatu",
+   "year": 1922,
+   "originallyAvailableAt": "1922-03-04",
+   "minutes": 94,
+   "studio": "Prana Film",
+   "genres": [
+    "Horror",
+    "Silent"
+   ],
+   "directors": [
+    "F. W. Murnau"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Max Schreck",
+     "role": "Count Orlok"
+    },
+    {
+     "name": "Gustav von Wangenheim",
+     "role": "Thomas Hutter"
+    },
+    {
+     "name": "Greta Schröder",
+     "role": "Ellen Hutter"
+    },
+    {
+     "name": "Alexander Granach",
+     "role": "Knock"
+    }
+   ],
+   "summary": "A young estate agent travels to the Carpathian mountains to sell a house to the reclusive Count Orlok, and brings the plague home with him. Murnau's shadow-haunted symphony of horror is the vampire film every other one remembers.",
+   "poster": {
+    "asset": "nosferatu-1922-poster"
+   },
+   "art": {
+    "asset": "nosferatu-1922-backdrop",
+    "mode": "cover",
+    "anchor": "center"
+   },
+   "collections": [
+    "Silent Classics"
+   ]
+  },
+  {
+   "id": "metropolis",
+   "title": "Metropolis",
+   "year": 1927,
+   "originallyAvailableAt": "1927-01-10",
+   "minutes": 153,
+   "studio": "UFA",
+   "genres": [
+    "Science Fiction",
+    "Drama",
+    "Silent"
+   ],
+   "directors": [
+    "Fritz Lang"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Brigitte Helm",
+     "role": "Maria"
+    },
+    {
+     "name": "Gustav Fröhlich",
+     "role": "Freder"
+    },
+    {
+     "name": "Alfred Abel",
+     "role": "Joh Fredersen"
+    },
+    {
+     "name": "Rudolf Klein-Rogge",
+     "role": "Rotwang"
+    }
+   ],
+   "summary": "In a gleaming city of towers, the son of its master descends to the machine halls below and falls for Maria, who preaches peace to the workers, while his father and an inventor plot to replace her with a machine in her likeness.",
+   "poster": {
+    "asset": "metropolis-1927-poster"
+   },
+   "collections": [
+    "Silent Classics"
+   ]
+  },
+  {
+   "id": "night-of-the-living-dead",
+   "title": "Night of the Living Dead",
+   "year": 1968,
+   "originallyAvailableAt": "1968-10-01",
+   "minutes": 96,
+   "studio": "Image Ten",
+   "genres": [
+    "Horror"
+   ],
+   "directors": [
+    "George A. Romero"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Duane Jones",
+     "role": "Ben"
+    },
+    {
+     "name": "Judith O'Dea",
+     "role": "Barbra"
+    },
+    {
+     "name": "Karl Hardman",
+     "role": "Harry Cooper"
+    },
+    {
+     "name": "Marilyn Eastman",
+     "role": "Helen Cooper"
+    }
+   ],
+   "summary": "Seven strangers barricade themselves in a Pennsylvania farmhouse as the recently dead rise and close in, and discover that the arguments inside may kill them before the things outside do.",
+   "poster": {
+    "asset": "night-of-the-living-dead-1968-poster"
+   }
+  },
+  {
+   "id": "the-general",
+   "title": "The General",
+   "year": 1926,
+   "originallyAvailableAt": "1926-12-31",
+   "minutes": 78,
+   "studio": "United Artists",
+   "genres": [
+    "Comedy",
+    "Action",
+    "Silent"
+   ],
+   "directors": [
+    "Buster Keaton",
+    "Clyde Bruckman"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Buster Keaton",
+     "role": "Johnnie Gray"
+    },
+    {
+     "name": "Marion Mack",
+     "role": "Annabelle Lee"
+    },
+    {
+     "name": "Glen Cavender",
+     "role": "Captain Anderson"
+    }
+   ],
+   "summary": "When Union spies steal his beloved locomotive, with his sweetheart aboard, a Southern railroad engineer gives chase alone, in one of the great sustained action sequences in film history.",
+   "poster": {
+    "asset": "the-general-1926-poster"
+   },
+   "titleSort": "General",
+   "collections": [
+    "Silent Classics"
+   ]
+  },
+  {
+   "id": "sherlock-jr",
+   "title": "Sherlock Jr.",
+   "year": 1924,
+   "originallyAvailableAt": "1924-04-21",
+   "minutes": 45,
+   "studio": "Metro Pictures",
+   "genres": [
+    "Comedy",
+    "Silent"
+   ],
+   "directors": [
+    "Buster Keaton"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Buster Keaton",
+     "role": "Projectionist"
+    },
+    {
+     "name": "Kathryn McGuire",
+     "role": "The Girl"
+    },
+    {
+     "name": "Joe Keaton",
+     "role": "The Girl's Father"
+    },
+    {
+     "name": "Ward Crane",
+     "role": "The Local Sheik"
+    }
+   ],
+   "summary": "A projectionist who studies to be a detective is framed for a theft, falls asleep in the booth, and walks straight into the film on screen to solve the case.",
+   "poster": {
+    "asset": "sherlock-jr-1924-poster"
+   },
+   "collections": [
+    "Silent Classics"
+   ]
+  },
+  {
+   "id": "his-girl-friday",
+   "title": "His Girl Friday",
+   "year": 1940,
+   "originallyAvailableAt": "1940-01-18",
+   "minutes": 92,
+   "studio": "Columbia Pictures",
+   "genres": [
+    "Comedy",
+    "Romance"
+   ],
+   "directors": [
+    "Howard Hawks"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Cary Grant",
+     "role": "Walter Burns"
+    },
+    {
+     "name": "Rosalind Russell",
+     "role": "Hildy Johnson"
+    },
+    {
+     "name": "Ralph Bellamy",
+     "role": "Bruce Baldwin"
+    },
+    {
+     "name": "Gene Lockhart",
+     "role": "Sheriff Hartwell"
+    }
+   ],
+   "summary": "A newspaper editor learns that his star reporter, who is also his ex-wife, is about to remarry and quit, and lures her back for one last story: a condemned man, a corrupt city hall, and a deadline.",
+   "poster": {
+    "asset": "his-girl-friday-1940-poster"
+   }
+  },
+  {
+   "id": "plan-9-from-outer-space",
+   "title": "Plan 9 from Outer Space",
+   "year": 1957,
+   "originallyAvailableAt": "1957-07-22",
+   "minutes": 79,
+   "studio": "Reynolds Pictures",
+   "genres": [
+    "Science Fiction",
+    "Horror"
+   ],
+   "directors": [
+    "Edward D. Wood Jr."
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Gregory Walcott",
+     "role": "Jeff Trent"
+    },
+    {
+     "name": "Mona McKinnon",
+     "role": "Paula Trent"
+    },
+    {
+     "name": "Tor Johnson",
+     "role": "Inspector Clay"
+    },
+    {
+     "name": "Vampira",
+     "role": "Vampire Girl"
+    }
+   ],
+   "summary": "Aliens alarmed by humanity's weapons put their ninth plan into action: raise the dead of a small California cemetery. An airline pilot and his wife stand in their way.",
+   "poster": {
+    "asset": "plan-9-from-outer-space-1957-poster"
+   }
+  },
+  {
+   "id": "the-kid",
+   "title": "The Kid",
+   "year": 1921,
+   "originallyAvailableAt": "1921-02-06",
+   "minutes": 68,
+   "studio": "First National",
+   "genres": [
+    "Comedy",
+    "Drama",
+    "Silent"
+   ],
+   "directors": [
+    "Charlie Chaplin"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Charlie Chaplin",
+     "role": "The Tramp"
+    },
+    {
+     "name": "Jackie Coogan",
+     "role": "The Kid"
+    },
+    {
+     "name": "Edna Purviance",
+     "role": "The Woman"
+    }
+   ],
+   "summary": "The Tramp finds an abandoned baby in an alley and, against his better judgement, raises him. Five years later, the authorities come for the boy.",
+   "poster": {
+    "asset": "the-kid-1921-poster"
+   },
+   "titleSort": "Kid",
+   "collections": [
+    "Silent Classics"
+   ]
+  },
+  {
+   "id": "safety-last",
+   "title": "Safety Last!",
+   "year": 1923,
+   "originallyAvailableAt": "1923-04-01",
+   "minutes": 74,
+   "studio": "Hal Roach Studios",
+   "genres": [
+    "Comedy",
+    "Silent"
+   ],
+   "directors": [
+    "Fred C. Newmeyer",
+    "Sam Taylor"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Harold Lloyd",
+     "role": "The Boy"
+    },
+    {
+     "name": "Mildred Davis",
+     "role": "The Girl"
+    },
+    {
+     "name": "Bill Strother",
+     "role": "The Pal"
+    }
+   ],
+   "summary": "A department-store clerk who has told his girl back home that he runs the place stages a publicity stunt to win a thousand dollars, and ends up climbing the building himself.",
+   "poster": {
+    "asset": "safety-last-1923-poster"
+   },
+   "collections": [
+    "Silent Classics"
+   ]
+  },
+  {
+   "id": "the-cabinet-of-dr-caligari",
+   "title": "The Cabinet of Dr. Caligari",
+   "year": 1920,
+   "originallyAvailableAt": "1920-02-26",
+   "minutes": 76,
+   "studio": "Decla-Bioscop",
+   "genres": [
+    "Horror",
+    "Mystery",
+    "Silent"
+   ],
+   "directors": [
+    "Robert Wiene"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Werner Krauss",
+     "role": "Dr. Caligari"
+    },
+    {
+     "name": "Conrad Veidt",
+     "role": "Cesare"
+    },
+    {
+     "name": "Friedrich Feher",
+     "role": "Francis"
+    },
+    {
+     "name": "Lil Dagover",
+     "role": "Jane Olsen"
+    }
+   ],
+   "summary": "A fairground showman arrives in a small town with a sleepwalker who, he claims, can see the future. That night the murders begin.",
+   "poster": {
+    "asset": "the-cabinet-of-dr-caligari-1920-poster"
+   },
+   "titleSort": "Cabinet of Dr. Caligari",
+   "collections": [
+    "Silent Classics"
+   ]
+  },
+  {
+   "id": "a-trip-to-the-moon",
+   "title": "A Trip to the Moon",
+   "year": 1902,
+   "originallyAvailableAt": "1902-09-01",
+   "minutes": 13,
+   "studio": "Star Film",
+   "genres": [
+    "Science Fiction",
+    "Fantasy",
+    "Silent",
+    "Short"
+   ],
+   "directors": [
+    "Georges Méliès"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Georges Méliès",
+     "role": "Professor Barbenfouillis"
+    },
+    {
+     "name": "Bleuette Bernon",
+     "role": "Phoebe"
+    }
+   ],
+   "summary": "A congress of astronomers fires itself to the Moon from a giant cannon, lands in the eye of the Man in the Moon, and meets the Selenites.",
+   "poster": {
+    "asset": "a-trip-to-the-moon-1902-poster"
+   },
+   "titleSort": "Trip to the Moon",
+   "collections": [
+    "Silent Classics"
+   ]
+  }
+ ],
+ "shows": [
+  {
+   "id": "caminandes",
+   "title": "Caminandes",
+   "year": 2013,
+   "studio": "Blender Institute",
+   "genres": [
+    "Animation",
+    "Comedy",
+    "Short"
+   ],
+   "directors": [
+    "Pablo Vazquez"
+   ],
+   "cast": [],
+   "summary": "Koro the llama lives in Patagonia and has one talent: finding obstacles between himself and whatever he wants next. Short slapstick episodes about fences, friendship and snacks.",
+   "poster": {
+    "asset": "caminandes-s01e01",
+    "crop": "focus-right"
+   },
+   "art": {
+    "asset": "bs-caminandes-3-header",
+    "mode": "extend",
+    "anchor": "right"
+   },
+   "seasons": [
+    {
+     "index": 1,
+     "episodes": [
+      {
+       "index": 1,
+       "title": "Llama Drama",
+       "date": "2013-01-10",
+       "minutes": 2,
+       "summary": "Koro meets a fence between himself and the other side of the road, and refuses to go around it.",
+       "thumb": {
+        "asset": "caminandes-s01e01"
+       }
+      },
+      {
+       "index": 2,
+       "title": "Gran Dillama",
+       "date": "2013-12-19",
+       "minutes": 3,
+       "summary": "The grass is greener beyond an electric fence. Koro takes that personally.",
+       "thumb": {
+        "asset": "caminandes-s01e02"
+       }
+      },
+      {
+       "index": 3,
+       "title": "Llamigos",
+       "date": "2016-02-26",
+       "minutes": 3,
+       "summary": "Winter in Patagonia, one last berry bush, and a penguin called Oti who wants the berries too.",
+       "thumb": {
+        "asset": "caminandes-s01e03"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "sherlock-holmes",
+   "title": "Sherlock Holmes",
+   "year": 1954,
+   "studio": "Sheldon Reynolds Productions",
+   "genres": [
+    "Mystery",
+    "Crime"
+   ],
+   "directors": [],
+   "cast": [
+    {
+     "name": "Ronald Howard",
+     "role": "Sherlock Holmes"
+    },
+    {
+     "name": "Howard Marion-Crawford",
+     "role": "Dr. John H. Watson"
+    },
+    {
+     "name": "Archie Duncan",
+     "role": "Inspector Lestrade"
+    }
+   ],
+   "summary": "A young, dry-witted Sherlock Holmes and a steady Dr. Watson take the cases that walk in off Baker Street, in thirty-nine half-hour mysteries shot in France for American television.",
+   "poster": {
+    "asset": "sherlock-holmes-1954-s01e01"
+   },
+   "seasons": [
+    {
+     "index": 1,
+     "episodes": [
+      {
+       "index": 1,
+       "title": "The Case of the Cunningham Heritage",
+       "date": "1954-10-18",
+       "minutes": 26,
+       "summary": "Holmes and Watson investigate the suspicious death of a wealthy patriarch, entangled with a disputed inheritance and a household full of people who each stood to gain from his death.",
+       "thumb": {
+        "asset": "sherlock-holmes-1954-s01e01",
+        "crop": "upper"
+       }
+      },
+      {
+       "index": 2,
+       "title": "The Case of the Pennsylvania Gun",
+       "date": "1954-10-25",
+       "minutes": 26,
+       "summary": "A rare antique firearm becomes the center of a theft and murder investigation that Holmes must untangle from a web of collectors and forgers.",
+       "thumb": {
+        "asset": "sherlock-holmes-1954-s01e02",
+        "crop": "upper"
+       }
+      },
+      {
+       "index": 3,
+       "title": "The Case of Lady Beryl",
+       "date": "1954-11-01",
+       "minutes": 26,
+       "summary": "A noblewoman seeks Holmes's help after a string of threats against her household, which turns out to connect to an old secret she's been keeping.",
+       "thumb": {
+        "asset": "sherlock-holmes-1954-s01e03",
+        "crop": "upper"
+       }
+      },
+      {
+       "index": 4,
+       "title": "The Belligerent Ghost",
+       "date": "1954-11-08",
+       "minutes": 26,
+       "summary": "A supposedly haunted house is terrorising its new tenants, and Holmes sets out to prove -- as usual -- that the 'ghost' has a very physical explanation.",
+       "thumb": {
+        "asset": "sherlock-holmes-1954-s01e04",
+        "crop": "upper"
+       }
+      },
+      {
+       "index": 5,
+       "title": "The Case of the Shy Ballerina",
+       "date": "1954-11-15",
+       "minutes": 26,
+       "summary": "A prima ballerina's stage fright turns out to be tangled up with a threat against her life, and Holmes has to work out who in the company wants her gone.",
+       "thumb": {
+        "asset": "sherlock-holmes-1954-s01e05",
+        "crop": "upper"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "added_order": [
+  "charge",
+  "sprite-fright",
+  "caminandes",
+  "spring",
+  "sintel",
+  "tears-of-steel",
+  "cosmos-laundromat",
+  "sherlock-holmes",
+  "nosferatu",
+  "metropolis",
+  "big-buck-bunny",
+  "elephants-dream",
+  "the-general",
+  "sherlock-jr",
+  "his-girl-friday",
+  "the-kid",
+  "safety-last",
+  "night-of-the-living-dead",
+  "the-cabinet-of-dr-caligari",
+  "plan-9-from-outer-space",
+  "a-trip-to-the-moon"
+ ],
+ "continue_watching": [
+  {
+   "item": "spring",
+   "progress": 0.42
+  },
+  {
+   "item": "tears-of-steel",
+   "progress": 0.63
+  },
+  {
+   "item": "caminandes/1/3",
+   "progress": 0.35
+  },
+  {
+   "item": "sintel",
+   "progress": 0.577
+  },
+  {
+   "item": "sherlock-holmes/1/2",
+   "progress": 0.48
+  },
+  {
+   "item": "metropolis",
+   "progress": 0.21
+  },
+  {
+   "item": "the-general",
+   "progress": 0.7
+  }
+ ],
+ "watched": [
+  "big-buck-bunny",
+  "nosferatu",
+  "the-kid",
+  "caminandes/1/1",
+  "caminandes/1/2",
+  "sherlock-holmes/1/1"
+ ],
+ "hubs": [
+  {
+   "title": "Recently Added in Movies",
+   "hubIdentifier": "movie.recentlyadded.1",
+   "type": "movie",
+   "recent": "movie"
+  },
+  {
+   "title": "Recently Added in TV Shows",
+   "hubIdentifier": "tv.recentlyadded.2",
+   "type": "episode",
+   "recent": "episode"
+  },
+  {
+   "title": "Blender Open Movies",
+   "hubIdentifier": "movie.collection.1",
+   "type": "movie",
+   "collection": "Blender Open Movies"
+  },
+  {
+   "title": "Silent Classics",
+   "hubIdentifier": "movie.collection.2",
+   "type": "movie",
+   "collection": "Silent Classics"
+  }
+ ]
+}

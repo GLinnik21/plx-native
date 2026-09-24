@@ -1130,7 +1130,7 @@ check(binary.exists(), f"the staged payload carries the binary ({binary.name})")
 #
 # It must not sit under `if BUILD:` — `BUILD` is `None` for any stamp that is neither shipped
 # configuration, and the Makefile itself documents a third (`RUST_FEATFLAGS="--no-default-features
-# --features devtriggers"`, the README-screenshot recipe). Nested, that combination would satisfy
+# --features devtriggers"`, the on-device screenshot recipe). Nested, that combination would satisfy
 # `release-guard` (RELEASE is non-empty), print "SKIP — neither shipped configuration", and package
 # a dev-trigger binary under the released id on a green run. "This package carries no dev-trigger
 # surface" is a property of the BYTES and needs no stamp to grade.

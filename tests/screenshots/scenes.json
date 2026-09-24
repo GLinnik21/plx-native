@@ -1,0 +1,103 @@
+{
+  "comment": "The documentation screenshots as named target STATES. tools/screenshots.py boots the simulator once per scene against tests/mock_pms.py --catalog, arms the scene's triggers (each one a file in a fresh instance root), waits for the settled capture (PLXNATIVE_SHOT_SETTLE) and then checks that every `expect` line is in the event log before it writes a single output. Triggers are the app's own dev triggers (docs/agent-reference.md lists them); nothing here sends a key. `token` and `plextv` are armed on every scene by the driver, so no run ever reaches a real server or plex.tv. --check-determinism captures each scene twice: every channel of every pixel may differ by at most `max_delta` (default 1: the GPU's run-to-run rounding in the blur and glass passes; scenes without them come back byte-identical), except inside a scene's `free_regions` ([x, y, w, h] in canvas pixels), which must say why in `tolerance_reason`.",
+  "canvas": "1920x1080",
+  "defaults": {
+    "settle_ms": 1500,
+    "after_ms": 2000,
+    "timeout_s": 90,
+    "stillclock_ms": 4000,
+    "max_delta": 1
+  },
+  "scenes": [
+    {
+      "name": "home",
+      "state": "Home at rest: the catalog's hero film pinned in hero slot 0 (the head of Continue Watching, so its button reads Continue), the deck's first shelf peeking below.",
+      "triggers": {"heropin": "0"},
+      "expect": ["home: hero pinned at slot 0", "hubs: landed"],
+      "hero_variants": true,
+      "outputs": [
+        {"file": "home.jpg", "size": "1600x900"},
+        {"file": "ux-home-hero.jpg", "size": "1920x1080"}
+      ]
+    },
+    {
+      "name": "home-shelves",
+      "state": "Home with focus on the first Continue Watching card: the card grown, its title and time-left line beneath it.",
+      "triggers": {"heropin": "0", "grid": ""},
+      "expect": ["hubs: landed"],
+      "outputs": [{"file": "ux-home-shelves.jpg", "size": "1920x1080"}]
+    },
+    {
+      "name": "item-menu",
+      "state": "The press-and-hold card menu open on the first Continue Watching card.",
+      "triggers": {"heropin": "0", "itemmenu": ""},
+      "expect": ["coldopen screen=itemmenu"],
+      "outputs": [{"file": "ux-item-menu.jpg", "size": "1920x1080"}]
+    },
+    {
+      "name": "account-menu",
+      "state": "The account menu open over a LANDED Home (the menu waits for 800 ms of rest, so the hero backdrop is in).",
+      "triggers": {"heropin": "0", "acct": "800"},
+      "expect": ["home: hero pinned at slot 0", "coldopen screen=account"],
+      "outputs": [{"file": "ux-account-menu.jpg", "size": "1920x1080"}]
+    },
+    {
+      "name": "library",
+      "state": "The Movies library scrolled to its All grid, focus on the third card of the first row, toolbar visible.",
+      "triggers": {"library": "0", "libgrid": "0,2"},
+      "expect": ["libgrid: focus seated at row 0 col 2"],
+      "outputs": [
+        {"file": "library.jpg", "size": "1600x900"},
+        {"file": "ux-library-grid.jpg", "size": "1920x1080"}
+      ]
+    },
+    {
+      "name": "library-sort",
+      "state": "The Movies grid with its Sort menu open (opened after 800 ms of rest, so the grid under it has finished scrolling).",
+      "triggers": {"library": "0", "libgrid": "0,3", "libmenu": "sort,800"},
+      "expect": ["libgrid: focus seated at row 0 col 3", "libmenu: sort menu up"],
+      "outputs": [{"file": "ux-library-sort.jpg", "size": "1920x1080"}]
+    },
+    {
+      "name": "search",
+      "state": "Search for \"the\": the query, the scope line, and the result shelves.",
+      "triggers": {"search": "the"},
+      "expect": ["state=ready"],
+      "outputs": [
+        {"file": "search.jpg", "size": "1600x900"},
+        {"file": "ux-search.jpg", "size": "1920x1080"}
+      ]
+    },
+    {
+      "name": "detail",
+      "state": "The detail page of Tears of Steel (ratingKey 105), part-watched, so its primary action reads Resume.",
+      "triggers": {"detail": "105"},
+      "expect": ["detail: sid=0 rk=105"],
+      "outputs": [{"file": "ux-detail.jpg", "size": "1920x1080"}]
+    },
+    {
+      "name": "signin",
+      "state": "The QR sign-in screen with the mock's pin: code DEMO and a QR that the mock generated (it encodes https://plex.tv/link). No token is armed on this scene.",
+      "triggers": {"login": ""},
+      "no_token": true,
+      "expect": ["auth: qr png", "coldopen screen=login"],
+      "outputs": [{"file": "ux-signin.jpg", "size": "1920x1080"}]
+    },
+    {
+      "name": "failure",
+      "state": "The playback failure read-out, forced by the failtest trigger over a real start of Sintel (ratingKey 102). No clock sink, so nothing plays under it and the screen comes to rest.",
+      "triggers": {"play": "102", "failtest": ""},
+      "expect": ["coldopen screen=player"],
+      "outputs": [{"file": "ux-failure.jpg", "size": "1920x1080"}]
+    },
+    {
+      "name": "player",
+      "state": "The player HUD, paused, over a real decoded frame of the Sintel trailer: the clock sink plays the file the mock serves, simvideo decodes it under the UI, autopause pauses it as soon as the player is up.",
+      "triggers": {"play": "102", "clocksink": "", "simvideo": "", "autopause": "delay=0"},
+      "expect": ["simvideo: first picture decoded", "autopause: Pause accepted"],
+      "free_regions": [[1130, 850, 130, 100]],
+      "tolerance_reason": "Where the pause lands on the timeline depends on host scheduling (the clock sink plays in real time until the pause is accepted), so the scrubber's playhead knob and the elapsed-time read-out beside it can move a second or two between runs. Everything else, the decoded picture included, is compared at the default bound.",
+      "outputs": [{"file": "player.jpg", "size": "1600x900"}]
+    }
+  ]
+}

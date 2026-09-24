@@ -53,6 +53,34 @@ fn parse_cell(v: &str) -> Option<(usize, usize)> {
     Some((r.trim().parse().ok()?, c.trim().parse().ok()?))
 }
 
+/// Has the screen been at rest for `rest` ms? `None` asks for no wait at all.
+///
+/// An overlay presented over a page FREEZES that page (the popover host draws it from a snapshot),
+/// so an arm that opens a menu while the page under it is still scrolling or still waiting for its
+/// art photographs a half-landed page forever. The arms that open a surface over a page therefore
+/// accept a rest period, and hold the surface back until the page has stopped changing. The signal
+/// is `ui::idle`'s change clock, which only the simulator keeps; on the television there is none,
+/// the wait is skipped, and the arm behaves exactly as it did before it took a value.
+pub(crate) fn at_rest(now: u32, rest: Option<u32>) -> bool {
+    #[cfg(feature = "hostsim")]
+    {
+        rest.is_none_or(|ms| now.wrapping_sub(crate::ui::idle::last_change_ms()) >= ms)
+    }
+    #[cfg(not(feature = "hostsim"))]
+    {
+        let _ = (now, rest);
+        true
+    }
+}
+
+/// `"<kind>[,<rest ms>]"` → `(kind, rest)`. A malformed rest reads as no rest, not as no trigger.
+fn parse_menu(v: &str) -> (&str, Option<u32>) {
+    match v.split_once(',') {
+        Some((kind, rest)) => (kind.trim(), rest.trim().parse().ok()),
+        None => (v.trim(), None),
+    }
+}
+
 /// Whether a resend is due: never sent, or sent at least [`RESEND_MS`] ago.
 fn due(sent: Option<u32>, now: u32) -> bool {
     sent.is_none_or(|at| now.wrapping_sub(at) >= RESEND_MS)
@@ -89,8 +117,9 @@ pub(crate) fn libgrid_arm(app: &mut App, fr: &Frame) {
     }
 }
 
-/// `/tmp/plxnative-libmenu=<sort|filter>` — on the Library page, open that toolbar menu, after
-/// `libgrid` (if armed) has seated its focus. Done when the menu SURFACE is up.
+/// `/tmp/plxnative-libmenu=<sort|filter>[,<rest ms>]` — on the Library page, open that toolbar
+/// menu, after `libgrid` (if armed) has seated its focus and, with a rest period, once the page has
+/// stopped moving ([`at_rest`]). Done when the menu SURFACE is up.
 pub(crate) fn libmenu_arm(app: &mut App, fr: &Frame) {
     if app.scenarios.shots.libmenu_done || !app.scenarios.shots.libgrid_done {
         return;
@@ -99,7 +128,8 @@ pub(crate) fn libmenu_arm(app: &mut App, fr: &Frame) {
         app.scenarios.shots.libmenu_done = true;
         return;
     };
-    let kind = match v.as_str() {
+    let (name, rest) = parse_menu(&v);
+    let kind = match name {
         "sort" => LibraryMenuKind::Sort,
         "filter" => LibraryMenuKind::Filter,
         other => {
@@ -109,16 +139,19 @@ pub(crate) fn libmenu_arm(app: &mut App, fr: &Frame) {
         }
     };
     if crate::app::bridge::library_menu_up(&app.pages) {
-        crate::log(&format!("libmenu: {v} menu up"));
+        crate::log(&format!("libmenu: {name} menu up"));
         app.scenarios.shots.libmenu_done = true;
         return;
     }
     if fr.now.wrapping_sub(app.t0) > CEILING_MS {
-        crate::log(&format!("libmenu: gave up; the {v} menu never opened"));
+        crate::log(&format!("libmenu: gave up; the {name} menu never opened"));
         app.scenarios.shots.libmenu_done = true;
         return;
     }
-    if matches!(app.route(), AppArg::Library) && due(app.scenarios.shots.libmenu_sent, fr.now) {
+    if matches!(app.route(), AppArg::Library)
+        && at_rest(fr.now, rest)
+        && due(app.scenarios.shots.libmenu_sent, fr.now)
+    {
         app.scenarios.shots.libmenu_sent = Some(fr.now);
         crate::app::bridge::Bridge::library_command(&mut app.pages, LibraryCmd::OpenMenu(kind));
     }
@@ -126,7 +159,15 @@ pub(crate) fn libmenu_arm(app: &mut App, fr: &Frame) {
 
 #[cfg(test)]
 mod tests {
-    use super::{due, parse_cell, RESEND_MS};
+    use super::{due, parse_cell, parse_menu, RESEND_MS};
+
+    #[test]
+    fn a_menu_trigger_is_a_kind_and_an_optional_rest() {
+        assert_eq!(parse_menu("sort"), ("sort", None));
+        assert_eq!(parse_menu("filter,800"), ("filter", Some(800)));
+        assert_eq!(parse_menu(" sort , 1200 "), ("sort", Some(1200)));
+        assert_eq!(parse_menu("sort,soon"), ("sort", None));
+    }
 
     #[test]
     fn a_cell_is_row_comma_col() {

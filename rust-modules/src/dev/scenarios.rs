@@ -432,9 +432,11 @@ pub(crate) fn framedrop_value() -> Option<String> {
 pub(crate) fn firstrun_armed() -> bool {
     crate::dev::flag("firstrun")
 }
-/// `/tmp/plxnative-acct` — auto-open the profile menu (headless capture of the popover).
-pub(crate) fn acct_armed() -> bool {
-    crate::dev::flag("acct")
+/// `/tmp/plxnative-acct[=<ms>]` — auto-open the profile menu (headless capture of the popover).
+/// `None` when unarmed; `Some(None)` opens it as soon as Home is up; `Some(Some(ms))` waits until
+/// the screen has been at rest for `ms` first (simulator only — see `acct_arm`).
+pub(crate) fn acct_armed() -> Option<Option<u32>> {
+    crate::dev::read("acct").map(|v| v.parse().ok())
 }
 /// `/tmp/plxnative-replay[=N]`'s raw content, for [`crate::app::boot::replay_budget`].
 pub(crate) fn replay_trigger_value() -> Option<String> {
@@ -885,11 +887,18 @@ fn press_arm(app: &mut App, fr: &mut Frame) {
 /// used to be a route the boot could simply name (`route = Route::Account { over: BarHost::Home }`
 /// beside `account_menu::open()`), and it is now presented on the container's `ModalStack`, which
 /// exists only once the loop is running. Same shape as `itemmenu_arm` beside it.
+///
+/// `acct=<ms>` holds the menu back until the screen has been at rest for `<ms>`
+/// ([`screenshot::at_rest`]): a menu opened on the first Home frame freezes a page whose hero
+/// backdrop has not arrived yet, and the documentation figure wants the menu over a LANDED Home.
 fn acct_arm(app: &mut App, fr: &mut Frame) {
-    if app.scenarios.acct_tried || !crate::dev::scenarios::acct_armed() {
+    let Some(rest) = crate::dev::scenarios::acct_armed() else {
+        return;
+    };
+    if app.scenarios.acct_tried {
         return;
     }
-    if matches!(app.route(), AppArg::Home) && app.pages.top_page().is_some() {
+    if screenshot::at_rest(fr.now, rest) && matches!(app.route(), AppArg::Home) && app.pages.top_page().is_some() {
         app.scenarios.acct_tried = true;
         crate::app::bridge::open_account_menu(&mut app.pages);
     } else if fr.now.wrapping_sub(app.t0) > 12_000 {

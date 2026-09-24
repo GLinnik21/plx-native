@@ -213,6 +213,52 @@ sign-in may legitimately have advanced by the time the app is foregrounded again
 3. **Give the app time before driving.** Posters and hub data arrive asynchronously; a shot at 2 s
    catches a half-built screen and looks like a layout bug.
 
+## Documentation screenshots
+
+`make screenshots` regenerates every image under `docs/screenshots/` from a committed scene
+manifest, against the mock server's demo library — no Plex account, no television, no gitignored
+file:
+
+```sh
+make demo-library                     # fetch (sha256-pinned, ~120 MB once) + derive; screenshots runs it too
+make screenshots                      # build the sim, render every scene into docs/screenshots/
+make screenshots SCENES=home,ux-detail.jpg OUT=/tmp/shots   # a subset, somewhere else
+make screenshots CHECK=1              # render each scene twice; fail unless within its bound
+make screenshots HERO=sintel          # pin another film as the home hero for this run
+make screenshots HERO_VARIANTS=1      # also home-hero-<film>.jpg for each hero candidate
+```
+
+- **Scenes are target STATES, reached by triggers.** `tests/screenshots/scenes.json` names each
+  state, the triggers that reach it, the event-log lines that prove it was reached (`expect`)
+  and the files it becomes. No key is sent. `tools/screenshots.py` arms `token`, `plextv` (plex.tv
+  replaced by the mock) and `stillclock` itself on every scene, and refuses a run whose log shows
+  a `BADTRIGGER`, a trigger that gave up, or a request the mock could not answer.
+- **The capture is the app's, once the screen is at rest.** `PLXNATIVE_SHOT_SETTLE=<ms>` makes the
+  simulator write one PNG after the screen has not changed for that long (and not before
+  `PLXNATIVE_SHOT_AFTER`), then exit with `PLXNATIVE_SHOT_EXIT=1`. The driver waits on that
+  process, under a ceiling timeout; there is no sleep anywhere. A screen that never comes to rest
+  is a failure, not a capture. A popover freezes the page under it, so a menu scene opens its menu
+  only after the page has rested (`acct=<ms>`, `libmenu=<kind>,<ms>`).
+- **Everything that moves is pinned.** The mock's clock is the catalog's `now`; watch state,
+  progress and added dates come from the catalog; `stillclock` holds free-running animation; the
+  hero is pinned to slot 0 (`heropin=0`), and the mock puts the hero film at the head of Continue
+  Watching, so its button reads Continue with progress.
+- **Determinism.** `CHECK=1` renders every scene twice and compares pixel by pixel: each channel
+  may differ by at most `max_delta` (default 1 — the GPU's run-to-run rounding), except inside a
+  scene's `free_regions`, which must carry a `tolerance_reason`. Search, detail, sign-in and the
+  failure read-out come back byte-identical; scenes with backdrop blur or glass differ by exactly
+  1 in anything from a few pixels to ~120k of them. The player scene frees the playhead knob and elapsed-time read-out: the clock
+  sink plays in real time until the pause is accepted, so where on the timeline it pauses moves
+  by a second or two.
+- **The library is openly licensed.** `tests/demo_library/assets.json` pins every source file (URL,
+  sha256, licence, author); `catalog.json` is the library. Film title logos are never used (the
+  Blender Studio terms reserve its trademarks); the app draws titles as text.
+  `python3 tools/demo_library.py credits` rewrites `docs/screenshots/CREDITS.md`, and
+  `python3 tools/demo_library.py check` validates both manifests offline. The cache lives outside
+  the repository (`$PLXNATIVE_DEMO_CACHE`, default `~/.cache/plxnative-demo`).
+- **Review before committing.** Open every image. A regenerated set is committed on its own,
+  never in the same commit as a change to the pipeline.
+
 ## What the simulator ANSWERS
 
 Layout and spacing · focus and navigation · route transitions and the page cross-fade · every
@@ -293,6 +339,8 @@ device-verified" is a useful, honest status. "Verified" without a TV is not.
   shots come out at the viewport size (e.g. 1650×928). Fine for layout, wrong for pixel work.
 - Without `plxnative-clocksink` there is no `player` route to screenshot beyond the failure
   read-out and the HUD's busy states. With it there is a real one, driven by a real stream — but
-  the video PLANE is still empty, because nothing decodes and the wayland overlay is webOS-only.
-  So a player shot here is the HUD over black, which is the right thing for HUD layout work and
-  the wrong thing for anything about the picture.
+  the video PLANE is empty, because the app decodes nothing and the wayland overlay is webOS-only:
+  the HUD sits over black. Arm `plxnative-simvideo` as well and a system `ffmpeg` child decodes
+  the stream the clock sink accepts and composites it UNDER the UI (`player/sim_video.rs`). That
+  is a screenshot facility for the documentation's player figure; it says nothing about LG's
+  decoder, the video plane or picture timing on the television.
