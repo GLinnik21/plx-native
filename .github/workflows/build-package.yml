@@ -73,9 +73,8 @@ on:
       fwcompat:
         description: >
           Run the per-binary firmware-database compatibility check (tools/fwcompat.py) against
-          pkg/plxnative and pkg/plxnative-storage, in addition to webosbrew-ipk-verify. Nightly
-          only today. Release lacking this gate is a known asymmetry to revisit — NOT enabled here,
-          this refactor changes no behaviour.
+          pkg/plxnative and pkg/plxnative-storage, in addition to webosbrew-ipk-verify. Nightly and
+          release both pass this true; a non-publishing caller can still opt out.
         type: boolean
         default: false
     secrets:
@@ -360,9 +359,9 @@ jobs:
             --fw-releases '>=4.0' pkg/*.ipk | tee pkg/ipk-verify.md | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Firmware compatibility gates (per-binary database check)
-        # Nightly-only today (`fwcompat`): checks each shipped binary against the local webosbrew
-        # compat-checker database directly, in addition to webosbrew-ipk-verify's own per-package
-        # verdict above. Not enabled for release yet — see the `fwcompat` input's comment.
+        # Checks each shipped binary (`fwcompat`) against the local webosbrew compat-checker
+        # database directly, in addition to webosbrew-ipk-verify's own per-package verdict above.
+        # Nightly and release both enable this — see the `fwcompat` input's comment.
         if: inputs.fwcompat
         run: |
           set -euo pipefail

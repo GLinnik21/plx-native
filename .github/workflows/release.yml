@@ -326,6 +326,10 @@ jobs:
       artifact: release-assets
       homebrew-manifest: true
       source-asset: true
+      # The per-binary firmware-database check nightly has carried since #137; a release ships
+      # plxnative-storage too (its 8 DT_NEEDED first went stable in 0.7.0), so it owes the same
+      # gate webosbrew-ipk-verify's per-package verdict does not replace.
+      fwcompat: true
     secrets:
       SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
