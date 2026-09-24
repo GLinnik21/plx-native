@@ -635,19 +635,26 @@ pub(crate) fn exit_player(
 /// The episode is OVER — drained to EOS, or the user skipped a `final` credits marker.
 /// Starts the queued episode when the show has one, else leaves the player exactly as
 /// `exit_player` would. There is no interstitial: "always the next episode".
+///
+/// Returns whether playback was handed off to Up Next (`true`) or the player was left (`false`).
+/// `exit_player`'s `PopTo` only PARKS the navigation (`Dispatcher::request`, applied at the next
+/// commit), so `app.route()` still reads `Player` for the rest of this frame; a caller that needs
+/// to tell a real exit from an Up Next handoff — `dev::scenarios::maybe_replay_after_eos` is the
+/// one that does — must use this return value rather than the route.
 pub(crate) fn finish_playback(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut crate::player::adapter::PlayerAdapter,
     refresh_hubs_at: &mut u32,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
     bridge: &mut super::bridge::Bridge,
-) {
+) -> bool {
     if play_up_next(ps, pa, HUD_LINGER_MS, pages, bridge) {
-        return;
+        return true;
     }
     exit_player(ps, pa, refresh_hubs_at, pages);
     // The ring goes back to the scrubber for the NEXT session, and the next session is a fresh
     // instance — so there is nothing to park here any more (`start_playback`'s note).
+    false
 }
 
 /// Activate whatever occupies the control row. ONE dispatch for both the OK key and the
@@ -704,7 +711,7 @@ pub(crate) fn activate_ctrl_row(
                 }
                 // a `final` credits segment: skipping it IS finishing the item
                 SkipAction::Finish => {
-                    finish_playback(ps, pa, refresh_hubs_at, pages, bridge);
+                    let _ = finish_playback(ps, pa, refresh_hubs_at, pages, bridge);
                     true
                 }
             }

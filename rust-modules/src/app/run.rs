@@ -1398,14 +1398,17 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // show has another episode queued, else leave the player (back to the detail page or
         // home, whichever is behind), instead of freezing on the last frame.
         if playback_may_run(app) && super::bridge::player(&app.pages).is_some() && crate::player::ended() {
-            finish_playback(&mut app.player.session,
+            let handed_off_to_up_next = finish_playback(&mut app.player.session,
                 &mut app.adapters.player,
                 &mut app.refresh_hubs_at,
                 &mut app.pages,
                 &mut app.bridge,
             );
             // dev: REPLAY AFTER COMPLETION (#46) — `crate::dev::scenarios::maybe_replay_after_eos`.
-            crate::dev::scenarios::maybe_replay_after_eos(app);
+            // `finish_playback`'s return, not `app.route()`: `exit_player`'s `PopTo` only PARKS
+            // the navigation (applied at the next commit), so the route still reads `Player` here
+            // even on a real exit — the return value is the only live signal for it this frame.
+            crate::dev::scenarios::maybe_replay_after_eos(app, handed_off_to_up_next);
         }
         // Up Next countdown elapsed → start the queued episode on its own. Beside the EOS
         // handoff so the whole auto-advance chain reads in one place.
