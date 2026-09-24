@@ -1252,6 +1252,7 @@ pub(crate) unsafe fn construct(
             press_release_at,
             itemmenu_tried,
             acct_tried,
+            acct_rest: None,
             shots: Default::default(),
             auto_tried,
             replay_left,

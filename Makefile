@@ -1671,23 +1671,26 @@ sim-macos: $(FFMPEG_HOST_STAGED) pkg/.ffabi-host-ok
 # **`make screenshots` — the documentation screenshots, regenerated.** Boots the simulator once per
 # scene in `tests/screenshots/scenes.json` against the mock server's DEMO LIBRARY (openly licensed
 # films, `tests/demo_library/`), waits for each scene's settled frame, and writes the JPEGs, and
-# the CREDITS.md that goes with them, into `docs/screenshots/` (or `OUT=dir`). No Plex account, no
+# the CREDITS.md that goes with them, into `docs/screenshots/` (or `SHOT_OUT=dir`). No Plex account, no
 # television, no gitignored file.
 #   make screenshots                         # every scene
-#   make screenshots SCENES=home,ux-detail   # some
-#   make screenshots OUT=/tmp/shots CHECK=1  # render twice, compare (the determinism check)
-#   make screenshots HERO=sintel OUT=/tmp/h  # the home shots with another film in the hero
-#   make screenshots HERO_VARIANTS=1         # also home-hero-<film>.jpg for each hero candidate
+#   make screenshots SHOT_SCENES=home,ux-detail            # some
+#   make screenshots SHOT_OUT=/tmp/shots SHOT_CHECK=1      # render twice, compare (the determinism check)
+#   make screenshots SHOT_HERO=sintel SHOT_OUT=/tmp/h      # the home shots with another film in the hero
+#   make screenshots SHOT_HERO_VARIANTS=1                  # also home-hero-<film>.jpg for each hero candidate
+# The knobs are SHOT_-prefixed because make takes a variable from the ENVIRONMENT too: a generic
+# OUT or CHECK exported by some other script (tests/focusfp.sh has an OUT) would otherwise move
+# the figures elsewhere or silently render everything twice.
 # Its own simulator build: `--no-default-features` drops `devtools` (the on-screen frame counter is
 # not part of the product) and `devtriggers` comes back because scenes are reached through them.
 # Its own target dir, for this file's feature-set rule. `CARGO_INCREMENTAL=0`: a one-shot build.
 SHOT_TDIR ?= $(SIM_TDIR)-shots
 SHOT_BIN   = $(SHOT_TDIR)/debug/plxnative-sim
-SCENES ?=
-OUT    ?=
-CHECK  ?=
-HERO   ?=
-HERO_VARIANTS ?=
+SHOT_SCENES ?=
+SHOT_OUT    ?=
+SHOT_CHECK  ?=
+SHOT_HERO   ?=
+SHOT_HERO_VARIANTS ?=
 screenshots-sim: $(FFMPEG_HOST_STAGED) pkg/.ffabi-host-ok
 	CARGO_INCREMENTAL=0 cargo build --manifest-path rust-modules/Cargo.toml --target-dir $(SHOT_TDIR) \
 	  --no-default-features --features hostsim,devtriggers --bin plxnative-sim
@@ -1696,9 +1699,9 @@ demo-library:
 	python3 tools/demo_library.py derive
 
 screenshots: screenshots-sim demo-library
-	python3 tools/screenshots.py --bin $(SHOT_BIN) $(if $(OUT),--out $(OUT),) \
-	  $(if $(SCENES),--only $(SCENES),) $(if $(CHECK),--check-determinism,) $(if $(HERO),--hero $(HERO),) \
-	  $(if $(HERO_VARIANTS),--hero-variants,)
+	python3 tools/screenshots.py --bin $(SHOT_BIN) $(if $(SHOT_OUT),--out $(SHOT_OUT),) \
+	  $(if $(SHOT_SCENES),--only $(SHOT_SCENES),) $(if $(SHOT_CHECK),--check-determinism,) $(if $(SHOT_HERO),--hero $(SHOT_HERO),) \
+	  $(if $(SHOT_HERO_VARIANTS),--hero-variants,)
 
 # Optimized Linux UI/Plex simulator with no host FFmpeg prerequisite. It runs natively on Linux;
 # Windows/WSLg uses the same binary through `tools/sim.ps1`. Play intentionally reaches the host

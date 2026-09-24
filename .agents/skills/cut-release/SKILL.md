@@ -205,7 +205,7 @@ plane. The note carries one line per tier; the matrix belongs to the audit.
 advertises a different app:
 
 ```sh
-make screenshots CHECK=1          # every figure, rendered twice; fails unless within its bound
+make screenshots SHOT_CHECK=1     # every figure, rendered twice; fails unless within its bound
 git status --short docs/screenshots
 ```
 

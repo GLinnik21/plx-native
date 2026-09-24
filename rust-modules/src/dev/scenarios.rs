@@ -99,6 +99,8 @@ pub(crate) struct Scenarios {
     pub(crate) press_release_at: u32,
     pub(crate) itemmenu_tried: bool,
     pub(crate) acct_tried: bool,
+    /// `/tmp/plxnative-acct`'s value, once read (see `acct_arm`).
+    pub(crate) acct_rest: Option<Option<u32>>,
     pub(crate) auto_tried: bool,
     pub(crate) replay_left: u32,
     pub(crate) grid_tried: bool,
@@ -715,8 +717,41 @@ pub(crate) fn apply_search_boot_trigger(
 
 /// `now - at >= gap_ms`, read as SIGNED so a future `at` (a `delay=` in force) correctly does not
 /// fire yet. See the tests below for the wrap and delay traps this predicate has to survive.
+/// A trigger's value, read until it is first found armed and held from then on, so a per-frame
+/// arm costs one read rather than one per frame. An unarmed trigger is looked for again next call.
+fn latched<T: Copy>(slot: &mut Option<T>, read: impl FnOnce() -> Option<T>) -> Option<T> {
+    if slot.is_none() {
+        *slot = read();
+    }
+    *slot
+}
+
 fn script_step_due(now: u32, at: u32, gap_ms: u32) -> bool {
     (now.wrapping_sub(at) as i32) >= gap_ms as i32
+}
+
+#[cfg(test)]
+mod trigger_latch_tests {
+    use super::latched;
+
+    #[test]
+    fn an_armed_trigger_is_read_once_and_then_held() {
+        let (mut slot, mut reads) = (None, 0);
+        for _ in 0..5 {
+            assert_eq!(latched(&mut slot, || { reads += 1; Some(Some(800u32)) }), Some(Some(800)));
+        }
+        assert_eq!(reads, 1, "an armed trigger's file was read on every frame");
+    }
+
+    #[test]
+    fn an_unarmed_trigger_is_looked_for_until_it_appears() {
+        let (mut slot, mut reads) = (None::<Option<u32>>, 0);
+        assert_eq!(latched(&mut slot, || { reads += 1; None }), None);
+        assert_eq!(latched(&mut slot, || { reads += 1; None }), None);
+        assert_eq!(latched(&mut slot, || { reads += 1; Some(None) }), Some(None));
+        assert_eq!(latched(&mut slot, || { reads += 1; Some(Some(1)) }), Some(None), "re-read once latched");
+        assert_eq!(reads, 3);
+    }
 }
 
 #[cfg(test)]
@@ -892,13 +927,17 @@ fn press_arm(app: &mut App, fr: &mut Frame) {
 /// `acct=<ms>` holds the menu back until the screen has been at rest for `<ms>`
 /// ([`screenshot::at_rest`]): a menu opened on the first Home frame freezes a page whose hero
 /// backdrop has not arrived yet, and the documentation figure wants the menu over a LANDED Home.
+///
+/// The trigger's value is read once and held ([`latched`]): `acct` carries a value, so arming it
+/// is an open+read rather than a stat, and a debug build on the television must not pay that on
+/// every frame. Once the menu is open or the arm gives up, `acct_tried` ends it before any read.
 fn acct_arm(app: &mut App, fr: &mut Frame) {
-    let Some(rest) = crate::dev::scenarios::acct_armed() else {
-        return;
-    };
     if app.scenarios.acct_tried {
         return;
     }
+    let Some(rest) = latched(&mut app.scenarios.acct_rest, crate::dev::scenarios::acct_armed) else {
+        return;
+    };
     if screenshot::at_rest(fr.now, rest) && matches!(app.route(), AppArg::Home) && app.pages.top_page().is_some() {
         app.scenarios.acct_tried = true;
         crate::app::bridge::open_account_menu(&mut app.pages);

@@ -2865,6 +2865,7 @@ mod lifecycle_regression_tests {
                 press_release_at: Default::default(),
                 itemmenu_tried: Default::default(),
                 acct_tried: Default::default(),
+                acct_rest: Default::default(),
                 shots: Default::default(),
                 auto_tried: Default::default(),
                 replay_left: Default::default(),

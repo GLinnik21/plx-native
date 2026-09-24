@@ -222,10 +222,10 @@ file:
 ```sh
 make demo-library                     # fetch (sha256-pinned, ~390 MB once) + derive; screenshots runs it too
 make screenshots                      # build the sim, render every scene + CREDITS.md into docs/screenshots/
-make screenshots SCENES=home,ux-detail.jpg OUT=/tmp/shots   # a subset, somewhere else
-make screenshots CHECK=1              # render each scene twice; fail unless within its bound
-make screenshots HERO=sintel          # pin another film as the home hero for this run
-make screenshots HERO_VARIANTS=1      # also home-hero-<film>.jpg for each hero candidate
+make screenshots SHOT_SCENES=home,ux-detail.jpg SHOT_OUT=/tmp/shots   # a subset, somewhere else
+make screenshots SHOT_CHECK=1         # render each scene twice; fail unless within its bound
+make screenshots SHOT_HERO=sintel     # pin another film as the home hero for this run
+make screenshots SHOT_HERO_VARIANTS=1 # also home-hero-<film>.jpg for each hero candidate
 ```
 
 - **Scenes are target STATES, reached by triggers.** `tests/screenshots/scenes.json` names each
@@ -243,7 +243,7 @@ make screenshots HERO_VARIANTS=1      # also home-hero-<film>.jpg for each hero 
   progress and added dates come from the catalog; `stillclock` holds free-running animation; the
   hero is pinned to slot 0 (`heropin=0`), and the mock puts the hero film at the head of Continue
   Watching, so its button reads Continue with progress.
-- **Determinism.** `CHECK=1` renders every scene twice and compares pixel by pixel: each channel
+- **Determinism.** `SHOT_CHECK=1` renders every scene twice and compares pixel by pixel: each channel
   may differ by at most `max_delta` (default 1 — the GPU's run-to-run rounding), except inside a
   scene's `free_regions`, which must carry a `tolerance_reason`. Search, detail, sign-in and the
   failure read-out come back byte-identical; scenes with backdrop blur or glass differ by exactly

@@ -15,12 +15,13 @@ driver:
   4. checks the capture is the state the manifest names: every `expect` line is in the event log,
      no trigger was refused (`BADTRIGGER`) or gave up, and the mock saw no request it could not
      answer;
-  5. scales and encodes each output with ffmpeg (Lanczos, `-bitexact`, one thread) into
-     `docs/screenshots/` or `--out`.
+  5. scales and encodes each output with ffmpeg (Lanczos, `-bitexact`, one thread) into a
+     staging directory.
 
-A run that succeeds also writes `CREDITS.md` into the same directory, from the demo library's
-manifests (`tools/demo_library.py`), so the one command that regenerates the images regenerates
-their credits and the two cannot drift apart.
+Only when every scene has succeeded is the staged set moved into `docs/screenshots/` (or
+`--out`), together with a `CREDITS.md` written from the demo library's manifests
+(`tools/demo_library.py`). So the one command that regenerates the images regenerates their
+credits, the two cannot drift apart, and a failed run leaves the directory as it was.
 
 `--check-determinism` captures every scene twice and compares the two PNGs pixel by pixel: every
 channel of every pixel may differ by at most the scene's `max_delta` (default 1: the GPU's
@@ -186,6 +187,36 @@ def write_credits(out):
     demo_library.credits(assets, catalog, out / "CREDITS.md")
 
 
+def render_set(jobs, render, out, keep=False):
+    """Run `render(scene, hero, outputs, stage)` for every job into a staging directory, and move
+    the whole set, with its CREDITS.md, into `out` only when every job succeeded. Any exception
+    fails its scene (a capture refused, ffmpeg exiting non-zero, the mock not starting); the other
+    scenes still run, so one run reports every failure. Returns the failed scene names; when there
+    are any, `out` has not been touched, so a failed run never leaves a half-regenerated set."""
+    stage = pathlib.Path(tempfile.mkdtemp(prefix="plxnative-shots-"))
+    failed = []
+    try:
+        for scene, hero, outputs in jobs:
+            try:
+                render(scene, hero, outputs, stage)
+            except Exception as e:  # noqa: BLE001 — every failure is the scene's, reported below
+                failed.append(scene["name"])
+                why = e if isinstance(e, RuntimeError) else f"{type(e).__name__}: {e}"
+                print(f"  {scene['name']}: FAILED — {why}", file=sys.stderr)
+        if failed:
+            if keep:
+                print(f"  staged output kept in {stage}", file=sys.stderr)
+            return failed
+        write_credits(stage)
+        out.mkdir(parents=True, exist_ok=True)
+        for f in sorted(stage.iterdir()):
+            shutil.move(str(f), str(out / f.name))
+        return []
+    finally:
+        if not (keep and failed):
+            shutil.rmtree(stage, ignore_errors=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--bin", required=True, type=pathlib.Path, help="the simulator (make screenshots-sim)")
@@ -222,43 +253,39 @@ def main():
                   if s["name"] in wanted or any(o["file"].removesuffix(".jpg") in wanted for o in s["outputs"])]
         if not scenes:
             die(f"--only {a.only!r} names no scene")
-    a.out.mkdir(parents=True, exist_ok=True)
-
-    jobs = [(s, a.hero, [(o["file"], o["size"]) for o in s["outputs"]]) for s in scenes]
+    jobs =[(s, a.hero, [(o["file"], o["size"]) for o in s["outputs"]]) for s in scenes]
     if a.hero_variants:
         home = next(s for s in manifest["scenes"] if s.get("hero_variants"))
         size = home["outputs"][0]["size"]
         for film in [catalog["hero"], *catalog.get("hero_alternatives", [])]:
             jobs.append((dict(home, name=f"home-hero-{film}"), film, [(f"home-hero-{film}.jpg", size)]))
 
-    failed, report = [], []
-    for scene, hero, outputs in jobs:
-        try:
-            png, _ = capture(a.bin, scene, defaults, hero, a.keep)
-            if a.check_determinism:
-                again, _ = capture(a.bin, scene, defaults, hero, a.keep)
-                bound = scene.get("max_delta", defaults["max_delta"])
-                free = scene.get("free_regions", [])
-                if again == png:
-                    report.append(f"{scene['name']}: identical")
-                else:
-                    n, worst = compare(png, again, *canvas, free)
-                    verdict = "within" if worst <= bound else "OVER"
-                    where = f" outside {len(free)} free region(s)" if free else ""
-                    report.append(f"{scene['name']}: {n} pixel(s) differ{where}, max |Δ| {worst} {verdict} {bound}")
-                    if worst > bound:
-                        raise RuntimeError(f"not deterministic: max |Δ| {worst} > {bound}{where}")
-            for file, size in outputs:
-                encode(png, a.out / file, size)
-        except RuntimeError as e:
-            failed.append(scene["name"])
-            print(f"  {scene['name']}: FAILED — {e}", file=sys.stderr)
+    report = []
+
+    def render(scene, hero, outputs, stage):
+        png, _ = capture(a.bin, scene, defaults, hero, a.keep)
+        if a.check_determinism:
+            again, _ = capture(a.bin, scene, defaults, hero, a.keep)
+            bound = scene.get("max_delta", defaults["max_delta"])
+            free = scene.get("free_regions", [])
+            if again == png:
+                report.append(f"{scene['name']}: identical")
+            else:
+                n, worst = compare(png, again, *canvas, free)
+                verdict = "within" if worst <= bound else "OVER"
+                where = f" outside {len(free)} free region(s)" if free else ""
+                report.append(f"{scene['name']}: {n} pixel(s) differ{where}, max |Δ| {worst} {verdict} {bound}")
+                if worst > bound:
+                    raise RuntimeError(f"not deterministic: max |Δ| {worst} > {bound}{where}")
+        for file, size in outputs:
+            encode(png, stage / file, size)
+
+    failed = render_set(jobs, render, a.out, a.keep)
     for line in report:
         print(f"determinism  {line}")
     if failed:
-        die(f"{len(failed)} scene(s) failed: {', '.join(failed)}")
-    write_credits(a.out)
-    print(f"screenshots: {sum(len(o) for _, _, o in jobs)} image(s) written to {a.out}")
+        die(f"{len(failed)} scene(s) failed: {', '.join(failed)}; nothing was written to {a.out}")
+    print(f"screenshots: {sum(len(o) for _, _, o in jobs)} image(s) and CREDITS.md written to {a.out}")
 
 
 if __name__ == "__main__":

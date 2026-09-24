@@ -79,13 +79,17 @@ def fetch(assets, only=None):
             print(f"demo_library: fetch {aid} ({a['bytes']:,} bytes)", flush=True)
             req = urllib.request.Request(a["url"], headers={"User-Agent": UA})
             with tempfile.NamedTemporaryFile(dir=dst.parent, delete=False) as tmp:
-                with urllib.request.urlopen(req, timeout=120) as r:
-                    shutil.copyfileobj(r, tmp)
-            got = sha256(tmp.name)
-            if got != a["sha256"]:
-                os.unlink(tmp.name)
-                sys.exit(f"demo_library: {aid}: sha256 {got} != pinned {a['sha256']} ({a['url']})")
-            os.replace(tmp.name, dst)
+                pass
+            try:  # the partial download never survives: a failed request, a bad hash, a ^C
+                with open(tmp.name, "wb") as f, urllib.request.urlopen(req, timeout=120) as r:
+                    shutil.copyfileobj(r, f)
+                got = sha256(tmp.name)
+                if got != a["sha256"]:
+                    sys.exit(f"demo_library: {aid}: sha256 {got} != pinned {a['sha256']} ({a['url']})")
+                os.replace(tmp.name, dst)
+            finally:
+                if os.path.exists(tmp.name):
+                    os.unlink(tmp.name)
         out[aid] = dst
     return out
 

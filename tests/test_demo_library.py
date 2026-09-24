@@ -5,15 +5,19 @@ stand-in and the scene manifest. The second half serves the catalog itself, whic
 derived artwork cache (`make demo-library`, ~390 MB of downloads); it is skipped, loudly, where
 the cache is absent, so a fresh clone's `make check` stays offline.
 """
+import contextlib
 import importlib.util
+import io
 import json
 import pathlib
 import re
 import shutil
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 import urllib.parse
 import zlib
 
@@ -126,6 +130,47 @@ class Credits(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             screenshots.write_credits(pathlib.Path(d))
             self.assertEqual((pathlib.Path(d) / "CREDITS.md").read_text(), tool.CREDITS.read_text())
+
+
+class RenderSet(unittest.TestCase):
+    """A run replaces the figure set whole, or leaves it as it was."""
+
+    JOBS = [({"name": "a"}, None, [("a.jpg", "1x1")]), ({"name": "b"}, None, [("b.jpg", "1x1")])]
+
+    def test_a_failure_of_any_kind_leaves_the_output_as_it_was(self):
+        def render(scene, hero, outputs, stage):
+            (stage / outputs[0][0]).write_bytes(b"new")
+            if scene["name"] == "b":
+                raise subprocess.CalledProcessError(1, ["ffmpeg"])
+        with tempfile.TemporaryDirectory() as d:
+            out = pathlib.Path(d)
+            (out / "a.jpg").write_bytes(b"old")
+            with contextlib.redirect_stderr(io.StringIO()):
+                failed = screenshots.render_set(self.JOBS, render, out)
+            self.assertEqual(failed, ["b"])
+            self.assertEqual(sorted(p.name for p in out.iterdir()), ["a.jpg"])
+            self.assertEqual((out / "a.jpg").read_bytes(), b"old")
+
+    def test_a_clean_run_moves_every_image_and_the_credits_in(self):
+        def render(scene, hero, outputs, stage):
+            (stage / outputs[0][0]).write_bytes(b"new")
+        with tempfile.TemporaryDirectory() as d:
+            out = pathlib.Path(d) / "shots"
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(screenshots.render_set(self.JOBS, render, out), [])
+            self.assertEqual(sorted(p.name for p in out.iterdir()), ["CREDITS.md", "a.jpg", "b.jpg"])
+
+
+class Fetch(unittest.TestCase):
+    def test_a_failed_download_leaves_no_partial_file(self):
+        aid, asset = next(iter(tool.load()[0].items()))
+        with tempfile.TemporaryDirectory() as d, \
+                unittest.mock.patch.object(tool, "cache_dir", return_value=pathlib.Path(d)), \
+                unittest.mock.patch.object(tool.urllib.request, "urlopen", side_effect=OSError("offline")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(OSError):
+                tool.fetch({aid: asset})
+            self.assertEqual(list((pathlib.Path(d) / "src").iterdir()), [])
 
 
 class Chapters(unittest.TestCase):
