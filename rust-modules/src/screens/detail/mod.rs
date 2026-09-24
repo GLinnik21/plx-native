@@ -1381,15 +1381,13 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
         let elem = if group == hero::HERO_GROUP {
             hero::HeroCtl::Play.elem()
         } else if group == season::SEASON_GROUP {
+            // Land on the SELECTED season, not whichever tab happens to be geometrically nearest
+            // `from`: `Placed` carries no source group, so this fires from every entry into the
+            // strip (episodes below, hero above) alike, which is what a season tab strip means by
+            // "current".
             let n = d.map(|d| d.seasons.len()).unwrap_or(0).min(64);
-            let i = nearest_variable(
-                &self.season_metrics,
-                from.rect.cx(),
-                self.tab_scroll.pos,
-                n,
-                from_i,
-            );
-            season::elem(i).unwrap_or(season::SEASON_ELEM_RANGE_START)
+            let i = d.map(|d| d.cur_season.min(n.saturating_sub(1)));
+            i.and_then(season::elem).unwrap_or(season::SEASON_ELEM_RANGE_START)
         } else if group == episodes::EPISODES_GROUP {
             let n = d
                 .map(|d| d.episodes.len())
@@ -1490,23 +1488,6 @@ fn row_move(index: usize, len: usize, dir: Dir) -> Option<usize> {
         Dir::Right if index + 1 < len => Some(index + 1),
         _ => None,
     }
-}
-
-fn nearest_variable(metrics: &season::Metrics, x: f32, scroll: f32, n: usize, tie: usize) -> usize {
-    (0..n)
-        .min_by(|a, b| {
-            let da = metrics
-                .rect(*a, 0.0, scroll)
-                .map(|r| (r.cx() - x).abs())
-                .unwrap_or(f32::MAX);
-            let db = metrics
-                .rect(*b, 0.0, scroll)
-                .map(|r| (r.cx() - x).abs())
-                .unwrap_or(f32::MAX);
-            da.total_cmp(&db)
-                .then_with(|| a.abs_diff(tie).cmp(&b.abs_diff(tie)))
-        })
-        .unwrap_or(0)
 }
 
 impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for DetailScreen {

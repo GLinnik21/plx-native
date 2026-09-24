@@ -440,3 +440,96 @@ fn detail_focus_places_and_hit_map_agree_for_all_three_scrolled_strips() {
     }
     clear();
 }
+
+/// A fixture with several seasons whose tabs, being short, cluster on the left of the strip —
+/// far from where the filmstrip's later episode columns sit. Reproduces
+/// <https://reddit.com> field report: UP out of the filmstrip must land on the *selected*
+/// season tab (`cur_season`), not on whichever tab happens to be geometrically nearest the
+/// episode card the cursor came from.
+fn fixture_with_seasons(sid: ServerId, season_count: usize, cur_season: usize) -> Detail {
+    let mut d = fixture(sid);
+    d.seasons = (0..season_count)
+        .map(|i| crate::metadata::Season {
+            rk: format!("season-{i}"),
+            index: i as i64,
+            title: format!("Season {i}"),
+            leaf_count: 12,
+            viewed_leaf_count: 0,
+        })
+        .collect();
+    d.cur_season = cur_season;
+    d
+}
+
+#[test]
+fn detail_focus_up_from_filmstrip_lands_on_the_selected_season_not_the_nearest_tab() {
+    let sid = ServerId::UNSET;
+
+    // cur_season is the LEFTMOST tab; focus starts on an episode column far to the right, whose
+    // x position is nearest a later (unselected) tab.
+    {
+        let _guard = install(fixture_with_seasons(sid, 5, 0));
+        let mut screen = bare(sid, "show");
+        let measure = crate::ui::fixture::FixtureMeasure;
+        let detail = test_store().view().current().expect("fixture detail must be mounted");
+        screen.season_metrics.update(detail, &measure);
+        let context = cx(&measure, None);
+        let owner = InputOwner::Entry(EntryId(8));
+        let mut engine = FocusEngine::new();
+        let selected_tab = FocusKey {
+            entry: EntryId(8),
+            elem: screen.engine_key(season::elem(0).unwrap()).unwrap(),
+        };
+        let far_episode = FocusKey {
+            entry: EntryId(8),
+            elem: screen.engine_key(episodes::elem(3, episodes::Row::Still).unwrap()).unwrap(),
+        };
+        assert!(matches!(
+            engine.set(owner, far_episode, Some(episodes::EPISODES_GROUP), By::Restore),
+            Outcome::Moved { .. }
+        ));
+        let up = expect_move(
+            move_dir(&mut engine, &screen, owner, Dir::Up, &context),
+            "UP from a far-right episode must reach the season strip",
+        );
+        assert_eq!(
+            up, selected_tab,
+            "UP must land on the SELECTED season (index 0), not whichever tab is nearest the episode's x"
+        );
+        clear();
+    }
+
+    // cur_season is the RIGHTMOST tab; focus starts on the FIRST episode column, whose x
+    // position is nearest the leftmost (unselected) tab.
+    {
+        let _guard = install(fixture_with_seasons(sid, 5, 4));
+        let mut screen = bare(sid, "show");
+        let measure = crate::ui::fixture::FixtureMeasure;
+        let detail = test_store().view().current().expect("fixture detail must be mounted");
+        screen.season_metrics.update(detail, &measure);
+        let context = cx(&measure, None);
+        let owner = InputOwner::Entry(EntryId(8));
+        let mut engine = FocusEngine::new();
+        let selected_tab = FocusKey {
+            entry: EntryId(8),
+            elem: screen.engine_key(season::elem(4).unwrap()).unwrap(),
+        };
+        let first_episode = FocusKey {
+            entry: EntryId(8),
+            elem: screen.engine_key(episodes::elem(0, episodes::Row::Still).unwrap()).unwrap(),
+        };
+        assert!(matches!(
+            engine.set(owner, first_episode, Some(episodes::EPISODES_GROUP), By::Restore),
+            Outcome::Moved { .. }
+        ));
+        let up = expect_move(
+            move_dir(&mut engine, &screen, owner, Dir::Up, &context),
+            "UP from the first episode must reach the season strip",
+        );
+        assert_eq!(
+            up, selected_tab,
+            "UP must land on the SELECTED season (index 4), not the tab nearest the first episode's x"
+        );
+        clear();
+    }
+}
