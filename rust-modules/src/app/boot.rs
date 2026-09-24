@@ -1159,7 +1159,7 @@ pub(crate) unsafe fn construct(
     // `/tmp/plxnative-autopause`: an authored Pause edge, plus the optional Resume edge which
     // owns the same script. External effects retry until the synchronized player state machine
     // accepts them; a busy native transition cannot silently consume the test operation.
-    let pause_script: Option<(u32, Option<u32>)> = None;
+    let pause_script: Option<(u32, Option<u32>, Option<u32>)> = None;
     let pause_resume_at: Option<u32> = None;
     let prev = 0u32;
     // Home data refresh, armed on every player exit (Stop/BACK/EOS): the hubs are refetched a

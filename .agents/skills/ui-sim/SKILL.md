@@ -220,7 +220,7 @@ manifest, against the mock server's demo library — no Plex account, no televis
 file:
 
 ```sh
-make demo-library                     # fetch (sha256-pinned, ~120 MB once) + derive; screenshots runs it too
+make demo-library                     # fetch (sha256-pinned, ~390 MB once) + derive; screenshots runs it too
 make screenshots                      # build the sim, render every scene into docs/screenshots/
 make screenshots SCENES=home,ux-detail.jpg OUT=/tmp/shots   # a subset, somewhere else
 make screenshots CHECK=1              # render each scene twice; fail unless within its bound
@@ -247,9 +247,9 @@ make screenshots HERO_VARIANTS=1      # also home-hero-<film>.jpg for each hero 
   may differ by at most `max_delta` (default 1 — the GPU's run-to-run rounding), except inside a
   scene's `free_regions`, which must carry a `tolerance_reason`. Search, detail, sign-in and the
   failure read-out come back byte-identical; scenes with backdrop blur or glass differ by exactly
-  1 in anything from a few pixels to ~120k of them. The player scene frees the playhead knob and elapsed-time read-out: the clock
-  sink plays in real time until the pause is accepted, so where on the timeline it pauses moves
-  by a second or two.
+  1 in anything from a few pixels to ~120k of them. The player scene frees the playhead knob alone: autopause is gated on the playhead
+  (`autopause=at=<ms>`), so it lands on the same frame and the same clock, but at a position
+  a few milliseconds apart, which moves the knob by a fraction of a pixel.
 - **The library is openly licensed.** `tests/demo_library/assets.json` pins every source file (URL,
   sha256, licence, author); `catalog.json` is the library. Film title logos are never used (the
   Blender Studio terms reserve its trademarks); the app draws titles as text.

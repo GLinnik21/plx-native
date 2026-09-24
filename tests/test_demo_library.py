@@ -2,7 +2,7 @@
 
 The first half needs nothing but this checkout — the manifests, the QR encoder, the plex.tv
 stand-in and the scene manifest. The second half serves the catalog itself, which needs the
-derived artwork cache (`make demo-library`, ~120 MB of downloads); it is skipped, loudly, where
+derived artwork cache (`make demo-library`, ~390 MB of downloads); it is skipped, loudly, where
 the cache is absent, so a fresh clone's `make check` stays offline.
 """
 import importlib.util
@@ -86,6 +86,29 @@ class Manifests(unittest.TestCase):
         broken = dict(assets, **{aid: dict(assets[aid], licence="CC BY-SA 4.0")})
         with self.assertRaises(AssertionError):
             tool.check(broken, catalog)
+
+
+class Chapters(unittest.TestCase):
+    chapters = staticmethod(mock_pms.CatalogLibrary._chapters)
+
+    def test_chapters_tile_the_film(self):
+        rows = self.chapters([{"start": "0:00", "title": "A"}, {"start": "1:41", "title": "B"}], 300_000, "x")
+        self.assertEqual([(r["index"], r["tag"], r["startTimeOffset"], r["endTimeOffset"]) for r in rows],
+                         [(1, "A", 0, 101_000), (2, "B", 101_000, 300_000)])
+
+    def test_malformed_chapters_are_refused(self):
+        for marks in ([{"start": "0:05", "title": "late"}],
+                      [{"start": "0:00", "title": "a"}, {"start": "0:00", "title": "b"}],
+                      [{"start": "0:00", "title": "a"}, {"start": "9:00", "title": "past the end"}]):
+            with self.subTest(marks=marks), self.assertRaises(ValueError):
+                self.chapters(marks, 300_000, "x")
+
+    def test_the_catalog_chapters_parse(self):
+        _, catalog = tool.load()
+        for m in catalog["movies"]:
+            if m.get("chapters"):
+                self.assertEqual(len(self.chapters(m["chapters"], m["minutes"] * 60_000, m["id"])),
+                                 len(m["chapters"]))
 
 
 class Qr(unittest.TestCase):
@@ -243,6 +266,14 @@ class Catalog(unittest.TestCase):
                 others = [r["ratingKey"] for r in rows[1:]]
                 base = [r["ratingKey"] for r in self.lib.continue_watching() if r["ratingKey"] != str(lib.by_slug[film])]
                 self.assertEqual(others, base)
+
+    def test_the_player_film_is_the_complete_sintel_with_its_chapters(self):
+        rk = self.lib.by_slug["sintel"]
+        it = self.get(f"/library/metadata/{rk}?includeChapters=1")["Metadata"][0]
+        self.assertEqual(it["duration"], 888_064)
+        self.assertEqual(it["Chapter"][-1]["endTimeOffset"], it["duration"])
+        self.assertEqual([c["tag"] for c in it["Chapter"]][:2], ["Snowbound", "The Shaman's Hut"])
+        self.assertLess(it["viewOffset"], 446_000, "the resume point sits before the pinned pause")
 
     def test_an_unknown_hero_is_refused(self):
         with self.assertRaises(ValueError):

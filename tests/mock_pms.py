@@ -737,6 +737,7 @@ class CatalogLibrary(Library):
                 it.update(duration=dur, Media=[media])
             else:
                 it["Media"] = self._demo_media(rk, part, dur, f"/media/Movies/{m['title']} ({m['year']})")
+            it["Chapter"] = self._chapters(m.get("chapters", []), dur, m["id"])
             self.items[rk] = it
         for n, s in enumerate(cat["shows"]):
             rk = 201 + n
@@ -802,6 +803,21 @@ class CatalogLibrary(Library):
             it = self.items[self.by_slug[slug]]
             it["viewCount"] = 1
             it["lastViewedAt"] = self.now - 86_400 * (10 + i)
+
+    @staticmethod
+    def _chapters(marks, duration, slug):
+        """`[{"start": "m:ss", "title": …}, …]` from the catalog → PMS's `Chapter[]`: each chapter
+        ends where the next begins, the last at the end of the file. The first must start at 0:00
+        and the starts must rise, as they do on a real file."""
+        def ms(stamp):
+            m, s = stamp.split(":")
+            return (int(m) * 60 + int(s)) * 1000
+        starts = [ms(c["start"]) for c in marks]
+        if marks and (starts[0] != 0 or starts != sorted(set(starts)) or starts[-1] >= duration):
+            raise ValueError(f"{slug}: chapter starts must begin at 0:00, rise, and end inside the film")
+        ends = starts[1:] + [duration]
+        return [{"id": n, "index": n, "tag": c["title"], "startTimeOffset": a, "endTimeOffset": b}
+                for n, (c, a, b) in enumerate(zip(marks, starts, ends), start=1)]
 
     @staticmethod
     def _blur_of(path):

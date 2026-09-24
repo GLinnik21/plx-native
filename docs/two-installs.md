@@ -387,7 +387,7 @@ forgetting: the stable package must not contain the `plxnative-noidle` dev witne
 That gate is graded **unconditionally**, outside the build-configuration branch, and the nesting is
 why it is worth a paragraph rather than a clause. `pkg/.build-config` records a feature set, and it
 maps to `None` for anything that is neither shipped configuration — the Makefile's own header
-documents a third (`--no-default-features --features devtriggers`, the README-screenshot recipe).
+documents a third (`--no-default-features --features devtriggers`, the on-device screenshot recipe).
 Nested under that stamp, exactly that combination satisfied `release-guard` (`RELEASE` is
 non-empty), printed `SKIP — neither shipped configuration`, and would have packaged a dev-trigger
 binary under the released id on an all-green run. "This package carries no dev-trigger surface" is a

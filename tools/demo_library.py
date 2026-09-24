@@ -16,8 +16,9 @@ Two committed manifests drive it:
   shelves) and, per item, which asset each image is derived from and how (`mode`, `anchor`, `crop`).
 
 Nothing is committed but the manifests: the sources and the derived images live in a cache outside
-the repository (`$PLXNATIVE_DEMO_CACHE`, default `~/.cache/plxnative-demo`, ~120 MB of sources),
-so a fresh clone rebuilds them with one command. Derivation is ffmpeg with fixed filters and fixed
+the repository (`$PLXNATIVE_DEMO_CACHE`, default `~/.cache/plxnative-demo`, ~390 MB of sources,
+283 MB of it the complete Sintel the player figure plays), so a fresh clone rebuilds them with one
+command. Derivation is ffmpeg with fixed filters and fixed
 encoder settings, so one ffmpeg build derives byte-identical files every time.
 """
 import argparse

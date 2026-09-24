@@ -278,15 +278,15 @@
    "author": "Blender Foundation",
    "attribution": "(c) copyright Blender Foundation - durian.blender.org"
   },
-  "sintel-trailer": {
-   "url": "https://download.blender.org/durian/trailer/sintel_trailer-1080p.mp4",
-   "source_page": "https://durian.blender.org/",
-   "sha256": "34bbd52a4b89fdf63c8ace50b268da26653a59508288100cd3c23de276db7931",
-   "bytes": 14621544,
+  "sintel-film": {
+   "url": "https://archive.org/download/Sintel/sintel-2048-stereo.mp4",
+   "source_page": "https://archive.org/details/Sintel",
+   "sha256": "24820089e5882c604eec07d6a2382ab28d28a951909aea29b0ab63fb63d80299",
+   "bytes": 282690045,
    "licence": "CC BY 3.0",
    "author": "Blender Foundation",
    "attribution": "© copyright Blender Foundation | durian.blender.org",
-   "notes": "The official Sintel trailer, H.264/AAC 1920x1080 24 fps. Served as the Sintel item's media so the player figure shows a real decoded frame."
+   "notes": "The complete film (14:48), Blender's own 2048x872 H.264/AAC stereo release as mirrored by the Internet Archive (its md5 e02a7538bfaddd47209743591d3e5dcb is the archive's). Served as the Sintel item's media, so the player figure shows a real frame at a real position on the film's real timeline."
   },
   "spring-poster": {
    "url": "https://upload.wikimedia.org/wikipedia/commons/2/25/Spring2019AlphaPosterBlender.jpg",

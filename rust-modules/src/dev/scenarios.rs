@@ -127,7 +127,8 @@ pub(crate) struct Scenarios {
     /// the surface it names exists.
     pub(crate) menupick_row: Option<c_int>,
     pub(crate) pause_tried: bool,
-    pub(crate) pause_script: Option<(u32, Option<u32>)>,
+    /// An armed Pause edge: (due at, hold ms, the media position it also waits for).
+    pub(crate) pause_script: Option<(u32, Option<u32>, Option<u32>)>,
     pub(crate) pause_resume_at: Option<u32>,
     /// `/tmp/plxnative-pushbench` — see [`bench`]'s module doc. `None` unarmed; cleared to `None`
     /// once its `n` cycles are done, the same shape `content_boot` uses to stop being ticked.
@@ -1158,11 +1159,13 @@ fn autopause_arm(app: &mut App, fr: &mut Frame) {
     if !app.scenarios.pause_tried && matches!(app.route(), AppArg::Player) && fr.now.wrapping_sub(app.t0) > 6000 {
         app.scenarios.pause_tried = true;
         if let Some(script) = super::pause_script() {
-            app.scenarios.pause_script = Some((fr.now.wrapping_add(script.delay_ms), script.hold_ms));
+            app.scenarios.pause_script =
+                Some((fr.now.wrapping_add(script.delay_ms), script.hold_ms, script.at_ms));
         }
     }
-    if let Some((pause_at, hold_ms)) = app.scenarios.pause_script {
-        if matches!(app.route(), AppArg::Player) && script_step_due(fr.now, pause_at, 0) {
+    if let Some((pause_at, hold_ms, at_ms)) = app.scenarios.pause_script {
+        let reached = at_ms.is_none_or(|ms| crate::app::playback::playpos() >= i64::from(ms) * 1_000_000);
+        if matches!(app.route(), AppArg::Player) && script_step_due(fr.now, pause_at, 0) && reached {
             if crate::app::lifecycle::set_transport_paused(&mut app.adapters.player, true) {
                 crate::log(&format!(
                     "autopause: Pause accepted hold={}ms",
