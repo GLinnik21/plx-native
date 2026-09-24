@@ -201,32 +201,17 @@
           </div>
         </section>
 
-        <section class="built-section" aria-labelledby="built-title">
-          <h2 id="built-title" data-reveal>Built differently.</h2>
+        <section class="built-section" aria-label="How PlxNative is built">
           <div class="built-card" data-reveal="card">
             <div class="built-copy">
-              <h3 class="built-title">The interface runs on the GPU</h3>
+              <h3 class="built-title">Built differently.</h3>
               <p>
-                PlxNative draws its interface directly with Rust and OpenGL. There is no Chromium,
-                JavaScript, or WebView in the UI.
+                PlxNative draws its interface directly on the TV's GPU, without running it in Chromium or a WebView.
+                This keeps browsing light and responsive, even on older LG TVs. Video uses the TV's own hardware decoder.
               </p>
               <p class="built-tech">Rust &middot; OpenGL &middot; Native webOS &middot; Open source</p>
             </div>
-            <div class="built-copy">
-              <h3 class="built-title">Video uses the TV's decoder</h3>
-              <p>
-                The television handles video in its native pipeline, using the formats it supports.
-                Plex can transcode when a file needs it.
-              </p>
-            </div>
-            <div class="built-copy">
-              <h3 class="built-title">Tested on real LG hardware</h3>
-              <p>
-                I develop on a 2019 LG TV and measure responsiveness there, where every frame matters.
-                PlxNative is built to feel quick on older sets, too.
-              </p>
-            </div>
-            <div class="built-copy">
+            <div class="built-copy built-copy--offline">
               <h3 class="built-title">No internet? Keep watching.</h3>
               <p>
                 After the initial online sign-in, PlxNative connects directly to your local Plex server, so your
