@@ -621,16 +621,42 @@ def tv_wan(state, ttl_s=None):
             print(f"    WARNING: wan on returned rc={r.returncode}; the on-device watchdog restores it")
 
 
-def require_stored_session(tv, name):
-    """A `session: stored` case needs a sign-in ON THE INSTALL, in one of the two places
-    `paths::session_candidates` reads for a flavoured install. Refused with the reason rather than
-    skipped: an offline case that silently ran as the injected identity would be the false pass
-    the attribute exists to prevent."""
+def stored_session_reason(tv):
+    """Why `session: stored` cases cannot run on this install, or None when a stored sign-in
+    exists in one of the two places `paths::session_candidates` reads for a flavoured install.
+    Returned rather than raised: whether an unmet precondition SKIPS the affected cases or aborts
+    the whole batch is the caller's call, not this probe's — a batch that also has cases which
+    don't need a stored session must not die for want of one that a few of them do."""
     r = ssh(tv, f"test -s /media/developer/{APPID}-auth.json || test -s /media/internal/.{APPID}-auth.json")
     if r.returncode != 0:
-        sys.exit(f"{name}: `session: stored` needs a signed-in session on {APPID} "
-                 f"(none at /media/developer/{APPID}-auth.json) — sign in on that install once, "
-                 f"with the internet up, and rerun")
+        return (f"needs a signed-in session on {APPID} (none at /media/developer/{APPID}-auth.json) "
+                f"— sign in on that install once, with the internet up, and rerun")
+    return None
+
+
+def partition_stored_sessions(cases, reason):
+    """Split `cases` into (still-runnable, skipped-for-stored-session) given `reason` — the
+    string `stored_session_reason()` returned, or None when a stored sign-in is present. Pure and
+    TV-independent, so the skip-vs-run decision is unit-testable without an ssh mock: the bug this
+    guards against (a missing stored session taking the whole batch down via an uncaught
+    `SystemExit`) is a property of what ends up in `cases`, not of any device state."""
+    if not reason:
+        return cases, []
+    stored = [c for c in cases if c.get("session") == "stored"]
+    if not stored:
+        return cases, []
+    return [c for c in cases if c.get("session") != "stored"], stored
+
+
+def require_stored_session(tv, name):
+    """A `session: stored` case needs a sign-in ON THE INSTALL. Refused with the reason rather
+    than silently running as the injected identity, which would be the false pass the attribute
+    exists to prevent. This is the single-case belt to the batch-level suspenders in main(): a
+    case reaching here whose batch-level check already found the session missing is a bug, not a
+    new thing to discover, so it still refuses loudly rather than playing as the wrong identity."""
+    reason = stored_session_reason(tv)
+    if reason:
+        sys.exit(f"{name}: `session: stored` {reason}")
 
 
 def ssh_argv(tv, remote_cmd):
@@ -6036,6 +6062,25 @@ def main():
     if args.build:
         do_build(cfg["tv"])
 
+    # `session: stored` cases need a sign-in already on the install (see stored_session_reason).
+    # That is a property of the INSTALL, not of any one case, so it is checked once here — same
+    # shape as the link conditioner below — and an unmet precondition SKIPS just those cases
+    # instead of aborting the whole batch (`sys.exit` inside a per-case `run_case` is NOT caught
+    # by that loop's `except Exception`, so one offline case used to take the other 34 down with
+    # it). A `--filter`/`--suite` that selected ONLY stored-session cases still gets a loud exit
+    # naming the reason, so the operator sees why nothing ran rather than a quiet "0 passed".
+    stored_reason = None
+    if any(c.get("session") == "stored" for c in cases):
+        stored_reason = stored_session_reason(cfg["tv"])
+    cases, stored_skipped = partition_stored_sessions(cases, stored_reason)
+    if stored_skipped:
+        print(f"stored session UNAVAILABLE — {stored_reason}")
+        for c in stored_skipped:
+            print(f"    SKIP {c['name']}: `session: stored` {stored_reason}")
+        if not cases:
+            sys.exit(f"every case matching --filter {args.filter!r} / --suite {args.suite!r} "
+                     f"is `session: stored` and none can run: {stored_reason}")
+
     # The link conditioner, started ONCE for the tier — the binary points at its port for every
     # case, conditioned or not, so it cannot be a per-case resource. `usable` decides whether a
     # case that names a `link_profile` runs or skips; nothing else changes.
@@ -6095,7 +6140,9 @@ def main():
               f"{os.path.basename(MANIFEST_LOCAL)}")
     for c in link_skipped:
         print(f"  [SKIP] {c['name']}  <- needs a conditioned link: {cond.why}")
-    nskip = len(shared_skipped) + len(item_skipped) + len(link_skipped)
+    for c in stored_skipped:
+        print(f"  [SKIP] {c['name']}  <- `session: stored` {stored_reason}")
+    nskip = len(shared_skipped) + len(item_skipped) + len(link_skipped) + len(stored_skipped)
     tail = f", {nskip} skipped" if nskip else ""
     print(f"\n{npass} passed, {real_fail} failed, {nxfail} known-gap of {len(summary)}{tail}")
     return 0 if real_fail == 0 else 1
