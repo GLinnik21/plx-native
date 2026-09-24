@@ -350,6 +350,11 @@ def check(assets, catalog):
     for ref in [c["item"] for c in catalog["continue_watching"]] + catalog["watched"] + catalog["added_order"] \
             + [catalog["hero"]] + catalog.get("hero_alternatives", []):
         assert ref in seen, f"catalog refers to unknown item {ref!r}"
+    for name, order in catalog.get("collection_order", {}).items():
+        members = [m["id"] for m in catalog["movies"] if name in m.get("collections", [])]
+        assert name in catalog["collections"], f"collection_order: no collection {name!r}"
+        assert sorted(order) == sorted(members), \
+            f"collection_order[{name!r}] must list every member exactly once: {sorted(members)}"
     return True
 
 

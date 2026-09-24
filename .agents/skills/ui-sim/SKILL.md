@@ -223,7 +223,7 @@ mock server's demo library — no Plex account, no television, no gitignored fil
 make demo-library                     # fetch (sha256-pinned, ~390 MB once) + derive; screenshots runs it too
 make screenshots                      # build the sim, render every scene + CREDITS.md into docs/screenshots/
 make screenshots SHOT_SCENES=home,ux-detail.jpg SHOT_OUT=/tmp/shots   # a subset, somewhere else
-make screenshots SHOT_SCENES=home,site-library,site-glass-narrow,site-up-next   # the site's images
+make screenshots SHOT_SCENES=home,site-glass,site-glass-narrow,site-tiles,site-up-next   # the site's images
 make screenshots SHOT_CHECK=1         # render each scene twice; fail unless within its bound
 make screenshots SHOT_HERO=sintel     # pin another film as the home hero for this run
 make screenshots SHOT_HERO_VARIANTS=1 # also home-hero-<film>.jpg for each hero candidate

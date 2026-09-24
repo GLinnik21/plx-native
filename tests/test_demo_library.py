@@ -493,9 +493,34 @@ class Catalog(unittest.TestCase):
         self.assertEqual([h["title"] for h in hubs],
                          ["Continue Watching", *(h["title"] for h in self.catalog["hubs"])])
         self.assertTrue(all(h["Metadata"] for h in hubs))
-        for key, recent in (("1", "Recently Added Movies"), ("2", "Recently Added TV")):
+        for key, rest in (("1", ["Recently Added Movies", *self.catalog["collections"]]),
+                          ("2", ["Recently Added TV"])):
             titles = [h["title"] for h in self.get(f"/hubs/sections/{key}")["Hub"]]
-            self.assertEqual(titles, ["Continue Watching", recent])
+            self.assertEqual(titles, ["Continue Watching", *rest])
+
+    def test_a_library_lists_its_collections_as_shelves_after_recently_added(self):
+        hubs = self.get("/hubs/sections/1")["Hub"][2:]
+        self.assertTrue(hubs)
+        pinned = self.catalog.get("collection_order", {})
+        for h in hubs:
+            self.assertRegex(h["hubIdentifier"], r"^custom\.collection\.1\.(\d+)\.\1$")
+            self.assertTrue(all(m["librarySectionID"] == 1 for m in h["Metadata"]))
+            if h["title"] in pinned:
+                # a custom order is served as pinned (the website's glass close-up depends on it)
+                want = [str(self.lib.by_slug[s]) for s in pinned[h["title"]]][:len(h["Metadata"])]
+                self.assertEqual([m["ratingKey"] for m in h["Metadata"]], want, h["title"])
+            else:
+                added = [m["addedAt"] for m in h["Metadata"]]
+                self.assertEqual(added, sorted(added, reverse=True), h["title"])
+        self.assertIn("Blender Open Movies", pinned)
+        self.assertTrue(any(h["title"] not in pinned for h in hubs), "one collection keeps the default")
+
+    def test_check_refuses_a_collection_order_that_is_not_the_whole_collection(self):
+        assets, catalog = tool.load()
+        order = dict(catalog["collection_order"])
+        order["Blender Open Movies"] = order["Blender Open Movies"][:-1]
+        with self.assertRaises(AssertionError):
+            tool.check(assets, dict(catalog, collection_order=order))
 
     def test_artwork_is_served_and_a_missing_image_is_a_404(self):
         rk = self.lib.by_slug[self.catalog["hero"]]

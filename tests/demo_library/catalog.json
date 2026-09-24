@@ -1,5 +1,5 @@
 {
- "comment": "The demo library for the documentation screenshots. Every asset is openly licensed or public domain; tests/demo_library/assets.json records where each came from. Times are PINNED (now = 1790000000) so every run of the mock answers byte-identically.",
+ "comment": "The demo library for the documentation screenshots. Every asset is openly licensed or public domain; tests/demo_library/assets.json records where each came from. Times are PINNED (now = 1790000000) so every run of the mock answers byte-identically. `collection_order` pins a collection's custom order (a real server's Custom sort for a collection); a collection without one lists newest addition first. Blender Open Movies is pinned so the website's glass close-up (tests/screenshots/scenes.json, site-glass) has the brightest posters of the collection under the tab bar: Wing It! behind Home and Movies, then Spring and Sprite Fright.",
  "now": 1790000000,
  "server": {
   "friendlyName": "Demo Library",
@@ -1676,6 +1676,7 @@
   "a-trip-to-the-moon",
   "hubblecast"
  ],
+ "collection_order": {"Blender Open Movies": ["singularity", "charge", "wing-it", "spring", "sprite-fright", "glass-half", "sintel", "tears-of-steel", "cosmos-laundromat", "coffee-run", "hero", "the-daily-dweebs", "big-buck-bunny", "elephants-dream"]},
  "continue_watching": [
   {
    "item": "sintel",
