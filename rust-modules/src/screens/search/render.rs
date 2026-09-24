@@ -101,14 +101,12 @@ impl Resources {
                 .collect();
             self.recents = Some(recents.clone());
         }
+        let keys = count_keys(H::search(cx).shelves());
         for (i, kind) in crate::search::KINDS.iter().enumerate() {
             if self.titles[i].is_empty() {
                 self.titles[i] = cstring(kind.title());
             }
-            let key = H::search(cx)
-                .shelves()
-                .get(i)
-                .map(|shelf| (shelf.kind, shelf.items.len()));
+            let key = keys[i];
             if self.count_keys[i] != key {
                 self.count_keys[i] = key;
                 self.counts[i] = key.map_or_else(CString::default, |(kind, n)| {
@@ -120,6 +118,19 @@ impl Resources {
             self.owner = cstring(owner);
         }
     }
+}
+
+/// Each shelf's count, filed under its KIND's slot — the slot `draw` reads the heading from.
+///
+/// `shelves()` is compact: a kind with no results has no shelf at all. Filing counts by position in
+/// that list put every count after a missing kind one slot early, so a search with no TV Shows
+/// headed its Episodes shelf with the Cast & Crew count ("Episodes 2 people").
+fn count_keys(shelves: &[crate::search::Shelf]) -> [Option<(Kind, usize)>; 5] {
+    let mut keys = [None; 5];
+    for shelf in shelves {
+        keys[layout::ordinal(shelf.kind) as usize] = Some((shelf.kind, shelf.items.len()));
+    }
+    keys
 }
 
 pub(super) fn draw<H: SearchLike>(screen: &SearchScreen, f: &mut DrawFrame<'_, '_, H>) {
@@ -785,6 +796,25 @@ mod tests {
     }
     fn cs(s: &str) -> CString {
         CString::new(s).expect("test literal")
+    }
+
+    #[test]
+    fn a_count_sits_under_its_own_kind_when_an_earlier_kind_found_nothing() {
+        let shelf = |kind, n| crate::search::Shelf {
+            kind,
+            items: (0..n).map(|_| Item::Media(Default::default())).collect(),
+        };
+        // No TV Shows: the compact shelf list skips that kind entirely.
+        let keys = count_keys(&[
+            shelf(Kind::Movie, 5),
+            shelf(Kind::Episode, 4),
+            shelf(Kind::Person, 2),
+        ]);
+        assert_eq!(keys[layout::ordinal(Kind::Movie) as usize], Some((Kind::Movie, 5)));
+        assert_eq!(keys[layout::ordinal(Kind::Show) as usize], None);
+        assert_eq!(keys[layout::ordinal(Kind::Episode) as usize], Some((Kind::Episode, 4)));
+        assert_eq!(keys[layout::ordinal(Kind::Person) as usize], Some((Kind::Person, 2)));
+        assert_eq!(keys[layout::ordinal(Kind::Collection) as usize], None);
     }
 
     #[test]
