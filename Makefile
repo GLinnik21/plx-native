@@ -1671,7 +1671,8 @@ sim-macos: $(FFMPEG_HOST_STAGED) pkg/.ffabi-host-ok
 # **`make screenshots` — the documentation screenshots, regenerated.** Boots the simulator once per
 # scene in `tests/screenshots/scenes.json` against the mock server's DEMO LIBRARY (openly licensed
 # films, `tests/demo_library/`), waits for each scene's settled frame, and writes the JPEGs, and
-# the CREDITS.md that goes with them, into `docs/screenshots/` (or `SHOT_OUT=dir`). No Plex account, no
+# the CREDITS.md that goes with them, into `docs/screenshots/` (or `SHOT_OUT=dir`), then the website's
+# `site/credits.html` from the same manifests. No Plex account, no
 # television, no gitignored file.
 #   make screenshots                         # every scene
 #   make screenshots SHOT_SCENES=home,ux-detail            # some
@@ -1702,6 +1703,7 @@ screenshots: screenshots-sim demo-library
 	python3 tools/screenshots.py --bin $(SHOT_BIN) $(if $(SHOT_OUT),--out $(SHOT_OUT),) \
 	  $(if $(SHOT_SCENES),--only $(SHOT_SCENES),) $(if $(SHOT_CHECK),--check-determinism,) $(if $(SHOT_HERO),--hero $(SHOT_HERO),) \
 	  $(if $(SHOT_HERO_VARIANTS),--hero-variants,)
+	python3 tools/demo_library.py site-credits
 
 # Optimized Linux UI/Plex simulator with no host FFmpeg prerequisite. It runs natively on Linux;
 # Windows/WSLg uses the same binary through `tools/sim.ps1`. Play intentionally reaches the host
