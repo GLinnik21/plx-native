@@ -74,35 +74,29 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   still builds.
 - After editing `rust-modules/src/**/*.rs`, also check the shipping feature set with
   `CARGO_INCREMENTAL=0 cargo +nightly check --manifest-path rust-modules/Cargo.toml --lib
-  --no-default-features` when the Claude-only release hook did not run. The prefix is not
-  decoration: this command does not go through `make`, so the Makefile's linked-worktree
-  `CARGO_INCREMENTAL=0` cannot reach it — and a one-shot gate has nothing to reuse a
-  multi-gigabyte cache for. It is not the only such invocation, which is the point: every direct
-  `cargo` call in a lane escaped that rule, to the tune of 12.9 GB measured 2026-09-17, so
-  `tools/build-gc.sh` now installs `.claude/worktrees/.cargo/config.toml` (`plx-build-gc-policy`)
-  with `incremental = false` for all of them, and since 2026-09-18 also `[profile.dev] debug =
-  "line-tables-only"` plus `debug = false` on every third-party package — a lane's own object
-  files, not the incremental cache, were the next largest thing in a lane's `target/` once the
-  rule above actually held. Keep the prefix anyway — it states the intent where a reader can see
-  it, and an env var still outranks the config file.
-- **`make disk` before and after a fleet.** Build trees are per-checkout and were never collected;
-  twelve lanes reached 45 GB with 3.2 GiB free on 2026-09-03. `tools/build-gc.sh
-  --incremental|--lanes|--worktrees|--all` reclaims them — every mode there except `--worktrees`
-  deletes only rebuildable output; `--worktrees` removes finished lane checkouts, not just `make`
-  output. Note what the measurement says rather than what everyone assumes: the cargo
-  **incremental cache** was 24 GB of that, FFmpeg 2.6 GB. **Run `tools/build-gc.sh --orphans`
-  after tearing a fleet down** — lane target dirs live outside the repo (`$PLX_FLEET_DIR`) and
-  outlive their worktree; 36 GB of them had accumulated unseen. **`--worktrees`** goes further and
-  removes the finished LANES themselves — clean, unlocked, already on `main` — since
-  `git branch --merged` cannot see a squash-merged lane and 128 registered worktrees (measured
-  2026-09-18) is well past what anyone reads by hand.
+  --no-default-features` when the Claude-only release hook did not run. Keep the
+  `CARGO_INCREMENTAL=0` prefix on this and on every other direct `cargo` call: they bypass `make`,
+  so the Makefile's linked-worktree setting cannot reach them, and a one-shot gate has no use for
+  a multi-gigabyte incremental cache. `tools/build-gc.sh` also installs
+  `.claude/worktrees/.cargo/config.toml` (`plx-build-gc-policy`) with `incremental = false`,
+  `[profile.dev] debug = "line-tables-only"` and `debug = false` for third-party packages as a
+  backstop; the env var outranks that file and states the intent where a reader can see it.
+- **`make disk` before and after a fleet.** Build trees are per-checkout and nothing collects
+  them for you; the cargo **incremental cache**, not FFmpeg, is most of the bulk.
+  `tools/build-gc.sh --incremental|--lanes|--all` deletes only rebuildable output. After tearing
+  a fleet down, run `--worktrees` (removes finished lanes — clean, unlocked, already on `main` —
+  which `git branch --merged` cannot see once they are squash-merged) and then `--orphans` (lane
+  target dirs live outside the repo under `$PLX_FLEET_DIR` and outlive their worktree).
+  `docs/agent-reference.md` keeps the measurements behind this.
 - Use the `which-tier` skill to choose between host checks, `ui-sim`, and real-device verification.
   Pixel output, LG text rasterization, video-plane composition, performance, and native playback
   generally need the TV before being called verified.
 - FFI, linkage, `dynlib!`, Starfish, ACB, curl, or bundled-FFmpeg changes require the
-  `fw_compat_reviewer` custom agent (or the equivalent manual review) before push.
-- After behavior changes, use the `doc_claim_auditor` custom agent (or perform the same audit) to
-  find prose that the change made false. It reports contradictions, not missing documentation.
+  `fw-compat-reviewer` custom agent (`fw_compat_reviewer` in Codex), or the equivalent manual
+  review, before push.
+- After behavior changes, use the `doc-claim-auditor` custom agent (`doc_claim_auditor` in
+  Codex), or perform the same audit, to find prose that the change made false. It reports
+  contradictions, not missing documentation.
 
 ## Television and release safety
 

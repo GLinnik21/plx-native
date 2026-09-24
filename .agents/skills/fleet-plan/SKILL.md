@@ -152,40 +152,14 @@ it".
 
 Every worktree gets its own cargo target dir per feature set — `RUST_TDIR` = `target` /
 `target-release`, `SIM_TDIR` = `target-sim`, `MACAPP_TDIR` = `target-macapp`, all under
-`rust-modules/` — and its own `vendor/ffmpeg-prefix`, though since 2026-09-03 the expensive half
-of that last one is shared (below). **`make disk` is the current number for every checkout at
-once; take it from there rather than from the table below**, which is a record of one afternoon
-and has already been overtaken twice.
+`rust-modules/` — and its own `vendor/ffmpeg-prefix` (the expensive FFmpeg build tree is shared;
+see below). **`make disk` is the current number for every checkout at once; read it there.** Two
+things about that number are counter-intuitive. A lane under `.claude/worktrees/` sits *inside* the
+main checkout, so `du -sh .` at the root bills you for every other lane too. And the largest single
+item is the cargo **incremental cache**, not FFmpeg: it grows without bound and outweighs the object
+code beside it. A lane without one costs a few gigabytes.
 
-Measured on this Mac, **2026-08-23**:
-
-| | |
-|---|---|
-| `du -sh .` at the repo root | **27 GB** — and read the next two rows before believing it |
-| ⤷ of which `.claude/worktrees/`, the three existing lanes | 9.2 GB |
-| ⤷ the main checkout's own content | 17 GB |
-| `rust-modules/target` (`debug/incremental` 6.2 G + `debug/deps` 5.9 G) | 14 GB |
-| `target-sim` / `target-release` / `target-macapp` | 2.1 GB / 321 MB / 125 MB |
-| `vendor/` (`ffmpeg-build` 379 M + `ffmpeg-prefix` 3.9 M) | 383 MB |
-| the three existing lanes, individually | 1.2 / 3.3 / 4.8 GB |
-| ⤷ what the 3.3 GB one is: `target` 2.5 G + `target-sim` 589 M + `vendor` 141 M | |
-| free on this volume | 48 GiB |
-
-Two of those rows are counter-intuitive. **A fleet worktree under `.claude/worktrees/` is inside
-the main checkout**, so `du -sh .` at the root bills you for every other lane as well — 9.2 of that
-27 GB is three lanes, and it comes back only when they are removed. And the 14 GB is months of
-accumulated host *and* cross artefacts in one tree, not the price of one `make check`: **the
-incremental cache alone is 6.2 GB** and grows without bound. The honest per-lane figure is the
-1.2–4.8 GB row. The recorded failure was **7 lanes × ~10 GB against a 72 GB margin**; the margin
-today is 48 GiB.
-
-**Measured again 2026-09-03, twelve lanes in, and the shape had changed enough to act on: 45 GB
-across the family, on a volume with 3.2 GiB free.** The breakdown is the part worth carrying,
-because it contradicts the thing everyone reaches for first — **FFmpeg was 2.6 GB of it, 6%**,
-while `target*/debug/incremental` alone was **24 GB, 53%**, at 1.2 to 4.0 GB per lane. A compile
-cache, sized larger than the object code beside it, in trees that exist for one task each.
-
-Three things came out of that measurement and they are the current state of this section:
+What keeps that in check:
 
 - **`make disk`** (`tools/build-gc.sh`) reports every checkout's derived trees, the external lane
   trees under `$PLX_FLEET_DIR`, and the free space, in one table; `tools/build-gc.sh
@@ -193,17 +167,15 @@ Three things came out of that measurement and they are the current state of this
   anything but `make` output or a lane worktree already fully on `main`. Run it when a lane starts
   failing for space, before launching a fleet, and `--worktrees` followed by `--orphans` after
   tearing one down (see "Collecting the work" below).
-- **A linked worktree does not write an incremental cache, and it took two rules to mean it** —
-  the Makefile sets `CARGO_INCREMENTAL=0` when `.git` is a file rather than a directory, which
-  covers the cargo runs `make` launches; every direct `cargo test`/`cargo check` a worker typed
-  escaped it, and 12.9 GB of lane caches was the measured cost on 2026-09-17. `tools/build-gc.sh`
-  now also installs `.claude/worktrees/.cargo/config.toml` with `incremental = false`, which any
-  cargo reads and which stops above the main checkout, so a lane pays object code and nothing
+- **A linked worktree does not write an incremental cache.** The Makefile sets
+  `CARGO_INCREMENTAL=0` when `.git` is a file rather than a directory, which covers the cargo runs
+  `make` launches; `tools/build-gc.sh` also installs `.claude/worktrees/.cargo/config.toml` with
+  `incremental = false`, which covers a direct `cargo test`/`cargo check` too and stops above the
+  main checkout, so a lane pays object code and nothing
   else and the main checkout keeps its cache. `CARGO_INCREMENTAL=1` in the environment still
   overrides both — the right call only for a lane genuinely doing long iterative work.
 - **The FFmpeg build tree is machine-wide and keyed by its configure flags**, under
-  `$PLX_BUILD_CACHE` (default `~/.cache/plxnative`). See the vendor bullet below: the manual
-  symlink this skill used to prescribe is no longer needed, and the hazard it carried is gone.
+  `$PLX_BUILD_CACHE` (default `~/.cache/plxnative`); see the vendor bullet below.
 
 **The rule: workers run `make check` and nothing that cross-compiles. ONE integrator does the
 cross-build, once, at the end.** `make check` is `make lint` (three named clippy lints) plus
@@ -229,11 +201,8 @@ lock and re-fingerprint each other's sources.
 
 **And moving them is how they become permanent, which is the failure this advice caused.** A tree
 under `$HOME/plx-fleet/<lane>` outlives its worktree by construction: remove the lane and the
-gigabytes stay, owned by nobody, named for a branch that no longer exists. Found 2026-09-03 by
-teaching `tools/build-gc.sh` to look there — **36 GB across ten dead lanes** (`cards`, `deploy`,
-`detail`, `glass`, `integ`, `labels`, `person`, `routes`, `search`, `settings`), every single one
-an orphan, none of them visible to a `du` at the repo root or to any earlier version of that
-script. So: **`tools/build-gc.sh --orphans` after every fleet**, which deletes exactly the
+gigabytes stay, owned by nobody, named for a branch that no longer exists, and invisible to a `du`
+at the repo root. So: **`tools/build-gc.sh --orphans` after every fleet**, which deletes exactly the
 external trees whose worktree is gone and touches no live lane. `make disk` lists them with an
 ORPHAN marker. Build output is
 untracked, so a lane with a target dir inside it always needs `--force` — and `--force` deletes

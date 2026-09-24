@@ -8,9 +8,8 @@ description: >
   TOUCHED — pure logic, a screen, text rasterization, an animation, frame rate, the player
   pipeline, selection/resume/markers, FFI, the release feature set, packaging — to the cheapest
   tier that can actually see it, names the tiers that cannot, and hands off to `ui-sim`,
-  `tv-session`, `tv-lock` or a plain `make check`. There are three tiers here with non-obvious
-  blind spots, and both recorded mistakes were the same shape: a green result from a tier that was
-  never able to see the thing being changed.
+  `tv-session`, `tv-lock` or a plain `make check`. Each tier has non-obvious blind spots, and a
+  tier that cannot see a change passes it green.
 ---
 
 # which-tier — what actually verifies this change
