@@ -653,6 +653,14 @@ impl Bridge {
         page.grid_position(d.input.engine.current(InputOwner::Entry(entry.id)))
     }
 
+    /// The Library page's focused hub-shelf card, `(shelf, col)`, if focus is on a shelf.
+    pub(crate) fn library_shelf_position(d: &Dispatcher<AppHost>) -> Option<(usize, usize)> {
+        let entry = d.nav.top_page()?;
+        let page = entry.inst.as_ref().and_then(|instance| instance.screen.as_any())
+            .and_then(|page| page.downcast_ref::<crate::screens::library::LibraryScreen>())?;
+        page.shelf_position(d.input.engine.current(InputOwner::Entry(entry.id)))
+    }
+
     pub(crate) fn library_card_focused(d: &Dispatcher<AppHost>) -> bool {
         let Some(entry) = d.nav.top_page() else { return false };
         let Some(page) = entry.inst.as_ref().and_then(|instance| instance.screen.as_any())

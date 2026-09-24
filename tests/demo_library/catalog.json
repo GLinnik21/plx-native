@@ -1127,7 +1127,8 @@
        "summary": "The grass is greener beyond an electric fence. Koro takes that personally.",
        "thumb": {
         "asset": "caminandes-s01e02"
-       }
+       },
+       "stand_in": true
       },
       {
        "index": 3,

@@ -461,6 +461,13 @@ impl LibraryScreen {
         self.pair.detail.index_of(key.elem).map(|index| (index / COLS, index % COLS))
     }
 
+    /// The focused hub-shelf card, `(shelf, col)`, if focus is on a shelf above the grid.
+    pub(crate) fn shelf_position(&self, focus: Option<FocusKey<u32>>) -> Option<(usize, usize)> {
+        let key = focus.filter(|key| key.entry == self.entry)?;
+        self.shelves.iter().enumerate()
+            .find_map(|(row, shelf)| shelf.elems.iter().position(|elem| *elem == key.elem).map(|col| (row, col)))
+    }
+
     pub(crate) fn probe_viewport(&self, focus: Option<FocusKey<u32>>) -> (&'static str, i32, i32, f32, f32) {
         if let Some((row, col)) = self.grid_position(focus) { return ("grid", row as i32, col as i32, 0.0, self.scroll.pos); }
         let elem = focus.filter(|key| key.entry == self.entry).map(|key| key.elem);
@@ -593,6 +600,11 @@ impl LibraryScreen {
                 let Some(index) = row.checked_mul(COLS).and_then(|i| i.checked_add(col)) else { return Handled::No };
                 let Some(elem) = self.pair.detail.elem_at(index) else { return Handled::No };
                 self.initial = false; // An explicit owned command supersedes the pending boot seat.
+                self.reseat(FocusTarget::Elem(self.key(elem)), fx);
+            }
+            LibraryCmd::FocusShelf { shelf, col } => {
+                let Some(&elem) = self.shelves.get(shelf).and_then(|s| s.elems.get(col)) else { return Handled::No };
+                self.initial = false; // As FocusGrid: an explicit owned command supersedes the boot seat.
                 self.reseat(FocusTarget::Elem(self.key(elem)), fx);
             }
             LibraryCmd::ItemMenu => return cx.focus.current.map_or(Handled::No, |key| self.activate(key.elem, true, cx, fx)),

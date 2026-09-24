@@ -141,7 +141,7 @@ pub(crate) struct Scenarios {
     pub(crate) deep_bench: Option<bench::DeepBench>,
     /// The boot-time trigger flags the loop consults every frame after.
     pub(crate) dev: DevFlags,
-    /// The screenshot pipeline's arms (`plxnative-libgrid`, `-libmenu`) — see [`screenshot`].
+    /// The screenshot pipeline's arms (`plxnative-libgrid`, `-libshelf`, `-libmenu`, `-clockstop`) — see [`screenshot`].
     pub(crate) shots: screenshot::ScreenshotArms,
 }
 
@@ -844,8 +844,10 @@ fn autoplay_arm(app: &mut App, fr: &mut Frame) {
 fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
     if !app.scenarios.grid_tried && _fr.now.wrapping_sub(app.t0) > 400 {
         app.scenarios.grid_tried = true;
-        if crate::dev::flag("grid") || crate::dev::flag("itemmenu") {
-            app.bridge.home_command(HomeCmd::FocusGrid { row: 0, col: 0 });
+        // `grid` alone (or `itemmenu`) seats the first card; `grid=<row>,<col>` any other.
+        if let Some(v) = crate::dev::read("grid").or_else(|| crate::dev::flag("itemmenu").then(String::new)) {
+            let (row, col) = screenshot::parse_cell(&v).unwrap_or((0, 0));
+            app.bridge.home_command(HomeCmd::FocusGrid { row, col });
         }
         if let Some(s) = crate::dev::read("library") {
             let kind = match s.parse::<usize>().unwrap_or(0) {
@@ -1351,7 +1353,9 @@ pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
     itemmenu_arm(app, fr);
     acct_arm(app, fr);
     screenshot::libgrid_arm(app, fr);
+    screenshot::libshelf_arm(app, fr);
     screenshot::libmenu_arm(app, fr);
+    screenshot::clockstop_arm(app, fr);
     if !detail_arm(app, fr) {
         return false;
     }

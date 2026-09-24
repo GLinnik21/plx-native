@@ -107,6 +107,13 @@ class Manifests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             tool.check(assets, dict(catalog, movies=movies))
 
+    def test_check_refuses_a_stand_in_anywhere_but_an_episode(self):
+        assets, catalog = tool.load()
+        movies = [dict(m) for m in catalog["movies"]]
+        movies[0]["stand_in"] = True
+        with self.assertRaises(AssertionError):
+            tool.check(assets, dict(catalog, movies=movies))
+
     def test_check_refuses_a_share_alike_licence(self):
         assets, catalog = tool.load()
         aid = next(iter(assets))
@@ -135,30 +142,116 @@ class Credits(unittest.TestCase):
 class RenderSet(unittest.TestCase):
     """A run replaces the figure set whole, or leaves it as it was."""
 
-    JOBS = [({"name": "a"}, None, [("a.jpg", "1x1")]), ({"name": "b"}, None, [("b.jpg", "1x1")])]
+    JOBS = [({"name": "a"}, None, [{"file": "a.jpg"}]),
+            ({"name": "b"}, None, [{"file": "b.jpg", "dest": "site"}])]
 
-    def test_a_failure_of_any_kind_leaves_the_output_as_it_was(self):
+    @staticmethod
+    def write(scene, hero, outputs, stage):
+        o = outputs[0]
+        (stage / o.get("dest", "docs") / o["file"]).write_bytes(b"new")
+
+    def test_a_failure_of_any_kind_leaves_every_destination_as_it_was(self):
         def render(scene, hero, outputs, stage):
-            (stage / outputs[0][0]).write_bytes(b"new")
+            self.write(scene, hero, outputs, stage)
             if scene["name"] == "b":
                 raise subprocess.CalledProcessError(1, ["ffmpeg"])
         with tempfile.TemporaryDirectory() as d:
-            out = pathlib.Path(d)
-            (out / "a.jpg").write_bytes(b"old")
+            docs, site = pathlib.Path(d) / "docs", pathlib.Path(d) / "site"
+            docs.mkdir()
+            (docs / "a.jpg").write_bytes(b"old")
             with contextlib.redirect_stderr(io.StringIO()):
-                failed = screenshots.render_set(self.JOBS, render, out)
+                failed = screenshots.render_set(self.JOBS, render, {"docs": docs, "site": site})
             self.assertEqual(failed, ["b"])
-            self.assertEqual(sorted(p.name for p in out.iterdir()), ["a.jpg"])
-            self.assertEqual((out / "a.jpg").read_bytes(), b"old")
+            self.assertEqual(sorted(p.name for p in docs.iterdir()), ["a.jpg"])
+            self.assertEqual((docs / "a.jpg").read_bytes(), b"old")
+            self.assertFalse(site.exists())
 
-    def test_a_clean_run_moves_every_image_and_the_credits_in(self):
-        def render(scene, hero, outputs, stage):
-            (stage / outputs[0][0]).write_bytes(b"new")
+    def test_a_clean_run_moves_each_output_to_its_destination_and_the_credits_beside_the_docs(self):
         with tempfile.TemporaryDirectory() as d:
-            out = pathlib.Path(d) / "shots"
+            docs, site = pathlib.Path(d) / "docs", pathlib.Path(d) / "site"
             with contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(screenshots.render_set(self.JOBS, render, out), [])
-            self.assertEqual(sorted(p.name for p in out.iterdir()), ["CREDITS.md", "a.jpg", "b.jpg"])
+                self.assertEqual(screenshots.render_set(self.JOBS, self.write, {"docs": docs, "site": site}), [])
+            self.assertEqual(sorted(p.name for p in docs.iterdir()), ["CREDITS.md", "a.jpg"])
+            self.assertEqual(sorted(p.name for p in site.iterdir()), ["b.jpg"])
+
+
+class OutputSpec(unittest.TestCase):
+    """`render_scale` and `crop`: a crop is in canvas coordinates, whatever the scale."""
+
+    CANVAS = (1920, 1080)
+
+    def spec(self, out, **scene):
+        return screenshots.output_spec(dict({"name": "t"}, **scene), out, self.CANVAS)
+
+    def test_an_uncropped_output_is_the_whole_canvas_at_the_scale(self):
+        self.assertEqual(self.spec({"file": "a.jpg"}), ("docs", "a.jpg", (0, 0, 1920, 1080), (1920, 1080), 2))
+        self.assertEqual(self.spec({"file": "a.jpg"}, render_scale=3)[2:4], ((0, 0, 5760, 3240), (5760, 3240)))
+
+    def test_a_crop_scales_with_the_render_and_keeps_its_size_unless_one_is_named(self):
+        dest, _, crop, size, q = self.spec({"file": "g.jpg", "dest": "site", "crop": [680, 0, 880, 160],
+                                            "quality": 4}, render_scale=3)
+        self.assertEqual((dest, crop, size, q), ("site", (2040, 0, 2640, 480), (2640, 480), 4))
+        self.assertEqual(self.spec({"file": "g.jpg", "crop": [680, 0, 880, 160], "size": "1320x240"},
+                                   render_scale=3)[3], (1320, 240))
+
+    def test_a_fractional_crop_rounds_its_edges_not_its_size(self):
+        # 846.667 canvas px at 3x is 2540 px: the edges round, so the size is what they enclose.
+        _, _, crop, size, _ = self.spec({"file": "t.jpg", "crop": [100.333, 20, 846.667, 513.333]},
+                                        render_scale=3)
+        self.assertEqual(crop, (301, 60, 2540, 1540))
+        self.assertEqual(size, (2540, 1540))
+
+    def test_what_the_driver_cannot_honour_is_refused(self):
+        bad = [
+            ({"file": "a.jpg"}, {"render_scale": 5}),
+            ({"file": "a.jpg"}, {"render_scale": 2.5}),
+            ({"file": "a.jpg"}, {"render_scale": True}),
+            ({"file": "a.jpg", "crop": [1800, 0, 200, 100]}, {}),
+            ({"file": "a.jpg", "crop": [0, 0, 0, 100]}, {}),
+            ({"file": "a.jpg", "crop": [-1, 0, 10, 10]}, {}),
+            ({"file": "a.jpg", "crop": [0, 0, "10", 10]}, {}),
+            ({"file": "a.jpg", "dest": "elsewhere"}, {}),
+            ({"file": "../a.jpg"}, {}),
+            ({"file": "a.png"}, {}),
+            ({"file": "a.jpg", "quality": 0}, {}),
+            ({"file": "a.jpg", "crop": [0, 0, 880, 160], "size": "880x200"}, {}),
+        ]
+        for out, scene in bad:
+            with self.subTest(out=out, scene=scene), self.assertRaises(ValueError):
+                self.spec(out, **scene)
+
+    def test_every_manifest_output_resolves(self):
+        manifest = json.loads(SCENES.read_text())
+        canvas = screenshots.size_of(manifest["canvas"])
+        for s in manifest["scenes"]:
+            for o in s["outputs"]:
+                with self.subTest(scene=s["name"], file=o["file"]):
+                    screenshots.resolve_output(s, o, canvas)
+
+
+class CardSpec(unittest.TestCase):
+    """A `card` output is composed around another output of its scene, never cut from the capture."""
+
+    SCENE = {"name": "home", "outputs": [{"file": "home.jpg", "size": "1600x900"},
+                                         {"file": "og-card.jpg", "dest": "site", "card": "home.jpg"}]}
+
+    def test_a_card_resolves_to_its_source_output(self):
+        dest, file, source = screenshots.card_spec(self.SCENE, self.SCENE["outputs"][1])
+        self.assertEqual((dest, file, source["file"]), ("site", "og-card.jpg", "home.jpg"))
+
+    def test_a_card_without_a_source_or_with_pixel_keys_is_refused(self):
+        for out in ({"file": "og.jpg", "card": "missing.jpg"},
+                    {"file": "og.jpg", "card": "og.jpg"},
+                    {"file": "og.jpg", "card": "home.jpg", "crop": [0, 0, 10, 10]},
+                    {"file": "og.png", "card": "home.jpg"}):
+            scene = dict(self.SCENE, outputs=[*self.SCENE["outputs"], out])
+            with self.subTest(out=out), self.assertRaises(ValueError):
+                screenshots.card_spec(scene, out)
+
+    def test_the_manifest_renders_the_link_preview_from_the_home_figure(self):
+        manifest = json.loads(SCENES.read_text())
+        cards = [(s["name"], o) for s in manifest["scenes"] for o in s["outputs"] if "card" in o]
+        self.assertEqual(cards, [("home", {"file": "og-card.jpg", "dest": "site", "card": "home.jpg"})])
 
 
 class Fetch(unittest.TestCase):
@@ -284,8 +377,18 @@ class SceneManifest(unittest.TestCase):
         self.assertRegex(self.manifest["canvas"], r"^\d+x\d+$")
         for s in self.scenes:
             for o in s["outputs"]:
-                self.assertRegex(o["size"], r"^\d+x\d+$", s["name"])
+                if "size" in o:
+                    self.assertRegex(o["size"], r"^\d+x\d+$", s["name"])
                 self.assertTrue(o["file"].endswith(".jpg"), o["file"])
+
+    def test_the_site_close_ups_are_all_rendered_and_supersampled(self):
+        site = {o["file"]: s for s in self.scenes for o in s["outputs"]
+                if o.get("dest") == "site" and "card" not in o}
+        self.assertEqual(set(site), {"closeup-glass.jpg", "closeup-glass-narrow.jpg",
+                                     "closeup-tiles.jpg", "closeup-player.jpg"})
+        for file, s in site.items():
+            with self.subTest(file=file):
+                self.assertGreaterEqual(s.get("render_scale", 1), 3)
 
     def test_every_scene_names_its_state_and_a_log_line_proving_it(self):
         for s in self.scenes:
@@ -359,6 +462,27 @@ class Catalog(unittest.TestCase):
         self.assertEqual(it["Chapter"][-1]["endTimeOffset"], it["duration"])
         self.assertEqual([c["tag"] for c in it["Chapter"]][:2], ["Snowbound", "The Shaman's Hut"])
         self.assertLess(it["viewOffset"], 446_000, "the resume point sits before the pinned pause")
+
+    def test_a_continuous_queue_of_an_episode_carries_the_rest_of_its_show(self):
+        rk = self.lib.by_slug["caminandes/1/2"]
+        path = f"/playQueues?type=video&uri=server%3A%2F%2Fx%2Flibrary%2Fmetadata%2F{rk}&continuous=1"
+        q = self.get(path)
+        self.assertEqual([m["ratingKey"] for m in q["Metadata"]],
+                         [str(rk), str(self.lib.by_slug["caminandes/1/3"])])
+        self.assertEqual([m["playQueueItemID"] for m in q["Metadata"]], [1, 2])
+        self.assertEqual(q["playQueueSelectedItemID"], 1)
+        # without continuous, and for a movie, the queue is the item alone
+        self.assertEqual(len(self.get(path.replace("&continuous=1", ""))["Metadata"]), 1)
+        film = self.lib.by_slug["sintel"]
+        self.assertEqual(len(self.get(f"/playQueues?uri=library%2Fmetadata%2F{film}&continuous=1")["Metadata"]), 1)
+
+    def test_a_stand_in_episode_plays_a_real_file_of_its_catalog_length(self):
+        rk = self.lib.by_slug["caminandes/1/2"]
+        it = self.get(f"/library/metadata/{rk}")["Metadata"][0]
+        part = it["Media"][0]["Part"][0]
+        self.assertEqual(it["duration"], 180_000)
+        self.assertIn(part["id"], self.lib.media_files)
+        self.assertEqual(self.lib.media_files[part["id"]].name, "stand-in.mp4")
 
     def test_an_unknown_hero_is_refused(self):
         with self.assertRaises(ValueError):

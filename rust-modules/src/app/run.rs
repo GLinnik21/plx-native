@@ -398,7 +398,8 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     // asked-for quiet, invalidate so the NEXT present is the settled frame and `maybe_capture`
     // takes it. Before the decision below, so that invalidate selects this very frame.
     #[cfg(feature = "hostsim")]
-    crate::shot::tick(fr.now, app.pages.budget.has_queued_work() || crate::gfx::snapshot_pending());
+    crate::shot::tick(fr.now, app.pages.budget.has_queued_work() || crate::gfx::snapshot_pending()
+        || app.scenarios.shots.pending());
     fr.present = !crate::gfx::snapshot_pending()
         && app.window_activity.allow_present(
             crate::ui::idle::should_present(fr.now) || app.pages.budget.has_queued_work(),

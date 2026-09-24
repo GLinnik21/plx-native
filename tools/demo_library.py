@@ -21,7 +21,9 @@ the repository (`$PLXNATIVE_DEMO_CACHE`, default `~/.cache/plxnative-demo`, ~390
 command. Derivation is ffmpeg with fixed filters and fixed
 encoder settings, so one ffmpeg build derives byte-identical files every time. The clear logos
 (`logo` in the catalog, see `derive_logo`) are cut from each film's own poster with Pillow, the
-one Python package the screenshots need.
+one Python package the screenshots need. An episode marked `stand_in` also gets a STAND-IN video
+(`derive_stand_in`): black and silent, the episode's catalog length, so the simulator can play the
+episode (the Up Next figure) without a copy of the work being fetched or shown.
 """
 import argparse
 import hashlib
@@ -132,6 +134,22 @@ def derive_image(src, dst, size, recipe):
         graph = f"[0:v]format=rgb24,{_cover(w, h, anchor)},format=yuvj444p[o]"
     _ffmpeg(["-i", str(src), "-filter_complex", graph, "-map", "[o]", "-frames:v", "1",
              "-q:v", "3", "-bitexact", str(dst)])
+
+
+# The stand-in's encoding. Part of its recipe stamp, so a change here re-derives it.
+STAND_IN = {"size": "640x360", "rate": 24, "audio_rate": 48000, "v": "libx264", "a": "aac"}
+
+
+def derive_stand_in(dst, seconds):
+    """A black, silent H.264/AAC MP4 of exactly `seconds`: what an episode marked `stand_in`
+    plays in the simulator. It shows nothing of the work (the player figure that uses it draws no
+    video plane), so it needs no source and no credit."""
+    c = STAND_IN
+    _ffmpeg(["-f", "lavfi", "-i", f"color=c=black:s={c['size']}:r={c['rate']}:d={seconds}",
+             "-f", "lavfi", "-i", f"anullsrc=r={c['audio_rate']}:cl=stereo",
+             "-t", str(seconds), "-c:v", c["v"], "-preset", "veryfast", "-tune", "stillimage",
+             "-pix_fmt", "yuv420p", "-c:a", c["a"], "-b:a", "64k", "-movflags", "+faststart",
+             "-map_metadata", "-1", "-bitexact", "-fflags", "+bitexact", str(dst)])
 
 
 def _rgba(hexcolour):
@@ -271,6 +289,15 @@ def derive(assets, catalog):
                 derive_logo(paths, dst, recipe)
                 stamp.write_text(want)
             report[f"{key}:logo"] = sha256(dst)
+        if rec.get("stand_in"):
+            dst = out / key.replace("/", "_") / "stand-in.mp4"
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            stamp = dst.with_suffix(".recipe")
+            want = json.dumps([rec["minutes"], STAND_IN], sort_keys=True)
+            if not dst.exists() or not stamp.exists() or stamp.read_text() != want:
+                derive_stand_in(dst, rec["minutes"] * 60)
+                stamp.write_text(want)
+            report[f"{key}:stand-in"] = sha256(dst)
     for m in catalog["movies"]:
         if "media" in m:
             report[f"{m['id']}:media"] = assets[m["media"]]["sha256"]
@@ -300,6 +327,9 @@ def check(assets, catalog):
         if "media" in rec:
             assert rec["media"] in assets, f"{key}: media {rec['media']!r} is not in assets.json"
             used.add(rec["media"])
+        if "stand_in" in rec:
+            assert kind == "episode" and rec["stand_in"] is True and "media" not in rec, \
+                f"{key}: stand_in is `true` on an episode without media"
         if "logo" in rec:
             # A clearLogo is the film's own title art, so it is cut from that film's own poster.
             assert rec["logo"]["asset"] == rec.get("poster", {}).get("asset"), \
