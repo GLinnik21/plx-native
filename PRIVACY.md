@@ -82,7 +82,8 @@ classes, coarse raster, rate, HTTP and buffer classes, whether a first picture a
 most 32 typed playback transitions with bucketed elapsed times. It contains no title, ratingKey,
 URL, path, playhead, duration, exact bitrate, server identity, address, token, account or profile,
 and is not joined to the product analytics identifier or `playback_id`. It carries the same Crash
-report ID as a crash report. Buffering, seeking, holding
+report ID as a crash report, and the same television model, SoC, hardware revision, webOS release
+and the `rtkmem`/`install` sandbox facts a crash report carries. Buffering, seeking, holding
 a low quality, or rejecting an adaptive-bitrate candidate does not by itself send a report.
 The closed diagnostic vocabulary includes terminal kinds such as `playback_interrupted` and
 `original_rollback`; HLS direction `refresh`; delivery reason `original_open_rollback`; and
