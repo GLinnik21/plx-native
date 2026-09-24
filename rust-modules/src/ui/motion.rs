@@ -263,6 +263,21 @@ fn held_phase_ms() -> Option<u32> {
     HELD_PHASE_MS.with(|h| Some(h.get()).filter(|ms| *ms != u32::MAX))
 }
 
+/// Where the [`Phase`] clocks are held ([`hold_phase_clocks`]), if they are — for a clock that is
+/// not a `Phase` but must hold with them (the Up Next countdown). Always `None` without
+/// `devtriggers`.
+#[inline]
+pub(crate) fn held_clock_ms() -> Option<u32> {
+    #[cfg(feature = "devtriggers")]
+    {
+        held_phase_ms()
+    }
+    #[cfg(not(feature = "devtriggers"))]
+    {
+        None
+    }
+}
+
 /// Are the [`Phase`] clocks held ([`hold_phase_clocks`])? A clock-driven view that keeps the loop
 /// awake on its own (`widgets::Spinner` reports from its draw) asks this, so a held picture really
 /// is still. Always `false` without `devtriggers`.

@@ -4,7 +4,8 @@ the images the mock server serves, and write the credits.
 
     python3 tools/demo_library.py fetch     # download every pinned asset (sha256-checked)
     python3 tools/demo_library.py derive    # fetch, then build posters/backdrops/stills
-    python3 tools/demo_library.py credits   # rewrite docs/screenshots/CREDITS.md (make screenshots does)
+    python3 tools/demo_library.py credits   # rewrite docs/screenshots/CREDITS.md and site/credits.html
+    python3 tools/demo_library.py site-credits  # rewrite site/credits.html only (make screenshots does)
     python3 tools/demo_library.py check     # validate the two manifests; no network
 
 Two committed manifests drive it:
@@ -21,10 +22,13 @@ the repository (`$PLXNATIVE_DEMO_CACHE`, default `~/.cache/plxnative-demo`, ~390
 command. Derivation is ffmpeg with fixed filters and fixed
 encoder settings, so one ffmpeg build derives byte-identical files every time. The clear logos
 (`logo` in the catalog, see `derive_logo`) are cut from each film's own poster with Pillow, the
-one Python package the screenshots need.
+one Python package the screenshots need. An episode marked `stand_in` also gets a STAND-IN video
+(`derive_stand_in`): black and silent, the episode's catalog length, so the simulator can play the
+episode (the Up Next figure) without a copy of the work being fetched or shown.
 """
 import argparse
 import hashlib
+import html
 import json
 import os
 import pathlib
@@ -32,12 +36,14 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import urllib.parse
 import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "tests" / "demo_library" / "assets.json"
 CATALOG = ROOT / "tests" / "demo_library" / "catalog.json"
 CREDITS = ROOT / "docs" / "screenshots" / "CREDITS.md"
+SITE_CREDITS = ROOT / "site" / "credits.html"
 UA = "PlxNativeDemoLibrary/1.0 (+https://github.com/GLinnik21/plex-native-poc)"
 
 POSTER = (600, 900)
@@ -132,6 +138,22 @@ def derive_image(src, dst, size, recipe):
         graph = f"[0:v]format=rgb24,{_cover(w, h, anchor)},format=yuvj444p[o]"
     _ffmpeg(["-i", str(src), "-filter_complex", graph, "-map", "[o]", "-frames:v", "1",
              "-q:v", "3", "-bitexact", str(dst)])
+
+
+# The stand-in's encoding. Part of its recipe stamp, so a change here re-derives it.
+STAND_IN = {"size": "640x360", "rate": 24, "audio_rate": 48000, "v": "libx264", "a": "aac"}
+
+
+def derive_stand_in(dst, seconds):
+    """A black, silent H.264/AAC MP4 of exactly `seconds`: what an episode marked `stand_in`
+    plays in the simulator. It shows nothing of the work (the player figure that uses it draws no
+    video plane), so it needs no source and no credit."""
+    c = STAND_IN
+    _ffmpeg(["-f", "lavfi", "-i", f"color=c=black:s={c['size']}:r={c['rate']}:d={seconds}",
+             "-f", "lavfi", "-i", f"anullsrc=r={c['audio_rate']}:cl=stereo",
+             "-t", str(seconds), "-c:v", c["v"], "-preset", "veryfast", "-tune", "stillimage",
+             "-pix_fmt", "yuv420p", "-c:a", c["a"], "-b:a", "64k", "-movflags", "+faststart",
+             "-map_metadata", "-1", "-bitexact", "-fflags", "+bitexact", str(dst)])
 
 
 def _rgba(hexcolour):
@@ -271,6 +293,15 @@ def derive(assets, catalog):
                 derive_logo(paths, dst, recipe)
                 stamp.write_text(want)
             report[f"{key}:logo"] = sha256(dst)
+        if rec.get("stand_in"):
+            dst = out / key.replace("/", "_") / "stand-in.mp4"
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            stamp = dst.with_suffix(".recipe")
+            want = json.dumps([rec["minutes"], STAND_IN], sort_keys=True)
+            if not dst.exists() or not stamp.exists() or stamp.read_text() != want:
+                derive_stand_in(dst, rec["minutes"] * 60)
+                stamp.write_text(want)
+            report[f"{key}:stand-in"] = sha256(dst)
     for m in catalog["movies"]:
         if "media" in m:
             report[f"{m['id']}:media"] = assets[m["media"]]["sha256"]
@@ -300,6 +331,9 @@ def check(assets, catalog):
         if "media" in rec:
             assert rec["media"] in assets, f"{key}: media {rec['media']!r} is not in assets.json"
             used.add(rec["media"])
+        if "stand_in" in rec:
+            assert kind == "episode" and rec["stand_in"] is True and "media" not in rec, \
+                f"{key}: stand_in is `true` on an episode without media"
         if "logo" in rec:
             # A clearLogo is the film's own title art, so it is cut from that film's own poster.
             assert rec["logo"]["asset"] == rec.get("poster", {}).get("asset"), \
@@ -320,6 +354,11 @@ def check(assets, catalog):
     for ref in [c["item"] for c in catalog["continue_watching"]] + catalog["watched"] + catalog["added_order"] \
             + [catalog["hero"]] + catalog.get("hero_alternatives", []):
         assert ref in seen, f"catalog refers to unknown item {ref!r}"
+    for name, order in catalog.get("collection_order", {}).items():
+        members = [m["id"] for m in catalog["movies"] if name in m.get("collections", [])]
+        assert name in catalog["collections"], f"collection_order: no collection {name!r}"
+        assert sorted(order) == sorted(members), \
+            f"collection_order[{name!r}] must list every member exactly once: {sorted(members)}"
     return True
 
 
@@ -381,9 +420,202 @@ def credits(assets, catalog, dst=CREDITS):
     print(f"demo_library: wrote {dst}")
 
 
+LICENCE_TEXTS = {"CC BY 3.0": "https://creativecommons.org/licenses/by/3.0/",
+                 "CC BY 4.0": "https://creativecommons.org/licenses/by/4.0/",
+                 "CC0 1.0": "https://creativecommons.org/publicdomain/zero/1.0/"}
+
+# Where a source page lives, as the credits page names it.
+SOURCE_HOSTS = {"commons.wikimedia.org": "Wikimedia Commons", "studio.blender.org": "Blender Studio",
+                "esahubble.org": "ESA/Hubble", "archive.org": "Internet Archive"}
+
+
+def _changes(role, recipe):
+    """What was done to a source to make the image the app shows, in the credits page's words."""
+    if role == "media":
+        return "Played in the app as the film itself; not altered."
+    if role == "logo":
+        text = "Title lettering cut out of the poster onto a transparent ground for the clear logo"
+        return text + ("; dark lettering recoloured to read over a backdrop." if any("fill" in k for k in recipe["keys"])
+                       else ".")
+    w, h = {"poster": POSTER, "art": ART, "thumb": THUMB}[role]
+    what = {"poster": "poster", "art": "backdrop", "thumb": "episode still"}[role]
+    if role == "art" and recipe.get("mode") == "extend":
+        return (f"Scaled to fit a {w}×{h} {what}; the sides are filled with a blurred, "
+                "darkened copy of the image.")
+    return f"Scaled and cropped to a {w}×{h} {what}."
+
+
+def _source_host(url):
+    host = urllib.parse.urlsplit(url).hostname
+    return SOURCE_HOSTS.get(host, host)
+
+
+def site_works(assets, catalog):
+    """The credits page's model: one entry per work (a film or a series, in catalog order), each a
+    list of credited sources. A source used several ways within a work is one entry; the episode
+    stills of a series that share author, licence and treatment are one entry with a link per
+    episode."""
+    works = []
+    for kind, records in (("film", catalog["movies"]), ("series", catalog["shows"])):
+        for rec in records:
+            uses = {}  # asset id -> {"roles": [...], "changes": [...], "episodes": [(sort, label)]}
+
+            def use(aid, role, recipe, episode=None):
+                u = uses.setdefault(aid, {"roles": [], "changes": [], "episodes": []})
+                label = {"poster": "Poster", "art": "Backdrop", "thumb": "Episode still", "media": "Video",
+                         "logo": "Clear logo"}[role]
+                if label not in u["roles"]:
+                    u["roles"].append(label)
+                change = _changes(role, recipe)
+                if change not in u["changes"]:
+                    u["changes"].append(change)
+                if episode:
+                    u["episodes"].append(episode)
+
+            for role in ("poster", "art", "thumb", "logo"):
+                if role in rec:
+                    use(rec[role]["asset"], role, rec[role])
+            if "media" in rec:
+                use(rec["media"], "media", None)
+            for season in rec.get("seasons", []):
+                for e in season["episodes"]:
+                    if "thumb" in e:
+                        use(e["thumb"]["asset"], "thumb", e["thumb"],
+                            ((season["index"], e["index"]), f"S{season['index']} E{e['index']}: {e['title']}"))
+            entries, stills = [], {}
+            for aid, u in uses.items():
+                a = assets[aid]
+                who = a["author"] if a["attribution"] in ("", a["author"]) else f"{a['author']}; {a['attribution']}"
+                if u["roles"] == ["Episode still"]:
+                    key = (who, a["licence"], tuple(u["changes"]))
+                    if key not in stills:
+                        stills[key] = {"roles": u["roles"], "author": who, "licence": a["licence"],
+                                       "changes": u["changes"], "sources": []}
+                        entries.append(stills[key])
+                    stills[key]["sources"] += [(sort, label, a["source_page"]) for sort, label in u["episodes"]]
+                    continue
+                entries.append({"roles": u["roles"], "author": who, "licence": a["licence"], "changes": u["changes"],
+                                "sources": [((), _source_host(a["source_page"]), a["source_page"])]})
+            for e in entries:
+                e["sources"].sort()
+                if len(e["sources"]) > 1:
+                    e["roles"] = ["Episode stills"]
+            works.append({"id": rec["id"], "kind": kind, "title": rec["title"], "year": rec.get("year"),
+                          "entries": entries})
+    return works
+
+
+def site_credits(assets, catalog, dst=SITE_CREDITS):
+    """site/credits.html: the attribution the website's screenshots owe, written from the same
+    manifests as CREDITS.md so it cannot drift from them. It lists the whole demo library: which
+    works a figure shows is decided by the app's layout at capture time, not by anything the
+    manifests record."""
+    esc = html.escape
+    works = site_works(assets, catalog)
+
+    def licence(name):
+        if name in LICENCE_TEXTS:
+            return f'<a href="{esc(LICENCE_TEXTS[name])}" rel="license">{esc(name)}</a>'
+        return esc(name)
+
+    def work(w):
+        year = f' <span class="credit-year">{w["year"]}</span>' if w["year"] else ""
+        out = [f'          <article class="credit-work" id="{esc(w["id"])}">',
+               f'            <h3 class="credit-title">{esc(w["title"])}{year}</h3>',
+               '            <div class="credit-entries">']
+        for e in w["entries"]:
+            if len(e["sources"]) == 1:
+                (_, text, href), = e["sources"]
+                source = f'<a href="{esc(href)}">{esc(text)}</a>'
+            else:  # a link per episode, each named for its episode
+                source = ('<ul class="credit-sources">'
+                          + "".join(f'<li><a href="{esc(href)}">{esc(text)}</a></li>' for _, text, href in e["sources"])
+                          + "</ul>")
+            roles = e["roles"][0] + "".join(f" and {r.lower()}" for r in e["roles"][1:])
+            facts = [("By", esc(e["author"])), ("Licence", licence(e["licence"])), ("Source", source),
+                     ("Changes", esc(" ".join(e["changes"])))]
+            out += ['              <dl class="credit-entry">',
+                    f'                <dt class="credit-use">{esc(roles)}</dt>',
+                    *(f'                <dd><span class="credit-label">{label}</span>'
+                      f'<div class="credit-value">{value}</div></dd>' for label, value in facts),
+                    '              </dl>']
+        out += ['            </div>', '          </article>']
+        return out
+
+    def section(kind, heading):
+        body = [line for w in works if w["kind"] == kind for line in work(w)]
+        return [f'        <section class="credits-section" aria-labelledby="credits-{kind}">',
+                f'          <h2 id="credits-{kind}">{heading}</h2>', *body, '        </section>', '']
+
+    used = [name for name in LICENCE_TEXTS if any(a["licence"] == name for a in assets.values())]
+    licences = ", ".join(f'<a href="{esc(LICENCE_TEXTS[n])}" rel="license">{esc(n)}</a>' for n in used)
+    repo = "https://github.com/GLinnik21/plx-native/blob/main/"
+    sections = "\n".join(section("film", "Films") + section("series", "Series"))
+    page = f"""<!doctype html>
+<!-- Written by `python3 tools/demo_library.py site-credits` (make screenshots) from
+     tests/demo_library/assets.json and catalog.json. Do not edit by hand. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Credits and licences for the openly licensed artwork in the PlxNative screenshots." />
+    <title>Artwork credits — PlxNative</title>
+    <link rel="canonical" href="https://plxnative.com/credits.html" />
+    <link rel="icon" type="image/png" href="assets/logo-master.png" />
+    <meta name="theme-color" content="#202022" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <div class="ambient-ground" aria-hidden="true"></div>
+      <main class="page-root">
+        <header class="site-header">
+          <a class="brand" href="./" aria-label="PlxNative home">
+            <span class="brand-mark"><img src="assets/logo-master.png" alt="" /></span>
+            <span class="brand-name">PlxNative</span>
+          </a>
+          <div class="header-actions">
+            <a class="header-back" href="./">&larr; Back to the site</a>
+          </div>
+        </header>
+
+        <section class="credits-intro" aria-labelledby="credits-title">
+          <h1 id="credits-title">Artwork credits</h1>
+          <p class="lead">
+            The screenshots on this site show PlxNative browsing a demo library made entirely of openly
+            licensed and public-domain works: open movies by Blender Studio and others.
+          </p>
+          <p>
+            Each work is listed with its author, licence, source and the changes made. Every picture was
+            scaled and cropped to the app&rsquo;s layout, and the screenshots themselves are cropped and
+            resized for this site. Nothing was redrawn or otherwise altered except where noted.
+          </p>
+        </section>
+
+{sections}
+        <footer class="site-footer credits-footer">
+          <p class="credits-licences">
+            Licence texts: {licences}. Public-domain status is as recorded on each work&rsquo;s source page.
+          </p>
+          <p class="footer-meta">
+            <span>Generated from the <a href="{repo}tests/demo_library/assets.json">demo library manifest</a></span>
+            <span class="sep" aria-hidden="true">·</span>
+            <span><a href="{repo}docs/screenshots/CREDITS.md">Documentation screenshot credits</a></span>
+          </p>
+        </footer>
+      </main>
+    </div>
+  </body>
+</html>
+"""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(page)
+    print(f"demo_library: wrote {dst}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("command", choices=["fetch", "derive", "credits", "check"])
+    ap.add_argument("command", choices=["fetch", "derive", "credits", "site-credits", "check"])
     a = ap.parse_args()
     assets, catalog = load()
     check(assets, catalog)
@@ -393,6 +625,9 @@ def main():
         derive(assets, catalog)
     elif a.command == "credits":
         credits(assets, catalog)
+        site_credits(assets, catalog)
+    elif a.command == "site-credits":
+        site_credits(assets, catalog)
     else:
         print("demo_library: manifests ok")
 

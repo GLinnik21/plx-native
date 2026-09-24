@@ -200,13 +200,13 @@ moves one line.** Do not widen it because a firmware "should" work, and never le
 loader check become a playback claim — it grades whether the process starts and cannot see a video
 plane. The note carries one line per tier; the matrix belongs to the audit.
 
-**Regenerate the screenshots, look at them, and commit them on their own.** The README and
-`docs/ux-scenario.md` show the release's own UI, so a release whose figures predate its changes
-advertises a different app:
+**Regenerate the screenshots, look at them, and commit them on their own.** The README,
+`docs/ux-scenario.md` and the website's close-up stills and link-preview card (`site/media/`) show
+the release's own UI, so a release whose figures predate its changes advertises a different app:
 
 ```sh
-make screenshots SHOT_CHECK=1     # every figure, rendered twice; fails unless within its bound
-git status --short docs/screenshots
+make screenshots SHOT_CHECK=1     # every figure and site still, rendered twice; fails unless within its bound
+git status --short docs/screenshots site/media
 ```
 
 Open every changed image before committing it — a scene whose state drifted (a menu that opened on

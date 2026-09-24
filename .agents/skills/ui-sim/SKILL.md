@@ -215,14 +215,15 @@ sign-in may legitimately have advanced by the time the app is foregrounded again
 
 ## Documentation screenshots
 
-`make screenshots` regenerates every image under `docs/screenshots/` from a committed scene
-manifest, against the mock server's demo library — no Plex account, no television, no gitignored
-file:
+`make screenshots` regenerates every image under `docs/screenshots/`, and the website's close-up
+stills and link-preview card under `site/media/`, from a committed scene manifest, against the
+mock server's demo library — no Plex account, no television, no gitignored file:
 
 ```sh
 make demo-library                     # fetch (sha256-pinned, ~390 MB once) + derive; screenshots runs it too
 make screenshots                      # build the sim, render every scene + CREDITS.md into docs/screenshots/
 make screenshots SHOT_SCENES=home,ux-detail.jpg SHOT_OUT=/tmp/shots   # a subset, somewhere else
+make screenshots SHOT_SCENES=home,site-glass,site-glass-narrow,site-tiles,site-up-next   # the site's images
 make screenshots SHOT_CHECK=1         # render each scene twice; fail unless within its bound
 make screenshots SHOT_HERO=sintel     # pin another film as the home hero for this run
 make screenshots SHOT_HERO_VARIANTS=1 # also home-hero-<film>.jpg for each hero candidate
@@ -233,6 +234,22 @@ make screenshots SHOT_HERO_VARIANTS=1 # also home-hero-<film>.jpg for each hero 
   and the files it becomes. No key is sent. `tools/screenshots.py` arms `token`, `plextv` (plex.tv
   replaced by the mock) and `stillclock` itself on every scene, and refuses a run whose log shows
   a `BADTRIGGER`, a trigger that gave up, or a request the mock could not answer.
+- **An output is a file, a crop and a size.** An output's `dest` is `docs` (default,
+  `docs/screenshots/`) or `site` (`site/media/`). A scene may render supersampled
+  (`render_scale` 1..4); an output may `crop` (`[x, y, w, h]` in 1920x1080 canvas pixels,
+  fractions allowed, whatever the scale), resample to `size` (refused if it would change the
+  crop's shape) and set a JPEG `quality`. The `site-*` scenes cut the site's close-ups at 3x/4x
+  on the hand-cut framing (the scene's `state` records how each crop was matched). A `card`
+  output (`og-card.jpg`, on the `home` scene) is not cut from the capture: `tools/render-og-card.sh`
+  composes `site/og/card.html` around the home figure the same run staged, so a run that includes
+  `home` needs a headless Chromium (Chrome, Chromium or a Playwright cache; `CHROME=` overrides).
+  Outputs are all-or-nothing: one failed scene and nothing is written anywhere.
+- **Screenshot triggers worth knowing.** `grid=<row>,<col>` (Home), `libgrid=<row>,<col>` (the
+  library's All grid), `libshelf=<shelf>,<col>` (a library shelf; the view scrolls to it),
+  `libmenu=<kind>,<ms>`, and under `hostsim` `clockstop=<ms>`: the clock sink's clock stops at that
+  position while the player stays PLAYING (Up Next only shows while playing; `autopause` would
+  take it down). The settled capture waits for every armed seat, menu and clock stop to land, so
+  a scene that seeks does not rest before it. `stillclock` also holds the Up Next countdown.
 - **The capture is the app's, once the screen is at rest.** `PLXNATIVE_SHOT_SETTLE=<ms>` makes the
   simulator write one PNG after the screen has not changed for that long (and not before
   `PLXNATIVE_SHOT_AFTER`), then exit with `PLXNATIVE_SHOT_EXIT=1`. The driver waits on that

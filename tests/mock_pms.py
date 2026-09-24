@@ -43,8 +43,12 @@ serves real titles, credits and synopses of openly licensed and public-domain fi
 artwork `tools/demo_library.py derive` built from the pinned sources in
 `tests/demo_library/assets.json`. Its clock is pinned (`now` in the catalog), so it is as
 deterministic as a seeded library; `--hero SLUG` moves one film to the front of Continue Watching,
-which is the home hero's first slot. Nothing recorded against it may be committed as a fixture —
-the harness's alphabet check would refuse it, correctly.
+which is the home hero's first slot. An episode marked `stand_in` plays: its media is a black,
+silent file of the episode's catalog length that `derive` made (never the work itself), which is
+enough for the simulator's clock sink to run the player over it. And a `continuous=1` PlayQueue
+of an episode carries the rest of its show after it, as PMS's does, so Up Next has a successor.
+Nothing recorded against it may be committed as a fixture — the harness's alphabet check would
+refuse it, correctly.
 
 Every mode also answers the four plex.tv calls of the QR sign-in (`/api/v2/pins`, the poll, the
 QR image, and `/api/v2/user`) with a fixed demo code, for an app booted with
@@ -832,6 +836,14 @@ class CatalogLibrary(Library):
                               year=int(e["date"][:4]), originallyAvailableAt=e["date"], duration=dur,
                               Media=self._demo_media(erk, part, dur, f"/media/TV/{s['title']}/S{season['index']:02d}E{e['index']:02d}"),
                               Director=[], Writer=[], Role=[], Chapter=[], Marker=[])
+                    if e.get("stand_in"):
+                        slug = f"{s['id']}/{season['index']}/{e['index']}"
+                        path = self.derived / slug.replace("/", "_") / "stand-in.mp4"
+                        if not path.is_file():
+                            raise ValueError(f"{slug}: derived stand-in is missing ({path}); rerun "
+                                             "`python3 tools/demo_library.py derive`")
+                        media, dur = self._verified_media(path, erk, part)
+                        ep.update(duration=dur, Media=[media])
                     if "art" in self.images[rk]:
                         self.images[erk]["art"] = self.images[rk]["art"]
                     self.items[erk] = ep
@@ -842,6 +854,16 @@ class CatalogLibrary(Library):
                 it["duration"] = max((x["duration"] for x in self.items.values()
                                       if x["type"] == "episode" and x["grandparentRatingKey"] == it["ratingKey"]),
                                      default=0)
+
+    def continuous_queue(self, it):
+        """The rows of a `continuous=1` PlayQueue started on `it`: an episode and every episode of
+        its show after it, in (season, episode) order, as PMS answers; anything else, itself."""
+        if it["type"] != "episode":
+            return [it]
+        show = [x for x in self.items.values()
+                if x["type"] == "episode" and x["grandparentRatingKey"] == it["grandparentRatingKey"]]
+        show.sort(key=lambda x: (x["parentIndex"], x["index"]))
+        return show[show.index(it):]
 
     def _pin_clock(self, hero):
         """addedAt, lastViewedAt, viewOffset and viewCount from the catalog and its pinned `now` —
@@ -930,6 +952,31 @@ class CatalogLibrary(Library):
                     "-bitexact", *encode, "-"])
             return ctype, self._scaled[key]
 
+    def collection_rows(self, cid):
+        """A collection's members (Home's shelf and the library's alike): in the catalog's
+        `collection_order` for it when it has one — a real server's custom collection order —
+        otherwise newest addition first."""
+        rows = [it for it in self.items.values()
+                if any(c["id"] == cid for c in it.get("Collection", []))]
+        rows.sort(key=lambda it: -it["addedAt"])
+        order = self.catalog.get("collection_order", {}).get(self.collections[cid]["tag"])
+        if order:
+            rank = {self.by_slug[slug]: n for n, slug in enumerate(order)}
+            rows.sort(key=lambda it: rank[int(it["ratingKey"])])
+        return rows
+
+    def section_collection_hubs(self, section, kind):
+        """The catalog's collections in one library, as the shelves a real server lists after
+        Recently Added: `custom.collection.<section>.<id>.<id>`, in the catalog's order."""
+        hubs = []
+        for c in self.collections.values():
+            rows = [it for it in self.collection_rows(c["id"]) if it["librarySectionID"] == section]
+            if rows:
+                hubs.append({"title": c["tag"], "type": kind, "size": len(rows),
+                             "hubIdentifier": f"custom.collection.{section}.{c['id']}.{c['id']}",
+                             "key": f"/library/collections/{c['id']}/children", "Metadata": rows[:12]})
+        return hubs
+
     def home_hubs(self):
         """`/hubs` after Continue Watching: the catalog's shelves, in its order."""
         out = []
@@ -937,10 +984,8 @@ class CatalogLibrary(Library):
             if "recent" in h:
                 rows = self.recent(h["recent"], 12)
             else:
-                cid = next(c["id"] for c in self.collections.values() if c["tag"] == h["collection"])
-                rows = [it for it in self.items.values()
-                        if any(c["id"] == cid for c in it.get("Collection", []))]
-                rows.sort(key=lambda it: -it["addedAt"])
+                rows = self.collection_rows(
+                    next(c["id"] for c in self.collections.values() if c["tag"] == h["collection"]))
             out.append({"title": h["title"], "type": h["type"], "hubIdentifier": h["hubIdentifier"],
                         "key": f"/hubs/demo/{h['hubIdentifier']}", "Metadata": rows})
         return out
@@ -1147,6 +1192,9 @@ class MockPms:
                 # catalog run is photographed and an identifier on screen is a mock showing through.
                 hubs[0]["title"] = "Continue Watching"
                 hubs[1]["title"] = "Recently Added Movies" if kind == "movie" else "Recently Added TV"
+                # A real server lists the library's collections as shelves of their own after
+                # these (docs/pms-api.md, 3a), so the catalog's do the same.
+                hubs += lib.section_collection_hubs(int(key), kind)
             return j(self.container(Hub=hubs))
         if p == "/hubs/search":
             lim = q.get("limit", "")
@@ -1187,7 +1235,15 @@ class MockPms:
             uri = q.get("uri", "")
             rk = uri.rsplit("/", 1)[-1]
             it = lib.items.get(int(rk)) if rk.isdigit() else None
-            rows = [dict(it, playQueueItemID=1)] if it else []
+            # Only the demo library follows `continuous=1` past the item: the seeded library's
+            # queue of one is what the harness's recorded cases were taken against.
+            if it is None:
+                queue = []
+            elif q.get("continuous") == "1" and isinstance(lib, CatalogLibrary):
+                queue = lib.continuous_queue(it)
+            else:
+                queue = [it]
+            rows = [dict(x, playQueueItemID=n) for n, x in enumerate(queue, start=1)]
             return j(self.container(Metadata=rows, playQueueID=1, playQueueSelectedItemID=1,
                                     playQueueSelectedItemOffset=0, playQueueTotalCount=len(rows),
                                     playQueueVersion=1))

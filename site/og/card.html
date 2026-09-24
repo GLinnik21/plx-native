@@ -1,6 +1,8 @@
 <!doctype html>
-<!-- Source of site/media/og-card.png, the 1200x630 link preview (Open Graph / Twitter card).
-     Not deployed. Re-render with tools/render-og-card.sh after editing. -->
+<!-- Source of site/media/og-card.jpg, the 1200x630 link preview (Open Graph / Twitter card).
+     Not deployed. Its screenshot is the documentation's home figure; `make screenshots`
+     re-renders the card with the figure it has just made (tools/render-og-card.sh --shot), and
+     after editing this file, tools/render-og-card.sh alone re-renders it. -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -14,6 +16,10 @@
         font-family: "PlxAppFont";
         src: url("../../pkg/appfont-bold.ttf") format("truetype");
         font-weight: 700;
+      }
+      :root {
+        /* render-og-card.sh --shot overrides this with the figure a screenshot run staged. */
+        --shot: url("../../docs/screenshots/home.jpg");
       }
       html,
       body {
@@ -39,7 +45,7 @@
         width: 796px;
         height: 448px;
         border-radius: 22px;
-        background: url("../media/feel-poster.jpg") center / cover;
+        background: var(--shot) center / cover;
         box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14), 0 40px 90px rgba(0, 0, 0, 0.6),
           0 12px 30px rgba(0, 0, 0, 0.45);
       }

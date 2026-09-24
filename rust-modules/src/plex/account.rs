@@ -40,10 +40,12 @@ pub(crate) fn plex_tv() -> &'static str {
     static BASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     BASE.get_or_init(|| match crate::dev::read("plextv") {
         Some(v) if loopback_http(&v) => {
+            #[cfg(feature = "devtriggers")]
             crate::log("account: plex.tv replaced by a loopback stand-in (/tmp/plxnative-plextv)");
             v.trim_end_matches('/').to_string()
         }
         Some(_) => {
+            #[cfg(feature = "devtriggers")]
             crate::log("BADTRIGGER plextv: only http://127.0.0.1:<port> or http://localhost:<port> is accepted");
             PLEX_TV.to_string()
         }

@@ -50,6 +50,7 @@ jobs:
           mkdir -p _site/nightly
 
           cp site/index.html _site/index.html
+          cp site/credits.html _site/credits.html
           cp site/styles.css _site/styles.css
           cp site/site.js _site/site.js
           cp site/CNAME _site/CNAME
@@ -111,7 +112,7 @@ jobs:
                   return False
               return True
 
-          sources = [site / "index.html", site / "styles.css", site / "site.js"]
+          sources = [site / "index.html", site / "credits.html", site / "styles.css", site / "site.js"]
           all_refs = set()
           for src in sources:
               if src.exists():

@@ -603,9 +603,10 @@ which the linking section explains is load-bearing rather than tidy.
   sha256 per platform, and what the app writes, reads and reaches on your television.
 - `site/` — the landing page (`index.html`/`styles.css`/`site.js`/`CNAME`); `.github/workflows/
   pages.yml` stages its screenshots, logo and fonts from their existing README/app locations
-  rather than copying them into `site/`. The link-preview card `site/media/og-card.jpg` is
-  rendered from `site/og/card.html` (not deployed) by `tools/render-og-card.sh`; re-render it
-  after editing the card or `site/media/feel-poster.jpg`.
+  rather than copying them into `site/`. The close-up stills `site/media/closeup-*.jpg` and the
+  link-preview card `site/media/og-card.jpg` are `make screenshots` outputs (`ui-sim` skill,
+  "Documentation screenshots"): the card is `site/og/card.html` (not deployed) rendered around
+  the home figure by `tools/render-og-card.sh`; re-render after editing the card.
 - `pkg/` — deployable payload: `appinfo.json` (native app manifest), `plxnative` binary, icons,
   `appfont*.ttf`, and the prebuilt `.ipk`.
 - `ipkroot/` — ipk staging (`ctl/control`, `data/`, `debian-binary`); assembled by `make ipk`.
