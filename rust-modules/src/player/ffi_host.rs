@@ -343,11 +343,16 @@ impl Clock {
     }
 }
 
-pub(super) unsafe fn sf_load(_payload: *const c_char, epoch: u32) -> c_int {
+pub(super) unsafe fn sf_load(payload: *const c_char, epoch: u32) -> c_int {
     if !enabled() || epoch == 0 || OBJECT_READY.load(Relaxed) || LIFECYCLE_BLOCKED.load(Relaxed) {
         return 0; // "pipeline could not be constructed" — the engine's existing failure path
     }
     Clock::rewind();
+    // `plxnative-simvideo`: the screenshot picture (`player::sim_video`) learns the codec here.
+    if !payload.is_null() {
+        let payload = std::ffi::CStr::from_ptr(payload).to_string_lossy();
+        crate::player::sim_video::load(&payload, Clock::position_ns);
+    }
     ACTIVE_EPOCH.store(epoch, Relaxed);
     CALLBACK_INTERCEPTS.store(0, Relaxed);
     CALLBACK_GATE_RETIRED.store(false, Relaxed);
@@ -484,6 +489,7 @@ pub(super) unsafe fn sf_flush() -> c_int {
         return 0;
     }
     Clock::rewind();
+    crate::player::sim_video::flush();
     1
 }
 pub(super) unsafe fn sf_push_eos() -> c_int {
@@ -517,7 +523,7 @@ pub(super) unsafe fn sf_send_segment() -> c_int {
 /// buffer to fill — the app's backpressure is upstream, in the AU queues' byte caps and the
 /// feed-ahead throttle, and those are exactly what this exists to exercise. Returning `'B'` here
 /// would add a second, fictional one.
-pub(super) unsafe fn sf_feed(_p: *const u8, _size: c_uint, pts: i64, es_data: c_int) -> c_char {
+pub(super) unsafe fn sf_feed(p: *const u8, size: c_uint, pts: i64, es_data: c_int) -> c_char {
     #[cfg(test)]
     note_dispatch("sf_feed");
     if !enabled() {
@@ -525,6 +531,9 @@ pub(super) unsafe fn sf_feed(_p: *const u8, _size: c_uint, pts: i64, es_data: c_
     }
     if es_data == 1 {
         FED_MAX_NS.fetch_max(pts, Relaxed);
+        if !p.is_null() && size > 0 {
+            crate::player::sim_video::feed(std::slice::from_raw_parts(p, size as usize), pts);
+        }
     }
     FEED_OK
 }
@@ -540,6 +549,7 @@ pub(super) unsafe fn sf_unload() {
     }
     LOADED.store(false, Relaxed);
     Clock::rewind();
+    crate::player::sim_video::stop();
 }
 pub(super) unsafe fn sf_callback_gate_retire() -> c_int {
     #[cfg(test)]
@@ -570,6 +580,7 @@ pub(super) unsafe fn sf_destroy() -> c_int {
     OBJECT_READY.store(false, Relaxed);
     LOADED.store(false, Relaxed);
     Clock::rewind();
+    crate::player::sim_video::stop();
     1
 }
 pub(super) unsafe fn sf_quarantine() {
@@ -580,6 +591,7 @@ pub(super) unsafe fn sf_quarantine() {
     OBJECT_READY.store(false, Relaxed);
     LOADED.store(false, Relaxed);
     Clock::rewind();
+    crate::player::sim_video::stop();
 }
 
 /// `VP_NONE` — "video cannot be displayed, but the app still runs", which is precisely the

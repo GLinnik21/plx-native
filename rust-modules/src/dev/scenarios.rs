@@ -39,6 +39,7 @@ use crate::ui::machine::{Key, Tick};
 use std::os::raw::c_int;
 
 pub(crate) mod bench;
+pub(crate) mod screenshot;
 
 /// The dev triggers read ONCE at boot and consulted by the loop every frame after (each is
 /// documented where it is READ, below). Formerly `App::dev: DevFlags`; unchanged in shape.
@@ -137,6 +138,8 @@ pub(crate) struct Scenarios {
     pub(crate) deep_bench: Option<bench::DeepBench>,
     /// The boot-time trigger flags the loop consults every frame after.
     pub(crate) dev: DevFlags,
+    /// The screenshot pipeline's arms (`plxnative-libgrid`, `-libmenu`) — see [`screenshot`].
+    pub(crate) shots: screenshot::ScreenshotArms,
 }
 
 // =================================================================================================
@@ -203,6 +206,11 @@ pub(crate) fn arm_logintest() {
             }
         });
     }
+}
+
+/// `/tmp/plxnative-stillclock=<ms>` — see [`screenshot::arm_stillclock`].
+pub(crate) fn arm_stillclock() {
+    screenshot::arm_stillclock();
 }
 
 /// `/tmp/plxnative-anim` — the animation-diagnostic overlay (off by default).
@@ -819,6 +827,13 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
                 app.bridge.home_command(HomeCmd::SelectHero(n));
             }
         }
+        // `/tmp/plxnative-heropin=<n>` — `heroidx`, then HOLD that billboard (no auto-advance):
+        // the screenshot pipeline's pin, so a settled capture shows the slot its scene named.
+        if let Some(s) = crate::dev::read("heropin") {
+            if let Ok(n) = s.parse::<c_int>() {
+                app.bridge.home_command(HomeCmd::PinHero(n));
+            }
+        }
     }
 }
 
@@ -1273,6 +1288,8 @@ pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
     press_arm(app, fr);
     itemmenu_arm(app, fr);
     acct_arm(app, fr);
+    screenshot::libgrid_arm(app, fr);
+    screenshot::libmenu_arm(app, fr);
     if !detail_arm(app, fr) {
         return false;
     }

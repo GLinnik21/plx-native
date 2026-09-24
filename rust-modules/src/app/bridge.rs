@@ -645,6 +645,14 @@ impl Bridge {
             Delivery::Screen(ScreenEvent::App(AppMsg::Library(command)))));
     }
 
+    /// The Library page's focused grid cell, `(row, col)`, if focus is on its grid.
+    pub(crate) fn library_grid_position(d: &Dispatcher<AppHost>) -> Option<(usize, usize)> {
+        let entry = d.nav.top_page()?;
+        let page = entry.inst.as_ref().and_then(|instance| instance.screen.as_any())
+            .and_then(|page| page.downcast_ref::<crate::screens::library::LibraryScreen>())?;
+        page.grid_position(d.input.engine.current(InputOwner::Entry(entry.id)))
+    }
+
     pub(crate) fn library_card_focused(d: &Dispatcher<AppHost>) -> bool {
         let Some(entry) = d.nav.top_page() else { return false };
         let Some(page) = entry.inst.as_ref().and_then(|instance| instance.screen.as_any())
@@ -811,7 +819,7 @@ impl Bridge {
         // Retain data-dependent boot intentions until the first catalog arrives. A command
         // is addressed only after the Home body exists; no UI state is mutated by this queue.
         while let Some(command) = self.home_commands.front().copied() {
-            if !ready && matches!(command, HomeCmd::FocusGrid { .. } | HomeCmd::SelectHero(_) | HomeCmd::Flip(_) | HomeCmd::ItemMenu) {
+            if !ready && matches!(command, HomeCmd::FocusGrid { .. } | HomeCmd::SelectHero(_) | HomeCmd::PinHero(_) | HomeCmd::Flip(_) | HomeCmd::ItemMenu) {
                 break;
             }
             self.home_commands.pop_front();
@@ -2294,6 +2302,11 @@ pub(crate) fn open_item_menu(d: &mut Dispatcher<AppHost>, arg: crate::screens::r
     }
     d.nav.next_style = Style::Compact;
     d.request(MachineId::Nav, NavOp::Present(AppArg::ItemMenu(arg)));
+}
+
+/// Is a Library Sort/Filter/Sources menu up (any phase)?
+pub(crate) fn library_menu_up(d: &Dispatcher<AppHost>) -> bool {
+    surface_up(d, |a| matches!(a, AppArg::LibraryMenu(_)))
 }
 
 /// Is the item menu up (any phase)?

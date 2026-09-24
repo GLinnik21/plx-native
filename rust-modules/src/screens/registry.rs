@@ -201,6 +201,10 @@ pub(crate) enum HomeCmd {
     FocusStrip(HomeTab),
     Flip(i32),
     SelectHero(i32),
+    /// [`SelectHero`](Self::SelectHero), then HOLD that slot: the auto-advance stops for the
+    /// life of the page. The screenshot pipeline's pin (`/tmp/plxnative-heropin=<n>`), so a
+    /// capture taken whenever the page settles shows the billboard the scene manifest named.
+    PinHero(i32),
     ItemMenu,
 }
 
@@ -346,8 +350,11 @@ impl crate::ui::machine::LogicalState for ItemMenuArg {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LibraryCmd {
     Enter(crate::stores::browse::SecKind),
-    #[cfg(test)]
+    /// Seat focus on one grid card (tests, and the screenshot pipeline's `plxnative-libgrid`).
     FocusGrid { row: usize, col: usize },
+    /// Open the Sort or Filter menu exactly as OK on its toolbar chip does (the screenshot
+    /// pipeline's `plxnative-libmenu`).
+    OpenMenu(LibraryMenuKind),
     Page(i32),
     Sweep,
     SwitchStep(u32),

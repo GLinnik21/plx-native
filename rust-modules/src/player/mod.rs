@@ -24,6 +24,8 @@ mod pump;
 pub(crate) mod report;
 mod shared;
 pub(crate) mod sidecar;
+#[cfg(feature = "hostsim")]
+pub(crate) mod sim_video; // the simulator's decoded picture, for screenshots (see its doc)
 pub(crate) mod threads;
 
 use crate::task::MainThread;

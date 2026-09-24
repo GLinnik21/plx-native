@@ -232,9 +232,35 @@ impl Phase {
             self.at_ms = t.ms;
             self.running = true;
         }
+        #[cfg(feature = "devtriggers")]
+        if let Some(held) = held_phase_ms() {
+            // Held: a still picture, so nothing to present for.
+            return held as f32;
+        }
         present.note(PresentEvent::Motion);
         t.ms.wrapping_sub(self.at_ms) as f32
     }
+}
+
+#[cfg(feature = "devtriggers")]
+thread_local! {
+    /// `/tmp/plxnative-stillclock=<ms>` (`dev::scenarios::screenshot`): every [`Phase`] on this
+    /// thread reads this many elapsed ms and reports NO motion, so a spinner is drawn at one fixed
+    /// angle and a waiting screen can settle. `u32::MAX` = not held. Thread-local because the one
+    /// writer and every reader are the UI thread, and a process global would leak between tests.
+    static HELD_PHASE_MS: std::cell::Cell<u32> = const { std::cell::Cell::new(u32::MAX) };
+}
+
+/// Hold every [`Phase`] clock at `ms` — the screenshot pipeline's pin on free-running animation
+/// (spinner angle, stall timers). `None` releases it. Dev builds only.
+#[cfg(feature = "devtriggers")]
+pub(crate) fn hold_phase_clocks(ms: Option<u32>) {
+    HELD_PHASE_MS.with(|h| h.set(ms.map_or(u32::MAX, |ms| ms.min(u32::MAX - 1))));
+}
+
+#[cfg(feature = "devtriggers")]
+fn held_phase_ms() -> Option<u32> {
+    HELD_PHASE_MS.with(|h| Some(h.get()).filter(|ms| *ms != u32::MAX))
 }
 
 // --- the differential table -------------------------------------------------------------------
@@ -428,5 +454,26 @@ mod tests {
             50.0,
             "reset re-anchors rather than continuing the old count"
         );
+    }
+
+    /// The screenshot pin: a held clock reads the held value at every tick and asks for no
+    /// present, so a screen whose only motion is a spinner comes to rest.
+    #[test]
+    #[cfg(feature = "devtriggers")]
+    fn a_held_phase_clock_reads_the_held_value_and_reports_no_motion() {
+        let mut present = Present::new();
+        let _ = present.take(0);
+        let mut ph_clock = Phase::default();
+        super::hold_phase_clocks(Some(190));
+        // All inside the keepalive window, so a `true` could only be motion.
+        for ms in [100u32, 400, 900] {
+            let mut ph = PresentHandle(&mut present);
+            assert_eq!(ph_clock.advance(Tick { ms, dt_us: 0 }, &mut ph), 190.0);
+            assert!(!present.take(ms), "a held clock is not motion");
+        }
+        super::hold_phase_clocks(None);
+        let mut ph = PresentHandle(&mut present);
+        let _ = ph_clock.advance(Tick { ms: 1_000, dt_us: 0 }, &mut ph);
+        assert!(present.take(1_000), "released, it runs again");
     }
 }

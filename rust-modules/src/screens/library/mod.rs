@@ -588,7 +588,6 @@ impl LibraryScreen {
                 self.page_fade.mount();
                 self.sync(cx);
             }
-            #[cfg(test)]
             LibraryCmd::FocusGrid { row, col } => {
                 if col >= COLS { return Handled::No; }
                 let Some(index) = row.checked_mul(COLS).and_then(|i| i.checked_add(col)) else { return Handled::No };
@@ -597,6 +596,14 @@ impl LibraryScreen {
                 self.reseat(FocusTarget::Elem(self.key(elem)), fx);
             }
             LibraryCmd::ItemMenu => return cx.focus.current.map_or(Handled::No, |key| self.activate(key.elem, true, cx, fx)),
+            LibraryCmd::OpenMenu(kind) => {
+                let elem = match kind {
+                    crate::screens::registry::LibraryMenuKind::Sort => SORT,
+                    crate::screens::registry::LibraryMenuKind::Filter => FILTER,
+                    _ => return Handled::No,
+                };
+                return self.activate(elem, false, cx, fx);
+            }
             LibraryCmd::Page(direction) => {
                 let Some((row, col)) = self.grid_position(cx.focus.current) else { return Handled::No };
                 let rows = self.pair.detail.elems.len().div_ceil(COLS);

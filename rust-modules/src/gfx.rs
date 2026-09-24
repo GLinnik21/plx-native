@@ -145,6 +145,8 @@ const GL_DITHER: c_uint = 0x0BD0;
 const GL_ONE: c_uint = 0x0001;
 const GL_SRC_ALPHA: c_uint = 0x0302;
 const GL_ONE_MINUS_SRC_ALPHA: c_uint = 0x0303;
+#[cfg(feature = "hostsim")]
+const GL_ONE_MINUS_DST_ALPHA: c_uint = 0x0305;
 const GL_TEXTURE_2D: c_uint = 0x0DE1;
 const GL_TEXTURE0: c_uint = 0x84C0;
 const GL_TEXTURE1: c_uint = 0x84C1;
@@ -2060,6 +2062,21 @@ pub(crate) fn draw_tex(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32,
         0.0,
         NO_RIM.as_ptr(),
     );
+}
+
+/// **Simulator only: composite `tex` UNDER everything drawn so far this frame** — the television
+/// compositor's arithmetic for its hardware video plane beneath our UI plane. The UI plane holds
+/// premultiplied colour over a transparent clear (see the blend note in the GL setup above), so
+/// the panel shows `ui.rgb + video.rgb * (1 - ui.a)`; drawing the picture with
+/// `(ONE_MINUS_DST_ALPHA, ONE)` computes exactly that, and leaves the surface opaque. Used by
+/// `player::sim_video` for the screenshot pipeline's player figure; restores the app's blend.
+#[cfg(feature = "hostsim")]
+pub(crate) fn draw_under(tex: c_uint, x: f32, y: f32, w: f32, h: f32) {
+    unsafe {
+        glBlendFuncSeparate(GL_ONE_MINUS_DST_ALPHA, GL_ONE, GL_ONE_MINUS_DST_ALPHA, GL_ONE);
+        draw_tex(tex, x, y, w, h, 0.0, [1.0f32; 4].as_ptr());
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    }
 }
 
 /// One full logical-screen snapshot shared by modal hosts and frozen page transitions.

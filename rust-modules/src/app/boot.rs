@@ -785,6 +785,9 @@ pub(crate) unsafe fn construct(
     // dev: the animation-diagnostic overlay is OFF by default; /tmp/plxnative-anim enables it (its
     // trace goes to /tmp/plxnative-anim.log, a separate stream from the main event log)
     if !controlled { crate::dev::scenarios::arm_anim(); }
+    // dev: /tmp/plxnative-stillclock=<ms> holds every free-running animation clock (spinners)
+    // still, so a screenshot of a waiting screen settles on one deterministic frame.
+    if !controlled { crate::dev::scenarios::arm_stillclock(); }
     // dev: profile is asynchronous EXT_disjoint_timer_query timing; hwcnt is the serialized
     // direct Mali counter-attribution run. Their content names ONE phase (empty = frame.ui).
     // Combining them would perturb the timer result, so fail closed when both are present.
@@ -1249,6 +1252,7 @@ pub(crate) unsafe fn construct(
             press_release_at,
             itemmenu_tried,
             acct_tried,
+            shots: Default::default(),
             auto_tried,
             replay_left,
             grid_tried,

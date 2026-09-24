@@ -30,6 +30,7 @@ fn home_command(command: &crate::screens::registry::HomeCmd) -> Value {
             HomeTab::Home => "home", HomeTab::Movies => "movies", HomeTab::Shows => "shows", HomeTab::Search => "search" }}),
         HomeCmd::Flip(delta) => json!({"flip":delta}),
         HomeCmd::SelectHero(index) => json!({"select_hero":index}),
+        HomeCmd::PinHero(index) => json!({"pin_hero":index}),
         HomeCmd::ItemMenu => json!("itemmenu"),
     }
 }
