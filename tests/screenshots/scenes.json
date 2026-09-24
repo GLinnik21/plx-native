@@ -92,11 +92,9 @@
     },
     {
       "name": "player",
-      "state": "The player HUD, paused at 7:26 of Sintel (ratingKey 102, the complete 14:48 film) on a close-up of Sintel, its Chapters tab beside Info: the clock sink plays the file the mock serves from the resume point (7:15), simvideo decodes it under the UI, and autopause pauses once the published playhead reaches 7:26.",
-      "triggers": {"play": "102", "clocksink": "", "simvideo": "", "autopause": "at=446000"},
+      "state": "The player HUD, paused at 7:26 of Sintel (ratingKey 102, the complete 14:48 film) on a close-up of Sintel, its Chapters tab beside Info: the clock sink plays the file the mock serves from the resume point (7:15), simvideo decodes it under the UI, and autopause pauses once the published playhead reaches 7:26.02 — mid-frame, where the clock sink is told to stop, so the pause freezes the same frame, clock and knob every run.",
+      "triggers": {"play": "102", "clocksink": "", "simvideo": "", "autopause": "at=446020"},
       "expect": ["simvideo: first picture decoded", "autopause: Pause accepted"],
-      "free_regions": [[925, 850, 80, 70]],
-      "tolerance_reason": "The pause is gated on the published playhead, so it lands in the same shot on the same second every run (7:26), but the exact position it is accepted at moves by a few milliseconds with host scheduling, and the scrubber's playhead knob is drawn at that sub-pixel position: the knob's edge pixels differ by a few levels. The decoded picture and both clocks are compared at the default bound.",
       "outputs": [{"file": "player.jpg", "size": "1600x900"}]
     }
   ]

@@ -192,6 +192,39 @@ fn enabled() -> bool {
 fn now_ms() -> i64 {
     i64::from(super::super::vclock_ms())
 }
+/// The rebase `sf_on_event` applies to a reported position (`playpos = fed - pts_shift +
+/// disp_base`), inverted: the fed PTS at which the app will read `media_ns`.
+fn media_to_fed(media_ns: i64) -> i64 {
+    let shared = &super::super::SHARED;
+    media_ns
+        .saturating_add(shared.pts_shift.load(Relaxed))
+        .saturating_sub(shared.disp_base.load(Relaxed))
+}
+
+/// Stop the running clock EXACTLY at a movie position, or lift the stop (`None`). Returns whether
+/// a stop was armed: one the playhead has already passed is refused, because honouring it would
+/// run the clock backwards.
+///
+/// **Why it exists: the documentation's player figure** (`autopause=at=<ms>`). A pause issued when
+/// the playhead has reached a position is accepted some tens of milliseconds later, and how many
+/// moves with host scheduling, across a 24 fps frame boundary as often as not: a different frame,
+/// a different knob position, every run. Stopped here, the clock waits on the one position the
+/// pause is aimed at, the pause then freezes it there (`hold` reads the clamped position), and
+/// the picture `sim_video` shows, the clock readout and the playhead are identical from run to
+/// run. A stall of the sink's own making, like the fed-ceiling clamp above: the app sees a
+/// pipeline that has not presented past that point yet, which is a shape it already handles.
+pub(super) fn stop_clock_at(media_ns: Option<i64>) -> bool {
+    let Some(media_ns) = media_ns else {
+        STOP_AT_MEDIA_NS.store(i64::MAX, Relaxed);
+        return false;
+    };
+    if Clock::position_ns() > media_to_fed(media_ns) {
+        return false;
+    }
+    STOP_AT_MEDIA_NS.store(media_ns, Relaxed);
+    true
+}
+
 fn report_position(pts_ns: i64) {
     let epoch = ACTIVE_EPOCH.load(Relaxed);
     if epoch != 0 && !CALLBACK_GATE_RETIRED.load(Relaxed) {
@@ -220,6 +253,8 @@ static BASE_NS: AtomicI64 = AtomicI64::new(0);
 static RESUMED_AT_MS: AtomicI64 = AtomicI64::new(0);
 /// The highest video PTS ever handed to [`sf_feed`]. The clock may not run past it.
 static FED_MAX_NS: AtomicI64 = AtomicI64::new(i64::MIN);
+/// A MOVIE position the clock may not run past either (`i64::MAX` = none): [`stop_clock_at`].
+static STOP_AT_MEDIA_NS: AtomicI64 = AtomicI64::new(i64::MAX);
 
 #[cfg(test)]
 pub(super) fn force_callback_intercepts_for_test(value: u32) {
@@ -277,7 +312,11 @@ impl Clock {
         } else {
             0
         };
-        let free = base.saturating_add(elapsed.saturating_mul(1_000_000));
+        let mut free = base.saturating_add(elapsed.saturating_mul(1_000_000));
+        let stop = STOP_AT_MEDIA_NS.load(Relaxed);
+        if stop != i64::MAX {
+            free = free.min(media_to_fed(stop));
+        }
         if fed == i64::MIN {
             base
         } else {
@@ -685,6 +724,34 @@ mod tests {
     fn fresh() {
         Clock::rewind();
         FED_MAX_NS.store(i64::MIN, Relaxed);
+    }
+
+    #[test]
+    fn a_media_stop_parks_the_running_clock_exactly_on_it_and_a_pause_keeps_it_there() {
+        let _g = lock();
+        fresh();
+        // The fed timeline is rebased onto the movie's: playpos = fed - pts_shift + disp_base.
+        let shared = &super::super::super::SHARED;
+        shared.pts_shift.store(2_000_000_000, Relaxed);
+        shared.disp_base.store(435_000_000_000, Relaxed);
+        FED_MAX_NS.store(600_000_000_000, Relaxed);
+        BASE_NS.store(2_000_000_000, Relaxed);
+        RESUMED_AT_MS.store(now_ms(), Relaxed);
+        PLAYING.store(true, Relaxed);
+        assert!(stop_clock_at(Some(446_020_000_000)), "11 s ahead of the playhead: armed");
+        // A minute of wall time later the clock has run into the stop and waits on it, on the
+        // exact fed PTS the movie position maps to, not wherever the wall clock got to.
+        RESUMED_AT_MS.store(now_ms() - 60_000, Relaxed);
+        assert_eq!(Clock::position_ns(), 13_020_000_000);
+        Clock::hold();
+        assert_eq!(BASE_NS.load(Relaxed), 13_020_000_000, "the pause keeps the stop's position");
+        stop_clock_at(None);
+        assert_eq!(Clock::position_ns(), 13_020_000_000, "lifting it does not move a held clock");
+        // A stop the playhead has already passed is refused: the clock would otherwise jump back.
+        assert!(!stop_clock_at(Some(440_000_000_000)));
+        assert_eq!(Clock::position_ns(), 13_020_000_000);
+        shared.pts_shift.store(0, Relaxed);
+        shared.disp_base.store(0, Relaxed);
     }
 
     #[test]

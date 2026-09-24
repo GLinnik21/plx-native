@@ -1164,6 +1164,15 @@ fn autopause_arm(app: &mut App, fr: &mut Frame) {
         }
     }
     if let Some((pause_at, hold_ms, at_ms)) = app.scenarios.pause_script {
+        // In the simulator the clock sink is also told to stop on `at` exactly, so the pause
+        // (accepted a little after the gate opens) freezes that position rather than wherever
+        // scheduling had got to: the same frame and clock every run (`ffi_host.rs::stop_clock_at`).
+        // Re-armed every frame until accepted: a Load in between rebases the fed timeline, and
+        // the stop is kept in movie time, so re-arming is idempotent.
+        #[cfg(feature = "hostsim")]
+        if let Some(ms) = at_ms {
+            crate::player::stop_sim_clock_at(Some(i64::from(ms) * 1_000_000));
+        }
         let reached = at_ms.is_none_or(|ms| crate::app::playback::playpos() >= i64::from(ms) * 1_000_000);
         if matches!(app.route(), AppArg::Player) && script_step_due(fr.now, pause_at, 0) && reached {
             if crate::app::lifecycle::set_transport_paused(&mut app.adapters.player, true) {
@@ -1173,6 +1182,8 @@ fn autopause_arm(app: &mut App, fr: &mut Frame) {
                 ));
                 app.scenarios.pause_script = None;
                 app.scenarios.pause_resume_at = hold_ms.map(|hold| fr.now.wrapping_add(hold));
+                #[cfg(feature = "hostsim")]
+                crate::player::stop_sim_clock_at(None);
                 pin_headless_hud(app, fr.now, None);
             }
         }

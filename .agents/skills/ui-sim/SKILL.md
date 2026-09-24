@@ -247,9 +247,10 @@ make screenshots HERO_VARIANTS=1      # also home-hero-<film>.jpg for each hero 
   may differ by at most `max_delta` (default 1 — the GPU's run-to-run rounding), except inside a
   scene's `free_regions`, which must carry a `tolerance_reason`. Search, detail, sign-in and the
   failure read-out come back byte-identical; scenes with backdrop blur or glass differ by exactly
-  1 in anything from a few pixels to ~120k of them. The player scene frees the playhead knob alone: autopause is gated on the playhead
-  (`autopause=at=<ms>`), so it lands on the same frame and the same clock, but at a position
-  a few milliseconds apart, which moves the knob by a fraction of a pixel.
+  1 in anything from a few pixels to ~120k of them. The player is byte-identical too:
+  `autopause=at=<ms>` waits for the playhead to reach that position, and under `hostsim` it also
+  stops the clock sink exactly there, so the frame, the clocks and the knob are the same every
+  run. Aim `at` between two frames (Sintel is 24 fps), so no PTS rounding picks the neighbour.
 - **The library is openly licensed.** `tests/demo_library/assets.json` pins every source file (URL,
   sha256, licence, author); `catalog.json` is the library. Film title logos are never used (the
   Blender Studio terms reserve its trademarks); the app draws titles as text.
