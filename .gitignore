@@ -75,6 +75,7 @@ pkg/logmprobe
 .tv-tunnel.log
 .tv-remote-url
 pkg/.build-config
+pkg/.config-local-stamp
 # The derived per-flavour descriptor (ci/mkipk.py --emit-appinfo). Generated from the tracked
 # pkg/appinfo.json by ci/flavor.py on every deploy/package, so committing it would put the version
 # in a fifth file. NB `pkg/dev/` is the opposite — tracked artwork, cut by tools/mkicons.py.
