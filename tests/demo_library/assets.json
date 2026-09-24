@@ -426,6 +426,443 @@
    "author": "Blender Studio",
    "attribution": "© Blender Foundation | studio.blender.org",
    "notes": "Blender Studio project header artwork. Site terms: \"Unless notified otherwise, all digital content (webpages, video, artwork, 3D data) is available under the Creative Commons Attribution 4.0.\""
+  },
+  "bs-singularity-header": {
+   "url": "https://studio.blender.org/files/public/header/project/77/d2/77d22fd704cf7ee46e009032d2d906a6.webp",
+   "source_page": "https://studio.blender.org/projects/singularity/",
+   "sha256": "afd10fed79f0fc6ba57466971335e50bf255435eda3c8dc5cc607095928be335",
+   "bytes": 82508,
+   "licence": "CC BY 4.0",
+   "author": "Blender Studio",
+   "attribution": "© Blender Foundation | studio.blender.org",
+   "notes": "Blender Studio project header artwork. Site terms: \"Unless notified otherwise, all digital content (webpages, video, artwork, 3D data) is available under the Creative Commons Attribution 4.0.\""
+  },
+  "sita-still-ram-sita-gods": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/b/b3/05.RamSitaGods.png",
+   "source_page": "https://commons.wikimedia.org/wiki/File:05.RamSitaGods.png",
+   "sha256": "9961796856657e48ad11ffce92523430dd3fdc8b028e3a6ff25304e4d61c10f4",
+   "bytes": 2035275,
+   "licence": "CC0 1.0",
+   "author": "Nina Paley",
+   "attribution": "Nina Paley"
+  },
+  "seder-masochism-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/0/0b/SederMasochismPoster.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:SederMasochismPoster.jpg",
+   "sha256": "4961be0a02d11d3fbd58af980488b55e15986052ede0eb279e512c9e0186dda3",
+   "bytes": 436099,
+   "licence": "CC0 1.0",
+   "author": "Nina Paley",
+   "attribution": "Nina Paley"
+  },
+  "seder-masochism-still-moses-splits-sea": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/7/73/Moses-Splits-Sea_by_Nina_Paley.jpg",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Moses-Splits-Sea_by_Nina_Paley.jpg",
+   "sha256": "98cd36cb2e865c8556b012122ef524238f0d775bee6e84e6bf24c1c8bb34f693",
+   "bytes": 685563,
+   "licence": "CC0 1.0",
+   "author": "Nina Paley",
+   "attribution": "Nina Paley"
+  },
+  "esa-hubble-heic1608a": {
+   "url": "https://cdn.esahubble.org/archives/images/screen/heic1608a.jpg",
+   "source_page": "https://esahubble.org/images/heic1608a/",
+   "sha256": "e32591c59897579b808351b60927cd79bcee350573919cbba12b5b1704ad3406",
+   "bytes": 163185,
+   "licence": "CC BY 4.0",
+   "author": "NASA, ESA, Hubble Heritage Team",
+   "attribution": "NASA, ESA, Hubble Heritage Team",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "esa-hubble-heic1509a": {
+   "url": "https://cdn.esahubble.org/archives/images/large/heic1509a.jpg",
+   "source_page": "https://esahubble.org/images/heic1509a/",
+   "sha256": "7c0ee37824edcad0173ece168f0e8c305d0b1fc09db46c9e5a58c44a301b77bc",
+   "bytes": 18698730,
+   "licence": "CC BY 4.0",
+   "author": "NASA, ESA, the Hubble Heritage Team (STScI/AURA), A. Nota (ESA/STScI), and the Westerlund 2 Science Team",
+   "attribution": "NASA, ESA, the Hubble Heritage Team (STScI/AURA), A. Nota (ESA/STScI), and the Westerlund 2 Science Team",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-hubblecast133a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/hubblecast133a.jpg",
+   "source_page": "https://esahubble.org/videos/hubblecast133a/",
+   "sha256": "73fc10f69c983bae21f083645deaa8b1bbdf99b4f720e6b52fffbf4bc73be88c",
+   "bytes": 29876,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic2021a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic2021a.jpg",
+   "source_page": "https://esahubble.org/videos/heic2021a/",
+   "sha256": "dfb72dea7f15acba7d051f611e6653e09de89e7fd6e35fb5f208d9dd5720e52c",
+   "bytes": 28682,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-hubblecast131a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/hubblecast131a.jpg",
+   "source_page": "https://esahubble.org/videos/hubblecast131a/",
+   "sha256": "54fbc754de65f573730a6a1e790878be742f166f3eeda069208c469d32ba1c6a",
+   "bytes": 41131,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic2013a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic2013a.jpg",
+   "source_page": "https://esahubble.org/videos/heic2013a/",
+   "sha256": "4a0ed495c50c8aad1bf181feeac0f8ffd13be2d9cd687cba9ef79a836dddad7a",
+   "bytes": 26558,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic2007a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic2007a.jpg",
+   "source_page": "https://esahubble.org/videos/heic2007a/",
+   "sha256": "3d79e9fc29cea54163314c46ec06f9c16fde5478265bd1c6d16ccd43fd477087",
+   "bytes": 38781,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic2006a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic2006a.jpg",
+   "source_page": "https://esahubble.org/videos/heic2006a/",
+   "sha256": "14b7e70ceb4be55d62a6a6b302d7bcf0c9d8fe9fb77455c9baf2593bae378036",
+   "bytes": 31882,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-hubblecast126a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/hubblecast126a.jpg",
+   "source_page": "https://esahubble.org/videos/hubblecast126a/",
+   "sha256": "ee5ee8295eaa5af6518618e57b70a45537e9e2e24d07d878bb9ad599d808f01a",
+   "bytes": 20457,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1921b": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1921b.jpg",
+   "source_page": "https://esahubble.org/videos/heic1921b/",
+   "sha256": "e06898996d3b7ff247d4d4ba15071668684f3511f0bd0377415963b95dfe3599",
+   "bytes": 24828,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1916a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1916a.jpg",
+   "source_page": "https://esahubble.org/videos/heic1916a/",
+   "sha256": "8bbee108fdebdd4be248a7c5f8644949c900bde69010ae6fb42d1b85ac569d98",
+   "bytes": 26148,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1914a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1914a.jpg",
+   "source_page": "https://esahubble.org/videos/heic1914a/",
+   "sha256": "3d8226f9c737da5b94f97ae44c9625547a668f246d4eef60b24e64b7d6bd17c1",
+   "bytes": 36107,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1912a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1912a.jpg",
+   "source_page": "https://esahubble.org/videos/heic1912a/",
+   "sha256": "1e6a29cece82d569e28b5914fda4a818d89014c1e860bc96a930d3a44add7b52",
+   "bytes": 49463,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-hubblecast121b": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/hubblecast121b.jpg",
+   "source_page": "https://esahubble.org/videos/hubblecast121b/",
+   "sha256": "a14293591410d4e1e9fa1c5feded8f65a0f1f29de357e4f01bdfcf8f1425ab73",
+   "bytes": 12920,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1908a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1908a.jpg",
+   "source_page": "https://esahubble.org/videos/heic1908a/",
+   "sha256": "0de3c5c7f4746686d5ac44db148d4f3240f13c546c5ffc8557acd4346cf0615a",
+   "bytes": 31521,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1907a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1907a.jpg",
+   "source_page": "https://esahubble.org/videos/heic1907a/",
+   "sha256": "1c31a72d4c20975408f162ade45c069af77bbd5ea50b7ec6df97a9ecdde0269a",
+   "bytes": 68861,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-hubblecast118a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/hubblecast118a.jpg",
+   "source_page": "https://esahubble.org/videos/hubblecast118a/",
+   "sha256": "9ad9695ebfb6d773fa93d0d3bfb08dc06d11a9df047bfe0b1930355eadc7e442",
+   "bytes": 41559,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1905a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1905a.jpg",
+   "source_page": "https://esahubble.org/videos/heic1905a/",
+   "sha256": "5a038fdf11c1a69504bac6667ad0d1d7328debcafe530576a3bd7b3033fec07c",
+   "bytes": 49363,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1901a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1901a.jpg",
+   "source_page": "https://esahubble.org/videos/heic1901a/",
+   "sha256": "fcb85c588fa1119755f70a75af53cc374d0a2c7ca162c388169203ac37a46f77",
+   "bytes": 72935,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-hubblecast114a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/hubblecast114a.jpg",
+   "source_page": "https://esahubble.org/videos/hubblecast114a/",
+   "sha256": "a4809ecbab4bd6baf661fa5a8b9625676e3cc26bb17ea631a1ebb9a11ec8277c",
+   "bytes": 34740,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1814a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1814a.jpg",
+   "source_page": "https://esahubble.org/videos/heic1814a/",
+   "sha256": "8805390b93bb8667d15756fe2bafbd4e51673df4aba21b6b63c037a7de3a7612",
+   "bytes": 18322,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1813a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1813a.jpg",
+   "source_page": "https://esahubble.org/videos/heic1813a/",
+   "sha256": "e769843852c1385efc4107a2b5a34fb3b874071db28488f8eb6d365a6d634bcb",
+   "bytes": 16574,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1812a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1812a.jpg",
+   "source_page": "https://esahubble.org/videos/heic1812a/",
+   "sha256": "f5721fd13409d19b4ab390b5cdec41563ff055bf7dd2acc15c522321f3d6e515",
+   "bytes": 33895,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1808a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1808a.jpg",
+   "source_page": "https://esahubble.org/videos/heic1808a/",
+   "sha256": "7ef9860340be235b0fe787e08249142f3f12ff29debf5c93ca6deb1ca3b32f1d",
+   "bytes": 16942,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1807a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1807a.jpg",
+   "source_page": "https://esahubble.org/videos/heic1807a/",
+   "sha256": "5c46e3c37aa0d786a7f0141993f1e633cb1ec3bcd1eafd3f76cc93ac332ee299",
+   "bytes": 29992,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1803a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1803a.jpg",
+   "source_page": "https://esahubble.org/videos/heic1803a/",
+   "sha256": "adb82a98870bbef0d6b82cc0bfc0bfb6008d9f54360fe76e051d330992f24dd1",
+   "bytes": 68894,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-hubblecast106a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/hubblecast106a.jpg",
+   "source_page": "https://esahubble.org/videos/hubblecast106a/",
+   "sha256": "f2e211720ebb7a8442b79dc78c9630f56392e91fa2e1ba22b6a076c2cd919bda",
+   "bytes": 30596,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1717a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1717a.jpg",
+   "source_page": "https://esahubble.org/videos/heic1717a/",
+   "sha256": "11469f4413bad2a1f284d5195f75f23fd47d0f8804b3303f1411df6ccbf4cf52",
+   "bytes": 33923,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-hubblecast102a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/hubblecast102a.jpg",
+   "source_page": "https://esahubble.org/videos/hubblecast102a/",
+   "sha256": "d619f2983aec70208476612062ee9269273c9cdfa089f8980675d7a1e893bdd3",
+   "bytes": 25285,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-hubblecast99a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/hubblecast99a.jpg",
+   "source_page": "https://esahubble.org/videos/hubblecast99a/",
+   "sha256": "930366392bd12ac1386a5ad5ac7428992069dc8aeba83407cbff7fb133013f16",
+   "bytes": 79587,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-hubblecast98a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/hubblecast98a.jpg",
+   "source_page": "https://esahubble.org/videos/hubblecast98a/",
+   "sha256": "ca571f75b273095d47b691cce3b6319d4cbd0720476389f928dc11501cbe0f75",
+   "bytes": 20637,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-hubblecast97a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/hubblecast97a.jpg",
+   "source_page": "https://esahubble.org/videos/hubblecast97a/",
+   "sha256": "8118d5c00a0f8dc6012c84807969122fdd40e0f7d89169638f115469676cf78d",
+   "bytes": 54565,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1620a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1620a.jpg",
+   "source_page": "https://esahubble.org/videos/heic1620a/",
+   "sha256": "8d4013ed7773c97b86708aa2b4c94a8c8a1377a581e93faff9034e92abea22ad",
+   "bytes": 16741,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-hubblecast93a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/hubblecast93a.jpg",
+   "source_page": "https://esahubble.org/videos/hubblecast93a/",
+   "sha256": "164173844c488be2b44b73c63af0c7bfd6d8568559f9f0235403c776ed8ae955",
+   "bytes": 36384,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1608a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1608a.jpg",
+   "source_page": "https://esahubble.org/videos/heic1608a/",
+   "sha256": "65e3207a209262216c1c0589336f4a6fb48c178a52324c2c0f543d1494a40e4e",
+   "bytes": 36603,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-hubblecast91a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/hubblecast91a.jpg",
+   "source_page": "https://esahubble.org/videos/hubblecast91a/",
+   "sha256": "314c9bf6f8b9a42979b850bdbee61abeef41b264117c6647908801c8e4cb61b4",
+   "bytes": 44544,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1521a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1521a.jpg",
+   "source_page": "https://esahubble.org/videos/heic1521a/",
+   "sha256": "6eaea78c139c5d664dbedd6e611028f88e31c03620d65e3feb821396c83f2e8a",
+   "bytes": 39662,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-hubblecast87a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/hubblecast87a.jpg",
+   "source_page": "https://esahubble.org/videos/hubblecast87a/",
+   "sha256": "bf5ab691ea5ee6b7cd8fffcb2360d2211753746617f63ff2551346d7a54e7675",
+   "bytes": 23671,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1518a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1518a.jpg",
+   "source_page": "https://esahubble.org/videos/heic1518a/",
+   "sha256": "4a58cd0a9fb04d54d23ba518e3d893bc679a2cd963755dbb932ffa49b77aae43",
+   "bytes": 27456,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
+  },
+  "hubblecast-heic1509a": {
+   "url": "https://cdn.esahubble.org/archives/videos/videoframe/heic1509a.jpg",
+   "source_page": "https://esahubble.org/videos/heic1509a/",
+   "sha256": "d45635366fb1a2ae096f6adbd5828dde1961dacb934d9150522a3735cb8d7d09",
+   "bytes": 60027,
+   "licence": "CC BY 4.0",
+   "author": "ESA/Hubble",
+   "attribution": "ESA/Hubble",
+   "notes": "ESA/Hubble: \"ESA/Hubble images, videos and web texts are released under the Creative Commons Attribution 4.0 International license\" (https://esahubble.org/copyright/). The licence does not extend to ESA/Hubble's logos, so no frame showing one is used."
   }
  }
 }

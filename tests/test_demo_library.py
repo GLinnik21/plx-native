@@ -66,7 +66,7 @@ class Manifests(unittest.TestCase):
                 self.assertRegex(a["sha256"], r"^[0-9a-f]{64}$")
                 self.assertGreater(a["bytes"], 0)
                 self.assertTrue(a["url"].startswith("https://"), a["url"])
-                self.assertTrue(a["licence"].startswith(("CC BY", "Public domain")), a["licence"])
+                self.assertTrue(a["licence"].startswith(("CC BY", "CC0", "Public domain")), a["licence"])
 
     def test_the_hero_and_its_alternatives_are_distinct_films(self):
         _, catalog = tool.load()
@@ -328,10 +328,40 @@ class Catalog(unittest.TestCase):
         bare = next(k for k in self.lib.items if "clearLogo" not in self.lib.images.get(k, {}))
         self.assertEqual(self.pms.handle("GET", ask.format(bare))[0], 404)
 
-    def search(self, query):
-        hubs = self.get("/hubs/search?" + urllib.parse.urlencode({"query": query}))["Hub"]
+    def search(self, query, limit=12):
+        # 12 is what the app asks for (`search::LIMIT`).
+        hubs = self.get("/hubs/search?" + urllib.parse.urlencode({"query": query, "limit": limit}))["Hub"]
         return {h["type"]: [r.get("title") or r.get("tag") for r in h.get("Metadata", h.get("Directory", []))]
                 for h in hubs}
+
+    def test_search_caps_each_hub_at_limit_and_its_size_says_what_it_returned(self):
+        hubs = self.get("/hubs/search?query=an&limit=2")["Hub"]
+        movie = next(h for h in hubs if h["type"] == "movie")
+        self.assertEqual((movie["size"], len(movie["Metadata"])), (2, 2))
+        # No limit: PMS's own default of three rows per hub.
+        hubs = self.get("/hubs/search?query=an")["Hub"]
+        self.assertEqual(next(h for h in hubs if h["type"] == "movie")["size"], 3)
+
+    def test_a_genre_match_brings_that_genres_movies_after_the_title_hits(self):
+        hubs = {h["type"]: h for h in self.get("/hubs/search?query=co&limit=12")["Hub"]}
+        rows = hubs["movie"]["Metadata"]
+        # Direct title hits first, carrying no reason ...
+        self.assertEqual([r["title"] for r in rows[:2]], ["Cosmos Laundromat", "Coffee Run"])
+        self.assertTrue(all("reason" not in r for r in rows[:2]))
+        # ... then the related films, each saying why it is there: the Comedy genre's, and
+        # Caligari for Conrad Veidt, who acts in it.
+        why = {r["title"]: (r["reason"], r["reasonTitle"]) for r in rows[2:]}
+        self.assertEqual(why["Sprite Fright"], ("genre", "Comedy"))
+        self.assertEqual(why["The Cabinet of Dr. Caligari"], ("actor", "Conrad Veidt"))
+        # Only movies are related; Caminandes is a comedy, and still no show hit.
+        self.assertEqual(self.search("an")["show"], [])
+
+    def test_an_actor_match_brings_the_movies_they_act_in(self):
+        hubs = {h["type"]: h for h in self.get("/hubs/search?query=halina&limit=12")["Hub"]}
+        self.assertEqual([t["tag"] for t in hubs["actor"]["Directory"]], ["Halina Reijn"])
+        self.assertEqual([(r["title"], r["reason"]) for r in hubs["movie"]["Metadata"]], [("Sintel", "actor")])
+        # A director is not an actor: Fritz Lang's name brings no film.
+        self.assertNotIn("Metropolis", self.search("fritz")["movie"])
 
     def test_search_matches_the_start_of_a_word_not_the_middle(self):
         # Word-prefix, as the mock assumes PMS does: "sp" begins Spring, Sprite and Space;

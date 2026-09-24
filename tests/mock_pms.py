@@ -117,7 +117,8 @@ def search_matcher(query):
     The WORD-PREFIX rule is an assumption, not a measurement: docs/pms-api.md §3b probed the
     response shape, not the matching, and the spec only says PMS "looks for partial matches" and
     spell-checks. It is the conservative reading — a mid-word match would make figures show hits a
-    real server may not return. The spell-checking and the related-item hubs are not modelled."""
+    real server may not return. Spell-checking is not modelled; the related results are, in
+    `Library.search`."""
     want = search_words(query)
     if len(query.strip()) < SEARCH_MIN_QUERY or not want:
         return lambda name: False
@@ -631,21 +632,51 @@ class Library:
         return [it for it in self.items.values() if it["type"] in ("movie", "show") and any(
             t["id"] == pid for t in it.get("Role", []) + it.get("Director", []) + it.get("Writer", []))]
 
-    def search(self, query):
+    def search(self, query, limit=3):
+        """`/hubs/search` as hubs. Each hub holds at most `limit` rows and its `size` is the number
+        it holds, as measured (docs/pms-api.md: "`limit` caps each hub separately", 3 when absent,
+        and `Hub.size` is the rows returned).
+
+        The movie hub also carries RELATED results, which the spec documents for this endpoint:
+        "for a genre match, it may return movies in that genre, or for an actor match, movies with
+        that actor", each marked with `reason` (the hub the match came from), `reasonTitle` and
+        `reasonID`. The mock returns exactly those two relations — a genre whose name the query
+        matches brings that genre's movies, and a person it matches brings the movies they act in —
+        after the direct title hits, in library order. The order and the choice of which relations
+        a real server applies are assumptions: the spec names these two examples and says the hubs
+        are ordered "based on quality", which the mock does not try to model. Shows, episodes and
+        the other hubs hold direct hits only."""
         hits = search_matcher(query)
+        limit = max(1, int(limit))
+        genres = [g for g in self.genres.values() if hits(g["tag"])]
+        matched = [t for t in self.people.values() if hits(t["tag"])]
+
+        def related(it):
+            for g in genres:
+                if any(t["id"] == g["id"] for t in it.get("Genre", [])):
+                    return {"reason": "genre", "reasonTitle": g["tag"], "reasonID": g["id"]}
+            for p in matched:
+                if any(t["id"] == p["id"] for t in it.get("Role", [])):
+                    return {"reason": "actor", "reasonTitle": p["tag"], "reasonID": p["id"]}
+            return None
+
         hubs = []
-        for kind, title in (("movie", "movie"), ("show", "show"), ("episode", "episode")):
-            rows = [it for it in self.items.values() if it["type"] == kind and hits(it["title"])]
-            hubs.append({"title": title, "type": kind, "hubIdentifier": kind, "size": len(rows),
-                         "Metadata": rows[:8]})
+        for kind in ("movie", "show", "episode"):
+            items = [it for it in self.items.values() if it["type"] == kind]
+            rows = [it for it in items if hits(it["title"])]
+            if kind == "movie":
+                rows += [dict(it, **why) for it in items
+                         if not hits(it["title"]) and (why := related(it))]
+            rows = rows[:limit]
+            hubs.append({"title": kind, "type": kind, "hubIdentifier": kind, "size": len(rows),
+                         "Metadata": rows})
         people = [dict(t, type="actor", key=f"/library/sections/1/all?actor={t['id']}",
-                       librarySectionID=1)
-                  for t in self.people.values() if hits(t["tag"])]
+                       librarySectionID=1) for t in matched][:limit]
         hubs.append({"title": "actor", "type": "actor", "hubIdentifier": "actor",
-                     "size": len(people), "Directory": people[:8]})
+                     "size": len(people), "Directory": people})
         cols = [{"tag": c["tag"], "id": c["id"], "type": "collection", "librarySectionID": 1,
                  "key": f"/library/sections/1/all?collection={c['id']}", "reasonTitle": ""}
-                for c in self.collections.values() if hits(c["tag"])]
+                for c in self.collections.values() if hits(c["tag"])][:limit]
         hubs.append({"title": "collection", "type": "collection", "hubIdentifier": "collection",
                      "size": len(cols), "Directory": cols})
         return hubs
@@ -790,7 +821,7 @@ class CatalogLibrary(Library):
                 self.images[srk] = self.images[rk]
                 self.items[srk] = se
                 for e in season["episodes"]:
-                    erk = srk * 10 + e["index"]
+                    erk = srk * 1000 + e["index"]  # episode numbers run past 9 (Hubblecast 133)
                     part += 1
                     ep = base(erk, "episode", shows, e, f"{s['id']}/{season['index']}/{e['index']}")
                     dur = e["minutes"] * 60_000
@@ -1118,7 +1149,8 @@ class MockPms:
                 hubs[1]["title"] = "Recently Added Movies" if kind == "movie" else "Recently Added TV"
             return j(self.container(Hub=hubs))
         if p == "/hubs/search":
-            return j(self.container(Hub=lib.search(q.get("query", ""))))
+            lim = q.get("limit", "")
+            return j(self.container(Hub=lib.search(q.get("query", ""), int(lim) if lim.isdigit() else 3)))
         if p == "/photo/:/transcode" and catalog:
             img = lib.image(q.get("url", ""), q.get("width"), q.get("height"))
             return (200, *img) if img else (404, "text/plain", b"no image")

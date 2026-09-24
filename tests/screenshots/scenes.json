@@ -64,8 +64,8 @@
     },
     {
       "name": "search",
-      "state": "Search for \"dr\" (the app's two-character minimum): the query, the scope line, and the result shelves the mock's word-prefix match gives — Movies (Elephants Dream, The Cabinet of Dr. Caligari), then Episodes (Caminandes: Llama Drama).",
-      "triggers": {"search": "dr"},
+      "state": "Search for \"an\" (the app's two-character minimum): the query, the scope line, and the two result shelves the mock gives — Movies, the films of the Animation genre the query matches (related results, as the spec documents: Spring, Sintel, Sprite Fright, Charge, …), then Episodes whose titles have a word beginning \"an\" (Hubblecast: 26th anniversary; Hubble, exoplanets and the hunt for life; Light: Mars and Saturn; …).",
+      "triggers": {"search": "an"},
       "expect": ["state=ready"],
       "outputs": [
         {"file": "search.jpg", "size": "1600x900"},

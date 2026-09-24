@@ -309,7 +309,7 @@ def check(assets, catalog):
     for aid, a in assets.items():
         for field in ("url", "sha256", "bytes", "licence", "author", "attribution", "source_page"):
             assert a.get(field) not in (None, ""), f"asset {aid}: missing {field}"
-        assert a["licence"].startswith(("CC BY", "Public domain")), f"asset {aid}: licence {a['licence']!r}"
+        assert a["licence"].startswith(("CC BY", "CC0", "Public domain")), f"asset {aid}: licence {a['licence']!r}"
         assert "-SA" not in a["licence"] and "-NC" not in a["licence"] and "-ND" not in a["licence"], aid
     unused = sorted(set(assets) - used)
     assert not unused, f"assets never used: {unused}"
@@ -366,9 +366,12 @@ def credits(assets, catalog):
         attribution = a["author"] if a["attribution"] in ("", a["author"]) else f"{a['author']}; {a['attribution']}"
         lines.append(f"| {', '.join(uses)} | [{a['url'].rsplit('/', 1)[-1]}]({a['source_page']}) | "
                      f"{a['licence']} | {attribution.replace('|', '/')} |")
-    lines += ["", "Licence texts: [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/), "
-                  "[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Public-domain status is as "
-                  "recorded on each file's Wikimedia Commons page.", ""]
+    texts = {"CC BY 3.0": "https://creativecommons.org/licenses/by/3.0/",
+             "CC BY 4.0": "https://creativecommons.org/licenses/by/4.0/",
+             "CC0 1.0": "https://creativecommons.org/publicdomain/zero/1.0/"}
+    used = sorted({a["licence"] for a in assets.values()} & set(texts))
+    lines += ["", "Licence texts: " + ", ".join(f"[{name}]({texts[name]})" for name in used)
+              + ". Public-domain status is as recorded on each file's Wikimedia Commons page.", ""]
     CREDITS.parent.mkdir(parents=True, exist_ok=True)
     CREDITS.write_text("\n".join(lines))
     print(f"demo_library: wrote {CREDITS.relative_to(ROOT)}")
