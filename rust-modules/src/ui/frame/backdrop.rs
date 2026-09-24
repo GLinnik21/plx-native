@@ -357,6 +357,16 @@ pub(crate) fn recording_excluded() -> bool {
     })
 }
 
+/// True once a DISCOVERY walk has reached the surfaces band — the half of
+/// [`recording_excluded`] where a glass declaration is a bug rather than dead content.
+pub(crate) fn in_surfaces_band() -> bool {
+    WALK.with(|w| {
+        w.borrow()
+            .as_ref()
+            .is_some_and(|w| w.discovery && w.current >= Z::surface(0))
+    })
+}
+
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 #[derive(Default)]
 pub(crate) struct Sources {

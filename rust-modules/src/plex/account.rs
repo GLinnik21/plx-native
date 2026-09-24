@@ -29,6 +29,36 @@ use std::time::{Duration, Instant};
 use super::models::{de_bool, de_i64, de_str, de_vec};
 
 const PLEX_TV: &str = "https://plex.tv";
+
+/// plex.tv's base URL: [`PLEX_TV`], or — in a dev build only — a LOOPBACK stand-in named by
+/// `/tmp/plxnative-plextv=http://127.0.0.1:<port>`. The screenshot pipeline's mock
+/// (`tests/mock_pms.py --catalog`) answers the sign-in pin and serves its QR there, so no
+/// documentation figure ever shows a live code minted by the real service. Anything that is not
+/// plain `http://` to `127.0.0.1`/`localhost` is refused and logged: this trigger must never be
+/// able to point the account API, and the token it carries, at another host. Read once.
+pub(crate) fn plex_tv() -> &'static str {
+    static BASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BASE.get_or_init(|| match crate::dev::read("plextv") {
+        Some(v) if loopback_http(&v) => {
+            crate::log("account: plex.tv replaced by a loopback stand-in (/tmp/plxnative-plextv)");
+            v.trim_end_matches('/').to_string()
+        }
+        Some(_) => {
+            crate::log("BADTRIGGER plextv: only http://127.0.0.1:<port> or http://localhost:<port> is accepted");
+            PLEX_TV.to_string()
+        }
+        None => PLEX_TV.to_string(),
+    })
+}
+
+/// `http://127.0.0.1:<port>` or `http://localhost:<port>`, optionally with a trailing `/`.
+fn loopback_http(v: &str) -> bool {
+    let port = v
+        .strip_prefix("http://127.0.0.1:")
+        .or_else(|| v.strip_prefix("http://localhost:"))
+        .map(|rest| rest.strip_suffix('/').unwrap_or(rest));
+    port.is_some_and(|p| !p.is_empty() && p.len() <= 5 && p.bytes().all(|b| b.is_ascii_digit()))
+}
 const AUDIO_PREFERENCES_SUCCESS_TTL: Duration = Duration::from_secs(5 * 60);
 const AUDIO_PREFERENCES_FAILURE_TTL: Duration = Duration::from_secs(45);
 const AUDIO_PREFERENCES_FAILURE_TTL_MAX: Duration = Duration::from_secs(10 * 60);
@@ -263,7 +293,7 @@ impl AccountClient {
     fn fetch_audio_preferences(&self, expected: &super::session::UserRef,
         timeouts: crate::net::Timeouts) -> AudioPreferencesOutcome
     {
-        let url = format!("{PLEX_TV}/api/v2/user");
+        let url = format!("{}/api/v2/user", plex_tv());
         let response = crate::net::request_evidence(&url, &self.headers(), "GET", None,
             timeouts, false, None, None);
         note_response_contact(&url, &response);
@@ -296,7 +326,7 @@ impl AccountClient {
     /// an `Option` folded "plex.tv refused this identity" into "plex.tv never answered", which is
     /// how a managed profile's 401 read as nothing at all (#132). See [`CallEvidence`].
     pub fn create_pin(&self) -> Result<Pin, CallEvidence> {
-        let url = format!("{PLEX_TV}/api/v2/pins?strong=false");
+        let url = format!("{}/api/v2/pins?strong=false", plex_tv());
         decode_evidence("POST", &url, self.post_raw(&url))
     }
 
@@ -307,7 +337,7 @@ impl AccountClient {
     /// **It returns [`PinPoll`] rather than `Option<Pin>` because the caller has to tell a dead
     /// pin from a bad moment**, and an `Option` cannot. See [`PinPoll::Gone`].
     pub fn poll_pin(&self, id: i64) -> PinPoll {
-        let url = format!("{PLEX_TV}/api/v2/pins/{id}");
+        let url = format!("{}/api/v2/pins/{id}", plex_tv());
         // Polling did not update the reachability memo; preserve that policy.
         let response = crate::net::request_evidence(&url, &self.headers(), "GET", None,
             crate::net::API, false, None, None);
@@ -327,7 +357,7 @@ impl AccountClient {
     /// ([`refused_identity`]) is a statement about the token rather than the network.
     pub fn resources(&self) -> Result<Vec<Resource>, CallEvidence> {
         self.get_evidence(&format!(
-            "{PLEX_TV}/api/v2/resources?includeHttps=1&includeRelay=1&includeIPv6=1"
+            "{}/api/v2/resources?includeHttps=1&includeRelay=1&includeIPv6=1", plex_tv()
         ))
     }
 
@@ -341,7 +371,7 @@ impl AccountClient {
     /// saying this identity cannot list the household, and no retry or connection check changes
     /// it. `Err` keeps the status ([`refused_identity`]) so the roster worker can say so.
     pub fn home_users(&self) -> Result<Vec<HomeUser>, CallEvidence> {
-        let hu: HomeUsers = self.get_evidence(&format!("{PLEX_TV}/api/v2/home/users"))?;
+        let hu: HomeUsers = self.get_evidence(&format!("{}/api/v2/home/users", plex_tv()))?;
         Ok(hu.users)
     }
 
@@ -361,7 +391,7 @@ impl AccountClient {
             Some(p) if !p.is_empty() => format!("?pin={p}"),
             _ => String::new(),
         };
-        let url = format!("{PLEX_TV}/api/v2/home/users/{uuid}/switch{q}");
+        let url = format!("{}/api/v2/home/users/{uuid}/switch{q}", plex_tv());
         switch_response(&url, self.post_raw(&url))
             .expect("uncapped account request cannot report a local body limit")
     }
@@ -645,7 +675,7 @@ const UNREACHABLE_MEMO: Duration = Duration::from_secs(45);
 const REACHABLE_MEMO: Duration = Duration::from_secs(300);
 
 fn note_contact(url: &str, answered: bool) {
-    if !url.starts_with(PLEX_TV) {
+    if !url.starts_with(plex_tv()) {
         return;
     }
     let now = Instant::now();
@@ -685,6 +715,26 @@ pub(crate) fn set_unreachable_for_test(unreachable: bool) {
 #[cfg(test)]
 mod reachability_tests {
     use super::*;
+
+    /// The `plextv` stand-in is loopback-only: a trigger file must never be able to aim the
+    /// account API (and the token it carries) at any other host.
+    #[test]
+    fn only_a_loopback_http_origin_may_stand_in_for_plex_tv() {
+        assert!(loopback_http("http://127.0.0.1:32612"));
+        assert!(loopback_http("http://localhost:8080/"));
+        for refused in [
+            "https://127.0.0.1:32612",
+            "http://127.0.0.1",
+            "http://127.0.0.1:",
+            "http://127.0.0.1:80@evil.example",
+            "http://127.0.0.1:123456",
+            "http://127.0.0.2:80",
+            "http://localhost.evil.example:80",
+            "https://plex.tv",
+        ] {
+            assert!(!loopback_http(refused), "{refused} must be refused");
+        }
+    }
 
     /// Process globals — serialized on the crate-wide lock.
     #[test]

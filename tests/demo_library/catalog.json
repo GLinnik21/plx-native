@@ -1,0 +1,1742 @@
+{
+ "comment": "The demo library for the documentation screenshots. Every asset is openly licensed or public domain; tests/demo_library/assets.json records where each came from. Times are PINNED (now = 1790000000) so every run of the mock answers byte-identically.",
+ "now": 1790000000,
+ "server": {
+  "friendlyName": "Demo Library",
+  "machineIdentifier": "demo0000library0000plxnative"
+ },
+ "hero": "sintel",
+ "hero_alternatives": [
+  "spring",
+  "sprite-fright"
+ ],
+ "sections": [
+  {
+   "key": "1",
+   "type": "movie",
+   "title": "Movies"
+  },
+  {
+   "key": "2",
+   "type": "show",
+   "title": "TV Shows"
+  }
+ ],
+ "collections": [
+  "Blender Open Movies",
+  "Silent Classics"
+ ],
+ "movies": [
+  {
+   "id": "spring",
+   "title": "Spring",
+   "year": 2019,
+   "originallyAvailableAt": "2019-04-04",
+   "minutes": 8,
+   "studio": "Blender Studio",
+   "genres": [
+    "Animation",
+    "Fantasy",
+    "Short"
+   ],
+   "directors": [
+    "Andy Goralczyk"
+   ],
+   "writers": [],
+   "cast": [],
+   "summary": "A shepherd girl and her dog climb into the mountains to face the ancient spirits who hold back the thaw, and to keep the cycle of life turning. A wordless fable of fear, loss and renewal, painted in moss, snow and firelight.",
+   "poster": {
+    "asset": "spring-poster"
+   },
+   "art": {
+    "asset": "bs-spring-header",
+    "mode": "extend",
+    "anchor": "right"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ],
+   "logo": {
+    "asset": "spring-poster",
+    "box": [
+     530,
+     300,
+     1210,
+     350
+    ],
+    "scale": 0.75,
+    "keys": [
+     {
+      "signal": "dark",
+      "blur": 2.5,
+      "levels": [
+       190,
+       198
+      ],
+      "grow": {
+       "signal": "shade",
+       "levels": [
+        36,
+        44
+       ],
+       "steps": 4
+      },
+      "smooth": 5,
+      "feather": 0.8,
+      "fill": "#e4f4ef"
+     }
+    ]
+   }
+  },
+  {
+   "id": "sintel",
+   "title": "Sintel",
+   "year": 2010,
+   "originallyAvailableAt": "2010-09-27",
+   "minutes": 15,
+   "studio": "Blender Foundation",
+   "genres": [
+    "Animation",
+    "Fantasy",
+    "Action",
+    "Short"
+   ],
+   "directors": [
+    "Colin Levy"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Halina Reijn",
+     "role": "Sintel"
+    },
+    {
+     "name": "Thom Hoffman",
+     "role": "Shaman"
+    }
+   ],
+   "summary": "A lone young woman crosses frozen wastes and ruined cities in search of Scales, the baby dragon she rescued and raised before it was taken from her. The closer she comes to the dragons' lair, the less certain she is of what she will find there.",
+   "poster": {
+    "asset": "sintel-poster"
+   },
+   "art": {
+    "asset": "bs-sintel-header",
+    "mode": "cover",
+    "anchor": "right"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ],
+   "media": "sintel-film",
+   "chapters": [
+    {
+     "start": "0:00",
+     "title": "Snowbound"
+    },
+    {
+     "start": "1:41",
+     "title": "The Shaman's Hut"
+    },
+    {
+     "start": "2:42",
+     "title": "Scales"
+    },
+    {
+     "start": "5:53",
+     "title": "The Long Search"
+    },
+    {
+     "start": "8:04",
+     "title": "The Dragon's Lair"
+    },
+    {
+     "start": "11:24",
+     "title": "Aftermath"
+    },
+    {
+     "start": "12:24",
+     "title": "Credits"
+    }
+   ],
+   "logo": {
+    "asset": "sintel-poster",
+    "box": [
+     252,
+     958,
+     400,
+     92
+    ],
+    "scale": 2,
+    "keys": [
+     {
+      "signal": "light",
+      "levels": [
+       110,
+       190
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "id": "sprite-fright",
+   "title": "Sprite Fright",
+   "year": 2021,
+   "originallyAvailableAt": "2021-10-29",
+   "minutes": 10,
+   "studio": "Blender Studio",
+   "genres": [
+    "Animation",
+    "Comedy",
+    "Horror",
+    "Short"
+   ],
+   "directors": [
+    "Matthew Luhn"
+   ],
+   "writers": [],
+   "cast": [],
+   "summary": "A group of rowdy teenagers on a weekend in the woods discovers that the forest's tiny, adorable mushroom sprites do not take kindly to litter. An eighties-style creature comedy in which the cute things are the monsters.",
+   "poster": {
+    "asset": "sprite-fright-poster"
+   },
+   "art": {
+    "asset": "bs-sprite-fright-header",
+    "mode": "cover",
+    "anchor": "right"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ],
+   "logo": {
+    "asset": "sprite-fright-poster",
+    "box": [
+     960,
+     4060,
+     2560,
+     1790
+    ],
+    "scale": 0.4,
+    "keys": [
+     {
+      "signal": "red",
+      "levels": [
+       70,
+       130
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "id": "charge",
+   "title": "Charge",
+   "year": 2022,
+   "originallyAvailableAt": "2022-12-12",
+   "minutes": 6,
+   "studio": "Blender Studio",
+   "genres": [
+    "Animation",
+    "Action",
+    "Science Fiction",
+    "Short"
+   ],
+   "directors": [
+    "Hjalti Hjalmarsson"
+   ],
+   "writers": [],
+   "cast": [],
+   "summary": "In a frozen, energy-starved future, an old man breaks into a guarded facility to steal a single battery, and meets the machine built to stop him.",
+   "poster": {
+    "asset": "charge-poster"
+   },
+   "art": {
+    "asset": "bs-charge-header",
+    "mode": "cover",
+    "anchor": "right"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "tears-of-steel",
+   "title": "Tears of Steel",
+   "year": 2012,
+   "originallyAvailableAt": "2012-09-26",
+   "minutes": 12,
+   "studio": "Blender Foundation",
+   "genres": [
+    "Science Fiction",
+    "Action",
+    "Short"
+   ],
+   "directors": [
+    "Ian Hubert"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Derek de Lint",
+     "role": "Old Thom"
+    },
+    {
+     "name": "Sergio Hasselbaink",
+     "role": "Barley"
+    },
+    {
+     "name": "Rogier Schippers",
+     "role": "Captain"
+    },
+    {
+     "name": "Vanja Rukavina",
+     "role": "Celia"
+    }
+   ],
+   "summary": "In a future Amsterdam overrun by machines, a band of scientists and soldiers gathers in the Oude Kerk to restage one heartbreaking moment from the past, in the hope that changing it will stop the robots before they ever rise.",
+   "poster": {
+    "asset": "tears-of-steel-poster"
+   },
+   "art": {
+    "asset": "tears-of-steel-backdrop",
+    "mode": "cover",
+    "anchor": "center"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "cosmos-laundromat",
+   "title": "Cosmos Laundromat",
+   "year": 2015,
+   "originallyAvailableAt": "2015-08-10",
+   "minutes": 12,
+   "studio": "Blender Institute",
+   "genres": [
+    "Animation",
+    "Comedy",
+    "Fantasy",
+    "Short"
+   ],
+   "directors": [
+    "Mathieu Auvray"
+   ],
+   "writers": [],
+   "cast": [],
+   "summary": "On a desolate island, a suicidal sheep called Franck meets Victor, a mysterious salesman who offers him the gift of a lifetime: a chance to live a different life, and then another.",
+   "poster": {
+    "asset": "cosmos-laundromat-poster"
+   },
+   "titleSort": "Cosmos Laundromat",
+   "art": {
+    "asset": "bs-cosmos-laundromat-header",
+    "mode": "extend",
+    "anchor": "right"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "big-buck-bunny",
+   "title": "Big Buck Bunny",
+   "year": 2008,
+   "originallyAvailableAt": "2008-05-30",
+   "minutes": 10,
+   "studio": "Blender Foundation",
+   "genres": [
+    "Animation",
+    "Comedy",
+    "Short"
+   ],
+   "directors": [
+    "Sacha Goedegebure"
+   ],
+   "writers": [],
+   "cast": [],
+   "summary": "A gentle giant of a rabbit wakes up to a perfect spring morning, until three bullying rodents flatten his favourite butterfly. Revenge, it turns out, is best served with elaborate traps.",
+   "poster": {
+    "asset": "big-buck-bunny-poster"
+   },
+   "art": {
+    "asset": "big-buck-bunny-backdrop",
+    "mode": "cover",
+    "anchor": "center"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "elephants-dream",
+   "title": "Elephants Dream",
+   "year": 2006,
+   "originallyAvailableAt": "2006-03-24",
+   "minutes": 11,
+   "studio": "Blender Foundation",
+   "genres": [
+    "Animation",
+    "Science Fiction",
+    "Short"
+   ],
+   "directors": [
+    "Bassam Kurdali"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Tygo Gernandt",
+     "role": "Proog"
+    },
+    {
+     "name": "Cas Jansen",
+     "role": "Emo"
+    }
+   ],
+   "summary": "Old Proog leads young Emo through the Machine, an endless world of wires, pistons and impossible rooms that Proog insists is full of wonders. Emo is beginning to see it differently.",
+   "poster": {
+    "asset": "elephants-dream-poster"
+   },
+   "art": {
+    "asset": "bs-elephants-dream-header",
+    "mode": "extend",
+    "anchor": "right"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "nosferatu",
+   "title": "Nosferatu",
+   "year": 1922,
+   "originallyAvailableAt": "1922-03-04",
+   "minutes": 94,
+   "studio": "Prana Film",
+   "genres": [
+    "Horror",
+    "Silent"
+   ],
+   "directors": [
+    "F. W. Murnau"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Max Schreck",
+     "role": "Count Orlok"
+    },
+    {
+     "name": "Gustav von Wangenheim",
+     "role": "Thomas Hutter"
+    },
+    {
+     "name": "Greta Schröder",
+     "role": "Ellen Hutter"
+    },
+    {
+     "name": "Alexander Granach",
+     "role": "Knock"
+    }
+   ],
+   "summary": "A young estate agent travels to the Carpathian mountains to sell a house to the reclusive Count Orlok, and brings the plague home with him. Murnau's shadow-haunted symphony of horror is the vampire film every other one remembers.",
+   "poster": {
+    "asset": "nosferatu-1922-poster"
+   },
+   "art": {
+    "asset": "nosferatu-1922-backdrop",
+    "mode": "cover",
+    "anchor": "center"
+   },
+   "collections": [
+    "Silent Classics"
+   ]
+  },
+  {
+   "id": "metropolis",
+   "title": "Metropolis",
+   "year": 1927,
+   "originallyAvailableAt": "1927-01-10",
+   "minutes": 153,
+   "studio": "UFA",
+   "genres": [
+    "Science Fiction",
+    "Drama",
+    "Silent"
+   ],
+   "directors": [
+    "Fritz Lang"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Brigitte Helm",
+     "role": "Maria"
+    },
+    {
+     "name": "Gustav Fröhlich",
+     "role": "Freder"
+    },
+    {
+     "name": "Alfred Abel",
+     "role": "Joh Fredersen"
+    },
+    {
+     "name": "Rudolf Klein-Rogge",
+     "role": "Rotwang"
+    }
+   ],
+   "summary": "In a gleaming city of towers, the son of its master descends to the machine halls below and falls for Maria, who preaches peace to the workers, while his father and an inventor plot to replace her with a machine in her likeness.",
+   "poster": {
+    "asset": "metropolis-1927-poster"
+   },
+   "collections": [
+    "Silent Classics"
+   ]
+  },
+  {
+   "id": "night-of-the-living-dead",
+   "title": "Night of the Living Dead",
+   "year": 1968,
+   "originallyAvailableAt": "1968-10-01",
+   "minutes": 96,
+   "studio": "Image Ten",
+   "genres": [
+    "Horror"
+   ],
+   "directors": [
+    "George A. Romero"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Duane Jones",
+     "role": "Ben"
+    },
+    {
+     "name": "Judith O'Dea",
+     "role": "Barbra"
+    },
+    {
+     "name": "Karl Hardman",
+     "role": "Harry Cooper"
+    },
+    {
+     "name": "Marilyn Eastman",
+     "role": "Helen Cooper"
+    }
+   ],
+   "summary": "Seven strangers barricade themselves in a Pennsylvania farmhouse as the recently dead rise and close in, and discover that the arguments inside may kill them before the things outside do.",
+   "poster": {
+    "asset": "night-of-the-living-dead-1968-poster"
+   }
+  },
+  {
+   "id": "the-general",
+   "title": "The General",
+   "year": 1926,
+   "originallyAvailableAt": "1926-12-31",
+   "minutes": 78,
+   "studio": "United Artists",
+   "genres": [
+    "Comedy",
+    "Action",
+    "Silent"
+   ],
+   "directors": [
+    "Buster Keaton",
+    "Clyde Bruckman"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Buster Keaton",
+     "role": "Johnnie Gray"
+    },
+    {
+     "name": "Marion Mack",
+     "role": "Annabelle Lee"
+    },
+    {
+     "name": "Glen Cavender",
+     "role": "Captain Anderson"
+    }
+   ],
+   "summary": "When Union spies steal his beloved locomotive, with his sweetheart aboard, a Southern railroad engineer gives chase alone, in one of the great sustained action sequences in film history.",
+   "poster": {
+    "asset": "the-general-1926-poster"
+   },
+   "titleSort": "General",
+   "collections": [
+    "Silent Classics"
+   ]
+  },
+  {
+   "id": "sherlock-jr",
+   "title": "Sherlock Jr.",
+   "year": 1924,
+   "originallyAvailableAt": "1924-04-21",
+   "minutes": 45,
+   "studio": "Metro Pictures",
+   "genres": [
+    "Comedy",
+    "Silent"
+   ],
+   "directors": [
+    "Buster Keaton"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Buster Keaton",
+     "role": "Projectionist"
+    },
+    {
+     "name": "Kathryn McGuire",
+     "role": "The Girl"
+    },
+    {
+     "name": "Joe Keaton",
+     "role": "The Girl's Father"
+    },
+    {
+     "name": "Ward Crane",
+     "role": "The Local Sheik"
+    }
+   ],
+   "summary": "A projectionist who studies to be a detective is framed for a theft, falls asleep in the booth, and walks straight into the film on screen to solve the case.",
+   "poster": {
+    "asset": "sherlock-jr-1924-poster"
+   },
+   "collections": [
+    "Silent Classics"
+   ]
+  },
+  {
+   "id": "his-girl-friday",
+   "title": "His Girl Friday",
+   "year": 1940,
+   "originallyAvailableAt": "1940-01-18",
+   "minutes": 92,
+   "studio": "Columbia Pictures",
+   "genres": [
+    "Comedy",
+    "Romance"
+   ],
+   "directors": [
+    "Howard Hawks"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Cary Grant",
+     "role": "Walter Burns"
+    },
+    {
+     "name": "Rosalind Russell",
+     "role": "Hildy Johnson"
+    },
+    {
+     "name": "Ralph Bellamy",
+     "role": "Bruce Baldwin"
+    },
+    {
+     "name": "Gene Lockhart",
+     "role": "Sheriff Hartwell"
+    }
+   ],
+   "summary": "A newspaper editor learns that his star reporter, who is also his ex-wife, is about to remarry and quit, and lures her back for one last story: a condemned man, a corrupt city hall, and a deadline.",
+   "poster": {
+    "asset": "his-girl-friday-1940-poster"
+   }
+  },
+  {
+   "id": "plan-9-from-outer-space",
+   "title": "Plan 9 from Outer Space",
+   "year": 1957,
+   "originallyAvailableAt": "1957-07-22",
+   "minutes": 79,
+   "studio": "Reynolds Pictures",
+   "genres": [
+    "Science Fiction",
+    "Horror"
+   ],
+   "directors": [
+    "Edward D. Wood Jr."
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Gregory Walcott",
+     "role": "Jeff Trent"
+    },
+    {
+     "name": "Mona McKinnon",
+     "role": "Paula Trent"
+    },
+    {
+     "name": "Tor Johnson",
+     "role": "Inspector Clay"
+    },
+    {
+     "name": "Vampira",
+     "role": "Vampire Girl"
+    }
+   ],
+   "summary": "Aliens alarmed by humanity's weapons put their ninth plan into action: raise the dead of a small California cemetery. An airline pilot and his wife stand in their way.",
+   "poster": {
+    "asset": "plan-9-from-outer-space-1957-poster"
+   }
+  },
+  {
+   "id": "the-kid",
+   "title": "The Kid",
+   "year": 1921,
+   "originallyAvailableAt": "1921-02-06",
+   "minutes": 68,
+   "studio": "First National",
+   "genres": [
+    "Comedy",
+    "Drama",
+    "Silent"
+   ],
+   "directors": [
+    "Charlie Chaplin"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Charlie Chaplin",
+     "role": "The Tramp"
+    },
+    {
+     "name": "Jackie Coogan",
+     "role": "The Kid"
+    },
+    {
+     "name": "Edna Purviance",
+     "role": "The Woman"
+    }
+   ],
+   "summary": "The Tramp finds an abandoned baby in an alley and, against his better judgement, raises him. Five years later, the authorities come for the boy.",
+   "poster": {
+    "asset": "the-kid-1921-poster"
+   },
+   "titleSort": "Kid",
+   "collections": [
+    "Silent Classics"
+   ]
+  },
+  {
+   "id": "safety-last",
+   "title": "Safety Last!",
+   "year": 1923,
+   "originallyAvailableAt": "1923-04-01",
+   "minutes": 74,
+   "studio": "Hal Roach Studios",
+   "genres": [
+    "Comedy",
+    "Silent"
+   ],
+   "directors": [
+    "Fred C. Newmeyer",
+    "Sam Taylor"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Harold Lloyd",
+     "role": "The Boy"
+    },
+    {
+     "name": "Mildred Davis",
+     "role": "The Girl"
+    },
+    {
+     "name": "Bill Strother",
+     "role": "The Pal"
+    }
+   ],
+   "summary": "A department-store clerk who has told his girl back home that he runs the place stages a publicity stunt to win a thousand dollars, and ends up climbing the building himself.",
+   "poster": {
+    "asset": "safety-last-1923-poster"
+   },
+   "collections": [
+    "Silent Classics"
+   ]
+  },
+  {
+   "id": "the-cabinet-of-dr-caligari",
+   "title": "The Cabinet of Dr. Caligari",
+   "year": 1920,
+   "originallyAvailableAt": "1920-02-26",
+   "minutes": 76,
+   "studio": "Decla-Bioscop",
+   "genres": [
+    "Horror",
+    "Mystery",
+    "Silent"
+   ],
+   "directors": [
+    "Robert Wiene"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Werner Krauss",
+     "role": "Dr. Caligari"
+    },
+    {
+     "name": "Conrad Veidt",
+     "role": "Cesare"
+    },
+    {
+     "name": "Friedrich Feher",
+     "role": "Francis"
+    },
+    {
+     "name": "Lil Dagover",
+     "role": "Jane Olsen"
+    }
+   ],
+   "summary": "A fairground showman arrives in a small town with a sleepwalker who, he claims, can see the future. That night the murders begin.",
+   "poster": {
+    "asset": "the-cabinet-of-dr-caligari-1920-poster"
+   },
+   "titleSort": "Cabinet of Dr. Caligari",
+   "collections": [
+    "Silent Classics"
+   ]
+  },
+  {
+   "id": "a-trip-to-the-moon",
+   "title": "A Trip to the Moon",
+   "year": 1902,
+   "originallyAvailableAt": "1902-09-01",
+   "minutes": 13,
+   "studio": "Star Film",
+   "genres": [
+    "Science Fiction",
+    "Fantasy",
+    "Silent",
+    "Short"
+   ],
+   "directors": [
+    "Georges Méliès"
+   ],
+   "writers": [],
+   "cast": [
+    {
+     "name": "Georges Méliès",
+     "role": "Professor Barbenfouillis"
+    },
+    {
+     "name": "Bleuette Bernon",
+     "role": "Phoebe"
+    }
+   ],
+   "summary": "A congress of astronomers fires itself to the Moon from a giant cannon, lands in the eye of the Man in the Moon, and meets the Selenites.",
+   "poster": {
+    "asset": "a-trip-to-the-moon-1902-poster"
+   },
+   "titleSort": "Trip to the Moon",
+   "collections": [
+    "Silent Classics"
+   ]
+  },
+  {
+   "id": "wing-it",
+   "title": "Wing It!",
+   "year": 2023,
+   "originallyAvailableAt": "2023-09-12",
+   "minutes": 4,
+   "studio": "Blender Studio",
+   "genres": [
+    "Animation",
+    "Comedy",
+    "Short"
+   ],
+   "directors": [],
+   "writers": [],
+   "cast": [],
+   "summary": "An uptight engineer gets an unwelcome visit from an enthusiastic wannabe-pilot, causing both of them to be launched into the air inside an out-of-control space shuttle.",
+   "poster": {
+    "asset": "bs-wing-it-header"
+   },
+   "art": {
+    "asset": "bs-wing-it-header",
+    "mode": "cover",
+    "anchor": "center"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "coffee-run",
+   "title": "Coffee Run",
+   "year": 2020,
+   "originallyAvailableAt": "2020-05-29",
+   "minutes": 3,
+   "studio": "Blender Studio",
+   "genres": [
+    "Animation",
+    "Drama",
+    "Short"
+   ],
+   "directors": [
+    "Hjalti Hjalmarsson"
+   ],
+   "writers": [],
+   "cast": [],
+   "summary": "Fueled by caffeine, a young woman runs through the bittersweet memories of her past relationship.",
+   "poster": {
+    "asset": "coffee-run-poster"
+   },
+   "art": {
+    "asset": "bs-coffee-run-header",
+    "mode": "extend",
+    "anchor": "right"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "hero",
+   "title": "Hero",
+   "year": 2018,
+   "originallyAvailableAt": "2018-04-16",
+   "minutes": 4,
+   "studio": "Blender Institute",
+   "genres": [
+    "Animation",
+    "Action",
+    "Short"
+   ],
+   "directors": [
+    "Daniel Martinez Lara"
+   ],
+   "writers": [],
+   "cast": [],
+   "summary": "A showcase for Grease Pencil in Blender 2.8: 2D animation tools within a full 3D pipeline, and the sixth short film funded by the Blender Cloud.",
+   "poster": {
+    "asset": "hero-still-red"
+   },
+   "art": {
+    "asset": "bs-hero-header",
+    "mode": "cover",
+    "anchor": "center"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "glass-half",
+   "title": "Glass Half",
+   "year": 2015,
+   "originallyAvailableAt": "2015-10-30",
+   "minutes": 3,
+   "studio": "Blender Institute",
+   "genres": [
+    "Animation",
+    "Comedy",
+    "Short"
+   ],
+   "directors": [
+    "Beorn Leonard"
+   ],
+   "writers": [
+    "Beorn Leonard"
+   ],
+   "cast": [],
+   "summary": "Two amateur art critics meet in a gallery and argue passionately about the pieces they see, causing chaos for everyone else, until finally they find a piece on which they can agree.",
+   "poster": {
+    "asset": "glass-half-still-style",
+    "crop": "focus-right"
+   },
+   "art": {
+    "asset": "bs-glass-half-header",
+    "mode": "extend",
+    "anchor": "center"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "the-daily-dweebs",
+   "title": "The Daily Dweebs",
+   "year": 2017,
+   "originallyAvailableAt": "2017-10-19",
+   "minutes": 1,
+   "studio": "Blender Animation Studio",
+   "genres": [
+    "Animation",
+    "Comedy",
+    "Short"
+   ],
+   "directors": [
+    "Hjalti Hjalmarsson"
+   ],
+   "writers": [],
+   "cast": [],
+   "summary": "A Blender Animation Studio short, directed and animated by Hjalti Hjalmarsson.",
+   "poster": {
+    "asset": "the-daily-dweebs-poster"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "singularity",
+   "title": "Singularity",
+   "year": 2026,
+   "originallyAvailableAt": "2026-05-11",
+   "minutes": 7,
+   "studio": "Blender Studio",
+   "genres": [
+    "Animation",
+    "Adventure",
+    "Short"
+   ],
+   "directors": [
+    "Andy Goralczyk"
+   ],
+   "writers": [],
+   "cast": [],
+   "summary": "When an ominous cosmic event swallows the icy home of a small space critter, he must find refuge among a group of luminous creatures watched over by a mysterious celestial being.",
+   "poster": {
+    "asset": "bs-singularity-header"
+   },
+   "art": {
+    "asset": "bs-singularity-header",
+    "mode": "cover",
+    "anchor": "center"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "sita-sings-the-blues",
+   "title": "Sita Sings the Blues",
+   "year": 2008,
+   "originallyAvailableAt": "2008-02-11",
+   "minutes": 82,
+   "studio": "Nina Paley",
+   "genres": [
+    "Animation",
+    "Musical",
+    "Comedy"
+   ],
+   "directors": [
+    "Nina Paley"
+   ],
+   "writers": [
+    "Nina Paley"
+   ],
+   "cast": [],
+   "summary": "The Ramayana, told with the torch songs of Annette Hanshaw: Sita, loyal to a husband who doubts her, and an animator in New York whose own marriage is coming apart.",
+   "poster": {
+    "asset": "sita-still-ram-sita-gods"
+   },
+   "art": {
+    "asset": "sita-still-ram-sita-gods",
+    "mode": "cover",
+    "anchor": "center"
+   }
+  },
+  {
+   "id": "seder-masochism",
+   "title": "Seder-Masochism",
+   "year": 2018,
+   "originallyAvailableAt": "2018-06-11",
+   "minutes": 78,
+   "studio": "Nina Paley",
+   "genres": [
+    "Animation",
+    "Musical",
+    "Comedy"
+   ],
+   "directors": [
+    "Nina Paley"
+   ],
+   "writers": [
+    "Nina Paley"
+   ],
+   "cast": [],
+   "summary": "An animated musical that loosely follows the Passover Seder story, with the events of Exodus retold by Moses, Aharon, the Angel of Death, Jesus and the director's father, and a goddess's point of view restored.",
+   "poster": {
+    "asset": "seder-masochism-poster"
+   },
+   "art": {
+    "asset": "seder-masochism-still-moses-splits-sea",
+    "mode": "cover",
+    "anchor": "center"
+   }
+  }
+ ],
+ "shows": [
+  {
+   "id": "caminandes",
+   "title": "Caminandes",
+   "year": 2013,
+   "studio": "Blender Institute",
+   "genres": [
+    "Animation",
+    "Comedy",
+    "Short"
+   ],
+   "directors": [
+    "Pablo Vazquez"
+   ],
+   "cast": [],
+   "summary": "Koro the llama lives in Patagonia and has one talent: finding obstacles between himself and whatever he wants next. Short slapstick episodes about fences, friendship and snacks.",
+   "poster": {
+    "asset": "caminandes-s01e01",
+    "crop": "focus-right"
+   },
+   "art": {
+    "asset": "bs-caminandes-3-header",
+    "mode": "extend",
+    "anchor": "right"
+   },
+   "seasons": [
+    {
+     "index": 1,
+     "episodes": [
+      {
+       "index": 1,
+       "title": "Llama Drama",
+       "date": "2013-01-10",
+       "minutes": 2,
+       "summary": "Koro meets a fence between himself and the other side of the road, and refuses to go around it.",
+       "thumb": {
+        "asset": "caminandes-s01e01"
+       }
+      },
+      {
+       "index": 2,
+       "title": "Gran Dillama",
+       "date": "2013-12-19",
+       "minutes": 3,
+       "summary": "The grass is greener beyond an electric fence. Koro takes that personally.",
+       "thumb": {
+        "asset": "caminandes-s01e02"
+       }
+      },
+      {
+       "index": 3,
+       "title": "Llamigos",
+       "date": "2016-02-26",
+       "minutes": 3,
+       "summary": "Winter in Patagonia, one last berry bush, and a penguin called Oti who wants the berries too.",
+       "thumb": {
+        "asset": "caminandes-s01e03"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "sherlock-holmes",
+   "title": "Sherlock Holmes",
+   "year": 1954,
+   "studio": "Sheldon Reynolds Productions",
+   "genres": [
+    "Mystery",
+    "Crime"
+   ],
+   "directors": [],
+   "cast": [
+    {
+     "name": "Ronald Howard",
+     "role": "Sherlock Holmes"
+    },
+    {
+     "name": "Howard Marion-Crawford",
+     "role": "Dr. John H. Watson"
+    },
+    {
+     "name": "Archie Duncan",
+     "role": "Inspector Lestrade"
+    }
+   ],
+   "summary": "A young, dry-witted Sherlock Holmes and a steady Dr. Watson take the cases that walk in off Baker Street, in thirty-nine half-hour mysteries shot in France for American television.",
+   "poster": {
+    "asset": "sherlock-holmes-1954-s01e01"
+   },
+   "seasons": [
+    {
+     "index": 1,
+     "episodes": [
+      {
+       "index": 1,
+       "title": "The Case of the Cunningham Heritage",
+       "date": "1954-10-18",
+       "minutes": 26,
+       "summary": "Holmes and Watson investigate the suspicious death of a wealthy patriarch, entangled with a disputed inheritance and a household full of people who each stood to gain from his death.",
+       "thumb": {
+        "asset": "sherlock-holmes-1954-s01e01",
+        "crop": "upper"
+       }
+      },
+      {
+       "index": 2,
+       "title": "The Case of the Pennsylvania Gun",
+       "date": "1954-10-25",
+       "minutes": 26,
+       "summary": "A rare antique firearm becomes the center of a theft and murder investigation that Holmes must untangle from a web of collectors and forgers.",
+       "thumb": {
+        "asset": "sherlock-holmes-1954-s01e02",
+        "crop": "upper"
+       }
+      },
+      {
+       "index": 3,
+       "title": "The Case of Lady Beryl",
+       "date": "1954-11-01",
+       "minutes": 26,
+       "summary": "A noblewoman seeks Holmes's help after a string of threats against her household, which turns out to connect to an old secret she's been keeping.",
+       "thumb": {
+        "asset": "sherlock-holmes-1954-s01e03",
+        "crop": "upper"
+       }
+      },
+      {
+       "index": 4,
+       "title": "The Belligerent Ghost",
+       "date": "1954-11-08",
+       "minutes": 26,
+       "summary": "A supposedly haunted house is terrorising its new tenants, and Holmes sets out to prove -- as usual -- that the 'ghost' has a very physical explanation.",
+       "thumb": {
+        "asset": "sherlock-holmes-1954-s01e04",
+        "crop": "upper"
+       }
+      },
+      {
+       "index": 5,
+       "title": "The Case of the Shy Ballerina",
+       "date": "1954-11-15",
+       "minutes": 26,
+       "summary": "A prima ballerina's stage fright turns out to be tangled up with a threat against her life, and Holmes has to work out who in the company wants her gone.",
+       "thumb": {
+        "asset": "sherlock-holmes-1954-s01e05",
+        "crop": "upper"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "id": "hubblecast",
+   "title": "Hubblecast",
+   "note": "Episodes 84-133 (2015-2020), numbered as ESA/Hubble numbers them. Left out: 100, 105 and 129, whose preview frames show an ESA/Hubble wordmark or logo, which the CC BY licence does not cover (https://esahubble.org/copyright/); 90, whose presenter wears one; and 85, 89, 94, 95, 101, 104, 113 and 116, whose frames show a private person or third-party material. Titles, dates and runtimes are from each episode's esahubble.org page; summaries open its text.",
+   "year": 2007,
+   "studio": "ESA/Hubble",
+   "genres": [
+    "Documentary"
+   ],
+   "directors": [],
+   "cast": [],
+   "summary": "ESA/Hubble's video podcast about the discoveries of the NASA/ESA Hubble Space Telescope, and about the telescope itself. The episodes here are those of 2015 to 2020.",
+   "poster": {
+    "asset": "esa-hubble-heic1608a"
+   },
+   "art": {
+    "asset": "esa-hubble-heic1509a",
+    "mode": "cover",
+    "anchor": "center"
+   },
+   "seasons": [
+    {
+     "index": 1,
+     "episodes": [
+      {
+       "index": 84,
+       "title": "A starry snapshot for Hubble’s 25th",
+       "date": "2015-04-23",
+       "minutes": 5,
+       "summary": "This Hubblecast explores the new image of star cluster Westerlund 2, taken by the NASA/ESA Hubble Space telescope and released to celebrate its 25th year in orbit. Credit:",
+       "thumb": {
+        "asset": "hubblecast-heic1509a"
+       }
+      },
+      {
+       "index": 86,
+       "title": "The wings of the Twin Jet Nebula",
+       "date": "2015-08-26",
+       "minutes": 5,
+       "summary": "This Hubblecast explores the wings of Twin Jet Nebula which were observed and studied by the NASA/ESA Hubble Space Telescope. Credit:",
+       "thumb": {
+        "asset": "hubblecast-heic1518a"
+       }
+      },
+      {
+       "index": 87,
+       "title": "The many mysteries of Pluto",
+       "date": "2015-09-23",
+       "minutes": 6,
+       "summary": "Before NASA's New Horizons probe flew past Pluto in July 2015, almost all of the information scientists had about this mysterious dwarf planet came from observations made by Hubble.",
+       "thumb": {
+        "asset": "hubblecast-hubblecast87a"
+       }
+      },
+      {
+       "index": 88,
+       "title": "Mysterious Ripples Found Racing Through Planet-forming Disc",
+       "date": "2015-10-07",
+       "minutes": 5,
+       "summary": "Using images from the NASA/ESA Hubble Space Telescope and ESO’s Very Large Telescope, astronomers have discovered unique and totally unexpected structures within the dusty disc around the star AU Microscopii. Credit:",
+       "thumb": {
+        "asset": "hubblecast-heic1521a"
+       }
+      },
+      {
+       "index": 91,
+       "title": "The future of Hubble, part 1",
+       "date": "2016-04-08",
+       "minutes": 7,
+       "summary": "In April 2016 the NASA/ESA Hubble Space Telescope celebrates its 26th year in orbit. During this time the telescope has made many remarkable discoveries. But what comes next?",
+       "thumb": {
+        "asset": "hubblecast-hubblecast91a"
+       }
+      },
+      {
+       "index": 92,
+       "title": "26th anniversary",
+       "date": "2016-04-21",
+       "minutes": 5,
+       "summary": "On 24 April 1990, the NASA/ESA Hubble Space Telescope was sent into orbit aboard the space shuttle Discovery. Now it is celebrating its 26th anniversary. As in the last years Hubble spent a modest portion of its observing time to observe a special chosen object.",
+       "thumb": {
+        "asset": "hubblecast-heic1608a"
+       }
+      },
+      {
+       "index": 93,
+       "title": "Telescope Teamwork",
+       "date": "2016-07-06",
+       "minutes": 8,
+       "summary": "The NASA/ESA Hubble Space Telescope is one of the most sophisticated telescopes in the world. But even Hubble cannot uncover all secrets of the Universe on its own.",
+       "thumb": {
+        "asset": "hubblecast-hubblecast93a"
+       }
+      },
+      {
+       "index": 96,
+       "title": "How many galaxies are there?",
+       "date": "2016-10-13",
+       "minutes": 6,
+       "summary": "Since Edwin Hubble discovered that the Milky Way is not the only galaxy in the Universe astronomers try to find out how many of them are there. This new Hubblecast focusses on the question “How many galaxies are there?” including the new numbers achieved in 2016. Credit:",
+       "thumb": {
+        "asset": "hubblecast-heic1620a"
+       }
+      },
+      {
+       "index": 97,
+       "title": "Hubble, exoplanets and the hunt for life",
+       "date": "2016-12-15",
+       "minutes": 6,
+       "summary": "Since astronomers discovered that the stars in the sky are other suns, humanity has wondered if they are also orbited by planets and if those planets host alien life.",
+       "thumb": {
+        "asset": "hubblecast-hubblecast97a"
+       }
+      },
+      {
+       "index": 98,
+       "title": "Hubble’s biggest discoveries — part 1",
+       "date": "2017-02-23",
+       "minutes": 7,
+       "summary": "Since its launch in 1990, Hubble has revolutionised our knowledge of astronomy. From imaging the most stunning phenomena in the cosmos, to the study of the invisible parts of the Universe, to observing the most distant objects ever seen.",
+       "thumb": {
+        "asset": "hubblecast-hubblecast98a"
+       }
+      },
+      {
+       "index": 99,
+       "title": "Hubble’s biggest discoveries — part 2",
+       "date": "2017-03-22",
+       "minutes": 7,
+       "summary": "To many, Hubble is best known for its stunning images of celestial objects, but among astronomers it is admired for the valuable data it delivers.",
+       "thumb": {
+        "asset": "hubblecast-hubblecast99a"
+       }
+      },
+      {
+       "index": 102,
+       "title": "Taking the fingerprints of exoplanets",
+       "date": "2017-10-11",
+       "minutes": 4,
+       "summary": "The atmosphere of an exoplanet can reveal a wealth of information, such as the planet’s temperature, its air pressure, and whether it is suitable for life.",
+       "thumb": {
+        "asset": "hubblecast-hubblecast102a"
+       }
+      },
+      {
+       "index": 103,
+       "title": "Hubble observes source of gravitational waves for the first time",
+       "date": "2017-10-16",
+       "minutes": 4,
+       "summary": "Astronomers using the NASA/ESA Hubble Space Telescope have observed a visible counterpart to gravitational waves for the first time: a kilonova from merging neutron stars. For the first time, Hubble has observed the source of a gravitational wave: the merging of two neutron stars.",
+       "thumb": {
+        "asset": "hubblecast-heic1717a"
+       }
+      },
+      {
+       "index": 106,
+       "title": "Light: Flying through the Orion Nebula",
+       "date": "2018-01-15",
+       "minutes": 1,
+       "summary": "This visualisation takes the viewer on a breathtaking flight through the Orion Nebula, a nearby star-forming region. The video has been produced using scientific imagery and data from the NASA/ESA Hubble Space Telescope.",
+       "thumb": {
+        "asset": "hubblecast-hubblecast106a"
+       }
+      },
+      {
+       "index": 107,
+       "title": "Decoding the colours of NGC 3344",
+       "date": "2018-02-14",
+       "minutes": 5,
+       "summary": "Our eyes detect only visible light, but on board Hubble are a variety of instruments that together detect many different wavelengths of light.",
+       "thumb": {
+        "asset": "hubblecast-heic1803a"
+       }
+      },
+      {
+       "index": 108,
+       "title": "Light: Hubble finds most distant star",
+       "date": "2018-04-02",
+       "minutes": 1,
+       "summary": "Astronomers have used Hubble to make an incredible discovery — they have observed the most distant star ever seen. The bright blue star existed only 4.4 billion years after the Big Bang.",
+       "thumb": {
+        "asset": "hubblecast-heic1807a"
+       }
+      },
+      {
+       "index": 109,
+       "title": "Diving into the Lagoon Nebula",
+       "date": "2018-04-19",
+       "minutes": 4,
+       "summary": "On 24 April 1990, Hubble was launched into space. To celebrate its 28th year in orbit, some of Hubble’s precious observation time was used to observe the colourful Lagoon Nebula.",
+       "thumb": {
+        "asset": "hubblecast-heic1808a"
+       }
+      },
+      {
+       "index": 110,
+       "title": "Light: New test of Einstein’s general relativity",
+       "date": "2018-06-21",
+       "minutes": 1,
+       "summary": "An international team of astronomers using Hubble has made the most precise test of general relativity yet outside our Milky Way. A nearby galaxy acts as a strong gravitational lens, distorting light from a distant galaxy behind it to create an Einstein ring around its centre.",
+       "thumb": {
+        "asset": "hubblecast-heic1812a"
+       }
+      },
+      {
+       "index": 111,
+       "title": "Hubble sees `Oumuamua getting a boost",
+       "date": "2018-06-27",
+       "minutes": 6,
+       "summary": "Astronomers have found that ‘Oumuamua, the first interstellar object discovered in the Solar System, is moving away from the Sun faster than expected.",
+       "thumb": {
+        "asset": "hubblecast-heic1813a"
+       }
+      },
+      {
+       "index": 112,
+       "title": "Light: Mars and Saturn",
+       "date": "2018-07-26",
+       "minutes": 1,
+       "summary": "Mars and Saturn are among the most popular planets. This new episode of the Hubblecast presents the images Hubble took of these planets in summer 2018. You can subscribe to the Hubblecasts in iTunes , receive future episodes on YouTube or follow us on Vimeo .",
+       "thumb": {
+        "asset": "hubblecast-heic1814a"
+       }
+      },
+      {
+       "index": 114,
+       "title": "How does Hubble orientate itself in space?",
+       "date": "2018-12-19",
+       "minutes": 4,
+       "summary": "This new Hubblecast episode takes a detailed look into the refined Pointing Control System that allows Hubble to keep its gaze into the Universe firm and steady. Credit:",
+       "thumb": {
+        "asset": "hubblecast-hubblecast114a"
+       }
+      },
+      {
+       "index": 115,
+       "title": "Light: Triangulum Galaxy in unrivalled detail",
+       "date": "2019-01-07",
+       "minutes": 1,
+       "summary": "The NASA/ESA Hubble Space Telescope has captured the most detailed image yet of a the Triangulum Galaxy, a spiral galaxy located at a distance of only three million light-years. The image of our cosmic neighbour is the second largest image ever created with Hubble data.",
+       "thumb": {
+        "asset": "hubblecast-heic1901a"
+       }
+      },
+      {
+       "index": 117,
+       "title": "Light: Hubble & Gaia weigh the Milky Way",
+       "date": "2019-03-07",
+       "minutes": 1,
+       "summary": "Measurements from the NASA/ESA Hubble Space Telescope and the ESA Gaia mission have been combined to improve he estimate of the mass of our home galaxy the Milky Way: 1.5 trillion solar masses.",
+       "thumb": {
+        "asset": "hubblecast-heic1905a"
+       }
+      },
+      {
+       "index": 118,
+       "title": "How the first stars transformed the Universe",
+       "date": "2019-04-03",
+       "minutes": 5,
+       "summary": "Right after the Universe started with the Big Bang, the cosmos was dark. Only the first stars created millions of years later brought light. These first stars and their radiation drastically changed the Universe during what is known as the epoch of reionisation.",
+       "thumb": {
+        "asset": "hubblecast-hubblecast118a"
+       }
+      },
+      {
+       "index": 119,
+       "title": "Hubble’s 29th anniversary",
+       "date": "2019-04-18",
+       "minutes": 6,
+       "summary": "On 18 April 2019 Hubble is celebrating its 29th year in space. For this anniversary NASA and ESA dedicated a small amount of its precious observation time to take a look at the beautiful Southern Crab Nebula.",
+       "thumb": {
+        "asset": "hubblecast-heic1907a"
+       }
+      },
+      {
+       "index": 120,
+       "title": "Light: Continued Discrepancy in the Universe's Expansion Rate",
+       "date": "2019-04-25",
+       "minutes": 2,
+       "summary": "Measurements of today's expansion rate do not match the rate that was expected based on how the Universe appeared shortly after the Big Bang over 13 billion years ago.",
+       "thumb": {
+        "asset": "hubblecast-heic1908a"
+       }
+      },
+      {
+       "index": 121,
+       "title": "What can we learn from exoplanet transits?",
+       "date": "2019-06-12",
+       "minutes": 6,
+       "summary": "This new Hubblecast episode explores what we can learn through the transits of exoplanets. It also tells us what we have learned from these transits with the help of Hubble and which discoveries we can expect with the NASA/ESA/CSA James Webb Space Telescope. Credit:",
+       "thumb": {
+        "asset": "hubblecast-hubblecast121b"
+       }
+      },
+      {
+       "index": 122,
+       "title": "Light: The Evolution of Eta Carinae",
+       "date": "2019-07-01",
+       "minutes": 1,
+       "summary": "This Hubblecast explores the various observations the NASA/ESA Hubble Space Telescope has made of the Eta Carinae in various wavelengths. Credit:",
+       "thumb": {
+        "asset": "hubblecast-heic1912a"
+       }
+      },
+      {
+       "index": 123,
+       "title": "Light: Jupiter’s Great Red Spot",
+       "date": "2019-08-08",
+       "minutes": 2,
+       "summary": "This video highlights Jupiter’s trademark spot and observations made of the feature by the NASA/ESA Hubble Space Telescope that demonstrate that the spot has shrunk over time. Credit:",
+       "thumb": {
+        "asset": "hubblecast-heic1914a"
+       }
+      },
+      {
+       "index": 124,
+       "title": "Light: Exoplanet K2-18b",
+       "date": "2019-09-11",
+       "minutes": 1,
+       "summary": "This Hubblecast Light highlights the exciting discovery of the first water detected on a potentially habitable planet.",
+       "thumb": {
+        "asset": "hubblecast-heic1916a"
+       }
+      },
+      {
+       "index": 125,
+       "title": "Light: Hubble Studies High-Energy Gamma Ray Burst",
+       "date": "2019-11-20",
+       "minutes": 1,
+       "summary": "New observations from the NASA/ESA Hubble Space Telescope have investigated the nature of the powerful gamma-ray burst GRB 190114C by studying its environment.",
+       "thumb": {
+        "asset": "hubblecast-heic1921b"
+       }
+      },
+      {
+       "index": 126,
+       "title": "From Ultraviolet to Infrared: Comparing the Hubble and James Webb Space Telescopes",
+       "date": "2019-12-11",
+       "minutes": 5,
+       "summary": "This Hubblecast explores how the NASA/ESA Hubble Space Telescope’s observations differ across different wavelengths of the electromagnetic spectrum, and how these observations will be complemented by those of the upcoming NASA/ESA/CSA James Webb Space Telescope . Credit:",
+       "thumb": {
+        "asset": "hubblecast-hubblecast126a"
+       }
+      },
+      {
+       "index": 127,
+       "title": "Light: The Mysteries of Fomalhaut b",
+       "date": "2020-04-20",
+       "minutes": 2,
+       "summary": "Data from the NASA/ESA Hubble Space Telescope have revealed an expanding cloud of dust that was likely produced in a collision between two large bodies orbiting the bright nearby star Fomalhaut. Credit:",
+       "thumb": {
+        "asset": "hubblecast-heic2006a"
+       }
+      },
+      {
+       "index": 128,
+       "title": "30 Years of Science with the Hubble Space Telescope",
+       "date": "2020-04-24",
+       "minutes": 17,
+       "summary": "On 24 April 1990 the NASA/ESA Hubble Space Telescope was sent into orbit aboard the space shuttle Discovery, the first space telescope of its kind.",
+       "thumb": {
+        "asset": "hubblecast-heic2007a"
+       }
+      },
+      {
+       "index": 130,
+       "title": "Light: Hubble Studies the Earth during a Total Lunar Eclipse",
+       "date": "2020-08-06",
+       "minutes": 1,
+       "summary": "Taking advantage of a total lunar eclipse in January 2019, astronomers using the NASA/ESA Hubble Space Telescope have measured the amount of ozone in Earth’s atmosphere.",
+       "thumb": {
+        "asset": "hubblecast-heic2013a"
+       }
+      },
+      {
+       "index": 131,
+       "title": "Special: Showcase of Hubble's 30th Anniversary Artistic Creations",
+       "date": "2020-08-26",
+       "minutes": 5,
+       "summary": "On 24 April 2020, the NASA/ESA Hubble Space Telescope celebrated its 30th anniversary. ESA/Hubble invited the general public to submit Hubble-themed artistic creations to celebrate this special milestone.",
+       "thumb": {
+        "asset": "hubblecast-hubblecast131a"
+       }
+      },
+      {
+       "index": 132,
+       "title": "Light: The Strange Exoplanet That Resembles the Long-Sought “Planet Nine”",
+       "date": "2020-12-10",
+       "minutes": 2,
+       "summary": "The NASA/ESA Hubble Space Telescope has discovered an 11-Jupiter-mass exoplanet called HD106906 b that occupies an unlikely orbit around a double star 336 light-years away.",
+       "thumb": {
+        "asset": "hubblecast-heic2021a"
+       }
+      },
+      {
+       "index": 133,
+       "title": "Spectroscopy with Hubble",
+       "date": "2020-12-16",
+       "minutes": 8,
+       "summary": "How does spectroscopy work and what can the study of light tell us about the Universe? How are astronomers using spectroscopy to study exoplanets in the search for life?",
+       "thumb": {
+        "asset": "hubblecast-hubblecast133a"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "added_order": [
+  "singularity",
+  "charge",
+  "sprite-fright",
+  "caminandes",
+  "spring",
+  "sintel",
+  "tears-of-steel",
+  "cosmos-laundromat",
+  "wing-it",
+  "coffee-run",
+  "hero",
+  "glass-half",
+  "the-daily-dweebs",
+  "seder-masochism",
+  "sita-sings-the-blues",
+  "sherlock-holmes",
+  "nosferatu",
+  "metropolis",
+  "big-buck-bunny",
+  "elephants-dream",
+  "the-general",
+  "sherlock-jr",
+  "his-girl-friday",
+  "the-kid",
+  "safety-last",
+  "night-of-the-living-dead",
+  "the-cabinet-of-dr-caligari",
+  "plan-9-from-outer-space",
+  "a-trip-to-the-moon",
+  "hubblecast"
+ ],
+ "continue_watching": [
+  {
+   "item": "sintel",
+   "progress": 0.49
+  },
+  {
+   "item": "spring",
+   "progress": 0.42
+  },
+  {
+   "item": "tears-of-steel",
+   "progress": 0.63
+  },
+  {
+   "item": "caminandes/1/3",
+   "progress": 0.35
+  },
+  {
+   "item": "sherlock-holmes/1/2",
+   "progress": 0.48
+  },
+  {
+   "item": "metropolis",
+   "progress": 0.21
+  },
+  {
+   "item": "the-general",
+   "progress": 0.7
+  }
+ ],
+ "watched": [
+  "big-buck-bunny",
+  "nosferatu",
+  "the-kid",
+  "caminandes/1/1",
+  "caminandes/1/2",
+  "sherlock-holmes/1/1"
+ ],
+ "hubs": [
+  {
+   "title": "Recently Added in Movies",
+   "hubIdentifier": "movie.recentlyadded.1",
+   "type": "movie",
+   "recent": "movie"
+  },
+  {
+   "title": "Recently Added in TV Shows",
+   "hubIdentifier": "tv.recentlyadded.2",
+   "type": "episode",
+   "recent": "episode"
+  },
+  {
+   "title": "Blender Open Movies",
+   "hubIdentifier": "movie.collection.1",
+   "type": "movie",
+   "collection": "Blender Open Movies"
+  },
+  {
+   "title": "Silent Classics",
+   "hubIdentifier": "movie.collection.2",
+   "type": "movie",
+   "collection": "Silent Classics"
+  }
+ ]
+}

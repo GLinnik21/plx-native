@@ -39,6 +39,7 @@ use crate::ui::machine::{Key, Tick};
 use std::os::raw::c_int;
 
 pub(crate) mod bench;
+pub(crate) mod screenshot;
 
 /// The dev triggers read ONCE at boot and consulted by the loop every frame after (each is
 /// documented where it is READ, below). Formerly `App::dev: DevFlags`; unchanged in shape.
@@ -98,6 +99,8 @@ pub(crate) struct Scenarios {
     pub(crate) press_release_at: u32,
     pub(crate) itemmenu_tried: bool,
     pub(crate) acct_tried: bool,
+    /// `/tmp/plxnative-acct`'s value, once read (see `acct_arm`).
+    pub(crate) acct_rest: Option<Option<u32>>,
     pub(crate) auto_tried: bool,
     pub(crate) replay_left: u32,
     pub(crate) grid_tried: bool,
@@ -126,7 +129,8 @@ pub(crate) struct Scenarios {
     /// the surface it names exists.
     pub(crate) menupick_row: Option<c_int>,
     pub(crate) pause_tried: bool,
-    pub(crate) pause_script: Option<(u32, Option<u32>)>,
+    /// An armed Pause edge: (due at, hold ms, the media position it also waits for).
+    pub(crate) pause_script: Option<(u32, Option<u32>, Option<u32>)>,
     pub(crate) pause_resume_at: Option<u32>,
     /// `/tmp/plxnative-pushbench` — see [`bench`]'s module doc. `None` unarmed; cleared to `None`
     /// once its `n` cycles are done, the same shape `content_boot` uses to stop being ticked.
@@ -137,6 +141,8 @@ pub(crate) struct Scenarios {
     pub(crate) deep_bench: Option<bench::DeepBench>,
     /// The boot-time trigger flags the loop consults every frame after.
     pub(crate) dev: DevFlags,
+    /// The screenshot pipeline's arms (`plxnative-libgrid`, `-libmenu`) — see [`screenshot`].
+    pub(crate) shots: screenshot::ScreenshotArms,
 }
 
 // =================================================================================================
@@ -203,6 +209,11 @@ pub(crate) fn arm_logintest() {
             }
         });
     }
+}
+
+/// `/tmp/plxnative-stillclock=<ms>` — see [`screenshot::arm_stillclock`].
+pub(crate) fn arm_stillclock() {
+    screenshot::arm_stillclock();
 }
 
 /// `/tmp/plxnative-anim` — the animation-diagnostic overlay (off by default).
@@ -424,9 +435,11 @@ pub(crate) fn framedrop_value() -> Option<String> {
 pub(crate) fn firstrun_armed() -> bool {
     crate::dev::flag("firstrun")
 }
-/// `/tmp/plxnative-acct` — auto-open the profile menu (headless capture of the popover).
-pub(crate) fn acct_armed() -> bool {
-    crate::dev::flag("acct")
+/// `/tmp/plxnative-acct[=<ms>]` — auto-open the profile menu (headless capture of the popover).
+/// `None` when unarmed; `Some(None)` opens it as soon as Home is up; `Some(Some(ms))` waits until
+/// the screen has been at rest for `ms` first (simulator only — see `acct_arm`).
+pub(crate) fn acct_armed() -> Option<Option<u32>> {
+    crate::dev::read("acct").map(|v| v.parse().ok())
 }
 /// `/tmp/plxnative-replay[=N]`'s raw content, for [`crate::app::boot::replay_budget`].
 pub(crate) fn replay_trigger_value() -> Option<String> {
@@ -704,8 +717,41 @@ pub(crate) fn apply_search_boot_trigger(
 
 /// `now - at >= gap_ms`, read as SIGNED so a future `at` (a `delay=` in force) correctly does not
 /// fire yet. See the tests below for the wrap and delay traps this predicate has to survive.
+/// A trigger's value, read until it is first found armed and held from then on, so a per-frame
+/// arm costs one read rather than one per frame. An unarmed trigger is looked for again next call.
+fn latched<T: Copy>(slot: &mut Option<T>, read: impl FnOnce() -> Option<T>) -> Option<T> {
+    if slot.is_none() {
+        *slot = read();
+    }
+    *slot
+}
+
 fn script_step_due(now: u32, at: u32, gap_ms: u32) -> bool {
     (now.wrapping_sub(at) as i32) >= gap_ms as i32
+}
+
+#[cfg(test)]
+mod trigger_latch_tests {
+    use super::latched;
+
+    #[test]
+    fn an_armed_trigger_is_read_once_and_then_held() {
+        let (mut slot, mut reads) = (None, 0);
+        for _ in 0..5 {
+            assert_eq!(latched(&mut slot, || { reads += 1; Some(Some(800u32)) }), Some(Some(800)));
+        }
+        assert_eq!(reads, 1, "an armed trigger's file was read on every frame");
+    }
+
+    #[test]
+    fn an_unarmed_trigger_is_looked_for_until_it_appears() {
+        let (mut slot, mut reads) = (None::<Option<u32>>, 0);
+        assert_eq!(latched(&mut slot, || { reads += 1; None }), None);
+        assert_eq!(latched(&mut slot, || { reads += 1; None }), None);
+        assert_eq!(latched(&mut slot, || { reads += 1; Some(None) }), Some(None));
+        assert_eq!(latched(&mut slot, || { reads += 1; Some(Some(1)) }), Some(None), "re-read once latched");
+        assert_eq!(reads, 3);
+    }
 }
 
 #[cfg(test)]
@@ -819,6 +865,13 @@ fn grid_library_search_heroidx_arm(app: &mut App, _fr: &mut Frame) {
                 app.bridge.home_command(HomeCmd::SelectHero(n));
             }
         }
+        // `/tmp/plxnative-heropin=<n>` — `heroidx`, then HOLD that billboard (no auto-advance):
+        // the screenshot pipeline's pin, so a settled capture shows the slot its scene named.
+        if let Some(s) = crate::dev::read("heropin") {
+            if let Ok(n) = s.parse::<c_int>() {
+                app.bridge.home_command(HomeCmd::PinHero(n));
+            }
+        }
     }
 }
 
@@ -870,11 +923,22 @@ fn press_arm(app: &mut App, fr: &mut Frame) {
 /// used to be a route the boot could simply name (`route = Route::Account { over: BarHost::Home }`
 /// beside `account_menu::open()`), and it is now presented on the container's `ModalStack`, which
 /// exists only once the loop is running. Same shape as `itemmenu_arm` beside it.
+///
+/// `acct=<ms>` holds the menu back until the screen has been at rest for `<ms>`
+/// ([`screenshot::at_rest`]): a menu opened on the first Home frame freezes a page whose hero
+/// backdrop has not arrived yet, and the documentation figure wants the menu over a LANDED Home.
+///
+/// The trigger's value is read once and held ([`latched`]): `acct` carries a value, so arming it
+/// is an open+read rather than a stat, and a debug build on the television must not pay that on
+/// every frame. Once the menu is open or the arm gives up, `acct_tried` ends it before any read.
 fn acct_arm(app: &mut App, fr: &mut Frame) {
-    if app.scenarios.acct_tried || !crate::dev::scenarios::acct_armed() {
+    if app.scenarios.acct_tried {
         return;
     }
-    if matches!(app.route(), AppArg::Home) && app.pages.top_page().is_some() {
+    let Some(rest) = latched(&mut app.scenarios.acct_rest, crate::dev::scenarios::acct_armed) else {
+        return;
+    };
+    if screenshot::at_rest(fr.now, rest) && matches!(app.route(), AppArg::Home) && app.pages.top_page().is_some() {
         app.scenarios.acct_tried = true;
         crate::app::bridge::open_account_menu(&mut app.pages);
     } else if fr.now.wrapping_sub(app.t0) > 12_000 {
@@ -1134,11 +1198,22 @@ fn autopause_arm(app: &mut App, fr: &mut Frame) {
     if !app.scenarios.pause_tried && matches!(app.route(), AppArg::Player) && fr.now.wrapping_sub(app.t0) > 6000 {
         app.scenarios.pause_tried = true;
         if let Some(script) = super::pause_script() {
-            app.scenarios.pause_script = Some((fr.now.wrapping_add(script.delay_ms), script.hold_ms));
+            app.scenarios.pause_script =
+                Some((fr.now.wrapping_add(script.delay_ms), script.hold_ms, script.at_ms));
         }
     }
-    if let Some((pause_at, hold_ms)) = app.scenarios.pause_script {
-        if matches!(app.route(), AppArg::Player) && script_step_due(fr.now, pause_at, 0) {
+    if let Some((pause_at, hold_ms, at_ms)) = app.scenarios.pause_script {
+        // In the simulator the clock sink is also told to stop on `at` exactly, so the pause
+        // (accepted a little after the gate opens) freezes that position rather than wherever
+        // scheduling had got to: the same frame and clock every run (`ffi_host.rs::stop_clock_at`).
+        // Re-armed every frame until accepted: a Load in between rebases the fed timeline, and
+        // the stop is kept in movie time, so re-arming is idempotent.
+        #[cfg(feature = "hostsim")]
+        if let Some(ms) = at_ms {
+            crate::player::stop_sim_clock_at(Some(i64::from(ms) * 1_000_000));
+        }
+        let reached = at_ms.is_none_or(|ms| crate::app::playback::playpos() >= i64::from(ms) * 1_000_000);
+        if matches!(app.route(), AppArg::Player) && script_step_due(fr.now, pause_at, 0) && reached {
             if crate::app::lifecycle::set_transport_paused(&mut app.adapters.player, true) {
                 crate::log(&format!(
                     "autopause: Pause accepted hold={}ms",
@@ -1146,6 +1221,8 @@ fn autopause_arm(app: &mut App, fr: &mut Frame) {
                 ));
                 app.scenarios.pause_script = None;
                 app.scenarios.pause_resume_at = hold_ms.map(|hold| fr.now.wrapping_add(hold));
+                #[cfg(feature = "hostsim")]
+                crate::player::stop_sim_clock_at(None);
                 pin_headless_hud(app, fr.now, None);
             }
         }
@@ -1273,6 +1350,8 @@ pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
     press_arm(app, fr);
     itemmenu_arm(app, fr);
     acct_arm(app, fr);
+    screenshot::libgrid_arm(app, fr);
+    screenshot::libmenu_arm(app, fr);
     if !detail_arm(app, fr) {
         return false;
     }

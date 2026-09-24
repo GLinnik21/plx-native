@@ -1012,7 +1012,7 @@ fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32,
     ));
     // fetch the server-rendered QR PNG (the exact QR the official apps display); public, no token.
     let qr_url = if pin.qr.is_empty() {
-        format!("https://plex.tv/api/v2/pins/qr/{}", pin.code)
+        format!("{}/api/v2/pins/qr/{}", crate::plex::account::plex_tv(), pin.code)
     } else {
         pin.qr.clone()
     };

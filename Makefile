@@ -1250,6 +1250,9 @@ check: lint
 	@# regression there is invisible here and shows up as a stranger concluding the suite is broken.
 	python3 tests/test_harness.py
 	python3 tests/test_mock_pms_library.py
+	@# The demo library and the screenshot scene manifest (make screenshots). Offline: the cases
+	@# that serve the catalog skip, and say so, where the derived artwork cache is absent.
+	python3 tests/test_demo_library.py
 	@# Host-only halves of the opt-in live diagnostics: /proc/interrupt parsing, rate normalization,
 	@# stack aggregation and folded output. Neither command resolves a TV or takes its lock.
 	tools/profile-graphics --selftest
@@ -1665,6 +1668,41 @@ sim-macos: $(FFMPEG_HOST_STAGED) pkg/.ffabi-host-ok
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
 	  cargo build --manifest-path rust-modules/Cargo.toml --target-dir $(SIM_TDIR)$(if $(LAB),-lab,) --features hostsim$(if $(LAB), --features lab-diagnostics,) --bin plxnative-sim
 
+# **`make screenshots` — the documentation screenshots, regenerated.** Boots the simulator once per
+# scene in `tests/screenshots/scenes.json` against the mock server's DEMO LIBRARY (openly licensed
+# films, `tests/demo_library/`), waits for each scene's settled frame, and writes the JPEGs, and
+# the CREDITS.md that goes with them, into `docs/screenshots/` (or `SHOT_OUT=dir`). No Plex account, no
+# television, no gitignored file.
+#   make screenshots                         # every scene
+#   make screenshots SHOT_SCENES=home,ux-detail            # some
+#   make screenshots SHOT_OUT=/tmp/shots SHOT_CHECK=1      # render twice, compare (the determinism check)
+#   make screenshots SHOT_HERO=sintel SHOT_OUT=/tmp/h      # the home shots with another film in the hero
+#   make screenshots SHOT_HERO_VARIANTS=1                  # also home-hero-<film>.jpg for each hero candidate
+# The knobs are SHOT_-prefixed because make takes a variable from the ENVIRONMENT too: a generic
+# OUT or CHECK exported by some other script (tests/focusfp.sh has an OUT) would otherwise move
+# the figures elsewhere or silently render everything twice.
+# Its own simulator build: `--no-default-features` drops `devtools` (the on-screen frame counter is
+# not part of the product) and `devtriggers` comes back because scenes are reached through them.
+# Its own target dir, for this file's feature-set rule. `CARGO_INCREMENTAL=0`: a one-shot build.
+SHOT_TDIR ?= $(SIM_TDIR)-shots
+SHOT_BIN   = $(SHOT_TDIR)/debug/plxnative-sim
+SHOT_SCENES ?=
+SHOT_OUT    ?=
+SHOT_CHECK  ?=
+SHOT_HERO   ?=
+SHOT_HERO_VARIANTS ?=
+screenshots-sim: $(FFMPEG_HOST_STAGED) pkg/.ffabi-host-ok
+	CARGO_INCREMENTAL=0 cargo build --manifest-path rust-modules/Cargo.toml --target-dir $(SHOT_TDIR) \
+	  --no-default-features --features hostsim,devtriggers --bin plxnative-sim
+
+demo-library:
+	python3 tools/demo_library.py derive
+
+screenshots: screenshots-sim demo-library
+	python3 tools/screenshots.py --bin $(SHOT_BIN) $(if $(SHOT_OUT),--out $(SHOT_OUT),) \
+	  $(if $(SHOT_SCENES),--only $(SHOT_SCENES),) $(if $(SHOT_CHECK),--check-determinism,) $(if $(SHOT_HERO),--hero $(SHOT_HERO),) \
+	  $(if $(SHOT_HERO_VARIANTS),--hero-variants,)
+
 # Optimized Linux UI/Plex simulator with no host FFmpeg prerequisite. It runs natively on Linux;
 # Windows/WSLg uses the same binary through `tools/sim.ps1`. Play intentionally reaches the host
 # seam's existing "no video path" result.
@@ -1814,5 +1852,5 @@ fetch-profile:
 	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
-.PHONY: disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe tv-capture-bench mali-irq-sample plxnative-stackwalk sim sim-macos sim-linux sim-wsl sim-run sim-macos-run sim-shot sim-macos-shot sim-token sim-macos-token sim-play sim-macos-play sim-clean sim-macos-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
+.PHONY: screenshots screenshots-sim demo-library disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe tv-capture-bench mali-irq-sample plxnative-stackwalk sim sim-macos sim-linux sim-wsl sim-run sim-macos-run sim-shot sim-macos-shot sim-token sim-macos-token sim-play sim-macos-play sim-clean sim-macos-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
         release-guard lab-guard install uninstall $(QUERY_GOALS)

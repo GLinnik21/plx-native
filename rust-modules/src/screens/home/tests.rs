@@ -2141,3 +2141,26 @@ fn the_hero_countdown_restarts_when_the_last_modal_is_dismissed() {
         s.hero_auto
     );
 }
+
+/// `HomeCmd::PinHero` — the screenshot pipeline's hero pin (`/tmp/plxnative-heropin=<n>`) —
+/// selects that slot and HOLDS it: the auto-advance never fires, however long the page sits
+/// uncovered, so a capture taken at any settled moment shows the same billboard.
+#[test]
+fn a_pinned_hero_never_auto_advances() {
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    let (handled, _, _) = step(&mut s, view, None, &ScreenEvent::App(AppMsg::Home(HomeCmd::PinHero(1))));
+    assert_eq!(handled, Handled::Yes);
+    assert_eq!(s.carousel.as_ref().map(|(_, rk)| rk.as_str()), Some("2"));
+    // 20 s of 16 ms ticks: more than twice HERO_AUTO_S.
+    for frame in 1..=1250u32 {
+        step(&mut s, view, None, &ScreenEvent::Tick(Tick { ms: frame * 16, dt_us: 16_000 }));
+        assert!(s.outgoing.is_none(), "the pinned hero began a slide at tick {frame}");
+    }
+    assert_eq!(s.carousel.as_ref().map(|(_, rk)| rk.as_str()), Some("2"));
+}

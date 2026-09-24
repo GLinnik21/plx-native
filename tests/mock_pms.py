@@ -37,14 +37,30 @@ at startup.
     python3 tests/mock_pms.py --port 32499 --movies 321 --rail-fixture  # multi-page A–Z rail
     python3 tests/mock_pms.py --host 0.0.0.0 --media /path/to/mockverify  # account-free TV set
 
+`--catalog tests/demo_library/catalog.json` is the one exception to the closed alphabet, and a
+deliberate one: the DEMO LIBRARY behind the documentation screenshots (`make screenshots`). It
+serves real titles, credits and synopses of openly licensed and public-domain films, with the
+artwork `tools/demo_library.py derive` built from the pinned sources in
+`tests/demo_library/assets.json`. Its clock is pinned (`now` in the catalog), so it is as
+deterministic as a seeded library; `--hero SLUG` moves one film to the front of Continue Watching,
+which is the home hero's first slot. Nothing recorded against it may be committed as a fixture —
+the harness's alphabet check would refuse it, correctly.
+
+Every mode also answers the four plex.tv calls of the QR sign-in (`/api/v2/pins`, the poll, the
+QR image, and `/api/v2/user`) with a fixed demo code, for an app booted with
+`plxnative-plextv=http://127.0.0.1:<port>`: the sign-in screen can then be driven and captured
+without touching plex.tv.
+
 The app reaches it as any other server: `make sim-shot SIM_PMS=127.0.0.1 SIM_PORT=32499` with
 any non-empty string in `$SIM_DIR/plxnative-token` (the token is accepted, never checked).
 """
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import random
+import re
 import struct
 import subprocess
 import sys
@@ -53,6 +69,8 @@ import time
 import urllib.parse
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))  # demo_library.qr
 
 VERIFY_SHOW_RK = 900001
 VERIFY_SEASON_RK = 900002
@@ -81,6 +99,34 @@ def sname(rng):
 
 def swords(rng, n):
     return " ".join(sname(rng) for _ in range(n))
+
+
+# The shortest query PMS answers: a one-character query came back with every hub empty (measured
+# against PMS 1.43.3; the app's `search::MIN_QUERY` never sends one).
+SEARCH_MIN_QUERY = 2
+
+
+def search_words(text):
+    return re.findall(r"[0-9a-z]+", text.lower())
+
+
+def search_matcher(query):
+    """What `/hubs/search` counts as a hit: every word of the query begins a word of the name.
+    "sp" finds "Spring" and "Sprite Fright"; "in" finds neither "Spring" nor "Sintel".
+
+    The WORD-PREFIX rule is an assumption, not a measurement: docs/pms-api.md §3b probed the
+    response shape, not the matching, and the spec only says PMS "looks for partial matches" and
+    spell-checks. It is the conservative reading — a mid-word match would make figures show hits a
+    real server may not return. Spell-checking is not modelled; the related results are, in
+    `Library.search`."""
+    want = search_words(query)
+    if len(query.strip()) < SEARCH_MIN_QUERY or not want:
+        return lambda name: False
+
+    def hits(name):
+        words = search_words(name)
+        return all(any(w.startswith(q) for w in words) for q in want)
+    return hits
 
 
 # ---------------------------------------------------------------- the generated library ----
@@ -586,24 +632,318 @@ class Library:
         return [it for it in self.items.values() if it["type"] in ("movie", "show") and any(
             t["id"] == pid for t in it.get("Role", []) + it.get("Director", []) + it.get("Writer", []))]
 
-    def search(self, query):
-        q = query.lower()
+    def search(self, query, limit=3):
+        """`/hubs/search` as hubs. Each hub holds at most `limit` rows and its `size` is the number
+        it holds, as measured (docs/pms-api.md: "`limit` caps each hub separately", 3 when absent,
+        and `Hub.size` is the rows returned).
+
+        The movie hub also carries RELATED results, which the spec documents for this endpoint:
+        "for a genre match, it may return movies in that genre, or for an actor match, movies with
+        that actor", each marked with `reason` (the hub the match came from), `reasonTitle` and
+        `reasonID`. The mock returns exactly those two relations — a genre whose name the query
+        matches brings that genre's movies, and a person it matches brings the movies they act in —
+        after the direct title hits, in library order. The order and the choice of which relations
+        a real server applies are assumptions: the spec names these two examples and says the hubs
+        are ordered "based on quality", which the mock does not try to model. Shows, episodes and
+        the other hubs hold direct hits only."""
+        hits = search_matcher(query)
+        limit = max(1, int(limit))
+        genres = [g for g in self.genres.values() if hits(g["tag"])]
+        matched = [t for t in self.people.values() if hits(t["tag"])]
+
+        def related(it):
+            for g in genres:
+                if any(t["id"] == g["id"] for t in it.get("Genre", [])):
+                    return {"reason": "genre", "reasonTitle": g["tag"], "reasonID": g["id"]}
+            for p in matched:
+                if any(t["id"] == p["id"] for t in it.get("Role", [])):
+                    return {"reason": "actor", "reasonTitle": p["tag"], "reasonID": p["id"]}
+            return None
+
         hubs = []
-        for kind, title in (("movie", "movie"), ("show", "show"), ("episode", "episode")):
-            rows = [it for it in self.items.values() if it["type"] == kind and q in it["title"].lower()]
-            hubs.append({"title": title, "type": kind, "hubIdentifier": kind, "size": len(rows),
-                         "Metadata": rows[:8]})
+        for kind in ("movie", "show", "episode"):
+            items = [it for it in self.items.values() if it["type"] == kind]
+            rows = [it for it in items if hits(it["title"])]
+            if kind == "movie":
+                rows += [dict(it, **why) for it in items
+                         if not hits(it["title"]) and (why := related(it))]
+            rows = rows[:limit]
+            hubs.append({"title": kind, "type": kind, "hubIdentifier": kind, "size": len(rows),
+                         "Metadata": rows})
         people = [dict(t, type="actor", key=f"/library/sections/1/all?actor={t['id']}",
-                       librarySectionID=1)
-                  for t in self.people.values() if q in t["tag"].lower()]
+                       librarySectionID=1) for t in matched][:limit]
         hubs.append({"title": "actor", "type": "actor", "hubIdentifier": "actor",
-                     "size": len(people), "Directory": people[:8]})
+                     "size": len(people), "Directory": people})
         cols = [{"tag": c["tag"], "id": c["id"], "type": "collection", "librarySectionID": 1,
                  "key": f"/library/sections/1/all?collection={c['id']}", "reasonTitle": ""}
-                for c in self.collections.values() if q in c["tag"].lower()]
+                for c in self.collections.values() if hits(c["tag"])][:limit]
         hubs.append({"title": "collection", "type": "collection", "hubIdentifier": "collection",
                      "size": len(cols), "Directory": cols})
         return hubs
+
+
+# ---------------------------------------------------------------- the demo catalog --------
+
+DEMO_PIN_ID = 1790000001
+DEMO_PIN_CODE = "DEMO"
+# What the demo sign-in QR encodes: the page a person types a code into. A scan of a screenshot
+# lands on plex.tv's own link page, which asks for a code this server invented — harmless.
+DEMO_QR_TEXT = b"https://plex.tv/link"
+
+
+def demo_cache_dir():
+    env = os.environ.get("PLXNATIVE_DEMO_CACHE")
+    return pathlib.Path(env) if env else pathlib.Path.home() / ".cache" / "plxnative-demo"
+
+
+class CatalogLibrary(Library):
+    """The demo library (`--catalog`): the same wire shapes and the same queries as the generated
+    library, built from `tests/demo_library/catalog.json` instead of a seed. Keys are dense and
+    fixed by catalog ORDER — movies 101.., shows 201.., a season `show*10+n`, an episode
+    `season*10+n` — so a scene manifest can name an item by key and the key never moves unless
+    the catalog does."""
+
+    def __init__(self, catalog_path, cache=None, hero=None):
+        catalog_path = pathlib.Path(catalog_path)
+        cat = json.loads(catalog_path.read_text())
+        assets = json.loads((catalog_path.parent / "assets.json").read_text())["assets"]
+        self.cache = pathlib.Path(cache) if cache else demo_cache_dir()
+        self.derived = self.cache / "derived"
+        if not self.derived.is_dir():
+            raise ValueError(f"no derived demo artwork in {self.derived}: "
+                             "run `python3 tools/demo_library.py derive` first")
+        self.catalog = cat
+        self.seed = 0
+        self.now = int(cat["now"])
+        self.machine = cat["server"]["machineIdentifier"]
+        self.friendly = cat["server"]["friendlyName"]
+        self.items, self.people, self.genres, self.collections = {}, {}, {}, {}
+        self.sections = [dict(s, uuid=f"demo-section-{s['key']}") for s in cat["sections"]]
+        self.media_files, self.sidecars, self.verification_streams, self.media_content_type = {}, {}, {}, {}
+        self.images = {}  # rk -> {"thumb"|"art": derived file}
+        self.by_slug = {}  # "slug" / "slug/season/episode" -> rk
+        self._scaled = {}
+        self._lock = threading.Lock()
+        for n, name in enumerate(cat["collections"], start=1):
+            self.collections[n] = {"id": n, "tag": name}
+        coll_id = {c["tag"]: c["id"] for c in self.collections.values()}
+
+        def person(name):
+            for p in self.people.values():
+                if p["tag"] == name:
+                    return p
+            pid = len(self.people) + 1
+            self.people[pid] = {"id": pid, "tag": name, "tagKey": f"demo-person-{pid}"}
+            return self.people[pid]
+
+        def genre(name):
+            for g in self.genres.values():
+                if g["tag"] == name:
+                    return g
+            gid = len(self.genres) + 1
+            self.genres[gid] = {"id": gid, "tag": name, "filter": f"genre={gid}"}
+            return self.genres[gid]
+
+        def credits(rec):
+            return {
+                "Genre": [dict(genre(g)) for g in rec.get("genres", [])],
+                "Director": [dict(person(n)) for n in rec.get("directors", [])],
+                "Writer": [dict(person(n)) for n in rec.get("writers", [])],
+                "Role": [dict(person(c["name"]), role=c["role"]) for c in rec.get("cast", [])],
+            }
+
+        def base(rk, kind, section, rec, slug):
+            key = slug.replace("/", "_")
+            it = {
+                "ratingKey": str(rk), "key": f"/library/metadata/{rk}", "guid": f"plex://{kind}/demo-{key}",
+                "type": kind, "title": rec["title"], "titleSort": rec.get("titleSort", rec["title"]),
+                "librarySectionTitle": section["title"], "librarySectionID": int(section["key"]),
+                "librarySectionKey": f"/library/sections/{section['key']}",
+                "summary": rec.get("summary", ""),
+            }
+            if "year" in rec:
+                it["year"] = rec["year"]
+            images = {}
+            for role, name in (("thumb", "poster"), ("art", "art"), ("thumb", "thumb")):
+                path = self.derived / key / f"{name}.jpg"
+                if name in rec and path.is_file():
+                    images[role] = path
+                    it[role] = f"/library/metadata/{rk}/{role}/{self.now}"
+                elif name in rec:
+                    raise ValueError(f"{slug}: derived {name} is missing ({path}); rerun "
+                                     "`python3 tools/demo_library.py derive`")
+            if "logo" in rec:
+                # The item's clearLogo, which the app asks for by path
+                # (`/library/metadata/<rk>/clearLogo`), as it does of a real server.
+                path = self.derived / key / "logo.png"
+                if not path.is_file():
+                    raise ValueError(f"{slug}: derived logo is missing ({path}); rerun "
+                                     "`python3 tools/demo_library.py derive`")
+                images["clearLogo"] = path
+            if "art" in images:
+                it["UltraBlurColors"] = self._blur_of(images["art"])
+            self.images[rk] = images
+            self.by_slug[slug] = rk
+            return it
+
+        movies, shows = self.sections[0], self.sections[1]
+        part = 100
+        for n, m in enumerate(cat["movies"]):
+            rk = 101 + n
+            part += 1
+            it = base(rk, "movie", movies, m, m["id"])
+            dur = m["minutes"] * 60_000
+            it.update(studio=m.get("studio", ""), originallyAvailableAt=m["originallyAvailableAt"],
+                      duration=dur, Chapter=[], Marker=[], **credits(m))
+            if m.get("collections"):
+                it["Collection"] = [{"tag": c, "id": coll_id[c]} for c in m["collections"]]
+            if "media" in m:
+                a = assets[m["media"]]
+                path = self.cache / "src" / f"{m['media']}.{a['url'].rsplit('.', 1)[-1].lower()}"
+                media, dur = self._verified_media(path, rk, part)
+                it.update(duration=dur, Media=[media])
+            else:
+                it["Media"] = self._demo_media(rk, part, dur, f"/media/Movies/{m['title']} ({m['year']})")
+            it["Chapter"] = self._chapters(m.get("chapters", []), dur, m["id"])
+            self.items[rk] = it
+        for n, s in enumerate(cat["shows"]):
+            rk = 201 + n
+            show = base(rk, "show", shows, s, s["id"])
+            show.update(studio=s.get("studio", ""), originallyAvailableAt=f"{s['year']}-01-01",
+                        duration=0, childCount=0, leafCount=0, viewedLeafCount=0, **credits(s))
+            self.items[rk] = show
+            for season in s["seasons"]:
+                srk = rk * 10 + season["index"]
+                se = base(srk, "season", shows, {"title": f"Season {season['index']}"}, f"{s['id']}/{season['index']}")
+                se.update(index=season["index"], parentRatingKey=show["ratingKey"], parentKey=show["key"],
+                          parentTitle=show["title"], parentThumb=show.get("thumb", ""), thumb=show.get("thumb", ""),
+                          art=show.get("art", ""), leafCount=0, viewedLeafCount=0)
+                self.images[srk] = self.images[rk]
+                self.items[srk] = se
+                for e in season["episodes"]:
+                    erk = srk * 1000 + e["index"]  # episode numbers run past 9 (Hubblecast 133)
+                    part += 1
+                    ep = base(erk, "episode", shows, e, f"{s['id']}/{season['index']}/{e['index']}")
+                    dur = e["minutes"] * 60_000
+                    ep.update(index=e["index"], parentIndex=season["index"], parentRatingKey=se["ratingKey"],
+                              parentKey=se["key"], parentTitle=se["title"], grandparentRatingKey=show["ratingKey"],
+                              grandparentKey=show["key"], grandparentTitle=show["title"],
+                              grandparentThumb=show.get("thumb", ""), grandparentArt=show.get("art", ""),
+                              year=int(e["date"][:4]), originallyAvailableAt=e["date"], duration=dur,
+                              Media=self._demo_media(erk, part, dur, f"/media/TV/{s['title']}/S{season['index']:02d}E{e['index']:02d}"),
+                              Director=[], Writer=[], Role=[], Chapter=[], Marker=[])
+                    if "art" in self.images[rk]:
+                        self.images[erk]["art"] = self.images[rk]["art"]
+                    self.items[erk] = ep
+        self._pin_clock(hero or cat["hero"])
+        self._roll_up()
+        for it in self.items.values():
+            if it["type"] == "show":
+                it["duration"] = max((x["duration"] for x in self.items.values()
+                                      if x["type"] == "episode" and x["grandparentRatingKey"] == it["ratingKey"]),
+                                     default=0)
+
+    def _pin_clock(self, hero):
+        """addedAt, lastViewedAt, viewOffset and viewCount from the catalog and its pinned `now` —
+        never from the wall clock. `hero` goes to the head of Continue Watching: the home hero pool
+        opens with the deck, so that is its first slot."""
+        cat = self.catalog
+        if hero not in self.by_slug:
+            raise ValueError(f"--hero {hero!r} is not in the catalog")
+        for i, slug in enumerate(cat["added_order"]):
+            it = self.items[self.by_slug[slug]]
+            added = self.now - 86_400 * (2 + 3 * i)
+            it["addedAt"] = it["updatedAt"] = added
+            if it["type"] == "show":
+                for x in self.items.values():
+                    if x.get("grandparentRatingKey") == it["ratingKey"] or x.get("parentRatingKey") == it["ratingKey"]:
+                        x["addedAt"] = x["updatedAt"] = added + x.get("index", 0) * 60
+        deck = [dict(c) for c in cat["continue_watching"]]
+        if all(c["item"] != hero for c in deck):
+            deck.insert(0, {"item": hero, "progress": 0.42})
+        deck.sort(key=lambda c: c["item"] != hero)  # stable: the hero first, the rest in order
+        for i, c in enumerate(deck):
+            it = self.items[self.by_slug[c["item"]]]
+            it["viewOffset"] = int(it["duration"] * c["progress"]) // 1000 * 1000
+            it["lastViewedAt"] = self.now - 600 - 3_600 * i
+        for i, slug in enumerate(cat["watched"]):
+            it = self.items[self.by_slug[slug]]
+            it["viewCount"] = 1
+            it["lastViewedAt"] = self.now - 86_400 * (10 + i)
+
+    @staticmethod
+    def _chapters(marks, duration, slug):
+        """`[{"start": "m:ss", "title": …}, …]` from the catalog → PMS's `Chapter[]`: each chapter
+        ends where the next begins, the last at the end of the file. The first must start at 0:00
+        and the starts must rise, as they do on a real file."""
+        def ms(stamp):
+            m, s = stamp.split(":")
+            return (int(m) * 60 + int(s)) * 1000
+        starts = [ms(c["start"]) for c in marks]
+        if marks and (starts[0] != 0 or starts != sorted(set(starts)) or starts[-1] >= duration):
+            raise ValueError(f"{slug}: chapter starts must begin at 0:00, rise, and end inside the film")
+        ends = starts[1:] + [duration]
+        return [{"id": n, "index": n, "tag": c["title"], "startTimeOffset": a, "endTimeOffset": b}
+                for n, (c, a, b) in enumerate(zip(marks, starts, ends), start=1)]
+
+    @staticmethod
+    def _blur_of(path):
+        """The four UltraBlur corner colours PMS would compute, taken from the backdrop itself: a
+        2×2 area-average of the image, darkened the way PMS's own colours are."""
+        raw = subprocess.check_output(["ffmpeg", "-v", "error", "-i", str(path), "-vf",
+                                       "scale=2:2:flags=area", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+        px = [tuple(int(c * 0.55) for c in raw[i:i + 3]) for i in range(0, 12, 3)]
+        tl, tr, bl, br = px
+        return {k: "#%02x%02x%02x" % v for k, v in
+                (("topLeft", tl), ("topRight", tr), ("bottomRight", br), ("bottomLeft", bl))}
+
+    def _demo_media(self, rk, part, duration, stem):
+        media = self._media(random.Random(rk), rk, part, duration)
+        media[0]["Part"][0]["file"] = stem + ".mkv"
+        return media
+
+    def image(self, url, width, height):
+        """`(content type, bytes)` for an artwork URL (`/library/metadata/<rk>/<thumb|art|clearLogo>
+        [/<n>]`), scaled like PMS's photo transcoder with minSize=1 (cover the box, keep the aspect)
+        — a clearLogo as a transparent PNG, the rest as JPEG; None when the item has no such image
+        — a 404, as for a real item without art."""
+        segs = [s for s in urllib.parse.urlsplit(url).path.split("/") if s]
+        if len(segs) < 4 or segs[:2] != ["library", "metadata"] or not segs[2].isdigit():
+            return None
+        path = self.images.get(int(segs[2]), {}).get(segs[3])
+        if path is None:
+            return None
+        png = path.suffix == ".png"
+        ctype = "image/png" if png else "image/jpeg"
+        try:
+            w, h = max(1, min(int(width), 3840)), max(1, min(int(height), 2160))
+        except (TypeError, ValueError):
+            return ctype, path.read_bytes()
+        key = (str(path), w, h)
+        encode = (["-pix_fmt", "rgba", "-f", "image2pipe", "-vcodec", "png"] if png else
+                  ["-q:v", "3", "-f", "image2pipe", "-vcodec", "mjpeg"])
+        with self._lock:
+            if key not in self._scaled:
+                self._scaled[key] = subprocess.check_output([
+                    "ffmpeg", "-v", "error", "-threads", "1", "-i", str(path), "-vf",
+                    f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos",
+                    "-bitexact", *encode, "-"])
+            return ctype, self._scaled[key]
+
+    def home_hubs(self):
+        """`/hubs` after Continue Watching: the catalog's shelves, in its order."""
+        out = []
+        for h in self.catalog["hubs"]:
+            if "recent" in h:
+                rows = self.recent(h["recent"], 12)
+            else:
+                cid = next(c["id"] for c in self.collections.values() if c["tag"] == h["collection"])
+                rows = [it for it in self.items.values()
+                        if any(c["id"] == cid for c in it.get("Collection", []))]
+                rows.sort(key=lambda it: -it["addedAt"])
+            out.append({"title": h["title"], "type": h["type"], "hubIdentifier": h["hubIdentifier"],
+                        "key": f"/hubs/demo/{h['hubIdentifier']}", "Metadata": rows})
+        return out
 
 
 # ---------------------------------------------------------------- PNG ----------------------
@@ -689,6 +1029,21 @@ class MockPms:
         if write_path and not (method in ("GET", "HEAD") and p.startswith("/library/parts/")):
             self.note_write(method, path, body)
 
+        # plex.tv's QR sign-in, for `plxnative-plextv` (see the module doc). Never linked: the poll
+        # stays pending, which is the state the sign-in screen is captured in.
+        if p == "/api/v2/pins" and method == "POST":
+            return j({"id": DEMO_PIN_ID, "code": DEMO_PIN_CODE, "expiresIn": 1800, "authToken": None,
+                      "qr": ""}, 201)
+        if p == f"/api/v2/pins/{DEMO_PIN_ID}":
+            return j({"id": DEMO_PIN_ID, "code": DEMO_PIN_CODE, "expiresIn": 1800, "authToken": None})
+        if p == f"/api/v2/pins/qr/{DEMO_PIN_CODE}":
+            import demo_library.qr as qr
+            return (200, "image/png", qr.png(qr.encode(DEMO_QR_TEXT, "M"), scale=8, border=0, plex_style=True))
+        if p == "/api/v2/user":
+            return j({"id": 1, "uuid": "demo-user", "username": "demo", "title": "Demo",
+                      "friendlyName": "Demo", "email": "demo@example.invalid", "thumb": "",
+                      "subscription": {"active": True, "status": "Active", "plan": "lifetime"}})
+        catalog = isinstance(lib, CatalogLibrary)
         if p == "/" or p == "/identity":
             return j(self.container(machineIdentifier=lib.machine, friendlyName=lib.friendly,
                                     version="1.41.0.0000-synthetic", myPlexSubscription=True,
@@ -742,6 +1097,9 @@ class MockPms:
                 return j(self.container(Hub=[{"title": "related", "type": it["type"] if it else "movie",
                                               "hubIdentifier": "related", "size": min(8, len(pool)),
                                               "Metadata": pool[:8]}]))
+            if catalog:
+                img = lib.image(p, q.get("width"), q.get("height"))
+                return (200, *img) if img else (404, "text/plain", b"no image")
             if sub in ("thumb", "art"):
                 png = flat_png(q.get("width", 250), q.get("height", 375), colour_for(p))
                 return (200, "image/png", png)
@@ -757,11 +1115,19 @@ class MockPms:
                     {"title": "home.television.recent", "type": "episode",
                      "hubIdentifier": "home.television.recent",
                      "key": "/library/sections/2/recentlyAdded", "Metadata": lib.recent("episode")}]
+            if catalog:
+                hubs = hubs[:1] + lib.home_hubs()
+                hubs[0]["title"] = "Continue Watching"
             if q.get("excludeContinueWatching") != "1":
                 hubs[0]["Metadata"] = lib.continue_watching()[:12]
             for h in hubs:
                 h["size"] = len(h["Metadata"])
             return j(self.container(Hub=hubs))
+        if catalog and p == "/hubs/continueWatching":
+            rows = lib.continue_watching()[:int(q.get("count", 12))]
+            return j(self.container(Hub=[{"title": "Continue Watching", "type": "mixed",
+                                          "hubIdentifier": "home.continue", "key": "/hubs/continueWatching",
+                                          "size": len(rows), "Metadata": rows}]))
         if p == "/hubs/continueWatching":
             rows = lib.continue_watching()[:int(q.get("count", 12))]
             return j(self.container(Hub=[{"title": "home.continue", "type": "mixed",
@@ -776,9 +1142,18 @@ class MockPms:
                     {"title": f"{kind}.recentlyadded.{key}", "type": kind,
                      "hubIdentifier": f"{kind}.recentlyadded.{key}", "size": 12,
                      "Metadata": lib.recent(kind)}]
+            if catalog:
+                # The identifiers stay; the titles are the ones a real server shows, because a
+                # catalog run is photographed and an identifier on screen is a mock showing through.
+                hubs[0]["title"] = "Continue Watching"
+                hubs[1]["title"] = "Recently Added Movies" if kind == "movie" else "Recently Added TV"
             return j(self.container(Hub=hubs))
         if p == "/hubs/search":
-            return j(self.container(Hub=lib.search(q.get("query", ""))))
+            lim = q.get("limit", "")
+            return j(self.container(Hub=lib.search(q.get("query", ""), int(lim) if lim.isdigit() else 3)))
+        if p == "/photo/:/transcode" and catalog:
+            img = lib.image(q.get("url", ""), q.get("width"), q.get("height"))
+            return (200, *img) if img else (404, "text/plain", b"no image")
         if p == "/photo/:/transcode":
             src = q.get("url", "")
             png = flat_png(q.get("width", 250), q.get("height", 375), colour_for(src))
@@ -982,14 +1357,25 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    def handle_error(self, request, client_address):
+        """A client that hangs up mid-body (a player stopping, a process exiting) is ordinary for a
+        media server, not an error worth a traceback; anything else still gets one."""
+        if isinstance(sys.exc_info()[1], ConnectionError):
+            return
+        super().handle_error(request, client_address)
+
 
 def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture=False,
-          media=None, extra_media=None):
+          media=None, extra_media=None, catalog=None, catalog_cache=None, hero=None):
     """Start a mock PMS in a daemon thread; returns (server, pms). Loopback only by default: the
     app on the simulator is on this machine, and a LAN-facing listener would be one more thing
-    the outbound guard has to reason about."""
-    pms = MockPms(Library(seed=seed, movies=movies, rail_fixture=rail_fixture, media=media,
-                          extra_media=extra_media))
+    the outbound guard has to reason about. `catalog` serves the demo library instead of a seed."""
+    if catalog is not None:
+        lib = CatalogLibrary(catalog, cache=catalog_cache, hero=hero)
+    else:
+        lib = Library(seed=seed, movies=movies, rail_fixture=rail_fixture, media=media,
+                      extra_media=extra_media)
+    pms = MockPms(lib)
     srv = Server((host, port), Handler)
     srv.pms = pms
     srv.verbose = verbose
@@ -1147,9 +1533,16 @@ def main():
     ap.add_argument("--extra-media", type=pathlib.Path, action="append", default=[],
                     help="opt-in arbitrary media file (repeatable); each becomes one movie, "
                          "ratingKey assigned from EXTRA_MEDIA_RK_BASE and printed at startup")
+    ap.add_argument("--catalog", type=pathlib.Path,
+                    help="serve the demo library (tests/demo_library/catalog.json) instead of a seed")
+    ap.add_argument("--catalog-cache", type=pathlib.Path,
+                    help="the demo library cache (default $PLXNATIVE_DEMO_CACHE or ~/.cache/plxnative-demo)")
+    ap.add_argument("--hero", help="with --catalog: the film at the head of Continue Watching (the hero)")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
+    if a.hero and a.catalog is None:
+        ap.error("--hero needs --catalog")
     if not 0 <= a.movies <= 1000:
         ap.error("--movies must be between 0 and 1000")
     if a.selftest:
@@ -1158,10 +1551,12 @@ def main():
     try:
         srv, pms = serve(a.port, seed=a.seed, host=a.host, verbose=a.verbose,
                          movies=a.movies, rail_fixture=a.rail_fixture, media=a.media,
-                         extra_media=a.extra_media)
+                         extra_media=a.extra_media, catalog=a.catalog, catalog_cache=a.catalog_cache,
+                         hero=a.hero)
     except ValueError as e:
         ap.error(str(e))
-    print(f"mock_pms: serving seed={a.seed} on http://{a.host}:{srv.server_address[1]}", flush=True)
+    what = f"catalog={a.catalog}" if a.catalog else f"seed={a.seed}"
+    print(f"mock_pms: serving {what} on http://{a.host}:{srv.server_address[1]}", flush=True)
     if a.media is not None:
         trigger = {"name": pms.lib.friendly, "machine_id": pms.lib.machine,
                    "host": "<TV-REACHABLE-HOST>", "port": srv.server_address[1],

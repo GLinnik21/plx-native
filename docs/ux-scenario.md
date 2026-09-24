@@ -188,7 +188,7 @@ is why moving to or from them fades the whole screen rather than just the page.
 ![Home, shelves](screenshots/ux-home-shelves.jpg)
 
 DOWN from the hero enters the shelves; DOWN again steps between them; LEFT/RIGHT walks the cards.
-The focused card grows, and its title and a status line appear beneath it — here *"2 hr 6 min
+The focused card grows, and its title and a status line appear beneath it — here *"8 min
 left"*, which is the resume state. A watched item carries a check mark in its corner.
 
 **OK on a card in *Continue Watching* plays it directly**, and the amber ▶ on the card is what
@@ -233,7 +233,8 @@ advances by itself the moment the account is linked. Nothing needs pressing; aft
 answer the spinner's line becomes *"Still waiting — press OK for a new code"*, and OK mints a fresh
 code without leaving the screen.
 
-*The code in the figure is a one-time, short-lived claim code. It names no account.*
+*The code in the figure, DEMO, and its QR are the mock server's stand-in for plex.tv's pin
+service (§9); a real code is a one-time, short-lived claim code that names no account.*
 
 Account **creation** happens on plex.tv, not in the app.
 
@@ -273,8 +274,7 @@ pad back to the roster.
 
 Reached from any library pill in the top strip. A poster grid, four-way navigable, with:
 
-- **Sort** and **Filter** pills above the grid (left);
-- the item **count** (right) — *"27 films"*;
+- **Sort** and **Filter** pills above the grid (left), each reading its current choice;
 - an **A–Z rail** down the right edge, which jumps the grid to a letter;
 - watched check marks on the cards.
 
@@ -318,9 +318,8 @@ The line beside the field names the **scope** — which server or servers are be
 covers the user's own servers and any shared with the account; Plex Discover / Watchlist catalog
 results are deliberately out of scope, by decision rather than by omission.
 
-*The scope line in the figure is redacted: it names a real server. The substitute is the app's own
-string for a server that reports no name (`screens/search/render.rs::scope_text`), so the figure shows a
-state the app really produces.*
+*The figure searches the demo library's mock server, so its scope line names that server,
+"Demo Library".*
 
 ### 5.6 Card context menu
 
@@ -342,7 +341,7 @@ OK opens a popover headed *ACCOUNT*. Signed in, it offers switching profile and 
 
 One more row, **Settings**, is offered in **every** state, signed in or out. A person who cannot get
 past sign-in has still received a copy of this software, so privacy and legal information cannot be
-conditional on an account. *(The figure above predates this row.)* Settings opens a full-screen
+conditional on an account. Settings opens a full-screen
 modal: signed-in users also get **Favorite libraries** (under a **Libraries** section — which
 libraries this television shows, on Home, in the top strip and in the Library's own picker), while
 everyone gets **Privacy & data**, **Legal notices** and **About PlxNative**.
@@ -416,8 +415,10 @@ rung this playback is already using, so picking that rung is a plain retry and p
 starts the same item under a different policy. A failure is therefore terminal for the pipeline,
 not a trap for the viewer.
 
-The figure is a real server verdict (*"Cannot convert this item. Implementation for video encoder
-'hevc' not found."*). The screen is shaped to survive being photographed off a panel and pasted into
+The verdict in the figure (*"Cannot convert this item. Implementation for video encoder 'hevc' not
+found."*) is the one a real server returned when it had no HEVC encoder; the figure replays it
+through the `failtest` dev trigger, and its footer reads "webOS unknown · unknown set" because it
+was taken on the simulator. The screen is shaped to survive being photographed off a panel and pasted into
 a bug report, which is the state it is usually seen in.
 
 ### 5.11 Diagnostics read-out
@@ -490,9 +491,9 @@ grounds are below, and they are the reason this document exists.
 
 ![Player HUD](screenshots/player.jpg)
 
-*Device capture. The Starfish/ACB media seam exists only on the television, so the player cannot be
-photographed on the desktop simulator — see §9. The figure shows the **paused** state: note the
-pause mark immediately right of the `0:25` clock, and that there is no transport button row.*
+*Simulator capture — see §9 for how the picture under it was made. The figure shows the **paused**
+state: note the pause mark immediately right of the elapsed clock, and that there is no transport
+button row.*
 
 The HUD is summoned by any input and hides itself again after **4.5 s** of no input — **8 s** while
 one of its panels is open, which is longer read time for a list. While it is hidden the picture is
@@ -741,19 +742,24 @@ Where the four deferring items are answered, and the neighbouring items this doc
 
 ## 9. Figures, and which ones still need a device capture
 
-Every figure in this document except the player HUD was taken from the **desktop simulator**
-(`make sim`), which runs the same application core, against a real Plex server, at the authored
-1920×1080. Layout, focus, navigation and the whole data layer are identical to the television's.
+Every figure in this document was taken from the **desktop simulator**, which runs the same
+application core at the authored 1920×1080, against the **mock server's demo library** — openly
+licensed and public-domain films (`tests/demo_library/`, credited in
+`docs/screenshots/CREDITS.md`) — and never against a real Plex account. `make screenshots`
+regenerates all of them from the scene manifest `tests/screenshots/scenes.json`, which names the
+state each figure shows and the dev triggers that reach it. Layout, focus, navigation and the whole
+data layer are identical to the television's.
 
-**What the simulator cannot photograph** is anything involving video. The Starfish/ACB media seam is
-29 symbols that exist only on the television, so a Play press on the desktop lands on the app's real
-failure read-out — which is how §5.10's figure was taken honestly, and why the player figures cannot
-be.
+**What the simulator cannot show** is the television's video path. The Starfish/ACB media seam is
+29 symbols that exist only on the television. The player figure (§6.3) is the real HUD over a real
+decoded frame, but the frame is made by a simulator-only facility: a clock sink plays the file the
+mock serves and a system `ffmpeg` decodes it under the UI (`player/sim_video.rs`). It shows what the
+HUD looks like over a picture; it says nothing about LG's decoder or the hardware video plane.
 
 | figure | source | status |
 |---|---|---|
-| Home hero, Home shelves, Detail, Card menu, Library grid, Library sort, Search, Account menu, Sign in, Failure read-out | simulator, 1920×1080 | **in this document** |
-| Player HUD (`screenshots/player.jpg`) | device capture | **in this document** — shows the paused state mark |
+| Home hero, Home shelves, Detail, Card menu, Library grid, Library sort, Search, Account menu, Sign in, Failure read-out | simulator, demo library, 1920×1080 | **in this document** |
+| Player HUD (`screenshots/player.jpg`) | simulator, demo library, simulator-decoded frame | **in this document** — shows the paused state mark |
 | Player HUD, playing steadily (empty mark slot) | device | **needed** |
 | Player HUD, fast-forward and rewind marks | device | **needed** |
 | Subtitle track menu · Audio track menu | device | **needed** |
@@ -774,7 +780,8 @@ The needed captures are all reachable on the bench with the boot triggers docume
 - Key dispatch: `rust-modules/src/ui/consts.rs::classify` and `rust-modules/src/app.rs`'s ladder.
 - Screen map: the `Route` enum in `rust-modules/src/app.rs` and `ui::trail`.
 - Audio: `Makefile` `LIBS_REAL`, and `SDL_Init(SDL_INIT_VIDEO)` in `rust-modules/src/app.rs`.
-- Figures: `make sim`, 2026-08-23, at 1920×1080, dev counter compiled out.
+- Figures: `make screenshots` (the simulator against `tests/mock_pms.py`'s demo library), at
+  1920×1080, dev counter compiled out; the scene manifest is `tests/screenshots/scenes.json`.
 
-**Exactly one figure is edited, and the edit is stated where it appears**: the Search scope line
-(§5.5), which named a real server. No other figure has been retouched in any way.
+**No figure is edited.** Each is the app's own capture of a settled screen, scaled and encoded by
+`tools/screenshots.py` and nothing else.

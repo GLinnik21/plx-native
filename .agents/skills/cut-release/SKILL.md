@@ -116,7 +116,7 @@ mechanism.
 unconditionally** — the check sits outside the `pkg/.build-config` branch, gated on nothing but
 "this package is the stable id". That matters because the stamp cannot be trusted to be one of the
 two shipped configurations: the Makefile documents a third (`RUST_FEATFLAGS="--no-default-features
---features devtriggers"`, the README-screenshot recipe), and while the check was nested it would
+--features devtriggers"`, the on-device screenshot recipe), and while the check was nested it would
 have printed "SKIP — neither shipped configuration" and packaged a dev-trigger binary under the
 released id on a green run. So the gate genuinely holds against the two ways past the recipe: the
 documented `ALLOW_DEV_ON_STABLE=1` hatch, and a third feature set that satisfies `release-guard`
@@ -199,6 +199,22 @@ ci/gen-release-audit.py --tag vA.B.C --dist /tmp/vA.B.C
 moves one line.** Do not widen it because a firmware "should" work, and never let the static
 loader check become a playback claim — it grades whether the process starts and cannot see a video
 plane. The note carries one line per tier; the matrix belongs to the audit.
+
+**Regenerate the screenshots, look at them, and commit them on their own.** The README and
+`docs/ux-scenario.md` show the release's own UI, so a release whose figures predate its changes
+advertises a different app:
+
+```sh
+make screenshots SHOT_CHECK=1     # every figure, rendered twice; fails unless within its bound
+git status --short docs/screenshots
+```
+
+Open every changed image before committing it — a scene whose state drifted (a menu that opened on
+the wrong row, a shelf that moved) still passes its log checks. No account and no television are
+involved (`ui-sim` skill, "Documentation screenshots"). It is one command: the same run rewrites
+`docs/screenshots/CREDITS.md`. Commit the images and CREDITS.md as one commit of their own ahead
+of the version bump; a caption the new figures made false is fixed in that same
+commit.
 
 ### 3. Build locally to catch mistakes early — CI builds what ships
 

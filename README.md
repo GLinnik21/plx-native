@@ -20,7 +20,9 @@ day to watch things off my server in the next room.
 
 ## What it looks like
 
-Real screenshots off the television, not mockups.
+Real captures of the app, not mockups: the same code that runs on the television, on the desktop
+simulator, browsing a demo library of openly licensed films
+([credits](docs/screenshots/CREDITS.md)). `make screenshots` regenerates them.
 
 ![Home](docs/screenshots/home.jpg)
 
@@ -28,7 +30,10 @@ Real screenshots off the television, not mockups.
 
 ![Library](docs/screenshots/library.jpg)
 
-**Library** — sort, filter (including unwatched-only), and an A–Z rail down the side.
+**Library** — a library opens on its own shelves: what you're partway through, with the time
+left under the focused card, and what just landed. Further down is the full grid, with sort,
+filter (including unwatched-only) and an A–Z rail down the side
+([pictured here](docs/screenshots/ux-library-grid.jpg)).
 
 ![Search](docs/screenshots/search.jpg)
 
@@ -36,8 +41,8 @@ Real screenshots off the television, not mockups.
 
 ![Player](docs/screenshots/player.jpg)
 
-**Player** — the transport with chapters and track menus, drawn on top of video the
-television is decoding itself.
+**Player** — the transport with chapters and track menus, drawn over video the television decodes
+itself. (In this capture the frame under it was decoded by the simulator.)
 
 ## What it does
 

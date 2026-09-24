@@ -571,16 +571,21 @@ pub(crate) fn quality_switch_script() -> Option<(u32, Vec<crate::plex::session::
 }
 
 /// One synchronized user Pause, optionally followed by Resume —
-/// `plxnative-autopause=[delay=<ms>,][hold=<ms>]`.
+/// `plxnative-autopause=[delay=<ms>,][at=<ms>,][hold=<ms>]`.
 ///
 /// An empty file preserves the original paused-HUD capture contract: pause at the player's
 /// ordinary six-second dev gate and stay paused. A non-empty script may delay that edge and name a
-/// finite accepted hold. Unknown/duplicate/invalid fields fail the whole trigger closed; silently
+/// finite accepted hold. `at` also holds the edge until the PUBLISHED playhead has reached that
+/// media position (and, in the simulator, stops the clock sink exactly on it, so the pause freezes
+/// that position: `ffi_host.rs::stop_clock_at`): a wall-clock delay pauses wherever the host's
+/// scheduling has got playback to, which moves from run to run, and the documentation's player
+/// figure wants the same frame and the same clock every time. Unknown/duplicate/invalid fields fail the whole trigger closed; silently
 /// substituting a duration would exercise a different interleaving from the manifest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PauseScript {
     pub(crate) delay_ms: u32,
     pub(crate) hold_ms: Option<u32>,
+    pub(crate) at_ms: Option<u32>,
 }
 
 fn parse_pause_script(raw: &str) -> Option<PauseScript> {
@@ -588,10 +593,12 @@ fn parse_pause_script(raw: &str) -> Option<PauseScript> {
         return Some(PauseScript {
             delay_ms: 0,
             hold_ms: None,
+            at_ms: None,
         });
     }
     let mut delay_ms = None;
     let mut hold_ms = None;
+    let mut at_ms = None;
     for field in raw
         .split(',')
         .map(str::trim)
@@ -602,6 +609,11 @@ fn parse_pause_script(raw: &str) -> Option<PauseScript> {
                 return None;
             }
             delay_ms = Some(value.parse().ok()?);
+        } else if let Some(value) = field.strip_prefix("at=") {
+            if at_ms.is_some() {
+                return None;
+            }
+            at_ms = Some(value.parse().ok()?);
         } else if let Some(value) = field.strip_prefix("hold=") {
             if hold_ms.is_some() {
                 return None;
@@ -618,6 +630,7 @@ fn parse_pause_script(raw: &str) -> Option<PauseScript> {
     Some(PauseScript {
         delay_ms: delay_ms.unwrap_or(0),
         hold_ms,
+        at_ms,
     })
 }
 
@@ -1707,6 +1720,7 @@ mod tests {
             Some(super::PauseScript {
                 delay_ms: 0,
                 hold_ms: None,
+                at_ms: None,
             }),
             "the empty screenshot trigger remains a permanent Pause",
         );
@@ -1715,8 +1729,20 @@ mod tests {
             Some(super::PauseScript {
                 delay_ms: 25_000,
                 hold_ms: Some(6_000),
+                at_ms: None,
             }),
         );
+        assert_eq!(
+            parse("at=432000"),
+            Some(super::PauseScript {
+                delay_ms: 0,
+                hold_ms: None,
+                at_ms: Some(432_000),
+            }),
+            "a position-gated pause: the published playhead, not a wall-clock delay",
+        );
+        assert_eq!(parse("at=1,at=2"), None);
+        assert_eq!(parse("at=soon"), None);
         assert_eq!(parse("hold=0"), None);
         assert_eq!(parse("delay=10,delay=20"), None);
         assert_eq!(parse("hold=oops"), None);

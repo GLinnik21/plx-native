@@ -181,6 +181,11 @@ static DAMAGE_GEN: AtomicU32 = AtomicU32::new(0);
 static LAST_PRESENT: AtomicU32 = AtomicU32::new(0);
 /// Presents since the last [`take_presents`] — the heartbeat's `fps=` field.
 static PRESENTS: AtomicU32 = AtomicU32::new(0);
+/// `now` of the last [`should_present`] that found a CHANGE (motion, damage, a wake, the settle
+/// frame) — the keepalive and the bound video plane do not count. The simulator's settled-shot
+/// clock (`shot::tick`) reads it; nothing on the television does.
+#[cfg(feature = "hostsim")]
+static LAST_CHANGE: AtomicU32 = AtomicU32::new(0);
 /// Kill switch (`/tmp/plxnative-noidle`), so a device A/B is one file apart and a bad frame on the
 /// panel is one `rm` from being ruled out as this feature's fault.
 static ENABLED: AtomicBool = AtomicBool::new(true);
@@ -549,6 +554,10 @@ pub(crate) fn should_present(now: u32) -> bool {
     let dirty = DIRTY.swap(false, Relaxed);
     let dirty = dirty || new_damage;
     let changed = moving || dirty || wake || settling;
+    #[cfg(feature = "hostsim")]
+    if changed {
+        LAST_CHANGE.store(now, Relaxed);
+    }
     PRESENT_DIRTY.with(|c| c.set(dirty));
     // The video-plane term is HERE, below every take-and-clear above it, and not `|| fr.player` at
     // the call site as it was through phase 8. Two reasons, and the second is the bug: a term on
@@ -590,6 +599,12 @@ pub(crate) fn present_moving() -> bool {
 #[inline]
 pub(crate) fn page_moving() -> bool {
     PAGE_MOVING.with(|m| m.get())
+}
+
+/// `now` of the last frame that had something to change — see [`LAST_CHANGE`]. Simulator only.
+#[cfg(feature = "hostsim")]
+pub(crate) fn last_change_ms() -> u32 {
+    LAST_CHANGE.load(Relaxed)
 }
 
 /// Record that a frame was presented. Deliberately does NOT clear the discrete flag — a report

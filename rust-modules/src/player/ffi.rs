@@ -118,6 +118,13 @@ pub(crate) fn force_callback_intercepts_for_test(value: u32) {
     sys::force_callback_intercepts_for_test(value);
 }
 
+/// Stop the simulator's clock sink exactly at a movie position, or lift the stop. See
+/// `ffi_host.rs::stop_clock_at`; the television's pipeline has no such control.
+#[cfg(feature = "hostsim")]
+pub(crate) fn stop_sim_clock_at(media_ns: Option<i64>) -> bool {
+    sys::stop_clock_at(media_ns)
+}
+
 #[cfg(all(test, feature = "hostsim"))]
 pub(crate) fn reset_native_lifecycle_for_test() {
     sys::reset_native_lifecycle_for_test();

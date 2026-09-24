@@ -2884,7 +2884,13 @@ impl View for Spinner {
         // presents frame 1, whose draw reports and so buys frame 2, until nothing draws a spinner.
         // It relies on `should_present` taking-and-clearing rather than `note_present` clearing
         // after the draw, which would destroy this report on the frame it is raised.
-        crate::ui::idle::invalidate();
+        //
+        // Not while the screenshot pipeline holds the clocks (`stillclock`): the phase this draws
+        // from is then a constant, so the next frame would be identical and a waiting screen
+        // (the sign-in QR's "Waiting for you to sign in…") could never come to rest.
+        if !crate::ui::motion::phase_clocks_held() {
+            crate::ui::idle::invalidate();
+        }
         let t = (self.phase % Self::PERIOD_MS) as f32 / Self::PERIOD_MS as f32;
         for i in 0..self.dots {
             let ang =

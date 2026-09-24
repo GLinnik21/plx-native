@@ -394,6 +394,11 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     // A third term goes FIRST and short-circuits the other two: a page capture still in flight on
     // the GPU (`gfx::SNAPSHOT_THIS_FRAME`'s doc). Presenting now would only wait a whole vsync for
     // a buffer; not asking `should_present` leaves its damage and motion for the frame that does.
+    // The simulator's settled capture (`PLXNATIVE_SHOT_SETTLE`): once nothing has changed for the
+    // asked-for quiet, invalidate so the NEXT present is the settled frame and `maybe_capture`
+    // takes it. Before the decision below, so that invalidate selects this very frame.
+    #[cfg(feature = "hostsim")]
+    crate::shot::tick(fr.now, app.pages.budget.has_queued_work() || crate::gfx::snapshot_pending());
     fr.present = !crate::gfx::snapshot_pending()
         && app.window_activity.allow_present(
             crate::ui::idle::should_present(fr.now) || app.pages.budget.has_queued_work(),
@@ -488,6 +493,12 @@ unsafe fn present_and_swap(
             crate::capture::tick(fr.now);
         }
         app.instr.mark(crate::diag::heartbeat::Phase::Capture); // capture
+        // `plxnative-simvideo`: the decoded picture goes UNDER the finished UI, as the television's
+        // compositor puts its video plane under ours — before the capture, so shots include it.
+        #[cfg(feature = "hostsim")]
+        if fr.player {
+            crate::player::sim_video::composite_under();
+        }
         // Before the swap, never after: the back buffer is undefined once presented.
         #[cfg(feature = "hostsim")]
         if crate::shot::maybe_capture(_vx, _vy, _vw, _vh) {
@@ -2854,6 +2865,8 @@ mod lifecycle_regression_tests {
                 press_release_at: Default::default(),
                 itemmenu_tried: Default::default(),
                 acct_tried: Default::default(),
+                acct_rest: Default::default(),
+                shots: Default::default(),
                 auto_tried: Default::default(),
                 replay_left: Default::default(),
                 grid_tried: Default::default(),

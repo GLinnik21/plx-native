@@ -18,6 +18,13 @@
 //!   PLXNATIVE_SHOT=<path>          where to write (default: `shot.png` in the instance root)
 //!   PLXNATIVE_SHOT_FRAME=<n>       ALSO capture automatically at presented frame n (default: no
 //!                                  automatic capture — only the `shot` token fires one)
+//!   PLXNATIVE_SHOT_SETTLE=<ms>     ALSO capture automatically once the screen has been at REST for
+//!                                  <ms>: no motion, no damage, no queued upload, no pending page
+//!                                  capture (`ui::idle`'s own change signal, which ignores the
+//!                                  keepalive and the bound video plane). The screenshot pipeline's
+//!                                  trigger: it waits on the app's state, never on a wall clock.
+//!   PLXNATIVE_SHOT_AFTER=<ms>      …and not before <ms> since the first frame (default 0), so a
+//!                                  scene whose trigger fires late cannot be captured before it
 //!   PLXNATIVE_SHOT_EXIT=1          end the run after an automatic capture — the headless one-shot
 //!                                  mode (an orderly stop through the app's own shutdown, never an
 //!                                  `exit()` from inside the frame: see [`maybe_capture`])
@@ -55,6 +62,10 @@ struct Cfg {
     /// numbered ones an agent was told to read — which is exactly what a default of 150 did to the
     /// `ui-sim` skill's own interactive recipe.
     frame: Option<u32>,
+    /// `Some(quiet_ms)` arms the settled capture — see the module doc.
+    settle: Option<u32>,
+    /// Earliest settled capture, in ms after the first frame.
+    after: u32,
     exit: bool,
     alpha: bool,
 }
@@ -70,6 +81,13 @@ fn cfg() -> &'static Cfg {
         frame: std::env::var("PLXNATIVE_SHOT_FRAME")
             .ok()
             .and_then(|s| s.parse().ok()),
+        settle: std::env::var("PLXNATIVE_SHOT_SETTLE")
+            .ok()
+            .and_then(|s| s.parse().ok()),
+        after: std::env::var("PLXNATIVE_SHOT_AFTER")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0),
         exit: std::env::var_os("PLXNATIVE_SHOT_EXIT").is_some(),
         alpha: std::env::var("PLXNATIVE_SHOT_ALPHA").as_deref() == Ok("1"),
     })
@@ -81,6 +99,41 @@ static FRAMES: AtomicU32 = AtomicU32::new(0);
 
 /// Set by the `shot` remote token; captures the next presented frame regardless of the count.
 static ON_DEMAND: AtomicBool = AtomicBool::new(false);
+
+/// Set by [`tick`] when the settled capture is due; taken by the next [`maybe_capture`].
+static SETTLED: AtomicBool = AtomicBool::new(false);
+/// The settled capture has been asked for once; it never repeats in one process.
+static SETTLE_FIRED: AtomicBool = AtomicBool::new(false);
+/// `now` of the first [`tick`], the origin of `PLXNATIVE_SHOT_AFTER`.
+static FIRST_TICK: OnceLock<u32> = OnceLock::new();
+
+/// Is the settled capture due? `quiet` is how long nothing has changed, `age` how long since the
+/// first frame, `busy` whether work is queued that will change the picture.
+fn settled_due(settle: u32, after: u32, age: u32, quiet: u32, busy: bool) -> bool {
+    !busy && age >= after && quiet >= settle
+}
+
+/// Once per loop iteration, BEFORE the present decision (`app::run`): arm the settled capture when
+/// the screen has been at rest long enough. A settled screen does not present, so this invalidates
+/// to make the next frame present — and that frame, drawn from unchanged state, is the capture.
+pub(crate) fn tick(now: u32, busy: bool) {
+    let cfg = cfg();
+    let Some(settle) = cfg.settle else { return };
+    if SETTLE_FIRED.load(Ordering::Relaxed) {
+        return;
+    }
+    let first = *FIRST_TICK.get_or_init(|| now);
+    let quiet = now.wrapping_sub(crate::ui::idle::last_change_ms());
+    if settled_due(settle, cfg.after, now.wrapping_sub(first), quiet, busy) {
+        SETTLE_FIRED.store(true, Ordering::Relaxed);
+        SETTLED.store(true, Ordering::Relaxed);
+        crate::log(&format!(
+            "shot: settled ({quiet} ms at rest, {} ms after the first frame)",
+            now.wrapping_sub(first)
+        ));
+        crate::ui::idle::invalidate();
+    }
+}
 
 /// Ask for a capture of the next frame. The remote-FIFO entry point (`app.rs`'s token dispatch).
 ///
@@ -130,8 +183,9 @@ fn numbered(base: &std::path::Path) -> std::path::PathBuf {
 pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) -> bool {
     let n = FRAMES.fetch_add(1, Ordering::Relaxed);
     let on_demand = ON_DEMAND.swap(false, Ordering::Relaxed);
+    let settled = SETTLED.swap(false, Ordering::Relaxed);
     let cfg = cfg();
-    if !on_demand && cfg.frame != Some(n) {
+    if !on_demand && !settled && cfg.frame != Some(n) {
         return false;
     }
     let ends_run = ends_run(cfg.exit, on_demand);
@@ -222,7 +276,15 @@ fn ends_run(exit: bool, on_demand: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::ends_run;
+    use super::{ends_run, settled_due};
+
+    #[test]
+    fn the_settled_capture_waits_for_quiet_age_and_idle_work() {
+        assert!(settled_due(800, 3_000, 3_000, 800, false));
+        assert!(!settled_due(800, 3_000, 2_999, 5_000, false), "not before AFTER");
+        assert!(!settled_due(800, 0, 9_000, 799, false), "not before the quiet has elapsed");
+        assert!(!settled_due(800, 0, 9_000, 5_000, true), "not while work is queued");
+    }
 
     #[test]
     fn only_the_automatic_headless_capture_ends_the_run() {

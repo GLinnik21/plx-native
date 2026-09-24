@@ -411,9 +411,13 @@ impl Painter {
         if frame::backdrop::recording_excluded() {
             // `paint` would discard this unconditionally (see its comment); skip building
             // `values` at all rather than build it only to throw it away.
-            debug_assert_ne!(
-                tag,
-                frame::backdrop::GLASS_COMMAND,
+            //
+            // Only the SURFACES half of that gate is a programming error for a glass. The other
+            // half — content under a frozen host boundary (the tab bar's glass on Home while an
+            // account or item menu holds Home as a snapshot) — is dead content that `paint`
+            // discards by the same rule, and asserting there panicked every such frame.
+            debug_assert!(
+                tag != frame::backdrop::GLASS_COMMAND || !frame::backdrop::in_surfaces_band(),
                 "a glass command was declared at/above the surfaces band, where recording is \
                  skipped; this glass would never resolve"
             );
@@ -1605,5 +1609,46 @@ mod tests {
             r.y < f.y && r.y + r.h > f.y + f.h,
             "the square must overflow the short axis both ways"
         );
+    }
+
+    /// A glass declared UNDER a frozen host boundary — the tab bar's backdrop on Home while the
+    /// account menu or an item menu holds Home as a frozen snapshot — is dead content, exactly as
+    /// `backdrop::paint` treats it: skipped silently. The declare pre-check once asserted on every
+    /// skipped glass, so opening either menu over Home panicked every frame of a debug build (the
+    /// frame guard caught it, and the menu never drew).
+    #[test]
+    fn a_glass_under_a_frozen_host_boundary_is_skipped_not_asserted() {
+        use frame::backdrop::{self, Layer, Sources, Z};
+        use std::{cell::RefCell, rc::Rc};
+        let _guard = crate::testlock::serial();
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        sources.borrow_mut().begin(vec![Layer {
+            z: Z::surface(0),
+            rect: backdrop::canvas(),
+            blocks: true,
+            revision: 1,
+            composite_alpha: None,
+        }]);
+        let _walk = backdrop::discover(sources.clone());
+        let _chrome = backdrop::layer(Z::CHROME, true);
+        assert!(backdrop::recording_excluded(), "the chrome sits under a blocking full-canvas layer");
+        let skipped = Painter::root().declare(Rect::new(0.0, 0.0, 100.0, 40.0), backdrop::GLASS_COMMAND, |_| {});
+        assert!(skipped, "an occluded glass is consumed without recording");
+    }
+
+    /// …while a glass declared IN the surfaces band still trips the assertion: nothing there is
+    /// ever resolved, so the declaration itself is the bug.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "surfaces band")]
+    fn a_glass_in_the_surfaces_band_still_asserts() {
+        use frame::backdrop::{self, Sources, Z};
+        use std::{cell::RefCell, rc::Rc};
+        let _guard = crate::testlock::serial();
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        sources.borrow_mut().begin(vec![]);
+        let _walk = backdrop::discover(sources.clone());
+        let _surface = backdrop::layer(Z::surface(0), true);
+        let _ = Painter::root().declare(Rect::new(0.0, 0.0, 100.0, 40.0), backdrop::GLASS_COMMAND, |_| {});
     }
 }

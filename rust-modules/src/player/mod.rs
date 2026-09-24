@@ -24,6 +24,8 @@ mod pump;
 pub(crate) mod report;
 mod shared;
 pub(crate) mod sidecar;
+#[cfg(feature = "hostsim")]
+pub(crate) mod sim_video; // the simulator's decoded picture, for screenshots (see its doc)
 pub(crate) mod threads;
 
 use crate::task::MainThread;
@@ -997,6 +999,8 @@ pub(crate) use engine::aq_caps;
 /// itself.
 pub(crate) use engine::feed_leads_ms;
 pub(crate) use ffi::{VP_ACB, VP_EXPORTED, VP_NONE};
+#[cfg(feature = "hostsim")]
+pub(crate) use ffi::stop_sim_clock_at;
 
 /// One consistent read of everything the on-screen diagnostics overlay shows (`app::diagnostics`).
 ///
