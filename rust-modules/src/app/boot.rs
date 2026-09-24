@@ -564,9 +564,11 @@ pub(crate) unsafe fn construct(
     // except the token.
     let dev_servers = if controlled { Ok(Vec::new()) } else { crate::dev::servers() };
     match &dev_servers {
-        Err(e) => log(&format!(
-            "servers: /tmp/plxnative-servers IGNORED — not valid JSON: {e}"
-        )),
+        // `_e`: the only reader is the gated log line (see `dev.rs` on why literals are gated).
+        Err(_e) => {
+            #[cfg(feature = "devtriggers")]
+            log(&format!("servers: /tmp/plxnative-servers IGNORED — not valid JSON: {_e}"));
+        }
         Ok(v) if !v.is_empty() => {
             let usable = v.iter().filter(|s| s.usable()).count();
             for (i, s) in v.iter().enumerate() {
@@ -675,6 +677,7 @@ pub(crate) unsafe fn construct(
         super::bridge::execute_session_command(pages, crate::auth::SessionCmd::StartLogin);
         pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
             rec, false);
+        #[cfg(feature = "devtriggers")]
         log("boot: /tmp/plxnative-login — starting QR login");
         BootTo::Login
     } else if !dev_token.is_empty() {
@@ -1303,8 +1306,13 @@ pub(crate) unsafe fn construct(
     // dev: /tmp/plxnative-nobudget — put the ONE frame budget (the tree's, spec §2.2) into its
     // pre-phase-11 shape for the A/B's control leg. The tree exists now, which is why this is
     // here rather than beside the trigger read.
+    //
+    // The log line is gated on its own: the flag reaches here through a struct field, and the
+    // optimizer does not always prove that field `false` in a release build, so the literal
+    // shipped (`ci/check-package.py` failed on it). See `dev.rs`'s module doc.
     if app.scenarios.dev.nobudget {
         app.pages.budget = crate::ui::frame::Budget::pre_phase_11();
+        #[cfg(feature = "devtriggers")]
         crate::log("budget: pre-phase-11 admission (quota only) by /tmp/plxnative-nobudget");
     }
     if controlled {

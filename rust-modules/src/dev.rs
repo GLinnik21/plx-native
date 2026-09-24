@@ -12,9 +12,17 @@
 //! — and `plxnative-url` replaces the stream the player feeds.
 //!
 //! So every read goes through here, and here is `#[cfg]`-gated on the `devtriggers` feature. In a
-//! `--no-default-features` build [`flag`] is `false` and [`read`] is `None` at COMPILE time, the
-//! branches behind them fold away. Storage and diagnostics still use runtime files; none are
-//! developer triggers.
+//! `--no-default-features` build [`flag`] is `false` and [`read`] is `None` at COMPILE time, so
+//! no trigger can be armed. Storage and diagnostics still use runtime files; none are developer
+//! triggers.
+//!
+//! That does NOT keep a trigger's NAME out of the binary. A branch behind `flag`/`read` usually
+//! folds away, but not reliably: once the answer is carried through a struct field (the
+//! `nobudget` flag on `DevFlags`), the optimizer may keep the branch and its string literals
+//! in a release build, and `ci/check-package.py` fails the package because it greps the shipped
+//! bytes for every trigger name this module lists. So every statement whose literal names a trigger
+//! (a log line saying `/tmp/plxnative-…`) carries its own `#[cfg(feature = "devtriggers")]`. Never
+//! rely on constant folding for this.
 //!
 //! Two rules for anything added later:
 //!

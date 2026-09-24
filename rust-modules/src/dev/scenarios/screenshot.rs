@@ -155,6 +155,7 @@ impl SeatArm {
             return None;
         };
         let Some(cell) = parse_cell(&v) else {
+            #[cfg(feature = "devtriggers")]
             crate::log(&format!("BADTRIGGER {name} {v:?}: expected <a>,<b>"));
             self.done = true;
             return None;
@@ -198,8 +199,9 @@ pub(crate) fn libmenu_arm(app: &mut App, fr: &Frame) {
     let kind = match name {
         "sort" => LibraryMenuKind::Sort,
         "filter" => LibraryMenuKind::Filter,
-        other => {
-            crate::log(&format!("BADTRIGGER libmenu {other:?}: expected sort or filter"));
+        _other => {
+            #[cfg(feature = "devtriggers")]
+            crate::log(&format!("BADTRIGGER libmenu {_other:?}: expected sort or filter"));
             app.scenarios.shots.libmenu_done = true;
             return;
         }

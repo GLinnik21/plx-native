@@ -189,6 +189,7 @@ fn fetch_once(id: ServerId, c: &Client) {
     // per-server override. Checked here, once per fetch, rather than in `subscription()` — that
     // accessor is on per-frame paths and `dev::flag` is a filesystem stat.
     if crate::dev::flag("nopass") {
+        #[cfg(feature = "devtriggers")]
         crate::log("pms: /tmp/plxnative-nopass — reporting subscription as No");
         sub = Subscription::No;
     }

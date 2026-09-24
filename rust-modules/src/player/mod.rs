@@ -89,6 +89,7 @@ pub(crate) fn seed_dev_track_names() {
     // subtitle list — a seed is a diagnostic, not a format, and the alternative is quoting rules.
     let (a, sub) = spec.split_once(';').unwrap_or(("", spec));
     let (audio, subs) = (list(a), list(sub));
+    #[cfg(feature = "devtriggers")]
     crate::log(&format!(
         "player: DEV track names seeded (a={} s={}) — /tmp/plxnative-tracknames",
         audio.len(),

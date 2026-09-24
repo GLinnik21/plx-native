@@ -619,6 +619,7 @@ fn fps_class(fps: f64) -> u32 {
 fn sink_envelope_now(ps: &crate::route::PlaybackSession, is_h265: bool) -> SinkEnvelope {
     if let Some(spec) = crate::dev::read("sinkmax") {
         if let Some(env) = parse_sinkmax(&spec) {
+            #[cfg(feature = "devtriggers")]
             log(&format!(
                 "sinkmax: envelope OVERRIDDEN to {}x{}@{} by /tmp/plxnative-sinkmax",
                 env.w, env.h, env.fps
@@ -672,6 +673,7 @@ fn build_av_payload(ps: &crate::route::PlaybackSession, video: &str, audio: &str
     // rather than passing ours through. This rational is the one input we hand it that could be
     // what it builds that lattice FROM, so it is the one remaining lever on our side.
     if crate::dev::flag("nofps") {
+        #[cfg(feature = "devtriggers")]
         log("esInfo: videoFps WITHHELD by /tmp/plxnative-nofps");
     } else if let Some((num, den)) = fps_rational(crate::route::stream_fps(ps)) {
         p = p
@@ -775,6 +777,7 @@ fn with_dolby_hdr_info(p: &str, video: &str, dv: crate::metadata::DvPresentation
         return p.to_string();
     };
     if crate::metadata::dv_node_suppressed() {
+        #[cfg(feature = "devtriggers")]
         log(&format!(
             "dv: DolbyHdrInfo P{} SUPPRESSED by /tmp/plxnative-dvnonode (direct play kept)",
             n.profile_id
@@ -1086,6 +1089,7 @@ fn start_bufferfeed_inner(
         } else {
             // nothing to play: no selected item, no /tmp/plxnative-url, no local sample. (The old
             // baked-in demo-movie fallback is gone — the binary carries no URLs/credentials.)
+            #[cfg(feature = "devtriggers")]
             log("start_bufferfeed: no URL — select an item (or set /tmp/plxnative-url)");
             return Err(crate::route::RouteStartResult::NoRoute);
         }

@@ -179,6 +179,7 @@ pub(crate) fn login_forced() -> bool {
 pub(crate) fn dev_token() -> String {
     match crate::dev::read("token") {
         Some(s) if !s.is_empty() => {
+            #[cfg(feature = "devtriggers")]
             crate::log("token: using /tmp/plxnative-token (test identity)");
             s
         }
@@ -255,6 +256,7 @@ pub(crate) fn arm_drawmask() {
 pub(crate) fn arm_heroground() {
     if crate::dev::flag("heroground") {
         crate::ui::widgets::set_hero_ground(true);
+        #[cfg(feature = "devtriggers")]
         crate::log("hero: one-pass ground ENABLED by /tmp/plxnative-heroground");
     }
 }
@@ -293,6 +295,7 @@ pub(crate) fn arm_cpuprof() {
 pub(crate) fn arm_noidle() {
     if crate::dev::flag("noidle") {
         crate::ui::idle::set_enabled(false);
+        #[cfg(feature = "devtriggers")]
         crate::log("idle: present gate DISABLED by /tmp/plxnative-noidle");
     }
 }
@@ -886,8 +889,9 @@ fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
                 "home" => crate::screens::family::SettingsPage::Favourites,
                 "privacy" => crate::screens::family::SettingsPage::Privacy,
                 "legal" => crate::screens::family::SettingsPage::Legal,
-                other => {
-                    crate::log(&format!("BADTRIGGER settings-boot target {other:?} unknown; opened root instead"));
+                _other => {
+                    #[cfg(feature = "devtriggers")]
+                    crate::log(&format!("BADTRIGGER settings-boot target {_other:?} unknown; opened root instead"));
                     crate::screens::family::SettingsPage::Root
                 }
             };
@@ -998,12 +1002,14 @@ fn detail_arm(app: &mut App, fr: &mut Frame) -> bool {
             if !rk.is_empty() {
                 let sid = match crate::app::boot::direct_trigger_server() {
                     Ok(sid) => sid,
-                    Err(e) => {
-                        crate::log(&format!("plxnative-detail: refused: {e}"));
+                    Err(_e) => {
+                        #[cfg(feature = "devtriggers")]
+                        crate::log(&format!("plxnative-detail: refused: {_e}"));
                         return false;
                     }
                 };
                 app.bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
+                #[cfg(feature = "devtriggers")]
                 crate::log(&format!("plxnative-detail: rk={rk} server={} start", sid.raw()));
                 // A HARD CUT onto the page: at boot there is no outgoing screen to replace, so a
                 // dip would fade the page up out of nothing and read as a slow app rather than a
@@ -1048,12 +1054,14 @@ fn play_arm(app: &mut App, fr: &mut Frame) -> bool {
             if !rk.is_empty() {
                 let sid = match crate::app::boot::direct_trigger_server() {
                     Ok(sid) => sid,
-                    Err(e) => {
-                        crate::log(&format!("plxnative-play: refused: {e}"));
+                    Err(_e) => {
+                        #[cfg(feature = "devtriggers")]
+                        crate::log(&format!("plxnative-play: refused: {_e}"));
                         return false;
                     }
                 };
                 app.bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: rk.to_string() });
+                #[cfg(feature = "devtriggers")]
                 crate::log(&format!("plxnative-play: rk={rk} server={} request", sid.raw()));
                 app.scenarios.play_await = Some((sid, rk.to_string(), fr.now.wrapping_add(12_000)));
             }
@@ -1089,6 +1097,7 @@ fn play_await_tick(app: &mut App, fr: &mut Frame) {
         let expired = fr.now.wrapping_sub(deadline) < u32::MAX / 2;
         if settled || expired {
             app.scenarios.play_await = None;
+            #[cfg(feature = "devtriggers")]
             crate::log(&format!(
                 "plxnative-play: rk={rk} server={} — no detail landed ({})",
                 sid.raw(),
@@ -1099,9 +1108,11 @@ fn play_await_tick(app: &mut App, fr: &mut Frame) {
     };
     app.scenarios.play_await = None;
     if part.is_empty() {
+        #[cfg(feature = "devtriggers")]
         crate::log(&format!("plxnative-play: rk={rk} server={} — nothing playable on it", sid.raw()));
         return;
     }
+    #[cfg(feature = "devtriggers")]
     crate::log(&format!("plxnative-play: rk={rk} server={} start", sid.raw()));
     if crate::route::request_play(&mut app.player.session, app.bridge.metadata_mut(), sid, &rk, &part, &vc, &ac, &title, "") {
         let resume = crate::metadata::resume_ns(resume_ms, dur_ms);

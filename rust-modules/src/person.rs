@@ -927,6 +927,7 @@ fn seed_dev_profile(p: &mut Person) {
         p.birthplace = "Stockwell, London".to_string();
     }
     p.profiled = true;
+    #[cfg(feature = "devtriggers")]
     crate::log(&format!(
         "person: DEV bio seeded ({}B) — /tmp/plxnative-personbio",
         p.bio.len()
