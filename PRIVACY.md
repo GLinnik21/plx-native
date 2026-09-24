@@ -34,13 +34,13 @@ never leave the device it was made on.
 PlxNative stores your Plex account token and a separate token for each server you use. For every
 profile on your account you have switched to on this television, it also keeps that profile's own
 server access token(s), so a later switch still works with no internet, and, for a PIN-protected
-profile, a one-way check computed from that PIN rather than the PIN itself. The addresses and
-identifiers of those servers, the profile names and pictures on your account — pictures are also
-cached as files so the profile picker still shows faces with no internet — your Home library
-choices, your recent searches, your playback quality preference, and local technical logs: a small
-rotating event log and a bounded storage status snapshot. It also stores your answers to the two
-optional-reporting questions, the random Crash report ID if you turned crash reports on, the
-random Analytics ID if you turned product analytics on, any report waiting to be sent, and a
+profile, a one-way check computed from that PIN rather than the PIN itself. It also keeps the
+addresses and identifiers of those servers, the profile names and pictures on your account —
+pictures are also cached as files so the profile picker still shows faces with no internet — your
+Home library choices, your recent searches, your playback quality preference, and local technical
+logs: a small rotating event log and a bounded storage status snapshot. It also stores your answers
+to the two optional-reporting questions, the random Crash report ID if you turned crash reports on,
+the random Analytics ID if you turned product analytics on, any report waiting to be sent, and a
 marker recording how much of the crash log has already been read.
 It keeps no bookmark of its own for where you stopped watching: playback position is held by your
 Plex Media Server. The Settings screen can sign out and remove PlxNative data from this television.
