@@ -252,9 +252,11 @@ make screenshots HERO_VARIANTS=1      # also home-hero-<film>.jpg for each hero 
   stops the clock sink exactly there, so the frame, the clocks and the knob are the same every
   run. Aim `at` between two frames (Sintel is 24 fps), so no PTS rounding picks the neighbour.
 - **The library is openly licensed.** `tests/demo_library/assets.json` pins every source file (URL,
-  sha256, licence, author); `catalog.json` is the library. Film title logos are never used (the
-  Blender Studio terms reserve its trademarks); the app draws titles as text.
-  `python3 tools/demo_library.py credits` rewrites `docs/screenshots/CREDITS.md`, and
+  sha256, licence, author); `catalog.json` is the library. A film's clear logo (the title art
+  the home hero draws) is cut from that film's own CC BY poster by a `logo` recipe in the
+  catalog, so it is a derivative under the poster's licence and CREDITS.md says so; every hero
+  candidate has one. Cutting it needs Pillow (`python3 -m pip install Pillow`), the one Python
+  package the pipeline uses. `python3 tools/demo_library.py credits` rewrites `docs/screenshots/CREDITS.md`, and
   `python3 tools/demo_library.py check` validates both manifests offline. The cache lives outside
   the repository (`$PLXNATIVE_DEMO_CACHE`, default `~/.cache/plxnative-demo`).
 - **Review before committing.** Open every image. A regenerated set is committed on its own,

@@ -19,7 +19,9 @@ Nothing is committed but the manifests: the sources and the derived images live 
 the repository (`$PLXNATIVE_DEMO_CACHE`, default `~/.cache/plxnative-demo`, ~390 MB of sources,
 283 MB of it the complete Sintel the player figure plays), so a fresh clone rebuilds them with one
 command. Derivation is ffmpeg with fixed filters and fixed
-encoder settings, so one ffmpeg build derives byte-identical files every time.
+encoder settings, so one ffmpeg build derives byte-identical files every time. The clear logos
+(`logo` in the catalog, see `derive_logo`) are cut from each film's own poster with Pillow, the
+one Python package the screenshots need.
 """
 import argparse
 import hashlib
@@ -128,6 +130,96 @@ def derive_image(src, dst, size, recipe):
              "-q:v", "3", "-bitexact", str(dst)])
 
 
+def _rgba(hexcolour):
+    """`#rrggbb` → an opaque RGBA tuple."""
+    v = hexcolour.lstrip("#")
+    return tuple(int(v[i:i + 2], 16) for i in (0, 2, 4)) + (255,)
+
+
+# What makes a pixel lettering rather than background, per key. Each is a 0..255 image the
+# key's `levels` then stretch into alpha.
+_SIGNALS = {
+    "light": lambda r, g, b, lum: lum,
+    "dark": lambda r, g, b, lum: lum.point(lambda v: 255 - v),
+    "red": lambda r, g, b, lum: _dominance(r, g, b),
+    "green": lambda r, g, b, lum: _dominance(g, r, b),
+    "shade": lambda r, g, b, lum: _shade(lum),
+}
+
+
+def _shade(lum):
+    """How much darker each pixel is than its local ground: the ground is the brightest nearby
+    (a max filter over a quarter-size copy, wider than a letter stroke), softened."""
+    from PIL import Image, ImageChops, ImageFilter
+    small = lum.resize((max(1, lum.width // 4), max(1, lum.height // 4)))
+    ground = small.filter(ImageFilter.MaxFilter(15)).filter(ImageFilter.GaussianBlur(15))
+    return ImageChops.subtract(ground.resize(lum.size, Image.BILINEAR), lum).filter(ImageFilter.GaussianBlur(1.5))
+
+
+def _dominance(a, b, c):
+    """How far channel `a` stands above the larger of the other two, clamped at 0."""
+    from PIL import ImageChops
+    return ImageChops.subtract(a, ImageChops.lighter(b, c))
+
+
+def derive_logo(paths, dst, recipe):
+    """An item's clearLogo: the film's own title art, cut out of its poster onto a transparent
+    ground and trimmed to its ink.
+
+    `box` ([x, y, w, h] in poster pixels) is cut out and resized `scale`×. Each of `keys` —
+    `{"signal": light|dark|shade|red|green, "levels": [lo, hi]}` — says what one part of the
+    lettering looks like against that poster's ground (light letters on a dark sky; red letters),
+    and is stretched from `lo` (transparent) to `hi` (opaque). A key may also carry:
+
+    * `blur` — a Gaussian radius applied to the signal first, so a textured letter keys whole;
+    * `grow: {"signal", "levels", "steps"}` — grow the key `steps` pixels into the region that
+      second signal marks. Spring's carved-stone letters sit on mist that darkens down the
+      poster, so no one `dark` level both holds their lit rims and drops the mist: the letter
+      cores seed the key and grow out to the rims `shade` (darkness against the local ground)
+      finds, never reaching the mist a letter does not touch;
+    * `smooth` — the median size that cleans the edge (3), and `feather`, a final Gaussian radius;
+    * `fill` (`#rrggbb`) — recolour that part's ink, for lettering too dark to read over a
+      backdrop; otherwise the colours are the poster's own.
+
+    The keys are layered in order. Pillow does the keying (the one Python package the screenshots
+    need).
+    """
+    try:
+        from PIL import Image, ImageChops, ImageFilter
+    except ImportError:
+        sys.exit("demo_library: the clear logos need Pillow: python3 -m pip install Pillow")
+    x, y, w, h = recipe["box"]
+    n = recipe.get("scale", 1)
+    rgb = Image.open(paths[recipe["asset"]]).convert("RGB").crop((x, y, x + w, y + h))
+    rgb = rgb.resize((round(w * n), round(h * n)), Image.LANCZOS)
+    r, g, b = rgb.split()
+    lum = rgb.convert("L")
+
+    def keyed(k):
+        sig = _SIGNALS[k["signal"]](r, g, b, lum)
+        if k.get("blur"):
+            sig = sig.filter(ImageFilter.GaussianBlur(k["blur"]))
+        lo, hi = k["levels"]
+        return sig.point(lambda v: 0 if v <= lo else 255 if v >= hi else (v - lo) * 255 // (hi - lo))
+
+    logo = Image.new("RGBA", rgb.size, (0, 0, 0, 0))
+    for key in recipe["keys"]:
+        alpha = keyed(key)
+        if "grow" in key:
+            region = keyed(key["grow"])
+            alpha = ImageChops.darker(alpha, region)
+            for _ in range(key["grow"]["steps"]):
+                alpha = ImageChops.darker(alpha.filter(ImageFilter.MaxFilter(3)), region)
+        alpha = alpha.filter(ImageFilter.MedianFilter(key.get("smooth", 3)))
+        if key.get("feather"):
+            alpha = alpha.filter(ImageFilter.GaussianBlur(key["feather"]))
+        ink = Image.new("RGBA", rgb.size, _rgba(key["fill"])) if "fill" in key else rgb.convert("RGBA")
+        ink.putalpha(alpha)
+        logo.alpha_composite(ink)
+    logo = logo.crop(logo.getchannel("A").getbbox())
+    logo.save(dst, format="PNG", optimize=False)
+
+
 def item_keys(catalog):
     """(key, kind, record) for every item: `slug` for movies/shows, `slug/season/episode`."""
     for m in catalog["movies"]:
@@ -165,6 +257,16 @@ def derive(assets, catalog):
                 derive_image(paths[recipe["asset"]], dst, size, recipe)
                 stamp.write_text(want)
             report[f"{key}:{role}"] = sha256(dst)
+        if "logo" in rec:
+            recipe = rec["logo"]
+            dst = out / key.replace("/", "_") / "logo.png"
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            stamp = dst.with_suffix(".recipe")
+            want = json.dumps([assets[recipe["asset"]]["sha256"], recipe], sort_keys=True)
+            if not dst.exists() or not stamp.exists() or stamp.read_text() != want:
+                derive_logo(paths, dst, recipe)
+                stamp.write_text(want)
+            report[f"{key}:logo"] = sha256(dst)
     for m in catalog["movies"]:
         if "media" in m:
             report[f"{m['id']}:media"] = assets[m["media"]]["sha256"]
@@ -194,6 +296,16 @@ def check(assets, catalog):
         if "media" in rec:
             assert rec["media"] in assets, f"{key}: media {rec['media']!r} is not in assets.json"
             used.add(rec["media"])
+        if "logo" in rec:
+            # A clearLogo is the film's own title art, so it is cut from that film's own poster.
+            assert rec["logo"]["asset"] == rec.get("poster", {}).get("asset"), \
+                f"{key}: a logo is cut from the item's own poster"
+            assert rec["logo"]["keys"], f"{key}: a logo needs at least one key"
+            for k in rec["logo"]["keys"]:
+                for sig in (k["signal"], k.get("grow", {}).get("signal", k["signal"])):
+                    assert sig in _SIGNALS, f"{key}: logo key {sig!r}"
+                if "fill" in k:
+                    _rgba(k["fill"])
     for aid, a in assets.items():
         for field in ("url", "sha256", "bytes", "licence", "author", "attribution", "source_page"):
             assert a.get(field) not in (None, ""), f"asset {aid}: missing {field}"
@@ -218,7 +330,10 @@ def credits(assets, catalog):
             aid = rec.get(role, {}).get("asset") if role != "media" else rec.get("media")
             if aid:
                 where.setdefault(aid, []).append((key, role))
-    label = {"poster": "poster", "art": "backdrop", "thumb": "episode still", "media": "video"}
+        if "logo" in rec:
+            where.setdefault(rec["logo"]["asset"], []).append((key, "logo"))
+    label = {"poster": "poster", "art": "backdrop", "thumb": "episode still", "media": "video",
+             "logo": "clear logo, derived from this poster"}
     show_of = {}
     for s in catalog["shows"]:
         for season in s["seasons"]:
@@ -231,9 +346,10 @@ def credits(assets, catalog):
         "work. The library is `tests/demo_library/catalog.json`; the files, their pinned hashes and licences",
         "are `tests/demo_library/assets.json`; `make screenshots` rebuilds the images from them",
         "(`.agents/skills/ui-sim/SKILL.md`, \"Documentation screenshots\"). Backdrops and posters are",
-        "resized and cropped from the sources below; no other change was made to them. Titles are drawn",
-        "by the app as text: film title logos are not used, because the Blender Studio terms that license",
-        "its artwork reserve all rights in trademarks and logos.",
+        "resized and cropped from the sources below; no other change was made to them. A film's clear",
+        "logo (the title art over the home hero) is derived from that film's own poster, under the",
+        "poster's licence: its title lettering is cut out onto a transparent ground and nothing is",
+        "redrawn.",
         "",
         "Generated by `python3 tools/demo_library.py credits`; do not edit by hand.",
         "",

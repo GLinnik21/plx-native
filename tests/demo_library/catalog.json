@@ -55,7 +55,38 @@
    },
    "collections": [
     "Blender Open Movies"
-   ]
+   ],
+   "logo": {
+    "asset": "spring-poster",
+    "box": [
+     530,
+     300,
+     1210,
+     350
+    ],
+    "scale": 0.75,
+    "keys": [
+     {
+      "signal": "dark",
+      "blur": 2.5,
+      "levels": [
+       190,
+       198
+      ],
+      "grow": {
+       "signal": "shade",
+       "levels": [
+        36,
+        44
+       ],
+       "steps": 4
+      },
+      "smooth": 5,
+      "feather": 0.8,
+      "fill": "#e4f4ef"
+     }
+    ]
+   }
   },
   {
    "id": "sintel",
@@ -126,7 +157,26 @@
      "start": "12:24",
      "title": "Credits"
     }
-   ]
+   ],
+   "logo": {
+    "asset": "sintel-poster",
+    "box": [
+     252,
+     958,
+     400,
+     92
+    ],
+    "scale": 2,
+    "keys": [
+     {
+      "signal": "light",
+      "levels": [
+       110,
+       190
+      ]
+     }
+    ]
+   }
   },
   {
    "id": "sprite-fright",
@@ -157,7 +207,26 @@
    },
    "collections": [
     "Blender Open Movies"
-   ]
+   ],
+   "logo": {
+    "asset": "sprite-fright-poster",
+    "box": [
+     960,
+     4060,
+     2560,
+     1790
+    ],
+    "scale": 0.4,
+    "keys": [
+     {
+      "signal": "red",
+      "levels": [
+       70,
+       130
+      ]
+     }
+    ]
+   }
   },
   {
    "id": "charge",

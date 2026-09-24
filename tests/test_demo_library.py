@@ -80,6 +80,24 @@ class Manifests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             tool.check(assets, broken)
 
+    def test_every_hero_candidate_has_a_logo_cut_from_its_own_poster(self):
+        # The home hero draws a film's clearLogo; a candidate without one falls back to text.
+        _, catalog = tool.load()
+        films = {m["id"]: m for m in catalog["movies"]}
+        for film in (catalog["hero"], *catalog["hero_alternatives"]):
+            with self.subTest(hero=film):
+                self.assertIn("logo", films[film])
+                self.assertEqual(films[film]["logo"]["asset"], films[film]["poster"]["asset"])
+
+    def test_check_refuses_a_logo_cut_from_another_films_poster(self):
+        assets, catalog = tool.load()
+        movies = [dict(m) for m in catalog["movies"]]
+        donor = next(m for m in movies if "logo" in m)
+        other = next(m for m in movies if m["poster"]["asset"] != donor["poster"]["asset"])
+        other["logo"] = donor["logo"]
+        with self.assertRaises(AssertionError):
+            tool.check(assets, dict(catalog, movies=movies))
+
     def test_check_refuses_a_share_alike_licence(self):
         assets, catalog = tool.load()
         aid = next(iter(assets))
@@ -296,6 +314,18 @@ class Catalog(unittest.TestCase):
         self.assertEqual(data[:2], b"\xff\xd8")
         status, _, _ = self.pms.handle("GET", "/photo/:/transcode?url=/library/metadata/99999/thumb/1&width=10&height=10")
         self.assertEqual(status, 404)
+
+    def test_a_clear_logo_is_served_as_a_transparent_png(self):
+        # The path the app asks for (`ui/hero_logo.rs`), through the photo transcoder.
+        ask = "/photo/:/transcode?url=/library/metadata/{}/clearLogo&width=600&height=240&minSize=1"
+        rk = self.lib.by_slug[self.catalog["hero"]]
+        status, ctype, data = self.pms.handle("GET", ask.format(rk))
+        self.assertEqual((status, ctype), (200, "image/png"))
+        w, h = struct.unpack(">II", data[16:24])
+        self.assertEqual(data[25], 6, "colour type 6 is RGBA")
+        self.assertTrue(w >= 600 and h >= 240, (w, h))
+        bare = next(k for k in self.lib.items if "clearLogo" not in self.lib.images.get(k, {}))
+        self.assertEqual(self.pms.handle("GET", ask.format(bare))[0], 404)
 
     def test_two_libraries_serve_the_same_bytes(self):
         other = mock_pms.MockPms(mock_pms.CatalogLibrary(CATALOG))

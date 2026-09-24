@@ -43,13 +43,17 @@
     },
     {
       "name": "library",
+      "state": "The Movies library at the top of its page, as it opens: the Continue Watching shelf with focus on its first card (the catalog's hero, captioned with its time left), Recently Added Movies below.",
+      "triggers": {"library": "0"},
+      "expect": ["coldopen screen=library", "libhubs: section 0 landed 2 shelves"],
+      "outputs": [{"file": "library.jpg", "size": "1600x900"}]
+    },
+    {
+      "name": "library-grid",
       "state": "The Movies library scrolled to its All grid, focus on the third card of the first row, toolbar visible.",
       "triggers": {"library": "0", "libgrid": "0,2"},
       "expect": ["libgrid: focus seated at row 0 col 2"],
-      "outputs": [
-        {"file": "library.jpg", "size": "1600x900"},
-        {"file": "ux-library-grid.jpg", "size": "1920x1080"}
-      ]
+      "outputs": [{"file": "ux-library-grid.jpg", "size": "1920x1080"}]
     },
     {
       "name": "library-sort",
@@ -60,8 +64,8 @@
     },
     {
       "name": "search",
-      "state": "Search for \"the\": the query, the scope line, and the result shelves.",
-      "triggers": {"search": "the"},
+      "state": "Search for \"in\": the query, the scope line, and the result shelves (Movies, then TV Shows).",
+      "triggers": {"search": "in"},
       "expect": ["state=ready"],
       "outputs": [
         {"file": "search.jpg", "size": "1600x900"},

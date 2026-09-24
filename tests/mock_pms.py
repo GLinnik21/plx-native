@@ -713,6 +713,14 @@ class CatalogLibrary(Library):
                 elif name in rec:
                     raise ValueError(f"{slug}: derived {name} is missing ({path}); rerun "
                                      "`python3 tools/demo_library.py derive`")
+            if "logo" in rec:
+                # The item's clearLogo, which the app asks for by path
+                # (`/library/metadata/<rk>/clearLogo`), as it does of a real server.
+                path = self.derived / key / "logo.png"
+                if not path.is_file():
+                    raise ValueError(f"{slug}: derived logo is missing ({path}); rerun "
+                                     "`python3 tools/demo_library.py derive`")
+                images["clearLogo"] = path
             if "art" in images:
                 it["UltraBlurColors"] = self._blur_of(images["art"])
             self.images[rk] = images
@@ -836,27 +844,32 @@ class CatalogLibrary(Library):
         return media
 
     def image(self, url, width, height):
-        """The bytes for an artwork URL (`/library/metadata/<rk>/<thumb|art>/<n>`), scaled like
-        PMS's photo transcoder with minSize=1 (cover the box, keep the aspect); None when the item
-        has no such image — a 404, as for a real item without art."""
+        """`(content type, bytes)` for an artwork URL (`/library/metadata/<rk>/<thumb|art|clearLogo>
+        [/<n>]`), scaled like PMS's photo transcoder with minSize=1 (cover the box, keep the aspect)
+        — a clearLogo as a transparent PNG, the rest as JPEG; None when the item has no such image
+        — a 404, as for a real item without art."""
         segs = [s for s in urllib.parse.urlsplit(url).path.split("/") if s]
         if len(segs) < 4 or segs[:2] != ["library", "metadata"] or not segs[2].isdigit():
             return None
         path = self.images.get(int(segs[2]), {}).get(segs[3])
         if path is None:
             return None
+        png = path.suffix == ".png"
+        ctype = "image/png" if png else "image/jpeg"
         try:
             w, h = max(1, min(int(width), 3840)), max(1, min(int(height), 2160))
         except (TypeError, ValueError):
-            return path.read_bytes()
+            return ctype, path.read_bytes()
         key = (str(path), w, h)
+        encode = (["-pix_fmt", "rgba", "-f", "image2pipe", "-vcodec", "png"] if png else
+                  ["-q:v", "3", "-f", "image2pipe", "-vcodec", "mjpeg"])
         with self._lock:
             if key not in self._scaled:
                 self._scaled[key] = subprocess.check_output([
                     "ffmpeg", "-v", "error", "-threads", "1", "-i", str(path), "-vf",
                     f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=lanczos",
-                    "-q:v", "3", "-bitexact", "-f", "image2pipe", "-vcodec", "mjpeg", "-"])
-            return self._scaled[key]
+                    "-bitexact", *encode, "-"])
+            return ctype, self._scaled[key]
 
     def home_hubs(self):
         """`/hubs` after Continue Watching: the catalog's shelves, in its order."""
@@ -1026,8 +1039,8 @@ class MockPms:
                                               "hubIdentifier": "related", "size": min(8, len(pool)),
                                               "Metadata": pool[:8]}]))
             if catalog:
-                data = lib.image(p, q.get("width"), q.get("height"))
-                return (200, "image/jpeg", data) if data else (404, "text/plain", b"no image")
+                img = lib.image(p, q.get("width"), q.get("height"))
+                return (200, *img) if img else (404, "text/plain", b"no image")
             if sub in ("thumb", "art"):
                 png = flat_png(q.get("width", 250), q.get("height", 375), colour_for(p))
                 return (200, "image/png", png)
@@ -1079,8 +1092,8 @@ class MockPms:
         if p == "/hubs/search":
             return j(self.container(Hub=lib.search(q.get("query", ""))))
         if p == "/photo/:/transcode" and catalog:
-            data = lib.image(q.get("url", ""), q.get("width"), q.get("height"))
-            return (200, "image/jpeg", data) if data else (404, "text/plain", b"no image")
+            img = lib.image(q.get("url", ""), q.get("width"), q.get("height"))
+            return (200, *img) if img else (404, "text/plain", b"no image")
         if p == "/photo/:/transcode":
             src = q.get("url", "")
             png = flat_png(q.get("width", 250), q.get("height", 375), colour_for(src))
