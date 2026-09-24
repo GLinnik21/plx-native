@@ -18,6 +18,10 @@ driver:
   5. scales and encodes each output with ffmpeg (Lanczos, `-bitexact`, one thread) into
      `docs/screenshots/` or `--out`.
 
+A run that succeeds also writes `CREDITS.md` into the same directory, from the demo library's
+manifests (`tools/demo_library.py`), so the one command that regenerates the images regenerates
+their credits and the two cannot drift apart.
+
 `--check-determinism` captures every scene twice and compares the two PNGs pixel by pixel: every
 channel of every pixel may differ by at most the scene's `max_delta` (default 1: the GPU's
 rounding, which is not bit-stable run to run), except inside the scene's `free_regions`, each of
@@ -30,6 +34,7 @@ home scenes pin for this run. Both write to the output directory like every othe
 Nothing here reads a gitignored file, and nothing touches a Plex account or a television.
 """
 import argparse
+import importlib.util
 import json
 import os
 import pathlib
@@ -42,6 +47,12 @@ import time
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests"))
 import mock_pms  # noqa: E402
+
+# tools/demo_library.py shares its name with the tests/demo_library package, so it is loaded by
+# path under another name rather than through sys.path.
+_spec = importlib.util.spec_from_file_location("demo_library_tool", ROOT / "tools" / "demo_library.py")
+demo_library = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(demo_library)
 
 SCENES = ROOT / "tests" / "screenshots" / "scenes.json"
 CATALOG = ROOT / "tests" / "demo_library" / "catalog.json"
@@ -168,6 +179,13 @@ def encode(png, dst, size):
     tmp.replace(dst)
 
 
+def write_credits(out):
+    """CREDITS.md for the images in `out`, from the manifests they were rendered from."""
+    assets, catalog = demo_library.load()
+    demo_library.check(assets, catalog)
+    demo_library.credits(assets, catalog, out / "CREDITS.md")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--bin", required=True, type=pathlib.Path, help="the simulator (make screenshots-sim)")
@@ -239,6 +257,7 @@ def main():
         print(f"determinism  {line}")
     if failed:
         die(f"{len(failed)} scene(s) failed: {', '.join(failed)}")
+    write_credits(a.out)
     print(f"screenshots: {sum(len(o) for _, _, o in jobs)} image(s) written to {a.out}")
 
 

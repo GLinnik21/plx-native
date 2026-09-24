@@ -211,9 +211,9 @@ git status --short docs/screenshots
 
 Open every changed image before committing it — a scene whose state drifted (a menu that opened on
 the wrong row, a shelf that moved) still passes its log checks. No account and no television are
-involved (`ui-sim` skill, "Documentation screenshots"). Commit the images, and
-`docs/screenshots/CREDITS.md` if `tools/demo_library.py credits` changed it, as one commit of
-their own ahead of the version bump; a caption the new figures made false is fixed in that same
+involved (`ui-sim` skill, "Documentation screenshots"). It is one command: the same run rewrites
+`docs/screenshots/CREDITS.md`. Commit the images and CREDITS.md as one commit of their own ahead
+of the version bump; a caption the new figures made false is fixed in that same
 commit.
 
 ### 3. Build locally to catch mistakes early — CI builds what ships

@@ -12,6 +12,7 @@ import re
 import shutil
 import struct
 import sys
+import tempfile
 import unittest
 import urllib.parse
 import zlib
@@ -27,6 +28,9 @@ from demo_library import qr  # noqa: E402  (tests/demo_library/qr.py)
 _spec = importlib.util.spec_from_file_location("demo_library_tool", ROOT / "tools" / "demo_library.py")
 tool = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(tool)
+_spec = importlib.util.spec_from_file_location("screenshots_tool", ROOT / "tools" / "screenshots.py")
+screenshots = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(screenshots)
 
 SCENES = ROOT / "tests" / "screenshots" / "scenes.json"
 CATALOG = ROOT / "tests" / "demo_library" / "catalog.json"
@@ -105,6 +109,23 @@ class Manifests(unittest.TestCase):
         broken = dict(assets, **{aid: dict(assets[aid], licence="CC BY-SA 4.0")})
         with self.assertRaises(AssertionError):
             tool.check(broken, catalog)
+
+
+class Credits(unittest.TestCase):
+    """CREDITS.md is written by the same command that writes the images, so it cannot lag them."""
+
+    def test_the_committed_credits_are_what_the_manifests_say(self):
+        assets, catalog = tool.load()
+        with tempfile.TemporaryDirectory() as d:
+            dst = pathlib.Path(d) / "CREDITS.md"
+            tool.credits(assets, catalog, dst)
+            self.assertEqual(dst.read_text(), tool.CREDITS.read_text(),
+                             "docs/screenshots/CREDITS.md is stale: run `make screenshots`")
+
+    def test_a_screenshot_run_writes_the_credits_beside_its_images(self):
+        with tempfile.TemporaryDirectory() as d:
+            screenshots.write_credits(pathlib.Path(d))
+            self.assertEqual((pathlib.Path(d) / "CREDITS.md").read_text(), tool.CREDITS.read_text())
 
 
 class Chapters(unittest.TestCase):

@@ -1670,8 +1670,9 @@ sim-macos: $(FFMPEG_HOST_STAGED) pkg/.ffabi-host-ok
 
 # **`make screenshots` — the documentation screenshots, regenerated.** Boots the simulator once per
 # scene in `tests/screenshots/scenes.json` against the mock server's DEMO LIBRARY (openly licensed
-# films, `tests/demo_library/`), waits for each scene's settled frame, and writes the JPEGs into
-# `docs/screenshots/` (or `OUT=dir`). No Plex account, no television, no gitignored file.
+# films, `tests/demo_library/`), waits for each scene's settled frame, and writes the JPEGs, and
+# the CREDITS.md that goes with them, into `docs/screenshots/` (or `OUT=dir`). No Plex account, no
+# television, no gitignored file.
 #   make screenshots                         # every scene
 #   make screenshots SCENES=home,ux-detail   # some
 #   make screenshots OUT=/tmp/shots CHECK=1  # render twice, compare (the determinism check)

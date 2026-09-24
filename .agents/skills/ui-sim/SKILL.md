@@ -221,7 +221,7 @@ file:
 
 ```sh
 make demo-library                     # fetch (sha256-pinned, ~390 MB once) + derive; screenshots runs it too
-make screenshots                      # build the sim, render every scene into docs/screenshots/
+make screenshots                      # build the sim, render every scene + CREDITS.md into docs/screenshots/
 make screenshots SCENES=home,ux-detail.jpg OUT=/tmp/shots   # a subset, somewhere else
 make screenshots CHECK=1              # render each scene twice; fail unless within its bound
 make screenshots HERO=sintel          # pin another film as the home hero for this run
@@ -256,7 +256,8 @@ make screenshots HERO_VARIANTS=1      # also home-hero-<film>.jpg for each hero 
   the home hero draws) is cut from that film's own CC BY poster by a `logo` recipe in the
   catalog, so it is a derivative under the poster's licence and CREDITS.md says so; every hero
   candidate has one. Cutting it needs Pillow (`python3 -m pip install Pillow`), the one Python
-  package the pipeline uses. `python3 tools/demo_library.py credits` rewrites `docs/screenshots/CREDITS.md`, and
+  package the pipeline uses. `make screenshots` is the one command: a run that succeeds also
+  rewrites `CREDITS.md` beside the images, so the credits cannot lag them.
   `python3 tools/demo_library.py check` validates both manifests offline. The cache lives outside
   the repository (`$PLXNATIVE_DEMO_CACHE`, default `~/.cache/plxnative-demo`).
 - **Review before committing.** Open every image. A regenerated set is committed on its own,
