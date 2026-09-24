@@ -60,6 +60,7 @@ import json
 import os
 import pathlib
 import random
+import re
 import struct
 import subprocess
 import sys
@@ -98,6 +99,33 @@ def sname(rng):
 
 def swords(rng, n):
     return " ".join(sname(rng) for _ in range(n))
+
+
+# The shortest query PMS answers: a one-character query came back with every hub empty (measured
+# against PMS 1.43.3; the app's `search::MIN_QUERY` never sends one).
+SEARCH_MIN_QUERY = 2
+
+
+def search_words(text):
+    return re.findall(r"[0-9a-z]+", text.lower())
+
+
+def search_matcher(query):
+    """What `/hubs/search` counts as a hit: every word of the query begins a word of the name.
+    "sp" finds "Spring" and "Sprite Fright"; "in" finds neither "Spring" nor "Sintel".
+
+    The WORD-PREFIX rule is an assumption, not a measurement: docs/pms-api.md §3b probed the
+    response shape, not the matching, and the spec only says PMS "looks for partial matches" and
+    spell-checks. It is the conservative reading — a mid-word match would make figures show hits a
+    real server may not return. The spell-checking and the related-item hubs are not modelled."""
+    want = search_words(query)
+    if len(query.strip()) < SEARCH_MIN_QUERY or not want:
+        return lambda name: False
+
+    def hits(name):
+        words = search_words(name)
+        return all(any(w.startswith(q) for w in words) for q in want)
+    return hits
 
 
 # ---------------------------------------------------------------- the generated library ----
@@ -604,20 +632,20 @@ class Library:
             t["id"] == pid for t in it.get("Role", []) + it.get("Director", []) + it.get("Writer", []))]
 
     def search(self, query):
-        q = query.lower()
+        hits = search_matcher(query)
         hubs = []
         for kind, title in (("movie", "movie"), ("show", "show"), ("episode", "episode")):
-            rows = [it for it in self.items.values() if it["type"] == kind and q in it["title"].lower()]
+            rows = [it for it in self.items.values() if it["type"] == kind and hits(it["title"])]
             hubs.append({"title": title, "type": kind, "hubIdentifier": kind, "size": len(rows),
                          "Metadata": rows[:8]})
         people = [dict(t, type="actor", key=f"/library/sections/1/all?actor={t['id']}",
                        librarySectionID=1)
-                  for t in self.people.values() if q in t["tag"].lower()]
+                  for t in self.people.values() if hits(t["tag"])]
         hubs.append({"title": "actor", "type": "actor", "hubIdentifier": "actor",
                      "size": len(people), "Directory": people[:8]})
         cols = [{"tag": c["tag"], "id": c["id"], "type": "collection", "librarySectionID": 1,
                  "key": f"/library/sections/1/all?collection={c['id']}", "reasonTitle": ""}
-                for c in self.collections.values() if q in c["tag"].lower()]
+                for c in self.collections.values() if hits(c["tag"])]
         hubs.append({"title": "collection", "type": "collection", "hubIdentifier": "collection",
                      "size": len(cols), "Directory": cols})
         return hubs

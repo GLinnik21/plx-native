@@ -64,8 +64,8 @@
     },
     {
       "name": "search",
-      "state": "Search for \"in\": the query, the scope line, and the result shelves (Movies, then TV Shows).",
-      "triggers": {"search": "in"},
+      "state": "Search for \"th\" (the app's two-character minimum): the query, the scope line, and the result shelves the mock's word-prefix match gives (Movies, then Episodes).",
+      "triggers": {"search": "th"},
       "expect": ["state=ready"],
       "outputs": [
         {"file": "search.jpg", "size": "1600x900"},

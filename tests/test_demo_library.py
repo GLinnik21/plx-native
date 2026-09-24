@@ -13,6 +13,7 @@ import shutil
 import struct
 import sys
 import unittest
+import urllib.parse
 import zlib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -326,6 +327,28 @@ class Catalog(unittest.TestCase):
         self.assertTrue(w >= 600 and h >= 240, (w, h))
         bare = next(k for k in self.lib.items if "clearLogo" not in self.lib.images.get(k, {}))
         self.assertEqual(self.pms.handle("GET", ask.format(bare))[0], 404)
+
+    def search(self, query):
+        hubs = self.get("/hubs/search?" + urllib.parse.urlencode({"query": query}))["Hub"]
+        return {h["type"]: [r.get("title") or r.get("tag") for r in h.get("Metadata", h.get("Directory", []))]
+                for h in hubs}
+
+    def test_search_matches_the_start_of_a_word_not_the_middle(self):
+        # Word-prefix, as the mock assumes PMS does: "sp" begins Spring, Sprite and Space;
+        # "in" sits inside Spring and Sintel and begins no word, so it finds no film.
+        hits = self.search("sp")
+        self.assertEqual(hits["movie"], ["Spring", "Sprite Fright", "Plan 9 from Outer Space"])
+        self.assertEqual(self.search("in")["movie"], [])
+        # Every word of the query must begin a word of the name, in any order.
+        self.assertEqual(self.search("st te")["movie"], ["Tears of Steel"])
+        self.assertEqual(self.search("sherlock holmes")["show"], ["Sherlock Holmes"])
+        # People and collections match by the same rule.
+        self.assertIn("Fritz Lang", self.search("fr")["actor"])
+        self.assertEqual(self.search("si")["collection"], ["Silent Classics"])
+
+    def test_a_one_character_search_finds_nothing(self):
+        # PMS answers a one-character query with every hub empty (docs: tests/manifest.json).
+        self.assertTrue(all(not rows for rows in self.search("s").values()))
 
     def test_two_libraries_serve_the_same_bytes(self):
         other = mock_pms.MockPms(mock_pms.CatalogLibrary(CATALOG))
