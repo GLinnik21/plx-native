@@ -1287,8 +1287,13 @@ fn menupick_arm(app: &mut App, fr: &mut Frame) {
         let meta = app.bridge.metadata_view();
         match crate::app::bridge::player_overlay_mut(&mut app.pages) {
             Some(surface) => {
-                if let Some(commit) = surface.pick_track_row(&app.player.session, meta, row) {
-                    crate::app::playback::commit_track(&mut app.player.session, commit);
+                match surface.pick_track_row(&app.player.session, meta, row) {
+                    Some(commit) => crate::app::playback::commit_track(&mut app.player.session, commit),
+                    // The menu's own on_ok treats picking the already-active row as a no-op: no
+                    // commit, no route transition line. Without this, a manifest case whose row
+                    // no longer differs from the start pick (e.g. #210's file-default rule) fails
+                    // downstream as "no route transition" with nothing pointing back at menupick.
+                    None => crate::log(&format!("menupick: row {row} already active — no commit")),
                 }
             }
             None => app.scenarios.menupick_row = Some(row),

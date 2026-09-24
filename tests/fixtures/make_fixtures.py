@@ -164,11 +164,12 @@ row 0 is *Off* and row r is subtitle index r-1. So:
 
  * `audio_switch_transcode` picks audio row 6 on `movie_h264_ac3_many_audio` and expects a
    transcode, so index 6 is the ENGLISH DTS track (DTS is outside the direct-play set).
- * `audio_switch_native` picks audio row 0 on `episode_hevc_4k_hdr10_eac3` and expects a
-   NATIVE switch, and its title says "foreign default + eng … eng auto-picked at start".
+ * `audio_switch_native` picks audio row 1 on `episode_hevc_4k_hdr10_eac3` and expects a
+   NATIVE switch, and its title says "foreign default + eng … file default picked at start".
    So index 0 is a German E-AC-3 track carrying the default disposition and index 1 is the
-   English one: the route auto-picks English at start, row 0 switches to the German track,
-   and both being E-AC-3 keeps the switch native.
+   English one: with no Plex language preference the route auto-picks the file's default
+   (German, row 0) at start (#210), and row 1 switches to the English track — both being
+   E-AC-3 keeps the switch native.
  * `subtitle_text_srt` picks subtitle row 3 = index 2 and expects English cues, so the four
    text tracks are ordered [rus forced, rus, eng, eng-SDH] — the same order as the real
    library item the case was written against.

@@ -3514,6 +3514,12 @@ def _find_any(lines, needles):
 def op_audio_native(lines):
     hit = _find_any(lines, AUDIO_NATIVE_SWITCH_LINES)
     if hit is None:
+        # A row already active at menupick time commits nothing and never reaches the
+        # transition line at all; scenarios.rs logs that case explicitly, so surface it
+        # here instead of leaving a bare "not native" that looks like a route regression.
+        no_commit = find(lines, "menupick: row")
+        if no_commit is not None:
+            return False, f"no `route transition: native audio` line :: {no_commit.strip()}"
         return False, "no `route transition: native audio` line (switch was not native)"
     cs = codec_ids(lines)
     if not cs:
