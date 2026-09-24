@@ -350,6 +350,82 @@
    "licence": "Public domain",
    "author": "First National",
    "attribution": "First National"
+  },
+  "coffee-run-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/a/a7/Coffee_Run-movie_poster.png",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Coffee_Run-movie_poster.png",
+   "sha256": "bbbf90b2a2e840affd54bc05e00778f4874abe0ce05c5c49326833475d208b72",
+   "bytes": 25782456,
+   "licence": "CC BY 4.0",
+   "author": "Hjalti Hjalmarsson (Blender Cloud)",
+   "attribution": "Hjalti Hjalmarsson (Blender Cloud)"
+  },
+  "the-daily-dweebs-poster": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/0/0f/The_Daily_Dweebs-movie_poster.png",
+   "source_page": "https://commons.wikimedia.org/wiki/File:The_Daily_Dweebs-movie_poster.png",
+   "sha256": "f0054e5a1e8d9d4b01e9cdf3b1f60d8476c1c356feb585d008a00f254157cc66",
+   "bytes": 876091,
+   "licence": "CC BY 4.0",
+   "author": "Hjalti Hjalmarsson (Blender Cloud)",
+   "attribution": "Hjalti Hjalmarsson (Blender Cloud)"
+  },
+  "hero-still-red": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/c/c5/Hero_-_screenshot-hero_red.png",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Hero_-_screenshot-hero_red.png",
+   "sha256": "813de73ea4afe36ae66f1520975b771af6cf07bd6481244b0ab6f9f2b0cb0c6f",
+   "bytes": 882003,
+   "licence": "CC BY 4.0",
+   "author": "Blender Foundation",
+   "attribution": "Blender Foundation"
+  },
+  "glass-half-still-style": {
+   "url": "https://upload.wikimedia.org/wikipedia/commons/2/2c/Glass_Half_-_screenshot-Min_and_Max_artwork_style.png",
+   "source_page": "https://commons.wikimedia.org/wiki/File:Glass_Half_-_screenshot-Min_and_Max_artwork_style.png",
+   "sha256": "86295f94acfbbad8e4445ce069818fc7059176b8b5e1d234e6fcbb740558dd2e",
+   "bytes": 2870576,
+   "licence": "CC BY 4.0",
+   "author": "Blender Foundation",
+   "attribution": "Blender Foundation"
+  },
+  "bs-coffee-run-header": {
+   "url": "https://studio.blender.org/files/public/header/project/7a/43/7a43fa6b0bc44e62f1cbb21473800e07.png",
+   "source_page": "https://studio.blender.org/projects/coffee-run/",
+   "sha256": "0f3eb99f1768727d30547451c4071614130f6f65240139356c530490f0e73d58",
+   "bytes": 449913,
+   "licence": "CC BY 4.0",
+   "author": "Blender Studio",
+   "attribution": "© Blender Foundation | studio.blender.org",
+   "notes": "Blender Studio project header artwork. Site terms: \"Unless notified otherwise, all digital content (webpages, video, artwork, 3D data) is available under the Creative Commons Attribution 4.0.\""
+  },
+  "bs-hero-header": {
+   "url": "https://studio.blender.org/files/public/header/project/2e/cb/2ecb2976719298685517e7a559f7f770.png",
+   "source_page": "https://studio.blender.org/projects/hero/",
+   "sha256": "e656dc4ff4d88a11e7481a13289d9906ec85306b853adfdcaab4c230080e0f26",
+   "bytes": 461458,
+   "licence": "CC BY 4.0",
+   "author": "Blender Studio",
+   "attribution": "© Blender Foundation | studio.blender.org",
+   "notes": "Blender Studio project header artwork. Site terms: \"Unless notified otherwise, all digital content (webpages, video, artwork, 3D data) is available under the Creative Commons Attribution 4.0.\""
+  },
+  "bs-glass-half-header": {
+   "url": "https://studio.blender.org/files/public/header/project/55/fe/55fe87e01cb1c1404fd0ca3dbce4f536.png",
+   "source_page": "https://studio.blender.org/projects/glass-half/",
+   "sha256": "8dd57072c7dd4a8ac2dc562f945014a268ab4ccd715efb81fb9980e1d03100e3",
+   "bytes": 974877,
+   "licence": "CC BY 4.0",
+   "author": "Blender Studio",
+   "attribution": "© Blender Foundation | studio.blender.org",
+   "notes": "Blender Studio project header artwork. Site terms: \"Unless notified otherwise, all digital content (webpages, video, artwork, 3D data) is available under the Creative Commons Attribution 4.0.\""
+  },
+  "bs-wing-it-header": {
+   "url": "https://studio.blender.org/files/public/header/project/1c/60/1c60961bd2b161e546343de8022b05c9.jpg",
+   "source_page": "https://studio.blender.org/projects/wing-it/",
+   "sha256": "8e887748f0eb5a8ac342d82cf94eeb0cc25d82e1db99dc82ce3b608353412f9f",
+   "bytes": 368457,
+   "licence": "CC BY 4.0",
+   "author": "Blender Studio",
+   "attribution": "© Blender Foundation | studio.blender.org",
+   "notes": "Blender Studio project header artwork. Site terms: \"Unless notified otherwise, all digital content (webpages, video, artwork, 3D data) is available under the Creative Commons Attribution 4.0.\""
   }
  }
 }

@@ -5,9 +5,9 @@
   "friendlyName": "Demo Library",
   "machineIdentifier": "demo0000library0000plxnative"
  },
- "hero": "spring",
+ "hero": "sintel",
  "hero_alternatives": [
-  "sintel",
+  "spring",
   "sprite-fright"
  ],
  "sections": [
@@ -844,6 +844,152 @@
    "collections": [
     "Silent Classics"
    ]
+  },
+  {
+   "id": "wing-it",
+   "title": "Wing It!",
+   "year": 2023,
+   "originallyAvailableAt": "2023-09-12",
+   "minutes": 4,
+   "studio": "Blender Studio",
+   "genres": [
+    "Animation",
+    "Comedy",
+    "Short"
+   ],
+   "directors": [],
+   "writers": [],
+   "cast": [],
+   "summary": "An uptight engineer gets an unwelcome visit from an enthusiastic wannabe-pilot, causing both of them to be launched into the air inside an out-of-control space shuttle.",
+   "poster": {
+    "asset": "bs-wing-it-header"
+   },
+   "art": {
+    "asset": "bs-wing-it-header",
+    "mode": "cover",
+    "anchor": "center"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "coffee-run",
+   "title": "Coffee Run",
+   "year": 2020,
+   "originallyAvailableAt": "2020-05-29",
+   "minutes": 3,
+   "studio": "Blender Studio",
+   "genres": [
+    "Animation",
+    "Drama",
+    "Short"
+   ],
+   "directors": [
+    "Hjalti Hjalmarsson"
+   ],
+   "writers": [],
+   "cast": [],
+   "summary": "Fueled by caffeine, a young woman runs through the bittersweet memories of her past relationship.",
+   "poster": {
+    "asset": "coffee-run-poster"
+   },
+   "art": {
+    "asset": "bs-coffee-run-header",
+    "mode": "extend",
+    "anchor": "right"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "hero",
+   "title": "Hero",
+   "year": 2018,
+   "originallyAvailableAt": "2018-04-16",
+   "minutes": 4,
+   "studio": "Blender Institute",
+   "genres": [
+    "Animation",
+    "Action",
+    "Short"
+   ],
+   "directors": [
+    "Daniel Martinez Lara"
+   ],
+   "writers": [],
+   "cast": [],
+   "summary": "A showcase for Grease Pencil in Blender 2.8: 2D animation tools within a full 3D pipeline, and the sixth short film funded by the Blender Cloud.",
+   "poster": {
+    "asset": "hero-still-red"
+   },
+   "art": {
+    "asset": "bs-hero-header",
+    "mode": "cover",
+    "anchor": "center"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "glass-half",
+   "title": "Glass Half",
+   "year": 2015,
+   "originallyAvailableAt": "2015-10-30",
+   "minutes": 3,
+   "studio": "Blender Institute",
+   "genres": [
+    "Animation",
+    "Comedy",
+    "Short"
+   ],
+   "directors": [
+    "Beorn Leonard"
+   ],
+   "writers": [
+    "Beorn Leonard"
+   ],
+   "cast": [],
+   "summary": "Two amateur art critics meet in a gallery and argue passionately about the pieces they see, causing chaos for everyone else, until finally they find a piece on which they can agree.",
+   "poster": {
+    "asset": "glass-half-still-style",
+    "crop": "focus-right"
+   },
+   "art": {
+    "asset": "bs-glass-half-header",
+    "mode": "extend",
+    "anchor": "center"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
+  },
+  {
+   "id": "the-daily-dweebs",
+   "title": "The Daily Dweebs",
+   "year": 2017,
+   "originallyAvailableAt": "2017-10-19",
+   "minutes": 1,
+   "studio": "Blender Animation Studio",
+   "genres": [
+    "Animation",
+    "Comedy",
+    "Short"
+   ],
+   "directors": [
+    "Hjalti Hjalmarsson"
+   ],
+   "writers": [],
+   "cast": [],
+   "summary": "A Blender Animation Studio short, directed and animated by Hjalti Hjalmarsson.",
+   "poster": {
+    "asset": "the-daily-dweebs-poster"
+   },
+   "collections": [
+    "Blender Open Movies"
+   ]
   }
  ],
  "shows": [
@@ -1009,6 +1155,11 @@
   "sintel",
   "tears-of-steel",
   "cosmos-laundromat",
+  "wing-it",
+  "coffee-run",
+  "hero",
+  "glass-half",
+  "the-daily-dweebs",
   "sherlock-holmes",
   "nosferatu",
   "metropolis",
@@ -1026,6 +1177,10 @@
  ],
  "continue_watching": [
   {
+   "item": "sintel",
+   "progress": 0.49
+  },
+  {
    "item": "spring",
    "progress": 0.42
   },
@@ -1036,10 +1191,6 @@
   {
    "item": "caminandes/1/3",
    "progress": 0.35
-  },
-  {
-   "item": "sintel",
-   "progress": 0.49
   },
   {
    "item": "sherlock-holmes/1/2",
