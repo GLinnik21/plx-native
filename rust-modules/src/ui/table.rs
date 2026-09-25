@@ -66,6 +66,11 @@ pub struct Row {
     /// a line that does nothing. (A second `Section` cannot do this job: a headerless section adds
     /// vertical air but draws no rule, because the hairline rides the section HEADER.)
     pub sep: bool,
+    /// The row's action is **destructive** — it ends or removes something (Sign out, Remove from
+    /// Deck). Semantics only, never drawn: it exists so a menu never OPENS with its focus on one
+    /// ([`TableView::opening_row`]). A stray OK on a freshly opened menu must be harmless; the row
+    /// stays one press away, it is simply never where focus starts.
+    pub destructive: bool,
 }
 impl Row {
     pub fn new(label: impl Into<String>) -> Self {
@@ -82,6 +87,7 @@ impl Row {
             licon: None,
             dim: false,
             sep: false,
+            destructive: false,
         }
     }
     /// The grouping hairline — a row that draws a rule and cannot be focused.
@@ -155,6 +161,11 @@ impl Row {
     }
     pub fn dim(mut self, v: bool) -> Self {
         self.dim = v;
+        self
+    }
+    /// Mark the row's action destructive — see [`Row::destructive`].
+    pub fn destructive(mut self, v: bool) -> Self {
+        self.destructive = v;
         self
     }
     /// `tall` is the TABLE's two-line measure — see [`TableView::tall_rows`]. A row cannot answer
@@ -466,6 +477,28 @@ impl TableView {
                 .jump(top + self.row_height(self.sel) - PILL_INSET);
             self.scroll.jump(0.0);
         }
+    }
+
+    /// **Open** a menu on `sections`: [`Self::set_sections`] with the selection on
+    /// [`Self::opening_row`] and the pill snapped there. Every menu that has no prior selection to
+    /// restore opens through this, so none can open with its focus on a destructive action.
+    pub fn open_sections(&mut self, sections: Vec<Section>) {
+        self.sections = sections;
+        let sel = self.opening_row();
+        let sections = std::mem::take(&mut self.sections);
+        self.set_sections(sections, sel, false);
+    }
+
+    /// Where a menu's focus STARTS: the first selectable row that is not [`Row::destructive`]; the
+    /// first selectable row when every row is destructive (the menu still has to focus something,
+    /// and then the one action on offer is the one asked for); `0` for an empty table.
+    pub fn opening_row(&self) -> i32 {
+        let n = self.n_rows();
+        let selectable = || (0..n).filter(|&i| !self.rows_at(i).sep);
+        selectable()
+            .find(|&i| !self.rows_at(i).destructive)
+            .or_else(|| selectable().next())
+            .unwrap_or(0)
     }
 
     pub fn n_rows(&self) -> i32 {
@@ -1093,6 +1126,30 @@ mod tests {
         let empty = TableView::new();
         assert_eq!(empty.last_row(), None);
         assert!(!empty.at_last_row());
+    }
+
+    /// **A menu never opens with its focus on a destructive action.** The opening row steps over
+    /// destructive rows and separators; when every row is destructive it is the first anyway.
+    #[test]
+    fn a_menu_opens_on_its_first_non_destructive_row() {
+        let mut t = TableView::new();
+        t.open_sections(vec![Section::new("S")
+            .row(Row::new("Sign out").destructive(true))
+            .row(Row::separator())
+            .row(Row::new("Settings"))]);
+        assert_eq!(t.sel, 2);
+        assert_eq!(t.opening_row(), 2);
+
+        t.open_sections(vec![Section::new("S")
+            .row(Row::separator())
+            .row(Row::new("Remove").destructive(true))]);
+        assert_eq!(t.sel, 1, "all destructive: the first selectable row anyway");
+
+        t.open_sections(vec![Section::new("S").row(Row::new("a")).row(Row::new("b"))]);
+        assert_eq!(t.sel, 0, "an ordinary menu still opens on its first row");
+
+        t.open_sections(Vec::new());
+        assert_eq!(t.sel, 0);
     }
 
     /// **A row OPENS something exactly when it wears the drill-in chevron.** `route_screen`'s
