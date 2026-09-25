@@ -198,7 +198,7 @@ pub(crate) fn restore_server_selection(server: crate::plex::ServerId, meta: crat
 }
 
 /// The line to draw at `now_ns`, if a sidecar is selected and this is a direct play.
-pub(crate) fn active(now_ns: i64, transcoding: bool) -> Option<String> {
+pub(crate) fn active(now_ns: i64, transcoding: bool, offset_ns: i64) -> Option<String> {
     let st = state();
     if st.want == 0 || transcoding {
         return None; // a transcode BURNS the selection; drawing it too would double the line
@@ -209,7 +209,8 @@ pub(crate) fn active(now_ns: i64, transcoding: bool) -> Option<String> {
         }
     }
     match &st.loaded {
-        Some((id, cues)) if *id == st.want => cue_at(cues, now_ns).map(|c| c.text.clone()),
+        Some((id, cues)) if *id == st.want =>
+            cue_at(cues, now_ns.saturating_sub(offset_ns)).map(|c| c.text.clone()),
         _ => None,
     }
 }
@@ -376,10 +377,10 @@ mod tests {
         let parallel = started_rx.recv_timeout(Duration::from_millis(100)).is_ok();
         release_tx.send(()).unwrap();
         let until = Instant::now() + Duration::from_secs(2);
-        while active(2_000_000_000, false).as_deref() != Some("new") && Instant::now() < until {
+        while active(2_000_000_000, false, 0).as_deref() != Some("new") && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert_eq!(active(2_000_000_000, false).as_deref(), Some("new"));
+        assert_eq!(active(2_000_000_000, false, 0).as_deref(), Some("new"));
         reset();
         assert!(!parallel, "an abandoned fetch must finish before another worker is started");
     }

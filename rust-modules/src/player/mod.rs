@@ -1385,10 +1385,24 @@ pub(crate) fn subtitle_tone() -> crate::plex::session::SubtitleTone {
     crate::plex::session::SubtitleTone::from_index(SUBTITLE_TONE.load(Relaxed))
 }
 
+static SUBTITLE_OFFSET_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+pub(crate) fn subtitle_offset_ns() -> i64 {
+    SUBTITLE_OFFSET_MS.load(Relaxed).saturating_mul(1_000_000)
+}
+
+pub(crate) fn subtitle_offset() -> i64 {
+    SUBTITLE_OFFSET_MS.load(Relaxed)
+}
+
 /// Restore the persisted preference without writing it back (boot, and the credentials handoff
 /// after a fresh sign-in — the two places `route::restore_quality` is called from).
 pub(crate) fn restore_subtitle_tone(tone: crate::plex::session::SubtitleTone) {
     SUBTITLE_TONE.store(tone.index(), Relaxed);
+}
+
+pub(crate) fn restore_subtitle_offset(offset: i64) {
+    SUBTITLE_OFFSET_MS.store(offset.clamp(-30_000, 30_000), Relaxed);
 }
 
 /// Select a tone on the main thread and retain its persistence work for the shared worker.
@@ -1398,6 +1412,13 @@ pub(crate) fn set_subtitle_tone(tone: crate::plex::session::SubtitleTone) {
     SUBTITLE_TONE.store(tone.index(), Relaxed);
     let _ = crate::storage_worker::submit_retained(move || crate::plex::session::set_subtitle_tone(tone));
     // the picker's checkmark moves on this — see `route::persist_quality_choice`
+    crate::ui::idle::invalidate();
+}
+
+pub(crate) fn set_subtitle_offset(offset: i64) {
+    let offset = offset.clamp(-30_000, 30_000);
+    SUBTITLE_OFFSET_MS.store(offset, Relaxed);
+    let _ = crate::storage_worker::submit_retained(move || crate::plex::session::set_subtitle_offset(offset));
     crate::ui::idle::invalidate();
 }
 
@@ -1458,9 +1479,10 @@ pub(crate) fn active_subtitle(now_ns: i64) -> Option<String> {
         return None;
     }
     let cues = SHARED.sub_cues.lock().unwrap();
+    let lookup_ns = now_ns.saturating_sub(subtitle_offset_ns());
     cues.iter()
         .rev()
-        .find(|c| c.track == sel && now_ns >= c.start_ns && now_ns < c.end_ns)
+        .find(|c| c.track == sel && lookup_ns >= c.start_ns && lookup_ns < c.end_ns)
         .map(|c| c.text.clone())
 }
 
@@ -1477,9 +1499,10 @@ pub(crate) fn subtitle_cue_id(now_ns: i64) -> i64 {
         return 0;
     }
     let cues = SHARED.sub_cues.lock().unwrap();
+    let lookup_ns = now_ns.saturating_sub(subtitle_offset_ns());
     cues.iter()
         .rev()
-        .find(|c| c.track == sel && now_ns >= c.start_ns && now_ns < c.end_ns)
+        .find(|c| c.track == sel && lookup_ns >= c.start_ns && lookup_ns < c.end_ns)
         .map_or(0, |c| c.start_ns)
 }
 
@@ -1558,9 +1581,10 @@ pub(crate) fn active_bitmap_key(now_ns: i64) -> Option<i64> {
         return None;
     }
     let v = SHARED.sub_bitmaps.lock().unwrap();
+    let lookup_ns = now_ns.saturating_sub(subtitle_offset_ns());
     v.iter()
         .rev()
-        .find(|c| c.track == sel && now_ns >= c.start_ns && now_ns < c.end_ns)
+        .find(|c| c.track == sel && lookup_ns >= c.start_ns && lookup_ns < c.end_ns)
         .map(|c| c.start_ns)
 }
 /// Fetch (canvas_w, canvas_h, rects) for the selected track's display set with this `start_ns`
@@ -2734,6 +2758,29 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn subtitle_offset_shifts_text_lookup_in_both_directions() {
+        let _g = crate::testlock::serial();
+        SHARED.sub_cues.lock().unwrap().clear();
+        SHARED.desired_sub_idx.store(0, Relaxed);
+        restore_subtitle_offset(0);
+        push_subtitle_text(0, 1_000, 2_000, "cue".into());
+
+        assert_eq!(active_subtitle(1_500).as_deref(), Some("cue"));
+
+        restore_subtitle_offset(1_000);
+        assert_eq!(active_subtitle(1_500), None, "positive offset delays the caption");
+        assert_eq!(active_subtitle(2_500).as_deref(), Some("cue"));
+
+        restore_subtitle_offset(-1_000);
+        assert_eq!(active_subtitle(500).as_deref(), Some("cue"));
+        assert_eq!(active_subtitle(1_500).as_deref(), Some("cue"));
+
+        restore_subtitle_offset(0);
+        SHARED.sub_cues.lock().unwrap().clear();
+        SHARED.desired_sub_idx.store(-1, Relaxed);
+    }
     /// The image-subtitle store, exercised as a display SET rather than a single bitmap. Three
     /// invariants moved when multi-rect landed and none of them is observable on the host except
     /// here: every rect of a set survives the round trip under ONE key (so a two-line PGS cue is

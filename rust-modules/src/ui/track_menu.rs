@@ -39,6 +39,7 @@ pub(crate) struct TrackMenuState {
     /// `visible_subs` (whose answer moves when a playback starts transcoding). `None` on the
     /// Audio tab, which has no such section.
     tone_base: Option<c_int>,
+    offset_base: Option<c_int>,
     table: TableView, // main-thread only
 }
 
@@ -60,6 +61,7 @@ pub(crate) enum TrackCommit {
     /// The caption's tone. Not a track at all, but it is picked in this panel and it is the
     /// loop that performs it (`player::set_subtitle_tone` writes the session), like the two above.
     SubtitleTone(crate::plex::session::SubtitleTone),
+    SubtitleOffset(i64),
 }
 
 impl TrackMenuState {
@@ -71,6 +73,7 @@ impl TrackMenuState {
             active_audio: 0,
             active_sub: -1,
             tone_base: None,
+            offset_base: None,
             table: TableView::new(),
         };
         s.sync_item(ps, meta);
@@ -128,7 +131,10 @@ impl TrackMenuState {
         if tab == 0 {
             n_audio(meta)
         } else {
-            visible_subs(ps, meta).len() as c_int + 1 + SubtitleTone::LADDER.len() as c_int
+            visible_subs(ps, meta).len() as c_int
+                + 1
+                + SubtitleTone::LADDER.len() as c_int
+                + (!crate::route::is_transcoding(ps)) as c_int * OFFSET_COUNT
         }
     }
     /// the table row that should be focused when entering `tab` (its active selection)
@@ -231,6 +237,8 @@ impl TrackMenuState {
             // a row of the Color section: no track changes, so no `TrackCommit::Subtitle` — that
             // one always republishes, and re-committing the track would re-burn a transcode
             Some(TrackCommit::SubtitleTone(tone))
+        } else if let Some(offset) = offset_at(self.offset_base, sel) {
+            Some(TrackCommit::SubtitleOffset(offset))
         } else {
             // row 0 = Off = -1; else map the visible row back to its subs-list index
             let vis = visible_subs(ps, meta);
@@ -363,18 +371,44 @@ impl TrackMenuState {
         sec
     }
 
+    fn build_offsets(&self, ps: &crate::route::PlaybackSession) -> Section {
+        let active = crate::player::subtitle_offset();
+        let mut sec = Section::new("Timing");
+        for step in 0..OFFSET_COUNT {
+            let offset = OFFSET_MIN_MS + step as i64 * OFFSET_STEP_MS;
+            let label = if offset == 0 {
+                "0 ms".to_string()
+            } else {
+                format!("{offset:+} ms")
+            };
+            sec = sec.row(Row::new(label).checked(offset == active));
+        }
+        if crate::route::is_transcoding(ps) {
+            sec = Section::new("Timing");
+        }
+        sec
+    }
+
     fn rebuild(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int, slide: bool) {
         let sel = self.sel_for_tab(ps, meta, tab);
         if tab == 0 {
             self.tone_base = None;
+            self.offset_base = None;
             self.table.set_sections(vec![self.build_audio(meta)], sel, slide);
         } else {
             // TWO sections, and `TableView::sel` is one flat index over both (`more_menu`'s
             // contract): the tones start where the track rows end.
             let subs = self.build_subs(ps, meta);
             let tones = self.build_tones();
-            self.table.set_sections(vec![subs, tones], sel, slide);
+            let mut sections = vec![subs, tones];
+            if !crate::route::is_transcoding(ps) {
+                sections.push(self.build_offsets(ps));
+            }
+            self.table.set_sections(sections, sel, slide);
             self.tone_base = Some(self.table.n_rows() - SubtitleTone::LADDER.len() as c_int);
+            self.offset_base = (!crate::route::is_transcoding(ps)).then(|| {
+                self.table.n_rows() - OFFSET_COUNT
+            });
         }
     }
 
@@ -567,6 +601,15 @@ fn tone_at(tone_base: Option<c_int>, sel: c_int) -> Option<SubtitleTone> {
     let i = usize::try_from(sel.checked_sub(tone_base?)?).ok()?;
     SubtitleTone::LADDER.get(i).copied()
 }
+
+fn offset_at(offset_base: Option<c_int>, sel: c_int) -> Option<i64> {
+    let i = sel.checked_sub(offset_base?)?;
+    (0..OFFSET_COUNT).contains(&i).then_some(OFFSET_MIN_MS + i as i64 * OFFSET_STEP_MS)
+}
+
+const OFFSET_MIN_MS: i64 = -30_000;
+const OFFSET_STEP_MS: i64 = 100;
+const OFFSET_COUNT: c_int = 601;
 
 // ---- section building ----
 use crate::metadata::friendly_codec; // the ONE codec→display-name map (shared with the Info card)
@@ -825,6 +868,18 @@ mod tests {
             menu.on_ok(&ps, store.view()),
             Some(TrackCommit::SubtitleTone(SubtitleTone::LADDER[0]))
         );
+
+        menu.focus_row(9);
+        assert_eq!(
+            menu.on_ok(&ps, store.view()),
+            Some(TrackCommit::SubtitleOffset(-30_000))
+        );
+
+        menu.focus_row(309);
+        assert_eq!(
+            menu.on_ok(&ps, store.view()),
+            Some(TrackCommit::SubtitleOffset(0))
+        );
     }
 
     /// **Position is the join, so an unnamed track must occupy a slot rather than be skipped.**
@@ -899,6 +954,7 @@ mod focus_tests {
             active_audio: 0,
             active_sub: -1,
             tone_base: None,
+            offset_base: None,
             table,
         }
     }

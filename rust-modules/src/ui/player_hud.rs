@@ -68,7 +68,8 @@ fn wrap(s: &str, max: usize) -> Vec<String> {
 /// transcode BURNS the selection into the picture and drawing it too would double the line.
 pub(crate) fn draw_subtitles(hud_up: bool, transcoding: bool) {
     let now_ns = crate::player::playpos_ns();
-    let cue = crate::player::sidecar::active(now_ns, transcoding)
+    let offset_ns = crate::player::subtitle_offset_ns();
+    let cue = crate::player::sidecar::active(now_ns, transcoding, offset_ns)
         .or_else(|| crate::player::active_subtitle(now_ns));
     let text = match cue {
         Some(t) if !t.trim().is_empty() => t,

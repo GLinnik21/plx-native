@@ -559,6 +559,8 @@ pub struct Session {
     /// Soft-parsed: an unknown spelling costs the preference, never the credentials.
     #[serde(default, deserialize_with = "de_soft_subtitle_tone")]
     pub(crate) subtitle_tone: SubtitleTone,
+    #[serde(default, deserialize_with = "de_soft_subtitle_offset")]
+    pub(crate) subtitle_offset: i64,
     /// **Device-wide ambient memory**: the last hero `UltraBlurColors` envelope Home actually
     /// rendered on this television, so a route in the Settings/first-run family that opens
     /// BEFORE Home has fetched anything this boot — first-run consent moved ahead of the
@@ -608,6 +610,8 @@ struct CanonicalSessionPreferences {
     trailer_autoplay: bool,
     #[serde(default, deserialize_with = "de_soft_subtitle_tone")]
     subtitle_tone: SubtitleTone,
+    #[serde(default, deserialize_with = "de_soft_subtitle_offset")]
+    subtitle_offset: i64,
     /// Parsed only so a future preference does not make the known fields disappear. The shipping
     /// adapter merges these opaque keys from the current DB8 public payload before every rewrite;
     /// they are not promoted into the Session domain object.
@@ -631,6 +635,7 @@ impl Default for CanonicalSessionPreferences {
             last_hero_blur: None,
             trailer_autoplay: true,
             subtitle_tone: SubtitleTone::White,
+            subtitle_offset: 0,
             extensions: BTreeMap::new(),
         }
     }
@@ -671,6 +676,7 @@ fn split_public(session: &Session) -> Result<crate::storage::state::PublicPayloa
         last_hero_blur: session.last_hero_blur,
         trailer_autoplay: session.trailer_autoplay,
         subtitle_tone: session.subtitle_tone,
+        subtitle_offset: session.subtitle_offset,
         extensions: BTreeMap::new(),
     })
     .map_err(|_| ())?;
@@ -733,6 +739,7 @@ pub(crate) fn join_canonical(
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
         subtitle_tone: preferences.subtitle_tone,
+        subtitle_offset: preferences.subtitle_offset,
         profiles,
         extensions: auth.extensions,
     })
@@ -754,6 +761,7 @@ fn public_session(public: &crate::storage::state::PublicPayload) -> Session {
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
         subtitle_tone: preferences.subtitle_tone,
+        subtitle_offset: preferences.subtitle_offset,
         home_pins, recent_searches,
         ..Default::default()
     }
@@ -865,6 +873,16 @@ pub(crate) fn set_subtitle_tone(tone: SubtitleTone) -> bool {
             return None;
         }
         Some(cur.with_subtitle_tone(tone))
+    })
+}
+
+/// Persist the client-rendered subtitle timing offset.
+pub(crate) fn set_subtitle_offset(offset: i64) -> bool {
+    update(|cur| {
+        if cur.subtitle_offset == offset {
+            return None;
+        }
+        Some(cur.with_subtitle_offset(offset))
     })
 }
 
@@ -1573,6 +1591,21 @@ where
     Ok(serde_json::from_value::<SubtitleTone>(v).unwrap_or_default())
 }
 
+fn de_soft_subtitle_offset<'de, D>(d: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Ok(v) = serde_json::Value::deserialize(d) else {
+        return Ok(0);
+    };
+    let value = match v {
+        Value::Number(n) => n.as_i64().unwrap_or(0),
+        Value::String(s) => s.parse::<i64>().unwrap_or(0),
+        _ => 0,
+    };
+    Ok(((-30_000..=30_000).contains(&value) && value % 100 == 0).then_some(value).unwrap_or(0))
+}
+
 /// A preference switch: garbage degrades to off rather than failing the enclosing [`Session`].
 fn de_soft_bool<'de, D>(d: D) -> Result<bool, D::Error>
 where
@@ -1686,6 +1719,16 @@ impl Session {
     pub(crate) fn with_subtitle_tone(&self, tone: SubtitleTone) -> Self {
         let mut next = self.clone();
         next.subtitle_tone = tone;
+        next
+    }
+
+    pub(crate) fn subtitle_offset(&self) -> i64 {
+        self.subtitle_offset
+    }
+
+    pub(crate) fn with_subtitle_offset(&self, offset: i64) -> Self {
+        let mut next = self.clone();
+        next.subtitle_offset = offset;
         next
     }
 
