@@ -144,6 +144,9 @@ tests/fixtures/**/*.mkv
 tests/fixtures/**/*.mp4
 tests/fixtures/**/*.sup
 tests/fixtures/fixtures.json
+# ...except one deliberate 13 KB regression fixture, which is not generated media but the input of
+# `ff_image_subtitle_tests.rs` (`make check-ffmpeg`): mkvmerge's zlib-compressed subtitle tracks.
+!tests/fixtures/mkv_zlib_subs.mkv
 
 # Python bytecode from the host-side test/tooling scripts.
 __pycache__/

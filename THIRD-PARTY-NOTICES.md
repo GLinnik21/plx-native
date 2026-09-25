@@ -49,7 +49,9 @@ repository, which is also attached to each release.
 **Configuration.** Built with `--disable-everything` plus an explicit component list, **without**
 `--enable-gpl`, `--enable-version3` or `--enable-nonfree`, so no GPL-licensed or non-free FFmpeg
 component is present. Only demuxers, parsers, bitstream filters and *subtitle* decoders are
-enabled — video and audio are decoded by the television's hardware, not by FFmpeg.
+enabled — video and audio are decoded by the television's hardware, not by FFmpeg. The one
+external library enabled is **zlib**, the television's own `libz.so.1` (not redistributed — see
+section 3), which the Matroska demuxer needs to inflate compressed subtitle tracks.
 
 **You may modify and replace them.** They are ordinary shared libraries, loaded at run time by
 `dlopen` from the application's own directory; no FFmpeg code is linked into the `plxnative`
@@ -297,6 +299,7 @@ of a bundled copy alone does not establish that no obligation applies.
 | GLib | 2.48.2 | LGPL-2.1-or-later | See section 1 |
 | GNU C Library | 2.24 | LGPL-2.1-or-later | See section 1 |
 | SDL2 (LG fork) | 2.0.4 | Zlib | Copyright (C) 1997-2016 Sam Lantinga |
+| zlib | 1.2.11 on this build (1.2.7 to 1.3.1 across the firmware inventories) | Zlib | Copyright (C) 1995-2017 Jean-loup Gailly and Mark Adler. Loaded by the bundled FFmpeg, not by `plxnative` |
 | SDL2_ttf | 2.0.14 | Zlib | Zlib-licensed since 2.0.11 |
 | libcurl | 7.53.1 (LG SONAME `libcurl.so.5`) | curl (MIT/X derivate) | Copyright (c) 1996 - 2017, Daniel Stenberg, <daniel@haxx.se>, and many contributors |
 | libwayland-client | 0.3.0 | MIT | Copyright © 2008-2012 Kristian Høgsberg; © 2010-2012 Intel Corporation; © 2011 Benjamin Franzke; © 2012 Collabora, Ltd. The licence of *this LG build specifically* was not read off the device |

@@ -161,6 +161,17 @@ fi
 # current, and stages dylibs referencing a library that is no longer on the disk. It also makes
 # the two builds agree — the cross build had no such packages to find, so the host one was the
 # only half whose output depended on the machine it was built on.
+#
+# **zlib is the one external library, and it is named, not detected.** `--disable-autodetect`
+# took it too, and nothing failed: the matroska demuxer only INFLATES a track's ContentCompression
+# when built with zlib, and otherwise logs "Unsupported encoding type" and passes the packets
+# through still compressed. mkvmerge compresses every PGS and VobSub track with zlib by default,
+# so on nearly every Blu-ray remux the image-subtitle decoder was handed `78 da …`, found no
+# display set, and produced nothing — playback perfect, not one `image cue`, on every television
+# (`subtitle_image_pgs` in two release audits). `--enable-zlib` is explicit, so configure FAILS if
+# the library is absent instead of quietly building the old behaviour. It links the system
+# `libz.so.1`, present on every firmware inventory `fwsym` holds (webOS 3 to 10, zlib 1.2.7 to
+# 1.3.1) and on macOS; `make check-ffmpeg` is the test that holds it in place.
 if [ -n "$HOST" ]; then
   # No --arch/--cpu/--target-os: configure detects this Mac, which is the point.
   set -- --prefix=/plx
@@ -178,6 +189,7 @@ set -- "$@" \
   --disable-debug --enable-small \
   --disable-everything \
   --disable-autodetect \
+  --enable-zlib \
   --enable-demuxer=matroska,mov,mpegts,h264,hevc \
   --enable-parser=h264,hevc,aac,ac3,dvdsub,dvbsub \
   --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,extract_extradata \
