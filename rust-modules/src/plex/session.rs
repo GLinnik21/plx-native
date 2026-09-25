@@ -4132,14 +4132,18 @@ fn retry_pending_revocation_removals_locked() -> bool {
             // Discard obsolete permission without touching the marker for a newer sign-out.
             true
         } else {
-            match std::fs::remove_file(&marker) {
+            match crate::storage::unlink(&marker) {
                 Ok(()) => sync_retired_candidate_parent(&marker),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => sync_retired_candidate_parent(&marker),
-                Err(error) => {
-                    crate::log(&format!("session: revocation retirement failed errno={}",
-                        error.raw_os_error().unwrap_or(0)));
-                    false
-                }
+                // The same rule as `retire_session_candidate`: absence proven behind a refusal.
+                Err(error) => match crate::storage::prove_absent_after_refused_unlink(&marker, error) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        crate::log(&format!("session: revocation retirement failed errno={}",
+                            error.raw_os_error().unwrap_or(0)));
+                        false
+                    }
+                },
             }
         };
         if retired {
@@ -4252,21 +4256,34 @@ fn sync_retired_candidate_parent(path: &std::path::Path) -> bool {
 
 /// Shared by both sign-out sweeps. Successful retirement includes a synced tombstone;
 /// failures remain visible, especially when no reachable canonical Cleared record protects us.
+///
+/// Retired means no credential remains at `path`: removed (parent synced), neutralized, or
+/// PROVEN absent. A refused unlink is not evidence of presence — Linux answers EROFS from the
+/// parent's mount before it looks the child up, which is how every legacy candidate on a mount
+/// the jail sees read-only answered on webOS 4.10.2. So a refusal is followed by a no-follow
+/// lookup, and a neutralize open (no O_CREAT) answering ENOENT is the same proof. Only a name
+/// that exists, or cannot be looked at, stays a failure for the caller to retry.
 fn retire_session_candidate(path: &std::path::Path) -> bool {
-    match std::fs::remove_file(path) {
-        Ok(()) => sync_retired_candidate_parent(path),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => sync_retired_candidate_parent(path),
-        Err(unlink) => match neutralize_session_candidate(path) {
-            Ok(()) => true,
-            Err(overwrite) => {
-                crate::log(&format!(
-                    "session: sign-out candidate retirement failed path={} unlink_errno={} neutralize_errno={}",
-                    path.display(), unlink.raw_os_error().unwrap_or(0),
-                    overwrite.raw_os_error().unwrap_or(0)
-                ));
-                false
-            }
-        },
+    let unlink = match crate::storage::unlink(path) {
+        Ok(()) => return sync_retired_candidate_parent(path),
+        // May be the retry of our own unlink whose parent sync failed, so it syncs too.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return sync_retired_candidate_parent(path),
+        Err(error) => error,
+    };
+    // A refusal changed nothing on disk, so absence proven behind it has nothing to flush.
+    let Err(unlink) = crate::storage::prove_absent_after_refused_unlink(path, unlink) else { return true };
+    match neutralize_session_candidate(path) {
+        Ok(()) => true,
+        // Opened without O_CREAT: the name vanished after the lookup above.
+        Err(overwrite) if overwrite.kind() == std::io::ErrorKind::NotFound => true,
+        Err(overwrite) => {
+            crate::log(&format!(
+                "session: sign-out candidate retirement failed path={} unlink_errno={} neutralize_errno={}",
+                path.display(), unlink.raw_os_error().unwrap_or(0),
+                overwrite.raw_os_error().unwrap_or(0)
+            ));
+            false
+        }
     }
 }
 

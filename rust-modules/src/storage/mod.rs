@@ -544,10 +544,55 @@ fn classify_remove_error(
 }
 
 pub(crate) fn remove_file_or_prove_absent(path: &Path) -> io::Result<RemoveDisposition> {
-    match std::fs::remove_file(path) {
+    match unlink(path) {
         Ok(()) => Ok(RemoveDisposition::Removed),
         Err(error) => classify_remove_error(error, std::fs::symlink_metadata(path).map(|_| ())),
     }
+}
+
+/// For a caller that has to tell an unlink's own ENOENT (which may be the retry of an earlier
+/// unlink whose parent sync failed) apart from a REFUSED unlink: `Ok(())` only when a no-follow
+/// lookup independently proves the name absent, so the refusal left nothing behind; otherwise
+/// the original unlink error. The same rule as [`remove_file_or_prove_absent`].
+pub(crate) fn prove_absent_after_refused_unlink(path: &Path, error: io::Error) -> io::Result<()> {
+    classify_remove_error(error, std::fs::symlink_metadata(path).map(|_| ())).map(|_| ())
+}
+
+#[cfg(test)]
+static UNLINK_FAULT_FOR_TEST: std::sync::Mutex<Option<(PathBuf, i32)>> = std::sync::Mutex::new(None);
+
+/// Make every [`unlink`] of a path under `dir` fail with `errno`, on EVERY thread (the sign-out
+/// clear runs on the storage worker), until the guard drops. Scoped to a directory the test owns
+/// so a parallel test's cleanup elsewhere is untouched. The host cannot mount a read-only
+/// filesystem, and EROFS — which Linux returns from the parent's mount BEFORE it looks the child
+/// up — is exactly what the television answers for a candidate that does not exist.
+#[cfg(test)]
+pub(crate) struct UnlinkFaultForTest;
+
+#[cfg(test)]
+impl UnlinkFaultForTest {
+    pub(crate) fn install(dir: &Path, errno: i32) -> Self {
+        *UNLINK_FAULT_FOR_TEST.lock().unwrap_or_else(|e| e.into_inner()) = Some((dir.to_path_buf(), errno));
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for UnlinkFaultForTest {
+    fn drop(&mut self) {
+        *UNLINK_FAULT_FOR_TEST.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+}
+
+/// `unlink(2)` for credential cleanup, with the test build's fault seam in front of it.
+pub(crate) fn unlink(path: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if let Some((_, errno)) = UNLINK_FAULT_FOR_TEST.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
+        .filter(|(dir, _)| path.starts_with(dir))
+    {
+        return Err(io::Error::from_raw_os_error(*errno));
+    }
+    std::fs::remove_file(path)
 }
 
 // All child names below are generated internally, with no path separators. Keep the already-open
