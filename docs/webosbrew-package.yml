@@ -94,11 +94,12 @@ description: |
     shared is normally reached at a public address, and that traffic crosses the internet in clear
     text. Servers behind Plex Relay, servers that require secure connections, and servers reachable
     only by hostname or IPv6 cannot be dialled at all, and there is nowhere to enter an address.
-  * **Two televisions have been watched, out of every set this installs on.** Video is verified on
-    a 2019 LG (platform release 4.10.2) by the author, and reported working on a 2021 LG
-    65UP7560AUD (6.5.2) by a webosbrew reviewer. Everything from webOS 4.0 up is checked only for
-    whether the app *starts*, which says nothing about whether a picture appears. If you are on
-    5.x, 10 or 11, you are the first — and a report either way is welcome.
+  * **Video plays on sets from 2018 through webOS 11.** The author verifies it on a 2019 LG
+    (platform release 4.10.2) before every release, and opt-in usage reports show playback, direct
+    and transcoded, on Developer Mode installs of every firmware line from 4.4.2 to 11.2.0. Known
+    exceptions: some 2019 sets on LG's k5lp or k3lp chip, whose Developer Mode sandbox withholds a
+    device the video path needs; 2018 sets on platform release 3.9.3, where video has never been
+    seen to start (issue #249); and a crash on k6hp sets (issue #174).
   * **Dolby Vision is confirmed on ONE television.** On the 2019 set this is developed against, a
     Profile 5 or Profile 8 film moves the panel into its Dolby Vision picture mode, and a Profile 7
     film — the dual-layer kind this app cannot feed — is refused and lands on HDR10, which is what

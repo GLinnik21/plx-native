@@ -391,7 +391,9 @@ tools/fwcompat.py --lib libSDL2-2.0.so.0 --grep webOS
 **It grades whether the app STARTS, and nothing else.** A firmware can export every ACB entry point
 and still refuse to put a picture on the video plane. Today: OK on releases 4.4.2 through 11.2.0;
 playback is device-verified on 4.10.0 (the dev set) and 6.5.2 (the webosbrew reviewer's set,
-issue #22 — the `VP_EXPORTED` path works), and `docs/webos5-port.md` §4 is the list of what
+issue #22 — the `VP_EXPORTED` path works); opt-in PostHog `playback.started` events (2026-09)
+additionally show direct and transcoded starts on field sets from 4.4.2 to 11.2.0, including
+10.3.1 transcodes, while 3.9.3 sets have requests and no outcome (#249); and `docs/webos5-port.md` §4 is the list of what
 webOS 5+ still needs a human with a television to settle.
 
 **The inventories are SYMBOL LISTS — `name`, `package`, `needed`, `symbols`, and nothing else.**
