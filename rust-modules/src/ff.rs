@@ -8219,3 +8219,7 @@ mod hls_reserve_tests;
 #[cfg(test)]
 #[path = "ff_stall_guard_tests.rs"]
 mod stall_guard_tests;
+
+#[cfg(test)]
+#[path = "ff_image_subtitle_tests.rs"]
+mod image_subtitle_tests;

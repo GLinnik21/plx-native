@@ -16,6 +16,7 @@ on:
       - 'ci/build-ffmpeg.sh'
       - 'ci/stage-host-ffmpeg.sh'
       - 'ci/ffabi-assert.c'
+      - 'tests/fixtures/mkv_zlib_subs.mkv'
       - 'tools/sim.ps1'
       - 'tools/sim-smoke.py'
   pull_request:
@@ -105,6 +106,16 @@ jobs:
           key: simulator-macos
       - name: Build native macOS simulator
         run: make sim-macos SIM_TDIR=rust-modules/target-sim-ci
+      - name: Install nightly Rust
+        # `make check-ffmpeg` runs the host suite's FFmpeg-backed tests on the toolchain `make
+        # check` uses; the simulator above builds on the runner's default one. `rust-src` is not
+        # optional: rust-modules/.cargo/config.toml sets `[unstable] build-std` for every nightly
+        # cargo run, host tests included — the same component ci.yml's host checks install.
+        run: rustup toolchain install nightly --profile minimal --component rust-src
+      - name: Tests against the bundled FFmpeg
+        # The one place the host FFmpeg (built above, same component list as the shipped one) is
+        # available to the test suite — `make check` has none, so these are #[ignore]d there.
+        run: make check-ffmpeg
       - name: Launch and capture 1080p frame
         run: |
           python3 tools/sim-smoke.py \
