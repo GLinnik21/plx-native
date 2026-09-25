@@ -60,7 +60,12 @@ pub const CAP_BYTES: usize = 64 * 1024 * 1024;
 /// Only this application's runtime namespace, never the target named by recplay or a header.
 /// Caller must first consume the active Writer. remove_dir_all does not follow directory
 /// symlinks; the explicit symlink branch also handles dangling links as owned entries.
-pub(crate) fn erase_owned_artifacts(root: &Path) -> Vec<String> {
+///
+/// `remove_file` is the application's file-removal rule, injected because `ui/` names no storage
+/// layer (§2.1): the app passes the erase sweep's shared rule, under which a refused unlink of a
+/// name proven gone counts as removed.
+pub(crate) fn erase_owned_artifacts(root: &Path,
+    remove_file: fn(&Path) -> std::io::Result<()>) -> Vec<String> {
     let mut failures = Vec::new();
     for name in ["plxnative-rec", "plxnative-recplay", "plxnative-app-init", "plxnative-recordings"] {
         let path = root.join(name);
@@ -68,7 +73,7 @@ pub(crate) fn erase_owned_artifacts(root: &Path) -> Vec<String> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error),
             Ok(metadata) if name == "plxnative-recordings" && metadata.is_dir() => fs::remove_dir_all(&path),
-            Ok(_) => fs::remove_file(&path),
+            Ok(_) => remove_file(&path),
         };
         if result.is_err() { failures.push(format!("{name}: could not remove owned recording artifact")); }
     }

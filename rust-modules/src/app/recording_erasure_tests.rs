@@ -107,7 +107,7 @@ fn owned_recording_files_are_erased_after_quiescence_and_leftovers_are_acked() {
             "subsequent frames and shutdown cannot recreate erased data"
         );
         assert_eq!(
-            crate::ui::rec::erase_owned_artifacts(&root).len(),
+            crate::ui::rec::erase_owned_artifacts(&root, crate::app::input::remove_or_prove_absent).len(),
             usize::from(partial),
             "missing files are idempotent; an unremoved control directory remains reported"
         );
