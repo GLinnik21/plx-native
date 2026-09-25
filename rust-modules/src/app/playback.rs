@@ -475,6 +475,7 @@ pub(crate) fn commit_track(
             }
         }
         TrackCommit::SubtitleTone(tone) => crate::player::set_subtitle_tone(tone),
+        TrackCommit::SubtitleOffset(offset) => crate::player::set_subtitle_offset(offset),
     }
 }
 
