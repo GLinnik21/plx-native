@@ -326,11 +326,19 @@ impl PlayerOverlayScreen {
     fn activate<H: AppLike + crate::screens::registry::MetadataLike>(&mut self, ps: &crate::route::PlaybackSession, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         match &mut self.panel {
             Panel::Tracks(p) => {
+                // asked BEFORE `on_ok`, which may rebuild the rows under the cursor
+                let stays = p.ok_keeps_open();
                 if let Some(commit) = p.on_ok(ps, H::metadata(cx)) {
                     fx.push(Fx::App(AppFx::Player(PlayerReq::CommitTrack(commit))));
                 }
-                self.dismiss(fx);
-                self.closing(fx);
+                if stays {
+                    // a Timing step: the viewer is watching the caption move, so the transport
+                    // keeps a menu's read time rather than starting to close
+                    self.moved(fx);
+                } else {
+                    self.dismiss(fx);
+                    self.closing(fx);
+                }
             }
             Panel::More(p) => {
                 let action = p.on_ok();

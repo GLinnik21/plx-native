@@ -669,7 +669,7 @@ pub(crate) unsafe fn construct(
     );
     // The subtitle tone rides the same file and the same moment: a preference, restored once.
     crate::player::restore_subtitle_tone(session.subtitle_tone());
-    crate::player::restore_subtitle_offset(session.subtitle_offset());
+    crate::player::restore_subtitle_offset(session.subtitle_offset_ms());
     let primary_binding = initial.as_ref().map(|initial| initial.primary_client);
     let activate_session = |bridge: &mut super::bridge::Bridge,
         pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,

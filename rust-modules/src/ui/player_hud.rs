@@ -68,8 +68,9 @@ fn wrap(s: &str, max: usize) -> Vec<String> {
 /// transcode BURNS the selection into the picture and drawing it too would double the line.
 pub(crate) fn draw_subtitles(hud_up: bool, transcoding: bool) {
     let now_ns = crate::player::playpos_ns();
-    let offset_ns = crate::player::subtitle_offset_ns();
-    let cue = crate::player::sidecar::active(now_ns, transcoding, offset_ns)
+    // the sidecar is looked up on the SUBTITLE clock (the playhead less the viewer's timing
+    // offset); the embedded store applies the same subtraction inside `active_subtitle`
+    let cue = crate::player::sidecar::active(crate::player::subtitle_clock_ns(now_ns), transcoding)
         .or_else(|| crate::player::active_subtitle(now_ns));
     let text = match cue {
         Some(t) if !t.trim().is_empty() => t,

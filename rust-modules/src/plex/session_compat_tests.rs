@@ -349,7 +349,7 @@ fn invalid_auto_sign_in_is_soft_and_off() {
 fn the_subtitle_tone_is_white_when_absent_or_unknown_and_round_trips_every_rung() {
     let parsed: Session = serde_json::from_str(r#"{"client_id":"c"}"#).unwrap();
     assert_eq!(parsed.subtitle_tone(), SubtitleTone::White);
-    assert_eq!(parsed.subtitle_offset(), 0);
+    assert_eq!(parsed.subtitle_offset_ms(), 0);
     for damaged in [r#""mauve""#, "7", "null", r#"{"a":1}"#] {
         let text = format!(r#"{{"client_id":"c","subtitle_tone":{damaged}}}"#);
         let parsed: Session = serde_json::from_str(&text).unwrap();
@@ -382,20 +382,41 @@ fn the_subtitle_tone_is_white_when_absent_or_unknown_and_round_trips_every_rung(
 #[test]
 fn the_subtitle_offset_is_zero_when_absent_or_unknown_and_round_trips() {
     let parsed: Session = serde_json::from_str(r#"{"client_id":"c"}"#).unwrap();
-    assert_eq!(parsed.subtitle_offset(), 0);
-    for damaged in [r#""late""#, "null", "99"] {
-        let text = format!(r#"{{"client_id":"c","subtitle_offset":{damaged}}}"#);
+    assert_eq!(parsed.subtitle_offset_ms(), 0);
+    // off the 100 ms grain, past the ±30 s range, and not a number at all
+    for damaged in [r#""late""#, "null", "99", "30100", "-30100", "1e9", r#"{"a":1}"#] {
+        let text = format!(r#"{{"client_id":"c","subtitle_offset_ms":{damaged}}}"#);
         let parsed: Session = serde_json::from_str(&text).unwrap();
-        assert_eq!(parsed.subtitle_offset(), 0, "{damaged}");
+        assert_eq!(parsed.subtitle_offset_ms(), 0, "{damaged}");
     }
     for offset in [-30_000, -10_000, -5_000, -2_000, -1_000, 0, 100, 1_000, 5_000, 10_000, 30_000] {
         let json = serde_json::to_value(Session::default().with_subtitle_offset(offset)).unwrap();
-        assert_eq!(json["subtitle_offset"], offset);
+        assert_eq!(json["subtitle_offset_ms"], offset);
         let again: Session = serde_json::from_value(json).unwrap();
-        assert_eq!(again.subtitle_offset(), offset);
+        assert_eq!(again.subtitle_offset_ms(), offset);
     }
-    let legacy: Session = serde_json::from_str(r#"{"client_id":"c","subtitle_offset":"-5000"}"#).unwrap();
-    assert_eq!(legacy.subtitle_offset(), -5_000);
+    // a numeric string is read the way every other lenient numeric field is
+    let stringly: Session = serde_json::from_str(r#"{"client_id":"c","subtitle_offset_ms":"-5000"}"#).unwrap();
+    assert_eq!(stringly.subtitle_offset_ms(), -5_000);
+}
+
+/// The offset is a PUBLIC preference: it survives `split_public` → `join_canonical` and the
+/// locked-bundle `public_session` snapshot, and it is not one of the protected fields — so moving
+/// it can never make a routine write look like a credential change that re-seals the auth half.
+#[test]
+fn the_subtitle_offset_is_a_public_preference_outside_the_sealed_auth() {
+    let session = Session::default().with_subtitle_offset(-1_200);
+    let public = split_public(&session).unwrap();
+    assert_eq!(public.preferences["subtitle_offset_ms"], -1_200);
+    let joined = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
+    assert_eq!(joined.subtitle_offset_ms(), -1_200);
+    assert_eq!(public_session(&public).subtitle_offset_ms(), -1_200);
+    assert!(
+        protected_fields_equal(&Session::default(), &session),
+        "an offset change must leave the protected fields identical"
+    );
+    let empty = crate::storage::state::PublicPayload::default();
+    assert_eq!(public_session(&empty).subtitle_offset_ms(), 0);
 }
 
 /// The tone lives in the PUBLIC preferences half of the canonical split, so it must survive

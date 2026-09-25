@@ -387,6 +387,32 @@ fn activate_commits_the_bare_rows_directly() {
     );
 }
 
+/// **A Timing step commits and leaves the Subtitles panel UP.** The offset is found by pressing
+/// and watching the caption move; every other Tracks row still commits and closes.
+#[test]
+fn a_timing_step_commits_without_dismissing_the_tracks_panel() {
+    let _g = crate::testlock::serial(); // the panel seeds its offset from the player's global
+    crate::player::restore_subtitle_offset(0);
+    let ps = crate::route::PlaybackSession::IDLE;
+    let meta = crate::stores::metadata::MetadataStore::default();
+    let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
+    // no playing item: Off, then the tone ladder, then Timing's Earlier / Later / Reset
+    let later = 1 + crate::plex::session::SubtitleTone::LADDER.len() as u32 + 1;
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: later }, by: By::Dir });
+    let (_, reqs, dismissed) = activate(&mut page, later);
+    assert!(!dismissed, "a Timing step keeps the panel open");
+    assert!(reqs.iter().any(|r| matches!(
+        r,
+        PlayerReq::CommitTrack(crate::ui::track_menu::TrackCommit::SubtitleOffset(100))
+    )));
+    assert!(reqs.iter().any(|r| matches!(r, PlayerReq::ExtendHud(_))));
+
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: 1 }, by: By::Dir });
+    let (_, _, dismissed) = activate(&mut page, 1);
+    assert!(dismissed, "a tone row still commits and closes");
+    crate::player::restore_subtitle_offset(0);
+}
+
 /// **Info's split, kept from the old ladder's `Key::Ok if p.focus_is_ctl()` arm** (restructure
 /// phase 12): a POINTER click's `Activate` is already a precise, instantaneous gesture, so it
 /// applies the card's action at once; a keyboard OK arms the engine's own (non-holdable) press and

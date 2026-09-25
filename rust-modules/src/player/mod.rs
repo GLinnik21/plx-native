@@ -1385,14 +1385,46 @@ pub(crate) fn subtitle_tone() -> crate::plex::session::SubtitleTone {
     crate::plex::session::SubtitleTone::from_index(SUBTITLE_TONE.load(Relaxed))
 }
 
-static SUBTITLE_OFFSET_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+/// The viewer's subtitle timing offset in MILLISECONDS — positive draws every client-rendered cue
+/// later, negative earlier. A preference that outlives a playback, for the same reason as
+/// [`SUBTITLE_TONE`]. `AtomicI32` rather than `I64`: ±30 000 ms fits trivially, and the 32-bit
+/// target gets a plain word load on the per-frame lookups.
+static SUBTITLE_OFFSET_MS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
-pub(crate) fn subtitle_offset_ns() -> i64 {
-    SUBTITLE_OFFSET_MS.load(Relaxed).saturating_mul(1_000_000)
+/// The offset in milliseconds (the unit the menu and the session file speak).
+pub(crate) fn subtitle_offset_ms() -> i64 {
+    i64::from(SUBTITLE_OFFSET_MS.load(Relaxed))
 }
 
-pub(crate) fn subtitle_offset() -> i64 {
-    SUBTITLE_OFFSET_MS.load(Relaxed)
+/// The offset in nanoseconds (the unit every cue store speaks).
+fn subtitle_offset_ns() -> i64 {
+    subtitle_offset_ms() * 1_000_000
+}
+
+/// **The content time whose cue is on screen at playhead `now_ns`**: the playhead minus the
+/// offset, so a +2 s offset shows at 12 s the cue authored for 10 s. Every lookup — embedded text,
+/// image sets, the sidecar — goes through this one subtraction; saturating, so no offset can wrap
+/// a timestamp at either end of `i64`.
+///
+/// The sidecar holds its whole file, so any offset is exact there. An EMBEDDED track only has the
+/// cues the demuxer has read: an early offset wider than its ~10-20 s read-ahead, or a late one in
+/// the first seconds after a seek (the demuxer restarts AT the target, never before it), finds
+/// nothing to draw until the window catches up.
+pub(crate) fn subtitle_clock_ns(now_ns: i64) -> i64 {
+    now_ns.saturating_sub(subtitle_offset_ns())
+}
+
+/// The oldest cue end a store must still hold: two seconds behind whichever is EARLIER, the
+/// playhead or the subtitle clock. A positive offset makes the subtitle clock trail the playhead,
+/// and pruning against the playhead alone would drop a delayed cue before it was ever drawn.
+fn subtitle_floor_ns() -> i64 {
+    let now = SHARED.playpos_ns.load(Relaxed);
+    now.min(subtitle_clock_ns(now)).saturating_sub(2_000_000_000)
+}
+
+fn clamp_subtitle_offset_ms(offset_ms: i64) -> i32 {
+    let max = crate::plex::session::SUBTITLE_OFFSET_MAX_MS;
+    offset_ms.clamp(-max, max) as i32
 }
 
 /// Restore the persisted preference without writing it back (boot, and the credentials handoff
@@ -1401,8 +1433,10 @@ pub(crate) fn restore_subtitle_tone(tone: crate::plex::session::SubtitleTone) {
     SUBTITLE_TONE.store(tone.index(), Relaxed);
 }
 
-pub(crate) fn restore_subtitle_offset(offset: i64) {
-    SUBTITLE_OFFSET_MS.store(offset.clamp(-30_000, 30_000), Relaxed);
+/// Restore the persisted timing offset (ms) without writing it back — the same two call sites as
+/// [`restore_subtitle_tone`].
+pub(crate) fn restore_subtitle_offset(offset_ms: i64) {
+    SUBTITLE_OFFSET_MS.store(clamp_subtitle_offset_ms(offset_ms), Relaxed);
 }
 
 /// Select a tone on the main thread and retain its persistence work for the shared worker.
@@ -1415,10 +1449,16 @@ pub(crate) fn set_subtitle_tone(tone: crate::plex::session::SubtitleTone) {
     crate::ui::idle::invalidate();
 }
 
-pub(crate) fn set_subtitle_offset(offset: i64) {
-    let offset = offset.clamp(-30_000, 30_000);
-    SUBTITLE_OFFSET_MS.store(offset, Relaxed);
-    let _ = crate::storage_worker::submit_retained(move || crate::plex::session::set_subtitle_offset(offset));
+/// Set the timing offset (ms) on the main thread; like the tone it takes effect on the next drawn
+/// frame, with nothing to reload. The retained job persists whatever the offset is WHEN IT RUNS,
+/// not the value it was queued with: the menu steps 100 ms per press, so a burst of presses the
+/// worker has not caught up with collapses — the first job to run writes the latest value, and
+/// the ones queued behind it find the file already equal, so `update` writes nothing for them.
+pub(crate) fn set_subtitle_offset(offset_ms: i64) {
+    SUBTITLE_OFFSET_MS.store(clamp_subtitle_offset_ms(offset_ms), Relaxed);
+    let _ = crate::storage_worker::submit_retained(|| {
+        crate::plex::session::set_subtitle_offset(subtitle_offset_ms())
+    });
     crate::ui::idle::invalidate();
 }
 
@@ -1432,7 +1472,7 @@ pub(crate) fn push_subtitle_text(track: i32, start_ns: i64, end_ns: i64, text: S
         return;
     }
     let mut cues = SHARED.sub_cues.lock().unwrap();
-    let floor = SHARED.playpos_ns.load(Relaxed) - 2_000_000_000;
+    let floor = subtitle_floor_ns();
     cues.retain(|c| c.end_ns >= floor);
     if cues.len() >= 512 {
         cues.remove(0);
@@ -1479,7 +1519,7 @@ pub(crate) fn active_subtitle(now_ns: i64) -> Option<String> {
         return None;
     }
     let cues = SHARED.sub_cues.lock().unwrap();
-    let lookup_ns = now_ns.saturating_sub(subtitle_offset_ns());
+    let lookup_ns = subtitle_clock_ns(now_ns);
     cues.iter()
         .rev()
         .find(|c| c.track == sel && lookup_ns >= c.start_ns && lookup_ns < c.end_ns)
@@ -1499,7 +1539,7 @@ pub(crate) fn subtitle_cue_id(now_ns: i64) -> i64 {
         return 0;
     }
     let cues = SHARED.sub_cues.lock().unwrap();
-    let lookup_ns = now_ns.saturating_sub(subtitle_offset_ns());
+    let lookup_ns = subtitle_clock_ns(now_ns);
     cues.iter()
         .rev()
         .find(|c| c.track == sel && lookup_ns >= c.start_ns && lookup_ns < c.end_ns)
@@ -1530,7 +1570,7 @@ pub(crate) fn push_subtitle_bitmap(
             c.end_ns = start_ns; // this set replaces the one still showing
         }
     }
-    let floor = SHARED.playpos_ns.load(Relaxed) - 2_000_000_000;
+    let floor = subtitle_floor_ns();
     v.retain(|c| c.end_ns >= floor);
     v.push(SubBitmap {
         track,
@@ -1554,11 +1594,14 @@ pub(crate) fn push_subtitle_bitmap(
     // read-ahead go, because that cue is at least not on screen yet.
     const BUDGET: usize = 24 * 1024 * 1024;
     let mut total: usize = v.iter().map(|c| c.bytes()).sum();
+    // "Passed" is judged on the SUBTITLE clock when an offset delays it: a cue the playhead has
+    // passed but a positive offset has not yet drawn is still ahead of the viewer.
     let now = SHARED.playpos_ns.load(Relaxed);
+    let passed = now.min(subtitle_clock_ns(now));
     while total > BUDGET && v.len() > 1 {
         let i = v
             .iter()
-            .position(|c| c.end_ns <= now)
+            .position(|c| c.end_ns <= passed)
             .unwrap_or(v.len() - 1);
         total -= v[i].bytes();
         v.remove(i);
@@ -1581,7 +1624,7 @@ pub(crate) fn active_bitmap_key(now_ns: i64) -> Option<i64> {
         return None;
     }
     let v = SHARED.sub_bitmaps.lock().unwrap();
-    let lookup_ns = now_ns.saturating_sub(subtitle_offset_ns());
+    let lookup_ns = subtitle_clock_ns(now_ns);
     v.iter()
         .rev()
         .find(|c| c.track == sel && lookup_ns >= c.start_ns && lookup_ns < c.end_ns)
@@ -2759,27 +2802,82 @@ mod tests {
     }
 
 
+    /// One second, in the cue stores' unit. The offset is set in MILLISECONDS and every cue is in
+    /// NANOSECONDS; mixing the two is how this test once put a 1 000 ns cue under a 1 s offset.
+    const SEC: i64 = 1_000_000_000;
+
+    /// A positive offset draws a cue later, a negative one earlier, by exactly the offset.
     #[test]
     fn subtitle_offset_shifts_text_lookup_in_both_directions() {
         let _g = crate::testlock::serial();
         SHARED.sub_cues.lock().unwrap().clear();
+        SHARED.playpos_ns.store(0, Relaxed);
         SHARED.desired_sub_idx.store(0, Relaxed);
         restore_subtitle_offset(0);
-        push_subtitle_text(0, 1_000, 2_000, "cue".into());
+        push_subtitle_text(0, SEC, 2 * SEC, "cue".into());
 
-        assert_eq!(active_subtitle(1_500).as_deref(), Some("cue"));
+        assert_eq!(active_subtitle(SEC + SEC / 2).as_deref(), Some("cue"));
 
         restore_subtitle_offset(1_000);
-        assert_eq!(active_subtitle(1_500), None, "positive offset delays the caption");
-        assert_eq!(active_subtitle(2_500).as_deref(), Some("cue"));
+        assert_eq!(active_subtitle(SEC + SEC / 2), None, "a positive offset delays the caption");
+        assert_eq!(active_subtitle(2 * SEC + SEC / 2).as_deref(), Some("cue"));
+        assert_eq!(active_subtitle(3 * SEC), None, "…and ends it as late as it started it");
 
         restore_subtitle_offset(-1_000);
-        assert_eq!(active_subtitle(500).as_deref(), Some("cue"));
-        assert_eq!(active_subtitle(1_500).as_deref(), Some("cue"));
+        assert_eq!(active_subtitle(SEC / 2).as_deref(), Some("cue"), "a negative one advances it");
+        assert_eq!(active_subtitle(SEC + SEC / 2), None);
 
         restore_subtitle_offset(0);
         SHARED.sub_cues.lock().unwrap().clear();
         SHARED.desired_sub_idx.store(-1, Relaxed);
+    }
+
+    /// **A delayed cue is still in the store when its moment comes.** Both stores prune cues more
+    /// than two seconds behind the playhead on every push; under a +5 s offset the cue on screen
+    /// at playhead 6.5 s is the one authored for 1.5 s, which the playhead-only floor had already
+    /// thrown away when the next cue arrived.
+    #[test]
+    fn a_delayed_cue_survives_the_prune_until_the_offset_has_shown_it() {
+        let _g = crate::testlock::serial();
+        SHARED.sub_cues.lock().unwrap().clear();
+        SHARED.sub_bitmaps.lock().unwrap().clear();
+        SHARED.desired_sub_idx.store(0, Relaxed);
+        restore_subtitle_offset(5_000);
+        SHARED.playpos_ns.store(0, Relaxed);
+        push_subtitle_text(0, SEC, 2 * SEC, "early".into());
+        push_subtitle_bitmap(0, SEC, 1920, 1080, vec![rect(0, 0, 8, 8)]);
+        close_subtitle_bitmap(0, 2 * SEC);
+
+        // the playhead reaches 6.5 s and the demuxer pushes the next cues, which prunes
+        SHARED.playpos_ns.store(6 * SEC + SEC / 2, Relaxed);
+        push_subtitle_text(0, 9 * SEC, 10 * SEC, "later".into());
+        push_subtitle_bitmap(0, 9 * SEC, 1920, 1080, vec![rect(0, 0, 8, 8)]);
+
+        let now = 6 * SEC + SEC / 2;
+        assert_eq!(active_subtitle(now).as_deref(), Some("early"), "text");
+        assert_eq!(active_bitmap_key(now), Some(SEC), "image");
+
+        restore_subtitle_offset(0);
+        SHARED.playpos_ns.store(0, Relaxed);
+        SHARED.sub_cues.lock().unwrap().clear();
+        SHARED.sub_bitmaps.lock().unwrap().clear();
+        SHARED.desired_sub_idx.store(-1, Relaxed);
+    }
+
+    /// The offset can never wrap a timestamp: the lookups saturate at both ends of `i64`, and the
+    /// setter clamps to the ±30 s the session file accepts.
+    #[test]
+    fn the_subtitle_clock_saturates_and_the_offset_clamps() {
+        let _g = crate::testlock::serial();
+        restore_subtitle_offset(30_000);
+        assert_eq!(subtitle_clock_ns(i64::MIN), i64::MIN);
+        restore_subtitle_offset(-30_000);
+        assert_eq!(subtitle_clock_ns(i64::MAX), i64::MAX);
+        restore_subtitle_offset(i64::MAX);
+        assert_eq!(subtitle_offset_ms(), 30_000);
+        restore_subtitle_offset(i64::MIN);
+        assert_eq!(subtitle_offset_ms(), -30_000);
+        restore_subtitle_offset(0);
     }
     /// The image-subtitle store, exercised as a display SET rather than a single bitmap. Three
     /// invariants moved when multi-rect landed and none of them is observable on the host except
