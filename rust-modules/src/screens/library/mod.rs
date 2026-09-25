@@ -866,10 +866,11 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                 return cx.focus.current.map_or(Handled::No, |key| self.activate(key.elem, false, cx, fx));
             }
             ScreenEvent::Input(input) => {
-                // Any key, click, drag or wheel is the reader acting at the seat. It must claim it
-                // HERE: OK-down arms a delayed press the dispatcher only commits if focus is still
-                // on its key, and this page's next Tick may run before that commit.
-                if matches!(input.kind, InputKind::Key { edge: Edge::Down, .. }
+                // Any key, pointer motion, click, drag or wheel is the reader acting at the seat.
+                // It must claim it HERE: OK-down arms a delayed press the dispatcher only commits
+                // if focus is still on its key, and this page's next Tick may run before that
+                // commit; hovering the already-focused control moves nothing, so no `FocusMoved`.
+                if matches!(input.kind, InputKind::Key { edge: Edge::Down, .. } | InputKind::Pointer { .. }
                     | InputKind::Click { .. } | InputKind::Drag { .. } | InputKind::Wheel { .. }) {
                     self.provisional = None;
                 }

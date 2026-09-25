@@ -588,3 +588,19 @@ fn a_shelf_landing_never_moves_a_seat_the_user_began_to_press() {
     land_shelves(&mut fixture, &mut page, &mut engine);
     assert_eq!(engine.current(OWNER), Some(page.key(SORT)), "a press begun on the seat keeps it");
 }
+
+/// A pointer resting on the seat is the reader's too (a Magic Remote hovers without clicking), and
+/// hovering the already-focused control moves nothing, so no `FocusMoved` would release it.
+#[test]
+fn a_shelf_landing_never_moves_a_seat_the_pointer_is_on() {
+    let _guard = crate::testlock::serial();
+    let (mut fixture, mut page, mut engine) = opened_before_its_shelves(SecKind::Movie, Opened::Pointer);
+    assert_eq!(engine.current(OWNER), Some(page.key(SORT)));
+    fixture.step(&mut page, &mut engine, ScreenEvent::Input(crate::ui::machine::InputEvent {
+        at: Tick::default(),
+        source: crate::ui::machine::Source::Sdl,
+        kind: InputKind::Pointer { x: 0.0, y: 0.0, hit: Some(SORT) },
+    }));
+    land_shelves(&mut fixture, &mut page, &mut engine);
+    assert_eq!(engine.current(OWNER), Some(page.key(SORT)), "a hovered seat is the user's");
+}
