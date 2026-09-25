@@ -1243,7 +1243,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let mut requests = Vec::new();
         while std::time::Instant::now() < deadline && requests.len() < 2 {
-            match listener.accept() {
+            match crate::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
                     let mut request = String::new();
                     let mut reader = BufReader::new(socket.try_clone().expect("clone socket"));
@@ -1880,7 +1880,7 @@ fn cold_source_preflight_uses_the_playback_identity_and_does_not_close_it() {
 
         listener.set_nonblocking(true).unwrap();
         for _ in 0..50 {
-            match listener.accept() {
+            match crate::testnet::accept(&listener) {
                 Ok((socket, _)) => {
                     let mut extra = String::new();
                     BufReader::new(socket)

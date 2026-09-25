@@ -66,7 +66,7 @@ pub(super) fn with_counting_listener(
     std::thread::scope(|sc| {
         sc.spawn(|| {
             while !stop.load(Ordering::Acquire) {
-                match srv.accept() {
+                match crate::testnet::accept(&srv) {
                     Ok((s, _)) => {
                         accepts.fetch_add(1, Ordering::AcqRel);
                         let (rq, st) = (&requests, &stop);

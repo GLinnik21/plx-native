@@ -216,13 +216,8 @@ pub(super) fn plan_pms_inner(
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
         let mut requests = Vec::new();
         while requests.len() < n && std::time::Instant::now() < deadline {
-            match listener.accept() {
+            match crate::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
-                    // The listener is nonblocking; on macOS the accepted fd inherits that,
-                    // and a parallel suite can accept before the request line is buffered.
-                    socket
-                        .set_nonblocking(false)
-                        .expect("blocking accepted socket");
                     let first = drain_http(&mut socket);
                     if start_bytes.is_some() && first.contains("/library/parts/") {
                         use std::io::Write;
@@ -301,9 +296,8 @@ pub(super) fn selection_probe_pms(
         let mut selection = (1, 9);
         let mut requests = Vec::new();
         loop {
-            match listener.accept() {
+            match crate::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
-                    socket.set_nonblocking(false).unwrap();
                     let line = drain_http(&mut socket);
                     if line.starts_with("PUT /library/parts/") {
                         selection = (

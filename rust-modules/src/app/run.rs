@@ -3199,7 +3199,7 @@ mod lifecycle_regression_tests {
             let worker = match crate::task::spawn_small_keeping("lifecycle-fixture", move || {
                 let mut first = true;
                 while !stopping.load(Ordering::Acquire) {
-                    let (mut socket, _) = match listener.accept() {
+                    let (mut socket, _) = match crate::testnet::accept(&listener) {
                         Ok(v) => v,
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(Duration::from_millis(1));
@@ -3207,10 +3207,6 @@ mod lifecycle_regression_tests {
                         }
                         Err(e) => panic!("fixture accept: {e}"),
                     };
-                    // An accepted socket inherits the listener's O_NONBLOCK on the BSDs, so a client
-                    // that connects before it writes (the timeline reporter, a detail fetch) would
-                    // read `WouldBlock` and take the fixture down with it.
-                    socket.set_nonblocking(false).unwrap();
                     socket
                         .set_read_timeout(Some(Duration::from_secs(3)))
                         .unwrap();

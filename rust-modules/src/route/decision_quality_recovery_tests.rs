@@ -997,7 +997,7 @@ fn a_remux_recovery_keeps_hls_until_frames_and_rolls_back_the_replacement() {
         }
         fn poll(listener: &std::net::TcpListener, rounds: usize, requests: &mut Vec<String>) {
             for _ in 0..rounds {
-                match listener.accept() {
+                match crate::testnet::accept(listener) {
                     Ok((mut socket, _)) => {
                         requests.push(request(&mut socket));
                         socket
@@ -1644,11 +1644,8 @@ fn an_installed_cold_direct_route_closes_its_logical_resource_at_teardown() {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let mut requests = Vec::new();
         while std::time::Instant::now() < deadline {
-            match listener.accept() {
+            match crate::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
-                    // Darwin inherits the listener's nonblocking flag on accepted sockets.
-                    // The accept deadline is not permission for read_line to race the writer.
-                    socket.set_nonblocking(false).expect("blocking request reader");
                     let timeout = Some(std::time::Duration::from_secs(20));
                     socket.set_read_timeout(timeout).expect("request timeout");
                     socket.set_write_timeout(timeout).expect("response timeout");
@@ -1936,7 +1933,7 @@ fn stopping_a_pending_direct_recovery_closes_its_resource_once() {
         while std::time::Instant::now() < hard_deadline
             && observe_until.is_none_or(|until| std::time::Instant::now() < until)
         {
-            match listener.accept() {
+            match crate::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
                     let mut reader = BufReader::new(socket.try_clone().expect("clone socket"));
                     let mut first = String::new();

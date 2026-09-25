@@ -355,13 +355,10 @@ mod tests {
                 let end = Instant::now() + Duration::from_millis(2500);
                 let mut requests = 0;
                 while Instant::now() < end {
-                    let Ok((mut socket, _)) = listener.accept() else {
+                    let Ok((mut socket, _)) = crate::testnet::accept(&listener) else {
                         std::thread::sleep(Duration::from_millis(5));
                         continue;
                     };
-                    // The accepted socket inherits the listener's O_NONBLOCK on macOS; a read that
-                    // beats the client's write would fail `WouldBlock` instead of waiting.
-                    socket.set_nonblocking(false).unwrap();
                     socket.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
                     let mut request = [0; 4096];
                     let n = socket.read(&mut request).unwrap();

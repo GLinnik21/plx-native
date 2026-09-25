@@ -1913,7 +1913,7 @@ mod tests {
         std::thread::scope(|sc| {
             sc.spawn(|| {
                 while !stop.load(Ordering::Acquire) {
-                    match srv.accept() {
+                    match crate::testnet::accept(&srv) {
                         Ok((s, _)) => {
                             // Bumped BEFORE the reply, so it is already final by the time any
                             // open against this listener can return — every assertion is causally
