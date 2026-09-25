@@ -542,8 +542,7 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // silently refuses instead of playing, exactly the ordinary Play path's own race
             // (`ContentReq::Play` in `app::content`), so this takes the same hold-until-released
             // path rather than calling `request_play`/`start_playback_with` directly.
-            super::content::halt_preview_now(ps, pa);
-            if crate::player::preview::occupies() {
+            if !super::content::clear_engine_for_play(ps, pa, super::bridge::player(pages).is_some()) {
                 super::content::hold_feature(intent, 0, None);
                 return;
             }

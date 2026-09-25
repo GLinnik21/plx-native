@@ -118,8 +118,66 @@ pub(super) fn request_play_intent(
     }
 }
 
+/// What a Play must do about the engine the session already holds before asking for its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PlayClearance {
+    /// Nothing is in the way.
+    Clear,
+    /// A preview still occupies the engine; queue the play ([`hold_feature`]).
+    Hold,
+    /// A live engine nothing owns: stop it, then play.
+    RetireOrphan,
+}
+
+/// A live engine that is neither a preview nor the player page's: every transport key and the
+/// EOS teardown are gated on the player page, so nothing will ever stop it, and the next Load
+/// meets it as "a live Engine that belongs to another Load attempt" and fails.
+pub(super) fn off_route_orphan(live: bool, preview: bool, player_mounted: bool) -> bool {
+    live && !preview && !player_mounted
+}
+
+/// Asked after [`halt_preview_now`] has already started any preview's abandonment.
+pub(super) fn play_clearance(occupies: bool, live: bool, preview: bool, player_mounted: bool) -> PlayClearance {
+    if occupies {
+        PlayClearance::Hold
+    } else if off_route_orphan(live, preview, player_mounted) {
+        PlayClearance::RetireOrphan
+    } else {
+        PlayClearance::Clear
+    }
+}
+
+/// Hand the engine back before a Play: halt a preview, then answer [`play_clearance`]. `false`
+/// means hold the play; an orphan is stopped here, so `true` always means the slot is free.
+/// Every Play reachable from a page goes through this one door.
+pub(super) fn clear_engine_for_play(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut crate::player::adapter::PlayerAdapter,
+    player_mounted: bool,
+) -> bool {
+    halt_preview_now(ps, pa);
+    match play_clearance(
+        crate::player::preview::occupies(),
+        pa.is_live(),
+        crate::route::is_preview(ps),
+        player_mounted,
+    ) {
+        PlayClearance::Hold => false,
+        PlayClearance::Clear => true,
+        PlayClearance::RetireOrphan => {
+            log("play: stopping an off-route engine nothing owns before the new Load");
+            crate::player::stop_bufferfeed(ps, pa);
+            true
+        }
+    }
+}
+
 fn drain_held_feature(app: &mut App) {
-    if crate::player::preview::occupies() {
+    if HELD_FEATURE.with(|slot| slot.borrow().is_none()) {
+        return;
+    }
+    let mounted = super::bridge::player(&app.pages).is_some();
+    if !clear_engine_for_play(&mut app.player.session, &mut app.adapters.player, mounted) {
         return;
     }
     let held = HELD_FEATURE.with(|slot| slot.borrow_mut().take());
@@ -156,6 +214,31 @@ fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
     TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
 }
 
+#[cfg(test)]
+mod play_clearance_tests {
+    use super::{off_route_orphan, play_clearance, PlayClearance};
+
+    /// Field report, 0.7.0 prep: a trailer's engine outlived its end on the detail page, and
+    /// the film's Play then failed with `start_bufferfeed: live Engine belongs to another Load
+    /// attempt`. A Play from a page must pre-empt an engine nothing owns, not fail against it.
+    #[test]
+    fn a_play_pre_empts_a_live_engine_that_no_page_owns() {
+        assert_eq!(play_clearance(false, true, false, false), PlayClearance::RetireOrphan);
+        assert!(off_route_orphan(true, false, false));
+    }
+
+    #[test]
+    fn a_play_holds_for_a_preview_and_leaves_the_player_engine_alone() {
+        // A preview still abandoning its Load: hold, never stop it from here.
+        assert_eq!(play_clearance(true, true, true, false), PlayClearance::Hold);
+        // The player page owns its engine; a page over it is not a reason to stop it.
+        assert_eq!(play_clearance(false, true, false, true), PlayClearance::Clear);
+        assert!(!off_route_orphan(true, false, true));
+        // A live preview is the preview's, whatever the machine says.
+        assert!(!off_route_orphan(true, true, false));
+        assert_eq!(play_clearance(false, false, false, false), PlayClearance::Clear);
+    }
+}
 
 #[cfg(test)]
 mod held_feature_tests {
@@ -387,8 +470,8 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
             // answers it itself, over the entry a `Pop` would reveal (`NavStack::continuous_for`).
             ContentReq::Back => bridge::nav_pop_with_return(&mut app.pages, ret),
             ContentReq::Play { play, resume_ns } => {
-                halt_preview(app);
-                if crate::player::preview::occupies() {
+                let mounted = bridge::player(&app.pages).is_some();
+                if !clear_engine_for_play(&mut app.player.session, &mut app.adapters.player, mounted) {
                     hold_feature(play, resume_ns, Some(ret));
                     continue;
                 }

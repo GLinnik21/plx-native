@@ -1352,8 +1352,12 @@ fn playback_may_run(app: &App) -> bool {
 /// poll, the reporter, EOS / Up Next, the hub refresh, the held key, the scrubber and the paused
 /// seek — everything that reads `fr.now` and no `dt`.
 pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
-        if playback_may_run(app) && is_started() {
-            crate::player::pump(&mut app.player.session, &mut app.adapters.player, fr.now);
+        if playback_may_run(app) {
+            if is_started() {
+                crate::player::pump(&mut app.player.session, &mut app.adapters.player, fr.now);
+            }
+            // Outside `is_started`: a refused preview landing or a stale machine has no engine,
+            // and is exactly what must still be settled back to Idle.
             crate::player::preview::after_pump(
                 &mut app.player.session,
                 &mut app.adapters.player,
@@ -1409,6 +1413,18 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             // the navigation (applied at the next commit), so the route still reads `Player` here
             // even on a real exit — the return value is the only live signal for it this frame.
             crate::dev::scenarios::maybe_replay_after_eos(app, handed_off_to_up_next);
+        } else if playback_may_run(app)
+            && crate::player::ended()
+            && super::content::off_route_orphan(
+                app.adapters.player.is_live(),
+                crate::route::is_preview(&app.player.session),
+                super::bridge::player(&app.pages).is_some(),
+            )
+        {
+            // The same end with no player page to leave: nothing else would ever stop this
+            // engine, and its reporter would keep posting the final position forever.
+            log("EOS: stopping an off-route engine nothing owns");
+            crate::player::stop_bufferfeed(&mut app.player.session, &mut app.adapters.player);
         }
         // Up Next countdown elapsed → start the queued episode on its own. Beside the EOS
         // handoff so the whole auto-advance chain reads in one place.
@@ -2025,6 +2041,19 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                 }
                 if let Some(r) = crate::route::pump_play(&mut app.player.session, app.bridge.metadata_mut()) {
                     crate::ui::idle::invalidate();
+                    // A preview landing nobody is waiting for any more (the page halted it while
+                    // the resolve was in flight) must not start an engine: nothing would track
+                    // it, so nothing would stop it at its end or hand the engine to a later Play.
+                    if crate::route::is_preview(&app.player.session)
+                        && !crate::player::preview::expects_landing()
+                    {
+                        if let Some(transaction) = crate::route::pending_route_start() {
+                            let _ = crate::route::reject_route_start_preparation(transaction);
+                        }
+                        crate::player::stop_bufferfeed(&mut app.player.session, &mut app.adapters.player);
+                        crate::route::clear_preview(&mut app.player.session);
+                        return;
+                    }
                     let resume_prepared = r <= 0
                         || matches!(
                             crate::player::resume_at(&mut app.player.session, r),
