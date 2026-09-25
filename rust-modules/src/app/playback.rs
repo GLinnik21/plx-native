@@ -206,11 +206,16 @@ pub(crate) fn enter_player(
     from: Origin,
     ret: Option<crate::ui::screen::ReturnState<u32, crate::screens::registry::PageMemory>>,
 ) {
+    // …or already on its way: a Play inside the push's own dip-out finds the page it pressed on
+    // still the committed top, and re-seeding from it would leave a seed no mount ever spends
+    // (the pending push is inert against its twin, `NavStack::is_inert`) for the next player
+    // mount to pick up as its origin.
     let already_up = pages
         .nav
         .top_page()
         .map(|e| matches!(e.arg, AppArg::Player))
-        .unwrap_or(false);
+        .unwrap_or(false)
+        || matches!(pages.nav.tabs.stack.pending_dest(), Some(AppArg::Player));
     if already_up {
         return;
     }
@@ -1442,6 +1447,44 @@ mod player_return_tests {
             p.top_entry(),
             show,
             "four auto-advances later, still the show page",
+        );
+        crate::plex::reset_servers_for_test();
+    }
+
+    /// **The push is the product's dip, and the player is asked for twice inside it** — once by
+    /// the Play press, once by a second Play (or the plan's landing) before the floor. The page
+    /// the user pressed on is still the committed top for that whole window, so the second ask
+    /// must neither prepare a fresh player that has lost the origin nor re-seed one that no mount
+    /// will ever spend: the session still returns to the detail page, and the NEXT player mount
+    /// that nobody seeded (`show_page(Player)`'s foreground restore) inherits nothing.
+    #[test]
+    fn a_second_play_inside_the_push_keeps_the_origin_and_leaves_no_seed() {
+        let _serial = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("player-return-dip");
+        let mut p = Pages::new();
+        p.d.nav.tabs.stack.transition = Box::new(crate::ui::containers::transition::PageDip::new());
+        p.stand_on(AppArg::Home);
+        p.stand_on(detail(A, "7"));
+        let page = p.top_entry();
+        enter_player(&mut p.d, &mut p.rig, Origin::Here, None);
+        p.t += 16;
+        bridge::frame(&mut p.d, &mut p.rig, tick(p.t), vec![]);
+        assert!(
+            p.d.nav.tabs.stack.pending_target_mut().is_some_and(|e| e.inst.is_some()),
+            "premise: the dip-out has prepared the player",
+        );
+        p.play(Origin::Here);
+        assert!(matches!(p.top(), AppArg::Player));
+        assert_eq!(p.d.nav.tabs.stack.depth(), 3, "one player, not two");
+        p.back_out();
+        assert_eq!(p.top_entry(), page, "the session came back to the detail page");
+
+        bridge::show_page(&mut p.d, AppArg::Player);
+        p.settle();
+        assert_eq!(
+            bridge::player(&p.d).and_then(|player| player.origin).map(|o| o.entry),
+            None,
+            "an unseeded player mount inherits no origin from the earlier session",
         );
         crate::plex::reset_servers_for_test();
     }

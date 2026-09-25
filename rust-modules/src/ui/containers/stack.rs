@@ -170,14 +170,22 @@ impl<H: Host> NavStack<H> {
     ///
     /// A *different* pending op is never inert this way: the newest request still replaces it
     /// (sign-out and a profile switch depend on newest-wins over whatever the previous frame
-    /// parked). Only `Root`/`SelectTab`/`PopTo` are covered — the three the redundant per-frame
-    /// followers in `app/run.rs` actually ask for; `Push`/`Replace`/`Present`/`Pop`/`Dismiss`/
-    /// `Cancel` are never asked twice in a row for the same reason, so they are never inert here.
+    /// parked). `Root`/`SelectTab`/`PopTo` are the three the redundant per-frame followers in
+    /// `app/run.rs` ask for. `Push`/`Replace` are the two that MINT a destination, and a repeat of
+    /// one while it is pending is a landing re-asking for the page it is already waiting on — the
+    /// player pushed by `start_playback`, then again by `update`'s plan landing while the route
+    /// still names the page under the dip. Replacing the pending op there would drop the body the
+    /// dip-out already prepared ([`Self::stage_pending_target`]) and prepare a fresh one, and the
+    /// prepared mount is where a screen spends its one-shot seed: the replacement mounts WITHOUT
+    /// it (a player with no origin, which is how BACK from a film landed on Home).
+    /// `Present`/`Pop`/`Dismiss`/`Cancel` are never inert here.
     fn is_inert(&self, op: &NavOp<H::Arg>) -> bool {
         if let Some(p) = &self.pending {
             return match (&p.op, op) {
                 (NavOp::Root(a), NavOp::Root(b)) => a.same_instance(b),
                 (NavOp::SelectTab(a), NavOp::SelectTab(b)) => a.same_instance(b),
+                (NavOp::Push(a), NavOp::Push(b)) => a.same_instance(b),
+                (NavOp::Replace(a), NavOp::Replace(b)) => a.same_instance(b),
                 (NavOp::PopTo(a), NavOp::PopTo(b)) => a == b,
                 _ => false,
             };

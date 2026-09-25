@@ -3180,6 +3180,12 @@ mod lifecycle_regression_tests {
         /// substitution was reverted before committing; the host's real thread budget was never
         /// actually exhausted, so this is a SIMULATED red, not an observed historical one.
         fn new() -> Option<Rig> {
+            Self::serving(true)
+        }
+
+        /// `successor: false` serves a one-row queue — a film, with no Up Next to hand off to — so
+        /// an end of stream leaves the player instead of starting the next item.
+        fn serving(successor: bool) -> Option<Rig> {
             crate::plex::reset_servers_for_test();
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
@@ -3201,6 +3207,10 @@ mod lifecycle_regression_tests {
                         }
                         Err(e) => panic!("fixture accept: {e}"),
                     };
+                    // An accepted socket inherits the listener's O_NONBLOCK on the BSDs, so a client
+                    // that connects before it writes (the timeline reporter, a detail fetch) would
+                    // read `WouldBlock` and take the fixture down with it.
+                    socket.set_nonblocking(false).unwrap();
                     socket
                         .set_read_timeout(Some(Duration::from_secs(3)))
                         .unwrap();
@@ -3227,6 +3237,16 @@ mod lifecycle_regression_tests {
                     }
                     let body = if request.contains("/decision?") {
                         r#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"directplay"}]}]}]}}"#
+                    } else if !successor {
+                        r#"{"MediaContainer":{"machineIdentifier":"lifecycle-fixture","size":1,
+                        "playQueueID":1,"playQueueSelectedItemID":11,"playQueueTotalCount":1,
+                        "Metadata":[
+                        {"ratingKey":"1","playQueueItemID":11,"type":"movie","title":"First",
+                         "duration":60000,
+                         "Media":[{"videoCodec":"h264","audioCodec":"aac","width":1280,"height":720,
+                         "Part":[{"id":1,"key":"/library/parts/1/file.mkv","Stream":[
+                         {"id":1,"streamType":1,"codec":"h264"},
+                         {"id":2,"streamType":2,"codec":"aac","selected":true}]}]}]}]}}"#
                     } else {
                         r#"{"MediaContainer":{"machineIdentifier":"lifecycle-fixture","size":2,
                         "playQueueID":1,"playQueueSelectedItemID":11,"playQueueTotalCount":2,
@@ -3640,5 +3660,160 @@ mod lifecycle_regression_tests {
         assert!(!crate::route::play_pending());
         assert_eq!(rig.app.player.lifecycle.state, ForegroundState::Idle);
         assert!(crate::route::has_url(&rig.app.player.session));
+    }
+
+    /// One loop iteration's navigation-bearing phases, in `run`'s order: the playback tick (EOS),
+    /// the container's frame, the post-player restore, the drained requests and `update` (where a
+    /// resolved plan lands).
+    use crate::ui::screen::ScreenArg;
+
+    fn step(app: &mut App, t: &mut u32, inputs: Vec<crate::ui::machine::InputEvent<u32>>) {
+        *t += 16;
+        app.inputs.extend(inputs);
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        fr.now = *t;
+        fr.dt = 0.016;
+        let was_player = super::super::bridge::player(&app.pages).is_some();
+        unsafe { playback_tick(app, &mut fr); }
+        super::super::bridge::frame(&mut app.pages, &mut app.bridge,
+            crate::ui::machine::Tick { ms: *t, dt_us: 16_000 }, std::mem::take(&mut app.inputs));
+        if was_player && super::super::bridge::player(&app.pages).is_none() {
+            restore_played_entry(app);
+        }
+        content_requests(app, &fr);
+        loop_requests(app);
+        unsafe { update(app, &mut fr); }
+    }
+
+    /// The page stack on the transition `boot.rs` builds it with. `app()`'s dispatcher commits
+    /// immediately, and an immediate commit never has a dip-out to prepare a destination in —
+    /// which is the whole window the tests below are about. Returns the frame clock's start.
+    fn product_transition(app: &mut App) -> u32 {
+        app.pages.nav.tabs.stack.transition =
+            Box::new(crate::ui::containers::transition::PageDip::new());
+        0
+    }
+
+    fn settle(app: &mut App, t: &mut u32) {
+        for _ in 0..24 {
+            step(app, t, vec![]);
+        }
+    }
+
+    /// **Press Play, and let the plan land INSIDE the player push's dip-out** — the order the
+    /// television produces whenever the resolve is quicker than the 140 ms fade. `start_playback`
+    /// pushes the player while the plan is still resolving; the next frame's dip-out PREPARES the
+    /// destination (`NavStack::stage_pending_target`), which mounts the player and so consumes its
+    /// origin seed; and when the plan then lands, the committed route still names the page under
+    /// the dip, so `update`'s landing arm asks for the player a second time (`pump_play: engine
+    /// started off-route`). Returns the entry the session was launched from.
+    fn play_with_a_landing_inside_the_dip(rig: &mut Rig, t: &mut u32) -> crate::ui::machine::EntryId {
+        let origin = rig.app.pages.nav.top_page().expect("a page is on top").id;
+        rig.request();
+        rig.accept_start();
+        assert!(crate::route::play_pending(), "the plan is still resolving");
+        step(&mut rig.app, t, vec![]);
+        assert!(super::super::bridge::player(&rig.app.pages).is_none(), "the push has not committed");
+        assert!(
+            rig.app.pages.nav.tabs.stack.pending_target_mut().is_some_and(|e| e.inst.is_some()),
+            "premise: the dip-out has already prepared the player it is pushing",
+        );
+        rig.release.send(()).unwrap();
+        poll_until("the plan did not land through update", || {
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+            fr.now = *t;
+            unsafe { update(&mut rig.app, &mut fr); }
+            rig.app.adapters.player.is_live()
+        });
+        settle(&mut rig.app, t);
+        assert!(super::super::bridge::player(&rig.app.pages).is_some(), "the player is on top");
+        origin
+    }
+
+    /// BACK as the remote spells it (ESC — the dev remote's own spelling of BACK in the field
+    /// report): the player classifies `sym`/`wcode`, not the fixture's `Key`.
+    fn back_key(ms: u32) -> crate::ui::machine::InputEvent<u32> {
+        let mut event = crate::ui::fixture::key(crate::ui::machine::Key::Back, crate::ui::fixture::tick(ms));
+        if let crate::ui::machine::InputKind::Key { sym, .. } = &mut event.kind {
+            *sym = crate::ui::consts::SDLK_ESCAPE;
+        }
+        event
+    }
+
+    fn detail_arg(sid: crate::plex::ServerId) -> AppArg {
+        AppArg::Content(crate::screens::registry::ContentArg::Detail { sid, rk: "1".into() })
+    }
+
+    /// Field report: Home → a detail page → Play → BACK landed on HOME. BACK must land on the
+    /// detail page the film was started from — the same entry, not a fresh copy of it.
+    #[test]
+    fn back_from_the_player_returns_to_the_detail_page_it_was_started_from() {
+        let _serial = crate::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else {
+            eprintln!("SKIPPED back_from_the_player_returns_to_the_detail_page_it_was_started_from: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        super::super::bridge::open_detail(&mut rig.app.pages, &mut rig.app.bridge, rig.sid, "1", None, None);
+        settle(&mut rig.app, &mut t);
+        let origin = play_with_a_landing_inside_the_dip(&mut rig, &mut t);
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        settle(&mut rig.app, &mut t);
+        assert!(
+            rig.app.route().same_instance(&detail_arg(rig.sid)),
+            "BACK from the player landed on {:?}, not the detail page",
+            rig.app.route().id(),
+        );
+        assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin));
+    }
+
+    /// The same session drained to its end with nothing queued after it: `finish_playback` leaves
+    /// through `exit_player`, so an end of stream lands where BACK and Stop do — the page the
+    /// session was launched from (§5.1), not Home.
+    #[test]
+    fn an_end_of_stream_without_up_next_returns_to_the_detail_page() {
+        let _serial = crate::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else {
+            eprintln!("SKIPPED an_end_of_stream_without_up_next_returns_to_the_detail_page: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        super::super::bridge::open_detail(&mut rig.app.pages, &mut rig.app.bridge, rig.sid, "1", None, None);
+        settle(&mut rig.app, &mut t);
+        let origin = play_with_a_landing_inside_the_dip(&mut rig, &mut t);
+        assert!(crate::route::up_next(&rig.app.player.session).is_none(), "a film: nothing queued");
+        crate::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
+        settle(&mut rig.app, &mut t);
+        assert!(
+            rig.app.route().same_instance(&detail_arg(rig.sid)),
+            "end of stream landed on {:?}, not the detail page",
+            rig.app.route().id(),
+        );
+        assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin));
+    }
+
+    /// A Continue Watching tile plays straight from Home with no detail page in between, so the
+    /// page the session returns to is Home itself — the same entry, with its memory.
+    #[test]
+    fn back_from_a_session_started_on_home_returns_to_home() {
+        let _serial = crate::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else {
+            eprintln!("SKIPPED back_from_a_session_started_on_home_returns_to_home: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        let origin = play_with_a_landing_inside_the_dip(&mut rig, &mut t);
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        settle(&mut rig.app, &mut t);
+        assert!(matches!(rig.app.route(), AppArg::Home));
+        assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin));
     }
 }
