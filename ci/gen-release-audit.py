@@ -188,8 +188,8 @@ def sha256(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
-def row(k: str, v: str) -> str:
-    return f"| {k} | {v} |"
+def row(*cells: str) -> str:
+    return f"| {' | '.join(cells)} |"
 
 
 def table(rows: list[str], head: tuple[str, ...] = ("", "")) -> str:
@@ -502,7 +502,7 @@ def generate(args) -> str:
             needed = ", ".join(f"`{n}`" for n in e.get("needed", [])) or "—"
             rows.append(row(f"`{name.rsplit('/', 1)[-1]}`",
                             f"SONAME `{e.get('soname') or '?'}`, {human(len(data))} bytes, "
-                            f"sha256 `{sha256(data)[:16]}` | {needed}"))
+                            f"sha256 `{sha256(data)[:16]}`", needed))
         out.append("Shared libraries shipped **beside** the binary and opened by absolute path out "
                    "of the app's own directory, so they can neither shadow nor be shadowed by the "
                    "television's own FFmpeg. Their `DT_NEEDED` entries that are not shipped here "

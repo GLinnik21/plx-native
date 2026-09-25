@@ -233,6 +233,11 @@ def split_shipped(needed, shipped_dir):
     is the package's own and is taken off the firmware's list, and what that file exports counts as
     resolved; everything else still has to come from the television. Each shipped library is graded
     on its own run, so its dependencies are not skipped, only not graded twice.
+
+    DIR is trusted to be the payload: a name is "shipped" because a file of that name sits there,
+    not because the .ipk carries it. CI's `pkg/` is exactly the staged payload; a local `pkg/` with
+    leftovers from another build (a debug `libswscale-plx` beside a RELEASE=1 build) would credit a
+    library the package does not ship.
     """
     if not shipped_dir:
         return needed, set()
