@@ -51,7 +51,7 @@ fn a_stalled_discovery_retries_discovery_rather_than_minting_a_new_qr() {
 #[test]
 fn a_worse_candidate_finishing_last_never_downgrades_the_winner() {
     let plan = race_plan();
-    let dial: ProbeDial = Arc::new(|origin, _, _| {
+    let dial: ProbeDial = status_dial(|origin, _, _| {
         if origin.host().starts_with("203-") {
             std::thread::sleep(Duration::from_millis(30));
         }
@@ -82,7 +82,7 @@ fn a_worse_candidate_finishing_last_never_downgrades_the_winner() {
 fn a_better_candidate_finishing_last_causes_exactly_one_final_repoint() {
     let mut plan = race_plan();
     plan.candidates.swap(0, 1); // remote launches first; local remains the better score
-    let dial: ProbeDial = Arc::new(|origin, _, _| {
+    let dial: ProbeDial = status_dial(|origin, _, _| {
         if origin.host().starts_with("192-") {
             std::thread::sleep(Duration::from_millis(30));
         }
@@ -109,7 +109,7 @@ fn a_better_candidate_finishing_last_causes_exactly_one_final_repoint() {
 #[test]
 fn one_refused_spawn_still_settles_on_the_worker_that_exists() {
     let plan = race_plan();
-    let dial: ProbeDial = Arc::new(|_, _, _| (200, identity_json("race-machine")));
+    let dial: ProbeDial = status_dial(|_, _, _| (200, identity_json("race-machine")));
     let spawn = |index: usize, job: ProbeJob| {
         if index == 0 {
             false
@@ -129,7 +129,7 @@ fn one_refused_spawn_still_settles_on_the_worker_that_exists() {
 #[test]
 fn all_refused_spawns_terminate_as_failure() {
     let plan = race_plan();
-    let dial: ProbeDial = Arc::new(|_, _, _| panic!("a refused job must never run"));
+    let dial: ProbeDial = status_dial(|_, _, _| panic!("a refused job must never run"));
     let mut activations = 0;
     let reach =
         probe_server_racing(&plan, dial, &|_, _| false, test_policy(), &mut |_, _, _| {
@@ -156,7 +156,7 @@ fn relay_is_dialled_only_after_every_nonrelay_candidate_settles() {
     });
     let seen = Arc::new(Mutex::new(Vec::new()));
     let seen_by_dial = Arc::clone(&seen);
-    let dial: ProbeDial = Arc::new(move |origin, _, _| {
+    let dial: ProbeDial = status_dial(move |origin, _, _| {
         seen_by_dial.lock().unwrap().push(origin.host().to_string());
         if origin.host() == "relay.example.test" {
             (200, identity_json("race-machine"))
@@ -195,7 +195,7 @@ fn relay_only_server_gets_a_fresh_probe_budget_after_direct_timeouts_and_is_admi
     };
     let relay_budgets = Arc::new(Mutex::new(Vec::new()));
     let relay_budgets_at_dial = Arc::clone(&relay_budgets);
-    let dial: ProbeDial = Arc::new(move |origin, _, budget| {
+    let dial: ProbeDial = status_dial(move |origin, _, budget| {
         if origin.host() == "relay.example.test" {
             relay_budgets_at_dial.lock().unwrap().push(budget);
             if budget == policy.remote {
@@ -242,7 +242,7 @@ fn a_reachable_relay_beats_a_direct_proxy_401() {
         ipv6: false,
         credential_eligible: true,
     });
-    let dial: ProbeDial = Arc::new(|origin, _, _| {
+    let dial: ProbeDial = status_dial(|origin, _, _| {
         if origin.host() == "relay.example.test" {
             (200, identity_json("race-machine"))
         } else {
@@ -307,7 +307,7 @@ fn a_direct_401_remains_the_reason_when_relay_is_silent() {
         ipv6: false,
         credential_eligible: true,
     });
-    let dial: ProbeDial = Arc::new(|origin, _, _| {
+    let dial: ProbeDial = status_dial(|origin, _, _| {
         if origin.host() == "relay.example.test" {
             (0, Vec::new())
         } else {
@@ -330,7 +330,7 @@ fn a_direct_401_remains_the_reason_when_relay_is_silent() {
 fn an_on_time_result_queued_before_the_deadline_survives_coordinator_delay() {
     let mut plan = race_plan();
     plan.candidates.truncate(1);
-    let dial: ProbeDial = Arc::new(|_, _, _| (200, identity_json("race-machine")));
+    let dial: ProbeDial = status_dial(|_, _, _| (200, identity_json("race-machine")));
     let spawn = |_: usize, job: ProbeJob| {
         job();
         std::thread::sleep(Duration::from_millis(20));
@@ -347,7 +347,7 @@ fn an_on_time_result_queued_before_the_deadline_survives_coordinator_delay() {
 #[test]
 fn a_late_local_result_is_ignored_while_a_remote_deadline_remains_live() {
     let plan = race_plan();
-    let dial: ProbeDial = Arc::new(|origin, _, _| {
+    let dial: ProbeDial = status_dial(|origin, _, _| {
         if origin.host().starts_with("192-") {
             std::thread::sleep(Duration::from_millis(25));
         } else {
@@ -372,7 +372,7 @@ fn a_late_local_result_is_ignored_while_a_remote_deadline_remains_live() {
 #[test]
 fn a_verified_reachable_candidate_wins_over_a_parallel_401() {
     let plan = race_plan();
-    let dial: ProbeDial = Arc::new(|origin, _, _| {
+    let dial: ProbeDial = status_dial(|origin, _, _| {
         if origin.host().starts_with("192-") {
             (401, Vec::new())
         } else {
@@ -417,7 +417,7 @@ fn under_allow_plaintext_the_lan_twin_wins_and_relay_is_never_dialled() {
     });
     let seen = Arc::new(Mutex::new(Vec::new()));
     let seen_by_dial = Arc::clone(&seen);
-    let dial: ProbeDial = Arc::new(move |origin, _, _| {
+    let dial: ProbeDial = status_dial(move |origin, _, _| {
         seen_by_dial.lock().unwrap().push(origin.host().to_string());
         if origin.host() == "192.0.2.10" {
             (200, identity_json("race-machine"))
@@ -458,7 +458,7 @@ fn insecure_only_outranks_a_refusal() {
         ipv6: false,
         credential_eligible: false,
     };
-    let dial: ProbeDial = Arc::new(|origin, _, _| {
+    let dial: ProbeDial = status_dial(|origin, _, _| {
         if origin.host() == "192.0.2.10" {
             (200, identity_json("race-machine")) // verified, but ineligible
         } else {
@@ -473,7 +473,7 @@ fn insecure_only_outranks_a_refusal() {
         &mut |_, _, _| {},
     );
     assert!(
-        matches!(reach, Reach::InsecureOnly(_)),
+        matches!(reach, Reach::InsecureOnly(..)),
         "a verified plaintext answer must outrank a parallel 401"
     );
 }
@@ -494,7 +494,7 @@ fn a_late_eligible_answer_after_an_early_plaintext_one_becomes_first_and_activat
         ipv6: false,
         credential_eligible: false,
     };
-    let dial: ProbeDial = Arc::new(|origin, _, _| {
+    let dial: ProbeDial = status_dial(|origin, _, _| {
         if origin.host() == "192.0.2.10" {
             (200, identity_json("race-machine")) // instant, but ineligible
         } else {
@@ -554,7 +554,7 @@ fn under_https_only_every_activation_and_every_reach_at_origin_is_tls() {
 
     assert_case(
         &race_plan(),
-        Arc::new(|origin, _, _| {
+        status_dial(|origin, _, _| {
             if origin.host().starts_with("192-") {
                 (200, identity_json("race-machine"))
             } else {
@@ -564,7 +564,7 @@ fn under_https_only_every_activation_and_every_reach_at_origin_is_tls() {
     );
     assert_case(
         &probe::plan(&issue_95_account(true), CredentialPolicy::HttpsOnly),
-        Arc::new(issue_95_dial),
+        status_dial(issue_95_dial),
     );
     assert!(
         activated_total > 0,
@@ -661,7 +661,7 @@ fn issue_95_a_plaintext_only_winner_must_not_be_reach_at_and_must_not_starve_the
     let plan = probe::plan(&issue_95_account(true), CredentialPolicy::HttpsOnly);
     let seen = Arc::new(Mutex::new(Vec::new()));
     let seen_by_dial = Arc::clone(&seen);
-    let dial: ProbeDial = Arc::new(move |origin, pin, budget| {
+    let dial: ProbeDial = status_dial(move |origin, pin, budget| {
         seen_by_dial.lock().unwrap().push(origin.log_form());
         issue_95_dial(origin, pin, budget)
     });
@@ -711,7 +711,7 @@ fn issue_95_a_plaintext_only_winner_must_not_be_reach_at_and_must_not_starve_the
 #[test]
 fn issue_95_resolve_roster_only_ever_records_an_https_origin() {
     let resources = vec![issue_95_account(true)];
-    let dial: ProbeDial = Arc::new(issue_95_dial);
+    let dial: ProbeDial = status_dial(issue_95_dial);
     let mut probe_one = |plan: &ProbePlan| {
         probe_server_racing(
             plan,
@@ -748,7 +748,7 @@ fn issue_95_resolve_roster_only_ever_records_an_https_origin() {
 #[test]
 fn issue_95_without_a_relay_a_plaintext_only_answer_is_not_reached() {
     let resources = vec![issue_95_account(false)];
-    let dial: ProbeDial = Arc::new(issue_95_dial);
+    let dial: ProbeDial = status_dial(issue_95_dial);
     let mut probe_one = |plan: &ProbePlan| {
         probe_server_racing(
             plan,
@@ -781,29 +781,29 @@ fn issue_95_without_a_relay_a_plaintext_only_answer_is_not_reached() {
 #[test]
 fn resolved_none_insecure_outranks_refused_and_every_other_shape_is_unchanged() {
     assert!(matches!(
-        resolved_without_roster(Resolved::NoServers),
-        Err(Discovery::NoServers)
+        resolved_without_roster(Resolved::NoServers { resources: 0 }, DiscoveryTrigger::Login),
+        Err(Discovery::NoServers(_))
     ));
     assert!(matches!(
-        resolved_without_roster(Resolved::None { refused: true, insecure: false }),
+        resolved_without_roster(Resolved::None { refused: true, insecure: false, evidence: None }, DiscoveryTrigger::Login),
         Err(Discovery::Refused)
     ));
     assert!(matches!(
-        resolved_without_roster(Resolved::None { refused: false, insecure: false }),
+        resolved_without_roster(Resolved::None { refused: false, insecure: false, evidence: None }, DiscoveryTrigger::Login),
         Err(Discovery::Silent(None))
     ));
     assert!(
         matches!(
-            resolved_without_roster(Resolved::None { refused: true, insecure: true }),
-            Err(Discovery::InsecureOnly)
+            resolved_without_roster(Resolved::None { refused: true, insecure: true, evidence: None }, DiscoveryTrigger::Login),
+            Err(Discovery::InsecureOnly(_))
         ),
         "a verified plaintext answer outranks a parallel/proxy 401"
     );
     assert!(matches!(
-        resolved_without_roster(Resolved::None { refused: false, insecure: true }),
-        Err(Discovery::InsecureOnly)
+        resolved_without_roster(Resolved::None { refused: false, insecure: true, evidence: None }, DiscoveryTrigger::Login),
+        Err(Discovery::InsecureOnly(_))
     ));
-    assert!(matches!(resolved_without_roster(Resolved::Reached(vec![])), Ok(v) if v.is_empty()));
+    assert!(matches!(resolved_without_roster(Resolved::Reached(vec![]), DiscoveryTrigger::Login), Ok(v) if v.is_empty()));
 }
 
 /// Sign-in and rediscovery must say the SAME sentence for the SAME verdict — the whole point
@@ -858,7 +858,7 @@ fn a_pinned_lan_https_candidate_wins_and_the_relay_is_never_dialled() {
     let plan = probe::plan(&issue_95_account(true), CredentialPolicy::HttpsOnly);
     let seen = Arc::new(Mutex::new(Vec::new()));
     let seen_by_dial = Arc::clone(&seen);
-    let dial: ProbeDial = Arc::new(move |origin, pin, budget| {
+    let dial: ProbeDial = status_dial(move |origin, pin, budget| {
         seen_by_dial.lock().unwrap().push(origin.log_form());
         issue_95_dial_pinned(origin, pin, budget)
     });
@@ -897,7 +897,7 @@ fn a_pinned_lan_https_candidate_wins_and_the_relay_is_never_dialled() {
 #[test]
 fn a_pinned_winner_is_recorded_as_the_plex_direct_origin_not_the_dialled_address() {
     let resources = vec![issue_95_account(true)];
-    let dial: ProbeDial = Arc::new(issue_95_dial_pinned);
+    let dial: ProbeDial = status_dial(issue_95_dial_pinned);
     let mut probe_one = |plan: &ProbePlan| {
         probe_server_racing(
             plan,
@@ -980,7 +980,7 @@ fn e2e95_resource(lan_port: u16, dead_port: u16, relay_port: Option<u16>) -> Res
 
 /// **The real curl/TLS stack reaches the pinned HTTPS LAN candidate and never activates its
 /// plaintext twin.** Issue #95's shape, driven through the PRODUCTION dial
-/// (`get_identity` → `crate::http::request_probe` → `crate::net::request_result`) rather
+/// (`get_identity` → `crate::http::request_probe` → `crate::net::request_result_evidence`) rather
 /// than a fake [`ProbeDial`] closure: a loopback double
 /// ([`crate::net::spawn_dual_protocol`]) answers the SAME `/identity` body over
 /// both a real TLS handshake (against a minted self-signed cert curl is told to trust via
@@ -1144,11 +1144,11 @@ fn e2e_real_curl_tls_failure_with_a_verified_plaintext_answer_yields_insecure_on
             assert!(*insecure, "the plaintext twin verified this machine and must be recorded insecure");
         }
         Resolved::Reached(_) => panic!("expected Resolved::None{{insecure:true}}, got a Reached roster"),
-        Resolved::NoServers => panic!("expected Resolved::None{{insecure:true}}, got NoServers"),
+        Resolved::NoServers { .. } => panic!("expected Resolved::None{{insecure:true}}, got NoServers"),
     }
     assert!(matches!(
-        resolved_without_roster(resolved),
-        Err(Discovery::InsecureOnly)
+        resolved_without_roster(resolved, DiscoveryTrigger::Login),
+        Err(Discovery::InsecureOnly(Some(_)))
     ));
 }
 
@@ -1179,7 +1179,7 @@ fn a_candidate_whose_label_does_not_encode_its_own_address_gets_no_pin() {
     };
     let seen_pin: Arc<Mutex<Option<Option<crate::plex::ResolvePin>>>> = Arc::new(Mutex::new(None));
     let seen_pin_by_dial = Arc::clone(&seen_pin);
-    let dial: ProbeDial = Arc::new(move |_origin, pin, _budget| {
+    let dial: ProbeDial = status_dial(move |_origin, pin, _budget| {
         *seen_pin_by_dial.lock().unwrap() = Some(pin.cloned());
         (200, identity_json("mismatch-machine"))
     });
@@ -1879,7 +1879,7 @@ fn the_three_empty_outcomes_are_distinguished() {
     .unwrap();
     assert!(matches!(
         resolve_roster(&players, &[], CredentialPolicy::HttpsOnly, &|_| (0, Vec::new())),
-        Resolved::NoServers
+        Resolved::NoServers { .. }
     ));
 
     // servers that simply do not answer
@@ -2000,4 +2000,184 @@ fn a_sign_in_roster_carries_plex_tvs_household_evidence_verbatim() {
         [("aaaa1111", true, false, 0), ("bbbb2222", false, false, 987_654)],
         "`ownerId:null` is 0 and never matches a household member; the share names its owner",
     );
+}
+
+// ---- PLX-NATIVE-10: an insecure-only verdict carries the evidence that explains it ----
+
+/// Race `resource` through the production coordinator with `dial`, then fold the one-server
+/// roster exactly as sign-in does — the path whose `Discovery` the incident is built from.
+fn insecure_verdict(resource: Resource, dial: ProbeDial) -> Discovery {
+    let resources = vec![resource];
+    let mut probe_one = |plan: &ProbePlan| {
+        probe_server_racing(plan, Arc::clone(&dial), &threaded_spawn, test_policy(),
+            &mut |_, _, _| {})
+    };
+    let resolved = resolve_roster_using(&resources, &[], CredentialPolicy::HttpsOnly,
+        &mut probe_one, &mut || {}, &mut |_, _, _, _| {});
+    resolved_without_roster(resolved, DiscoveryTrigger::Login)
+        .err()
+        .expect("nothing credential-eligible verified, so discovery must fail")
+}
+
+fn insecure_evidence_of(d: &Discovery) -> probe::InsecureEvidence {
+    let Discovery::InsecureOnly(Some(evidence)) = d else {
+        panic!("expected an insecure-only verdict with probe evidence");
+    };
+    let (_, incident) = discovery_failure(d).expect("an insecure-only verdict is a failure");
+    assert_eq!(incident.insecure, Some(*evidence), "the incident carries the verdict's evidence");
+    *evidence
+}
+
+fn timed_out() -> crate::net::RequestFailure {
+    crate::net::RequestFailure {
+        cause: crate::net::RequestError::TimedOut, status: None, body_limit: None, curl_rc: Some(28),
+    }
+}
+
+fn transport_rc(rc: i32) -> crate::net::RequestFailure {
+    crate::net::RequestFailure {
+        cause: crate::net::RequestError::Transport, status: None, body_limit: None, curl_rc: Some(rc),
+    }
+}
+
+/// Our own server with every HTTPS route plex.tv can advertise — a LAN `plex.direct` name, a
+/// public `plex.direct` name, a custom access URL and a relay — plus the LAN plaintext twin the
+/// fixtures let answer. `relay` false drops the relay connection entirely.
+fn every_route_server(relay: bool) -> Resource {
+    let relay = if relay {
+        r#",{"protocol":"https","address":"198.51.100.4","port":8443,
+             "uri":"https://198-51-100-4.relayhash.plex.direct:8443","local":false,"relay":true,"IPv6":false}"#
+    } else {
+        ""
+    };
+    resource(&format!(
+        r#"{{"name":"ours","clientIdentifier":"routes01","provides":"server","owned":true,
+            "sourceTitle":null,"publicAddressMatches":true,"httpsRequired":false,
+            "accessToken":"tok-routes","connections":[
+              {{"protocol":"https","address":"192.168.0.10","port":32400,
+               "uri":"https://192-168-0-10.hash.plex.direct:32400","local":true,"relay":false,"IPv6":false}},
+              {{"protocol":"https","address":"203.0.113.9","port":32400,
+               "uri":"https://203-0-113-9.hash.plex.direct:32400","local":false,"relay":false,"IPv6":false}},
+              {{"protocol":"https","address":"media.example.test","port":443,
+               "uri":"https://media.example.test:443","local":false,"relay":false,"IPv6":false}}{relay}
+            ]}}"#
+    ))
+}
+
+/// **(a) A real failed TLS handshake is named as TLS, not folded into silence.** The same real
+/// curl fixture as the `Reach::At`-refusal test above: the LAN `plex.direct` name points at a
+/// plaintext-only double, so curl's ClientHello fails (a TLS `CURLcode`), while the plaintext
+/// twin on that port verifies the machine. The evidence must say which route failed and how,
+/// and carry the plaintext answer's closed facts — a loopback literal on a `local` connection.
+#[test]
+fn e2e_insecure_only_evidence_names_the_failed_tls_handshake() {
+    let _serial = crate::testlock::serial();
+    if !(crate::net::global_init() && crate::net::available()) {
+        eprintln!("curl unavailable on this host; skipping");
+        return;
+    }
+    let plain_port = crate::net::spawn_plain_only(identity_json("e2e95mid"));
+    let dead = crate::net::dead_port();
+    let d = insecure_verdict(e2e95_resource(plain_port, dead, None), Arc::new(get_identity));
+    let e = insecure_evidence_of(&d);
+    assert_eq!(e.https.lan_plex_direct, probe::RouteOutcome::Tls, "{e:?}");
+    assert_eq!(e.https.public_plex_direct, probe::RouteOutcome::Absent);
+    assert_eq!(e.https.custom_https, probe::RouteOutcome::Absent);
+    assert_eq!(e.https.relay, probe::RouteOutcome::Absent);
+    assert!(e.plaintext_local && e.owned && e.public_address_matches && !e.https_required, "{e:?}");
+    assert_eq!(e.plaintext_scope, probe::AddressScope::Loopback);
+    assert_eq!(e.plaintext_family, probe::AddressFamily::V4);
+}
+
+/// **(b) Every HTTPS route timing out is four timeouts, not one `unknown`.** The LAN plaintext
+/// twin verifies; each HTTPS route — LAN name, public name, custom URL and the relay raced after
+/// them — times out. The plaintext facts are the ones a same-network decision would need.
+#[test]
+fn insecure_only_evidence_records_a_timeout_on_every_https_route() {
+    let dial: ProbeDial = Arc::new(|origin, _, _| {
+        if origin.is_tls() {
+            ProbeReply::Failed(Some(timed_out()))
+        } else if origin.host() == "192.168.0.10" {
+            ProbeReply::from((200, identity_json("routes01")))
+        } else {
+            ProbeReply::Failed(None)
+        }
+    });
+    let e = insecure_evidence_of(&insecure_verdict(every_route_server(true), dial));
+    assert_eq!(
+        e.https,
+        probe::HttpsRoutes {
+            lan_plex_direct: probe::RouteOutcome::Timeout,
+            public_plex_direct: probe::RouteOutcome::Timeout,
+            custom_https: probe::RouteOutcome::Timeout,
+            relay: probe::RouteOutcome::Timeout,
+        }
+    );
+    assert!(e.plaintext_local && e.owned && e.public_address_matches && !e.https_required, "{e:?}");
+    assert_eq!(e.plaintext_scope, probe::AddressScope::Private);
+    assert_eq!(e.plaintext_family, probe::AddressFamily::V4);
+}
+
+/// **(c) A relay plex.tv never advertised is `absent`; one that failed says how.** Same server,
+/// same failures on the direct routes (a TLS refusal on the LAN name, a refused connect on the
+/// public one, DNS on the custom name); only the relay row differs.
+#[test]
+fn insecure_only_evidence_tells_an_absent_relay_from_a_failed_one() {
+    let dial: ProbeDial = Arc::new(|origin, _, _| {
+        let host = origin.host();
+        if !origin.is_tls() {
+            return if host == "192.168.0.10" {
+                ProbeReply::from((200, identity_json("routes01")))
+            } else {
+                ProbeReply::Failed(None)
+            };
+        }
+        ProbeReply::Failed(Some(if host.starts_with("192-") {
+            transport_rc(35)
+        } else if host.starts_with("203-") {
+            transport_rc(7)
+        } else {
+            transport_rc(6)
+        }))
+    });
+    let failed = insecure_evidence_of(&insecure_verdict(every_route_server(true), Arc::clone(&dial)));
+    let absent = insecure_evidence_of(&insecure_verdict(every_route_server(false), dial));
+    for e in [failed, absent] {
+        assert_eq!(e.https.lan_plex_direct, probe::RouteOutcome::Tls, "{e:?}");
+        assert_eq!(e.https.public_plex_direct, probe::RouteOutcome::Refused, "{e:?}");
+        assert_eq!(e.https.custom_https, probe::RouteOutcome::Dns, "{e:?}");
+    }
+    assert_eq!(failed.https.relay, probe::RouteOutcome::Dns, "the relay was raced and failed");
+    assert_eq!(absent.https.relay, probe::RouteOutcome::Absent, "plex.tv advertised no relay");
+}
+
+/// **(d) An account whose resources are all players says how many it had, and which flow asked.**
+/// `NoServers` is a statement about the account, so its evidence is a bucketed count of what
+/// `/resources` did return — never a name — and whether a fresh sign-in or a retry produced it.
+#[test]
+fn no_servers_evidence_counts_the_players_and_names_the_trigger() {
+    let player = |n: usize| {
+        format!(r#"{{"name":"p{n}","clientIdentifier":"cccc{n}","provides":"player","connections":[]}}"#)
+    };
+    let one = serde_json::from_str::<Vec<Resource>>(&format!("[{}]", player(1))).unwrap();
+    let seven = serde_json::from_str::<Vec<Resource>>(&format!(
+        "[{}]",
+        (0..7).map(player).collect::<Vec<_>>().join(",")
+    ))
+    .unwrap();
+    for (resources, trigger, bucket) in [
+        (one, DiscoveryTrigger::Rediscover, crate::telemetry::incident::CountBucket::One),
+        (seven, DiscoveryTrigger::Login, crate::telemetry::incident::CountBucket::SixPlus),
+    ] {
+        let resolved = resolve_roster(&resources, &[], CredentialPolicy::HttpsOnly, &|_| (0, Vec::new()));
+        let d = resolved_without_roster(resolved, trigger).err().expect("no server is a failure");
+        let Discovery::NoServers(evidence) = d else { panic!("expected NoServers") };
+        assert_eq!(
+            evidence,
+            crate::telemetry::incident::NoServersEvidence { resources: bucket, trigger }
+        );
+        let (_, incident) = discovery_failure(&d).expect("no servers is a failure");
+        assert_eq!(incident.no_servers, Some(evidence));
+        assert_eq!(incident.insecure, None);
+    }
 }

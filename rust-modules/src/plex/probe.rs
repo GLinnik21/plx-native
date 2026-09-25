@@ -412,6 +412,318 @@ pub fn candidates(res: &Resource, policy: CredentialPolicy) -> Vec<Candidate> {
     out
 }
 
+/// Which HTTPS route to a server a candidate is — the rows of [`HttpsRoutes`]. Read off the
+/// candidate's own URL and tier, never off `address`: the `plex.direct` NAME is what makes a route
+/// one plex.tv minted a certificate for, and the tier is plex.tv's own `local`/`relay` flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HttpsRole {
+    /// A `plex.direct` name on a `local` connection — the one `auth::race_batch` pins to the
+    /// advertised address, so it needs no resolver.
+    LanPlexDirect,
+    /// A `plex.direct` name on a remote (not relay) connection.
+    PublicPlexDirect,
+    /// Any other `https://` URL the owner published (a custom server access URL), whatever its tier.
+    CustomHttps,
+    /// Plex's relay tunnel.
+    Relay,
+}
+
+impl Candidate {
+    /// This candidate's [`HttpsRole`], `None` for a plaintext one.
+    pub(crate) fn https_role(&self) -> Option<HttpsRole> {
+        if self.scheme != Scheme::Https {
+            return None;
+        }
+        let plex_direct = url_host(&self.url).to_ascii_lowercase().ends_with(".plex.direct");
+        Some(match (self.location, plex_direct) {
+            (Location::Relay, _) => HttpsRole::Relay,
+            (_, false) => HttpsRole::CustomHttps,
+            (Location::Local, true) => HttpsRole::LanPlexDirect,
+            (Location::Remote, true) => HttpsRole::PublicPlexDirect,
+        })
+    }
+}
+
+/// How one probed route ended, in the incident report's link vocabulary
+/// (`telemetry::incident::LinkClass`) plus the three answers only an identity probe can give —
+/// and the two ways a route can have NO answer at all, which are the whole difference between
+/// "this server has no HTTPS" and "HTTPS failed from this television". Closed; never a status
+/// number, a code or anything the server said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum RouteOutcome {
+    /// plex.tv advertised no candidate for this route.
+    Absent,
+    /// A candidate existed but was never dialled (not dialable, a refused worker spawn, or an
+    /// origin an earlier admission already rejected).
+    NotAttempted,
+    /// Nothing answered before the probe's own deadline — curl's code 28, or the coordinator
+    /// expiring a worker that had not finished.
+    Timeout,
+    /// The name did not resolve (curl code 6).
+    Dns,
+    /// The TLS handshake or certificate check failed (curl codes 35, 60, 77, 90).
+    Tls,
+    /// The connection was refused (curl code 7).
+    Refused,
+    /// Any other transport failure libcurl named.
+    TransportOther,
+    /// A transport failure with no code to classify it by — the plaintext transport, or a request
+    /// refused before libcurl ran.
+    Unknown,
+    /// Answered 401.
+    Unauthorized,
+    /// Answered 2xx as a different machine (or with no identity to check).
+    WrongServer,
+    /// Answered with any other non-2xx status.
+    Answered4xx,
+    Answered5xx,
+    AnsweredOther,
+    /// Answered as the server we asked for.
+    Verified,
+}
+
+impl RouteOutcome {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::NotAttempted => "not_attempted",
+            Self::Timeout => "timeout",
+            Self::Dns => "dns",
+            Self::Tls => "tls",
+            Self::Refused => "refused",
+            Self::TransportOther => "transport_other",
+            Self::Unknown => "unknown",
+            Self::Unauthorized => "unauthorized",
+            Self::WrongServer => "wrong_server",
+            Self::Answered4xx => "answered_4xx",
+            Self::Answered5xx => "answered_5xx",
+            Self::AnsweredOther => "answered_other",
+            Self::Verified => "verified",
+        }
+    }
+
+    /// A transport failure, through the incident report's own classifier so the two vocabularies
+    /// cannot drift: `None` is a failure no layer could attach evidence to. Connection refused is
+    /// split out of `transport_other` here only — the report's top-level `link` keeps its class,
+    /// because Sentry fingerprints on it.
+    pub(crate) fn of_failure(failure: Option<crate::net::RequestFailure>) -> Self {
+        use crate::telemetry::incident::{classify, LinkClass};
+        let Some(failure) = failure else { return Self::Unknown };
+        match classify(Some(Err(failure))) {
+            (LinkClass::Answered2xx, ..) => Self::WrongServer, // a truncated 2xx verified nothing
+            (LinkClass::Answered4xx, Some(401), _) => Self::Unauthorized,
+            (LinkClass::Answered4xx, ..) => Self::Answered4xx,
+            (LinkClass::Answered5xx, ..) => Self::Answered5xx,
+            (LinkClass::AnsweredOther, ..) => Self::AnsweredOther,
+            (LinkClass::Dns, ..) => Self::Dns,
+            (LinkClass::Tls, ..) => Self::Tls,
+            (LinkClass::Timeout, ..) => Self::Timeout,
+            (LinkClass::TransportOther, _, Some(7)) => Self::Refused,
+            (LinkClass::TransportOther, ..) => Self::TransportOther,
+            (LinkClass::Unknown, ..) => Self::Unknown,
+        }
+    }
+
+    /// A status the server answered, graded by the probe's own [`Outcome`] for it.
+    pub(crate) fn of_answer(status: i32, outcome: Outcome) -> Self {
+        match outcome {
+            Outcome::Reachable => Self::Verified,
+            Outcome::WrongServer => Self::WrongServer,
+            Outcome::Unauthorized => Self::Unauthorized,
+            Outcome::Unreachable | Outcome::InsecureOnly => match status {
+                400..=499 => Self::Answered4xx,
+                500..=599 => Self::Answered5xx,
+                _ => Self::AnsweredOther,
+            },
+        }
+    }
+
+    fn attempted(self) -> bool {
+        !matches!(self, Self::Absent | Self::NotAttempted)
+    }
+}
+
+/// What became of each HTTPS route to one server, one [`RouteOutcome`] per [`HttpsRole`].
+///
+/// A role with several candidates (a v4 and a v6 LAN name) reports the FIRST one in plan order
+/// that was actually dialled — rank order, so the route the race most wanted — and
+/// [`RouteOutcome::NotAttempted`] only when none of them was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct HttpsRoutes {
+    pub lan_plex_direct: RouteOutcome,
+    pub public_plex_direct: RouteOutcome,
+    pub custom_https: RouteOutcome,
+    pub relay: RouteOutcome,
+}
+
+impl HttpsRoutes {
+    /// Fold per-candidate observations — `observed[i]` for `candidates[i]`, `None` where that
+    /// candidate was never dialled — into one row per role.
+    pub(crate) fn of(candidates: &[Candidate], observed: &[Option<RouteOutcome>]) -> Self {
+        let mut routes = Self {
+            lan_plex_direct: RouteOutcome::Absent,
+            public_plex_direct: RouteOutcome::Absent,
+            custom_https: RouteOutcome::Absent,
+            relay: RouteOutcome::Absent,
+        };
+        for (i, c) in candidates.iter().enumerate() {
+            let Some(role) = c.https_role() else { continue };
+            let seen = observed.get(i).copied().flatten().unwrap_or(RouteOutcome::NotAttempted);
+            let slot = match role {
+                HttpsRole::LanPlexDirect => &mut routes.lan_plex_direct,
+                HttpsRole::PublicPlexDirect => &mut routes.public_plex_direct,
+                HttpsRole::CustomHttps => &mut routes.custom_https,
+                HttpsRole::Relay => &mut routes.relay,
+            };
+            if !slot.attempted() {
+                *slot = seen;
+            }
+        }
+        routes
+    }
+}
+
+/// What kind of address a literal is — the half of "is this the same network" an address can
+/// answer by itself. Closed: the address never leaves this type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum AddressScope {
+    /// RFC 1918 IPv4.
+    Private,
+    /// IPv4 169.254/16 or IPv6 fe80::/10.
+    LinkLocal,
+    /// IPv6 unique-local fc00::/7.
+    UniqueLocal,
+    Loopback,
+    /// Any other literal.
+    Public,
+    /// Not a literal at all — a hostname.
+    Name,
+}
+
+/// The address family of a literal; `Unknown` for a hostname.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum AddressFamily {
+    V4,
+    V6,
+    Unknown,
+}
+
+impl AddressScope {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Private => "private",
+            Self::LinkLocal => "link_local",
+            Self::UniqueLocal => "unique_local",
+            Self::Loopback => "loopback",
+            Self::Public => "public",
+            Self::Name => "name",
+        }
+    }
+
+    /// Classify `address` as plex.tv advertised it (a dotted quad, a v6 literal with or without
+    /// brackets, or a hostname).
+    pub(crate) fn of(address: &str) -> (Self, AddressFamily) {
+        let bare = address
+            .strip_prefix('[')
+            .map_or(address, |h| h.strip_suffix(']').unwrap_or(h));
+        match bare.parse::<std::net::IpAddr>() {
+            Err(_) => (Self::Name, AddressFamily::Unknown),
+            Ok(std::net::IpAddr::V4(a)) => (
+                if a.is_loopback() {
+                    Self::Loopback
+                } else if a.is_private() {
+                    Self::Private
+                } else if a.is_link_local() {
+                    Self::LinkLocal
+                } else {
+                    Self::Public
+                },
+                AddressFamily::V4,
+            ),
+            Ok(std::net::IpAddr::V6(a)) => {
+                let first = a.segments()[0];
+                (
+                    if a.is_loopback() {
+                        Self::Loopback
+                    } else if first & 0xfe00 == 0xfc00 {
+                        Self::UniqueLocal
+                    } else if first & 0xffc0 == 0xfe80 {
+                        Self::LinkLocal
+                    } else {
+                        Self::Public
+                    },
+                    AddressFamily::V6,
+                )
+            }
+        }
+    }
+}
+
+impl AddressFamily {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::V4 => "v4",
+            Self::V6 => "v6",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// **Why a server settled as insecure-only, as closed facts** — the evidence the
+/// `discovery_insecure_only` incident carries and the local log states, and the input a
+/// same-network plaintext decision has to be made from: what became of every HTTPS route, and
+/// what the verified plaintext answer was. Every field is an enum or a bool; no address, name,
+/// URL or token is kept, so the value can leave the device as it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct InsecureEvidence {
+    pub https: HttpsRoutes,
+    /// The verified plaintext candidate came from a connection plex.tv marked `local`.
+    pub plaintext_local: bool,
+    /// The resource's `publicAddressMatches`: plex.tv saw this client behind the server's NAT.
+    pub public_address_matches: bool,
+    pub owned: bool,
+    /// The resource's `httpsRequired`. A plaintext candidate is never built when it is set
+    /// (rule 2), so an insecure-only verdict always reads `false` here; it is carried so the
+    /// evidence states the rule rather than leaving a reader to know it.
+    pub https_required: bool,
+    pub plaintext_scope: AddressScope,
+    pub plaintext_family: AddressFamily,
+}
+
+impl InsecureEvidence {
+    /// The evidence for `res`, whose verified plaintext answer came from `plaintext`.
+    pub(crate) fn new(res: &Resource, plaintext: &Candidate, https: HttpsRoutes) -> Self {
+        let (plaintext_scope, plaintext_family) = AddressScope::of(&plaintext.address);
+        Self {
+            https,
+            plaintext_local: plaintext.location == Location::Local,
+            public_address_matches: res.public_address_matches,
+            owned: res.owned,
+            https_required: res.https_required,
+            plaintext_scope,
+            plaintext_family,
+        }
+    }
+
+    /// The same facts as one log line of closed codes.
+    pub(crate) fn log_form(&self) -> String {
+        format!(
+            "https_lan={} https_public={} https_custom={} https_relay={} plaintext_local={} \
+             public_address_matches={} owned={} https_required={} plaintext_scope={} plaintext_family={}",
+            self.https.lan_plex_direct.code(),
+            self.https.public_plex_direct.code(),
+            self.https.custom_https.code(),
+            self.https.relay.code(),
+            self.plaintext_local,
+            self.public_address_matches,
+            self.owned,
+            self.https_required,
+            self.plaintext_scope.code(),
+            self.plaintext_family.code(),
+        )
+    }
+}
+
 /// The plan for one server: identity to verify, token to send, addresses to try.
 pub fn plan(res: &Resource, policy: CredentialPolicy) -> ProbePlan {
     ProbePlan {
@@ -428,6 +740,25 @@ pub fn plan(res: &Resource, policy: CredentialPolicy) -> ProbePlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The scope is the literal's own class, never a guess from a name; v6 ULA and link-local are
+    /// read by prefix, and brackets are tolerated as plex.tv may send them.
+    #[test]
+    fn address_scope_reads_only_the_literal() {
+        for (address, want) in [
+            ("192.168.0.10", (AddressScope::Private, AddressFamily::V4)),
+            ("10.0.0.2", (AddressScope::Private, AddressFamily::V4)),
+            ("169.254.3.4", (AddressScope::LinkLocal, AddressFamily::V4)),
+            ("127.0.0.1", (AddressScope::Loopback, AddressFamily::V4)),
+            ("203.0.113.9", (AddressScope::Public, AddressFamily::V4)),
+            ("[fd12:3456::1]", (AddressScope::UniqueLocal, AddressFamily::V6)),
+            ("fe80::1", (AddressScope::LinkLocal, AddressFamily::V6)),
+            ("2001:db8::1", (AddressScope::Public, AddressFamily::V6)),
+            ("nas.example.test", (AddressScope::Name, AddressFamily::Unknown)),
+        ] {
+            assert_eq!(AddressScope::of(address), want, "{address}");
+        }
+    }
 
     /// The two fixtures are the shapes measured live on 2026-08-11 (`docs/shared-servers.md` §2):
     /// addresses and identifiers are stand-ins, the arrangement of flags is not.

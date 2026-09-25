@@ -463,7 +463,7 @@ impl Client {
         headers: &[&str],
         deadline: std::time::Instant,
     ) -> http::RequestOutcome {
-        if !self.may_send() { return http::RequestOutcome::Transport; }
+        if !self.may_send() { return http::RequestOutcome::Transport(None); }
         let owned = pms_headers(headers);
         let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
         http::request_until_outcome(
@@ -575,7 +575,7 @@ impl Client {
                 JsonDeadlineOutcome::Response { reply, parsed }
             }
             http::RequestOutcome::Deadline => JsonDeadlineOutcome::Deadline,
-            http::RequestOutcome::Transport => JsonDeadlineOutcome::Transport,
+            http::RequestOutcome::Transport(_) => JsonDeadlineOutcome::Transport,
         }
     }
 
@@ -592,7 +592,7 @@ impl Client {
         let r = http::request_probe(
             &self.origin, &self.with_token(path_no_token), Method::Get, &headers,
             super::SIDECAR_MAX_BYTES, 25, self.resolve_pin.as_ref(),
-        )?;
+        ).ok()?;
         r.ok().then_some(r.body)
     }
 
@@ -683,7 +683,7 @@ impl Client {
     ) -> Option<i32> {
         match self.send_until(path_no_token, Method::Get, &[], deadline) {
             http::RequestOutcome::Response(reply) => Some(reply.status),
-            http::RequestOutcome::Deadline | http::RequestOutcome::Transport => None,
+            http::RequestOutcome::Deadline | http::RequestOutcome::Transport(_) => None,
         }
     }
 
@@ -695,7 +695,7 @@ impl Client {
     ) -> Option<i32> {
         match self.send_until(path_no_token, Method::Post, &[], deadline) {
             http::RequestOutcome::Response(reply) => Some(reply.status),
-            http::RequestOutcome::Deadline | http::RequestOutcome::Transport => None,
+            http::RequestOutcome::Deadline | http::RequestOutcome::Transport(_) => None,
         }
     }
 

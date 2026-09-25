@@ -10,8 +10,10 @@
 //! Stored Home, picker and explicit developer bootstrap use the same owner, with distinct typed
 //! authority. Network/PIN derivation remain worker operations; offline policy is retained below.
 use crate::plex::account::{AccountClient, CallEvidence, HomeUser, PinPoll, Resource, SwitchOutcome};
-use crate::telemetry::incident::{DiscoveryClass, IncidentContext, IncidentKind};
-use crate::plex::probe::{self, Candidate, Outcome, ProbePlan};
+use crate::telemetry::incident::{
+    CountBucket, DiscoveryClass, DiscoveryTrigger, IncidentContext, IncidentKind, NoServersEvidence,
+};
+use crate::plex::probe::{self, Candidate, HttpsRoutes, InsecureEvidence, Outcome, ProbePlan, RouteOutcome};
 use crate::plex::session::{self, ProfileCreds, ServerRef, Session, SourceRef, UserRef};
 use crate::plex::{CredentialPolicy, Origin, ServerId};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -856,7 +858,13 @@ fn discovery_failure(d: &Discovery) -> Option<(&'static str, IncidentContext)> {
     }
     let (message, class, last) = match d {
         Discovery::Ok { .. } | Discovery::Cancelled => return None,
-        Discovery::NoServers => ("This Plex account has no server yet.", DiscoveryClass::NoServers, None),
+        Discovery::NoServers(evidence) => {
+            return Some((
+                "This Plex account has no server yet.",
+                IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::NoServers), None)
+                    .with_no_servers(*evidence),
+            ));
+        }
         Discovery::Refused => (
             "Your Plex server refused the connection — check its network access settings.",
             DiscoveryClass::Refused,
@@ -867,7 +875,16 @@ fn discovery_failure(d: &Discovery) -> Option<(&'static str, IncidentContext)> {
             DiscoveryClass::Silent,
             *last,
         ),
-        Discovery::InsecureOnly => (DISCOVERY_INSECURE_ONLY_MESSAGE, DiscoveryClass::InsecureOnly, None),
+        Discovery::InsecureOnly(evidence) => {
+            let incident = IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::InsecureOnly), None);
+            return Some((
+                DISCOVERY_INSECURE_ONLY_MESSAGE,
+                match evidence {
+                    Some(evidence) => incident.with_insecure(*evidence),
+                    None => incident,
+                },
+            ));
+        }
     };
     Some((message, IncidentContext::new(IncidentKind::Discovery(class), last)))
 }
@@ -927,7 +944,7 @@ fn login_worker_with_output(epoch: u64, cid: String, output: &dyn owner::Observa
     // It now describes what actually happened, and none of the three sends the user to the wrong
     // place: a token refusal is not a router problem, and an account with no server is not an
     // outage.
-    let discovery = discover_and_store(&ac, &cid, epoch, output);
+    let discovery = discover_and_store(&ac, &cid, epoch, DiscoveryTrigger::Login, output);
     if let Some((message, incident)) = discovery_failure(&discovery) {
         return output_failed(output, epoch, message, incident);
     }
@@ -1097,7 +1114,7 @@ fn rediscovery_worker_with_output(cid: String, token: String, epoch: u64,
     output: &dyn owner::ObservationSink) {
     if !output.live() { return; }
     let ac = AccountClient::new(&cid, Some(&token));
-    let discovery = discover_and_store(&ac, &cid, epoch, output);
+    let discovery = discover_and_store(&ac, &cid, epoch, DiscoveryTrigger::Rediscover, output);
     if let Some((message, incident)) = discovery_failure(&discovery) {
         // The same caption AND the same incident as sign-in: this is the retry of that failure.
         return output_failed(output, epoch, message, incident);
@@ -1373,7 +1390,10 @@ enum Reach {
     /// verified-but-ineligible candidate must not read as success (`probe.rs`'s module doc); it is
     /// not [`Reach::No`] either, because "the server did not answer" and "the server answered and
     /// this build cannot use it" are two different facts to hand the user.
-    InsecureOnly(Candidate),
+    ///
+    /// The [`HttpsRoutes`] beside it say what became of every HTTPS route to the server — the
+    /// evidence that tells "this server has no HTTPS" from "HTTPS failed from here".
+    InsecureOnly(Candidate, HttpsRoutes),
     /// One or more candidates answered 401 and no candidate verified the server. A proxy-specific
     /// 401 does not cancel parallel direct probes or the relay fallback; it survives only as the
     /// final reason when none of those proves reachability. Reporting that as generic silence would
@@ -1400,7 +1420,10 @@ enum Discovery {
     /// `/api/v2/resources` named no server at all. NOT the case where it could not be fetched —
     /// that is [`Discovery::Silent`], because a request that never arrived says nothing about what
     /// the account owns.
-    NoServers,
+    ///
+    /// Carries how many resources `/resources` did return and which flow asked (closed evidence
+    /// for the incident).
+    NoServers(NoServersEvidence),
     /// Servers exist; none of them answered (or plex.tv itself did not). Carries the failed
     /// `/api/v2/resources` call's evidence when that is what went silent; `None` when the servers
     /// themselves did.
@@ -1414,7 +1437,11 @@ enum Discovery {
     /// [`Self::Refused`] (plan §4): a verified plaintext answer is a more useful fact than a
     /// parallel/proxy 401, and points at a fixable cause (HTTPS to the server) rather than a
     /// credential one.
-    InsecureOnly,
+    ///
+    /// Carries the first such server's [`InsecureEvidence`]; `None` only when the verdict came
+    /// from admission refusing an origin the build cannot credential, where no plaintext answer
+    /// exists to describe.
+    InsecureOnly(Option<InsecureEvidence>),
 }
 
 /// Copy for [`Discovery::InsecureOnly`], shared by sign-in and rediscovery so the two paths
@@ -1540,8 +1567,9 @@ fn classify(status: i32, body: &[u8], want_machine_id: &str) -> Outcome {
 /// transport.
 ///
 /// A transport failure — nothing answered, DNS said no, the certificate would not validate — comes
-/// back as `(0, [])`, and `classify` reads that as [`Outcome::Unreachable`]. `0` is not a status any
-/// server can send, so it cannot be confused with one.
+/// back as [`ProbeReply::Failed`], keeping libcurl's evidence when the TLS transport had any, so a
+/// verdict can later say HOW each route failed ([`RouteOutcome::of_failure`]) instead of only that
+/// it did.
 ///
 /// `pin`, when [`race_batch`] built one for this candidate, is forwarded to
 /// [`crate::http::request_probe`] exactly as `apply_candidate_activation` forwards one to
@@ -1551,7 +1579,7 @@ fn get_identity(
     origin: &Origin,
     pin: Option<&crate::plex::ResolvePin>,
     budget: Duration,
-) -> (i32, Vec<u8>) {
+) -> ProbeReply {
     match crate::http::request_probe(
         origin,
         IDENTITY,
@@ -1565,8 +1593,38 @@ fn get_identity(
         // WHILE it reads, before a machine we have not accepted can make this worker allocate an
         // unbounded body; an over-limit answer is therefore a transport failure, never a prefix
         // that might happen to contain a plausible machine id.
-        Some(r) => (r.status, r.body),
-        None => (0, Vec::new()),
+        Ok(r) => ProbeReply::Answered { status: r.status, body: r.body },
+        Err(failure) => ProbeReply::Failed(failure),
+    }
+}
+
+/// What one identity probe observed: an answer (any status), or a transport failure with the
+/// evidence the transport kept. Never collapsed to a sentinel status — the failure's `CURLcode` is
+/// what an insecure-only verdict names per route.
+#[derive(Debug)]
+enum ProbeReply {
+    Answered { status: i32, body: Vec<u8> },
+    Failed(Option<crate::net::RequestFailure>),
+}
+
+impl ProbeReply {
+    /// The acceptance verdict ([`classify`]) and the route evidence for this reply.
+    fn grade(&self, want_machine_id: &str) -> (Outcome, RouteOutcome) {
+        match self {
+            Self::Answered { status, body } => {
+                let outcome = classify(*status, body, want_machine_id);
+                (outcome, RouteOutcome::of_answer(*status, outcome))
+            }
+            Self::Failed(failure) => (Outcome::Unreachable, RouteOutcome::of_failure(*failure)),
+        }
+    }
+}
+
+/// The legacy `(status, body)` shape the synchronous test seams script: status `0` is "nothing
+/// answered", with no evidence.
+impl From<(i32, Vec<u8>)> for ProbeReply {
+    fn from((status, body): (i32, Vec<u8>)) -> Self {
+        if status == 0 { Self::Failed(None) } else { Self::Answered { status, body } }
     }
 }
 
@@ -1618,7 +1676,7 @@ impl AdmissionBudget {
 }
 
 type ProbeDial = Arc<
-    dyn Fn(&Origin, Option<&crate::plex::ResolvePin>, Duration) -> (i32, Vec<u8>) + Send + Sync + 'static,
+    dyn Fn(&Origin, Option<&crate::plex::ResolvePin>, Duration) -> ProbeReply + Send + Sync + 'static,
 >;
 type ProbeJob = Box<dyn FnOnce() + Send + 'static>;
 
@@ -1634,6 +1692,7 @@ struct ProbeMessage {
     index: usize,
     on_time: bool,
     outcome: Outcome,
+    route: RouteOutcome,
 }
 
 const PROBE_PENDING: u8 = 0;
@@ -1655,6 +1714,9 @@ struct BatchResult {
     /// evidence for [`Reach::InsecureOnly`] when nothing eligible verifies.
     insecure: Option<Winner>,
     refused: bool,
+    /// What each candidate's probe came to, indexed like [`ProbePlan::candidates`]; `None` for
+    /// one this batch never dialled. The raw material of [`HttpsRoutes`].
+    observed: Vec<Option<RouteOutcome>>,
 }
 
 fn probe_deadline(c: &Candidate, policy: ProbeDeadlines) -> Duration {
@@ -1715,6 +1777,10 @@ fn settle_probe_message(
         return; // expired or already settled: late/duplicate messages are inert
     };
     *live -= 1;
+    if let Some(slot) = result.observed.get_mut(message.index) {
+        // A late answer is a timeout as far as this race is concerned: it was not waited for.
+        *slot = Some(if message.on_time { message.route } else { RouteOutcome::Timeout });
+    }
     if !message.on_time {
         return;
     }
@@ -1814,8 +1880,7 @@ fn race_batch(
         // through DNS exactly as before.
         let pin = crate::plex::ResolvePin::for_origin(&origin, &c.address);
         let job = Box::new(move || {
-            let (status, body) = dial(&origin, pin.as_ref(), budget);
-            let outcome = classify(status, &body, &machine_id);
+            let (outcome, route) = dial(&origin, pin.as_ref(), budget).grade(&machine_id);
             let on_time = Instant::now() <= deadline;
             // Claim completion before publishing the message. If the coordinator expires first,
             // this result is inert. If this claim wins and the worker is descheduled before send,
@@ -1834,6 +1899,7 @@ fn race_batch(
                     index,
                     on_time,
                     outcome,
+                    route,
                 });
             }
         });
@@ -1846,7 +1912,10 @@ fn race_batch(
     // job), disconnect settles the remaining pending set instead of parking the coordinator.
     drop(tx);
 
-    let mut result = BatchResult::default();
+    let mut result = BatchResult {
+        observed: vec![None; plan.candidates.len()],
+        ..BatchResult::default()
+    };
     while live > 0 {
         // Drain results that completed on time BEFORE expiring by the coordinator's current clock.
         // Spawn setup and queue backlog are allowed to delay observation; `finished` is the fact
@@ -1890,6 +1959,7 @@ fn race_batch(
             if expired {
                 pending[index] = None;
                 live -= 1;
+                result.observed[index] = Some(RouteOutcome::Timeout);
                 let c = &plan.candidates[index];
                 log(&format!(
                     "auth: '{}' probe timed out at {}:{}",
@@ -1968,16 +2038,23 @@ fn probe_server_racing(
     if batch.first.is_none() && !relay.is_empty() {
         let direct_refused = batch.refused;
         let direct_insecure = batch.insecure.take();
+        let direct_observed = std::mem::take(&mut batch.observed);
         batch = race_batch(plan, &relay, dial, spawn, policy, activate);
         batch.refused |= direct_refused;
         if batch.insecure.is_none() {
             batch.insecure = direct_insecure;
         }
+        // The two phases dial disjoint candidates, so their observations merge slot by slot.
+        for (slot, direct) in batch.observed.iter_mut().zip(direct_observed) {
+            if slot.is_none() {
+                *slot = direct;
+            }
+        }
     }
 
     let Some(best) = batch.best else {
         return if let Some(insecure) = batch.insecure {
-            Reach::InsecureOnly(insecure.candidate)
+            Reach::InsecureOnly(insecure.candidate, HttpsRoutes::of(&plan.candidates, &batch.observed))
         } else if batch.refused {
             Reach::Refused
         } else {
@@ -2076,7 +2153,7 @@ pub(crate) fn settled_probe_for_test(
 fn probe_verdict(reach: &Reach) -> (Outcome, Option<probe::Location>, Option<String>) {
     match reach {
         Reach::At(c, _) => (Outcome::Reachable, Some(c.location), Some(c.address.clone())),
-        Reach::InsecureOnly(c) => (Outcome::InsecureOnly, Some(c.location), Some(c.address.clone())),
+        Reach::InsecureOnly(c, _) => (Outcome::InsecureOnly, Some(c.location), Some(c.address.clone())),
         Reach::Refused => (Outcome::Unauthorized, None, None),
         Reach::No => (Outcome::Unreachable, None, None),
     }
@@ -2115,11 +2192,12 @@ fn publish_settled_probes(probes: &[SettledProbe]) {
 #[cfg(test)]
 fn probe_server(plan: &ProbePlan, dial: &dyn Fn(&Origin) -> (i32, Vec<u8>)) -> Reach {
     let mut tried = 0;
+    let mut observed: Vec<Option<RouteOutcome>> = vec![None; plan.candidates.len()];
     // The same eligibility rule the racing coordinator applies (`settle_probe_message`): a
     // verified-but-ineligible answer is kept as evidence, never returned as `Reach::At`, and the
     // search continues past it — the next candidate may still verify AND be usable.
     let mut insecure: Option<Candidate> = None;
-    for c in plan.candidates.iter() {
+    for (index, c) in plan.candidates.iter().enumerate() {
         let Some(origin) = dial_target(c) else {
             continue;
         };
@@ -2128,8 +2206,9 @@ fn probe_server(plan: &ProbePlan, dial: &dyn Fn(&Origin) -> (i32, Vec<u8>)) -> R
         // the roster records cannot be two different things. It is passed rather than split into
         // `(host, port)` because the SCHEME is now part of what gets dialled: splitting it here
         // would put the transport choice back at a call site.
-        let (status, body) = dial(&origin);
-        match classify(status, &body, &plan.machine_id) {
+        let (outcome, route) = ProbeReply::from(dial(&origin)).grade(&plan.machine_id);
+        observed[index] = Some(route);
+        match outcome {
             Outcome::Reachable => {
                 if !c.credential_eligible {
                     log(&format!(
@@ -2165,7 +2244,7 @@ fn probe_server(plan: &ProbePlan, dial: &dyn Fn(&Origin) -> (i32, Vec<u8>)) -> R
         }
     }
     if let Some(c) = insecure {
-        return Reach::InsecureOnly(c);
+        return Reach::InsecureOnly(c, HttpsRoutes::of(&plan.candidates, &observed));
     }
     let skipped = plan.candidates.len() - tried;
     log(&format!(
@@ -2178,13 +2257,15 @@ fn probe_server(plan: &ProbePlan, dial: &dyn Fn(&Origin) -> (i32, Vec<u8>)) -> R
 /// What probing a whole `/api/v2/resources` response came to.
 enum Resolved {
     /// The response named no server at all — nothing was dialled, and this is a fact about the
-    /// account rather than about the network.
-    NoServers,
+    /// account rather than about the network. `resources` is how many rows it did return.
+    NoServers { resources: usize },
     /// Servers were probed and none was accepted. `refused` distinguishes "at least one answered
     /// 401" from "silence", and `insecure` marks that at least one server answered
     /// [`Reach::InsecureOnly`] — verified alive, but over a transport this build can never put a
-    /// credential on. Three different things to tell the user.
-    None { refused: bool, insecure: bool },
+    /// credential on. Three different things to tell the user. `evidence` is the FIRST such
+    /// server's [`InsecureEvidence`] in probe order (ours first) — `None` with `insecure` set only
+    /// when admission, not a probe, refused an origin the build cannot credential.
+    None { refused: bool, insecure: bool, evidence: Option<InsecureEvidence> },
     /// The roster, **ours first**, each entry carrying the address that actually answered.
     Reached(Vec<SourceRef>),
 }
@@ -2222,7 +2303,10 @@ fn resolve_roster_using_admission(
 ) -> Resolution {
     let mut servers: Vec<&Resource> = resources.iter().filter(|r| r.is_server()).collect();
     if servers.is_empty() {
-        return Resolution { outcome: Resolved::NoServers, admitted_machine_id: None };
+        return Resolution {
+            outcome: Resolved::NoServers { resources: resources.len() },
+            admitted_machine_id: None,
+        };
     }
     // Ours first, then shared servers whose publicAddressMatches says we share the server's NAT.
     // `sort_by_key` is stable, so plex.tv's own order survives inside each group.
@@ -2232,6 +2316,7 @@ fn resolve_roster_using_admission(
     let mut admitted_machine_id = None;
     let mut refused = false;
     let mut insecure = false;
+    let mut evidence: Option<InsecureEvidence> = None;
     for (server_index, r) in servers.into_iter().enumerate() {
         if server_index != 0 {
             between_servers();
@@ -2297,19 +2382,20 @@ fn resolve_roster_using_admission(
             // published before this match runs) — R2/A5's registry-only commit besides. This arm
             // only records the fact for `Resolved`'s own aggregate, which decides the user-facing
             // `Discovery`/`ServerRosterOutcome` rather than the registry write.
-            Reach::InsecureOnly(c) => {
+            Reach::InsecureOnly(c, routes) => {
                 log(&format!(
                     "auth: '{}' verified at {}:{} but only over plaintext — not recorded",
                     plan.name, c.address, c.port
                 ));
                 insecure = true;
+                evidence.get_or_insert_with(|| InsecureEvidence::new(r, &c, routes));
             }
             Reach::Refused => refused = true,
             Reach::No => {}
         }
     }
     let outcome = if found.is_empty() {
-        Resolved::None { refused, insecure }
+        Resolved::None { refused, insecure, evidence }
     } else {
         Resolved::Reached(found)
     };
@@ -2524,17 +2610,35 @@ fn probe_profile_resource_live_after(
 /// leave a real roster (`Resolved::Reached`) for the caller to keep processing. Pure and pulled out
 /// of [`discover_and_store`] so the precedence rule (plan §4: `At` > `InsecureOnly` > `Refused` >
 /// `No`) is itself gradeable on the dev Mac rather than only reachable through a live worker.
-fn resolved_without_roster(resolved: Resolved) -> Result<Vec<SourceRef>, Discovery> {
+///
+/// `trigger` is which flow ran this discovery; it is evidence for the no-servers incident only.
+/// Each failing verdict that carries evidence logs it here, once, as closed codes.
+fn resolved_without_roster(
+    resolved: Resolved,
+    trigger: DiscoveryTrigger,
+) -> Result<Vec<SourceRef>, Discovery> {
     match resolved {
-        Resolved::NoServers => Err(Discovery::NoServers),
+        Resolved::NoServers { resources } => {
+            log(&format!(
+                "auth: no servers (resources n={resources}, all non-server) after {}",
+                trigger.code()
+            ));
+            Err(Discovery::NoServers(NoServersEvidence {
+                resources: CountBucket::from_count(resources),
+                trigger,
+            }))
+        }
         // A verified-but-plaintext answer is worth more to the user than a parallel/proxy 401,
         // because it names a fixable cause (HTTPS to the server) rather than a credential one.
-        Resolved::None { insecure: true, .. } => {
-            log("auth: at least one server verified only over plaintext (insecure-only), unusable in this build");
-            Err(Discovery::InsecureOnly)
+        Resolved::None { insecure: true, evidence, .. } => {
+            log(&format!(
+                "auth: at least one server verified only over plaintext (insecure-only), unusable in this build: {}",
+                evidence.as_ref().map_or_else(|| "no probe evidence (admission)".to_owned(), InsecureEvidence::log_form)
+            ));
+            Err(Discovery::InsecureOnly(evidence))
         }
-        Resolved::None { refused: true, insecure: false } => Err(Discovery::Refused),
-        Resolved::None { refused: false, insecure: false } => Err(Discovery::Silent(None)),
+        Resolved::None { refused: true, insecure: false, .. } => Err(Discovery::Refused),
+        Resolved::None { refused: false, insecure: false, .. } => Err(Discovery::Silent(None)),
         Resolved::Reached(found) => Ok(found),
     }
 }
@@ -2549,7 +2653,7 @@ fn resolved_without_roster(resolved: Resolved) -> Result<Vec<SourceRef>, Discove
 ///
 /// The primary [`ServerRef`] is written exactly as before, so a single-server account produces the
 /// same session file it always did (plus a one-entry roster beside it).
-fn discover_and_store(ac: &AccountClient, client_id: &str, epoch: u64,
+fn discover_and_store(ac: &AccountClient, client_id: &str, epoch: u64, trigger: DiscoveryTrigger,
     output: &dyn owner::ObservationSink) -> Discovery {
     if !output.live() { return Discovery::Cancelled; }
     let resources = match ac.resources() {
@@ -2593,7 +2697,7 @@ fn discover_and_store(ac: &AccountClient, client_id: &str, epoch: u64,
     let resolution = resolve_roster_live_while(&resources, &[], client_id,
         &mut activate, &mut observe, &|| output.live());
     if !output.live() { return Discovery::Cancelled; }
-    let found = match resolved_without_roster(resolution.outcome) {
+    let found = match resolved_without_roster(resolution.outcome, trigger) {
         Ok(found) => found,
         Err(discovery) => return discovery,
     };
@@ -3352,8 +3456,7 @@ impl<S: FnOnce(&AccountClient, &str, Option<&str>) -> SwitchOutcome> ProfileWork
         } else {
             PROBE_DEADLINES.remote
         };
-        let (status, body) = get_identity(&origin, pin.as_ref(), budget);
-        let outcome = classify(status, &body, &plan.machine_id);
+        let (outcome, _) = get_identity(&origin, pin.as_ref(), budget).grade(&plan.machine_id);
         let source = (outcome == Outcome::Reachable).then(|| {
             let mut fresh = cached.clone();
             fresh.token = resource.access_token.clone();
