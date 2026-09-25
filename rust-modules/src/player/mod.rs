@@ -1415,7 +1415,10 @@ fn subtitle_offset_ns() -> i64 {
 /// only has the cues the demuxer has read, which is why [`subtitle_offset_range_ms`] gives it no
 /// advance at all; a delay is served from the store, except in the first seconds after a seek
 /// (the demuxer restarts AT the target, never before it), which find nothing to draw until the
-/// playhead has moved on by the delay.
+/// playhead has moved on by the delay. A native audio-track switch (`engine::switch_audio_native`
+/// → `reload_at`) is the same case: its teardown clears both cue stores and the demuxer restarts
+/// at the playhead, so an embedded track under a delay shows nothing for about the delay after the
+/// switch.
 pub(crate) fn subtitle_clock_ns(now_ns: i64) -> i64 {
     now_ns.saturating_sub(subtitle_offset_ns())
 }
