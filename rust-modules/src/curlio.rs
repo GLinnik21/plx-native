@@ -2383,7 +2383,11 @@ mod tests {
     #[test]
     fn teardown_aborts_a_runtime_source_probe_without_waiting_out_its_budget() {
         let Some(_gate) = curl_gate() else { return };
-        with_server(RangeMode::Stall, |port, _, _| {
+        // The server never answers, so the probe is parked in its setup wait and only teardown's
+        // wake can end it. `Stall` sent headers at once: a 200 to the probe's Range, which the
+        // probe itself refuses as `RangeIgnored` — ending the sample (and retiring its handle)
+        // before teardown ran whenever this thread was late, which a loaded suite made it.
+        with_server(RangeMode::WithholdFrom(1), |port, _, _| {
             let url = format!("http://127.0.0.1:{port}/f.mkv");
             let started = std::time::Instant::now();
             std::thread::scope(|scope| {
@@ -2409,6 +2413,10 @@ mod tests {
                     );
                     std::thread::yield_now();
                 }
+                // Teardown lands whenever the main thread next runs, not the instant the probe
+                // publishes. A loaded suite deschedules this thread right here; the delay makes
+                // that the case every run, so the probe is already on the wire when it is woken.
+                std::thread::sleep(std::time::Duration::from_millis(100));
                 abort_active();
                 let result = worker.join().expect("probe worker");
                 assert!(
