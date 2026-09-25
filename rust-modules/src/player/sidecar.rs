@@ -174,6 +174,24 @@ pub(crate) fn deselect() {
     st.failed = None;
 }
 
+/// Is a sidecar the selected subtitle? True from the pick, before its file has arrived — the
+/// question is which KIND of track the viewer chose (it decides the timing offset's range,
+/// `player::subtitle_offset_range_ms`), not whether a cue is ready.
+pub(crate) fn selected() -> bool {
+    state().want != 0
+}
+
+/// Mark `stream_id` as the selected sidecar without fetching anything — for tests of what the
+/// selection KIND decides (the timing offset's range), which never draw a cue.
+#[cfg(test)]
+pub(crate) fn select_without_fetch_for_test(stream_id: i64) {
+    let mut st = state();
+    st.generation = st.generation.wrapping_add(1);
+    st.pending = None;
+    st.want = stream_id;
+    st.failed = None;
+}
+
 /// A new item is starting: nothing of the previous one's may survive. MAIN THREAD.
 pub(crate) fn reset() {
     let mut st = state();

@@ -1410,11 +1410,11 @@ fn subtitle_offset_ns() -> i64 {
 /// image sets, the sidecar — goes through this one subtraction; saturating, so no offset can wrap
 /// a timestamp at either end of `i64`.
 ///
-/// The sidecar holds its whole file, so any offset is exact there. An EMBEDDED track only has the
-/// cues the demuxer has read: an early offset wider than its read-ahead (bounded by the A/V queues,
-/// so only seconds at a high bitrate — why the range stops at 5 s early), or a late one in
-/// the first seconds after a seek (the demuxer restarts AT the target, never before it), finds
-/// nothing to draw until the window catches up.
+/// The sidecar holds its whole file, so any offset in its range is exact there. An EMBEDDED track
+/// only has the cues the demuxer has read, which is why [`subtitle_offset_range_ms`] gives it no
+/// advance at all; a delay is served from the store, except in the first seconds after a seek
+/// (the demuxer restarts AT the target, never before it), which find nothing to draw until the
+/// playhead has moved on by the delay.
 pub(crate) fn subtitle_clock_ns(now_ns: i64) -> i64 {
     now_ns.saturating_sub(subtitle_offset_ns())
 }
@@ -1427,17 +1427,38 @@ fn subtitle_floor_ns() -> i64 {
     now.min(subtitle_clock_ns(now)).saturating_sub(2_000_000_000)
 }
 
-/// The timing offset's range in milliseconds — the Timing rows' clamp and the player's, one pair of
-/// numbers. **Asymmetric on purpose.** A DELAY is served from cues already in the store (which
-/// retains them for as long as the offset needs); an ADVANCE needs cues the demuxer has not read
-/// yet, and an embedded track's cues are read in the same bounded A/V queue as the picture.
-pub(crate) const SUBTITLE_OFFSET_EARLIEST_MS: i64 = -5_000;
+/// The latest the offset goes, for every kind of track: a DELAY is served from cues already in the
+/// store, which retains them for as long as the offset needs (`subtitle_floor_ns`, and the image
+/// store's eviction order in [`push_subtitle_bitmap`]).
 pub(crate) const SUBTITLE_OFFSET_LATEST_MS: i64 = 30_000;
+/// The earliest a SIDECAR goes. Its whole file is in memory (`sidecar`), so an advance is exactly
+/// as servable as a delay.
+pub(crate) const SUBTITLE_OFFSET_EARLIEST_SIDECAR_MS: i64 = -30_000;
 /// The Timing rows' step.
 pub(crate) const SUBTITLE_OFFSET_STEP_MS: i64 = 100;
 
+/// **The offset range for the selected subtitle, in milliseconds (`(earliest, latest)`)** — the
+/// ONE rule the Timing rows (their clamp and their limit dimming, `ui::track_menu`) and the
+/// player's clamp ([`set_subtitle_offset`]) both call, so the menu can never offer a step the
+/// player refuses.
+///
+/// A sidecar gets -30..=+30 s. An EMBEDDED track (text or image) gets 0..=+30 s, a delay only:
+/// an advance needs cues the demuxer has not read yet, and an embedded track's packets ride the
+/// same byte-bounded A/V queues as the picture (`engine::AQ_VIDEO_BYTES`, 10 MiB — about 2 s of
+/// a 40 Mbit/s remux), so an advance would find nothing to draw. Off counts as embedded; the
+/// offset is 0 there anyway (a track change resets it).
+pub(crate) fn subtitle_offset_range_ms() -> (i64, i64) {
+    offset_range_for(sidecar::selected())
+}
+
+fn offset_range_for(sidecar: bool) -> (i64, i64) {
+    let earliest = if sidecar { SUBTITLE_OFFSET_EARLIEST_SIDECAR_MS } else { 0 };
+    (earliest, SUBTITLE_OFFSET_LATEST_MS)
+}
+
 fn clamp_subtitle_offset_ms(offset_ms: i64) -> i32 {
-    offset_ms.clamp(SUBTITLE_OFFSET_EARLIEST_MS, SUBTITLE_OFFSET_LATEST_MS) as i32
+    let (earliest, latest) = subtitle_offset_range_ms();
+    offset_ms.clamp(earliest, latest) as i32
 }
 
 /// Restore the persisted preference without writing it back (boot, and the credentials handoff
@@ -2826,11 +2847,15 @@ mod tests {
         assert_eq!(active_subtitle(2 * SEC + SEC / 2).as_deref(), Some("cue"));
         assert_eq!(active_subtitle(3 * SEC), None, "…and ends it as late as it started it");
 
+        // only a sidecar takes an advance (`subtitle_offset_range_ms`); the subtraction is the
+        // one every store shares, so the embedded lookup still proves its direction
+        sidecar::select_without_fetch_for_test(42);
         set_subtitle_offset(-1_000);
         assert_eq!(active_subtitle(SEC / 2).as_deref(), Some("cue"), "a negative one advances it");
         assert_eq!(active_subtitle(SEC + SEC / 2), None);
 
         set_subtitle_offset(0);
+        sidecar::reset();
         SHARED.sub_cues.lock().unwrap().clear();
         SHARED.desired_sub_idx.store(-1, Relaxed);
     }
@@ -2880,20 +2905,48 @@ mod tests {
         set_subtitle_offset(0);
     }
 
+    /// **An advance is offered only where it can be served.** A sidecar holds its whole file, so
+    /// it takes 30 s either way; an EMBEDDED track's cues arrive through the byte-bounded A/V
+    /// queues (about 2 s ahead of the playhead at a high bitrate), so it takes a delay only. The
+    /// clamp follows whichever kind is selected, including a negative offset left from a sidecar.
+    #[test]
+    fn an_embedded_track_takes_no_advance_and_a_sidecar_takes_thirty_seconds() {
+        let _g = crate::testlock::serial();
+        sidecar::reset();
+        set_subtitle_offset(-1_000);
+        assert_eq!(subtitle_offset_ms(), 0, "an embedded track (or Off) takes no advance");
+        set_subtitle_offset(40_000);
+        assert_eq!(subtitle_offset_ms(), 30_000);
+
+        sidecar::select_without_fetch_for_test(42);
+        set_subtitle_offset(-30_000);
+        assert_eq!(subtitle_offset_ms(), -30_000, "a sidecar advances 30 s");
+        set_subtitle_offset(i64::MIN);
+        assert_eq!(subtitle_offset_ms(), -30_000);
+        set_subtitle_offset(i64::MAX);
+        assert_eq!(subtitle_offset_ms(), 30_000);
+
+        // the kind decides, not the value's history: the same request on an embedded track is 0
+        set_subtitle_offset(-2_000);
+        sidecar::deselect();
+        set_subtitle_offset(-2_000);
+        assert_eq!(subtitle_offset_ms(), 0, "a negative offset never reaches an embedded track");
+        set_subtitle_offset(0);
+        sidecar::reset();
+    }
+
     /// The offset can never wrap a timestamp: the lookups saturate at both ends of `i64`, and the
     /// setter clamps to the Timing rows' range.
     #[test]
     fn the_subtitle_clock_saturates_and_the_offset_clamps() {
         let _g = crate::testlock::serial();
+        sidecar::select_without_fetch_for_test(42);
         set_subtitle_offset(30_000);
         assert_eq!(subtitle_clock_ns(i64::MIN), i64::MIN);
-        set_subtitle_offset(-5_000);
+        set_subtitle_offset(-30_000);
         assert_eq!(subtitle_clock_ns(i64::MAX), i64::MAX);
-        set_subtitle_offset(i64::MAX);
-        assert_eq!(subtitle_offset_ms(), 30_000);
-        set_subtitle_offset(i64::MIN);
-        assert_eq!(subtitle_offset_ms(), -5_000, "an advance stops at 5 s");
         set_subtitle_offset(0);
+        sidecar::reset();
     }
     /// The image-subtitle store, exercised as a display SET rather than a single bitmap. Three
     /// invariants moved when multi-rect landed and none of them is observable on the host except

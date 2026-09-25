@@ -13,13 +13,15 @@
 //!
 //! On a direct play a third section follows, **Timing**: the subtitle offset
 //! (`player::subtitle_offset_ms`, which lasts one playback of one track) as the header's read-out, and three rows that
-//! step it — Earlier and Later by 100 ms (up to 5 s early, 30 s late), Reset to zero. OK on one of those performs the step and
+//! step it — Earlier and Later by 100 ms, Reset to zero. The range is the player's
+//! (`player::subtitle_offset_range_ms`): 30 s late for any track, 30 s early for a sidecar, and no
+//! advance for an embedded track, whose Earlier row is drawn dim and does nothing at zero. OK on one of those performs the step and
 //! leaves the panel open ([`TrackMenuState::ok_keeps_open`]); every other row still closes it. A
 //! transcode draws no Timing section: the server burns the captions, and no client-side offset
 //! reaches a burned caption.
 #![allow(dead_code)]
 use crate::metadata;
-use crate::player::{SUBTITLE_OFFSET_EARLIEST_MS, SUBTITLE_OFFSET_LATEST_MS, SUBTITLE_OFFSET_STEP_MS};
+use crate::player::SUBTITLE_OFFSET_STEP_MS;
 use crate::plex::session::SubtitleTone;
 use crate::ui::consts::SCR_H;
 use crate::ui::frame::Budget;
@@ -255,12 +257,13 @@ impl TrackMenuState {
             // one always republishes, and re-committing the track would re-burn a transcode
             Some(TrackCommit::SubtitleTone(tone))
         } else if let Some(row) = timing_at(self.offset_base, sel) {
+            let (earliest, latest) = crate::player::subtitle_offset_range_ms();
             let next = match row {
                 TimingRow::Earlier => self.offset_ms - SUBTITLE_OFFSET_STEP_MS,
                 TimingRow::Later => self.offset_ms + SUBTITLE_OFFSET_STEP_MS,
                 TimingRow::Reset => 0,
             }
-            .clamp(SUBTITLE_OFFSET_EARLIEST_MS, SUBTITLE_OFFSET_LATEST_MS);
+            .clamp(earliest, latest);
             if next == self.offset_ms {
                 return None; // at a limit, or Reset at zero: nothing to perform
             }
@@ -405,17 +408,20 @@ impl TrackMenuState {
     /// ([`TimingRow`]). A stepper rather than one checked row per value — hundreds of rows at
     /// 100 ms would be a list nobody could walk and a per-frame layout walk over every one of them.
     fn build_timing(&self) -> Section {
+        // the player's own range for the selected track's kind — Earlier dims at an embedded
+        // track's 0, which takes no advance, and at a sidecar's -30 s
+        let (earliest, latest) = crate::player::subtitle_offset_range_ms();
         let mut sec = Section::new("Timing").accessory(format_offset(self.offset_ms));
         for row in TimingRow::ALL {
             let r = match row {
                 TimingRow::Earlier => Row::new("Earlier")
                     .value(format_offset(-SUBTITLE_OFFSET_STEP_MS))
                     .value_dim(true)
-                    .dim(self.offset_ms <= SUBTITLE_OFFSET_EARLIEST_MS),
+                    .dim(self.offset_ms <= earliest),
                 TimingRow::Later => Row::new("Later")
                     .value(format_offset(SUBTITLE_OFFSET_STEP_MS))
                     .value_dim(true)
-                    .dim(self.offset_ms >= SUBTITLE_OFFSET_LATEST_MS),
+                    .dim(self.offset_ms >= latest),
                 TimingRow::Reset => Row::new("Reset").dim(self.offset_ms == 0),
             };
             sec = sec.row(r);
@@ -889,6 +895,7 @@ mod tests {
     #[test]
     fn sidecar_and_tone_rows_map_to_their_own_commits_in_one_menu() {
         let _g = crate::testlock::serial(); // the panel seeds its offset from the player's global
+        crate::player::sidecar::reset();
         crate::player::set_subtitle_offset(0);
         let ps = crate::route::PlaybackSession::IDLE;
         let mut store = crate::stores::metadata::MetadataStore::default();
@@ -946,9 +953,9 @@ mod tests {
 
         // …and the Timing rows start where the ladder ends: Earlier, Later, Reset
         let timing = 3 + SubtitleTone::LADDER.len() as c_int;
-        menu.focus_row(timing);
+        menu.focus_row(timing + 1);
         assert!(menu.ok_keeps_open());
-        assert_eq!(menu.on_ok(&ps, store.view()), Some(TrackCommit::SubtitleOffset(-100)));
+        assert_eq!(menu.on_ok(&ps, store.view()), Some(TrackCommit::SubtitleOffset(100)));
     }
 
     /// **The Timing section is a stepper, three rows whatever the range.** Each Earlier/Later
@@ -958,6 +965,7 @@ mod tests {
     #[test]
     fn the_timing_rows_step_the_offset_and_keep_the_panel_open() {
         let _g = crate::testlock::serial();
+        crate::player::sidecar::reset(); // an embedded (or no) track: the range is 0..=+30 s
         crate::player::set_subtitle_offset(0);
         let ps = crate::route::PlaybackSession::IDLE;
         let store = crate::stores::metadata::MetadataStore::default();
@@ -981,11 +989,11 @@ mod tests {
         assert_eq!(menu.on_ok(&ps, store.view()), Some(TrackCommit::SubtitleOffset(0)));
         assert_eq!(menu.on_ok(&ps, store.view()), None, "Reset at zero is nothing to perform");
 
-        crate::player::set_subtitle_offset(-5_000);
+        crate::player::set_subtitle_offset(30_000);
         let mut menu = TrackMenuState::new(&ps, store.view(), 1);
-        menu.focus_row(earlier);
+        menu.focus_row(later);
         assert_eq!(menu.on_ok(&ps, store.view()), None, "the limit clamps rather than wraps");
-        assert_eq!(menu.table.sections[2].accessory, "-5.0 s");
+        assert_eq!(menu.table.sections[2].accessory, "+30.0 s");
         crate::player::set_subtitle_offset(0);
 
         // a track or tone row still closes the panel
@@ -993,6 +1001,40 @@ mod tests {
         assert!(!menu.ok_keeps_open());
         menu.focus_row(1);
         assert!(!menu.ok_keeps_open());
+    }
+
+    /// **Earlier is dim and inert at the selected kind's floor.** An embedded track takes a delay
+    /// only (its cues arrive through the A/V queues, a couple of seconds ahead), so at zero the row
+    /// is drawn dim and OK on it performs nothing; a sidecar, whole in memory, steps down to -30 s.
+    /// The menu and the player's clamp read ONE range function, so they cannot disagree.
+    #[test]
+    fn earlier_is_dim_and_inert_at_the_selected_kinds_floor() {
+        let _g = crate::testlock::serial();
+        crate::player::sidecar::reset();
+        crate::player::set_subtitle_offset(0);
+        let ps = crate::route::PlaybackSession::IDLE;
+        let store = crate::stores::metadata::MetadataStore::default();
+        let earlier = 1 + SubtitleTone::LADDER.len() as c_int;
+
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1);
+        assert!(menu.table.sections[2].rows[0].dim, "no advance on an embedded track: Earlier is dim");
+        menu.focus_row(earlier);
+        assert_eq!(menu.on_ok(&ps, store.view()), None, "…and inert");
+        assert_eq!(menu.table.sections[2].accessory, "0.0 s");
+
+        crate::player::sidecar::select_without_fetch_for_test(42);
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1);
+        assert!(!menu.table.sections[2].rows[0].dim, "a sidecar can be advanced");
+        menu.focus_row(earlier);
+        assert_eq!(menu.on_ok(&ps, store.view()), Some(TrackCommit::SubtitleOffset(-100)));
+        crate::player::set_subtitle_offset(-30_000);
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1);
+        assert!(menu.table.sections[2].rows[0].dim, "-30 s is a sidecar's floor");
+        menu.focus_row(earlier);
+        assert_eq!(menu.on_ok(&ps, store.view()), None);
+
+        crate::player::set_subtitle_offset(0);
+        crate::player::sidecar::reset();
     }
 
     #[test]
