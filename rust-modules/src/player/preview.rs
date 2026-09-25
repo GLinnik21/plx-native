@@ -696,9 +696,7 @@ pub(crate) fn after_pump(
             .and_then(|e| e.load_th.as_ref())
             .is_none_or(|t| t.is_finished());
         if finished {
-            super::engine::stop_bufferfeed(ps, pa);
-            transition("abandoned Load returned", Machine::stopped);
-            crate::route::clear_preview(ps);
+            retire(ps, pa, "abandoned Load returned");
         }
         return;
     }
@@ -725,16 +723,11 @@ pub(crate) fn after_pump(
         Settle::Ended => {
             crate::player::log("preview: EOS — stopping the preview engine");
             transition("eos", Machine::eos);
-            super::engine::stop_bufferfeed(ps, pa);
-            transition("eos", Machine::stopped);
-            crate::route::clear_preview(ps);
+            retire(ps, pa, "eos");
         }
         Settle::Failed => {
             transition("admitted Load failed", |m| m.fail_admitted(601));
-            if live {
-                super::engine::stop_bufferfeed(ps, pa);
-            }
-            crate::route::clear_preview(ps);
+            retire(ps, pa, "admitted Load failed");
         }
         Settle::Stale => {
             // Never the engine: when the session is not a preview it is someone else's.
@@ -831,9 +824,8 @@ pub(crate) fn seek(
         }
         super::engine::ReloadOutcome::NoRoute => SeekOutcome::Refused,
         super::engine::ReloadOutcome::StartFailed => {
-            super::engine::stop_bufferfeed(ps, pa);
             with_mut(Machine::refuse_admission);
-            crate::route::clear_preview(ps);
+            retire(ps, pa, "seek reload failed");
             SeekOutcome::Failed
         }
     }
@@ -853,9 +845,27 @@ pub(crate) fn halt(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
         return;
     }
     transition("halt", Machine::abandon);
-    super::engine::stop_bufferfeed(ps, pa);
+    retire(ps, pa, "halt");
+}
+
+/// **Stop a preview session's engine — the one way every preview exit does it** (EOS, a failed
+/// Load or open, a failed seek, a halt, an abandoned Load that has finally returned).
+///
+/// `engine::teardown` defers a preview Load that has not returned rather than join it on the main
+/// thread, so the engine may still be installed afterwards. The session then stays a preview and
+/// the machine `Abandoning` until [`after_pump`] finishes it: clearing the flag under a live
+/// engine is how a failed trailer open was once rescued onto an HLS transcode that reported a
+/// timeline to the viewer's account.
+pub(crate) fn retire(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    why: &'static str,
+) {
+    if pa.is_live() {
+        super::engine::stop_bufferfeed(ps, pa);
+    }
     let still_live = pa.is_live();
-    transition("halt", |m| m.halted(still_live));
+    transition(why, |m| m.halted(still_live));
     if !still_live {
         crate::route::clear_preview(ps);
     }

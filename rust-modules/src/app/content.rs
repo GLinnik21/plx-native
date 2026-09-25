@@ -47,6 +47,44 @@ fn halt_preview(app: &mut App) {
     halt_preview_now(&mut app.player.session, &mut app.adapters.player);
 }
 
+std::thread_local! {
+    /// The page instance whose hero started the preview in flight, set when its
+    /// `ContentReq::PreviewStart` is accepted. See [`halt_preview_off_its_page`].
+    static PREVIEW_HOST: std::cell::Cell<Option<crate::ui::machine::InstanceId>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Must a preview be halted this frame? `active` is a preview occupying the machine or installed
+/// in the session, `abandoning` is a halt already waiting for its Load to return, and `host_owns_input`
+/// is whether the page that started it still owns input.
+pub(super) fn preview_must_halt(active: bool, abandoning: bool, host_owns_input: bool) -> bool {
+    active && !abandoning && !host_owns_input
+}
+
+/// **A preview lives exactly as long as the page that started it owns input.** Every way off a
+/// detail page — Home, another title, the Account and Settings overlays, the item menu, a panel,
+/// BACK — ends with some other entry (or surface) owning input, so this one check, run every
+/// frame after the navigation commit, is the hook all of them pass through; the page's own
+/// `ContentReq::PreviewStop` and the halts beside `Push`/`Present`/`Panel` only get there sooner.
+/// An app suspend is the one exit that leaves input where it was, and the lifecycle arm halts
+/// the preview itself.
+fn halt_preview_off_its_page(app: &mut App) {
+    let active = crate::player::preview::occupies() || crate::route::is_preview(&app.player.session);
+    if !active {
+        PREVIEW_HOST.with(|h| h.set(None));
+        return;
+    }
+    let host_owns_input = PREVIEW_HOST
+        .with(std::cell::Cell::get)
+        .and_then(|instance| app.pages.nav.entry_of_instance(instance))
+        .is_some_and(|entry| app.pages.nav.input_owner() == Some(InputOwner::Entry(entry)));
+    if preview_must_halt(active, crate::player::preview::abandoning(), host_owns_input) {
+        log("preview: its page no longer owns input — halting");
+        halt_preview(app);
+        PREVIEW_HOST.with(|h| h.set(None));
+    }
+}
+
 /// The `&mut App`-free half of [`halt_preview`], for call sites (the item menu's own action
 /// dispatch in `app::input`) that only have the playback session and adapter, not the whole
 /// frame. Both must start abandonment before checking [`crate::player::preview::occupies`] —
@@ -212,6 +250,27 @@ thread_local! {
 #[cfg(test)]
 fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
     TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+}
+
+#[cfg(test)]
+mod preview_host_tests {
+    use super::preview_must_halt;
+
+    /// Field report, 0.7.0 prep: a trailer kept playing — and posting a timeline every ten
+    /// seconds — after the viewer went Home, opened Account or Settings, or opened another title,
+    /// and no later detail page autoplayed. Only the page's own requests halted it, and none of
+    /// those exits is one. A preview lives exactly as long as its page owns input.
+    #[test]
+    fn a_preview_is_halted_once_its_page_no_longer_owns_input() {
+        assert!(preview_must_halt(true, false, false));
+    }
+
+    #[test]
+    fn a_preview_on_its_page_or_already_abandoning_is_left_alone() {
+        assert!(!preview_must_halt(true, false, true));
+        assert!(!preview_must_halt(true, true, false));
+        assert!(!preview_must_halt(false, false, false));
+    }
 }
 
 #[cfg(test)]
@@ -409,6 +468,7 @@ mod held_feature_tests {
 }
 
 pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
+    halt_preview_off_its_page(app);
     drain_held_feature(app);
     home_requests(app, fr.now);
     library_requests(app, fr.now);
@@ -512,7 +572,9 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
                     &acodec,
                     &title,
                 );
-                if !ok {
+                if ok {
+                    PREVIEW_HOST.with(|h| h.set(Some(instance)));
+                } else {
                     crate::player::preview::note_admission_refused();
                 }
             }

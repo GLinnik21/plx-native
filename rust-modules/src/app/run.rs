@@ -735,11 +735,17 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
         // Revoke our borrowed SDL proxies before another frame can use them while backgrounded.
         // SDL owns their lifetime; foreground must query its current window again.
         crate::system::sys_release_wayland();
+        // A trailer preview is not parked: the OS taking the screen ends it, like any other way
+        // off its page (`content::halt_preview_off_its_page`). A Load that has not returned is
+        // left Abandoning, and a preview session is never parked for the foreground reload —
+        // that reload would bring the trailer back as ordinary playback.
+        super::content::halt_preview_now(&mut app.player.session, &mut app.adapters.player);
         // Playback owns its resolve and Engine before the queued Player page mounts. Page
         // presence only governs the screen-local cleanup below, never resource suspension.
-        if (crate::route::play_pending()
-            || app.adapters.player.is_live()
-            || crate::route::has_url(&app.player.session))
+        if !crate::route::preview_request(&app.player.session)
+            && (crate::route::play_pending()
+                || app.adapters.player.is_live()
+                || crate::route::has_url(&app.player.session))
             && !app.player.lifecycle.awaiting_load()
         {
             // INTENDED, not published: this snapshot is the only thing the foreground
