@@ -2046,6 +2046,15 @@ fn the_preview_tells_a_container_remux_apart_from_a_re_encode() {
 
 #[test]
 fn on_deck_hevc_p5_preview_uses_the_selected_episodes_codec() {
+    // `playback_preview_with_capability_for_test` reads the process-global quality ceiling
+    // (`quality()`) and the server registry (`crate::plex::client_for`), same as
+    // `the_preview_tells_a_container_remux_apart_from_a_re_encode` above it. Without this guard
+    // another thread's test can move either between the two assertions below and flip
+    // DirectPlay/Converts out from under this one — see `crate::testlock` for why the lock (not a
+    // retry) is the fix.
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Original);
     let mut show = crate::metadata::Detail {
         is_show: true,
         part: String::new(),

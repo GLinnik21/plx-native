@@ -4726,6 +4726,12 @@ pub(crate) fn quality() -> Quality {
 /// sessions: their missing field resolves to Original but remains missing until the user makes an
 /// explicit choice, so a future Auto-ready build still cannot reinterpret that old install.
 pub(crate) fn restore_quality(q: Quality) {
+    // `QUALITY` is a process global `quality()` reads without taking any lock, so a test that
+    // writes it without `testlock::serial()` lands the write mid some OTHER test's read —
+    // `on_deck_hevc_p5_preview_uses_the_selected_episodes_codec` flaked exactly this way. Same
+    // guard as the plex server registry (`plex::servers::register_with_client_id`).
+    #[cfg(test)]
+    crate::testlock::assert_held("the playback quality ceiling (restore_quality)");
     QUALITY.store(supported_quality(q).index(), Ordering::Relaxed);
 }
 
@@ -4753,6 +4759,9 @@ pub(crate) fn restore_quality(q: Quality) {
 fn persist_quality_choice(q: Quality) -> Quality {
     let q = supported_quality(q);
     crate::player::report::note_quality_selected_for(playback_trace_generation(), q);
+    // See `restore_quality`: the same process global, the same lock requirement in tests.
+    #[cfg(test)]
+    crate::testlock::assert_held("the playback quality ceiling (persist_quality_choice)");
     QUALITY.store(q.index(), Ordering::Relaxed);
     // A session write is a read-modify-write under the session lock: changing this preference
     // must not overwrite a roster refresh, a profile switch, or another profile's recents.
