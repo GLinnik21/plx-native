@@ -642,3 +642,53 @@ fn a_shelf_landing_never_moves_a_restored_seat_at_the_head() {
     land_shelves(&mut fixture, &mut page, &mut engine);
     assert_eq!(engine.current(OWNER), Some(page.key(FILTER)), "a restored seat is the reader's");
 }
+
+/// **The engine's memory of a seat the PAGE placed is not a choice the reader made.** Every seat
+/// is remembered by the engine, and TOOLBAR_GROUP is one group across sections — so Movies' own
+/// automatic Sort seat, still remembered, read as a restore when Shows opened with its grid
+/// before its shelves, and the Shows shelves then landed above Sort: the field report again, one
+/// section later.
+#[test]
+fn a_page_placed_seat_remembered_by_the_engine_is_not_a_restore() {
+    let _guard = crate::testlock::serial();
+    let mut fixture = Fixture::new(2, 24, 0);
+    fixture.sections[1].kind = SecKind::Show;
+    fixture.publish(0, 24);
+    let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Movie);
+    let mut engine = FocusEngine::new();
+    let mut ms = 0;
+    let mut frames = |fixture: &Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, n: u32| {
+        for _ in 0..n {
+            ms += 16;
+            fixture.step(page, engine, ScreenEvent::Tick(Tick { ms, dt_us: 16_000 }));
+        }
+    };
+    let land = |fixture: &mut Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, section: usize| {
+        fixture._stores.browse_run(BrowseCmd::SetCur(section));
+        fixture._stores.browse.borrow_mut().seed_shelves_for_test(section, &["Synthetic shelf 0", "Synthetic shelf 1"], 4);
+        fixture.hubs = fixture._stores.browse.borrow_mut().hubs_snapshot();
+        fixture.step(page, engine, ScreenEvent::StoreChanged(StoreId::Browse.ord(), 1));
+    };
+    fixture.step(&mut page, &mut engine, ScreenEvent::Mount);
+    frames(&fixture, &mut page, &mut engine, 3);
+    assert_eq!(engine.current(OWNER), Some(page.key(SORT)), "Movies: grid first, so the page seats Sort");
+    land(&mut fixture, &mut page, &mut engine, 0);
+    frames(&fixture, &mut page, &mut engine, 3);
+    assert_eq!(engine.current(OWNER), Some(page.key(page.shelves[0].elems[0])), "Movies: the seat follows the shelves");
+    fixture._stores.browse_run(BrowseCmd::SetCur(1));
+    fixture.hubs = fixture._stores.browse.borrow_mut().hubs_snapshot();
+    fixture.step(&mut page, &mut engine, ScreenEvent::App(AppMsg::Library(LibraryCmd::Enter(SecKind::Show))));
+    frames(&fixture, &mut page, &mut engine, 2);
+    fixture.publish(1, 24);
+    fixture.step(&mut page, &mut engine, ScreenEvent::StoreChanged(StoreId::Browse.ord(), 1));
+    frames(&fixture, &mut page, &mut engine, 60);
+    assert_eq!(page.kind, SecKind::Show);
+    assert!(page.shelves.is_empty(), "Shows: grid first, shelves still in flight");
+    land(&mut fixture, &mut page, &mut engine, 1);
+    frames(&fixture, &mut page, &mut engine, 3);
+    assert_eq!(page.shelves.len(), 2, "Shows: the landing must reach the document");
+    fixture.direction(&mut page, &mut engine, Dir::Down);
+    let at = engine.current(OWNER).and_then(|key| page.group_of(&key.elem, &fixture.cx(&engine)));
+    assert!(page.shelves.iter().any(|shelf| Some(shelf.group) == at),
+        "Shows: DOWN must reach a shelf, not the grid's heading or the grid (focus in {at:?})");
+}

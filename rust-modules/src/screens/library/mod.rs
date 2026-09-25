@@ -69,7 +69,7 @@ const MORE: u32 = 4;
 const STRIP: GroupId = crate::ui::containers::tabs::STRIP;
 
 pub(crate) const SHAPE: [&str; 8] = [
-    "LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,provisional:Option<u32>,sweep_down:bool,epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,shelf_publication:Option<(HubsId{epoch:u32,sid:u32,section:u64},revision:u64)>,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],shelves:[{id:str,group:u32,landscape:bool,elems:[u32],motion:CardRow}],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}",
+    "LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,provisional:Option<u32>,placed:[(group:u32,elem:u32)],sweep_down:bool,epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,shelf_publication:Option<(HubsId{epoch:u32,sid:u32,section:u64},revision:u64)>,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],shelves:[{id:str,group:u32,landscape:bool,elems:[u32],motion:CardRow}],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}",
     transactions::SHAPE,
     crate::ui::widgets::PageGround::SHAPE,
     crate::ui::widgets::TabStrip::SHAPE,
@@ -149,6 +149,10 @@ pub(crate) struct LibraryScreen {
     /// choice: nobody has moved since. Such a seat follows the head when a landing changes what the
     /// head is — the shelves arrive async, usually after a prepared grid, and commit above it.
     provisional: Option<GroupId>,
+    /// Remembered cursors the PAGE wrote by seating itself, which the reader has not confirmed.
+    /// The engine remembers every seat alike, and `TOOLBAR_GROUP` is one group across sections,
+    /// so its memory alone cannot tell a restore from the page's own earlier seat.
+    placed: Vec<(GroupId, u32)>,
     sweep_down: bool,
     // Paint-only state: neither capsule travel nor ambient colours choose focus or activation.
     library_capsules: crate::ui::widgets::TabStrip,
@@ -173,7 +177,7 @@ impl LibraryScreen {
             scroll: Spring::at(0.0), scroll_target: 0.0, restore_scroll: None,
             viewports: Vec::new(),
             pending: PendingTransactions::default(), page_fade: Xfade::new(), grid_fade: Xfade::new(),
-            readout: Readout::Loading, live: true, initial: true, provisional: None, sweep_down: true,
+            readout: Readout::Loading, live: true, initial: true, provisional: None, placed: Vec::new(), sweep_down: true,
             library_capsules: crate::ui::widgets::TabStrip::new(),
             library_pop: crate::ui::widgets::CtlPop::new(),
             ground: crate::ui::widgets::PageGround::new(), ground_seeded: false,
@@ -509,6 +513,7 @@ impl LibraryScreen {
         // Every activation path (OK, a click, a hold, a scripted menu) is a choice made AT the seat,
         // and none of them moves focus, so no `FocusMoved` will release it.
         self.provisional = None;
+        self.placed.retain(|(_, placed)| *placed != elem);
         // A singleton never reaches this screen at all any more (`self.libraries` is cleared in
         // `sync`), so `MORE` is the only remaining way into the Sources menu — an ordinary library
         // pill below always requests a section transition, never a menu.
@@ -751,6 +756,12 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                 // Any seat off the head that was not a user move (a restore, a reconcile, a seat by
                 // element) is somebody else's choice too, and the head seat no longer describes it.
                 if to_group != self.provisional { self.provisional = None; }
+                // What the engine now remembers for this group is the page's own seat only if this
+                // move IS that seat; any other move into the group was somebody's choice.
+                if let Some(group) = to_group {
+                    self.placed.retain(|(placed, _)| *placed != group);
+                    if self.provisional == Some(group) { self.placed.push((group, to.elem)); }
+                }
                 let outcome = self.pair.focus_moved(from_group, to_group, *to);
                 // Projected entry names the letter but preserves the exact remembered grid item.
                 // Only a move within the rail (or direct pointer entry) jumps to its first title.
@@ -832,7 +843,8 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                         // a restored scroll (a saved viewport or bookmark, at the head or not) names
                         // the block they left, and a remembered cursor in the seated group is where
                         // `Seat::Remembered` puts them back — neither may follow a landing.
-                        let restoring = self.restore_scroll.is_some() || cx.focus.remembered(group).is_some();
+                        let restoring = self.restore_scroll.is_some() || cx.focus.remembered(group)
+                            .is_some_and(|elem| !self.placed.contains(&(group, elem)));
                         self.provisional = (group == self.first_group() && !restoring).then_some(group);
                         self.seat_on(group, cx, fx);
                     } else if let Some(seated) = self.provisional.filter(|_| self.layout.first().is_some()) {
@@ -876,6 +888,11 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                 if matches!(input.kind, InputKind::Key { edge: Edge::Down, .. } | InputKind::Pointer { .. }
                     | InputKind::Click { .. } | InputKind::Drag { .. } | InputKind::Wheel { .. }) {
                     self.provisional = None;
+                }
+                // A pointer on a control confirms it the way activating it does.
+                if let InputKind::Pointer { hit: Some(hit), .. } | InputKind::Click { hit: Some(hit), .. }
+                    | InputKind::Drag { hit: Some(hit), .. } = input.kind {
+                    self.placed.retain(|(_, placed)| *placed != hit);
                 }
                 if matches!(input.kind, InputKind::Key { key: Key::Ok, edge: Edge::Down, .. })
                     && cx.focus.current.is_some_and(|key| key.entry == self.entry && region_of_elem(key.elem) == Some(KeyRegion::Rail)) {
@@ -1081,6 +1098,8 @@ impl LogicalState for LibraryScreen {
         c.option(self.restore_scroll, |c, value| { c.f32(value); });
         c.bool(self.live).bool(self.initial);
         c.option(self.provisional, |c, group| { c.u32(group.0); });
+        c.seq(self.placed.len());
+        for (group, elem) in &self.placed { c.u32(group.0).u32(*elem); }
         c.bool(self.sweep_down);
         c.option(self.epoch, |c, value| { c.u32(value); });
         c.option(self.query, |c, value| { c.u32(value); });

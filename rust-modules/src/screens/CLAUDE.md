@@ -61,7 +61,8 @@ that mixes async content with a live cursor:
   first block must re-seat when a landing changes what that block is, until the user moves. The
   Library's grid is usually prepared before its shelves land, so its first seat was the grid's
   heading; the shelves then committed above it and the first DOWN went on into the grid
-  (`LibraryScreen::provisional`). Home already has this shape (the hero seats when its action row
+  (`LibraryScreen::provisional`). A restore is only what the reader chose: the engine remembers
+  the page's own seats too, so the page keeps their provenance (`LibraryScreen::placed`). Home already has this shape (the hero seats when its action row
   arrives, while focus is still on the strip); Search seats its field, which never arrives async,
   and Person and Detail keep no self-seat for a landing to strand.
 - **Derive re-entry position, don't store it.** `Layout::seat_for_scroll` derives the focus seat
