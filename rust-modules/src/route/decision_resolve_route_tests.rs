@@ -1378,6 +1378,48 @@ fn the_visible_switch_stamp_is_the_frame_tick_and_a_landing_cannot_rewind_it() {
     install_active_encoder("");
 }
 
+/// Retry, and a quality picked after a failure, resolve the SAME item with the subtitle the viewer
+/// had (`RetryContext::sub_sid`), so the timing offset tuned against that subtitle rides along. A
+/// genuinely new request (no retry) still starts at 0.
+#[test]
+fn a_retry_keeps_the_subtitle_offset_a_new_item_does_not() {
+    let _g = crate::testlock::serial();
+    crate::player::reset_subtitle();
+    crate::player::set_subtitle_offset(2_000);
+    let retry = RetryContext {
+        resume_ns: 0,
+        audio_sid: 17,
+        sub_sid: 23,
+        sub_offset_ms: crate::player::subtitle_offset_ms(),
+    };
+    reset_track_selection(Some(retry));
+    assert_eq!(
+        crate::player::subtitle_offset_ms(),
+        2_000,
+        "a retry of the same item must keep the offset tuned against its subtitle",
+    );
+    reset_track_selection(None);
+    assert_eq!(crate::player::subtitle_offset_ms(), 0, "a new item starts at 0");
+
+    // A sidecar's advance survives the reset (which deselects the sidecar) and is held to the
+    // range of whatever the landing re-selected: kept for the sidecar, dropped for anything else.
+    let advanced = RetryContext { sub_offset_ms: -2_000, ..retry };
+    reset_track_selection(Some(advanced));
+    assert_eq!(crate::player::subtitle_offset_ms(), -2_000);
+    crate::player::sidecar::select_without_fetch_for_test(23);
+    crate::player::reclamp_subtitle_offset();
+    assert_eq!(crate::player::subtitle_offset_ms(), -2_000, "the sidecar landed again");
+    reset_track_selection(Some(advanced));
+    crate::player::reclamp_subtitle_offset();
+    assert_eq!(
+        crate::player::subtitle_offset_ms(),
+        0,
+        "an advance never outlives the sidecar that allowed it",
+    );
+    crate::player::reset_audio_track();
+    crate::player::reset_subtitle();
+}
+
 #[test]
 fn a_refused_retry_keeps_its_position_and_full_request_for_the_next_quality() {
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -1406,6 +1448,7 @@ fn a_refused_retry_keeps_its_position_and_full_request_for_the_next_quality() {
             resume_ns: 3_600_000_000_000,
             audio_sid: 17,
             sub_sid: 23,
+            sub_offset_ms: 0,
         },
         "a rescue must not silently restore the server-default tracks",
     );
@@ -2146,4 +2189,40 @@ fn sidecar_on_invalidates_a_pending_original_recovery() {
     reset_session(&mut ps);
     reset_player_control_for_test(&ps);
     crate::player::reset_subtitle();
+}
+
+/// **A subtitle timing offset belongs to the track it was tuned against.** Picking a DIFFERENT
+/// track (another embedded one, a sidecar, or Off) starts the new one at zero; re-committing the
+/// track already showing — the menu republishes a subtitle OK even when nothing changed — keeps
+/// the offset the viewer found.
+#[test]
+fn picking_a_different_subtitle_track_resets_the_offset_and_re_picking_it_keeps_it() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    apply_plan(&mut ps,
+        Plan {
+            url: "https://example.invalid/source.mkv".into(),
+            delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+            transport_kbps: 22_000,
+            ..Default::default()
+        },
+        "rk-subtitle-offset",
+    );
+    commit_subtitle_selection(&mut ps, 2, 88);
+    crate::player::set_subtitle_offset(1_500);
+
+    commit_subtitle_selection(&mut ps, 2, 88);
+    assert_eq!(crate::player::subtitle_offset_ms(), 1_500, "the same track keeps its offset");
+
+    commit_subtitle_selection(&mut ps, 3, 89);
+    assert_eq!(crate::player::subtitle_offset_ms(), 0, "another track starts at zero");
+
+    crate::player::set_subtitle_offset(700);
+    commit_subtitle_selection(&mut ps, -1, 0);
+    assert_eq!(crate::player::subtitle_offset_ms(), 0, "Off drops the offset too");
+
+    reset_session(&mut ps);
+    reset_player_control_for_test(&ps);
+    crate::player::reset_subtitle();
+    crate::player::set_subtitle_offset(0);
 }

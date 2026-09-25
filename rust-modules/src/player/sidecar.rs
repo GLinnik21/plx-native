@@ -10,8 +10,9 @@
 //!
 //! # Why its own store, and not `SHARED.sub_cues`
 //!
-//! That store is a WINDOW: `push_subtitle_text` drops everything more than 2 s behind the playhead
-//! and caps at 512, because the demuxer refills it as it reads. A sidecar arrives once, whole —
+//! That store is a WINDOW: `push_subtitle_text` drops everything more than the latest delay + 2 s
+//! (32 s) behind the playhead (`player::subtitle_floor_ns`) and caps at 512, because the demuxer
+//! refills it as it reads. A sidecar arrives once, whole —
 //! 1,000-2,000 cues for a feature — and nothing re-reads it after a backward seek. So the file is
 //! kept in full, sorted, and looked up by time.
 //!
@@ -23,6 +24,11 @@
 //! transcoding — otherwise a direct play that becomes a transcode mid-film (a DTS audio pick)
 //! would show the line twice. The fact is PASSED IN rather than read: the playback session is
 //! the frame's publication, and the draw that calls this already holds it.
+//!
+//! The draw asks on the SUBTITLE clock (`player::subtitle_clock_ns`, the playhead less the
+//! viewer's timing offset). Because the whole file is here, a sidecar is the one kind of track
+//! that can be ADVANCED as well as delayed — [`selected`] is what `player::subtitle_offset_range_ms`
+//! reads to offer it -30 s..+30 s, where an embedded track gets a delay only.
 //!
 //! # Threading
 //!
@@ -170,6 +176,24 @@ pub(crate) fn deselect() {
     st.generation = st.generation.wrapping_add(1);
     st.pending = None;
     st.want = 0;
+    st.failed = None;
+}
+
+/// Is a sidecar the selected subtitle? True from the pick, before its file has arrived — the
+/// question is which KIND of track the viewer chose (it decides the timing offset's range,
+/// `player::subtitle_offset_range_ms`), not whether a cue is ready.
+pub(crate) fn selected() -> bool {
+    state().want != 0
+}
+
+/// Mark `stream_id` as the selected sidecar without fetching anything — for tests of what the
+/// selection KIND decides (the timing offset's range), which never draw a cue.
+#[cfg(test)]
+pub(crate) fn select_without_fetch_for_test(stream_id: i64) {
+    let mut st = state();
+    st.generation = st.generation.wrapping_add(1);
+    st.pending = None;
+    st.want = stream_id;
     st.failed = None;
 }
 

@@ -68,7 +68,9 @@ fn wrap(s: &str, max: usize) -> Vec<String> {
 /// transcode BURNS the selection into the picture and drawing it too would double the line.
 pub(crate) fn draw_subtitles(hud_up: bool, transcoding: bool) {
     let now_ns = crate::player::playpos_ns();
-    let cue = crate::player::sidecar::active(now_ns, transcoding)
+    // the sidecar is looked up on the SUBTITLE clock (the playhead less the viewer's timing
+    // offset); the embedded store applies the same subtraction inside `active_subtitle`
+    let cue = crate::player::sidecar::active(crate::player::subtitle_clock_ns(now_ns), transcoding)
         .or_else(|| crate::player::active_subtitle(now_ns));
     let text = match cue {
         Some(t) if !t.trim().is_empty() => t,
@@ -219,7 +221,9 @@ pub(crate) fn draw_subtitle_bitmap(cache: &mut SubtitleBitmaps, hud_up: bool) {
                 for (i, r) in rects.iter().enumerate() {
                     let dst = sub_screen_rect((r.x, r.y, r.w, r.h), cw, ch);
                     let prev = set.get(i).map_or(0, |(t, _)| *t);
-                    let tex = upload_rgba(prev, r.w, r.h, r.rgba.as_ptr());
+                    // the store holds the set indexed; expand it once, here, per cue change
+                    let rgba = r.to_rgba();
+                    let tex = upload_rgba(prev, r.w, r.h, rgba.as_ptr());
                     match set.get_mut(i) {
                         Some(slot) => *slot = (tex, dst),
                         None => set.push((tex, dst)),

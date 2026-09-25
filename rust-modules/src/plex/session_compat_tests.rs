@@ -440,3 +440,19 @@ fn a_session_written_before_household_evidence_falls_back_to_raw_owned() {
         );
     }
 }
+
+/// **The subtitle timing offset is not in the session file.** A timing error belongs to one
+/// subtitle track against one media file, so the offset lives and dies with the playback
+/// (`player::set_subtitle_offset`) and a stored one would put the last film's correction on the
+/// next film. Neither the flat session nor the DB8 public preferences carry the key.
+#[test]
+fn the_session_file_carries_no_subtitle_offset() {
+    let json = serde_json::to_value(Session::default()).unwrap();
+    assert!(json.get("subtitle_offset_ms").is_none(), "the session file names no offset: {json}");
+    let public = split_public(&Session::default()).unwrap();
+    assert!(
+        public.preferences.get("subtitle_offset_ms").is_none(),
+        "the public preferences name no offset: {}",
+        public.preferences
+    );
+}

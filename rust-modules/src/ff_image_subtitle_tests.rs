@@ -73,7 +73,7 @@ fn bind_host_ffmpeg() {
 /// v.mkv --compression 0:zlib t.srt`.
 ///
 /// The image tracks go through the app's own decode path — `open_sub_decoder`, `decode_bitmap_cue`,
-/// `rect_to_rgba`, `sub_canvas`, `push_subtitle_bitmap` — keyed by file-order ordinal as the demux
+/// `rect_to_indexed`, `sub_canvas`, `push_subtitle_bitmap` — keyed by file-order ordinal as the demux
 /// loop keys them.
 #[test]
 #[ignore = "needs the host build of the bundled FFmpeg — run by `make check-ffmpeg`"]
