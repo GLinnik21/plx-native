@@ -367,6 +367,22 @@ jobs:
           set -euo pipefail
           ./tools/fwcompat.py --db /usr/share/webosbrew/compat-checker/data --min-release 4.4.2 pkg/plxnative | tee -a "$GITHUB_STEP_SUMMARY"
           ./tools/fwcompat.py --db /usr/share/webosbrew/compat-checker/data --min-release 4.4.2 pkg/plxnative-storage | tee -a "$GITHUB_STEP_SUMMARY"
+          # The bundled FFmpeg libraries are dlopen'd, so neither line above nor webosbrew-ipk-verify
+          # (which grades the app and service executables only) resolves THEIR DT_NEEDED against a
+          # firmware; #235's `libz.so.1` on libavformat was graded by nobody. `--shipped pkg` takes
+          # the package's own sibling libraries off the firmware's list. Appended to
+          # pkg/ipk-verify.md as well, because that file is what gen-release-audit.py embeds as the
+          # audit's static matrix, so the verdict is read from the shipped bytes.
+          {
+            echo
+            echo '### Bundled libraries (tools/fwcompat.py --shipped pkg)'
+            echo '```'
+            for lib in pkg/lib*-plx.so.*; do
+              case "$lib" in *.link.*) continue ;; esac   # the link-evidence sidecars
+              ./tools/fwcompat.py --db /usr/share/webosbrew/compat-checker/data --min-release 4.4.2 --shipped pkg "$lib"
+            done
+            echo '```'
+          } | tee -a pkg/ipk-verify.md | tee -a "$GITHUB_STEP_SUMMARY"
 
       - id: name
         run: echo "ipk=$(ls pkg/*.ipk)" >> "$GITHUB_OUTPUT"
