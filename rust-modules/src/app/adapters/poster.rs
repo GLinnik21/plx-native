@@ -391,7 +391,7 @@ fn set_key(s: &mut Pslot, key: &str) {
     crate::cbuf::set_bytes(&mut s.key, key);
 }
 
-// (server, path, w, h, png) → built transcode path, memoised. resolve_tex re-derives the key for
+// (server, path, w, h, png) → built transcode path, memoised. resolve_tex_wh_on re-derives the key for
 // every visible art tile every frame (~25-40 tiles × 60fps); the QueryBuilder + token clone behind
 // image_transcode_path was ~15k heap allocs/sec of steady-state waste for keys that never change.
 // MAIN-thread only (all poster_key callers are draw paths).

@@ -15,7 +15,7 @@ use crate::ui::screen::{
 };
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{badge, badge_w, resolve_tex_on, BadgeStyle};
+use crate::ui::widgets::{badge, badge_w, resolve_tex_wh_on, BadgeStyle};
 use crate::ui::{Painter, Rect, View};
 use std::ffi::CString;
 use std::os::raw::c_int;
@@ -198,7 +198,7 @@ impl InfoPanelState {
         let mut drawn = false;
         if !thumb_path.is_empty() {
             // the PLAYING item's server — the info panel describes what is on the video plane
-            let t = resolve_tex_on(
+            let (t, tw, th) = resolve_tex_wh_on(
                 crate::route::item_sid(crate::route::cur_sid(ps)),
                 &thumb_path,
                 480,
@@ -206,7 +206,11 @@ impl InfoPanelState {
                 0,
             );
             if t != 0 {
-                p.tex(t, Rect::new(sx, sy, sw, sh), 16.0, theme::TINT_WHITE);
+                // cropped to the 16:9 box, never squashed: a 4:3 still or a movie's art of any
+                // aspect comes back at its own shape (`minSize=1` covers the box, it does not fit it)
+                let still = Rect::new(sx, sy, sw, sh);
+                let uv = still.cover_uv(tw, th, crate::ui::Crop::Centre);
+                p.tex_uv(t, uv, still, 16.0, theme::TINT_WHITE);
                 drawn = true;
             }
         }

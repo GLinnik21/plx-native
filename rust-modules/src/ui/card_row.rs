@@ -775,7 +775,7 @@ pub(crate) fn draw_focused(
 ///
 /// This is the loop the detail page's Related and Cast rows and the person page's Movies/Shows
 /// shelves all run; it lives here rather than in a screen so the culling discipline travels with
-/// it. **Only tiles that pass `on_axis` are drawn, and therefore only they call `resolve_tex`** —
+/// it. **Only tiles that pass `on_axis` are drawn, and therefore only they call `resolve_tex_wh_on`** —
 /// the 64-slot poster LRU must never see an off-screen request, which is exactly what a
 /// hand-rolled per-screen copy of this loop keeps getting wrong.
 ///
