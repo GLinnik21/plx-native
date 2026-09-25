@@ -717,20 +717,32 @@ and season `/extras` are not requested.
 ### Transcoded (use this for all UI images)
 
 ```
-GET /photo/:/transcode?width={w}&height={h}&minSize=1&upscale=1
-    &url={urlencoded thumb-or-art path}&X-Plex-Token=...
+GET /photo/:/transcode?width={w}&height={h}&minSize=1&url={urlencoded thumb-or-art path}
+    [&format=png]&X-Plex-Token=...
 ```
 
-`url` is the URL-encoded value of `thumb`/`art`/`grandparentThumb` (e.g.
-`%2Flibrary%2Fmetadata%2F1%2Fthumb%2F1778526065`). `minSize=1` = fill (crop to
-exact w×h), `upscale=1` = allow upscaling small sources so returned size is exact.
+This is exactly what `plex::Client::image_transcode_path` (`rust-modules/src/plex/transcoder.rs`)
+builds; no other image request exists. `url` is the URL-encoded value of `thumb`/`art`/
+`grandparentThumb` (e.g. `%2Flibrary%2Fmetadata%2F1%2Fthumb%2F1778526065`). `format=png` is sent
+only for a clearLogo, which needs its alpha. **No `upscale` parameter is sent.**
+
+**`minSize=1` means COVER: the result fills the w×h box and keeps the SOURCE's aspect.** It is
+not cropped to exactly w×h, so its long side can overshoot the box: a 2:3 portrait requested at
+300×300 comes back about 300×450. The client depends on this. `ui::Rect::cover_uv` and
+`widgets::art_uv` crop the texture to the tile at draw time using its decoded size, and
+`img.rs`'s decode-budget limits assume an overshooting long side. *Unverified against a real
+PMS:* this is the PMS photo-transcoder semantics the code is written to, and the model
+`tests/mock_pms.py` implements (`scale=…:force_original_aspect_ratio=increase`). The results
+below are consistent with it, but they cannot tell cover from crop. The poster's source is 2:3
+(its raw size is 1920×2880, below), so it already had the box's shape, and the art's source
+size was not recorded.
 
 Verified live:
 
 | request | result |
 |---|---|
-| `width=420&height=236&url=/library/metadata/1/art/...` | 200, `image/jpeg`, exactly 420×236, 29 KB |
-| `width=300&height=450&url=/library/metadata/1/thumb/...` | 200, `image/jpeg`, exactly 300×450, 36 KB |
+| `width=420&height=236&url=/library/metadata/1/art/...` | 200, `image/jpeg`, 420×236, 29 KB |
+| `width=300&height=450&url=/library/metadata/1/thumb/...` | 200, `image/jpeg`, 300×450, 36 KB |
 
 ### Raw (no transcode wrapper) — verified, do NOT use for grids
 
@@ -742,17 +754,22 @@ Returns 200 `image/jpeg` but at **full original size**: 1920×2880, **1.3 MB**
 (vs 36 KB transcoded). ~40× the bytes and a GLES texture upload/downscale per cell —
 always go through `/photo/:/transcode`.
 
-### Size recommendations for 1920×1080 UI
+### Boxes the app requests
 
-| UI element | request size | notes |
+Each image is requested at the size its tile draws, not a multiple of it (the TV panel is 1:1 at
+1080p), so a source already at the tile's aspect uploads exactly at tile size. The table is
+mirrored in `img.rs`'s decode-budget note.
+
+| UI element | request (all `minSize=1`) | source aspect differs from the box → |
 |---|---|---|
-| Landscape shelf card 420×236 | `width=420&height=236&minSize=1&upscale=1`, `url=art` (or episode `thumb`) | exact-size JPEG, ~25–40 KB |
-| Poster card 300×450 | `width=300&height=450&minSize=1&upscale=1`, `url=thumb` | ~30–45 KB |
-| Detail background | `width=1920&height=1080&minSize=1&upscale=1`, `url=art` | fetch once, ~150–300 KB |
-| Focus zoom headroom (optional) | request 1.25×: 525×295 / 375×563 | only if cards scale >1.1 on focus |
-
-Requesting the exact card size (no devicePixelRatio multiplier — the TV panel is 1:1
-at 1080p) keeps texture memory minimal: 420×236 RGBA = ~400 KB VRAM per card.
+| Poster card | `width=250&height=375`, `url=thumb` | long side overshoots; cropped at draw (`art_uv`) |
+| Landscape still (episode / shelf) | `width=420&height=236`, still → show art → poster | cropped at draw (`art_uv`) |
+| Person headshot, profile avatar | `width=300&height=300`, `url=thumb` | cropped at draw, headshots riding high (`Crop::Headshot`) |
+| Profile chip avatar | `width=128&height=128` | cropped at draw |
+| Player info panel still | `width=480&height=270` | cropped to its 320×180 box at draw |
+| Home hero backdrop | `width=1280&height=720`, `url=art` | overflowed off-panel (`Rect::cover`) |
+| Detail backdrop | `width=1920&height=1080`, `url=art` | overflowed off-panel (`Rect::cover`) |
+| Hero clearLogo | `width=600&height=240&format=png` | contained in its column (`hero_logo::fit`) |
 
 ---
 

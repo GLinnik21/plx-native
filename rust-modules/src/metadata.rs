@@ -939,7 +939,7 @@ pub(crate) struct Chapter {
     pub(crate) index: i64,    // 1-based chapter number
     pub(crate) start_ms: i64, // startTimeOffset — the seek target + timestamp label
     pub(crate) title: String, // Chapter.tag; empty → UI shows "Chapter {index}"
-    pub(crate) thumb: String, // server image path → resolve_tex (empty if no chapter thumbs)
+    pub(crate) thumb: String, // server image path → resolve_tex_wh_on (empty if no chapter thumbs)
 }
 
 /// Parse an item's `Chapter[]` into the app's model — the ONE `plex::Chapter` → [`Chapter`] mapping,

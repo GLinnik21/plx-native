@@ -1948,6 +1948,24 @@ fn uv_rect_padded(w: f32, h: f32, qw: f32, qh: f32) -> [f32; 4] {
     [0.5 - 0.5 * sx, 0.5 - 0.5 * sy, sx, sy]
 }
 
+/// The whole texture as a UV window `(offset.xy, scale.zw)` — the crop every textured draw took
+/// before pictures carried one, and still the right one for any texture made at its box's aspect.
+pub(crate) const UV_FULL: [f32; 4] = [0.0, 0.0, 1.0, 1.0];
+
+/// `inner` (quad → card, [`uv_rect_padded`]) followed by `crop` (card → texture, the window a
+/// cover crop keeps — `ui::Rect::cover_uv`): one `(offset, scale)` pair, because the vertex shader
+/// applies exactly one. Both are affine, so `crop.xy + (inner.xy + a·inner.zw)·crop.zw` folds to
+/// `(crop.xy + inner.xy·crop.zw) + a·(inner.zw·crop.zw)`. [`UV_FULL`] is its identity on either side.
+#[inline]
+fn uv_compose(crop: [f32; 4], inner: [f32; 4]) -> [f32; 4] {
+    [
+        crop[0] + inner[0] * crop[2],
+        crop[1] + inner[1] * crop[3],
+        inner[2] * crop[2],
+        inner[3] * crop[3],
+    ]
+}
+
 /// `fs_img.frag`'s `u_inner`: the half-extent, about the card centre, of the box whose every point
 /// is at least `max(radius, 2) + 1` px inside the rounded rect — so its SDF is below −2, the rim,
 /// the AA edge and the shadow are all exactly zero there, and the fragment is `(tex, ta)` without
@@ -2008,6 +2026,7 @@ fn draw_tex_core(
 #[allow(clippy::too_many_arguments)]
 fn draw_tex_impl(
     tex: c_uint,
+    crop: [f32; 4],
     x: f32,
     y: f32,
     w: f32,
@@ -2024,7 +2043,9 @@ fn draw_tex_impl(
     let (qx, qy, qw, qh) = (x - pad, y - pad, w + 2.0 * pad, h + 2.0 * pad); // inflate for the penumbra
                                                                              // CPU-fold the uniform-only terms (Midgard has no uniform pre-shader): card half-size, the
                                                                              // quad→card UV rect (identity when pad==0), and the shadow's 0.5/blur normaliser.
-    let uv = uv_rect_padded(w, h, qw, qh);
+    // …then the picture's own crop on top: the card maps onto `crop`'s window of the texture,
+    // never onto all of it unless that is what `crop` says (a cover crop keeps the aspect).
+    let uv = uv_compose(crop, uv_rect_padded(w, h, qw, qh));
     let shinv = if shblur > 0.0 { 0.5 / shblur } else { 0.0 };
     draw_tex_core(
         class,
@@ -2048,8 +2069,25 @@ fn draw_tex_impl(
 const NO_RIM: [f32; 4] = [0.0, 0.0, 0.0, 0.0]; // rim/shadow disabled: alpha 0 ⇒ shader skips it
 
 pub(crate) fn draw_tex(tex: c_uint, x: f32, y: f32, w: f32, h: f32, radius: f32, tint: *const f32) {
+    draw_tex_uv(tex, UV_FULL, x, y, w, h, radius, tint);
+}
+
+/// [`draw_tex`] sampling only the `crop` window of the texture (`(offset.xy, scale.zw)`, see
+/// [`uv_compose`]) — how a picture of another aspect is drawn into its box uncropped by stretching.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_tex_uv(
+    tex: c_uint,
+    crop: [f32; 4],
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    tint: *const f32,
+) {
     draw_tex_impl(
         tex,
+        crop,
         x,
         y,
         w,
@@ -2310,6 +2348,7 @@ fn frame_cache_uv() -> [f32; 4] {
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_tex_stroked(
     tex: c_uint,
+    crop: [f32; 4],
     x: f32,
     y: f32,
     w: f32,
@@ -2321,6 +2360,7 @@ pub(crate) fn draw_tex_stroked(
 ) {
     draw_tex_impl(
         tex,
+        crop,
         x,
         y,
         w,
@@ -2341,6 +2381,7 @@ pub(crate) fn draw_tex_stroked(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_tex_carded(
     tex: c_uint,
+    crop: [f32; 4],
     x: f32,
     y: f32,
     w: f32,
@@ -2366,7 +2407,7 @@ pub(crate) fn draw_tex_carded(
         }
     }
     draw_tex_impl(
-        tex, x, y, w, h, radius, tint, rimw, rimcol, pad, shblur, shcol,
+        tex, crop, x, y, w, h, radius, tint, rimw, rimcol, pad, shblur, shcol,
     );
 }
 
@@ -6435,6 +6476,30 @@ mod tests {
         assert!(uv_rect_padded(0.0, 0.0, 8.0, 8.0)
             .iter()
             .all(|v| v.is_finite()));
+    }
+
+    /// A picture's crop rides UNDER the shadow inflation: the card's own edges land exactly on the
+    /// crop window's edges at every pad, so a cover-cropped headshot and its shadow ring agree, and
+    /// the whole-texture crop leaves the padded rect untouched (no draw that never asked for a crop
+    /// resamples itself).
+    #[test]
+    fn a_crop_composes_under_the_padding_and_the_full_window_is_its_identity() {
+        let (w, h) = (190.0f32, 190.0f32); // a cast circle
+        let crop = [0.0f32, 1.0 / 15.0, 1.0, 2.0 / 3.0]; // a 2:3 headshot, top-biased
+        for pad in [0.0f32, 12.0] {
+            let (qw, qh) = (w + 2.0 * pad, h + 2.0 * pad);
+            let inner = uv_rect_padded(w, h, qw, qh);
+            assert_eq!(uv_compose(UV_FULL, inner), inner, "the full window must be the identity");
+            let uv = uv_compose(crop, inner);
+            let at = |a: f32, i: usize| uv[i] + a * uv[i + 2];
+            let (u0, u1) = (at(pad / qw, 0), at((pad + w) / qw, 0));
+            let (v0, v1) = (at(pad / qh, 1), at((pad + h) / qh, 1));
+            assert!((u0 - crop[0]).abs() < 1e-5 && (u1 - (crop[0] + crop[2])).abs() < 1e-5);
+            assert!(
+                (v0 - crop[1]).abs() < 1e-5 && (v1 - (crop[1] + crop[3])).abs() < 1e-5,
+                "card edges must land on the crop window at pad={pad}: {v0} {v1}"
+            );
+        }
     }
 
     /// The backdrop window samples the SCREEN POSITION it is drawn at, out of a bottom-up snapshot.

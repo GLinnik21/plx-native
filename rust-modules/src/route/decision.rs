@@ -5861,7 +5861,7 @@ pub(crate) fn pump_play(ps: &mut PlaybackSession, meta: &mut crate::stores::meta
     // Warm the next episode's still NOW rather than at first draw. The URL has been known since
     // this plan resolved — tens of minutes before the credits — and the fetch is async, so touching
     // it here costs nothing and spares the control a skeleton for one image-transcode round trip at
-    // exactly the moment it appears in front of the user. `warm_tex`, not `resolve_tex`: this wants
+    // exactly the moment it appears in front of the user. `warm_tex`, not `resolve_tex_wh_on`: this wants
     // the fetch and nothing else, and a slot warmed tens of minutes early must NOT be carrying the
     // evict-protection a draw takes (see `ui::tex::warm_on`). At the tile's OWN 480×270 —
     // `(server, path, w, h, png)` IS the store key, so a warm at any other size buys nothing.

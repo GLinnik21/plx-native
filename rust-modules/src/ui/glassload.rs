@@ -558,8 +558,10 @@ impl Dial {
                 }
                 Kind::Card { focused } => {
                     let f = if focused { 1.0 } else { 0.0 };
+                    // synthetic noise: no subject and no aspect to keep, so the whole texture
                     p.tex_carded(
                         self.card_tex(i),
+                        crate::gfx::UV_FULL,
                         r,
                         theme::CARD_RING_RAD,
                         [1.0, 1.0, 1.0, 1.0],

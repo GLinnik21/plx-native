@@ -193,33 +193,23 @@ fn frost_sweep() -> Option<f32> {
 }
 
 
-/// build the transcode key on the stack and resolve it to a GL texture (0 until loaded), for art
-/// on the server the user is browsing.
+/// Build the transcode key on the stack and resolve it to a GL texture AND its decoded pixel
+/// size — `(0, 0.0, 0.0)` until it is ready. The size is the store's own answer about the slot it
+/// just probed for the texture, so knowing the source aspect is free: no second lock or key scan.
+///
+/// **The size is not optional, which is why this is the only resolver.** Every image is fetched as
+/// a `minSize=1` transcode, which COVERS the requested box rather than fitting it, so a texture's
+/// aspect is the SOURCE's and not the box's; a picture drawn into its frame without it is
+/// stretched. [`card`] turns it into a crop ([`art_uv`]), a backdrop into an overflow
+/// ([`Rect::cover`](crate::ui::Rect::cover)). There was an id-only `resolve_tex_on` beside this,
+/// and every art tile in the app went through it and drew squashed.
 ///
 /// **A thumb path is only meaningful on the server that issued it** — rating keys are server-local
 /// integers from 1, so the same `/library/metadata/42/thumb/…` names a different film on a
-/// friend's share. This form says "the current server", which is the right answer for art that
-/// belongs to the screen (a section's own tiles, a person's headshot) and the wrong one for an
-/// item that came from somewhere else: those call [`resolve_tex_on`] with the item's own server.
-pub(crate) fn resolve_tex(path: &str, w: c_int, h: c_int, png: c_int) -> u32 {
-    resolve_tex_on(crate::plex::current_server(), path, w, h, png)
-}
-
-/// [`resolve_tex`] for art belonging to a NAMED server.
-pub(crate) fn resolve_tex_on(srv: ServerId, path: &str, w: c_int, h: c_int, png: c_int) -> u32 {
-    crate::ui::tex::resolve_on(srv.raw(), path, w, h, png != 0)
-}
-
-/// [`resolve_tex_on`] plus the DECODED pixel size of the texture — `(0, 0.0, 0.0)` until it is
-/// ready. For art that must be FIT or COVERED into its frame rather than stretched to it
-/// ([`Rect::cover`](crate::ui::Rect::cover)). The size is the store's own answer about the slot it
-/// just probed for the texture, so this is the SAME single lookup [`resolve_tex_on`] does — knowing
-/// the source aspect is free, and a screen never pays a second lock + key scan for it.
-///
-/// **There is deliberately no current-server twin of this or of [`warm_tex_on`].** Both had one and
-/// neither had a caller: every user is a hero backdrop or a prefetch of one, and a hero is exactly
-/// the art that belongs to an ITEM rather than to the screen. A bare form would be the shorter name
-/// autocomplete offers for the case where getting it wrong is a blank billboard.
+/// friend's share — so the server is always NAMED. There is deliberately no current-server twin of
+/// this or of [`warm_tex_on`]: a bare form would be the shorter name autocomplete offers for the
+/// case where getting it wrong is another item's picture. Art that genuinely belongs to the
+/// browsed server (the profile chip's avatar) passes `plex::current_server()` and says so.
 pub(crate) fn resolve_tex_wh_on(
     srv: ServerId,
     path: &str,
@@ -230,7 +220,7 @@ pub(crate) fn resolve_tex_wh_on(
     crate::ui::tex::resolve_wh_on(srv.raw(), path, w, h, png != 0)
 }
 
-/// The prefetch twin of [`resolve_tex_on`]: the same key through `ui::tex::warm_on` — start the
+/// The prefetch twin of [`resolve_tex_wh_on`]: the same key through `ui::tex::warm_on` — start the
 /// fetch, take no texture, take no LRU protection. Same arguments on purpose, so a screen warms EXACTLY the key it will later
 /// resolve; a warm at a different size — or on a different server — is a different slot and buys
 /// nothing.
@@ -294,7 +284,8 @@ const STILL_RES: (c_int, c_int) = (420, 236);
 /// sent no thumb of its own, and BOTH of those must fall through to something 16:9-ish before they
 /// reach `thumb` — which for an episode is the SHOW POSTER, i.e. the identical-tiles picture this
 /// whole tile exists to replace. Falling back to it at all is still right for the last resort: a
-/// letterboxed poster answers "which show" even when it cannot answer "which episode".
+/// poster, cover-cropped to the tile ([`art_uv`]), answers "which show" even when it cannot answer
+/// "which episode".
 pub(crate) fn still_key(m: &PmsMovie) -> &str {
     if !m.still.is_empty() {
         &m.still
@@ -541,23 +532,47 @@ pub(crate) const STILL_PAIR_GAP: f32 = 2.0;
 pub(crate) const STILL_GLYPH_D: f32 = 20.0;
 pub(crate) const STILL_LINE_GAP: f32 = 8.0;
 
+/// **The window of a resolved `tw × th` texture that [`card`] shows in `r`** — a cover crop, so a
+/// picture is never stretched to its tile's aspect. Every image the app fetches is a
+/// `/photo/:/transcode` with `minSize=1`, which COVERS the requested box rather than fitting it
+/// (`img.rs`'s decode-budget note): a 2:3 headshot asked for at 300×300 comes back 300×450, and
+/// sampling all of it into a 190-px circle squashed every portrait-shot actor to two-thirds of
+/// their height. The crop's placement is the art's ([`art_crop`]); an undecoded texture is
+/// [`crate::gfx::UV_FULL`], as `Rect::cover_uv` documents.
+///
+/// Pure, and the seam every art tile goes through — the shelf, the Library grid, Search, the
+/// person page's portrait, the profile picker, extras, cast — so no one of them can draw a picture
+/// at the wrong aspect by forgetting to ask.
+pub(crate) fn art_uv(art: &Art, tw: f32, th: f32, r: Rect) -> [f32; 4] {
+    r.cover_uv(tw, th, art_crop(art))
+}
+
+/// Where [`art_uv`]'s crop keeps the picture: a person's photo rides high so the face survives a
+/// portrait source going into a circle; every other variant is even.
+pub(crate) fn art_crop(art: &Art) -> crate::ui::Crop {
+    match art {
+        Art::Person { .. } => crate::ui::Crop::Headshot,
+        Art::Poster(_) | Art::Still(_) | Art::Thumb { .. } => crate::ui::Crop::Centre,
+    }
+}
+
 /// A not-yet-loaded skeleton falls back to a rimmed fill (no shadow until the art arrives).
 pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, scale: f32, f: f32) {
     let r = if focused { frame.scaled(scale) } else { frame };
     match art {
         Art::Poster(m) => {
             // **The ROW's server, not the current one.** A `thumb` path is a key on the server that
-            // issued it — image-transcode paths embed a server-local ratingKey — so the bare
-            // `resolve_tex` (which is `_on(current_server(), …)`) fetched every tile's art from
+            // issued it — image-transcode paths embed a server-local ratingKey — so a bare
+            // current-server `resolve_tex` (since removed) fetched every tile's art from
             // whichever server was current. That was invisible only while browsing a shared library
             // also re-pointed `current`; the moment that stopped, the Library grid of a friend's
             // library drew skeletons for most tiles and OUR films for the few ratingKeys that
             // happen to collide — both servers number from 1, so collisions are the normal case.
-            let t = m
-                .map(|m| resolve_tex_on(m.sid, &m.thumb, 250, 375, 0))
-                .unwrap_or(0);
+            let (t, tw, th) = m
+                .map(|m| resolve_tex_wh_on(m.sid, &m.thumb, 250, 375, 0))
+                .unwrap_or((0, 0.0, 0.0));
             if t != 0 {
-                p.tex_carded(t, r, rad, theme::TINT_WHITE, f);
+                p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
             } else {
                 p.rect_sheened(r, rad, theme::SKELETON_TOP, theme::SKELETON_BOT);
             }
@@ -594,9 +609,9 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
             }
         }
         Art::Thumb { sid, key, res } => {
-            let t = resolve_tex_on(sid, key, res.0, res.1, 0);
+            let (t, tw, th) = resolve_tex_wh_on(sid, key, res.0, res.1, 0);
             if t != 0 {
-                p.tex_carded(t, r, rad, theme::TINT_WHITE, f);
+                p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
             } else {
                 p.rrect_sheened(r, rad, theme::CARD_PLACEHOLDER);
             }
@@ -608,11 +623,11 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
         // mark for months for precisely that reason. A shelf of episodes needs the mark as much as
         // a shelf of films does.
         Art::Still(m) => {
-            let t = m
-                .map(|m| resolve_tex_on(m.sid, still_key(m), STILL_RES.0, STILL_RES.1, 0))
-                .unwrap_or(0);
+            let (t, tw, th) = m
+                .map(|m| resolve_tex_wh_on(m.sid, still_key(m), STILL_RES.0, STILL_RES.1, 0))
+                .unwrap_or((0, 0.0, 0.0));
             if t != 0 {
-                p.tex_carded(t, r, rad, theme::TINT_WHITE, f);
+                p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
             } else {
                 p.rect_sheened(r, rad, theme::SKELETON_TOP, theme::SKELETON_BOT);
             }
@@ -628,9 +643,9 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
             let _ = m;
         }
         Art::Person { sid, key, res } => {
-            let t = resolve_tex_on(sid, key, res.0, res.1, 0);
+            let (t, tw, th) = resolve_tex_wh_on(sid, key, res.0, res.1, 0);
             if t != 0 {
-                p.tex_carded(t, r, rad, theme::TINT_WHITE, f);
+                p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
             } else {
                 p.rrect_sheened(r, rad, theme::CARD_PLACEHOLDER);
                 // Only for a person the server has NO headshot of — an unresolved texture with a
@@ -2374,9 +2389,12 @@ pub(crate) fn profile_chip_with(p: Painter, data: ProfileChipRead<'_>, chip_expa
     p.focus_shadow(r, d * 0.5, e);
     let mut drew = false;
     if !thumb_s.is_empty() {
-        let t = resolve_tex(thumb_s, 128, 128, 0);
+        let (t, tw, th) = resolve_tex_wh_on(crate::plex::current_server(), thumb_s, 128, 128, 0);
         if t != 0 {
-            p.tex_stroked(t, r, d * 0.5, theme::TINT_WHITE);
+            // the same crop the profile picker's `Art::Thumb` avatars take, so one person's
+            // picture is framed alike on the chip and on the picker
+            let uv = r.cover_uv(tw, th, crate::ui::Crop::Centre);
+            p.tex_stroked(t, uv, r, d * 0.5, theme::TINT_WHITE);
             drew = true;
         }
     }
@@ -7325,3 +7343,7 @@ mod ambient_ground_tests;
 #[cfg(test)]
 #[path = "widgets_hero_scrim_tests.rs"]
 mod hero_scrim_tests;
+
+#[cfg(test)]
+#[path = "widgets_art_crop_tests.rs"]
+mod art_crop_tests;
