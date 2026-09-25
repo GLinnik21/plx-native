@@ -735,11 +735,17 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
         // Revoke our borrowed SDL proxies before another frame can use them while backgrounded.
         // SDL owns their lifetime; foreground must query its current window again.
         crate::system::sys_release_wayland();
+        // A trailer preview is not parked: the OS taking the screen ends it, like any other way
+        // off its page (`content::halt_preview_off_its_page`). A Load that has not returned is
+        // left Abandoning, and a preview session is never parked for the foreground reload —
+        // that reload would bring the trailer back as ordinary playback.
+        super::content::halt_preview_now(&mut app.player.session, &mut app.adapters.player);
         // Playback owns its resolve and Engine before the queued Player page mounts. Page
         // presence only governs the screen-local cleanup below, never resource suspension.
-        if (crate::route::play_pending()
-            || app.adapters.player.is_live()
-            || crate::route::has_url(&app.player.session))
+        if !crate::route::preview_request(&app.player.session)
+            && (crate::route::play_pending()
+                || app.adapters.player.is_live()
+                || crate::route::has_url(&app.player.session))
             && !app.player.lifecycle.awaiting_load()
         {
             // INTENDED, not published: this snapshot is the only thing the foreground
@@ -1352,8 +1358,12 @@ fn playback_may_run(app: &App) -> bool {
 /// poll, the reporter, EOS / Up Next, the hub refresh, the held key, the scrubber and the paused
 /// seek — everything that reads `fr.now` and no `dt`.
 pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
-        if playback_may_run(app) && is_started() {
-            crate::player::pump(&mut app.player.session, &mut app.adapters.player, fr.now);
+        if playback_may_run(app) {
+            if is_started() {
+                crate::player::pump(&mut app.player.session, &mut app.adapters.player, fr.now);
+            }
+            // Outside `is_started`: a refused preview landing or a stale machine has no engine,
+            // and is exactly what must still be settled back to Idle.
             crate::player::preview::after_pump(
                 &mut app.player.session,
                 &mut app.adapters.player,
@@ -1409,6 +1419,18 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             // the navigation (applied at the next commit), so the route still reads `Player` here
             // even on a real exit — the return value is the only live signal for it this frame.
             crate::dev::scenarios::maybe_replay_after_eos(app, handed_off_to_up_next);
+        } else if playback_may_run(app)
+            && crate::player::ended()
+            && super::content::off_route_orphan(
+                app.adapters.player.is_live(),
+                crate::route::is_preview(&app.player.session),
+                super::bridge::player(&app.pages).is_some(),
+            )
+        {
+            // The same end with no player page to leave: nothing else would ever stop this
+            // engine, and its reporter would keep posting the final position forever.
+            log("EOS: stopping an off-route engine nothing owns");
+            crate::player::stop_bufferfeed(&mut app.player.session, &mut app.adapters.player);
         }
         // Up Next countdown elapsed → start the queued episode on its own. Beside the EOS
         // handoff so the whole auto-advance chain reads in one place.
@@ -2025,6 +2047,19 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                 }
                 if let Some(r) = crate::route::pump_play(&mut app.player.session, app.bridge.metadata_mut()) {
                     crate::ui::idle::invalidate();
+                    // A preview landing nobody is waiting for any more (the page halted it while
+                    // the resolve was in flight) must not start an engine: nothing would track
+                    // it, so nothing would stop it at its end or hand the engine to a later Play.
+                    if crate::route::is_preview(&app.player.session)
+                        && !crate::player::preview::expects_landing()
+                    {
+                        if let Some(transaction) = crate::route::pending_route_start() {
+                            let _ = crate::route::reject_route_start_preparation(transaction);
+                        }
+                        crate::player::stop_bufferfeed(&mut app.player.session, &mut app.adapters.player);
+                        crate::route::clear_preview(&mut app.player.session);
+                        return;
+                    }
                     let resume_prepared = r <= 0
                         || matches!(
                             crate::player::resume_at(&mut app.player.session, r),

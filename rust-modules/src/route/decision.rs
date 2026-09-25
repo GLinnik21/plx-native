@@ -325,6 +325,11 @@ pub(crate) struct PlaybackSession {
     /// This session is a hero preview. Skips watch-state writes and must not be repaired onto
     /// the player route.
     preview: bool,
+    /// This session was RESOLVED for a hero preview. Installed with `preview` by [`apply_plan`]
+    /// and, unlike it, never cleared by the preview machinery: `preview` tracks whether the
+    /// machine still owns the engine, this says what the session may write. See
+    /// [`preview_request`].
+    resolved_as_preview: bool,
 }
 
 impl PlaybackSession {
@@ -377,6 +382,7 @@ impl PlaybackSession {
         queue: Vec::new(),
         now_ms: 0,
         preview: false,
+        resolved_as_preview: false,
     };
 }
 
@@ -444,6 +450,7 @@ impl PlaybackSession {
             now_ms,
             queue: _,
             preview: _,
+            resolved_as_preview,
         } = self;
         PlaybackSession {
             jail_load_blocked: *jail_load_blocked,
@@ -493,6 +500,7 @@ impl PlaybackSession {
             queue: Vec::new(),
             // A screen copy is not the live preview. The loop reads the real session.
             preview: false,
+            resolved_as_preview: *resolved_as_preview,
         }
     }
 }
@@ -4239,7 +4247,7 @@ pub(crate) fn scrobble_stop(
     final_report: Option<(String, i64, i64)>,
     report_th: Option<std::thread::JoinHandle<()>>,
 ) {
-    if ps.preview {
+    if preview_request(ps) {
         return;
     }
     let (logical_session, pq, pqi) = (sess(ps), pq_id(ps), pq_item_id(ps));
@@ -5421,6 +5429,19 @@ pub(crate) fn clear_preview(ps: &mut PlaybackSession) {
     ps.preview = false;
 }
 
+/// Was the installed session resolved for a hero preview? Unlike [`is_preview`], which the
+/// preview machinery clears as it retires the session, this is fixed at landing and only the next
+/// landing replaces it — so no teardown bookkeeping can turn a trailer into a playback.
+///
+/// **The one gate on every account write a session makes**: the timeline lease
+/// ([`begin_timeline_reporting`]) and the stop scrobble ([`scrobble_stop`]) both ask it, as do the
+/// pump's failure arms before any Original→HLS rescue. Read from the INSTALLED session rather
+/// than from `request`: a preview requested while a film's engine is still live replaces
+/// `request` at the press, and that film's final stop must still be reported.
+pub(crate) fn preview_request(ps: &PlaybackSession) -> bool {
+    ps.preview || ps.resolved_as_preview
+}
+
 /// Attach the UI's resume point to the resolve currently in flight.
 ///
 /// `request_play_*` is issued immediately before `app::start_playback`, so the latter knows the
@@ -6016,6 +6037,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
             // contents and must not rewind the stamp `Player::set_now` wrote this iteration.
             now_ms,
             preview,
+            resolved_as_preview: preview,
         };
     } };
     if let (crate::plex::TranscodeDelivery::FixedHls { .. }, Some(rung)) = (
@@ -6394,6 +6416,10 @@ pub(crate) fn commit_subtitle_selection(ps: &mut PlaybackSession, sub_idx: i32, 
 /// remains in `PlayerControl`, so a later in-place ABR commit changes the wire session and this
 /// projection under one lock without touching main-thread-only `Session`.
 pub(crate) fn begin_timeline_reporting(ps: &PlaybackSession) -> Option<TimelineLease> {
+    // A trailer never writes watch state, whatever became of its preview flag.
+    if preview_request(ps) {
+        return None;
+    }
     let projection = TimelineProjection {
         sid: cur_sid(ps),
         rating_key: cur_rk(ps),

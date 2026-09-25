@@ -1341,7 +1341,7 @@ fn at_the_floor_the_open_asks_for_the_hold_once_and_keeps_its_connection() {
     let torn_down = publisher.join().expect("publisher");
     let outcome = opened
         .as_ref()
-        .map(|(_, size)| *size)
+        .map(|(_, size, _)| *size)
         .map_err(|e| format!("{e:?}"));
     drop(opened);
     crate::stream::http_close(&mut *hs);

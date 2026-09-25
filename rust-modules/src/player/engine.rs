@@ -1330,7 +1330,8 @@ fn start_bufferfeed_inner(
     // never reads route::Session: a stale lease stops at teardown, while active encoder changes
     // remain synchronized with the projection under PlayerControl.
     let report_stop = threads::ReportStop::new();
-    let report_th = if stream && !crate::route::is_preview(ps) {
+    // `begin_timeline_reporting` is the gate: it refuses any session resolved for a preview.
+    let report_th = if stream {
         if let Some(lease) = crate::route::begin_timeline_reporting(ps) {
             // best-effort: refused, the only loss is that the resume point stops being posted
             let st = report_stop.clone();

@@ -144,6 +144,8 @@ pub(crate) struct Machine {
     picture_ms: Option<u32>,
     last_num: u32,
     key: Option<(u32, String)>,
+    /// The last `blocked` answer that was logged, so the reason is written once per change.
+    told: Option<(u32, String, Option<Start>)>,
 }
 
 impl Default for Machine {
@@ -159,6 +161,7 @@ impl Default for Machine {
             picture_ms: None,
             last_num: 0,
             key: None,
+            told: None,
         }
     }
 }
@@ -182,21 +185,9 @@ impl Machine {
     /// A second dwell is allowed. Cache hits refuse to start, they do not suppress replay of an
     /// item that actually has a playable extra.
     pub(crate) fn start(&mut self, sid: ServerId, rk: &str, now_ms: u32, enabled: bool) -> Start {
-        if !enabled {
+        if let Some(refusal) = self.block_reason(sid, rk, enabled) {
             self.nops += 1;
-            return Start::Disabled;
-        }
-        if self.breaker {
-            self.nops += 1;
-            return Start::BreakerOpen;
-        }
-        if self.cycles >= CYCLE_BUDGET {
-            self.nops += 1;
-            return Start::BudgetSpent;
-        }
-        if let Some(fact) = self.fact(sid, rk) {
-            self.nops += 1;
-            return Start::Cached(fact);
+            return refusal;
         }
         if self.phase != Phase::Idle {
             return Start::Busy;
@@ -210,6 +201,20 @@ impl Machine {
         Start::Accepted
     }
 
+    /// The standing refusal for `rk`, if any — the one list both [`start`](Self::start) and
+    /// [`blocked`] answer from. `Busy` is not here: it is about this moment, not about the item.
+    fn block_reason(&self, sid: ServerId, rk: &str, enabled: bool) -> Option<Start> {
+        if !enabled {
+            Some(Start::Disabled)
+        } else if self.breaker {
+            Some(Start::BreakerOpen)
+        } else if self.cycles >= CYCLE_BUDGET {
+            Some(Start::BudgetSpent)
+        } else {
+            self.fact(sid, rk).map(Start::Cached)
+        }
+    }
+
     pub(crate) fn fact(&self, sid: ServerId, rk: &str) -> Option<Fact> {
         let sid = u32::from(sid.raw());
         self.cache
@@ -219,7 +224,10 @@ impl Machine {
     }
 
     pub(crate) fn remember(&mut self, sid: ServerId, rk: &str, fact: Fact) {
-        let sid = u32::from(sid.raw());
+        self.remember_raw(u32::from(sid.raw()), rk, fact);
+    }
+
+    fn remember_raw(&mut self, sid: u32, rk: &str, fact: Fact) {
         if let Some(existing) = self.cache.iter_mut().find(|e| e.sid == sid && e.rk == rk) {
             existing.fact = fact;
             return;
@@ -259,6 +267,17 @@ impl Machine {
         self.phase = Phase::Idle;
         self.admitted = false;
         self.key = None;
+    }
+
+    /// This machine's own request landed with no URL. Remembered against the key [`start`]
+    /// recorded — the item that was asked for — so the page does not re-resolve it every dwell.
+    pub(crate) fn refuse_landing(&mut self) {
+        if let Some((sid, rk)) = self.key.take() {
+            self.remember_raw(sid, &rk, Fact::RefusedDirect);
+        }
+        self.nops += 1;
+        self.phase = Phase::Idle;
+        self.admitted = false;
     }
 
     pub(crate) fn no_extra(&mut self, sid: ServerId, rk: &str) {
@@ -354,6 +373,25 @@ impl Machine {
         self.key = None;
     }
 
+    /// [`halt`] has asked the engine to stop. `still_live` is whether it is still installed
+    /// afterwards — a Load that had not returned is left to land unbound rather than joined.
+    /// Still installed means `Abandoning` whatever the phase was — including Idle, when the
+    /// machine had already lost track of the session — so `occupies()` holds a Play until
+    /// [`after_pump`] joins the returned Load.
+    pub(crate) fn halted(&mut self, still_live: bool) {
+        if still_live {
+            self.phase = Phase::Abandoning;
+        } else {
+            self.stopped();
+        }
+    }
+
+    /// May a preview landing start an engine? A landing is the answer to [`start`]'s own
+    /// request, so only a machine still `Fetching` is waiting for one.
+    pub(crate) fn expects_landing(&self) -> bool {
+        self.phase == Phase::Fetching
+    }
+
     /// **`Loading`/`Binding` count as "picture up" too, once this session has shown one before.**
     /// A seek's `reload_at` briefly leaves `Playing` for `Loading`→`Binding` on its way back
     /// ([`admit_seek`]/[`bound`]/[`picture`]) — if this returned [`View::STILL`] for that span,
@@ -425,10 +463,38 @@ pub(crate) fn view() -> View {
     with_mut(|m| m.view())
 }
 
+/// Run one machine transition and log it when the phase actually moved — the only record a
+/// field report has of why autoplay stopped, or never started again.
+fn transition(why: &str, f: impl FnOnce(&mut Machine)) {
+    let moved = with_mut(|m| {
+        let from = m.phase;
+        let rk = m.key.as_ref().map(|(_, rk)| rk.clone()).unwrap_or_default();
+        f(m);
+        (from != m.phase).then(|| (from, m.phase, rk))
+    });
+    if let Some((from, to, rk)) = moved {
+        crate::player::log(&format!("preview: {from:?}->{to:?} ({why}) rk={rk}"));
+    }
+}
+
+/// Called every frame the hero holds focus. The reason is logged once per change of item or
+/// reason, not per frame: a page that never autoplays says why exactly once.
 pub(crate) fn blocked(sid: ServerId, rk: &str) -> bool {
-    with_mut(|m| {
-        !enabled() || m.breaker || m.cycles >= CYCLE_BUDGET || m.fact(sid, rk).is_some()
-    })
+    let enabled = enabled();
+    let told = with_mut(|m| {
+        let reason = m.block_reason(sid, rk, enabled);
+        let sid = u32::from(sid.raw());
+        // Compared before anything is allocated: this runs every frame.
+        if m.told.as_ref().is_some_and(|(s, r, why)| *s == sid && r == rk && *why == reason) {
+            return (reason, false);
+        }
+        m.told = Some((sid, rk.to_owned(), reason));
+        (reason, true)
+    });
+    if let (Some(reason), true) = told {
+        crate::player::log(&format!("preview: blocked rk={rk} reason={reason:?}"));
+    }
+    told.0.is_some()
 }
 
 pub(crate) fn occupies() -> bool {
@@ -459,45 +525,48 @@ pub(crate) fn bound_or_playing() -> bool {
 }
 
 pub(crate) fn request_start(sid: ServerId, rk: &str, now_ms: u32) -> Start {
-    with_mut(|m| m.start(sid, rk, now_ms, enabled()))
+    let (start, phase) = with_mut(|m| (m.start(sid, rk, now_ms, enabled()), m.phase));
+    crate::player::log(&format!("preview: start rk={rk} -> {start:?} phase={phase:?}"));
+    start
 }
 
 pub(crate) fn note_no_extra(sid: ServerId, rk: &str) {
-    with_mut(|m| m.no_extra(sid, rk));
+    transition("no extra", |m| m.no_extra(sid, rk));
 }
 
 pub(crate) fn note_refused_direct(sid: ServerId, rk: &str) {
-    with_mut(|m| m.refuse_direct(sid, rk));
+    transition("refused direct", |m| m.refuse_direct(sid, rk));
 }
 
 pub(crate) fn note_admitted() {
-    with_mut(|m| m.admit());
+    transition("admitted", Machine::admit);
 }
 
 pub(crate) fn note_admission_refused() {
-    with_mut(|m| m.refuse_admission());
+    transition("admission refused", Machine::refuse_admission);
 }
 
 pub(crate) fn note_failed(num: u32) {
-    with_mut(|m| m.fail_admitted(num));
-}
-
-pub(crate) fn note_abandon() {
-    with_mut(|m| m.abandon());
-}
-
-pub(crate) fn note_stopped() {
-    with_mut(|m| m.stopped());
+    transition("Load failed", |m| m.fail_admitted(num));
 }
 
 pub(crate) fn note_picture(now_ms: u32) {
-    if let Some(line) = with_mut(|m| m.picture(now_ms)) {
+    let mut line = None;
+    transition("picture", |m| line = m.picture(now_ms));
+    if let Some(line) = line {
         crate::player::log(&line);
     }
 }
 
-pub(crate) fn note_eos() {
-    with_mut(|m| m.eos());
+/// A preview landing is about to start an engine. Refused — and logged — when the machine is no
+/// longer waiting for it: the page that asked has since stopped it (a halt while the resolve
+/// was in flight), and an engine started now would play with nothing tracking it.
+pub(crate) fn expects_landing() -> bool {
+    let (expects, phase) = with_mut(|m| (m.expects_landing(), m.phase));
+    if !expects {
+        crate::player::log(&format!("preview: landing discarded phase={phase:?}"));
+    }
+    expects
 }
 
 /// Test-only: force the process-wide singleton straight into `phase`, skipping the normal
@@ -526,17 +595,90 @@ pub(crate) fn reset_for_test() {
     with_mut(|m| *m = Machine::default());
 }
 
-/// After the engine pump. Finishes an abandoned Load once the media thread has returned, logs
-/// the first picture, and arms the breaker if an admitted Load failed before any frame.
+/// What [`after_pump`] owes the machine and the engine this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Settle {
+    /// Nothing to end. Bind/picture bookkeeping still runs for a live preview.
+    Nothing,
+    /// The preview engine played to its end: stop it and return to Idle.
+    Ended,
+    /// A preview Load failed before any frame.
+    Failed,
+    /// The machine tracks a session that no longer exists — a landing replaced the preview
+    /// session, or its engine was torn down by a path that is not this file's.
+    Stale,
+    /// The preview's own landing produced no engine (`/decision` refused, not a direct play).
+    Refused,
+}
+
+/// The facts [`after_pump`] reads, gathered so [`settle`] can be a pure function of them.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PumpFacts {
+    pub phase: Phase,
+    /// `route::is_preview` — the installed session is a preview.
+    pub preview: bool,
+    /// An engine is installed.
+    pub live: bool,
+    /// A resolve is in flight (`route::play_pending`).
+    pub resolving: bool,
+    pub ended: bool,
+    pub failed: bool,
+    pub seen_frame: bool,
+}
+
+/// Decide what [`after_pump`] must do. Abandoning is not asked here — it waits on the Load
+/// thread, which is not a fact this function can see.
+///
+/// **The installed session, not the machine, says whose engine it is.** The machine is this
+/// file's bookkeeping about a session; when the two disagree the machine is the one that is
+/// wrong, and every rule below moves the machine, never someone else's engine.
+pub(crate) fn settle(f: PumpFacts) -> Settle {
+    if !f.preview {
+        // `Fetching` before the landing is the normal resolve window: `ps.preview` is only
+        // installed when the plan lands. Anything else is a machine whose session is gone.
+        return match f.phase {
+            Phase::Idle => Settle::Nothing,
+            Phase::Fetching if f.resolving => Settle::Nothing,
+            _ => Settle::Stale,
+        };
+    }
+    if !f.live {
+        return match f.phase {
+            Phase::Fetching if f.resolving => Settle::Nothing,
+            // The landing arrived and started nothing: `/decision` refused it.
+            Phase::Fetching => Settle::Refused,
+            // No engine, whatever the machine thought: release it and the preview flag.
+            _ => Settle::Stale,
+        };
+    }
+    // A live preview engine. Its end and its failure are this file's to act on even when the
+    // machine lost track of it — nothing else will stop it.
+    if f.ended {
+        Settle::Ended
+    } else if f.failed && !f.seen_frame {
+        Settle::Failed
+    } else {
+        Settle::Nothing
+    }
+}
+
+/// After the engine pump, every frame playback may run — NOT only while an engine is started:
+/// a refused landing and a stale machine have no engine at all, and are exactly what used to
+/// strand the machine outside Idle (and every later autoplay with it). Finishes an abandoned Load
+/// once the media thread has returned, logs the first picture, and arms the breaker if an
+/// admitted Load failed before any frame.
+///
+/// **It only ever stops a PREVIEW engine.** A machine that is out of step with the installed
+/// session ([`Settle::Stale`]) is reset without touching the engine: that engine is a film's.
 pub(crate) fn after_pump(
     ps: &mut crate::route::PlaybackSession,
     pa: &mut super::adapter::PlayerAdapter,
     now_ms: u32,
 ) {
-    if !crate::route::is_preview(ps) && !occupies() {
+    let preview = crate::route::is_preview(ps);
+    if !preview && !occupies() {
         return;
     }
-    let failed = super::SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire);
     if abandoning() {
         // KNOWN GAP (code review, unresolved): this poll has no timeout. If the native load
         // thread never finishes (the k5lp DirectVoInit hang class this app already has a general
@@ -554,33 +696,53 @@ pub(crate) fn after_pump(
             .and_then(|e| e.load_th.as_ref())
             .is_none_or(|t| t.is_finished());
         if finished {
-            super::engine::stop_bufferfeed(ps, pa);
-            note_stopped();
+            retire(ps, pa, "abandoned Load returned");
+        }
+        return;
+    }
+    let live = pa.is_live();
+    let seen_frame = crate::player::seen_frame();
+    if preview && live && occupies() {
+        if seen_frame {
+            note_picture(now_ms);
+        } else if pa.engine().is_some_and(|eng| eng.stage >= super::shared::Stage::Playing) {
+            transition("bound", Machine::bound);
+        }
+    }
+    let facts = PumpFacts {
+        phase: with_mut(|m| m.phase),
+        preview,
+        live,
+        resolving: crate::route::play_pending(),
+        ended: crate::player::ended(),
+        failed: super::SHARED.load_failed.load(std::sync::atomic::Ordering::Acquire),
+        seen_frame,
+    };
+    match settle(facts) {
+        Settle::Nothing => {}
+        Settle::Ended => {
+            crate::player::log("preview: EOS — stopping the preview engine");
+            transition("eos", Machine::eos);
+            retire(ps, pa, "eos");
+        }
+        Settle::Failed => {
+            transition("admitted Load failed", |m| m.fail_admitted(601));
+            retire(ps, pa, "admitted Load failed");
+        }
+        Settle::Stale => {
+            // Never the engine: when the session is not a preview it is someone else's.
+            transition(
+                if preview { "engine gone" } else { "session replaced" },
+                Machine::stopped,
+            );
+            if preview {
+                crate::route::clear_preview(ps);
+            }
+        }
+        Settle::Refused => {
+            transition("landing refused", Machine::refuse_landing);
             crate::route::clear_preview(ps);
         }
-        return;
-    }
-    if crate::player::seen_frame() && occupies() {
-        note_picture(now_ms);
-    } else if occupies() {
-        let loaded = pa.engine().is_some_and(|eng| eng.stage >= super::shared::Stage::Playing);
-        if loaded {
-            with_mut(|m| m.bound());
-        }
-    }
-    if crate::player::ended() && occupies() {
-        note_eos();
-        super::engine::stop_bufferfeed(ps, pa);
-        note_stopped();
-        crate::route::clear_preview(ps);
-        return;
-    }
-    if failed && occupies() && !crate::player::seen_frame() {
-        note_failed(601);
-        if pa.is_live() {
-            super::engine::stop_bufferfeed(ps, pa);
-        }
-        crate::route::clear_preview(ps);
     }
 }
 
@@ -662,23 +824,49 @@ pub(crate) fn seek(
         }
         super::engine::ReloadOutcome::NoRoute => SeekOutcome::Refused,
         super::engine::ReloadOutcome::StartFailed => {
-            super::engine::stop_bufferfeed(ps, pa);
             with_mut(Machine::refuse_admission);
-            crate::route::clear_preview(ps);
+            retire(ps, pa, "seek reload failed");
             SeekOutcome::Failed
         }
     }
 }
 
 /// Stop a live preview. A Load that has not returned is abandoned rather than joined.
+///
+/// **Only a preview session's engine is ever stopped here.** With no preview installed, a
+/// machine still `Fetching` is released so its landing is discarded ([`expects_landing`]), and
+/// any other non-Idle phase is stale; neither is a reason to tear down whatever engine the
+/// session does hold — that one belongs to a film.
 pub(crate) fn halt(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter) {
-    if !crate::route::is_preview(ps) && !occupies() {
+    if !crate::route::is_preview(ps) {
+        if occupies() {
+            transition("halt before landing", Machine::stopped);
+        }
         return;
     }
-    note_abandon();
-    super::engine::stop_bufferfeed(ps, pa);
-    if !pa.is_live() {
-        note_stopped();
+    transition("halt", Machine::abandon);
+    retire(ps, pa, "halt");
+}
+
+/// **Stop a preview session's engine — the one way every preview exit does it** (EOS, a failed
+/// Load or open, a failed seek, a halt, an abandoned Load that has finally returned).
+///
+/// `engine::teardown` defers a preview Load that has not returned rather than join it on the main
+/// thread, so the engine may still be installed afterwards. The session then stays a preview and
+/// the machine `Abandoning` until [`after_pump`] finishes it: clearing the flag under a live
+/// engine is how a failed trailer open was once rescued onto an HLS transcode that reported a
+/// timeline to the viewer's account.
+pub(crate) fn retire(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    why: &'static str,
+) {
+    if pa.is_live() {
+        super::engine::stop_bufferfeed(ps, pa);
+    }
+    let still_live = pa.is_live();
+    transition(why, |m| m.halted(still_live));
+    if !still_live {
         crate::route::clear_preview(ps);
     }
 }
@@ -957,6 +1145,106 @@ mod tests {
         assert_eq!(view.prose, 0.0);
         assert_eq!(view.art, 0.0);
         assert!((view.field - crate::ui::landing_hero::PREVIEW_FIELD).abs() < 1e-6);
+    }
+
+    fn facts(phase: Phase) -> PumpFacts {
+        PumpFacts {
+            phase,
+            preview: true,
+            live: true,
+            resolving: false,
+            ended: false,
+            failed: false,
+            seen_frame: true,
+        }
+    }
+
+    /// Field report, 0.7.0 prep: a trailer logged `EOS reached … → ended` and then ran on for
+    /// three minutes, because the EOS stop was gated on the MACHINE's phase. A preview engine at
+    /// its end is stopped whatever the machine believes.
+    #[test]
+    fn a_preview_engine_at_its_end_is_stopped_whatever_phase_the_machine_is_in() {
+        for phase in [
+            Phase::Idle,
+            Phase::Fetching,
+            Phase::Loading,
+            Phase::Binding,
+            Phase::Playing,
+            Phase::Stopping,
+        ] {
+            let f = PumpFacts { ended: true, ..facts(phase) };
+            assert_eq!(settle(f), Settle::Ended, "{phase:?}");
+        }
+    }
+
+    /// The same field report's other half: a later detail page never autoplayed. A machine that
+    /// outlives its session — a landing replaced the preview, or its engine went away through a
+    /// path that is not this file's — must return to Idle, and must NEVER stop or fail the
+    /// engine that is now there: that engine is a film's.
+    #[test]
+    fn a_machine_that_outlived_its_session_is_released_without_touching_the_engine() {
+        for phase in [Phase::Loading, Phase::Binding, Phase::Playing, Phase::Stopping] {
+            let film = PumpFacts { preview: false, ..facts(phase) };
+            assert_eq!(settle(film), Settle::Stale, "{phase:?}: film engine live");
+            let failing_film = PumpFacts { failed: true, seen_frame: false, ..film };
+            assert_eq!(settle(failing_film), Settle::Stale, "{phase:?}: a film's Load failure is not the preview's");
+            let ending_film = PumpFacts { ended: true, ..film };
+            assert_eq!(settle(ending_film), Settle::Stale, "{phase:?}: a film's EOS is the player's");
+            let gone = PumpFacts { live: false, ..facts(phase) };
+            assert_eq!(settle(gone), Settle::Stale, "{phase:?}: preview engine torn down elsewhere");
+        }
+        // Fetching with no preview installed yet is the normal resolve window; once nothing is
+        // resolving any more, the request was superseded and nothing will ever land for it.
+        let resolving = PumpFacts { preview: false, live: false, resolving: true, ..facts(Phase::Fetching) };
+        assert_eq!(settle(resolving), Settle::Nothing);
+        assert_eq!(settle(PumpFacts { resolving: false, ..resolving }), Settle::Stale);
+    }
+
+    /// A `/decision` that refuses a preview (not a direct play) lands with no URL, `pump_play`
+    /// returns nothing, and the loop's refusal handling never ran — so the machine sat in
+    /// `Fetching`, `occupies()` stayed true, and no later page could dwell.
+    #[test]
+    fn a_refused_preview_landing_releases_the_machine_and_the_next_item_starts() {
+        let landed = PumpFacts { live: false, resolving: false, ..facts(Phase::Fetching) };
+        assert_eq!(settle(landed), Settle::Refused);
+        assert_eq!(settle(PumpFacts { resolving: true, ..landed }), Settle::Nothing);
+
+        let mut m = Machine::default();
+        assert_eq!(m.start(sid(), "trailer", 0, true), Start::Accepted);
+        m.refuse_landing();
+        assert_eq!(m.phase(), Phase::Idle);
+        assert_eq!(
+            m.start(sid(), "trailer", 1, true),
+            Start::Cached(Fact::RefusedDirect),
+            "the refused item is not re-resolved every dwell"
+        );
+        assert_eq!(m.start(sid(), "next", 2, true), Start::Accepted);
+    }
+
+    /// Halting a preview whose Load has not returned leaves the engine installed. The machine
+    /// must say so (`Abandoning`, so `occupies()` holds a Play) even if it had already lost
+    /// track of the session — otherwise a Play goes straight at the installed engine and fails.
+    #[test]
+    fn a_halt_that_leaves_the_engine_installed_keeps_the_machine_abandoning() {
+        let mut m = Machine::default();
+        m.abandon();
+        m.halted(true);
+        assert_eq!(m.phase(), Phase::Abandoning);
+        m.halted(false);
+        assert_eq!(m.phase(), Phase::Idle);
+    }
+
+    /// A page that halts its preview while the resolve is still in flight must not have the
+    /// landing start an engine later: nothing would track it.
+    #[test]
+    fn only_a_machine_still_fetching_accepts_its_landing() {
+        let mut m = Machine::default();
+        assert!(!m.expects_landing(), "nothing was requested");
+        assert_eq!(m.start(sid(), "rk", 0, true), Start::Accepted);
+        assert!(m.expects_landing());
+        m.abandon();
+        m.stopped();
+        assert!(!m.expects_landing(), "halted before the landing");
     }
 
     #[test]

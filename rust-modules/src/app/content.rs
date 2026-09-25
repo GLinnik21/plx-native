@@ -47,6 +47,44 @@ fn halt_preview(app: &mut App) {
     halt_preview_now(&mut app.player.session, &mut app.adapters.player);
 }
 
+std::thread_local! {
+    /// The page instance whose hero started the preview in flight, set when its
+    /// `ContentReq::PreviewStart` is accepted. See [`halt_preview_off_its_page`].
+    static PREVIEW_HOST: std::cell::Cell<Option<crate::ui::machine::InstanceId>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Must a preview be halted this frame? `active` is a preview occupying the machine or installed
+/// in the session, `abandoning` is a halt already waiting for its Load to return, and `host_owns_input`
+/// is whether the page that started it still owns input.
+pub(super) fn preview_must_halt(active: bool, abandoning: bool, host_owns_input: bool) -> bool {
+    active && !abandoning && !host_owns_input
+}
+
+/// **A preview lives exactly as long as the page that started it owns input.** Every way off a
+/// detail page — Home, another title, the Account and Settings overlays, the item menu, a panel,
+/// BACK — ends with some other entry (or surface) owning input, so this one check, run every
+/// frame after the navigation commit, is the hook all of them pass through; the page's own
+/// `ContentReq::PreviewStop` and the halts beside `Push`/`Present`/`Panel` only get there sooner.
+/// An app suspend is the one exit that leaves input where it was, and the lifecycle arm halts
+/// the preview itself.
+fn halt_preview_off_its_page(app: &mut App) {
+    let active = crate::player::preview::occupies() || crate::route::is_preview(&app.player.session);
+    if !active {
+        PREVIEW_HOST.with(|h| h.set(None));
+        return;
+    }
+    let host_owns_input = PREVIEW_HOST
+        .with(std::cell::Cell::get)
+        .and_then(|instance| app.pages.nav.entry_of_instance(instance))
+        .is_some_and(|entry| app.pages.nav.input_owner() == Some(InputOwner::Entry(entry)));
+    if preview_must_halt(active, crate::player::preview::abandoning(), host_owns_input) {
+        log("preview: its page no longer owns input — halting");
+        halt_preview(app);
+        PREVIEW_HOST.with(|h| h.set(None));
+    }
+}
+
 /// The `&mut App`-free half of [`halt_preview`], for call sites (the item menu's own action
 /// dispatch in `app::input`) that only have the playback session and adapter, not the whole
 /// frame. Both must start abandonment before checking [`crate::player::preview::occupies`] —
@@ -118,8 +156,66 @@ pub(super) fn request_play_intent(
     }
 }
 
+/// What a Play must do about the engine the session already holds before asking for its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PlayClearance {
+    /// Nothing is in the way.
+    Clear,
+    /// A preview still occupies the engine; queue the play ([`hold_feature`]).
+    Hold,
+    /// A live engine nothing owns: stop it, then play.
+    RetireOrphan,
+}
+
+/// A live engine that is neither a preview nor the player page's: every transport key and the
+/// EOS teardown are gated on the player page, so nothing will ever stop it, and the next Load
+/// meets it as "a live Engine that belongs to another Load attempt" and fails.
+pub(super) fn off_route_orphan(live: bool, preview: bool, player_mounted: bool) -> bool {
+    live && !preview && !player_mounted
+}
+
+/// Asked after [`halt_preview_now`] has already started any preview's abandonment.
+pub(super) fn play_clearance(occupies: bool, live: bool, preview: bool, player_mounted: bool) -> PlayClearance {
+    if occupies {
+        PlayClearance::Hold
+    } else if off_route_orphan(live, preview, player_mounted) {
+        PlayClearance::RetireOrphan
+    } else {
+        PlayClearance::Clear
+    }
+}
+
+/// Hand the engine back before a Play: halt a preview, then answer [`play_clearance`]. `false`
+/// means hold the play; an orphan is stopped here, so `true` always means the slot is free.
+/// Every Play reachable from a page goes through this one door.
+pub(super) fn clear_engine_for_play(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut crate::player::adapter::PlayerAdapter,
+    player_mounted: bool,
+) -> bool {
+    halt_preview_now(ps, pa);
+    match play_clearance(
+        crate::player::preview::occupies(),
+        pa.is_live(),
+        crate::route::is_preview(ps),
+        player_mounted,
+    ) {
+        PlayClearance::Hold => false,
+        PlayClearance::Clear => true,
+        PlayClearance::RetireOrphan => {
+            log("play: stopping an off-route engine nothing owns before the new Load");
+            crate::player::stop_bufferfeed(ps, pa);
+            true
+        }
+    }
+}
+
 fn drain_held_feature(app: &mut App) {
-    if crate::player::preview::occupies() {
+    if HELD_FEATURE.with(|slot| slot.borrow().is_none()) {
+        return;
+    }
+    let mounted = super::bridge::player(&app.pages).is_some();
+    if !clear_engine_for_play(&mut app.player.session, &mut app.adapters.player, mounted) {
         return;
     }
     let held = HELD_FEATURE.with(|slot| slot.borrow_mut().take());
@@ -156,6 +252,52 @@ fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
     TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
 }
 
+#[cfg(test)]
+mod preview_host_tests {
+    use super::preview_must_halt;
+
+    /// Field report, 0.7.0 prep: a trailer kept playing — and posting a timeline every ten
+    /// seconds — after the viewer went Home, opened Account or Settings, or opened another title,
+    /// and no later detail page autoplayed. Only the page's own requests halted it, and none of
+    /// those exits is one. A preview lives exactly as long as its page owns input.
+    #[test]
+    fn a_preview_is_halted_once_its_page_no_longer_owns_input() {
+        assert!(preview_must_halt(true, false, false));
+    }
+
+    #[test]
+    fn a_preview_on_its_page_or_already_abandoning_is_left_alone() {
+        assert!(!preview_must_halt(true, false, true));
+        assert!(!preview_must_halt(true, true, false));
+        assert!(!preview_must_halt(false, false, false));
+    }
+}
+
+#[cfg(test)]
+mod play_clearance_tests {
+    use super::{off_route_orphan, play_clearance, PlayClearance};
+
+    /// Field report, 0.7.0 prep: a trailer's engine outlived its end on the detail page, and
+    /// the film's Play then failed with `start_bufferfeed: live Engine belongs to another Load
+    /// attempt`. A Play from a page must pre-empt an engine nothing owns, not fail against it.
+    #[test]
+    fn a_play_pre_empts_a_live_engine_that_no_page_owns() {
+        assert_eq!(play_clearance(false, true, false, false), PlayClearance::RetireOrphan);
+        assert!(off_route_orphan(true, false, false));
+    }
+
+    #[test]
+    fn a_play_holds_for_a_preview_and_leaves_the_player_engine_alone() {
+        // A preview still abandoning its Load: hold, never stop it from here.
+        assert_eq!(play_clearance(true, true, true, false), PlayClearance::Hold);
+        // The player page owns its engine; a page over it is not a reason to stop it.
+        assert_eq!(play_clearance(false, true, false, true), PlayClearance::Clear);
+        assert!(!off_route_orphan(true, false, true));
+        // A live preview is the preview's, whatever the machine says.
+        assert!(!off_route_orphan(true, true, false));
+        assert_eq!(play_clearance(false, false, false, false), PlayClearance::Clear);
+    }
+}
 
 #[cfg(test)]
 mod held_feature_tests {
@@ -326,6 +468,7 @@ mod held_feature_tests {
 }
 
 pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
+    halt_preview_off_its_page(app);
     drain_held_feature(app);
     home_requests(app, fr.now);
     library_requests(app, fr.now);
@@ -387,8 +530,8 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
             // answers it itself, over the entry a `Pop` would reveal (`NavStack::continuous_for`).
             ContentReq::Back => bridge::nav_pop_with_return(&mut app.pages, ret),
             ContentReq::Play { play, resume_ns } => {
-                halt_preview(app);
-                if crate::player::preview::occupies() {
+                let mounted = bridge::player(&app.pages).is_some();
+                if !clear_engine_for_play(&mut app.player.session, &mut app.adapters.player, mounted) {
                     hold_feature(play, resume_ns, Some(ret));
                     continue;
                 }
@@ -429,7 +572,9 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
                     &acodec,
                     &title,
                 );
-                if !ok {
+                if ok {
+                    PREVIEW_HOST.with(|h| h.set(Some(instance)));
+                } else {
                     crate::player::preview::note_admission_refused();
                 }
             }

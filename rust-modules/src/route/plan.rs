@@ -1258,7 +1258,9 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     plan.transport_kbps = source_transport_kbps;
     // See `Session::cur_auto_original_watched`: Auto running Original is the whole condition, and
     // the link's tier is not part of it.
-    plan.auto_original_watched = env.quality == Quality::Auto && auto_original;
+    // A preview is direct-play or nothing: an Original→HLS rescue would turn a trailer into a
+    // transcode, so its Original is never watched.
+    plan.auto_original_watched = env.quality == Quality::Auto && auto_original && !env.preview;
     if env.quality != Quality::Auto && !tentative_quality.direct_play {
         crate::player::log(&format!(
             "route: quality ceiling {} — source {}kbps {src_w}x{src_h}; denying direct play + remux, re-encoding",
