@@ -17,8 +17,8 @@ Everything below is derived from bytes:
   * every payload file, with its size, mode, owner and sha256;
   * the binary's ELF class, machine and complete DT_NEEDED list (parsed here, in pure Python —
     no readelf, so this runs on the runner, on a Mac, and on a machine with no NDK);
-  * the bundled FFmpeg libraries, their SONAMEs, and the configure invocation FFmpeg records
-    inside libavutil — which is where the LGPL position is actually decided, and where v0.2.1's
+  * the bundled FFmpeg libraries, their SONAMEs and DT_NEEDED, and the configure invocation
+    FFmpeg records inside libavutil — which is where the LGPL position is actually decided, and where v0.2.1's
     build-machine path was found;
   * the dev-trigger witnesses, counted rather than asserted, so "none" is a measurement;
   * host- and path-shaped strings in the shipped binary, as a FLOOR on what it can reach.
@@ -188,8 +188,8 @@ def sha256(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
-def row(k: str, v: str) -> str:
-    return f"| {k} | {v} |"
+def row(*cells: str) -> str:
+    return f"| {' | '.join(cells)} |"
 
 
 def table(rows: list[str], head: tuple[str, ...] = ("", "")) -> str:
@@ -496,14 +496,19 @@ def generate(args) -> str:
         rows = []
         for name, data in sorted(sos.items()):
             e = elf_info(data)
+            # Their own DT_NEEDED is what the television's loader resolves when the app opens them,
+            # and nothing else in this block states it: v0.7.0's libavformat gained `libz.so.1`
+            # (#235) and the only record of that was a hand-typed sentence in the authored half.
+            needed = ", ".join(f"`{n}`" for n in e.get("needed", [])) or "—"
             rows.append(row(f"`{name.rsplit('/', 1)[-1]}`",
                             f"SONAME `{e.get('soname') or '?'}`, {human(len(data))} bytes, "
-                            f"sha256 `{sha256(data)[:16]}`"))
+                            f"sha256 `{sha256(data)[:16]}`", needed))
         out.append("Shared libraries shipped **beside** the binary and opened by absolute path out "
                    "of the app's own directory, so they can neither shadow nor be shadowed by the "
-                   "television's own FFmpeg:")
+                   "television's own FFmpeg. Their `DT_NEEDED` entries that are not shipped here "
+                   "are resolved from the television, and the static matrix below grades them:")
         out.append("")
-        out += [table(rows, ("file", "identity")), ""]
+        out += [table(rows, ("file", "identity", "`DT_NEEDED`")), ""]
 
     # ---- FFmpeg + licence
     out.append("### FFmpeg and the LGPL position")

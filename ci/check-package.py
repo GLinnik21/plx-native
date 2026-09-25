@@ -720,6 +720,12 @@ def lint_audit(path) -> None:
     unknown = unknown_firmwares(authored)
     check(not unknown, f"every webOS version {path.name}'s authored half names has evidence"
                        + (f" (no evidence for {', '.join(unknown)})" if unknown else ""))
+    # No CI step substitutes anything in the authored half — `gen-release-audit.py` only replaces
+    # the generated block — so a `__PLACEHOLDER__` left there publishes literally, in place of the
+    # evidence it stood for. The v0.7.0 audit carried one through review.
+    left = sorted(set(re.findall(r"__[A-Z0-9_]+__", authored)))
+    check(not left, f"{path.name}'s authored half carries no unfilled placeholder"
+                    + (f" (found {', '.join(left)})" if left else ""))
 
 
 # Lint one document without a package, which is how a note or an audit is graded while it is

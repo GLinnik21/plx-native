@@ -251,6 +251,13 @@ jobs:
               --min-release 4.4.2 pkg/plxnative
             ./tools/fwcompat.py --db /usr/share/webosbrew/compat-checker/data \
               --min-release 4.4.2 pkg/plxnative-storage
+            # The dlopen'd bundled FFmpeg: nothing above resolves its own DT_NEEDED (#235's
+            # libz.so.1). Its sibling libraries ship in pkg/, so --shipped takes them off the list.
+            for lib in pkg/lib*-plx.so.*; do
+              case "$lib" in *.link.*) continue ;; esac   # the link-evidence sidecars
+              ./tools/fwcompat.py --db /usr/share/webosbrew/compat-checker/data \
+                --min-release 4.4.2 --shipped pkg "$lib"
+            done
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
