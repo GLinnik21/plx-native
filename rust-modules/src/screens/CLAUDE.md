@@ -57,6 +57,13 @@ that mixes async content with a live cursor:
   the rail are all controls acting on nothing, and the async focus clamp *correctly* moved focus
   off an undrawn zone. The clamp cannot tell "this control is gone" from "the thing it acts on is
   reloading" — so `Layout::grid_head` stays true while a grid-scoped transition is in flight.
+- **A seat nobody chose follows the head.** A page that seats its own focus on its document's
+  first block must re-seat when a landing changes what that block is, until the user moves. The
+  Library's grid is usually prepared before its shelves land, so its first seat was the grid's
+  heading; the shelves then committed above it and the first DOWN went on into the grid
+  (`LibraryScreen::provisional`). Home already has this shape (the hero seats when its action row
+  arrives, while focus is still on the strip); Search seats its field, which never arrives async,
+  and Person and Detail keep no self-seat for a landing to strand.
 - **Derive re-entry position, don't store it.** `Layout::seat_for_scroll` derives the focus seat
   from the restored SCROLL rather than a saved grid index: the server's hubs change subject
   between requests, so a stored shelf index can name a different shelf on return.

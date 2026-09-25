@@ -465,3 +465,95 @@ fn source_controls_and_document_groups_match_bare_shelves_full_and_failed_conten
         }
     }
 }
+
+/// How the page was reached, as far as the focus engine can tell: a pointer click on the strip's
+/// tab, a keyboard OK on it, or a boot/trigger open with nothing focused at all.
+#[derive(Clone, Copy, Debug)]
+enum Opened {
+    Pointer,
+    Keyboard,
+    Unfocused,
+}
+
+/// Open a Library of `kind` whose A–Z grid is already prepared and whose own shelves have NOT
+/// landed yet, and run it to its first seat.
+fn opened_before_its_shelves(kind: SecKind, opened: Opened) -> (Fixture, LibraryScreen, FocusEngine<u32>) {
+    let mut fixture = Fixture::new(1, 24, 0);
+    for section in &mut fixture.sections { section.kind = kind; }
+    fixture.publish(0, 24);
+    let mut page = LibraryScreen::new(ENTRY, InstanceId(19), kind);
+    let mut engine = FocusEngine::new();
+    let tab = FocusKey { entry: ENTRY, elem: crate::ui::dispatch::STRIP_BASE + 1 };
+    match opened {
+        Opened::Pointer => { engine.set(OWNER, tab, Some(STRIP), By::Pointer); }
+        Opened::Keyboard => { engine.set(OWNER, tab, Some(STRIP), By::Dir); }
+        Opened::Unfocused => {}
+    }
+    fixture.step(&mut page, &mut engine, ScreenEvent::Mount);
+    for i in 0..3 {
+        fixture.step(&mut page, &mut engine, ScreenEvent::Tick(Tick { ms: i * 16, dt_us: 16_000 }));
+    }
+    (fixture, page, engine)
+}
+
+/// The shelves arrive: published by the store, observed by the page, a few frames run.
+fn land_shelves(fixture: &mut Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>) {
+    fixture._stores.browse.borrow_mut().seed_shelves_for_test(0, &["Synthetic shelf 0", "Synthetic shelf 1"], 4);
+    fixture.hubs = fixture._stores.browse.borrow_mut().hubs_snapshot();
+    fixture.step(page, engine, ScreenEvent::StoreChanged(StoreId::Browse.ord(), 1));
+    for i in 3..6 {
+        fixture.step(page, engine, ScreenEvent::Tick(Tick { ms: i * 16, dt_us: 16_000 }));
+    }
+    assert_eq!(page.shelves.len(), 2, "the landing must reach the page's document");
+}
+
+/// **Field report, TV debug build of main a788b27a:** the Movies tab was clicked, the screen
+/// cold-opened with its grid already prepared, `libhubs: section 0 landed 7 shelves` arrived
+/// AFTER that, and the first DOWN put focus in the "All" block instead of on a shelf.
+///
+/// The page seats its own default focus on the document's first block the first frame it has
+/// one. With the grid prepared and the shelves still in flight that block is the grid's heading
+/// row, so focus sat on SORT; the shelves then committed above it (the page is at its head, so
+/// `SecHubs::commit_staged` rightly lets them in) and pushed the seated control 2 × a shelf pitch
+/// down, off the panel. Nothing re-seated, so the first DOWN walked on from the heading into the
+/// grid. A seat nobody chose must follow the document's head until somebody moves — the same seat
+/// the page takes when the shelves happen to land first. Held for both library kinds and every
+/// entry path, because none of them is involved in the fault.
+#[test]
+fn a_shelf_landing_after_the_head_seat_moves_that_seat_onto_the_first_shelf() {
+    let _guard = crate::testlock::serial();
+    for kind in [SecKind::Movie, SecKind::Show] {
+        for opened in [Opened::Pointer, Opened::Keyboard, Opened::Unfocused] {
+            let (mut fixture, mut page, mut engine) = opened_before_its_shelves(kind, opened);
+            assert_eq!(
+                engine.current(OWNER).and_then(|key| page.group_of(&key.elem, &fixture.cx(&engine))),
+                Some(TOOLBAR_GROUP),
+                "{kind:?}/{opened:?}: with no shelves yet, the head of the document is the grid's heading"
+            );
+            land_shelves(&mut fixture, &mut page, &mut engine);
+            assert_eq!(
+                engine.current(OWNER),
+                Some(page.key(page.shelves[0].elems[0])),
+                "{kind:?}/{opened:?}: the landing must carry the page's own seat onto the first shelf's first card"
+            );
+            fixture.direction(&mut page, &mut engine, Dir::Down);
+            assert_eq!(
+                engine.current(OWNER),
+                Some(page.key(page.shelves[1].elems[0])),
+                "{kind:?}/{opened:?}: DOWN walks the shelves, never jumping to the grid's heading or the grid"
+            );
+        }
+    }
+}
+
+/// …and only a seat nobody chose. Once the user has moved, a landing is not allowed to take
+/// focus away from where they put it.
+#[test]
+fn a_shelf_landing_never_moves_a_seat_the_user_chose() {
+    let _guard = crate::testlock::serial();
+    let (mut fixture, mut page, mut engine) = opened_before_its_shelves(SecKind::Movie, Opened::Pointer);
+    fixture.direction(&mut page, &mut engine, Dir::Right);
+    assert_eq!(engine.current(OWNER), Some(page.key(FILTER)));
+    land_shelves(&mut fixture, &mut page, &mut engine);
+    assert_eq!(engine.current(OWNER), Some(page.key(FILTER)), "the user's own move outranks the page's seat");
+}

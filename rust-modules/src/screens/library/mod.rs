@@ -69,7 +69,7 @@ const MORE: u32 = 4;
 const STRIP: GroupId = crate::ui::containers::tabs::STRIP;
 
 pub(crate) const SHAPE: [&str; 8] = [
-    "LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,sweep_down:bool,epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,shelf_publication:Option<(HubsId{epoch:u32,sid:u32,section:u64},revision:u64)>,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],shelves:[{id:str,group:u32,landscape:bool,elems:[u32],motion:CardRow}],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}",
+    "LibraryScreen{entry:u32,instance:u32,kind:u32,wanted_kind:Option<u32>,scroll:{pos:f32,vel:f32},scroll_target:f32,restore_scroll:Option<f32>,live:bool,initial:bool,provisional:Option<u32>,sweep_down:bool,epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,shelf_publication:Option<(HubsId{epoch:u32,sid:u32,section:u64},revision:u64)>,page_fade:Xfade{phase:u8,t:f32},grid_fade:Xfade{phase:u8,t:f32},pair:MasterDetailState{side:u32,follow:u32,band:u32,door:Option<u32>},pending:PendingTransactions,ground_seeded:bool,ground:PageGround,chrome:LibraryChrome,memory:PageMemory::Library,viewport_cache:[LibraryViewport],shelves:[{id:str,group:u32,landscape:bool,elems:[u32],motion:CardRow}],libraries:[(elem:u32,section:u32)],readout:u32,layout:LibraryLayout,target_layout:LibraryLayout,grid:LibraryGrid,rail:LibraryRail}",
     transactions::SHAPE,
     crate::ui::widgets::PageGround::SHAPE,
     crate::ui::widgets::TabStrip::SHAPE,
@@ -145,6 +145,10 @@ pub(crate) struct LibraryScreen {
     readout: Readout,
     live: bool,
     initial: bool,
+    /// The head group the page seated its own focus in, while that seat is still the page's own
+    /// choice: nobody has moved since. Such a seat follows the head when a landing changes what the
+    /// head is — the shelves arrive async, usually after a prepared grid, and commit above it.
+    provisional: Option<GroupId>,
     sweep_down: bool,
     // Paint-only state: neither capsule travel nor ambient colours choose focus or activation.
     library_capsules: crate::ui::widgets::TabStrip,
@@ -169,7 +173,7 @@ impl LibraryScreen {
             scroll: Spring::at(0.0), scroll_target: 0.0, restore_scroll: None,
             viewports: Vec::new(),
             pending: PendingTransactions::default(), page_fade: Xfade::new(), grid_fade: Xfade::new(),
-            readout: Readout::Loading, live: true, initial: true, sweep_down: true,
+            readout: Readout::Loading, live: true, initial: true, provisional: None, sweep_down: true,
             library_capsules: crate::ui::widgets::TabStrip::new(),
             library_pop: crate::ui::widgets::CtlPop::new(),
             ground: crate::ui::widgets::PageGround::new(), ground_seeded: false,
@@ -190,6 +194,7 @@ impl LibraryScreen {
         self.scroll.jump(memory.scroll);
         self.scroll_target = memory.scroll;
         self.initial = false;
+        self.provisional = None;
     }
 
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: self.entry, elem } }
@@ -379,6 +384,16 @@ impl LibraryScreen {
         self.layout.status = self.readout == Readout::Failed;
         self.target_layout.status = self.layout.status;
         self.pair.detail.set_geometry(self.layout, self.scroll.pos, self.target_layout, self.scroll_target);
+    }
+
+    /// Seat the page's own focus in `group`; the library row seats the library on view.
+    fn seat_on<H: LibraryLike>(&self, group: GroupId, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        if group == LIBRARY_GROUP {
+            if let Some((elem, _)) = self.libraries.iter().find(|(_, index)| Some(*index) == self.view_section(cx)) {
+                fx.remember(LIBRARY_GROUP, *elem);
+            }
+        }
+        self.reseat(FocusTarget::ContainerGroup(group), fx);
     }
 
     fn first_group(&self) -> GroupId {
@@ -600,11 +615,13 @@ impl LibraryScreen {
                 let Some(index) = row.checked_mul(COLS).and_then(|i| i.checked_add(col)) else { return Handled::No };
                 let Some(elem) = self.pair.detail.elem_at(index) else { return Handled::No };
                 self.initial = false; // An explicit owned command supersedes the pending boot seat.
+                self.provisional = None;
                 self.reseat(FocusTarget::Elem(self.key(elem)), fx);
             }
             LibraryCmd::FocusShelf { shelf, col } => {
                 let Some(&elem) = self.shelves.get(shelf).and_then(|s| s.elems.get(col)) else { return Handled::No };
                 self.initial = false; // As FocusGrid: an explicit owned command supersedes the boot seat.
+                self.provisional = None;
                 self.reseat(FocusTarget::Elem(self.key(elem)), fx);
             }
             LibraryCmd::ItemMenu => return cx.focus.current.map_or(Handled::No, |key| self.activate(key.elem, true, cx, fx)),
@@ -716,6 +733,7 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
             ScreenEvent::FocusMoved { from, to, by } => {
                 if matches!(by, By::Dir | By::Pointer) {
                     self.initial = false;
+                    self.provisional = None;
                     // A deliberate move is the only focus change the poster wall animates: the
                     // tile grows from rest over the frames after this, as a shelf's does. A
                     // restore or a reconcile is left to `GridPart::tick`, which adopts its cell
@@ -727,6 +745,9 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                 }
                 let from_group = from.and_then(|key| <Self as Focusable<H>>::group_of(self, &key.elem, cx));
                 let to_group = <Self as Focusable<H>>::group_of(self, &to.elem, cx);
+                // Any seat off the head that was not a user move (a restore, a reconcile, a seat by
+                // element) is somebody else's choice too, and the head seat no longer describes it.
+                if to_group != self.provisional { self.provisional = None; }
                 let outcome = self.pair.focus_moved(from_group, to_group, *to);
                 // Projected entry names the letter but preserves the exact remembered grid item.
                 // Only a move within the rail (or direct pointer entry) jumps to its first title.
@@ -804,12 +825,21 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                             Some(Block::Shelf(index)) => self.shelves[index].group,
                             _ => self.first_group(),
                         };
-                        if group == LIBRARY_GROUP {
-                            if let Some((elem, _)) = self.libraries.iter().find(|(_, index)| Some(*index) == self.view_section(cx)) {
-                                fx.remember(LIBRARY_GROUP, *elem);
-                            }
-                        }
-                        self.reseat(FocusTarget::ContainerGroup(group), fx);
+                        // Only a HEAD seat is provisional: one derived from a restored scroll names
+                        // the block the reader left, which a landing above it does not change.
+                        self.provisional = (group == self.first_group() && self.scroll_target <= 0.5).then_some(group);
+                        self.seat_on(group, cx, fx);
+                    } else if let Some(seated) = self.provisional.filter(|_| self.layout.first().is_some()) {
+                        // A landing moved the head out from under the page's own seat (field report
+                        // on a788b27a: the shelves committed above a seat on the grid's heading, and
+                        // the first DOWN went on into the grid). Follow it, as a first paint would.
+                        let head = self.first_group();
+                        let at = focused.filter(|key| key.entry == self.entry)
+                            .and_then(|key| <Self as Focusable<H>>::group_of(self, &key.elem, cx));
+                        // Focus anywhere but the seat is somebody's move, reported or not yet (the
+                        // engine moves before the page hears `FocusMoved`): not the page's to take.
+                        if at != Some(seated) { self.provisional = None; }
+                        else if head != seated { self.provisional = Some(head); self.seat_on(head, cx, fx); }
                     }
                 }
                 // The dispatcher ticks the top page beneath a compact menu, but not buried pages.
@@ -839,6 +869,7 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                     return Handled::Yes;
                 }
                 if let InputKind::Wheel { dy } = input.kind {
+                    self.provisional = None; // the reader moved the page off the head the seat held
                     self.scroll_target = (self.scroll_target - dy * layout::GRID_PITCH)
                         .clamp(0.0, self.target_layout.max_scroll());
                     fx.invalidate(Provenance::Input);
@@ -1035,7 +1066,9 @@ impl LogicalState for LibraryScreen {
         c.option(self.wanted_kind, |c, kind| { c.u32(match kind { SecKind::Movie => 0, SecKind::Show => 1 }); });
         c.f32(self.scroll.pos).f32(self.scroll.vel).f32(self.scroll_target);
         c.option(self.restore_scroll, |c, value| { c.f32(value); });
-        c.bool(self.live).bool(self.initial).bool(self.sweep_down);
+        c.bool(self.live).bool(self.initial);
+        c.option(self.provisional, |c, group| { c.u32(group.0); });
+        c.bool(self.sweep_down);
         c.option(self.epoch, |c, value| { c.u32(value); });
         c.option(self.query, |c, value| { c.u32(value); });
         c.bool(self.grid_reset_pending);
