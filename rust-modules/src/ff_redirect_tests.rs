@@ -30,7 +30,7 @@ impl Scripted {
         let (seen_t, stop_t) = (seen.clone(), stop.clone());
         let thread = std::thread::spawn(move || {
             while !stop_t.load(Ordering::Acquire) {
-                let mut s = match srv.accept() {
+                let mut s = match crate::testnet::accept(&srv) {
                     Ok((s, _)) => s,
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(std::time::Duration::from_millis(2));
@@ -38,8 +38,6 @@ impl Scripted {
                     }
                     Err(_) => return,
                 };
-                // macOS hands the accepted socket the listener's O_NONBLOCK.
-                let _ = s.set_nonblocking(false);
                 let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(300)));
                 let mut raw = Vec::new();
                 let mut chunk = [0u8; 2048];
