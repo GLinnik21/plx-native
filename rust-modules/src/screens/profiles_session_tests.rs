@@ -709,3 +709,72 @@ fn root_back_uses_the_instance_address_and_checked_correlation_space() {
         .all(|st| !matches!(st.fx, Fx::App(AppFx::Session(_)))));
 }
 
+
+/// The read-out as the owner publishes it: nobody to offer, a reason, and whether BACK from it
+/// resumes a session inside the app.
+fn readout(reason: &str, back_resumes: bool) -> auth::owner::SessionSnapshot {
+    let mut read = snapshot(Phase::Profiles, Vec::new());
+    read.error = Arc::from(reason);
+    read.readout_back_resumes = back_resumes;
+    read
+}
+
+fn session_cmds(fx: &[Stamped<SessionHost>]) -> Vec<&'static str> {
+    fx.iter().filter_map(|st| match &st.fx {
+        Fx::App(AppFx::Session(auth::SessionCmd::BackAtRoot { .. })) => Some("BackAtRoot"),
+        Fx::App(AppFx::Session(auth::SessionCmd::SignOut)) => Some("SignOut"),
+        Fx::App(AppFx::Session(_)) => Some("other"),
+        _ => None,
+    }).collect()
+}
+
+/// The owner's TV report: the refused-roster read-out showed ONE control, *Sign out*, focused —
+/// BACK did leave, but nothing on screen said so and the only visible way out was destructive.
+/// Both read-outs (refused and unreachable) now lead with a focused *Back* whose OK is exactly
+/// the BACK key, with *Sign out* secondary beside it on the read-out's own row.
+#[test]
+fn a_roster_readout_offers_a_focused_back_whose_ok_is_the_back_key() {
+    for reason in [auth::owner::ROSTER_REFUSED, auth::owner::ROSTER_UNREACHABLE] {
+        let read = readout(reason, true);
+        let mut s = ProfilesScreen::new(EntryId(0), read.read());
+        let back = FocusKey { entry: EntryId(0), elem: READOUT_BACK };
+        let sign_out = FocusKey { entry: EntryId(0), elem: FOOTER };
+        let c = cx_with(None, &read);
+
+        let (_, fx) = step_ev_with(&mut s, &ScreenEvent::Tick(Tick::default()), None, &read, InstanceId(3));
+        assert!(fx.iter().any(|st| matches!(&st.fx, Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(
+            Enter::Fresh { focus: FocusTarget::Elem(k) }))) if *k == back)),
+            "{reason}: focus is seated on Back, not on Sign out");
+
+        let group = Focusable::<SessionHost>::group_of(&s, &back.elem, &c).expect("Back is focusable");
+        assert_eq!(Focusable::<SessionHost>::group_of(&s, &sign_out.elem, &c), Some(group),
+            "Back and Sign out are one row");
+        let at = |k: FocusKey<u32>| Focusable::<SessionHost>::place(&s, &k.elem, &c, At::Drawn)
+            .expect("placed").rect;
+        assert!(at(back).x < at(sign_out).x, "Back leads the row; Sign out is secondary");
+        assert!(at(back).y >= StatusOverlay::FULL_ANCHOR_TOP, "the row stands under the verdict");
+        assert_eq!(Focusable::<SessionHost>::reconcile(&s, sign_out, &c), sign_out,
+            "Sign out stays reachable");
+        assert!(matches!(Focusable::<SessionHost>::neighbour(&s, back, Dir::Right, &c), Step::Move(k) if k == sign_out));
+
+        let (_, ok) = step_ev_with(&mut s, &ScreenEvent::PressCommit(crate::ui::machine::PressId(1)),
+            Some(back), &read, InstanceId(3));
+        let (_, key) = step_ev_with(&mut s, &key_down(Key::Back, 0, 0), Some(back), &read, InstanceId(3));
+        assert_eq!(session_cmds(&ok), vec!["BackAtRoot"], "{reason}: OK on Back asks to leave");
+        assert_eq!(session_cmds(&ok), session_cmds(&key), "OK on Back IS the BACK key");
+    }
+}
+
+/// With no session behind the picker, BACK hands the screen to the television — a *Back* pill
+/// would claim otherwise, so none is offered and *Sign out* stays the read-out's one control.
+#[test]
+fn a_readout_whose_back_leaves_the_app_offers_no_back_pill() {
+    let read = readout(auth::owner::ROSTER_REFUSED, false);
+    let mut s = ProfilesScreen::new(EntryId(0), read.read());
+    let c = cx_with(None, &read);
+    let (_, fx) = step_ev_with(&mut s, &ScreenEvent::Tick(Tick::default()), None, &read, InstanceId(3));
+    assert!(!fx.iter().any(|st| matches!(&st.fx, Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(
+        Enter::Fresh { focus: FocusTarget::Elem(k) }))) if k.elem == READOUT_BACK)));
+    assert_eq!(Focusable::<SessionHost>::group_of(&s, &READOUT_BACK, &c), None);
+    assert!(Focusable::<SessionHost>::group_of(&s, &FOOTER, &c).is_some(), "Sign out is still there");
+}

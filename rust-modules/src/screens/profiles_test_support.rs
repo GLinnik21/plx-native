@@ -44,6 +44,8 @@ pub(super) fn snapshot(phase: Phase, users: Vec<auth::UserTile>) -> auth::owner:
         persistence_warning: None,
         incident: None,
         link_trouble: false,
+        switch_refused: false,
+        readout_back_resumes: false,
     }
 }
 
@@ -98,6 +100,8 @@ pub(super) fn bare(pad: Pad) -> ProfilesScreen {
         users: Arc::from(Vec::<auth::UserTile>::new()),
         phase: Phase::Profiles,
         error: Arc::from(""),
+        back_resumes: false,
+        readout_seated: false,
         pin_denied: false,
         flow_epoch: 0,
         next_correlation: Some(1),
@@ -113,6 +117,8 @@ pub(super) fn bare(pad: Pad) -> ProfilesScreen {
             pad_len: 0,
             pad_submitting: false,
             pad_flashing: false,
+            readout_back: false,
+            readout_seated: false,
             next_correlation: Some(1),
             selection_correlation: None,
             selection_epoch: None,

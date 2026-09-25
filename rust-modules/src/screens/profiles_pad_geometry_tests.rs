@@ -384,6 +384,8 @@ fn ok_means_one_thing_on_the_pill_and_another_on_a_tile() {
 
     // the two live answers, and they are not interchangeable
     assert_eq!(commit_action(false, Some(FOOTER), N), Commit::SignOut);
+    // the roster read-out's Back is the BACK key's request, never a sign-out
+    assert_eq!(commit_action(false, Some(READOUT_BACK), 0), Commit::Back);
     assert_eq!(commit_action(false, Some(0), N), Commit::Select(0));
     assert_eq!(commit_action(false, Some(2), N), Commit::Select(2));
 

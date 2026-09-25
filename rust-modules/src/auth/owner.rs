@@ -676,9 +676,51 @@ pub(crate) struct SessionInit {
     /// plex.tv has left at least two consecutive polls of the code on screen unanswered.
     #[serde(default)]
     pub link_trouble: bool,
+    /// The identity plex.tv REFUSED a roster to while nothing was cached to switch from — the
+    /// verdict behind [`ROSTER_REFUSED`]'s read-out, kept so the account menu stops offering
+    /// *Change profile* into that dead end ([`SessionSnapshot::switch_refused`]). Keyed by the
+    /// identity rather than a flag, so a sign-out, a sign-in or a profile switch retires it
+    /// without every one of those paths having to remember to. In memory only: a relaunch asks
+    /// plex.tv again.
+    #[serde(default)]
+    pub switch_refused_for: Option<Identity>,
 }
 
 impl SessionInit {
+    /// The picker is showing #132's read-out: nobody to offer, and a reason why.
+    fn roster_readout_up(&self) -> bool {
+        is_roster_readout(self.phase, &self.users, &self.error)
+    }
+
+    /// Is the picker on screen one that has nobody to offer and is no longer waiting to? Then no
+    /// profile boundary can be crossed from it — nobody can be handed the remote — and BACK
+    /// resumes whatever session is behind it rather than stranding the person on Sign out
+    /// (#132). A picker with tiles, or with a roster request still in flight, is not this.
+    fn roster_dead_end(&self) -> bool {
+        self.phase == Phase::Profiles && self.users.is_empty()
+            && !self.pending.values().any(|pending| pending.key.op == SessionOp::HomeRoster)
+    }
+
+    /// Whether BACK from a [dead end](Self::roster_dead_end) resumes a session inside the app:
+    /// the dev session it never left, or a stored one it can reach. Otherwise BACK is the root
+    /// press and the television takes the screen.
+    fn dead_end_resumes(&self) -> bool {
+        matches!(self.authority, BootstrapAuthority::DevPms { .. })
+            || self.committed_credentials.merge_into(&self.persisted).can_go_local()
+    }
+
+    /// [`SessionSnapshot::switch_refused`]: the identity a roster was refused to (with nothing
+    /// cached) is still the one in use.
+    fn switch_refused(&self) -> bool {
+        self.switch_refused_for.as_ref().is_some_and(|id| id.matches(&self.persisted))
+    }
+
+    /// Put up #132's refused read-out and remember the verdict for this identity.
+    fn refuse_switch(&mut self) {
+        self.error = ROSTER_REFUSED.into();
+        self.switch_refused_for = Some(Identity::of(&self.persisted));
+    }
+
     pub fn captured(persisted: PersistedSession) -> Self {
         let committed_credentials = CredentialPatch::of(&persisted);
         let disk_identity = Identity::of(&persisted);
@@ -693,7 +735,7 @@ impl SessionInit {
             unconfirmed_fresh_prior: None, pending_erase: None, inbox: VecDeque::new(), pump_pending: false,
             active_profile: None, profile_scope: ProfileScope(0),
             delete_leftovers: 0, incident: None, incidents_seen: Vec::new(), next_incident: 0,
-            link_trouble: false }
+            link_trouble: false, switch_refused_for: None }
     }
 
     pub fn captured_boot(saved: PersistedSession, primary: Option<crate::plex::session::ServerRef>,
@@ -910,6 +952,9 @@ impl LogicalState for SessionInit {
         w.seq(self.incidents_seen.len());
         for key in &self.incidents_seen { incident::write_key(w, key); }
         w.u32(self.next_incident).bool(self.link_trouble);
+        w.option(self.switch_refused_for.as_ref(), |w, id| {
+            w.str(&id.client_id).str(&id.account_token).str(&id.profile_uuid);
+        });
     }
     fn probe(&self, out: &mut String) {
         use std::fmt::Write;
@@ -943,6 +988,16 @@ pub(crate) struct SessionSnapshot {
     pub incident: Option<IncidentOffer>,
     /// plex.tv is not answering the polls of the code on screen.
     pub link_trouble: bool,
+    /// **Switching profiles is known to be unavailable for the identity in use** — its roster
+    /// was refused with nothing cached (plex.tv's verdict, or a dev-token session that has no
+    /// account to ask with). The account menu hides *Change profile* on it; no verdict
+    /// (unreachable, never asked) keeps the row, because that row is what asks.
+    pub switch_refused: bool,
+    /// **BACK from the roster read-out resumes a session inside the app** — the one fact the
+    /// read-out needs to offer a *Back* control whose press does what the BACK key does. When
+    /// it is `false` the key hands the screen to the television, and a *Back* pill saying
+    /// otherwise would lie.
+    pub readout_back_resumes: bool,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -995,6 +1050,9 @@ impl SessionSnapshot {
             && self.scope == state.profile_scope && self.delete_leftovers == state.delete_leftovers
             && self.persistence_warning == state.persistence_warning
             && self.incident == state.incident && self.link_trouble == state.link_trouble
+            && self.switch_refused == state.switch_refused()
+            && self.readout_back_resumes == (state.roster_readout_up() && state.roster_dead_end()
+                && state.dead_end_resumes())
             && match (&self.profile, &state.active_profile) {
                 (None, None) => true,
                 (Some(read), Some(profile)) => read.uuid == profile.uuid
@@ -1024,7 +1082,9 @@ impl SessionSnapshot {
                 uuid: p.uuid.clone(), title: p.title.clone(), thumb: p.thumb.clone(),
             }), scope: state.profile_scope, delete_leftovers: state.delete_leftovers,
             persistence_warning: state.persistence_warning, incident: state.incident.clone(),
-            link_trouble: state.link_trouble }
+            link_trouble: state.link_trouble, switch_refused: state.switch_refused(),
+            readout_back_resumes: state.roster_readout_up() && state.roster_dead_end()
+                && state.dead_end_resumes() }
     }
 }
 
@@ -1667,7 +1727,7 @@ impl SessionMachine {
             let _ = picker;
             self.state.phase = Phase::Profiles;
             self.state.users.clear();
-            self.state.error = ROSTER_REFUSED.into();
+            self.state.refuse_switch();
             self.replace_publication();
             return true;
         }
@@ -1760,7 +1820,7 @@ impl SessionMachine {
             emit(SessionFx::BackReply { to: reply, resumed: false });
             return true;
         }
-        let dead_end = self.roster_dead_end();
+        let dead_end = self.state.roster_dead_end();
         if dead_end {
             if let BootstrapAuthority::DevPms { primary, .. } = &self.state.authority {
                 // Nothing was detached or re-pointed (see `start_switch`): re-announce the dev
@@ -1778,8 +1838,9 @@ impl SessionMachine {
         let stored = self.state.committed_credentials.merge_into(&self.state.persisted);
         // A dead-end picker offered nobody, so the picker-kind rule (`may_resume`: the
         // Change-profile picker is a root, so BACK cannot skip a PIN) has no boundary to guard.
-        // Only "is there a session to go back to" remains.
-        let resumable = if dead_end { stored.can_go_local() } else { super::resumable(&stored, self.state.picker) };
+        // Only "is there a session to go back to" remains — `dead_end_resumes`, the same answer
+        // the read-out publishes so its *Back* control is offered exactly when this resumes.
+        let resumable = if dead_end { self.state.dead_end_resumes() } else { super::resumable(&stored, self.state.picker) };
         if !resumable || self.state.epoch.checked_add(1).is_none() {
             emit(SessionFx::BackReply { to: reply, resumed: false });
             return true;
@@ -1904,7 +1965,7 @@ impl SessionMachine {
     /// A roster request ended without tiles. With cached tiles on screen nothing changes — they
     /// are still the household, and offline switching reads them. With NONE, the picker says so
     /// on its own route: `Phase::Profiles` with the reason in `error` and no tiles is the
-    /// read-out `screens/profiles.rs` draws, and [`Self::roster_dead_end`] is what lets BACK leave
+    /// read-out `screens/profiles.rs` draws, and [`SessionInit::roster_dead_end`] is what lets BACK leave
     /// it. It used to be `fail_login`, i.e. `Phase::Error` — which the app routes to the SIGN-IN
     /// screen ("Couldn't sign in", whose Try again starts a new QR sign-in) for a person who is
     /// signed in, and whose BACK the Change-profile picker's root rule then refused (#132).
@@ -1914,13 +1975,14 @@ impl SessionMachine {
         }
     }
 
-    /// Is the picker on screen one that has nobody to offer and is no longer waiting to? Then no
-    /// profile boundary can be crossed from it — nobody can be handed the remote — and BACK
-    /// resumes whatever session is behind it rather than stranding the person on Sign out
-    /// (#132). A picker with tiles, or with a roster request still in flight, is not this.
-    fn roster_dead_end(&self) -> bool {
-        self.state.phase == Phase::Profiles && self.state.users.is_empty()
-            && !self.state.pending.values().any(|pending| pending.key.op == SessionOp::HomeRoster)
+    /// [`Self::fail_empty_home_roster`] for plex.tv's VERDICT: over nothing cached it is the dead
+    /// end itself, so it is also remembered for this identity and the account menu stops offering
+    /// the way in (`SessionInit::refuse_switch`). Over cached tiles it changes nothing, like any
+    /// other empty answer.
+    fn refuse_empty_home_roster(&mut self) {
+        if self.state.users.is_empty() && self.state.phase == Phase::Profiles {
+            self.state.refuse_switch();
+        }
     }
 
     fn apply_resource_observation(&mut self, envelope: &SessionEnvelope,
@@ -2026,12 +2088,17 @@ impl SessionMachine {
                 let users = match &progress.users {
                     Some(users) if !users.is_empty() => users,
                     graded => {
-                        self.fail_empty_home_roster(if graded.is_none() { ROSTER_UNREACHABLE } else { ROSTER_REFUSED });
+                        if graded.is_none() {
+                            self.fail_empty_home_roster(ROSTER_UNREACHABLE);
+                        } else {
+                            self.refuse_empty_home_roster();
+                        }
                         self.retire(req, emit);
                         self.replace_publication();
                         return true;
                     }
                 };
+                self.state.switch_refused_for = None;
                 let mut next = self.state.persisted.clone();
                 next.home_users = users.iter().map(super::UserTile::to_ref).collect();
                 let patch = CredentialPatch::of(&next);
@@ -4639,5 +4706,81 @@ mod tests {
             install: ReadyInstall::AlreadyInstalled, .. })), "BACK hands the dev session back");
         assert_eq!(owner.state.phase, Phase::Ready);
         assert!(owner.state.error.is_empty());
+        assert!(!before.switch_refused, "nothing has been refused before anybody asked");
+        assert!(owner.publication().switch_refused,
+            "the refusal outlives the read-out, so the menu stops offering it");
+    }
+
+    /// The account menu must not lead into #132's dead end once the app KNOWS it is one: plex.tv
+    /// refused this identity a roster and nothing is cached to switch from. The verdict outlives
+    /// the picker (BACK resumes the same identity), while "no verdict" — plex.tv unreachable —
+    /// publishes none, because the menu row is what asks again.
+    #[test]
+    fn a_refused_roster_with_nothing_cached_is_published_as_the_identitys_switch_verdict() {
+        let _g = crate::testlock::serial();
+        for (users, refused) in [(None, false), (Some(Vec::new()), true)] {
+            let (mut owner, _) = empty_roster_change_profile(users);
+            let read = owner.publication();
+            assert_eq!(read.switch_refused, refused, "verdict on the read-out itself");
+            assert!(read.readout_back_resumes,
+                "a stored, dialable session is behind the picker: BACK resumes it");
+            let reply = ReplyTo { instance: 0, correlation: 7 };
+            step(&mut owner, SessionEvent::Command(Command::BackAtRoot { reply }));
+            assert_eq!(owner.state.phase, Phase::Ready, "rig: BACK resumed");
+            assert_eq!(owner.publication().switch_refused, refused,
+                "the same identity is still refused once the picker has gone");
+            owner.state.persisted.user.uuid = "another-profile".into();
+            owner.replace_publication();
+            assert!(!owner.publication().switch_refused,
+                "a different identity has not been refused anything");
+        }
+    }
+
+    /// A refusal over a CACHED roster is no dead end — offline switching reads the cache (#132,
+    /// #164) — so it is neither committed over the cache nor published as a verdict.
+    #[test]
+    fn a_refusal_over_a_cached_roster_is_not_a_switch_verdict() {
+        let _g = crate::testlock::serial();
+        let mut init = local_session();
+        init.persisted.home_users = vec![crate::plex::session::HomeUserRef {
+            uuid: "cached-user".into(), title: "Cached".into(), ..Default::default() }];
+        let mut owner = SessionMachine::from_init(init);
+        let effects = step(&mut owner, SessionEvent::Command(Command::StartSwitch(Picker::ChangeProfile)));
+        let (req, key) = effects.iter().find_map(|fx| match fx {
+            SessionFx::Work { req, key, input: SessionWork::HomeRoster { .. }, .. } => Some((*req, *key)),
+            _ => None,
+        }).unwrap();
+        settle_picker_commit(&mut owner, &effects);
+        let envelope = roster_envelope(&mut owner, req, key, Some(Vec::new()));
+        step(&mut owner, SessionEvent::Result(envelope));
+        assert_eq!(owner.state.persisted.home_users.len(), 1, "the cache survives the refusal");
+        assert!(!owner.publication().switch_refused);
+    }
+
+    /// With no dialable session stored, BACK from the read-out hands the screen to the television
+    /// — so the read-out must not offer a *Back* that claims to stay in the app.
+    #[test]
+    fn a_readout_with_no_session_behind_it_says_back_does_not_resume() {
+        let _g = crate::testlock::serial();
+        let mut persisted = local_session().persisted;
+        persisted.server = Default::default();
+        let mut owner = SessionMachine::from_init(SessionInit::captured(persisted));
+        let effects = step(&mut owner, SessionEvent::Command(Command::StartSwitch(Picker::ChangeProfile)));
+        let (req, key) = effects.iter().find_map(|fx| match fx {
+            SessionFx::Work { req, key, input: SessionWork::HomeRoster { .. }, .. } => Some((*req, *key)),
+            _ => None,
+        }).expect("rig: an account token is enough to ask for a roster");
+        if effects.iter().any(|fx| matches!(fx, SessionFx::Commit { .. })) {
+            settle_picker_commit(&mut owner, &effects);
+        }
+        let envelope = roster_envelope(&mut owner, req, key, Some(Vec::new()));
+        step(&mut owner, SessionEvent::Result(envelope));
+        let read = owner.publication();
+        assert_eq!(read.roster_readout(), Some(ROSTER_REFUSED), "rig: the read-out is up");
+        assert!(!read.readout_back_resumes);
+        let reply = ReplyTo { instance: 0, correlation: 7 };
+        let effects = step(&mut owner, SessionEvent::Command(Command::BackAtRoot { reply }));
+        assert!(effects.iter().any(|fx| matches!(fx, SessionFx::BackReply { resumed: false, .. })),
+            "the published fact and BACK's own decision are one answer");
     }
 }

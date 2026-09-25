@@ -241,7 +241,9 @@ fn dev_retry_is_inert_outside_error_and_restart_wait_remains_account_only() {
             reply: ReplyTo { instance: 19, correlation: 1 } });
         // In `Ready`, StartSwitch is no longer silent (#132): it raises the picker's "isn't
         // available" read-out, and the BACK below returns from it — so the pair round-trips to
-        // the state it started from, which is what the hash equality below still proves.
+        // the state it started from, which is what the hash equality below still proves, less
+        // the one fact the refusal is meant to leave behind: the dev identity's switch verdict,
+        // which is what stops the account menu offering the same dead end again.
         execute_session_command(&mut d, SessionCmd::StartSwitch(crate::auth::Picker::ChangeProfile));
         execute_session_command(&mut d, SessionCmd::SelectProfile { index: 0, pin: None });
         execute_session_command(&mut d, SessionCmd::BackAtRoot { reply: ReplyTo { instance: 19, correlation: 2 } });
@@ -249,7 +251,9 @@ fn dev_retry_is_inert_outside_error_and_restart_wait_remains_account_only() {
         execute_session_command(&mut d, SessionCmd::RequestEndpoint { sid: crate::plex::ServerId::from_raw(0) });
         execute_session_command(&mut d, SessionCmd::TakeReady);
         frame(&mut rig, &mut d);
-        assert_eq!(rig.session.subhash(), before);
+        let mut after = rig.session.snapshot_init();
+        assert_eq!(after.switch_refused_for.take().is_some(), phase == Phase::Ready);
+        assert_eq!(crate::auth::owner::SessionMachine::from_init(after).subhash(), before);
         assert!(rig.session.snapshot_init().pending.is_empty());
         assert_eq!(rig.session_adapter.fixture_resources().disk.account_token, "synthetic-saved-a");
         assert!(rig.session_adapter.fixture_resources().registry_writes.is_empty());

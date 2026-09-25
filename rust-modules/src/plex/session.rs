@@ -4328,7 +4328,9 @@ impl Session {
     /// "ask" — which is why [`Account::can_switch`] keeps the switch row: that row is what
     /// re-fetches the roster, and hiding it on an empty one would be a one-way door out of a Plex
     /// Home created later. When the re-fetch fails too, the picker reads out why and BACK leaves
-    /// it (#132).
+    /// it (#132); a REFUSAL over nothing cached is then remembered for that identity
+    /// (`auth::owner::SessionSnapshot::switch_refused`), and it is `screens::account_menu`, not
+    /// this, that hides the row on it.
     pub fn account(&self, active: Option<&UserRef>) -> Account {
         let named = |t: &str| Some(t.to_string()).filter(|t| !t.is_empty());
         // the roster hop searches for a NAMED admin, then any named entry — a `find(admin)` whose
