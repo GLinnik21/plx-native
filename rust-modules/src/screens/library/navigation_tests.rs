@@ -557,3 +557,16 @@ fn a_shelf_landing_never_moves_a_seat_the_user_chose() {
     land_shelves(&mut fixture, &mut page, &mut engine);
     assert_eq!(engine.current(OWNER), Some(page.key(FILTER)), "the user's own move outranks the page's seat");
 }
+
+/// Pressing OK on the page's own seat is a choice as surely as moving is, and it moves nothing
+/// (no `FocusMoved` reports it): opening Sort from the head seat and having the shelves land while
+/// its menu is up must bring the reader back to Sort, not to a shelf.
+#[test]
+fn a_shelf_landing_never_moves_a_seat_the_user_activated() {
+    let _guard = crate::testlock::serial();
+    let (mut fixture, mut page, mut engine) = opened_before_its_shelves(SecKind::Movie, Opened::Keyboard);
+    assert_eq!(engine.current(OWNER), Some(page.key(SORT)));
+    fixture.step(&mut page, &mut engine, ScreenEvent::Activate(SORT));
+    land_shelves(&mut fixture, &mut page, &mut engine);
+    assert_eq!(engine.current(OWNER), Some(page.key(SORT)), "an activated seat is the user's");
+}

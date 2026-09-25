@@ -506,6 +506,9 @@ impl LibraryScreen {
     }
 
     fn activate<H: LibraryLike>(&mut self, elem: u32, held: bool, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        // Every activation path (OK, a click, a hold, a scripted menu) is a choice made AT the seat,
+        // and none of them moves focus, so no `FocusMoved` will release it.
+        self.provisional = None;
         // A singleton never reaches this screen at all any more (`self.libraries` is cleared in
         // `sync`), so `MORE` is the only remaining way into the Sources menu — an ordinary library
         // pill below always requests a section transition, never a menu.
