@@ -280,7 +280,7 @@ fn build_with(
         // the neighbouring card it is anchored beside. It is also the more accurate of the two —
         // the server action hides the item from the DECK and leaves its resume point intact, so
         // "remove from continue watching" over-promises a reset it does not perform.
-        sec = sec.row(Row::new("Remove from Deck").licon(Icon::Close));
+        sec = sec.row(Row::new("Remove from Deck").licon(Icon::Close).destructive(true));
         acts.push(Some(Action::RemoveFromDeck(m.rk.clone())));
     }
     debug_assert_eq!(acts.len(), sec.rows.len(), "{ACTS_PARALLEL}");
@@ -324,8 +324,13 @@ fn state_rows(
         acts.push(Some(Action::MarkWatched(rk.to_string())));
     }
     if mark != PosterMark::None {
-        sec =
-            sec.row(Row::new(crate::ui::widgets::MARK_UNWATCHED_VERB).licon(Icon::MinusCircleFill));
+        // Destructive: it throws the watch record away, so a menu never OPENS on it
+        // (`TableView::opening_row`) — a watched episode opens on Play from Start instead.
+        sec = sec.row(
+            Row::new(crate::ui::widgets::MARK_UNWATCHED_VERB)
+                .licon(Icon::MinusCircleFill)
+                .destructive(true),
+        );
         acts.push(Some(Action::MarkUnwatched(rk.to_string())));
     }
     if leaf {
@@ -477,7 +482,14 @@ impl ItemMenuScreen {
         self.acts = acts;
         // a short list of one-line actions — BODY labels, not menu-size HEADLINE
         self.table.compact = true;
-        self.table.set_sections(vec![sec], 0, false);
+        self.table.open_sections(vec![sec]);
+    }
+
+    /// Where focus starts, and where it falls back to when the key it had is gone — the table's
+    /// opening row, which skips the separator and never lands on a destructive row while any other
+    /// is on offer.
+    fn opening(&self) -> u32 {
+        u32::try_from(self.table.opening_row()).unwrap_or(0)
     }
 
     fn frame(&self) -> Rect {
@@ -653,7 +665,7 @@ impl<H: AppLike> Focusable<H> for ItemMenuScreen {
         } else {
             FocusKey {
                 entry: self.entry,
-                elem: self.focusable().next().unwrap_or(0),
+                elem: self.opening(),
             }
         }
     }
@@ -664,7 +676,7 @@ impl<H: AppLike> Focusable<H> for ItemMenuScreen {
             elem: if self.acts.get(sel as usize).is_some_and(|a| a.is_some()) {
                 sel
             } else {
-                self.focusable().next().unwrap_or(0)
+                self.opening()
             },
         }
     }
@@ -1005,6 +1017,28 @@ mod tests {
             .iter()
             .flatten()
             .any(|a| matches!(a, Action::GoToShow(..) | Action::GoToItem(_))));
+    }
+
+    /// **A menu never opens with its focus on a destructive action.** *Mark as Unwatched* throws the
+    /// watch record away (and propagates to the other copies), so a watched episode's menu opens on
+    /// *Play from Start*; a watched season, whose one row it is, still opens on it. *Remove from
+    /// Deck* is last in the shelf menu and is tagged too, so no reorder can make it the opening row.
+    #[test]
+    fn a_menu_never_opens_on_a_destructive_row() {
+        let opening = |(sec, acts): (Section, Vec<Option<Action>>)| {
+            let mut t = TableView::new();
+            t.open_sections(vec![sec]);
+            acts[t.sel as usize].clone().expect("the opening row acts")
+        };
+        assert!(matches!(opening(build_episode("77", PosterMark::Watched)),
+            Action::PlayFromStart(_)), "a watched episode opened on Mark as Unwatched");
+        assert!(matches!(opening(build_season("78", PosterMark::Watched)),
+            Action::MarkUnwatched(_)), "the only row is the one on offer");
+        assert!(matches!(opening(build_episode("79", PosterMark::None)),
+            Action::MarkWatched(_)));
+        let (sec, acts) = build(&item(3, PosterMark::None), true);
+        let deck = acts.iter().position(|a| matches!(a, Some(Action::RemoveFromDeck(_))));
+        assert!(sec.rows[deck.expect("rig: a deck card")].destructive);
     }
 
     /// **The owner-reported gap, at both entry points.** An item in the MIDDLE is at neither end of

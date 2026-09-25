@@ -148,6 +148,14 @@ fn drills_in(a: Action) -> bool {
     matches!(a, Action::ChangeProfile | Action::SignIn | Action::Settings)
 }
 
+/// Rows whose action ends something in place. Never where the menu's focus starts
+/// ([`crate::ui::table::TableView::opening_row`]): with *Change profile* hidden (a refused roster, a
+/// server-only session) *Sign out* is the FIRST row, and a stray OK on a freshly opened menu must
+/// not sign anyone out.
+fn destructive(a: Action) -> bool {
+    matches!(a, Action::SignOut)
+}
+
 /// The row list IS the mapping — a selection outside it (an empty menu, a stale index) is `None`
 /// rather than whatever action happens to sit at that position in the other row set.
 fn action_at(rows: &[Action], sel: i32) -> Action {
@@ -225,12 +233,16 @@ impl AccountMenuScreen {
         self.header = acc.name.unwrap_or_else(|| HEADER_FALLBACK.to_string());
         let mut sec = Section::new(self.header.clone());
         for a in self.rows {
-            sec = sec.row(Row::new(label(*a)).chevron(drills_in(*a)));
+            sec = sec.row(Row::new(label(*a)).chevron(drills_in(*a)).destructive(destructive(*a)));
         }
         // small one-word action list — BODY labels, not menu-size HEADLINE bold
         self.table.compact = true;
-        let sel = self.rows.iter().position(|a| *a == selected).unwrap_or(0) as i32;
-        self.table.set_sections(vec![sec], sel, false);
+        // The action that was focused keeps its row when it survives the rebuild; otherwise (the
+        // first build, or the row was taken away under an open menu) the menu OPENS afresh.
+        match self.rows.iter().position(|a| *a == selected) {
+            Some(row) => self.table.set_sections(vec![sec], row as i32, false),
+            None => self.table.open_sections(vec![sec]),
+        }
         // `rows` *is* the index→action map, so it must stay one-to-one with what was built above;
         // a row appended here and not to `rows_for` is exactly the drift this replaced.
         debug_assert_eq!(self.rows.len() as i32, self.table.n_rows());
@@ -264,6 +276,12 @@ impl AccountMenuScreen {
             fx.push(Fx::App(AppFx::Loop(req)));
         }
         fx.push(Fx::Nav(NavOp::Dismiss(self.entry)));
+    }
+
+    /// The action a focus with nowhere better to go lands on — the table's opening row, which is
+    /// never a destructive one while any other is on offer.
+    fn opening_action(&self) -> Action {
+        action_at(self.rows, self.table.opening_row())
     }
 
     /// The highlighted row, for the focus probe — a READ of the cursor the engine moves.
@@ -367,7 +385,7 @@ impl<H: AppLike> Focusable<H> for AccountMenuScreen {
         } else {
             FocusKey {
                 entry: self.entry,
-                elem: self.rows.first().copied().unwrap_or(Action::None) as u32,
+                elem: self.opening_action() as u32,
             }
         }
     }
@@ -528,6 +546,37 @@ mod tests {
         assert!(!menu.rows.contains(&Action::ChangeProfile),
             "a verdict landing under an open menu takes the row away");
         assert!(menu.rows.contains(&Action::SignOut));
+    }
+
+    /// **A menu never opens with its focus on a destructive action.** #237 hid *Change profile*
+    /// on a refused roster, which left *Sign out* as the first row — and the menu seats its focus on
+    /// the first row, so one stray OK signed the user out (seen on the TV). The opening row skips
+    /// destructive rows; so does the fallback when the focused row is taken away under an open
+    /// menu (the verdict landing while *Change profile* is focused).
+    #[test]
+    fn a_refused_roster_never_opens_the_menu_on_sign_out() {
+        let _serial = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("account-menu-safe-open");
+        crate::plex::session::save(&local(Session { account_token: "acct".into(),
+            ..Default::default() }));
+
+        let mut menu = AccountMenuScreen::new(EntryId(0));
+        tick(&mut menu, &published(true));
+        assert!(!menu.rows.contains(&Action::ChangeProfile), "rig: the roster was refused");
+        assert_eq!(menu.rows[0], Action::SignOut, "rig: Sign out is the first row");
+        assert_ne!(action_at(menu.rows, menu.sel()), Action::SignOut,
+            "the menu opened focused on Sign out");
+        assert_eq!(action_at(menu.rows, menu.sel()), Action::Settings);
+        assert_eq!(menu.opening_action(), Action::Settings,
+            "the focus fallback lands on Sign out");
+
+        // The verdict landing under an open menu whose focus sits on Change profile.
+        let mut menu = AccountMenuScreen::new(EntryId(0));
+        tick(&mut menu, &published(false));
+        assert_eq!(action_at(menu.rows, menu.sel()), Action::ChangeProfile, "rig");
+        tick(&mut menu, &published(true));
+        assert_eq!(action_at(menu.rows, menu.sel()), Action::Settings,
+            "a removed row's focus fell onto Sign out");
     }
 
     fn owner(title: &str) -> HomeUserRef {

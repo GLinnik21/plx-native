@@ -180,6 +180,9 @@ presentation in a design pass.
    ladder, an item context menu, the play-queue list — is a `popover.rs` container over the live
    screen with a `table.rs` `TableView` inside, anchored near its trigger, the way `track_menu.rs`
    and the library sort/filter menus already work. Plex's full-screen modals were rejected by name.
+   A menu never opens with its focus on a destructive action: tag such rows
+   `Row::destructive(true)` and open the table with `TableView::open_sections`, whose
+   `opening_row` is also the focus fallback when a focused row disappears.
 
 2. **Clickable text marks are ALL CAPS.** `MORE` and every other pressable text mark is
    capitalised, overriding the design system's sentence-case rule for app-written text: the mark is
