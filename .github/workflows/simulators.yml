@@ -108,8 +108,10 @@ jobs:
         run: make sim-macos SIM_TDIR=rust-modules/target-sim-ci
       - name: Install nightly Rust
         # `make check-ffmpeg` runs the host suite's FFmpeg-backed tests on the toolchain `make
-        # check` uses; the simulator above builds on the runner's default one.
-        run: rustup toolchain install nightly --profile minimal
+        # check` uses; the simulator above builds on the runner's default one. `rust-src` is not
+        # optional: rust-modules/.cargo/config.toml sets `[unstable] build-std` for every nightly
+        # cargo run, host tests included — the same component ci.yml's host checks install.
+        run: rustup toolchain install nightly --profile minimal --component rust-src
       - name: Tests against the bundled FFmpeg
         # The one place the host FFmpeg (built above, same component list as the shipped one) is
         # available to the test suite — `make check` has none, so these are #[ignore]d there.
