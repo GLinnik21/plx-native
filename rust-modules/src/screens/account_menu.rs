@@ -30,7 +30,7 @@
 use std::borrow::Cow;
 
 use crate::plex::session::Account;
-use crate::screens::registry::{AppFx, AppLike, LoopReq};
+use crate::screens::registry::{AppFx, AppLike, AuthLike, LoopReq};
 use crate::ui::frame::Budget;
 use crate::ui::machine::{
     Canon, Cx, Edge, Effects, EntryId, FocusKey, Fx, GroupId, Handled, InputKind, Key,
@@ -79,13 +79,19 @@ pub(crate) const SHAPE: &str =
 /// The rows for an account state, in order. Signed out, the only truthful action is signing in;
 /// offering "Change profile" there dead-ends in an empty who's-watching screen. Signed in, "Sign
 /// in" is a lie, so it is never offered — "Change profile" is, whenever plex.tv can serve a roster.
-fn rows_for(acc: &Account) -> &'static [Action] {
+///
+/// `switch_refused` is the Session's published verdict that it CANNOT for the identity in use
+/// ([`crate::auth::owner::SessionSnapshot::switch_refused`]): plex.tv refused this identity a
+/// roster with nothing cached, or the session is a dev-token one. The row is hidden then, the same
+/// way a server-only session's is — it would open #132's read-out and nothing else. No verdict
+/// (never asked, plex.tv unreachable) keeps the row, because the row is what asks.
+fn rows_for(acc: &Account, switch_refused: bool) -> &'static [Action] {
     // The lab row is a THIRD axis rather than an append, so every row set stays a `&'static`
     // slice and [`action_at`]'s index mapping keeps working unchanged. Six arms is the price of
     // not allocating a row vector per open; the alternative was a `Vec` in a static.
     match (
         acc.signed_in,
-        acc.can_switch,
+        acc.can_switch && !switch_refused,
         crate::lab::menu_row_enabled(),
     ) {
         (false, _, false) => &[Action::SignIn, Action::Settings],
@@ -185,6 +191,9 @@ pub(crate) struct AccountMenuScreen {
     /// Rebuild on visible session landings as well as the initial mount. Focus keys name
     /// actions, not row positions, so a landing cannot turn an armed Settings press into Sign out.
     session_watch: crate::plex::session::VisibleSessionWatch,
+    /// The Session's published switch verdict the rows were built on
+    /// ([`crate::auth::owner::SessionSnapshot::switch_refused`]) — a change rebuilds them.
+    switch_refused: bool,
     built: bool,
 }
 
@@ -197,11 +206,12 @@ impl AccountMenuScreen {
             table: TableView::new(),
             built: false,
             session_watch: Default::default(),
+            switch_refused: false,
         }
     }
 
     /// Capture a settled session without blocking storage.
-    fn build(&mut self) {
+    fn build(&mut self, switch_refused: bool) {
         if self.built {
             return;
         }
@@ -210,7 +220,8 @@ impl AccountMenuScreen {
         let selected = action_at(self.rows, self.table.sel);
         let cur = crate::plex::session::current();
         let acc = sess.account(cur.as_ref());
-        self.rows = rows_for(&acc);
+        self.switch_refused = switch_refused;
+        self.rows = rows_for(&acc, switch_refused);
         self.header = acc.name.unwrap_or_else(|| HEADER_FALLBACK.to_string());
         let mut sec = Section::new(self.header.clone());
         for a in self.rows {
@@ -261,15 +272,18 @@ impl AccountMenuScreen {
     }
 }
 
-impl<H: AppLike> Machine<H> for AccountMenuScreen {
+impl<H: AuthLike> Machine<H> for AccountMenuScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        let switch_refused = H::auth(cx).0.switch_refused;
         match ev {
-            ScreenEvent::Mount => self.build(),
+            ScreenEvent::Mount => self.build(switch_refused),
             ScreenEvent::Tick(tick) => {
-                if self.session_watch.changed() { self.built = false; }
+                if self.session_watch.changed() || switch_refused != self.switch_refused {
+                    self.built = false;
+                }
                 if !self.built {
-                    self.build();
+                    self.build(switch_refused);
                     if self.built { fx.invalidate(crate::ui::present::Provenance::Landing(crate::ui::machine::MachineId::Session)); }
                 }
                 self.table.sel = cx
@@ -365,7 +379,7 @@ impl<H: AppLike> Focusable<H> for AccountMenuScreen {
     }
 }
 
-impl<H: AppLike> Screen<H> for AccountMenuScreen {
+impl<H: AuthLike> Screen<H> for AccountMenuScreen {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -448,6 +462,74 @@ mod tests {
     use super::*;
     use crate::plex::session::{HomeUserRef, ServerRef, Session, UserRef};
 
+    /// A host whose only view is the Session publication — the one fact the menu reads off it.
+    struct MenuHost;
+    impl crate::ui::machine::Host for MenuHost {
+        type Arg = super::super::family::SettingsPage;
+        type Fx = AppFx;
+        type Msg = crate::screens::registry::AppMsg;
+        type Elem = u32;
+        type Views<'a> = crate::auth::SessionRead<'a>;
+        type Init = super::super::family::NoInit;
+        type Memory = ();
+    }
+    impl AuthLike for MenuHost {
+        fn auth<'a>(cx: &Cx<'a, Self>) -> crate::auth::SessionRead<'a> {
+            cx.views
+        }
+    }
+
+    fn published(switch_refused: bool) -> crate::auth::owner::SessionSnapshot {
+        crate::auth::owner::SessionSnapshot {
+            flow_epoch: 0, phase: crate::auth::Phase::Ready, qr_generation: 0,
+            code: std::sync::Arc::from(""), png: std::sync::Arc::from(Vec::<u8>::new()),
+            code_replaced: false, users: std::sync::Arc::from(Vec::new()),
+            error: std::sync::Arc::from(""), pin_denied: false, profile: None,
+            scope: crate::auth::owner::ProfileScope(0), delete_leftovers: 0,
+            persistence_warning: None, incident: None, link_trouble: false,
+            switch_refused, readout_back_resumes: false,
+        }
+    }
+
+    fn tick(menu: &mut AccountMenuScreen, read: &crate::auth::owner::SessionSnapshot) {
+        use crate::ui::machine::{InputOwner, MachineId, Tick};
+        let cx = Cx::<MenuHost> {
+            views: read.read(),
+            tick: Tick::default(), measure: &crate::ui::fixture::FixtureMeasure,
+            press: Default::default(), focus: Default::default(),
+            owner: InputOwner::Entry(EntryId(0)),
+        };
+        let mut out = Vec::new();
+        let mut present = crate::ui::present::Present::new();
+        let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
+        menu.step(&ScreenEvent::Tick(Tick::default()), &cx, &mut fx);
+    }
+
+    /// #132's dead end, not led into: once the Session KNOWS switching is unavailable for the
+    /// identity in use (plex.tv refused its roster with nothing cached, or a dev-token session),
+    /// *Change profile* is not offered — hidden, the idiom this menu already uses for a server-only
+    /// session. No verdict keeps the row: it is what asks plex.tv again. A verdict landing while
+    /// the menu is open rebuilds it.
+    #[test]
+    fn a_known_switch_refusal_hides_change_profile_and_no_verdict_keeps_it() {
+        let s = local(Session { account_token: "acct".into(), ..Default::default() });
+        let acc = s.account(None);
+        assert_eq!(rows_for(&acc, true).iter().map(|a| label(*a)).collect::<Vec<_>>(),
+            vec!["Sign out", "Settings"]);
+        assert_eq!(rows_for(&acc, false)[0], Action::ChangeProfile);
+
+        let _serial = crate::testlock::serial();
+        let _session = crate::plex::session::TempSession::new("account-menu-verdict");
+        crate::plex::session::save(&s);
+        let mut menu = AccountMenuScreen::new(EntryId(0));
+        tick(&mut menu, &published(false));
+        assert!(menu.rows.contains(&Action::ChangeProfile), "rig: switching is offered");
+        tick(&mut menu, &published(true));
+        assert!(!menu.rows.contains(&Action::ChangeProfile),
+            "a verdict landing under an open menu takes the row away");
+        assert!(menu.rows.contains(&Action::SignOut));
+    }
+
     fn owner(title: &str) -> HomeUserRef {
         HomeUserRef {
             title: title.to_string(),
@@ -463,7 +545,6 @@ mod tests {
     }
     #[test]
     fn session_refresh_rebuilds_an_open_account_menu() {
-        use crate::ui::machine::{InputOwner, MachineId, Tick};
         let _serial = crate::testlock::serial();
         let _session = crate::plex::session::TempSession::new("account-menu-refresh");
         let mut saved = local(Session { client_id: "synthetic-client".into(),
@@ -472,19 +553,10 @@ mod tests {
             ..Default::default() }];
         crate::plex::session::install_transient_for_test(true);
         let mut menu = AccountMenuScreen::new(EntryId(0));
-        menu.build();
+        menu.build(false);
         assert!(!menu.rows.contains(&Action::SignOut));
         crate::plex::session::save(&saved);
-        let cx = Cx::<super::super::family::InnerHost> {
-            views: crate::stores::browse::DirectoryView::empty_for_test(),
-            tick: Tick::default(), measure: &crate::ui::fixture::FixtureMeasure,
-            press: Default::default(), focus: Default::default(),
-            owner: InputOwner::Entry(EntryId(0)),
-        };
-        let mut out = Vec::new();
-        let mut present = crate::ui::present::Present::new();
-        let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
-        menu.step(&ScreenEvent::Tick(Tick::default()), &cx, &mut fx);
+        tick(&mut menu, &published(false));
         assert!(menu.rows.contains(&Action::SignOut));
         assert!(!menu.rows.contains(&Action::SignIn));
         assert_eq!(menu.header, "Synthetic owner");
@@ -495,13 +567,13 @@ mod tests {
         let _serial = crate::testlock::serial();
         let _session = crate::plex::session::TempSession::new("account-action-identity");
         let mut menu = AccountMenuScreen::new(EntryId(0));
-        menu.build();
+        menu.build(false);
         let settings_key = Action::Settings as u32;
         assert_eq!(menu.row_of(settings_key), Some(1));
         crate::plex::session::save(&local(Session { client_id: "synthetic-client".into(),
             account_token: "synthetic-token".into(), ..Default::default() }));
         menu.built = false;
-        menu.build();
+        menu.build(false);
         assert_eq!(menu.row_of(settings_key), Some(2));
         assert_eq!(menu.row_of(Action::SignIn as u32), None,
             "an old Sign in key cannot become the new Sign out action");
@@ -519,7 +591,7 @@ mod tests {
     }
     fn menu(s: &Session, active: Option<&UserRef>) -> (String, Vec<&'static str>) {
         let acc = s.account(active);
-        let rows = rows_for(&acc);
+        let rows = rows_for(&acc, false);
         (
             acc.name.unwrap_or_else(|| HEADER_FALLBACK.to_string()),
             rows.iter().map(|a| label(*a)).collect(),
@@ -655,7 +727,7 @@ mod tests {
             "chip and header, one name"
         );
         assert!(
-            !rows_for(&acc).contains(&Action::SignIn),
+            !rows_for(&acc, false).contains(&Action::SignIn),
             "…and the menu never offered Sign in"
         );
 
@@ -673,7 +745,7 @@ mod tests {
         // for.
         let out = Session::default().account(None);
         assert_eq!(chip_label(&out), label(Action::SignIn));
-        assert_eq!(rows_for(&out)[0], Action::SignIn);
+        assert_eq!(rows_for(&out, false)[0], Action::SignIn);
     }
 
     /// Settings is about the SOFTWARE rather than the account and is offered in every state.
@@ -692,7 +764,7 @@ mod tests {
             }),
             local(Session::default()),
         ] {
-            let rows = rows_for(&s.account(None));
+            let rows = rows_for(&s.account(None), false);
             assert!(
                 rows.contains(&Action::Settings),
                 "no Settings row in {rows:?}"
@@ -710,7 +782,7 @@ mod tests {
             }),
             local(Session::default()),
         ] {
-            let rows = rows_for(&s.account(None));
+            let rows = rows_for(&s.account(None), false);
             assert!(
                 rows.iter().any(|a| label(*a) == "Settings"),
                 "no Settings row in {rows:?}"
@@ -722,7 +794,7 @@ mod tests {
     /// (not the other set's action at that index, which is exactly what the old fixed 0/1 map did).
     #[test]
     fn selection_maps_by_the_drawn_row_list() {
-        let signed_out = rows_for(&Session::default().account(None));
+        let signed_out = rows_for(&Session::default().account(None), false);
         assert_eq!(action_at(signed_out, 0), Action::SignIn);
         assert_eq!(action_at(signed_out, 1), Action::Settings);
         assert_eq!(action_at(signed_out, 2), Action::None);
@@ -730,13 +802,13 @@ mod tests {
             account_token: "acct".into(),
             ..Default::default()
         });
-        let full = rows_for(&s.account(None));
+        let full = rows_for(&s.account(None), false);
         assert_eq!(action_at(full, 0), Action::ChangeProfile);
         assert_eq!(action_at(full, 1), Action::SignOut);
         assert_eq!(action_at(full, 2), Action::Settings);
         assert_eq!(action_at(full, 3), Action::None);
         assert_eq!(action_at(full, -1), Action::None);
-        let no_switch = rows_for(&local(Session::default()).account(None));
+        let no_switch = rows_for(&local(Session::default()).account(None), false);
         assert_eq!(action_at(no_switch, 0), Action::SignOut);
         assert_eq!(action_at(no_switch, 1), Action::Settings);
         assert_eq!(action_at(no_switch, 2), Action::None);

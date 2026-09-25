@@ -1,7 +1,8 @@
 //! **The who's-watching picker, as an owned `Screen`** (restructure spec §13, phase 6 —
 //! `ui/profiles.rs` moved). The avatar row (`crate::ui::card_row`, a circular `RowStyle::PROFILES`
 //! shelf — the same shelf motion the poster rows use) plus the "Sign out" footer, and the PIN
-//! keypad for a protected profile.
+//! keypad for a protected profile. With nobody to offer (#132's read-out) the footer gives way to
+//! the read-out's own control row: a focused *Back* whose OK is the BACK key, then *Sign out*.
 //!
 //! **One struct, no globals.** The legacy screen kept its whole scene in two `static mut`s
 //! (`SCENE`, `FOOTER_POP`) and its own hand-rolled focus ladder (`Act`, `act`, `step_fc`,
@@ -119,6 +120,9 @@ pub(crate) const TITLE: &str = "Who's watching?";
 
 /// The verdict over the picker's failed read-out; the owner's `error` is the reason under it.
 const READOUT_CAPTION: &std::ffi::CStr = c"Can\u{2019}t change profile";
+/// The read-out's non-destructive way out: what the BACK key does, as a control on screen.
+const BACK_LABEL: &std::ffi::CStr = c"Back";
+const SIGN_OUT_LABEL: &std::ffi::CStr = c"Sign out";
 
 const ROW_Y: f32 = 384.0;
 /// Name band offset below `ROW_Y` — derived from the SAME numbers the shelf pops by, so raising
@@ -164,6 +168,9 @@ const PAD_HOLES: &[(usize, usize)] = &[(3, 0)];
 /// (`registry::BAND`/`ALERT`), just local to this screen since nothing outside it ever needs to
 /// name one of these keys.
 const FOOTER: u32 = 0x1000_0000;
+/// The roster read-out's *Back* — the primary of its control row, with *Sign out* (still
+/// [`FOOTER`]) beside it. Offered only while BACK from the read-out would resume a session.
+const READOUT_BACK: u32 = 0x1000_0001;
 /// Keypad cell `(r, c)` is `PAD_BASE + r * PAD_COLS + c`.
 const PAD_BASE: u32 = 0x2000_0000;
 
@@ -176,6 +183,8 @@ const ROSTER_GROUP: GroupId = GroupId(1);
 /// host test. See the `PressCommit` arm for the history.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Commit {
+    /// The read-out's *Back*: exactly the BACK key's request.
+    Back,
     SignOut,
     Select(usize),
     Nothing,
@@ -195,12 +204,49 @@ fn commit_action(pad_open: bool, elem: Option<u32>, roster_n: usize) -> Commit {
     match elem {
         None => Commit::Nothing,
         Some(FOOTER) => Commit::SignOut,
+        Some(READOUT_BACK) => Commit::Back,
         Some(e) if (e as usize) < roster_n => Commit::Select(e as usize),
         Some(_) => Commit::Nothing,
     }
 }
 const FOOTER_GROUP: GroupId = GroupId(2);
 const PAD_GROUP: GroupId = GroupId(3);
+/// The roster read-out's control row — *Back* then *Sign out*, or *Sign out* alone — in place of
+/// the footer while the read-out is up.
+const READOUT_GROUP: GroupId = GroupId(4);
+
+/// **The roster read-out, built once for both its uses** — the draw, and the geometry the focus
+/// engine and the pointer read ([`readout_rects`]) — so the pills and their stops are one
+/// expression (`screens::login::readout_overlay`'s rule). It fills the page, so it hangs from
+/// `StatusOverlay::FULL_ANCHOR_TOP` with the reason and the row stacked under it, like every other
+/// failed page read-out. `back` puts *Back* first and *Sign out* second; without it *Sign out* is
+/// the row's one control.
+fn readout_overlay(reason: &std::ffi::CStr, back: bool) -> StatusOverlay<'_> {
+    let o = StatusOverlay::new(Rect::FULL, READOUT_CAPTION, StatusKind::Failed)
+        .page()
+        .reason(reason);
+    if back {
+        o.action(BACK_LABEL).secondary(Some(SIGN_OUT_LABEL))
+    } else {
+        o.action(SIGN_OUT_LABEL)
+    }
+}
+
+/// The read-out row's elements in walk (and slot) order.
+fn readout_elems(back: bool) -> &'static [u32] {
+    if back {
+        &[READOUT_BACK, FOOTER]
+    } else {
+        &[FOOTER]
+    }
+}
+
+/// Each read-out element's rect, by slot — the widget's own placement through `Measure`. The
+/// reason TEXT does not move the row (a `Failed` reason is a reserved two-line slot), so an empty
+/// one places it exactly where the draw does.
+fn readout_rects(measure: &dyn Measure, back: bool) -> [Option<Rect>; 2] {
+    readout_overlay(c"", back).action_frames_measured(measure)
+}
 
 fn pad_rc(elem: u32) -> Option<(usize, usize)> {
     let i = elem.checked_sub(PAD_BASE)? as usize;
@@ -277,7 +323,7 @@ fn row_geom(n: usize) -> (f32, f32) {
 /// `text::text_width(..., 1)` — `Measure::width` takes a real bold flag, unlike `cap_h`/`line_h`
 /// below, so this one needs no approximation at all.
 fn footer_rect(measure: &dyn Measure) -> Rect {
-    let tw = measure.width(c"Sign out", theme::size::BODY, true);
+    let tw = measure.width(SIGN_OUT_LABEL, theme::size::BODY, true);
     let w = tw + 76.0;
     Rect::new((SCR_W as f32 - w) * 0.5, FOOTER_Y, w, FOOTER_H)
 }
@@ -534,6 +580,8 @@ struct ProfilesState {
     pad_len: u32,
     pad_submitting: bool,
     pad_flashing: bool,
+    readout_back: bool,
+    readout_seated: bool,
     next_correlation: Option<u32>,
     selection_correlation: Option<u32>,
     selection_epoch: Option<u64>,
@@ -549,6 +597,8 @@ impl LogicalState for ProfilesState {
             .u32(self.pad_len)
             .bool(self.pad_submitting)
             .bool(self.pad_flashing)
+            .bool(self.readout_back)
+            .bool(self.readout_seated)
             .option(self.next_correlation, |w, correlation| {
                 w.u32(correlation);
             })
@@ -566,7 +616,7 @@ impl LogicalState for ProfilesState {
     fn probe(&self, out: &mut String) {
         // the PIN's length, never its digits
         out.push_str(&format!(
-            "profiles n={} phase={} denied={} pad_open={} target={} pin_len={} submitting={} flashing={} correlation_live={} selection_pending={} selection_accepted={}",
+            "profiles n={} phase={} denied={} pad_open={} target={} pin_len={} submitting={} flashing={} readout_back={} correlation_live={} selection_pending={} selection_accepted={}",
             self.roster_n,
             self.phase,
             self.pin_denied,
@@ -575,6 +625,7 @@ impl LogicalState for ProfilesState {
             self.pad_len,
             self.pad_submitting,
             self.pad_flashing,
+            self.readout_back,
             self.next_correlation.is_some(),
             self.selection_correlation.is_some(),
             self.selection_epoch.is_some(),
@@ -629,9 +680,9 @@ pub(crate) struct ProfilesScreen {
     /// borrows this by reference, so it has to live as long as `&self`, which is why it is a
     /// field rather than a local `let` `Shelf::sty` could not outlive.
     row_sty: card_row::RowStyle,
-    /// The footer's own focus pop — one control, so `CtlPop<1>`, exactly as `ui/profiles.rs`'s
-    /// `FOOTER_POP` was, just owned rather than a second `static mut`.
-    footer_pop: CtlPop<1>,
+    /// The controls' focus pop — slot 0 the footer (or the read-out's primary), slot 1 the
+    /// read-out's secondary — owned rather than `ui/profiles.rs`'s `static mut FOOTER_POP`.
+    footer_pop: CtlPop<2>,
     /// Free-running rotation clock for the spinner (empty roster, PIN verification, a profile
     /// switch in flight), in ms — cached each tick from [`spin_phase`](Self::spin_phase)'s
     /// `advance`. Render-only, never hashed.
@@ -645,6 +696,13 @@ pub(crate) struct ProfilesScreen {
     users: Arc<[auth::UserTile]>,
     phase: Phase,
     error: Arc<str>,
+    /// The Session's [`readout_back_resumes`](auth::owner::SessionSnapshot::readout_back_resumes):
+    /// whether the read-out's *Back* is offered at all.
+    back_resumes: bool,
+    /// Focus has been seated on the read-out's row since it came up — cleared when it goes, so
+    /// the next read-out seats again. The container's mount-time `Enter` ran against whatever
+    /// `groups()` answered THEN; a read-out landing later has to ask for focus itself.
+    readout_seated: bool,
     pin_denied: bool,
     flow_epoch: u64,
     next_correlation: Option<u32>,
@@ -675,6 +733,8 @@ impl ProfilesScreen {
             users: Arc::clone(&snapshot.users),
             phase: snapshot.phase,
             error: Arc::clone(&snapshot.error),
+            back_resumes: snapshot.readout_back_resumes,
+            readout_seated: false,
             // The mounter carries `DismissPinError` beside construction. The local first paint
             // must already be fresh while that command is still in the drain.
             pin_denied: false,
@@ -692,6 +752,8 @@ impl ProfilesScreen {
                 pad_len: 0,
                 pad_submitting: false,
                 pad_flashing: false,
+                readout_back: false,
+                readout_seated: false,
                 next_correlation: Some(1),
                 selection_correlation: None,
                 selection_epoch: None,
@@ -750,6 +812,8 @@ impl ProfilesScreen {
             pad_len: self.pad.entry.len() as u32,
             pad_submitting: self.pad.submitting,
             pad_flashing: self.pad.error_s > 0.0,
+            readout_back: self.readout_back(),
+            readout_seated: self.readout_seated,
             next_correlation: self.next_correlation,
             selection_correlation,
             selection_epoch,
@@ -783,6 +847,7 @@ impl ProfilesScreen {
         self.users = Arc::clone(&snapshot.users);
         self.phase = snapshot.phase;
         self.error = Arc::clone(&snapshot.error);
+        self.back_resumes = snapshot.readout_back_resumes;
         self.pin_denied = snapshot.pin_denied;
         self.flow_epoch = snapshot.flow_epoch;
     }
@@ -791,13 +856,30 @@ impl ProfilesScreen {
     /// a reason in `error` while still on this route (`auth::owner::ROSTER_UNREACHABLE` /
     /// `ROSTER_REFUSED`). Drawn as a failed read-out in place of the loading spinner — which,
     /// with no failure state to end it, spun forever (#132) — and BACK leaves it
-    /// (`auth::owner`'s `roster_dead_end`).
+    /// (`auth::owner`'s `roster_dead_end`), which its *Back* control says on screen
+    /// ([`Self::readout_back`]).
     ///
     /// Not logged here: the screen only sees the state it was mounted on, and a dev-token
     /// Change profile has already failed by then. The bridge announces the read-out at the
     /// session's publication boundary (`auth::owner::roster_readout_entered`).
     fn roster_readout(&self) -> bool {
         auth::owner::is_roster_readout(self.phase, &self.users, &self.error)
+    }
+
+    /// **The read-out leads with *Back***, whose OK is the BACK key — the way out it used to leave
+    /// unsaid, with *Sign out* its only visible (and destructive) control. Offered only when the
+    /// Session says BACK resumes something inside the app; otherwise the key hands the screen to
+    /// the television, and a *Back* pill claiming to stay would be the lie.
+    fn readout_back(&self) -> bool {
+        self.roster_readout() && self.back_resumes
+    }
+
+    /// The read-out row's position of `elem`, while the read-out is up.
+    fn readout_slot(&self, elem: u32) -> Option<usize> {
+        if !self.roster_readout() {
+            return None;
+        }
+        readout_elems(self.back_resumes).iter().position(|e| *e == elem)
     }
 
     fn tick<H: AuthLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
@@ -809,8 +891,33 @@ impl ProfilesScreen {
 
         let cur = cx.focus.current.map(|k| k.elem);
         let footer_focused = !self.pad.open && cur == Some(FOOTER);
-        // closed while the PIN pad is up, which is also when the control is not drawn at all
-        self.footer_pop.step(footer_focused.then_some(0), dt);
+        // closed while the PIN pad is up, which is also when the control is not drawn at all;
+        // on the read-out the pop follows the row's slot, not the footer's
+        let pop_slot = if self.pad.open {
+            None
+        } else if self.roster_readout() {
+            cur.and_then(|e| self.readout_slot(e))
+        } else {
+            footer_focused.then_some(0)
+        };
+        self.footer_pop.step(pop_slot, dt);
+
+        // The read-out just came up: seat focus on its primary (see `readout_seated`).
+        let readout = self.roster_readout() && !self.pad.open;
+        if readout && !self.readout_seated {
+            let first = readout_elems(self.back_resumes)[0];
+            let me = fx.from();
+            fx.push(Fx::Deliver(
+                me,
+                Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
+                    focus: FocusTarget::Elem(crate::ui::machine::FocusKey {
+                        entry: self.entry,
+                        elem: first,
+                    }),
+                })),
+            ));
+        }
+        self.readout_seated = readout;
 
         if self.pad.open {
             Self::step_pin_flash(&mut self.pad, dt, fx);
@@ -1253,6 +1360,23 @@ impl<H: AppLike> Focusable<H> for ProfilesView<'_> {
             out.push(pad_group_spec(cx.measure));
             return;
         }
+        if self.roster_readout() {
+            // The read-out's row replaces the footer: *Sign out* moves onto it, beside *Back*.
+            let rects = readout_rects(cx.measure, self.back_resumes);
+            let extent = rects.iter().flatten().copied().reduce(|a, b| a.union(b));
+            out.push(GroupSpec {
+                id: READOUT_GROUP,
+                kind: GroupKind::Row { wrap: false },
+                seat: Seat::First,
+                reachable: AxisMask::BOTH,
+                // nothing else is focusable while the read-out is up
+                edge: [EdgeRule::Stop; 4],
+                extent: extent.unwrap_or(Rect::FULL),
+                len: readout_elems(self.back_resumes).len(),
+                elem: ElemKind::Control,
+            });
+            return;
+        }
         let n = self.n;
         if n > 0 {
             Focusable::<H>::groups(&self.shelf(n), cx, out);
@@ -1264,6 +1388,9 @@ impl<H: AppLike> Focusable<H> for ProfilesView<'_> {
     fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
         if self.pad.open {
             return pad_group_of(*key);
+        }
+        if self.roster_readout() {
+            return self.readout_slot(*key).map(|_| READOUT_GROUP);
         }
         if *key == FOOTER {
             return Some(FOOTER_GROUP);
@@ -1280,6 +1407,20 @@ impl<H: AppLike> Focusable<H> for ProfilesView<'_> {
         if self.pad.open {
             return pad_neighbour(key.entry, key.elem, dir);
         }
+        if let Some(at) = self.readout_slot(key.elem) {
+            let elems = readout_elems(self.back_resumes);
+            let next = match dir {
+                Dir::Left => at.checked_sub(1),
+                Dir::Right => Some(at + 1).filter(|&i| i < elems.len()),
+                Dir::Up | Dir::Down => None,
+            };
+            return next.map_or(Step::Edge, |i| {
+                Step::Move(crate::ui::machine::FocusKey {
+                    entry: key.entry,
+                    elem: elems[i],
+                })
+            });
+        }
         if key.elem == FOOTER {
             // the footer never moves "inside itself" — every direction escalates to its own edge
             // rule, which is where ▲ reaching the roster and ▼/◀/▶ holding it are decided
@@ -1291,6 +1432,15 @@ impl<H: AppLike> Focusable<H> for ProfilesView<'_> {
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
         if self.pad.open {
             return pad_place(cx.measure, *key);
+        }
+        if let Some(slot) = self.readout_slot(*key) {
+            let r = readout_rects(cx.measure, self.back_resumes)[slot]?;
+            return Some(Placed {
+                rect: r,
+                rest_rect: r,
+                clip: Rect::FULL,
+                index: Some(slot as u32),
+            });
         }
         if *key == FOOTER {
             let r = footer_rect(cx.measure);
@@ -1311,6 +1461,15 @@ impl<H: AppLike> Focusable<H> for ProfilesView<'_> {
     ) -> crate::ui::machine::FocusKey<u32> {
         if self.pad.open {
             return pad_reconcile(self.entry, want);
+        }
+        if self.roster_readout() {
+            if self.readout_slot(want.elem).is_some() {
+                return want;
+            }
+            return crate::ui::machine::FocusKey {
+                entry: self.entry,
+                elem: readout_elems(self.back_resumes)[0],
+            };
         }
         if want.elem == FOOTER {
             return want;
@@ -1333,6 +1492,12 @@ impl<H: AppLike> Focusable<H> for ProfilesView<'_> {
     fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
         if self.pad.open {
             return pad_seat(cx.measure, self.entry, from);
+        }
+        if g == READOUT_GROUP {
+            return crate::ui::machine::FocusKey {
+                entry: self.entry,
+                elem: readout_elems(self.back_resumes)[0],
+            };
         }
         if g == FOOTER_GROUP {
             return crate::ui::machine::FocusKey {
@@ -1421,6 +1586,8 @@ impl<H: AuthLike> Machine<H> for ProfilesScreen {
                     _ => 0,
                 };
                 match commit_action(self.pad.open, elem, roster_n) {
+                    // the same request the BACK key's arm below makes — one door, two ways in
+                    Commit::Back => self.request_root_back(fx),
                     Commit::SignOut => {
                         fx.push(Fx::App(AppFx::Session(auth::SessionCmd::SignOut)));
                     }
@@ -1637,45 +1804,57 @@ impl<H: AuthLike> Screen<H> for ProfilesScreen {
             );
         }
 
-        // "Sign out" — the picker is the only surface a user who doesn't recognise these profiles
-        // ever sees, so it must offer a way out of the account.
-        let footer_r = footer_rect(f.measure);
-        Button::new(c"Sign out".as_ptr(), theme::size::BODY, footer_r)
-            .focused(footer_focused)
-            .scale(self.footer_pop.scale(0))
-            .palette(self.ground.palette())
-            .draw(&Env::inert(), p);
-        f.stop(
-            p,
-            Stop {
-                key: crate::ui::machine::FocusKey {
-                    entry: self.entry,
-                    elem: FOOTER,
+        let stop = |f: &mut DrawFrame<'_, '_, H>, elem: u32, rect: Rect| {
+            f.stop(
+                p,
+                Stop {
+                    key: crate::ui::machine::FocusKey {
+                        entry: self.entry,
+                        elem,
+                    },
+                    rect,
+                    rest_rect: rect,
+                    clip: Rect::FULL,
+                    hover: Hover::Focus,
+                    activate: Activate::Press,
                 },
-                rect: footer_r,
-                rest_rect: footer_r,
-                clip: Rect::FULL,
-                hover: Hover::Focus,
-                activate: Activate::Press,
-            },
-        );
-
+            );
+        };
         if readout {
             // Nobody to offer and nothing left to wait for: the shared failed read-out — the same
-            // widget, placement and neutral ink as the sign-in screen's (never red). Sign out
-            // stays in the footer; BACK returns to the session behind the picker.
+            // widget, placement and neutral ink as the sign-in screen's (never red) — with its
+            // controls on its own row: *Back* (what the BACK key does, focused) and *Sign out*
+            // beside it, or *Sign out* alone when BACK would leave the app (`readout_back`).
             let reason = CString::new(self.error.as_ref()).unwrap_or_default();
-            StatusOverlay::new(Rect::FULL, READOUT_CAPTION, StatusKind::Failed)
-                .page()
-                .reason(&reason)
-                .draw_measured(&Env::inert(), p, f.measure);
-        } else if users.is_empty() {
-            // roster not here yet (persisted seed empty, refresh in flight) — a spinner, not a
-            // blank page. It always ends: a failed refresh is the read-out above.
-            Spinner::new(SCR_W as f32 * 0.5, ROW_Y + self.row_sty.h * 0.5, 26.0)
-                .phase(self.spin_ms as u32)
-                .tint(theme::TEXT_PRIMARY)
+            let press = f.press.scale;
+            let overlay = readout_overlay(&reason, self.back_resumes)
+                .focus(cur.and_then(|e| self.readout_slot(e)))
+                .scales([0, 1].map(|i| self.footer_pop.scale_with(i, press)));
+            overlay.draw_measured(&Env::inert(), p, f.measure);
+            let frames = overlay.action_frames_measured(f.measure);
+            for (elem, rect) in readout_elems(self.back_resumes).iter().zip(frames) {
+                if let Some(rect) = rect {
+                    stop(f, *elem, rect);
+                }
+            }
+        } else {
+            // "Sign out" — the picker is the only surface a user who doesn't recognise these
+            // profiles ever sees, so it must offer a way out of the account.
+            let footer_r = footer_rect(f.measure);
+            Button::new(SIGN_OUT_LABEL.as_ptr(), theme::size::BODY, footer_r)
+                .focused(footer_focused)
+                .scale(self.footer_pop.scale(0))
+                .palette(self.ground.palette())
                 .draw(&Env::inert(), p);
+            stop(f, FOOTER, footer_r);
+            if users.is_empty() {
+                // roster not here yet (persisted seed empty, refresh in flight) — a spinner, not a
+                // blank page. It always ends: a failed refresh is the read-out above.
+                Spinner::new(SCR_W as f32 * 0.5, ROW_Y + self.row_sty.h * 0.5, 26.0)
+                    .phase(self.spin_ms as u32)
+                    .tint(theme::TEXT_PRIMARY)
+                    .draw(&Env::inert(), p);
+            }
         }
 
         // a failed switch (wrong PIN, offline) drops the flow back here with an error

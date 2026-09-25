@@ -2023,6 +2023,8 @@ mod tests {
             persistence_warning: None,
             incident: None,
             link_trouble: false,
+            switch_refused: false,
+            readout_back_resumes: false,
         }
     }
 
