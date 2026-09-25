@@ -73,7 +73,16 @@ pub struct HttpStream {
     peer_port: c_int,
     peer_host_len: c_int,
     peer_host: [u8; 256],
+    /// The `Location` of the last response when it was a redirect ([`redirect::is_redirect`]),
+    /// `location_len` 0 otherwise or when it did not fit. Read by [`redirect::open_following`]
+    /// after the open reports the status; the socket itself is already closed by then.
+    location_len: c_int,
+    location: [u8; LOCATION_CAP],
 }
+
+/// Longest `Location` kept. Presigned CDN URLs run to a couple of KiB; one that does not fit is
+/// treated as absent, which fails the open rather than requesting a truncated URL.
+const LOCATION_CAP: usize = 8192;
 
 fn errno() -> c_int {
     std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
@@ -149,6 +158,7 @@ impl HttpStream {
         self.keep_alive = 0;
         self.body_done = 0;
         self.trailer_line_has_content = 0;
+        self.location_len = 0;
     }
 }
 
@@ -1116,34 +1126,6 @@ pub(crate) fn http_open(
     ))
 }
 
-/// [`http_open`] with its typed result, consulting `checkpoint` before and during every blocking
-/// connect/send/header wait. The HLS segment open's no-deadline branch, so no branch of that open
-/// drops its acquisition's checkpoint.
-pub(crate) fn http_open_result(
-    hs: *mut HttpStream,
-    host: *const c_char,
-    port: c_int,
-    path: *const c_char,
-    extra: *const c_char,
-    method: &str,
-    checkpoint: &mut dyn Checkpoint,
-) -> Result<(), HttpOpenError> {
-    http_open_with_timeouts(
-        hs,
-        host,
-        port,
-        path,
-        extra,
-        method,
-        CONNECT_TIMEOUT_MS,
-        MEDIA_RECV_TIMEOUT_MS,
-        MEDIA_SEND_TIMEOUT_MS,
-        None,
-        false,
-        checkpoint,
-    )
-}
-
 /// [`http_open`] with the whole-chain connect and stalled-I/O ceiling selected by the caller.
 /// Candidate discovery is the one caller that knows whether a connection is local or remote; the
 /// ordinary request path keeps [`CONNECT_TIMEOUT_MS`] and never infers a tier from an address.
@@ -1570,11 +1552,14 @@ unsafe fn perform_http_request(
     remember_peer(hs, host_s, port);
 
     hs.bpos = hdr_end as c_int; // first body byte
+    if redirect::is_redirect(hs.status) {
+        remember_location(hs, hdr_end);
+    }
     if hs.status < 200 || hs.status >= 300 {
         // The code is known exactly here. The typed deadline API returns it directly; legacy
         // callers still receive `-1`, and it also survives in the struct because `close_owned`
-        // touches only the fd. A seek reopen remains a legacy caller and therefore still has
-        // only the flat failure.
+        // touches only the fd. Media opens go through `redirect::open_following`, which reads the
+        // typed status and, for a redirect, the `Location` captured above.
         //
         // `status=0` is not a code any server sent: it is what the parse above leaves when the
         // status line was not `HTTP/1.x` followed by exactly three digits.
@@ -1601,6 +1586,41 @@ unsafe fn perform_http_request(
         set_socket_timeouts(fd, MEDIA_RECV_TIMEOUT_MS, MEDIA_SEND_TIMEOUT_MS);
     }
     Ok(())
+}
+
+/// Copy the `Location` field value out of the current response head into `hs.location`.
+fn remember_location(hs: &mut HttpStream, hdr_end: usize) {
+    hs.location_len = 0;
+    let hdr = &hs.buf[..hdr_end];
+    let Some(p) = find_ci(hdr, b"\r\nlocation:") else {
+        return;
+    };
+    let v = &hdr[p + 11..];
+    let v = &v[v.iter().take_while(|b| **b == b' ' || **b == b'\t').count()..];
+    let end = v
+        .iter()
+        .position(|b| *b == b'\r' || *b == b'\n')
+        .unwrap_or(v.len());
+    let mut v = &v[..end];
+    while let [rest @ .., b' ' | b'\t'] = v {
+        v = rest;
+    }
+    if v.is_empty() || v.len() > LOCATION_CAP {
+        return;
+    }
+    let n = v.len();
+    hs.location[..n].copy_from_slice(v);
+    hs.location_len = n as c_int;
+}
+
+/// The `Location` of the last redirect response on this stream, if it had a usable one.
+pub(crate) fn hs_redirect_location(hs: *const HttpStream) -> Option<String> {
+    if hs.is_null() {
+        return None;
+    }
+    let hs = unsafe { &*hs };
+    let n = (hs.location_len.max(0) as usize).min(LOCATION_CAP);
+    (n > 0).then(|| String::from_utf8_lossy(&hs.location[..n]).into_owned())
 }
 
 pub(crate) fn http_read(hs: *mut HttpStream, dst: *mut c_uchar, n: c_int) -> c_int {
@@ -2186,6 +2206,9 @@ pub(crate) fn http_stream_boxed() -> Box<HttpStream> {
     hs.set_fd(-1);
     hs
 }
+
+#[path = "stream_redirect.rs"]
+pub(crate) mod redirect;
 
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]

@@ -1572,7 +1572,9 @@ const SEEK_END: c_int = 2;
 const AVSEEK_SIZE: c_int = 0x10000;
 
 /// **Which transport is under the AVIO.** The two are not interchangeable and the choice is made
-/// once, in `demux`, from the part URL's SCHEME — never guessed per call.
+/// from the SCHEME of the URL actually served — the part URL's, unless a plaintext open was
+/// redirected to https (`stream::redirect`), in which case the socket open hands over to curl.
+/// Never guessed per call.
 ///
 /// * [`Src::Socket`] is the original and the default: `stream.rs`'s raw TCP socket wrapping the
 ///   ENGINE-owned `HttpStream` — cleartext, numeric address, seeking by closing and re-opening
@@ -2665,7 +2667,12 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
         if target < 0 {
             return -1;
         }
+        let aq = s.aq;
+        let mut hopped_to_tls = None;
         let ok = match &mut s.src {
+            // Redirects are followed here too (`stream::redirect`), and the effective target is
+            // written back so the NEXT seek starts from it rather than replaying the chain. A hop
+            // to https cannot stay on this socket; it becomes the curl source below.
             Src::Socket {
                 hs,
                 host,
@@ -2673,16 +2680,44 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                 path,
             } => {
                 crate::stream::http_close(*hs);
-                let range =
-                    CString::new(format!("Range: bytes={}-\r\n", target)).unwrap_or_default();
-                crate::stream::http_open(
+                let origin = crate::plex::Origin::http(&host.to_string_lossy(), *port);
+                let from = path.to_string_lossy().into_owned();
+                let req = crate::stream::redirect::Request {
+                    origin: &origin,
+                    path: &from,
+                    credentials: None,
+                    range_from: Some(target),
+                    deadline: None,
+                };
+                match crate::stream::redirect::open_following(
                     *hs,
-                    host.as_ptr(),
-                    *port,
-                    path.as_ptr(),
-                    range.as_ptr(),
-                    "GET",
-                ) == 0
+                    &req,
+                    &mut crate::checkpoint::NoCheckpoint,
+                ) {
+                    Ok(crate::stream::redirect::Opened::Socket(t)) => {
+                        if let (Ok(h), Ok(p)) =
+                            (CString::new(t.origin.host()), CString::new(t.path))
+                        {
+                            *host = h;
+                            *port = t.origin.port() as c_int;
+                            *path = p;
+                        }
+                        true
+                    }
+                    Ok(crate::stream::redirect::Opened::Tls(t)) => {
+                        match open_curl_hop(&t.url(), target, aq) {
+                            Ok(cs) => {
+                                hopped_to_tls = Some(cs);
+                                true
+                            }
+                            Err(e) => {
+                                crate::player::log(&format!("ff: seek https hop FAILED: {e:?}"));
+                                false
+                            }
+                        }
+                    }
+                    Err(_) => false,
+                }
             }
             // `curlio` REFUSES a Range the server answered with a 200, where `stream.rs` accepts
             // any 2xx. That is the one behavioural difference between these two arms, and it is
@@ -2691,6 +2726,9 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
             Src::Curl(cs) => cs.seek(target),
             Src::Idle => false,
         };
+        if let Some(cs) = hopped_to_tls {
+            s.src = Src::Curl(cs);
+        }
         if !ok {
             return -1;
         }
@@ -3237,121 +3275,234 @@ fn hls_open_source(
     let origin = &resource.origin;
     if origin.is_tls() {
         let url = format!("{}{}", origin.base(), request_path);
-        if let Some(mut cs) = net.curl.take() {
-            let reopened = cs.reopen_until(&url, deadline, &mut *checkpoint);
-            if unsafe { crate::aq::aq_is_aborted(aq) } {
-                return Err(HlsExit::Aborted);
-            }
-            match reopened {
-                Ok(()) => {
-                    let (status, size) = (cs.status(), cs.size());
-                    SHARED.dg_http_status.store(status, Ordering::Relaxed);
-                    SHARED.file_size.store(size, Ordering::Release);
-                    return Ok((Src::Curl(cs), size));
-                }
-                Err(crate::curlio::OpenErr::Aborted) => return Err(HlsExit::Aborted),
-                Err(crate::curlio::OpenErr::Deadline) => {
-                    net.curl = Some(cs);
-                    return Err(HlsExit::PrimeExpired);
-                }
-                // A controlled stop keeps the session and never falls through to a fresh dial.
-                Err(e @ crate::curlio::OpenErr::Stopped) => {
-                    net.curl = Some(cs);
-                    return Err(classify_curl_open_err(e));
-                }
-                Err(crate::curlio::OpenErr::Status(status)) => {
-                    SHARED.dg_http_status.store(status, Ordering::Relaxed);
-                    net.curl = Some(cs);
-                    return Err(if status == 404 {
-                        HlsExit::NotReady
-                    } else {
-                        HlsExit::Failed("HTTPS request failed")
-                    });
-                }
-                Err(_) => {
-                    // Idle TLS session or a broken multi: drop it and dial as a first open.
-                }
-            }
-        }
-        let reservation = crate::curlio::CurlSource::reserve_open().map_err(|e| {
-            if e == crate::curlio::OpenErr::Aborted {
-                HlsExit::Aborted
-            } else {
-                HlsExit::Failed("HTTPS reservation failed")
-            }
-        })?;
-        if unsafe { crate::aq::aq_is_aborted(aq) } {
-            return Err(HlsExit::Aborted);
-        }
-        let opened = crate::curlio::CurlSource::open_reserved_checked(
-            &url,
-            0,
-            reservation,
-            deadline,
-            &mut *checkpoint,
-        );
-        if unsafe { crate::aq::aq_is_aborted(aq) } {
-            drop(opened);
-            return Err(HlsExit::Aborted);
-        }
-        let cs = opened.map_err(classify_curl_open_err)?;
-        let (status, size) = (cs.status(), cs.size());
-        SHARED.dg_http_status.store(status, Ordering::Relaxed);
-        SHARED.file_size.store(size, Ordering::Release);
-        Ok((Src::Curl(cs), size))
+        hls_open_curl(&url, aq, net, deadline, checkpoint)
     } else {
-        let host = CString::new(origin.host()).map_err(|_| HlsExit::Failed("invalid PMS host"))?;
-        let path =
-            CString::new(request_path).map_err(|_| HlsExit::Failed("invalid HLS request path"))?;
-        let hs = net.hs;
-        // Keep-alive: `http_open` reuses the live fd when the previous body was drained.
-        let opened = if let Some(at) = deadline {
-            if std::time::Instant::now() >= at {
+        hls_open_plain(origin, request_path, aq, net, deadline, checkpoint)
+    }
+}
+
+/// The https half of [`hls_open_source`]: reuse the session's curl multi when it has one, else
+/// dial a fresh reserved source. Also where a plaintext open lands after a redirect to https.
+fn hls_open_curl(
+    url: &str,
+    aq: *mut AuQueue,
+    net: &mut HlsNet,
+    deadline: Option<std::time::Instant>,
+    checkpoint: &mut dyn crate::checkpoint::Checkpoint,
+) -> Result<(Src, i64), HlsExit> {
+    if let Some(mut cs) = net.curl.take() {
+        let reopened = cs.reopen_until(url, deadline, &mut *checkpoint);
+        if unsafe { crate::aq::aq_is_aborted(aq) } {
+            return Err(HlsExit::Aborted);
+        }
+        match reopened {
+            Ok(()) => {
+                let (status, size) = (cs.status(), cs.size());
+                SHARED.dg_http_status.store(status, Ordering::Relaxed);
+                SHARED.file_size.store(size, Ordering::Release);
+                return Ok((Src::Curl(cs), size));
+            }
+            Err(crate::curlio::OpenErr::Aborted) => return Err(HlsExit::Aborted),
+            Err(crate::curlio::OpenErr::Deadline) => {
+                net.curl = Some(cs);
                 return Err(HlsExit::PrimeExpired);
             }
-            crate::stream::http_open_until_result(
-                hs,
-                host.as_ptr(),
-                origin.port() as c_int,
-                path.as_ptr(),
-                std::ptr::null(),
-                "GET",
-                at,
-                &mut *checkpoint,
-            )
-        } else {
-            crate::stream::http_open_result(
-                hs,
-                host.as_ptr(),
-                origin.port() as c_int,
-                path.as_ptr(),
-                std::ptr::null(),
-                "GET",
-                &mut *checkpoint,
-            )
-        };
-        if unsafe { crate::aq::aq_is_aborted(aq) } {
-            return Err(HlsExit::Aborted);
+            // A controlled stop keeps the session and never falls through to a fresh dial.
+            Err(e @ crate::curlio::OpenErr::Stopped) => {
+                net.curl = Some(cs);
+                return Err(classify_curl_open_err(e));
+            }
+            Err(crate::curlio::OpenErr::Status(status)) => {
+                SHARED.dg_http_status.store(status, Ordering::Relaxed);
+                net.curl = Some(cs);
+                return Err(if status == 404 {
+                    HlsExit::NotReady
+                } else {
+                    HlsExit::Failed("HTTPS request failed")
+                });
+            }
+            Err(_) => {
+                // Idle TLS session or a broken multi: drop it and dial as a first open.
+            }
         }
-        if let Err(error) = opened {
+    }
+    let reservation = crate::curlio::CurlSource::reserve_open().map_err(|e| {
+        if e == crate::curlio::OpenErr::Aborted {
+            HlsExit::Aborted
+        } else {
+            HlsExit::Failed("HTTPS reservation failed")
+        }
+    })?;
+    if unsafe { crate::aq::aq_is_aborted(aq) } {
+        return Err(HlsExit::Aborted);
+    }
+    let opened = crate::curlio::CurlSource::open_reserved_checked(
+        url,
+        0,
+        reservation,
+        deadline,
+        &mut *checkpoint,
+    );
+    if unsafe { crate::aq::aq_is_aborted(aq) } {
+        drop(opened);
+        return Err(HlsExit::Aborted);
+    }
+    let cs = opened.map_err(classify_curl_open_err)?;
+    let (status, size) = (cs.status(), cs.size());
+    SHARED.dg_http_status.store(status, Ordering::Relaxed);
+    SHARED.file_size.store(size, Ordering::Release);
+    Ok((Src::Curl(cs), size))
+}
+
+/// The plaintext half of [`hls_open_source`], redirects followed (`stream::redirect`). A hop to
+/// https continues on the session's curl slot.
+fn hls_open_plain(
+    origin: &crate::plex::Origin,
+    request_path: &str,
+    aq: *mut AuQueue,
+    net: &mut HlsNet,
+    deadline: Option<std::time::Instant>,
+    checkpoint: &mut dyn crate::checkpoint::Checkpoint,
+) -> Result<(Src, i64), HlsExit> {
+    use crate::stream::redirect::{FollowError, Opened};
+    let hs = net.hs;
+    if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+        return Err(HlsExit::PrimeExpired);
+    }
+    // Keep-alive: `http_open` reuses the live fd when the previous body was drained.
+    let req = crate::stream::redirect::Request {
+        origin,
+        path: request_path,
+        credentials: None,
+        range_from: None,
+        deadline,
+    };
+    let opened = crate::stream::redirect::open_following(hs, &req, &mut *checkpoint);
+    if unsafe { crate::aq::aq_is_aborted(aq) } {
+        return Err(HlsExit::Aborted);
+    }
+    let target = match opened {
+        Ok(Opened::Socket(t)) => t,
+        Ok(Opened::Tls(t)) => return hls_open_curl(&t.url(), aq, net, deadline, checkpoint),
+        Err(error) => {
             SHARED
                 .dg_http_status
                 .store(crate::stream::hs_status(hs), Ordering::Relaxed);
-            return Err(classify_plaintext_open_failure(error));
+            return Err(match error {
+                FollowError::Open(error) => classify_plaintext_open_failure(error),
+                FollowError::TooManyHops | FollowError::BadLocation(_) => {
+                    HlsExit::Failed("HTTP redirect refused")
+                }
+            });
         }
-        let status = crate::stream::hs_status(hs);
-        let size = crate::stream::hs_content_length(hs);
-        SHARED.dg_http_status.store(status, Ordering::Relaxed);
-        SHARED.file_size.store(size, Ordering::Release);
-        Ok((
-            Src::Socket {
-                hs,
-                host,
-                port: origin.port() as c_int,
-                path,
-            },
-            size,
-        ))
+    };
+    let host =
+        CString::new(target.origin.host()).map_err(|_| HlsExit::Failed("invalid PMS host"))?;
+    let port = target.origin.port() as c_int;
+    let path =
+        CString::new(target.path).map_err(|_| HlsExit::Failed("invalid HLS request path"))?;
+    let status = crate::stream::hs_status(hs);
+    let size = crate::stream::hs_content_length(hs);
+    SHARED.dg_http_status.store(status, Ordering::Relaxed);
+    SHARED.file_size.store(size, Ordering::Release);
+    Ok((
+        Src::Socket {
+            hs,
+            host,
+            port,
+            path,
+        },
+        size,
+    ))
+}
+
+/// Why a progressive media open produced no source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MediaOpenFail {
+    /// Teardown won; not a playback failure.
+    Aborted,
+    Failed,
+}
+
+/// Open an https redirect target on the curl source at byte `at`. The reservation publishes
+/// teardown's wake target BEFORE the abort check — the order `demux`'s own TLS open keeps.
+fn open_curl_hop(
+    url: &str,
+    at: i64,
+    aq: *mut AuQueue,
+) -> Result<Box<crate::curlio::CurlSource>, crate::curlio::OpenErr> {
+    let reservation = crate::curlio::CurlSource::reserve_open()?;
+    if unsafe { crate::aq::aq_is_aborted(aq) } {
+        return Err(crate::curlio::OpenErr::Aborted);
+    }
+    crate::curlio::CurlSource::open_reserved(url, at, reservation)
+}
+
+/// The progressive (direct-play) open of a PLAINTEXT part URL, redirects followed. A PMS-hosted
+/// trailer answers its Part URL with a `302` to a presigned CDN URL — usually https, which lands
+/// on the curl source. Publishes the same two diagnostics the TLS arm of `demux` does.
+fn open_plain_progressive(
+    hs_p: *mut HttpStream,
+    origin: &crate::plex::Origin,
+    path: &str,
+    aq_p: *mut AuQueue,
+) -> Result<(Src, i64), MediaOpenFail> {
+    use crate::stream::redirect::Opened;
+    crate::stream::http_close(hs_p);
+    let req = crate::stream::redirect::Request {
+        origin,
+        path,
+        credentials: None,
+        range_from: None,
+        deadline: None,
+    };
+    match crate::stream::redirect::open_following(hs_p, &req, &mut crate::checkpoint::NoCheckpoint)
+    {
+        Ok(Opened::Socket(t)) => {
+            let size = crate::stream::hs_content_length(hs_p);
+            SHARED.file_size.store(size, Ordering::Release);
+            let st = crate::stream::hs_status(hs_p);
+            SHARED.dg_http_status.store(st, Ordering::Relaxed);
+            crate::player::log(&format!("ff: open status={st} clen={size}"));
+            let (Ok(host), Ok(path)) = (CString::new(t.origin.host()), CString::new(t.path)) else {
+                return Err(MediaOpenFail::Failed);
+            };
+            Ok((
+                Src::Socket {
+                    hs: hs_p,
+                    host,
+                    port: t.origin.port() as c_int,
+                    path,
+                },
+                size,
+            ))
+        }
+        Ok(Opened::Tls(t)) => match open_curl_hop(&t.url(), 0, aq_p) {
+            Ok(cs) => {
+                let (st, size) = (cs.status(), cs.size());
+                SHARED.file_size.store(size, Ordering::Release);
+                SHARED.dg_http_status.store(st, Ordering::Relaxed);
+                crate::player::log(&format!("ff: open https status={st} clen={size}"));
+                Ok((Src::Curl(cs), size))
+            }
+            Err(crate::curlio::OpenErr::Aborted) => Err(MediaOpenFail::Aborted),
+            Err(e) => {
+                if let crate::curlio::OpenErr::Status(st) = e {
+                    SHARED.dg_http_status.store(st, Ordering::Relaxed);
+                }
+                crate::player::log(&format!("ff: https open FAILED: {e:?}"));
+                Err(MediaOpenFail::Failed)
+            }
+        },
+        Err(e) => {
+            if unsafe { crate::aq::aq_is_aborted(aq_p) } {
+                return Err(MediaOpenFail::Aborted);
+            }
+            let st = crate::stream::hs_status(hs_p);
+            SHARED.dg_http_status.store(st, Ordering::Relaxed);
+            crate::player::log(&format!("ff: http_open FAILED status={st} ({e:?})"));
+            Err(MediaOpenFail::Failed)
+        }
     }
 }
 
@@ -7423,13 +7574,9 @@ pub(crate) fn demux(
     // spans unbounded wall clock, so "six windows" was not a duration at all. One `Instant` for the
     // whole progressive session, read absolutely, for the reason `advance_to` documents.
     let mut original_since = std::time::Instant::now();
-    let port = origin.port() as c_int;
-    // `host()` is the origin's BARE host — a v6 literal arrives unbracketed, which is what
-    // `stream.rs` wants; `base()` re-brackets it, which is what a URL needs. Both spellings come
-    // from the one `Origin` rather than being reconstructed, which is the whole point of the type.
-    let host_c = CString::new(origin.host().to_owned()).unwrap_or_default();
+    // `base()` re-brackets a v6 host, which is what a URL needs; the plaintext arm hands the
+    // `Origin` itself to `open_plain_progressive`, which dials its BARE `host()`.
     let url = format!("{}{}", origin.base(), path); // https only — carries the token, never logged
-    let path_c = CString::new(path).unwrap_or_default();
 
     // PANIC BARRIER around the whole producer body. Not about the unwind itself — this thread is
     // started by `task::spawn`, so std already catches a panic at the thread boundary and turns it
@@ -7485,8 +7632,8 @@ pub(crate) fn demux(
                     crate::player::log("ff: aborted before reopen");
                     break;
                 }
-                // ONE decision, here, from the scheme — and the only place in the media path that
-                // makes it. Both arms publish the same two diagnostics (`dg_http_status`, `file_size`)
+                // ONE decision, here, from the scheme; the only later switch is a plaintext open
+                // redirected to https, which `open_plain_progressive` hands to curl. Both arms publish the same two diagnostics (`dg_http_status`, `file_size`)
                 // before anything else can fail, because the read-out panel is the first thing anybody
                 // looks at when a part will not play and it must mean the same thing either way.
                 let (src, size) = if origin.is_tls() {
@@ -7513,36 +7660,18 @@ pub(crate) fn demux(
                         }
                     }
                 } else {
-                    crate::stream::http_close(hs_p);
-                    if crate::stream::http_open(
-                        hs_p,
-                        host_c.as_ptr(),
-                        port,
-                        path_c.as_ptr(),
-                        std::ptr::null(),
-                        "GET",
-                    ) != 0
-                    {
-                        let st = crate::stream::hs_status(hs_p);
-                        SHARED.dg_http_status.store(st, Ordering::Relaxed);
-                        crate::player::log(&format!("ff: http_open FAILED status={st}"));
-                        SHARED.demux_failed.store(true, Ordering::Release);
-                        break;
+                    // Redirects followed; an https hop comes back as the curl source.
+                    match open_plain_progressive(hs_p, &origin, &path, aq_p) {
+                        Ok(opened) => opened,
+                        Err(MediaOpenFail::Aborted) => {
+                            crate::player::log("ff: aborted during open");
+                            break;
+                        }
+                        Err(MediaOpenFail::Failed) => {
+                            SHARED.demux_failed.store(true, Ordering::Release);
+                            break;
+                        }
                     }
-                    let size = crate::stream::hs_content_length(hs_p);
-                    SHARED.file_size.store(size, Ordering::Release);
-                    let st = crate::stream::hs_status(hs_p);
-                    SHARED.dg_http_status.store(st, Ordering::Relaxed);
-                    crate::player::log(&format!("ff: open status={st} clen={size}"));
-                    (
-                        Src::Socket {
-                            hs: hs_p,
-                            host: host_c.clone(),
-                            port,
-                            path: path_c.clone(),
-                        },
-                        size,
-                    )
                 };
 
                 let mut state = Box::new(AvioState {
@@ -8223,3 +8352,7 @@ mod stall_guard_tests;
 #[cfg(test)]
 #[path = "ff_image_subtitle_tests.rs"]
 mod image_subtitle_tests;
+
+#[cfg(test)]
+#[path = "ff_redirect_tests.rs"]
+mod redirect_tests;
