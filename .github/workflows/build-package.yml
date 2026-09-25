@@ -372,17 +372,20 @@ jobs:
           # firmware; #235's `libz.so.1` on libavformat was graded by nobody. `--shipped pkg` takes
           # the package's own sibling libraries off the firmware's list. Appended to
           # pkg/ipk-verify.md as well, because that file is what gen-release-audit.py embeds as the
-          # audit's static matrix, so the verdict is read from the shipped bytes.
+          # audit's static matrix, so the verdict is read from the shipped bytes. The generator
+          # already wraps that whole file in one code fence, so the copy appended there carries no
+          # fence of its own (a nested one would close the generator's); only the step summary,
+          # which renders as Markdown, fences the aligned columns.
+          matrix=$(mktemp)
           {
-            echo
-            echo '### Bundled libraries (tools/fwcompat.py --shipped pkg)'
-            echo '```'
+            echo 'Bundled libraries (tools/fwcompat.py --shipped pkg):'
             for lib in pkg/lib*-plx.so.*; do
               case "$lib" in *.link.*) continue ;; esac   # the link-evidence sidecars
               ./tools/fwcompat.py --db /usr/share/webosbrew/compat-checker/data --min-release 4.4.2 --shipped pkg "$lib"
             done
-            echo '```'
-          } | tee -a pkg/ipk-verify.md | tee -a "$GITHUB_STEP_SUMMARY"
+          } > "$matrix"
+          { echo; cat "$matrix"; } >> pkg/ipk-verify.md
+          { echo; echo '```'; cat "$matrix"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       - id: name
         run: echo "ipk=$(ls pkg/*.ipk)" >> "$GITHUB_OUTPUT"
