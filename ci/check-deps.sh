@@ -718,6 +718,11 @@ if [ -n "$(grep_code '(crate|super)::app::' "$SRC/screens")" ]; then
   fail "layer: a screen names the application (§2.1) — ask for it as an AppFx/LoopReq instead"
 else ok "layer"; fi
 gate sessionwrite 'session::load\(' "$SRC/screens" "$SRC/ui"
+# uistorage: the LIBRARY (`ui/`) never names the storage layer (§2.1: `ui/` may name only
+# `crate::{gfx,text,paths,task}`). A ui-owned sweep that needs the app's removal rule takes it as an
+# injected `fn` (`ui::rec::erase_owned_artifacts`). Zero, no allowlist. The wider table is not a
+# grep yet: ui/ still names other application modules, mostly from tests and dev instruments.
+gate uistorage '(crate|super)::storage::' "$SRC/ui"
 
 # legacypage: the word itself, anywhere under src — a doc that still describes the type is as much
 # a hit as a declaration, which is the point (nothing compiles the prose either).

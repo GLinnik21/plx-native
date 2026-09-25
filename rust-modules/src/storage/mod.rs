@@ -584,7 +584,8 @@ impl Drop for UnlinkFaultForTest {
     }
 }
 
-/// `unlink(2)` for credential cleanup, with the test build's fault seam in front of it.
+/// `unlink(2)` for credential cleanup and the local-data erase sweeps, with the test build's fault
+/// seam in front of it.
 pub(crate) fn unlink(path: &Path) -> io::Result<()> {
     #[cfg(test)]
     if let Some((_, errno)) = UNLINK_FAULT_FOR_TEST.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
