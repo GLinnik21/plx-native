@@ -307,7 +307,7 @@ pub struct AVSubtitleRect {
     pub data: [*mut u8; 4], // +20  data[0]=PAL8 indices, data[1]=palette (256×BGRA)
     pub linesize: [c_int; 4], // +36
     // **`flags` comes BEFORE `type`, and this model had them the other way round until
-    // 2026-08-28.** The consequence was latent rather than live — `rect_to_rgba` reads only
+    // 2026-08-28.** The consequence was latent rather than live — `rect_to_indexed` reads only
     // x/y/w/h/linesize[0]/data[0..2], all of which are ahead of the swap — but it was wrong in
     // the way this whole apparatus exists to prevent: `type_` read `flags`, `text` read `type`,
     // and on the 64-bit host `flags` landed at offset 96 of a 96-byte struct, i.e. one word past
@@ -1241,15 +1241,20 @@ unsafe fn sub_canvas(dec: *mut AVCodecContext) -> (i32, i32) {
     }
 }
 
-/// Convert one decoded PAL8 subtitle rect to a straight-alpha RGBA bitmap (palette entries are
-/// 0xAARRGGBB), or None if the decoder left it unusable. Coords are passed through in the
-/// stream's own authoring canvas — the renderer scales, not us.
+/// Copy one decoded PAL8 subtitle rect into the store's indexed form — its `w*h` palette indices
+/// (the decoder's rows, stride dropped) and its 256-entry palette as straight-alpha RGBA (palette
+/// entries are 0xAARRGGBB) — or None if the decoder left it unusable. Indexed rather than
+/// expanded: a quarter of the bytes, which is what `player::SUB_BITMAP_BUDGET` is sized on; the
+/// renderer expands a set once, when it uploads it (`SubRect::to_rgba`). Coords are passed
+/// through in the stream's own authoring canvas — the renderer scales, not us.
 ///
 /// Every field here is unvalidated data from a decoder fed by the network, and `usize` is 32
-/// bits on this target, so the size is bounded BEFORE it is multiplied: `w*h*4` for a rect the
-/// decoder claimed was 40000×40000 wraps to a small allocation, and the write loop would then
-/// run off the end of it (a panic on the demux thread, which is outside `ui::guard`).
-unsafe fn rect_to_rgba(r: *const AVSubtitleRect) -> Option<crate::player::SubRect> {
+/// bits on this target, so the size is bounded BEFORE it is multiplied: `w*h` for a rect the
+/// decoder claimed was 40000×40000 is refused before any allocation, and the copy loop can never
+/// run off the end of what was allocated (a panic on the demux thread, which is outside
+/// `ui::guard`). The palette is the decoders' fixed `AVPALETTE_SIZE` (256 entries, which pgssub
+/// and dvdsub allocate whole), so any index byte stays inside it.
+unsafe fn rect_to_indexed(r: *const AVSubtitleRect) -> Option<crate::player::SubRect> {
     if r.is_null() {
         return None;
     }
@@ -1270,28 +1275,24 @@ unsafe fn rect_to_rgba(r: *const AVSubtitleRect) -> Option<crate::player::SubRec
         return None;
     }
     let (wu, hu, su) = (w as usize, h as usize, stride as usize);
-    let bytes = match wu.checked_mul(hu).and_then(|n| n.checked_mul(4)) {
-        Some(n) => n,
-        None => return None,
-    };
-    let mut rgba = vec![0u8; bytes];
+    // the 4x headroom keeps `to_rgba`'s expansion of this rect inside `usize` too
+    let pixels = wu.checked_mul(hu).filter(|n| n.checked_mul(4).is_some())?;
+    let mut index = Vec::with_capacity(pixels);
     for row in 0..hu {
-        let src = idx.add(row * su);
-        for col in 0..wu {
-            let p = *pal.add(*src.add(col) as usize); // 0xAARRGGBB (native u32)
-            let o = (row * wu + col) * 4;
-            rgba[o] = (p >> 16) as u8; // R
-            rgba[o + 1] = (p >> 8) as u8; // G
-            rgba[o + 2] = p as u8; // B
-            rgba[o + 3] = (p >> 24) as u8; // A
-        }
+        index.extend_from_slice(std::slice::from_raw_parts(idx.add(row * su), wu));
     }
-    Some(crate::player::SubRect { x, y, w, h, rgba })
+    let mut palette = Box::new([[0u8; 4]; 256]);
+    for (i, entry) in palette.iter_mut().enumerate() {
+        let p = *pal.add(i); // 0xAARRGGBB (native u32)
+        *entry = [(p >> 16) as u8, (p >> 8) as u8, p as u8, (p >> 24) as u8];
+    }
+    Some(crate::player::SubRect { x, y, w, h, index, palette })
 }
 
-/// Decode one image-subtitle packet for the SELECTED track and push it to the render store.
+/// Decode one image-subtitle packet (the demux loop calls this for EVERY image track while
+/// subtitles are on) and push it to the render store.
 /// A CLEAR (num_rects==0) closes the open cue; otherwise EVERY rect of the display set is
-/// converted to straight-alpha RGBA and pushed as one cue with start = packet pts (the end is
+/// copied in indexed form (`rect_to_indexed`) and pushed as one cue with start = packet pts (the end is
 /// set later by the next CLEAR or superseding set). Two-line dialogue and sign-plus-dialogue are
 /// authored as separate rects of the SAME display set, so dropping all but rect 0 (what this did
 /// before) silently lost half the line. The set's canvas comes from `sub_canvas`.
@@ -1312,13 +1313,13 @@ unsafe fn decode_bitmap_cue(
         avsubtitle_free(&mut sub);
         return;
     }
-    // A pathological display set cannot be allowed to bloat the 24 MB store or the renderer's
+    // A pathological display set cannot be allowed to bloat the 24 MiB store or the renderer's
     // texture set; DVB regions are the realistic source of many rects, PGS allows at most 2.
     const MAX_RECTS: usize = 8;
     let n = (sub.num_rects as usize).min(MAX_RECTS);
     let mut rects = Vec::with_capacity(n);
     for i in 0..n {
-        if let Some(r) = rect_to_rgba(*sub.rects.add(i)) {
+        if let Some(r) = rect_to_indexed(*sub.rects.add(i)) {
             rects.push(r);
         }
     }
@@ -8119,7 +8120,7 @@ pub(crate) fn demux(
                             // renderer filters by selection. RAM is bounded by the store's byte budget.
                             //
                             // GATED on subs being ON at all: with subtitles Off (the common case) the
-                            // continuous per-display-set RLE decode + the up-to-24MB RGBA store were
+                            // continuous per-display-set RLE decode + the up-to-24MB indexed store were
                             // pure waste on the demux core during 4K playback. Turning subs on starts
                             // decoding from the current read position — a switch between two IMAGE
                             // tracks stays instant; only the off→on moment can wait for the next cue.

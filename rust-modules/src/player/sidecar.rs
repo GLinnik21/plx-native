@@ -25,6 +25,11 @@
 //! would show the line twice. The fact is PASSED IN rather than read: the playback session is
 //! the frame's publication, and the draw that calls this already holds it.
 //!
+//! The draw asks on the SUBTITLE clock (`player::subtitle_clock_ns`, the playhead less the
+//! viewer's timing offset). Because the whole file is here, a sidecar is the one kind of track
+//! that can be ADVANCED as well as delayed — [`selected`] is what `player::subtitle_offset_range_ms`
+//! reads to offer it -30 s..+30 s, where an embedded track gets a delay only.
+//!
 //! # Threading
 //!
 //! [`select`]/[`deselect`]/[`active`] are main-thread calls; the fetch runs on a `task` worker and

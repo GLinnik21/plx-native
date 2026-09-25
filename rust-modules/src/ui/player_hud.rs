@@ -221,7 +221,9 @@ pub(crate) fn draw_subtitle_bitmap(cache: &mut SubtitleBitmaps, hud_up: bool) {
                 for (i, r) in rects.iter().enumerate() {
                     let dst = sub_screen_rect((r.x, r.y, r.w, r.h), cw, ch);
                     let prev = set.get(i).map_or(0, |(t, _)| *t);
-                    let tex = upload_rgba(prev, r.w, r.h, r.rgba.as_ptr());
+                    // the store holds the set indexed; expand it once, here, per cue change
+                    let rgba = r.to_rgba();
+                    let tex = upload_rgba(prev, r.w, r.h, rgba.as_ptr());
                     match set.get_mut(i) {
                         Some(slot) => *slot = (tex, dst),
                         None => set.push((tex, dst)),
