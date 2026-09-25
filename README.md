@@ -60,18 +60,28 @@ itself. (In this capture the frame under it was decoded by the simulator.)
 
 ## Will it work on my television?
 
-Video has been watched on two sets in the world, so this is deliberately specific about which:
+**It needs webOS 4.0 or newer**; older firmware won't start — you'd get a tile that does nothing.
+Past that, it most likely will. I develop and test on a 2019 set, and opt-in usage reports show
+video playing on sets from 2018 through the newest, on webOS 11 — both direct play and server
+transcodes, Developer Mode installs included.
 
-| Your set | What's known |
+### Known issues
+
+| Where | What happens |
 |---|---|
-| **webOS 4.5** — LG 49SM9000PLA | Plays video. My own television; tested before every release. |
-| **webOS 6.5.2** — one LG 65UP7560AUD | Plays video, [reported by someone else](https://github.com/GLinnik21/plx-native/issues/22) — six of eight attempts. |
-| **webOS 10.3.1** — one rented set | The pipeline accepted HEVC direct play, though nobody watched the picture. Every server transcode is refused, so a file this app can't direct-play won't play at all. |
-| **Anything else from webOS 4.0 up** | Starts — the binary resolves cleanly against nine real firmware images. Nothing further is known. |
-| **webOS 3.9 and older** | Won't start — you'd get a tile that does nothing. |
+| **Some 2019 sets on LG's k5lp or k3lp chip**, installed through Developer Mode | Video won't play. On these sets LG's Developer Mode sandbox can withhold a device the video path needs — Kodi and Moonlight hit the same wall. The app checks for it and says so instead of crashing; other sets on the same chip play normally. On a rooted TV with Homebrew Channel, the failure screen offers **Repair**, which applies the Homebrew Channel fix to the sandbox (one owner fixed it this way from a root shell; the button itself hasn't been run on an affected set yet). Without root there is no fix. |
+| **2018 sets on firmware that reports platform release 3.9.3** | Sign-in and browsing work, but video has never been seen to start on one, and no error is reported either. |
+| **Sets on LG's k6hp chip** | A crash seen in opt-in crash reports and not reproduced here, because I have no such set: [#174](https://github.com/GLinnik21/plx-native/issues/174). |
 
-If your set is in the middle, [tell me what happened](https://github.com/GLinnik21/plx-native/issues)
-— it working is as useful a report as it failing.
+### Rooted or not
+
+**No root is needed.** A regular TV in Developer Mode runs everything except the k5lp/k3lp Repair
+above. What Developer Mode costs you is renewal: if the session lapses, LG removes the apps
+installed through it ([how to keep them](docs/install-and-verify.md#important-developer-mode-expires)).
+A rooted TV with Homebrew Channel has no expiry.
+
+If something goes wrong, [tell me what happened](https://github.com/GLinnik21/plx-native/issues) —
+and if you own one of the sets above, it working is as useful a report as it failing.
 
 ## Installing
 
@@ -128,6 +138,9 @@ I built this for how *I* watch, so it's narrower than Plex's:
 - **No typing in server addresses.** Servers come from your Plex account; set them up on a phone or
   PC and choose from what's there. Servers reached through Plex's relay, or that require an
   encrypted connection, are supported but haven't been watched end to end.
+- **Styled ASS subtitles** (common on anime) show as plain text when a video plays directly
+  ([#73](https://github.com/GLinnik21/plx-native/issues/73)). Pick a lower quality in the player's
+  menu and the server draws them into the picture, styling included.
 - **One person's spare time.** There will be bugs I haven't hit, because I don't watch the way you do.
 
 If that fits, it's genuinely nice to use. If it doesn't, the official app will serve you better.
