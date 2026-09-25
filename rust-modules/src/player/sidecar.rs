@@ -10,8 +10,9 @@
 //!
 //! # Why its own store, and not `SHARED.sub_cues`
 //!
-//! That store is a WINDOW: `push_subtitle_text` drops everything more than 2 s behind the playhead
-//! and caps at 512, because the demuxer refills it as it reads. A sidecar arrives once, whole —
+//! That store is a WINDOW: `push_subtitle_text` drops everything more than 2 s behind the earlier
+//! of the playhead and the subtitle clock (`player::subtitle_clock_ns`) and caps at 512, because
+//! the demuxer refills it as it reads. A sidecar arrives once, whole —
 //! 1,000-2,000 cues for a feature — and nothing re-reads it after a backward seek. So the file is
 //! kept in full, sorted, and looked up by time.
 //!

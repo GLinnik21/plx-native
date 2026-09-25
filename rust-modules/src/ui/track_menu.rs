@@ -13,13 +13,15 @@
 //!
 //! On a direct play a third section follows, **Timing**: the subtitle offset
 //! (`plex::session::Session::subtitle_offset_ms`) as the header's read-out, and three rows that
-//! step it — Earlier and Later by 100 ms, Reset to zero. OK on one of those performs the step and
+//! step it — Earlier and Later by 100 ms (up to 5 s early, 30 s late), Reset to zero. OK on one of those performs the step and
 //! leaves the panel open ([`TrackMenuState::ok_keeps_open`]); every other row still closes it. A
 //! transcode draws no Timing section: the server burns the captions, and no client-side offset
 //! reaches a burned caption.
 #![allow(dead_code)]
 use crate::metadata;
-use crate::plex::session::{SubtitleTone, SUBTITLE_OFFSET_MAX_MS, SUBTITLE_OFFSET_STEP_MS};
+use crate::plex::session::{
+    SubtitleTone, SUBTITLE_OFFSET_EARLIEST_MS, SUBTITLE_OFFSET_LATEST_MS, SUBTITLE_OFFSET_STEP_MS,
+};
 use crate::ui::consts::SCR_H;
 use crate::ui::frame::Budget;
 use crate::ui::geom::IndexElem;
@@ -254,13 +256,12 @@ impl TrackMenuState {
             // one always republishes, and re-committing the track would re-burn a transcode
             Some(TrackCommit::SubtitleTone(tone))
         } else if let Some(row) = timing_at(self.offset_base, sel) {
-            let max = SUBTITLE_OFFSET_MAX_MS;
             let next = match row {
                 TimingRow::Earlier => self.offset_ms - SUBTITLE_OFFSET_STEP_MS,
                 TimingRow::Later => self.offset_ms + SUBTITLE_OFFSET_STEP_MS,
                 TimingRow::Reset => 0,
             }
-            .clamp(-max, max);
+            .clamp(SUBTITLE_OFFSET_EARLIEST_MS, SUBTITLE_OFFSET_LATEST_MS);
             if next == self.offset_ms {
                 return None; // at a limit, or Reset at zero: nothing to perform
             }
@@ -402,7 +403,7 @@ impl TrackMenuState {
     }
 
     /// The Timing section: the offset as the header's read-out and three fixed rows that step it
-    /// ([`TimingRow`]). A stepper rather than one checked row per value — 601 rows of ±30 s at
+    /// ([`TimingRow`]). A stepper rather than one checked row per value — hundreds of rows at
     /// 100 ms would be a list nobody could walk and a per-frame layout walk over every one of them.
     fn build_timing(&self) -> Section {
         let mut sec = Section::new("Timing").accessory(format_offset(self.offset_ms));
@@ -411,11 +412,11 @@ impl TrackMenuState {
                 TimingRow::Earlier => Row::new("Earlier")
                     .value(format_offset(-SUBTITLE_OFFSET_STEP_MS))
                     .value_dim(true)
-                    .dim(self.offset_ms <= -SUBTITLE_OFFSET_MAX_MS),
+                    .dim(self.offset_ms <= SUBTITLE_OFFSET_EARLIEST_MS),
                 TimingRow::Later => Row::new("Later")
                     .value(format_offset(SUBTITLE_OFFSET_STEP_MS))
                     .value_dim(true)
-                    .dim(self.offset_ms >= SUBTITLE_OFFSET_MAX_MS),
+                    .dim(self.offset_ms >= SUBTITLE_OFFSET_LATEST_MS),
                 TimingRow::Reset => Row::new("Reset").dim(self.offset_ms == 0),
             };
             sec = sec.row(r);
@@ -981,11 +982,11 @@ mod tests {
         assert_eq!(menu.on_ok(&ps, store.view()), Some(TrackCommit::SubtitleOffset(0)));
         assert_eq!(menu.on_ok(&ps, store.view()), None, "Reset at zero is nothing to perform");
 
-        crate::player::restore_subtitle_offset(-SUBTITLE_OFFSET_MAX_MS);
+        crate::player::restore_subtitle_offset(-5_000);
         let mut menu = TrackMenuState::new(&ps, store.view(), 1);
         menu.focus_row(earlier);
         assert_eq!(menu.on_ok(&ps, store.view()), None, "the limit clamps rather than wraps");
-        assert_eq!(menu.table.sections[2].accessory, "-30.0 s");
+        assert_eq!(menu.table.sections[2].accessory, "-5.0 s");
         crate::player::restore_subtitle_offset(0);
 
         // a track or tone row still closes the panel

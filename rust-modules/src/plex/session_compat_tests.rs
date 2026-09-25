@@ -383,13 +383,13 @@ fn the_subtitle_tone_is_white_when_absent_or_unknown_and_round_trips_every_rung(
 fn the_subtitle_offset_is_zero_when_absent_or_unknown_and_round_trips() {
     let parsed: Session = serde_json::from_str(r#"{"client_id":"c"}"#).unwrap();
     assert_eq!(parsed.subtitle_offset_ms(), 0);
-    // off the 100 ms grain, past the ±30 s range, and not a number at all
-    for damaged in [r#""late""#, "null", "99", "30100", "-30100", "1e9", r#"{"a":1}"#] {
+    // off the 100 ms grain, outside -5..=+30 s, and not a number at all
+    for damaged in [r#""late""#, "null", "99", "30100", "-5100", "-30000", "1e9", r#"{"a":1}"#] {
         let text = format!(r#"{{"client_id":"c","subtitle_offset_ms":{damaged}}}"#);
         let parsed: Session = serde_json::from_str(&text).unwrap();
         assert_eq!(parsed.subtitle_offset_ms(), 0, "{damaged}");
     }
-    for offset in [-30_000, -10_000, -5_000, -2_000, -1_000, 0, 100, 1_000, 5_000, 10_000, 30_000] {
+    for offset in [-5_000, -2_000, -1_000, 0, 100, 1_000, 5_000, 10_000, 30_000] {
         let json = serde_json::to_value(Session::default().with_subtitle_offset(offset)).unwrap();
         assert_eq!(json["subtitle_offset_ms"], offset);
         let again: Session = serde_json::from_value(json).unwrap();

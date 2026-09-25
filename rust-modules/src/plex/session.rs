@@ -560,8 +560,8 @@ pub struct Session {
     #[serde(default, deserialize_with = "de_soft_subtitle_tone")]
     pub(crate) subtitle_tone: SubtitleTone,
     /// **The client-rendered subtitles' timing offset**, in milliseconds: positive draws every cue
-    /// later, negative earlier, within ±[`SUBTITLE_OFFSET_MAX_MS`] in [`SUBTITLE_OFFSET_STEP_MS`]
-    /// steps. A public preference beside the tone, never part of the sealed credentials — so a
+    /// later, negative earlier, from [`SUBTITLE_OFFSET_EARLIEST_MS`] to
+    /// [`SUBTITLE_OFFSET_LATEST_MS`] in [`SUBTITLE_OFFSET_STEP_MS`] steps. A public preference beside the tone, never part of the sealed credentials — so a
     /// change is a public-only write through [`update`]. Absence is 0, what every build before the
     /// field drew; soft-parsed like the tone, so a damaged value costs the offset and nothing else.
     #[serde(default, deserialize_with = "de_soft_subtitle_offset")]
@@ -881,9 +881,15 @@ pub(crate) fn set_subtitle_tone(tone: SubtitleTone) -> bool {
     })
 }
 
-/// The widest subtitle timing offset either way, in milliseconds (the menu's clamp, the player's
-/// clamp and the soft parser's range — one number).
-pub(crate) const SUBTITLE_OFFSET_MAX_MS: i64 = 30_000;
+/// The subtitle timing offset's range in milliseconds — the menu's clamp, the player's clamp and
+/// the soft parser's range, one pair of numbers. **Asymmetric on purpose.** A DELAY is served from
+/// cues already in the store (which retains them for as long as the offset needs), so it can be as
+/// long as a mismatched sidecar wants. An ADVANCE needs cues the demuxer has not read yet, and an
+/// embedded track's cues are read in the same bounded A/V queue as the picture — a few seconds
+/// ahead at a high bitrate — so a wide advance would find no cue to draw, film after film, since
+/// the offset is persisted. Five seconds is the widest advance kept.
+pub(crate) const SUBTITLE_OFFSET_EARLIEST_MS: i64 = -5_000;
+pub(crate) const SUBTITLE_OFFSET_LATEST_MS: i64 = 30_000;
 /// The menu's step, and the grain a persisted offset must sit on to be believed.
 pub(crate) const SUBTITLE_OFFSET_STEP_MS: i64 = 100;
 
@@ -1616,7 +1622,7 @@ where
         Value::String(s) => s.parse::<i64>().unwrap_or(0),
         _ => 0,
     };
-    let valid = (-SUBTITLE_OFFSET_MAX_MS..=SUBTITLE_OFFSET_MAX_MS).contains(&value)
+    let valid = (SUBTITLE_OFFSET_EARLIEST_MS..=SUBTITLE_OFFSET_LATEST_MS).contains(&value)
         && value % SUBTITLE_OFFSET_STEP_MS == 0;
     Ok(if valid { value } else { 0 })
 }

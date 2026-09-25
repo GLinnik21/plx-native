@@ -1387,7 +1387,7 @@ pub(crate) fn subtitle_tone() -> crate::plex::session::SubtitleTone {
 
 /// The viewer's subtitle timing offset in MILLISECONDS — positive draws every client-rendered cue
 /// later, negative earlier. A preference that outlives a playback, for the same reason as
-/// [`SUBTITLE_TONE`]. `AtomicI32` rather than `I64`: ±30 000 ms fits trivially, and the 32-bit
+/// [`SUBTITLE_TONE`]. `AtomicI32` rather than `I64`: the -5 000..=30 000 ms range fits trivially, and the 32-bit
 /// target gets a plain word load on the per-frame lookups.
 static SUBTITLE_OFFSET_MS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
@@ -1407,7 +1407,8 @@ fn subtitle_offset_ns() -> i64 {
 /// a timestamp at either end of `i64`.
 ///
 /// The sidecar holds its whole file, so any offset is exact there. An EMBEDDED track only has the
-/// cues the demuxer has read: an early offset wider than its ~10-20 s read-ahead, or a late one in
+/// cues the demuxer has read: an early offset wider than its read-ahead (bounded by the A/V queues,
+/// so only seconds at a high bitrate — why the range stops at 5 s early), or a late one in
 /// the first seconds after a seek (the demuxer restarts AT the target, never before it), finds
 /// nothing to draw until the window catches up.
 pub(crate) fn subtitle_clock_ns(now_ns: i64) -> i64 {
@@ -1423,8 +1424,8 @@ fn subtitle_floor_ns() -> i64 {
 }
 
 fn clamp_subtitle_offset_ms(offset_ms: i64) -> i32 {
-    let max = crate::plex::session::SUBTITLE_OFFSET_MAX_MS;
-    offset_ms.clamp(-max, max) as i32
+    use crate::plex::session::{SUBTITLE_OFFSET_EARLIEST_MS, SUBTITLE_OFFSET_LATEST_MS};
+    offset_ms.clamp(SUBTITLE_OFFSET_EARLIEST_MS, SUBTITLE_OFFSET_LATEST_MS) as i32
 }
 
 /// Restore the persisted preference without writing it back (boot, and the credentials handoff
@@ -1586,8 +1587,9 @@ pub(crate) fn push_subtitle_bitmap(
     // bytes and not cue count — and which is what made the eviction ORDER start to matter.
     //
     // `v` is in demux (increasing-pts) order and the time-retain above has already dropped
-    // everything more than 2s behind the playhead, so `v[0]` is the cue AT or just behind the
-    // playhead — the one about to be drawn — while the tail is the demuxer's 10-20s read-ahead.
+    // everything more than 2s behind the earlier of the playhead and the subtitle clock
+    // (`subtitle_floor_ns`), so `v[0]` is the cue AT or just behind that point — the one about
+    // to be drawn — while the tail is the demuxer's read-ahead.
     // Evicting index 0 (what this did) therefore blanks the subtitle the viewer is reading and
     // keeps cues they have not reached. So: drop a cue the playhead has already passed first,
     // since it can never be shown again; only when none is left does the FAR END of the
@@ -2865,18 +2867,18 @@ mod tests {
     }
 
     /// The offset can never wrap a timestamp: the lookups saturate at both ends of `i64`, and the
-    /// setter clamps to the ±30 s the session file accepts.
+    /// setter clamps to the -5..=+30 s the session file accepts.
     #[test]
     fn the_subtitle_clock_saturates_and_the_offset_clamps() {
         let _g = crate::testlock::serial();
         restore_subtitle_offset(30_000);
         assert_eq!(subtitle_clock_ns(i64::MIN), i64::MIN);
-        restore_subtitle_offset(-30_000);
+        restore_subtitle_offset(-5_000);
         assert_eq!(subtitle_clock_ns(i64::MAX), i64::MAX);
         restore_subtitle_offset(i64::MAX);
         assert_eq!(subtitle_offset_ms(), 30_000);
         restore_subtitle_offset(i64::MIN);
-        assert_eq!(subtitle_offset_ms(), -30_000);
+        assert_eq!(subtitle_offset_ms(), -5_000, "an advance stops at 5 s");
         restore_subtitle_offset(0);
     }
     /// The image-subtitle store, exercised as a display SET rather than a single bitmap. Three
