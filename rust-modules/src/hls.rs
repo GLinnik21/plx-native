@@ -176,6 +176,24 @@ impl Resource {
         Ok(Self { origin, path })
     }
 
+    /// The resource a transport request path names, with its credential taken back out — the
+    /// inverse of [`InheritedAuth::request_path`]. What a redirected playlist fetch landed on
+    /// becomes the base its children resolve against, and a [`Resource`] never holds the token.
+    pub(crate) fn from_request_path(origin: Origin, request_path: &str) -> Result<Self, Error> {
+        let path = match request_path.split_once('?') {
+            None => request_path.to_owned(),
+            Some((path, query)) => {
+                let kept: Vec<&str> = query.split('&').filter(|pair| !is_token_pair(pair)).collect();
+                if kept.is_empty() {
+                    path.to_owned()
+                } else {
+                    format!("{path}?{}", kept.join("&"))
+                }
+            }
+        };
+        Resource::new(origin, path)
+    }
+
     /// Resolve one playlist URI. Relative and root-relative references inherit the base origin;
     /// an absolute HTTP(S) reference is accepted only when its parsed origin is exactly equal.
     pub(crate) fn resolve(&self, reference: &str) -> Result<Self, Error> {

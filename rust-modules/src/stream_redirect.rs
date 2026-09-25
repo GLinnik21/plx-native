@@ -15,6 +15,10 @@
 //! authority, and the PMS token must never reach a third party. A `Range` is not a credential and
 //! rides every hop. Log lines carry an origin and a query-less path, never a query.
 //!
+//! A caller whose contract confines it to one origin — HLS, whose playlists may only name
+//! children on the PMS origin (`crate::hls`) — sets [`Request::same_origin_only`], and a hop
+//! elsewhere (a scheme change included) is refused before anything is dialled there.
+//!
 //! The control plane (`crate::http`) does not come through here; its redirect policy is the
 //! per-request `follow_redirects` option in `crate::net`, off by default.
 
@@ -71,6 +75,8 @@ pub(crate) enum FollowError {
     Open(HttpOpenError),
     /// More than [`MAX_HOPS`] redirects.
     TooManyHops,
+    /// A hop off the original origin, for a [`Request::same_origin_only`] request.
+    LeftOrigin,
     /// A redirect with no `Location`, or one this client cannot request (another scheme, a
     /// malformed authority, control bytes).
     BadLocation(c_int),
@@ -87,6 +93,8 @@ pub(crate) struct Request<'a> {
     pub(crate) range_from: Option<i64>,
     /// Absolute setup deadline for the whole chain (connect/send/headers of every hop).
     pub(crate) deadline: Option<Instant>,
+    /// Refuse, undialled, any hop whose scheme+host+port differ from [`Self::origin`].
+    pub(crate) same_origin_only: bool,
 }
 
 /// Open `req` on `hs`, following plaintext redirects. See the module doc for the credential rule.
@@ -165,6 +173,15 @@ pub(crate) fn open_following(
         }
         hop += 1;
         let same = same_origin(&next.origin, req.origin);
+        if !same && req.same_origin_only {
+            crate::log(&format!(
+                "stream: redirect {status} -> {}{} REFUSED: this request may not leave {}",
+                next.origin.log_form(),
+                log_endpoint(&next.path),
+                req.origin.log_form()
+            ));
+            return Err(FollowError::LeftOrigin);
+        }
         if same {
             if let Some(pair) = token {
                 next.path = with_query_pair(&next.path, pair);
@@ -475,6 +492,7 @@ mod tests {
             credentials: None,
             range_from: None,
             deadline: None,
+            same_origin_only: false,
         };
         match open_following(&mut *hs, &req, &mut crate::checkpoint::NoCheckpoint) {
             Ok(Opened::Tls(t)) => assert_eq!(t.url(), "https://127.0.0.1:1/x"),
@@ -525,6 +543,7 @@ mod tests {
             credentials: Some("X-Plex-Token: secret\r\n"),
             range_from: Some(7),
             deadline: None,
+            same_origin_only: false,
         };
         let got = open_following(&mut *hs, &req, &mut crate::checkpoint::NoCheckpoint);
         super::super::http_close(&mut *hs);

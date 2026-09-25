@@ -2688,6 +2688,7 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                     credentials: None,
                     range_from: Some(target),
                     deadline: None,
+                    same_origin_only: false,
                 };
                 match crate::stream::redirect::open_following(
                     *hs,
@@ -3268,14 +3269,17 @@ fn hls_open_source(
     // Consulted by every blocking wait of the open with a deadline. Playlist fetches pass
     // `NoCheckpoint`; a segment fetch passes its acquisition runtime.
     checkpoint: &mut dyn crate::checkpoint::Checkpoint,
-) -> Result<(Src, i64), HlsExit> {
+) -> Result<(Src, i64, crate::hls::Resource), HlsExit> {
     if unsafe { crate::aq::aq_is_aborted(aq) } {
         return Err(HlsExit::Aborted);
     }
     let origin = &resource.origin;
     if origin.is_tls() {
         let url = format!("{}{}", origin.base(), request_path);
-        hls_open_curl(&url, aq, net, deadline, checkpoint)
+        // libcurl follows any redirect itself (`curlio`), and does not report where it landed;
+        // the requested resource is the only base this path knows.
+        let (src, size) = hls_open_curl(&url, aq, net, deadline, checkpoint)?;
+        Ok((src, size, resource.clone()))
     } else {
         hls_open_plain(origin, request_path, aq, net, deadline, checkpoint)
     }
@@ -3354,8 +3358,9 @@ fn hls_open_curl(
     Ok((Src::Curl(cs), size))
 }
 
-/// The plaintext half of [`hls_open_source`], redirects followed (`stream::redirect`). A hop to
-/// https continues on the session's curl slot.
+/// The plaintext half of [`hls_open_source`], redirects followed (`stream::redirect`) while they
+/// stay on the PMS origin. Also returns the resource the open landed on: a playlist's children
+/// resolve against it, not against the path that was requested.
 fn hls_open_plain(
     origin: &crate::plex::Origin,
     request_path: &str,
@@ -3363,7 +3368,7 @@ fn hls_open_plain(
     net: &mut HlsNet,
     deadline: Option<std::time::Instant>,
     checkpoint: &mut dyn crate::checkpoint::Checkpoint,
-) -> Result<(Src, i64), HlsExit> {
+) -> Result<(Src, i64, crate::hls::Resource), HlsExit> {
     use crate::stream::redirect::{FollowError, Opened};
     let hs = net.hs;
     if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
@@ -3376,6 +3381,8 @@ fn hls_open_plain(
         credentials: None,
         range_from: None,
         deadline,
+        // The HLS contract (`crate::hls`): every request stays on the PMS origin.
+        same_origin_only: true,
     };
     let opened = crate::stream::redirect::open_following(hs, &req, &mut *checkpoint);
     if unsafe { crate::aq::aq_is_aborted(aq) } {
@@ -3383,19 +3390,22 @@ fn hls_open_plain(
     }
     let target = match opened {
         Ok(Opened::Socket(t)) => t,
-        Ok(Opened::Tls(t)) => return hls_open_curl(&t.url(), aq, net, deadline, checkpoint),
+        // Unreachable from a plaintext origin with `same_origin_only`: https is another origin.
+        Ok(Opened::Tls(_)) => return Err(HlsExit::Failed("HTTP redirect refused")),
         Err(error) => {
             SHARED
                 .dg_http_status
                 .store(crate::stream::hs_status(hs), Ordering::Relaxed);
             return Err(match error {
                 FollowError::Open(error) => classify_plaintext_open_failure(error),
-                FollowError::TooManyHops | FollowError::BadLocation(_) => {
-                    HlsExit::Failed("HTTP redirect refused")
-                }
+                FollowError::TooManyHops
+                | FollowError::BadLocation(_)
+                | FollowError::LeftOrigin => HlsExit::Failed("HTTP redirect refused"),
             });
         }
     };
+    let landed = crate::hls::Resource::from_request_path(target.origin.clone(), &target.path)
+        .map_err(|_| HlsExit::Failed("HTTP redirect refused"))?;
     let host =
         CString::new(target.origin.host()).map_err(|_| HlsExit::Failed("invalid PMS host"))?;
     let port = target.origin.port() as c_int;
@@ -3413,6 +3423,7 @@ fn hls_open_plain(
             path,
         },
         size,
+        landed,
     ))
 }
 
@@ -3455,6 +3466,7 @@ fn open_plain_progressive(
         credentials: None,
         range_from: None,
         deadline: None,
+        same_origin_only: false,
     };
     match crate::stream::redirect::open_following(hs_p, &req, &mut crate::checkpoint::NoCheckpoint)
     {
@@ -3560,14 +3572,14 @@ fn hls_fetch_text(
     aq: *mut AuQueue,
     net: &mut HlsNet,
     mut reserve: Option<&mut ReserveDeadlineState>,
-) -> Result<(String, u128), HlsExit> {
+) -> Result<(String, u128, crate::hls::Resource), HlsExit> {
     const MAX_PLAYLIST_BYTES: usize = 1024 * 1024;
     let request_path = auth
         .request_path(resource)
         .map_err(|_| HlsExit::Failed("playlist credential rejected"))?;
     let started = std::time::Instant::now();
     let mut watchdog = TransportWatchdog::for_origin(&resource.origin);
-    let (mut src, size) = loop {
+    let (mut src, size, landed) = loop {
         if unsafe { crate::aq::aq_is_aborted(aq) } {
             return Err(HlsExit::Aborted);
         }
@@ -3658,7 +3670,7 @@ fn hls_fetch_text(
     hls_recycle_src(src, net);
     let elapsed = started.elapsed().as_millis();
     String::from_utf8(body)
-        .map(|text| (text, elapsed))
+        .map(|text| (text, elapsed, landed))
         .map_err(|_| HlsExit::Failed("playlist is not UTF-8"))
 }
 
@@ -4023,10 +4035,11 @@ unsafe fn hls_demux_segment(
         // deadline shorter than the checkpoint slice ends the wait without asking again.
         let opened = opened.map_err(|error| runtime.settle(error, audio_expected()));
         match opened {
-            Ok(opened) => {
+            // A segment has no children, so where a redirect landed is of no further use.
+            Ok((src, size, _landed)) => {
                 transport_watchdog.reset();
                 open_us = attempt.elapsed().as_micros() as u64;
-                break opened;
+                break (src, size);
             }
             // The blocking open may have returned on the old reserve deadline in the same pump
             // tick that established the internal hold. Re-open under the promoted policy; the
@@ -4457,8 +4470,10 @@ fn hls_cursor_open(
         .map_err(|_| HlsExit::Failed("invalid HLS master URL"))?;
     let auth = crate::hls::InheritedAuth::capture(&master_resource)
         .map_err(|_| HlsExit::Failed("HLS master has no unique credential"))?;
-    let (master_text, master_ms) = hls_fetch_text(&master_resource, &auth, aq, net, reserve)?;
-    let master = crate::hls::parse_master(&master_resource, &master_text).map_err(|e| {
+    // Parsed against where the fetch LANDED: a redirected master's children are relative to it.
+    let (master_text, master_ms, master_landed) =
+        hls_fetch_text(&master_resource, &auth, aq, net, reserve)?;
+    let master = crate::hls::parse_master(&master_landed, &master_text).map_err(|e| {
         crate::player::log(&format!("hls: master rejected: {e}"));
         HlsExit::Failed("HLS master rejected")
     })?;
@@ -4492,9 +4507,10 @@ fn hls_cursor_next(
         if cursor.ended {
             return Ok(None);
         }
-        let (media_text, media_ms) =
+        // Refreshed from the variant's own URL; its segments resolve against where it landed.
+        let (media_text, media_ms, media_landed) =
             hls_fetch_text(&cursor.media, &cursor.auth, aq, net, reserve.as_deref_mut())?;
-        let media = crate::hls::parse_media(&cursor.media, &media_text).map_err(|e| {
+        let media = crate::hls::parse_media(&media_landed, &media_text).map_err(|e| {
             crate::player::log(&format!("hls: media rejected: {e}"));
             HlsExit::Failed("HLS media playlist rejected")
         })?;
