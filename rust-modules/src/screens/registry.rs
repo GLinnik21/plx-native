@@ -1897,7 +1897,7 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 /// item changes libraries while still distinguishing section-specific rows. Recorded fixtures need
 /// `tools/plxnative-rec rerecord` like any other shape-pin bump before replay is trusted.
 #[cfg(test)]
-const SCREEN_SHAPES_PIN: u64 = 0xd48c_db30_5492_1e33;
+const SCREEN_SHAPES_PIN: u64 = 0xc0de_ced9_ee95_3632;
 
 #[cfg(test)]
 mod arg_tests {
