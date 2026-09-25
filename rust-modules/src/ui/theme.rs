@@ -858,12 +858,18 @@ pub const INK_ON_RESUME: [f32; 4] = NEUTRAL_850;
 /// FOCUSED row's near-white pill. One step behind the label so the label is what you read and the
 /// value is what you check — and an ALPHA of the pill's own ink rather than a grey, because a grey
 /// over near-white goes muddy where black at a weight stays clean. Unfocused rows use
-/// [`TEXT_SECONDARY`] (and [`TEXT_TERTIARY`] when quietened), which need no token of their own.
+/// [`TEXT_SECONDARY`] (and [`TEXT_TERTIARY`] when quietened), which need no token of their own,
+/// and [`ROW_VALUE_INK_DIM`] on a dim row.
 pub const ROW_VALUE_INK_ON: [f32; 4] = with_a(BLACK, 0.60);
 /// The same read-out a further step back — see [`ROW_VALUE_INK_ON`]. Derived from [`ACCENT_INK`]
 /// rather than black: at .38 the ink is thin enough that its HUE starts to show, and the pill's own
 /// near-black is the one this must not look tinted against.
 pub const ROW_VALUE_INK_ON_DIM: [f32; 4] = with_a(ACCENT_INK, 0.38);
+/// An unfocused **dim** row's read-out (`table::Row::dim` — an unavailable step, a limit reached).
+/// The dim row's label is already [`TEXT_TERTIARY`], and the value keeps its one step behind the
+/// label; a read-out at the live row's ink made the row look half-available. That same ink
+/// quietened, as [`TEXT_SEPARATOR`] is, rather than a grey of its own.
+pub const ROW_VALUE_INK_DIM: [f32; 4] = with_a(TEXT_TERTIARY, 0.45);
 
 // ── The watched TICK on artwork (the tile's one state mark) ──────────────────
 /// The tick's ink: `COOL_0`, the same near-white a title is set in. **No disc, no plate** — the

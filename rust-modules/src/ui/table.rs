@@ -903,12 +903,7 @@ impl TableView {
             // step is the ink's ALONE — the run itself is bold (see [`VALUE_BOLD`], which all three
             // calls below take so the measure and the paint can never be two different faces).
             if let Some(v) = row.readout() {
-                let ink = match (focused, row.value_dim) {
-                    (true, false) => theme::ROW_VALUE_INK_ON,
-                    (true, true) => theme::ROW_VALUE_INK_ON_DIM,
-                    (false, false) => theme::TEXT_SECONDARY,
-                    (false, true) => theme::TEXT_TERTIARY,
-                };
+                let ink = row_value_ink(row, focused);
                 if let Ok(vc) = std::ffi::CString::new(v) {
                     let vsz = theme::size::LABEL;
                     let vy = crate::text::text_vcenter_y(vsz, VALUE_BOLD, cyc);
@@ -1039,8 +1034,51 @@ impl TableView {
     }
 }
 
+/// The ink of a row's trailing read-out ([`Row::readout`]): one step behind the row's label, so it
+/// follows the row's [`Row::dim`] as well as its own [`Row::value_dim`]. A dim row's label is
+/// already [`theme::TEXT_TERTIARY`], so its read-out takes [`theme::ROW_VALUE_INK_DIM`] below
+/// that; drawn at the live row's ink, a step that cannot be taken (the Timing section's Earlier at
+/// its floor) still announced itself at the trailing edge. Over the focused pill a dim row's
+/// read-out takes the quiet rung.
+fn row_value_ink(row: &Row, focused: bool) -> [f32; 4] {
+    match (focused, row.dim, row.value_dim) {
+        (true, false, false) => theme::ROW_VALUE_INK_ON,
+        (true, _, _) => theme::ROW_VALUE_INK_ON_DIM,
+        (false, true, _) => theme::ROW_VALUE_INK_DIM,
+        (false, false, false) => theme::TEXT_SECONDARY,
+        (false, false, true) => theme::TEXT_TERTIARY,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// **A dimmed row's read-out dims with it.** The Timing section's Earlier row at the
+    /// selected kind's floor is `dim`, and its "−0.1 s" read-out was drawn at the SAME ink as the
+    /// live Later row's — so the step that could not be taken still announced itself at the
+    /// trailing edge. The read-out stays one step behind its label: a dim label is
+    /// [`theme::TEXT_TERTIARY`], so a dim row's value sits below that.
+    #[test]
+    fn a_dim_rows_readout_follows_the_row_dim() {
+        let live = Row::new("Later").value("+0.1 s").value_dim(true);
+        let dimmed = Row::new("Earlier").value("\u{2212}0.1 s").value_dim(true).dim(true);
+        assert_ne!(
+            row_value_ink(&dimmed, false),
+            row_value_ink(&live, false),
+            "a dim row's read-out must not keep the live row's ink",
+        );
+        assert!(
+            row_value_ink(&dimmed, false)[3] < theme::TEXT_TERTIARY[3],
+            "a dim row's read-out sits a step behind its dim label",
+        );
+        // an undimmed, unquietened read-out is unchanged
+        let plain = Row::new("Audio").value("English");
+        assert_eq!(row_value_ink(&plain, false), theme::TEXT_SECONDARY);
+        assert_eq!(row_value_ink(&plain, true), theme::ROW_VALUE_INK_ON);
+        // over the focused pill a dim row's read-out takes the quiet rung
+        let dim_plain = Row::new("Audio").value("English").dim(true);
+        assert_eq!(row_value_ink(&dim_plain, true), theme::ROW_VALUE_INK_ON_DIM);
+    }
+
     #[test]
     fn table_motion_canonical_state_covers_hidden_spring_velocity_and_layout_flags() {
         fn hash(table: &super::TableView) -> u64 {
