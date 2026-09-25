@@ -6396,6 +6396,12 @@ pub(crate) fn commit_subtitle_selection(ps: &mut PlaybackSession, sub_idx: i32, 
             }
         } };
     }
+    // A timing offset was tuned against the track that was showing; a DIFFERENT pick (another
+    // track, a sidecar, or Off) starts at zero. Re-committing the same track — a subtitle OK
+    // always republishes — keeps what the viewer found.
+    if stream_id != ps.cur_sub_sid {
+        crate::player::set_subtitle_offset(0);
+    }
     crate::player::request_subtitle(sub_idx);
     set_subtitle(ps, stream_id);
     if transcoding {

@@ -1298,6 +1298,7 @@ pub(crate) fn reset_audio_track() {
 pub(crate) fn reset_subtitle() {
     SHARED.desired_sub_idx.store(-1, Relaxed);
     sidecar::reset(); // …and the previous item's external subtitle file with it
+    SUBTITLE_OFFSET_MS.store(0, Relaxed); // …and the timing offset tuned against that file
 }
 /// select the audio stream index the demuxer feeds at the FIRST Load (before start_bufferfeed) —
 /// used by the decision to direct-play a non-default direct-playable track (e.g. an AC3 track on
@@ -1386,12 +1387,15 @@ pub(crate) fn subtitle_tone() -> crate::plex::session::SubtitleTone {
 }
 
 /// The viewer's subtitle timing offset in MILLISECONDS — positive draws every client-rendered cue
-/// later, negative earlier. A preference that outlives a playback, for the same reason as
-/// [`SUBTITLE_TONE`]. `AtomicI32` rather than `I64`: the -5 000..=30 000 ms range fits trivially, and the 32-bit
-/// target gets a plain word load on the per-frame lookups.
+/// later, negative earlier. **It belongs to ONE playback of ONE subtitle track**, unlike
+/// [`SUBTITLE_TONE`]: a timing error is a property of a track against a media file, so the next
+/// film, or another track of this one, must never inherit it. Nothing persists it; [`reset_subtitle`]
+/// (a new item) and `route::commit_subtitle_selection` (a different track) put it back to 0.
+/// `AtomicI32` rather than `I64`: the range fits trivially, and the 32-bit target gets a plain
+/// word load on the per-frame lookups.
 static SUBTITLE_OFFSET_MS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
-/// The offset in milliseconds (the unit the menu and the session file speak).
+/// The offset in milliseconds (the unit the menu speaks).
 pub(crate) fn subtitle_offset_ms() -> i64 {
     i64::from(SUBTITLE_OFFSET_MS.load(Relaxed))
 }
@@ -1423,8 +1427,16 @@ fn subtitle_floor_ns() -> i64 {
     now.min(subtitle_clock_ns(now)).saturating_sub(2_000_000_000)
 }
 
+/// The timing offset's range in milliseconds — the Timing rows' clamp and the player's, one pair of
+/// numbers. **Asymmetric on purpose.** A DELAY is served from cues already in the store (which
+/// retains them for as long as the offset needs); an ADVANCE needs cues the demuxer has not read
+/// yet, and an embedded track's cues are read in the same bounded A/V queue as the picture.
+pub(crate) const SUBTITLE_OFFSET_EARLIEST_MS: i64 = -5_000;
+pub(crate) const SUBTITLE_OFFSET_LATEST_MS: i64 = 30_000;
+/// The Timing rows' step.
+pub(crate) const SUBTITLE_OFFSET_STEP_MS: i64 = 100;
+
 fn clamp_subtitle_offset_ms(offset_ms: i64) -> i32 {
-    use crate::plex::session::{SUBTITLE_OFFSET_EARLIEST_MS, SUBTITLE_OFFSET_LATEST_MS};
     offset_ms.clamp(SUBTITLE_OFFSET_EARLIEST_MS, SUBTITLE_OFFSET_LATEST_MS) as i32
 }
 
@@ -1432,12 +1444,6 @@ fn clamp_subtitle_offset_ms(offset_ms: i64) -> i32 {
 /// after a fresh sign-in — the two places `route::restore_quality` is called from).
 pub(crate) fn restore_subtitle_tone(tone: crate::plex::session::SubtitleTone) {
     SUBTITLE_TONE.store(tone.index(), Relaxed);
-}
-
-/// Restore the persisted timing offset (ms) without writing it back — the same two call sites as
-/// [`restore_subtitle_tone`].
-pub(crate) fn restore_subtitle_offset(offset_ms: i64) {
-    SUBTITLE_OFFSET_MS.store(clamp_subtitle_offset_ms(offset_ms), Relaxed);
 }
 
 /// Select a tone on the main thread and retain its persistence work for the shared worker.
@@ -1450,16 +1456,11 @@ pub(crate) fn set_subtitle_tone(tone: crate::plex::session::SubtitleTone) {
     crate::ui::idle::invalidate();
 }
 
-/// Set the timing offset (ms) on the main thread; like the tone it takes effect on the next drawn
-/// frame, with nothing to reload. The retained job persists whatever the offset is WHEN IT RUNS,
-/// not the value it was queued with: the menu steps 100 ms per press, so a burst of presses the
-/// worker has not caught up with collapses — the first job to run writes the latest value, and
-/// the ones queued behind it find the file already equal, so `update` writes nothing for them.
+/// Set the timing offset (ms) on the main thread, clamped to the range; like the tone it takes
+/// effect on the next drawn frame, with nothing to reload. Never persisted — see
+/// [`SUBTITLE_OFFSET_MS`].
 pub(crate) fn set_subtitle_offset(offset_ms: i64) {
     SUBTITLE_OFFSET_MS.store(clamp_subtitle_offset_ms(offset_ms), Relaxed);
-    let _ = crate::storage_worker::submit_retained(|| {
-        crate::plex::session::set_subtitle_offset(subtitle_offset_ms())
-    });
     crate::ui::idle::invalidate();
 }
 
@@ -2815,21 +2816,21 @@ mod tests {
         SHARED.sub_cues.lock().unwrap().clear();
         SHARED.playpos_ns.store(0, Relaxed);
         SHARED.desired_sub_idx.store(0, Relaxed);
-        restore_subtitle_offset(0);
+        set_subtitle_offset(0);
         push_subtitle_text(0, SEC, 2 * SEC, "cue".into());
 
         assert_eq!(active_subtitle(SEC + SEC / 2).as_deref(), Some("cue"));
 
-        restore_subtitle_offset(1_000);
+        set_subtitle_offset(1_000);
         assert_eq!(active_subtitle(SEC + SEC / 2), None, "a positive offset delays the caption");
         assert_eq!(active_subtitle(2 * SEC + SEC / 2).as_deref(), Some("cue"));
         assert_eq!(active_subtitle(3 * SEC), None, "…and ends it as late as it started it");
 
-        restore_subtitle_offset(-1_000);
+        set_subtitle_offset(-1_000);
         assert_eq!(active_subtitle(SEC / 2).as_deref(), Some("cue"), "a negative one advances it");
         assert_eq!(active_subtitle(SEC + SEC / 2), None);
 
-        restore_subtitle_offset(0);
+        set_subtitle_offset(0);
         SHARED.sub_cues.lock().unwrap().clear();
         SHARED.desired_sub_idx.store(-1, Relaxed);
     }
@@ -2844,7 +2845,7 @@ mod tests {
         SHARED.sub_cues.lock().unwrap().clear();
         SHARED.sub_bitmaps.lock().unwrap().clear();
         SHARED.desired_sub_idx.store(0, Relaxed);
-        restore_subtitle_offset(5_000);
+        set_subtitle_offset(5_000);
         SHARED.playpos_ns.store(0, Relaxed);
         push_subtitle_text(0, SEC, 2 * SEC, "early".into());
         push_subtitle_bitmap(0, SEC, 1920, 1080, vec![rect(0, 0, 8, 8)]);
@@ -2859,27 +2860,40 @@ mod tests {
         assert_eq!(active_subtitle(now).as_deref(), Some("early"), "text");
         assert_eq!(active_bitmap_key(now), Some(SEC), "image");
 
-        restore_subtitle_offset(0);
+        set_subtitle_offset(0);
         SHARED.playpos_ns.store(0, Relaxed);
         SHARED.sub_cues.lock().unwrap().clear();
         SHARED.sub_bitmaps.lock().unwrap().clear();
         SHARED.desired_sub_idx.store(-1, Relaxed);
     }
 
+    /// **A new item starts with no timing offset.** The offset is a property of one subtitle track
+    /// against one file; `reset_subtitle` is the new-item hook, and the last film's correction
+    /// must not shift the next film's captions.
+    #[test]
+    fn a_new_item_starts_with_no_subtitle_offset() {
+        let _g = crate::testlock::serial();
+        set_subtitle_offset(2_000);
+        assert_eq!(subtitle_offset_ms(), 2_000);
+        reset_subtitle();
+        assert_eq!(subtitle_offset_ms(), 0, "a new item must not inherit the offset");
+        set_subtitle_offset(0);
+    }
+
     /// The offset can never wrap a timestamp: the lookups saturate at both ends of `i64`, and the
-    /// setter clamps to the -5..=+30 s the session file accepts.
+    /// setter clamps to the Timing rows' range.
     #[test]
     fn the_subtitle_clock_saturates_and_the_offset_clamps() {
         let _g = crate::testlock::serial();
-        restore_subtitle_offset(30_000);
+        set_subtitle_offset(30_000);
         assert_eq!(subtitle_clock_ns(i64::MIN), i64::MIN);
-        restore_subtitle_offset(-5_000);
+        set_subtitle_offset(-5_000);
         assert_eq!(subtitle_clock_ns(i64::MAX), i64::MAX);
-        restore_subtitle_offset(i64::MAX);
+        set_subtitle_offset(i64::MAX);
         assert_eq!(subtitle_offset_ms(), 30_000);
-        restore_subtitle_offset(i64::MIN);
+        set_subtitle_offset(i64::MIN);
         assert_eq!(subtitle_offset_ms(), -5_000, "an advance stops at 5 s");
-        restore_subtitle_offset(0);
+        set_subtitle_offset(0);
     }
     /// The image-subtitle store, exercised as a display SET rather than a single bitmap. Three
     /// invariants moved when multi-rect landed and none of them is observable on the host except

@@ -349,7 +349,6 @@ fn invalid_auto_sign_in_is_soft_and_off() {
 fn the_subtitle_tone_is_white_when_absent_or_unknown_and_round_trips_every_rung() {
     let parsed: Session = serde_json::from_str(r#"{"client_id":"c"}"#).unwrap();
     assert_eq!(parsed.subtitle_tone(), SubtitleTone::White);
-    assert_eq!(parsed.subtitle_offset_ms(), 0);
     for damaged in [r#""mauve""#, "7", "null", r#"{"a":1}"#] {
         let text = format!(r#"{{"client_id":"c","subtitle_tone":{damaged}}}"#);
         let parsed: Session = serde_json::from_str(&text).unwrap();
@@ -379,105 +378,18 @@ fn the_subtitle_tone_is_white_when_absent_or_unknown_and_round_trips_every_rung(
     assert_eq!(SubtitleTone::from_index(200), SubtitleTone::White, "out of range is white");
 }
 
+/// **The subtitle timing offset is not in the session file.** A timing error belongs to one
+/// subtitle track against one media file, so the offset lives and dies with the playback
+/// (`player::set_subtitle_offset`) and a stored one would put the last film's correction on the
+/// next film. Neither the flat session nor the DB8 public preferences carry the key.
 #[test]
-fn the_subtitle_offset_is_zero_when_absent_or_unknown_and_round_trips() {
-    let parsed: Session = serde_json::from_str(r#"{"client_id":"c"}"#).unwrap();
-    assert_eq!(parsed.subtitle_offset_ms(), 0);
-    // off the 100 ms grain, outside -5..=+30 s, and not a number at all
-    for damaged in [r#""late""#, "null", "99", "30100", "-5100", "-30000", "1e9", r#"{"a":1}"#] {
-        let text = format!(r#"{{"client_id":"c","subtitle_offset_ms":{damaged}}}"#);
-        let parsed: Session = serde_json::from_str(&text).unwrap();
-        assert_eq!(parsed.subtitle_offset_ms(), 0, "{damaged}");
-    }
-    for offset in [-5_000, -2_000, -1_000, 0, 100, 1_000, 5_000, 10_000, 30_000] {
-        let json = serde_json::to_value(Session::default().with_subtitle_offset(offset)).unwrap();
-        assert_eq!(json["subtitle_offset_ms"], offset);
-        let again: Session = serde_json::from_value(json).unwrap();
-        assert_eq!(again.subtitle_offset_ms(), offset);
-    }
-    // a numeric string is read the way every other lenient numeric field is
-    let stringly: Session = serde_json::from_str(r#"{"client_id":"c","subtitle_offset_ms":"-5000"}"#).unwrap();
-    assert_eq!(stringly.subtitle_offset_ms(), -5_000);
-}
-
-/// The offset is a PUBLIC preference: it survives `split_public` → `join_canonical` and the
-/// locked-bundle `public_session` snapshot, and it is not one of the protected fields — so moving
-/// it can never make a routine write look like a credential change that re-seals the auth half.
-#[test]
-fn the_subtitle_offset_is_a_public_preference_outside_the_sealed_auth() {
-    let session = Session::default().with_subtitle_offset(-1_200);
-    let public = split_public(&session).unwrap();
-    assert_eq!(public.preferences["subtitle_offset_ms"], -1_200);
-    let joined = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
-    assert_eq!(joined.subtitle_offset_ms(), -1_200);
-    assert_eq!(public_session(&public).subtitle_offset_ms(), -1_200);
+fn the_session_file_carries_no_subtitle_offset() {
+    let json = serde_json::to_value(Session::default()).unwrap();
+    assert!(json.get("subtitle_offset_ms").is_none(), "the session file names no offset: {json}");
+    let public = split_public(&Session::default()).unwrap();
     assert!(
-        protected_fields_equal(&Session::default(), &session),
-        "an offset change must leave the protected fields identical"
+        public.preferences.get("subtitle_offset_ms").is_none(),
+        "the public preferences name no offset: {}",
+        public.preferences
     );
-    let empty = crate::storage::state::PublicPayload::default();
-    assert_eq!(public_session(&empty).subtitle_offset_ms(), 0);
-}
-
-/// The tone lives in the PUBLIC preferences half of the canonical split, so it must survive
-/// `split_public` → `join_canonical` and the locked-bundle `public_session` snapshot alike.
-#[test]
-fn the_subtitle_tone_survives_the_canonical_split() {
-    let session = Session::default().with_subtitle_tone(SubtitleTone::DarkGrey);
-    let public = split_public(&session).unwrap();
-    assert_eq!(public.preferences["subtitle_tone"], "grey_40");
-    let joined = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
-    assert_eq!(joined.subtitle_tone(), SubtitleTone::DarkGrey);
-    assert_eq!(public_session(&public).subtitle_tone(), SubtitleTone::DarkGrey);
-    // …and a null preferences blob is white, not a failure
-    let empty = crate::storage::state::PublicPayload::default();
-    assert_eq!(public_session(&empty).subtitle_tone(), SubtitleTone::White);
-}
-
-/// **A session written before household evidence existed reads as TODAY's behaviour, not worse.**
-///
-/// `SourceRef::home`/`owner_id` are absent from every file on every television right now, and the
-/// deserializer defaults them to `false`/`0`. That pair is chosen, not inherited: with no
-/// evidence, [`crate::plex::is_household`] answers exactly what raw `owned` answers — which is
-/// what the whole app did before the field existed — and the record self-corrects on the next
-/// `/api/v2/resources`, which every boot and every profile switch performs.
-///
-/// It is graded rather than merely documented because the failure is silent in the wrong
-/// direction: a household server defaulting to "outside" is the bug this evidence exists to
-/// remove, and a future serde change that made `home` default `true`, or that dropped the
-/// `#[serde(default)]`, would sign the device out or invent a household on the strength of
-/// nothing.
-#[test]
-fn a_session_written_before_household_evidence_falls_back_to_raw_owned() {
-    let legacy = r#"{"client_id":"cid-1","account_token":"acct",
-        "server":{"name":"Mac mini","machine_id":"aaaa1111","address":"192.168.0.10",
-                  "port":32400,"token":"tok-own"},
-        "user":{"id":7,"uuid":"u-7","title":"Gleb","thumb":"","token":"tok-user"},
-        "home_users":[{"id":111111,"uuid":"u-admin","title":"admin","admin":true}],
-        "sources":[
-          {"machine_id":"aaaa1111","name":"Mac mini","shared_by":"","owned":true,
-           "address":"192.168.0.10","port":32400,"token":"tok-own"},
-          {"machine_id":"bbbb2222","name":"nas-home","shared_by":"friend","owned":false,
-           "address":"203.0.113.9","port":31234,"token":"tok-share"}]}"#;
-    let s: Session = serde_json::from_str(legacy).expect("a pre-evidence session file parses");
-
-    assert!(
-        s.sources.iter().all(|x| !x.home && x.owner_id == 0),
-        "no file on disk carries either field yet"
-    );
-    let household = s.household_ids();
-    assert_eq!(household, [111_111], "the roster is unaffected by the source shape");
-    for source in &s.sources {
-        assert_eq!(
-            crate::plex::is_household(
-                crate::plex::GrantEvidence {
-                    owned: source.owned, home: source.home, owner_id: source.owner_id,
-                }
-                .grant(),
-                &household,
-            ),
-            source.owned,
-            "with no evidence the verdict is raw `owned` — {}", source.machine_id,
-        );
-    }
 }

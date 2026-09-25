@@ -2147,3 +2147,39 @@ fn sidecar_on_invalidates_a_pending_original_recovery() {
     reset_player_control_for_test(&ps);
     crate::player::reset_subtitle();
 }
+
+/// **A subtitle timing offset belongs to the track it was tuned against.** Picking a DIFFERENT
+/// track (another embedded one, a sidecar, or Off) starts the new one at zero; re-committing the
+/// track already showing — the menu republishes a subtitle OK even when nothing changed — keeps
+/// the offset the viewer found.
+#[test]
+fn picking_a_different_subtitle_track_resets_the_offset_and_re_picking_it_keeps_it() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    apply_plan(&mut ps,
+        Plan {
+            url: "https://example.invalid/source.mkv".into(),
+            delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+            transport_kbps: 22_000,
+            ..Default::default()
+        },
+        "rk-subtitle-offset",
+    );
+    commit_subtitle_selection(&mut ps, 2, 88);
+    crate::player::set_subtitle_offset(1_500);
+
+    commit_subtitle_selection(&mut ps, 2, 88);
+    assert_eq!(crate::player::subtitle_offset_ms(), 1_500, "the same track keeps its offset");
+
+    commit_subtitle_selection(&mut ps, 3, 89);
+    assert_eq!(crate::player::subtitle_offset_ms(), 0, "another track starts at zero");
+
+    crate::player::set_subtitle_offset(700);
+    commit_subtitle_selection(&mut ps, -1, 0);
+    assert_eq!(crate::player::subtitle_offset_ms(), 0, "Off drops the offset too");
+
+    reset_session(&mut ps);
+    reset_player_control_for_test(&ps);
+    crate::player::reset_subtitle();
+    crate::player::set_subtitle_offset(0);
+}

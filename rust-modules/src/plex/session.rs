@@ -559,13 +559,6 @@ pub struct Session {
     /// Soft-parsed: an unknown spelling costs the preference, never the credentials.
     #[serde(default, deserialize_with = "de_soft_subtitle_tone")]
     pub(crate) subtitle_tone: SubtitleTone,
-    /// **The client-rendered subtitles' timing offset**, in milliseconds: positive draws every cue
-    /// later, negative earlier, from [`SUBTITLE_OFFSET_EARLIEST_MS`] to
-    /// [`SUBTITLE_OFFSET_LATEST_MS`] in [`SUBTITLE_OFFSET_STEP_MS`] steps. A public preference beside the tone, never part of the sealed credentials — so a
-    /// change is a public-only write through [`update`]. Absence is 0, what every build before the
-    /// field drew; soft-parsed like the tone, so a damaged value costs the offset and nothing else.
-    #[serde(default, deserialize_with = "de_soft_subtitle_offset")]
-    pub(crate) subtitle_offset_ms: i64,
     /// **Device-wide ambient memory**: the last hero `UltraBlurColors` envelope Home actually
     /// rendered on this television, so a route in the Settings/first-run family that opens
     /// BEFORE Home has fetched anything this boot — first-run consent moved ahead of the
@@ -615,8 +608,6 @@ struct CanonicalSessionPreferences {
     trailer_autoplay: bool,
     #[serde(default, deserialize_with = "de_soft_subtitle_tone")]
     subtitle_tone: SubtitleTone,
-    #[serde(default, deserialize_with = "de_soft_subtitle_offset")]
-    subtitle_offset_ms: i64,
     /// Parsed only so a future preference does not make the known fields disappear. The shipping
     /// adapter merges these opaque keys from the current DB8 public payload before every rewrite;
     /// they are not promoted into the Session domain object.
@@ -640,7 +631,6 @@ impl Default for CanonicalSessionPreferences {
             last_hero_blur: None,
             trailer_autoplay: true,
             subtitle_tone: SubtitleTone::White,
-            subtitle_offset_ms: 0,
             extensions: BTreeMap::new(),
         }
     }
@@ -681,7 +671,6 @@ fn split_public(session: &Session) -> Result<crate::storage::state::PublicPayloa
         last_hero_blur: session.last_hero_blur,
         trailer_autoplay: session.trailer_autoplay,
         subtitle_tone: session.subtitle_tone,
-        subtitle_offset_ms: session.subtitle_offset_ms,
         extensions: BTreeMap::new(),
     })
     .map_err(|_| ())?;
@@ -744,7 +733,6 @@ pub(crate) fn join_canonical(
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
         subtitle_tone: preferences.subtitle_tone,
-        subtitle_offset_ms: preferences.subtitle_offset_ms,
         profiles,
         extensions: auth.extensions,
     })
@@ -766,7 +754,6 @@ fn public_session(public: &crate::storage::state::PublicPayload) -> Session {
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
         subtitle_tone: preferences.subtitle_tone,
-        subtitle_offset_ms: preferences.subtitle_offset_ms,
         home_pins, recent_searches,
         ..Default::default()
     }
@@ -878,28 +865,6 @@ pub(crate) fn set_subtitle_tone(tone: SubtitleTone) -> bool {
             return None;
         }
         Some(cur.with_subtitle_tone(tone))
-    })
-}
-
-/// The subtitle timing offset's range in milliseconds — the menu's clamp, the player's clamp and
-/// the soft parser's range, one pair of numbers. **Asymmetric on purpose.** A DELAY is served from
-/// cues already in the store (which retains them for as long as the offset needs), so it can be as
-/// long as a mismatched sidecar wants. An ADVANCE needs cues the demuxer has not read yet, and an
-/// embedded track's cues are read in the same bounded A/V queue as the picture — a few seconds
-/// ahead at a high bitrate — so a wide advance would find no cue to draw, film after film, since
-/// the offset is persisted. Five seconds is the widest advance kept.
-pub(crate) const SUBTITLE_OFFSET_EARLIEST_MS: i64 = -5_000;
-pub(crate) const SUBTITLE_OFFSET_LATEST_MS: i64 = 30_000;
-/// The menu's step, and the grain a persisted offset must sit on to be believed.
-pub(crate) const SUBTITLE_OFFSET_STEP_MS: i64 = 100;
-
-/// Persist the subtitle timing offset (ms) through [`update`], merging with the current record.
-pub(crate) fn set_subtitle_offset(offset_ms: i64) -> bool {
-    update(|cur| {
-        if cur.subtitle_offset_ms == offset_ms {
-            return None;
-        }
-        Some(cur.with_subtitle_offset(offset_ms))
     })
 }
 
@@ -1608,25 +1573,6 @@ where
     Ok(serde_json::from_value::<SubtitleTone>(v).unwrap_or_default())
 }
 
-/// The timing offset: a number (or PMS-style numeric string) inside the range and on the step, else
-/// 0. Out-of-range or off-grain is garbage rather than something to clamp — no build writes it.
-fn de_soft_subtitle_offset<'de, D>(d: D) -> Result<i64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let Ok(v) = serde_json::Value::deserialize(d) else {
-        return Ok(0);
-    };
-    let value = match v {
-        Value::Number(n) => n.as_i64().unwrap_or(0),
-        Value::String(s) => s.parse::<i64>().unwrap_or(0),
-        _ => 0,
-    };
-    let valid = (SUBTITLE_OFFSET_EARLIEST_MS..=SUBTITLE_OFFSET_LATEST_MS).contains(&value)
-        && value % SUBTITLE_OFFSET_STEP_MS == 0;
-    Ok(if valid { value } else { 0 })
-}
-
 /// A preference switch: garbage degrades to off rather than failing the enclosing [`Session`].
 fn de_soft_bool<'de, D>(d: D) -> Result<bool, D::Error>
 where
@@ -1740,16 +1686,6 @@ impl Session {
     pub(crate) fn with_subtitle_tone(&self, tone: SubtitleTone) -> Self {
         let mut next = self.clone();
         next.subtitle_tone = tone;
-        next
-    }
-
-    pub(crate) fn subtitle_offset_ms(&self) -> i64 {
-        self.subtitle_offset_ms
-    }
-
-    pub(crate) fn with_subtitle_offset(&self, offset_ms: i64) -> Self {
-        let mut next = self.clone();
-        next.subtitle_offset_ms = offset_ms;
         next
     }
 

@@ -12,16 +12,15 @@
 //! `TableView::sel` over both sections, so [`TrackMenuState::tone_base`] is where one ends.
 //!
 //! On a direct play a third section follows, **Timing**: the subtitle offset
-//! (`plex::session::Session::subtitle_offset_ms`) as the header's read-out, and three rows that
+//! (`player::subtitle_offset_ms`, which lasts one playback of one track) as the header's read-out, and three rows that
 //! step it — Earlier and Later by 100 ms (up to 5 s early, 30 s late), Reset to zero. OK on one of those performs the step and
 //! leaves the panel open ([`TrackMenuState::ok_keeps_open`]); every other row still closes it. A
 //! transcode draws no Timing section: the server burns the captions, and no client-side offset
 //! reaches a burned caption.
 #![allow(dead_code)]
 use crate::metadata;
-use crate::plex::session::{
-    SubtitleTone, SUBTITLE_OFFSET_EARLIEST_MS, SUBTITLE_OFFSET_LATEST_MS, SUBTITLE_OFFSET_STEP_MS,
-};
+use crate::player::{SUBTITLE_OFFSET_EARLIEST_MS, SUBTITLE_OFFSET_LATEST_MS, SUBTITLE_OFFSET_STEP_MS};
+use crate::plex::session::SubtitleTone;
 use crate::ui::consts::SCR_H;
 use crate::ui::frame::Budget;
 use crate::ui::geom::IndexElem;
@@ -890,7 +889,7 @@ mod tests {
     #[test]
     fn sidecar_and_tone_rows_map_to_their_own_commits_in_one_menu() {
         let _g = crate::testlock::serial(); // the panel seeds its offset from the player's global
-        crate::player::restore_subtitle_offset(0);
+        crate::player::set_subtitle_offset(0);
         let ps = crate::route::PlaybackSession::IDLE;
         let mut store = crate::stores::metadata::MetadataStore::default();
         assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(
@@ -959,7 +958,7 @@ mod tests {
     #[test]
     fn the_timing_rows_step_the_offset_and_keep_the_panel_open() {
         let _g = crate::testlock::serial();
-        crate::player::restore_subtitle_offset(0);
+        crate::player::set_subtitle_offset(0);
         let ps = crate::route::PlaybackSession::IDLE;
         let store = crate::stores::metadata::MetadataStore::default();
         let mut menu = TrackMenuState::new(&ps, store.view(), 1);
@@ -982,12 +981,12 @@ mod tests {
         assert_eq!(menu.on_ok(&ps, store.view()), Some(TrackCommit::SubtitleOffset(0)));
         assert_eq!(menu.on_ok(&ps, store.view()), None, "Reset at zero is nothing to perform");
 
-        crate::player::restore_subtitle_offset(-5_000);
+        crate::player::set_subtitle_offset(-5_000);
         let mut menu = TrackMenuState::new(&ps, store.view(), 1);
         menu.focus_row(earlier);
         assert_eq!(menu.on_ok(&ps, store.view()), None, "the limit clamps rather than wraps");
         assert_eq!(menu.table.sections[2].accessory, "-5.0 s");
-        crate::player::restore_subtitle_offset(0);
+        crate::player::set_subtitle_offset(0);
 
         // a track or tone row still closes the panel
         menu.focus_row(0);
