@@ -987,3 +987,30 @@ fn search_route_steps_the_shared_strip_so_its_published_rects_do_not_go_stale() 
          (stale={stale_gap}, settled after 1s={settled_gap}) — losing the Search chrome arm \
          again silently reproduces the frozen capsule / stale pointer targets this pins");
 }
+
+/// **A second open of the detail page already on its way is not a new navigation** — the detail
+/// half of `enter_player`'s pending-push rule. The dip-out prepares the pushed page, which spends
+/// the `DetailSeed` at its mount, and a repeated `Push` of the same page is inert
+/// (`NavStack::is_inert`); a re-seed written for it would never be spent by that page and would
+/// linger for the next detail mount of the same item that nobody seeded.
+#[test]
+fn a_second_open_of_the_pending_detail_page_leaves_no_seed_behind() {
+    let _g = crate::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::with_transition(
+        Box::new(crate::ui::containers::transition::PageDip::new()));
+    let mut rig = Bridge::for_test(|| 0);
+    frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
+    for i in 1..20u32 { super::frame(&mut d, &mut rig, tick(i * 16), vec![]); }
+    let sid = crate::plex::ServerId::UNSET;
+    open_detail(&mut d, &mut rig, sid, "1001", Some(1), None);
+    super::frame(&mut d, &mut rig, tick(400), vec![]);
+    assert!(
+        d.nav.tabs.stack.pending_target_mut().is_some_and(|e| e.inst.is_some()),
+        "premise: the dip-out has prepared the detail page",
+    );
+    assert!(rig.mounter.seed.is_none(), "the prepared mount spent the first seed");
+    open_detail(&mut d, &mut rig, sid, "1001", Some(2), None);
+    for i in 1..30u32 { super::frame(&mut d, &mut rig, tick(400 + i * 16), vec![]); }
+    assert_eq!(d.nav.tabs.stack.depth(), 2, "one detail page, not two");
+    assert!(rig.mounter.seed.is_none(), "no unspent seed is left for a later mount");
+}
