@@ -43,6 +43,7 @@ struct RetryContext {
     resume_ns: i64,
     audio_sid: i64,
     sub_sid: i64,
+    sub_offset_ms: i64,
 }
 
 /// Everything the main thread needs to resolve and render the playback in progress, in one struct.
@@ -5613,8 +5614,7 @@ fn request_play_inner(
     // the PREVIOUS leaf's until this resolve lands. See `metadata::retire_playing_item`.
     if !request.preview {
         meta.run(crate::stores::metadata::MetadataCmd::RetirePlayingItem);
-        crate::player::reset_audio_track();
-        crate::player::reset_subtitle();
+        reset_track_selection(retry);
     }
     // Capture the reducer revision BEFORE projecting the environment. Both happen on the main
     // thread, so a later quality/track edit necessarily advances this revision after the snapshot
@@ -5688,6 +5688,20 @@ fn request_play_inner(
     spawned
 }
 
+/// Clear the outgoing item's live track selection for a play request. A retry is the SAME item
+/// resolved again with the subtitle it had (`RetryContext::sub_sid`, applied to the resolve env
+/// below), so the timing offset tuned against that subtitle is carried with it; a new item starts at
+/// 0. The landing re-clamps it once the subtitle is re-selected
+/// (`player::reclamp_subtitle_offset`), since the reset has just deselected the sidecar whose
+/// range allows an advance.
+fn reset_track_selection(retry: Option<RetryContext>) {
+    crate::player::reset_audio_track();
+    crate::player::reset_subtitle();
+    if let Some(retry) = retry {
+        crate::player::restore_subtitle_offset(retry.sub_offset_ms);
+    }
+}
+
 /// Start a fresh resolve for the item whose terminal error is still on screen.
 ///
 /// The caller owns Engine teardown; this module owns the immutable request descriptor, track
@@ -5716,6 +5730,7 @@ fn current_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
         resume_ns: resume_ns.max(0),
         audio_sid: cur_audio_sid(ps),
         sub_sid: cur_sub_sid(ps),
+        sub_offset_ms: crate::player::subtitle_offset_ms(),
     }
 }
 
@@ -6072,6 +6087,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
         ));
         crate::player::request_subtitle(ord);
     }
+    // A retry carried its subtitle offset through the reset (`reset_track_selection`); hold it to
+    // the range of the subtitle that actually landed, so an advance never outlives its sidecar.
+    crate::player::reclamp_subtitle_offset();
     // A landing is a DISCRETE change to what is on screen, so it owes the present gate a poke —
     // `ui::idle::invalidate`'s call-site list is that module's correctness argument. The caller
     // (`app.rs`'s pump) invalidates only when `pump_play` returns TRUE, and a REFUSING plan returns

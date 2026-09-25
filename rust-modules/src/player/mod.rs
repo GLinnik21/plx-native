@@ -1390,7 +1390,8 @@ pub(crate) fn subtitle_tone() -> crate::plex::session::SubtitleTone {
 /// later, negative earlier. **It belongs to ONE playback of ONE subtitle track**, unlike
 /// [`SUBTITLE_TONE`]: a timing error is a property of a track against a media file, so the next
 /// film, or another track of this one, must never inherit it. Nothing persists it; [`reset_subtitle`]
-/// (a new item) and `route::commit_subtitle_selection` (a different track) put it back to 0.
+/// (a new item) and `route::commit_subtitle_selection` (a different track) put it back to 0. A
+/// retry of the same item with the same subtitle carries it ([`restore_subtitle_offset`]).
 /// `AtomicI32` rather than `I64`: the range fits trivially, and the 32-bit target gets a plain
 /// word load on the per-frame lookups.
 static SUBTITLE_OFFSET_MS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
@@ -1490,6 +1491,22 @@ pub(crate) fn set_subtitle_tone(tone: crate::plex::session::SubtitleTone) {
 pub(crate) fn set_subtitle_offset(offset_ms: i64) {
     SUBTITLE_OFFSET_MS.store(clamp_subtitle_offset_ms(offset_ms), Relaxed);
     crate::ui::idle::invalidate();
+}
+
+/// Carry a retry's offset through [`reset_subtitle`] (`route::reset_track_selection`). The
+/// subtitle it was tuned against is re-selected only when the retry lands — a sidecar, whose range
+/// allows an advance, among them — so this holds it to the WIDEST range, and the landing narrows it
+/// with [`reclamp_subtitle_offset`].
+pub(crate) fn restore_subtitle_offset(offset_ms: i64) {
+    let clamped = offset_ms.clamp(SUBTITLE_OFFSET_EARLIEST_SIDECAR_MS, SUBTITLE_OFFSET_LATEST_MS);
+    SUBTITLE_OFFSET_MS.store(clamped as i32, Relaxed);
+}
+
+/// Hold the offset to the range of the subtitle now selected ([`subtitle_offset_range_ms`]) —
+/// called by a landing, after it has re-selected the subtitle, so an advance carried by a retry
+/// never outlives the sidecar that allowed it.
+pub(crate) fn reclamp_subtitle_offset() {
+    SUBTITLE_OFFSET_MS.store(clamp_subtitle_offset_ms(subtitle_offset_ms()), Relaxed);
 }
 
 /// The text store's hard cap, a runaway guard that an ordinary file never reaches. The store
