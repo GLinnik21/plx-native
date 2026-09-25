@@ -170,8 +170,8 @@ fi
 # display set, and produced nothing — playback perfect, not one `image cue`, on every television
 # (`subtitle_image_pgs` in two release audits). `--enable-zlib` is explicit, so configure FAILS if
 # the library is absent instead of quietly building the old behaviour. It links the system
-# `libz.so.1`, present on every firmware inventory `fwsym` holds (webOS 3 to 10, zlib 1.2.7 to
-# 1.3.1) and on macOS; `make check-ffmpeg` is the test that holds it in place.
+# `libz.so.1`, present on every firmware inventory `fwsym` holds (platform releases 1.2.0
+# to 11.2.0, zlib 1.2.7 to 1.3.1) and on macOS; `make check-ffmpeg` is the test that holds it in place.
 if [ -n "$HOST" ]; then
   # No --arch/--cpu/--target-os: configure detects this Mac, which is the point.
   set -- --prefix=/plx

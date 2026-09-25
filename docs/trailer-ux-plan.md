@@ -975,7 +975,7 @@ this fix — pressing the Trailer control still plays the trailer on demand, eve
 
 **Considered and deferred (eng review, outside-voice finding #3 — overcomplexity):** moving this
 detection into `player::preview::Machine` itself as a one-shot `just_finished` flag, set at
-`note_eos()` before `note_stopped()` wipes the session's key, would eliminate this fix's ordering
+the `Machine::eos` transition before `Machine::stopped` wipes the session's key (the `note_eos()`/`note_stopped()` of this record's time), would eliminate this fix's ordering
 fragility at the source rather than patching around it, and would benefit any future consumer of
 trailer-completion signal, not just this screen. Not chosen for this PR — it touches a shared
 module other code paths depend on, a larger blast radius than a screen-local fix for what is
