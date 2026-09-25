@@ -570,3 +570,21 @@ fn a_shelf_landing_never_moves_a_seat_the_user_activated() {
     land_shelves(&mut fixture, &mut page, &mut engine);
     assert_eq!(engine.current(OWNER), Some(page.key(SORT)), "an activated seat is the user's");
 }
+
+/// …and the press is claimed where it STARTS, not where it commits: OK-down on the seat arms a
+/// delayed press whose activation the dispatcher only delivers if focus is still on that key, so a
+/// landing observed between the two would move focus and silently drop the press.
+#[test]
+fn a_shelf_landing_never_moves_a_seat_the_user_began_to_press() {
+    let _guard = crate::testlock::serial();
+    let press = |key, edge| ScreenEvent::Input(crate::ui::machine::InputEvent {
+        at: Tick::default(),
+        source: crate::ui::machine::Source::Sdl,
+        kind: InputKind::Key { key, sym: 0, wcode: 0, edge, at_edge: false },
+    });
+    let (mut fixture, mut page, mut engine) = opened_before_its_shelves(SecKind::Movie, Opened::Keyboard);
+    assert_eq!(engine.current(OWNER), Some(page.key(SORT)));
+    fixture.step(&mut page, &mut engine, press(Key::Ok, Edge::Down));
+    land_shelves(&mut fixture, &mut page, &mut engine);
+    assert_eq!(engine.current(OWNER), Some(page.key(SORT)), "a press begun on the seat keeps it");
+}

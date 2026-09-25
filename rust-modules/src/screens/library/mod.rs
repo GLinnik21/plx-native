@@ -866,13 +866,19 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                 return cx.focus.current.map_or(Handled::No, |key| self.activate(key.elem, false, cx, fx));
             }
             ScreenEvent::Input(input) => {
+                // Any key, click, drag or wheel is the reader acting at the seat. It must claim it
+                // HERE: OK-down arms a delayed press the dispatcher only commits if focus is still
+                // on its key, and this page's next Tick may run before that commit.
+                if matches!(input.kind, InputKind::Key { edge: Edge::Down, .. }
+                    | InputKind::Click { .. } | InputKind::Drag { .. } | InputKind::Wheel { .. }) {
+                    self.provisional = None;
+                }
                 if matches!(input.kind, InputKind::Key { key: Key::Ok, edge: Edge::Down, .. })
                     && cx.focus.current.is_some_and(|key| key.entry == self.entry && region_of_elem(key.elem) == Some(KeyRegion::Rail)) {
                     self.reseat(FocusTarget::ContainerGroup(self.pair.groups_config().detail), fx);
                     return Handled::Yes;
                 }
                 if let InputKind::Wheel { dy } = input.kind {
-                    self.provisional = None; // the reader moved the page off the head the seat held
                     self.scroll_target = (self.scroll_target - dy * layout::GRID_PITCH)
                         .clamp(0.0, self.target_layout.max_scroll());
                     fx.invalidate(Provenance::Input);
