@@ -1567,6 +1567,72 @@ fn retirement_accepts_a_missing_parent_directory_without_a_sync() {
     assert!(retire_session_candidate(&file.dir.join("missing").join("auth.json")));
 }
 
+/// The webOS 4.10.2 field report: after sign-out, a 0.6-era candidate
+/// (`/media/internal/.<app>-auth.json`) that does not exist on a mount the jail sees read-only
+/// answered `unlink_errno=30 neutralize_errno=2`. Linux checks the parent mount for write access
+/// BEFORE it looks the child up, so EROFS says nothing about the name — and the neutralize open's
+/// ENOENT proves it absent. Counting that as a failure kept every sign-out "incomplete" and
+/// re-ran the clear every second, forever.
+#[test]
+fn signout_counts_an_absent_candidate_behind_a_read_only_mount_as_retired() {
+    let _serial = crate::testlock::serial();
+    let file = TempSession::new("absent-behind-erofs");
+    assert!(!file.file().exists(), "the legacy candidate does not exist");
+    let _erofs = crate::storage::UnlinkFaultForTest::install(&file.dir, libc::EROFS);
+    assert_eq!(crate::storage::unlink(&file.file()).unwrap_err().raw_os_error(), Some(libc::EROFS));
+    assert_eq!(neutralize_session_candidate(&file.file()).unwrap_err().raw_os_error(), Some(libc::ENOENT),
+        "the TV's pair: unlink EROFS, neutralize ENOENT");
+    assert!(retire_session_candidate(&file.file()), "an absent candidate is retired");
+    for attempt in 0..3 {
+        assert_eq!(clear(), ClearOutcome::Durable { legacy_swept: true },
+            "attempt {attempt}: the clear completes instead of retrying forever");
+    }
+}
+
+/// A candidate that EXISTS behind the same refusal, and cannot be neutralized either, is a real
+/// surviving credential: the clear stays incomplete (so the adapter keeps the revocation and
+/// retries) on every attempt, and this process stays locally revoked.
+#[test]
+fn signout_keeps_reporting_a_present_candidate_behind_a_read_only_mount() {
+    let _serial = crate::testlock::serial();
+    let file = TempSession::new("present-behind-erofs");
+    assert!(save_legacy_fallback_locked(&signed_in(), false, false).is_some());
+    let credentials = std::fs::read(file.file()).unwrap();
+    let _permissions = RestorePermissions::set(&[(file.file().as_path(), 0o400)]);
+    let _erofs = crate::storage::UnlinkFaultForTest::install(&file.dir, libc::EROFS);
+    for attempt in 0..3 {
+        assert_eq!(clear(), ClearOutcome::Durable { legacy_swept: false },
+            "attempt {attempt}: a surviving credential is never reported as retired");
+    }
+    assert_eq!(std::fs::read(file.file()).unwrap(), credentials, "the credentials really survived");
+    assert!(fallback_revoked_at(&auth_paths()), "the durable revocation marker is retained");
+    assert!(peek().account_token.is_empty(), "this process remains locally revoked");
+    drop(_erofs);
+    drop(_permissions);
+    assert_eq!(clear(), ClearOutcome::Durable { legacy_swept: true }, "a later retry still retires it");
+    assert!(!file.file().exists());
+}
+
+/// A revocation marker whose removal was authorized goes through the same rule: absent behind a
+/// refused unlink is retired, not a pending removal that never drains.
+#[test]
+fn revocation_marker_absent_behind_a_read_only_mount_is_retired() {
+    let _serial = crate::testlock::serial();
+    let file = TempSession::new("marker-behind-erofs");
+    let marker = fallback_revocation_path(&file.file());
+    let tenure = REVOCATION_GENERATION.load(std::sync::atomic::Ordering::Acquire);
+    PENDING_REVOCATION_REMOVALS.lock().unwrap().push((marker.clone(), tenure));
+    let _erofs = crate::storage::UnlinkFaultForTest::install(&file.dir, libc::EROFS);
+    assert!(retry_pending_revocation_removals_locked());
+    assert!(PENDING_REVOCATION_REMOVALS.lock().unwrap().is_empty());
+    // A PRESENT marker behind the refusal stays pending.
+    std::fs::write(&marker, b"revoked\n").unwrap();
+    PENDING_REVOCATION_REMOVALS.lock().unwrap().push((marker.clone(), tenure));
+    assert!(!retry_pending_revocation_removals_locked());
+    assert_eq!(PENDING_REVOCATION_REMOVALS.lock().unwrap().len(), 1);
+    PENDING_REVOCATION_REMOVALS.lock().unwrap().clear();
+}
+
 #[test]
 fn recovery_retirement_retries_pending_parent_sync_before_skipping_absent_files() {
     let _serial = crate::testlock::serial();

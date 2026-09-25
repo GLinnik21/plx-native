@@ -209,6 +209,19 @@ fn write_credentials(plan: &CommitPlan, cancelled: &AtomicBool) -> DiskCommit {
 // Use logical milliseconds so replay/test ticks control the same one-second backoff.
 const STORAGE_RETRY_MS: u32 = 1_000;
 
+/// Ceiling on the wait between clears that came back incomplete. An incomplete clear is a
+/// credential that really survived (an absent candidate counts as retired), so the erase is never
+/// abandoned — but each attempt rewrites and fsyncs the revocation marker and logs, and a
+/// candidate that stays undeletable must not do that every second for the life of the process.
+const ERASE_RETRY_CAP_MS: u32 = 30_000;
+
+/// 1 s, 2 s, 4 s … after the `incomplete`-th consecutive incomplete clear, capped.
+fn erase_retry_delay(incomplete: u32) -> u32 {
+    STORAGE_RETRY_MS
+        .saturating_mul(1 << incomplete.saturating_sub(1).min(15))
+        .min(ERASE_RETRY_CAP_MS)
+}
+
 struct PendingCommit {
     req: u32,
     epoch: u64,
@@ -243,6 +256,8 @@ struct PendingErase {
     diagnostics: bool,
     ticket: Option<crate::storage_worker::TypedTicket<EraseWorkerOutcome>>,
     retry_at: u32,
+    /// Consecutive clears that reported a surviving credential; drives [`erase_retry_delay`].
+    incomplete: u32,
 }
 
 struct EraseWorkerOutcome {
@@ -724,7 +739,7 @@ impl SessionAdapter {
             let diagnostics = diagnostics && self.resource_test_io.is_none();
             if diagnostics { crate::storage::diagnostics::disable(); }
             self.erasures.push_back(PendingErase {
-                epoch, all_local, diagnostics, ticket: None, retry_at: crate::app::clock::now(),
+                epoch, all_local, diagnostics, ticket: None, retry_at: crate::app::clock::now(), incomplete: 0,
             });
             self.submit_erase();
             None
@@ -773,7 +788,8 @@ impl SessionAdapter {
             Ok(outcome) if !outcome.complete => {
                 let pending = self.erasures.front_mut()?;
                 pending.ticket = None;
-                pending.retry_at = crate::app::clock::now().wrapping_add(STORAGE_RETRY_MS);
+                pending.incomplete = pending.incomplete.saturating_add(1);
+                pending.retry_at = crate::app::clock::now().wrapping_add(erase_retry_delay(pending.incomplete));
                 return None;
             }
             Ok(outcome) => outcome.failures,
@@ -1155,7 +1171,7 @@ mod tests {
         let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
         if erase {
             adapter.erasures.push_back(PendingErase { epoch: 1, all_local: false, diagnostics: false, ticket: None,
-                retry_at: crate::app::clock::now() });
+                retry_at: crate::app::clock::now(), incomplete: 0 });
         } else {
             enqueue_test_commit(&mut adapter, queued_plan(&crate::plex::session::Session::default()));
         }
@@ -1227,10 +1243,126 @@ mod tests {
         let mt = unsafe { crate::task::MainThread::assume() };
         let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
         adapter.erasures.push_back(PendingErase { epoch: 1, all_local: false, diagnostics: false, ticket: None,
-            retry_at: crate::app::clock::now().wrapping_add(STORAGE_RETRY_MS) });
+            retry_at: crate::app::clock::now().wrapping_add(STORAGE_RETRY_MS), incomplete: 0 });
         enqueue_test_commit(&mut adapter, queued_plan(&crate::plex::session::Session::default()));
         adapter.submit_commit();
         assert!(adapter.commits.front().unwrap().ticket.is_none(), "erase retains its FIFO position");
+    }
+
+    /// The webOS 4.10.2 mount: the session candidate does not exist and every unlink in its
+    /// directory answers EROFS. Returns the fault guard and the adapter.
+    fn erase_behind_a_read_only_mount(session: &crate::plex::session::TempSession,
+        mt: &crate::task::MainThread) -> (crate::storage::UnlinkFaultForTest, SessionAdapter) {
+        crate::plex::session::save(&crate::plex::session::Session {
+            client_id: "install".into(), account_token: "old".into(), ..Default::default() });
+        std::fs::remove_file(session.path()).unwrap();
+        let erofs = crate::storage::UnlinkFaultForTest::install(session.path().parent().unwrap(), libc::EROFS);
+        (erofs, SessionAdapter::live_resources_for_test(mt, false))
+    }
+
+    /// Before the fix the erase never completed, and `submit_commit` holds every credential commit
+    /// behind a pending erase — so a sign-in after that sign-out was never persisted at all.
+    #[test]
+    fn a_signin_after_signout_behind_a_read_only_mount_is_written() {
+        let _serial = crate::testlock::serial();
+        let session = crate::plex::session::TempSession::new("signin-after-erofs-signout");
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let (_erofs, mut adapter) = erase_behind_a_read_only_mount(&session, &mt);
+        let mut meta = crate::stores::metadata::MetadataStore::default();
+        assert!(adapter.begin_erase(1, false, &mut meta).is_none());
+        crate::storage_worker::drain_for_test();
+        assert!(matches!(adapter.take_erased(&mut meta), Some(crate::auth::owner::SessionEvent::Erased { epoch: 1, .. })),
+            "an absent candidate behind EROFS must not hold the sign-out open");
+        // A QR sign-in persists under the fresh-reauthentication authority.
+        let plan = CommitPlan { authority: crate::plex::session::SaveAuthority::FreshReauthentication,
+            ..queued_plan(&crate::plex::session::load()) };
+        enqueue_test_commit(&mut adapter, plan);
+        assert!(adapter.take_committed().is_none(), "admitted, not yet run");
+        crate::storage_worker::drain_for_test();
+        let completed = adapter.take_committed().expect("the new sign-in's commit runs");
+        assert!(matches!(completed.disk, Ok(Some(_))), "the new credential is written");
+        assert_eq!(crate::plex::session::load().account_token, "new-credential");
+    }
+
+    /// "Delete all local data" rides the same erase queue; its sweep and the route to sign-in only
+    /// run from `finish_erase`, which the stuck clear never reached on the television.
+    #[test]
+    fn delete_all_local_data_behind_a_read_only_mount_reaches_its_sweep() {
+        let _serial = crate::testlock::serial();
+        let session = crate::plex::session::TempSession::new("erase-local-erofs");
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let (_erofs, mut adapter) = erase_behind_a_read_only_mount(&session, &mt);
+        let mut meta = crate::stores::metadata::MetadataStore::default();
+        assert!(adapter.begin_erase(7, true, &mut meta).is_none());
+        crate::storage_worker::drain_for_test();
+        assert!(matches!(adapter.take_erased(&mut meta), Some(crate::auth::owner::SessionEvent::Erased { epoch: 7, .. })),
+            "the all-local erase completes");
+        assert_eq!(adapter.resource_test_io.as_ref().unwrap().erase_sweeps, [true],
+            "finish_erase ran the all-local sweep");
+    }
+
+    #[test]
+    fn erase_retry_delay_doubles_to_its_cap() {
+        let delays: Vec<u32> = (1..=8).map(erase_retry_delay).collect();
+        assert_eq!(delays, [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000, 30_000]);
+        assert_eq!(erase_retry_delay(u32::MAX), ERASE_RETRY_CAP_MS);
+    }
+
+    /// A credential that really survives the clear keeps the erase queued (the revocation is
+    /// never dropped), but its retries back off to [`ERASE_RETRY_CAP_MS`] instead of rewriting
+    /// the revocation marker and logging every second; once the file can go, the same erase
+    /// completes.
+    #[test]
+    fn a_clear_that_leaves_a_credential_retries_with_capped_backoff_and_never_gives_up() {
+        use std::os::unix::fs::PermissionsExt;
+        let _serial = crate::testlock::serial();
+        let session = crate::plex::session::TempSession::new("erase-capped-backoff");
+        crate::plex::session::save(&crate::plex::session::Session {
+            client_id: "install".into(), account_token: "old".into(), ..Default::default() });
+        let file = session.path();
+        let dir = file.parent().unwrap().to_path_buf();
+        struct Restore(std::path::PathBuf, std::path::PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+                let _ = std::fs::set_permissions(&self.1, std::fs::Permissions::from_mode(0o600));
+                crate::app::clock::set_replay(0);
+            }
+        }
+        let _restore = Restore(dir.clone(), file.clone());
+        // Neither unlink (directory) nor neutralize (file) is permitted: a real survivor.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o400)).unwrap();
+        crate::app::clock::set_replay(100);
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let mut adapter = SessionAdapter::live_resources_for_test(&mt, false);
+        let mut meta = crate::stores::metadata::MetadataStore::default();
+        assert!(adapter.begin_erase(1, false, &mut meta).is_none());
+        let mut waits = Vec::new();
+        for _ in 0..7 {
+            crate::storage_worker::drain_for_test();
+            assert!(adapter.take_erased(&mut meta).is_none(), "the revocation is retained");
+            let due = adapter.erasures.front().expect("the erase stays queued").retry_at;
+            waits.push(due.wrapping_sub(crate::app::clock::now()));
+            crate::app::clock::set_replay(due.wrapping_sub(1));
+            adapter.submit_erase();
+            assert!(adapter.erasures.front().unwrap().ticket.is_none(), "no retry before it is due");
+            crate::app::clock::set_replay(due);
+            adapter.submit_erase();
+            assert!(adapter.erasures.front().unwrap().ticket.is_some(), "the due retry runs");
+        }
+        assert_eq!(waits, [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000]);
+        crate::storage_worker::drain_for_test();
+        assert!(adapter.take_erased(&mut meta).is_none(), "the eighth attempt fails too");
+        assert!(file.exists(), "the credential really survived every attempt");
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        crate::app::clock::set_replay(adapter.erasures.front().unwrap().retry_at);
+        let completed = adapter.take_erased(&mut meta);
+        crate::storage_worker::drain_for_test();
+        let completed = completed.or_else(|| adapter.take_erased(&mut meta));
+        assert!(matches!(completed, Some(crate::auth::owner::SessionEvent::Erased { epoch: 1, .. })),
+            "the next due retry retires the file once it can go");
+        assert!(!file.exists());
     }
 
     #[test]
