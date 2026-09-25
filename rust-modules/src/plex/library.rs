@@ -355,7 +355,7 @@ mod tests {
                 let end = Instant::now() + Duration::from_millis(2500);
                 let mut requests = 0;
                 while Instant::now() < end {
-                    let Ok((mut socket, _)) = listener.accept() else {
+                    let Ok((mut socket, _)) = crate::testnet::accept(&listener) else {
                         std::thread::sleep(Duration::from_millis(5));
                         continue;
                     };

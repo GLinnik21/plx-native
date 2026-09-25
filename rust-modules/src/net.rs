@@ -1481,7 +1481,7 @@ mod request_tests {
             scope.spawn(|| {
                 let until = Instant::now() + Duration::from_secs(5);
                 while !stop.load(Ordering::Acquire) && Instant::now() < until {
-                    if let Ok((mut socket, _)) = server.accept() {
+                    if let Ok((mut socket, _)) = crate::testnet::accept(&server) {
                         socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
                         socket.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
                         let _ = socket.read(&mut [0; 4096]);
@@ -1718,7 +1718,7 @@ mod request_tests {
         std::thread::scope(|sc| {
             sc.spawn(|| {
                 while !stop.load(Ordering::Acquire) {
-                    match srv.accept() {
+                    match crate::testnet::accept(&srv) {
                         Ok((mut s, _)) => {
                             accepts.fetch_add(1, Ordering::AcqRel);
                             let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(2)));

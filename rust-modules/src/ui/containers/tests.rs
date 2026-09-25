@@ -1188,6 +1188,48 @@ fn a_page_pushed_behind_a_dip_has_its_text_resident_before_it_is_seen() {
     );
 }
 
+/// **Asking for the page that is already on its way is not a second navigation.** The dip-out
+/// PREPARES a pushed destination — its body mounts ahead of the floor, and a mount is where a
+/// screen consumes its one-shot seed (the player's origin, a detail page's season). A second
+/// `Push` of the same page while the first is pending used to replace it, dropping the prepared
+/// body and preparing a fresh one that found its seed already spent: a player landing inside the
+/// push's dip lost the page it was launched from, and BACK took the user to Home.
+#[test]
+fn a_repeated_ask_for_the_pending_page_keeps_its_prepared_body() {
+    // `Push` and `Replace` are the two ops that mint a destination; `Root`/`SelectTab` were
+    // already inert against a pending twin.
+    for (op, depth) in [
+        (NavOp::Push(FixtureArg::Page(42)), 2),
+        (NavOp::Replace(FixtureArg::Page(42)), 1),
+    ] {
+        let mut d: Dispatcher<FixtureHost> = Dispatcher::with_transition(Box::new(PageDip::new()));
+        let mut rig = FixtureRig::new();
+        d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+        for i in 0..30u32 {
+            d.frame(&mut rig, tick(i * 16), vec![], vec![], &mut NoTap);
+        }
+        assert_eq!(d.top_screen().unwrap().name(), "home");
+        d.request(MachineId::Nav, op.clone());
+        d.frame(&mut rig, tick(600), vec![], vec![], &mut NoTap);
+        let prepared = |d: &mut Dispatcher<FixtureHost>| {
+            d.nav.tabs.stack.pending_target_mut().and_then(|e| e.inst.as_ref()).map(|i| i.id)
+        };
+        let body = prepared(&mut d).expect("premise: the dip-out prepared the destination");
+        d.request(MachineId::Nav, op.clone());
+        d.frame(&mut rig, tick(616), vec![], vec![], &mut NoTap);
+        assert_eq!(prepared(&mut d), Some(body), "{op:?}: the prepared body survives the repeat");
+        for i in 0..30u32 {
+            d.frame(&mut rig, tick(632 + i * 16), vec![], vec![], &mut NoTap);
+        }
+        assert_eq!(d.nav.tabs.stack.depth(), depth, "{op:?}: one navigation, not two");
+        assert_eq!(
+            d.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| i.id),
+            Some(body),
+            "{op:?}: the body that commits is the one that was prepared",
+        );
+    }
+}
+
 /// **`has_pending_navigation` is a question about the PAGE stack**, and [`Navigation::moves_page`]
 /// is the one classifier that answers it — the same one [`Navigation::request`] routes by, so the
 /// guard and the commit cannot disagree about what a parked op is.

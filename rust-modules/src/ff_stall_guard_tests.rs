@@ -506,7 +506,7 @@ impl ScriptedPms {
         let acceptor = std::thread::spawn(move || {
             let mut handlers = Vec::new();
             while !st.load(Ordering::Acquire) {
-                let socket = match listener.accept() {
+                let socket = match crate::testnet::accept(&listener) {
                     Ok((socket, _)) => socket,
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(std::time::Duration::from_millis(1));

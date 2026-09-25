@@ -2669,12 +2669,20 @@ pub(crate) fn open_detail(
     sid: crate::plex::ServerId, rk: &str, season: Option<std::os::raw::c_int>,
     ret: Option<ReturnState<u32, PageMemory>>,
 ) {
+    use crate::ui::screen::ScreenArg;
+    let arg = AppArg::Content(ContentArg::Detail { sid, rk: rk.to_string() });
+    // The page is already on its way (a second press inside the push's dip-out): the pending push
+    // is inert against its twin (`NavStack::is_inert`) and its prepared body has spent its seed,
+    // so a seed written now would only linger for some later, unseeded mount of this item. The
+    // player's `enter_player` answers the same question the same way.
+    if d.nav.tabs.stack.pending_dest().is_some_and(|pending| pending.same_instance(&arg)) {
+        return;
+    }
     let spot = crate::metadata::Spot {
         season: season.map(|s| s as i64),
         ..Default::default()
     };
     rig.seed_detail(sid, rk, spot);
-    let arg = AppArg::Content(ContentArg::Detail { sid, rk: rk.to_string() });
     match ret {
         Some(ret) => nav_push_with_return(d, arg, ret),
         None => nav_push(d, arg),
