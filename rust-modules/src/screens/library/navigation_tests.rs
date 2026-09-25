@@ -604,3 +604,41 @@ fn a_shelf_landing_never_moves_a_seat_the_pointer_is_on() {
     land_shelves(&mut fixture, &mut page, &mut engine);
     assert_eq!(engine.current(OWNER), Some(page.key(SORT)), "a hovered seat is the user's");
 }
+
+/// **A restored seat is the reader's, even at the head.** Movies → Shows → Movies after leaving
+/// focus on FILTER: returning to Movies restores its saved viewport (scroll 0) and the engine's
+/// remembered FILTER, and the page's re-entry seat lands there. That seat is a restore, not the
+/// page's own choice, so a shelf landing that follows must leave it where the reader left it.
+#[test]
+fn a_shelf_landing_never_moves_a_restored_seat_at_the_head() {
+    let _guard = crate::testlock::serial();
+    let mut fixture = Fixture::new(2, 24, 0);
+    fixture.sections[1].kind = SecKind::Show;
+    fixture.publish(0, 24);
+    let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Movie);
+    let mut engine = FocusEngine::new();
+    let mut ms = 0;
+    let mut frames = |fixture: &Fixture, page: &mut LibraryScreen, engine: &mut FocusEngine<u32>, n: u32| {
+        for _ in 0..n {
+            ms += 16;
+            fixture.step(page, engine, ScreenEvent::Tick(Tick { ms, dt_us: 16_000 }));
+        }
+    };
+    fixture.step(&mut page, &mut engine, ScreenEvent::Mount);
+    frames(&fixture, &mut page, &mut engine, 3);
+    assert!(page.libraries.is_empty(), "one library per kind draws no selector");
+    assert_eq!(engine.current(OWNER), Some(page.key(SORT)));
+    fixture.direction(&mut page, &mut engine, Dir::Right);
+    assert_eq!(engine.current(OWNER), Some(page.key(FILTER)));
+    for (kind, section) in [(SecKind::Show, 1), (SecKind::Movie, 0)] {
+        fixture.step(&mut page, &mut engine, ScreenEvent::App(AppMsg::Library(LibraryCmd::Enter(kind))));
+        frames(&fixture, &mut page, &mut engine, 2);
+        fixture.publish(section, 24);
+        fixture.step(&mut page, &mut engine, ScreenEvent::StoreChanged(StoreId::Browse.ord(), 1));
+        frames(&fixture, &mut page, &mut engine, 60);
+        assert_eq!(page.kind, kind);
+    }
+    assert_eq!(engine.current(OWNER), Some(page.key(FILTER)), "the return restores the reader's seat");
+    land_shelves(&mut fixture, &mut page, &mut engine);
+    assert_eq!(engine.current(OWNER), Some(page.key(FILTER)), "a restored seat is the reader's");
+}

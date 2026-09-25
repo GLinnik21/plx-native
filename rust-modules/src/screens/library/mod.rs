@@ -828,9 +828,12 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
                             Some(Block::Shelf(index)) => self.shelves[index].group,
                             _ => self.first_group(),
                         };
-                        // Only a HEAD seat is provisional: one derived from a restored scroll names
-                        // the block the reader left, which a landing above it does not change.
-                        self.provisional = (group == self.first_group() && self.scroll_target <= 0.5).then_some(group);
+                        // Only the page's OWN head seat is provisional. Any restore is the reader's:
+                        // a restored scroll (a saved viewport or bookmark, at the head or not) names
+                        // the block they left, and a remembered cursor in the seated group is where
+                        // `Seat::Remembered` puts them back — neither may follow a landing.
+                        let restoring = self.restore_scroll.is_some() || cx.focus.remembered(group).is_some();
+                        self.provisional = (group == self.first_group() && !restoring).then_some(group);
                         self.seat_on(group, cx, fx);
                     } else if let Some(seated) = self.provisional.filter(|_| self.layout.first().is_some()) {
                         // A landing moved the head out from under the page's own seat (field report
