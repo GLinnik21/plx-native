@@ -297,6 +297,11 @@ pub(crate) struct CommitDelta {
     pub complete_signin: bool,
     pub profile_seated: bool,
     pub ready: Option<bool>,
+    /// plex.tv answered this identity with a roster (a sign-in's own, or the picker's refresh):
+    /// the question [`SessionInit::switch_refused_for`] recorded a refusal to is answered again,
+    /// so the verdict goes with the commit that carries the answer.
+    #[serde(default)]
+    pub roster_answered: bool,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -679,9 +684,11 @@ pub(crate) struct SessionInit {
     /// The identity plex.tv REFUSED a roster to while nothing was cached to switch from — the
     /// verdict behind [`ROSTER_REFUSED`]'s read-out, kept so the account menu stops offering
     /// *Change profile* into that dead end ([`SessionSnapshot::switch_refused`]). Keyed by the
-    /// identity rather than a flag, so a sign-out, a sign-in or a profile switch retires it
-    /// without every one of those paths having to remember to. In memory only: a relaunch asks
-    /// plex.tv again.
+    /// identity, so a profile switch to anyone else reads it as unrefused. The identity's
+    /// lifecycle retires it outright: `erase` (sign-out; the same account signed back in is the
+    /// same `Identity`), and any commit carrying a roster for it
+    /// ([`CommitDelta::roster_answered`] — a sign-in's own or the picker's refresh). In memory
+    /// only: a relaunch asks plex.tv again.
     #[serde(default)]
     pub switch_refused_for: Option<Identity>,
 }
@@ -942,7 +949,7 @@ impl LogicalState for SessionInit {
                 }
             });
             w.bool(delta.clear_error).bool(delta.activate_profile).bool(delta.complete_signin)
-                .bool(delta.profile_seated);
+                .bool(delta.profile_seated).bool(delta.roster_answered);
             w.option(delta.ready, |w, ready| { w.bool(ready); });
         });
         w.option(self.pending_erase, |w, (epoch, sign_in)| { w.u64(epoch).bool(sign_in); });
@@ -1463,6 +1470,7 @@ impl SessionMachine {
         if let Some(phase) = delta.phase { self.state.phase = phase; }
         if let Some(picker) = delta.picker { self.state.picker = picker; }
         if let Some(users) = delta.users { self.state.users = users; }
+        if delta.roster_answered { self.state.switch_refused_for = None; }
         if let Some(ready) = delta.ready { self.state.apply_pending = ready; }
         if delta.clear_error {
             self.state.error.clear();
@@ -1874,6 +1882,9 @@ impl SessionMachine {
         self.advance_epoch(emit).expect("epoch preflight");
         self.state.persisted = PersistedSession::default();
         self.state.committed_credentials = CredentialPatch::of(&self.state.persisted);
+        // The identity ends here, and its verdicts with it: the same account signed back in is
+        // the same `Identity`, and nothing has refused it anything in that sign-in.
+        self.state.switch_refused_for = None;
         self.state.pending_erase = Some((self.state.epoch, sign_in));
         self.state.authority = BootstrapAuthority::Account { extras: Vec::new() };
         self.state.picker = Picker::Boot;
@@ -2039,6 +2050,7 @@ impl SessionMachine {
                 let patch = CredentialPatch::of(&next);
                 delta.credentials = Some(patch.clone());
                 plan.credentials = Some(patch);
+                delta.roster_answered = !users.is_empty();
                 if users.len() > 1 {
                     delta.phase = Some(Phase::Profiles);
                     delta.picker = Some(Picker::SignedIn);
@@ -2098,12 +2110,12 @@ impl SessionMachine {
                         return true;
                     }
                 };
-                self.state.switch_refused_for = None;
                 let mut next = self.state.persisted.clone();
                 next.home_users = users.iter().map(super::UserTile::to_ref).collect();
                 let patch = CredentialPatch::of(&next);
                 delta.credentials = Some(patch.clone());
                 delta.users = Some(users.clone());
+                delta.roster_answered = true;
                 plan.credentials = Some(patch);
             }
             Observation::ServerRoster(progress) => match &progress.outcome {
@@ -4733,6 +4745,51 @@ mod tests {
             owner.replace_publication();
             assert!(!owner.publication().switch_refused,
                 "a different identity has not been refused anything");
+        }
+    }
+
+    /// The verdict belongs to the identity's LIFECYCLE, not to one call site. Signing out ends
+    /// the identity, so it forgets the verdict: signing back into the same account in the same
+    /// process yields the same `Identity`, and a surviving verdict would hide *Change profile*
+    /// until restart even after that login brought a roster.
+    #[test]
+    fn signing_out_forgets_the_switch_verdict() {
+        let _g = crate::testlock::serial();
+        let (mut owner, _) = empty_roster_change_profile(Some(Vec::new()));
+        assert!(owner.publication().switch_refused, "rig: the verdict is recorded");
+        let account = owner.state.persisted.clone();
+        step(&mut owner, SessionEvent::Command(Command::SignOut));
+        assert!(owner.state.switch_refused_for.is_none(), "sign-out ends the identity and its verdict");
+        // The same account, signed back in: nothing refused it in this sign-in.
+        owner.state.persisted = account;
+        owner.replace_publication();
+        assert!(!owner.publication().switch_refused);
+    }
+
+    /// Any AUTHORITATIVE roster clears the verdict — a sign-in's own roster as much as the
+    /// picker's refresh — because both answer the question the verdict recorded. A sign-in that
+    /// brought no roster answered nothing, and keeps it.
+    #[test]
+    fn a_sign_in_that_brings_a_roster_clears_the_switch_verdict() {
+        let _g = crate::testlock::serial();
+        for (users, cleared) in [
+            (vec![UserTile { uuid: "u-1".into(), title: "Only user".into(), ..Default::default() }], true),
+            (Vec::new(), false),
+        ] {
+            let mut init = reopened_after_authorization();
+            init.switch_refused_for = Some(Identity::of(&init.persisted));
+            let mut owner = SessionMachine::from_init(init);
+            assert!(owner.publication().switch_refused, "rig: the verdict is recorded");
+            let req = owner.state.next_req;
+            let epoch = owner.state.epoch;
+            let signed_in = qr_event(&owner, req, 1, super::super::LoginProgress::SignedIn {
+                epoch, server: local_server(), sources: Vec::new(), users }, true);
+            step(&mut owner, SessionEvent::Result(signed_in));
+            step(&mut owner, SessionEvent::Commit(CommitReply { req, epoch, arrival: 1,
+                admission: CommitAdmission::Admitted { revision: 1, purpose: PersistencePurpose::Discovery } }));
+            assert!(owner.state.pending_commit.is_none(), "rig: the sign-in committed");
+            assert_eq!(owner.publication().switch_refused, !cleared);
+            assert_eq!(owner.state.switch_refused_for.is_none(), cleared);
         }
     }
 
