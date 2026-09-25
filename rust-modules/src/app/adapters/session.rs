@@ -808,7 +808,8 @@ impl SessionAdapter {
                 if let Some(io) = &mut self.resource_test_io {
                     io.erase_sweeps.push(all_local);
                     return recording_leftovers + if all_local {
-                        io.recording_root.as_ref().map_or(0, |root| crate::ui::rec::erase_owned_artifacts(root).len())
+                        io.recording_root.as_ref().map_or(0, |root| crate::ui::rec::erase_owned_artifacts(root,
+                        super::super::input::remove_or_prove_absent).len())
                     } else { 0 }; // Other host cache/runtime sweeps remain disabled in resource tests.
                 }
                 crate::imgcache::clear();
