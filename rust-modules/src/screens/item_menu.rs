@@ -324,8 +324,13 @@ fn state_rows(
         acts.push(Some(Action::MarkWatched(rk.to_string())));
     }
     if mark != PosterMark::None {
-        sec =
-            sec.row(Row::new(crate::ui::widgets::MARK_UNWATCHED_VERB).licon(Icon::MinusCircleFill));
+        // Destructive: it throws the watch record away, so a menu never OPENS on it
+        // (`TableView::opening_row`) — a watched episode opens on Play from Start instead.
+        sec = sec.row(
+            Row::new(crate::ui::widgets::MARK_UNWATCHED_VERB)
+                .licon(Icon::MinusCircleFill)
+                .destructive(true),
+        );
         acts.push(Some(Action::MarkUnwatched(rk.to_string())));
     }
     if leaf {
@@ -1012,6 +1017,28 @@ mod tests {
             .iter()
             .flatten()
             .any(|a| matches!(a, Action::GoToShow(..) | Action::GoToItem(_))));
+    }
+
+    /// **A menu never opens with its focus on a destructive action.** *Mark as Unwatched* throws the
+    /// watch record away (and propagates to the other copies), so a watched episode's menu opens on
+    /// *Play from Start*; a watched season, whose one row it is, still opens on it. *Remove from
+    /// Deck* is last in the shelf menu and is tagged too, so no reorder can make it the opening row.
+    #[test]
+    fn a_menu_never_opens_on_a_destructive_row() {
+        let opening = |(sec, acts): (Section, Vec<Option<Action>>)| {
+            let mut t = TableView::new();
+            t.open_sections(vec![sec]);
+            acts[t.sel as usize].clone().expect("the opening row acts")
+        };
+        assert!(matches!(opening(build_episode("77", PosterMark::Watched)),
+            Action::PlayFromStart(_)), "a watched episode opened on Mark as Unwatched");
+        assert!(matches!(opening(build_season("78", PosterMark::Watched)),
+            Action::MarkUnwatched(_)), "the only row is the one on offer");
+        assert!(matches!(opening(build_episode("79", PosterMark::None)),
+            Action::MarkWatched(_)));
+        let (sec, acts) = build(&item(3, PosterMark::None), true);
+        let deck = acts.iter().position(|a| matches!(a, Some(Action::RemoveFromDeck(_))));
+        assert!(sec.rows[deck.expect("rig: a deck card")].destructive);
     }
 
     /// **The owner-reported gap, at both entry points.** An item in the MIDDLE is at neither end of
