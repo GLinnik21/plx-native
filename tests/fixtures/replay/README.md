@@ -32,6 +32,13 @@ unlisted domain remain unsupported and fail closed before IO. Product replay has
 modes: Targets substitutes each recorded Focus/Hit resolution before dependent effects, while
 Resolve runs the current engine/map and grades every resolution pointwise before continuing.
 
+The TV's startup WILL/DID foreground notifications are recorded and replayed through the
+navigation owner. Recorded notifications cannot restore native playback, change network grants,
+or authorize drawing into a physically backgrounded window. During replay the real compositor
+still owns window activation, while live keys and FIFO commands cannot join the recorded input
+stream. A real background/quit event interrupts replay; recorded background lifecycle remains
+unsupported.
+
 The admission contract also records each synchronous worker-spawn answer with its full request
 identity and frame ordering. A refused attempt stays refused during replay, including its normal
 retry/backoff; it is not turned into an admitted worker or an asynchronous failure. Natural

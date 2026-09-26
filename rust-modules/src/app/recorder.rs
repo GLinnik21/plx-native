@@ -8,6 +8,9 @@
 //! also denies/counts transport attempts. Detail and Person replies are supplied at their
 //! original store consumers; admissions retain the request identity and spawn answer.
 //! Account and playback remain outside this contract.
+//! Startup WILL/DID foreground is a bounded logical input. Replay resumes navigation without
+//! native playback or network-grant authority; actual SDL still owns physical window safety.
+//! Background lifecycle remains outside the accepted recording domain.
 //!
 //! Supported effects carry complete private payloads, including screen-input time/source/edge
 //! and focus identity. Missing/extra/changed effects or results prevent SAME. A codec error
