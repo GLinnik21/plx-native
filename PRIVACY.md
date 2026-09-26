@@ -36,7 +36,8 @@ profile on your account you have switched to on this television, it also keeps t
 server access token(s), so a later switch still works with no internet, and, for a PIN-protected
 profile, a one-way check computed from that PIN rather than the PIN itself. It also keeps the
 addresses and identifiers of those servers, the profile names and pictures on your account —
-pictures are also cached as files so the profile picker still shows faces with no internet — your
+pictures and other downloaded artwork (posters, backdrops and cast images) are cached as
+bounded files for reuse across restarts — your
 Home library choices, your recent searches, your playback quality preference, and local technical
 logs: a small rotating event log and a bounded storage status snapshot. It also stores your answers
 to the two optional-reporting questions, the random Crash report ID if you turned crash reports on,
@@ -52,7 +53,7 @@ Plex Media Server. The Settings screen can sign out and remove PlxNative data fr
 
 Those lifetimes differ. Signing out removes the sign-in, the servers registered with it and their
 tokens, every profile's own cached server access token(s) and PIN check, the cached profile
-pictures, your answers about unencrypted connections — and with them your optional-reporting
+pictures and other downloaded artwork, your answers about unencrypted connections — and with them your optional-reporting
 answers, both identifiers and any queued report,
 because those choices were made by the person who signed in and say nothing about whoever signs
 in next: the next sign-in is asked afresh. Switching between the profiles of one Plex account is

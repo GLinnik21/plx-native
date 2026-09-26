@@ -551,8 +551,8 @@ pub(crate) unsafe fn construct(
     // why no two-source state could be graded headlessly before this.
     //
     // ADDITIVE and nothing more. The primary is still `plxnative-token` (or the stored session)
-    // against the compiled-in host/port, byte for byte, so a run that names one server behaves
-    // exactly as it always did. `dev::servers()` is the accessor — memoized, so the harness's
+    // against the configured host/port (or the explicit dev-only pms-origin fixture override),
+    // so an ordinary run that names one server behaves as before. `dev::servers()` is the accessor — memoized, so the harness's
     // /tmp wipe cannot change what this boot was handed — and `dev::DevServer` is the shape.
     //
     // It is NOT on the DIAG exemption list (`dev.rs`), deliberately: unlike a log or the anim
@@ -639,10 +639,14 @@ pub(crate) unsafe fn construct(
         None => crate::plex::session::load(),
     };
     let forced_login = !controlled && crate::dev::scenarios::login_forced();
-    let dev_primary = (!forced_login && !dev_token.is_empty()).then(|| crate::plex::session::ServerRef {
-        address: host_s.clone(), port: i64::from(pms_port),
-        origin_url: crate::plex::Origin::http(&host_s, pms_port).base(), token: dev_token.clone(),
-        tier: Some(crate::plex::probe::configured_tier(&host_s)), ..Default::default()
+    let dev_primary = (!forced_login && !dev_token.is_empty()).then(|| {
+        let origin = crate::dev::scenarios::pms_origin()
+            .unwrap_or_else(|| crate::plex::Origin::http(&host_s, pms_port));
+        crate::plex::session::ServerRef {
+            address: origin.host().to_owned(), port: i64::from(origin.port()),
+            origin_url: origin.base(), token: dev_token.clone(),
+            tier: Some(crate::plex::probe::configured_tier(origin.host())), ..Default::default()
+        }
     });
     let session_init = match &initial {
         Some(initial) => initial.session.clone(),

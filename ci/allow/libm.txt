@@ -1,8 +1,11 @@
-# count: 5
+# count: 6
 # The transcendental surface OUTSIDE ui/motion.rs (spec §4.2). Every entry is RENDER or
 # COLOUR arithmetic — nothing here is logical state, hashed or replayed. Shrink, never grow.
+# The test-support entry preserves widgets.rs's existing colour-test exception after its
+# cfg(test) module moved to a separate file; no production arithmetic was added.
 rust-modules/src/gfx.rs	sRGB/Lab colour conversions for the ground sampler (render)
 rust-modules/src/ui/widgets.rs	glass and control-face geometry (render)
+rust-modules/src/ui/widgets_test_support.rs	sRGB linearisation moved from widgets.rs's cfg(test) contrast helper
 rust-modules/src/ui/testpat.rs	the synthetic test-pattern generator (dev diagnostic)
 rust-modules/src/ui/pill.rs	the capsule outline solve (render geometry)
 rust-modules/src/ui/route_screen.rs	sRGB linearisation for the ground contrast test (render)

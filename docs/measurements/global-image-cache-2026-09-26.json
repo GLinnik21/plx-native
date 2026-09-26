@@ -1,0 +1,479 @@
+{
+  "access": {
+    "baseline": {
+      "duration_s": 214.318,
+      "image_bytes": 113712768,
+      "image_failures": 0,
+      "image_requests": 3456,
+      "image_successes": 3456,
+      "metadata_requests": 28,
+      "unique_image_ids": 1200,
+      "unique_image_keys": 1200,
+      "unique_listing_items": 1200
+    },
+    "cold": {
+      "duration_s": 71.948,
+      "image_bytes": 39483600,
+      "image_failures": 0,
+      "image_requests": 1200,
+      "image_successes": 1200,
+      "metadata_requests": 28,
+      "unique_image_ids": 1200,
+      "unique_image_keys": 1200,
+      "unique_listing_items": 1200
+    },
+    "warm": {
+      "duration_s": 68.223,
+      "image_bytes": 0,
+      "image_failures": 0,
+      "image_requests": 0,
+      "image_successes": 0,
+      "metadata_requests": 28,
+      "unique_image_ids": 0,
+      "unique_image_keys": 0,
+      "unique_listing_items": 1200
+    }
+  },
+  "baseline": {
+    "cache": {
+      "bytes": 0,
+      "entries": 0,
+      "evictions": 0,
+      "fetches": 2538,
+      "gpu_bytes": 24000000,
+      "hits": 0,
+      "misses": 0,
+      "peak_queued_bytes": 2250000,
+      "queued_bytes": 0,
+      "writes": 0
+    },
+    "cache_samples": 158,
+    "fps": {
+      "max": 61,
+      "min": 45,
+      "n": 153,
+      "p10": 52,
+      "p50": 56,
+      "p95": 59
+    },
+    "invalid_pacing": false,
+    "library_samples": 158,
+    "loop": {
+      "max": 60,
+      "min": 44,
+      "n": 153,
+      "p10": 51,
+      "p50": 55,
+      "p95": 59
+    },
+    "memory": {
+      "growth_kib": 5260,
+      "hwm_kib": 75624,
+      "rss_kib": {
+        "max": 74596,
+        "min": 67020,
+        "n": 49,
+        "p10": 68568,
+        "p50": 71896,
+        "p95": 73616
+      }
+    },
+    "pacing": {
+      "gt100": 0,
+      "gt16": 5353,
+      "gt33": 154,
+      "gt50": 4,
+      "max_ms": 57.6,
+      "n": 8453,
+      "over_33ms_percent": 1.822,
+      "worst_window_p95_ms": 47.0,
+      "worst_window_p99_ms": 58.0
+    },
+    "pids": [
+      22244
+    ],
+    "slow_cpu_work": {
+      "over_100ms": 0,
+      "over_33ms": 146,
+      "over_50ms": 4,
+      "recorded_slow_frames": 868,
+      "with_image_upload": 468,
+      "worst_frames": [
+        {
+          "capture": 0.0,
+          "draw": 53.0,
+          "ingest": 0.0,
+          "navcommit": 0.4,
+          "prepare": 0.0,
+          "results": 0.1,
+          "swap": 3.9,
+          "tick_drain": 0.1,
+          "total": 57.6,
+          "up": 0.0
+        },
+        {
+          "capture": 0.0,
+          "draw": 8.8,
+          "ingest": 0.0,
+          "navcommit": 0.4,
+          "prepare": 42.6,
+          "results": 0.1,
+          "swap": 1.3,
+          "tick_drain": 0.1,
+          "total": 53.3,
+          "up": 1.0
+        },
+        {
+          "capture": 0.0,
+          "draw": 50.5,
+          "ingest": 0.0,
+          "navcommit": 0.4,
+          "prepare": 0.0,
+          "results": 0.1,
+          "swap": 0.5,
+          "tick_drain": 0.1,
+          "total": 51.6,
+          "up": 0.0
+        },
+        {
+          "capture": 0.0,
+          "draw": 25.5,
+          "ingest": 0.0,
+          "navcommit": 0.4,
+          "prepare": 10.6,
+          "results": 0.1,
+          "swap": 13.8,
+          "tick_drain": 0.1,
+          "total": 50.4,
+          "up": 1.0
+        },
+        {
+          "capture": 0.0,
+          "draw": 25.5,
+          "ingest": 0.0,
+          "navcommit": 0.7,
+          "prepare": 19.3,
+          "results": 0.1,
+          "swap": 3.9,
+          "tick_drain": 0.1,
+          "total": 49.7,
+          "up": 1.0
+        }
+      ]
+    },
+    "worstframe_ms": {
+      "max": 57.6,
+      "min": 19.6,
+      "n": 153,
+      "p10": 26.2,
+      "p50": 33.8,
+      "p95": 44.8
+    }
+  },
+  "binary_md5": "2ee8a9d982c954c00788f933c5fa6c90",
+  "cold": {
+    "cache": {
+      "bytes": 39512400,
+      "entries": 1200,
+      "evictions": 0,
+      "fetches": 1200,
+      "gpu_bytes": 22125000,
+      "hits": 1656,
+      "misses": 1200,
+      "peak_queued_bytes": 2250000,
+      "queued_bytes": 1125000,
+      "writes": 1200
+    },
+    "cache_samples": 177,
+    "fps": {
+      "max": 60,
+      "min": 46,
+      "n": 172,
+      "p10": 51,
+      "p50": 56,
+      "p95": 59
+    },
+    "invalid_pacing": false,
+    "library_samples": 177,
+    "loop": {
+      "max": 60,
+      "min": 46,
+      "n": 172,
+      "p10": 51,
+      "p50": 56,
+      "p95": 59
+    },
+    "memory": {
+      "growth_kib": 4516,
+      "hwm_kib": 76744,
+      "rss_kib": {
+        "max": 76056,
+        "min": 70424,
+        "n": 49,
+        "p10": 72628,
+        "p50": 73768,
+        "p95": 74956
+      }
+    },
+    "pacing": {
+      "gt100": 0,
+      "gt16": 5996,
+      "gt33": 154,
+      "gt50": 4,
+      "max_ms": 65.4,
+      "n": 9535,
+      "over_33ms_percent": 1.615,
+      "worst_window_p95_ms": 43.0,
+      "worst_window_p99_ms": 66.0
+    },
+    "pids": [
+      6215
+    ],
+    "slow_cpu_work": {
+      "over_100ms": 0,
+      "over_33ms": 147,
+      "over_50ms": 4,
+      "recorded_slow_frames": 924,
+      "with_image_upload": 474,
+      "worst_frames": [
+        {
+          "capture": 0.0,
+          "draw": 64.3,
+          "ingest": 0.0,
+          "navcommit": 0.4,
+          "prepare": 0.0,
+          "results": 0.1,
+          "swap": 0.5,
+          "tick_drain": 0.1,
+          "total": 65.4,
+          "up": 0.0
+        },
+        {
+          "capture": 0.0,
+          "draw": 54.3,
+          "ingest": 0.0,
+          "navcommit": 0.4,
+          "prepare": 0.0,
+          "results": 0.2,
+          "swap": 0.5,
+          "tick_drain": 0.1,
+          "total": 55.5,
+          "up": 0.0
+        },
+        {
+          "capture": 0.0,
+          "draw": 19.4,
+          "ingest": 0.1,
+          "navcommit": 0.6,
+          "prepare": 33.9,
+          "results": 0.1,
+          "swap": 0.8,
+          "tick_drain": 0.1,
+          "total": 54.8,
+          "up": 1.0
+        },
+        {
+          "capture": 0.0,
+          "draw": 42.4,
+          "ingest": 0.0,
+          "navcommit": 0.5,
+          "prepare": 0.0,
+          "results": 0.1,
+          "swap": 8.7,
+          "tick_drain": 0.1,
+          "total": 51.8,
+          "up": 0.0
+        },
+        {
+          "capture": 0.0,
+          "draw": 47.0,
+          "ingest": 0.0,
+          "navcommit": 0.4,
+          "prepare": 0.0,
+          "results": 0.1,
+          "swap": 1.8,
+          "tick_drain": 0.1,
+          "total": 49.4,
+          "up": 0.0
+        }
+      ]
+    },
+    "worstframe_ms": {
+      "max": 65.4,
+      "min": 20.3,
+      "n": 172,
+      "p10": 25.6,
+      "p50": 33.3,
+      "p95": 46.4
+    }
+  },
+  "errors": [],
+  "flavor": "debug",
+  "passed": true,
+  "real_plex_restart": {
+    "bytes": 2676817,
+    "entries": 45,
+    "evictions": 0,
+    "fetches": 0,
+    "gpu_bytes": 21347880,
+    "hits": 15,
+    "misses": 0,
+    "peak_queued_bytes": 4436400,
+    "queued_bytes": 0,
+    "writes": 0
+  },
+  "stack_profile": {
+    "before_snapshot_fix": true,
+    "binary_md5": "9c1cb8e55bcb671cc29238d4f4daa14b",
+    "library_key_stack_samples": 334,
+    "samples": 1200,
+    "usable": 1200
+  },
+  "ui_size": [
+    1920,
+    1080
+  ],
+  "validation": {
+    "arm_build": "passed",
+    "firmware_imports": "passed for all inventoried releases at or above 4.4.2",
+    "make_check": "passed",
+    "shipping_feature_check": "passed",
+    "stress_report": "passed"
+  },
+  "warm": {
+    "cache": {
+      "bytes": 39512400,
+      "entries": 1200,
+      "evictions": 0,
+      "fetches": 0,
+      "gpu_bytes": 24000000,
+      "hits": 2538,
+      "misses": 0,
+      "peak_queued_bytes": 3000000,
+      "queued_bytes": 0,
+      "writes": 0
+    },
+    "cache_samples": 158,
+    "fps": {
+      "max": 61,
+      "min": 45,
+      "n": 153,
+      "p10": 53,
+      "p50": 56,
+      "p95": 59
+    },
+    "invalid_pacing": false,
+    "library_samples": 158,
+    "loop": {
+      "max": 60,
+      "min": 45,
+      "n": 153,
+      "p10": 52,
+      "p50": 56,
+      "p95": 59
+    },
+    "memory": {
+      "growth_kib": 4848,
+      "hwm_kib": 76072,
+      "rss_kib": {
+        "max": 74960,
+        "min": 68776,
+        "n": 50,
+        "p10": 69872,
+        "p50": 73260,
+        "p95": 74596
+      }
+    },
+    "pacing": {
+      "gt100": 0,
+      "gt16": 5383,
+      "gt33": 109,
+      "gt50": 2,
+      "max_ms": 53.7,
+      "n": 8529,
+      "over_33ms_percent": 1.278,
+      "worst_window_p95_ms": 40.0,
+      "worst_window_p99_ms": 54.0
+    },
+    "pids": [
+      13444
+    ],
+    "slow_cpu_work": {
+      "over_100ms": 0,
+      "over_33ms": 100,
+      "over_50ms": 2,
+      "recorded_slow_frames": 782,
+      "with_image_upload": 405,
+      "worst_frames": [
+        {
+          "capture": 0.0,
+          "draw": 52.5,
+          "ingest": 0.0,
+          "navcommit": 0.5,
+          "prepare": 0.0,
+          "results": 0.1,
+          "swap": 0.5,
+          "tick_drain": 0.1,
+          "total": 53.7,
+          "up": 0.0
+        },
+        {
+          "capture": 0.0,
+          "draw": 41.9,
+          "ingest": 0.0,
+          "navcommit": 0.4,
+          "prepare": 0.0,
+          "results": 0.1,
+          "swap": 11.0,
+          "tick_drain": 0.1,
+          "total": 53.6,
+          "up": 0.0
+        },
+        {
+          "capture": 0.0,
+          "draw": 6.2,
+          "ingest": 0.0,
+          "navcommit": 1.2,
+          "prepare": 40.1,
+          "results": 0.1,
+          "swap": 0.5,
+          "tick_drain": 0.1,
+          "total": 48.2,
+          "up": 1.0
+        },
+        {
+          "capture": 0.0,
+          "draw": 43.8,
+          "ingest": 0.0,
+          "navcommit": 0.4,
+          "prepare": 0.0,
+          "results": 0.1,
+          "swap": 2.5,
+          "tick_drain": 0.1,
+          "total": 46.9,
+          "up": 0.0
+        },
+        {
+          "capture": 0.0,
+          "draw": 10.2,
+          "ingest": 0.0,
+          "navcommit": 0.4,
+          "prepare": 35.2,
+          "results": 0.1,
+          "swap": 0.4,
+          "tick_drain": 0.1,
+          "total": 46.4,
+          "up": 1.0
+        }
+      ]
+    },
+    "worstframe_ms": {
+      "max": 53.7,
+      "min": 19.8,
+      "n": 153,
+      "p10": 24.2,
+      "p50": 32.4,
+      "p95": 43.1
+    }
+  }
+}

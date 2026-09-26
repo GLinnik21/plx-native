@@ -44,6 +44,8 @@
 //! ~140 bytes (an ordinary relative thumb) to ~177 (an absolute headshot — see [`built_key`])
 //! into a fixed [`PT_KEYLEN`]-byte array (see [`Pslot::key`]), and a `u16` compare is also the
 //! cheaper half of the per-frame identity scan, so it goes first.
+mod refresh;
+
 use crate::img;
 use crate::plex::ServerId;
 use crate::ui::machine::PosterKey;
@@ -68,6 +70,27 @@ pub(crate) fn take_upload_stats() -> (u32, u64) {
 }
 
 const PT_CAP: usize = 64;
+/// Decoded pixels waiting for upload, independent of the persistent and GPU cache budgets.
+/// Existing active decodes can exceed this threshold; no further demand work starts until
+/// the upload queue drains. This prevents a fast disk from queuing 64 large backdrops.
+const DECODE_BACKLOG_MAX: usize = 8 * 1024 * 1024;
+static BACKLOG_PEAK: AtomicU64 = AtomicU64::new(0);
+
+fn decoded_slot_bytes(slots: &[Pslot; PT_CAP]) -> usize {
+    slots.iter().filter(|s| s.state == P_DECODED)
+        .map(|s| s.pw.max(0) as usize * s.ph.max(0) as usize * 4).sum()
+}
+
+fn decode_admitted(slots: &[Pslot; PT_CAP], pending_bytes: usize) -> bool {
+    decoded_slot_bytes(slots).saturating_add(pending_bytes) < DECODE_BACKLOG_MAX
+}
+
+fn note_backlog(slots: &[Pslot; PT_CAP]) -> usize {
+    let bytes = decoded_slot_bytes(slots).saturating_add(tex::pending_bytes());
+    BACKLOG_PEAK.fetch_max(bytes as u64, Ordering::Relaxed);
+    bytes
+}
+
 /// Bytes a slot's key array holds, NUL included — see [`Pslot::key`] for the cliff at the end of
 /// it, and [`KEY_MAX`] for the gate that keeps requests off it.
 const PT_KEYLEN: usize = 256;
@@ -152,6 +175,8 @@ struct Pslot {
     visible: bool,
     use_: c_uint,  // LRU clock
     gen: c_uint,   // bumped on eviction; stale-decode guard
+    cache_gen: u64, // account epoch captured when queued, before any worker can race sign-out
+    token_gen: u32, // the grant that built this request (profile switches need not erase disk)
     frame: c_uint, // last frame poster_get touched it (evict-protect)
     /// `P_RETRY` only: the app-clock tick (`app::clock::now`, ms) the next attempt may go at.
     /// `None` = parked by the worker and not yet scheduled — the next DRAW on the main thread
@@ -197,6 +222,8 @@ impl Pslot {
         visible: false,
         use_: 0,
         gen: 0,
+        cache_gen: 0,
+        token_gen: 0,
         frame: 0,
         retry_at: None,
         retry_wake_sent: false,
@@ -745,9 +772,11 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // tile that had its picture.
     let decline = touch == Touch::Draw && crate::ui::card_row::scrolling_fast();
     let mut g = store();
+    let cache_gen = crate::imgcache::generation();
+    let token_gen = crate::plex::client_for(srv).map_or(0, |c| c.token_gen());
     // hit?
     for i in 0..PT_CAP {
-        if slot_matches(&g.slots[i], srv, key_s.as_bytes()) {
+        if g.slots[i].cache_gen == cache_gen && g.slots[i].token_gen == token_gen && slot_matches(&g.slots[i], srv, key_s.as_bytes()) {
             if touch == Touch::Draw {
                 g.clock = g.clock.wrapping_add(1);
                 let (c, f) = (g.clock, g.frame);
@@ -872,6 +901,8 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         let s = &mut g.slots[idx];
         s.px = 0;
         s.gen = s.gen.wrapping_add(1);
+        s.cache_gen = cache_gen;
+        s.token_gen = token_gen;
         set_key(s, key_s);
         s.srv = srv; // captured HERE, on the main thread — the worker asks no one which server
         s.state = P_WANT;
@@ -935,11 +966,11 @@ impl tex::Source for PosterSource {
         let mut g = store();
         let mut lost = false;
         if let Some(s) = g.slots.get_mut(key.0 as usize) {
-            // READY is the only state whose truth depends on render-cache residency. The cache
+            // A delivered decode or READY entry depends on render-cache residency. The cache
             // calls this synchronously for both a rejected decoded result and pressure eviction,
             // before application code can probe or recycle the key. Thus the source never answers
             // READY for a key the cache could not make resident.
-            if s.state == P_READY {
+            if matches!(s.state, P_READY | P_DECODED) {
                 s.state = P_EVICTED;
                 lost = true;
                 // The thrash guard's bookkeeping (see `evict_was_rapid`'s doc): a rapid re-eviction
@@ -1041,7 +1072,7 @@ pub(crate) fn begin_frame() {
 /// microseconds) so the library owns what it uploads.
 pub(crate) fn drain_decoded() {
     loop {
-        let (idx, px, w, h) = {
+        let (idx, px, w, h, current) = {
             let mut g = store();
             let Some(i) = (0..PT_CAP).find(|&i| g.slots[i].state == P_DECODED) else {
                 break;
@@ -1049,9 +1080,16 @@ pub(crate) fn drain_decoded() {
             let s = &mut g.slots[i];
             let (px, w, h) = (s.px, s.pw, s.ph);
             s.px = 0;
-            s.state = P_READY;
-            (i, px, w, h)
+            let current = s.cache_gen == crate::imgcache::generation();
+            // Retain the decoded-byte charge until tex::accept publishes its pending bytes.
+            // A brief double charge is safe; a gap would let both workers over-admit decodes.
+            if !current { s.state = P_FAILED; }
+            (i, px, w, h, current)
         };
+        if !current {
+            if px != 0 { img::img_free(px as *mut c_uchar); }
+            continue;
+        }
         let key = PosterKey(idx as u32);
         let result = if px != 0 && w > 0 && h > 0 && w <= u16::MAX as c_int && h <= u16::MAX as c_int {
             let n = (w as usize) * (h as usize) * 4;
@@ -1070,6 +1108,9 @@ pub(crate) fn drain_decoded() {
             img::img_free(px as *mut c_uchar);
         }
         tex::accept(PosterReady { key, result });
+        let mut g = store();
+        // Rejection may synchronously notify unresident during accept. Preserve that verdict.
+        if g.slots[idx].state == P_DECODED { g.slots[idx].state = P_READY; }
     }
 }
 
@@ -1120,6 +1161,7 @@ pub(crate) fn prepare(
 ) -> usize {
     let n = tex::prepare(b, &mut GfxUploader, present, now_us);
     if n > 0 {
+        CV.notify_all();
         crate::ui::idle::invalidate();
     }
     n
@@ -1216,151 +1258,127 @@ fn warn_fetch_failed(srv: ServerId, cause: ArtFail) {
     }
 }
 
-/// BACKGROUND worker: claim a P_WANT slot, fetch+decode off-lock, publish P_DECODED.
+/// Cumulative network attempts, including stale refreshes. No URL or credential is logged.
+static FETCHES: AtomicU64 = AtomicU64::new(0);
+
+fn fetch_image(client: &crate::plex::Client, path: &str) -> Option<Vec<u8>> {
+    FETCHES.fetch_add(1, Ordering::Relaxed);
+    client.fetch_built(path)
+}
+
+/// Use the persistent PMS identity, never its registration-order slot. An origin is the
+/// conservative fallback for injected/older sessions that have not learned a machine id yet.
+fn disk_namespace(client: &crate::plex::Client) -> String {
+    if client.machine_id().is_empty() {
+        format!("origin:{}", client.origin().base())
+    } else {
+        format!("machine:{}", client.machine_id())
+    }
+}
+
+/// Diagnostic snapshot only: reading counters must never initialize or scan the disk cache
+/// on the frame thread. The two demand workers are the only callers that open it.
+pub(crate) fn log_cache_stats() {
+    let s = crate::imgcache::stats();
+    let queued = note_backlog(&store().slots);
+    crate::log(&format!(
+        "imgcache: hits={} misses={} writes={} evictions={} entries={} bytes={} fetches={} queued_bytes={} peak_queued_bytes={} gpu_bytes={}",
+        s.hit, s.miss, s.write, s.eviction, s.entries, s.bytes,
+        FETCHES.load(Ordering::Relaxed), queued, BACKLOG_PEAK.load(Ordering::Relaxed), tex::resident_bytes(),
+    ));
+}
+
+/// BACKGROUND worker: claim a request, read disk or fetch and decode off-lock, publish pixels.
+/// RAM/GPU residency stays bounded independently of the number of persistent images.
 fn poster_worker() {
     loop {
-        let (idx, key_s, srv, gen) = {
+        let (idx, key_s, srv, gen, cache_gen, token_gen) = {
             let mut g = store();
             let idx = loop {
-                if g.quit {
-                    return;
+                if g.quit { return; }
+                note_backlog(&g.slots);
+                if decode_admitted(&g.slots, tex::pending_bytes()) {
+                    if let Some(i) = next_wanted(&g.slots) { break i; }
                 }
-                if let Some(i) = next_wanted(&g.slots) {
-                    break i;
-                }
-                let res = CV.wait_timeout(g, Duration::from_millis(50));
-                g = res
-                    .map(|(guard, _)| guard)
-                    .unwrap_or_else(|e| e.into_inner().0);
+                g = CV.wait_timeout(g, Duration::from_millis(50))
+                    .map(|(guard, _)| guard).unwrap_or_else(|e| e.into_inner().0);
             };
-            let key_s = String::from_utf8_lossy(key_bytes(&g.slots[idx])).into_owned();
-            let (srv, sgen) = (g.slots[idx].srv, g.slots[idx].gen);
-            g.slots[idx].state = P_LOADING;
-            (idx, key_s, srv, sgen)
+            let s = &mut g.slots[idx];
+            s.state = P_LOADING;
+            (idx, String::from_utf8_lossy(key_bytes(s)).into_owned(), s.srv, s.gen, s.cache_gen, s.token_gen)
         };
-
-        // Fetch + decode off the lock — no GL here.
-        //
-        // The address is THIS SLOT's server, resolved from the id the main thread wrote when it
-        // claimed the slot; the worker never asks what the current server is, because with two
-        // registered it is the wrong host for half the tiles on screen. And the fetch goes
-        // through `fetch_built`, not `get_bytes`: `key_s` IS the store key and already ends in
-        // that server's token, so the ordinary path would append a second one. (Going through
-        // the client at all is the point — `crate::stream` used to be called from here, behind
-        // the back of the layer whose module doc claims to be the only code that touches it.)
-        //
-        // The three ways to reach the decode with NOTHING are split apart only to be REPORTED —
-        // `warn_fetch_failed` carries the argument for why this module owes the log a line. Nothing
-        // about the outcome moves: each of them yields the same null pointer the folded `_ =>` arm
-        // did, and the state transition below is untouched.
-        let mut w = 0i32;
-        let mut h = 0i32;
-        // A DURABLE class of art (today: profile avatars, which the server proxies from plex.tv)
-        // also lives in `crate::imgcache`, and the FILE WINS whenever there is one: the key
-        // carries plex.tv's own cache-buster, so a cached file is current for its key by
-        // construction and there is nothing a fetch could refresh. Going to the network first
-        // was the 2026-09-06 picker with no faces: offline, the proxy's request to plex.tv
-        // hangs for the whole transfer budget, both workers sat on avatars, and the tiles
-        // stayed skeletons until long after the pick. On a miss the fetch runs as before, and
-        // the bytes are written only AFTER they decode — a proxy answering 2xx with something
-        // that is not the picture must never overwrite a good file.
-        let disk = crate::imgcache::classify(&key_s);
-        let cache_gen = crate::imgcache::generation();
-        let mut fetched: Option<Vec<u8>> = None;
+        let mut w = 0;
+        let mut h = 0;
         let mut px = std::ptr::null_mut();
-        // A stale cached file is refreshed AFTER the picture is published (below), and only
-        // into the file — never on this worker's critical path, and never as a texture swap.
-        let mut refresh_after: Option<crate::imgcache::DiskKey> = None;
-        if let Some(k) = &disk {
-            if let Some(b) = crate::imgcache::read(k) {
-                px = img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut w, &mut h);
-                if px.is_null() {
-                    // a file that no longer decodes is retired, and the fetch below replaces it
-                    crate::imgcache::remove(k);
-                } else if crate::imgcache::age(k).is_some_and(|a| a > crate::imgcache::REFRESH_AFTER)
-                    && crate::plex::account::plex_tv_recently_reachable()
-                {
-                    refresh_after = Some(k.clone());
+        let mut stale = None;
+        let mut transient = false;
+        // Revoked servers cannot use disk as a route around sign-out. Keep this client snapshot
+        // for both identity and transport; a later registry repoint must not mix the two.
+        if let Some(client) = crate::plex::client_for(srv)
+            .filter(|c| cache_gen == crate::imgcache::generation() && c.token_gen() == token_gen)
+        {
+            let disk = if crate::dev::scenarios::imagecache_bypass_armed() {
+                None
+            } else {
+                crate::imgcache::classify(&disk_namespace(client), &key_s)
+            };
+            if let Some(k) = &disk {
+                if let Some(cached) = crate::imgcache::read_at(cache_gen, k) {
+                    px = img::img_decode_rgba(cached.bytes.as_ptr(), cached.bytes.len() as c_int, &mut w, &mut h);
+                    if px.is_null() {
+                        crate::imgcache::remove_at(cache_gen, k);
+                    } else if cached.stale {
+                        stale = Some((client, k.clone()));
+                    }
                 }
             }
-        }
-        // `transient` is what a null `px` means: park and retry (P_RETRY), or give up (P_FAILED).
-        let (px, transient) = if !px.is_null() {
-            (px, false)
-        } else {
-            match crate::plex::client_for(srv) {
-                Some(c) => match c.fetch_built_outcome(&key_s) {
-                    // bytes arrived: from here on a failure is the decoder's, and `img.rs` logs it
+            if px.is_null() && cache_gen == crate::imgcache::generation() {
+                FETCHES.fetch_add(1, Ordering::Relaxed);
+                match client.fetch_built_outcome(&key_s) {
                     crate::plex::ArtFetch::Bytes(b) if !b.is_empty() => {
-                        let px =
-                            img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut w, &mut h);
-                        if !px.is_null() && disk.is_some() {
-                            fetched = Some(b);
+                        px = img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut w, &mut h);
+                        // Only a successfully decoded response may replace an existing image.
+                        if !px.is_null() {
+                            if let Some(k) = &disk { crate::imgcache::write_at(cache_gen, k, &b); }
                         }
-                        (px, false)
                     }
                     crate::plex::ArtFetch::Bytes(_) => {
+                        transient = true;
                         warn_fetch_failed(srv, ArtFail::Empty);
-                        (std::ptr::null_mut(), true)
                     }
-                    outcome @ crate::plex::ArtFetch::Status(_) => {
+                    outcome => {
+                        transient = is_transient(&outcome);
                         warn_fetch_failed(srv, ArtFail::NoResponse);
-                        (std::ptr::null_mut(), is_transient(&outcome))
                     }
-                    crate::plex::ArtFetch::NoResponse => {
-                        warn_fetch_failed(srv, ArtFail::NoResponse);
-                        (std::ptr::null_mut(), true)
-                    }
-                },
-                // no client for this id YET — a re-point in progress publishes the new one a
-                // moment later, which is the same window the plaintext refusal opens
-                None => {
-                    warn_fetch_failed(srv, ArtFail::NoServer);
-                    (std::ptr::null_mut(), true)
                 }
             }
+        } else {
+            transient = cache_gen == crate::imgcache::generation();
+            warn_fetch_failed(srv, ArtFail::NoServer);
+        }
+        // End this scope BEFORE any further disk/network work. The former avatar refresh held
+        // Store throughout its network timeout and froze every main-thread artwork lookup.
+        let accepted = {
+            let mut g = store();
+            let s = &mut g.slots[idx];
+            if s.gen == gen && s.state == P_LOADING {
+                if cache_gen == crate::imgcache::generation() && !px.is_null() {
+                    s.px = px as usize;
+                    s.pw = w;
+                    s.ph = h;
+                    s.state = P_DECODED;
+                    true
+                } else {
+                    if transient && cache_gen == crate::imgcache::generation() { park_retry(s); }
+                    else { s.state = P_FAILED; }
+                    false
+                }
+            } else { false }
         };
-
-        if let (Some(k), Some(b)) = (&disk, &fetched) {
-            // gated on the generation read before the fetch: a sign-out in between means these
-            // bytes belong to an account that has left, and they are dropped
-            crate::imgcache::write_at(cache_gen, k, b);
-        }
-
-        let mut g = store();
-        let s = &mut g.slots[idx];
-        if s.gen == gen && s.state == P_LOADING {
-            if !px.is_null() {
-                s.px = px as usize;
-                s.pw = w;
-                s.ph = h;
-                s.state = P_DECODED;
-            } else if transient {
-                park_retry(s);
-            } else {
-                s.state = P_FAILED;
-            }
-        } else if !px.is_null() {
-            drop(g);
-            img::img_free(px); // recycled while we worked: discard
-        }
-
-        // The cached picture is on its way to the screen; now, and only now, look again at a
-        // file old enough to deserve it, on a link plex.tv has answered on recently. A refresh
-        // must never cost a face: the fetch feeds the FILE (next boot shows it), the texture
-        // already published stands, and a fetch that brings nothing changes nothing. This worker
-        // is busy for the round trip, which is the price of not holding a third thread for it.
-        if let Some(k) = refresh_after {
-            if let Some(b) = crate::plex::client_for(srv).and_then(|c| c.fetch_built(&key_s)) {
-                if !b.is_empty() {
-                    let mut fw = 0i32;
-                    let mut fh = 0i32;
-                    let fresh = img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut fw, &mut fh);
-                    if !fresh.is_null() {
-                        img::img_free(fresh);
-                        crate::imgcache::write_at(cache_gen, &k, &b);
-                    }
-                }
+        if !accepted && !px.is_null() { img::img_free(px); }
+        if accepted {
+            if let Some((client, key)) = stale {
+                refresh::enqueue(client, key_s, key, cache_gen, token_gen);
             }
         }
     }
@@ -1383,6 +1401,7 @@ pub(crate) fn init() {
         .filter_map(|_| crate::task::spawn("poster", poster_worker))
         .collect();
     store().workers = handles;
+    refresh::init();
 }
 
 pub(crate) fn shutdown() {
@@ -1391,6 +1410,7 @@ pub(crate) fn shutdown() {
         g.quit = true;
     }
     CV.notify_all();
+    refresh::shutdown();
     let handles = std::mem::take(&mut store().workers);
     for h in handles {
         // these park in `stream::http_get`, whose socket nothing outside the call can reach —
@@ -1428,6 +1448,22 @@ mod tests {
     //! server in the registry, which is a crate global. They still touch no socket and no GL —
     //! `poster_key` only formats a string.
     use super::*;
+
+    #[test]
+    fn demand_waits_for_decoded_bytes_in_both_queues_to_drain() {
+        let mut slots = [Pslot::ZERO; PT_CAP];
+        assert!(decode_admitted(&slots, 0));
+        slots[0].state = P_DECODED;
+        slots[0].pw = 1024;
+        slots[0].ph = 1024;
+        assert!(decode_admitted(&slots, 0));
+        assert!(!decode_admitted(&slots, 4 * 1024 * 1024));
+        slots[1] = slots[0];
+        assert!(!decode_admitted(&slots, 0));
+        slots[0].state = P_READY;
+        assert!(decode_admitted(&slots, 0));
+        assert!(!decode_admitted(&slots, DECODE_BACKLOG_MAX));
+    }
 
     /// A synthetic headshot URL of the SHAPE the server really returns for a `/hubs/search`
     /// `actor` row: absolute, on Plex's metadata CDN, with a 32-hex digest. A made-up digest
@@ -1653,6 +1689,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_repoint_with_the_same_url_and_token_retires_the_old_request_generation() {
+        let (_fresh, sid, tok) = one_server();
+        crate::ui::card_row::begin_motion_frame();
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        let old_generation = crate::plex::client_for(sid).unwrap().token_gen();
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            g.frame = 1;
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = old_generation;
+            set_key(slot, &path);
+            slot.state = P_EVICTED;
+        }
+        let repointed = crate::plex::register_for_test("poster-test", "127.0.0.2", 32400, tok, "cid-poster-test");
+        assert_eq!(repointed, sid);
+        let current_generation = crate::plex::client_for(sid).unwrap().token_gen();
+        assert_ne!(current_generation, old_generation);
+        assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Claimed);
+        assert!(store().slots.iter().any(|s| s.state == P_WANT
+            && s.srv == sid && s.token_gen == current_generation));
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
     /// A rejected decode used to leave the source in READY while the cache remembered the key as
     /// failed. No later probe could re-arm either half, so the tile drew its skeleton forever.
     #[test]
@@ -1666,6 +1729,8 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             set_key(slot, &path);
             slot.state = P_DECODED;
             slot.px = 0;
@@ -1719,6 +1784,8 @@ mod tests {
             let slot = &mut g.slots[0];
             slot.state = P_READY;
             slot.srv = srv;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(srv).unwrap().token_gen();
             set_key(slot, &path);
         }
 
@@ -1849,6 +1916,8 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             set_key(slot, &path);
             slot.state = P_EVICTED;
             // No eviction history, so the cooldown gate would admit this re-arm. That isolates
@@ -1892,6 +1961,8 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             set_key(slot, &path);
             slot.state = P_RETRY;
             slot.attempts = 1;
@@ -1941,6 +2012,8 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             set_key(slot, &path);
             slot.state = P_READY;
         }
@@ -1987,6 +2060,8 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             set_key(slot, &path);
             slot.state = P_READY;
         }
@@ -2075,6 +2150,8 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             set_key(slot, &path);
             slot.state = P_EVICTED;
         }
@@ -2124,6 +2201,8 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             set_key(slot, &path);
             slot.state = P_EVICTED;
             slot.evict_attempts = 1;
@@ -2164,6 +2243,8 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             set_key(slot, &path);
             slot.state = P_EVICTED;
             slot.evict_attempts = 1;
@@ -2212,6 +2293,8 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             set_key(slot, &path);
             slot.state = P_READY;
         }
@@ -2280,6 +2363,8 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             set_key(slot, &path);
             slot.state = P_READY;
             slot.evicted_at = Some(0);
@@ -2422,6 +2507,8 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             set_key(slot, &path);
             slot.state = P_READY;
         }

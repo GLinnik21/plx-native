@@ -29,6 +29,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::frame::{Budget, Class};
 use super::machine::{PosterKey, PresentHandle};
@@ -80,6 +81,17 @@ thread_local! {
     static CACHE: RefCell<TexCache<PosterKey>> =
         RefCell::new(TexCache::with_budget(CACHE_CAP, TEX_RESIDENT_BYTES_MAX * render_area()));
     static SOURCE: Cell<Option<&'static dyn Source>> = const { Cell::new(None) };
+}
+
+static PENDING_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+fn mutate_cache<R>(f: impl FnOnce(&mut TexCache<PosterKey>) -> R) -> R {
+    CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        let result = f(&mut cache);
+        PENDING_BYTES.store(cache.pending.iter().map(|(_, d)| d.rgba.len()).sum(), Ordering::Release);
+        result
+    })
 }
 
 /// One entry per source slot: the source's own eviction policy (`free` on recycle) is the one
@@ -165,7 +177,7 @@ pub fn install(src: &'static dyn Source) {
 /// The cache is thread-local, so this changes only the calling test's instance.
 #[cfg(test)]
 pub(crate) fn reset_for_test(bytes_max: usize) {
-    CACHE.with(|c| *c.borrow_mut() = TexCache::with_budget(CACHE_CAP, bytes_max));
+    mutate_cache(|c| *c = TexCache::with_budget(CACHE_CAP, bytes_max));
 }
 
 fn with_source<T>(f: impl FnOnce(&dyn Source) -> T, absent: T) -> T {
@@ -227,8 +239,7 @@ pub fn source_idle() -> bool {
 
 /// The source's delivery: one decoded image (or a failure) for a key. Touches no GL.
 pub fn accept(r: PosterReady<PosterKey>) {
-    let unresident = CACHE.with(|c| {
-        let mut c = c.borrow_mut();
+    let unresident = mutate_cache(|c| {
         c.accept(r);
         c.take_unresident().collect::<Vec<_>>()
     });
@@ -239,13 +250,12 @@ pub fn accept(r: PosterReady<PosterKey>) {
 
 /// The source recycled a slot: its texture, if resident, is freed now (GL thread).
 pub fn free(key: PosterKey, up: &mut dyn Uploader) {
-    CACHE.with(|c| c.borrow_mut().free(key, up));
+    mutate_cache(|c| c.free(key, up));
 }
 
 /// The upload step, once per frame in the GL scope (§3.3 step 9). Returns how many landed.
 pub fn prepare(b: &mut Budget, up: &mut dyn Uploader, present: &mut PresentHandle<'_>, now_us: impl Fn() -> u64) -> usize {
-    let (n, unresident) = CACHE.with(|c| {
-        let mut c = c.borrow_mut();
+    let (n, unresident) = mutate_cache(|c| {
         let n = c.prepare(b, up, present, now_us);
         (n, c.take_unresident().collect::<Vec<_>>())
     });
@@ -254,6 +264,9 @@ pub fn prepare(b: &mut Budget, up: &mut dyn Uploader, present: &mut PresentHandl
     }
     n
 }
+
+/// Unuploaded pixels, published after queue mutations and readable by demand workers.
+pub fn pending_bytes() -> usize { PENDING_BYTES.load(Ordering::Acquire) }
 
 /// Whether the upload queue holds work — what forces a present (§3.3 step 8).
 pub fn has_pending() -> bool {
@@ -276,7 +289,7 @@ pub fn resident_bytes() -> usize {
 
 /// Free every resident texture (app exit, GL thread).
 pub fn shutdown(up: &mut dyn Uploader) {
-    CACHE.with(|c| c.borrow_mut().drain_all(up));
+    mutate_cache(|c| c.drain_all(up));
 }
 
 /// A decoded image: an OWNED render resource.
@@ -567,6 +580,41 @@ mod tests {
                 rgba: vec![0; 16].into_boxed_slice(),
             }),
         }
+    }
+
+    #[test]
+    fn pending_byte_snapshot_tracks_accept_upload_recycle_and_shutdown() {
+        let _guard = crate::testlock::serial();
+        let old_cache = mutate_cache(|c| std::mem::replace(c, TexCache::with_budget(8, 32)));
+        let image = |key, bytes| PosterReady {
+            key: PosterKey(key),
+            result: Ok(Decoded { w: 1, h: 1, rgba: vec![0; bytes].into_boxed_slice() }),
+        };
+        let mut up = StubUp { next: 0, freed: vec![], warmed: vec![] };
+        let mut present = Present::new();
+        let mut budget = Budget::new();
+        assert_eq!(pending_bytes(), 0);
+        for (key, bytes) in [16, 20, 24, 28, 32].into_iter().enumerate() {
+            accept(image(key as u32, bytes));
+        }
+        accept(PosterReady { key: PosterKey(9), result: Err(PosterError::Decode) });
+        assert_eq!(pending_bytes(), 120, "failures contribute no pixels");
+        free(PosterKey(1), &mut up);
+        assert_eq!(pending_bytes(), 100, "recycled pending pixels release their bytes");
+        budget.begin_frame(0);
+        assert_eq!(prepare(&mut budget, &mut up, &mut PresentHandle(&mut present), || 0), 3);
+        assert_eq!(pending_bytes(), 32, "the fourth image waits beyond the upload quota");
+        assert_eq!(resident_bytes(), 28, "GPU byte eviction is independent of pending bytes");
+        assert_eq!(std::thread::spawn(pending_bytes).join().unwrap(), 32,
+            "workers see the main thread's snapshot, not an empty thread-local cache");
+        accept(image(3, 8));
+        assert_eq!(pending_bytes(), 40, "a replacement's pixels count while queued");
+        free(PosterKey(3), &mut up);
+        assert_eq!(pending_bytes(), 32, "free releases queued replacements as well as residency");
+        shutdown(&mut up);
+        assert_eq!(pending_bytes(), 0, "shutdown releases the remaining queue");
+        assert_eq!(resident_bytes(), 0);
+        mutate_cache(|c| *c = old_cache);
     }
 
     #[test]
