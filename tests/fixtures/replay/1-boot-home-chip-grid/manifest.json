@@ -1,7 +1,7 @@
 {
  "anchor": true,
  "blobs": false,
- "build": "0.7.0-dev",
+ "build": "0.8.0-dev",
  "clock": {
   "start": 0
  },
@@ -53,8 +53,8 @@
        "address": "127.0.0.1",
        "machine_id": "",
        "name": "",
-       "origin": "http://127.0.0.1:32498",
-       "port": 32498,
+       "origin": "http://127.0.0.1:32623",
+       "port": 32623,
        "tier": "local",
        "token": "s00000002"
       }
@@ -100,6 +100,10 @@
     "error": "",
     "held_handoff": null,
     "inbox": [],
+    "incident": null,
+    "incidents_seen": [],
+    "link_trouble": false,
+    "next_incident": 0,
     "next_qr": 0,
     "next_req": 0,
     "pending": {},
@@ -113,6 +117,7 @@
      "home_users": [],
      "last_hero_blur": null,
      "last_library": [],
+     "plaintext_consent": [],
      "playback_quality": null,
      "profiles": [],
      "recent_searches": [],
@@ -126,6 +131,7 @@
       "token": ""
      },
      "sources": [],
+     "subtitle_tone": "white",
      "trailer_autoplay": false,
      "user": {
       "id": 0,
@@ -137,15 +143,18 @@
     },
     "persistence_purpose": null,
     "persistence_warning": null,
+    "persistence_warning_answered": false,
     "phase": "Idle",
     "picker": "Boot",
     "pin_code": "",
     "pin_denied": false,
+    "plaintext": null,
     "profile_scope": 0,
     "pump_pending": false,
     "qr_gen": 0,
     "qr_png": [],
     "signin_active": false,
+    "switch_refused_for": null,
     "unconfirmed_fresh_prior": null,
     "users": []
    },
@@ -158,11 +167,11 @@
    ],
    "version": 1
   },
-  "hash": 10327468772161875,
+  "hash": 17511844494293143001,
   "probe": "controlled=home version=1"
  },
  "schema": 3,
- "state_fp": 1538339256646369256,
+ "state_fp": 10372147871357755035,
  "triggers": [
   "plxnative-app-init",
   "plxnative-rec",
