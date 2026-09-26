@@ -2999,6 +2999,28 @@ mod lifecycle_regression_tests {
         }
     }
 
+    #[test]
+    fn controlled_content_boot_waits_for_the_queued_home_root() {
+        use crate::ui::machine::{Fx, MachineId, NavOp};
+        let _serial = crate::testlock::serial();
+        let mut app = app();
+        let encoded = super::super::synthetic_home_initial(1, 32517, Some("flow12".into())).unwrap();
+        app.boot_initial = Some(serde_json::from_str(&encoded).unwrap());
+        app.pages.emit(MachineId::Nav, Fx::Nav(NavOp::Root(AppArg::Home)));
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        fr.now = 1500; // Cold startup already exceeded the scenario's 500 ms delay.
+        crate::dev::scenarios::controlled_each_frame(&mut app, &mut fr);
+        assert!(!app.scenarios.detail_tried, "Root(Home) has not mounted yet");
+        frame(&mut app, fr.now);
+        assert!(app.pages.top_screen().is_some());
+        crate::dev::scenarios::controlled_each_frame(&mut app, &mut fr);
+        assert!(app.scenarios.detail_tried);
+        assert!(app.scenarios.content_boot.is_some());
+        frame(&mut app, fr.now + 16);
+        assert!(matches!(app.pages.top_arg(), Some(AppArg::Content(
+            crate::screens::registry::ContentArg::Detail { rk, .. })) if rk == "1001"));
+    }
+
     #[cfg(feature = "devtriggers")]
     #[test]
     fn a_recorded_raw_hang_probe_replays_without_missing_input() {

@@ -1417,7 +1417,11 @@ pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
 /// execute only values restored into the App from its validated initial input.
 pub(crate) fn controlled_each_frame(app: &mut App, fr: &mut Frame) -> bool {
     settings_boot_arm(app, fr);
-    if !app.scenarios.detail_tried && fr.now.wrapping_sub(app.t0) > 500 {
+    // A cold font/GL boot can spend more than 500 ms before the first dispatcher frame.
+    // Do not consume the one-shot while Root(Home) is still queued: its first commit would
+    // replace the Detail request and leave the controlled content flow on Home forever.
+    if !app.scenarios.detail_tried && app.pages.top_screen().is_some()
+        && fr.now.wrapping_sub(app.t0) > 500 {
         app.scenarios.detail_tried = true;
         if let Some(input) = app.boot_initial.as_ref().and_then(|init| init.content.as_ref()) {
             let sid = crate::plex::ServerId::from_raw(0);
