@@ -75,6 +75,7 @@ use std::ffi::{CStr, CString};
 use std::hash::{Hash, Hasher};
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::ptr::{addr_of, addr_of_mut};
+use std::rc::Rc;
 
 use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
 use crate::ui::overdraw::{gate, Class};
@@ -854,6 +855,8 @@ unsafe fn render_runs(
 }
 
 pub(crate) fn init_text() {
+    FITTED_LINES.with(|cache| cache.borrow_mut().entries.clear());
+    MEASURED_BOUNDS.with(|cache| cache.borrow_mut().entries.clear());
     unsafe {
         if TTF_Init() != 0 {
             log("TTF_Init failed");
@@ -1148,8 +1151,10 @@ unsafe fn cache_store(
 ///
 /// The cost model changes for those strings only, and both callers that hammer this absorb it:
 /// `elide`'s binary search is memoised on its RESULT, and `TextView`'s wrap sweep goes through
-/// `elide`. A pure-ASCII string still costs exactly one `TTF_SizeUTF8`, decided before any
-/// coverage is loaded.
+/// `elide`. Native widths are cached by the exact bytes, size and weight, so different fitting
+/// budgets and repeated toolbar draws reuse the same metrics. A pure-ASCII cache miss costs one
+/// `TTF_SizeUTF8`, decided before any coverage is loaded. Failed or partial measurements and the
+/// uninitialized-font estimate are never cached.
 pub(crate) fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
     text_bounds(s,sz,bold).0
 }
@@ -1170,7 +1175,16 @@ pub(crate) fn text_bounds(s: *const c_char, sz: c_int, bold: c_int) -> (f32,f32)
             MEASURE_FAULT.store(true, Ordering::Relaxed);
             return (unmeasured_width(CStr::from_ptr(s).to_bytes().len(), sz), sz as f32);
         }
-        let bytes = CStr::from_ptr(s).to_bytes();
+        let text = CStr::from_ptr(s);
+        MEASURED_BOUNDS.with(|cache| cache.borrow_mut().bounds(text, sz, bold,
+            || measure_native_bounds(text, sz, bold)))
+    }
+}
+
+/// The second result says every run was measured successfully, including mixed-script labels.
+fn measure_native_bounds(s: &CStr, sz: c_int, bold: c_int) -> ((f32, f32), bool) {
+    unsafe {
+        let bytes = s.to_bytes();
         if let Some((st, runs)) = std::str::from_utf8(bytes)
             .ok()
             .and_then(|st| Some((st, split_runs(st)?)))
@@ -1179,31 +1193,35 @@ pub(crate) fn text_bounds(s: *const c_char, sz: c_int, bold: c_int) -> (f32,f32)
             let base=font_at(sz,bold);
             let ascent=if base.is_null() {0} else {TTF_FontAscent(base)};
             let mut below=if base.is_null() {0} else {TTF_FontHeight(base)-ascent};
+            let mut complete = !base.is_null();
             for &(link, from, to) in &runs.at[..runs.n] {
                 let f = link_font(link, sz, bold);
                 let f = if f.is_null() { font_at(sz, bold) } else { f };
                 let Ok(c) = CString::new(&st[from..to]) else {
+                    complete = false;
                     continue;
                 };
                 let (mut w, mut h): (c_int, c_int) = (0, 0);
                 if !f.is_null() && TTF_SizeUTF8(f, c.as_ptr(), &mut w, &mut h) == 0 {
                     total += w as f32;
-                    below=below.max(h-TTF_FontAscent(f));
+                    below = below.max(h - TTF_FontAscent(f));
+                } else {
+                    complete = false;
                 }
             }
-            return (total,if base.is_null() {0.0} else {(ascent+below) as f32});
+            return ((total, if base.is_null() { 0.0 } else { (ascent + below) as f32 }), complete);
         }
         let f = font_at(sz, bold);
         if f.is_null() {
-            return (0.0, 0.0);
+            return ((0.0, 0.0), false);
         }
         // Both outputs are real locals. The painter needs height as well as width, with no
         // rasterization or texture upload during declaration.
         let (mut w, mut h): (c_int, c_int) = (0, 0);
-        if TTF_SizeUTF8(f, s, &mut w, &mut h) != 0 {
-            return (0.0, 0.0); // same "unmeasurable → 0" contract the null-surface path had
+        if TTF_SizeUTF8(f, s.as_ptr(), &mut w, &mut h) != 0 {
+            return ((0.0, 0.0), false); // same "unmeasurable → 0" contract the null-surface path had
         }
-        (w as f32,h as f32)
+        ((w as f32, h as f32), true)
     }
 }
 
@@ -1229,6 +1247,12 @@ pub(crate) fn take_measure_fault() -> bool {
 pub(crate) struct TtfMeasure;
 
 impl crate::ui::machine::Measure for TtfMeasure {
+    fn fit_line(&self, s: &str, budget: f32, sz: i32, bold: bool) -> Rc<CStr> {
+        if unsafe { addr_of!(TEXT_OK).read() } == 0 {
+            return fit_line_by(self, s, budget, sz, bold);
+        }
+        FITTED_LINES.with(|cache| cache.borrow_mut().fit(self, s, budget, sz, bold))
+    }
     fn width(&self, s: &CStr, sz: c_int, bold: bool) -> f32 {
         // `text_width` reads TEXT_OK, a main-thread static the C-era init writes once at boot.
         let ok = unsafe { std::ptr::addr_of!(TEXT_OK).read() } != 0;
@@ -1247,6 +1271,292 @@ impl crate::ui::machine::Measure for TtfMeasure {
 }
 
 static mut ELIDE_CACHE: Option<HashMap<u64, String>> = None;
+
+#[derive(Default)]
+struct MeasuredBounds {
+    entries: HashMap<u64, MeasuredBound>,
+}
+
+struct MeasuredBound {
+    text: Box<[u8]>,
+    spec: (c_int, c_int),
+    bounds: (f32, f32),
+}
+
+thread_local! {
+    static MEASURED_BOUNDS: std::cell::RefCell<MeasuredBounds> = Default::default();
+    static NATIVE_WIDTH_FAILURES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+impl MeasuredBounds {
+    fn bounds(&mut self, text: &CStr, sz: c_int, bold: c_int,
+        compute: impl FnOnce() -> ((f32, f32), bool)) -> (f32, f32) {
+        let bytes = text.to_bytes();
+        let spec = (sz, bold);
+        let mut hash = DefaultHasher::new();
+        (bytes, spec).hash(&mut hash);
+        let key = hash.finish();
+        if let Some(entry) = self.entries.get(&key) {
+            if entry.spec == spec && entry.text.as_ref() == bytes { return entry.bounds; }
+        }
+        let (bounds, complete) = compute();
+        if complete {
+            if self.entries.len() >= 512 { self.entries.clear(); }
+            self.entries.insert(key, MeasuredBound { text: bytes.into(), spec, bounds });
+        } else {
+            NATIVE_WIDTH_FAILURES.with(|generation| generation.set(generation.get().wrapping_add(1)));
+        }
+        bounds
+    }
+
+    #[cfg(test)]
+    fn width(&mut self, text: &CStr, sz: c_int, bold: c_int,
+        compute: impl FnOnce() -> (f32, bool)) -> f32 {
+        self.bounds(text, sz, bold, || {
+            let (width, complete) = compute();
+            ((width, 0.0), complete)
+        }).0
+    }
+}
+
+#[cfg(test)]
+mod measured_width_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn native_bounds_cache_keeps_mixed_font_height_and_retries_partial_runs() {
+        let mut cache = MeasuredBounds::default();
+        assert_eq!(cache.bounds(c"A linked face", 26, 0, || ((120.0, 35.0), false)), (120.0, 35.0));
+        assert!(cache.entries.is_empty(), "a missing linked run cannot become a permanent bound");
+        assert_eq!(cache.bounds(c"A linked face", 26, 0, || ((180.0, 41.0), true)), (180.0, 41.0));
+        assert_eq!(cache.bounds(c"A linked face", 26, 0, || panic!("cached bounds")), (180.0, 41.0));
+        assert_eq!(cache.bounds(c"A linked face", 26, 1, || ((183.0, 43.0), true)), (183.0, 43.0));
+    }
+
+    #[test]
+    fn repeated_native_widths_avoid_metric_calls() {
+        let mut cache = MeasuredBounds::default();
+        let calls = Cell::new(0);
+        for _ in 0..60 {
+            let width = cache.width(c"A show with a long title", 26, 1, || {
+                calls.set(calls.get() + 1);
+                (321.5, true)
+            });
+            assert_eq!(width, 321.5);
+            assert_eq!(calls.get(), 1, "repeated fits and toolbar draws must reuse font metrics");
+        }
+    }
+
+    #[test]
+    fn native_width_keys_are_exact_and_storage_is_bounded() {
+        let mut cache = MeasuredBounds::default();
+        let calls = Cell::new(0);
+        for (text, sz, bold) in [(c"Episode", 24, 0), (c"Episode", 26, 0),
+            (c"Episode", 26, 1), (c"Épisode", 26, 1)] {
+            let width = cache.width(text, sz, bold, || {
+                calls.set(calls.get() + 1);
+                (calls.get() as f32, true)
+            });
+            assert_eq!(cache.width(text, sz, bold, || panic!("already measured")), width);
+        }
+        assert_eq!(calls.get(), 4);
+        for index in 0..1024 {
+            let text = CString::new(index.to_string()).unwrap();
+            cache.width(&text, 24, 0, || (1.0, true));
+            assert!(cache.entries.len() <= 512);
+        }
+    }
+
+    #[test]
+    fn failed_or_partial_native_metrics_are_retried() {
+        let mut cache = MeasuredBounds::default();
+        let calls = Cell::new(0);
+        for width in [0.0, 25.0] {
+            assert_eq!(cache.width(c"episode", 24, 0, || {
+                calls.set(calls.get() + 1);
+                (width, false)
+            }), width);
+            assert!(cache.entries.is_empty());
+        }
+        assert_eq!(calls.get(), 2);
+        assert_eq!(cache.width(c"episode", 24, 0, || (42.0, true)), 42.0);
+        assert_eq!(cache.width(c"episode", 24, 0, || panic!("success is cached")), 42.0);
+    }
+}
+
+pub(crate) fn fit_line_by<M: crate::ui::machine::Measure + ?Sized>(
+    measure: &M, s: &str, budget: f32, sz: i32, bold: bool,
+) -> Rc<CStr> {
+    CString::new(elide_by(s, budget, false, |text| measure.width_str(text, sz, bold)))
+        .unwrap_or_default().into_boxed_c_str().into()
+}
+
+#[derive(Default)]
+struct FittedLines {
+    entries: HashMap<u64, FittedLine>,
+}
+
+struct FittedLine {
+    text: Box<str>,
+    spec: (u32, i32, bool),
+    run: Rc<CStr>,
+}
+
+// Only the native capability owns this memo. A recording/replay capability must issue its own
+// metric queries even when an identical string was already fitted against a live font.
+thread_local! {
+    static FITTED_LINES: std::cell::RefCell<FittedLines> = Default::default();
+}
+
+impl FittedLines {
+    fn fit(&mut self, measure: &impl crate::ui::machine::Measure, s: &str,
+        budget: f32, sz: i32, bold: bool) -> Rc<CStr> {
+        let spec = (budget.to_bits(), sz, bold);
+        let mut hash = DefaultHasher::new();
+        (s, spec).hash(&mut hash);
+        let key = hash.finish();
+        if let Some(entry) = self.entries.get(&key) {
+            // Retain the full input as well: a hash collision must never show another item's label.
+            if entry.spec == spec && entry.text.as_ref() == s { return Rc::clone(&entry.run); }
+        }
+        let before = NATIVE_WIDTH_FAILURES.with(std::cell::Cell::get);
+        let run = fit_line_by(measure, s, budget, sz, bold);
+        // Preserve this frame's fallback, but retry a fit that relied on failed/partial metrics.
+        // Cache hits return above, so a successful hot run pays no generation checks.
+        if NATIVE_WIDTH_FAILURES.with(std::cell::Cell::get) != before { return run; }
+        if self.entries.len() >= 512 { self.entries.clear(); }
+        self.entries.insert(key, FittedLine { text: s.into(), spec, run: Rc::clone(&run) });
+        run
+    }
+}
+
+#[cfg(test)]
+mod fitted_line_tests {
+    use super::*;
+    use crate::ui::machine::Measure;
+    use std::cell::Cell;
+
+    #[derive(Default)]
+    struct CountMeasure(Cell<usize>);
+    impl Measure for CountMeasure {
+        fn width(&self, s: &CStr, sz: i32, _: bool) -> f32 {
+            self.0.set(self.0.get() + 1);
+            s.to_string_lossy().chars().count() as f32 * sz as f32
+        }
+        fn cap_h(&self, _: i32) -> f32 { 1.0 }
+        fn line_h(&self, _: i32) -> f32 { 1.0 }
+    }
+
+    #[test]
+    fn repeated_still_lines_reuse_measurement_and_drawable_storage() {
+        let measure = CountMeasure::default();
+        let mut cache = FittedLines::default();
+        let show = cache.fit(&measure, "A show with a long title", 10.0, 1, true);
+        let address = cache.fit(&measure, "S1 · E2", 10.0, 1, false);
+        let calls = measure.0.get();
+        assert!(calls > 0);
+        for _ in 0..60 {
+            let next_show = cache.fit(&measure, "A show with a long title", 10.0, 1, true);
+            let next_address = cache.fit(&measure, "S1 · E2", 10.0, 1, false);
+            assert_eq!(measure.0.get(), calls, "stable overlays must not remeasure each frame");
+            assert!(Rc::ptr_eq(&show, &next_show));
+            assert!(Rc::ptr_eq(&address, &next_address));
+        }
+    }
+
+    #[test]
+    fn a_failed_metric_does_not_cache_a_stale_fitted_line() {
+        struct RetryMeasure {
+            fail: Cell<bool>,
+            widths: std::cell::RefCell<MeasuredBounds>,
+            calls: Cell<usize>,
+        }
+        impl Measure for RetryMeasure {
+            fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
+                self.widths.borrow_mut().width(s, sz, bold as c_int, || {
+                    self.calls.set(self.calls.get() + 1);
+                    let failed = self.fail.replace(false);
+                    (if failed { 0.0 } else { s.to_string_lossy().chars().count() as f32 }, !failed)
+                })
+            }
+            fn cap_h(&self, _: i32) -> f32 { 1.0 }
+            fn line_h(&self, _: i32) -> f32 { 1.0 }
+        }
+        let measure = RetryMeasure { fail: Cell::new(true), widths: Default::default(), calls: Cell::new(0) };
+        let mut cache = FittedLines::default();
+        let failed = cache.fit(&measure, "episode", 4.0, 1, false);
+        assert_eq!(failed.to_bytes(), b"episode"); // the failed zero width preserves this frame's fallback
+        let recovered = cache.fit(&measure, "episode", 4.0, 1, false);
+        assert_eq!(recovered.to_bytes(), "epi…".as_bytes(), "retry must use the recovered font metrics");
+        let calls = measure.calls.get();
+        assert!(Rc::ptr_eq(&recovered, &cache.fit(&measure, "episode", 4.0, 1, false)));
+        assert_eq!(measure.calls.get(), calls, "a successful retry restores the cache fast path");
+    }
+
+    #[test]
+    fn fitted_lines_keep_exact_width_text_size_and_weight_in_the_key() {
+        let measure = CountMeasure::default();
+        let mut cache = FittedLines::default();
+        let run = cache.fit(&measure, "абвг", 3.25, 1, false);
+        assert_eq!(run.to_bytes(), "аб…".as_bytes());
+        for (text, budget, sz, bold) in [
+            ("абвг", 3.75, 1, false), ("абвг", 3.75, 2, false),
+            ("абвг", 3.75, 2, true), ("different", 3.75, 2, true),
+        ] {
+            let calls = measure.0.get();
+            cache.fit(&measure, text, budget, sz, bold);
+            assert!(measure.0.get() > calls);
+        }
+    }
+
+    #[test]
+    fn recording_and_replay_cannot_reuse_a_live_fitted_line() {
+        use crate::ui::rec::Measurements;
+        struct NativeMemo(CountMeasure, std::cell::RefCell<FittedLines>,
+            std::cell::RefCell<MeasuredBounds>);
+        impl Measure for NativeMemo {
+            fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
+                self.2.borrow_mut().width(s, sz, bold as c_int, || (self.0.width(s, sz, bold), true))
+            }
+            fn cap_h(&self, sz: i32) -> f32 { self.0.cap_h(sz) }
+            fn line_h(&self, sz: i32) -> f32 { self.0.line_h(sz) }
+            fn fit_line(&self, s: &str, budget: f32, sz: i32, bold: bool) -> Rc<CStr> {
+                self.1.borrow_mut().fit(self, s, budget, sz, bold)
+            }
+        }
+        let source = Box::leak(Box::new(NativeMemo(CountMeasure::default(), Default::default(), Default::default())));
+        let live = Measurements::Live(source);
+        let warm = live.fit_line("episode", 20.0, 1, false);
+        assert!(Rc::ptr_eq(&warm, &live.fit_line("episode", 20.0, 1, false)));
+        let record = Measurements::record(source);
+        let native_calls = source.0.0.get();
+        assert_eq!(warm, record.fit_line("episode", 20.0, 1, false));
+        assert_eq!(source.0.0.get(), native_calls, "recording queries must still use native cached metrics");
+        let metrics = record.drain().unwrap().into_iter().collect::<HashMap<_, _>>();
+        assert!(!metrics.is_empty(), "warm native memo must not hide recorded measurements");
+        let mut replay = Measurements::Pending(Cell::new(false));
+        replay.prepare(Some(&metrics));
+        assert_eq!(warm, replay.fit_line("episode", 20.0, 1, false));
+        assert!(replay.drain().is_ok());
+        let mut missing = Measurements::Pending(Cell::new(false));
+        missing.prepare(Some(&HashMap::new()));
+        missing.fit_line("episode", 20.0, 1, false);
+        assert!(missing.drain().is_err(), "warm native memo must not mask a replay miss");
+    }
+
+    #[test]
+    fn fitted_line_memo_stays_bounded_and_old_runs_remain_drawable() {
+        let measure = CountMeasure::default();
+        let mut cache = FittedLines::default();
+        let old = cache.fit(&measure, "episode", 20.0, 1, false);
+        for width in 0..1024 {
+            cache.fit(&measure, "episode", width as f32, 1, false);
+            assert!(cache.entries.len() <= 512);
+        }
+        assert_eq!(old.to_bytes(), b"episode");
+    }
+}
 
 /// Truncate `s` to fit `budget` px at `sz`/`bold`, ellipsised — and **memoised**. The per-frame
 /// binary search over candidate widths (each candidate a `text_width` call) is the text-measure
@@ -1464,6 +1774,13 @@ pub(crate) fn draw_text(
             2 => x - dw,
             _ => x,
         };
+        // Keep the texture warm and return its layout width, but skip driver state changes for
+        // runs outside the blur-source crop as well as the draw itself.
+        if crate::gfx::culled(dx, y, dw, dh)
+            || gate(Class::Text, dx, y, dw, dh)
+        {
+            return w as f32;
+        }
         crate::gfx::use_prog(TPROG); // TL_SCREEN / TL_TEX / texture unit 0 set once at init
         glUniform4fv(TL_COL, 1, col);
         glBindTexture(GL_TEXTURE_2D, tex);
@@ -1475,13 +1792,7 @@ pub(crate) fn draw_text(
             dw,
             dh,
         );
-        // The width is still returned — callers lay out from it — but a run outside a blur source
-        // pass's region contributes no fragment to the backdrop, so the quad is not submitted.
-        if !crate::gfx::culled(dx, y, dw, dh)
-            && !gate(Class::Text, dx, y, dw, dh)
-        {
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        }
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         w as f32
     }
 }
@@ -1531,6 +1842,11 @@ pub(crate) fn draw_text_fade(
             2 => x - dw,
             _ => x,
         };
+        if crate::gfx::culled(dx, y, dw, dh)
+            || gate(Class::Text, dx, y, dw, dh)
+        {
+            return w as f32;
+        }
         crate::gfx::use_prog(TPROGF); // TLF_SCREEN / TLF_TEX / texture unit 0 set once at init
         glUniform4fv(TLF_COL, 1, col);
         // px → string-texture uv (the varying spans the one-quad string). `(0.0, 0.0)` is "off" —
@@ -1551,11 +1867,7 @@ pub(crate) fn draw_text_fade(
             dw,
             dh,
         );
-        if !crate::gfx::culled(dx, y, dw, dh)
-            && !gate(Class::Text, dx, y, dw, dh)
-        {
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        }
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         w as f32
     }
 }

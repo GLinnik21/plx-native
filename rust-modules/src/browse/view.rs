@@ -22,6 +22,7 @@ pub(crate) struct ListingSnapshot {
 #[derive(Clone)]
 struct ListingData {
     id: ListingId,
+    library_type: super::LibraryType,
     total: i64,
     fetch: SecFetch,
     items: SecItems,
@@ -79,6 +80,14 @@ impl ListingSnapshot {
     }
 
     #[cfg(test)]
+    pub(crate) fn with_library_type(mut self, library_type: super::LibraryType) -> Self {
+        if let Some(data) = &mut self.data {
+            data.library_type = library_type;
+        }
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn with_page(mut self, start: usize, items: Vec<crate::pms::PmsMovie>) -> Self {
         if let Some(data) = &mut self.data {
             for (offset, item) in items.into_iter().enumerate() {
@@ -111,10 +120,12 @@ impl ListingSnapshot {
                     sid,
                     section: 1,
                 },
+                library_type: super::LibraryType::default(),
                 total: items.len() as i64,
                 fetch: SecFetch::Ready,
                 items: SecItems::from_vec(items),
                 sorts: Arc::new(vec![SortEntry {
+                    desc_key: String::new(),
                     key: "titleSort".into(),
                     title: "Title".into(),
                     default_desc: false,
@@ -206,6 +217,9 @@ impl<'a> ListingView<'a> {
     pub(crate) fn unwatched(self) -> bool {
         self.0.data.as_ref().is_some_and(|s| s.unwatched)
     }
+    pub(crate) fn library_type(self) -> super::LibraryType {
+        self.0.data.as_ref().map_or(super::LibraryType::default(), |s| s.library_type)
+    }
     pub(crate) fn rail_available(self) -> bool {
         self.id().is_some()
             && self
@@ -274,6 +288,7 @@ impl super::BrowseState {
                 .zip(self.states().get(sec))
                 .map(|(id, state)| ListingData {
                     id,
+                    library_type: state.library_type,
                     total: state.total,
                     fetch: state.fetch,
                     items: state.items.clone(),
@@ -655,6 +670,7 @@ mod tests {
         let (sorts, genres, letters) = {
             let section = owner.state_mut(0).unwrap();
             section.sorts = Arc::new(vec![SortEntry {
+                desc_key: String::new(),
                 key: "titleSort".into(),
                 title: "Title".into(),
                 default_desc: false,

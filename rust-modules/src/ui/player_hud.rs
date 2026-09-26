@@ -377,9 +377,8 @@ pub(crate) struct TransportRow {
     /// **The measured width of every control-row stand-in label seen so far** — a RENDER memo, the
     /// one half of this struct that is not logical state.
     ///
-    /// `text::text_width` is an uncached `TTF_SizeUTF8` and the labels are compile-time constants
-    /// whose width can never change, so re-measuring them 2-3x a frame is exactly the thrash
-    /// `text::elide`'s memo exists to avoid. It rides here rather than in a struct of its own
+    /// Native font metrics share a cache; this local memo also avoids repeated capability calls
+    /// and string preparation for the fixed control labels. It rides here rather than in a struct of its own
     /// because `ctrl_slot` is reached from the same three places the springs are — `draw_hud`,
     /// `up_next` and `skip_pill` — and one borrow through those paths is one borrow.
     widths: Vec<(String, f32)>,
@@ -489,9 +488,8 @@ pub(crate) const CTRL_ROW_W: f32 = 3.0 * BTN_S + 2.0 * BTN_GAP;
 /// discs' own edge, and never narrower than the pair it replaces so the row does not visibly shrink
 /// when it appears. ONE geometry for both stand-ins and for the pointer hit-test.
 ///
-/// The measured width is memoised per label: `text::text_width` is an uncached `TTF_SizeUTF8`, and
-/// the labels are compile-time constants whose width can never change — re-measuring them 2-3× a
-/// frame is exactly the thrash `text::elide`'s memo exists to avoid.
+/// The measured width is memoised per label, avoiding repeated capability calls and string
+/// preparation for fixed labels in addition to the native font-metric cache.
 pub(crate) fn ctrl_slot(row: &mut TransportRow, label: &str, measure: &dyn crate::ui::machine::Measure) -> Rect {
     let memo = &mut row.widths;
     let w = match memo.iter().find(|(l, _)| l == label) {

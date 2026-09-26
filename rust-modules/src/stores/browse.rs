@@ -14,7 +14,7 @@ use super::StoreId;
 
 #[allow(unused_imports)] // Shared owner vocabulary; some members are feature/test specific.
 pub(crate) use crate::browse::{
-    Cursor, CursorAt, GenreEntry, SecFetch, SecKind, SortEntry, SourceState, SrcGroup, SrcRow,
+    Cursor, CursorAt, GenreEntry, LibraryType, SecFetch, SecKind, SortEntry, SourceState, SrcGroup, SrcRow,
 };
 #[allow(unused_imports)] // Shared owner vocabulary; some members are feature/test specific.
 pub(crate) use crate::browse::section_hubs::{HubsId, HubsSnapshot, HubsView, Publication};
@@ -123,8 +123,8 @@ impl BrowseStore {
     }
 
     pub(crate) fn run(&mut self, cmd: BrowseCmd) -> bool {
-        let save_cursor = matches!(&cmd, BrowseCmd::Addressed {
-            work: LibraryWork::SaveCursor { .. }, ..
+        let change_sensitive = matches!(&cmd, BrowseCmd::Discovery(_) | BrowseCmd::Addressed {
+            work: LibraryWork::SaveCursor { .. } | LibraryWork::Hubs { .. }, ..
         });
         let quiet = matches!(&cmd, BrowseCmd::Addressed {
             work: LibraryWork::Want { .. } | LibraryWork::Letters | LibraryWork::Genres, ..
@@ -137,9 +137,8 @@ impl BrowseStore {
         if matches!(&cmd, BrowseCmd::Reset) {
             self.adapter = Arc::new(Default::default());
         }
-        let discovery = matches!(&cmd, BrowseCmd::Discovery(_));
         let changed = self.state.run_owned(&self.adapter, cmd) || roster_changed;
-        if (save_cursor && changed) || (!quiet && !save_cursor && (!discovery || changed)) {
+        if !quiet && (!change_sensitive || changed) {
             self.bump();
         }
         changed
@@ -406,6 +405,7 @@ pub(crate) enum QueryEdit {
     Sort { key: String, desc: bool },
     Unwatched(bool),
     Genre(Option<String>),
+    LibraryType(LibraryType),
 }
 
 #[derive(Clone, Debug)]
@@ -530,6 +530,38 @@ mod contract_tests {
         }
         assert_eq!(stores.browse.borrow().gen(), before);
         assert!(stores.take_notices().is_empty());
+    }
+
+    #[test]
+    fn hubs_housekeeping_notices_only_a_new_publication() {
+        let _guard = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let mut browse = BrowseStore::default();
+        browse.seed_two_source_table_for_test();
+        browse.seed_shelves_for_test(0, &["published"], 1);
+        let id = browse.hubs_snapshot().view().id().unwrap();
+        let target = SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section };
+        browse.take_notice();
+        let before = browse.gen();
+        let request = |target, may_publish| BrowseCmd::Addressed {
+            target, work: LibraryWork::Hubs { may_publish },
+        };
+        for may_publish in [false, true] {
+            assert!(!browse.run(request(target, may_publish)));
+            assert!(!browse.run(request(SectionAddress { epoch: target.epoch + 1, ..target }, may_publish)));
+        }
+        assert_eq!(browse.gen(), before, "unchanged and stale Hubs work must stay quiet");
+        assert_eq!(browse.take_notice(), None);
+
+        crate::browse::section_hubs::stage_shelves_for_owner_test(&mut browse.state, 0);
+        assert!(!browse.run(request(target, false)));
+        assert_eq!(browse.gen(), before, "a held staged publication is still unchanged");
+        assert!(browse.run(request(target, true)));
+        assert_eq!(browse.gen(), before + 1);
+        assert_eq!(browse.take_notice(), Some(before + 1), "a committed shelf set still owes its notice");
+        assert!(!browse.run(request(target, true)));
+        assert_eq!(browse.take_notice(), None, "the same publication is noticed once");
+        assert_eq!(browse.gen(), before + 1);
     }
 
     #[test]

@@ -626,6 +626,16 @@ impl Painter {
         let c = self.c(col);
         crate::gfx::draw_rrect(r.x + self.dx, r.y + self.dy, r.w, r.h, rl, rr, c.as_ptr());
     }
+    /// Bottom artwork gradient; false asks the widget to use its shader-failure fallback.
+    pub(crate) fn art_scrim(self, r: Rect, rad: f32, h: f32, col: [f32; 4]) -> bool {
+        if self.declare(r, 21, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            h.record(data);
+            col.record(data);
+        }) { return true; }
+        crate::gfx::draw_art_scrim(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, h, self.c(col))
+    }
     /// A rounded-rect **OUTLINE with nothing inside it** — a `w`-px inset ring in `col`, and the
     /// background composites straight through the middle.
     ///
@@ -1057,6 +1067,34 @@ impl Painter {
             blur,
             shcol.as_ptr(),
         );
+    }
+    /// The still specialization composes the label ground with the artwork. A fade or unsupported
+    /// shader returns false so the component can retain its ordinary card and ground passes.
+    #[must_use]
+    pub(crate) fn tex_carded_still(
+        self, tex: u32, uv: [f32; 4], r: Rect, rad: f32, f: f32, band: f32, scrim: [f32; 4],
+    ) -> bool {
+        // Discovery describes the same pixels even when the optional program uses its fallback.
+        // Missing artwork and cascaded fades keep the component's ordinary card/ground path.
+        if tex == 0 || self.c(theme::TINT_WHITE) != [1.0; 4] || band <= 0.0
+            || r.w <= 0.0 || r.h <= 0.0 || rad < 0.5 { return false; }
+        if self.declare({ let (b,o,_) = card_shadow_params(r.h,f);
+            Rect::new(r.x-b,r.y+o-b,r.w+2.0*b,r.h+2.0*b) }, 22, |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            crate::gfx::tex_ledger::revision(tex).record(data);
+            uv.record(data);
+            rad.record(data);
+            f.record(data);
+            band.record(data);
+            scrim.record(data);
+        }) { return true; }
+        let (blur, _, sa) = card_shadow_params(r.h, f);
+        crate::gfx::draw_tex_carded_still(
+            tex, uv, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, self.c(theme::TINT_WHITE),
+            theme::CARD_SHEEN_W, self.sheen_rim(), blur + 1.0, blur,
+            self.c(theme::with_a(theme::CARD_SHADOW, sa)), band, self.c(scrim),
+        )
     }
     /// THE HERO GROUND IN ONE PASS: the backdrop art with both scrim fields evaluated on it,
     /// instead of the art and then four blended gradient quads over the same 2.78M fragments.
@@ -1734,6 +1772,16 @@ mod tests {
             r.y < f.y && r.y + r.h > f.y + f.h,
             "the square must overflow the short axis both ways"
         );
+    }
+
+    #[test]
+    fn recording_still_primitives_never_reach_gl() {
+        let p = Painter::recording();
+        let r = Rect::new(100.0, 200.0, 400.0, 225.0);
+        assert!(p.art_scrim(r, 14.0, 80.0, theme::scrim(0.7)));
+        assert!(p.tex_carded_still(71, [0.1, 0.0, 0.8, 1.0], r, 14.0, 0.0, 80.0, theme::scrim(0.7)));
+        assert!(!p.tex_carded_still(0, crate::gfx::UV_FULL, r, 14.0, 0.0, 80.0, theme::scrim(0.7)),
+            "missing artwork must still traverse the placeholder path");
     }
 
     /// A glass declared UNDER a frozen host boundary — the tab bar's backdrop on Home while the

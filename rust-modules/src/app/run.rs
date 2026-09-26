@@ -3253,6 +3253,9 @@ mod lifecycle_regression_tests {
                         }
                         Err(e) => panic!("fixture accept: {e}"),
                     };
+                    // Darwin accept inherits the nonblocking listener flag. Reads must wait
+                    // for request bytes rather than racing the loopback client's first write.
+                    socket.set_nonblocking(false).unwrap();
                     socket
                         .set_read_timeout(Some(Duration::from_secs(3)))
                         .unwrap();

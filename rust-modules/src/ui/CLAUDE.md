@@ -301,6 +301,13 @@ tried first. None of it is reconstructable from the code without repeating the m
 
 ## Card marks — three marks, three meanings, and no card may blur them
 
+Library All uses the shared caption-band policy for movies, shows, seasons and episodes:
+only the focused row opens its caption; a bounded set of springs closes rows left behind.
+Live and target geometry include these bands, so painting, paging, scrolling and restored
+viewports agree. Episode rows use landscape stills. `Art::Still` supplies the label ground;
+`widgets::still_overlay` draws its labels and resume bar afterward. Both the artwork and
+its ground participate in backdrop discovery, including texture changes and UV cropping.
+
 - An **amber ▶** means **this press starts the video**. It is drawn where that is true and nowhere
   else: a Continue Watching deck, and the detail page's episode filmstrip. Watch state does not
   withdraw it — `widgets::still_glyph` is the whole rule, graded by an exhaustive table, because

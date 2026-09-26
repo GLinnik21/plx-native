@@ -36,6 +36,11 @@ use super::screen::{
     Activate, At, Dir, DrawFrame, EdgeRule, ElemKind, Enter, Focusable, FocusSource, FocusTarget,
     GroupSpec, HitSource, Mounter, Placed, ReturnState, Screen, ScreenArg, ScreenEvent, Step, Stop,
 };
+
+#[cfg(test)]
+mod return_tests {
+    include!("dispatch_return_tests.rs");
+}
 use super::{Painter, Rect};
 
 /// The strip's control namespace: `of_index(STRIP_BASE + stable_id)`, never display position.
@@ -215,7 +220,8 @@ pub trait Rig<H: Host> {
     /// Execute an application effect against the adapters; may emit more (an adapter result
     /// available at once, an `Emit`).
     fn app_fx(&mut self, from: MachineId, fx: H::Fx, parts: &CxParts<H::Elem>, out: &mut Effects<'_, H>);
-    /// Snapshot at effect execution, before another input can move the requesting page.
+    /// Emission-time bookmark delivered before effect execution. Housekeeping which opts out
+    /// through `Host::app_fx_needs_return` receives the default, clearing any previous bookmark.
     fn app_return(&mut self, _from: MachineId, _ret: ReturnState<H::Elem, H::Memory>) {}
     /// Main-thread native operation, reached only after Input validates the requesting owner.
     fn system_keyboard(&mut self, _up: bool) {}
@@ -524,7 +530,7 @@ where
     /// Queue an effect from OUTSIDE a step (the application's loop handing a store command to the
     /// dispatcher path): it drains in this frame's step 6 like any machine's emission.
     pub fn emit(&mut self, from: MachineId, fx: Fx<H>) {
-        if matches!(fx, Fx::App(_)) {
+        if matches!(&fx, Fx::App(app_fx) if H::app_fx_needs_return(app_fx)) {
             self.app_returns.push_back((from, self.return_state()));
         }
         self.queue.push_back(Stamped { from, fx });
@@ -1573,9 +1579,14 @@ where
                 Fx::Log(line) => rig.log(&line.0),
                 Fx::App(app_fx) => {
                     steps += 1;
-                    let captured = self.app_returns.iter().position(|(from, _)| *from == item.from)
-                        .and_then(|i| self.app_returns.remove(i)).map(|(_, ret)| ret)
-                        .unwrap_or_else(|| self.return_state());
+                    let captured = if H::app_fx_needs_return(&app_fx) {
+                        self.app_returns.iter().position(|(from, _)| *from == item.from)
+                            .and_then(|i| self.app_returns.remove(i)).map(|(_, ret)| ret)
+                            .unwrap_or_else(|| self.return_state())
+                    } else {
+                        // Do not consume a later navigation effect's bookmark from this sender.
+                        ReturnState::default()
+                    };
                     rig.app_return(item.from, captured);
                     let mut out: Vec<Stamped<H>> = Vec::new();
                     {
@@ -1603,8 +1614,10 @@ where
                 // at the FIFO tail loses same-frame releases (remote_synth_key emits both).
                 Fx::Press(_) | Fx::Deliver(_, Delivery::Keyboard { .. }) => immediate_input.push(s),
                 Fx::Deliver(_, Delivery::Screen(ScreenEvent::Activate(_))) if s.from == MachineId::Input => immediate_input.push(s),
-                Fx::App(_) => {
-                    self.app_returns.push_back((s.from, self.return_state()));
+                Fx::App(ref app_fx) => {
+                    if H::app_fx_needs_return(app_fx) {
+                        self.app_returns.push_back((s.from, self.return_state()));
+                    }
                     self.queue.push_back(s);
                 }
                 _ => self.queue.push_back(s),

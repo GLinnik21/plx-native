@@ -19,8 +19,54 @@ fn shelf_on_screen(origin: f32, pitch: f32) -> bool {
     on_axis(origin - crate::ui::consts::TITLE_DY, pitch, SCR_H, 0.0)
 }
 
+/// Reject a whole control band before creating labels or measuring individual pills. The
+/// full-width envelope preserves travelling capsules; shared cast tokens cover their shadows.
+/// It is deliberately wider than the controls, so no text metrics are needed to reject it.
+fn document_band_visible(p: crate::ui::Painter, y: f32, height: f32, pop: f32) -> bool {
+    let pad = theme::CONTROL_CAST_FOCUS.iter()
+        .map(|(dy, blur, _)| dy.abs() + blur).fold(0.0f32, f32::max) + 1.0;
+    let mut bounds = Rect::new(0.0, y, SCR_W, height)
+        .scaled(pop.max(1.0) * p.scale().max(1.0)).inset(-pad);
+    bounds.x += p.dx();
+    bounds.y += p.dy();
+    let visible = bounds.intersect(Rect::FULL);
+    visible.w > 0.0 && visible.h > 0.0
+        && (crate::ui::frame::backdrop::discovering()
+            || !crate::gfx::culled(bounds.x, bounds.y, bounds.w, bounds.h))
+}
+
 #[cfg(test)]
 mod layer_tests {
+    #[test]
+    fn document_band_culling_preserves_partial_labels_focus_and_shadow_edges() {
+        let _guard = crate::testlock::serial();
+        let p = crate::ui::Painter::root();
+        let height = crate::ui::widgets::StatusOverlay::CTRL_H;
+        let pad = crate::ui::theme::CONTROL_CAST_FOCUS.iter()
+            .map(|(dy, blur, _)| dy.abs() + blur).fold(0.0f32, f32::max) + 1.0;
+        assert!(super::document_band_visible(p, -height + 1.0, height, 1.0));
+        assert!(super::document_band_visible(p, -height - pad + 1.0, height, 1.0),
+            "a focus shadow can remain on the panel after the control itself left");
+        let above = -height - pad - 1.0;
+        assert!(!super::document_band_visible(p, above, height, 1.0));
+        assert!(super::document_band_visible(p, above, height, crate::ui::widgets::CTRL_FOCUS_SCALE),
+            "the focused capsule's growth belongs in the paint envelope");
+        assert!(super::document_band_visible(p.translate(0.0, 300.0), above, height, 1.0));
+        assert!(!super::document_band_visible(p, super::SCR_H + pad + 1.0, height, 1.0));
+        assert!(!super::document_band_visible(p, -2000.0, super::layout::GRID_HEAD_H, 1.0));
+    }
+
+    #[test]
+    fn document_band_culling_keeps_visible_controls_during_backdrop_discovery() {
+        let _guard = crate::testlock::serial();
+        let _discovery = crate::ui::frame::backdrop::discover(
+            std::rc::Rc::new(std::cell::RefCell::new(Default::default())));
+        assert!(crate::gfx::culled(0.0, 0.0, 100.0, 100.0),
+            "discovery suppresses GL draws without suppressing paint declarations");
+        assert!(super::document_band_visible(crate::ui::Painter::root(),
+            super::CONTENT_TOP, super::layout::GRID_HEAD_H, 1.0));
+    }
+
     #[test]
     fn shelf_culling_keeps_the_visible_band_above_the_centered_tab_track() {
         use crate::ui::consts::{CARD_H, ROW_PITCH, SCR_H, TITLE_DY};
@@ -57,7 +103,9 @@ impl LibraryScreen {
         // `loop=` 43-45 → 57); `lb.document` brackets the chips, the shelf band and the status
         // read-out with `lb.shelves` inside it for the card rows alone; `lb.grid` is the poster
         // wall's windowed rows and `lb.rail` the letter rail.
-        crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
+        crate::ui::profile::phase("lb.clear", || {
+            crate::gfx::frame_clear(theme::CLEAR_RGB.0, theme::CLEAR_RGB.1, theme::CLEAR_RGB.2);
+        });
         crate::ui::profile::phase("lb.ground", || {
             self.ground.draw(f.painter.alpha(f.page_alpha), Rect::FULL);
         });
@@ -84,21 +132,7 @@ impl LibraryScreen {
     fn draw_document<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
         let env = Env::inert();
-        // A single favourite never reaches this row at all — `sync` clears `self.libraries`
-        // outright when there is nothing to disambiguate (issue #100/#165), for every profile,
-        // owned or borrowed. What remains is always the pill strip.
-        if !self.libraries.is_empty() {
-            self.library_capsules.draw(p, self.library_rect(0, f.cx).y, crate::ui::widgets::StatusOverlay::CTRL_H,
-                crate::ui::widgets::TabGround::Plated { pop: self.library_pop.scale_with(0, f.press.scale) });
-        }
-        for (index, (_, section)) in self.libraries.iter().enumerate() {
-            let label = self.library_label(*section, f.cx);
-            let rect = self.library_rect(index, f.cx);
-            if !on_axis(rect.y, rect.h, SCR_H, 0.0) { continue; }
-            let (focused, selected) = self.library_capsules.mixes((rect.x, rect.w));
-            TabPill::new(label.as_ptr(), theme::size::BODY, rect).plated()
-                .mix(focused, selected).draw(&env, p);
-        }
+        self.draw_library_controls(f);
         crate::ui::profile::phase("lb.shelves", || {
             for (index, row) in self.shelves.iter().enumerate() {
                 let Some(shelf) = H::section_hubs(f.cx).shelves().get(index) else { continue };
@@ -116,17 +150,7 @@ impl LibraryScreen {
                 }
             }
         });
-        if self.layout.grid_head {
-            for elem in [SORT, FILTER] {
-                let chip = self.toolbar_chip(elem, f.cx);
-                if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {
-                    ValueChip::new(chip.name, &chip.value, chip.note.as_deref(), placed.rect)
-                        .focused(f.focus.current.is_some_and(|key| key.elem == elem)).draw(&env, p);
-                }
-            }
-            card_row::draw_heading(p, "All", "", MARGIN_X,
-                CONTENT_TOP + self.layout.grid_block_top() - self.scroll.pos, layout::GRID_RIGHT - MARGIN_X, f.measure);
-        }
+        self.draw_grid_header(f);
         if self.readout == Readout::Loading {
             // Preserve the Library's standalone loading spinner, outside either content fade.
             crate::ui::widgets::Spinner::new(SCR_W * 0.5, SCR_H * 0.52, 26.0)
@@ -143,6 +167,42 @@ impl LibraryScreen {
         }
     }
 
+    fn draw_library_controls<H: LibraryLike>(&self, f: &DrawFrame<'_, '_, H>) {
+        let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
+        let pop = self.library_pop.scale_with(0, f.press.scale);
+        let y = CONTENT_TOP - self.scroll.pos - self.shelves.first().map_or(0.0, |row| row.motion.lift());
+        if self.libraries.is_empty()
+            || !document_band_visible(p, y, crate::ui::widgets::StatusOverlay::CTRL_H, pop) { return; }
+        let env = Env::inert();
+        // Singleton selectors are hidden for every profile in `sync`; the remaining controls
+        // are always the library pill strip.
+        self.library_capsules.draw(p, y, crate::ui::widgets::StatusOverlay::CTRL_H,
+            crate::ui::widgets::TabGround::Plated { pop });
+        for (index, (_, section)) in self.libraries.iter().enumerate() {
+            let label = self.library_label(*section, f.cx);
+            let rect = self.library_rect(index, f.cx);
+            let (focused, selected) = self.library_capsules.mixes((rect.x, rect.w));
+            TabPill::new(label.as_ptr(), theme::size::BODY, rect).plated()
+                .mix(focused, selected).draw(&env, p);
+        }
+    }
+
+    fn draw_grid_header<H: LibraryLike>(&self, f: &DrawFrame<'_, '_, H>) {
+        let p = f.painter.alpha(f.page_alpha * self.page_fade.alpha());
+        let y = CONTENT_TOP + self.layout.grid_block_top() - self.scroll.pos;
+        if !self.layout.grid_head || !document_band_visible(p, y, layout::GRID_HEAD_H, 1.0) { return; }
+        let env = Env::inert();
+        for &elem in self.toolbar_elems() {
+            let chip = self.toolbar_chip(elem, f.cx);
+            if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {
+                ValueChip::new(chip.name, &chip.value, chip.note.as_deref(), placed.rect)
+                    .focused(f.focus.current.is_some_and(|key| key.elem == elem)).draw(&env, p);
+            }
+        }
+        card_row::draw_heading(p, "All", "", MARGIN_X,
+            y, layout::GRID_RIGHT - MARGIN_X, f.measure);
+    }
+
     fn record_document_stops<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
         for (index, (elem, _)) in self.libraries.iter().enumerate() {
             let rect = self.library_rect(index, f.cx);
@@ -155,7 +215,7 @@ impl LibraryScreen {
             for &elem in row.elems.iter().filter(|elem| Some(**elem) != focused) { self.stop(elem, f); }
             if let Some(elem) = focused.filter(|elem| row.elems.contains(elem)) { self.stop(elem, f); }
         }
-        if self.layout.grid_head { for elem in [SORT, FILTER] { self.stop(elem, f); } }
+        if self.layout.grid_head { for &elem in self.toolbar_elems() { self.stop(elem, f); } }
         if self.readout == Readout::Failed { self.stop(RETRY, f); }
     }
 

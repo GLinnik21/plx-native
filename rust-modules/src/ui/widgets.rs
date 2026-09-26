@@ -269,8 +269,9 @@ pub(crate) enum Art<'a> {
 }
 
 /// The one art-tile draw op. Resolves `art` to a texture (or a dark skeleton) and draws it at `frame`,
-/// scaled about its centre when `focused`. A textured tile routes through the CARD COMPOSITE
-/// ([`Painter::tex_carded`]): texture + 1px edge-sheen + the soft drop-shadow that GROWS with the pop
+/// scaled about its centre when `focused`. Textured tiles share the CARD COMPOSITE
+/// ([`Painter::tex_carded`], with [`Painter::tex_carded_still`] folding a still's label ground):
+/// texture + 1px edge-sheen + the soft drop-shadow that GROWS with the pop
 /// factor `f` (0 = resting/close to the shelf, 1 = fully lifted), all in ONE pass. The caller supplies
 /// `f` (the shelves compute it from their per-cell spring; the episode/chapters strips from `scale`).
 /// The size a landscape still is transcoded at — [`crate::ui::card_row::RowStyle::EPISODE`]'s tile,
@@ -412,10 +413,8 @@ pub(crate) fn still_line(
         // measured through the cap bands rather than a literal, so a font swap cannot silently
         // close the pair up.
         let ly = sy - sct - STILL_PAIR_GAP - lcb;
-        let run = crate::text::elide_by(label, right - x0, false, |t| measure.width_str(t, lsz, true));
-        if let Ok(lc) = std::ffi::CString::new(run) {
-            p.text(lc.as_ptr(), x0, ly, lsz, theme::TEXT_PRIMARY, 0, 1);
-        }
+        let run = measure.fit_line(label, right - x0, lsz, true);
+        p.text(run.as_ptr(), x0, ly, lsz, theme::TEXT_PRIMARY, 0, 1);
     }
 
     // …and the IDENTIFIER under it, with the action glyph at its head.
@@ -433,15 +432,12 @@ pub(crate) fn still_line(
     if sub.is_empty() {
         return;
     }
-    let run = crate::text::elide_by(sub, right - lx, false, |t| measure.width_str(t, ssz, false));
-    if let Ok(sc) = std::ffi::CString::new(run) {
-        p.text(sc.as_ptr(), lx, sy, ssz, theme::TEXT_SECONDARY, 0, 0);
-    }
+    let run = measure.fit_line(sub, right - lx, ssz, false);
+    p.text(run.as_ptr(), lx, sy, ssz, theme::TEXT_SECONDARY, 0, 0);
 }
 
-/// **A landscape still's WHOLE overlay, in the one order that composes** — scrim, then the state
-/// line, then the resume bar. Every surface that draws an episode still calls this and none of them
-/// spells the three out again.
+/// A landscape still's labels and resume bar. [`Art::Still`] supplies their ground as part of the
+/// artwork, using a fused pass when possible. Every catalog still calls this after its card.
 ///
 /// The order is `detail.rs`'s and is load-bearing: the bar belongs to the card's own bottom EDGE
 /// rather than to the scrim above it, so it goes LAST or the 78%-black gradient darkens it. That is
@@ -477,17 +473,6 @@ pub(crate) fn still_overlay(
         m.show_title.as_str()
     };
     let bar = m.resume_frac();
-    still_ground(
-        p,
-        card,
-        rad,
-        if show.is_empty() {
-            STILL_SCRIM_H_1
-        } else {
-            STILL_SCRIM_H
-        },
-        STILL_SCRIM_A,
-    );
     still_line(
         p,
         card,
@@ -512,8 +497,8 @@ pub(crate) fn still_overlay(
 ///
 /// [`STILL_SCRIM_H_1`] is the one-line band, kept rather than folded into the bigger number: the
 /// detail filmstrip prints its runtime alone, and giving it the pair's gradient would darken a
-/// third of every still to clear a line that is not there. [`still_overlay`] picks between them by
-/// what it is actually about to draw, so the two can never disagree with the label above them.
+/// third of every still to clear a line that is not there. [`Art::Still`] chooses the band from
+/// the same show/title fallback as [`still_overlay`].
 pub(crate) const STILL_SCRIM_H: f32 = 112.0;
 pub(crate) const STILL_SCRIM_H_1: f32 = 88.0;
 pub(crate) const STILL_SCRIM_A: f32 = 0.78;
@@ -626,10 +611,18 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
             let (t, tw, th) = m
                 .map(|m| resolve_tex_wh_on(m.sid, still_key(m), STILL_RES.0, STILL_RES.1, 0))
                 .unwrap_or((0, 0.0, 0.0));
-            if t != 0 {
-                p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
-            } else {
-                p.rect_sheened(r, rad, theme::SKELETON_TOP, theme::SKELETON_BOT);
+            let band = m.map_or(STILL_SCRIM_H_1, |m| {
+                if m.show_title.is_empty() && m.title.is_empty() { STILL_SCRIM_H_1 } else { STILL_SCRIM_H }
+            });
+            let fused = !tile_glass_armed()
+                && p.tex_carded_still(t, art_uv(&art, tw, th, r), r, rad, f, band, theme::scrim(STILL_SCRIM_A));
+            if !fused {
+                if t != 0 {
+                    p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
+                } else {
+                    p.rect_sheened(r, rad, theme::SKELETON_TOP, theme::SKELETON_BOT);
+                }
+                if m.is_some() { still_ground(p, r, rad, band, STILL_SCRIM_A); }
             }
             // **No watched DISC.** `Library Screens.dc.html` E: "the watched disc is suppressed
             // whenever a stateLine is present — one mark per tile, and the line is it." Every
@@ -812,7 +805,7 @@ static VEIL_TEX: AtomicU32 = AtomicU32::new(0);
 /// renderer has no radial gradient, and the two alternatives both fail on this shape: a `grad4` quad
 /// is bilinear and, worse, square — it would spill past the tile's 14px corner ARC onto the shelf at
 /// full strength, exactly where the mark is strongest; and stepping it as N rounded-rect bands (the
-/// `art_scrim` trick) is what `hero_scrim`'s doc already rejected for a field this wide, at a visible
+/// `art_scrim` fallback) is what `hero_scrim`'s doc already rejected for a field this wide, at a visible
 /// alpha staircase with `GL_DITHER` off. `Painter::tex` takes a corner radius, so ONE draw of this
 /// gets the tile's own silhouette for free — the veil's other three corners live in fully
 /// transparent territory, so rounding them changes nothing.
@@ -1059,7 +1052,7 @@ pub(crate) fn draw_card(
     );
 }
 
-/// How many flat bands [`art_scrim`] uses for its corner region — see there for why they exist. 3 is
+/// How many flat bands [`art_scrim`]'s shader-failure fallback uses for its corner region. 3 is
 /// enough that the step between them is ~0.03 alpha, well under a visible edge.
 const SCRIM_CORNER_BANDS: usize = 3;
 
@@ -1758,14 +1751,15 @@ pub(crate) fn still_ground(p: Painter, card: Rect, rad: f32, h: f32, a: f32) {
 /// video frame is a coin flip for legibility, and a capsule per label was the alternative the design
 /// deliberately drops.
 ///
-/// Two parts, because `Painter::rect`'s gradient is the only one we have and it would round all four
-/// corners of a band: the straight-sided majority is one gradient quad, and the last `rad` px — the
-/// only rows where the card's corner arcs bite — are flat bands scissored to the card silhouette
-/// (`card_row::resume_bar`'s corner-wrapping trick). Set/clear are paired inside the call, per
-/// `ui/CLAUDE.md`'s clip contract.
+/// One band-sized quad clips the continuous gradient to the full card's rounded silhouette,
+/// retaining the parent's scissor. Only a shader-link failure uses the older straight gradient
+/// plus three scissored corner bands below.
 pub(crate) fn art_scrim(p: Painter, card: Rect, rad: f32, h: f32, a: f32) {
     let h = h.min(card.h);
     if h <= 0.0 {
+        return;
+    }
+    if p.art_scrim(card, rad, h, theme::scrim(a)) {
         return;
     }
     // Snap every internal boundary to a whole COMPOSITED pixel (fold the painter translate, snap,
@@ -1831,11 +1825,9 @@ pub(crate) fn art_scrim(p: Painter, card: Rect, rad: f32, h: f32, a: f32) {
 
 // ---- The hero corner scrim: the wedge that makes hero copy legible over ARTWORK ---------------
 //
-// A **sibling** of `art_scrim`, deliberately not a direction flag on it. `art_scrim`'s entire body
-// is the scissor-vs-fill seam problem on a ROUNDED CARD — snapped bands, `SCRIM_CORNER_BANDS`,
-// clip/clip_clear — and a full-bleed hero has no corner arcs, no scissor and a different axis.
-// Folding a flag into it would make that seam machinery conditional on a case it never runs in,
-// which is forking by another name. What the two do share is the rule: a label sits directly on
+// A **sibling** of `art_scrim`, deliberately not a direction flag on it: the rounded card's
+// bottom band and the full-bleed hero have different geometry and axes. What they share is
+// the rule: a label sits directly on
 // artwork only where something has bought it the contrast to.
 
 /// How far the hero wedge reaches before it is gone entirely: it peaks at x=0 and is exactly 0
@@ -1928,7 +1920,7 @@ pub(crate) fn hero_scrim_right_a(x: f32, y: f32, strength: f32) -> f32 {
 ///
 /// **Quad 0 and quad 1 abut exactly**, and must keep doing so: quad 0's bottom pair (`bl→br` =
 /// edge→none) is identical to quad 1's top pair (`tl→tr` = edge→none) at every x, and the two share
-/// one float y. The reflex here is to reach for [`crate::gfx::snap`] — don't. [`art_scrim`] snaps
+/// one float y. The reflex here is to reach for [`crate::gfx::snap`] — don't. [`art_scrim`]'s fallback snaps
 /// because an integer-truncated *scissor* meets a float *fill*; these are fill-to-fill quads
 /// sharing an edge, where the rasterizer's own fill rule already guarantees neither a gap (one row
 /// of unscrimmed BRIGHT artwork) nor a double-cover (one row of doubled scrim). Snapping would be

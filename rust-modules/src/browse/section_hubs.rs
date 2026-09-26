@@ -655,6 +655,14 @@ pub(crate) fn seed_shelves_for_owner_test(
     st.hubs.commit_staged(true);
 }
 
+/// A worker success held behind the Library's publication gate, without starting a worker.
+#[cfg(test)]
+pub(crate) fn stage_shelves_for_owner_test(state: &mut super::BrowseState, sec: usize) {
+    if let Some(st) = state.state_mut(sec) {
+        st.hubs.land_ok(vec![Shelf { title: "staged".into(), ..Default::default() }]);
+    }
+}
+
 /// Turn a seeded section's shelves into EPISODE shelves — landscape rows of `kind == 3` items with
 /// a show behind them. The half [`seed_shelves_for_test`] deliberately does not do, because a
 /// geometry test wants the poster shape it can name; a test about the episode TILE wants this.
