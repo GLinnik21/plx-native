@@ -38,7 +38,7 @@ class FixtureTest(unittest.TestCase):
     def image_path(self, number):
         return "/photo/:/transcode?" + urllib.parse.urlencode(dict(
             url=f"/library/metadata/{number}/thumb/1", width=250, height=375,
-            minSize=1, **{"X-Plex-Token": "YOUR_TEST_TOKEN_NEVER_LOG"}))
+            minSize=1, **{"X-Plex-Token": "YOUR_IMAGE_TOKEN"}))
 
     def test_real_pagination_has_1200_distinct_posters_and_stable_identity(self):
         items = []
@@ -65,9 +65,9 @@ class FixtureTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as refused:
             self.get(self.image_path(1))
         self.assertEqual(refused.exception.code, 503)
-        self.get("/library/sections/1/all?X-Plex-Token=YOUR_TEST_TOKEN_METADATA")
-        self.assertNotIn("YOUR_TEST_TOKEN_NEVER_LOG", json.dumps(self.fixture.records))
-        self.assertNotIn("YOUR_TEST_TOKEN_METADATA", json.dumps(self.fixture.records))
+        self.get("/library/sections/1/all?X-Plex-Token=YOUR_META_TOKEN")
+        self.assertNotIn("YOUR_IMAGE_TOKEN", json.dumps(self.fixture.records))
+        self.assertNotIn("YOUR_META_TOKEN", json.dumps(self.fixture.records))
         self.assertEqual(self.fixture.snapshot()["phases"]["cold"]["unique_image_keys"], 2)
         self.assertEqual(self.fixture.snapshot()["phases"]["warm"]["image_failures"], 1)
 
