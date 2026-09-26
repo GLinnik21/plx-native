@@ -1281,6 +1281,7 @@ check: lint
 	@# installation cannot resolve SKIPS the cases that need it instead of killing the run. A
 	@# regression there is invisible here and shows up as a stranger concluding the suite is broken.
 	python3 tests/test_harness.py
+	python3 tests/test_replay_fixtures.py
 	python3 tests/test_mock_pms_library.py
 	@# The demo library and the screenshot scene manifest (make screenshots). Offline: the cases
 	@# that serve the catalog skip, and say so, where the derived artwork cache is absent.
@@ -1723,6 +1724,12 @@ sim-macos: $(FFMPEG_HOST_STAGED) $(LIBASS_HOST_STAGED) pkg/.ffabi-host-ok
 	PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
 	  cargo build --manifest-path rust-modules/Cargo.toml --target-dir $(SIM_TDIR)$(if $(LAB),-lab,) --features hostsim$(if $(LAB), --features lab-diagnostics,) --bin plxnative-sim
+
+# Full product replay is a renderer-backed host gate. Keep the fast unit suite usable without
+# a window system; Simulator CI runs this same driver against the simulator it just built.
+.PHONY: check-replay
+check-replay: sim-macos
+	python3 tests/replay_fixtures.py --sim "$$SIM_MACOS_BIN_ENV"
 
 # **`make screenshots` — the documentation screenshots, regenerated.** Boots the simulator once per
 # scene in `tests/screenshots/scenes.json` against the mock server's DEMO LIBRARY (openly licensed
