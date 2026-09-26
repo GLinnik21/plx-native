@@ -155,7 +155,7 @@ fn cancellation_before_worker_parks_is_remembered_and_releases_resources() {
         let runtime = runtime.clone();
         let observed_idle = observed_idle.clone();
         let may_park = may_park.clone();
-        std::thread::spawn(move || {
+        crate::task::spawn("ASS cancellation test", move || {
             runtime.worker.set(std::thread::current()).unwrap();
             let mut engine = Engine {
                 source: Some(source),
@@ -183,6 +183,7 @@ fn cancellation_before_worker_parks_is_remembered_and_releases_resources() {
             drop(retired);
             done_tx.send(()).unwrap();
         })
+        .expect("test worker")
     };
     let deadline = Instant::now() + Duration::from_secs(2);
     while !observed_idle.load(Ordering::Acquire) {
