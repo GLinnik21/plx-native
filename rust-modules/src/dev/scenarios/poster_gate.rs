@@ -137,13 +137,21 @@ impl Scene {
             now
         })
     }
-    fn finish_stage(&mut self, _now: u32) {
+    fn finish_stage(&mut self, now: u32) {
         self.stage += 1;
         self.started = None;
         self.witness = None;
         if self.stage == self.plan().len() {
+            // The final report includes the last completed present. Later draws
+            // are outside this finite scene; there is no successor to reset for.
             self.finished = true;
             crate::log(&format!("poster-gate: kind={} phase=done", self.mode.unwrap().word()));
+        } else {
+            // advance() reports before this iteration draws. Transfer ownership
+            // now: waiting until the next tick would erase the intervening
+            // requests, uploads and present from both phases' reports.
+            metrics::arm();
+            self.started = Some(now);
         }
     }
     fn advance(&mut self, app: &mut App, now: u32) {
