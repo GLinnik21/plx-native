@@ -33,6 +33,7 @@ in-page anchors are left alone.
 from __future__ import annotations
 
 import html
+import json
 import re
 import sys
 from pathlib import Path
@@ -50,6 +51,11 @@ except ImportError:  # pragma: no cover - operator-facing message, not exercised
 REPO = "GLinnik21/plx-native"
 GITHUB_BLOB = f"https://github.com/{REPO}/blob/main"
 SITE_ORIGIN = "https://plxnative.com"
+
+# Same card every other page reuses for link previews (site/media/og-card.jpg, staged to
+# _site/media/og-card.jpg by pages.yml); these two docs have no screenshot of their own.
+OG_IMAGE = f"{SITE_ORIGIN}/media/og-card.jpg"
+OG_IMAGE_ALT = "PlxNative home screen on an LG TV, next to the headline: Plex that feels fast on LG TVs."
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
@@ -83,12 +89,15 @@ def github_slug(text: str) -> str:
     return text.replace(" ", "-")
 
 
-def assign_heading_ids(tokens: list[Token]) -> str | None:
+def assign_heading_ids(tokens: list[Token]) -> tuple[str | None, list[tuple[int, str, str]]]:
     """Walk the top-level token stream, giving every heading_open token a GitHub-compatible
     `id`, deduplicated the same way GitHub does (a repeat gets -1, -2, ...). Returns the id
-    assigned to the first heading (the page's own <h1>), or None if there isn't one."""
+    assigned to the first heading (the page's own <h1>), or None if there isn't one, plus every
+    heading as (level, id, text) in document order — the level-2 ones are how the HowTo JSON-LD
+    below finds install-and-verify.md's numbered steps without hard-coding their text twice."""
     seen: dict[str, int] = {}
     first_id: str | None = None
+    headings: list[tuple[int, str, str]] = []
     for i, tok in enumerate(tokens):
         if tok.type != "heading_open":
             continue
@@ -101,7 +110,8 @@ def assign_heading_ids(tokens: list[Token]) -> str | None:
         tok.attrSet("id", slug)
         if first_id is None:
             first_id = slug
-    return first_id
+        headings.append((int(tok.tag[1:]), slug, inline.content))
+    return first_id, headings
 
 
 def resolve_repo_path(doc_dir: Path, href_path: str) -> str:
@@ -154,7 +164,7 @@ def rewrite_links(tokens: list[Token], doc_dir: Path) -> None:
             rewrite_links(tok.children, doc_dir)
 
 
-def render_markdown(doc_path: Path, doc_repo_rel: str) -> tuple[str, str | None]:
+def render_markdown(doc_path: Path, doc_repo_rel: str) -> tuple[str, str | None, list[tuple[int, str, str]]]:
     # "gfm-like" for GFM tables + fenced code; linkify off (neither doc needs bare-URL
     # autolinking, and it would pull in the separate linkify-it-py dependency); raw HTML
     # off (nothing in these docs needs it, and it should stay that way without review).
@@ -163,14 +173,14 @@ def render_markdown(doc_path: Path, doc_repo_rel: str) -> tuple[str, str | None]
     tokens = md.parse(src)
     doc_dir = Path(doc_repo_rel).parent
     rewrite_links(tokens, doc_dir)
-    first_heading_id = assign_heading_ids(tokens)
+    first_heading_id, headings = assign_heading_ids(tokens)
     body = md.renderer.render(tokens, md.options, {})
     # Table wrapper for horizontal scroll on narrow viewports — plain string
     # substitution is safe here because we render our own docs, not arbitrary input.
     body = body.replace("<table>", '<div class="doc-table-wrap">\n<table>').replace(
         "</table>", "</table>\n</div>"
     )
-    return body, first_heading_id
+    return body, first_heading_id, headings
 
 
 PAGE_TEMPLATE = """<!doctype html>
@@ -179,23 +189,56 @@ PAGE_TEMPLATE = """<!doctype html>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="{description}" />
+    <meta name="robots" content="index,follow,max-image-preview:large" />
     <title>{title}</title>
     <link rel="canonical" href="{canonical}" />
     <link rel="icon" type="image/png" href="{root}assets/logo-master.png" />
     <meta name="theme-color" content="#202022" />
+    <meta property="og:type" content="article" />
+    <meta property="og:site_name" content="PlxNative" />
+    <meta property="og:url" content="{canonical}" />
+    <meta property="og:title" content="{title}" />
+    <meta property="og:description" content="{description}" />
+    <meta property="og:image" content="{og_image}" />
+    <meta property="og:image:type" content="image/jpeg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="{og_image_alt}" />
+    <meta property="og:locale" content="en_US" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="{title}" />
+    <meta name="twitter:description" content="{description}" />
+    <meta name="twitter:image" content="{og_image}" />
+    <meta name="twitter:image:alt" content="{og_image_alt}" />
     <link rel="stylesheet" href="{root}styles.css" />
+    <script type="application/ld+json">
+{schema_json}
+    </script>
+    <script type="application/ld+json">
+{breadcrumb_json}
+    </script>
   </head>
   <body>
     <div class="page-shell">
       <div class="ambient-ground" aria-hidden="true"></div>
       <main class="page-root">
         <header class="site-header">
-          <a class="brand" href="{root}" aria-label="PlxNative home">
-            <span class="brand-mark"><img src="{root}assets/logo-master.png" alt="" /></span>
-            <span class="brand-name">PlxNative</span>
-          </a>
-          <div class="header-actions">
-            <a class="header-back" href="{root}">&larr; Back to the site</a>
+          <div class="header-bar">
+            <a class="brand" href="{root}" aria-label="Back to PlxNative">
+              <span class="brand-mark"><img src="{root}assets/logo-master.png" alt="" /></span>
+              <span class="brand-name"><span class="back-arrow" aria-hidden="true">&larr;</span> PlxNative</span>
+            </a>
+            <nav class="site-nav" aria-label="Primary navigation">
+              <a href="{root}#feel">Demo</a>
+              <a href="{root}#why">Why</a>
+              <a href="{root}#showcase">Features</a>
+            </nav>
+            <div class="header-actions">
+              <a class="header-github" href="https://github.com/GLinnik21/plx-native" aria-label="PlxNative on GitHub">
+                <svg class="gh-icon" viewBox="0 0 24 24" width="21" height="21" fill="currentColor" aria-hidden="true"><path d="M12 1.5a10.5 10.5 0 0 0-3.32 20.46c.53.1.72-.23.72-.5v-1.76c-2.92.64-3.54-1.4-3.54-1.4-.48-1.22-1.17-1.55-1.17-1.55-.95-.65.07-.64.07-.64 1.06.08 1.61 1.09 1.61 1.09.94 1.6 2.46 1.14 3.06.87.1-.68.37-1.14.67-1.4-2.33-.27-4.78-1.17-4.78-5.2 0-1.15.41-2.09 1.08-2.83-.11-.27-.47-1.34.1-2.79 0 0 .88-.28 2.88 1.08a9.98 9.98 0 0 1 5.24 0c2-1.36 2.88-1.08 2.88-1.08.57 1.45.21 2.52.1 2.79.67.74 1.08 1.68 1.08 2.83 0 4.04-2.46 4.93-4.8 5.19.38.33.72.97.72 1.96v2.9c0 .28.19.62.73.51A10.5 10.5 0 0 0 12 1.5Z"></path></svg>
+              </a>
+              <a class="header-cta" href="{root}#install">Install</a>
+            </div>
           </div>
         </header>
 
@@ -219,6 +262,60 @@ PAGE_TEMPLATE = """<!doctype html>
 """
 
 
+def breadcrumb_json(page: dict, canonical: str) -> str:
+    """Home -> this page, for the rich-result breadcrumb trail. Page titles are all
+    "<name> — PlxNative"; the crumb wants just <name>."""
+    name = page["title"].split(" — ", 1)[0]
+    data = {
+        "@context": "https://schema.org",
+        "@type": "BreadcrumbList",
+        "itemListElement": [
+            {"@type": "ListItem", "position": 1, "name": "Home", "item": f"{SITE_ORIGIN}/"},
+            {"@type": "ListItem", "position": 2, "name": name, "item": canonical},
+        ],
+    }
+    return json.dumps(data, indent=2)
+
+
+_STEP_HEADING = re.compile(r"^\d+\.\s*(.+)$")
+
+
+def article_json(basename: str, page: dict, canonical: str, headings: list[tuple[int, str, str]]) -> str:
+    """TechArticle for most docs; install-and-verify.md really is a numbered walkthrough (its
+    own top-level headings are "1. ...", "2. ..."), so it gets HowTo with those as steps instead
+    — Google's own guidance is HowTo only for content that is actually sequential steps."""
+    name = page["title"].split(" — ", 1)[0]
+    steps = [
+        {"@type": "HowToStep", "name": m.group(1), "url": f"{canonical}#{slug}"}
+        for level, slug, text in headings
+        if level == 2
+        for m in [_STEP_HEADING.match(text)]
+        if m
+    ]
+    if basename == "install-and-verify.md" and steps:
+        data = {
+            "@context": "https://schema.org",
+            "@type": "HowTo",
+            "name": name,
+            "description": page["description"],
+            "url": canonical,
+            "image": OG_IMAGE,
+            "step": steps,
+        }
+    else:
+        data = {
+            "@context": "https://schema.org",
+            "@type": "TechArticle",
+            "headline": name,
+            "description": page["description"],
+            "url": canonical,
+            "mainEntityOfPage": canonical,
+            "image": OG_IMAGE,
+            "author": {"@type": "Person", "name": "Gleb Linnik"},
+        }
+    return json.dumps(data, indent=2)
+
+
 def render_page(md_path: str) -> str:
     doc_path = Path(md_path).resolve()
     doc_repo_rel = doc_path.relative_to(REPO_ROOT).as_posix()
@@ -230,14 +327,19 @@ def render_page(md_path: str) -> str:
             f"Add it to PAGES in {Path(__file__).name} first (route, title, description)."
         )
 
-    body, first_heading_id = render_markdown(doc_path, doc_repo_rel)
+    body, first_heading_id, headings = render_markdown(doc_path, doc_repo_rel)
     aria_labelledby = f' aria-labelledby="{first_heading_id}"' if first_heading_id else ""
+    canonical = f"{SITE_ORIGIN}{page['route']}"
 
     return PAGE_TEMPLATE.format(
         description=html.escape(page["description"], quote=True),
         title=html.escape(page["title"]),
-        canonical=f"{SITE_ORIGIN}{page['route']}",
+        canonical=canonical,
         root="/",
+        og_image=OG_IMAGE,
+        og_image_alt=html.escape(OG_IMAGE_ALT, quote=True),
+        schema_json=article_json(basename, page, canonical, headings),
+        breadcrumb_json=breadcrumb_json(page, canonical),
         aria_labelledby=aria_labelledby,
         body=body.rstrip("\n"),
         edit_url=f"{GITHUB_BLOB}/{doc_repo_rel}",

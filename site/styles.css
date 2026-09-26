@@ -17,6 +17,12 @@
   --color-white-a55: rgba(255, 255, 255, 0.55);
 
   --gutter: clamp(20px, 4vw, 56px);
+  /* The floating header: its gap from the top edge, the glass bar's height,
+     and the band it covers (where anchors land and the pinned scene starts). */
+  --header-top: 10px;
+  --header-bar-h: 52px;
+  --header-item-h: 40px;
+  --header-h: calc(var(--header-top) + var(--header-bar-h) + 10px);
 
   --text-primary: var(--color-cool-0);
   --text-reading: var(--color-cool-200);
@@ -29,6 +35,11 @@
   --hairline: var(--color-white-a10);
   --resume-fill: color-mix(in srgb, var(--color-amber-300) 95%, transparent);
   --card-sheen: rgba(255, 255, 255, 0.22);
+  /* The header's "you are here" glass: the nav pill under the current
+     section's link, and the Install button while Install is current. */
+  --selected-fill: rgba(255, 255, 255, 0.12);
+  --selected-rim: rgba(255, 255, 255, 0.08);
+  --selected-sheen: rgba(255, 255, 255, 0.14);
 
   /* oklch(from var(--surface-app) .972 calc(c*.36) h) and l-.06, precomputed to sRGB since
      --surface-app is achromatic (c=0): oklch(.972 0 0) = #f6f6f6, oklch(.912 0 0) = #e2e2e2. */
@@ -56,8 +67,12 @@
   box-sizing: border-box;
 }
 
-html {
-  scroll-behavior: smooth;
+/* Smooth only for in-page links (the header nav). It never applies to the
+   reader's own scrolling, and nothing on the page scrolls it by script. */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
 }
 html,
 body {
@@ -121,6 +136,10 @@ video::-webkit-media-controls-start-playback-button {
      the viewport (that is, never). */
   overflow: hidden;
   overflow: clip;
+  /* At least a screen tall, so a short page (the 404) is ground to the
+     bottom of the window rather than ending in a seam against the body. */
+  min-height: 100vh;
+  min-height: 100lvh;
 }
 /* Sized to the large viewport, so the tile does not change as the toolbar
    collapses mid-scroll. */
@@ -138,11 +157,16 @@ video::-webkit-media-controls-start-playback-button {
   max-width: 1240px;
   margin: 0 auto;
   position: relative;
+  /* The header's gap from the top edge. Padding, not the header's own
+     margin: overflow: clip does not contain margins, so a margin collapsed
+     through the shell and bared the body colour above it. */
+  padding-top: var(--header-top);
 }
 
-/* Scroll reveal. Elements marked data-reveal rise, fade and come into focus as
-   they enter the viewport; media grows in from slightly smaller instead of
-   blurring. site.js sets .is-revealed and a per-batch --reveal-delay, and
+/* Scroll reveal. Elements marked data-reveal rise and fade in as they enter
+   the viewport; media grows in from slightly smaller. Opacity and transforms
+   only: a blur here was a filter re-rendered on every frame of every reveal.
+   site.js sets .is-revealed and a per-batch --reveal-delay, and
    clears it once an element is back below the viewport, so scrolling down
    again replays it. Hidden states carry no transition, so a reset is never
    visible. The head script adds html.reveal; without it (no JS) or under
@@ -151,12 +175,10 @@ video::-webkit-media-controls-start-playback-button {
   .reveal [data-reveal] {
     opacity: 0;
     translate: 0 40px;
-    filter: blur(10px);
   }
   .reveal [data-reveal="media"] {
     translate: 0 72px;
     scale: 0.92;
-    filter: none;
   }
   /* A card is tall enough that a text-sized rise finishes while most of it is
      still below the fold, so it travels further and settles from a little
@@ -164,106 +186,165 @@ video::-webkit-media-controls-start-playback-button {
   .reveal [data-reveal="card"] {
     translate: 0 64px;
     scale: 0.96;
-    /* No blur: Safari rasterizes a blurred, scaled card once and swaps in
-       the sharp one at the end, which reads as a pop, not a fade. */
-    filter: none;
   }
+  /* Quick, all ease-out: an element is mostly there within a few hundred
+     ms, so nothing on screen reads as disabled while it waits. site.js keeps
+     the stagger short (180ms at most). */
   .reveal [data-reveal].is-revealed {
     opacity: 1;
     translate: none;
     scale: none;
-    filter: none;
     transition:
-      opacity 1000ms cubic-bezier(0.25, 0.1, 0.25, 1) var(--reveal-delay, 0ms),
-      translate 1200ms cubic-bezier(0.19, 1, 0.22, 1) var(--reveal-delay, 0ms),
-      scale 1400ms cubic-bezier(0.19, 1, 0.22, 1) var(--reveal-delay, 0ms),
-      filter 900ms cubic-bezier(0.25, 0.1, 0.25, 1) var(--reveal-delay, 0ms),
+      opacity 600ms cubic-bezier(0.25, 0.1, 0.25, 1) var(--reveal-delay, 0ms),
+      translate 800ms cubic-bezier(0.19, 1, 0.22, 1) var(--reveal-delay, 0ms),
+      scale 900ms cubic-bezier(0.19, 1, 0.22, 1) var(--reveal-delay, 0ms),
       transform 500ms cubic-bezier(0.16, 1, 0.3, 1);
   }
-  /* Cards fade in over longer, starting slowly: the text curve above puts
-     most of its fade in the first few hundred ms, which on a panel this size
-     reads as the card popping in rather than fading. */
+  /* Cards fade over a little longer: a panel this size fading as fast as a
+     line of text reads as popping in. */
   .reveal [data-reveal="card"].is-revealed {
     transition:
-      opacity 1500ms cubic-bezier(0.45, 0, 0.25, 1) var(--reveal-delay, 0ms),
-      translate 1500ms cubic-bezier(0.19, 1, 0.22, 1) var(--reveal-delay, 0ms),
-      scale 1700ms cubic-bezier(0.19, 1, 0.22, 1) var(--reveal-delay, 0ms),
+      opacity 800ms cubic-bezier(0.25, 0.1, 0.25, 1) var(--reveal-delay, 0ms),
+      translate 900ms cubic-bezier(0.19, 1, 0.22, 1) var(--reveal-delay, 0ms),
+      scale 1000ms cubic-bezier(0.19, 1, 0.22, 1) var(--reveal-delay, 0ms),
       transform 500ms cubic-bezier(0.16, 1, 0.3, 1);
   }
 
-  /* Hero opening: each line comes into focus after the one before it. */
+  /* Hero opening: each line rises in after the one before it, all landed
+     within about a second. */
   [data-intro] {
-    animation: intro 1400ms cubic-bezier(0.19, 1, 0.22, 1) both;
+    animation: intro 650ms cubic-bezier(0.19, 1, 0.22, 1) both;
   }
-  .hero-line:nth-child(1) {
-    animation-delay: 120ms;
+  .hero-line--lead {
+    animation-delay: 40ms;
   }
-  .hero-line:nth-child(2) {
-    animation-delay: 270ms;
+  .hero-line--sub {
+    animation-delay: 90ms;
   }
   .hero-lede {
-    animation-delay: 420ms;
+    animation-delay: 140ms;
   }
   .hero-actions {
-    animation-delay: 570ms;
+    animation-delay: 200ms;
   }
   .hero-meta {
-    animation-delay: 720ms;
+    animation-delay: 280ms;
+  }
+  /* The TV scene below never leads the hero: where it shows at load (a tall
+     window, a phone), its heading and TV come in once the hero has landed.
+     On their children, with `transform`, so this never meets the scene's
+     own animations on .feel-heading and .feel-stage (translate, rotate,
+     scale), nor the zoom's fades on the heading's lines (scale); `backwards`
+     leaves nothing behind once it has run. */
+  .feel-heading > *,
+  .feel-stage > * {
+    animation: intro 650ms cubic-bezier(0.19, 1, 0.22, 1) 600ms backwards;
   }
 }
 @keyframes intro {
   from {
     opacity: 0;
     transform: translateY(34px);
-    filter: blur(16px);
   }
   to {
     opacity: 1;
     transform: none;
-    filter: none;
   }
 }
-
 /* ---------- Header ---------- */
-/* A thin frosted bar that stays on top. Always frosted, never transparent:
-   iOS Safari tints the status bar area from it, so a transparent bar left a
-   flat band there that matched nothing. */
+/* A floating glass capsule: the page's version of the app's own glass tab
+   bar, with the brand at the left, the page's sections in the middle (a pill
+   slides under the one being read, like the app's selected tab), and GitHub
+   and Install at the right. The same markup heads every page.
+
+   Nothing sticky or fixed touches the top edge: the capsule sticks 10px below
+   it, and the header box around it is exactly as tall as the capsule. iOS
+   Safari (26) fills the area behind its status bar with one flat colour
+   sampled from a fixed or sticky element at the screen edge; the old
+   full-width bar sat there and had to stay frosted for that reason (a
+   transparent one left a flat band that matched nothing). With nothing at the
+   edge, Safari shows the page itself through its status bar, as it does
+   behind its toolbar (see .page-shell). */
 .site-header {
   position: sticky;
-  top: 0;
+  top: var(--header-top);
   z-index: 50;
+  display: flex;
+  justify-content: center;
+  /* Only the capsule takes the pointer; the page stays live either side. */
+  pointer-events: none;
+}
+.header-bar {
+  pointer-events: auto;
+  position: relative;
   isolation: isolate;
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px 20px;
-  padding: 12px 0;
+  gap: 2px;
+  height: var(--header-bar-h);
+  max-width: 100%;
+  padding: 0 6px;
+  border-radius: 999px;
 }
-.site-header::before {
+/* The glass itself, on its own layer so its tint and shadow can change
+   without repainting the contents. */
+.header-bar::before {
   content: "";
   position: absolute;
-  top: 0;
-  bottom: 0;
-  left: -100vw;
-  right: -100vw;
+  inset: 0;
   z-index: -1;
-  background: color-mix(in srgb, var(--surface-app) 72%, transparent);
-  -webkit-backdrop-filter: saturate(1.8) blur(20px);
-  backdrop-filter: saturate(1.8) blur(20px);
-  box-shadow: inset 0 -1px 0 var(--hairline);
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--surface-app) 76%, transparent);
+  -webkit-backdrop-filter: blur(22px) saturate(1.8);
+  backdrop-filter: blur(22px) saturate(1.8);
+  box-shadow:
+    inset 0 0 0 1px var(--color-white-a10),
+    inset 0 1px 0 rgba(255, 255, 255, 0.09),
+    0 14px 40px rgba(0, 0, 0, 0.4);
+  transition:
+    background-color 300ms ease,
+    box-shadow 300ms ease;
+}
+/* The glass is dense enough to read over any page running under it, which
+   is every page without site.js (install, troubleshooting, credits, 404).
+   Only the landing page, at its very top with nothing yet underneath, has
+   site.js mark the header .is-top and lighten it. */
+.site-header.is-top .header-bar::before {
+  background: color-mix(in srgb, var(--surface-app) 58%, transparent);
+  box-shadow:
+    inset 0 0 0 1px var(--color-white-a10),
+    inset 0 1px 0 rgba(255, 255, 255, 0.09),
+    0 10px 30px rgba(0, 0, 0, 0.22);
+}
+/* A reader who has asked for less transparency gets solid bars. */
+@media (prefers-reduced-transparency: reduce) {
+  .header-bar::before,
+  .site-header.is-top .header-bar::before {
+    background: var(--surface-app);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
 }
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
   min-width: 0;
-  order: 1;
+  height: var(--header-item-h);
+  padding: 0 14px 0 0;
+  border-radius: 999px;
+  color: var(--text-primary);
 }
+.brand:hover {
+  color: var(--text-primary);
+}
+/* A circle as tall as the header's items, so it sits in the capsule's
+   rounded end concentrically (the bar's end radius less its 6px padding),
+   as the Install pill does at the other end. */
 .brand-mark {
-  width: 34px;
-  height: 34px;
-  border-radius: 9px;
+  width: var(--header-item-h);
+  height: var(--header-item-h);
+  border-radius: 50%;
   background: #08080a;
   display: flex;
   align-items: center;
@@ -272,7 +353,7 @@ video::-webkit-media-controls-start-playback-button {
   flex: none;
 }
 .brand-mark img {
-  height: 20px;
+  height: calc(var(--header-item-h) * 0.55);
   width: auto;
   display: block;
 }
@@ -282,57 +363,175 @@ video::-webkit-media-controls-start-playback-button {
   letter-spacing: 0.2px;
   white-space: nowrap;
 }
+/* Sub-pages only (credits, 404, the doc pages): a leading chevron on the brand
+   link so it reads as a way back to the landing page, not just a logo. The
+   landing page's own header never has this span. */
+.back-arrow {
+  color: var(--text-secondary);
+}
+
+.site-nav {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: var(--header-item-h);
+  padding: 0 4px;
+  box-shadow: -1px 0 0 var(--color-white-a10), 1px 0 0 var(--color-white-a10);
+}
+.site-nav a {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  height: var(--header-item-h);
+  padding: 0 16px;
+  border-radius: 999px;
+  font-size: 15px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  transition: color 250ms ease;
+}
+.site-nav a:hover,
+.site-nav a.is-current {
+  color: var(--text-primary);
+}
+/* The selection pill; site.js places it under the current section's link. */
+.nav-pill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: var(--header-item-h);
+  width: var(--pill-w, 0px);
+  transform: translateX(var(--pill-x, 0px));
+  border-radius: 999px;
+  background: var(--selected-fill);
+  box-shadow:
+    inset 0 0 0 1px var(--selected-rim),
+    inset 0 1px 0 var(--selected-sheen);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform 480ms cubic-bezier(0.3, 1.2, 0.4, 1),
+    width 480ms cubic-bezier(0.3, 1.2, 0.4, 1),
+    opacity 250ms ease;
+}
+.site-nav.has-pill .nav-pill {
+  opacity: 1;
+}
+.site-nav.pill-instant .nav-pill {
+  transition: opacity 250ms ease;
+}
 
 .header-actions {
   display: flex;
   align-items: center;
-  gap: clamp(12px, 2vw, 22px);
-  order: 3;
-  margin-left: auto;
+  gap: 4px;
+  margin-left: 4px;
 }
 .header-github {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 15px;
+  display: grid;
+  place-items: center;
+  width: var(--header-item-h);
+  height: var(--header-item-h);
+  border-radius: 50%;
   color: var(--text-secondary);
-  white-space: nowrap;
-  padding: 8px 0;
+  transition:
+    color 200ms ease,
+    background-color 200ms ease;
 }
 .header-github:hover {
   color: var(--text-primary);
+  background: var(--color-white-a07);
 }
-.header-github .gh-icon {
-  display: none;
+/* The button's face is --accent-face-fill drawn from two registered colours,
+   so that it can fade to the current state below and back (a gradient itself
+   does not transition; without @property the change is simply immediate).
+   Its shadows are listed in the same kinds as the current state's, so they
+   interpolate too. */
+@property --cta-face {
+  syntax: "<color>";
+  inherits: false;
+  initial-value: #f6f6f6;
 }
-
-.site-nav {
-  display: flex;
-  flex-wrap: wrap;
+@property --cta-body {
+  syntax: "<color>";
+  inherits: false;
+  initial-value: #e2e2e2;
+}
+.header-cta {
+  --cta-face: var(--accent-face);
+  --cta-body: var(--accent-face-body);
+  display: inline-flex;
   align-items: center;
-  gap: 8px clamp(16px, 3vw, 34px);
+  height: var(--header-item-h);
+  padding: 0 20px;
+  border-radius: 999px;
   font-size: 15px;
-  flex: 0 1 auto;
-  order: 2;
-  margin-left: clamp(0px, 3vw, 44px);
-}
-.site-nav a {
-  color: var(--text-secondary);
+  font-weight: 700;
   white-space: nowrap;
-  padding: 8px 0;
+  color: var(--accent-ink);
+  background: linear-gradient(var(--cta-face), var(--cta-body) 9%, var(--cta-body));
+  box-shadow:
+    inset 0 0 0 1px var(--color-white-a22),
+    inset 0 1px 0 transparent,
+    0 2px 10px rgba(0, 0, 0, 0.25);
+  transition:
+    transform 200ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 250ms ease,
+    color 250ms ease,
+    --cta-face 250ms ease,
+    --cta-body 250ms ease;
 }
-.site-nav a:hover {
+.header-cta:hover {
+  color: var(--accent-ink);
+  transform: translateY(-1px);
+}
+/* While the Install section is the one being read (site.js marks the button
+   .is-current, as it marks the section links), the button is "here" the way
+   a link is: the nav pill's selected glass with the current link's ink, in
+   place of the call to action. No ring: that read as a keyboard-focus
+   outline; :focus-visible below is the real one. Sub-pages link it to the
+   landing page and never mark it. */
+.header-cta.is-current {
+  --cta-face: var(--selected-fill);
+  --cta-body: var(--selected-fill);
   color: var(--text-primary);
+  box-shadow:
+    inset 0 0 0 1px var(--selected-rim),
+    inset 0 1px 0 var(--selected-sheen),
+    0 2px 10px rgba(0, 0, 0, 0);
+}
+.site-header a:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 2px;
 }
 
 /* ---------- Hero ---------- */
 .hero {
-  padding: clamp(56px, 12vh, 140px) 0 clamp(8px, 3vh, 40px);
+  position: relative;
+  isolation: isolate;
+  padding: clamp(48px, 10vh, 124px) 0 clamp(8px, 3vh, 40px);
   display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
   transform-origin: 50% 0;
+}
+/* A soft light behind the headline, warm on one side and cool on the other,
+   like the app's route ground. Gradients only: no filter to redraw. */
+.hero::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: 50%;
+  top: 0;
+  width: min(1400px, 160vw);
+  height: 100%;
+  transform: translateX(-50%);
+  background:
+    radial-gradient(38% 46% at 38% 42%, rgba(250, 184, 46, 0.1), transparent 70%),
+    radial-gradient(34% 44% at 64% 50%, rgba(170, 190, 230, 0.08), transparent 70%);
+  pointer-events: none;
 }
 .hero h1 {
   font-size: clamp(40px, 7.4vw, 104px);
@@ -343,12 +542,34 @@ video::-webkit-media-controls-start-playback-button {
   text-wrap: balance;
   max-width: 1100px;
 }
+/* The eyebrow names the product plainly (it is part of the h1, so search
+   engines read it as the page's heading too). */
+.hero-kicker {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  margin: 0 auto clamp(18px, 2.6vh, 28px);
+  font-size: clamp(15px, 1.3vw, 19px);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+  color: var(--text-secondary);
+  text-wrap: nowrap;
+}
+/* No chip, no lamp: plain text above the headline. */
+.hero-kicker::before {
+  display: none;
+}
 .hero-line {
   display: block;
 }
 .hero-line--sub {
   color: var(--text-secondary);
 }
+/* .hero-shine keeps its class in the markup (a line that wraps stays one
+   span), but is plain flat silver again, same as the rest of .hero-line--sub:
+   no gradient, no shine sweep. */
 .hero-copy {
   display: flex;
   flex-direction: column;
@@ -415,17 +636,29 @@ video::-webkit-media-controls-start-playback-button {
   margin: 0;
   text-wrap: pretty;
 }
-.hero-meta span {
+/* Each item keeps its words together ("Built for LG webOS" never splits), and
+   a separator is held to the item before it, so the row can only break after
+   one (phones break it themselves, below). */
+.hero-meta-item {
+  white-space: nowrap;
+}
+.hero-meta .sep {
   color: var(--text-separator);
 }
 
 /* ---------- "See how it feels": the pinned TV scene ---------- */
 /* Without html.fx (no JS, or reduced motion) this is a plain TV playing the
    demo video. With it, the section is several screens tall and its content
-   stays pinned while site.js scrubs the scene from the scroll position. */
+   stays pinned while the scroll position drives the scene (the timeline is
+   in the scroll-driven block at the end of this section). */
+/* Wherever the section scrolls with the page (the TV in its flow), the Demo
+   link lands its heading 16px under the header's band (--header-h). */
 .feel {
+  --feel-pad: clamp(40px, 6vh, 72px);
+  --feel-land: calc(var(--header-h) + 16px - var(--feel-pad));
   position: relative;
-  padding: clamp(40px, 6vh, 72px) 0 0;
+  padding: var(--feel-pad) 0 0;
+  scroll-margin-top: var(--feel-land);
 }
 .feel-sticky {
   display: flex;
@@ -435,10 +668,14 @@ video::-webkit-media-controls-start-playback-button {
   gap: clamp(18px, 3svh, 34px);
   perspective: 2200px;
 }
+/* 1.3 screens of scroll drive the pinned scene; every stretch of it moves
+   something, so the scroll always visibly answers. The Demo link lands on
+   its first frame, the pinned box's own padding clearing the header. */
 .fx .feel {
-  height: 340vh;
-  height: 340svh;
+  height: 230vh;
+  height: 230svh;
   padding: 0;
+  scroll-margin-top: 0;
 }
 .fx .feel-sticky {
   position: sticky;
@@ -446,7 +683,40 @@ video::-webkit-media-controls-start-playback-button {
   height: 100vh;
   height: 100svh;
   justify-content: center;
-  padding-top: 60px;
+  padding-top: var(--header-h);
+}
+/* The TV in the page's flow instead: no pin and no zoom, the heading above it
+   and the caption below scrolling with the page. On phones (narrow windows,
+   either way up), where the column is nearly the window's width and a zoom
+   had little to add to the screen, and in a short landscape window, where
+   heading, TV and caption cannot share the screen. There the TV only rises in
+   as it comes on screen (the scroll-driven block below); site.js's flowQuery
+   is this media query. And, set by site.js as .is-still, where autoplay is
+   refused (Low Power Mode) and the pinned scene would be drawn by script
+   every frame: there it does not move at all. */
+@media (max-width: 759px), (max-height: 559px) and (orientation: landscape) {
+  .fx .feel {
+    height: auto;
+    padding: var(--feel-pad) 0 0;
+    scroll-margin-top: var(--feel-land);
+  }
+  .fx .feel-sticky {
+    position: relative;
+    top: auto;
+    height: auto;
+    padding-top: 0;
+  }
+}
+.fx .feel.is-still {
+  height: auto;
+  padding: var(--feel-pad) 0 0;
+  scroll-margin-top: var(--feel-land);
+}
+.fx .feel.is-still .feel-sticky {
+  position: relative;
+  top: auto;
+  height: auto;
+  padding-top: 0;
 }
 .feel-heading {
   position: relative;
@@ -474,31 +744,39 @@ video::-webkit-media-controls-start-playback-button {
   margin: 0;
   text-wrap: balance;
 }
+/* As wide as the column allows while the heading, the whole TV and the
+   caption still fit the window under the header, pinned or not: 330px is the
+   header, the heading, the stand, the caption and the gaps between them.
+   Phones and short landscape windows size it their own way (at the end). */
 .feel-stage {
   position: relative;
   z-index: 2;
-  width: 100%;
+  width: min(100%, calc((100vh - 330px) * 16 / 9));
+  width: min(100%, calc((100svh - 330px) * 16 / 9));
 }
-.fx .feel-stage {
-  /* As wide as the column allows while the whole TV still fits the window. */
-  width: min(100%, calc((100vh - 260px) * 16 / 9));
-  width: min(100%, calc((100svh - 260px) * 16 / 9));
+/* A layer of its own only while the scene is near the screen (site.js sets
+   .is-near), not all page long. */
+.fx .feel.is-near:not(.is-still) .feel-stage {
   will-change: transform, opacity;
 }
+/* The glow behind the TV: a tiny picture of the screen, already blurred and
+   saturated (tools/render-site-glows.py), that the browser scales up. It
+   reads as the blur(70px) it replaces and costs no filter. The TV's box (6%
+   from the top, 4% in from each side) grows by the soft edge baked into the
+   picture: --mx and --my are that edge as a fraction of the picture's
+   content, as the tool prints them; phones get their own picture. */
 .feel-glow {
+  --mx: 0.2115;
+  --my: 0.3438;
   position: absolute;
-  inset: 6% 4% 0;
-  width: 92%;
-  height: 94%;
+  left: calc(4% - 92% * var(--mx));
+  top: calc(6% - 94% * var(--my));
+  width: calc(92% * (1 + 2 * var(--mx)));
+  height: calc(94% * (1 + 2 * var(--my)));
   max-width: none;
-  object-fit: cover;
-  filter: blur(70px) saturate(1.5);
   opacity: 0.55;
   pointer-events: none;
   z-index: 0;
-}
-.feel-glow--video {
-  opacity: 0;
 }
 .feel-bezel {
   position: relative;
@@ -513,7 +791,9 @@ video::-webkit-media-controls-start-playback-button {
   overflow: hidden;
   background: #08080a;
 }
-.demo-card .feel-poster,
+/* The screen shows the demo video from the start. Until it has a frame the
+   video shows its poster, which is the video's own first frame, so starting
+   playback swaps nothing visible. */
 .demo-card video {
   position: absolute;
   inset: 0;
@@ -522,16 +802,35 @@ video::-webkit-media-controls-start-playback-button {
   object-fit: cover;
   display: block;
 }
-.feel-poster {
-  display: none;
+/* The scene's one timed state: site.js sets .is-zoomed while the screen is
+   well on its way to the window's width (from a sixth of the way), and the
+   glow, stand, heading and caption leave and come back with a transition
+   that finishes by itself, so wherever the reader stops they are either
+   there or gone, never half-faded. They leave as the screen grows toward
+   them and are back while it is still settling, quickly (250ms), so the
+   heading never trails the TV nor leaves an empty band above it. */
+.fx .feel-glow {
+  transition: opacity 700ms ease;
 }
-.fx .demo-card .feel-poster {
-  display: block;
-  will-change: transform;
-}
-.fx .demo-card video {
+.fx .feel.is-zoomed .feel-glow {
   opacity: 0;
-  will-change: opacity, transform;
+}
+.fx .stand {
+  transition: opacity 250ms ease;
+}
+.fx .feel.is-zoomed .stand {
+  opacity: 0;
+}
+/* The heading leaves in place, fading and settling back a little, never
+   travelling up into the header capsule. */
+.fx .feel-heading > * {
+  transition:
+    opacity 250ms ease,
+    scale 350ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.fx .feel.is-zoomed .feel-heading > * {
+  opacity: 0;
+  scale: 0.97;
 }
 .stand {
   position: relative;
@@ -558,11 +857,14 @@ video::-webkit-media-controls-start-playback-button {
   z-index: 0;
   font-size: 15px;
   line-height: 1.6;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   margin: 0;
   text-align: center;
 }
 .fx .feel-caption {
+  transition: opacity 250ms ease;
+}
+.fx .feel.is-zoomed .feel-caption {
   opacity: 0;
 }
 /* The video plays itself while it is on screen, with no native controls; this
@@ -585,17 +887,25 @@ video::-webkit-media-controls-start-playback-button {
   box-shadow: inset 0 0 0 1px var(--color-white-a22);
   cursor: pointer;
   transform-origin: 100% 100%;
-  transition: background 160ms ease, opacity 300ms ease;
+  transition: background 160ms ease;
 }
-.fx .demo-toggle {
-  opacity: 0;
-  pointer-events: none;
-}
+/* Always shown, whatever the video is doing, so a viewer whose autoplay was
+   refused (Low Power Mode) can start it. */
 .demo-toggle[hidden] {
   display: none;
 }
 .demo-toggle:hover {
   background: rgba(60, 60, 66, 0.7);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .demo-toggle {
+    background: rgb(40, 40, 44);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .demo-toggle:hover {
+    background: rgb(60, 60, 66);
+  }
 }
 .demo-toggle:focus-visible {
   outline: 2px solid var(--text-primary);
@@ -610,11 +920,196 @@ video::-webkit-media-controls-start-playback-button {
 .demo-toggle:not([data-state="playing"]) .demo-toggle-pause {
   display: none;
 }
+/* Autoplay refused (Low Power Mode, a browser set never to play by itself):
+   until the video first plays, the button is the poster's play button,
+   centred and larger, the same glass. site.js sets .is-start and clears it
+   at the first play, when it becomes the small corner control again. It
+   scales about its own centre, so the scene's counter-scale keeps it
+   centred on the screen. */
+.demo-toggle.is-start {
+  right: calc(50% - 36px);
+  bottom: calc(50% - 36px);
+  width: 72px;
+  height: 72px;
+  transform-origin: 50% 50%;
+}
+.demo-toggle.is-start svg {
+  width: 30px;
+  height: 30px;
+}
+.demo-toggle.is-start .demo-toggle-play {
+  translate: -1.2px 0;
+}
+
+/* The scene's geometry, run by the browser from the scroll position itself.
+   Where CSS scroll-driven animations exist (Chromium 115+, Safari 26+), the
+   tilt, the approach, the zoom and the heading's rise are animations on the
+   section's view timeline, which the compositor advances in the same frame
+   as the scroll (Safari 26.4+ and Chromium run them off the main thread).
+   Written by script, they could not keep up on iPhone: Safari scrolls in
+   another process, hands the page its scroll position late, and updates the
+   page at most 60 times a second while the scroll itself runs at 120, so the
+   TV lagged and stepped against the page it sits in. site.js then writes
+   none of this; it keeps the timed state (.is-zoomed), measures the zoom
+   target (--zoom-*) on layout changes, and computes the same curves per
+   frame where these animations are missing.
+   The video plays throughout. Progress p = 0..1 across the pinned stretch
+   (the `contain` range):
+     entry      the TV rises in, tilts upright and grows from 80%
+     0.00-0.12  it comes a little closer (94% to 100%)
+     0.12-0.52  the screen grows to the window's width...
+     0.52-0.70  ...holds there...
+     0.70-0.88  ...and settles back, the heading, caption, stand and
+                glow returning on the way (from about 0.85)...
+     0.88-1.00  ...to the whole scene at rest before the page moves on.
+   cubic-bezier(1/3, 0, 2/3, 1) is exactly smoothstep and
+   cubic-bezier(1/3, 1, 2/3, 1) exactly a cubic ease-out, the curves the
+   fallback computes. The entry animates translate/rotate/scale and the zoom
+   animates transform, which the browser applies in that order, so the two
+   ranges compose exactly as the fallback's single transform does.
+   In the page's flow (phones, a short landscape window) there is no pinned
+   stretch: the TV rises in on its own view timeline, tilting up and growing
+   from 90% over its whole entry (on a tall phone it is partly on screen at
+   load, and a shorter range had all but finished by then), and nothing else
+   moves. Without these animations the flow TV stands at rest; no script runs
+   it. */
+@supports (animation-timeline: --a) and (animation-range: entry 0% entry 100%) {
+  @media (prefers-reduced-motion: no-preference) {
+    .fx .feel {
+      view-timeline: --feel block;
+      view-timeline-inset: 0px;
+    }
+    .fx .feel-stage {
+      animation:
+        feel-stage-in linear both,
+        feel-stage-zoom linear both;
+      animation-timeline: --feel, --feel;
+      animation-range:
+        entry 0% entry 100%,
+        contain 0% contain 100%;
+    }
+    .fx .demo-toggle {
+      animation:
+        feel-toggle-in linear both,
+        feel-toggle-counter linear both;
+      animation-timeline: --feel, --feel;
+      animation-range:
+        entry 0% entry 100%,
+        contain 0% contain 100%;
+    }
+    .fx .feel-heading {
+      animation: feel-heading-in linear both;
+      animation-timeline: --feel;
+      animation-range: entry 0% entry 60%;
+    }
+    @media (max-width: 759px), (max-height: 559px) and (orientation: landscape) {
+      .fx .feel-stage {
+        animation: feel-stage-rise linear both;
+        animation-timeline: view();
+        animation-range: entry 0% entry 100%;
+      }
+      .fx .demo-toggle,
+      .fx .feel-heading {
+        animation: none;
+      }
+    }
+  }
+}
+@keyframes feel-stage-in {
+  from {
+    opacity: 0.3;
+    translate: 0 60px;
+    rotate: x 22deg;
+    scale: 0.8;
+    animation-timing-function: cubic-bezier(0.3333, 1, 0.6667, 1);
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+    rotate: x 0deg;
+    scale: 1;
+  }
+}
+@keyframes feel-stage-rise {
+  from {
+    opacity: 0.3;
+    translate: 0 40px;
+    rotate: x 22deg;
+    scale: 0.9;
+    animation-timing-function: cubic-bezier(0.3333, 1, 0.6667, 1);
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+    rotate: x 0deg;
+    scale: 1;
+  }
+}
+@keyframes feel-stage-zoom {
+  0% {
+    transform: translate(0px, 0px) scale(0.94);
+    animation-timing-function: cubic-bezier(0.3333, 0, 0.6667, 1);
+  }
+  12% {
+    transform: translate(0px, 0px) scale(1);
+    animation-timing-function: cubic-bezier(0.3333, 0, 0.6667, 1);
+  }
+  52%,
+  70% {
+    transform: translate(var(--zoom-x, 0px), var(--zoom-y, 0px)) scale(var(--zoom-s, 1));
+    animation-timing-function: cubic-bezier(0.3333, 0, 0.6667, 1);
+  }
+  88%,
+  100% {
+    transform: translate(0px, 0px) scale(1);
+  }
+}
+/* The pause button keeps its size while the TV around it grows in and
+   zooms: the inverse of the stage's scale, in the same two ranges. */
+@keyframes feel-toggle-in {
+  from {
+    scale: 1.25;
+    animation-timing-function: cubic-bezier(0.3333, 1, 0.6667, 1);
+  }
+  to {
+    scale: 1;
+  }
+}
+@keyframes feel-toggle-counter {
+  0% {
+    transform: scale(calc(1 / 0.94));
+    animation-timing-function: cubic-bezier(0.3333, 0, 0.6667, 1);
+  }
+  12% {
+    transform: scale(1);
+    animation-timing-function: cubic-bezier(0.3333, 0, 0.6667, 1);
+  }
+  52%,
+  70% {
+    transform: scale(var(--zoom-inv, 1));
+    animation-timing-function: cubic-bezier(0.3333, 0, 0.6667, 1);
+  }
+  88%,
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes feel-heading-in {
+  from {
+    opacity: 0;
+    transform: translateY(40px);
+    animation-timing-function: cubic-bezier(0.3333, 1, 0.6667, 1);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0px);
+  }
+}
 
 /* ---------- Why ---------- */
 .why-section {
   padding: clamp(72px, 11vh, 140px) 0;
-  scroll-margin-top: 64px;
+  scroll-margin-top: var(--header-h);
 }
 .why-section h2 {
   font-size: clamp(17px, 1.5vw, 21px);
@@ -669,8 +1164,8 @@ video::-webkit-media-controls-start-playback-button {
   text-wrap: balance;
   transform-origin: 50% 100%;
 }
-.fx [data-scrub-big] {
-  will-change: transform, opacity;
+.fx [data-scrub-big].is-near {
+  will-change: transform;
 }
 .section-heading p,
 .install-intro p {
@@ -688,7 +1183,12 @@ video::-webkit-media-controls-start-playback-button {
 
 /* ---------- Close-up showcase ---------- */
 .showcase-section {
+  /* A close-up's drop shadow, named so the phone's swipe row (a clip) can
+     keep room for it. */
+  --closeup-shadow-y: 20px;
+  --closeup-shadow-blur: 52px;
   padding: clamp(56px, 8vh, 100px) 0 clamp(44px, 6vh, 68px);
+  scroll-margin-top: var(--header-h);
 }
 .closeup-figure {
   margin: 0;
@@ -699,22 +1199,43 @@ video::-webkit-media-controls-start-playback-button {
   margin-bottom: clamp(18px, 2.4vw, 30px);
 }
 /* A soft, blurred copy of each close-up glows behind it; site.js brings it up
-   as the close-up opens. */
+   as the close-up opens. Like the TV's glow, a tiny pre-blurred picture
+   (tools/render-site-glows.py) in a box grown by its baked soft edge: the
+   close-up's box is 10% from the top, 6% in from each side, 80% tall. */
 .closeup-glow {
+  --mx: 0.3793;
+  --my: 0.55;
   position: absolute;
-  top: 10%;
-  left: 6%;
-  width: 88%;
-  height: 80%;
+  left: calc(6% - 88% * var(--mx));
+  top: calc(10% - 80% * var(--my));
+  width: calc(88% * (1 + 2 * var(--mx)));
+  height: calc(80% * (1 + 2 * var(--my)));
   max-width: none;
-  object-fit: cover;
-  filter: blur(64px) saturate(1.6);
   opacity: 0.5;
   pointer-events: none;
   z-index: 0;
 }
+.closeup-figure--full .closeup-glow {
+  --mx: 0.1833;
+  --my: 0.9167;
+}
+/* The glow comes up only once its picture is revealing (site.js's reveal
+   sets .is-revealed on the box), fading in with it and a little after, so it
+   never shows ahead of the picture as coloured fog. Hidden, it has no
+   transition, so a reset is never seen. Where nothing is revealed (no
+   IntersectionObserver), it is simply there. */
 .fx .closeup-glow {
   opacity: 0;
+}
+.fx .closeup-figure:has(> .closeup-box.is-revealed) .closeup-glow,
+.fx:not(.reveal) .closeup-glow {
+  opacity: 0.5;
+  transition: opacity 900ms ease 200ms;
+}
+/* On its own layer while it is near the screen, so the fade is a compositing
+   change rather than a repaint. */
+.fx .closeup-figure.is-near .closeup-glow {
+  will-change: opacity;
 }
 .closeup-box {
   position: relative;
@@ -723,7 +1244,7 @@ video::-webkit-media-controls-start-playback-button {
   border-radius: 14px;
   overflow: hidden;
   background: #08080a;
-  box-shadow: 0 20px 52px rgba(0, 0, 0, 0.5), inset 0 0 0 1px var(--card-sheen);
+  box-shadow: 0 var(--closeup-shadow-y) var(--closeup-shadow-blur) rgba(0, 0, 0, 0.5), inset 0 0 0 1px var(--card-sheen);
 }
 .closeup-box img {
   position: absolute;
@@ -956,7 +1477,7 @@ video::-webkit-media-controls-start-playback-button {
 /* ---------- Install ---------- */
 .install-section {
   padding: clamp(72px, 11vh, 140px) 0 clamp(44px, 6vh, 68px);
-  scroll-margin-top: 64px;
+  scroll-margin-top: var(--header-h);
 }
 .install-grid {
   display: grid;
@@ -994,13 +1515,10 @@ video::-webkit-media-controls-start-playback-button {
   text-wrap: pretty;
 }
 .install-card .install-note {
-  font-size: 15px;
+  font-size: 14px;
   line-height: 1.55;
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
   margin: 6px 0 0;
-  padding: 12px 14px;
-  border-radius: 10px;
-  box-shadow: inset 0 0 0 1px var(--color-white-a22);
   text-wrap: pretty;
 }
 .install-card a {
@@ -1102,7 +1620,7 @@ video::-webkit-media-controls-start-playback-button {
 }
 .footer-links {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: clamp(10px, 1.4vw, 14px) clamp(20px, 2.4vw, 36px);
   font-size: 15px;
 }
@@ -1158,17 +1676,6 @@ video::-webkit-media-controls-start-playback-button {
 }
 
 /* ---------- Credits page (credits.html, written by tools/demo_library.py) ---------- */
-.header-back {
-  display: inline-flex;
-  align-items: center;
-  font-size: 15px;
-  color: var(--text-secondary);
-  white-space: nowrap;
-  padding: 8px 0;
-}
-.header-back:hover {
-  color: var(--text-primary);
-}
 .credits-intro {
   padding: clamp(40px, 7vh, 84px) 0 clamp(32px, 5vh, 56px);
   max-width: 760px;
@@ -1208,7 +1715,7 @@ video::-webkit-media-controls-start-playback-button {
   grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
   gap: 12px clamp(24px, 4vw, 64px);
   padding: clamp(20px, 2.8vh, 28px) 0;
-  scroll-margin-top: 24px;
+  scroll-margin-top: var(--header-h);
 }
 .credit-work + .credit-work {
   box-shadow: inset 0 1px 0 var(--color-white-a07);
@@ -1386,7 +1893,10 @@ video::-webkit-media-controls-start-playback-button {
   border: 1px solid var(--hairline);
   border-radius: 10px;
   padding: 14px 16px;
+  /* Sideways only (see .doc-table-wrap). */
   overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
   margin: 0 0 18px;
 }
 .doc-body pre code {
@@ -1410,9 +1920,18 @@ video::-webkit-media-controls-start-playback-button {
   border-top: 1px solid var(--hairline);
   margin: clamp(32px, 5vh, 48px) 0;
 }
+/* A sideways scroller must not scroll vertically too: `overflow-x: auto`
+   alone turns overflow-y to auto as well, and then anything that pokes out of
+   the bottom makes it a vertical scroller that swallows the page's own
+   vertical swipes (the phone close-up row did exactly that). */
 .doc-table-wrap {
   overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
   margin: 0 0 22px;
+}
+.doc-body :is(h1, h2, h3, h4) {
+  scroll-margin-top: var(--header-h);
 }
 .doc-body table {
   width: 100%;
@@ -1441,37 +1960,35 @@ video::-webkit-media-controls-start-playback-button {
    Narrow layout (<760px)
    ========================================================= */
 @media (max-width: 759px) {
-  .header-actions {
-    order: 2;
+  /* On phones the capsule spans the column: brand at the left, GitHub and
+     Install at the right, every target 44px. The section links would not
+     fit beside them, and a sideways-scrolling strip of links is exactly the
+     kind of scroller that steals vertical swipes. */
+  :root {
+    --header-bar-h: 56px;
+    --header-item-h: 44px;
+  }
+  .header-bar {
+    width: 100%;
+    padding: 0 6px;
   }
   .site-nav {
     display: none;
   }
-  .header-github {
-    min-width: 44px;
-    min-height: 44px;
-    padding: 0;
+  .header-actions {
+    margin-left: auto;
   }
-  .header-github .gh-label {
-    display: none;
-  }
-  .header-github .gh-icon {
-    display: block;
+  .header-cta {
+    padding: 0 18px;
   }
   .footer-grid {
     grid-template-columns: minmax(0, 1fr);
-  }
-  .footer-links {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .footer-credit a {
     padding: 11px 0;
     margin: -11px 0;
   }
 
-  .header-back {
-    min-height: 44px;
-  }
   .doc-body table {
     min-width: 420px;
     font-size: 13.5px;
@@ -1526,25 +2043,35 @@ video::-webkit-media-controls-start-playback-button {
   .hero-gh-link {
     padding: 10px 2px;
   }
+  /* The row does not fit a phone's column, and a break left to the browser
+     ends a line with a separator. Phones get two lines, broken on purpose
+     before the last item, which drops its separator. */
+  .hero-meta .sep:nth-last-child(2) {
+    display: none;
+  }
+  .hero-meta-item:last-child {
+    display: block;
+  }
 
-  /* The TV scene pins just under the header (68px: a 44px tap target plus
-     its padding), centred in the rest of the screen. The pinned box is only
-     as tall as its content (heading, TV, caption) and is centred by its top
-     offset, using its height (--feel-h) that site.js measures, NOT by being
-     screen-tall: iOS Safari fills the area behind its toolbar with one
-     colour sampled from a pinned element reaching into it, and a
-     screen-tall box does whenever the toolbar collapses (it is mostly black
-     TV bezel, so the strip went black). */
-  .fx .feel {
-    height: 260vh;
-    height: 260svh;
+  /* The TV stands in the page's flow here (see .fx .feel), as large as the
+     column allows and a little more: the bezel runs out into the gutter, to
+     12px from the window's edges. A TV this close wants a nearer eye, or its
+     tilt as it rises in would barely read. */
+  .fx .feel-stage {
+    width: calc(100% + 2 * var(--gutter) - 24px);
   }
   .fx .feel-sticky {
-    top: calc(68px + max(0px, (100vh - 68px - var(--feel-h, 0px)) / 2));
-    top: calc(68px + max(0px, (100svh - 68px - var(--feel-h, 0px)) / 2));
-    height: auto;
-    justify-content: flex-start;
-    padding: 0;
+    perspective: 1000px;
+  }
+  /* The phone glows are their own pictures (<picture> sources), blurred for
+     boxes this size, so their baked edges are wider. */
+  .feel-glow {
+    --mx: 0.6875;
+    --my: 1.1;
+  }
+  .closeup-figure--full .closeup-glow {
+    --mx: 0.6471;
+    --my: 1;
   }
   .why-section {
     padding-top: 40px;
@@ -1556,15 +2083,30 @@ video::-webkit-media-controls-start-playback-button {
     --ar: 1120 / 530;
   }
   /* The two smaller close-ups become one swipeable row, edge to edge, each
-     card the same shape; the next one peeks in from the right. */
+     card the same shape; the next one peeks in from the right.
+     It scrolls sideways ONLY. `overflow-x: auto` alone makes overflow-y auto
+     too, and a card or caption still waiting to be revealed (translated
+     down, below) poked out of the row's bottom: the row became a 32px
+     vertical scroller, and a vertical swipe that started on it scrolled the
+     row instead of the page, once down and once back up. overflow-y is
+     hidden (`clip` cannot pair with `auto`), nothing inside may overflow
+     vertically, and a fling at either end stays in the row.
+     Being a clip, the row keeps room above the cards for their drop shadow
+     (it rises blur less offset above a card; below, the captions cover its
+     reach), taken back by its margin so nothing moves. That room overlaps
+     the caption above, which is positioned and so stays on top for taps.
+     Sideways the row already runs to the window's edges. */
   .closeup-row {
+    --shadow-rise: calc(var(--closeup-shadow-blur) - var(--closeup-shadow-y));
     display: flex;
     gap: 14px;
     overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
     scroll-snap-type: x mandatory;
     scroll-padding-left: var(--gutter);
-    margin: 0 calc(-1 * var(--gutter));
-    padding: 0 0 8px var(--gutter);
+    margin: calc(-1 * var(--shadow-rise)) calc(-1 * var(--gutter)) 0;
+    padding: var(--shadow-rise) 0 8px var(--gutter);
     align-items: start;
     scrollbar-width: none;
     -webkit-overflow-scrolling: touch;
@@ -1583,13 +2125,31 @@ video::-webkit-media-controls-start-playback-button {
     flex: 0 0 86%;
     scroll-snap-align: start;
   }
+  /* In the row, a glow keeps to its figure's own box: grown by its soft
+     edge, it would overflow the row, widening its sideways scroll and
+     giving it a vertical one (see above). */
+  .closeup-row .closeup-glow {
+    --mx: 0;
+    --my: 0;
+  }
+  /* In the row, reveals fade and settle in place rather than rising from
+     below, which would overflow the row (see above) and be cut off by it. */
+  .reveal .closeup-row [data-reveal] {
+    translate: none;
+  }
   .closeup-box--tiles {
     --ar: 1900 / 1540;
     --focus: 52% 0;
   }
+  /* The player close-up is wider than the card and its controls reach both
+     edges, so no crop keeps both buttons whole: it is shown entire, on the
+     picture's own black, and the card keeps the row's shape. */
   .closeup-box--player {
     --ar: 1900 / 1540;
-    --focus: 100% 50%;
+    background: #000;
+  }
+  .closeup-box--player img {
+    object-fit: contain;
   }
 
   .built-section {
@@ -1628,5 +2188,16 @@ video::-webkit-media-controls-start-playback-button {
   }
   .quote-lead-text .quote-mark {
     display: none;
+  }
+}
+/* In a short landscape window the flow TV (see .fx .feel) would be a
+   thumbnail at the wide layout's width and too tall at a phone's: it only has
+   to fit under the header, alone on the screen. After the phone rule above,
+   which a phone on its side can match as well. */
+@media (max-height: 559px) and (orientation: landscape) {
+  .feel-stage,
+  .fx .feel-stage {
+    width: min(100%, calc((100vh - 100px) * 16 / 9));
+    width: min(100%, calc((100svh - 100px) * 16 / 9));
   }
 }

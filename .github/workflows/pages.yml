@@ -63,14 +63,25 @@ jobs:
           cp site/styles.css _site/styles.css
           cp site/site.js _site/site.js
           cp site/CNAME _site/CNAME
+          cp site/robots.txt _site/robots.txt
+          cp site/sitemap.xml _site/sitemap.xml
+          cp site/404.html _site/404.html
 
           cp site/media/feel-1080p60.av1.mp4 _site/media/feel-1080p60.av1.mp4
           cp site/media/feel-1080p60.h264.mp4 _site/media/feel-1080p60.h264.mp4
+          cp site/media/feel-720p60.av1.mp4 _site/media/feel-720p60.av1.mp4
+          cp site/media/feel-720p60.h264.mp4 _site/media/feel-720p60.h264.mp4
           cp site/media/feel-poster.jpg _site/media/feel-poster.jpg
+          cp site/media/feel-glow.png _site/media/feel-glow.png
+          cp site/media/feel-glow-narrow.png _site/media/feel-glow-narrow.png
           cp site/media/closeup-glass.jpg _site/media/closeup-glass.jpg
           cp site/media/closeup-glass-narrow.jpg _site/media/closeup-glass-narrow.jpg
           cp site/media/closeup-tiles.jpg _site/media/closeup-tiles.jpg
           cp site/media/closeup-player.jpg _site/media/closeup-player.jpg
+          cp site/media/closeup-glass-glow.png _site/media/closeup-glass-glow.png
+          cp site/media/closeup-glass-narrow-glow.png _site/media/closeup-glass-narrow-glow.png
+          cp site/media/closeup-tiles-glow.png _site/media/closeup-tiles-glow.png
+          cp site/media/closeup-player-glow.png _site/media/closeup-player-glow.png
           cp site/media/og-card.jpg _site/media/og-card.jpg
 
           cp assets/logo-master.png _site/assets/logo-master.png
@@ -89,8 +100,8 @@ jobs:
           # styles.css and site.js. (The asset check below ignores the query string.)
           v="${GITHUB_SHA::8}"
           sed -i -E "s#(styles\.css|site\.js)\"#\1?v=${v}\"#g" \
-            _site/index.html _site/credits.html _site/install/index.html _site/troubleshooting/index.html
-          grep -c "?v=${v}" _site/index.html _site/credits.html _site/install/index.html _site/troubleshooting/index.html
+            _site/index.html _site/credits.html _site/install/index.html _site/troubleshooting/index.html _site/404.html
+          grep -c "?v=${v}" _site/index.html _site/credits.html _site/install/index.html _site/troubleshooting/index.html _site/404.html
 
       - name: Stage nightly/latest.json
         # `{"available": false}` when no nightly has ever published — the site has to build before
@@ -138,6 +149,7 @@ jobs:
               site / "credits.html",
               site / "install" / "index.html",
               site / "troubleshooting" / "index.html",
+              site / "404.html",
               site / "styles.css",
               site / "site.js",
           ]
