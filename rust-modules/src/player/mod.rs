@@ -1421,12 +1421,12 @@ fn subtitle_offset_ns() -> i64 {
 ///
 /// The sidecar holds its whole file, so any offset in its range is exact there. An EMBEDDED track
 /// only has the cues the demuxer has read, which is why [`subtitle_offset_range_ms`] gives it no
-/// advance at all; a delay is served from the store, except in the first seconds after a seek
-/// (the demuxer restarts AT the target, never before it), which find nothing to draw until the
-/// playhead has moved on by the delay. A native audio-track switch (`engine::switch_audio_native`
-/// → `reload_at`) is the same case: its teardown clears both cue stores and the demuxer restarts
-/// at the playhead, so an embedded track under a delay shows nothing for about the delay after the
-/// switch.
+/// advance at all. A delay is served from retained cues, but a seek can leave embedded text and
+/// image stores without the required history: the demuxer restarts at the target, not before it.
+/// Embedded ASS retains known events across an in-place seek, so buffered delayed cues remain
+/// available. A full pipeline reload, including a native audio-track switch
+/// (`engine::switch_audio_native` → `reload_at`), discards embedded history and can leave a delayed
+/// track empty until enough history has been read again.
 pub(crate) fn subtitle_clock_ns(now_ns: i64) -> i64 {
     now_ns.saturating_sub(subtitle_offset_ns())
 }
