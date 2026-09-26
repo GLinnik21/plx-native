@@ -17,7 +17,9 @@
 //!
 //! **Every value accepted here is closed or bucketed.** An [`IncidentKind`], a [`LinkClass`] built
 //! from the network layer's own evidence, bucketed counts and durations, a clamped code
-//! generation, and a persistence failure class. The only raw integers are the HTTP status, the
+//! generation, a persistence failure class, and — on the two discovery verdicts that need it —
+//! per-route HTTPS outcome classes, closed facts about a verified plaintext answer
+//! (`plex::probe::InsecureEvidence`) or a bucketed resource count. The only raw integers are the HTTP status, the
 //! `CURLcode` and the storage service's own error code — numbers with no identity of their own.
 //! There is no free-text slot at all: no error or caption string (a profile-switch message embeds
 //! the profile's title), no PIN, code, token, account, profile or server name, URL, hostname or
@@ -242,6 +244,59 @@ impl UnansweredBucket {
     }
 }
 
+/// A count of things plex.tv returned, bucketed — never the raw count.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum CountBucket {
+    Zero,
+    One,
+    TwoToFive,
+    SixPlus,
+}
+
+impl CountBucket {
+    pub(crate) fn from_count(n: usize) -> Self {
+        match n {
+            0 => Self::Zero,
+            1 => Self::One,
+            2..=5 => Self::TwoToFive,
+            _ => Self::SixPlus,
+        }
+    }
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Zero => "zero",
+            Self::One => "one",
+            Self::TwoToFive => "two_to_five",
+            Self::SixPlus => "six_plus",
+        }
+    }
+}
+
+/// Which flow ran the discovery that failed: the one right after a fresh code was authorized, or
+/// the discovery-only retry (*Try again*) that reuses that authorization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum DiscoveryTrigger {
+    Login,
+    Rediscover,
+}
+
+impl DiscoveryTrigger {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Login => "login",
+            Self::Rediscover => "rediscover",
+        }
+    }
+}
+
+/// Why `/resources` named no server: how much it did return, and which flow asked. Every
+/// resource counted is a non-server one by definition of the verdict, so one bucket says both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct NoServersEvidence {
+    pub resources: CountBucket,
+    pub trigger: DiscoveryTrigger,
+}
+
 /// How long the current run of misses has lasted, bucketed — never the raw duration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum FailingForBucket {
@@ -316,6 +371,33 @@ pub(crate) fn keymanager_stage_code(stage: KeymanagerStage) -> &'static str {
     }
 }
 
+/// **What became of a "Connect without encryption?" offer** — the closed consent outcome an
+/// insecure-only report carries for an eligible server (`plaintext_consent`). Never the server,
+/// its address or its owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum PlaintextConsentOutcome {
+    /// Eligible, and the person had not answered — the question is on screen.
+    Offered,
+    /// Allowed, yet this discovery still could not connect (the grant was refused as stale, or
+    /// the consented origin did not admit the credential).
+    Accepted,
+    /// *Not now* on the question.
+    Declined,
+    /// Turned off in Settings after it had been allowed.
+    Revoked,
+}
+
+impl PlaintextConsentOutcome {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Offered => "offered",
+            Self::Accepted => "accepted",
+            Self::Declined => "declined",
+            Self::Revoked => "revoked",
+        }
+    }
+}
+
 /// Everything one incident report carries. Every field is a closed enum, a bucket, a clamped
 /// count or a bare number with no identity of its own — see the module doc.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -340,6 +422,19 @@ pub(crate) struct IncidentContext {
     pub keymanager_stage: Option<KeymanagerStage>,
     /// The key service's own numeric error code, when it gave one.
     pub service_error_code: Option<i32>,
+    /// Why discovery settled as insecure-only — only on
+    /// [`DiscoveryClass::InsecureOnly`]. Every field closed; see
+    /// [`crate::plex::probe::InsecureEvidence`].
+    #[serde(default)]
+    pub insecure: Option<crate::plex::probe::InsecureEvidence>,
+    /// What became of the "Connect without encryption?" offer for the server an insecure-only
+    /// verdict speaks about — only when that server was eligible to be asked. A closed code; the
+    /// server and its owner are never carried.
+    #[serde(default)]
+    pub plaintext_consent: Option<PlaintextConsentOutcome>,
+    /// What `/resources` returned when it named no server — only on [`DiscoveryClass::NoServers`].
+    #[serde(default)]
+    pub no_servers: Option<NoServersEvidence>,
     /// Unix-epoch milliseconds when the context was BUILT — not when a report carrying it reaches
     /// the wire, which for a one-off is whenever the person presses Send and for a standing report
     /// can be a later launch's flush. `0` when the wall clock was at or before the epoch, and for
@@ -370,6 +465,9 @@ impl IncidentContext {
             persistence: None, helper: None, candidate_errnos: [None; 8],
             keymanager_stage: None,
             service_error_code: None,
+            insecure: None,
+            plaintext_consent: None,
+            no_servers: None,
             occurred_at_ms: now_ms(),
         }
     }
@@ -389,6 +487,9 @@ impl IncidentContext {
             persistence: None, helper: None, candidate_errnos: [None; 8],
             keymanager_stage: None,
             service_error_code: None,
+            insecure: None,
+            plaintext_consent: None,
+            no_servers: None,
             occurred_at_ms: 0,
         }
     }
@@ -404,6 +505,25 @@ impl IncidentContext {
         self.unanswered = UnansweredBucket::from_count(unanswered);
         self.failing_for = FailingForBucket::from_duration(failing_for);
         self.code_generation = Some(code_generation.clamp(1, 4) as u8);
+        self
+    }
+
+    /// The evidence behind an insecure-only discovery verdict.
+    pub(crate) fn with_insecure(mut self, evidence: crate::plex::probe::InsecureEvidence) -> Self {
+        self.insecure = Some(evidence);
+        self
+    }
+
+    /// The consent outcome for an insecure-only verdict's eligible server (see
+    /// [`Self::plaintext_consent`]); `None` leaves it off the report.
+    pub(crate) fn with_plaintext_consent(mut self, outcome: Option<PlaintextConsentOutcome>) -> Self {
+        self.plaintext_consent = outcome;
+        self
+    }
+
+    /// The evidence behind a no-servers discovery verdict.
+    pub(crate) fn with_no_servers(mut self, evidence: NoServersEvidence) -> Self {
+        self.no_servers = Some(evidence);
         self
     }
 
@@ -492,6 +612,26 @@ pub(crate) fn event_body(
     }
     if let Some(code) = ctx.service_error_code {
         incident["service_error_code"] = Value::from(code);
+    }
+    if let Some(e) = ctx.insecure {
+        incident["https_lan"] = Value::from(e.https.lan_plex_direct.code());
+        incident["https_public"] = Value::from(e.https.public_plex_direct.code());
+        incident["https_custom"] = Value::from(e.https.custom_https.code());
+        incident["https_relay"] = Value::from(e.https.relay.code());
+        incident["plaintext_local"] = Value::from(e.plaintext_local);
+        incident["public_address_matches"] = Value::from(e.public_address_matches);
+        incident["owned"] = Value::from(e.owned);
+        incident["https_required"] = Value::from(e.https_required);
+        incident["plaintext_scope"] = Value::from(e.plaintext_scope.code());
+        incident["plaintext_family"] = Value::from(e.plaintext_family.code());
+        incident["plaintext_eligibility"] = Value::from(e.plaintext_eligibility().code());
+    }
+    if let Some(outcome) = ctx.plaintext_consent {
+        incident["plaintext_consent"] = Value::from(outcome.code());
+    }
+    if let Some(e) = ctx.no_servers {
+        incident["resources"] = Value::from(e.resources.code());
+        incident["discovery_trigger"] = Value::from(e.trigger.code());
     }
     if let Some(helper) = ctx.helper {
         incident["helper"] = serde_json::to_value(helper).expect("closed helper evidence");
@@ -908,6 +1048,36 @@ mod tests {
         }
     }
 
+    /// An insecure-only verdict's evidence, every route bucket distinct so a key cannot be read
+    /// off the wrong field.
+    fn insecure_context() -> IncidentContext {
+        use crate::plex::probe::{AddressFamily, AddressScope, HttpsRoutes, InsecureEvidence, RouteOutcome};
+        IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::InsecureOnly), None)
+            .with_insecure(InsecureEvidence {
+                https: HttpsRoutes {
+                    lan_plex_direct: RouteOutcome::Tls,
+                    public_plex_direct: RouteOutcome::Timeout,
+                    custom_https: RouteOutcome::Absent,
+                    relay: RouteOutcome::Dns,
+                },
+                plaintext_local: true,
+                public_address_matches: true,
+                owned: true,
+                https_required: false,
+                plaintext_scope: AddressScope::Private,
+                plaintext_family: AddressFamily::V4,
+                identity_verified: true,
+            })
+    }
+
+    fn no_servers_context() -> IncidentContext {
+        IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::NoServers), None)
+            .with_no_servers(NoServersEvidence {
+                resources: CountBucket::TwoToFive,
+                trigger: DiscoveryTrigger::Rediscover,
+            })
+    }
+
     /// `PRIVACY.md` names every key a sign-in report's `incident` context can carry, so a key
     /// added to [`event_body`] without its line in the notice fails here, not in review.
     #[test]
@@ -924,6 +1094,16 @@ mod tests {
                 continue;
             }
             assert!(notice.contains(&format!("`{key}`")), "PRIVACY.md does not name `{key}`");
+        }
+        // The discovery evidence ships only on its two kinds; walk both.
+        for ctx in [
+            insecure_context().with_plaintext_consent(Some(PlaintextConsentOutcome::Offered)),
+            no_servers_context(),
+        ] {
+            let v = event_body("a", "", None, ctx, ConsentKind::OneOff);
+            for key in keys(&v["contexts"]["incident"]) {
+                assert!(key == "type" || notice.contains(&format!("`{key}`")), "PRIVACY.md does not name `{key}`");
+            }
         }
         // The save-failure trio ships too, but `dns_context`-shaped fixtures above never set it —
         // a context that HAS gone through `with_persistence` is the one that would have caught
@@ -982,6 +1162,43 @@ mod tests {
             ]
         );
         assert_eq!(v["contexts"]["incident"]["keymanager_stage"], "finish");
+
+        // An insecure-only verdict adds exactly its route buckets and plaintext facts.
+        let v = event_body("a", "", None, insecure_context(), ConsentKind::OneOff);
+        assert_eq!(
+            keys(&v["contexts"]["incident"]),
+            [
+                "consent", "failing_for", "https_custom", "https_lan", "https_public", "https_relay",
+                "https_required", "kind", "link", "owned", "plaintext_eligibility", "plaintext_family",
+                "plaintext_local", "plaintext_scope", "public_address_matches", "type", "unanswered",
+            ]
+        );
+        // …and an offered consent question adds exactly its closed outcome.
+        let offered = insecure_context().with_plaintext_consent(Some(PlaintextConsentOutcome::Declined));
+        let with_consent = event_body("a", "", None, offered, ConsentKind::OneOff);
+        let mut want = keys(&v["contexts"]["incident"]);
+        want.push("plaintext_consent");
+        want.sort_unstable();
+        assert_eq!(keys(&with_consent["contexts"]["incident"]), want);
+        assert_eq!(with_consent["contexts"]["incident"]["plaintext_consent"], "declined");
+        let incident = &v["contexts"]["incident"];
+        assert_eq!(
+            [&incident["https_lan"], &incident["https_public"], &incident["https_custom"], &incident["https_relay"]],
+            ["tls", "timeout", "absent", "dns"]
+        );
+        assert_eq!(incident["plaintext_scope"], "private");
+        assert_eq!(incident["plaintext_family"], "v4");
+        assert_eq!(incident["plaintext_local"], true);
+        assert_eq!(incident["https_required"], false);
+
+        // A no-servers verdict adds exactly its resource bucket and trigger.
+        let v = event_body("a", "", None, no_servers_context(), ConsentKind::OneOff);
+        assert_eq!(
+            keys(&v["contexts"]["incident"]),
+            ["consent", "discovery_trigger", "failing_for", "kind", "link", "resources", "type", "unanswered"]
+        );
+        assert_eq!(v["contexts"]["incident"]["resources"], "two_to_five");
+        assert_eq!(v["contexts"]["incident"]["discovery_trigger"], "rediscover");
     }
 
     #[test]
@@ -1073,6 +1290,11 @@ mod tests {
                 );
                 bodies.push(event_body("a", "b", errors_id.as_deref(), ctx, consent));
             }
+        }
+        // The discovery evidence rides only on its own kinds, so walk it where it is carried.
+        for ctx in [insecure_context(), no_servers_context()] {
+            bodies.push(event_body("a", "b", Some(&"e".repeat(32)), ctx, ConsentKind::Standing));
+            bodies.push(event_body("a", "b", None, ctx, ConsentKind::OneOff));
         }
         for v in &bodies {
             let mut all = Vec::new();

@@ -969,17 +969,29 @@ impl SessionAdapter {
             }),
         };
         let spawn = self.spawn;
+        // A sign-in starting is a new identity: every plaintext grant minted under the previous
+        // one is dead from here (`plex::grant`). A profile switch is NOT — consent is the
+        // account's, and its commit keeps only the grants its roster installs
+        // (`plex::grant::roster_replaced`), so a switch that is refused changes nothing. The work
+        // below captures the generations — and the answers the account it runs for gave — it may
+        // mint under. The grant table is a process global, so like every other global effect it
+        // belongs to the LIVE resources: a fixture adapter (a test rig, which runs without the
+        // serial lock) never reaches into it.
+        if key.op == SessionOp::Login && matches!(self.resources, Resources::Live { .. }) {
+            crate::plex::grant::identity_changed();
+        }
+        let ask = crate::plex::grant::PlaintextAsk::capture(input.account_token());
         #[cfg(test)]
         let launched = if let Some(run) = self.fixture_work.remove(&req.0) {
             self.launch_correlated(req, key, admission, stream, |job| { job(); true },
                 move |output| run(output, input))
         } else {
             self.launch_correlated(req, key, admission, stream, |job| spawn(name, job),
-                move |output| crate::auth::run_session_work(key, input, &output))
+                move |output| crate::auth::run_session_work(key, input, ask, &output))
         };
         #[cfg(not(test))]
         let launched = self.launch_correlated(req, key, admission, stream, |job| spawn(name, job),
-            move |output| crate::auth::run_session_work(key, input, &output));
+            move |output| crate::auth::run_session_work(key, input, ask, &output));
         match launched {
             Ok(()) | Err(AdmissionError::Duplicate) => Ok(()),
             Err(AdmissionError::Capacity) => Err(AdmissionReply {
@@ -1137,7 +1149,7 @@ mod tests {
 
     fn key(epoch: u64) -> SessionWorkKey { SessionWorkKey { epoch, op: SessionOp::Login } }
     fn failed(epoch: u64) -> AuthProgress {
-        LoginProgress::Failed { epoch, message: "Synthetic failure".into(), incident: crate::auth::synthetic_incident() }.into()
+        LoginProgress::Failed { epoch, message: "Synthetic failure".into(), incident: crate::auth::synthetic_incident(), plaintext: None }.into()
     }
 
     /// Stage B bridge wiring, exercised against the REAL disk writer (not the fixture arm, which
@@ -2322,5 +2334,18 @@ mod tests {
                 "{lane:?}"
             );
         }
+    }
+}
+
+/// **Record the person's plaintext answer for one server** — [`crate::auth::owner::SessionFx::PlaintextAnswer`]'s
+/// executor. This launch's authority first (`plex::grant::answer`: anything but *Allowed* withdraws
+/// the server's grant at once, and the retry a *Connect* starts captures the answer even before
+/// the write lands), then the persisted choice through the session's one read-modify-write door.
+/// An *Allowed* whose write fails costs only its memory across a restart — the person is asked
+/// again, the closed direction; a refusal is written again until it lands (`plex::grant::record`).
+pub(crate) fn record_plaintext_answer(account: &str, machine_id: &str,
+    choice: crate::plex::session::PlaintextChoice) {
+    if crate::plex::grant::record(account, machine_id, choice).is_err() {
+        crate::log("session: plaintext answer not saved (storage worker unavailable)");
     }
 }

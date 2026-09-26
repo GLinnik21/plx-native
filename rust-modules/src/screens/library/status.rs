@@ -16,8 +16,28 @@ impl LibraryScreen {
         let mut overlay = StatusOverlay::new(self.status_frame(), caption, kind).page().phase(cx.tick.ms)
             .focused(cx.focus.current == Some(self.key(RETRY)));
         if let Some(reason) = reason { overlay = overlay.reason(reason); }
-        if self.readout == Readout::Failed { overlay = overlay.action(c"Try again"); }
+        if self.readout == Readout::Failed {
+            overlay = overlay.action(super::super::plaintext_question::primary(self.plaintext.verdict()));
+        }
         overlay
+    }
+
+    /// Follow the offer for the failed source's server (`plex::grant::offers`), and take the
+    /// question down once the read-out it was asked from no longer asks about that server.
+    pub(super) fn watch_plaintext<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
+        use super::super::plaintext_question::{asks, Near};
+        let machine = (self.readout == Readout::Failed)
+            .then(|| H::directory(cx).source().and_then(|(sid, _)| crate::plex::client_for(*sid)))
+            .flatten()
+            .map(|client| client.machine_id());
+        self.plaintext.refresh(machine, Near::Only);
+        if self.plaintext_alert.is_open()
+            && !(self.readout == Readout::Failed
+                && self.plaintext_alert.subject() == self.plaintext.verdict().map(|v| v.machine_id.as_str())
+                && asks(self.plaintext.verdict()))
+        {
+            self.plaintext_alert.withdraw();
+        }
     }
 
     pub(super) fn status_rect<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<Rect> {
@@ -40,7 +60,14 @@ impl LibraryScreen {
                     None => "Can\u{2019}t reach your Plex server".to_string(),
                     Some(_) => format!("Can\u{2019}t reach {name}"),
                 };
-                (caption, owner.map(|owner| format!("Shared by {owner} · your own server is fine.")))
+                // A server discovery offers "Connect without encryption?" for says why instead,
+                // and names what *Connect* / *Try again* does (`auth::plaintext_copy`).
+                let reason = match self.plaintext.verdict() {
+                    Some(verdict) => Some(crate::auth::plaintext_copy(Some(verdict),
+                        crate::auth::ReadoutSurface::SignedIn).into_owned()),
+                    None => owner.map(|owner| format!("Shared by {owner} · your own server is fine.")),
+                };
+                (caption, reason)
             }
             Readout::Empty => {
                 let caption = if self.wanted_kind.is_some() { "Nothing here matches".into() }

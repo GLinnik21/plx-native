@@ -107,7 +107,7 @@ fn fail(owner: &mut SessionMachine, context: IncidentContext) -> Vec<SessionFx> 
     let epoch = owner.state.epoch;
     observe(
         owner,
-        LoginProgress::Failed { epoch, message: "synthetic failure".into(), incident: context },
+        LoginProgress::Failed { epoch, message: "synthetic failure".into(), incident: context, plaintext: None },
         true,
     )
 }

@@ -572,6 +572,21 @@ pub struct Session {
     /// section like [`Session::home_pins`].
     #[serde(default, deserialize_with = "de_soft_hero_blur")]
     pub(crate) last_hero_blur: Option<[[f32; 3]; 4]>,
+    /// **The person's answer to "Connect without encryption?"**, one entry per server
+    /// (`machineIdentifier`) they were asked about. The account half of the key is this file: it
+    /// is the signed-in account's, and it is cleared with the credentials on sign-out, so an
+    /// answer never outlives the account that gave it.
+    ///
+    /// This is a CHOICE, never a transport grant: nothing here says which address was used or
+    /// lets a plaintext origin be reactivated from disk. A credential goes to a plaintext origin
+    /// only under a live `plex::grant::PlaintextGrant`, minted in-process from a FRESH eligible
+    /// probe and this answer together (`docs/shared-servers.md`). An absent entry is "never
+    /// asked".
+    ///
+    /// Soft-parsed for the reason every list in this struct is: a hand-edited entry costs that
+    /// entry — and an entry that cannot be read is "never asked", the closed direction.
+    #[serde(default, deserialize_with = "de_soft_vec")]
+    pub(crate) plaintext_consent: Vec<PlaintextConsent>,
     #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
     pub(crate) extensions: OpaqueExtensions,
 
@@ -608,6 +623,8 @@ struct CanonicalSessionPreferences {
     trailer_autoplay: bool,
     #[serde(default, deserialize_with = "de_soft_subtitle_tone")]
     subtitle_tone: SubtitleTone,
+    #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
+    plaintext_consent: Vec<PlaintextConsent>,
     /// Parsed only so a future preference does not make the known fields disappear. The shipping
     /// adapter merges these opaque keys from the current DB8 public payload before every rewrite;
     /// they are not promoted into the Session domain object.
@@ -631,6 +648,7 @@ impl Default for CanonicalSessionPreferences {
             last_hero_blur: None,
             trailer_autoplay: true,
             subtitle_tone: SubtitleTone::White,
+            plaintext_consent: Vec::new(),
             extensions: BTreeMap::new(),
         }
     }
@@ -671,6 +689,7 @@ fn split_public(session: &Session) -> Result<crate::storage::state::PublicPayloa
         last_hero_blur: session.last_hero_blur,
         trailer_autoplay: session.trailer_autoplay,
         subtitle_tone: session.subtitle_tone,
+        plaintext_consent: session.plaintext_consent.clone(),
         extensions: BTreeMap::new(),
     })
     .map_err(|_| ())?;
@@ -733,6 +752,7 @@ pub(crate) fn join_canonical(
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
         subtitle_tone: preferences.subtitle_tone,
+        plaintext_consent: preferences.plaintext_consent,
         profiles,
         extensions: auth.extensions,
     })
@@ -754,6 +774,7 @@ fn public_session(public: &crate::storage::state::PublicPayload) -> Session {
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
         subtitle_tone: preferences.subtitle_tone,
+        plaintext_consent: preferences.plaintext_consent,
         home_pins, recent_searches,
         ..Default::default()
     }
@@ -1302,8 +1323,10 @@ impl SourceRef {
     /// only that there is an address, a dialable port and a non-empty token written down — it says
     /// nothing about whether THIS BUILD may put that token on THIS origin's transport. Issue #95:
     /// a stored `http://` entry is fully `dialable`. Issue #107 closed the gap that used to sit
-    /// between here and that answer — a plaintext credential over it is refused or not by
-    /// [`CredentialPolicy`](super::CredentialPolicy), asked again at registration
+    /// between here and that answer — a plaintext credential over it is refused or not by the one
+    /// authority, `super::grant::credential_allowed` (the build's
+    /// [`CredentialPolicy`](super::CredentialPolicy), or a live consented grant — which a stored
+    /// entry can never supply by itself: grants are not persisted), asked again at registration
     /// (`servers::register_origin` and its sibling entry points, before the entry can ever become
     /// the current client) and again at the point of the actual request — never here.
     pub fn dialable(&self) -> bool {
@@ -1354,6 +1377,43 @@ pub struct PinnedLib {
     #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
     pub(crate) extensions: OpaqueExtensions,
 
+}
+
+/// The person's answer to "Connect without encryption?" for one server. See
+/// [`Session::plaintext_consent`].
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PlaintextChoice {
+    /// Never asked — the only value an absent or unreadable entry can mean.
+    #[default]
+    Undecided,
+    /// Connect is allowed while the server is eligible (`plex::probe::PlaintextEligibility`).
+    Allowed,
+    /// *Not now* on the question.
+    Declined,
+    /// Turned off in Settings after it had been allowed. Distinct from `Declined` only so the
+    /// read-out and the report can say which: both refuse the same way.
+    Revoked,
+}
+
+impl PlaintextChoice {
+    pub(crate) fn allows(self) -> bool {
+        self == Self::Allowed
+    }
+}
+
+/// One server's recorded [`PlaintextChoice`].
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PlaintextConsent {
+    pub machine_id: String,
+    /// The account that answered — `plex::grant::account_key`, a one-way fingerprint of its
+    /// plex.tv token. An entry is honoured only while that account is signed in; one with no
+    /// account (or another's) reads as never asked.
+    #[serde(default)]
+    pub account: String,
+    pub choice: PlaintextChoice,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
 }
 
 /// One profile's last-browsed library per content type. See [`Session::last_library`].
@@ -1676,6 +1736,32 @@ impl Session {
     pub(crate) fn with_trailer_autoplay(&self, on: bool) -> Self {
         let mut next = self.clone();
         next.trailer_autoplay = on;
+        next
+    }
+
+    /// The answer `account` (`plex::grant::account_key`) recorded for one server —
+    /// [`PlaintextChoice::Undecided`] when it was never asked (see [`Session::plaintext_consent`]).
+    pub(crate) fn plaintext_choice(&self, account: &str, machine_id: &str) -> PlaintextChoice {
+        self.plaintext_consent
+            .iter()
+            .find(|c| c.account == account && c.machine_id == machine_id)
+            .map_or(PlaintextChoice::Undecided, |c| c.choice)
+    }
+
+    /// Record one server's answer for `account`, leaving that account's other servers alone.
+    /// `Undecided` forgets it. Another account's answers are dropped on the way: they could never
+    /// be honoured again while this one answers, and the file keeps only the live account's.
+    pub(crate) fn with_plaintext_choice(&self, account: &str, machine_id: &str, choice: PlaintextChoice) -> Self {
+        let mut next = self.clone();
+        next.plaintext_consent.retain(|c| c.account == account && c.machine_id != machine_id);
+        if choice != PlaintextChoice::Undecided && !machine_id.is_empty() && !account.is_empty() {
+            next.plaintext_consent.push(PlaintextConsent {
+                machine_id: machine_id.to_owned(),
+                account: account.to_owned(),
+                choice,
+                extensions: Default::default(),
+            });
+        }
         next
     }
 
@@ -2126,6 +2212,34 @@ pub(crate) fn queue_update_ticket(edit: impl FnOnce(&Session) -> Option<Session>
             edit(current)
         })
     }))
+}
+
+/// [`queue_update_ticket`] for an edit whose LANDING matters — a consent refusal
+/// (`plex::grant::record`), which must not be lost to a failed write. `settled` runs on the
+/// storage worker once the attempt is over: `true` when the file holds the edit afterwards (it
+/// already did, or the write persisted) or the edit no longer applies (a sign-out or another
+/// account replaced the one it was queued for), `false` when the store could not be read or the
+/// write failed — the caller's cue to try again.
+pub(crate) fn queue_update_settled(
+    edit: impl FnOnce(&Session) -> Option<Session> + Send + 'static,
+    settled: impl FnOnce(bool) + Send + 'static,
+) {
+    let expected = peek();
+    let tenure = REVOCATION_GENERATION.load(std::sync::atomic::Ordering::Acquire);
+    drop(crate::storage_worker::submit_retained(move || {
+        let (mut read, mut moot) = (false, false);
+        let write = update_with_outcome(|current| {
+            if REVOCATION_GENERATION.load(std::sync::atomic::Ordering::Acquire) != tenure
+                || (!expected.client_id.is_empty() && (current.client_id != expected.client_id
+                    || current.account_token != expected.account_token)) {
+                moot = true;
+                return None;
+            }
+            read = true;
+            edit(current)
+        });
+        settled(moot || write.map_or(read, |w| w.outcome.persisted()));
+    }));
 }
 
 /// Read the persisted session without minting or preference edits. A worker may migrate a marked

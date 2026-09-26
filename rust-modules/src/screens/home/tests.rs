@@ -292,7 +292,8 @@ fn a_failed_home_stands_on_the_page_readout_lines() {
     assert_eq!((caption.to_str().unwrap(), kind), ("Can\u{2019}t reach your Plex server", StatusKind::Failed));
     assert_eq!(action.unwrap().to_str().unwrap(), "Try again");
     let measure = crate::ui::fixture::FixtureMeasure;
-    let overlay = status_overlay(snapshot.view()).unwrap();
+    let no_offer = OfferWatch::default();
+    let overlay = status_overlay(snapshot.view(), &no_offer).unwrap();
     let verdict = overlay.verdict_band_measured(&measure);
     assert_eq!(verdict.y, StatusOverlay::FULL_ANCHOR_TOP);
     let drawn = overlay.action_frame_measured(&measure).unwrap();
@@ -2163,4 +2164,75 @@ fn a_pinned_hero_never_auto_advances() {
         assert!(s.outgoing.is_none(), "the pinned hero began a slide at tick {frame}");
     }
     assert_eq!(s.carousel.as_ref().map(|(_, rk)| rk.as_str()), Some("2"));
+}
+
+/// **A signed-in person has a consent path from Home** (PLX-NATIVE-10, code review 3). A failed
+/// Home while discovery offers "Connect without encryption?" for a server says why in the reason
+/// slot and makes *Connect* the primary; *Connect* asks the SHARED question
+/// (`screens::plaintext_question`) seated on *Not now* instead of retrying, and only its answer
+/// reaches Session. Once answered *Not now*, the primary is *Try again* again and the reason
+/// points at Settings.
+#[test]
+fn a_failed_home_over_an_offered_server_asks_the_shared_question() {
+    use crate::plex::session::PlaintextChoice;
+    let _guard = crate::testlock::serial();
+    crate::plex::grant::reset_for_test();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 0, crate::pms::HubState::Failed);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    let entry = s.entry;
+    let verdict = crate::plex::grant::PlaintextVerdict {
+        machine_id: "lan-machine".into(), name: "Home".into(), shared_by: String::new(),
+        eligibility: crate::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided,
+    };
+    crate::plex::grant::offered(crate::plex::grant::scope(), verdict.clone());
+    step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
+    let measure = FixtureMeasure;
+    let overlay = status_overlay(view, &s.plaintext).unwrap();
+    assert_eq!(overlay.action, Some(plaintext_question::CONNECT));
+    let reason = crate::auth::plaintext_copy(Some(&verdict), crate::auth::ReadoutSurface::SignedIn);
+    assert_eq!(overlay.reason.and_then(|r| r.to_str().ok()), Some(reason.as_ref()));
+    let drawn = overlay.action_frame_measured(&measure).unwrap();
+    let hit = s.hero_button_rect(view, 0, &measure).unwrap();
+    assert_eq!([hit.x, hit.y, hit.w, hit.h], [drawn.x, drawn.y, drawn.w, drawn.h], "the hit rect is the drawn pill");
+
+    let hero = Some(FocusKey { entry, elem: HERO_PLAY_ELEM });
+    let (_, opened, _) = step(&mut s, view, hero, &ScreenEvent::Activate(HERO_PLAY_ELEM));
+    let retries = |out: &[Stamped<TestHost>]| out.iter().any(|st| matches!(&st.fx,
+        Fx::App(AppFx::Store(StoreId::Hubs, StoreCmd::Hubs(HubsCmd::Retry)))));
+    assert!(!retries(&opened), "Connect asks; it does not retry");
+    assert!(s.plaintext_alert.is_open());
+    assert!(opened.iter().any(|st| matches!(&st.fx, Fx::Deliver(_, Delivery::Screen(ScreenEvent::Enter(
+        Enter::Fresh { focus: FocusTarget::ContainerGroup(g) }))) if *g == PLAINTEXT_GROUP)));
+    let context = cx(view, None);
+    let mut groups = Vec::new();
+    Focusable::<TestHost>::groups(&s, &context, &mut groups);
+    assert_eq!(groups.iter().map(|g| g.id).collect::<Vec<_>>(), [PLAINTEXT_GROUP], "the question traps focus");
+    let from = Placed { rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL, index: None };
+    assert_eq!(Focusable::<TestHost>::seat(&s, PLAINTEXT_GROUP, from, &context).elem, PLAINTEXT_CANCEL_ELEM,
+        "seated on Not now");
+
+    let connect = Some(FocusKey { entry, elem: PLAINTEXT_CONNECT_ELEM });
+    let (_, answered, _) = step(&mut s, view, connect, &ScreenEvent::PressCommit(crate::ui::machine::PressId(1)));
+    let answers: Vec<_> = answered.iter().filter_map(|st| match &st.fx {
+        Fx::App(AppFx::Session(crate::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. }))
+            if machine_id == "lan-machine" => Some(*choice),
+        _ => None,
+    }).collect();
+    assert_eq!(answers, [PlaintextChoice::Allowed]);
+    assert!(!s.plaintext_alert.is_open());
+
+    crate::plex::grant::answer("account", "lan-machine", PlaintextChoice::Declined);
+    step(&mut s, view, None, &ScreenEvent::Tick(Tick::default()));
+    let overlay = status_overlay(view, &s.plaintext).unwrap();
+    assert_eq!(overlay.action, Some(plaintext_question::TRY_AGAIN));
+    assert!(overlay.reason.and_then(|r| r.to_str().ok()).is_some_and(|r|
+        r.contains("Settings \u{2192} Unencrypted connections")), "{:?}", overlay.reason);
+    let (_, retried, _) = step(&mut s, view, hero, &ScreenEvent::Activate(HERO_PLAY_ELEM));
+    assert!(retries(&retried), "an answered question is not put again from a failure");
+    assert!(!s.plaintext_alert.is_open());
+    crate::plex::grant::reset_for_test();
 }

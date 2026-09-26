@@ -43,6 +43,7 @@ use crate::ui::widgets::{
 };
 use crate::ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
 
+use super::plaintext_question::{self, AlertStep, Near, OfferWatch, PlaintextAlert};
 use super::registry::{
     AppFx, AppMsg, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
     HomeMemory, HomeReq, HomeTab, LoopReq, PageMemory,
@@ -54,6 +55,11 @@ const HERO_PLAY_ELEM: u32 = 0;
 const HERO_INFO_ELEM: u32 = 1;
 const FIRST_ITEM_ELEM: u32 = 0x1000;
 const HERO_NBTN: usize = 2;
+/// "Connect without encryption?" over the failure read-out (`screens::plaintext_question`): its
+/// group sits between the hero's and the first hub's, its two answers below the first item key.
+const PLAINTEXT_GROUP: GroupId = GroupId(0xF0);
+const PLAINTEXT_CANCEL_ELEM: u32 = 0x0F00;
+const PLAINTEXT_CONNECT_ELEM: u32 = 0x0F01;
 
 /// Parent/container semantic strip keys. Positions are deliberately not encoded here.
 pub(crate) const STRIP_HOME_ELEM: u32 = crate::ui::dispatch::STRIP_BASE;
@@ -303,6 +309,11 @@ pub(crate) struct HomeScreen {
     strip_chosen: bool,
     snap: Spring,
     status_ms: f32,
+    /// The plaintext-only server the failure read-out speaks about, when discovery offers the
+    /// question for one (`plex::grant::offers`) — not logical state: it is the grant table's.
+    plaintext: OfferWatch,
+    /// The question, asked from the read-out's *Connect*.
+    plaintext_alert: PlaintextAlert,
     hero_pop: CtlPop<HERO_NBTN>,
     backdrop: Backdrop,
     grid: Grid,
@@ -335,6 +346,8 @@ impl HomeScreen {
             strip_chosen: false,
             snap: Spring::at(0.0),
             status_ms: 0.0,
+            plaintext: OfferWatch::default(),
+            plaintext_alert: PlaintextAlert::new(PLAINTEXT_GROUP, PLAINTEXT_CANCEL_ELEM, PLAINTEXT_CONNECT_ELEM),
             hero_pop: CtlPop::new(),
             backdrop: Backdrop::new(),
             grid: Grid::new(),
@@ -705,6 +718,19 @@ impl HomeScreen {
             self.snap_target = 0.0;
             self.snap.jump(0.0);
         }
+        let current = crate::plex::client_for(crate::plex::current_server()).map(|c| c.machine_id());
+        if self.plaintext.refresh(current, Near::First) {
+            fx.invalidate(Provenance::Landing(fx.from()));
+        }
+        if self.plaintext_alert.is_open()
+            && !(status_read(view).is_some_and(|(_, kind, _)| kind == StatusKind::Failed)
+                && self.plaintext_alert.subject() == self.plaintext.verdict().map(|v| v.machine_id.as_str())
+                && plaintext_question::asks(self.plaintext.verdict()))
+        {
+            // the read-out it was asked from is gone, or no longer asks about that server
+            self.plaintext_alert.withdraw();
+        }
+        self.plaintext_alert.update(dt);
         self.status_ms = (self.status_ms + dt * 1000.0)
             % (crate::ui::widgets::Spinner::PERIOD_MS as f32 * 1000.0);
         self.hero_flip_cd = (self.hero_flip_cd - dt).max(0.0);
@@ -970,6 +996,20 @@ impl HomeScreen {
             return;
         }
         let view = H::hubs(cx);
+        if status_read(view).is_some_and(|(_, kind, _)| kind == StatusKind::Failed)
+            && elem == HERO_PLAY_ELEM
+            && plaintext_question::asks(self.plaintext.verdict())
+        {
+            // The server is on this network and only answers without encryption: *Connect*
+            // asks the shared question rather than retrying what cannot succeed.
+            if let Some(v) = self.plaintext.verdict() {
+                let machine = v.machine_id.clone();
+                let sid = crate::plex::id_of_machine(&machine);
+                self.plaintext_alert.open(&machine, sid, MachineId::Instance(self.instance), fx);
+                fx.invalidate(Provenance::Input);
+            }
+            return;
+        }
         if status_read(view).is_some() && elem == HERO_PLAY_ELEM {
             fx.push(Fx::App(AppFx::Store(
                 StoreId::Hubs,
@@ -1073,7 +1113,11 @@ impl HomeScreen {
         crate::ui::profile::phase("hm.status", || self.draw_status(view, &env, p, focus));
         crate::ui::testpat::underlay(p);
         crate::ui::testpat::draw(p);
-        self.record_stops(f, view);
+        if !self.plaintext_alert.visible() {
+            // the question owns the pointer while it is up; nothing under it is a target
+            self.record_stops(f, view);
+        }
+        self.plaintext_alert.draw(f, self.entry);
     }
 
     fn draw_hero(
@@ -1279,7 +1323,7 @@ impl HomeScreen {
     }
 
     fn draw_status(&self, view: HubsView<'_>, env: &Env, p: Painter, focus: Option<Located>) {
-        let Some(overlay) = status_overlay(view) else {
+        let Some(overlay) = status_overlay(view, &self.plaintext) else {
             return;
         };
         overlay
@@ -1440,7 +1484,10 @@ impl LogicalState for HomeScreen {
             outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _, hero_pinned: _, covered: _,
             snap_target: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,
-            hero_pop: _, backdrop: _, grid: _ } = self;
+            hero_pop: _, backdrop: _, grid: _,
+            // The plaintext question is the grant table's (`plex::grant::offers`), which no
+            // recording can raise, and its alert only paints over a failed read-out.
+            plaintext: _, plaintext_alert: _ } = self;
         c.f32(self.snap_target)
             .f32(self.snap.pos).f32(self.snap.vel)
             .f32(self.hero_flip_cd)
@@ -1492,6 +1539,9 @@ impl LogicalState for HomeScreen {
 
 impl<H: HomeLike> Focusable<H> for HomeScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        if self.plaintext_alert.groups(out) {
+            return;
+        }
         let view = H::hubs(cx);
         let hero_len = hero_group_len(view);
         let hero_end = self
@@ -1550,6 +1600,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     }
 
     fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
+        if let Some(answer) = self.plaintext_alert.group_of(*key) {
+            return answer;
+        }
         match self.locate(*key)? {
             Located::Hero(index) => (index < hero_group_len(H::hubs(cx))).then_some(HERO_GROUP),
             Located::Item(row, _) => self.rows.get(row).map(|r| r.group),
@@ -1557,6 +1610,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     }
 
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
+        if let Some(step) = self.plaintext_alert.neighbour(key, dir) {
+            return step;
+        }
         let hero_len = hero_group_len(H::hubs(cx));
         let next = match self.locate(key.elem) {
             Some(Located::Hero(i)) => match dir {
@@ -1589,6 +1645,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     }
 
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
+        if let Some(placed) = self.plaintext_alert.place(*key) {
+            return placed;
+        }
         let view = H::hubs(cx);
         match self.locate(*key)? {
             Located::Hero(index) => {
@@ -1670,6 +1729,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     }
 
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
+        if let Some(key) = self.plaintext_alert.reconcile(want) {
+            return key;
+        }
         if let Some(located) = self.locate(want.elem) {
             let valid = match located {
                 Located::Hero(index) => index < hero_group_len(H::hubs(cx)),
@@ -1708,6 +1770,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     }
 
     fn seat(&self, group: GroupId, from: Placed, _cx: &Cx<'_, H>) -> FocusKey<u32> {
+        if let Some(key) = self.plaintext_alert.seat(group, self.entry) {
+            return key;
+        }
         if group == HERO_GROUP {
             return FocusKey {
                 entry: self.entry,
@@ -1758,7 +1823,7 @@ impl HomeScreen {
             if index != 0 || action.is_none() {
                 return None;
             }
-            return status_overlay(view)?.action_frame_measured(measure);
+            return status_overlay(view, &self.plaintext)?.action_frame_measured(measure);
         }
         let hero = self.selected_hero(view)?.item;
         let resumes = crate::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
@@ -1786,6 +1851,18 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
     type Ev = ScreenEvent<H>;
 
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        match self.plaintext_alert.step(ev, cx) {
+            AlertStep::Pass => {}
+            AlertStep::Done(handled) => return handled,
+            AlertStep::Answer(cmd) => {
+                if let Some(cmd) = cmd {
+                    fx.push(Fx::App(AppFx::Session(cmd)));
+                }
+                self.reseat(FocusTarget::ContainerGroup(HERO_GROUP), fx);
+                fx.invalidate(Provenance::Input);
+                return Handled::Yes;
+            }
+        }
         match ev {
             ScreenEvent::Mount => {
                 self.sync_catalog(cx);
@@ -2095,14 +2172,26 @@ fn status_read(
 /// action on both, so the pill a click lands in is the pill on screen. It fills the page, so a
 /// failure stands on the shared page lines (`StatusOverlay::page`), level with the sign-in
 /// failure's and a Library section's; loading and the empty answer stay centred.
-fn status_overlay(view: HubsView<'_>) -> Option<StatusOverlay<'static>> {
+///
+/// A failure while discovery offers "Connect without encryption?" for a server (`plaintext`)
+/// says why in the reason slot and — until it is answered — makes *Connect* the primary
+/// (`screens::plaintext_question`, shared with the sign-in and a Library source's read-out).
+fn status_overlay<'a>(view: HubsView<'_>, plaintext: &'a OfferWatch) -> Option<StatusOverlay<'a>> {
     let (caption, kind, action) = status_read(view)?;
-    let overlay = StatusOverlay::new(Rect::FULL, caption, kind).page();
+    let mut overlay = StatusOverlay::new(Rect::FULL, caption, kind).page();
+    let mut action = action;
+    if kind == StatusKind::Failed {
+        if let (Some(verdict), Some(reason)) = (plaintext.verdict(), plaintext.reason()) {
+            overlay = overlay.reason(reason);
+            action = Some(plaintext_question::primary(Some(verdict)));
+        }
+    }
     Some(match action {
         Some(label) => overlay.action(label),
         None => overlay,
     })
 }
+
 
 fn hero_group_len(view: HubsView<'_>) -> usize {
     match status_read(view) {

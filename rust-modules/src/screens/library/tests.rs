@@ -570,6 +570,65 @@ fn discovery_failure_retry_targets_the_source_without_a_section() {
         "Retry must issue work even when discovery never produced a section address");
 }
 
+/// **A failed source whose server discovery offers "Connect without encryption?" for asks it**
+/// (PLX-NATIVE-10, code review 3) — the SAME question Home and the sign-in ask
+/// (`screens::plaintext_question`): the reason says why, *Connect* replaces *Try again* and opens
+/// the question seated on *Not now*, and its *Connect* sends one answer, re-finding this source's
+/// slot. Another server's offer does not change this source's read-out.
+#[test]
+fn a_failed_source_over_an_offered_server_asks_the_shared_question() {
+    use crate::plex::session::PlaintextChoice;
+    use super::super::plaintext_question::CONNECT;
+    let _guard = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    let sid = crate::plex::register_pinned_with_client_id("lan-machine", &crate::plex::Origin::http("192.168.1.50", 32400), "", None, "client", Default::default());
+    let mut fixture = Fixture::new();
+    fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
+    fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, sid,
+        crate::browse::SrcGroup { name: "Cinema server".into(), handle: String::new(),
+            state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
+    let mut page = fixture.screen();
+    let offer = |machine: &str| crate::plex::grant::offered(crate::plex::grant::scope(),
+        crate::plex::grant::PlaintextVerdict { machine_id: machine.into(), name: "nas".into(), shared_by: String::new(),
+            eligibility: crate::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided });
+    let tick = |page: &mut LibraryScreen| {
+        let mut out = Vec::new();
+        let mut present = crate::ui::present::Present::new();
+        page.step(&ScreenEvent::Tick(Tick::default()), &fixture.cx(None),
+            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+    };
+    offer("another-machine");
+    tick(&mut page);
+    let cx = fixture.cx(Some(page.key(RETRY)));
+    let (caption, reason) = page.status_text(&cx);
+    assert_eq!(page.status_overlay(&cx, &caption, reason.as_deref()).action, Some(c"Try again"),
+        "another server's offer is not this source's");
+
+    offer("lan-machine");
+    tick(&mut page);
+    let (caption, reason) = page.status_text(&cx);
+    assert!(reason.as_ref().and_then(|r| r.to_str().ok()).is_some_and(|r| r.contains("Select Connect")), "{reason:?}");
+    assert_eq!(page.status_overlay(&cx, &caption, reason.as_deref()).action, Some(CONNECT));
+    let mut out = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    page.activate(RETRY, false, &cx, &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+    assert!(!out.iter().any(|e| matches!(&e.fx, Fx::App(AppFx::Store(..)))), "Connect asks; it does not retry");
+    assert!(page.plaintext_alert.is_open());
+    let mut out = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    page.step(&ScreenEvent::PressCommit(crate::ui::machine::PressId(1)), &fixture.cx(Some(page.key(PLAINTEXT_CONNECT))),
+        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+    let answers: Vec<_> = out.iter().filter_map(|e| match &e.fx {
+        Fx::App(AppFx::Session(crate::auth::SessionCmd::AnswerPlaintext { machine_id, choice, sid: target }))
+            if machine_id == "lan-machine" => Some((*choice, *target)),
+        _ => None,
+    }).collect();
+    assert_eq!(answers, [(PlaintextChoice::Allowed, Some(sid))]);
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}
+
 #[test]
 fn failed_and_empty_readouts_offer_only_their_real_owned_controls() {
     let _guard = crate::testlock::serial();

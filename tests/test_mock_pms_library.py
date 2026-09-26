@@ -1,15 +1,20 @@
 """Library fixture contracts: the mock must exercise the real rail and sparse-page boundaries."""
+import contextlib
+import io
 import json
 import hashlib
 import pathlib
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import unittest
 import urllib.request
 
-from mock_pms import EXTRA_MEDIA_RK_BASE, Library, MockPms, serve
+from mock_pms import (
+    EXTRA_MEDIA_RK_BASE, PLEX_DIRECT_HASH, Library, MockPms, plaintext_only_lan_resources, serve,
+)
 
 
 HAS_FFMPEG_AND_FFPROBE = shutil.which("ffmpeg") and shutil.which("ffprobe")
@@ -200,6 +205,88 @@ class DoviAndExtraMedia(unittest.TestCase):
             finally:
                 server.shutdown()
                 server.server_close()
+
+
+class PlaintextOnlyLan(unittest.TestCase):
+    """PLX-NATIVE-10: `--plaintext-only-lan`'s wire shape and the fail-mode/advertise-ip
+    plumbing, kept separate from the (also-passing) live-socket assertions in mock_pms.py's own
+    `--selftest`, which additionally proves the https route really fails a TLS handshake."""
+
+    def test_resources_shape_has_no_relay_and_the_two_documented_connections(self):
+        lib = Library(seed=7)
+        rows = plaintext_only_lan_resources(lib, "127.0.0.1", 32499, 32500, "s0a0b0c0d")
+        self.assertEqual(len(rows), 1)
+        res = rows[0]
+        self.assertEqual(res["clientIdentifier"], lib.machine)
+        self.assertEqual(res["provides"], "server")
+        self.assertIs(res["owned"], True)
+        self.assertIs(res["httpsRequired"], False)
+        self.assertIs(res["publicAddressMatches"], True)
+        self.assertIsNone(res["sourceTitle"])
+        conns = res["connections"]
+        self.assertEqual(len(conns), 2)
+        self.assertFalse(any(c["relay"] for c in conns))
+        https = next(c for c in conns if c["protocol"] == "https")
+        http = next(c for c in conns if c["protocol"] == "http")
+        self.assertEqual(https, {"protocol": "https", "address": "127.0.0.1", "port": 32500,
+                                  "uri": f"https://127-0-0-1.{PLEX_DIRECT_HASH}.plex.direct:32500",
+                                  "local": True, "relay": False, "IPv6": False})
+        self.assertEqual(http, {"protocol": "http", "address": "127.0.0.1", "port": 32499,
+                                 "uri": "http://127.0.0.1:32499", "local": True, "relay": False,
+                                 "IPv6": False})
+
+    def test_serve_wires_api_v2_resources_only_in_this_mode(self):
+        pms = MockPms(Library(seed=7))
+        status, ctype, body = pms.handle("GET", "/api/v2/resources")
+        self.assertEqual(status, 200)
+        # unimplemented outside the mode: falls through like any other unknown plex.tv path.
+        self.assertEqual(json.loads(body), {"MediaContainer": {
+            "size": 0, "allowSync": False, "identifier": "com.plexapp.plugins.library",
+            "mediaTagPrefix": "/system/bundle/media/flags/", "mediaTagVersion": 1}})
+        self.assertEqual(pms.unknown, ["/api/v2/resources"])
+
+    def test_advertise_ip_none_falls_back_to_loopback_with_a_warning_when_undetectable(self):
+        import ipaddress
+        server, pms = serve(0, seed=7, plaintext_only_lan=True, advertise_ip=None)
+        try:
+            ipaddress.IPv4Address(pms.plaintext_only_lan["ip"])  # a real, parseable IPv4
+            # a real LAN IPv4 needs no warning; the loopback fallback always gets one.
+            if pms.plaintext_only_lan["ip"] == "127.0.0.1":
+                buf = io.StringIO()
+                with contextlib.redirect_stderr(buf):
+                    server2, pms2 = serve(0, seed=7, plaintext_only_lan=True, advertise_ip=None)
+                try:
+                    self.assertEqual(pms2.plaintext_only_lan["ip"], "127.0.0.1")
+                    self.assertIn("NOT LAN-eligible", buf.getvalue())
+                finally:
+                    server2.shutdown()
+                    server2.server_close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_unreachable_fail_mode_opens_no_listener_and_refuses(self):
+        server, pms = serve(0, seed=7, plaintext_only_lan=True, advertise_ip="127.0.0.1",
+                            insecure_fail_mode="unreachable")
+        try:
+            self.assertIsNone(server.insecure_fail_listener)
+            with self.assertRaises(OSError):
+                socket.create_connection(
+                    ("127.0.0.1", pms.plaintext_only_lan["fail_port"]), timeout=5).close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_identity_over_the_plaintext_connection_is_tokenless_and_matches_the_resource(self):
+        server, pms = serve(0, seed=7, plaintext_only_lan=True, advertise_ip="127.0.0.1")
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            with urllib.request.urlopen(base + "/identity", timeout=5) as response:
+                identity = json.load(response)["MediaContainer"]
+            self.assertEqual(identity["machineIdentifier"], pms.lib.machine)
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == "__main__":

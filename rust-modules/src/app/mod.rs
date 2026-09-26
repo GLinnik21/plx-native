@@ -291,6 +291,9 @@ pub(crate) struct App {
     pub(crate) menu_play_await: Option<MenuPlayAwait>,
     pub(crate) prev: u32,
     pub(crate) refresh_hubs_at: u32,
+    /// The HTTPS retry for servers on a plaintext grant (`plex::grant::UpgradeRetry`), stepped
+    /// every frame beside the view-state pump (`app/run.rs`).
+    pub(crate) plaintext_upgrade: crate::plex::grant::UpgradeRetry,
     ev: [u8; 128],
     remote: Option<crate::remote::Remote>,
     /// The SDL window (`SDL_CreateWindow`), for the swap.

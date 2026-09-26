@@ -390,6 +390,10 @@ static ACTIVE: AtomicU32 = AtomicU32::new(0);
 /// and the endpoint rediscovery loop retain it), but never becomes CURRENT and its `Client`
 /// carries an empty token. A later eligible re-point flips this bit in the same registry write.
 static CREDENTIAL_ELIGIBLE: AtomicU32 = AtomicU32::new(0);
+/// The subset of [`CREDENTIAL_ELIGIBLE`] whose eligibility rests on a plaintext grant
+/// (`super::grant`) rather than the policy alone — the slots [`regrade_credentials`] re-asks when
+/// a grant ends. Written with the eligibility bit, in the same registry write.
+static ON_GRANT: AtomicU32 = AtomicU32::new(0);
 /// Monotone epoch of the active roster's identity. It moves when a slot appears/disappears or is
 /// re-pointed, even when the active COUNT stays the same, so cached fan-out stores can distinguish
 /// `{0,1}` from `{0,2}` and can discard work aimed at a superseded origin.
@@ -558,6 +562,14 @@ pub fn ids() -> impl Iterator<Item = ServerId> {
     (FLOOR.load(Ordering::Acquire).min(hi)..hi)
         .filter(move |&i| active & (1u32 << i) != 0)
         .map(|i| ServerId(i as u16))
+}
+
+/// The active slot `machine_id` is registered in, if any.
+pub(crate) fn id_of_machine(machine_id: &str) -> Option<ServerId> {
+    if machine_id.is_empty() {
+        return None;
+    }
+    ids().find(|&id| client_for(id).is_some_and(|c| c.machine_id() == machine_id))
 }
 
 /// What the roster says about one server, `None` until something has described it — and `None`
@@ -832,6 +844,17 @@ fn populated(id: ServerId) -> Option<&'static Client> {
     (!p.is_null()).then(|| unsafe { &*p })
 }
 
+/// Record whether `id`'s credential rests on a plaintext grant — see [`ON_GRANT`].
+fn mark_on_grant(id: ServerId, on_grant: bool) {
+    let Some(i) = id.index() else { return };
+    let bit = 1u32 << i;
+    if on_grant {
+        ON_GRANT.fetch_or(bit, Ordering::Release);
+    } else {
+        ON_GRANT.fetch_and(!bit, Ordering::Release);
+    }
+}
+
 /// Publish one populated slot into the active profile's roster. Pointer/token writes happen first;
 /// the Release bit is what makes them reachable through [`client_for`].
 fn activate(id: ServerId, credential_eligible: bool) {
@@ -909,7 +932,7 @@ pub(crate) fn register_captured_origin_with_connection(machine_id: &str, origin:
         machine_id, origin, token, pin, connection, policy, &|| client_id.to_owned(),
     );
     #[cfg(not(test))]
-    if policy.may_carry_credential(origin) {
+    if super::grant::allowed_for(policy, machine_id, origin) {
         super::serverinfo::refresh(id);
     }
     id
@@ -935,7 +958,7 @@ pub(crate) fn register_origin(
     });
     // Both this cached-identity path and the captured-identity path refresh the server's
     // self-description. The worker is single-flighted per server; registration never waits.
-    if policy.may_carry_credential(origin) {
+    if super::grant::allowed_for(policy, machine_id, origin) {
         super::serverinfo::refresh(id);
     }
     id
@@ -1044,8 +1067,6 @@ fn register_lazy(
         _ => String::new(),
     };
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    let credential_eligible = policy.may_carry_credential(origin);
-    let admitted_token = if credential_eligible { token } else { "" };
     let n = COUNT.load(Ordering::Acquire);
     let floor = FLOOR.load(Ordering::Acquire).min(n);
     // Search every populated slot in THIS account's window, including one deactivated by a profile
@@ -1054,6 +1075,18 @@ fn register_lazy(
     let found = (floor..n)
         .map(|i| ServerId(i as u16))
         .find(|&id| populated(id).is_some_and(|c| same_server(c, machine_id, origin)));
+    // THE authority (`super::grant`): TLS, a developer build, or a live consented grant for this
+    // SERVER at this exact plaintext origin — the machine this registration is for (a legacy
+    // id-less call adopting a slot is that slot's machine; with none known, no grant applies).
+    // Asked under the write lock, so a revocation that lands after this line re-grades the slot
+    // it publishes (`regrade_credentials`), never misses it.
+    let grant_machine = match found.and_then(populated) {
+        Some(c) if machine_id.is_empty() => c.machine_id(),
+        _ => machine_id,
+    };
+    let credential_eligible = super::grant::allowed_for(policy, grant_machine, origin);
+    let on_grant = super::grant::rests_on_grant(policy, grant_machine, origin);
+    let admitted_token = if credential_eligible { token } else { "" };
 
     if let Some(id) = found {
         let c = populated(id).expect("the matched slot is populated");
@@ -1115,6 +1148,7 @@ fn register_lazy(
             fresh.apply_connection(connection);
         }
         activate(id, credential_eligible);
+        mark_on_grant(id, on_grant);
         if credential_eligible {
             if !was_eligible {
                 PROBES[id.0 as usize].store(PROBE_UNKNOWN, Ordering::Release);
@@ -1143,6 +1177,7 @@ fn register_lazy(
         fresh.apply_connection(connection);
     }
     activate(id, credential_eligible);
+    mark_on_grant(id, on_grant);
     if !credential_eligible {
         PROBES[n].store(probe_code(Outcome::InsecureOnly), Ordering::Release);
     }
@@ -1273,6 +1308,9 @@ pub(crate) fn revoke_all() {
     // Same crate-global registry `register_lazy`/`set_current` guard — see `lib.rs::testlock`.
     #[cfg(test)]
     crate::testlock::assert_held("the plex server registry (revoke_all)");
+    // Every plaintext grant dies with the identity that consented. First, and outside WRITE: its
+    // re-grade takes the same lock.
+    super::grant::identity_changed();
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
     let n = COUNT.load(Ordering::Acquire);
     let floor = FLOOR.load(Ordering::Acquire);
@@ -1289,6 +1327,7 @@ pub(crate) fn revoke_all() {
     CURRENT.store(ServerId::UNSET.0 as u32, Ordering::Release);
     ACTIVE.store(0, Ordering::Release);
     CREDENTIAL_ELIGIBLE.store(0, Ordering::Release);
+    ON_GRANT.store(0, Ordering::Release);
     FLOOR.store(n, Ordering::Release);
     ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
     if n > floor {
@@ -1301,6 +1340,42 @@ pub(crate) fn revoke_all() {
     // and `ui::idle` gates the whole present on detected motion — it cannot see a `static` being
     // written. Same reason `describe` invalidates.
     crate::ui::idle::invalidate();
+}
+
+/// **Re-ask the grant table for every client a grant was carrying** ([`ON_GRANT`]), after a plaintext grant was
+/// revoked or died (`super::grant`'s revocation paths). A client whose origin may no longer carry
+/// a credential has its token blanked IN PLACE — every `&'static Client` already handed out
+/// follows along, so a worker mid-request can at worst send a tokenless request — and is marked
+/// ineligible and [`Outcome::InsecureOnly`], exactly what [`register_lazy`] records for a stored
+/// origin it cannot credential. `current` moves off it when another usable slot exists.
+///
+/// Discovery is what re-grants: a later eligible, consented verdict mints a fresh grant and the
+/// ordinary registration re-tokens the slot.
+pub(crate) fn regrade_credentials() {
+    let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
+    let mut regraded = 0usize;
+    for id in ids() {
+        let Some(c) = client_for(id) else { continue };
+        let Some(i) = id.index() else { continue };
+        let bit = 1u32 << i;
+        if ON_GRANT.load(Ordering::Acquire) & bit == 0
+            || super::grant::granted_now(c.machine_id(), c.origin())
+        {
+            continue;
+        }
+        c.set_token("");
+        activate(id, false);
+        mark_on_grant(id, false);
+        PROBES[i].store(probe_code(Outcome::InsecureOnly), Ordering::Release);
+        ROSTER_GEN.fetch_add(1, Ordering::AcqRel);
+        regraded += 1;
+    }
+    if regraded > 0 {
+        crate::log(&format!(
+            "plex: {regraded} server(s) lost their plaintext credential — the grant ended"
+        ));
+        crate::ui::idle::invalidate();
+    }
 }
 
 /// Empty the table so each test starts from "nothing installed". Leaks whatever was registered
@@ -1326,6 +1401,7 @@ pub(crate) fn reset_for_test() {
     COUNT.store(0, Ordering::Release);
     ACTIVE.store(0, Ordering::Release);
     CREDENTIAL_ELIGIBLE.store(0, Ordering::Release);
+    ON_GRANT.store(0, Ordering::Release);
     ROSTER_GEN.store(1, Ordering::Release);
     FACTS_GEN.store(1, Ordering::Release);
     // The floor goes back with the count, or every test after one that signed out would register

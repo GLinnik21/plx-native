@@ -74,7 +74,8 @@ available* store to the data layer beside the resolve that fills it.)
 own server is normally `https://192-168-0-10.<hash>.plex.direct:32400`, a name only Plex's public
 zone resolves, so a LAN whose uplink was down could not reach a server one hop away — and the
 plaintext twin `probe::candidates` documents as "the offline fallback" cannot carry a token in a
-store build (`http::credential_transport_allowed`). A pin is built ONLY when the dashed label
+store build (`http::credential_transport_allowed`; a consented `grant` needs a fresh plex.tv
+resource list, which an offline boot does not have). A pin is built ONLY when the dashed label
 encodes the stored `address` (v4 or the eight-group v6 spelling), so it is a pure function of the
 hostname; `register_origin`/`install` take it, the `Client` carries it for the control plane, and
 `net::resolve` holds an append-only table the media plane (`curlio`) consults by host and port.
@@ -121,6 +122,29 @@ relay leg. If nothing eligible verifies, the result is `Reach::InsecureOnly` (pl
 `Discovery::InsecureOnly` / `SourceState::InsecureOnly` ("Not secure") — a fifth sentence, told
 apart from `Unreachable`, that **outranks a 401**. Before this it counted as reached, which was
 issue #95 itself.
+
+**"May a credential go to this origin" has ONE answer: `grant::credential_allowed`** (or
+`grant::allowed_under` where a pure function receives the policy). It is the build's
+`CredentialPolicy` OR a live `PlaintextGrant` for that exact origin (PLX-NATIVE-10). Whoever puts a
+particular SERVER's token on an origin — registry and endpoint admission — asks
+`grant::allowed_for(policy, machine_id, origin)`: a grant admits only the machine it was minted
+for. A remembered (cached) origin asks `grant::remembered_allowed`: the policy alone, never a
+grant. Nothing else
+asks `CredentialPolicy::may_carry_credential` or `Origin::is_tls` for a credential decision —
+`grep -rn may_carry_credential src/` finds only `grant.rs` (plus doc links). `probe::candidates`
+stamps the policy half at synthesis, and `auth::settle_plaintext` adds the grant half after the
+race. A grant is minted only by discovery, from a FRESH verdict `InsecureEvidence::
+plaintext_eligibility` calls eligible, when the person's recorded answer (`Session::
+plaintext_consent`, captured at the spawn site as `grant::PlaintextAsk`) allows it; it is bound to
+{identity generation, network generation, machine, exact numeric origin}, never persisted, dies on
+sign-in/sign-out, on every DID foreground (which queues each stranded server's endpoint
+re-discovery, requested by `grant::UpgradeRetry::due`), on a refusal (which also moves the consent generation
+a `PlaintextAsk` captured) and on a roster commit that does not install its (machine, origin) —
+a roster commit moves no generation — and a stored `SourceRef` naming a
+plaintext origin registers tokenless until discovery re-mints. Ending a grant re-grades the
+registry (`servers::regrade_credentials` blanks every client a grant was carrying, `ON_GRANT`);
+`grant::UpgradeRetry` re-discovers a granted server on the hub-retry backoff and the HTTPS
+registration retires the grant (`auth::retire_grant_on_https`).
 
 **Online primary selection also proves the token after it proves the machine.** `/identity` is
 deliberately unauthenticated, so a fresh identity winner is only a known endpoint. Before sign-in,

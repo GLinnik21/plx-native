@@ -66,6 +66,28 @@ mod tests {
         fn gap(&mut self) { panic!("refusal cannot wait") }
     }
 
+    /// **A profile switch that never commits changes no identity.** The grant a person's consent
+    /// minted stays live while a switch is attempted and refused: the identity moves at the switch's
+    /// COMMIT (`RegistryPlan::Install { replace: true }`), never at its launch.
+    #[test]
+    fn a_refused_profile_switch_leaves_the_live_plaintext_grant_alone() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        crate::plex::grant::reset_for_test();
+        let origin = crate::plex::Origin::http("192.168.0.10", 32400);
+        crate::plex::grant::mint(crate::plex::grant::scope(), "lan-http", &origin,
+            &crate::plex::grant::eligible_evidence_for_test()).unwrap();
+        let mut rig = profile_rig(false);
+        let mut d = Dispatcher::<AppHost>::new();
+        inject(&mut rig, RefusedIo);
+        command(&mut rig, &mut d, SessionCmd::SelectProfile { index: 0, pin: None });
+        let records = rig.session_adapter.take_results();
+        frame(&mut rig, &mut d, records);
+        assert_eq!(crate::plex::grant::granted_origin("lan-http"), Some(origin));
+        crate::plex::grant::reset_for_test();
+        crate::plex::reset_servers_for_test();
+    }
+
     #[test]
     fn r2a_offline_worker_completion_waits_for_main_application() {
         let mut rig = profile_rig(false);

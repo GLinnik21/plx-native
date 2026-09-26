@@ -53,10 +53,70 @@ refuse it, correctly.
 Every mode also answers the four plex.tv calls of the QR sign-in (`/api/v2/pins`, the poll, the
 QR image, and `/api/v2/user`) with a fixed demo code, for an app booted with
 `plxnative-plextv=http://127.0.0.1:<port>`: the sign-in screen can then be driven and captured
-without touching plex.tv.
+without touching plex.tv. The poll stays pending unless `--authorize-after N` (implied, N=2, by
+`--plaintext-only-lan`) links the code on the Nth poll with a synthetic account token, so a
+sign-in completes end to end without any real account.
 
 The app reaches it as any other server: `make sim-shot SIM_PMS=127.0.0.1 SIM_PORT=32499` with
 any non-empty string in `$SIM_DIR/plxnative-token` (the token is accepted, never checked).
+
+`--plaintext-only-lan` reproduces Sentry PLX-NATIVE-10: a person's OWN server (`owned=true`) on
+their LAN, whose owner never turned on port forwarding, so every HTTPS route plex.tv could name
+for it — a `*.plex.direct` connection AND relay — fails, while the plaintext local address still
+answers. It makes `/api/v2/resources` return exactly ONE resource, no relay connection at all,
+and two connections: an `https://<dashed-ip>.<hash>.plex.direct:<port>` one with `local=true` that
+FAILS (a real TCP listener that accepts and immediately closes, i.e. a genuine TLS handshake
+failure — or, with `--insecure-fail-mode unreachable`, a port nothing listens on at all), and a
+plain `http://<advertise-ip>:<port>` one with `local=true` that is THIS SAME server, answering
+`/identity` tokenless. `--advertise-ip` sets the LAN address the resources row carries (default:
+this host's detected primary LAN IPv4, else `127.0.0.1` with a startup warning — 127.0.0.1 is
+loopback, which the app's own eligibility check classifies as NOT a LAN address, so the consent
+path this mode exists to exercise will never trigger with that fallback; pass a real address).
+Bind with `--host 0.0.0.0` so a device other than this one can actually reach it. Expected app
+behaviour: a "Connect without encryption?" consent offer, never a dead end.
+
+The full reproduction needs a developer build to take the STORE credential policy — every
+`devtriggers` build otherwise lets a token ride plaintext and never needs the consent — and a QR
+sign-in against this mock (it authorizes the code by itself, on the 2nd poll):
+
+    1. python3 tests/mock_pms.py --host 0.0.0.0 --plaintext-only-lan --advertise-ip <HOST-LAN-IP>
+       (the LAN plaintext leg the app connects to directly).
+    2. `plex_tv()` in rust-modules/src/plex/account.rs accepts only a `127.0.0.1`/`localhost`
+       trigger — the trigger carries the account token, and that restriction is deliberate and
+       must stay. So make plex.tv loopback ON THE DEVICE with a reverse tunnel from the host
+       (hold the TV lock first):
+         ssh -N -R 32499:127.0.0.1:32499 root@<TV-HOST>
+    3. in the install's runtime root, arm (empty files unless shown):
+         plxnative-storepolicy                       store HttpsOnly policy (dev builds only)
+         plxnative-login                             boot to the QR sign-in
+         plxnative-plextv = http://127.0.0.1:32499
+    4. launch. The events log shows, in order:
+         - the sign-in read-out "Couldn't sign in" with the reason "Your Plex server is on this
+           network but can't be reached securely. Select Connect to connect without encryption."
+           and the primary *Connect*
+         - *Connect* opens "Connect without encryption?" seated on *Not now*; its *Connect* logs
+           `plaintext: user allowed an unencrypted connection on this network` and retries
+         - the retry mints the grant (`security: consented plaintext credentials for one server at …`),
+           then `security: plaintext PMS credentials sent under a consented grant` — the token
+           rides http://<HOST-LAN-IP>:32499 under it — Home loads from this mock
+         - Settings → Unencrypted connections shows the server ON; turning it off logs
+           `settings: unencrypted connections turned off for one server` and withdraws the grant
+           at once
+Loopback (the simulator) is never LAN-eligible, so steps 3–4 on the Mac stop at the ineligible
+read-out; the consent flow itself needs the TV and a real LAN address.
+
+    # TV (replace 192.168.0.10 with the host's actual LAN IPv4; never a real private address from
+    # a gitignored file — hold the TV lock for the device commands below):
+    python3 tests/mock_pms.py --host 0.0.0.0 --plaintext-only-lan --advertise-ip 192.168.0.10
+    # `plxnative-plextv` only ever accepts a loopback address (see step 2 above), so make plex.tv
+    # loopback ON THE DEVICE with a reverse tunnel from the host, then arm the loopback trigger:
+    # ssh -N -R 32499:127.0.0.1:32499 root@<TV-HOST>
+    # plxnative-plextv=http://127.0.0.1:32499
+
+    # Simulator (loopback is both plex.tv and the LAN address it advertises; still exercises the
+    # HTTPS-fails / plaintext-answers shape, just not the loopback-ineligibility warning):
+    python3 tests/mock_pms.py --plaintext-only-lan --advertise-ip 127.0.0.1
+    # plxnative-plextv=http://127.0.0.1:32499
 """
 import argparse
 import hashlib
@@ -65,6 +125,7 @@ import os
 import pathlib
 import random
 import re
+import socket
 import struct
 import subprocess
 import sys
@@ -93,6 +154,10 @@ VERIFY_PREFS = [
     {"id": "subtitleLanguage", "value": "en"},
     {"id": "subtitleMode", "value": "2"},
 ]
+# `--plaintext-only-lan` (PLX-NATIVE-10). Not a name — the fixed 32-hex label a real
+# `*.plex.direct` hostname carries ahead of the dashed IP; the closed alphabet governs the
+# synthetic library's titles/tags, not a protocol constant like this or "h264".
+PLEX_DIRECT_HASH = "0123456789abcdef0123456789abcdef"
 
 # ---------------------------------------------------------------- the closed alphabet -------
 
@@ -690,6 +755,9 @@ class Library:
 
 DEMO_PIN_ID = 1790000001
 DEMO_PIN_CODE = "DEMO"
+# The account token `--authorize-after` links the demo code with: synthetic, in the harness's own
+# token alphabet (`ALPHABET_TOKEN`), and accepted — never checked — by every endpoint here.
+DEMO_ACCOUNT_TOKEN = "s" + hashlib.sha1(b"mock-pms-demo-account").hexdigest()[:8]
 # What the demo sign-in QR encodes: the page a person types a code into. A scan of a screenshot
 # lands on plex.tv's own link page, which asks for a code this server invented — harmless.
 DEMO_QR_TEXT = b"https://plex.tv/link"
@@ -1012,6 +1080,90 @@ def colour_for(path):
     return (64 + h[0] % 128, 64 + h[1] % 128, 64 + h[2] % 128)
 
 
+# ---------------------------------------------------------------- PLX-NATIVE-10 (insecure LAN) --
+
+def detect_lan_ip():
+    """This host's primary LAN IPv4, best-effort. A UDP socket's `connect` only performs a routing
+    lookup — the kernel picks the outbound interface/source address for that destination — and
+    never actually sends a packet on `SOCK_DGRAM`, so this needs no network access and reaches
+    nothing. Returns `None` on a host with no route at all (offline, a sandboxed CI runner)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("10.255.255.255", 1))
+        return s.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        s.close()
+
+
+def open_insecure_fail_listener(fail_mode):
+    """The failing HTTPS route `--plaintext-only-lan` advertises. `"handshake"`: a real TCP
+    listener that accepts every connection and immediately closes it without writing a byte, so a
+    TLS ClientHello gets no ServerHello back — an actual, reproducible handshake failure rather
+    than a guess about how some firewall treats an unused port. `"unreachable"`: no listener at
+    all; the chosen port is picked and released, so nothing is bound there and a connection
+    attempt gets whatever the OS/network gives an address nobody is listening on (a real
+    ECONNREFUSED here; a silent timeout across a real LAN). Returns `(port, listener_socket)`;
+    `listener_socket` is `None` for `"unreachable"` and must be `.close()`d by the caller once the
+    accept-and-drop thread is no longer needed."""
+    if fail_mode not in ("handshake", "unreachable"):
+        raise ValueError(f"unknown fail_mode {fail_mode!r}")
+    if fail_mode == "unreachable":
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        probe.bind(("0.0.0.0", 0))
+        port = probe.getsockname()[1]
+        probe.close()
+        return port, None
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("0.0.0.0", 0))
+    listener.listen(8)
+    port = listener.getsockname()[1]
+
+    def accept_and_drop():
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return  # the listener was closed under us: shutting down, not a bug
+            conn.close()
+
+    threading.Thread(target=accept_and_drop, name="mock-pms-insecure-fail", daemon=True).start()
+    return port, listener
+
+
+def plaintext_only_lan_resources(lib, ip, http_port, fail_port, access_token):
+    """The exact `/api/v2/resources` PLX-NATIVE-10 needs: ONE owned server, no relay connection at
+    all, and two connections — the failing `https://…plex.direct` one and the plaintext LAN one,
+    which is this same mock (`ip`:`http_port`). Field names match what
+    `rust-modules/src/plex/account.rs`'s `Resource`/`Connection` deserialize (`clientIdentifier`,
+    `provides`, `owned`, `accessToken`, `httpsRequired`, `publicAddressMatches`,
+    `connections[{protocol,address,port,uri,local,relay,IPv6}]`); the top-level shape is a bare
+    JSON array, not a `MediaContainer` — plex.tv's envelope, not a PMS one."""
+    dashed = ip.replace(".", "-")
+    https_uri = f"https://{dashed}.{PLEX_DIRECT_HASH}.plex.direct:{fail_port}"
+    return [{
+        "name": lib.friendly,
+        "clientIdentifier": lib.machine,
+        "provides": "server",
+        "owned": True,
+        "accessToken": access_token,
+        "sourceTitle": None,
+        "ownerId": 0,
+        "home": False,
+        "presence": True,
+        "publicAddressMatches": True,
+        "httpsRequired": False,
+        "connections": [
+            {"protocol": "https", "address": ip, "port": fail_port, "uri": https_uri,
+             "local": True, "relay": False, "IPv6": False},
+            {"protocol": "http", "address": ip, "port": http_port,
+             "uri": f"http://{ip}:{http_port}", "local": True, "relay": False, "IPv6": False},
+        ],
+    }]
+
+
 # ---------------------------------------------------------------- the server ----------------
 
 class MockPms:
@@ -1021,6 +1173,12 @@ class MockPms:
         self.requests = []  # (path, status) in arrival order, for the harness
         self.unknown = []
         self.writes = []
+        # Set by `serve(..., plaintext_only_lan=True)` to a dict with ip/http_port/fail_port/
+        # access_token; `None` means /api/v2/resources is unimplemented, like any other mode.
+        self.plaintext_only_lan = None
+        # `--authorize-after N`: the pin poll links the demo code on the Nth poll; `None` never.
+        self.authorize_after = None
+        self.pin_polls = 0
 
     @staticmethod
     def safe_path(path):
@@ -1074,13 +1232,17 @@ class MockPms:
         if write_path and not (method in ("GET", "HEAD") and p.startswith("/library/parts/")):
             self.note_write(method, path, body)
 
-        # plex.tv's QR sign-in, for `plxnative-plextv` (see the module doc). Never linked: the poll
-        # stays pending, which is the state the sign-in screen is captured in.
+        # plex.tv's QR sign-in, for `plxnative-plextv` (see the module doc). Pending — the state
+        # the sign-in screen is captured in — unless `--authorize-after N` links it on the Nth poll.
         if p == "/api/v2/pins" and method == "POST":
             return j({"id": DEMO_PIN_ID, "code": DEMO_PIN_CODE, "expiresIn": 1800, "authToken": None,
                       "qr": ""}, 201)
         if p == f"/api/v2/pins/{DEMO_PIN_ID}":
-            return j({"id": DEMO_PIN_ID, "code": DEMO_PIN_CODE, "expiresIn": 1800, "authToken": None})
+            with self.lock:
+                self.pin_polls += 1
+                linked = self.authorize_after is not None and self.pin_polls >= self.authorize_after
+            return j({"id": DEMO_PIN_ID, "code": DEMO_PIN_CODE, "expiresIn": 1800,
+                      "authToken": DEMO_ACCOUNT_TOKEN if linked else None})
         if p == f"/api/v2/pins/qr/{DEMO_PIN_CODE}":
             import demo_library.qr as qr
             return (200, "image/png", qr.png(qr.encode(DEMO_QR_TEXT, "M"), scale=8, border=0, plex_style=True))
@@ -1088,6 +1250,12 @@ class MockPms:
             return j({"id": 1, "uuid": "demo-user", "username": "demo", "title": "Demo",
                       "friendlyName": "Demo", "email": "demo@example.invalid", "thumb": "",
                       "subscription": {"active": True, "status": "Active", "plan": "lifetime"}})
+        # `--plaintext-only-lan` (PLX-NATIVE-10): the account's discovered servers. No other mode
+        # implements this plex.tv endpoint, so it falls through to the UNKNOWN path below there.
+        if p == "/api/v2/resources" and self.plaintext_only_lan is not None:
+            cfg = self.plaintext_only_lan
+            return j(plaintext_only_lan_resources(
+                lib, cfg["ip"], cfg["http_port"], cfg["fail_port"], cfg["access_token"]))
         catalog = isinstance(lib, CatalogLibrary)
         if p == "/" or p == "/identity":
             return j(self.container(machineIdentifier=lib.machine, friendlyName=lib.friendly,
@@ -1422,19 +1590,54 @@ class Server(ThreadingHTTPServer):
 
 
 def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture=False,
-          media=None, extra_media=None, catalog=None, catalog_cache=None, hero=None):
+          media=None, extra_media=None, catalog=None, catalog_cache=None, hero=None,
+          plaintext_only_lan=False, advertise_ip=None, insecure_fail_mode="handshake",
+          authorize_after=None):
     """Start a mock PMS in a daemon thread; returns (server, pms). Loopback only by default: the
     app on the simulator is on this machine, and a LAN-facing listener would be one more thing
-    the outbound guard has to reason about. `catalog` serves the demo library instead of a seed."""
+    the outbound guard has to reason about. `catalog` serves the demo library instead of a seed.
+
+    `plaintext_only_lan=True` additionally answers `/api/v2/resources` (PLX-NATIVE-10; see the
+    module doc) and opens the failing-HTTPS listener `insecure_fail_mode` names. `advertise_ip`
+    picks the LAN address that resources row carries; `None` tries `detect_lan_ip()` and falls
+    back to `"127.0.0.1"` with a stderr warning if nothing routes. The chosen address and the
+    fail listener's port end up on `pms.plaintext_only_lan`; the fail listener itself (`None` for
+    `insecure_fail_mode="unreachable"`) is on `srv.insecure_fail_listener`, for the caller to
+    `.close()` alongside `srv.shutdown()`.
+
+    `authorize_after=N` links the QR sign-in's demo code on the Nth pin poll (`None`: never, except
+    that `plaintext_only_lan` implies 2 so its reproduction signs in by itself)."""
     if catalog is not None:
         lib = CatalogLibrary(catalog, cache=catalog_cache, hero=hero)
     else:
         lib = Library(seed=seed, movies=movies, rail_fixture=rail_fixture, media=media,
                       extra_media=extra_media)
     pms = MockPms(lib)
+    if authorize_after is None and plaintext_only_lan:
+        authorize_after = 2
+    pms.authorize_after = authorize_after
     srv = Server((host, port), Handler)
     srv.pms = pms
     srv.verbose = verbose
+    srv.insecure_fail_listener = None
+    if plaintext_only_lan:
+        ip = advertise_ip
+        if ip is None:
+            ip = detect_lan_ip()
+            if ip is None:
+                ip = "127.0.0.1"
+                print("mock_pms: WARNING --plaintext-only-lan found no routable LAN IPv4 to "
+                      "advertise; falling back to 127.0.0.1, which the app classifies as "
+                      "loopback, NOT LAN-eligible — PLX-NATIVE-10's consent path will never "
+                      "trigger against this fallback. Pass --advertise-ip with a real LAN "
+                      "address.", file=sys.stderr, flush=True)
+        fail_port, listener = open_insecure_fail_listener(insecure_fail_mode)
+        srv.insecure_fail_listener = listener
+        pms.plaintext_only_lan = {
+            "ip": ip, "http_port": srv.server_address[1], "fail_port": fail_port,
+            "fail_mode": insecure_fail_mode,
+            "access_token": "s" + hashlib.sha1(lib.machine.encode()).hexdigest()[:8],
+        }
     t = threading.Thread(target=srv.serve_forever, name="mock-pms", daemon=True)
     t.start()
     return srv, pms
@@ -1574,11 +1777,104 @@ def selftest():
         s_.shutdown()
         s_.server_close()
     tmp.cleanup()
+
+    _selftest_plaintext_only_lan()
     print("mock_pms selftest: ok")
 
 
+def _teardown(srv):
+    srv.shutdown()
+    srv.server_close()
+    if srv.insecure_fail_listener is not None:
+        srv.insecure_fail_listener.close()
+
+
+def _selftest_plaintext_only_lan():
+    """PLX-NATIVE-10: exactly two connections and no relay, the https one really fails a TLS
+    handshake (or is really unreachable, in the other fail mode), and the http one really answers
+    `/identity` tokenless with the resource's own machineIdentifier. `advertise_ip="127.0.0.1"` is
+    explicit here, so this is hermetic on a sandboxed CI runner with no real LAN route — it is
+    testing the mock's wire shapes, not the app's loopback-ineligibility rule."""
+    import ssl
+
+    srv, pms = serve(0, seed=7, plaintext_only_lan=True, advertise_ip="127.0.0.1")
+    try:
+        cfg = pms.plaintext_only_lan
+        http_port = srv.server_address[1]
+        assert cfg["ip"] == "127.0.0.1" and cfg["http_port"] == http_port
+
+        with urllib.request.urlopen(f"http://127.0.0.1:{http_port}/api/v2/resources", timeout=5) as r:
+            resources = json.loads(r.read())
+        assert isinstance(resources, list) and len(resources) == 1, resources
+        res = resources[0]
+        assert res["provides"] == "server" and res["owned"] is True
+        assert res["clientIdentifier"] == pms.lib.machine
+        assert res["httpsRequired"] is False and res["publicAddressMatches"] is True
+        conns = res["connections"]
+        assert len(conns) == 2, conns
+        assert not any(c["relay"] for c in conns), "no relay connection at all"
+        https = next(c for c in conns if c["protocol"] == "https")
+        http = next(c for c in conns if c["protocol"] == "http")
+        assert https["local"] is True and http["local"] is True
+        assert https["uri"] == f"https://127-0-0-1.{PLEX_DIRECT_HASH}.plex.direct:{cfg['fail_port']}"
+        assert https["address"] == "127.0.0.1" and https["port"] == cfg["fail_port"]
+        assert http["address"] == "127.0.0.1" and http["port"] == http_port
+        assert http["uri"] == f"http://127.0.0.1:{http_port}"
+
+        # the https route really fails a TLS handshake: a real ClientHello against a listener
+        # that accepts and immediately closes, never a guess from the JSON alone.
+        raised = None
+        try:
+            raw = socket.create_connection(("127.0.0.1", cfg["fail_port"]), timeout=5)
+            try:
+                ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+                ctx.wrap_socket(raw, server_hostname="127.0.0.1").close()
+            finally:
+                raw.close()
+        except (ssl.SSLError, OSError) as e:
+            raised = e
+        assert raised is not None, "the advertised https route must fail a real TLS handshake"
+
+        # the plaintext local connection answers /identity tokenless.
+        with urllib.request.urlopen(f"http://127.0.0.1:{http_port}/identity", timeout=5) as r:
+            identity = json.loads(r.read())["MediaContainer"]
+        assert identity["machineIdentifier"] == pms.lib.machine
+
+        # the mode signs in by itself: the demo code links on the 2nd poll, with the synthetic
+        # account token (T2 — the reproduction needs no real account).
+        def poll():
+            with urllib.request.urlopen(f"http://127.0.0.1:{http_port}/api/v2/pins/{DEMO_PIN_ID}",
+                                        timeout=5) as r:
+                return json.loads(r.read())["authToken"]
+        assert poll() is None, "the first poll is still pending"
+        assert poll() == DEMO_ACCOUNT_TOKEN
+        assert re.fullmatch(ALPHABET_TOKEN, DEMO_ACCOUNT_TOKEN)
+    finally:
+        _teardown(srv)
+
+    # the selectable "unreachable" fail mode: nothing is listening on the advertised port at all.
+    srv2, pms2 = serve(0, seed=7, plaintext_only_lan=True, advertise_ip="127.0.0.1",
+                       insecure_fail_mode="unreachable")
+    try:
+        assert srv2.insecure_fail_listener is None
+        fail_port = pms2.plaintext_only_lan["fail_port"]
+        try:
+            socket.create_connection(("127.0.0.1", fail_port), timeout=5).close()
+            raised = False
+        except OSError:
+            raised = True
+        assert raised, "an unreachable fail port must refuse or time out, never accept"
+    finally:
+        _teardown(srv2)
+
+
 def main():
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    # The PLX-NATIVE-10 reproduction (module doc) is the help's epilog, so `--help` carries it.
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
+                                 epilog=__doc__[__doc__.index("`--plaintext-only-lan` reproduces"):],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=32499)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--seed", type=int, default=1)
@@ -1594,6 +1890,30 @@ def main():
     ap.add_argument("--catalog-cache", type=pathlib.Path,
                     help="the demo library cache (default $PLXNATIVE_DEMO_CACHE or ~/.cache/plxnative-demo)")
     ap.add_argument("--hero", help="with --catalog: the film at the head of Continue Watching (the hero)")
+    ap.add_argument("--plaintext-only-lan", action="store_true",
+                    help="PLX-NATIVE-10: /api/v2/resources answers with ONE owned server, no "
+                         "relay, whose only HTTPS route (a plex.direct connection) fails before "
+                         "the app's own logic runs, and whose plaintext http://<advertise-ip>:"
+                         "<port> connection is this same server, answering /identity tokenless. "
+                         "TV: `python3 tests/mock_pms.py --host 0.0.0.0 --plaintext-only-lan "
+                         "--advertise-ip 192.168.0.10`, then point the device's plex.tv trigger "
+                         "at http://192.168.0.10:<port>. Simulator: `python3 tests/mock_pms.py "
+                         "--plaintext-only-lan --advertise-ip 127.0.0.1`. Expect the app to offer "
+                         "\"Connect without encryption?\", never a dead end. The full reproduction "
+                         "(store policy trigger, QR sign-in, expected log lines) follows below.")
+    ap.add_argument("--advertise-ip",
+                    help="with --plaintext-only-lan: the LAN IPv4 the resources row advertises; "
+                         "default: this host's detected primary LAN IPv4, else 127.0.0.1 WITH A "
+                         "STARTUP WARNING — 127.0.0.1 is loopback, which the app classifies as "
+                         "NOT LAN-eligible, so the consent path never triggers against that "
+                         "fallback")
+    ap.add_argument("--insecure-fail-mode", choices=("handshake", "unreachable"), default="handshake",
+                    help="with --plaintext-only-lan: how the advertised HTTPS route fails — "
+                         "'handshake' (default) accepts and immediately closes, a real TLS "
+                         "handshake failure; 'unreachable' advertises a port nothing listens on")
+    ap.add_argument("--authorize-after", type=int, metavar="N",
+                    help="link the QR sign-in's demo code on the Nth pin poll with a synthetic "
+                         "account token (default: never; --plaintext-only-lan implies 2)")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
@@ -1601,6 +1921,10 @@ def main():
         ap.error("--hero needs --catalog")
     if not 0 <= a.movies <= 1000:
         ap.error("--movies must be between 0 and 1000")
+    if (a.advertise_ip or a.insecure_fail_mode != "handshake") and not a.plaintext_only_lan:
+        ap.error("--advertise-ip/--insecure-fail-mode need --plaintext-only-lan")
+    if a.authorize_after is not None and a.authorize_after < 1:
+        ap.error("--authorize-after must be at least 1")
     if a.selftest:
         selftest()
         return
@@ -1608,7 +1932,9 @@ def main():
         srv, pms = serve(a.port, seed=a.seed, host=a.host, verbose=a.verbose,
                          movies=a.movies, rail_fixture=a.rail_fixture, media=a.media,
                          extra_media=a.extra_media, catalog=a.catalog, catalog_cache=a.catalog_cache,
-                         hero=a.hero)
+                         hero=a.hero, plaintext_only_lan=a.plaintext_only_lan,
+                         advertise_ip=a.advertise_ip, insecure_fail_mode=a.insecure_fail_mode,
+                         authorize_after=a.authorize_after)
     except ValueError as e:
         ap.error(str(e))
     what = f"catalog={a.catalog}" if a.catalog else f"seed={a.seed}"
@@ -1619,6 +1945,12 @@ def main():
                    "token": "mock-pms", "v1_rating_key": str(V1_RATING_KEY),
                    "v2_rating_key": str(V2_RATING_KEY)}
         print(json.dumps(trigger, separators=(",", ":")), flush=True)
+    if a.plaintext_only_lan:
+        cfg = pms.plaintext_only_lan
+        print(f"mock_pms: plaintext-only-lan resources: machine={pms.lib.machine} "
+              f"https(fails, {cfg['fail_mode']})=https://<dashed-ip>.{PLEX_DIRECT_HASH}"
+              f".plex.direct:{cfg['fail_port']} http(answers)=http://{cfg['ip']}:{cfg['http_port']}",
+              flush=True)
     for rk, path in sorted(getattr(pms.lib, "extra_media_files", {}).items()):
         print(f"mock_pms: extra-media rk={rk} file={path}", flush=True)
     try:
@@ -1628,6 +1960,8 @@ def main():
         pass
     finally:
         srv.shutdown()
+        if srv.insecure_fail_listener is not None:
+            srv.insecure_fail_listener.close()
         if pms.unknown:
             print("mock_pms: unknown paths seen: " + ", ".join(sorted(set(pms.unknown))), file=sys.stderr)
 

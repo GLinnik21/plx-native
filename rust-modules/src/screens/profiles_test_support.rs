@@ -43,6 +43,7 @@ pub(super) fn snapshot(phase: Phase, users: Vec<auth::UserTile>) -> auth::owner:
         delete_leftovers: 0,
         persistence_warning: None,
         incident: None,
+        plaintext: None,
         link_trouble: false,
         switch_refused: false,
         readout_back_resumes: false,

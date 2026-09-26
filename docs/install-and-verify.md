@@ -191,9 +191,9 @@ The television's codec table at `/etc/umediaserver/device_codec_capability_confi
 
 ### What it reaches
 
-`plex.tv` and `discover.provider.plex.tv` over TLS, and the Plex Media Servers your account can reach — your own and any shared with you — over HTTPS whenever a token is present.
+`plex.tv` and `discover.provider.plex.tv` over TLS, and the Plex Media Servers your account can reach — your own and any shared with you — over HTTPS whenever a token is present, except the home-network exception below.
 
-Stable builds refuse token-bearing plaintext HTTP; developer-trigger builds may enable it for a local lab and log that exception.
+Stable builds refuse token-bearing plaintext HTTP, with one exception that is yours to make: when a server answers only unencrypted on your home network — every secure route to it, Plex's relay included, failed — the app asks **Connect without encryption?**: on the sign-in screen, on the Home or library read-out that reports the failure, or when you switch the server on in Settings → **Unencrypted connections**. It is offered only for a numeric private address plex.tv lists as local and on the same network as the television, never for a remote address or the relay, and never for a server set to require secure connections. The answer is remembered per server for the Plex account that gave it, so another account signing in is asked again. The permission it grants is never stored: it holds only while each fresh check of that server still reaches the same address, and it ends when you sign in or out, switch to a profile that does not use that server at that address, or bring the app back from the background — the app cannot see the television change network, so those are the points where it proves eligibility again. While it is in use the app keeps retrying HTTPS and switches back as soon as a secure route verifies, and Settings → **Unencrypted connections** turns it off at once. Developer-trigger builds may enable plaintext for a local lab and log that exception.
 
 **Only if you switch them on**, the app also reaches Sentry and PostHog in the European Union. They have separate switches, both are off by default, and both are reversible. [`PRIVACY.md`](https://github.com/GLinnik21/plx-native/blob/main/PRIVACY.md) describes them in full.
 

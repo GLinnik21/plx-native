@@ -78,6 +78,7 @@ impl LibraryScreen {
                 f.page_alpha = parent;
             }),
         });
+        self.plaintext_alert.draw(f, self.entry);
     }
 
     fn draw_document<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>) {
@@ -136,7 +137,10 @@ impl LibraryScreen {
             let alpha = if self.readout == Readout::Empty { self.page_fade.alpha() * self.grid_fade.alpha() } else { 1.0 };
             status.draw_measured(&env, f.painter.alpha(f.page_alpha * alpha), f.cx.measure);
         }
-        self.record_document_stops(f);
+        if !self.plaintext_alert.visible() {
+            // the question owns the pointer while it is up; nothing under it is a target
+            self.record_document_stops(f);
+        }
     }
 
     fn record_document_stops<H: LibraryLike>(&self, f: &mut DrawFrame<'_, '_, H>) {

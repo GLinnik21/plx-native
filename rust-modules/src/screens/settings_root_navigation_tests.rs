@@ -585,3 +585,118 @@ fn session_refresh_keeps_optimistic_setting_through_transient_completion() {
     assert!(!root.state.auto_sign_in, "settled authority resolves the refused write");
     assert!(root.pending_auto.is_none());
 }
+
+/// **Unencrypted connections, in Settings** (PLX-NATIVE-10): a server the person allowed shows a
+/// switch, its detail stating what it means and that a grant carries it now; turning the switch
+/// off withdraws the grant AT ONCE — before the preferences write lands — and records the
+/// revocation, so the next discovery keeps the server tokenless.
+#[test]
+fn the_unencrypted_connection_switch_shows_the_grant_and_revokes_it_at_once() {
+    use crate::plex::session::PlaintextChoice;
+    let _g = crate::testlock::serial();
+    let _sess = multi_user_session("root-plaintext-switch");
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    let account = crate::plex::grant::account_key(&crate::plex::session::peek().account_token);
+    assert!(!account.is_empty(), "the fixture session is signed in");
+    let mut saved = crate::plex::session::peek().with_plaintext_choice(&account, "lan-machine", PlaintextChoice::Allowed);
+    saved.sources.push(crate::plex::session::SourceRef {
+        machine_id: "lan-machine".into(),
+        name: "Basement".into(),
+        ..Default::default()
+    });
+    crate::plex::session::save(&saved);
+    let lan = crate::plex::Origin::http("192.168.0.10", 32400);
+    crate::plex::grant::mint(crate::plex::grant::scope(), "lan-machine", &lan,
+        &crate::plex::grant::eligible_evidence_for_test()).unwrap();
+
+    let mut root = RootPage::new(EntryId(0), cx(None).views);
+    let row = root.rows.iter().position(|a| matches!(a, Action::Plaintext(0)))
+        .expect("an allowed server has its switch");
+    let drawn = root.table.sections.iter().flat_map(|s| &s.rows).nth(row).unwrap();
+    assert_eq!(drawn.label, "Basement");
+    assert_eq!(drawn.toggle, Some(true));
+    assert_eq!(drawn.detail, "Allowed on this network. Connected without encryption.");
+    assert_eq!(root.state.plaintext, vec![true]);
+
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
+    root.activate(row as i32, cx(None).views, &mut fx);
+    assert_eq!(crate::plex::grant::granted_origin("lan-machine"), None, "revoked before the write lands");
+    assert!(!crate::plex::grant::allowed_under(crate::plex::CredentialPolicy::HttpsOnly, &lan));
+    assert_eq!(root.state.plaintext, vec![false], "the switch shows the answer optimistically");
+    let drawn = root.table.sections.iter().flat_map(|s| &s.rows).nth(row).unwrap();
+    assert_eq!(drawn.toggle, Some(false));
+    assert_eq!(drawn.detail, "Not allowed. Only encrypted connections.");
+    crate::storage_worker::drain_for_test();
+    assert_eq!(crate::plex::session::peek().plaintext_choice(&account, "lan-machine"), PlaintextChoice::Revoked);
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}
+
+/// Nobody was ever asked, so there is nothing to turn off: no section at all.
+#[test]
+fn no_unencrypted_connection_section_without_an_answer() {
+    let _g = crate::testlock::serial();
+    let _sess = multi_user_session("root-plaintext-none");
+    let root = RootPage::new(EntryId(0), cx(None).views);
+    assert!(!root.rows.iter().any(|a| matches!(a, Action::Plaintext(_))));
+    assert!(root.state.plaintext.is_empty());
+}
+
+/// **Turning a switch ON asks first, and a never-asked server is listed** (PLX-NATIVE-10, code
+/// review 3 and design review D8). A server discovery offers "Connect without encryption?" for
+/// and nobody has answered shows its switch OFF; turning it on records nothing — it opens the
+/// SAME question the read-outs ask (`screens::plaintext_question`), seated on *Not now* — and only
+/// its *Connect* sends the answer (Allowed, re-finding the server), shown on at once.
+#[test]
+fn turning_an_unencrypted_connection_on_asks_the_shared_question_first() {
+    use crate::plex::session::PlaintextChoice;
+    let _g = crate::testlock::serial();
+    let _sess = multi_user_session("root-plaintext-ask");
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    crate::plex::grant::offered(crate::plex::grant::scope(), crate::plex::grant::PlaintextVerdict {
+        machine_id: "lan-machine".into(), name: "Basement".into(), shared_by: String::new(),
+        eligibility: crate::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided,
+    });
+    let mut root = RootPage::new(EntryId(0), cx(None).views);
+    let row = root.rows.iter().position(|a| matches!(a, Action::Plaintext(0)))
+        .expect("an offered, never-asked server has its switch");
+    let drawn = root.table.sections.iter().flat_map(|s| &s.rows).nth(row).unwrap();
+    assert_eq!(drawn.label, "Basement", "an offered server is named from its discovery, not the session file");
+    assert_eq!(drawn.toggle, Some(false));
+    assert_eq!(drawn.detail, "Not allowed. Only encrypted connections.");
+
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
+    root.activate(row as i32, cx(None).views, &mut fx);
+    assert!(root.alert.is_open(), "ON asks before anything is recorded");
+    assert_eq!(root.state.plaintext, vec![false]);
+    assert!(crate::plex::grant::choices(&[], &crate::plex::session::peek().account_token).is_empty(),
+        "nothing is recorded yet");
+    let mut groups = Vec::new();
+    Focusable::<InnerHost>::groups(&root, &cx(None), &mut groups);
+    assert_eq!(groups.iter().map(|g| g.id).collect::<Vec<_>>(), [ALERT_GROUP], "the question traps focus");
+    let from = Placed { rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL, index: None };
+    assert_eq!(Focusable::<InnerHost>::seat(&root, ALERT_GROUP, from, &cx(None)).elem, super::super::registry::ALERT,
+        "seated on Not now");
+
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
+    let connect = FocusKey { entry: EntryId(0), elem: super::super::registry::ALERT + 1 };
+    root.step(&ScreenEvent::PressCommit(crate::ui::machine::PressId(1)), &cx(Some(connect)), &mut fx);
+    let answers: Vec<_> = out.iter().filter_map(|st| match &st.fx {
+        Fx::App(super::super::registry::AppFx::Session(crate::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. }))
+            if machine_id == "lan-machine" => Some(*choice),
+        _ => None,
+    }).collect();
+    assert_eq!(answers, [PlaintextChoice::Allowed]);
+    assert!(!root.alert.is_open());
+    assert_eq!(root.state.plaintext, vec![true], "the switch shows the answer optimistically");
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}

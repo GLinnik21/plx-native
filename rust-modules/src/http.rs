@@ -108,14 +108,17 @@ pub(crate) struct Reply {
 pub(crate) enum RequestOutcome {
     Response(Reply),
     Deadline,
-    Transport,
+    /// Nothing answered. Carries libcurl's [`crate::net::RequestFailure`] when the TLS transport
+    /// ran and produced one; `None` from the plaintext transport and from a request refused
+    /// before any transport ran.
+    Transport(Option<crate::net::RequestFailure>),
 }
 
 impl RequestOutcome {
     fn response(self) -> Option<Reply> {
         match self {
             Self::Response(reply) => Some(reply),
-            Self::Deadline | Self::Transport => None,
+            Self::Deadline | Self::Transport(_) => None,
         }
     }
 }
@@ -226,6 +229,10 @@ pub(crate) fn request_until_outcome(
 /// ignores it: a pin belongs to a TLS name, never to a literal. A candidate whose dashed label does
 /// not encode the address it was persisted with gets no pin, and resolves through DNS exactly as
 /// before.
+///
+/// `Err` is a transport failure, carrying libcurl's [`crate::net::RequestFailure`] when the TLS
+/// arm produced one — the evidence a discovery verdict names per route
+/// (`plex::probe::RouteOutcome::of_failure`). `None` from the plaintext arm, which has no code.
 pub(crate) fn request_probe(
     origin: &Origin,
     path: &str,
@@ -234,8 +241,8 @@ pub(crate) fn request_probe(
     max_body: usize,
     timeout_s: i32,
     pin: Option<&ResolvePin>,
-) -> Option<Reply> {
-    request_with(
+) -> Result<Reply, Option<crate::net::RequestFailure>> {
+    match request_with(
         origin,
         path,
         method,
@@ -245,8 +252,13 @@ pub(crate) fn request_probe(
             timeout_s,
         },
         pin,
-    )
-    .response()
+    ) {
+        RequestOutcome::Response(reply) => Ok(reply),
+        RequestOutcome::Transport(failure) => Err(failure),
+        // A probe carries no caller deadline (`BodyPolicy::Probe`), so this is unreachable; it is
+        // a failure without evidence rather than a panic if that ever changes.
+        RequestOutcome::Deadline => Err(None),
+    }
 }
 
 fn request_with(
@@ -258,7 +270,7 @@ fn request_with(
     pin: Option<&ResolvePin>,
 ) -> RequestOutcome {
     if !credential_transport_allowed(origin, path, headers) {
-        return RequestOutcome::Transport;
+        return RequestOutcome::Transport(None);
     }
     match origin.scheme() {
         // The plaintext arm dials the literal it is given; a pin belongs to a TLS NAME only.
@@ -283,12 +295,14 @@ pub(crate) fn credential_transport_allowed_by_policy(
     headers: &[&str],
     policy: CredentialPolicy,
 ) -> bool {
-    !carries_credential(path, headers) || policy.may_carry_credential(origin)
+    !carries_credential(path, headers) || crate::plex::grant::allowed_under(policy, origin)
 }
 
-/// The shared control/media credential boundary. Store builds fail closed on a token-bearing HTTP
-/// URL; only a build that explicitly carries the developer-trigger feature may exercise a local
-/// plaintext PMS for lab work. The log names neither URL nor token.
+/// The shared control/media credential boundary: a request that carries a credential reaches the
+/// wire only when THE authority (`plex::grant`) says its origin may carry one — TLS, a developer
+/// build, or a live consented grant for exactly this plaintext origin. Asked per request, so a
+/// revoked grant stops the next request, whoever queued it and whenever. The log names neither
+/// URL nor token.
 pub(crate) fn credential_transport_allowed(origin: &Origin, path: &str, headers: &[&str]) -> bool {
     let allowed = credential_transport_allowed_by_policy(
         origin,
@@ -297,16 +311,30 @@ pub(crate) fn credential_transport_allowed(origin: &Origin, path: &str, headers:
         CredentialPolicy::build(),
     );
     if !origin.is_tls() && carries_credential(path, headers) {
-        static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            if allowed {
-                crate::log("security: developer build allows plaintext PMS credentials");
-            } else {
-                crate::log("security: refused plaintext PMS credentials; HTTPS required");
-            }
+        static REPORTED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+        if let Some(line) = plaintext_credential_report(&REPORTED, CredentialPolicy::build(), allowed) {
+            crate::log(line);
         }
     }
     allowed
+}
+
+/// The plaintext-credential log line for this outcome, the first time the process meets it —
+/// once per OUTCOME, not once per process: a store build meets the refusal before the person
+/// consents, and the consented send after it is the line a device check looks for.
+fn plaintext_credential_report(
+    seen: &std::sync::atomic::AtomicU8,
+    policy: CredentialPolicy,
+    allowed: bool,
+) -> Option<&'static str> {
+    let (bit, line) = if policy == CredentialPolicy::AllowPlaintext {
+        (1, "security: developer build allows plaintext PMS credentials")
+    } else if allowed {
+        (2, "security: plaintext PMS credentials sent under a consented grant")
+    } else {
+        (4, "security: refused plaintext PMS credentials; HTTPS required")
+    };
+    (seen.fetch_or(bit, std::sync::atomic::Ordering::Relaxed) & bit == 0).then_some(line)
 }
 
 /// The plaintext arm: [`crate::stream`]'s raw socket.
@@ -348,10 +376,10 @@ fn plaintext(
         s
     };
     let Ok(host_c) = std::ffi::CString::new(origin.host()) else {
-        return RequestOutcome::Transport;
+        return RequestOutcome::Transport(None);
     };
     let Ok(path_c) = std::ffi::CString::new(path) else {
-        return RequestOutcome::Transport;
+        return RequestOutcome::Transport(None);
     };
     let extra_c = std::ffi::CString::new(extra).ok();
     let extra_ptr = extra_c.as_ref().map_or(std::ptr::null(), |c| c.as_ptr());
@@ -399,7 +427,7 @@ fn plaintext(
                 Err(crate::stream::HttpOpenError::Deadline) => {
                     return match owner {
                         DeadlineOwner::Caller => RequestOutcome::Deadline,
-                        DeadlineOwner::Liveness => RequestOutcome::Transport,
+                        DeadlineOwner::Liveness => RequestOutcome::Transport(None),
                     };
                 }
                 // `Stopped` cannot occur: this request has no checkpoint.
@@ -408,7 +436,7 @@ fn plaintext(
                     | crate::stream::HttpOpenError::Stopped
                     | crate::stream::HttpOpenError::Transport,
                 ) => {
-                    return RequestOutcome::Transport;
+                    return RequestOutcome::Transport(None);
                 }
             }
         }
@@ -485,10 +513,10 @@ fn plaintext(
                     deadline_failure = Some(if n == crate::stream::HTTP_READ_DEADLINE {
                         match read_deadline_owner.unwrap_or(DeadlineOwner::Caller) {
                             DeadlineOwner::Caller => RequestOutcome::Deadline,
-                            DeadlineOwner::Liveness => RequestOutcome::Transport,
+                            DeadlineOwner::Liveness => RequestOutcome::Transport(None),
                         }
                     } else {
-                        RequestOutcome::Transport
+                        RequestOutcome::Transport(None)
                     });
                 }
                 break;
@@ -520,21 +548,21 @@ fn plaintext(
     }
     if overflowed {
         crate::log("http: response exceeded body limit");
-        return RequestOutcome::Transport;
+        return RequestOutcome::Transport(None);
     }
     if matches!(body_policy, BodyPolicy::Deadline { .. })
         && opened == 0
         && content_length >= 0
         && (body.len() as i64) < content_length
     {
-        return RequestOutcome::Transport;
+        return RequestOutcome::Transport(None);
     }
     // A status of 0 is not something a server sent — it is what `http_open`'s parser leaves when
     // the connection never produced an `HTTP/1.x NNN` line at all, i.e. a transport failure. It
     // must not reach a caller as a "response", because `classify` would read it as `Unreachable`
     // by luck rather than by decision, and `Reply::ok` would read it as a refusal.
     if status == 0 {
-        RequestOutcome::Transport
+        RequestOutcome::Transport(None)
     } else {
         RequestOutcome::Response(Reply { status, body })
     }
@@ -625,7 +653,7 @@ fn tls(
     };
     // PMS redirects are responses, never instructions: the path already carries a token. Keeping
     // `FOLLOWLOCATION` off also makes the TLS arm's 3xx semantics match the plaintext arm.
-    match crate::net::request_result(
+    match crate::net::request_result_evidence(
         &url,
         &owned,
         method.as_str(),
@@ -639,10 +667,10 @@ fn tls(
             status: r.status as i32,
             body: r.body,
         }),
-        Err(crate::net::RequestError::TimedOut) if caller_owns_timeout => RequestOutcome::Deadline,
-        Err(crate::net::RequestError::TimedOut | crate::net::RequestError::Transport) => {
-            RequestOutcome::Transport
+        Err(failure) if failure.cause == crate::net::RequestError::TimedOut && caller_owns_timeout => {
+            RequestOutcome::Deadline
         }
+        Err(failure) => RequestOutcome::Transport(Some(failure)),
     }
 }
 
@@ -746,7 +774,7 @@ mod tests {
             let tls_origin = Origin::parse(&format!("https://no-such-host.invalid:{port}")).unwrap();
             let pin = ResolvePin::for_test("no-such-host.invalid", port as i32, "127.0.0.1".parse().unwrap());
             assert!(
-                request_probe(&tls_origin, "/identity", Method::Get, &[], 4096, 1, Some(&pin)).is_none(),
+                request_probe(&tls_origin, "/identity", Method::Get, &[], 4096, 1, Some(&pin)).is_err(),
                 "TLS against a plaintext listener fails, as it must"
             );
             assert_eq!(
@@ -759,7 +787,7 @@ mod tests {
             let same_pin = ResolvePin::for_test("192.0.2.1", 32400, "127.0.0.1".parse().unwrap());
             assert!(
                 request_probe(&http_origin, "/identity", Method::Get, &[], 4096, 1, Some(&same_pin))
-                    .is_none(),
+                    .is_err(),
                 "the unrouted literal never answers, pin or no pin"
             );
             assert_eq!(
@@ -821,6 +849,26 @@ mod tests {
     fn the_shared_accept_header_is_a_bare_line() {
         assert_eq!(ACCEPT_JSON, "Accept: application/json");
         assert!(!ACCEPT_JSON.contains('\r') && !ACCEPT_JSON.contains('\n'));
+    }
+
+    /// A store build refuses plaintext credentials until the person consents — so a refusal is
+    /// normally met FIRST, and the consented send after it must still be said once: the log is
+    /// the only evidence a grant carried a token (PLX-NATIVE-10's device check reads it).
+    #[test]
+    fn each_plaintext_credential_outcome_is_reported_once() {
+        let seen = std::sync::atomic::AtomicU8::new(0);
+        let store = CredentialPolicy::HttpsOnly;
+        assert_eq!(
+            plaintext_credential_report(&seen, store, false),
+            Some("security: refused plaintext PMS credentials; HTTPS required")
+        );
+        assert_eq!(plaintext_credential_report(&seen, store, false), None, "once per outcome");
+        assert_eq!(
+            plaintext_credential_report(&seen, store, true),
+            Some("security: plaintext PMS credentials sent under a consented grant"),
+            "a consented send after a refusal is a different outcome"
+        );
+        assert_eq!(plaintext_credential_report(&seen, store, true), None);
     }
 
     #[test]
@@ -885,7 +933,7 @@ mod tests {
         });
 
         let origin = Origin::http("127.0.0.1", port as i32);
-        assert!(request_probe(&origin, "/identity", Method::Get, &[ACCEPT_JSON], 4, 1, None).is_none());
+        assert!(request_probe(&origin, "/identity", Method::Get, &[ACCEPT_JSON], 4, 1, None).is_err());
         server.join().expect("server");
     }
 
@@ -949,7 +997,7 @@ mod tests {
         server.join().unwrap();
         cross(deadline);
 
-        assert!(matches!(outcome, RequestOutcome::Transport));
+        assert!(matches!(outcome, RequestOutcome::Transport(_)));
     }
 
     #[test]

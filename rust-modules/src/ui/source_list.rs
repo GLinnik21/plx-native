@@ -100,9 +100,13 @@ fn state_word(s: SourceState) -> Option<&'static str> {
 const UNAUTHORIZED: &str = "Not authorized";
 /// Did not answer at all — refused, timed out, or unresolvable.
 const UNREACHABLE: &str = "Not reachable";
-/// Answered, verified as the right machine, but only over a transport this build can never put a
-/// credential on (issue #95). A different kind of fault from [`UNREACHABLE`] again — the server IS
+/// Answered, verified as the right machine, but only over a transport this build may not put a
+/// credential on without the person's consent (issue #95, PLX-NATIVE-10). A different kind of fault from [`UNREACHABLE`] again — the server IS
 /// there, it is the connection to it that has to change (HTTPS), not the server itself.
+///
+/// Deliberately NOT the consent flow's "without encryption" wording: this row names a state no
+/// question can change (the server was ineligible, or not yet offered); an eligible server is
+/// asked through `screens::plaintext_question`, and a granted one reads as connected.
 const INSECURE_ONLY: &str = "Not secure";
 
 /// The word a WORKING group's connection tier is said in — `None` when there is nothing worth

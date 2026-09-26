@@ -66,6 +66,10 @@ const SORT: u32 = 1;
 const FILTER: u32 = 2;
 const RETRY: u32 = 3;
 const MORE: u32 = 4;
+/// "Connect without encryption?" over a failed source's read-out (`screens::plaintext_question`).
+const PLAINTEXT_GROUP: GroupId = GroupId(0x4c49_4213);
+const PLAINTEXT_CANCEL: u32 = 5;
+const PLAINTEXT_CONNECT: u32 = 6;
 const STRIP: GroupId = crate::ui::containers::tabs::STRIP;
 
 pub(crate) const SHAPE: [&str; 8] = [
@@ -159,6 +163,11 @@ pub(crate) struct LibraryScreen {
     library_pop: crate::ui::widgets::CtlPop<1>,
     ground: crate::ui::widgets::PageGround,
     ground_seeded: bool,
+    /// The failed source's server, when discovery offers the question for it
+    /// (`plex::grant::offers`) — the grant table's, not logical state.
+    plaintext: super::plaintext_question::OfferWatch,
+    /// The question, asked from the failed read-out's *Connect*.
+    plaintext_alert: super::plaintext_question::PlaintextAlert,
 }
 
 impl LibraryScreen {
@@ -181,6 +190,8 @@ impl LibraryScreen {
             library_capsules: crate::ui::widgets::TabStrip::new(),
             library_pop: crate::ui::widgets::CtlPop::new(),
             ground: crate::ui::widgets::PageGround::new(), ground_seeded: false,
+            plaintext: Default::default(),
+            plaintext_alert: super::plaintext_question::PlaintextAlert::new(PLAINTEXT_GROUP, PLAINTEXT_CANCEL, PLAINTEXT_CONNECT),
         }
     }
 
@@ -572,6 +583,17 @@ impl LibraryScreen {
             _ => None,
         };
         if let Some(req) = req { fx.push(Fx::App(AppFx::Library(req))); return Handled::Yes; }
+        if elem == RETRY && self.readout == Readout::Failed
+            && super::plaintext_question::asks(self.plaintext.verdict())
+        {
+            // The source's server is on this network and only answers without encryption:
+            // *Connect* asks the shared question rather than retrying what cannot succeed.
+            let sid = H::directory(cx).source().map(|(sid, _)| *sid);
+            if let Some(machine) = self.plaintext.verdict().map(|v| v.machine_id.clone()) {
+                self.plaintext_alert.open(&machine, sid, MachineId::Instance(self.instance), fx);
+            }
+            return Handled::Yes;
+        }
         if elem == RETRY {
             if let Some(target) = self.address(cx) {
                 self.store(target, LibraryWork::Retry, fx);
@@ -700,6 +722,16 @@ impl LibraryScreen {
 impl<H: LibraryLike> Machine<H> for LibraryScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        use super::plaintext_question::AlertStep;
+        match self.plaintext_alert.step(ev, cx) {
+            AlertStep::Pass => {}
+            AlertStep::Done(handled) => return handled,
+            AlertStep::Answer(cmd) => {
+                if let Some(cmd) = cmd { fx.push(Fx::App(AppFx::Session(cmd))); }
+                self.reseat(FocusTarget::ContainerGroup(STATUS_GROUP), fx);
+                return Handled::Yes;
+            }
+        }
         match ev {
             ScreenEvent::Mount | ScreenEvent::StoreChanged(..) => { self.sync(cx); }
             ScreenEvent::RestoreMemory(PageMemory::Library(memory)) => { self.restore(memory); self.sync(cx); }
@@ -773,6 +805,8 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
             }
             ScreenEvent::Tick(tick) => {
                 self.sync(cx);
+                self.watch_plaintext(cx);
+                self.plaintext_alert.update(tick.dt());
                 if self.grid_reset_pending {
                     if let Some(elem) = self.pair.detail.elem_at(0) {
                         fx.remember(self.pair.groups_config().detail, elem);
@@ -932,6 +966,7 @@ impl<H: LibraryLike> Machine<H> for LibraryScreen {
 
 impl<H: LibraryLike> Focusable<H> for LibraryScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        if self.plaintext_alert.groups(out) { return; }
         if !self.libraries.is_empty() {
             out.push(row_group(LIBRARY_GROUP, self.libraries.len(), Rect::new(MARGIN_X, CONTENT_TOP - self.scroll.pos, layout::GRID_RIGHT - MARGIN_X, 52.0), ElemKind::Control));
         }
@@ -954,6 +989,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
         }
     }
     fn group_of(&self, elem: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
+        if let Some(answer) = self.plaintext_alert.group_of(*elem) { return answer; }
         if self.libraries.iter().any(|(key, _)| key == elem) { return Some(LIBRARY_GROUP); }
         if let Some(row) = self.shelves.iter().find(|row| row.elems.contains(elem)) { return Some(row.group); }
         if self.layout.grid_head && [SORT, FILTER].contains(elem) { return Some(TOOLBAR_GROUP); }
@@ -961,6 +997,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
         self.pair.group_of(elem, cx)
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
+        if let Some(step) = self.plaintext_alert.neighbour(key, dir) { return step; }
         if matches!(region_of_elem(key.elem), Some(KeyRegion::Grid | KeyRegion::Rail)) {
             return self.pair.neighbour(key, dir, cx);
         }
@@ -970,6 +1007,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
         next.and_then(|i| elems.get(i).copied()).map_or(Step::Edge, |elem| Step::Move(self.key(elem)))
     }
     fn place(&self, elem: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
+        if let Some(placed) = self.plaintext_alert.place(*elem) { return placed; }
         if matches!(region_of_elem(*elem), Some(KeyRegion::Grid | KeyRegion::Rail)) {
             return self.pair.place(elem, cx, at);
         }
@@ -986,6 +1024,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
         Some(Placed { rect, rest_rect: rest_rect.unwrap_or(rect), clip: Rect::new(0.0, crate::ui::widgets::TOP_BAR_BOTTOM, SCR_W, SCR_H - crate::ui::widgets::TOP_BAR_BOTTOM), index: None })
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
+        if let Some(key) = self.plaintext_alert.reconcile(want) { return key; }
         if matches!(self.keys.region(want.elem).or_else(|| region_of_elem(want.elem)), Some(KeyRegion::Grid | KeyRegion::Rail)) {
             // Ownership is a typed identity query, even when group_of no longer places the key.
             let next = self.pair.reconcile(want, cx);
@@ -1001,6 +1040,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
             .unwrap_or_else(|| self.key(crate::ui::dispatch::STRIP_BASE))
     }
     fn seat(&self, group: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<u32> {
+        if let Some(key) = self.plaintext_alert.seat(group, self.entry) { return key; }
         if group == self.pair.groups_config().detail || group == self.pair.groups_config().master { return self.pair.seat(group, from, cx); }
         let elems = self.row_elems(Some(group));
         let elem = elems.iter().filter_map(|elem| self.place(elem, cx, At::SpringTarget)
