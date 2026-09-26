@@ -39,6 +39,13 @@ still owns window activation, while live keys and FIFO commands cannot join the 
 stream. A real background/quit event interrupts replay; recorded background lifecycle remains
 unsupported.
 
+Page-capture GPU readiness is also a recorded input, sampled before dispatch. Replay supplies
+that observation to the ordinary motion and presentation gates, then computes and grades the
+final present decision. Faster GPU completion cannot introduce extra presents or advance a held
+transition early. Missing, duplicate, late or unconsumed readiness fails closed; the independent
+physical window gate still blocks drawing while backgrounded. Recordings predating this input
+are refused at the product shape boundary and must be recorded afresh.
+
 The admission contract also records each synchronous worker-spawn answer with its full request
 identity and frame ordering. A refused attempt stays refused during replay, including its normal
 retry/backoff; it is not turned into an admitted worker or an asynchronous failure. Natural

@@ -11,6 +11,9 @@
 //! Startup WILL/DID foreground is a bounded logical input. Replay resumes navigation without
 //! native playback or network-grant authority; actual SDL still owns physical window safety.
 //! Background lifecycle remains outside the accepted recording domain.
+//! Page-capture GPU readiness is recorded before dispatch and supplied on replay. It drives the
+//! ordinary motion/presentation gates; the final present decision is still computed and graded.
+//! Physical window authority remains live and cannot be supplied by the recording.
 //!
 //! Supported effects carry complete private payloads, including screen-input time/source/edge
 //! and focus identity. Missing/extra/changed effects or results prevent SAME. A codec error
@@ -208,6 +211,7 @@ pub(crate) fn state_fp() -> u64 {
     let mut shapes: Vec<&str> = APP_SHAPES.to_vec();
     shapes.push(super::bootstrap::CONTENT_SHAPE);
     shapes.push(RESOLUTION_SHAPE);
+    shapes.push("CaptureReadinessV1{before_dispatch:pending:bool}");
     shapes.push("MeasurementV1{query:Width(text:bytes,sz:i32,bold:bool)|Cap(sz:i32)|Line(sz:i32),answer:f32bits:u32}");
     shapes.extend_from_slice(crate::screens::registry::SCREEN_SHAPES);
     crate::ui::rec::state_fp(&shapes)
@@ -405,6 +409,7 @@ pub(crate) fn validate_controlled(recording: &Recording, initial: &super::bootst
             return Err("missing controlled state grade");
         }
         if index != 0 && frame.present.is_none() { return Err("missing controlled presentation grade"); }
+        if index != 0 && frame.snapshot_pending.is_none() { return Err("missing controlled capture readiness"); }
         if frame.f != index as u64 || frame.tick.is_none_or(|tick| tick.dt_us > 50_000) {
             return Err("invalid controlled frame sequence");
         }
@@ -948,8 +953,31 @@ impl Recplay {
         }
     }
 
+    /// One environmental observation before logical dispatch. GPU completion varies with
+    /// live texture work even when clocks and inputs are identical. Supply that observation,
+    /// never the final present bit: a changed present policy must still fail its grade.
     pub(crate) fn snapshot_pending(&mut self, live: bool) -> bool {
-        live
+        match self {
+            Self::Off => live,
+            Self::Recording(r) => {
+                let t0 = std::time::Instant::now();
+                r.w.capture_readiness(r.f, live);
+                r.events = true;
+                r.spent_ns += t0.elapsed().as_nanos() as u64;
+                live
+            }
+            Self::Replaying(r) => {
+                // Taking the fact enforces exactly one consumption. A missing, duplicated
+                // or unconsumed observation cannot earn SAME, even outside boot preflight.
+                match r.rec.frames.get_mut(r.at).and_then(|f| f.snapshot_pending.take()) {
+                    Some(pending) => pending,
+                    None => {
+                        r.failure = Some("missing or repeated capture readiness");
+                        true
+                    }
+                }
+            }
+        }
     }
 
     pub(crate) fn present(&mut self, bit: bool) {
@@ -1052,6 +1080,9 @@ impl Recplay {
                     crate::log(&format!("replay: land diverge f={frame} store={ord} reason={}", why.name()));
                 }
                 if let Some(fr) = r.rec.frames.get(r.at) {
+                    if fr.snapshot_pending.is_some() {
+                        r.failure = Some("unconsumed capture readiness");
+                    }
                     let scripts = fr.inputs.len();
                     if r.input_at < scripts {
                         let missing = scripts - r.input_at;
@@ -1355,20 +1386,44 @@ mod tests {
         rec.finish(crate::ui::landgate::fixture_gate());
         let recording = Recording::parse(&manifest,
             &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(), state_fp()).unwrap();
-        for mode in [ReplayMode::Targets, ReplayMode::Resolve] {
+        for (mode, live, changed_present) in [
+            (ReplayMode::Targets, false, false), (ReplayMode::Resolve, false, false),
+            (ReplayMode::Targets, true, false), (ReplayMode::Resolve, true, false),
+            (ReplayMode::Targets, false, true), (ReplayMode::Resolve, false, true),
+        ] {
             let mut replay = replay_for_test(copy_recording(&recording), mode);
             for f in 0..5 {
                 replay.tick(f * 16, 0.016);
-                let pending = replay.snapshot_pending(false);
-                replay.present(!pending);
+                let pending = replay.snapshot_pending(live);
+                replay.present(!pending ^ (changed_present && f == 3));
                 Tap::<Product>::focus(&mut replay, 1, None);
                 replay.end_frame(&|| 7);
             }
             let Recplay::Replaying(r) = replay else { unreachable!() };
             assert_eq!(r.diverged, 0);
-            assert_eq!(r.present_diffs, 0,
+            assert_eq!(r.present_diffs, u64::from(changed_present),
                 "GPU completion is an input; replay must not sample a new readiness schedule");
-            assert!(r.same());
+            assert_eq!(r.same(), !changed_present,
+                "supplying readiness must not hide a changed final present decision");
+        }
+    }
+
+    #[test]
+    fn capture_readiness_must_be_consumed_exactly_once() {
+        let _serial = crate::testlock::serial();
+        let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
+        for calls in 0..=2 {
+            let recording = Recording { header: Header::new(state_fp(), &initial),
+                frames: vec![crate::ui::rec::Frame { f: 0, snapshot_pending: Some(false),
+                    st: Some(7), ..Default::default() }], metrics: Default::default(), stopped_at: None };
+            let mut replay = replay_for_test(recording, ReplayMode::Targets);
+            for _ in 0..calls { replay.snapshot_pending(true); }
+            replay.end_frame(&|| 7);
+            let Recplay::Replaying(r) = replay else { unreachable!() };
+            assert_eq!(r.same(), calls == 1, "capture readiness consumed {calls} times");
+        }
+        for live in [false, true] {
+            assert_eq!(Recplay::Off.snapshot_pending(live), live, "ordinary GPU policy is unchanged");
         }
     }
 
@@ -1386,7 +1441,7 @@ mod tests {
                 crate::ui::rec::Frame { f: 0, tick: Some(Tick { ms: 0, dt_us: 0 }),
                     st: Some(7), focus: Some(None), ..Default::default() },
                 crate::ui::rec::Frame { f: 1, tick: Some(Tick { ms: 16, dt_us: 16_000 }),
-                    present: Some(true), st: Some(7), focus: Some(None),
+                    snapshot_pending: Some(false), present: Some(true), st: Some(7), focus: Some(None),
                     inputs: vec![json!({"f":1,"t":"in","kind":"lifecycle","code":0x105}),
                         json!({"f":1,"t":"in","kind":"lifecycle","code":0x106})],
                     ..Default::default() },
@@ -1394,6 +1449,9 @@ mod tests {
             metrics: Default::default(), stopped_at: None,
         };
         assert_eq!(validate_controlled(&recording, &initial), Ok(()));
+        recording.frames[1].snapshot_pending = None;
+        assert_eq!(validate_controlled(&recording, &initial), Err("missing controlled capture readiness"));
+        recording.frames[1].snapshot_pending = Some(false);
         for code in [0x103, 0x104, 0, u32::MAX] {
             recording.frames[1].inputs = vec![json!({"f":1,"t":"in","kind":"lifecycle","code":code})];
             assert!(validate_controlled(&recording, &initial).is_err(),
@@ -1909,7 +1967,7 @@ mod tests {
             crate::ui::rec::Frame { f: 0, tick: Some(Tick { ms: initial.clock_start, dt_us: 0 }),
                 st: Some(7), ..Default::default() },
             crate::ui::rec::Frame { f: 1, tick: Some(Tick { ms: initial.clock_start + 16, dt_us: 16000 }),
-                st: Some(7), present: Some(false), ..Default::default() },
+                st: Some(7), present: Some(false), snapshot_pending: Some(false), ..Default::default() },
         ], metrics: Default::default(), stopped_at: None };
         for token in ["hang-raw:1", "diag", "pat:0"] {
             let mut value = enc_token(token); value["f"] = json!(1); value["t"] = json!("in");

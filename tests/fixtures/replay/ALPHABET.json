@@ -50,7 +50,7 @@
     "press phase=(idle|down|up) live=[01] active=[01] long=[01]"
   ],
   "literals": [
-    "preview_stop", "about", "bio", "white",
+    "preview_stop", "about", "bio", "white", "capture",
     "content", "metadata", "en", "eng", "srt", "mkv", "Credits", "Imdb",
     " ", "/10", "1080p", "14 Mar 2011", "2 hr 24 min", "7.1",
     "About PlxNative", "Also available", "Analytics / Usage", "Analytics ID", "CC",
