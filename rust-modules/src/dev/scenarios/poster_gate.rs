@@ -131,6 +131,21 @@ impl Scene {
             Target::Hero => app.bridge.home_motion_witness(&app.pages).is_some_and(|[snap, _, _]| snap <= 0.01),
         }
     }
+    fn start_stage(&mut self, now: u32) -> u32 {
+        *self.started.get_or_insert_with(|| {
+            metrics::arm();
+            now
+        })
+    }
+    fn finish_stage(&mut self, _now: u32) {
+        self.stage += 1;
+        self.started = None;
+        self.witness = None;
+        if self.stage == self.plan().len() {
+            self.finished = true;
+            crate::log(&format!("poster-gate: kind={} phase=done", self.mode.unwrap().word()));
+        }
+    }
     fn advance(&mut self, app: &mut App, now: u32) {
         self.arm();
         let Some(mode) = self.mode else { return };
@@ -138,10 +153,7 @@ impl Scene {
         let route_ok = matches!((mode, app.route()), (Mode::Dive, AppArg::Home) | (Mode::Settle | Mode::Eviction, AppArg::Library));
         if !route_ok { return; }
         let stage = self.plan()[self.stage];
-        let start = *self.started.get_or_insert_with(|| {
-            metrics::arm();
-            now
-        });
+        let start = self.start_stage(now);
         let elapsed = now.wrapping_sub(start);
         if mode == Mode::Dive {
             if let Some(sample) = app.bridge.home_motion_witness(&app.pages) {
@@ -163,13 +175,7 @@ impl Scene {
             crate::log(&format!("poster-gate: kind={} phase=failed reason=target-or-art", mode.word()));
             return;
         }
-        self.stage += 1;
-        self.started = None;
-        self.witness = None;
-        if self.stage == self.plan().len() {
-            self.finished = true;
-            crate::log(&format!("poster-gate: kind={} phase=done", mode.word()));
-        }
+        self.finish_stage(now);
     }
 }
 fn report(kind: &str, phase: &str, ms: u32, s: Stats, complete: bool, witness: Option<Witness>) {
@@ -190,6 +196,59 @@ pub(crate) fn tick(app: &mut App, now: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn boundary_frame(now: u32) {
+        metrics::frame();
+        let _scope = crate::ui::card_motion::Scope::moving_for_test();
+        for _ in 0..6 { metrics::draw(true); }
+        // Deliberately inject forbidden fast work. A gate must retain it even
+        // when this is the first draw after a phase reports its completion.
+        metrics::request();
+        metrics::refused(metrics::Refused::Evicted);
+        metrics::rearmed();
+        metrics::upload();
+        metrics::evicted();
+        metrics::presented(now);
+    }
+    #[test]
+    fn every_phase_owns_its_handoff_draw_before_the_next_tick() {
+        for mode in [Mode::Settle, Mode::Eviction, Mode::Dive] {
+            let mut scene = Scene { checked: true, mode: Some(mode), ..Scene::default() };
+            for stage in 0..scene.plan().len() - 1 {
+                scene.stage = stage;
+                scene.started = None;
+                scene.start_stage(1000);
+                boundary_frame(1016);
+                let previous = metrics::snapshot();
+                assert_eq!(previous.frames, 1);
+                scene.finish_stage(1032);
+                // advance() runs before draw/upload/swap in app::run. This draw
+                // must be owned immediately; the next tick is already too late.
+                boundary_frame(1032);
+                let next_start = scene.start_stage(1048);
+                let next = metrics::snapshot();
+                assert_eq!(next.requested_moving, 1, "{mode:?} stage {stage}: lost fast admission at handoff");
+                assert_eq!((next.frames, next.moving_frames, next.uploads), (1, 1, 1));
+                assert_eq!((next.refused_evicted, next.rearmed, next.lost), (1, 1, 1));
+                assert_eq!((next.draws, next.ready, next.last_draws, next.last_ready), (6, 6, 6, 6));
+                assert!(next.full());
+                assert_eq!(next_start, 1032);
+            }
+        }
+    }
+    #[test]
+    fn final_phase_keeps_its_last_present_and_does_not_arm_another_phase() {
+        let mut scene = Scene { checked: true, mode: Some(Mode::Dive), ..Scene::default() };
+        scene.stage = scene.plan().len() - 1;
+        scene.start_stage(1000);
+        boundary_frame(1016);
+        scene.finish_stage(1032);
+        assert!(scene.finished);
+        assert!(scene.plan().get(scene.stage).is_none());
+        assert_eq!(scene.started, None);
+        let final_stats = metrics::snapshot();
+        assert_eq!((final_stats.frames, final_stats.requested_moving, final_stats.uploads), (1, 1, 1));
+        assert!(final_stats.full());
+    }
     #[test]
     fn sweeps_stop_at_their_own_end_and_reverse_over_seeded_rows() {
         assert_eq!(SETTLE[1].sweep_row(0), Some(0));
