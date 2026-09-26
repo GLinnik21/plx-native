@@ -32,6 +32,9 @@ unlisted domain remain unsupported and fail closed before IO. Product replay has
 modes: Targets substitutes each recorded Focus/Hit resolution before dependent effects, while
 Resolve runs the current engine/map and grades every resolution pointwise before continuing.
 
+Person's provider requests use the captured authority throughout controlled recording and replay.
+Ambient session-cache recovery cannot retire those requests or introduce unrecorded retries.
+
 The TV's startup WILL/DID foreground notifications are recorded and replayed through the
 navigation owner. Recorded notifications cannot restore native playback, change network grants,
 or authorize drawing into a physically backgrounded window. During replay the real compositor
