@@ -1978,7 +1978,7 @@ pub(crate) fn snapshot_frame_end() {
 
 /// Start an iteration: is a capture still in flight on the GPU? Latched for
 /// [`snapshot_pending`]; a signalled fence (or the cap) drops it.
-pub(crate) fn snapshot_frame_begin() {
+pub(crate) fn snapshot_frame_begin(readiness: impl FnOnce(bool) -> bool) {
     // SAFETY: main render thread.
     let fence = unsafe { (*std::ptr::addr_of!(SNAPSHOT_FENCE)).as_ref().map(|f| f.signaled()) };
     let n = SNAPSHOT_DEFERRED.load(Ordering::Relaxed);
@@ -1988,7 +1988,7 @@ pub(crate) fn snapshot_frame_begin() {
     } else if fence.is_some() {
         unsafe { SNAPSHOT_FENCE = None };
     }
-    SNAPSHOT_PENDING.store(defer, Ordering::Relaxed);
+    SNAPSHOT_PENDING.store(readiness(defer), Ordering::Relaxed);
 }
 
 /// Has this frame captured the page so far? Its GPU work will be waited out before the next

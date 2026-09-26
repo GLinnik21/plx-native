@@ -948,6 +948,10 @@ impl Recplay {
         }
     }
 
+    pub(crate) fn snapshot_pending(&mut self, live: bool) -> bool {
+        live
+    }
+
     pub(crate) fn present(&mut self, bit: bool) {
         match self {
             Recplay::Recording(r) => {
@@ -1328,6 +1332,44 @@ mod tests {
         Recplay::Replaying(Replay { resolution:ResolutionReplay {mode,..Default::default()}, rec,
             at:0,graded:0,diverged:0,present_diffs:0,result_diffs:0,land_diffs:0,result_at:0,
             effect_at:0,input_at:0,input_diffs:0,effect_diffs:0,started:false,failure:None })
+    }
+
+    #[test]
+    fn controlled_replay_retains_capture_readiness_when_the_gpu_finishes_earlier() {
+        use crate::ui::dispatch::Tap;
+        let _serial = crate::testlock::serial();
+        let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
+        let sink = crate::ui::rec::MemSink::default();
+        let segments = sink.segments.clone();
+        let manifest = Header::new(state_fp(), &initial).to_json().to_string();
+        let mut rec = Recplay::recording_with_sink(&initial, Box::new(sink)).unwrap();
+        // The ARM recording deferred these frames behind page-capture fences.
+        // Replay has no live poster downloads and its GPU can finish sooner.
+        for (f, pending) in [false, true, false, true, false].into_iter().enumerate() {
+            rec.tick(f as u32 * 16, 0.016);
+            let pending = rec.snapshot_pending(pending);
+            rec.present(!pending);
+            Tap::<Product>::focus(&mut rec, 1, None);
+            rec.end_frame(&|| 7);
+        }
+        rec.finish(crate::ui::landgate::fixture_gate());
+        let recording = Recording::parse(&manifest,
+            &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(), state_fp()).unwrap();
+        for mode in [ReplayMode::Targets, ReplayMode::Resolve] {
+            let mut replay = replay_for_test(copy_recording(&recording), mode);
+            for f in 0..5 {
+                replay.tick(f * 16, 0.016);
+                let pending = replay.snapshot_pending(false);
+                replay.present(!pending);
+                Tap::<Product>::focus(&mut replay, 1, None);
+                replay.end_frame(&|| 7);
+            }
+            let Recplay::Replaying(r) = replay else { unreachable!() };
+            assert_eq!(r.diverged, 0);
+            assert_eq!(r.present_diffs, 0,
+                "GPU completion is an input; replay must not sample a new readiness schedule");
+            assert!(r.same());
+        }
     }
 
     #[test]
