@@ -334,7 +334,7 @@ fn dev_native_activation_is_ephemeral_and_revoke_ack_precedes_clean_login_work()
             let SessionWork::Login { client_id } = input else { panic!("dev exit must start clean Login") };
             assert_eq!(client_id, "synthetic-device");
             signal.store(true, Ordering::Release);
-            output.complete(crate::auth::LoginProgress::Failed { epoch, message: "synthetic stop".into(), incident: crate::auth::synthetic_incident() }.into()).unwrap();
+            output.complete(crate::auth::LoginProgress::Failed { epoch, message: "synthetic stop".into(), incident: crate::auth::synthetic_incident(), plaintext: None }.into()).unwrap();
         });
         for _ in 0..crate::ui::dispatch::MAX_STEPS_PRE + crate::ui::dispatch::MAX_STEPS_POST - 1 {
             execute_session_command(&mut d, crate::auth::SessionCmd::NoteDeleteLeftovers(0));

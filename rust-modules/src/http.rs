@@ -295,12 +295,14 @@ pub(crate) fn credential_transport_allowed_by_policy(
     headers: &[&str],
     policy: CredentialPolicy,
 ) -> bool {
-    !carries_credential(path, headers) || policy.may_carry_credential(origin)
+    !carries_credential(path, headers) || crate::plex::grant::allowed_under(policy, origin)
 }
 
-/// The shared control/media credential boundary. Store builds fail closed on a token-bearing HTTP
-/// URL; only a build that explicitly carries the developer-trigger feature may exercise a local
-/// plaintext PMS for lab work. The log names neither URL nor token.
+/// The shared control/media credential boundary: a request that carries a credential reaches the
+/// wire only when THE authority (`plex::grant`) says its origin may carry one — TLS, a developer
+/// build, or a live consented grant for exactly this plaintext origin. Asked per request, so a
+/// revoked grant stops the next request, whoever queued it and whenever. The log names neither
+/// URL nor token.
 pub(crate) fn credential_transport_allowed(origin: &Origin, path: &str, headers: &[&str]) -> bool {
     let allowed = credential_transport_allowed_by_policy(
         origin,
@@ -311,8 +313,10 @@ pub(crate) fn credential_transport_allowed(origin: &Origin, path: &str, headers:
     if !origin.is_tls() && carries_credential(path, headers) {
         static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         if !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            if allowed {
+            if CredentialPolicy::build() == CredentialPolicy::AllowPlaintext {
                 crate::log("security: developer build allows plaintext PMS credentials");
+            } else if allowed {
+                crate::log("security: plaintext PMS credentials sent under a consented grant");
             } else {
                 crate::log("security: refused plaintext PMS credentials; HTTPS required");
             }

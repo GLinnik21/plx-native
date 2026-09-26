@@ -371,6 +371,33 @@ pub(crate) fn keymanager_stage_code(stage: KeymanagerStage) -> &'static str {
     }
 }
 
+/// **What became of a "Connect without encryption?" offer** — the closed consent outcome an
+/// insecure-only report carries for an eligible server (`plaintext_consent`). Never the server,
+/// its address or its owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum PlaintextConsentOutcome {
+    /// Eligible, and the person had not answered — the question is on screen.
+    Offered,
+    /// Allowed, yet this discovery still could not connect (the grant was refused as stale, or
+    /// the consented origin did not admit the credential).
+    Accepted,
+    /// *Not now* on the question.
+    Declined,
+    /// Turned off in Settings after it had been allowed.
+    Revoked,
+}
+
+impl PlaintextConsentOutcome {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Offered => "offered",
+            Self::Accepted => "accepted",
+            Self::Declined => "declined",
+            Self::Revoked => "revoked",
+        }
+    }
+}
+
 /// Everything one incident report carries. Every field is a closed enum, a bucket, a clamped
 /// count or a bare number with no identity of its own — see the module doc.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -400,6 +427,11 @@ pub(crate) struct IncidentContext {
     /// [`crate::plex::probe::InsecureEvidence`].
     #[serde(default)]
     pub insecure: Option<crate::plex::probe::InsecureEvidence>,
+    /// What became of the "Connect without encryption?" offer for the server an insecure-only
+    /// verdict speaks about — only when that server was eligible to be asked. A closed code; the
+    /// server and its owner are never carried.
+    #[serde(default)]
+    pub plaintext_consent: Option<PlaintextConsentOutcome>,
     /// What `/resources` returned when it named no server — only on [`DiscoveryClass::NoServers`].
     #[serde(default)]
     pub no_servers: Option<NoServersEvidence>,
@@ -434,6 +466,7 @@ impl IncidentContext {
             keymanager_stage: None,
             service_error_code: None,
             insecure: None,
+            plaintext_consent: None,
             no_servers: None,
             occurred_at_ms: now_ms(),
         }
@@ -455,6 +488,7 @@ impl IncidentContext {
             keymanager_stage: None,
             service_error_code: None,
             insecure: None,
+            plaintext_consent: None,
             no_servers: None,
             occurred_at_ms: 0,
         }
@@ -477,6 +511,13 @@ impl IncidentContext {
     /// The evidence behind an insecure-only discovery verdict.
     pub(crate) fn with_insecure(mut self, evidence: crate::plex::probe::InsecureEvidence) -> Self {
         self.insecure = Some(evidence);
+        self
+    }
+
+    /// The consent outcome for an insecure-only verdict's eligible server (see
+    /// [`Self::plaintext_consent`]); `None` leaves it off the report.
+    pub(crate) fn with_plaintext_consent(mut self, outcome: Option<PlaintextConsentOutcome>) -> Self {
+        self.plaintext_consent = outcome;
         self
     }
 
@@ -583,6 +624,10 @@ pub(crate) fn event_body(
         incident["https_required"] = Value::from(e.https_required);
         incident["plaintext_scope"] = Value::from(e.plaintext_scope.code());
         incident["plaintext_family"] = Value::from(e.plaintext_family.code());
+        incident["plaintext_eligibility"] = Value::from(e.plaintext_eligibility().code());
+    }
+    if let Some(outcome) = ctx.plaintext_consent {
+        incident["plaintext_consent"] = Value::from(outcome.code());
     }
     if let Some(e) = ctx.no_servers {
         incident["resources"] = Value::from(e.resources.code());
@@ -1021,6 +1066,7 @@ mod tests {
                 https_required: false,
                 plaintext_scope: AddressScope::Private,
                 plaintext_family: AddressFamily::V4,
+                identity_verified: true,
             })
     }
 
@@ -1050,7 +1096,10 @@ mod tests {
             assert!(notice.contains(&format!("`{key}`")), "PRIVACY.md does not name `{key}`");
         }
         // The discovery evidence ships only on its two kinds; walk both.
-        for ctx in [insecure_context(), no_servers_context()] {
+        for ctx in [
+            insecure_context().with_plaintext_consent(Some(PlaintextConsentOutcome::Offered)),
+            no_servers_context(),
+        ] {
             let v = event_body("a", "", None, ctx, ConsentKind::OneOff);
             for key in keys(&v["contexts"]["incident"]) {
                 assert!(key == "type" || notice.contains(&format!("`{key}`")), "PRIVACY.md does not name `{key}`");
@@ -1120,10 +1169,18 @@ mod tests {
             keys(&v["contexts"]["incident"]),
             [
                 "consent", "failing_for", "https_custom", "https_lan", "https_public", "https_relay",
-                "https_required", "kind", "link", "owned", "plaintext_family", "plaintext_local",
-                "plaintext_scope", "public_address_matches", "type", "unanswered",
+                "https_required", "kind", "link", "owned", "plaintext_eligibility", "plaintext_family",
+                "plaintext_local", "plaintext_scope", "public_address_matches", "type", "unanswered",
             ]
         );
+        // …and an offered consent question adds exactly its closed outcome.
+        let offered = insecure_context().with_plaintext_consent(Some(PlaintextConsentOutcome::Declined));
+        let with_consent = event_body("a", "", None, offered, ConsentKind::OneOff);
+        let mut want = keys(&v["contexts"]["incident"]);
+        want.push("plaintext_consent");
+        want.sort_unstable();
+        assert_eq!(keys(&with_consent["contexts"]["incident"]), want);
+        assert_eq!(with_consent["contexts"]["incident"]["plaintext_consent"], "declined");
         let incident = &v["contexts"]["incident"];
         assert_eq!(
             [&incident["https_lan"], &incident["https_public"], &incident["https_custom"], &incident["https_relay"]],

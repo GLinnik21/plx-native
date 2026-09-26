@@ -100,12 +100,15 @@ impl Scheme {
 /// The port a PMS origin means when its URL names none. See the module doc: 32400, not 80/443.
 pub const DEFAULT_PORT: i32 = 32400;
 
-/// **The one authority for "may a credential ride this origin" — the single rule, wherever it is
-/// asked.** Every caller that used to carry its own `cfg!(feature = "devtriggers")` (the http
-/// guard, the curlio media twin, the probe activation gate) now asks THIS type instead, and
+/// **The build's half of "may a credential ride this origin".** The question itself has ONE
+/// answer, `super::grant::credential_allowed` (or `grant::allowed_under` in a pure function that
+/// receives this value): this policy, OR a live consented plaintext grant for that exact origin
+/// (PLX-NATIVE-10). Every caller that used to carry its own `cfg!(feature = "devtriggers")` (the
+/// http guard, the curlio media twin, the probe activation gate) now goes through it, and
 /// [`CredentialPolicy::build`] is the ONLY place the cfg still lives.
 ///
-/// A store build is [`CredentialPolicy::HttpsOnly`]: a token may only ride a TLS origin. A
+/// A store build is [`CredentialPolicy::HttpsOnly`]: by policy a token may only ride a TLS origin
+/// (a grant is the one exception, and it lives in `grant`, not here). A
 /// developer build (`devtriggers`) is [`CredentialPolicy::AllowPlaintext`]: the rule exists so a
 /// lane with no TLS server of its own can still exercise the credentialed path against a plain
 /// `dev::DevServer`. Nothing about WHICH origin is eligible ever depends on where the policy came

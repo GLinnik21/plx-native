@@ -15,6 +15,12 @@
 //! authority, and the PMS token must never reach a third party. A `Range` is not a credential and
 //! rides every hop. Log lines carry an origin and a query-less path, never a query.
 //!
+//! **Every plaintext hop that would carry a credential asks the credential authority first**
+//! (`crate::http::credential_transport_allowed`, i.e. `plex::grant`) — the first request, every
+//! followed hop, and every reopen a seek makes. A plaintext media stream opened under a consented
+//! grant therefore stops at its next request once that grant is revoked: [`FollowError::Refused`],
+//! with nothing dialled.
+//!
 //! A caller whose contract confines it to one origin — HLS, whose playlists may only name
 //! children on the PMS origin (`crate::hls`) — sets [`Request::same_origin_only`], and a hop
 //! elsewhere (a scheme change included) is refused before anything is dialled there.
@@ -77,6 +83,9 @@ pub(crate) enum FollowError {
     TooManyHops,
     /// A hop off the original origin, for a [`Request::same_origin_only`] request.
     LeftOrigin,
+    /// The hop would carry a credential to a plaintext origin the credential authority does not
+    /// admit (no consented grant, or one revoked since the stream opened). Nothing was dialled.
+    Refused,
     /// A redirect with no `Location`, or one this client cannot request (another scheme, a
     /// malformed authority, control bytes).
     BadLocation(c_int),
@@ -119,6 +128,14 @@ pub(crate) fn open_following(
             if let Some(c) = req.credentials {
                 extra.push_str(c);
             }
+        }
+        if !crate::http::credential_transport_allowed(&cur.origin, &cur.path, &header_lines(&extra)) {
+            crate::log(&format!(
+                "stream: {}{} REFUSED: a credential may not travel to this plaintext origin",
+                cur.origin.log_form(),
+                log_endpoint(&cur.path)
+            ));
+            return Err(FollowError::Refused);
         }
         if let Some(at) = req.range_from {
             extra.push_str(&format!("Range: bytes={at}-\r\n"));
@@ -194,6 +211,11 @@ pub(crate) fn open_following(
         ));
         cur = next;
     }
+}
+
+/// A `Name: value\r\n` header block as the lines the credential check reads.
+fn header_lines(block: &str) -> Vec<&str> {
+    block.split("\r\n").filter(|line| !line.is_empty()).collect()
 }
 
 /// Same scheme, host (ASCII case-insensitive) and port.

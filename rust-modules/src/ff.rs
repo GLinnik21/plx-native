@@ -3402,6 +3402,7 @@ fn hls_open_plain(
                 FollowError::TooManyHops
                 | FollowError::BadLocation(_)
                 | FollowError::LeftOrigin => HlsExit::Failed("HTTP redirect refused"),
+                FollowError::Refused => HlsExit::Failed("insecure credential transport refused"),
             });
         }
     };

@@ -217,6 +217,10 @@ pub(super) fn write_context(w: &mut Canon, c: &IncidentContext) {
     w.option(c.helper, |w, helper| { w.str(&serde_json::to_string(&helper).unwrap()); });
     for errno in c.candidate_errnos { w.option(errno, |w, n| { w.u32(n as u32); }); }
     w.u64(c.occurred_at_ms);
+    // Appended only when present, so every context without it keeps its recorded digest.
+    if let Some(outcome) = c.plaintext_consent {
+        w.str(outcome.code());
+    }
 }
 
 pub(super) fn write_offer(w: &mut Canon, offer: &IncidentOffer) {

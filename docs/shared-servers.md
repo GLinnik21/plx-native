@@ -155,7 +155,9 @@ wget -q -T 8 -O - http://<public-ip>:31234/identity
 
 That unauthenticated `/identity` response proves the endpoint is reachable. It does not prove the
 authenticated transport: stable browse and playback require an HTTPS origin, while token-bearing
-plaintext is available only in an explicit developer-trigger lab build.
+plaintext is available only in an explicit developer-trigger lab build — or, for a numeric private
+address on the television's own network, after the person consents (`plex::grant`). A public
+endpoint like this one is remote and is never eligible.
 
 Also measured, because they shape the playback story:
 
@@ -224,7 +226,8 @@ terms. The bundled FFmpeg cannot help — it is built `--disable-network`,
 
 **Offline (2026-09-05): the `plex.direct` name is dialled with no DNS at all.** A LAN whose uplink
 is down resolves no `plex.direct` name, and the plaintext twin cannot carry a token in a store
-build, so the household's own server used to be unreachable exactly when it was the only thing
+build (a consented plaintext grant needs a fresh plex.tv resource list, which an offline boot does
+not have), so the household's own server used to be unreachable exactly when it was the only thing
 left. `rust-modules/src/plex/origin.rs`'s `ResolvePin` keeps the https origin and hands libcurl the
 `address` plex.tv advertised beside it through `CURLOPT_RESOLVE`, on both the control and the media
 plane; the certificate is still validated against the name. `rust-modules/src/plex/CLAUDE.md` has
@@ -258,7 +261,9 @@ Two caveats that make TLS a real follow-up rather than a nicety:
 
 1. **Historical risk, now closed for stable builds:** plain HTTP over the WAN puts
    `X-Plex-Token` in the clear. The current transport boundary refuses every token-bearing HTTP
-   control or media URL unless the binary explicitly includes the developer-trigger feature.
+   control or media URL unless the binary explicitly includes the developer-trigger feature, or
+   the person consented to one verified numeric private origin on their own network
+   (`plex::grant`) — never a WAN address like this one.
 2. The plain-HTTP route is **the owner's setting, not ours**. If they flip *Require secure
    connections* to Required, or their port-forward stops exposing the plain port, it disappears and
    only the curl path reaches them. Same for any share that is relay-only.
@@ -652,7 +657,9 @@ Three consequences, all of which the code now states:
 **There is no add-a-server-by-address on the television, and there will not be.** The list is the
 plex.tv grant — the existing registry — and nothing else. This is a product decision, not a
 transport limitation: HTTPS control/media are supported in stable builds; plaintext
-hostname/IPv4/IPv6 origins remain available only in explicit developer-trigger lab builds.
+hostname/IPv4/IPv6 origins remain available only in explicit developer-trigger lab builds, apart
+from the consented home-network exception (`plex::grant`), which admits one verified numeric
+private origin per server and never a name.
 
 **The selection is keyed by PROFILE.** `Session::pinned: Vec<PinnedLib>` hung off the `Session`,
 which is one per install — so a household could hold exactly one opinion about a friend's films,

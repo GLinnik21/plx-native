@@ -949,6 +949,9 @@ enum Action {
     Legal,
     AutoSignIn,
     TrailerAutoplay,
+    /// A server's "connect without encryption" switch — the index into
+    /// [`RootPage::plaintext_rows`].
+    Plaintext(usize),
     About,
 }
 
@@ -962,23 +965,39 @@ pub(crate) struct RootPage {
     session_snapshot: std::sync::Arc<crate::plex::session::Session>,
     pending_auto: Option<(bool, crate::storage_worker::TypedTicket<bool>)>,
     pending_trailer: Option<(bool, crate::storage_worker::TypedTicket<bool>)>,
+    /// The servers the person has answered "Connect without encryption?" for, by row — the
+    /// `(machine_id, allowed)` each switch shows.
+    plaintext_rows: Vec<(String, bool)>,
+    pending_plaintext: Option<(String, bool, crate::storage_worker::TypedTicket<bool>)>,
 }
 
 struct RootState {
     sel: i32,
     auto_sign_in: bool,
     trailer_autoplay: bool,
+    /// Each unencrypted-connection switch, in row order. Written to the canon only when there is
+    /// one, so every other root's digest is unchanged.
+    plaintext: Vec<bool>,
 }
 
 impl LogicalState for RootState {
     fn write(&self, w: &mut Canon) {
         w.u32(self.sel as u32).bool(self.auto_sign_in).bool(self.trailer_autoplay);
+        if !self.plaintext.is_empty() {
+            w.u32(self.plaintext.len() as u32);
+            for &on in &self.plaintext {
+                w.bool(on);
+            }
+        }
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!(
             "root sel={} auto_sign_in={} trailer_autoplay={}",
             self.sel, self.auto_sign_in, self.trailer_autoplay
         ));
+        if !self.plaintext.is_empty() {
+            out.push_str(&format!(" plaintext={:?}", self.plaintext));
+        }
     }
 }
 
@@ -991,10 +1010,13 @@ impl RootPage {
             session_watch: Default::default(),
             session_snapshot: Default::default(),
             pending_auto: None, pending_trailer: None,
+            plaintext_rows: Vec::new(),
+            pending_plaintext: None,
             state: RootState {
                 sel: 0,
                 auto_sign_in: false,
                 trailer_autoplay: true,
+                plaintext: Vec::new(),
             },
         };
         s.rebuild(0, directory);
@@ -1031,6 +1053,9 @@ impl RootPage {
                 ),
             );
             actions.push(Action::Favourites);
+            if let Some(servers) = self.plaintext_section(&mut actions) {
+                sections.push(servers);
+            }
         }
         sections.push(
             Section::new("Privacy")
@@ -1078,6 +1103,50 @@ impl RootPage {
         self.table.list_focused = true;
     }
 
+    /// **Unencrypted connections**: one switch per server the person has answered "Connect without
+    /// encryption?" for (on the sign-in read-out), from the session file — so it is there to
+    /// turn off again. A server connected over plaintext right now says so, quietly, in its detail
+    /// line; `None` when nobody was ever asked.
+    fn plaintext_section(&mut self, actions: &mut Vec<Action>) -> Option<Section> {
+        use crate::plex::session::PlaintextChoice;
+        let sess = &self.session_snapshot;
+        let pending = self.pending_plaintext.as_ref().map(|(m, on, _)| (m.clone(), *on));
+        self.plaintext_rows = sess
+            .plaintext_consent
+            .iter()
+            .filter(|c| c.choice != PlaintextChoice::Undecided)
+            .map(|c| {
+                let on = match &pending {
+                    Some((m, on)) if *m == c.machine_id => *on,
+                    _ => c.choice.allows(),
+                };
+                (c.machine_id.clone(), on)
+            })
+            .collect();
+        self.state.plaintext = self.plaintext_rows.iter().map(|(_, on)| *on).collect();
+        if self.plaintext_rows.is_empty() {
+            return None;
+        }
+        let mut section = Section::new("Unencrypted connections");
+        for (i, (machine, on)) in self.plaintext_rows.iter().enumerate() {
+            let name = sess
+                .sources
+                .iter()
+                .find(|s| s.machine_id == *machine && !s.name.is_empty())
+                .map_or("Plex server", |s| s.name.as_str());
+            let detail = if !on {
+                "Only encrypted connections."
+            } else if crate::plex::grant::granted_origin(machine).is_some() {
+                "Not encrypted. Connected without encryption on this network."
+            } else {
+                "May connect without encryption on your home network."
+            };
+            section = section.row(Row::new(name).detail(detail).toggle(*on));
+            actions.push(Action::Plaintext(i));
+        }
+        Some(section)
+    }
+
     fn view(&self) -> TableScreen<'_> {
         TableScreen::new(
             Header::new(
@@ -1111,6 +1180,29 @@ impl RootPage {
                 if let Ok(ticket) = crate::plex::session::queue_update_ticket(move |current|
                     (current.trailer_autoplay() != on).then(|| current.with_trailer_autoplay(on))) {
                     self.pending_trailer = Some((on, ticket));
+                }
+                self.rebuild(self.table.sel, directory);
+            }
+            Action::Plaintext(i) => {
+                use crate::plex::session::PlaintextChoice;
+                let Some((machine, on)) = self.plaintext_rows.get(i).cloned() else { return };
+                let on = !on;
+                // Turning it off withdraws the grant NOW (`plex::grant::answer`), before the
+                // preferences write lands; turning it on asks the server's endpoint to be found
+                // again, which mints a fresh grant only if the network still proves eligible.
+                let choice = if on { PlaintextChoice::Allowed } else { PlaintextChoice::Revoked };
+                crate::log(if on {
+                    "settings: unencrypted connections allowed for one server"
+                } else {
+                    "settings: unencrypted connections turned off for one server"
+                });
+                if let Ok(ticket) = crate::plex::grant::record(&machine, choice) {
+                    self.pending_plaintext = Some((machine.clone(), on, ticket));
+                }
+                if on {
+                    if let Some(sid) = crate::plex::id_of_machine(&machine) {
+                        fx.push(Fx::App(super::registry::AppFx::Session(crate::auth::SessionCmd::RequestEndpoint { sid })));
+                    }
                 }
                 self.rebuild(self.table.sel, directory);
             }
@@ -1150,6 +1242,14 @@ impl Machine<InnerHost> for RootPage {
                             *pending = None;
                             landed = true;
                         }
+                    }
+                }
+                if self.pending_plaintext.as_ref().is_some_and(|(_, _, ticket)| !matches!(ticket.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Empty))) {
+                    if let Some(snapshot) = crate::plex::session::peek_settled() {
+                        self.session_snapshot = snapshot;
+                        self.pending_plaintext = None;
+                        landed = true;
                     }
                 }
                 if landed { self.rebuild(self.table.sel, cx.views); fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session)); }

@@ -213,7 +213,7 @@ fn relay_only_server_gets_a_fresh_probe_budget_after_direct_timeouts_and_is_admi
     };
     let mut admissions = 0;
     let resolved = resolve_roster_using_admission(
-        &[resource], &[], CredentialPolicy::HttpsOnly, &mut probe_one,
+        &[resource], &[], CredentialPolicy::HttpsOnly, &PlaintextAsk::undecided(), &mut probe_one,
         &mut |_| {
             admissions += 1;
             crate::plex::EndpointAdmission::Usable
@@ -284,7 +284,7 @@ fn discovery_retries_the_same_server_via_relay_after_direct_admission_times_out(
     let mut admissions = vec![crate::plex::EndpointAdmission::Timeout,
         crate::plex::EndpointAdmission::Usable].into_iter();
     let resolved = resolve_roster_using_admission(
-        &[resource], &[], CredentialPolicy::HttpsOnly, &mut probe_one,
+        &[resource], &[], CredentialPolicy::HttpsOnly, &PlaintextAsk::undecided(), &mut probe_one,
         &mut |_| admissions.next().unwrap(), &mut |_, _, _| {},
         &mut || {}, &mut |_, _, _, _| {},
     );
@@ -2020,7 +2020,7 @@ fn insecure_verdict(resource: Resource, dial: ProbeDial) -> Discovery {
 }
 
 fn insecure_evidence_of(d: &Discovery) -> probe::InsecureEvidence {
-    let Discovery::InsecureOnly(Some(evidence)) = d else {
+    let Discovery::InsecureOnly(Some((evidence, _))) = d else {
         panic!("expected an insecure-only verdict with probe evidence");
     };
     let (_, incident) = discovery_failure(d).expect("an insecure-only verdict is a failure");
@@ -2180,4 +2180,135 @@ fn no_servers_evidence_counts_the_players_and_names_the_trigger() {
         assert_eq!(incident.no_servers, Some(evidence));
         assert_eq!(incident.insecure, None);
     }
+}
+
+// ---- PLX-NATIVE-10: consent-gated plaintext on the home network ----
+
+/// What answers the no-relay reporter's topology when the plaintext candidate is named by any
+/// host (the hostname variant below re-addresses it): every plaintext candidate but the remote
+/// custom one answers `/identity` for the machine, every HTTPS route is dead. `relay` switches
+/// the relay back on and lets it verify.
+fn plx10_dial(origin: &Origin, _pin: Option<&crate::plex::ResolvePin>, _budget: Duration) -> (i32, Vec<u8>) {
+    match (origin.host(), origin.is_tls()) {
+        ("custom.example.net", false) => (400, Vec::new()),
+        ("relay.example.net", true) => (200, identity_json("issue95mid")),
+        (host, false) if !host.starts_with("172.") => (200, identity_json("issue95mid")),
+        _ => (0, Vec::new()),
+    }
+}
+
+/// One store-policy discovery of `resource` under `ask`, recording every authenticated admission
+/// as `(origin_url, token)` — the only step of discovery that puts a credential on a request (the
+/// identity race is tokenless by construction: `ProbeDial` is handed no token at all).
+fn plx10_discover(resource: Resource, ask: &PlaintextAsk) -> (Resolution, Vec<(String, String)>) {
+    let dial: ProbeDial = status_dial(plx10_dial);
+    let mut probe_one = |plan: &ProbePlan, _: &[String]| {
+        probe_server_racing(plan, Arc::clone(&dial), &threaded_spawn, test_policy(), &mut |_, _, _| {})
+    };
+    let mut admitted = Vec::new();
+    let resolved = resolve_roster_using_admission(
+        &[resource], &[], CredentialPolicy::HttpsOnly, ask, &mut probe_one,
+        &mut |source| {
+            admitted.push((source.origin_url.clone(), source.token.clone()));
+            crate::plex::EndpointAdmission::Usable
+        },
+        &mut |_, _, _| {}, &mut || {}, &mut |_, _, _, _| {},
+    );
+    (resolved, admitted)
+}
+
+fn plx10_offer(resolved: &Resolution) -> Option<&PlaintextVerdict> {
+    match &resolved.outcome {
+        Resolved::None { evidence: Some((_, verdict)), .. } => Some(verdict),
+        _ => None,
+    }
+}
+
+/// **Before consent, no credential travels over plaintext** — HTTPS fails everywhere and there is
+/// no relay; the server answers only at its LAN plaintext address. Discovery settles insecure-only
+/// with an eligible, undecided verdict (the question the sign-in read-out asks), no admission ever
+/// named an `http://` origin, and no grant exists.
+#[test]
+fn plx10_before_consent_an_eligible_lan_answer_is_offered_and_no_token_goes_over_plaintext() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    let (resolved, admitted) = plx10_discover(issue_95_account(false), &PlaintextAsk::undecided());
+    assert!(admitted.iter().all(|(url, _)| url.starts_with("https://")), "{admitted:?}");
+    let verdict = plx10_offer(&resolved).expect("an insecure-only verdict");
+    assert_eq!(verdict.eligibility, probe::PlaintextEligibility::Eligible);
+    assert_eq!(verdict.choice, PlaintextChoice::Undecided);
+    assert!(verdict.offers());
+    assert!(crate::plex::grant::granted_machines().is_empty());
+    assert!(!crate::plex::grant::allowed_under(
+        CredentialPolicy::HttpsOnly, &Origin::http("192.168.1.50", 32400)));
+
+    // Declined is recorded, never offered as a question again, and still mints nothing.
+    let declined = PlaintextAsk::undecided().with("issue95mid", PlaintextChoice::Declined);
+    let (resolved, admitted) = plx10_discover(issue_95_account(false), &declined);
+    assert!(admitted.is_empty(), "{admitted:?}");
+    let verdict = plx10_offer(&resolved).expect("an insecure-only verdict");
+    assert_eq!(verdict.choice, PlaintextChoice::Declined);
+    assert!(crate::plex::grant::granted_machines().is_empty());
+    crate::plex::reset_servers_for_test();
+}
+
+/// **After consent, the plaintext origin is activated and the token goes to it alone**: exactly one
+/// admission, at `http://192.168.1.50:32400`, and the authority admits that exact origin — not the
+/// same host on another port, not another host.
+#[test]
+fn plx10_after_consent_the_token_goes_only_to_the_exact_verified_origin() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    let allowed = PlaintextAsk::undecided().with("issue95mid", PlaintextChoice::Allowed);
+    let (resolved, admitted) = plx10_discover(issue_95_account(false), &allowed);
+    assert_eq!(admitted, vec![("http://192.168.1.50:32400".to_owned(), "tok-95".to_owned())]);
+    let Resolved::Reached(found) = resolved.outcome else { panic!("consent must reach the server") };
+    assert_eq!(found[0].origin_url, "http://192.168.1.50:32400");
+    let store = CredentialPolicy::HttpsOnly;
+    assert!(crate::plex::grant::allowed_under(store, &Origin::http("192.168.1.50", 32400)));
+    assert!(!crate::plex::grant::allowed_under(store, &Origin::http("192.168.1.50", 32401)));
+    assert!(!crate::plex::grant::allowed_under(store, &Origin::http("192.168.1.51", 32400)));
+    assert!(!crate::plex::grant::allowed_under(store, &Origin::http("custom.example.net", 443)));
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}
+
+/// **Never offered, never granted — even with consent recorded**: a relay that verifies, a server
+/// that requires secure connections, a network plex.tv does not call the server's, a plaintext
+/// address that is a name, and a server plex.tv calls remote. Each keeps today's refusal (or the
+/// relay), and no admission ever names an `http://` origin.
+#[test]
+fn plx10_consent_never_downgrades_an_ineligible_topology() {
+    let _g = crate::testlock::serial();
+    let allowed = PlaintextAsk::undecided().with("issue95mid", PlaintextChoice::Allowed);
+    let variants: Vec<(&str, Resource)> = vec![
+        ("relay verifies", issue_95_account(true)),
+        ("httpsRequired", {
+            let mut r = issue_95_account(false); r.https_required = true; r
+        }),
+        ("publicAddressMatches=false", {
+            let mut r = issue_95_account(false); r.public_address_matches = false; r
+        }),
+        ("hostname address", {
+            let mut r = issue_95_account(false);
+            r.connections[0].address = "nas.home.arpa".into();
+            r
+        }),
+        ("remote", {
+            let mut r = issue_95_account(false);
+            for c in &mut r.connections { c.local = false; }
+            r
+        }),
+    ];
+    for (label, resource) in variants {
+        crate::plex::reset_servers_for_test();
+        crate::plex::grant::reset_for_test();
+        let (resolved, admitted) = plx10_discover(resource, &allowed);
+        assert!(admitted.iter().all(|(url, _)| url.starts_with("https://")), "{label}: {admitted:?}");
+        assert!(crate::plex::grant::granted_machines().is_empty(), "{label}: a grant was minted");
+        assert!(plx10_offer(&resolved).is_none_or(|v| !v.offers()), "{label}: offered");
+    }
+    crate::plex::reset_servers_for_test();
 }

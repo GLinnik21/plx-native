@@ -59,6 +59,10 @@ pub(crate) mod origin;
 // 8-second timeout and a probe that answers as the wrong machine.
 pub(crate) mod probe;
 
+// **May a credential go to this origin** — the one authority every credential consumer asks, and
+// the consented, network- and identity-bound plaintext grants behind its answer (see its doc).
+pub(crate) mod grant;
+
 // Which libraries feed Home, PER PROFILE. Pure policy over the section table and one profile's
 // persisted answer — no store, no screen — so the household default, the recorded answer and the
 // never-empty floor are graded on the host rather than observed on a television.
@@ -100,7 +104,7 @@ pub use servers::{
 // to call and nothing else's — a caller that merely wants to stop using a server wants
 // `set_current`, and one that wants to forget a share wants plex.tv to stop granting it.
 #[allow(unused_imports)]
-pub(crate) use servers::{finish_profile_switch, revoke_all, revoke_for_profile_switch};
+pub(crate) use servers::{finish_profile_switch, id_of_machine, revoke_all, revoke_for_profile_switch};
 // The registry as a TEST FIXTURE, for suites outside this module (`route.rs` grades which server a
 // `/:/timeline` POST reaches). `register_for_test` skips the `session::load` the public `register`
 // does — that call mints and PERSISTS a device uuid, which a host test has no business writing —
@@ -157,7 +161,7 @@ pub(crate) fn endpoint_admission_from_reply(status: i32, body: &[u8]) -> Endpoin
 pub(crate) fn admit_source_until(source: &session::SourceRef, client_id: &str,
     overall_deadline: std::time::Instant) -> EndpointAdmission {
     let Some(origin) = source.origin() else { return EndpointAdmission::Transport };
-    if !CredentialPolicy::build().may_carry_credential(&origin) {
+    if !grant::credential_allowed(&origin) {
         return EndpointAdmission::InsecureOnly;
     }
     let client = Client::new(ServerId::UNSET, &source.machine_id, origin, &source.token, client_id)

@@ -42,9 +42,13 @@ impl Observation {
                         for byte in qr_png { w.u8(*byte); }
                     }
                     LoginProgress::Authorized { epoch, token } => { w.u8(2).u64(*epoch).str(token); }
-                    LoginProgress::Failed { epoch, message, incident } => {
+                    LoginProgress::Failed { epoch, message, incident, plaintext } => {
                         w.u8(3).u64(*epoch).str(message);
                         owner::write_incident_context(w, incident);
+                        // Appended only when present, so a failure without one keeps its digest.
+                        if let Some(verdict) = plaintext {
+                            owner::write_plaintext_verdict(w, verdict);
+                        }
                     }
                     LoginProgress::LinkTrouble { epoch, trouble } => {
                         w.u8(5).u64(*epoch);

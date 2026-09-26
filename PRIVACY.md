@@ -40,14 +40,17 @@ pictures are also cached as files so the profile picker still shows faces with n
 Home library choices, your recent searches, your playback quality preference, and local technical
 logs: a small rotating event log and a bounded storage status snapshot. It also stores your answers
 to the two optional-reporting questions, the random Crash report ID if you turned crash reports on,
-the random Analytics ID if you turned product analytics on, any report waiting to be sent, and a
-marker recording how much of the crash log has already been read.
+the random Analytics ID if you turned product analytics on, any report waiting to be sent, a
+marker recording how much of the crash log has already been read, and — for a server you were
+asked about — whether you allowed it to be reached without encryption on your home network (the
+answer only: the permission itself lasts one launch on one network and is never stored).
 It keeps no bookmark of its own for where you stopped watching: playback position is held by your
 Plex Media Server. The Settings screen can sign out and remove PlxNative data from this television.
 
 Those lifetimes differ. Signing out removes the sign-in, the servers registered with it and their
 tokens, every profile's own cached server access token(s) and PIN check, the cached profile
-pictures — and with them your optional-reporting answers, both identifiers and any queued report,
+pictures, your answers about unencrypted connections — and with them your optional-reporting
+answers, both identifiers and any queued report,
 because those choices were made by the person who signed in and say nothing about whoever signs
 in next: the next sign-in is asked afresh. Switching between the profiles of one Plex account is
 not a sign-out and keeps all of it, including the server access token(s) and PIN check cached for
@@ -114,7 +117,12 @@ unencrypted answer, only fixed facts: whether plex.tv marked that connection loc
 (`public_address_matches`), whether the server is `owned` by the signed-in account, whether it
 requires secure connections (`https_required`), the kind of address it was (`plaintext_scope`:
 private, link-local, unique-local, loopback, public or a name) and its family
-(`plaintext_family`: v4, v6 or unknown) — never the address itself. When the account has no
+(`plaintext_family`: v4, v6 or unknown), whether the app could offer to connect without encryption
+on your home network or the fixed reason it could not (`plaintext_eligibility`: eligible,
+https_required, not_local, not_same_network, not_private_address, identity_unverified,
+https_unsettled or https_refused) and, when it asked, what became of the question
+(`plaintext_consent`: offered, accepted, declined or revoked) — never the address itself, the
+server or whose it is. When the account has no
 server, it carries how many other devices plex.tv listed (`resources`, bucketed) and whether that
 happened right after signing in or on a retry (`discovery_trigger`).
 It also carries whether the report was `consent`ed to as a standing choice or as a one-off, the app version and when it

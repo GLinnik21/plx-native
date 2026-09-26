@@ -794,6 +794,10 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
         // `Navigation::resume` is idempotent, so the pair is safe and a lost one is not.
         super::bridge::foreground(&mut app.pages);
         if et == 0x106 {
+            // Nothing proves the television is still on the network the person allowed
+            // unencrypted connections on: every plaintext grant ends here, and the next
+            // discovery re-proves eligibility before minting one (`plex::grant`).
+            crate::plex::grant::network_changed();
             // Reacquire only on DID foreground, before playback restoration and rendering.
             crate::system::sys_grab_wayland(app.win);
             crate::ui::idle::invalidate();
@@ -2148,6 +2152,11 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // is owed either way. Invalidates from inside, per landing.
         let endpoints = app.bridge.viewstate_pump();
         super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
+        // A server on a plaintext grant keeps trying HTTPS (`plex::grant::UpgradeRetry`): its
+        // endpoint re-discovery races every HTTPS route first and retires the grant when one
+        // verifies. Route-unconditional — the upgrade is owed whatever is on screen.
+        let upgrades = app.plaintext_upgrade.due(fr.now);
+        super::bridge::execute_endpoint_outcomes(&mut app.pages, upgrades);
         app.bridge.person_pump();
         if let Some(target) = app.bridge.take_detail_refresh() {
             refresh_content(&mut app.pages, &mut app.bridge, target);
@@ -2869,6 +2878,7 @@ mod lifecycle_regression_tests {
             menu_play_await: Default::default(),
             prev: Default::default(),
             refresh_hubs_at: Default::default(),
+            plaintext_upgrade: Default::default(),
             ev: [0; 128],
             remote: Default::default(),
             win: Default::default(),
