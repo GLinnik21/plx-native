@@ -7,6 +7,66 @@ use super::test_support::*;
 use super::test_support::{frame, frame_with_tap, frame_with_results};
 
 #[test]
+fn pending_home_grid_focus_wins_when_the_first_catalog_arrives() {
+    let _guard = crate::testlock::serial();
+    for on_strip in [false, true] {
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        rig.stores.hubs.seed_for_test(0, crate::pms::HubState::Loading);
+        frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
+        frame(&mut d, &mut rig, AppArg::Home, tick(1), vec![]);
+        let entry = d.nav.top_page().unwrap().id;
+        d.set_focus_in(
+            on_strip.then_some(FocusKey { entry, elem: crate::screens::home::STRIP_HOME_ELEM }),
+            on_strip.then_some(crate::ui::containers::tabs::STRIP),
+        );
+        assert!(rig.home_command(HomeCmd::FocusGrid { row: 0, col: 2 }));
+        frame(&mut d, &mut rig, AppArg::Home, tick(2), vec![]);
+        assert_eq!(rig.with_home(&d, |home, cx, _| home.hero_item::<AppHost>(cx).is_none()), Some(true));
+
+        // The real bridge releases the retained command before this frame's Tick. Its nested
+        // Enter has not reached the focus engine when Tick observes the first available CTA.
+        rig.stores.hubs.seed_grid_for_test(3, 4);
+        frame(&mut d, &mut rig, AppArg::Home, tick(3), vec![]);
+        assert_eq!(rig.with_home(&d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx)),
+            Some(Some((0, 2))), "the first CTA must not override explicit grid intent; on_strip={on_strip}");
+        assert_eq!(rig.with_home(&d, |home, _, _| home.snap_target()), Some(1.0));
+        let hero = rig.with_home(&d, |home, cx, _| home.hero_item::<AppHost>(cx).unwrap().rk.clone());
+
+        // Ten seconds exceeds the hero's eight-second carousel period. Remaining in the grid
+        // must not silently restore Hero or start its periodic slideshow.
+        for i in 4..629 { frame(&mut d, &mut rig, AppArg::Home, tick(i), vec![]); }
+        assert_eq!(rig.with_home(&d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx)), Some(Some((0, 2))));
+        assert_eq!(rig.with_home(&d, |home, _, _| home.snap_target()), Some(1.0));
+        assert_eq!(rig.with_home(&d, |home, cx, _| home.hero_item::<AppHost>(cx).unwrap().rk.clone()), hero);
+    }
+}
+
+#[test]
+fn first_home_catalog_preserves_default_and_explicit_hero_seating() {
+    let _guard = crate::testlock::serial();
+    for commands in [
+        vec![],
+        vec![HomeCmd::FocusGrid { row: usize::MAX, col: 0 }],
+        vec![HomeCmd::Hero],
+        vec![HomeCmd::FocusGrid { row: 0, col: 2 }, HomeCmd::Hero],
+    ] {
+        let mut d = Dispatcher::<AppHost>::new();
+        let mut rig = Bridge::for_test(|| 0);
+        rig.stores.hubs.seed_for_test(0, crate::pms::HubState::Loading);
+        frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
+        frame(&mut d, &mut rig, AppArg::Home, tick(1), vec![]);
+        let entry = d.nav.top_page().unwrap().id;
+        d.set_focus_in(None, None);
+        for command in &commands { assert!(rig.home_command(*command)); }
+        rig.stores.hubs.seed_grid_for_test(3, 4);
+        frame(&mut d, &mut rig, AppArg::Home, tick(2), vec![]);
+        assert_eq!(d.focus(), Some(FocusKey { entry, elem: 0 }), "commands={commands:?}");
+        assert_eq!(rig.with_home(&d, |home, _, _| home.snap_target()), Some(0.0));
+    }
+}
+
+#[test]
 fn home_requests_keep_the_emitting_instance_and_captured_return_memory() {
     use crate::screens::registry::{HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeMemory, HomeTab};
     let _guard = crate::testlock::serial();
