@@ -439,6 +439,8 @@ jobs:
           echo "| LGPL corresponding source attached ($(basename "$tarball") + build-ffmpeg.sh) | pass |" >> pkg/gates.md
 
       - name: Versioned source asset and isolated reconstruction
+        # collect-source-inputs includes all four checksum-pinned ASS/font-stack
+        # archives; reconstruction restores them before the offline build.
         if: inputs.source-asset
         env:
           # Both telemetry pairs, whichever one `inputs.telemetry` compiled in: the scan proves the

@@ -25,6 +25,7 @@ pub mod card_row;
 pub(crate) mod value_chip; // shared label/value/owner capsule used by menu-opening controls
 pub mod chapters_panel;
 pub(crate) mod containers; // RESTRUCTURE (spec §6.2): Navigation = TabContainer → NavStack → ModalStack, the transitions, the host fold
+pub(crate) mod ass_subtitles; // cached native ASS output, owned by the player screen
 pub mod consts;
 pub(crate) mod decision_alert;
 pub(crate) mod detail_layout;

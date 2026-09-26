@@ -76,6 +76,11 @@ pub(crate) fn draw_subtitles(hud_up: bool, transcoding: bool) {
         Some(t) if !t.trim().is_empty() => t,
         _ => return,
     };
+    draw_subtitle_message(&text, hud_up);
+}
+
+/// Shared caption placement for plain text and a styled-renderer failure message.
+pub(crate) fn draw_subtitle_message(text: &str, hud_up: bool) {
     let mut lines: Vec<String> = Vec::new();
     for seg in text.split('\n') {
         let seg = seg.trim();
@@ -116,7 +121,7 @@ pub(crate) fn draw_subtitles(hud_up: bool, transcoding: bool) {
 /// The ink both subtitle draws use this frame: the viewer's tone ([`crate::player::subtitle_tone`])
 /// resolved on [`theme::SUBTITLE_INKS`]. A rung the table does not have is white, never a
 /// neighbour.
-fn subtitle_ink() -> [f32; 4] {
+pub(crate) fn subtitle_ink() -> [f32; 4] {
     subtitle_ink_for(crate::player::subtitle_tone())
 }
 

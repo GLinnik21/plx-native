@@ -462,7 +462,7 @@ pub(crate) fn commit_track(
     match commit {
         TrackCommit::Audio { ordinal, codec, stream_id } =>
             crate::route::commit_audio_selection(ps, ordinal, &codec, stream_id),
-        TrackCommit::Subtitle { render_ordinal, stream_id, sidecar_key } => {
+        TrackCommit::Subtitle { render_ordinal, stream_id, sidecar_key, sidecar_codec } => {
             crate::route::commit_subtitle_selection(ps, render_ordinal, stream_id);
             // An EXTERNAL pick has no demuxer ordinal (`render_ordinal` is -1, so the embedded
             // renderer is off) — on direct play `player::sidecar` fetches and draws it instead.
@@ -470,7 +470,7 @@ pub(crate) fn commit_track(
             // is silenced for as long as that is true, so selecting here is harmless and means
             // the line survives the playback going BACK to direct play.
             match sidecar_key {
-                Some(key) => crate::player::sidecar::select(crate::route::cur_sid(ps), stream_id, key),
+                Some(key) => crate::player::sidecar::select(crate::route::cur_sid(ps), stream_id, key, sidecar_codec),
                 None => crate::player::sidecar::deselect(),
             }
         }

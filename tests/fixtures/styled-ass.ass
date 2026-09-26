@@ -1,0 +1,25 @@
+[Script Info]
+Title: Native ASS regression fixture
+ScriptType: v4.00+
+PlayResX: 1920
+PlayResY: 1080
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Inter,48,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,2,1,2,40,40,60,1
+Style: Sign,Inter,64,&H0000FF00,&H000000FF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,2,0,7,40,40,40,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 1,0:00:00.00,0:02:00.00,Sign,,0,0,0,,{\pos(120,100)}GREEN TOP LEFT
+Dialogue: 0,0:00:00.00,0:02:00.00,Default,,0,0,0,,Bottom dialogue remains visible with the sign.
+Dialogue: 2,0:00:00.00,0:02:00.00,Default,,0,0,0,,{\an7\pos(1450,120)\1c&HFF0000&\p1}m 0 0 l 160 0 160 120 0 120{\p0}
+Dialogue: 3,0:00:00.00,0:00:12.00,Default,,0,0,0,,{\an5\move(300,450,1500,450)\1c&H00FFFF&}MOVING YELLOW
+Dialogue: 3,0:00:12.00,0:00:24.00,Default,,0,0,0,,{\an5\move(1500,450,300,450)\1c&H00FFFF&}MOVING YELLOW
+Dialogue: 3,0:00:24.00,0:00:36.00,Default,,0,0,0,,{\an5\move(300,450,1500,450)\1c&H00FFFF&}MOVING YELLOW
+Dialogue: 4,0:00:00.00,0:00:12.00,Default,,0,0,0,,{\an5\pos(960,650)}{\kf300}KARAOKE {\kf300}COLOUR {\kf300}SWEEP
+Dialogue: 4,0:00:12.00,0:00:24.00,Default,,0,0,0,,{\an5\pos(960,650)}{\kf300}KARAOKE {\kf300}COLOUR {\kf300}SWEEP
+Dialogue: 4,0:00:24.00,0:00:36.00,Default,,0,0,0,,{\an5\pos(960,650)}{\kf300}KARAOKE {\kf300}COLOUR {\kf300}SWEEP
+Dialogue: 3,0:01:00.00,0:01:12.00,Default,,0,0,0,,{\an5\move(300,450,1500,450)\1c&H00FFFF&}AFTER SEEK

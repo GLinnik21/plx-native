@@ -471,6 +471,20 @@ class Library:
             rk = EXTRA_MEDIA_RK_BASE + n
             part_id = EXTRA_MEDIA_PART_ID_BASE + n
             media, duration = self._verified_media(path, rk, part_id)
+            # Native subtitle verification can exercise the same script as an embedded stream
+            # and as a sidecar. Only explicit sibling files of --extra-media are exposed.
+            streams = media["Part"][0]["Stream"]
+            for extension in ("ass", "ssa", "srt", "vtt"):
+                sidecar = path.with_suffix("." + extension)
+                if not sidecar.is_file():
+                    continue
+                sid = part_id * 100 + len(streams) + 1
+                streams.append({"id": sid, "streamType": 3, "codec": extension,
+                                "index": len(streams), "external": True, "selected": False,
+                                "language": "eng", "languageCode": "eng",
+                                "key": f"/library/streams/{sid}",
+                                "displayTitle": f"eng (external {extension.upper()})"})
+                self.sidecars[sid] = sidecar
             rng = random.Random(rk)
             movie = self._base(rng, rk, "movie", self.sections[0])
             movie.update(duration=duration, contentRating="NR", studio=sname(rng),

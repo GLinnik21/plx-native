@@ -16,6 +16,8 @@
 //! `threads::load_thread` calls `sf_load` off-main by design (see `ffi`).
 #![allow(non_upper_case_globals)]
 pub(crate) mod adapter;
+pub(crate) mod ass; // pinned libass worker and immutable rendered frames
+pub(crate) mod ass_source; // bounded embedded scripts and subtitle presentation clock
 pub(crate) mod engine;
 pub(crate) mod machine;
 pub(crate) mod preview;
@@ -419,6 +421,12 @@ pub(crate) fn observe_video_plane(
 pub(crate) fn is_started() -> bool {
     TX.started.load(Relaxed)
 }
+/// Coded video raster, atomically published by the demuxer. Subtitle renderers need this
+/// independently of the output canvas for anamorphic glyph/blur scaling.
+pub(crate) fn video_raster() -> (i32, i32) {
+    SHARED.video_raster()
+}
+
 pub(crate) fn playpos_ns() -> i64 {
     SHARED.playpos_ns.load(Relaxed)
 }
@@ -1545,15 +1553,14 @@ pub(crate) fn push_subtitle_text(track: i32, start_ns: i64, end_ns: i64, text: S
     });
 }
 /// demux (D-thread) pushes a subtitle cue (content-time ns) for track `track`. Called for
-/// EVERY text track so a mid-play switch is instant; only the selected track's cues are logged.
+/// EVERY plain-text track so a mid-play switch is instant; only the selected track's cues are logged.
 pub(crate) fn push_subtitle_cue(
     track: i32,
     start_ns: i64,
     end_ns: i64,
     payload: &[u8],
-    is_ass: bool,
 ) {
-    let text = sub_text(payload, is_ass);
+    let text = sub_text(payload);
     if text.is_empty() {
         return;
     }
@@ -1731,15 +1738,10 @@ pub(crate) fn bitmap_by_key(key: i64) -> Option<(i32, i32, Vec<SubRect>)> {
         .find(|c| c.track == sel && c.start_ns == key)
         .map(|c| (c.cw, c.ch, c.rects.clone()))
 }
-/// extract displayable text from a subtitle block (SRT = raw UTF-8; ASS = the field
-/// after the 8th comma), stripping tags/override codes and normalizing line breaks.
-fn sub_text(payload: &[u8], is_ass: bool) -> String {
-    let raw = String::from_utf8_lossy(payload);
-    let s = if is_ass {
-        raw.splitn(9, ',').nth(8).unwrap_or("").to_string()
-    } else {
-        raw.into_owned()
-    };
+/// Extract plain caption text, stripping markup and normalizing line breaks.
+/// ASS/SSA never enters this path: the native renderer receives its complete script/events.
+fn sub_text(payload: &[u8]) -> String {
+    let s = String::from_utf8_lossy(payload);
     let mut out = String::with_capacity(s.len());
     let mut ch = s.chars().peekable();
     while let Some(c) = ch.next() {

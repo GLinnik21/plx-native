@@ -1,0 +1,61 @@
+# Native ASS and SSA subtitles
+
+Direct playback preserves the authored script: styles, positioned signs, overlapping dialogue,
+drawings, font attachments, movement and karaoke. Transcoded playback continues to burn the
+selected subtitle on the server. The simple caption size/wrapping rules apply to plain text;
+ASS/SSA retains its authored layout. The viewer's existing tone and timing controls still apply.
+
+`ci/build-libass.py` builds a pinned libass with private FreeType, FriBidi and HarfBuzz. The
+application loads its own `libass-plx` by absolute path. Only the versioned `plx_ass_*` facade is
+exported; dependency symbols cannot collide with the firmware's font stack. `src/ass.c` reads
+libass structures through the same headers used to compile that library. No firmware libass or
+new Starfish API is required. Pins, checksums, license notices and corresponding source archives
+are part of the normal package/source-bundle workflow.
+
+The demuxer copies ASS headers, complete timed packets and font attachments out of FFmpeg.
+`Shared` owns the ASS source store and renderer mailbox alongside the other playback transport
+state. `player::ass_source` retains immutable snapshots and a bounded event window, including the
+history needed for subtitle delay. It keeps all embedded ASS tracks so selecting another language
+can use the already-read portion of the file. A seek changes source identities and discards old
+events while retaining headers and fonts; a new session discards the previous media's sources.
+Reaching demux EOF does not discard subtitles while queued video still plays.
+
+For an external ASS/SSA track, `player::sidecar` requests UTF-8 without converting to SubRip and
+retains the entire script. It also incorporates the video's font attachments, including when
+those arrive after the external file. Source reuse includes server identity, stream identity,
+delivery key and codec. Backward seeks and Off→On do not re-download a loaded script.
+
+`player::ass` owns the native objects on one worker. A single latest-request slot coalesces clock
+updates; a completed frame is accepted only for the current source/selection epoch. The UI never
+waits for font parsing or rasterization. Native change detection avoids copying and uploading an
+unchanged image. `ui::ass_subtitles` owns the resulting texture through the player screen's render
+lifetime and reports its memory to the shared render accounting.
+
+The subtitle clock interpolates between the pipeline's sparse position callbacks, with at most
+250 ms of extrapolation. Pause, seek and discontinuities re-anchor it. Output dimensions and the
+original coded video dimensions are passed separately to libass. The output uses the player's
+video-plane destination canvas; authored subtitles are not moved when the transport HUD appears.
+
+Verification commands (set `MOCK_PMS_PORT` to an unused local port and configure the developer
+build to reach that mock server):
+
+```sh
+make check
+make libass-host
+PLXNATIVE_APP_DIR="$PWD/pkg" CARGO_INCREMENTAL=0 cargo +nightly test \
+  --manifest-path rust-modules/Cargo.toml --lib player::ass::tests -- --include-ignored
+CARGO_INCREMENTAL=0 cargo +nightly check --manifest-path rust-modules/Cargo.toml \
+  --lib --no-default-features
+make
+python3 tests/fixtures/make_ass_fixture.py /tmp/ass-render-test
+python3 tests/mock_pms.py --host 0.0.0.0 --port "$MOCK_PMS_PORT" \
+  --extra-media /tmp/ass-render-test/styled-ass.mkv
+```
+
+The native host test checks actual libass pixels; ordinary host tests check source preservation,
+selection/seek fencing, overlap, bounds and download policy. Neither proves TV performance.
+Device checks must hold the TV lease and keep both the panel and sound off. Compare the unchanged
+build and the candidate on the same media: styles and overlap, moving/karaoke cues, track changes,
+Off, pause, backward/forward seek, external ASS and plain subtitles. Capture and inspect the
+output, and compare the UI heartbeat and hardware displayed-frame counters with capture disabled
+during performance measurement.

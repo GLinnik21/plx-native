@@ -43,7 +43,7 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   (default `~/webos-ndk/…`). One-time; re-run `relocate-sdk.sh` if you move the SDK.
 - `tools/sim.ps1 setup|build|run|shot|send` — Windows 11 UI/Plex simulator through the existing
   Ubuntu 22.04 WSLg runtime. It uses GPU-accelerated desktop OpenGL, keeps build/runtime state on
-  WSL's Linux filesystem, and stages only fonts into an isolated app directory. Its `make sim-wsl`
+  WSL's Linux filesystem, and stages fonts, their notice and the bundled ASS renderer into an isolated app directory. Its `make sim-wsl`
   build is optimized and deliberately skips host FFmpeg, so it covers UI, sign-in, Plex browsing,
   screenshots and remote commands but not demux/clock-sink playback. WSLg's non-blocking GLX swap
   is capped at 60 Hz in the Linux host build. The launcher also refuses WSLg's `use_gfxredir=0`

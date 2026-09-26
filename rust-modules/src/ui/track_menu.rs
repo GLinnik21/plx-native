@@ -72,8 +72,9 @@ pub(crate) enum TrackCommit {
     /// `sidecar_key` is `Some` when the pick is an EXTERNAL text subtitle the client can draw
     /// on direct play (`metadata::Stream::sidecar_renderable`): it has no demuxer ordinal
     /// (`render_ordinal` is -1), so the loop hands it to `player::sidecar` beside the unchanged
-    /// route commit. `None` — Off, or an embedded track — deselects any sidecar.
-    Subtitle { render_ordinal: c_int, stream_id: i64, sidecar_key: Option<String> },
+    /// route commit. `sidecar_codec` preserves ASS/SSA on download; a key need not have an
+    /// extension. `None` — Off, or an embedded track — deselects any sidecar.
+    Subtitle { render_ordinal: c_int, stream_id: i64, sidecar_key: Option<String>, sidecar_codec: String },
     /// The caption's tone. Not a track at all, but it is picked in this panel and it is the
     /// loop that performs it (`player::set_subtitle_tone` writes the session), like the two above.
     SubtitleTone(crate::plex::session::SubtitleTone),
@@ -296,15 +297,15 @@ impl TrackMenuState {
                     feature: crate::diag::schema::Feature::SubtitleTrack,
                 });
             }
-            let sidecar_key = tracks(meta)
+            let sidecar = tracks(meta)
                 .filter(|_| new_sub >= 0)
                 .and_then(|t| t.subs.get(new_sub as usize))
-                .filter(|s| s.sidecar_renderable())
-                .map(|s| s.key.clone());
+                .filter(|s| s.sidecar_renderable());
             Some(TrackCommit::Subtitle {
                 render_ordinal: ridx,
                 stream_id: self.sub_stream_id(meta),
-                sidecar_key,
+                sidecar_key: sidecar.map(|s| s.key.clone()),
+                sidecar_codec: sidecar.map(|s| s.codec.clone()).unwrap_or_default(),
             })
         }
     }
@@ -942,6 +943,7 @@ mod tests {
                 render_ordinal: -1,
                 stream_id: 42,
                 sidecar_key: Some("/library/streams/42.srt".into()),
+                sidecar_codec: "srt".into(),
             })
         );
 

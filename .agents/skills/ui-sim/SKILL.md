@@ -135,7 +135,7 @@ when credentials should be copied from `src/config.local.h`.
 
 Three things, and notably no webOS NDK and no nightly:
 
-1. `brew install sdl2_ttf` — pulls `sdl2-compat`. These are the ONLY non-system dynamic
+1. `brew install sdl2_ttf cmake pkg-config` — SDL pulls `sdl2-compat`; CMake and pkg-config build the bundled ASS/font stack. These are the ONLY non-system dynamic
    dependencies (`otool -L` shows just those two plus OpenGL/iconv/libSystem), and they are linked
    by absolute Homebrew path, so a copied binary will not run on a machine without them. Build on
    the machine rather than copying: `build.rs` asks `brew --prefix`, so it is also correct on an

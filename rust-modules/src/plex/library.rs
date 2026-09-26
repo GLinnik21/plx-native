@@ -255,24 +255,24 @@ impl Client {
     }
 
     /// Fetch a SIDECAR subtitle (`Stream.key`, i.e. `/library/streams/{id}`) for the client
-    /// renderer. The endpoint takes `encoding` and `format` (docs/plex-openapi.json), so the first
-    /// ask is for UTF-8 SubRip whatever the file on disk is — that is what turns a Windows-1250
-    /// `.srt` or an `.ass` into something one parser reads. The two fallbacks exist because the
-    /// conversion is the server's and has been seen refusing a FORMAT before (`.vtt` → 501):
+    /// renderer. The endpoint takes `encoding` and `format` (docs/plex-openapi.json). ASS/SSA
+    /// requests only UTF-8 re-encoding, preserving styles, drawings and overlapping events.
+    /// Other text formats request UTF-8 SubRip so formats such as SAMI keep their conversion
+    /// path. Conversion is the server's and has been seen refusing a FORMAT before (`.vtt` → 501):
     /// without `format` PMS re-encodes only, and the bare key is the file as it lies on disk.
-    /// `player::sidecar::parse` reads whichever of the three comes back.
-    pub fn sidecar_subtitle(&self, key: &str) -> Option<Vec<u8>> {
+    /// `player::sidecar` retains styled scripts and parses plain captions from the response.
+    pub fn sidecar_subtitle(&self, key: &str, codec: &str) -> Option<Vec<u8>> {
         if !sidecar_key_allowed(key) {
             return None; // a key is server data: only ever the path this method is for
         }
         let sep = if key.contains('?') { '&' } else { '?' };
-        [
-            format!("{key}{sep}encoding=utf-8&format=srt"),
-            format!("{key}{sep}encoding=utf-8"),
-            key.to_string(),
-        ]
-        .iter()
-        .find_map(|path| self.get_sidecar_bytes(path).filter(|b| !b.is_empty()))
+        let mut paths = Vec::with_capacity(3);
+        if !codec.eq_ignore_ascii_case("ass") && !codec.eq_ignore_ascii_case("ssa") {
+            paths.push(format!("{key}{sep}encoding=utf-8&format=srt"));
+        }
+        paths.push(format!("{key}{sep}encoding=utf-8"));
+        paths.push(key.to_string());
+        paths.iter().find_map(|path| self.get_sidecar_bytes(path).filter(|b| !b.is_empty()))
     }
 
     /// PUT /library/parts/{id} — select the part's audio/subtitle streams SERVER-side (the
@@ -325,6 +325,60 @@ fn guid_type(guid: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn sidecar_download_preserves_ass_and_keeps_other_format_conversion() {
+        use std::io::{Read, Write};
+        use std::time::{Duration, Instant};
+        let script = b"[Script Info]\nScriptType: v4.00+\n[Events]\n\
+            Dialogue: 0,0:00:01.00,0:00:03.00,Default,,0,0,0,,{\\pos(300,100)}SIGN\n";
+        let converted = b"1\n00:00:01,000 --> 00:00:03,000\nSIGN\n";
+        // SSA also exercises a PMS that refuses re-encoding: the original file is the fallback,
+        // never a style-destroying SubRip request. SAMI still needs its existing conversion.
+        for (codec, failed_requests, styled) in [("ass", 0, true), ("SSA", 1, true), ("sami", 0, false)] {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            listener.set_nonblocking(true).unwrap();
+            let server = std::thread::spawn(move || {
+                let mut requests = Vec::new();
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while requests.len() <= failed_requests && Instant::now() < deadline {
+                    let Ok((mut socket, _)) = crate::testnet::accept(&listener) else {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    };
+                    socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                    let mut request = [0; 8192];
+                    let n = socket.read(&mut request).unwrap();
+                    let request = String::from_utf8_lossy(&request[..n]).into_owned();
+                    let body: &[u8] = if request.contains("format=srt") { converted } else { script };
+                    let status = if requests.len() < failed_requests { "501 Not Implemented" } else { "200 OK" };
+                    write!(socket, "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                    socket.write_all(body).unwrap();
+                    requests.push(request);
+                }
+                requests
+            });
+            let client = Client::new(
+                crate::plex::ServerId::UNSET, "fixture",
+                crate::plex::Origin::http("127.0.0.1", port as i32), "", "cid",
+            );
+            // The source has no extension: metadata's codec must determine download policy.
+            let body = client.sidecar_subtitle("/library/streams/42", codec);
+            let requests = server.join().unwrap();
+            let expected: &[u8] = if styled { script } else { converted };
+            assert_eq!(body.as_deref(), Some(expected), "{codec}: {requests:?}");
+            assert_eq!(requests.len(), failed_requests + 1);
+            assert!(requests[0].contains("encoding=utf-8"));
+            if styled {
+                assert!(requests.iter().all(|request| !request.contains("format=srt")));
+            }
+            if failed_requests > 0 {
+                assert!(!requests.last().unwrap().contains("encoding="), "retry the original file");
+            }
+        }
+    }
 
     #[test]
     fn show_preferences_do_not_retry_a_transport_failure() {

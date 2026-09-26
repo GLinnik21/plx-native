@@ -495,6 +495,8 @@ crate::dynlib! {
 pub const AVMEDIA_TYPE_VIDEO: c_int = 0;
 pub const AVMEDIA_TYPE_AUDIO: c_int = 1;
 pub const AVMEDIA_TYPE_SUBTITLE: c_int = 3;
+// Proven against the bundled headers by ci/ffabi-assert.c.
+const AVMEDIA_TYPE_ATTACHMENT: c_int = 4;
 // The only codec id the app compares against. The others (H264, AC3, E-AC3) and AV_PKT_FLAG_KEY
 // were declared and never read; their values shift between FFmpeg majors, so each one was a
 // constant to re-derive and assert in order to prove nothing.
@@ -1167,6 +1169,60 @@ unsafe fn sub_kind(codec_id: c_int) -> SubKind {
         | "sami" | "realtext" | "subviewer" | "subviewer1" | "stl" | "mpl2" => SubKind::Plain,
         _ => SubKind::Bitmap,
     }
+}
+
+/// Copy the embedded ASS sources before FFmpeg can release them. The codec parameter and
+/// dictionary layouts are already compile-asserted against our bundled FFmpeg headers; the
+/// attachment media-type constant is asserted beside them. No firmware layout is inferred.
+unsafe fn begin_ass_sources(
+    fmt: *mut AVFormatContext,
+    streams: *mut *mut AVStream,
+    subs: &[(c_int, SubKind, *mut AVCodecContext)],
+) -> u64 {
+    use crate::player::{ass::Font, ass_source};
+    let mut headers = Vec::new();
+    let mut header_bytes = 0;
+    for (track, (si, kind, _)) in subs.iter().enumerate() {
+        if *kind != SubKind::Ass { continue; }
+        let cp = stream_codecpar(*streams.add(*si as usize));
+        let len = (*cp).extradata_size.max(0) as usize;
+        if len > 0 && len <= ass_source::MAX_HEADER_BYTES
+            && headers.len() < ass_source::MAX_TRACKS
+            && header_bytes + len <= ass_source::MAX_HEADERS_BYTES
+            && !(*cp).extradata.is_null() {
+            header_bytes += len;
+            headers.push((track as i32, std::slice::from_raw_parts((*cp).extradata, len).to_vec()));
+        }
+    }
+    let mut fonts = Vec::new();
+    let mut font_bytes = 0;
+    {
+        // External ASS may refer to these attachments even when the container carries no
+        // embedded ASS stream. Keep the per-media fonts independently of subtitle selection.
+        for i in 0..(*fmt).nb_streams {
+            let st = *streams.add(i as usize);
+            let cp = stream_codecpar(st);
+            let len = (*cp).extradata_size.max(0) as usize;
+            if fonts.len() >= ass_source::MAX_FONTS { break; }
+            if (*cp).codec_type != AVMEDIA_TYPE_ATTACHMENT || len < 4
+                || len > ass_source::MAX_FONT_BYTES - font_bytes || (*cp).extradata.is_null() { continue; }
+            let data = std::slice::from_raw_parts((*cp).extradata, len);
+            // Accept sfnt/OpenType/TrueType collection signatures, not arbitrary attachments.
+            if !matches!(&data[..4], b"\x00\x01\x00\x00" | b"OTTO" | b"ttcf" | b"true") { continue; }
+            let dict = *((st as *const u8).add(OFF_STREAM_METADATA) as *const *const AVDictionary);
+            let entry = if dict.is_null() { std::ptr::null_mut() }
+                else { av_dict_get(dict, c"filename".as_ptr(), std::ptr::null(), 0) };
+            let name = if !entry.is_null() && !(*entry).value.is_null() {
+                std::ffi::CStr::from_ptr((*entry).value).to_string_lossy().into_owned()
+            } else { format!("attachment-{i}.ttf") };
+            font_bytes += len;
+            fonts.push(Font { name, data: data.into() });
+        }
+        if !headers.is_empty() || !fonts.is_empty() {
+            crate::player::log(&format!("ass: embedded tracks={} fonts={} font_bytes={font_bytes}", headers.len(), fonts.len()));
+        }
+    }
+    ass_source::begin(headers, fonts)
 }
 
 /// Open a software decoder for an image-subtitle stream (PGS/VobSub/DVB). Returns a
@@ -7920,6 +7976,7 @@ pub(crate) fn demux(
                         sub_streams.push((i as c_int, k, dec));
                     }
                 }
+                let ass_generation = begin_ass_sources(fmt, streams, &sub_streams);
                 if !sub_streams.is_empty() {
                     let desc: Vec<String> = sub_streams
                         .iter()
@@ -8013,6 +8070,8 @@ pub(crate) fn demux(
                             original_watch = None;
                         }
                         let ts = av_rescale_q(seek_ns, NS_TB, stream_time_base(vst));
+                        // Fence completed renders from the old position before new packets arrive.
+                        crate::player::ass_source::seek(ass_generation);
                         let sr = av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
                         crate::player::log(&format!(
                             "ff: seek {}s rv={sr}",
@@ -8155,13 +8214,15 @@ pub(crate) fn demux(
                                 } else {
                                     raw
                                 };
-                                crate::player::push_subtitle_cue(
-                                    sub_pos as i32,
-                                    start,
-                                    end,
-                                    payload,
-                                    kind == SubKind::Ass,
-                                );
+                                if kind == SubKind::Ass {
+                                    crate::player::ass_source::push(
+                                        ass_generation, sub_pos as i32, start, end, payload,
+                                    );
+                                } else {
+                                    crate::player::push_subtitle_cue(
+                                        sub_pos as i32, start, end, payload,
+                                    );
+                                }
                             }
                         }
                         av_packet_unref(pkt);

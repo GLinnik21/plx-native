@@ -603,10 +603,12 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 
 ## Subtitle soft-render
 
-The **demuxer (`ff.rs`) demuxes embedded text subtitles** (SRT/subrip,
-ASS/SSA, mov_text) and emits `sub cue [..] len=<n>` lines. It pushes cues for **all** text tracks (tagged by
-index) and the renderer filters by the selected `desired_sub_idx`, so a mid-play track switch is
-instant (no ~10-20s buffer-gap wait). Image subs (PGS/VobSub/DVB) are now client-rendered too:
+The **demuxer (`ff.rs`) demuxes embedded plain-text subtitles** (SRT/subrip and mov_text)
+and emits `sub cue [..] len=<n>` lines. It pushes cues for **all** plain-text tracks (tagged by
+index), and the renderer filters by the selected `desired_sub_idx`, so a mid-play track switch is
+instant (no ~10-20s buffer-gap wait). ASS/SSA preserves headers, complete timed events and fonts
+for native libass rendering; plain-cue log assertions cannot verify that output. See
+[`ass-subtitles.md`](../docs/ass-subtitles.md) for its native pixel and device checks. Image subs (PGS/VobSub/DVB) are now client-rendered too:
 `ff.rs` software-decodes the selected bitmap track (`avcodec_decode_subtitle2`), converts each
 display-set to RGBA, and `player_hud::draw_subtitle_bitmap` composites it over the video as a GL
 texture (the webOS pipeline's own HW subtitle engine is only reachable in URI/demuxer mode, not

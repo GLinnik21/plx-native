@@ -716,7 +716,8 @@ pub(crate) struct Stream {
 
 impl Stream {
     /// Can the CLIENT draw this sidecar on direct play? Only a TEXT format: `player::sidecar`
-    /// asks PMS for it as UTF-8 SubRip and parses SubRip/WebVTT/ASS. An image sidecar
+    /// preserves ASS/SSA scripts for native styled rendering and asks PMS for other formats
+    /// as UTF-8 SubRip (with SubRip/WebVTT parsing fallbacks). An image sidecar
     /// (`.idx`/`.sub` VobSub, `.sup` PGS) has no such path — only a server burn can show it, so
     /// it stays a transcode-only row. An allow-list rather than "not an image codec", so a
     /// format nobody here has met is hidden instead of offered and then silently blank.

@@ -642,6 +642,8 @@ pub(crate) struct Shared {
     /// remux the server built, and its tags are whatever the server put there.
     pub track_names: Mutex<TrackNames>,
     pub sub_cues: Mutex<Vec<SubCue>>,
+    pub ass_sources: Mutex<super::ass_source::Store>,
+    pub ass_renderer: super::ass::Runtime,
     pub sub_bitmaps: Mutex<Vec<SubBitmap>>, // image-sub cues (every image track while subs are on)
 
     // demux (D) -> main (M)
@@ -950,6 +952,8 @@ impl Shared {
             desired_sub_idx: AtomicI32::new(-1),
             track_names: Mutex::new(TrackNames::new()),
             sub_cues: Mutex::new(Vec::new()),
+            ass_sources: Mutex::new(super::ass_source::Store::new()),
+            ass_renderer: super::ass::Runtime::new(),
             sub_bitmaps: Mutex::new(Vec::new()),
             file_size: AtomicI64::new(0),
             video_w: AtomicI32::new(0),
@@ -1538,6 +1542,7 @@ impl Shared {
         // seeks/reloads so a reload-based seek keeps the chosen subtitle. It is reset on a new
         // item (player::reset_subtitle). The cue/bitmap STORES below are transient render state
         // and DO clear (the fresh demuxer re-populates them).
+        self.ass_sources.lock().unwrap_or_else(|e| e.into_inner()).reset();
         self.sub_cues.lock().unwrap().clear();
         self.sub_bitmaps.lock().unwrap().clear();
         // Cleared with them, and for the same reason: they describe the FILE the last demuxer had

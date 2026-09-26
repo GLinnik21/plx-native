@@ -85,6 +85,7 @@ pub(crate) struct Origin {
 pub(crate) struct PlayerRender {
     /// The decoded image-subtitle display set and its cache key (`player_hud`'s `SET`/`KEY`/`SEL`).
     pub(crate) subs: SubtitleBitmaps,
+    pub(crate) ass: crate::ui::ass_subtitles::AssSubtitles,
 }
 
 impl Default for SubtitleBitmaps {
@@ -352,6 +353,7 @@ impl PlayerScreen {
         mix(u64::from(crate::player::TX.paused.load(Relaxed)));
         // …subtitles are NOT conditional: they are drawn on every frame of the route, HUD or no
         // HUD, which is exactly why a cue appearing had to become a report.
+        mix(self.render.ass.fingerprint());
         mix(crate::player::subtitle_cue_id(pos) as u64);
         mix(crate::player::active_bitmap_key(pos).unwrap_or(0) as u64);
         mix(u64::from(hud_up));
@@ -472,6 +474,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Machine<H> for Play
         }
         match ev {
             ScreenEvent::Tick(tick) => {
+                self.render.ass.update(H::session(cx), tick.ms);
                 if self.repair_alert.visible() && !H::session(cx).jail_load_blocked { self.repair_alert.close(); }
                 self.repair_alert.update(tick.dt());
                 // The control row's springs and the resume clock are stepped once per FRAME and
@@ -498,6 +501,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Machine<H> for Play
                 // The GL names in the subtitle set are OWNED. A static could never be told that a
                 // playback had ended; an instance is told exactly once.
                 self.render.subs.release();
+                self.render.ass.release();
                 Handled::Yes
             }
             ScreenEvent::Input(input) => {
@@ -1214,6 +1218,10 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Screen<H> for Playe
         // bottom of the screen. `transport` is false while the Info card or Chapters strip owns
         // the middle, and the lift follows the panel rather than the transport there.
         let subs_lift = hud_up || self.lifted;
+        self.render.ass.draw();
+        if let Some(message) = self.render.ass.error() {
+            crate::ui::player_hud::draw_subtitle_message(message, subs_lift);
+        }
         self.draw_subtitle_bitmap(subs_lift); // PGS/VobSub image subs
         crate::ui::player_hud::draw_subtitles(subs_lift, crate::route::is_transcoding(ps));
         // What a pointer can hit is registered AFTER the paint, by `record_stops`, from this
@@ -1255,7 +1263,9 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Screen<H> for Playe
     /// deletes them itself, so it is the one thing on this screen whose bytes belong to this
     /// instance rather than to a pool.
     fn render_report(&self) -> crate::ui::frame::RenderReport {
-        self.render.subs.render_report()
+        let bitmap = self.render.subs.render_report();
+        let ass = self.render.ass.render_report();
+        crate::ui::frame::RenderReport { textures: bitmap.textures + ass.textures, bytes: bitmap.bytes + ass.bytes }
     }
     fn focus_source(&self) -> FocusSource {
         FocusSource::Engine
