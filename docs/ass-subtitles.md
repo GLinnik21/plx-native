@@ -16,8 +16,10 @@ The demuxer copies ASS headers, complete timed packets and font attachments out 
 `Shared` owns the ASS source store and renderer mailbox alongside the other playback transport
 state. `player::ass_source` retains immutable snapshots and a bounded event window, including the
 history needed for subtitle delay. It keeps all embedded ASS tracks so selecting another language
-can use the already-read portion of the file. A seek changes source identities and discards old
-events while retaining headers and fonts; a new session discards the previous media's sources.
+can use the already-read portion of the file. A seek changes source identities while retaining known
+events, headers and fonts: Matroska does not resend earlier signs spanning the seek target.
+Reread packets are deduplicated, and pruning follows a backward seek before the native clock
+rebases; a new session discards the previous media's sources.
 Reaching demux EOF does not discard subtitles while queued video still plays.
 
 For an external ASS/SSA track, `player::sidecar` requests UTF-8 without converting to SubRip and
@@ -35,6 +37,9 @@ The subtitle clock interpolates between the pipeline's sparse position callbacks
 250 ms of extrapolation. Pause, seek and discontinuities re-anchor it. Output dimensions and the
 original coded video dimensions are passed separately to libass. The output uses the player's
 video-plane destination canvas; authored subtitles are not moved when the transport HUD appears.
+
+The device fixture generator requires FFmpeg/ffprobe and MKVToolNix (`mkvmerge`). It verifies
+subtitle packet counts, timestamps and mux interleaving before publishing a video.
 
 Verification commands (set `MOCK_PMS_PORT` to an unused local port and configure the developer
 build to reach that mock server):

@@ -1439,10 +1439,19 @@ pub(crate) fn subtitle_clock_ns(now_ns: i64) -> i64 {
 /// reads ahead of the playhead, which this floor never prunes. What bounds memory is each store's
 /// cap and its eviction order ([`push_subtitle_text`], [`SUB_BITMAP_BUDGET`]), not this floor.
 fn subtitle_floor_ns() -> i64 {
-    SHARED
-        .playpos_ns
-        .load(Relaxed)
-        .saturating_sub((SUBTITLE_OFFSET_LATEST_MS + 2_000) * 1_000_000)
+    subtitle_floor_for(
+        SHARED.playpos_ns.load(Relaxed),
+        SHARED.seeking.load(Relaxed),
+        SHARED.seek_display_ns.load(Relaxed),
+    )
+}
+
+fn subtitle_floor_for(position_ns: i64, seeking: bool, target_ns: i64) -> i64 {
+    // The demuxer can already be at a backward seek's target while the native clock still
+    // reports the old picture. Keep those newly read cues through the rebase. min also makes
+    // independently sampled atomics conservative if a new request races this read.
+    let anchor = if seeking && target_ns >= 0 { position_ns.min(target_ns) } else { position_ns };
+    anchor.saturating_sub((SUBTITLE_OFFSET_LATEST_MS + 2_000) * 1_000_000)
 }
 
 /// The latest the offset goes, for every kind of track: a DELAY is served from cues already in the

@@ -248,6 +248,10 @@ def build_locked(host, darwin, target, prefix, work, sources):
     sidecars = ['.link.map', '.link.trace', '.link.json'] if not host else []
     try:
         shutil.copy2(output, candidate)
+        # A developer shell may use umask 077. scp preserves this mode while the
+        # deployed file belongs to root; the jailed app must still be able to read
+        # and map its renderer. Match the package's normalized public-library mode.
+        candidate.chmod(0o755)
         if not host:
             run([str(cross) + 'strip', '--strip-unneeded', candidate], env=env)
             run([sys.executable, ROOT / 'ci/stage-link-evidence.py', output, candidate, '--stripped'], env=env)

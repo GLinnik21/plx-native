@@ -25,12 +25,14 @@ def main():
     sign = ((lambda r, g, b: r > g * 1.5 + 15 and b > g * 1.5 + 15)
             if args.second_track else
             (lambda r, g, b: g > r * 1.5 + 15 and g > b * 1.5 + 15))
+    # Even the darkest existing subtitle tone is71/255; the fixture ground is32.
+    # Keep the check valid without changing the viewer's saved tone preference.
     marks = {
         "authored sign": (count((80, 50, 1000, 240), sign), 1000),
         "blue vector drawing": (count((1350, 80, 1780, 290),
                                       lambda r, g, b: b > r * 1.5 + 15 and b > g * 1.5 + 15), 3000),
         "overlapping bottom dialogue": (count((200, 900, 1750, 1080),
-                                             lambda r, g, b: min(r, g, b) > 120), 1000),
+                                             lambda r, g, b: min(r, g, b) > 50), 1000),
     }
     for name, (pixels, minimum) in marks.items():
         print(f"{name}: {pixels:.0f} pixels (minimum {minimum})")

@@ -98,6 +98,9 @@ impl Store {
         };
         // Copies only small event descriptors and Arc handles. Font/script/payload bytes stay
         // shared, and the render worker never holds this store lock during native work.
+        if events.iter().any(|known| known == &event) {
+            return; // reread after a backward seek: preserve one source event and its budget
+        }
         let mut events: Vec<_> = events
             .iter()
             .filter(|e| e.start_ms.saturating_add(e.duration_ms) >= floor_ms)
@@ -137,7 +140,12 @@ impl Store {
             return;
         }
         for source in self.tracks.values_mut() {
-            let Content::Embedded { header, fonts, .. } = &source.content else {
+            let Content::Embedded {
+                header,
+                events,
+                fonts,
+            } = &source.content
+            else {
                 continue;
             };
             *source = Arc::new(Source {
@@ -146,7 +154,9 @@ impl Store {
                 content: Content::Embedded {
                     header: header.clone(),
                     fonts: fonts.clone(),
-                    events: Arc::from([]),
+                    // These are immutable facts about this media, not images from the old
+                    // clock. Matroska seeks do not resend an earlier cue spanning the target.
+                    events: events.clone(),
                 },
             });
         }
@@ -247,6 +257,57 @@ mod tests {
             payload: text.as_bytes().into(),
         }
     }
+
+    #[test]
+    fn an_in_place_seek_preserves_a_known_sign_spanning_the_target() {
+        let mut s = Store::default();
+        let generation = s.begin(vec![(0, b"header".to_vec())], vec![]);
+        let sign = Event {
+            start_ms: 0,
+            duration_ms: 120_000,
+            payload: b"0,1,Sign,,0,0,0,,long sign".as_slice().into(),
+        };
+        s.push(generation, 0, sign.clone(), 0);
+        let old_id = s.tracks[&0].id;
+        s.seek(generation);
+        let after = &s.tracks[&0];
+        assert_ne!(after.id, old_id, "the old raster must be fenced");
+        let Content::Embedded { events, .. } = &after.content else {
+            panic!()
+        };
+        assert_eq!(
+            events.as_ref(),
+            &[sign.clone()],
+            "av_seek_frame resumes at a video cue and does not resend an earlier long sign"
+        );
+        // A backward seek can reread a packet we already retained. It is one event, not
+        // another cache entry consuming the source budget on every rewind.
+        s.push(generation, 0, sign, 0);
+        let Content::Embedded { events, .. } = &s.tracks[&0].content else {
+            panic!()
+        };
+        assert_eq!(events.len(), 1);
+    }
+
+    #[test]
+    fn backward_seek_packets_survive_until_the_presentation_clock_rebases() {
+        let mut s = Store::default();
+        let generation = s.begin(vec![(0, b"header".to_vec())], vec![]);
+        // The demuxer is reading the requested ten-second position, while the native
+        // presentation callback still reports ninety seconds until the first new picture.
+        let floor_ms =
+            super::super::subtitle_floor_for(90_000_000_000, true, 10_000_000_000) / 1_000_000;
+        s.push(generation, 0, event("first new cue", 10_000), floor_ms);
+        s.push(generation, 0, event("next new cue", 12_000), floor_ms);
+        let Content::Embedded { events, .. } = &s.tracks[&0].content else {
+            panic!()
+        };
+        assert_eq!(
+            events.len(),
+            2,
+            "the old clock must not evict freshly read seek cues"
+        );
+    }
     #[test]
     fn overlapping_ass_events_and_headers_survive_without_flattening() {
         let mut s = Store::default();
@@ -286,7 +347,11 @@ mod tests {
         else {
             panic!()
         };
-        assert!(events.is_empty());
+        assert_eq!(
+            events.len(),
+            1,
+            "a seek retires the raster, not known media events"
+        );
         assert_eq!(header.as_ref(), b"header");
         assert_eq!(fonts.len(), 1);
         s.reset();
