@@ -1502,20 +1502,27 @@ video::-webkit-media-controls-start-playback-button {
     padding: 10px 2px;
   }
 
-  /* The TV scene pins just under the header and is only as tall as its
-     content, so the Why section follows right after the caption. */
+  /* The TV scene pins just under the header (68px: a 44px tap target plus
+     its padding) and fills the rest of the screen with heading, TV and
+     caption centred in it, so no empty band is left under the caption while
+     it is pinned. The space below the caption already separates it from
+     the Why section, which therefore needs no top padding of its own. */
   .fx .feel {
     height: 260vh;
     height: 260svh;
   }
   .fx .feel-sticky {
-    top: 64px;
-    height: auto;
-    justify-content: flex-start;
-    padding: 20px 0 8px;
+    top: 68px;
+    height: calc(100vh - 68px);
+    height: calc(100svh - 68px);
+    justify-content: center;
+    padding: 0;
   }
   .why-section {
     padding-top: 40px;
+  }
+  .fx .why-section {
+    padding-top: 0;
   }
 
   /* Phones get their own taller glass crop (a <picture> source) so the bar
