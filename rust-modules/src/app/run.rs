@@ -302,7 +302,7 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
     crate::ui::idle::frame_begin(fr.dt);
     // Is a page capture still in flight on the GPU? Latched once, before the springs step, so
     // the held appear spring and the present gate below read the same answer.
-    crate::gfx::snapshot_frame_begin();
+    crate::gfx::snapshot_frame_begin(|pending| app.rec.snapshot_pending(pending));
     // ui::press (tvOS click) — advance the dip/spring every frame; when a deferred activation
     // commits (the spring-back bounce has played), run it for whichever CARD view armed the
     // press. A long-press does NOT commit (`press::tick` clears `want_commit` at `LONG_MS`):
