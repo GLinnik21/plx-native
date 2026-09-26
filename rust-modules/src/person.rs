@@ -2064,6 +2064,41 @@ mod tests {
     }
 
     #[test]
+    fn controlled_person_ignores_ambient_session_recovery() {
+        let _g = crate::testlock::serial();
+        struct ResetTape;
+        impl Drop for ResetTape {
+            fn drop(&mut self) { crate::app::bootstrap::stores::reset_for_test(); }
+        }
+        for replay in [false, true] {
+            let _session = crate::plex::session::TempSession::new("controlled-person-recovery");
+            crate::plex::reset_servers_for_test();
+            let saved = crate::plex::session::peek();
+            crate::plex::session::install_transient_for_test(true);
+            let initial = crate::app::bootstrap::Initial::synthetic_home(23, 32517, None).unwrap();
+            crate::app::bootstrap::stores::init(&initial, replay);
+            let _tape = ResetTape;
+            let mut owner = Owner::default();
+            owner.open(S0, "1001", "", "Synthetic person", "");
+            owner.state.current.as_mut().unwrap().profiled = true;
+            owner.state.current.as_mut().unwrap().credited = true;
+            let generation = owner.gen();
+            // Minimized from ARM: the ambient cache recovered at frame 26 while
+            // recording, but frame 20 on replay, retiring/reissuing Person work.
+            crate::plex::session::save(&saved);
+            let changed = owner.pump();
+            assert_eq!(owner.gen(), generation,
+                "controlled Person must not retire recorded work on an ambient storage completion");
+            assert!(!changed);
+            assert!(owner.current().unwrap().profiled);
+            assert!(owner.current().unwrap().credited);
+            let (requests, failure) = crate::app::bootstrap::stores::finish();
+            assert!(requests.is_empty());
+            assert_eq!(failure, None);
+        }
+    }
+
+    #[test]
     fn session_refresh_retries_person_metadata_after_storage_recovers() {
         let _g = crate::testlock::serial();
         let _session = crate::plex::session::TempSession::new("person-session-refresh");
