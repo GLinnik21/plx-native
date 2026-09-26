@@ -103,14 +103,17 @@
   // JS; with JS they are replaced by a single pause/play button. Reduced
   // motion starts paused, and a viewer's pause is never overridden.
   //
-  // Returns setInView(bool). The pinned TV scene calls it, since it knows
-  // better than an IntersectionObserver when the video is actually showing;
-  // without the scene, an observer drives it.
-  function initDemoVideo(sceneDriven) {
+  // Returns { setInView(bool), shown() }. The pinned TV scene calls
+  // setInView, since it knows better than an IntersectionObserver when the
+  // video should run; without the scene, an observer drives it. shown() ramps
+  // 0→1 over a moment once the first frame is actually painted, so the scene
+  // never fades in a video that is still black or still showing its poster
+  // (that swap is what flickered). onFrame is called while it ramps.
+  function initDemoVideo(sceneDriven, onFrame) {
     const video = document.getElementById("demo-video");
     const card = document.getElementById("demo-card");
     const toggle = document.getElementById("demo-toggle");
-    if (!video || !card || !toggle) return null;
+    if (!video || !card || !toggle) return { setInView() {}, shown: () => 0 };
 
     video.controls = false;
     video.muted = true;
@@ -133,8 +136,29 @@
       else if (!video.paused) video.pause();
     };
 
+    const RAMP_MS = 350;
+    let frameAt = 0;
+    const markFrame = () => {
+      if (frameAt) return;
+      frameAt = performance.now();
+      if (onFrame) {
+        const pump = () => {
+          onFrame();
+          if (performance.now() - frameAt < RAMP_MS) requestAnimationFrame(pump);
+        };
+        requestAnimationFrame(pump);
+      }
+    };
+    const watchFirstFrame = () => {
+      if (frameAt) return;
+      if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(markFrame);
+      else video.addEventListener("timeupdate", () => video.currentTime > 0 && markFrame());
+    };
+    const shown = () => (frameAt ? clamp01((performance.now() - frameAt) / RAMP_MS) : 0);
+
     video.addEventListener("play", sync);
     video.addEventListener("pause", sync);
+    video.addEventListener("playing", watchFirstFrame, { once: true });
     toggle.addEventListener("click", () => {
       userPaused = !video.paused;
       if (userPaused) video.pause();
@@ -157,7 +181,7 @@
         setInView(true);
       }
     }
-    return setInView;
+    return { setInView, shown };
   }
 
   /* ---------- Scroll-driven scenes ---------- */
@@ -173,7 +197,7 @@
     const sticky = q(".feel-sticky");
     const heading = q(".feel-heading");
     const stage = q(".feel-stage");
-    const glow = q(".feel-glow");
+    const glow = q(".feel-glow:not(.feel-glow--video)");
     const bezel = q(".feel-bezel");
     const screen = q(".demo-card");
     const poster = q(".feel-poster");
@@ -193,12 +217,8 @@
     const bigs = [...document.querySelectorAll("[data-scrub-big]")];
     const words = splitWords(document.querySelector("[data-words]"));
 
-    // The glow behind the TV follows what is on its screen: the Home
-    // screenshot, then the video's first frame.
-    const glowHome = glow ? glow.getAttribute("src") : "";
-    const glowVideo = video ? video.getAttribute("poster") : "";
-    let glowOnVideo = false;
-    const setVideoInView = initDemoVideo(true);
+    const glowVideo = q(".feel-glow--video");
+    const demo = initDemoVideo(true, () => schedule());
 
     // Measure the viewport once per width. On iPhone the toolbar collapses
     // mid-scroll and changes innerHeight; recomputing from it makes the
@@ -241,7 +261,9 @@
         // 0.14–0.30: the video fades in over the Home screen.
         // 0.42–0.62: the screen grows to the full window width…
         // 0.84–1.00: …and settles back before the page moves on.
-        const vid = ss(0.14, 0.3);
+        const fade = ss(0.14, 0.3);
+        // Until the video has painted a frame, keep showing the screenshot.
+        const vid = fade * demo.shown();
         const zoom = ss(0.42, 0.62) * (1 - ss(0.84, 1));
 
         const cx = bezel.offsetLeft + screen.offsetLeft + screen.offsetWidth / 2;
@@ -259,34 +281,34 @@
 
         if (poster) {
           poster.style.transform = `scale(${(1 + 0.05 * clamp01(p / 0.3)).toFixed(4)})`;
-          poster.style.opacity = vid > 0.98 ? "0" : "1";
         }
         if (video) {
           video.style.opacity = vid.toFixed(3);
           video.style.transform = `scale(${(1.06 - 0.055 * vid).toFixed(4)})`;
         }
+        // The button follows the scroll, not the video, so a viewer whose
+        // autoplay was refused (Low Power Mode) can still start it.
         if (toggle) {
           // Counter-scale so the button keeps its size while the TV zooms.
           toggle.style.transform = `scale(${(1 / scale).toFixed(4)})`;
-          toggle.style.opacity = vid > 0.9 ? "1" : "0";
-          toggle.style.pointerEvents = vid > 0.9 ? "auto" : "none";
+          toggle.style.opacity = fade > 0.9 ? "1" : "0";
+          toggle.style.pointerEvents = fade > 0.9 ? "auto" : "none";
         }
         if (stand) stand.style.opacity = (1 - zoom).toFixed(3);
         if (caption) caption.style.opacity = (vid * (1 - zoom)).toFixed(3);
-        if (glow) {
-          glow.style.opacity = (0.55 * (1 - zoom)).toFixed(3);
-          if (glowOnVideo !== vid > 0.5) {
-            glowOnVideo = vid > 0.5;
-            glow.src = glowOnVideo ? glowVideo : glowHome;
-          }
-        }
+        // The glow behind the TV follows what is on its screen: two blurred
+        // copies crossfade, rather than swapping one image's src mid-scroll.
+        if (glow) glow.style.opacity = (0.55 * (1 - zoom) * (1 - vid)).toFixed(3);
+        if (glowVideo) glowVideo.style.opacity = (0.55 * (1 - zoom) * vid).toFixed(3);
         if (heading) {
           const hv = easeOut3(clamp01((vh - r.top) / (vh * 0.6))) * (1 - ss(0.38, 0.5));
           heading.style.opacity = hv.toFixed(3);
           heading.style.transform = `translateY(${((1 - hv) * (p < 0.3 ? 40 : -24)).toFixed(1)}px)`;
           heading.style.filter = hv < 0.99 ? `blur(${((1 - hv) * 10).toFixed(2)}px)` : "";
         }
-        if (setVideoInView) setVideoInView(r.top < vh * 0.5 && r.bottom > vh * 0.5 && vid > 0.5);
+        // Start playing as soon as the scene is on screen, well before the
+        // fade, so the first frame is decoded by the time it is shown.
+        demo.setInView(r.top < vh && r.bottom > 0);
       }
 
       // Close-ups open from slightly smaller while the picture inside settles

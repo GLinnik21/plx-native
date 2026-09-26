@@ -107,9 +107,16 @@ video::-webkit-media-controls-start-playback-button {
   overflow: hidden;
   overflow: clip;
 }
+/* Sized to the LARGE viewport rather than inset: 0. iOS Safari lays fixed
+   boxes out above its floating toolbar, so an inset: 0 ground stops there and
+   the strip behind the translucent bar shows a flat fill instead. */
 .ambient-ground {
   position: fixed;
-  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 100vh;
+  height: 100lvh;
   background: var(--route-ground-fallback);
   pointer-events: none;
 }
@@ -143,6 +150,9 @@ video::-webkit-media-controls-start-playback-button {
   .reveal [data-reveal="card"] {
     translate: 0 64px;
     scale: 0.96;
+    /* No blur: Safari rasterizes a blurred, scaled card once and swaps in
+       the sharp one at the end, which reads as a pop, not a fade. */
+    filter: none;
   }
   .reveal [data-reveal].is-revealed {
     opacity: 1;
@@ -465,6 +475,9 @@ video::-webkit-media-controls-start-playback-button {
   opacity: 0.55;
   pointer-events: none;
   z-index: 0;
+}
+.feel-glow--video {
+  opacity: 0;
 }
 .feel-bezel {
   position: relative;
