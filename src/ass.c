@@ -1,6 +1,7 @@
 /* Compiled INTO libass-plx, never linked into the app. The implementation reads
  * ASS_Image/ASS_Track through the exact pinned libass headers used to build it. */
 #include "../include/ass.h"
+#include "ass_composite.h"
 #include <ass/ass.h>
 #include <limits.h>
 #include <stdarg.h>
@@ -24,6 +25,7 @@ struct PlxAss {
     int width, height, storage_width, storage_height;
     int first;
     char *default_font;
+    unsigned reciprocal[256];
 };
 
 /* Subtitle text and font metadata are untrusted and can be private. Do not
@@ -51,6 +53,7 @@ PlxAss *plx_ass_create(const char *default_font)
     if (!default_font || !*default_font) return NULL;
     PlxAss *ctx = calloc(1, sizeof(*ctx));
     if (!ctx) return NULL;
+    for (unsigned a = 1; a < 256; ++a) ctx->reciprocal[a] = 65536u / a;
     ctx->default_font = strdup(default_font);
     ctx->library = ass_library_init();
     if (!ctx->default_font || !ctx->library) goto failed;
@@ -256,27 +259,24 @@ int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
             }
         }
         if (!bitmap) return -1;
-        unsigned color[3] = {p->color >> 24, (p->color >> 16) & 255,
-                             (p->color >> 8) & 255};
+        uint32_t color = (p->color >> 24) | ((p->color >> 8) & 0xff00u) |
+                         ((p->color << 8) & 0xff0000u) | 0xff000000u;
         unsigned opacity = 255 - (p->color & 255);
+        uint8_t coverage[256];
+        for (unsigned i = 0; i < 256; ++i)
+            coverage[i] = (uint8_t)((i * opacity + 127) / 255);
         for (int y = t; y < b; ++y) {
             const uint8_t *mask = p->bitmap + (size_t)(y - p->dst_y) * p->stride;
             uint8_t *dst = (uint8_t *)bitmap->rgba +
                 ((size_t)(y - bitmap->y) * bitmap->width + l - bitmap->x) * 4;
             for (int x = l; x < r; ++x, dst += 4) {
-                unsigned a = (mask[x - p->dst_x] * opacity + 127) / 255;
+                unsigned a = coverage[mask[x - p->dst_x]];
                 if (!a) continue;
                 if (a == 255) {
-                    dst[0] = (uint8_t)color[0];
-                    dst[1] = (uint8_t)color[1];
-                    dst[2] = (uint8_t)color[2];
-                    dst[3] = 255;
+                    ass_store_rgba(dst, color);
                     continue;
                 }
-                unsigned inverse = 255 - a;
-                for (int c = 0; c < 3; ++c)
-                    dst[c] = (uint8_t)((color[c] * a + dst[c] * inverse + 127) / 255);
-                dst[3] = (uint8_t)(a + (dst[3] * inverse + 127) / 255);
+                ass_store_rgba(dst, ass_blend_pixel(ass_load_rgba(dst), color, a));
             }
         }
     }
@@ -287,8 +287,8 @@ int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
          * (software division on the ARMv7 target), including static vector signs. */
         if (!a || a == 255) continue;
         for (int c = 0; c < 3; ++c) {
-            unsigned v = (ctx->rgba[i + c] * 255u + a / 2) / a;
-            ctx->rgba[i + c] = (uint8_t)(v > 255 ? 255 : v);
+            ctx->rgba[i + c] = ass_straight_channel(ctx->rgba[i + c], a,
+                                                  ctx->reciprocal[a]);
         }
     }
     frame->count = region_count;

@@ -684,7 +684,7 @@ FFMPEG_STAGED = $(addprefix pkg/,$(FFMPEG_SONAMES))
 LIBASS_STAGED = pkg/libass-plx.so.0
 LIBASS_INPUTS = ci/build-libass.sh ci/build-libass.py ci/libass-dependencies.json \
                 ci/arm-cc.py ci/check-link-evidence.py ci/stage-link-evidence.py \
-                src/ass.c include/ass.h
+                src/ass.c src/ass_composite.h include/ass.h
 $(LIBASS_STAGED): $(LIBASS_INPUTS)
 	WEBOS_SDK=$(WEBOS_SDK) ./ci/build-libass.sh
 
@@ -1175,6 +1175,7 @@ CRASHTRACE_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-crashtrace-test
 PRIVATE_LOG_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-private-log-test
 
 check: lint
+	python3 ci/test_ass_composite.py
 	@# EVERY host test runs in a THROWAWAY runtime root, and that is a correctness fix rather than
 	@# hygiene. `paths` resolves the session file out of the runtime dir, which on the host defaults
 	@# to a bare `/tmp` — so `browse::record_pins` writing a profile's library selection wrote the
