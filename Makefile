@@ -1672,6 +1672,13 @@ $(LIBASS_HOST_STAGED): $(LIBASS_INPUTS)
 
 libass-host: $(LIBASS_HOST_STAGED)
 
+# Ordinary host tests cannot see native glyph pixels. Exercise the same pinned renderer and
+# fonts that ship, including cancellation and source-lifecycle regressions beside the pixels.
+.PHONY: check-ass
+check-ass: $(LIBASS_HOST_STAGED)
+	cd rust-modules && CARGO_INCREMENTAL=0 PLXNATIVE_APP_DIR="$(CURDIR)/pkg" PATH="$$HOME/.cargo/bin:$$PATH" \
+	  cargo +$(RUST_NIGHTLY) test --lib player::ass::tests -- --include-ignored
+
 $(FFMPEG_HOST_INC)/libavformat/avformat.h: ci/build-ffmpeg.sh
 	HOST=1 ./ci/build-ffmpeg.sh
 

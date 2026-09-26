@@ -121,6 +121,8 @@ jobs:
         # The one place the host FFmpeg (built above, same component list as the shipped one) is
         # available to the test suite — `make check` has none, so these are #[ignore]d there.
         run: make check-ffmpeg
+      - name: Tests against the bundled ASS renderer
+        run: make check-ass
       - name: Launch and capture 1080p frame
         run: |
           python3 tools/sim-smoke.py \

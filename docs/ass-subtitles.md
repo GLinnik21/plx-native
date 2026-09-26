@@ -41,9 +41,7 @@ build to reach that mock server):
 
 ```sh
 make check
-make libass-host
-PLXNATIVE_APP_DIR="$PWD/pkg" CARGO_INCREMENTAL=0 cargo +nightly test \
-  --manifest-path rust-modules/Cargo.toml --lib player::ass::tests -- --include-ignored
+make check-ass
 CARGO_INCREMENTAL=0 cargo +nightly check --manifest-path rust-modules/Cargo.toml \
   --lib --no-default-features
 make

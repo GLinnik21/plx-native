@@ -62,6 +62,152 @@ fn ids_do_not_alias_cancellation_or_each_other() {
     assert_ne!(a, b);
 }
 
+fn request_key(source: &Source) -> Key {
+    Key {
+        epoch: 1,
+        source_id: source.id,
+        revision: source.revision,
+        now_ms: 100,
+        width: 320,
+        height: 180,
+        storage_width: 320,
+        storage_height: 180,
+    }
+}
+
+#[test]
+fn off_retires_a_racing_publication_and_pending_source_outside_the_mailbox_lock() {
+    let runtime = Runtime::new();
+    let source = Arc::new(source(vec![event(0, 0, 2000)]));
+    let key = request_key(&source);
+    let frame = error_frame(key, "fixture");
+    let source_witness = Arc::downgrade(&source);
+    let frame_witness = Arc::downgrade(&frame);
+    let mut engine = Engine {
+        source: Some(source.clone()),
+        frame: Some(frame.clone()),
+        ..Engine::default()
+    };
+    runtime.source_id.store(source.id, Ordering::Release);
+    {
+        let mut mailbox = runtime.mailbox.lock().unwrap();
+        mailbox.pending = Some(Request {
+            key,
+            source: source.clone(),
+        });
+        mailbox.requested = Some(key);
+        // The worker owns the lock and has already accepted this epoch. Cancel
+        // must return while the lock is held; the old publication then races in.
+        clear_runtime(&runtime);
+        mailbox.published = Some((key.epoch, frame.clone()));
+    }
+    drop(source);
+    drop(frame);
+    let retired = {
+        let mut mailbox = runtime.mailbox.lock().unwrap();
+        retire_off(&runtime, &mut mailbox, &mut engine).expect("Off has resources to retire")
+    };
+    assert!(
+        runtime.mailbox.try_lock().is_ok(),
+        "destruction must happen after unlocking"
+    );
+    assert!(engine.is_empty());
+    {
+        let mailbox = runtime.mailbox.lock().unwrap();
+        assert!(
+            mailbox.pending.is_none(),
+            "retire stale work before considering it for rendering"
+        );
+        assert!(mailbox.requested.is_none());
+        assert!(
+            mailbox.published.is_none(),
+            "a publication after cancellation must not be retained"
+        );
+    }
+    assert!(source_witness.upgrade().is_some());
+    assert!(frame_witness.upgrade().is_some());
+    drop(retired);
+    assert!(source_witness.upgrade().is_none());
+    assert!(frame_witness.upgrade().is_none());
+    assert!(
+        retire_off(&runtime, &mut runtime.mailbox.lock().unwrap(), &mut engine).is_none(),
+        "an empty Off worker can stay parked without periodic cleanup"
+    );
+}
+
+#[test]
+fn cancellation_before_worker_parks_is_remembered_and_releases_resources() {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    let runtime = Arc::new(Runtime::new());
+    let source = Arc::new(source(vec![event(0, 0, 2000)]));
+    let key = request_key(&source);
+    let frame = error_frame(key, "fixture");
+    let witness = Arc::downgrade(&frame);
+    runtime.source_id.store(source.id, Ordering::Release);
+    runtime.mailbox.lock().unwrap().published = Some((key.epoch, frame.clone()));
+    let observed_idle = Arc::new(AtomicBool::new(false));
+    let may_park = Arc::new(AtomicBool::new(false));
+    let (done_tx, done_rx) = mpsc::channel();
+    let worker = {
+        let runtime = runtime.clone();
+        let observed_idle = observed_idle.clone();
+        let may_park = may_park.clone();
+        std::thread::spawn(move || {
+            runtime.worker.set(std::thread::current()).unwrap();
+            let mut engine = Engine {
+                source: Some(source),
+                frame: Some(frame),
+                ..Engine::default()
+            };
+            {
+                let mailbox = runtime.mailbox.lock().unwrap();
+                assert!(mailbox.pending.is_none());
+                assert_ne!(runtime.source_id.load(Ordering::Acquire), 0);
+            }
+            // Main will cancel only AFTER the idle observation and BEFORE park.
+            // Spin on an atomic gate so no other blocking primitive can consume
+            // this thread's park permit during the forced interleaving.
+            observed_idle.store(true, Ordering::Release);
+            while !may_park.load(Ordering::Acquire) {
+                std::hint::spin_loop();
+            }
+            std::thread::park();
+            let retired = {
+                let mut mailbox = runtime.mailbox.lock().unwrap();
+                retire_off(&runtime, &mut mailbox, &mut engine)
+                    .expect("remembered Off wakes cleanup")
+            };
+            drop(retired);
+            done_tx.send(()).unwrap();
+        })
+    };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !observed_idle.load(Ordering::Acquire) {
+        assert!(
+            Instant::now() < deadline,
+            "worker must reach the controlled idle boundary"
+        );
+        std::thread::yield_now();
+    }
+    clear_runtime(&runtime);
+    may_park.store(true, Ordering::Release);
+    let completed = done_rx.recv_timeout(Duration::from_secs(2));
+    // If the wake was lost, release the test thread before reporting failure.
+    // The timeout observes completion; it never chooses the race interleaving.
+    if completed.is_err() {
+        worker.thread().unpark();
+    }
+    worker.join().unwrap();
+    completed.expect("cancel's wake permit must survive until park");
+    assert!(
+        witness.upgrade().is_none(),
+        "Off retains neither published nor worker-owned frame"
+    );
+}
+
 const HEADER: &str = "[Script Info]\nScriptType: v4.00+\nPlayResX: 320\nPlayResY: 180\nScaledBorderAndShadow: yes\n\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Inter,24,&H0000FF00,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,0,0,7,0,0,0,1\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n";
 
 fn script(lines: &str) -> Arc<Source> {

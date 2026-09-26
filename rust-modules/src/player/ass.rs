@@ -4,7 +4,7 @@
 use std::ffi::CString;
 use std::os::raw::{c_char, c_void};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 const MAX_SCRIPT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 256 * 1024;
@@ -106,8 +106,8 @@ pub(crate) struct Runtime {
     source_id: AtomicU64,
     epoch: AtomicU64,
     started: OnceLock<bool>,
+    worker: OnceLock<std::thread::Thread>,
     mailbox: Mutex<Mailbox>,
-    ready: Condvar,
 }
 
 impl Runtime {
@@ -116,12 +116,21 @@ impl Runtime {
             source_id: AtomicU64::new(0),
             epoch: AtomicU64::new(1),
             started: OnceLock::new(),
+            worker: OnceLock::new(),
             mailbox: Mutex::new(Mailbox {
                 pending: None,
                 requested: None,
                 published: None,
             }),
-            ready: Condvar::new(),
+        }
+    }
+
+    fn wake(&self) {
+        // Unlike a condition-variable notification, this permit survives the
+        // gap between checking the mailbox and parking. Before registration,
+        // the worker has not checked the startup mailbox yet.
+        if let Some(worker) = self.worker.get() {
+            worker.unpark();
         }
     }
 }
@@ -185,7 +194,7 @@ pub(crate) fn request(
     if mailbox.requested != Some(key) {
         mailbox.pending = Some(Request { key, source });
         mailbox.requested = Some(key);
-        runtime().ready.notify_one();
+        runtime().wake();
     }
     mailbox.published.as_ref().and_then(|(epoch, frame)| {
         (*epoch == key.epoch
@@ -198,16 +207,35 @@ pub(crate) fn request(
 
 /// MAIN THREAD: cancellation is immediate even while libass is rendering.
 pub(crate) fn clear() {
-    if runtime().source_id.swap(0, Ordering::AcqRel) == 0 {
+    clear_runtime(runtime());
+}
+
+fn clear_runtime(runtime: &Runtime) {
+    if runtime.source_id.swap(0, Ordering::AcqRel) == 0 {
         return;
     }
-    runtime().epoch.fetch_add(1, Ordering::AcqRel);
-    if let Ok(mut mailbox) = runtime().mailbox.try_lock() {
-        mailbox.pending = None;
-        mailbox.requested = None;
-        mailbox.published = None;
+    runtime.epoch.fetch_add(1, Ordering::AcqRel);
+    // Cleanup belongs to the worker. In particular, cancellation must neither
+    // wait for its mailbox lock nor free a large frame/source on the SDL thread.
+    runtime.wake();
+}
+
+/// Move retired resources out so native destruction takes place after the
+/// caller releases the mailbox lock.
+fn retire_off(
+    runtime: &Runtime,
+    mailbox: &mut Mailbox,
+    engine: &mut Engine,
+) -> Option<(Mailbox, Engine)> {
+    if runtime.source_id.load(Ordering::Acquire) != 0
+        || (engine.is_empty()
+            && mailbox.pending.is_none()
+            && mailbox.requested.is_none()
+            && mailbox.published.is_none())
+    {
+        return None;
     }
-    runtime().ready.notify_one();
+    Some((std::mem::take(mailbox), std::mem::take(engine)))
 }
 
 fn next_serial() -> u64 {
@@ -227,27 +255,31 @@ fn error_frame(key: Key, message: &'static str) -> Arc<Frame> {
 }
 
 fn worker() {
+    runtime()
+        .worker
+        .set(std::thread::current())
+        .expect("one styled subtitle worker");
     let mut engine = Engine::default();
     loop {
         let request = {
             let mut mailbox = runtime().mailbox.lock().unwrap_or_else(|e| e.into_inner());
             loop {
+                if let Some(retired) = retire_off(runtime(), &mut mailbox, &mut engine) {
+                    // Native destruction can be slow too: release the mailbox first.
+                    drop(mailbox);
+                    drop(retired);
+                    mailbox = runtime().mailbox.lock().unwrap_or_else(|e| e.into_inner());
+                    continue;
+                }
                 if let Some(request) = mailbox.pending.take() {
                     break request;
                 }
-                if runtime().source_id.load(Ordering::Acquire) == 0 {
-                    // Native destruction can be slow too: release the mailbox first.
-                    drop(mailbox);
-                    engine = Engine::default();
-                    mailbox = runtime().mailbox.lock().unwrap_or_else(|e| e.into_inner());
-                    if mailbox.pending.is_some() {
-                        continue;
-                    }
-                }
-                mailbox = runtime()
-                    .ready
-                    .wait(mailbox)
-                    .unwrap_or_else(|e| e.into_inner());
+                drop(mailbox);
+                // A queue/cancel between the check above and this park leaves a
+                // permit, so it cannot strand native resources until another key.
+                // A truly idle worker needs no periodic wakeup.
+                std::thread::park();
+                mailbox = runtime().mailbox.lock().unwrap_or_else(|e| e.into_inner());
             }
         };
         if runtime().epoch.load(Ordering::Acquire) != request.key.epoch {
@@ -392,6 +424,13 @@ struct Engine {
 }
 
 impl Engine {
+    fn is_empty(&self) -> bool {
+        self.source.is_none()
+            && self.native.is_none()
+            && self.frame.is_none()
+            && self.error.is_none()
+    }
+
     fn render(&mut self, request: &Request) -> Arc<Frame> {
         let key = request.key;
         let source_changed = self.source.as_ref().is_none_or(|old| {
