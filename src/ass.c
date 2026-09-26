@@ -15,6 +15,13 @@
 #define MAX_PIXELS (3840u * 2160u)
 #define MAX_IMAGES 16384
 
+struct ImageKey {
+    uintptr_t bitmap;
+    uint32_t color;
+    size_t region;
+    int x, y, width, height, stride;
+};
+
 struct PlxAss {
     ASS_Library *library;
     ASS_Renderer *renderer;
@@ -22,6 +29,9 @@ struct PlxAss {
     uint8_t *rgba;
     size_t bytes, font_bytes;
     PlxAssBitmap regions[PLX_ASS_MAX_REGIONS];
+    struct ImageKey *images;
+    size_t image_capacity, image_count, region_count;
+    int cache_valid;
     int width, height, storage_width, storage_height;
     int first;
     char *default_font;
@@ -44,6 +54,7 @@ void plx_ass_destroy(PlxAss *ctx)
     if (ctx->renderer) ass_renderer_done(ctx->renderer);
     if (ctx->library) ass_library_done(ctx->library);
     free(ctx->rgba);
+    free(ctx->images);
     free(ctx->default_font);
     free(ctx);
 }
@@ -174,6 +185,96 @@ static void add_bounds(struct Bounds *regions, size_t *count, struct Bounds box)
     regions[(*count)++] = box;
 }
 
+static int same_image(struct ImageKey a, struct ImageKey b)
+{
+    return a.bitmap == b.bitmap && a.color == b.color && a.region == b.region &&
+        a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height &&
+        a.stride == b.stride;
+}
+
+/* The pinned libass compares bitmap identity in ass_image_compare and keeps
+ * prev_images_root alive until AFTER it builds/compares the next frame. Its
+ * immutable coverage buffer therefore cannot be freed and reused between these
+ * consecutive snapshots. Store addresses only; never dereference an old one.
+ * Unlike libass's whole-frame changed flag, these keys identify static regions
+ * while another sign moves, changes colour, or advances its karaoke coverage. */
+static int retained_regions(PlxAss *ctx, ASS_Image *images, int width, int height,
+                            const struct Bounds *bounds, size_t count,
+                            size_t image_count, int reusable, int *retained)
+{
+    reusable = reusable && ctx->region_count == count && ctx->image_count == image_count;
+    for (size_t i = 0; i < count; ++i) {
+        retained[i] = reusable &&
+            ctx->regions[i].width == bounds[i].right - bounds[i].left &&
+            ctx->regions[i].height == bounds[i].bottom - bounds[i].top;
+    }
+    if (ctx->image_capacity < image_count) {
+        struct ImageKey *next = realloc(ctx->images, image_count * sizeof(*next));
+        if (!next) return -1;
+        ctx->images = next;
+        ctx->image_capacity = image_count;
+    }
+    size_t index = 0;
+    for (ASS_Image *p = images; p; p = p->next, ++index) {
+        struct ImageKey key = { .region = SIZE_MAX };
+        int l, t, r, b;
+        if (clipped_bounds(p, width, height, &l, &t, &r, &b) > 0) {
+            for (size_t i = 0; i < count; ++i) {
+                struct Bounds box = bounds[i];
+                if (l < box.left || t < box.top || r > box.right || b > box.bottom) continue;
+                key = (struct ImageKey){
+                    .bitmap = (uintptr_t)(p->bitmap + (size_t)(t - p->dst_y) * p->stride + (l - p->dst_x)),
+                    .color = p->color, .region = i, .x = l - box.left, .y = t - box.top,
+                    .width = r - l, .height = b - t, .stride = p->stride
+                };
+                break;
+            }
+            if (key.region == SIZE_MAX) return -1;
+        }
+        if (reusable && !same_image(ctx->images[index], key)) {
+            size_t old_region = ctx->images[index].region;
+            if (old_region < count) retained[old_region] = 0;
+            if (key.region < count) retained[key.region] = 0;
+        }
+        ctx->images[index] = key;
+    }
+    ctx->image_count = image_count;
+    return 0;
+}
+
+/* Keep one bounded arena. Regions retain their order on the reuse path, so
+ * moving left in ascending order and then right in descending order cannot
+ * overwrite another retained source. Clear changed regions only after moving. */
+static void place_regions(PlxAss *ctx, const struct Bounds *bounds, size_t count,
+                           const int *retained)
+{
+    size_t old_offset[PLX_ASS_MAX_REGIONS], next_offset[PLX_ASS_MAX_REGIONS];
+    size_t old = 0, next = 0;
+    for (size_t i = 0; i < count; ++i) {
+        old_offset[i] = old;
+        next_offset[i] = next;
+        if (i < ctx->region_count) old += ctx->regions[i].bytes;
+        next += (size_t)(bounds[i].right - bounds[i].left) * (bounds[i].bottom - bounds[i].top) * 4;
+    }
+    for (size_t i = 0; i < count; ++i)
+        if (retained[i] && next_offset[i] < old_offset[i])
+            memmove(ctx->rgba + next_offset[i], ctx->rgba + old_offset[i], ctx->regions[i].bytes);
+    for (size_t i = count; i-- > 0;)
+        if (retained[i] && next_offset[i] > old_offset[i])
+            memmove(ctx->rgba + next_offset[i], ctx->rgba + old_offset[i], ctx->regions[i].bytes);
+    for (size_t i = 0; i < count; ++i) {
+        struct Bounds b = bounds[i];
+        PlxAssBitmap *bitmap = &ctx->regions[i];
+        *bitmap = (PlxAssBitmap){
+            .x = b.left, .y = b.top, .width = b.right - b.left, .height = b.bottom - b.top,
+            .bytes = (size_t)(b.right - b.left) * (b.bottom - b.top) * 4,
+            .rgba = ctx->rgba + next_offset[i]
+        };
+        if (!retained[i]) memset(ctx->rgba + next_offset[i], 0, bitmap->bytes);
+    }
+    ctx->region_count = count;
+}
+
 int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
                    int storage_width, int storage_height,
                    PlxAssFrame *frame)
@@ -195,9 +296,15 @@ int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
         ctx->storage_width = storage_width;
         ctx->storage_height = storage_height;
     }
+    int reusable = ctx->cache_valid && !resized;
+    /* Any failed call breaks the consecutive-frame identity proof above. */
+    ctx->cache_valid = 0;
     int changed = 0;
     ASS_Image *images = ass_render_frame(ctx->renderer, ctx->track, now_ms, &changed);
-    if (!changed && !resized && !ctx->first) return 0;
+    if (!changed && reusable && !ctx->first) {
+        ctx->cache_valid = 1;
+        return 0;
+    }
     ctx->first = 0;
     struct Bounds bounds[PLX_ASS_MAX_REGIONS];
     size_t region_count = 0;
@@ -215,7 +322,14 @@ int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
         });
     }
     memset(frame, 0, sizeof(*frame));
-    if (!region_count) return 1;
+    if (!region_count) {
+        ctx->region_count = ctx->image_count = 0;
+        ctx->cache_valid = 1;
+        return 1;
+    }
+    int retained[PLX_ASS_MAX_REGIONS];
+    if (retained_regions(ctx, images, width, height, bounds, region_count,
+                         (size_t)image_count, reusable, retained) < 0) return -1;
     size_t bytes = 0;
     for (size_t i = 0; i < region_count; ++i) {
         struct Bounds b = bounds[i];
@@ -231,34 +345,17 @@ int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
         ctx->rgba = next;
         ctx->bytes = bytes;
     }
-    memset(ctx->rgba, 0, bytes);
-    size_t offset = 0;
-    for (size_t i = 0; i < region_count; ++i) {
-        struct Bounds b = bounds[i];
-        PlxAssBitmap *bitmap = &ctx->regions[i];
-        bitmap->x = b.left;
-        bitmap->y = b.top;
-        bitmap->width = b.right - b.left;
-        bitmap->height = b.bottom - b.top;
-        bitmap->bytes = (size_t)bitmap->width * bitmap->height * 4;
-        bitmap->rgba = ctx->rgba + offset;
-        offset += bitmap->bytes;
-    }
+    place_regions(ctx, bounds, region_count, retained);
     /* ASS_Image is an ordered list (shadow, outline, glyph, next event). Compose
      * every layer in that order in premultiplied space before converting to the
      * straight RGBA expected by SDL's ordinary blend mode. */
-    for (ASS_Image *p = images; p; p = p->next) {
+    size_t image_index = 0;
+    for (ASS_Image *p = images; p; p = p->next, ++image_index) {
+        size_t region = ctx->images[image_index].region;
+        if (region == SIZE_MAX || retained[region]) continue;
         int l, t, r, b;
         if (clipped_bounds(p, width, height, &l, &t, &r, &b) <= 0) continue;
-        PlxAssBitmap *bitmap = NULL;
-        for (size_t i = 0; i < region_count; ++i) {
-            struct Bounds box = bounds[i];
-            if (l >= box.left && t >= box.top && r <= box.right && b <= box.bottom) {
-                bitmap = &ctx->regions[i];
-                break;
-            }
-        }
-        if (!bitmap) return -1;
+        PlxAssBitmap *bitmap = &ctx->regions[region];
         uint32_t color = (p->color >> 24) | ((p->color >> 8) & 0xff00u) |
                          ((p->color << 8) & 0xff0000u) | 0xff000000u;
         unsigned opacity = 255 - (p->color & 255);
@@ -280,17 +377,22 @@ int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
             }
         }
     }
-    for (size_t i = 0; i < bytes; i += 4) {
-        unsigned a = ctx->rgba[i + 3];
-        /* Transparent pixels are already zero; opaque pixels are already
-         * straight RGBA. Avoid three variable divisions for every opaque pixel
-         * (software division on the ARMv7 target), including static vector signs. */
-        if (!a || a == 255) continue;
-        for (int c = 0; c < 3; ++c) {
-            ctx->rgba[i + c] = ass_straight_channel(ctx->rgba[i + c], a,
-                                                  ctx->reciprocal[a]);
+    for (size_t region = 0; region < region_count; ++region) {
+        if (retained[region]) continue;
+        PlxAssBitmap *bitmap = &ctx->regions[region];
+        uint8_t *rgba = (uint8_t *)bitmap->rgba;
+        for (size_t i = 0; i < bitmap->bytes; i += 4) {
+            unsigned a = rgba[i + 3];
+            /* Transparent pixels are already zero; opaque pixels are already
+             * straight RGBA. Avoid three variable divisions for every opaque pixel
+             * (software division on the ARMv7 target), including static vector signs. */
+            if (!a || a == 255) continue;
+            for (int c = 0; c < 3; ++c) {
+                rgba[i + c] = ass_straight_channel(rgba[i + c], a, ctx->reciprocal[a]);
+            }
         }
     }
+    ctx->cache_valid = 1;
     frame->count = region_count;
     frame->regions = ctx->regions;
     return 1;

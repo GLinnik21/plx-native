@@ -119,7 +119,7 @@ int main(void) {
     motion.dst_x += 2;
     motion.color ^= 0x10000000;
     unsigned changed = check(ctx, WIDTH);
-    if (changed >= all) {
+    if (changed != (unsigned)(motion.w * motion.h)) {
         fprintf(stderr, "static regions were recomposited: %u blends, full frame %u\n", changed, all);
         return 1;
     }
@@ -142,8 +142,15 @@ int main(void) {
     sign.next = &outline; check(ctx, WIDTH);
     sign.w = 0; check(ctx, WIDTH); /* invisible image */
     sign.w = 12; check(ctx, WIDTH);
+    /* An intervening failed frame retires the pointer-identity cache. The next
+     * libass call may reuse an address whose old image is no longer retained. */
+    sign.bitmap = NULL;
+    PlxAssFrame failed;
+    assert(plx_ass_render(ctx, 0, WIDTH, HEIGHT, WIDTH, HEIGHT, &failed) == -1);
+    sign.bitmap = masks[0]; masks[0][0] ^= 15;
+    check(ctx, WIDTH);
     plx_ass_destroy(ctx);
-    puts("PASS: unchanged regions skip blending; 252 frames match fresh composition");
+    puts("PASS: unchanged regions skip blending; 253 frames match fresh composition");
     return 0;
 }
 '''

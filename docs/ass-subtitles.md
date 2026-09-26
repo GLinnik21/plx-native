@@ -34,6 +34,9 @@ delivery key and codec. Backward seeks and Off→On do not re-download a loaded 
 updates; a completed frame is accepted only for the current source/selection epoch. The UI never
 waits for font parsing or rasterization. Native change detection avoids work for unchanged output. Overlapping libass images are composed
 in order into disjoint regions, with a maximum of 64 regions and one bounded pixel arena.
+Consecutive libass image identities also retain native region pixels, so a moving or karaoke
+cue does not repeatedly blend unrelated static signs. A bounded image-key table tracks that reuse;
+changed geometry, image order, clipping or content invalidates the affected regions.
 Unchanged region pixels retain their shared allocation, including across translations, so the
 player screen’s `ass_subtitles` cache reuses their GL uploads. Changed regions recycle the
 remaining textures; gaps, Off and unmount release them. The cache reports all retained texture
