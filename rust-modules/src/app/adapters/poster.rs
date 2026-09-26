@@ -725,9 +725,10 @@ type Hit = Option<PosterKey>;
 /// hit → the READY texture + its size; miss → claim a slot and enqueue the fetch, IF the request is
 /// admitted. Three things decide, and `touch` is only the first: `touch` itself (LRU bookkeeping on
 /// every hit, and whether a P_EVICTED slot is eligible to recover at all), the speculation bound
-/// [`warm_admissible`] for a Warm, and the document's scroll speed
-/// ([`crate::ui::card_row::scrolling_fast`]) for a Draw. A refused request claims nothing and
-/// records nothing; the next frame asks again.
+/// [`warm_admissible`] for a Warm, and the drawn card's placement scope
+/// ([`crate::ui::card_motion::declines_request`]) for a Draw. Unknown or moving card
+/// placement declines new work; featured images outside that scope remain eligible.
+/// A refusal claims no source slot; a follow-up present samples placement again.
 fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // The array's own precondition, checked before a slot can be claimed for a key that could
     // never match its probe again. `Warm::Known` (not `Full`) so a prefetch loop walks on to the
@@ -735,7 +736,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     if !is_fetchable(key_s) {
         return (None, Warm::Known);
     }
-    // A DRAW may not START poster work while the document is scrolling fast, and that holds at
+    // A scoped card DRAW may not START work with unknown or fast placement, at
     // EVERY point work begins — the fresh miss far below, but equally the two re-arm transitions
     // inside the matching-slot loop. Those matter more than the miss rather than less: a fast
     // scroll is exactly what evicts textures, so scrolling back across the same rows finds
@@ -743,7 +744,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // would never see if it only guarded the miss. A HIT is deliberately untouched: art that is
     // already resident still draws and still takes its LRU touch, so declining never blanks a
     // tile that had its picture.
-    let decline = touch == Touch::Draw && crate::ui::card_row::scrolling_fast();
+    let decline = touch == Touch::Draw && crate::ui::card_motion::declines_request();
     let mut g = store();
     // hit?
     for i in 0..PT_CAP {
@@ -767,7 +768,11 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     let wait = retry_backoff(g.slots[i].attempts).as_millis() as u32;
                     g.slots[i].retry_at = Some(now.wrapping_add(wait));
                     g.slots[i].retry_wake_sent = false;
-                } else if retry_due(&g.slots[i], now) && !decline {
+                } else if retry_due(&g.slots[i], now) {
+                    if decline {
+                        crate::ui::card_motion::deferred();
+                        return (None, Warm::Known);
+                    }
                     g.slots[i].state = P_WANT;
                     g.slots[i].retry_at = None;
                     g.slots[i].retry_wake_sent = false;
@@ -802,6 +807,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                     return (None, Warm::Known);
                 }
                 if decline {
+                    crate::ui::card_motion::deferred();
                     // The same deferral the cooldown just made, for the same reason: the slot
                     // stays EVICTED and the first draw at a settled speed re-arms it as usual.
                     return (None, Warm::Known);
@@ -849,6 +855,7 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // in `TexCache::pending` at 375 KB each. The request is the last point at which this work
     // can still be declined for free.
     if decline {
+        crate::ui::card_motion::deferred();
         return (None, Warm::Full);
     }
     // miss: prefer EMPTY, else LRU-evict a settled slot not used this frame
@@ -1812,9 +1819,8 @@ mod tests {
         let path = key_for(sid, "/library/metadata/4242/thumb", 2, 2, 0);
         store().slots = [Pslot::ZERO; PT_CAP];
 
-        crate::ui::card_row::begin_motion_frame();
-        crate::ui::card_row::note_scroll(1000.0);
-        assert!(crate::ui::card_row::scrolling_fast(), "the fixture is a fast scroll");
+        let motion = crate::ui::card_motion::Scope::moving_for_test();
+        assert!(crate::ui::card_motion::declines_request(), "the fixture is a fast scroll");
         let (hit, warm) = lookup(sid, &path, Touch::Draw);
         assert_eq!(hit, None, "a fast-scrolling miss resolves to no poster");
         assert_eq!(warm, Warm::Full, "and reports the attempt spent");
@@ -1822,13 +1828,78 @@ mod tests {
             "no slot is claimed, so no worker, fetch, decode or upload follows");
 
         // The settle is the whole difference — same key, same store, same call.
-        crate::ui::card_row::begin_motion_frame();
-        assert!(!crate::ui::card_row::scrolling_fast());
+        drop(motion);
+        assert!(!crate::ui::card_motion::declines_request());
         let (_, warm) = lookup(sid, &path, Touch::Draw);
         assert_eq!(warm, Warm::Claimed, "a settled document claims the slot");
         assert_eq!(store().slots[0].state, P_WANT, "and queues it for a worker");
         assert!(store().slots[0].visible, "as visible demand, not speculation");
 
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// Exercise the source-facing half of the product card primitive, not a
+    /// hand-entered admission scope. GPU composition is the real-TV obligation.
+    /// A future position term in any screen reaches this same transformed centre.
+    #[test]
+    fn the_card_renderer_scopes_every_art_variant_and_unknown_misses_converge() {
+        let (_fresh, sid, _) = one_server();
+        tex::install(&SOURCE);
+        tex::reset_for_test(16 * 1024 * 1024);
+        store().slots = [Pslot::ZERO; PT_CAP];
+        let rect = crate::ui::Rect::new(0.0, 0.0, 250.0, 375.0);
+        let mut item = crate::pms::PmsMovie::default();
+        item.sid = sid;
+        item.thumb = "/library/metadata/42/thumb".into();
+        item.still = "/library/metadata/42/still".into();
+        crate::ui::widgets::resolve_card_art(crate::ui::Painter::recording(), rect,
+            &crate::ui::widgets::Art::Poster(Some(&item)));
+        assert!(store().slots.iter().all(|s| s.state == P_EMPTY), "text prewarming must not start poster work");
+        for frame in 0..3 {
+            crate::ui::card_motion::begin_frame(frame * 16);
+            crate::ui::idle::frame_begin(0.016);
+            crate::ui::idle::take_local_damage();
+            let painter = crate::ui::Painter::root().translate(if frame == 0 { 0.0 } else { 80.0 }, 0.0);
+            for art in [crate::ui::widgets::Art::Poster(Some(&item)), crate::ui::widgets::Art::Still(Some(&item)),
+                crate::ui::widgets::Art::Thumb { sid, key: "/test-thumb", res: (250, 375) },
+                crate::ui::widgets::Art::Person { sid, key: "/test-person", res: (250, 250) }] {
+                crate::ui::widgets::resolve_card_art(painter, rect, &art);
+            }
+            if frame < 2 {
+                assert!(store().slots.iter().all(|s| s.state == P_EMPTY), "unknown/moving cards must claim no slots");
+                assert!(crate::ui::idle::take_local_damage() > 0, "a refused unknown needs a follow-up present");
+            } else {
+                assert_eq!(store().slots.iter().filter(|s| s.state == P_WANT).count(), 4, "all four settled variants must queue art");
+            }
+        }
+        assert!(!crate::ui::card_motion::declines_request(), "hero work after a card is outside its scope");
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    #[test]
+    fn a_motion_declined_retry_wakes_only_when_due() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/4242/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            set_key(slot, &path);
+            slot.state = P_RETRY;
+            slot.retry_at = Some(crate::app::clock::now().wrapping_add(30_000));
+        }
+        let motion = crate::ui::card_motion::Scope::moving_for_test();
+        crate::ui::idle::take_local_damage();
+        lookup(sid, &path, Touch::Draw);
+        assert_eq!(crate::ui::idle::take_local_damage(), 0, "a future retry must let the present gate rest");
+        store().slots[0].retry_at = Some(0);
+        lookup(sid, &path, Touch::Draw);
+        assert!(crate::ui::idle::take_local_damage() > 0, "an actually refused rearm needs a follow-up draw");
+        assert_eq!(store().slots[0].state, P_RETRY);
+        drop(motion);
+        lookup(sid, &path, Touch::Draw);
+        assert_eq!(store().slots[0].state, P_WANT);
         store().slots = [Pslot::ZERO; PT_CAP];
     }
 
@@ -1857,8 +1928,7 @@ mod tests {
         }
         let (_, rearmed0) = residency_counts_for_test();
 
-        crate::ui::card_row::begin_motion_frame();
-        crate::ui::card_row::note_scroll(1000.0);
+        let motion = crate::ui::card_motion::Scope::moving_for_test();
         let (hit, warm) = lookup(sid, &path, Touch::Draw);
         assert_eq!(hit, None, "an evicted slot has no pixels to hand back");
         assert_eq!(warm, Warm::Known, "the slot is known, merely left dormant");
@@ -1870,7 +1940,7 @@ mod tests {
         let (_, rearmed1) = residency_counts_for_test();
         assert_eq!(rearmed1, rearmed0, "and must not count as a re-arm");
 
-        crate::ui::card_row::begin_motion_frame();
+        drop(motion);
         let (_, _) = lookup(sid, &path, Touch::Draw);
         assert_eq!(store().slots[0].state, P_WANT, "a settled draw re-arms it exactly as before");
         let (_, rearmed2) = residency_counts_for_test();
@@ -1899,8 +1969,7 @@ mod tests {
             slot.retry_at = Some(0);
         }
 
-        crate::ui::card_row::begin_motion_frame();
-        crate::ui::card_row::note_scroll(1000.0);
+        let motion = crate::ui::card_motion::Scope::moving_for_test();
         let (hit, _) = lookup(sid, &path, Touch::Draw);
         assert_eq!(hit, None, "a parked retry has no pixels");
         assert_eq!(
@@ -1915,7 +1984,7 @@ mod tests {
         );
         assert_eq!(store().slots[0].attempts, 1, "a refusal is not an attempt");
 
-        crate::ui::card_row::begin_motion_frame();
+        drop(motion);
         let (_, _) = lookup(sid, &path, Touch::Draw);
         assert_eq!(store().slots[0].state, P_WANT, "a settled draw re-queues it");
         assert_eq!(store().slots[0].retry_at, None, "clearing the elapsed wait");

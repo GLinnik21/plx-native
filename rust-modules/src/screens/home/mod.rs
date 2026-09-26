@@ -645,23 +645,6 @@ impl HomeScreen {
         env
     }
 
-    /// Where the grid's flow hangs, for the fast-scroll motion signal (see the `snap` step in
-    /// `tick`). It is row 0's `base_y`, and [`Self::layout_grid`] must keep evaluating that in its
-    /// own order rather than calling this: **`base_y` is serialised into `LogicalState`**
-    /// (`CardRow::write_motion`), so its float evaluation order is load-bearing for every
-    /// committed replay recording, and `(top + flow) - scroll * snap` is not bit-identical to
-    /// `(top - scroll * snap) + flow` — 26% of realistic (snap, scroll, row) triples differ
-    /// (Codex P1 on PR #188). Nothing in `make check` replays those recordings, so the divergence
-    /// would not have surfaced until someone re-recorded one.
-    ///
-    /// At row 0 the two forms ARE bit-identical, `flow` being 0.0, which is what lets
-    /// `the_dive_report_reads_the_same_origin_the_layout_does` pin them together exactly. The
-    /// report only needs a px/s magnitude against a 120 px/s threshold, so row 0 is the whole
-    /// document's motion as far as the gate is concerned.
-    fn grid_origin(&self) -> f32 {
-        PEEK_Y + (GRID_TOP_Y - PEEK_Y) * self.snap.pos - self.grid.scroll_y.pos * self.snap.pos
-    }
-
     fn layout_grid(&mut self) {
         let top = PEEK_Y + (GRID_TOP_Y - PEEK_Y) * self.snap.pos;
         let mut flow = 0.0;
@@ -694,7 +677,7 @@ impl HomeScreen {
         }
         self.grid
             .scroll_y
-            .step_scroll(self.grid.scroll_target, K_SCROLL, dt);
+            .step(self.grid.scroll_target, K_SCROLL, dt);
         self.layout_grid();
     }
 
@@ -775,34 +758,8 @@ impl HomeScreen {
         } else {
             self.hero_auto = HERO_AUTO_S;
         }
-        // **The hero-to-grid dive is a document scroll that no scroll spring reports.** `snap` is a
-        // 0..1 FRACTION, so its own velocity is in fractions per second — about 2 at the peak of a
-        // dive, against a threshold in pixels — while `grid_origin` turns that same fraction into
-        // `GRID_TOP_Y - PEEK_Y` = 617 px of vertical travel for every shelf on screen. Both the
-        // grid's `scroll_y` and every shelf's `scroll_x` can sit perfectly still through it, so
-        // without this the whole reveal admitted exactly the poster work the gate exists to defer
-        // (Codex review on PR #187). Report the REALISED displacement, never the spring's own
-        // velocity, for the same reason `Spring::step_scroll` reports both.
-        //
-        // The dive scales the shelves' RETAINED HORIZONTAL offsets by the same fraction:
-        // `Grid::eff_scroll` is `scroll_x * snap`, so a row left sitting at a large offset sweeps
-        // its cards that far across the screen as `snap` runs 0 -> 1 while its own spring never
-        // moves and reports nothing. Near the end of the dive the vertical term alone falls under
-        // the threshold while the horizontal one is still hundreds of px/s, which is a fast reveal
-        // admitting work (Codex P2 on PR #188). Both axes are reported; `note_scroll` keeps the
-        // larger, so the document's fastest axis is the one the gate answers from.
-        let snap_before = self.snap.pos;
-        let origin_before = self.grid_origin();
         self.snap
             .step(pinned_snap(self.snap_target, self.rows.len()), K_SNAP, dt);
-        if dt > 0.0 {
-            card_row::note_scroll((self.grid_origin() - origin_before) / dt);
-            let dsnap = (self.snap.pos - snap_before).abs();
-            let widest = (0..self.rows.len())
-                .map(|row| self.grid.shelves[row].scroll_x().abs())
-                .fold(0.0f32, f32::max);
-            card_row::note_scroll(widest * dsnap / dt);
-        }
         // ONE answer for "is the dive still running", read by the present gate below. See
         // `SNAP_REST_POS`/`SNAP_REST_VEL` for why both terms are needed.
         let snap_moving = (self.snap.pos - self.snap_target).abs() > SNAP_REST_POS
