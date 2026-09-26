@@ -1290,6 +1290,7 @@ check: lint
 	@# The direct-screen TV command's own host-only contract: `--server N` must suppress the
 	@# singular token boot (which cannot register N>0) and must construct the exact identity marker
 	@# that `up` requires after launch. No SSH or television access occurs in this self-test.
+	python3 tools/mock-guest.py --selftest
 	tools/tv-session.sh selftest
 	python3 ci/test_tv_session.py
 	@# The three PreToolUse/PostToolUse hooks' own suites (~0.6s together). They were not in this

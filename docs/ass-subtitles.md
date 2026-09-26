@@ -57,7 +57,12 @@ python3 tests/mock_pms.py --host 0.0.0.0 --port "$MOCK_PMS_PORT" \
 
 The native host test checks actual libass pixels; ordinary host tests check source preservation,
 selection/seek fencing, overlap, bounds and download policy. Neither proves TV performance.
-Device checks must hold the TV lease and keep both the panel and sound off. Compare the unchanged
+Boot the fixture with `tools/tv-session.sh up --guest --mock --screen player=990001`.
+`--mock` verifies the configured server’s synthetic identity and supplies a fabricated guest token;
+it never resolves a real Plex account. Configure and build the developer app against that mock first.
+
+Device checks must hold the TV lease and keep both the panel and sound off. Release the lease
+while building or reviewing captures. Compare the unchanged
 build and the candidate on the same media: styles and overlap, moving/karaoke cues, track changes,
 Off, pause, backward/forward seek, external ASS and plain subtitles. Capture and inspect the
 output, and compare the UI heartbeat and hardware displayed-frame counters with capture disabled
