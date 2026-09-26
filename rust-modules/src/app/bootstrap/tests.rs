@@ -233,7 +233,7 @@ fn whole_record_preflight_rejects_bad_late_results_and_markers_without_resources
     record.frames.push(crate::ui::rec::Frame { f:1,tick:Some(Tick {ms:16,dt_us:16000}),
         results:vec![json!({"f":1,"t":"async","to":"store:1","req":1,"payload":{
             "kind":"hubs","version":1,"gen":1,"seq":1,"sid":0,"client":1,"token_gen":1,"build":null}})],
-        lands:vec![(1,1,1)],st:Some(0),present:Some(false),..Default::default() });
+        lands:vec![(1,1,1)],st:Some(0),present:Some(false),snapshot_pending:Some(true),..Default::default() });
     super::super::recorder::validate_controlled(&record,&initial).unwrap();
     record.frames[1].present = None;
     assert!(super::super::recorder::validate_controlled(&record,&initial).is_err());
