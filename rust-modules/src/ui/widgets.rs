@@ -268,6 +268,22 @@ pub(crate) enum Art<'a> {
     },
 }
 
+impl Art<'_> {
+    fn motion_identity(&self) -> Option<crate::ui::card_motion::Identity> {
+        use std::hash::{Hash, Hasher};
+        let (owner, sid, key, kind) = match self {
+            Self::Poster(Some(m)) => (*m as *const PmsMovie as usize, m.sid, m.thumb.as_str(), 0u8),
+            Self::Still(Some(m)) => (*m as *const PmsMovie as usize, m.sid, still_key(m), 1),
+            Self::Thumb { sid, key, .. } => (key.as_ptr() as usize, *sid, *key, 2),
+            Self::Person { sid, key, .. } => (key.as_ptr() as usize, *sid, *key, 3),
+            Self::Poster(None) | Self::Still(None) => return None,
+        };
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        (sid.raw(), key, kind).hash(&mut hash);
+        Some(crate::ui::card_motion::Identity { owner, asset: hash.finish() })
+    }
+}
+
 /// The one art-tile draw op. Resolves `art` to a texture (or a dark skeleton) and draws it at `frame`,
 /// scaled about its centre when `focused`. Textured tiles share the CARD COMPOSITE
 /// ([`Painter::tex_carded`], with [`Painter::tex_carded_still`] folding a still's label ground):
@@ -542,8 +558,28 @@ pub(crate) fn art_crop(art: &Art) -> crate::ui::Crop {
 }
 
 /// A not-yet-loaded skeleton falls back to a rimmed fill (no shadow until the art arrives).
+/// The source-facing half of the card primitive, also exercised without a GPU in
+/// host admission tests. The same final rect then goes to the card composite below.
+/// Text-only prewarming neither observes placement nor starts image work.
+pub(crate) fn resolve_card_art(p: Painter, rect: Rect, art: &Art<'_>) -> (u32, f32, f32) {
+    if p.is_recording() { return (0, 0.0, 0.0); }
+    let _admission = art.motion_identity()
+        .map(|id| crate::ui::card_motion::Scope::card(id, p.to_screen(rect).0));
+    match art {
+        Art::Poster(m) => m.map(|m| resolve_tex_wh_on(m.sid, &m.thumb, 250, 375, 0)).unwrap_or((0, 0.0, 0.0)),
+        Art::Still(m) => m.map(|m| resolve_tex_wh_on(m.sid, still_key(m), STILL_RES.0, STILL_RES.1, 0)).unwrap_or((0, 0.0, 0.0)),
+        Art::Thumb { sid, key, res } | Art::Person { sid, key, res } => resolve_tex_wh_on(*sid, key, res.0, res.1, 0),
+    }
+}
+
 pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, scale: f32, f: f32) {
+    // Text prewarming visits an offscreen page. This leaf has no text: starting
+    // image work here would bypass on-screen admission, and pollute its history.
+    if p.is_recording() { return; }
     let r = if focused { frame.scaled(scale) } else { frame };
+    // All card variants resolve inside their final placement scope. Neither the
+    // screen nor its springs can forget to report a new positional expression.
+    let image = resolve_card_art(p, r, &art);
     match art {
         Art::Poster(m) => {
             // **The ROW's server, not the current one.** A `thumb` path is a key on the server that
@@ -553,9 +589,7 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
             // also re-pointed `current`; the moment that stopped, the Library grid of a friend's
             // library drew skeletons for most tiles and OUR films for the few ratingKeys that
             // happen to collide — both servers number from 1, so collisions are the normal case.
-            let (t, tw, th) = m
-                .map(|m| resolve_tex_wh_on(m.sid, &m.thumb, 250, 375, 0))
-                .unwrap_or((0, 0.0, 0.0));
+            let (t, tw, th) = image;
             if t != 0 {
                 p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
             } else {
@@ -593,8 +627,8 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
                 }
             }
         }
-        Art::Thumb { sid, key, res } => {
-            let (t, tw, th) = resolve_tex_wh_on(sid, key, res.0, res.1, 0);
+        Art::Thumb { .. } => {
+            let (t, tw, th) = image;
             if t != 0 {
                 p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
             } else {
@@ -608,9 +642,7 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
         // mark for months for precisely that reason. A shelf of episodes needs the mark as much as
         // a shelf of films does.
         Art::Still(m) => {
-            let (t, tw, th) = m
-                .map(|m| resolve_tex_wh_on(m.sid, still_key(m), STILL_RES.0, STILL_RES.1, 0))
-                .unwrap_or((0, 0.0, 0.0));
+            let (t, tw, th) = image;
             let band = m.map_or(STILL_SCRIM_H_1, |m| {
                 if m.show_title.is_empty() && m.title.is_empty() { STILL_SCRIM_H_1 } else { STILL_SCRIM_H }
             });
@@ -635,8 +667,8 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
             // it too.
             let _ = m;
         }
-        Art::Person { sid, key, res } => {
-            let (t, tw, th) = resolve_tex_wh_on(sid, key, res.0, res.1, 0);
+        Art::Person { key, .. } => {
+            let (t, tw, th) = image;
             if t != 0 {
                 p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
             } else {
@@ -663,7 +695,7 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
 
 /// Which state mark a poster wears — the pure half of [`card`]'s corner, split out for exactly the
 /// reason `detail::ep_state` is: the CHOICE is the behaviour, while drawing it needs a GL context no
-/// host test has. Nothing else inside `card` is assertable, and this is the part that can be wrong.
+/// host test has. Source-admission tests additionally exercise `card` with the host GL stubs.
 ///
 /// | state | mark | drawn by |
 /// |---|---|---|
