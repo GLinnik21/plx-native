@@ -262,11 +262,13 @@ pub enum Key {
     Down,
     /// LEFT and RIGHT carry a flag because the ladder asks about them in two ways that accept
     /// DIFFERENT sets, and the difference is behaviour rather than an accident of spelling.
-    /// `alt` is `false` when the press arrived as the plain [`SDLK_LEFT`]/[`SDLK_RIGHT`] sym, and
+    /// [`classify`] sets `alt` to `false` when the press arrived as the plain [`SDLK_LEFT`]/[`SDLK_RIGHT`] sym, and
     /// `true` when it arrived only as a TRANSPORT key, [`WCODE_REWIND`]/[`WCODE_FASTFORWARD`]
     /// (in either field). The non-player four-way nav dispatch matches `alt: false` alone, so an
     /// alternate-code LEFT on Home reaches no arm that acts on it; the player's scrub arm and the
     /// Chapters strip match both. Preserve that asymmetry — it is what the flag is for.
+    /// [`classify_input`] also uses `alt: false` for an already-canonical navigation direction;
+    /// its screen consumers act on that direction without branching on the raw-code provenance.
     Left {
         alt: bool,
     },
@@ -360,6 +362,48 @@ pub fn classify(sym: c_uint, wcode: c_uint) -> Key {
         return Key::Back;
     }
     Key::Other
+}
+
+/// Classify an owned input event. The Input machine's canonical key is authoritative: pointer
+/// releases and scripted navigation have no raw SDL pair at all. Only `Other` needs raw fields
+/// to distinguish transport actions outside the small navigation alphabet. Screens must use
+/// this boundary instead of reclassifying raw fields and losing the machine's decision.
+pub fn classify_input(key: super::machine::Key, sym: c_uint, wcode: c_uint) -> Key {
+    use super::machine::Key as Canonical;
+    match key {
+        Canonical::Up => Key::Up,
+        Canonical::Down => Key::Down,
+        Canonical::Left => Key::Left { alt: false },
+        Canonical::Right => Key::Right { alt: false },
+        Canonical::Ok => Key::Ok,
+        Canonical::Back => Key::Back,
+        Canonical::Other => classify(sym, wcode),
+    }
+}
+
+#[cfg(test)]
+mod canonical_input_tests {
+    use super::*;
+    use crate::ui::machine::Key as Canonical;
+
+    #[test]
+    fn canonical_keys_work_without_raw_codes_and_outrank_them() {
+        for (canonical, expected) in [(Canonical::Up, Key::Up), (Canonical::Down, Key::Down),
+            (Canonical::Left, Key::Left { alt: false }), (Canonical::Right, Key::Right { alt: false }),
+            (Canonical::Ok, Key::Ok), (Canonical::Back, Key::Back)] {
+            assert_eq!(classify_input(canonical, 0, 0), expected);
+            assert_eq!(classify_input(canonical, 0, WCODE_PAUSE), expected);
+        }
+    }
+
+    #[test]
+    fn other_preserves_physical_transport_and_scrub_codes() {
+        for (sym, wcode) in [(0, WCODE_PLAY), (0, WCODE_PAUSE), (0, WCODE_PLAYPAUSE),
+            (0, WCODE_STOP), (0, WCODE_REWIND), (0, WCODE_FASTFORWARD), (0, WCODE_EXIT),
+            (0, WCODE_POINTER_HIDDEN), (0, 0)] {
+            assert_eq!(classify_input(Canonical::Other, sym, wcode), classify(sym, wcode));
+        }
+    }
 }
 
 /// **Which way the Library grid pages, if this press pages it at all.** `Some(-1)` up, `Some(1)`

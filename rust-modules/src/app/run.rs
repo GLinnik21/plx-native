@@ -3105,6 +3105,68 @@ mod lifecycle_regression_tests {
     }
 
     #[test]
+    fn remote_fifo_exposes_independent_pointer_edges() {
+        use crate::ui::machine::{Edge, InputKind, Key};
+        let _serial = crate::testlock::serial();
+        // SDL's event subsystem only: no window, renderer, native playback or device.
+        assert_eq!(unsafe { SDL_Init(0x4000) }, 0);
+        struct Events;
+        impl Drop for Events {
+            fn drop(&mut self) { unsafe { SDL_Quit(); } }
+        }
+        let _events = Events;
+        let mut app = app();
+        super::super::bridge::show_page(&mut app.pages, AppArg::Player);
+        frame(&mut app, 0);
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        for (token, held) in [("pd:900,870", true), ("pm:1200,870", true),
+            ("pm:1400,870", true), ("pu:1400,870", false)] {
+            assert!(unsafe { ingress_token(&mut app, &mut fr, token) },
+                "the FIFO must express each edge of a held pointer: {token}");
+            unsafe { drain_sdl(&mut app, &mut fr); }
+            assert_eq!(app.ptr.button_down, held, "{token}");
+        }
+        assert_eq!(app.inputs.len(), 4, "no hidden motions, clicks or releases");
+        assert!(matches!(app.inputs[0].kind, InputKind::Click { x: 900.0, y: 870.0, .. }));
+        assert!(matches!(app.inputs[1].kind, InputKind::Drag { x: 1200.0, y: 870.0, .. }));
+        assert!(matches!(app.inputs[2].kind, InputKind::Drag { x: 1400.0, y: 870.0, .. }));
+        assert!(matches!(app.inputs[3].kind, InputKind::Key { key: Key::Ok, edge: Edge::Up, .. }));
+
+        // Deliver the same collected edges through the dispatcher and the real player, one
+        // frame per edge. Screen tests separately grade these coordinates against record_stops;
+        // this map isolates the FIFO -> SDL -> app -> dispatcher -> scrub ownership boundary.
+        use crate::ui::{machine::{FocusKey, Tick}, screen::{Activate, Hover, Stop}, Rect};
+        use crate::screens::registry::PlayerReq;
+        let key = FocusKey { elem: crate::ui::player_hud::ELEM_SCRUB,
+            ..app.pages.focus().expect("the player has a scrub seat") };
+        let rect = crate::ui::player_hud::scrub_hit_rect();
+        app.pages.input.hit.fill(vec![Stop { key, rect, rest_rect: rect, clip: Rect::FULL,
+            hover: Hover::Ignore, activate: Activate::Direct }]);
+        app.pages.input.hit.swap();
+        crate::player::SHARED.duration_ns.store(100_000_000_000, Ordering::Relaxed);
+        for (index, input) in std::mem::take(&mut app.inputs).into_iter().enumerate() {
+            super::super::bridge::frame(&mut app.pages, &mut app.bridge,
+                Tick { ms: 1_000 + index as u32 * 500, dt_us: 16_000 }, vec![input]);
+            let reqs = app.bridge.take_player_reqs();
+            if index < 3 {
+                assert!(reqs.is_empty(), "a held drag previews without any transport request");
+                let page = super::super::bridge::player(&app.pages).unwrap();
+                assert!(page.scrub.drag);
+                assert!(page.scrub.ns > 0);
+            } else {
+                let expected = (crate::ui::player_hud::scrub_frac_x(1400.0) as f64 * 100_000_000_000.0) as i64;
+                assert_eq!(reqs, vec![PlayerReq::CommitSeek(expected)], "release commits once at the final motion");
+            }
+        }
+        // Neither the key's tap debounce nor a repeated pointer-up can replay this seek.
+        assert!(unsafe { ingress_token(&mut app, &mut fr, "pu:1400,870") });
+        unsafe { drain_sdl(&mut app, &mut fr); }
+        super::super::bridge::frame(&mut app.pages, &mut app.bridge,
+            Tick { ms: 4_000, dt_us: 16_000 }, std::mem::take(&mut app.inputs));
+        assert!(app.bridge.take_player_reqs().is_empty());
+    }
+
+    #[test]
     fn controlled_sdl_pointer_gestures_match_ordinary_ingress() {
         let _serial=crate::testlock::serial();
         let mut observed=Vec::new();
