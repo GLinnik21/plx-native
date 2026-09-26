@@ -361,9 +361,22 @@
       },
       { passive: true }
     );
-    window.addEventListener("resize", schedule);
+    // The phone layout centres the pinned scene by its own height (see the
+    // narrow .feel-sticky rule); its offsetHeight ignores the scene's
+    // transforms, so it only changes with the layout.
+    const measure = () => {
+      if (sticky) sticky.style.setProperty("--feel-h", sticky.offsetHeight + "px");
+    };
+    measure();
+    window.addEventListener("resize", () => {
+      measure();
+      schedule();
+    });
     // Late-decoding images and fonts shift the layout under the scene.
-    window.addEventListener("load", schedule);
+    window.addEventListener("load", () => {
+      measure();
+      schedule();
+    });
     tick();
   }
 

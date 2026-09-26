@@ -1518,30 +1518,26 @@ video::-webkit-media-controls-start-playback-button {
   }
 
   /* The TV scene pins just under the header (68px: a 44px tap target plus
-     its padding) and fills the rest of the screen with heading, TV and
-     caption centred in it, so no empty band is left under the caption while
-     it is pinned. The space below the caption already separates it from
-     the Why section, which therefore needs no top padding of its own.
-     It stops 24px short of the bottom edge: iOS Safari fills the area behind
-     its toolbar with one colour sampled from a pinned element touching that
-     edge, and this one is mostly black TV bezel while it zooms, which left a
-     black strip under the toolbar for the rest of the page. */
+     its padding), centred in the rest of the screen. The pinned box is only
+     as tall as its content (heading, TV, caption) and is centred by its top
+     offset, using its height (--feel-h) that site.js measures, NOT by being
+     screen-tall: iOS Safari fills the area behind its toolbar with one
+     colour sampled from a pinned element reaching into it, and a
+     screen-tall box does whenever the toolbar collapses (it is mostly black
+     TV bezel, so the strip went black). */
   .fx .feel {
     height: 260vh;
     height: 260svh;
   }
   .fx .feel-sticky {
-    top: 68px;
-    height: calc(100vh - 92px);
-    height: calc(100svh - 92px);
-    justify-content: center;
+    top: calc(68px + max(0px, (100vh - 68px - var(--feel-h, 0px)) / 2));
+    top: calc(68px + max(0px, (100svh - 68px - var(--feel-h, 0px)) / 2));
+    height: auto;
+    justify-content: flex-start;
     padding: 0;
   }
   .why-section {
     padding-top: 40px;
-  }
-  .fx .why-section {
-    padding-top: 0;
   }
 
   /* Phones get their own taller glass crop (a <picture> source) so the bar
