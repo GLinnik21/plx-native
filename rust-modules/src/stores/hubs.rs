@@ -38,6 +38,14 @@ impl Default for HubsStore {
 }
 
 impl HubsStore {
+    /// Retire the mailbox at the store command boundary, including when recording controls how
+    /// subsequent work is launched. Every command entry point shares this identity-reset rule.
+    fn prepare_command(&mut self, cmd: Option<&HubsCmd>) {
+        if matches!(cmd, Some(HubsCmd::Reset)) {
+            self.adapter = Arc::new(Default::default());
+        }
+    }
+
     /// Seed a fresh owner from restored boot initial conditions (`pms::initial::Initial::restore`),
     /// before any `Bridge`/`Stores` exists.
     pub(crate) fn from_parts(state: crate::pms::PmsState, adapter: crate::pms::PmsAdapter) -> Self {
@@ -171,6 +179,7 @@ impl HubsStore {
     pub(crate) fn controlled(&mut self, cmd: Option<HubsCmd>, dt: f32,
         launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> super::StoreOutcome {
         crate::testlock::assert_held("controlled hubs store");
+        self.prepare_command(cmd.as_ref());
         let command = cmd.is_some();
         let outcome = crate::pms::controlled_work(&mut self.state, &self.adapter, cmd, dt, launch);
         if command || outcome.changed { self.bump(); }
@@ -184,6 +193,7 @@ impl HubsStore {
         launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> super::StoreOutcome {
         #[cfg(test)]
         crate::testlock::assert_held("controlled hubs store with Browse owner");
+        self.prepare_command(cmd.as_ref());
         let command = cmd.is_some();
         let outcome = crate::pms::controlled_work_with_directory(&mut self.state, &self.adapter, cmd, dt, directory, launch);
         if command || outcome.changed { self.bump(); }
@@ -194,9 +204,7 @@ impl HubsStore {
     /// old worker can only finish into the retired mailbox it captured.
     #[cfg(test)]
     pub(crate) fn run(&mut self, cmd: HubsCmd) -> super::StoreOutcome {
-        if matches!(&cmd, HubsCmd::Reset) {
-            self.adapter = Arc::new(Default::default());
-        }
+        self.prepare_command(Some(&cmd));
         let answer = crate::pms::run(&mut self.state, &self.adapter, cmd);
         self.bump();
         answer
@@ -210,9 +218,7 @@ impl HubsStore {
         cmd: HubsCmd,
         directory: crate::stores::browse::DirectoryView<'_>,
     ) -> super::StoreOutcome {
-        if matches!(&cmd, HubsCmd::Reset) {
-            self.adapter = Arc::new(Default::default());
-        }
+        self.prepare_command(Some(&cmd));
         let answer = crate::pms::run_with_directory(&mut self.state, &self.adapter, cmd, directory);
         self.bump();
         answer
@@ -222,6 +228,37 @@ impl HubsStore {
 #[cfg(test)]
 mod contract_tests {
     use super::*;
+
+    #[test]
+    fn every_reset_entry_point_retires_workers_and_accepts_new_landings() {
+        let _guard = crate::testlock::serial();
+        let directory = crate::stores::browse::DirectorySnapshot::fixture(0, 0, vec![]);
+        for path in ["run", "run_with_directory", "controlled", "controlled_with_directory"] {
+            let mut store = HubsStore::default();
+            store.seed_for_test(1, crate::pms::HubState::Ready);
+            let retired = store.adapter();
+            crate::pms::queue_test_landing(&store.state, &retired, Some(1));
+
+            match path {
+                "run" => { let _ = store.run(HubsCmd::Reset); }
+                "run_with_directory" => { let _ = store.run_with_directory(HubsCmd::Reset, directory.view()); }
+                "controlled" => { let _ = store.controlled(Some(HubsCmd::Reset), 0.0, &mut |_| false); }
+                "controlled_with_directory" => {
+                    let _ = store.controlled_with_directory(Some(HubsCmd::Reset), 0.0, directory.view(), &mut |_| false);
+                }
+                _ => unreachable!(),
+            }
+
+            assert!(!Arc::ptr_eq(&retired, &store.adapter()), "{path} kept the old worker adapter");
+            store.seed_for_test(1, crate::pms::HubState::Ready);
+            // Also finish a worker AFTER reset: emptying the old mailbox alone cannot fence it.
+            crate::pms::queue_test_landing(&store.state, &retired, Some(1));
+            assert!(store.take_results().is_empty(), "{path} admitted a retired worker");
+            assert_eq!(crate::pms::take_landings(&retired).len(), 2);
+            store.queue_test_landing(Some(1));
+            assert_eq!(store.take_results().len(), 1, "{path} lost a new worker's landing");
+        }
+    }
 
     fn section(sid: crate::plex::ServerId, section: usize, pinned: bool)
         -> crate::stores::browse::SectionView {

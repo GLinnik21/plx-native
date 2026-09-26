@@ -2060,7 +2060,7 @@ fn reset_with_scope(state: &mut PmsState, adapter: &Arc<PmsAdapter>, scope: &Bro
     // field of the per-`Bridge` `HubsStore`, not a crate-global; see `lib.rs::testlock` and D5.
     #[cfg(test)]
     crate::testlock::assert_held("the pms hub catalog (reset)");
-    let _ = adapter; // rotation is the caller's job (`HubsStore::run*` on `HubsCmd::Reset`)
+    let _ = adapter; // every HubsStore command path rotates before applying `HubsCmd::Reset`
     state.hub_gen = state.hub_gen.wrapping_add(1); // a worker still running belongs to the old identity
     state.srcs = Vec::new();
     forget_roster(state);
