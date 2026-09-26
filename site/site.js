@@ -190,7 +190,6 @@
   // sentence lighting up word by word, the quotes drifting and the big
   // headlines settling. One rAF-throttled pass per scroll frame.
   function initScenes() {
-    const header = document.querySelector(".site-header");
     const hero = document.querySelector(".hero");
     const pin = document.querySelector(".feel");
     const q = (sel) => (pin ? pin.querySelector(sel) : null);
@@ -240,8 +239,6 @@
       const vw = document.documentElement.clientWidth;
       const narrow = isNarrow();
       const y = window.scrollY;
-
-      if (header) header.classList.toggle("is-stuck", y > 4);
 
       if (hero) {
         const p = clamp01(y / (vh * 0.7));
