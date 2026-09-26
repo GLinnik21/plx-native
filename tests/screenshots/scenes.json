@@ -104,11 +104,11 @@
     },
     {
       "name": "site-glass",
-      "state": "The website's glass close-up, supersampled 3x. The Movies library lists its collections after Recently Added, as a real server does; focus is seated on the third card of the last one (Silent Classics), so the Blender Open Movies shelf above it has scrolled up under the tab bar and fills it edge to edge in the collection's pinned custom order (catalog.json `collection_order`): Wing It! behind Home and Movies, Spring behind TV Shows, Sprite Fright past the search button. Measured as the area under the bar, mean HSV saturation 0.49 and mean chroma 0.16, against 0.16 and 0.04 for Continue Watching under it. Crop in canvas pixels: the bar from 8 canvas px left of its left end (the hand-cut framing, matched on the tab labels to 0 px).",
+      "state": "The website's glass close-up, supersampled 3x. The Movies library lists its collections after Recently Added, as a real server does; focus is seated on the third card of the last one (Silent Classics), so the Blender Open Movies shelf above it has scrolled up under the tab bar and fills it edge to edge in the collection's pinned custom order (catalog.json `collection_order`): Wing It! behind Home and Movies, Spring behind TV Shows, Sprite Fright past the search button. Measured as the area under the bar, mean HSV saturation 0.49 and mean chroma 0.16, against 0.16 and 0.04 for Continue Watching under it. Crop in canvas pixels: centred on the bar, which the app centres on the canvas (canvas x 688 to 1233, centre 960): 880 wide, so 168 px of shelf shows either side, at the page's 5.5:1 desktop shape. The phone crop (site-glass-narrow) stays cut from the bar's left end.",
       "triggers": {"library": "0", "libshelf": "3,2"},
       "render_scale": 3,
       "expect": ["libshelf: focus seated on shelf 3 col 2", "libhubs: section 0 landed 4 shelves"],
-      "outputs": [{"file": "closeup-glass.jpg", "dest": "site", "crop": [680, 0, 880, 160]}]
+      "outputs": [{"file": "closeup-glass.jpg", "dest": "site", "crop": [520, 0, 880, 160]}]
     },
     {
       "name": "site-tiles",
