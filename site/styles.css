@@ -1284,9 +1284,14 @@ video::-webkit-media-controls-start-playback-button {
 /* ---------- Doc pages (install/troubleshooting, rendered by tools/render-doc-page.py from
    docs/*.md) — prose only: headings, paragraphs, lists, code, tables, quotes, rules. Reuses
    the credits page's container width and heading scale rather than inventing a new one. ---------- */
+/* One centred reading column: on a wide window a left-pinned column leaves
+   an empty band on the right. Prose fills the column (no narrower measure of
+   its own), so paragraphs, headings and tables share one right edge; 720px of
+   16px text is about 80 characters a line. */
 .doc-page {
   padding: clamp(40px, 7vh, 84px) 0 clamp(56px, 8vh, 96px);
-  max-width: 760px;
+  max-width: 720px;
+  margin: 0 auto;
 }
 .doc-body h1 {
   font-size: clamp(32px, 4.4vw, 56px);
@@ -1321,7 +1326,6 @@ video::-webkit-media-controls-start-playback-button {
   font-size: 16px;
   line-height: 1.65;
   color: var(--text-reading);
-  max-width: 68ch;
   text-wrap: pretty;
 }
 .doc-body p {
