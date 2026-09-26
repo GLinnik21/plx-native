@@ -14,6 +14,8 @@
 //! Page-capture GPU readiness is recorded before dispatch and supplied on replay. It drives the
 //! ordinary motion/presentation gates; the final present decision is still computed and graded.
 //! Physical window authority remains live and cannot be supplied by the recording.
+//! Controlled Person requests keep captured authority; asynchronous ambient session-cache
+//! recovery cannot retire or reissue them at an unrecorded frame.
 //!
 //! Supported effects carry complete private payloads, including screen-input time/source/edge
 //! and focus identity. Missing/extra/changed effects or results prevent SAME. A codec error
