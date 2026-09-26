@@ -7651,7 +7651,7 @@ pub(crate) fn demux(
     let mut original_since = std::time::Instant::now();
     // `base()` re-brackets a v6 host, which is what a URL needs; the plaintext arm hands the
     // `Origin` itself to `open_plain_progressive`, which dials its BARE `host()`.
-    let url = format!("{}{}", origin.base(), path); // https only — carries the token, never logged
+    let url = format!("{}{}", origin.base(), path); // delivery identity; may carry a token, never logged
 
     // PANIC BARRIER around the whole producer body. Not about the unwind itself — this thread is
     // started by `task::spawn`, so std already catches a panic at the thread boundary and turns it

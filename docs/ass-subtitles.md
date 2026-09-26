@@ -19,7 +19,7 @@ history needed for subtitle delay. It keeps all embedded ASS tracks so selecting
 can use the already-read portion of the file. A seek changes source identities while retaining known
 events, headers and fonts: Matroska does not resend earlier signs spanning the seek target.
 Reread packets are deduplicated, and pruning follows a backward seek before the native clock
-rebases; a new session discards the previous media's sources.
+rebases; a new playback discards the previous media's sources.
 Reload-based seeks and demux reopens also retain known events, after revalidating the exact
 delivery identity and complete ASS header inventory. A different file or a new playback cannot
 inherit them. This matters when an in-place seek falls back to a fresh native Load.
