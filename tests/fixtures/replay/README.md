@@ -4,7 +4,15 @@ A directory here is one RECORDING (restructure spec §5.3): `manifest.json` (the
 `rec-NNNN.jsonl` segments, taken on the simulator against `tests/mock_pms.py` by arming
 `plxnative-rec`. They are regression assertions pinned to the build lineage that recorded them
 (§5.5): `tools/plxnative-rec diff` compares two, `tools/plxnative-rec check` verifies one against
-`ALPHABET.json`, and `tests/test_harness.py` verifies every committed one on every `make check`.
+`ALPHABET.json`, and `tests/test_harness.py` checks their schema and closed vocabulary on every
+`make check`. **`make check-replay` builds the macOS simulator and executes every committed
+recording in both Targets and Resolve modes.** The same driver (`tests/replay_fixtures.py`) gates
+the macOS Simulator CI job, with outbound networking denied, and retains each run's logs.
+It requires a successful process exit, exactly one clean summary, every difference counter zero,
+and frame/grade counts matching the complete committed ledger. Missing manifests or segments,
+refused fixtures, timeouts, and incomplete replay all fail; no fixture is quarantined or skipped.
+The renderer-backed replay gate is separate from the pure host suite: `make check` tests its
+strict result parser, but does not launch the simulator.
 
 Controlled bootstrap accepts **Home**, **Settings**, and the typed synthetic
 **12-filmography-detail-return** content domain. `tests/focusfp.sh --rec --only 12` asks the
