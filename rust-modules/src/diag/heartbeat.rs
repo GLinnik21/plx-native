@@ -11,8 +11,8 @@
 //! `budget=`/`evicted_hot=` after `worstprep=` — see [`Instruments::heartbeat_tail`] for the wire
 //! order and why nothing may be inserted ahead of `fps=` or `worstframe=`.
 //!
-//! Two things here are armed and the rest is not, and the split is the measurement's cost: the
-//! eight phases and the two peaks need a clock read per phase, so they hide behind
+//! Phase timing and present-to-present pacing are armed, and the split is the measurement's
+//! cost: the eight phases and the two peaks need a clock read per phase, so they hide behind
 //! `plxnative-framedrop`; every other field is a counter somebody already keeps, so it prints in
 //! every build. The one §8.4 names and this module does NOT have is `allocs=` — see
 //! `heartbeat_tail`'s doc for why a counting allocator was not invented to fill it.
@@ -102,6 +102,77 @@ pub(crate) struct HeartbeatFields {
     pub(crate) evicted_hot: u32,
 }
 
+/// Presented-frame cadence, including pacing/scheduler time outside the measured CPU phases.
+/// The fixed histogram rounds up to integer milliseconds; bin 256 holds every interval over
+/// 255ms. A percentile in that overflow bin reports the observed maximum as an upper bound.
+/// Exact threshold counters use the performance counter directly, before histogram rounding.
+struct FramePacing {
+    histogram: [u64; 257],
+    n: u64,
+    gt16: u64,
+    gt33: u64,
+    gt50: u64,
+    gt100: u64,
+    max_ms: f64,
+}
+
+impl Default for FramePacing {
+    fn default() -> Self {
+        Self {
+            histogram: [0; 257],
+            n: 0,
+            gt16: 0,
+            gt33: 0,
+            gt50: 0,
+            gt100: 0,
+            max_ms: 0.0,
+        }
+    }
+}
+
+impl FramePacing {
+    fn note(&mut self, ticks: u64, frequency: u64) {
+        if frequency == 0 {
+            return;
+        }
+        let elapsed_ms = ticks as f64 * 1000.0 / frequency as f64;
+        self.n += 1;
+        self.histogram[(elapsed_ms.ceil() as usize).min(256)] += 1;
+        self.max_ms = self.max_ms.max(elapsed_ms);
+        // Strictly over 1/60s, 1/30s, 1/20s and 1/10s. Integer cross-products distinguish an
+        // exact boundary from one tick above it, independent of floating point rounding.
+        let ticks = ticks as u128;
+        let frequency = frequency as u128;
+        self.gt16 += u64::from(ticks * 60 > frequency);
+        self.gt33 += u64::from(ticks * 30 > frequency);
+        self.gt50 += u64::from(ticks * 20 > frequency);
+        self.gt100 += u64::from(ticks * 10 > frequency);
+    }
+
+    fn percentile(&self, percent: u64) -> f64 {
+        if self.n == 0 {
+            return 0.0;
+        }
+        let rank = (self.n * percent).div_ceil(100);
+        let mut count = 0;
+        for (ms, n) in self.histogram.iter().enumerate() {
+            count += n;
+            if count >= rank {
+                return if ms == 256 { self.max_ms } else { ms as f64 };
+            }
+        }
+        self.max_ms
+    }
+
+    fn tail(&self) -> String {
+        format!(
+            " frame_n={} frame_gt16={} frame_gt33={} frame_gt50={} frame_gt100={} frame_max={:.1}ms frame_p95={:.1}ms frame_p99={:.1}ms",
+            self.n, self.gt16, self.gt33, self.gt50, self.gt100, self.max_ms,
+            self.percentile(95), self.percentile(99),
+        )
+    }
+}
+
 pub(crate) struct Instruments {
     armed: bool,
     thresh_ms: f64,
@@ -113,6 +184,9 @@ pub(crate) struct Instruments {
     worst_prep: f64,
     /// THIS frame's counters, replaced (never accumulated) once per presented frame.
     counters: FrameCounters,
+    /// None after startup or a skipped present, so intentional idle gaps are not samples.
+    previous_present: Option<u64>,
+    pacing: FramePacing,
 }
 
 impl Instruments {
@@ -128,6 +202,8 @@ impl Instruments {
             worst: 0.0,
             worst_prep: 0.0,
             counters: FrameCounters::default(),
+            previous_present: None,
+            pacing: FramePacing::default(),
         }
     }
 
@@ -154,12 +230,20 @@ impl Instruments {
         };
     }
 
-    /// A frame that does not present has no draw/capture/swap: those phases END where prepare did.
-    pub(crate) fn skip_present_phases(&mut self) {
+    /// Initialize draw/capture/swap to the end of prepare before the present decision. This
+    /// runs on every iteration; a later present replaces the stamps and preserves cadence.
+    pub(crate) fn seed_present_phases(&mut self) {
         let p = self.stamps[Phase::Prepare as usize];
         self.stamps[Phase::Draw as usize] = p;
         self.stamps[Phase::Capture as usize] = p;
         self.stamps[Phase::Swap as usize] = p;
+    }
+
+    /// An iteration that actually skips presenting has no draw/capture/swap. Its idle gap must
+    /// not become a pacing sample when presenting resumes; call only after that decision.
+    pub(crate) fn skip_present_phases(&mut self) {
+        self.seed_present_phases();
+        self.previous_present = None;
     }
 
     /// After `mark(Prepare)`: fold this iteration's prepare span into the per-second peak.
@@ -167,9 +251,8 @@ impl Instruments {
         if !self.armed {
             return;
         }
-        let prep = self.ms(
-            self.stamps[Phase::Prepare as usize].wrapping_sub(self.stamps[Phase::TickDrain as usize]),
-        );
+        let prep = self.ms(self.stamps[Phase::Prepare as usize]
+            .wrapping_sub(self.stamps[Phase::TickDrain as usize]));
         if prep > self.worst_prep {
             self.worst_prep = prep;
         }
@@ -205,7 +288,13 @@ impl Instruments {
         if !self.armed {
             return None;
         }
-        let total = self.ms(self.stamps[Phase::Swap as usize].wrapping_sub(self.stamps[Phase::Top as usize]));
+        let present = self.stamps[Phase::Swap as usize];
+        if let Some(previous) = self.previous_present.replace(present) {
+            self.pacing
+                .note(present.wrapping_sub(previous), self.perf_freq as u64);
+        }
+        let total = self
+            .ms(self.stamps[Phase::Swap as usize].wrapping_sub(self.stamps[Phase::Top as usize]));
         if total > self.worst {
             self.worst = total;
         }
@@ -236,7 +325,7 @@ impl Instruments {
     /// The heartbeat's trailing fields, and the per-second reset. The WIRE ORDER is a contract:
     ///
     /// ```text
-    /// … fps=<n> [load= snap= period=] [worstframe= worstprep=] carried= dropped= budget= evicted_hot= [rec=] [sim=1]
+    /// … fps=<n> [load= snap= period=] [worstframe= worstprep=] carried= dropped= budget= evicted_hot= [frame_n= frame_gt16= frame_gt33= frame_gt50= frame_gt100= frame_max= frame_p95= frame_p99=] [rec=] [sim=1]
     /// ```
     ///
     /// * `worstframe=`/`worstprep=` are the ARMED pair (`plxnative-framedrop`) and stay LAST of
@@ -247,6 +336,11 @@ impl Instruments {
     ///   of them costs a measurement: they are counters four owners already keep. `budget=` is
     ///   `admitted/refused`, with `/solo:<class>` appended only when a solo take was admitted in
     ///   the second — a field that is usually absent, so its presence is the event.
+    /// * The ARMED `frame_*` summary measures intervals between consecutive presented swaps.
+    ///   It includes pacing delays outside the CPU phases, excludes gaps across a skipped
+    ///   present, and resets each heartbeat while preserving the previous present timestamp.
+    ///   `gt16` and `gt33` mean strictly over 1000/60ms and 1000/30ms. Percentiles round up to
+    ///   whole milliseconds; an overflow percentile (>255ms) reports the maximum interval.
     /// * `rec_us` is the recorder's spend this second (spec §5.3): it rides after all of them,
     ///   and its presence is what disqualifies the run's `fps=`/`worstframe=` in `tests/run.py`,
     ///   exactly as the profiler triggers do — a recorder perturbs the pacing it feeds.
@@ -258,7 +352,10 @@ impl Instruments {
     pub(crate) fn heartbeat_tail(&mut self, f: HeartbeatFields, rec_us: Option<u64>) -> String {
         let mut s = String::new();
         if self.armed {
-            s = format!(" worstframe={:.1}ms worstprep={:.1}ms", self.worst, self.worst_prep);
+            s = format!(
+                " worstframe={:.1}ms worstprep={:.1}ms",
+                self.worst, self.worst_prep
+            );
             self.worst = 0.0;
             self.worst_prep = 0.0;
         }
@@ -274,6 +371,10 @@ impl Instruments {
             },
             f.evicted_hot,
         ));
+        if self.armed {
+            s.push_str(&self.pacing.tail());
+            self.pacing = FramePacing::default();
+        }
         if let Some(us) = rec_us {
             s.push_str(&format!(" rec={us}us"));
         }
@@ -344,7 +445,11 @@ impl ColdOpens {
         if self.pending.len() >= COLD_PENDING_MAX {
             self.pending.remove(0);
         }
-        self.pending.push(Pending { id, screen, at_ms: now_ms });
+        self.pending.push(Pending {
+            id,
+            screen,
+            at_ms: now_ms,
+        });
     }
 
     /// A body was unmounted without ever drawing: forget it rather than report it late.
@@ -403,7 +508,12 @@ mod tests {
         let mut i = Instruments::new(true, 0.0); // threshold 0: every frame is a drop
         i.perf_freq = 1000.0; // one tick per ms, so spans are readable
         i.stamps = [0, 1, 3, 6, 10, 15, 21, 28, 36];
-        i.note_frame_counters(FrameCounters { uploads: 2, upload_px: 187_500, cards: 9, cards_off: 1 });
+        i.note_frame_counters(FrameCounters {
+            uploads: 2,
+            upload_px: 187_500,
+            cards: 9,
+            cards_off: 1,
+        });
         let line = i.frame_drop_line(&|| "route=home".into()).unwrap();
         assert_eq!(
             line,
@@ -412,13 +522,142 @@ mod tests {
         );
         assert_eq!(
             i.heartbeat_tail(HeartbeatFields::default(), None),
-            " worstframe=36.0ms worstprep=0.0ms carried=0 dropped=0 budget=0/0 evicted_hot=0"
+            " worstframe=36.0ms worstprep=0.0ms carried=0 dropped=0 budget=0/0 evicted_hot=0 \
+             frame_n=0 frame_gt16=0 frame_gt33=0 frame_gt50=0 frame_gt100=0 frame_max=0.0ms frame_p95=0.0ms frame_p99=0.0ms"
         );
         assert_eq!(
             i.heartbeat_tail(HeartbeatFields::default(), Some(17)),
-            " worstframe=0.0ms worstprep=0.0ms carried=0 dropped=0 budget=0/0 evicted_hot=0 rec=17us",
+            " worstframe=0.0ms worstprep=0.0ms carried=0 dropped=0 budget=0/0 evicted_hot=0 \
+             frame_n=0 frame_gt16=0 frame_gt33=0 frame_gt50=0 frame_gt100=0 frame_max=0.0ms frame_p95=0.0ms frame_p99=0.0ms rec=17us",
             "reset per second; rec= rides last"
         );
+    }
+
+    fn present_at(i: &mut Instruments, swap: u64) {
+        i.stamps = [swap - 2; 9];
+        // prepare_window seeds these phases on every iteration, including presented frames.
+        i.seed_present_phases();
+        i.stamps[Phase::Swap as usize] = swap;
+        assert!(
+            i.frame_drop_line(&String::new).is_none(),
+            "short CPU phases need no FRAMEDROP line"
+        );
+    }
+
+    #[test]
+    fn pacing_measures_actual_swap_intervals_including_time_outside_cpu_work() {
+        let mut i = Instruments::new(true, 22.0);
+        present_at(&mut i, 100);
+        present_at(&mut i, 150);
+        let tail = i.heartbeat_tail(HeartbeatFields::default(), None);
+        assert!(tail.contains(" worstframe=2.0ms "), "{tail}");
+        assert!(tail.contains(" frame_n=1 frame_gt16=1 frame_gt33=1 frame_gt50=0 frame_gt100=0 frame_max=50.0ms frame_p95=50.0ms frame_p99=50.0ms"), "{tail}");
+        let mut unarmed = Instruments::new(false, 22.0);
+        present_at(&mut unarmed, 100);
+        present_at(&mut unarmed, 150);
+        assert_eq!(unarmed.pacing.n, 0);
+        assert_eq!(unarmed.previous_present, None);
+        assert!(!unarmed
+            .heartbeat_tail(HeartbeatFields::default(), None)
+            .contains("frame_"));
+    }
+
+    #[test]
+    fn skipped_present_excludes_idle_gap_without_discarding_prior_samples() {
+        let mut i = Instruments::new(true, 22.0);
+        present_at(&mut i, 100);
+        present_at(&mut i, 116);
+        i.skip_present_phases();
+        present_at(&mut i, 10_000);
+        present_at(&mut i, 10_016);
+        let tail = i.heartbeat_tail(HeartbeatFields::default(), None);
+        assert!(
+            tail.contains(
+                " frame_n=2 frame_gt16=0 frame_gt33=0 frame_gt50=0 frame_gt100=0 frame_max=16.0ms"
+            ),
+            "{tail}"
+        );
+    }
+
+    #[test]
+    fn prepare_seeding_preserves_present_cadence_and_only_actual_idle_breaks_it() {
+        let mut i = Instruments::new(true, 22.0);
+        // The same sequence as run.rs: prepare_window seeds every iteration, then a present
+        // replaces its swap stamp. Three consecutive presents therefore give two intervals.
+        for swap in [100, 117, 134] {
+            present_at(&mut i, swap);
+        }
+        assert_eq!(i.pacing.n, 2);
+        assert_eq!(i.previous_present, Some(134));
+        i.stamps[Phase::Prepare as usize] = 140;
+        i.seed_present_phases();
+        assert_eq!(i.previous_present, Some(134), "seeding alone is not idle");
+        assert_eq!(&i.stamps[Phase::Draw as usize..], &[140, 140, 140]);
+        // Only the actual !fr.present branch marks the cadence discontinuity.
+        i.skip_present_phases();
+        assert_eq!(i.previous_present, None);
+        present_at(&mut i, 10_000);
+        assert_eq!(
+            i.pacing.n, 2,
+            "first present after idle only anchors the next interval"
+        );
+        present_at(&mut i, 10_017);
+        assert_eq!(i.pacing.n, 3);
+        assert_eq!(i.pacing.max_ms, 17.0);
+    }
+
+    #[test]
+    fn pacing_thresholds_are_strict_and_histogram_overflow_keeps_long_stalls() {
+        let mut i = Instruments::new(true, 22.0);
+        i.perf_freq = 60_000.0;
+        let mut stamp = 100;
+        present_at(&mut i, stamp);
+        // Exact 1/60, 1/30, 1/20, 1/10 second boundaries and one tick above each, then 500ms.
+        for interval in [1000, 1001, 2000, 2001, 3000, 3001, 6000, 6001, 30_000] {
+            stamp += interval;
+            present_at(&mut i, stamp);
+        }
+        assert_eq!(i.pacing.histogram[256], 1);
+        let tail = i.heartbeat_tail(HeartbeatFields::default(), None);
+        assert!(tail.contains(" frame_n=9 frame_gt16=8 frame_gt33=6 frame_gt50=4 frame_gt100=2 frame_max=500.0ms frame_p95=500.0ms frame_p99=500.0ms"), "{tail}");
+    }
+
+    #[test]
+    fn pacing_percentiles_use_nearest_rank_and_round_up_to_integer_ms() {
+        let mut pacing = FramePacing::default();
+        for _ in 0..95 {
+            pacing.note(10_100, 1_000_000);
+        }
+        for _ in 0..3 {
+            pacing.note(30_000, 1_000_000);
+        }
+        pacing.note(100_000, 1_000_000);
+        pacing.note(200_000, 1_000_000);
+        assert_eq!(pacing.percentile(95), 11.0);
+        assert_eq!(pacing.percentile(99), 100.0);
+        assert_eq!(pacing.percentile(100), 200.0);
+    }
+
+    #[test]
+    fn heartbeat_resets_pacing_samples_but_preserves_consecutive_present_cadence() {
+        let mut i = Instruments::new(true, 22.0);
+        present_at(&mut i, 100);
+        present_at(&mut i, 116);
+        assert!(i
+            .heartbeat_tail(HeartbeatFields::default(), None)
+            .contains(" frame_n=1 "));
+        assert_eq!(i.previous_present, Some(116));
+        assert_eq!(i.pacing.n, 0);
+        present_at(&mut i, 166);
+        let tail = i.heartbeat_tail(HeartbeatFields::default(), None);
+        assert!(
+            tail.contains(
+                " frame_n=1 frame_gt16=1 frame_gt33=1 frame_gt50=0 frame_gt100=0 frame_max=50.0ms"
+            ),
+            "{tail}"
+        );
+        let empty = i.heartbeat_tail(HeartbeatFields::default(), None);
+        assert!(empty.contains(" frame_n=0 frame_gt16=0 frame_gt33=0 frame_gt50=0 frame_gt100=0 frame_max=0.0ms frame_p95=0.0ms frame_p99=0.0ms"), "{empty}");
     }
 
     /// The defect this fixed: the counters were drained by the `extra()` closure, which runs only
@@ -431,11 +670,21 @@ mod tests {
         i.perf_freq = 1000.0;
         // frame 1: nine uploads, but a 5 ms frame — under the threshold, so NO line
         i.stamps = [0, 1, 1, 1, 1, 2, 4, 4, 5];
-        i.note_frame_counters(FrameCounters { uploads: 9, upload_px: 843_750, cards: 40, cards_off: 3 });
+        i.note_frame_counters(FrameCounters {
+            uploads: 9,
+            upload_px: 843_750,
+            cards: 40,
+            cards_off: 3,
+        });
         assert!(i.frame_drop_line(&|| "route=detail".into()).is_none());
         // frame 2: nothing uploaded, and slow — the line must not inherit frame 1's nine
         i.stamps = [0, 1, 2, 3, 4, 5, 40, 41, 42];
-        i.note_frame_counters(FrameCounters { uploads: 0, upload_px: 0, cards: 12, cards_off: 0 });
+        i.note_frame_counters(FrameCounters {
+            uploads: 0,
+            upload_px: 0,
+            cards: 12,
+            cards_off: 0,
+        });
         let line = i.frame_drop_line(&|| "route=detail".into()).unwrap();
         assert!(line.contains(" up=0 px=0 cards=12 off=0 "), "{line}");
     }
@@ -447,11 +696,17 @@ mod tests {
         // a frame that prepared and drew SOMETHING ELSE says nothing about instance 7
         c.note_prepare(0);
         c.drawn(4, 1_000, 0);
-        assert!(c.take_lines().is_empty(), "another body's draw is not this mount's");
+        assert!(
+            c.take_lines().is_empty(),
+            "another body's draw is not this mount's"
+        );
         // …and the frame it does draw on: 40 ms later, budget refused nothing
         c.note_prepare(3);
         c.drawn(7, 1_040, 3);
-        assert_eq!(c.take_lines(), vec!["coldopen screen=detail ms=40 prepared=true".to_string()]);
+        assert_eq!(
+            c.take_lines(),
+            vec!["coldopen screen=detail ms=40 prepared=true".to_string()]
+        );
         // never a second line for the same instance
         c.note_prepare(3);
         c.drawn(7, 1_200, 3);
@@ -464,7 +719,10 @@ mod tests {
         c.mounted(2, "home", 500);
         c.note_prepare(11);
         c.drawn(2, 500, 12); // one take refused between the window opening and the draw
-        assert_eq!(c.take_lines(), vec!["coldopen screen=home ms=0 prepared=false".to_string()]);
+        assert_eq!(
+            c.take_lines(),
+            vec!["coldopen screen=home ms=0 prepared=false".to_string()]
+        );
     }
 
     #[test]

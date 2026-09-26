@@ -25,6 +25,7 @@
 //! on the dispatcher yet. The bridge drains them after every dispatcher frame.
 
 use crate::screens::family::SettingsPage;
+use std::sync::Arc;
 use crate::screens::settings::{Family, RouteSurface};
 use crate::stores::{StoreCmd, StoreId, StoreWork};
 use crate::ui::machine::{
@@ -417,7 +418,9 @@ pub(crate) struct LibraryMemory {
     pub(crate) query: Option<u32>,
     pub(crate) grid_reset_pending: bool,
     pub(crate) viewports: Vec<LibraryViewport>,
-    pub(crate) keys: Vec<LibraryKey>,
+    /// Return snapshots share unchanged catalog keys. The live registry detaches on mutation;
+    /// the canonical state remains the ordered key values, never this allocation's identity.
+    pub(crate) keys: Arc<Vec<LibraryKey>>,
     pub(crate) next_elem: u32,
     pub(crate) section: Option<LibrarySectionIdentity>,
     pub(crate) scroll: f32,
@@ -663,7 +666,7 @@ impl crate::ui::machine::LogicalState for PageMemory {
                     c.u32(u32::from(section.sid.raw())).u64(section.key as u64);
                 });
                 c.seq(memory.keys.len());
-                for key in &memory.keys {
+                for key in memory.keys.iter() {
                     write_library_identity(&key.identity, c);
                     c.u32(key.elem).u32(key.last_group).u32(key.last_index);
                 }
