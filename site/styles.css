@@ -134,6 +134,25 @@ video::-webkit-media-controls-start-playback-button {
 .ambient-ground {
   display: none;
 }
+/* iOS/iPadOS Safari only (-webkit-touch-callout is WebKit-on-iOS): Safari
+   fills the area behind its bottom toolbar with a colour sampled from a
+   fixed or sticky element at the bottom edge, and keeps it. Left to itself
+   it picked the pinned TV scene's black bezel and kept a black strip under
+   the toolbar for the rest of the page. This thin fixed strip is the element
+   it samples instead, in the ground's own dark warm tone. */
+@supports (-webkit-touch-callout: none) {
+  body::after {
+    content: "";
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 100;
+    height: 4px;
+    background: color-mix(in srgb, var(--color-atmos-charcoal) 80%, var(--color-atmos-umber));
+    pointer-events: none;
+  }
+}
 .page-root {
   max-width: 1240px;
   margin: 0 auto;
