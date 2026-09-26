@@ -2152,7 +2152,9 @@ mod tests {
         // has not. The predecessor 0x6c07_e505_2de6_63b8 is kept in this comment for the same
         // reason every value above it is: it is what the recordings made before the change were
         // graded under.
-        assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0xb2a6_c39d_095e_c1b6);
+        // Plaintext consent adds the captured offer and persisted answers: ControlledHomeInitV5
+        // carries SessionInitV4. The previous app census was 0xb2a6_c39d_095e_c1b6.
+        assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0x5232_f81a_719f_4c3c);
     }
 
     /// The gate at the REAL hubs landing site, through the recording the driver loads: a result
