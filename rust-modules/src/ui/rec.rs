@@ -706,6 +706,7 @@ impl Recording {
         let mut metrics = HashMap::new();
         let mut stopped_at = None;
         let mut n = 0usize;
+        let mut after_tick = false;
         for seg in segments {
             for line in seg.split(|&b| b == b'\n') {
                 if line.is_empty() {
@@ -735,11 +736,10 @@ impl Recording {
                     }
                     "capture" => {
                         if fr.snapshot_pending.is_some() { return Err(malformed(n,"duplicate capture readiness")); }
-                        if fr.tick.is_none() || fr.present.is_some() || fr.focus.is_some()
-                            || !fr.inputs.is_empty() || !fr.effects.is_empty() || !fr.results.is_empty()
-                            || !fr.life.is_empty() || !fr.resolutions.is_empty() || !fr.lands.is_empty()
-                            || fr.st.is_some() {
-                            return Err(malformed(n,"capture readiness after dispatch or before tick"));
+                        // Native/direct ingress can precede the clock row. The capture sample
+                        // itself is immediately after that row, before logical tick dispatch.
+                        if !after_tick || fr.tick.is_none() {
+                            return Err(malformed(n,"capture readiness is not immediately after tick"));
                         }
                         if v.as_object().is_none_or(|o| o.len() != 3) {
                             return Err(malformed(n,"capture readiness envelope"));
@@ -813,6 +813,7 @@ impl Recording {
                     }
                     _ => return Err(malformed(n, "record kind")),
                 }
+                after_tick = kind == "tick";
             }
         }
         if frames.last().is_some_and(|frame| frame.tick.is_none()) { return Err(malformed(n,"completed frame lacks tick")); }
@@ -1111,8 +1112,13 @@ mod tests {
         let capture = json!({"f":0,"t":"capture","pending":true}).to_string() + "\n";
         let good = Recording::parse(&manifest, &[format!("{tick}{capture}").as_bytes()], 1).unwrap();
         assert_eq!(good.frames[0].snapshot_pending, Some(true));
+        let ingress = json!({"f":0,"t":"in","kind":"lifecycle","code":262}).to_string();
+        assert!(Recording::parse(&manifest, &[format!("{ingress}\n{tick}{capture}").as_bytes()], 1).is_ok(),
+            "native ingress is recorded before clock_and_press samples the GPU");
         for bad in [
             format!("{capture}{tick}"), format!("{tick}{capture}{capture}"),
+            format!("{tick}{}\n{}\n", json!({"f":1,"t":"capture","pending":true}),
+                json!({"f":1,"t":"tick","ms":16,"dt_us":16000})),
             format!("{tick}{}\n", json!({"f":0,"t":"capture","pending":0})),
             format!("{tick}{}\n", json!({"f":0,"t":"capture","pending":null})),
             format!("{tick}{}\n", json!({"f":0,"t":"capture","pending":true,"extra":0})),
