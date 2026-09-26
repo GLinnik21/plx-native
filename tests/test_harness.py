@@ -556,18 +556,7 @@ class ReplayFixtures(unittest.TestCase):
                                         "%s/%s: a %d-char string outside the alphabet" % (name, fn, len(v)))
         self.assertGreater(checked, 0)
 
-    # Fixture 12 cannot be re-recorded until the controlled-effect encoder
-    # (`app/bootstrap/effects.rs`) learns `ContentReq::PreviewStart`: it currently handles only
-    # `ContentReq::Push`/`Present`/`Back`, and Flow 12's own flow trips the Detail hero-preview
-    # autostart. Quarantined explicitly rather than silently passed by a schema-only check — a
-    # reader of `make check` output should see "known-stale, encoder gap" instead of silence.
-    QUARANTINED_FIXTURES = {
-        "12-filmography-detail-return":
-            "state_fp stale (0x8fac311a39190e46, anchors 1/6 moved to 0x155947674871ffe8): "
-            "the controlled-effect encoder cannot record the Detail hero-preview autostart this "
-            "flow trips, so it cannot be re-recorded until app/bootstrap/effects.rs gains "
-            "ContentReq::PreviewStart",
-    }
+    QUARANTINED_FIXTURES = {}
 
     def test_every_committed_fixture_carries_the_trees_recording_schema(self):
         """`ui/rec.rs`'s SCHEMA moved 1 -> 2 in restructure phase 11 and this suite did not

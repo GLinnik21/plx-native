@@ -70,15 +70,14 @@ gained the seven page names flat — `state_fp` moved from `0x2ee80fef41949b4b` 
 NO recorded frame hash changed. The committed artifacts could not be loaded at all
 (`replay: REFUSED — state shape 0x2ee80fef41949b4b recorded, 0x489bbd488180e355 here`, all three),
 which is the machine-checkable condition `rerecord` verifies for itself; nothing was accepted,
-because nothing could be compared. The three anchor manifests no longer share one `state_fp`:
-the store-ownership migration re-recorded `1-boot-home-chip-grid` and `6-settings-family` onto
-`state_fp` `1538339256646369256` (`0x155947674871ffe8`), but `12-filmography-detail-return` still
-carries the earlier `10352703632114781766` (`0x8fac311a39190e46`) and REFUSES to load — the
-controlled-effect encoder (`app/bootstrap/effects.rs`) only handles
-`ContentReq::Push`/`Present`/`Back`, and Flow 12's own flow trips the Detail hero-preview
-autostart, which the encoder cannot record yet. `tests/test_harness.py`'s schema-drift check
-quarantines it with that reason until the encoder gains that effect; do not treat the next
-`rerecord` of 1 or 6 as proof 12 is current too. Clean replay summaries require
+because nothing could be compared. All three anchors were subsequently re-recorded against the current state shape
+`4766036340958210980` (`0x42245cccf16aaba4`). The controlled effect encoder now covers preview
+start/stop/transport/seek, item-menu requests, and every content-panel payload with exhaustive
+matches. Replay regenerates those typed requests and compares their complete JSON payloads;
+it does not decode recorded effects into executable requests. Full playback remains outside
+this controlled domain. Flow 12 also waits for the initial Home root to mount before opening
+Detail, so a cold renderer taking longer than the 500 ms scenario delay cannot discard the
+Detail request. Fixture 12's quarantine is removed. Clean replay summaries require
 `input_diffs=0 effect_diffs=0 focus_diffs=0 hit_diffs=0` as well as zero state, presentation,
 result, and landing diffs.
 

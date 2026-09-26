@@ -1,7 +1,7 @@
 {
  "anchor": true,
  "blobs": false,
- "build": "0.7.0-dev",
+ "build": "0.8.0-dev",
  "clock": {
   "start": 0
  },
@@ -17,7 +17,11 @@
    "consent": {
     "asked_version": 0,
     "errors": false,
-    "usage": false
+    "errors_declined_scope": 0,
+    "errors_scope": 0,
+    "usage": false,
+    "usage_declined_scope": 0,
+    "usage_scope": 0
    },
    "content": {
     "detail": "1001",
@@ -48,6 +52,7 @@
    "primary_client": 1,
    "session": {
     "active_profile": null,
+    "admitted_persistence": null,
     "apply_pending": false,
     "authority": {
      "DevPms": {
@@ -56,8 +61,8 @@
        "address": "127.0.0.1",
        "machine_id": "",
        "name": "",
-       "origin": "http://127.0.0.1:32498",
-       "port": 32498,
+       "origin": "http://127.0.0.1:32619",
+       "port": 32619,
        "tier": "local",
        "token": "s00000002"
       }
@@ -65,6 +70,11 @@
     },
     "authorized_in_flow": false,
     "code_replaced": false,
+    "commit_phase": {
+     "admitted": false,
+     "durable": false,
+     "proves_saved_login": false
+    },
     "committed_credentials": {
      "account_token": "",
      "client_id": "s00000001",
@@ -96,7 +106,12 @@
     },
     "epoch": 1,
     "error": "",
+    "held_handoff": null,
     "inbox": [],
+    "incident": null,
+    "incidents_seen": [],
+    "link_trouble": false,
+    "next_incident": 0,
     "next_qr": 0,
     "next_req": 0,
     "pending": {},
@@ -123,6 +138,8 @@
       "token": ""
      },
      "sources": [],
+     "subtitle_tone": "white",
+     "trailer_autoplay": false,
      "user": {
       "id": 0,
       "thumb": "",
@@ -131,6 +148,9 @@
       "uuid": ""
      }
     },
+    "persistence_purpose": null,
+    "persistence_warning": null,
+    "persistence_warning_answered": false,
     "phase": "Idle",
     "picker": "Boot",
     "pin_code": "",
@@ -140,6 +160,8 @@
     "qr_gen": 0,
     "qr_png": [],
     "signin_active": false,
+    "switch_refused_for": null,
+    "unconfirmed_fresh_prior": null,
     "users": []
    },
    "settings": null,
@@ -157,11 +179,11 @@
    ],
    "version": 1
   },
-  "hash": 4701756076162525103,
+  "hash": 2728831299102762005,
   "probe": "controlled=home version=1"
  },
  "schema": 3,
- "state_fp": 10352703632114781766,
+ "state_fp": 4766036340958210980,
  "triggers": [
   "plxnative-app-init",
   "plxnative-rec",
