@@ -410,7 +410,9 @@ pub(crate) fn validate_controlled(recording: &Recording, initial: &super::bootst
             return Err("invalid bootstrap frame");
         }
         for input in &frame.inputs {
-            if direct_token(input).is_none() { decode_input(input)?; }
+            if direct_token(input).is_none() && controlled_foreground(input)?.is_none() {
+                decode_input(input)?;
+            }
         }
         // Admissions and terminals share a frame when the local spawn is refused. Arrays retain
         // their own order, so establish every synchronous answer before validating that frame's
@@ -1249,6 +1251,20 @@ pub(crate) fn enc_lifecycle(code: u32) -> Value {
     json!({"kind": "lifecycle", "code": code})
 }
 
+/// Startup activation is part of the bounded Home/Settings/content domain. Backgrounding
+/// and playback restoration are not: accepting these two notifications grants no native,
+/// credential or network authority to a recording. Keep the complete envelope canonical.
+pub(crate) fn controlled_foreground(value: &Value) -> Result<Option<u32>, &'static str> {
+    if value["kind"] != "lifecycle" { return Ok(None); }
+    let code = value["code"].as_u64().and_then(|n| u32::try_from(n).ok())
+        .filter(|code| matches!(code, 0x105 | 0x106))
+        .ok_or("unsupported controlled lifecycle")?;
+    if input_payload(value) != enc_lifecycle(code) {
+        return Err("noncanonical controlled lifecycle");
+    }
+    Ok(Some(code))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1337,6 +1353,10 @@ mod tests {
             recording.frames[1].inputs = vec![json!({"f":1,"t":"in","kind":"lifecycle","code":code})];
             assert!(validate_controlled(&recording, &initial).is_err(),
                 "background and unknown lifecycle remain outside the controlled domain");
+        }
+        for value in [json!({"kind":"lifecycle","code":0x106,"extra":true}),
+            json!({"kind":"lifecycle","code":"262"}), json!({"kind":"lifecycle"})] {
+            assert!(controlled_foreground(&value).is_err());
         }
     }
 

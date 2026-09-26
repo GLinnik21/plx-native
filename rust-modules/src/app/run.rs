@@ -556,11 +556,12 @@ unsafe fn present_and_swap(
 /// Ingest: the lab command channel, the remote FIFO and the SDL event queue (spec §3.3 step 2).
 /// Every key, pointer, text and lifecycle event the frame acts on enters here.
 pub(crate) unsafe fn ingest(app: &mut App, fr: &mut Frame) {
+        let supplied = controlled_replay(app);
         // Cloud Test Lab has no SSH/FIFO. Its LAB build long-polls outward, then leaves each
         // command here for the SDL thread so the same dispatcher and event queue remain the
         // only input path. Acknowledge acceptance after dispatch, before polling SDL below.
         for command in crate::lab::take_commands() {
-            let ok = ingress_token(app, fr, &command.token);
+            let ok = !supplied && ingress_token(app, fr, &command.token);
             crate::lab::command_done(command.id, ok);
         }
         // The FIFO's tokens are collected first so the recorder (a field beside `remote`) can
@@ -571,7 +572,7 @@ pub(crate) unsafe fn ingest(app: &mut App, fr: &mut Frame) {
             r.drain(|tok| toks.push(tok.to_string()));
         }
         for tok in toks {
-            let _ = ingress_token(app, fr, &tok);
+            if !supplied { let _ = ingress_token(app, fr, &tok); }
         }
         drain_sdl(app, fr);
 }
@@ -640,6 +641,18 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
     let et = rd_u32(&app.ev, 0);
     app.window_activity.event(et);
     crate::telemetry::window::lifecycle(et, matches!(app.route(), AppArg::Player));
+    if controlled_replay(app) {
+        // The tape owns logical ingress; real SDL startup notifications must not be
+        // counted a second time. The real compositor still owns window safety.
+        // Only its DID foreground reacquires native handles. Recorded notifications
+        // below never reacquire them, revoke grants or resume a native player.
+        if et == 0x106 { crate::system::sys_grab_wayland(app.win); }
+        if matches!(et, 0x103 | 0x104 | SDL_QUIT) {
+            app.rec.refuse("live window exit interrupted controlled replay");
+            app.running = false;
+        }
+        return;
+    }
     // INPUT while a popover holds the page frozen is the POPOVER's: every invalidate
     // such an event raises — the one below, and whatever its handler adds — is
     // attributed to it, so the frozen host is not re-rendered on every key-up
@@ -2744,6 +2757,18 @@ unsafe fn replay_inject(app: &mut App, fr: &mut Frame, v: &serde_json::Value) {
         return;
     }
     if app.boot_initial.is_some() {
+        match super::recorder::controlled_foreground(v) {
+            Ok(Some(code)) => {
+                app.rec.input(super::recorder::enc_lifecycle(code));
+                // Same navigation owner as ordinary foreground, with platform and
+                // player restoration kept behind actual SDL lifecycle ingress.
+                super::bridge::foreground(&mut app.pages);
+                crate::ui::idle::invalidate();
+                return;
+            }
+            Err(reason) => { app.rec.refuse(reason); return; }
+            Ok(None) => {}
+        }
         match super::recorder::decode_input(v) {
             Ok(input) if input.source == crate::ui::machine::Source::Script => {
                 // The typed initial scenario regenerates this internal step at its recorded
@@ -2784,6 +2809,10 @@ unsafe fn replay_inject(app: &mut App, fr: &mut Frame, v: &serde_json::Value) {
         }
         other => log(&format!("replay: input kind {other:?} is not replayable; skipped")),
     }
+}
+
+fn controlled_replay(app: &App) -> bool {
+    app.boot_initial.is_some() && matches!(&app.rec, super::recorder::Recplay::Replaying(_))
 }
 
 /// The same bounded physical-key bookkeeping for controlled recording and supplied replay.
@@ -3057,6 +3086,66 @@ mod lifecycle_regression_tests {
             Tap::focus(&mut app.rec, 0, None);
             assert!(app.rec.end_frame(&|| 7));
             assert!(!app.rec.outcome_failed(), "the injected probe must consume its recorded input, controlled={controlled}");
+        }
+    }
+
+    #[test]
+    fn controlled_foreground_replays_once_without_platform_authority() {
+        use super::super::{bootstrap::{Initial, Preflight}, recorder::{Recplay, ReplayMode, state_fp}};
+        use crate::ui::{dispatch::Tap, machine::Tick, rec::{Header, Recording}};
+        let _serial = crate::testlock::serial();
+        for mode in [ReplayMode::Targets, ReplayMode::Resolve] {
+            let mut app = app();
+            let initial = Initial::synthetic_home(1, 32517, None).unwrap();
+            let recording = Recording {
+                header: Header::new(state_fp(), &initial),
+                frames: vec![
+                    crate::ui::rec::Frame { f: 0, tick: Some(Tick { ms: 0, dt_us: 0 }),
+                        st: Some(7), focus: Some(None), ..Default::default() },
+                    crate::ui::rec::Frame { f: 1, tick: Some(Tick { ms: 16, dt_us: 16_000 }),
+                        present: Some(true), st: Some(7), focus: Some(None),
+                        inputs: vec![serde_json::json!({"f":1,"t":"in","kind":"lifecycle","code":0x105}),
+                            serde_json::json!({"f":1,"t":"in","kind":"lifecycle","code":0x106})],
+                        ..Default::default() },
+                ], metrics: Default::default(), stopped_at: None,
+            };
+            app.boot_initial = Some(initial.clone());
+            app.rec = Recplay::controlled(Preflight::Replay { initial: initial.clone(), recording, mode },
+                &initial).unwrap();
+            Tap::focus(&mut app.rec, 0, None);
+            assert!(!app.rec.end_frame(&|| 7));
+
+            app.pages.suspend();
+            app.window_activity.event(0x104);
+            let revision = crate::plex::grant::revision();
+            let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+            for value in app.rec.replay_inputs() {
+                unsafe { replay_inject(&mut app, &mut fr, &value); }
+            }
+            assert!(!app.pages.nav.suspended, "recorded foreground reaches the navigation owner");
+            assert!(!app.window_activity.allow_present(true),
+                "a recording cannot authorize EGL presentation while the real window is backgrounded");
+            assert_eq!(crate::plex::grant::revision(), revision,
+                "recorded foreground has no network-grant authority");
+
+            // The actual compositor's startup pair may arrive at another frame. It
+            // restores physical window safety without consuming extra tape inputs.
+            event(&mut app, &mut fr, 0x105);
+            event(&mut app, &mut fr, 0x106);
+            event(&mut app, &mut fr, SDL_KEYDOWN);
+            assert!(app.window_activity.allow_present(true));
+            assert!(app.inputs.is_empty(), "ambient keys cannot enter the recorded scenario");
+            assert_eq!(crate::plex::grant::revision(), revision);
+            app.rec.present(true);
+            Tap::focus(&mut app.rec, 1, None);
+            assert!(app.rec.end_frame(&|| 7));
+            assert!(!app.rec.outcome_failed(), "each recorded foreground input is graded exactly once");
+
+            app.running = true;
+            event(&mut app, &mut fr, 0x104);
+            assert!(!app.running);
+            assert!(!app.window_activity.allow_present(true));
+            assert_eq!(app.rec.failure(), Some("live window exit interrupted controlled replay"));
         }
     }
 
