@@ -80,11 +80,17 @@ The full reproduction needs a developer build to take the STORE credential polic
 sign-in against this mock (it authorizes the code by itself, on the 2nd poll):
 
     1. python3 tests/mock_pms.py --host 0.0.0.0 --plaintext-only-lan --advertise-ip <HOST-LAN-IP>
-    2. in the install's runtime root, arm (empty files unless shown):
+       (the LAN plaintext leg the app connects to directly).
+    2. `plex_tv()` in rust-modules/src/plex/account.rs accepts only a `127.0.0.1`/`localhost`
+       trigger — the trigger carries the account token, and that restriction is deliberate and
+       must stay. So make plex.tv loopback ON THE DEVICE with a reverse tunnel from the host
+       (hold the TV lock first):
+         ssh -N -R 32499:127.0.0.1:32499 root@<TV-HOST>
+    3. in the install's runtime root, arm (empty files unless shown):
          plxnative-storepolicy                       store HttpsOnly policy (dev builds only)
          plxnative-login                             boot to the QR sign-in
-         plxnative-plextv = http://<HOST-LAN-IP>:32499
-    3. launch. The events log shows, in order:
+         plxnative-plextv = http://127.0.0.1:32499
+    4. launch. The events log shows, in order:
          - the sign-in read-out "Couldn't sign in" with the reason "Your Plex server is on this
            network but can't be reached securely. Select Connect to connect without encryption."
            and the primary *Connect*
@@ -96,14 +102,16 @@ sign-in against this mock (it authorizes the code by itself, on the 2nd poll):
          - Settings → Unencrypted connections shows the server ON; turning it off logs
            `settings: unencrypted connections turned off for one server` and withdraws the grant
            at once
-Loopback (the simulator) is never LAN-eligible, so steps 2–3 on the Mac stop at the ineligible
+Loopback (the simulator) is never LAN-eligible, so steps 3–4 on the Mac stop at the ineligible
 read-out; the consent flow itself needs the TV and a real LAN address.
 
     # TV (replace 192.168.0.10 with the host's actual LAN IPv4; never a real private address from
-    # a gitignored file):
+    # a gitignored file — hold the TV lock for the device commands below):
     python3 tests/mock_pms.py --host 0.0.0.0 --plaintext-only-lan --advertise-ip 192.168.0.10
-    # then point the device's plex.tv trigger at this same host:port, e.g.
-    # plxnative-plextv=http://192.168.0.10:32499 read from the TV over SSH, never printed here.
+    # `plxnative-plextv` only ever accepts a loopback address (see step 2 above), so make plex.tv
+    # loopback ON THE DEVICE with a reverse tunnel from the host, then arm the loopback trigger:
+    # ssh -N -R 32499:127.0.0.1:32499 root@<TV-HOST>
+    # plxnative-plextv=http://127.0.0.1:32499
 
     # Simulator (loopback is both plex.tv and the LAN address it advertises; still exercises the
     # HTTPS-fails / plaintext-answers shape, just not the loopback-ineligibility warning):
