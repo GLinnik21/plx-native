@@ -25,6 +25,8 @@ MARKERS = (
 )
 COMMIT = re.compile(r"scrub: pointer commit ns=(\d+)")
 NATIVE_SEEK = re.compile(r"seek\(in-place\): av_seek t=(\d+)")
+PAUSED_FRAME = re.compile(r"seek: paused frame restored ns=(\d+)")
+POSITION = re.compile(r"\bpos=(\d+)s\b")
 
 
 def grade(lines):
@@ -58,6 +60,20 @@ def grade(lines):
             failures.append(f"{name}: {len(seeks)} native seeks; expected {expected}")
         if commits != seeks:
             failures.append(f"{name}: requested {commits}, native seeks {seeks}")
+        if expected:
+            restored = [(i, int(m[1])) for i, line in enumerate(window)
+                        if (m := PAUSED_FRAME.search(line))]
+            if len(restored) != 1:
+                failures.append(f"{name}: {len(restored)} accepted pause-restoration receipts; expected 1")
+            else:
+                at, landed = restored[0]
+                if not any(NATIVE_SEEK.search(line) for line in window[:at]):
+                    failures.append(f"{name}: pause receipt precedes the native seek")
+                positions = [int(m[1]) for line in window[at + 1:] if (m := POSITION.search(line))]
+                if len(positions) < 2:
+                    failures.append(f"{name}: need two post-restoration playhead samples, got {positions}")
+                elif max(positions) - min(positions) > 1 or abs(positions[0] - landed // 1_000_000_000) > 1:
+                    failures.append(f"{name}: restored playhead did not stay paused: {positions}")
         committed.extend(commits)
     if len(committed) == 3 and not (committed[0] == committed[1] > committed[2] > 0):
         failures.append("equal-x clicks must agree and the leftward drag must seek backward")
@@ -74,7 +90,10 @@ class GraderTests(unittest.TestCase):
             lines.append(marker)
             if i in (1, 3, 7):
                 ns = 75_000_000_000 if i != 7 else 35_000_000_000
-                lines += [f"scrub: pointer commit ns={ns}", f"seek(in-place): av_seek t={ns} coalesced=0"]
+                lines += [f"scrub: pointer commit ns={ns}", f"seek(in-place): av_seek t={ns} coalesced=0",
+                          f"seek: paused frame restored ns={ns}",
+                          f"loop=60 route=player pos={ns // 1_000_000_000}s fps=0",
+                          f"loop=60 route=player pos={ns // 1_000_000_000}s fps=0"]
         return lines
 
     def test_complete_protocol(self):
@@ -100,6 +119,16 @@ class GraderTests(unittest.TestCase):
     def test_no_seek_after_release_is_rejected(self):
         self.assertTrue(grade([line for line in self.good() if not COMMIT.search(line)]))
 
+    def test_accepted_pause_and_stationary_samples_are_required(self):
+        self.assertTrue(grade([line for line in self.good() if not PAUSED_FRAME.search(line)]))
+        lines = self.good()
+        at = next(i for i, line in enumerate(lines) if POSITION.search(line))
+        lines[at + 1] = "loop=60 route=player pos=78s fps=60"
+        self.assertTrue(grade(lines))
+        lines = self.good()
+        del lines[at + 1]
+        self.assertTrue(grade(lines))
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
@@ -113,7 +142,7 @@ if __name__ == "__main__":
         for failure in failures:
             print(f"FAIL: {failure}")
         if not failures:
-            print("PASS: both clicks, held drag, release outside band, no premature/duplicate seek")
+            print("PASS: both clicks, held drag, release outside band, no premature/duplicate seek, restored pause")
         raise SystemExit(bool(failures))
     else:
         parser.error("supply a saved log or --selftest")

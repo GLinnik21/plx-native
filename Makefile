@@ -1281,6 +1281,7 @@ check: lint
 	@# installation cannot resolve SKIPS the cases that need it instead of killing the run. A
 	@# regression there is invisible here and shows up as a stranger concluding the suite is broken.
 	python3 tests/test_harness.py
+	python3 tests/player_pointer.py --selftest
 	python3 tests/test_mock_pms_library.py
 	@# The demo library and the screenshot scene manifest (make screenshots). Offline: the cases
 	@# that serve the catalog skip, and say so, where the derived artwork cache is absent.

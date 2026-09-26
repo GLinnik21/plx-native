@@ -276,6 +276,9 @@ fn remote_token_pointer(tok: &str) -> Option<(RemotePointer, i32, i32)> {
 /// SDL pointer bytes shared by clicks, held-pointer FIFO edges and recorded-event replay.
 /// The inverse of `ptr_xy`: convert authored coordinates exactly once, including window scaling
 /// and letterboxing. Replay may carry a real off-canvas motion, so only the token parser clamps.
+/// ABI: `include/SDL2/SDL_events.h` and the NDK's matching mouse-event declarations put four
+/// Uint32 fields before button@16/state@17 and Sint32 x@20/y@24. ARM32 NDK syntax-only
+/// `offsetof` assertions verified these offsets; see `docs/testing-player-pointer.md`.
 fn encode_pointer(et: u32, x: i32, y: i32) -> [u8; 128] {
     let mut ev = [0u8; 128];
     let (px, py) = crate::surface::to_physical(x as f32, y as f32);

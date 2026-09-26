@@ -37,21 +37,25 @@ identity and synthetic URL in the log before input. Use the baseline
 `pipe_h264_ac3_1080p.mkv` at its full fixture duration, without autoseek or pause triggers. Let the
 video bind and advance before starting. Keep each click/drag on the same app instance; collect
 the complete event log afterward. The driver lane owns boot, lock, fixture serving and teardown.
+Pause the synthetic clip before this core protocol to pin its HUD during capture. The successful
+post-seek pause receipt and stationary samples below also verify that scrubbing preserves pause.
 
 Run the following device commands with the lock held. The delays are between input frames; do
-not combine them into one FIFO write. Save captures immediately, inspect them after the input
-sequence, and release the lease before inspecting images or writing a report.
+not combine them into one FIFO write. Save captures immediately and inspect them after the input
+sequence. At session handback, release the lease promptly when device work pauses.
 
 ```sh
+tools/tv-session.sh key pause
+sleep 2
 tools/tv-session.sh key pm:1400,870
 sleep 1
 tools/tv-session.sh shot /tmp/player-pointer-hud.png
 tools/tv-session.sh key ck:1400,870
-sleep 2
+sleep 5
 tools/tv-session.sh key pm:1400,890
 sleep 1
 tools/tv-session.sh key ck:1400,890
-sleep 2
+sleep 5
 tools/tv-session.sh key pd:900,870
 sleep 1
 tools/tv-session.sh key pm:1200,700
@@ -60,7 +64,7 @@ tools/tv-session.sh key pm:700,700
 sleep 1
 tools/tv-session.sh shot /tmp/player-pointer-held.png
 tools/tv-session.sh key pu:700,700
-sleep 2
+sleep 5
 tools/tv-session.sh key pu:700,700
 sleep 2
 tools/tv-session.sh key pm:701,700
@@ -75,6 +79,12 @@ There must be exactly one `scrub: pointer commit ns=…` and one matching
 `seek(in-place): av_seek t=…` for each click and for the release; none while held or after the
 repeated release. The equal-x clicks must request the same position, and the final drag must seek
 backward. The log grader checks those boundaries rather than counting total seeks alone.
+After each native seek it also requires `seek: paused frame restored ns=…`, emitted only after
+the existing successful pause boundary closes the seek's temporary feed override, followed by at
+least two heartbeat `pos=…s` samples whose spread is at most one second (integer quantization).
+This proves an accepted native pause plus an observed stationary playhead; it is not a firmware
+state callback. If five seconds does not collect the receipt and two samples, wait for them before
+sending the next phase's token. A missing witness is a failure, not an assumed pause.
 
 For a HUD-reveal capture, first let the HUD expire while playing, capture the hidden state, then
 send `pm:1400,870` and capture it again after one second. Do this in a separate run so it cannot
@@ -97,5 +107,23 @@ use production stop registration to distinguish HUD visibility from hover suppre
 historical click coordinates. `make check` covers these Rust tests in its hostsim leg.
 
 `python3 tests/player_pointer.py --selftest` grades saved-log fixtures with missing primitives,
-premature commits, missing commits, duplicate commits and wrong native seek targets. This script
-is offline and does not acquire or drive the TV.
+premature commits, missing commits, duplicate commits, wrong native seek targets and missing or
+moving paused-state samples. `make check` runs this self-test. The script is offline and does not
+acquire or drive the TV.
+
+## SDL ABI and firmware review
+
+The tracked `include/SDL2/SDL_events.h` mouse-button struct and the NDK sysroot's matching
+declaration contain four `Uint32` fields, four `Uint8` fields, then two `Sint32` coordinates.
+`SDL_stdinc.h` defines those through `uint32_t`, `uint8_t`, and `int32_t`. Therefore on ARM32,
+button is at 16, state at 17, x at 20 and y at 24; the motion struct's x/y offsets also match.
+`SDL_mouse.h` defines left-button as 1; `SDL_events.h` defines pressed/released as 1/0.
+The NDK GCC was run with its explicit `--sysroot`, `-std=c11 -fsyntax-only -Iinclude` and
+`_Static_assert`s for all six offsets, the button/state constants, and `sizeof(void *) == 4`:
+all passed without producing an object or building the app. This source/target-compiler proof is
+separate from the host SDL queue test.
+
+Equivalent manual firmware-compatibility review found no new symbol, `extern`, link directive,
+`dynlib!` declaration, library candidate, calling convention or `DT_NEEDED` change. The existing
+`SDL_PushEvent` signature is unchanged. This is a loader-seam review; native gesture and pause
+behavior still require the device protocol above.
