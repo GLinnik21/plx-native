@@ -1699,7 +1699,7 @@ mod tests {
     #[test]
     fn a_repoint_with_the_same_url_and_token_retires_the_old_request_generation() {
         let (_fresh, sid, tok) = one_server();
-        crate::ui::card_row::begin_motion_frame();
+        crate::ui::card_motion::begin_frame(crate::app::clock::now());
         let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
         let old_generation = crate::plex::client_for(sid).unwrap().token_gen();
         {
