@@ -224,6 +224,7 @@ impl LibraryScreen {
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: self.entry, elem } }
 
     /// The heading row's group for the section on the page.
+    #[cfg(test)]
     pub(crate) fn toolbar_group(&self) -> GroupId { self.toolbar }
 
     fn reseat<H: LibraryLike>(&self, focus: FocusTarget<u32>, fx: &mut Effects<'_, H>) {
