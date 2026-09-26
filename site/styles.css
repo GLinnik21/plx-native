@@ -1112,6 +1112,137 @@ img {
   margin-top: clamp(20px, 3vh, 28px);
 }
 
+/* ---------- Doc pages (install/troubleshooting, rendered by tools/render-doc-page.py from
+   docs/*.md) — prose only: headings, paragraphs, lists, code, tables, quotes, rules. Reuses
+   the credits page's container width and heading scale rather than inventing a new one. ---------- */
+.doc-page {
+  padding: clamp(40px, 7vh, 84px) 0 clamp(56px, 8vh, 96px);
+  max-width: 760px;
+}
+.doc-body h1 {
+  font-size: clamp(32px, 4.4vw, 56px);
+  line-height: 1.06;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  margin: 0 0 clamp(18px, 2.6vh, 26px);
+}
+.doc-body h2 {
+  font-size: clamp(21px, 2.4vw, 27px);
+  line-height: 1.25;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: clamp(36px, 5vh, 52px) 0 14px;
+}
+.doc-body h1 + h2 {
+  margin-top: 0;
+}
+.doc-body h3 {
+  font-size: 19px;
+  font-weight: 700;
+  margin: 28px 0 10px;
+}
+.doc-body h4 {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin: 22px 0 8px;
+}
+.doc-body p,
+.doc-body li {
+  font-size: 16px;
+  line-height: 1.65;
+  color: var(--text-reading);
+  max-width: 68ch;
+  text-wrap: pretty;
+}
+.doc-body p {
+  margin: 0 0 16px;
+}
+.doc-body strong {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+.doc-body a {
+  color: var(--text-primary);
+  text-decoration: underline;
+  text-decoration-color: var(--text-separator);
+  text-underline-offset: 2px;
+}
+.doc-body a:hover {
+  color: var(--resume-fill);
+  text-decoration-color: currentColor;
+}
+.doc-body ul,
+.doc-body ol {
+  margin: 0 0 16px;
+  padding-left: 1.3em;
+}
+.doc-body li + li {
+  margin-top: 6px;
+}
+.doc-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.87em;
+  background: var(--color-white-a07);
+  border-radius: 4px;
+  padding: 0.12em 0.4em;
+}
+.doc-body pre {
+  background: var(--color-white-a07);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin: 0 0 18px;
+}
+.doc-body pre code {
+  background: none;
+  padding: 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--text-primary);
+}
+.doc-body blockquote {
+  margin: 0 0 18px;
+  padding: 2px 0 2px 16px;
+  border-left: 2px solid var(--hairline);
+  color: var(--text-secondary);
+}
+.doc-body blockquote p:last-child {
+  margin-bottom: 0;
+}
+.doc-body hr {
+  border: none;
+  border-top: 1px solid var(--hairline);
+  margin: clamp(32px, 5vh, 48px) 0;
+}
+.doc-table-wrap {
+  overflow-x: auto;
+  margin: 0 0 22px;
+}
+.doc-body table {
+  width: 100%;
+  min-width: 480px;
+  border-collapse: collapse;
+  margin: 0;
+  font-size: 14.5px;
+}
+.doc-body th,
+.doc-body td {
+  text-align: left;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--hairline);
+  vertical-align: top;
+}
+.doc-body th {
+  color: var(--text-secondary);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.doc-body td {
+  color: var(--text-reading);
+}
+
 /* =========================================================
    Narrow layout (<760px)
    ========================================================= */
@@ -1146,6 +1277,17 @@ img {
 
   .header-back {
     min-height: 44px;
+  }
+  .doc-body table {
+    min-width: 420px;
+    font-size: 13.5px;
+  }
+  .doc-body th,
+  .doc-body td {
+    padding: 8px 10px;
+  }
+  .doc-body pre {
+    padding: 12px 14px;
   }
   .credit-work {
     grid-template-columns: minmax(0, 1fr);

@@ -10,6 +10,10 @@ on:
     paths:
       - "site/**"
       - "docs/screenshots/**"
+      - "docs/install-and-verify.md"
+      - "docs/troubleshooting.md"
+      - "tools/render-doc-page.py"
+      - "tools/requirements-docs.txt"
       - "assets/logo-master.png"
       - "pkg/appfont.ttf"
       - "pkg/appfont-bold.ttf"
@@ -39,6 +43,9 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Install doc-render dependencies
+        run: python3 -m pip install --quiet -r tools/requirements-docs.txt
+
       - name: Stage _site
         run: |
           set -euo pipefail
@@ -48,6 +55,8 @@ jobs:
           mkdir -p _site/docs/screenshots
           mkdir -p _site/fonts
           mkdir -p _site/nightly
+          mkdir -p _site/install
+          mkdir -p _site/troubleshooting
 
           cp site/index.html _site/index.html
           cp site/credits.html _site/credits.html
@@ -70,6 +79,9 @@ jobs:
 
           cp pkg/appfont.ttf _site/fonts/appfont.ttf
           cp pkg/appfont-bold.ttf _site/fonts/appfont-bold.ttf
+
+          python3 tools/render-doc-page.py docs/install-and-verify.md > _site/install/index.html
+          python3 tools/render-doc-page.py docs/troubleshooting.md > _site/troubleshooting/index.html
 
       - name: Stage nightly/latest.json
         # `{"available": false}` when no nightly has ever published — the site has to build before
@@ -112,7 +124,14 @@ jobs:
                   return False
               return True
 
-          sources = [site / "index.html", site / "credits.html", site / "styles.css", site / "site.js"]
+          sources = [
+              site / "index.html",
+              site / "credits.html",
+              site / "install" / "index.html",
+              site / "troubleshooting" / "index.html",
+              site / "styles.css",
+              site / "site.js",
+          ]
           all_refs = set()
           for src in sources:
               if src.exists():
@@ -128,7 +147,12 @@ jobs:
               if not clean:
                   continue
               local_ref_count += 1
-              resolved = (site / clean).resolve()
+              # The doc pages (install/, troubleshooting/) are one path segment deep, so
+              # tools/render-doc-page.py emits root-absolute refs ("/styles.css", "/install/")
+              # rather than "../styles.css". Path.__truediv__ treats an absolute right-hand
+              # side as a full replacement, not a join, so strip the leading "/" first —
+              # these are root-of-site paths, not filesystem-absolute ones.
+              resolved = (site / clean.lstrip("/")).resolve()
               try:
                   resolved.relative_to(site.resolve())
               except ValueError:

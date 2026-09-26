@@ -124,6 +124,8 @@ See [LG's session guidance](https://webostv.developer.lge.com/develop/getting-st
 
 For more connection help, see [webOSbrew's troubleshooting guide](https://www.webosbrew.org/devmode/#troubleshooting). To [report a PlxNative problem](https://github.com/GLinnik21/plx-native/issues), include your TV model, webOS version, PlxNative version, installation method, and the exact error. Do not post passwords, Passphrase, Plex tokens, or screenshots containing them.
 
+If PlxNative itself is installed and opens but something inside it doesn't work — sign-in, playback, or anything else — see [Troubleshooting](troubleshooting.md).
+
 ---
 
 ## Checking what you downloaded
