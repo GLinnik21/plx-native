@@ -40,6 +40,71 @@ impl LibraryLike for HostFixture {
 const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
 
+/// Return memory is captured several times per frame. A 1,200-item catalog must share its
+/// unchanged keys across those snapshots, while later reconciliation cannot mutate a saved
+/// return position or its canonical state.
+#[test]
+fn page_memory_shares_1200_keys_and_preserves_older_snapshots() {
+    let _guard = crate::testlock::serial();
+    let sid = crate::plex::ServerId::from_raw(1);
+    let section = LibrarySectionIdentity { sid, key: 7 };
+    let mut page = LibraryScreen::new(ENTRY, InstanceId(20), SecKind::Movie);
+    for index in 0..1200 {
+        page.keys.register(LibraryIdentity::Grid {
+            section: section.clone(), sid, rk: format!("fixture-{index}"),
+        }, GRID_GROUP, index);
+    }
+    let original = page.page_memory();
+    let original_hash = PageMemory::Library(original.clone()).hash();
+    assert_eq!(original.keys.len(), 1200);
+    for frame in 0..60 {
+        page.scroll.jump(frame as f32);
+        let next = page.page_memory();
+        assert_eq!(original.keys.as_ptr(), next.keys.as_ptr(),
+            "scroll frame {frame} must not copy the unchanged catalog into return memory");
+        let forwarded = next.clone();
+        assert_eq!(next.keys.as_ptr(), forwarded.keys.as_ptr(),
+            "forwarding return memory must not copy the catalog either");
+    }
+
+    let key = &original.keys[17];
+    let elem = key.elem;
+    let identity = key.identity.clone();
+    assert_eq!(page.keys.register(identity.clone(), GRID_GROUP, 17), elem);
+    page.keys.update_last_place(elem, GRID_GROUP, 17);
+    assert_eq!(page.page_memory().keys.as_ptr(), original.keys.as_ptr(),
+        "unchanged reconciliation must not detach the shared snapshot");
+
+    assert_eq!(page.keys.register(identity, GroupId(90), 23), elem);
+    let moved = page.page_memory();
+    assert_ne!(moved.keys.as_ptr(), original.keys.as_ptr());
+    assert_eq!(moved.keys[17].last_index, 23);
+    assert_eq!(original.keys[17].last_index, 17);
+    page.keys.update_last_place(elem, GroupId(91), 31);
+    let moved_again = page.page_memory();
+    assert_eq!(moved_again.keys[17].last_index, 31);
+    assert_eq!(moved.keys[17].last_index, 23, "a previous reconciliation stays immutable");
+
+    let added = page.keys.register(LibraryIdentity::Grid {
+        section: section.clone(), sid, rk: "fixture-new".into(),
+    }, GRID_GROUP, 1200);
+    let grown = page.page_memory();
+    assert_eq!(grown.keys.len(), 1201);
+    assert_eq!(moved_again.keys.len(), 1200, "appending must not grow an older snapshot");
+    assert_ne!(added, elem);
+
+    let mut restored = KeyRegistry::restore(&original);
+    let restored_memory = restored.remember(original.section.clone(), original.scroll, Vec::new());
+    assert_eq!(restored_memory.keys.as_ptr(), original.keys.as_ptr(),
+        "remounting reuses the immutable key snapshot");
+    assert_eq!(restored.last_place(elem), Some((GRID_GROUP, 17)));
+    restored.update_last_place(elem, GroupId(92), 41);
+    assert_eq!(restored.last_place(elem), Some((GroupId(92), 41)));
+    assert_eq!(original.keys[17].last_index, 17);
+    assert_eq!(PageMemory::Library(original.clone()).hash(), original_hash,
+        "neither live reconciliation nor remount mutation may change saved canonical memory");
+}
+
 #[test]
 fn all_grid_caption_band_restores_with_the_saved_viewport() {
     let _guard = crate::testlock::serial();

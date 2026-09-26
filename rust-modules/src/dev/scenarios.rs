@@ -187,6 +187,18 @@ pub(crate) fn dev_token() -> String {
     }
 }
 
+/// Optional primary endpoint for a synthetic PMS fixture. Used only with the explicitly
+/// injected dev token; a persisted account is never redirected. Absent in shipping builds.
+pub(crate) fn pms_origin() -> Option<crate::plex::Origin> {
+    crate::dev::read("pms-origin").and_then(|s| crate::plex::Origin::parse(s.trim()))
+}
+
+crate::dev::latched_flag! { pub(crate) fn imagecache_stats_armed = "imagecache-stats"; }
+crate::dev::latched_flag! {
+    /// RAM-only control leg for cache performance comparisons; absent in shipping builds.
+    pub(crate) fn imagecache_bypass_armed = "imagecache-bypass";
+}
+
 /// `/tmp/plxnative-pickuser=<index>` — force the boot picker and auto-select that roster tile.
 pub(crate) fn pickuser_index() -> Option<usize> {
     crate::dev::read("pickuser").and_then(|s| s.parse().ok())

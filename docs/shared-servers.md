@@ -242,15 +242,15 @@ PIN. A profile that has never been seated online on this television has nothing 
 picker says so: "No internet connection. Pick this profile once while online, and it will work
 offline." One online sign-in and one online pick per profile are the whole precondition. `rust-modules/src/plex/CLAUDE.md` has the mechanism.
 
-**Offline, the pictures (2026-09-06).** Posters, backdrops and hero art are the server's own and
-load offline as they do online. Profile avatars are not: the server proxies them from plex.tv, so
-they used to be blank circles on the one screen every boot shows. `rust-modules/src/imgcache.rs`
-is a small bounded on-disk cache — the foundation, used for avatars only today — that the poster
-worker reads before any fetch and fills on a miss; sign-out empties it. The key deliberately
-EXCLUDES the query: plex.tv stamps an avatar's `?c=` with the time it answered the roster request
-rather than with a version of the picture — one session file held five values for three unchanged
-faces, two of them stamped in the same second — so keying on it made every online boot a miss and
-every refresh a new file. Staleness is handled by file age instead (`REFRESH_AFTER`). Cast headshots (`metadata-static.plex.tv`, also proxied) are still online-only.
+**Offline artwork.** Every reusable image transcode—posters, backdrops, logos, episode stills,
+profile avatars and cast headshots—uses the shared disk tier in `rust-modules/src/imgcache.rs`.
+A hit is decoded locally before any network request. Entries are keyed by stable server identity,
+source and transformation, with the outer request’s `X-Plex-Token` excluded; the volatile avatar roster stamp is ignored.
+On a stale disk hit (after a day), cached art remains visible while a bounded background lane
+attempts a refresh.
+A missing image still requires its server (and, for proxied external art, that server's uplink).
+Sign-out clears the cache and retires in-flight writes. See [image-cache.md](image-cache.md)
+for bounds, lifecycle and the large-grid verification recipe.
 
 **That plaintext endpoint is useful reachability evidence, not a stable authenticated route.**
 §2(c) shows that the TV can reach it, but a public build still needs one of the server's advertised

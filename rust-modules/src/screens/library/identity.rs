@@ -1,6 +1,7 @@
 //! Server-scoped key registry and tombstones for an owned Library instance.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::screens::registry::{
     LibraryIdentity, LibraryKey, LibraryMemory, LibrarySectionIdentity,
@@ -36,7 +37,10 @@ pub(super) fn region_of_elem(elem: u32) -> Option<KeyRegion> {
 
 #[derive(Clone, Debug)]
 pub(super) struct KeyRegistry {
-    keys: Vec<LibraryKey>,
+    // The dispatcher captures return memory several times per frame. Share its immutable
+    // sequence until a publication actually changes a key or its recovery position; then
+    // detach once for that mutation batch, retaining every older snapshot unchanged.
+    keys: Arc<Vec<LibraryKey>>,
     next: [u32; 5],
     identity_index: HashMap<LibraryIdentity, usize>,
     elem_index: HashMap<u32, usize>,
@@ -46,14 +50,14 @@ pub(super) struct KeyRegistry {
 
 impl Default for KeyRegistry {
     fn default() -> Self {
-        Self { keys: Vec::new(), next: [0; 5], identity_index: HashMap::new(),
+        Self { keys: Arc::new(Vec::new()), next: [0; 5], identity_index: HashMap::new(),
             elem_index: HashMap::new(), #[cfg(test)] register_probes: 0 }
     }
 }
 
 impl KeyRegistry {
     pub(super) fn restore(memory: &LibraryMemory) -> Self {
-        let mut out = Self { keys: memory.keys.clone(), next: [0; 5],
+        let mut out = Self { keys: Arc::clone(&memory.keys), next: [0; 5],
             identity_index: HashMap::with_capacity(memory.keys.len()),
             elem_index: HashMap::with_capacity(memory.keys.len()),
             #[cfg(test)] register_probes: 0 };
@@ -81,7 +85,7 @@ impl KeyRegistry {
             query: None,
             grid_reset_pending: false,
             viewports: Vec::new(),
-            keys: self.keys.clone(),
+            keys: Arc::clone(&self.keys),
             next_elem: self.keys.len() as u32,
             section,
             scroll,
@@ -97,10 +101,14 @@ impl KeyRegistry {
     ) -> u32 {
         #[cfg(test)] { self.register_probes += 1; }
         if let Some(&at) = self.identity_index.get(&identity) {
-            let key = &mut self.keys[at];
-            key.last_group = group.0;
-            key.last_index = index as u32;
-            return key.elem;
+            let key = &self.keys[at];
+            let elem = key.elem;
+            if key.last_group != group.0 || key.last_index != index as u32 {
+                let key = &mut Arc::make_mut(&mut self.keys)[at];
+                key.last_group = group.0;
+                key.last_index = index as u32;
+            }
+            return elem;
         }
         let region = identity_region(&identity);
         let slot = region_index(region);
@@ -110,7 +118,7 @@ impl KeyRegistry {
         let at = self.keys.len();
         self.identity_index.insert(identity.clone(), at);
         self.elem_index.insert(elem, at);
-        self.keys.push(LibraryKey {
+        Arc::make_mut(&mut self.keys).push(LibraryKey {
             identity,
             elem,
             last_group: group.0,
@@ -142,8 +150,11 @@ impl KeyRegistry {
 
     pub(super) fn update_last_place(&mut self, elem: u32, group: GroupId, index: usize) {
         let at = self.elem_index[&elem];
-        self.keys[at].last_group = group.0;
-        self.keys[at].last_index = index as u32;
+        if self.keys[at].last_group != group.0 || self.keys[at].last_index != index as u32 {
+            let key = &mut Arc::make_mut(&mut self.keys)[at];
+            key.last_group = group.0;
+            key.last_index = index as u32;
+        }
     }
 
     pub(super) fn keys(&self) -> &[LibraryKey] { &self.keys }

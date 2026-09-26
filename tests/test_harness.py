@@ -5331,7 +5331,7 @@ impl PersonOwnerGateFixture {
     # rules are absent from the table below on purpose, the same way a deleted allowlist's own
     # entry disappears rather than pinning at 0.
     PINNED_ALLOWLIST_COUNTS = {
-        "libm.txt": 5,
+        "libm.txt": 6,  # widgets.rs's existing test helper moved to widgets_test_support.rs
         "mutators.txt": 0,
         "nav.txt": 0,
         "sibling-migration.txt": 0,

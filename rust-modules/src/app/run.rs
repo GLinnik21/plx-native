@@ -442,7 +442,7 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     app.instr.note_prepare();
     // Hoisted: the frame-drop detector reads these after the gate. Seeded to the pump
     // stamp so a skipped frame reports zero draw/cap/swap rather than a stale delta.
-    app.instr.skip_present_phases();
+    app.instr.seed_present_phases();
 }
 
 /// **The `Rig`-delegated privileged primitives** (spec §15.2, D4). `Bridge`'s `Rig` impl
@@ -546,6 +546,7 @@ unsafe fn present_and_swap(
             budget.finish();
         }
     } else {
+        app.instr.skip_present_phases();
         // Device and macOS presented frames block in swap; WSLg/X11 presented frames use the
         // software budget above. A skipped frame reaches neither path, so sleep here to keep a
         // settled screen from becoming a CPU spinner.
@@ -2589,6 +2590,9 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
 pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
     let rn = fr.rn;
         if loop_tick(&mut app.iters_ct, &mut app.loop_t, &mut app.loop_shown, fr.now) {
+            if crate::dev::scenarios::imagecache_stats_armed() {
+                super::adapters::poster::log_cache_stats();
+            }
             // once/sec render heartbeat — greppable without reading the on-screen counter.
             // The harness parses `loop=(\d+) route=(\w+)(?: overlay=(\w+))?` (tests/run.py), so
             // the player's overlay tag stays right after route= and worstframe= stays LAST.

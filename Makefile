@@ -1285,6 +1285,7 @@ check: lint
 	@# The demo library and the screenshot scene manifest (make screenshots). Offline: the cases
 	@# that serve the catalog skip, and say so, where the derived artwork cache is absent.
 	python3 tests/test_demo_library.py
+	python3 tests/test_image_cache_stress.py
 	@# Host-only halves of the opt-in live diagnostics: /proc/interrupt parsing, rate normalization,
 	@# stack aggregation and folded output. Neither command resolves a TV or takes its lock.
 	tools/profile-graphics --selftest

@@ -195,7 +195,12 @@ $1|$2
 wholly_test_files() {
   {
     find "$SRC" -name '*.rs' -print0 | xargs -0 awk '
-      FNR==1 { dir=FILENAME; sub(/\/[^\/]*$/, "", dir); prevcfg=0; path="" }
+      FNR==1 {
+        dir=FILENAME; sub(/\/[^\/]*$/, "", dir)
+        moddir=FILENAME; sub(/\.rs$/, "", moddir)
+        if (FILENAME ~ /\/(mod|lib|main)\.rs$/) moddir=dir
+        prevcfg=0; path=""
+      }
       /^#\[cfg\(test\)\][ \t]*$/ { prevcfg=1; path=""; next }
       prevcfg==1 && /^#\[path = "[^"]+"\][ \t]*$/ {
         path=$0; sub(/^#\[path = "/,"",path); sub(/"\].*/,"",path)
@@ -203,7 +208,8 @@ wholly_test_files() {
       }
       prevcfg==1 && /^mod [a-z_]+;/ {
         line=$0; sub(/^mod /,"",line); sub(/;.*/,"",line)
-        if (path != "") print dir "/" path; else print dir "/" line ".rs"
+        if (path != "") print dir "/" path
+        else { print moddir "/" line ".rs"; print moddir "/" line "/mod.rs" }
       }
       { prevcfg=0; path="" }
     ' /dev/null
