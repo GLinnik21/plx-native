@@ -265,6 +265,14 @@ int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
                 ((size_t)(y - bitmap->y) * bitmap->width + l - bitmap->x) * 4;
             for (int x = l; x < r; ++x, dst += 4) {
                 unsigned a = (mask[x - p->dst_x] * opacity + 127) / 255;
+                if (!a) continue;
+                if (a == 255) {
+                    dst[0] = (uint8_t)color[0];
+                    dst[1] = (uint8_t)color[1];
+                    dst[2] = (uint8_t)color[2];
+                    dst[3] = 255;
+                    continue;
+                }
                 unsigned inverse = 255 - a;
                 for (int c = 0; c < 3; ++c)
                     dst[c] = (uint8_t)((color[c] * a + dst[c] * inverse + 127) / 255);
@@ -274,7 +282,10 @@ int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
     }
     for (size_t i = 0; i < bytes; i += 4) {
         unsigned a = ctx->rgba[i + 3];
-        if (!a) continue;
+        /* Transparent pixels are already zero; opaque pixels are already
+         * straight RGBA. Avoid three variable divisions for every opaque pixel
+         * (software division on the ARMv7 target), including static vector signs. */
+        if (!a || a == 255) continue;
         for (int c = 0; c < 3; ++c) {
             unsigned v = (ctx->rgba[i + c] * 255u + a / 2) / a;
             ctx->rgba[i + c] = (uint8_t)(v > 255 ? 255 : v);
