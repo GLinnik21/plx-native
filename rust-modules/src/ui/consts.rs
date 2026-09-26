@@ -262,11 +262,13 @@ pub enum Key {
     Down,
     /// LEFT and RIGHT carry a flag because the ladder asks about them in two ways that accept
     /// DIFFERENT sets, and the difference is behaviour rather than an accident of spelling.
-    /// `alt` is `false` when the press arrived as the plain [`SDLK_LEFT`]/[`SDLK_RIGHT`] sym, and
+    /// [`classify`] sets `alt` to `false` when the press arrived as the plain [`SDLK_LEFT`]/[`SDLK_RIGHT`] sym, and
     /// `true` when it arrived only as a TRANSPORT key, [`WCODE_REWIND`]/[`WCODE_FASTFORWARD`]
     /// (in either field). The non-player four-way nav dispatch matches `alt: false` alone, so an
     /// alternate-code LEFT on Home reaches no arm that acts on it; the player's scrub arm and the
     /// Chapters strip match both. Preserve that asymmetry — it is what the flag is for.
+    /// [`classify_input`] also uses `alt: false` for an already-canonical navigation direction;
+    /// its screen consumers act on that direction without branching on the raw-code provenance.
     Left {
         alt: bool,
     },
