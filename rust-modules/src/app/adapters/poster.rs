@@ -18,13 +18,11 @@
 //! that eviction caused stays on screen until the draw that wants the key re-requests it. The
 //! source cannot offer another upload from retained pixels because ownership moved to the render
 //! cache and retaining a second CPU copy of the entire 44 MiB GL pool would defeat the memory
-//! ceiling; a later demand therefore pays a full network refetch, decode and upload, not a disk
-//! read — `imgcache`'s disk tier holds only plex.tv avatars (`classify` answers `None` for an
-//! ordinary server-relative transcode path; `class_of` matches only a plex.tv avatar URL), so a
-//! poster, backdrop or hero logo has no disk fallback to land on. That real cost is why re-arming
-//! is rate-limited rather than free: it is the reason the residency thrash guard, the 250 ms–8 s
-//! cooldown backoff and the Draw-only gate above exist at all. A READY slot recycled by
-//! [`victim`] frees its cache entry on the way out.
+//! ceiling. A later demand follows the shared disk-first path for all reusable artwork: a usable
+//! disk hit supplies compressed bytes, which still need decoding and uploading. A disk miss
+//! needs a network fetch. Re-arming therefore still has a cost, bounded by the residency
+//! thrash guard, the 250 ms–8 s cooldown backoff and the Draw-only gate above. A READY slot
+//! recycled by [`victim`] frees its cache entry on the way out.
 //!
 //! Rust port of the old src/posters.c; rewritten on std::sync (a `Mutex<Store>` + `Condvar` +
 //! two `task::spawn` workers). The decoded-pixel pointer is stored as an address (usize) so the
@@ -1952,21 +1950,27 @@ mod tests {
             g.slots = [Pslot::ZERO; PT_CAP];
             let slot = &mut g.slots[0];
             slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
             set_key(slot, &path);
             slot.state = P_RETRY;
             slot.retry_at = Some(crate::app::clock::now().wrapping_add(30_000));
         }
         let motion = crate::ui::card_motion::Scope::moving_for_test();
         crate::ui::idle::take_local_damage();
-        lookup(sid, &path, Touch::Draw);
+        assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Known,
+            "the future retry must match its existing slot, not take the fresh-miss gate");
         assert_eq!(crate::ui::idle::take_local_damage(), 0, "a future retry must let the present gate rest");
         store().slots[0].retry_at = Some(0);
-        lookup(sid, &path, Touch::Draw);
+        assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Known,
+            "motion must defer the known due retry");
         assert!(crate::ui::idle::take_local_damage() > 0, "an actually refused rearm needs a follow-up draw");
         assert_eq!(store().slots[0].state, P_RETRY);
         drop(motion);
-        lookup(sid, &path, Touch::Draw);
+        assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Known,
+            "settling must re-queue the existing retry rather than claim a fresh slot");
         assert_eq!(store().slots[0].state, P_WANT);
+        assert_eq!(store().slots[0].retry_at, None, "re-queuing clears the elapsed wait");
         store().slots = [Pslot::ZERO; PT_CAP];
     }
 
