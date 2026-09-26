@@ -436,7 +436,8 @@ cast+about / info-panel regressions.
 The finite `poster-scroll-settle`, `poster-eviction-reversal` and `poster-hero-grid-dive`
 scenes additionally grade `poster-gate:` telemetry. Run them with `--fps --only poster-`.
 Their moving FPS counts actual swaps between the first and last moving-card frames using the
-unclamped frame clock; source admissions during that motion must be zero. The final settled
+unclamped frame clock; new requests admitted for fast-moving cards must be zero. Requests for
+other cards or featured images, previously admitted work, and stale-image refresh can continue. The final settled
 window must request and upload missing art and then draw every artwork-bearing card resident.
 A high FPS with no poster work cannot pass. The reversal also requires real texture losses,
 refusals of evicted slots during reversal, and rearming afterward. The dive records

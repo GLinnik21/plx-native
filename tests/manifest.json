@@ -19,7 +19,7 @@
         "plxnative-postergate": "settle",
         "plxnative-library": true
       },
-      "comment": "Finite 18-row scroll followed by a complete art window. Requires >=152 library items with reachable artwork. Motion FPS and zero source admissions while moving are graded separately from the settled request/upload/render proof. No activation or viewing-history writes."
+      "comment": "Finite 18-row scroll followed by a complete art window. Requires >=152 library items with reachable artwork. Motion FPS and zero new admissions for fast-moving cards are graded separately from the settled request/upload/render proof. No activation or viewing-history writes."
     },
     {
       "name": "poster-eviction-reversal",
