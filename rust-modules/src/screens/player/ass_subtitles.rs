@@ -15,6 +15,7 @@ pub(crate) struct AssSubtitles {
     clock: ass_source::Clock,
     textures: Vec<CachedTexture>,
     uploaded: u64,
+    viewport: crate::player::video_geometry::Viewport,
 }
 
 impl AssSubtitles {
@@ -45,8 +46,13 @@ impl AssSubtitles {
         );
         let clock = clock.saturating_sub(crate::player::subtitle_offset_ms());
         let (coded_w, coded_h) = crate::player::video_raster();
+        let viewport = crate::player::video_viewport(SCR_W as i32, SCR_H as i32);
+        if self.viewport != viewport {
+            self.viewport = viewport;
+            self.frame = None;
+        }
         if let Some(frame) =
-            ass::request(source, clock, SCR_W as i32, SCR_H as i32, coded_w, coded_h)
+            ass::request(source, clock, viewport.width, viewport.height, coded_w, coded_h)
         {
             self.frame = Some(frame);
         }
@@ -104,8 +110,8 @@ impl AssSubtitles {
             Painter::root().tex(
                 texture.id,
                 Rect::new(
-                    rect.x as f32,
-                    rect.y as f32,
+                    (self.viewport.x + rect.x) as f32,
+                    (self.viewport.y + rect.y) as f32,
                     rect.width as f32,
                     rect.height as f32,
                 ),

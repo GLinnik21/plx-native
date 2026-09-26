@@ -29,6 +29,7 @@ pub(crate) mod sidecar;
 #[cfg(feature = "hostsim")]
 pub(crate) mod sim_video; // the simulator's decoded picture, for screenshots (see its doc)
 pub(crate) mod threads;
+pub(crate) mod video_geometry;
 
 use crate::task::MainThread;
 pub(crate) use shared::HlsAutomaticTransition;
@@ -425,6 +426,15 @@ pub(crate) fn is_started() -> bool {
 /// independently of the output canvas for anamorphic glyph/blur scaling.
 pub(crate) fn video_raster() -> (i32, i32) {
     SHARED.video_raster()
+}
+
+/// The picture inside the full-screen video window, including non-square pixels.
+pub(crate) fn video_viewport(width: i32, height: i32) -> video_geometry::Viewport {
+    let (w, h) = SHARED.video_raster();
+    video_geometry::Aspect::unpack(SHARED.video_aspect.load(std::sync::atomic::Ordering::Acquire))
+        .or_else(|| video_geometry::Aspect::from_raster(w, h))
+        .unwrap_or_else(|| video_geometry::Aspect::from_raster(width, height).unwrap())
+        .fit(width, height)
 }
 
 pub(crate) fn playpos_ns() -> i64 {
@@ -2014,6 +2024,11 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
 
     if let Some(fps_milli) = source_fps_milli(b) {
         SHARED.video_fps_milli.store(fps_milli, Relaxed);
+    }
+    if find(b, b"\"video\"") {
+        if let Some(aspect) = video_geometry::source_aspect(b) {
+            SHARED.video_aspect.store(aspect.pack(), std::sync::atomic::Ordering::Release);
+        }
     }
 
     {

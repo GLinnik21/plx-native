@@ -662,6 +662,9 @@ pub(crate) struct Shared {
     /// Coherent `{w,h}` publication for actuator consumers. The individual fields above remain
     /// diagnostic mirrors; reading them independently can manufacture a raster no stream owned.
     video_raster: AtomicU64,
+    /// Coherent display aspect from sourceInfo, including non-square pixels. Zero
+    /// until reported; overlays temporarily fall back to the demuxer's coded raster.
+    pub video_aspect: AtomicU64,
     /// Decoder-reported source frame rate in thousandths of a frame per second. 0 means the
     /// sourceInfo callback has not supplied one; unlike `FRAMEREADY`, this is stream metadata and
     /// therefore does not mistake the firmware's ~5 Hz position tick for video cadence.
@@ -959,6 +962,7 @@ impl Shared {
             video_w: AtomicI32::new(0),
             video_h: AtomicI32::new(0),
             video_raster: AtomicU64::new(0),
+            video_aspect: AtomicU64::new(0),
             video_fps_milli: AtomicI64::new(0),
             duration_ns: AtomicI64::new(0),
             hls_video_tail_ns: AtomicI64::new(-1),
@@ -1554,6 +1558,7 @@ impl Shared {
         self.video_w.store(0, Ordering::Relaxed);
         self.video_h.store(0, Ordering::Relaxed);
         self.video_raster.store(0, Ordering::Release);
+        self.video_aspect.store(0, Ordering::Release);
         self.video_fps_milli.store(0, Ordering::Relaxed);
         self.duration_ns.store(0, Ordering::Relaxed);
         self.hls_video_tail_ns.store(-1, Ordering::Relaxed);
