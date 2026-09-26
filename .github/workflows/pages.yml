@@ -83,6 +83,15 @@ jobs:
           python3 tools/render-doc-page.py docs/install-and-verify.md > _site/install/index.html
           python3 tools/render-doc-page.py docs/troubleshooting.md > _site/troubleshooting/index.html
 
+          # Pages serves everything with a 10-minute browser cache, so a visitor right after a
+          # deploy could get the new HTML with the old stylesheet/script, or the other way round.
+          # Stamping the references with the commit makes each page fetch its own matching
+          # styles.css and site.js. (The asset check below ignores the query string.)
+          v="${GITHUB_SHA::8}"
+          sed -i -E "s#(styles\.css|site\.js)\"#\1?v=${v}\"#g" \
+            _site/index.html _site/credits.html _site/install/index.html _site/troubleshooting/index.html
+          grep -c "?v=${v}" _site/index.html _site/credits.html _site/install/index.html _site/troubleshooting/index.html
+
       - name: Stage nightly/latest.json
         # `{"available": false}` when no nightly has ever published — the site has to build before
         # the first nightly exists, so a `gh api` miss here must not fail the whole Pages build.
