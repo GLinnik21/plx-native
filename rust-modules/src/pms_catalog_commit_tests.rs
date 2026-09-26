@@ -130,6 +130,22 @@ fn an_episode_keeps_its_own_still_without_a_show_poster() {
     assert!(film.still.is_empty());
 }
 
+#[test]
+fn a_flat_season_listing_keeps_its_show_title_and_own_poster() {
+    let season: crate::plex::Metadata = serde_json::from_str(r#"{
+        "type":"season", "ratingKey":"17", "title":"Season 2", "index":2,
+        "parentRatingKey":"9", "parentTitle":"Example Show", "thumb":"/season/poster"
+    }"#).unwrap();
+    let item = parse_item(&season, sid(0));
+    assert_eq!(item.show_title, "Example Show",
+        "seasons from different shows need their show name in a flat listing");
+    assert_eq!(item.title, "Season 2");
+    assert_eq!(item.show_rk, "9");
+    assert_eq!(item.season_index, 2);
+    assert_eq!(item.thumb, "/season/poster");
+    assert!(item.still.is_empty());
+}
+
 /// **A ratingKey alone does not name an item once a second server exists.** Both servers
 /// number from 1, so the merged catalog below holds two different films called `"1"` — and the
 /// bare-key scan this replaced returned the FIRST of them to every caller, which is a play of

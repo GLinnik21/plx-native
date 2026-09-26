@@ -74,7 +74,14 @@ impl LibraryScreen {
                     else if directory.sections().is_empty() { "No libraries on this server".into() }
                     else if listing.unwatched() || listing.genre().is_some() { "Nothing here matches".into() }
                     else if let Some(section) = directory.current().and_then(|i| directory.sections().get(i)) {
-                        format!("No {} in {}", section.kind.noun(), section.row.title)
+                        let noun = if section.kind == SecKind::Show {
+                            match listing.library_type() {
+                                crate::browse::LibraryType::Shows => "TV shows",
+                                crate::browse::LibraryType::Seasons => "seasons",
+                                crate::browse::LibraryType::Episodes => "episodes",
+                            }
+                        } else { section.kind.noun() };
+                        format!("No {noun} in {}", section.row.title)
                     } else { "Nothing here matches".into() };
                 (caption, None)
             }

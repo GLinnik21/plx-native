@@ -1,11 +1,24 @@
 //! Pure geometry for the owned Library's single vertical document.
 
 use crate::ui::consts::{CARD_H, CARD_W, MARGIN_X, MARGIN_Y, SCR_H, SCR_W};
+use crate::ui::card_row::RowStyle;
 use crate::ui::theme;
 
 pub(super) const COLS: usize = 6;
+const EPISODE_COLS: usize = 4;
 pub(super) const MAX_LIBRARY_PILLS: usize = 8;
 pub(super) const MAX_SHELVES: usize = 12;
+/// Only the focused and closing bands are represented, independent of catalog size.
+/// Sixteen spans more row moves than a complete spring at normal remote repeat speed.
+pub(super) const MAX_GRID_BANDS: usize = 16;
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct GridBand {
+    pub row: usize,
+    pub expansion: f32,
+}
+impl GridBand {
+    pub const CLOSED: Self = Self { row: usize::MAX, expansion: 0.0 };
+}
 pub(super) const MAX_LETTERS: usize = 64;
 pub(super) const CONTENT_TOP: f32 = crate::ui::consts::GRID_TOP_Y;
 pub(super) const LIBRARY_ROW_H: f32 = crate::ui::widgets::StatusOverlay::CTRL_H + crate::ui::consts::CARD_DY + crate::ui::consts::TITLE_DY;
@@ -13,8 +26,9 @@ pub(super) const GRID_HEAD_H: f32 = crate::ui::consts::TITLE_DY
     + crate::ui::consts::CARD_DY
     + 52.0
     + crate::ui::consts::CARD_DY;
+#[cfg(test)]
 pub(super) const GRID_PITCH: f32 = CARD_H
-    + crate::ui::card_row::UNDER_LABEL_H
+    + crate::ui::card_row::LABEL_BAND_COLLAPSED
     + crate::ui::consts::UNDER_LABEL_AIR;
 pub(super) const RAIL_TRACK_W: f32 = 44.0;
 pub(super) const RAIL_PITCH: f32 = 34.0;
@@ -40,16 +54,22 @@ pub(super) struct Layout {
     pub rows: usize,
     pub grid_head: bool,
     pub status: bool,
+    episodes: bool,
     pitches: [f32; MAX_SHELVES],
+    grid_bands: [GridBand; MAX_GRID_BANDS],
 }
 
 impl Layout {
-    pub(super) const SHAPE: &'static str = "LibraryLayout{libraries:bool,shelves:u32,rows:u32,grid_head:bool,status:bool,pitches:[f32;12]}";
+    pub(super) const SHAPE: &'static str = "LibraryLayout{libraries:bool,shelves:u32,rows:u32,grid_head:bool,status:bool,episodes:bool,pitches:[f32;12],grid_bands:[(row:u32,expansion:f32)]}";
 
     pub(super) fn write(&self, c: &mut crate::ui::machine::Canon) {
-        let Self { libraries, shelves, rows, grid_head, status, pitches } = self;
-        c.bool(*libraries).u32(*shelves as u32).u32(*rows as u32).bool(*grid_head).bool(*status);
+        let Self { libraries, shelves, rows, grid_head, status, episodes, pitches, grid_bands } = self;
+        c.bool(*libraries).u32(*shelves as u32).u32(*rows as u32).bool(*grid_head).bool(*status).bool(*episodes);
         for pitch in pitches { c.f32(*pitch); }
+        c.seq(grid_bands.iter().filter(|band| band.row != usize::MAX).count());
+        for band in grid_bands.iter().filter(|band| band.row != usize::MAX) {
+            c.u32(band.row as u32).f32(band.expansion);
+        }
     }
 
     pub(super) fn new(libraries: bool, shelf_pitches: &[f32], rows: usize, grid_head: bool) -> Self {
@@ -63,7 +83,9 @@ impl Layout {
             rows,
             grid_head,
             status: false,
+            episodes: false,
             pitches,
+            grid_bands: [GridBand::CLOSED; MAX_GRID_BANDS],
         }
     }
 
@@ -71,52 +93,111 @@ impl Layout {
         Self { status: true, ..Self::new(libraries, shelf_pitches, 0, false) }
     }
 
-    pub(super) fn library_h(self) -> f32 {
+    pub(super) fn with_episodes(self, episodes: bool) -> Self { Self { episodes, ..self } }
+
+    pub(super) fn with_grid_bands(mut self, bands: [GridBand; MAX_GRID_BANDS]) -> Self {
+        self.grid_bands = bands;
+        self
+    }
+
+    pub(super) fn with_grid_focus(mut self, row: Option<usize>) -> Self {
+        self.grid_bands = [GridBand::CLOSED; MAX_GRID_BANDS];
+        if let Some(row) = row.filter(|&row| row < self.rows) {
+            self.grid_bands[0] = GridBand { row, expansion: 1.0 };
+        }
+        self
+    }
+
+    pub(super) fn row_expansion(&self, row: usize) -> f32 {
+        self.grid_bands.iter().find(|band| band.row == row).map_or(0.0, |band| band.expansion)
+    }
+
+    fn band_growth_before(&self, row: usize) -> f32 {
+        self.grid_bands.iter().filter(|band| band.row < row.min(self.rows))
+            .map(|band| crate::ui::card_row::under_band(band.expansion)
+                - crate::ui::card_row::LABEL_BAND_COLLAPSED).sum()
+    }
+
+    fn row_top(&self, row: usize) -> f32 {
+        self.grid_top() + row as f32 * self.grid_pitch() + self.band_growth_before(row)
+    }
+
+    pub(super) fn is_episodes(&self) -> bool { self.episodes }
+
+    pub(super) fn cols(&self) -> usize { if self.episodes { EPISODE_COLS } else { COLS } }
+
+    /// The grid keeps the shared episode treatment and gap, fitting four stills in the band
+    /// before the alphabet rail. Its height follows the shared aspect, so the grid's hit boxes,
+    /// scroll window and draws all describe the same cards.
+    pub(super) fn style(&self) -> RowStyle {
+        let style = if self.episodes {
+            let base = RowStyle::EPISODE;
+            let w = (GRID_RIGHT - MARGIN_X - (EPISODE_COLS - 1) as f32 * base.gap)
+                / EPISODE_COLS as f32;
+            RowStyle { w, h: w * base.h / base.w, ..base }
+        } else { RowStyle { gap: GRID_GAP, ..RowStyle::HOME } };
+        style.with_right_reserve(SCR_W - GRID_RIGHT)
+    }
+
+    pub(super) fn card_w(&self) -> f32 { self.style().w }
+
+    pub(super) fn card_h(&self) -> f32 { self.style().h }
+
+    pub(super) fn grid_pitch(&self) -> f32 {
+        self.card_h() + crate::ui::card_row::LABEL_BAND_COLLAPSED + crate::ui::consts::UNDER_LABEL_AIR
+    }
+
+    pub(super) fn cell_x(&self, col: usize) -> f32 {
+        let style = self.style();
+        MARGIN_X + col as f32 * (style.w + style.gap)
+    }
+
+    pub(super) fn library_h(&self) -> f32 {
         if self.libraries { LIBRARY_ROW_H } else { 0.0 }
     }
 
-    pub(super) fn shelf_pitch(self, index: usize) -> f32 {
+    pub(super) fn shelf_pitch(&self, index: usize) -> f32 {
         self.pitches.get(index).copied().unwrap_or(crate::ui::consts::ROW_PITCH)
     }
 
-    pub(super) fn shelf_origin(self, index: usize) -> f32 {
+    pub(super) fn shelf_origin(&self, index: usize) -> f32 {
         self.library_h() + self.pitches[..index.min(self.shelves)].iter().sum::<f32>()
     }
 
-    pub(super) fn grid_block_top(self) -> f32 {
+    pub(super) fn grid_block_top(&self) -> f32 {
         self.library_h() + self.pitches[..self.shelves].iter().sum::<f32>()
     }
 
-    pub(super) fn grid_top(self) -> f32 {
+    pub(super) fn grid_top(&self) -> f32 {
         self.grid_block_top() + if self.grid_head { GRID_HEAD_H } else { 0.0 }
     }
 
-    pub(super) fn row_y(self, row: usize, scroll: f32) -> f32 {
-        CONTENT_TOP + self.grid_top() + row as f32 * GRID_PITCH - scroll
+    pub(super) fn row_y(&self, row: usize, scroll: f32) -> f32 {
+        CONTENT_TOP + self.row_top(row) - scroll
     }
 
-    pub(super) fn shelf_y(self, shelf: usize, scroll: f32) -> f32 {
+    pub(super) fn shelf_y(&self, shelf: usize, scroll: f32) -> f32 {
         CONTENT_TOP + self.shelf_origin(shelf) - scroll
     }
 
-    pub(super) fn doc_to_grid(self, scroll: f32) -> f32 { scroll - self.grid_top() }
+    pub(super) fn doc_to_grid(&self, scroll: f32) -> f32 { scroll - self.grid_top() }
 
-    pub(super) fn doc_h(self) -> f32 { self.grid_top() + self.rows as f32 * GRID_PITCH }
+    pub(super) fn doc_h(&self) -> f32 { self.row_top(self.rows) }
 
-    pub(super) fn max_scroll(self) -> f32 {
+    pub(super) fn max_scroll(&self) -> f32 {
         (self.doc_h() - (SCR_H - CONTENT_TOP) + MARGIN_Y).max(0.0)
     }
 
-    pub(super) fn row_reveal(self, row: usize) -> f32 {
-        let top = if row == 0 { self.grid_block_top() } else { self.grid_top() + row as f32 * GRID_PITCH };
+    pub(super) fn row_reveal(&self, row: usize) -> f32 {
+        let top = if row == 0 { self.grid_block_top() } else { self.row_top(row) };
         top.clamp(0.0, self.max_scroll())
     }
 
-    pub(super) fn shelf_reveal(self, shelf: usize) -> f32 {
+    pub(super) fn shelf_reveal(&self, shelf: usize) -> f32 {
         (self.shelf_origin(shelf) - crate::ui::consts::TITLE_DY).clamp(0.0, self.max_scroll())
     }
 
-    pub(super) fn first(self) -> Option<Block> {
+    pub(super) fn first(&self) -> Option<Block> {
         if self.libraries { Some(Block::LibraryRow) }
         else if self.shelves > 0 { Some(Block::Shelf(0)) }
         else if self.status { Some(Block::Status) }
@@ -124,7 +205,7 @@ impl Layout {
         else { None }
     }
 
-    pub(super) fn seat_for_scroll(self, scroll: f32, saved_row: usize) -> Option<Block> {
+    pub(super) fn seat_for_scroll(&self, scroll: f32, saved_row: usize) -> Option<Block> {
         let first = self.first()?;
         if scroll <= 0.5 { return Some(first); }
         let mut best = (f32::INFINITY, first);
@@ -143,15 +224,17 @@ impl Layout {
         Some(best.1)
     }
 
-    pub(super) fn visible_rows(self, scroll: f32) -> (usize, usize) {
+    pub(super) fn visible_rows(&self, scroll: f32) -> (usize, usize) {
         if self.rows == 0 { return (0, 0); }
         let local = self.doc_to_grid(scroll);
-        let lo = ((local - CARD_H) / GRID_PITCH).floor().max(0.0) as usize;
-        let hi = (((local + SCR_H - CONTENT_TOP) / GRID_PITCH).ceil().max(0.0) as usize + 1).min(self.rows);
+        let pitch = self.grid_pitch();
+        // Prefix growth is nonnegative and at most the sparse bands' total. This conservative
+        // inverse retains only nearby rows without scanning a catalog or binary-searching it.
+        let growth = self.band_growth_before(self.rows);
+        let lo = ((local - self.card_h() - growth) / pitch).floor().max(0.0) as usize;
+        let hi = (((local + SCR_H - CONTENT_TOP) / pitch).ceil().max(0.0) as usize + 1).min(self.rows);
         (lo.min(hi), hi)
     }
-
-    pub(super) fn grid_x(col: usize) -> f32 { MARGIN_X + col as f32 * (CARD_W + GRID_GAP) }
 
 }
 
@@ -202,6 +285,40 @@ pub(super) fn shelf_pitch(landscape: bool, expanded: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn all_rows_without_focus_use_the_shared_collapsed_band() {
+        for episodes in [false, true] {
+            let layout = Layout::new(false, &[], 10_000, true).with_episodes(episodes);
+            let pitch = layout.card_h() + crate::ui::card_row::under_band(0.0)
+                + crate::ui::consts::UNDER_LABEL_AIR;
+            assert!((layout.row_y(1, 0.0) - layout.row_y(0, 0.0) - pitch).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn only_the_focused_all_row_reserves_its_caption_and_the_last_caption_fits() {
+        use crate::ui::card_row::{BAND_OPEN, UNDER_LABEL_H};
+        for episodes in [false, true] {
+            let compact = Layout::new(true, &[shelf_pitch(false, 0.0)], 40, true)
+                .with_episodes(episodes);
+            for focused in [0, 3, 39] {
+                let layout = compact.with_grid_focus(Some(focused));
+                assert!((layout.doc_h() - compact.doc_h() - BAND_OPEN).abs() < 0.002);
+                for row in [0, 3, 39] {
+                    let growth = if row > focused { BAND_OPEN } else { 0.0 };
+                    assert!((layout.row_y(row, 0.0) - compact.row_y(row, 0.0) - growth).abs() < 0.002);
+                    assert_eq!(layout.row_expansion(row), f32::from(row == focused));
+                }
+                let scroll = layout.row_reveal(focused);
+                let (lo, hi) = layout.visible_rows(scroll);
+                assert!((lo..hi).contains(&focused));
+                assert!(hi - lo < 8, "paging remains bounded for both card shapes");
+                assert!(layout.row_y(focused, scroll) + layout.card_h() + UNDER_LABEL_H
+                    <= SCR_H - MARGIN_Y + 0.01);
+            }
+        }
+    }
 
     fn posters(libraries: bool, shelves: usize, rows: usize, grid_head: bool) -> Layout {
         Layout::new(libraries, &vec![crate::ui::consts::ROW_PITCH; shelves], rows, grid_head)
@@ -276,7 +393,7 @@ mod tests {
                     "row_reveal must never ask past max_scroll ({shelves} shelves, {rows} rows)"
                 );
                 // the whole last row — card, label band and the air under it — is on the panel
-                let bottom = CONTENT_TOP + lay.grid_top() + rows as f32 * GRID_PITCH - last;
+                let bottom = CONTENT_TOP + lay.doc_h() - last;
                 assert!(
                     bottom <= SCR_H + 0.001,
                     "the last row's caption is off the panel ({shelves} shelves, {rows} rows): {bottom}"
@@ -309,10 +426,27 @@ mod tests {
 
     #[test]
     fn six_column_grid_fills_only_the_reserved_content_band() {
-        assert_eq!(Layout::grid_x(0), MARGIN_X);
-        let right = Layout::grid_x(COLS - 1) + CARD_W;
+        let layout = posters(false, 0, 40, true);
+        assert_eq!(layout.cell_x(0), MARGIN_X);
+        let right = layout.cell_x(COLS - 1) + layout.card_w();
         assert!((right - GRID_RIGHT).abs() < 0.01);
         assert!(right + RAIL_BAND <= SCR_W - MARGIN_X + 0.01);
+    }
+
+    #[test]
+    fn episode_grid_fits_four_stills_before_the_rail_and_reveals_the_last_caption() {
+        let lay = posters(true, 2, 40, true).with_episodes(true);
+        assert_eq!(lay.cols(), 4);
+        assert_eq!(lay.cell_x(0), MARGIN_X);
+        assert!((lay.cell_x(lay.cols() - 1) + lay.card_w() - GRID_RIGHT).abs() < 0.01);
+        assert!((lay.card_w() / lay.card_h() - RowStyle::EPISODE.w / RowStyle::EPISODE.h).abs() < 0.001);
+        assert!(lay.grid_pitch() < GRID_PITCH);
+        assert_eq!(lay.row_reveal(8), lay.grid_top() + 8.0 * lay.grid_pitch());
+        let last = lay.row_reveal(39);
+        assert!(lay.row_y(39, last) + lay.grid_pitch() <= SCR_H - MARGIN_Y + 0.01);
+        let (lo, hi) = lay.visible_rows(lay.row_reveal(8));
+        assert!(lo <= 8 && hi > 8);
+        assert!(hi - lo < 8, "the episode page window stays bounded: {lo}..{hi}");
     }
 
     #[test]

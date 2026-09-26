@@ -1009,6 +1009,55 @@ mod tests {
         }
     }
     #[test]
+    fn still_commands_track_crop_texture_revision_and_scrim_under_cached_glass() {
+        let _guard = crate::testlock::serial();
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        let tex = 9081;
+        crate::gfx::tex_ledger::specified(tex, 720, 480);
+        // Each changed input repeats once: its first frame invalidates; its settled twin reuses.
+        for step in 0..14 {
+            let state = step / 2;
+            if step == 4 { crate::gfx::tex_ledger::specified(tex, 720, 480); }
+            sources.borrow_mut().begin(vec![]);
+            {
+                let _walk = discover(sources.clone());
+                let p = crate::ui::Painter::root();
+                let uv = if state >= 1 { [0.0, 0.1, 1.0, 0.8] } else { crate::gfx::UV_FULL };
+                let rad = if state >= 3 { 18.0 } else { 14.0 };
+                let focus = if state >= 4 { 0.5 } else { 0.0 };
+                let band = if state >= 5 { 90.0 } else { 80.0 };
+                let scrim = crate::ui::theme::scrim(if state >= 6 { 0.8 } else { 0.7 });
+                assert!(p.tex_carded_still(tex, uv, rect(0.0), rad, focus, band, scrim));
+                declare_glass(p, rect(0.0));
+            }
+            sources.borrow_mut().resolve();
+            assert_eq!(!sources.borrow().entries[&Z(1)].valid, step % 2 == 0, "step {step}");
+            commit(&sources);
+        }
+        crate::gfx::tex_ledger::deleted(tex);
+    }
+
+    #[test]
+    fn standalone_still_scrims_invalidate_only_when_their_picture_changes() {
+        let _guard = crate::testlock::serial();
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        for step in 0..8 {
+            sources.borrow_mut().begin(vec![]);
+            {
+                let _walk = discover(sources.clone());
+                let p = crate::ui::Painter::root();
+                assert!(p.art_scrim(rect(0.0), if step >= 2 { 18.0 } else { 14.0 },
+                    if step >= 4 { 90.0 } else { 80.0 },
+                    crate::ui::theme::scrim(if step >= 6 { 0.8 } else { 0.7 })));
+                declare_glass(p, rect(0.0));
+            }
+            sources.borrow_mut().resolve();
+            assert_eq!(!sources.borrow().entries[&Z(1)].valid, step % 2 == 0, "step {step}");
+            commit(&sources);
+        }
+    }
+
+    #[test]
     fn the_real_painter_ignores_foreground_and_outside_motion_but_captures_settle() {
         let _guard = crate::testlock::serial();
         let sources = Rc::new(RefCell::new(Sources::default()));

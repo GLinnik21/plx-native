@@ -41,6 +41,74 @@ const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
 
 #[test]
+fn all_grid_caption_band_restores_with_the_saved_viewport() {
+    let _guard = crate::testlock::serial();
+    let fixture = Fixture::new();
+    let mut page = fixture.screen();
+    let key = page.key(page.pair.detail.elem_at(35).unwrap());
+    page.relayout(Some(key));
+    page.scroll_target = page.target_layout.row_reveal(5);
+    page.scroll.jump(page.scroll_target);
+    page.relayout(Some(key));
+    let before = page.place(&key.elem, &fixture.cx(Some(key)), At::Drawn).unwrap();
+    let PageMemory::Library(memory) = <LibraryScreen as Screen<HostFixture>>::memory(&page) else { panic!() };
+    let mut restored = LibraryScreen::new(ENTRY, InstanceId(20), SecKind::Movie);
+    restored.restore(&memory);
+    restored.sync(&fixture.cx(Some(key)));
+    let after = restored.place(&key.elem, &fixture.cx(Some(key)), At::Drawn).unwrap();
+    assert_eq!(restored.layout.row_expansion(5), 1.0);
+    assert_eq!(restored.layout.row_expansion(4), 0.0);
+    assert_eq!(restored.scroll.pos, page.scroll.pos);
+    assert_eq!([after.rect.x, after.rect.y, after.rect.w, after.rect.h],
+        [before.rect.x, before.rect.y, before.rect.w, before.rect.h]);
+    assert_eq!(restored.layout.doc_h(), page.layout.doc_h());
+}
+
+#[test]
+fn saved_last_all_row_opens_before_the_bookmark_scroll_is_clamped() {
+    let _guard = crate::testlock::serial();
+    let mut fixture = Fixture::new();
+    let saved_scroll = fixture.screen().layout.with_grid_focus(Some(5)).max_scroll();
+    fixture.listing = fixture.listing.clone().with_cursor(crate::stores::browse::Cursor {
+        at: crate::stores::browse::CursorAt::SlotIndex(35), scroll: saved_scroll,
+    });
+    let mut page = fixture.screen();
+    let mut output = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    assert!(page.seed_cursor(&fixture.cx(None),
+        &mut Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present)));
+    assert_eq!(page.scroll.pos, saved_scroll);
+    assert_eq!(page.target_layout.row_expansion(5), 1.0);
+    assert_eq!(page.layout.row_expansion(5), 1.0);
+    assert_eq!(page.restore_scroll, Some(saved_scroll));
+}
+
+#[test]
+fn all_grid_moves_open_only_the_destination_band_and_use_settled_reveal() {
+    let _guard = crate::testlock::serial();
+    let fixture = Fixture::new();
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    let first = page.key(page.pair.detail.elem_at(12).unwrap());
+    page.relayout(Some(first));
+    engine.set(OWNER, first, Some(page.pair.groups_config().detail), By::Restore);
+    direction(&mut page, &mut engine, &fixture, Dir::Down);
+    let next = engine.current(OWNER).unwrap();
+    assert_eq!(page.grid_position(Some(next)), Some((3, 0)));
+    assert_eq!(page.layout.row_expansion(2), 1.0, "outgoing row starts closing from its live size");
+    assert_eq!(page.layout.row_expansion(3), 0.0, "incoming row starts compact");
+    assert_eq!(page.target_layout.row_expansion(2), 0.0);
+    assert_eq!(page.target_layout.row_expansion(3), 1.0);
+    assert_eq!(page.scroll_target, page.target_layout.row_reveal(3));
+    let target = page.place(&next.elem, &fixture.cx(Some(next)), At::SpringTarget).unwrap();
+    assert_eq!(target.rest_rect.cy(), page.target_layout.row_y(3, page.scroll_target)
+        + page.target_layout.card_h() * 0.5);
+    let (lo, hi) = page.target_layout.visible_rows(page.scroll_target);
+    assert!((lo..hi).contains(&3));
+}
+
+#[test]
 fn grid_paint_window_keeps_cards_above_the_centered_tab_track() {
     let _guard = crate::testlock::serial();
     let fixture = Fixture::new();
@@ -1095,3 +1163,7 @@ fn shelf_publication_request_distinguishes_page_fade_from_grid_fade_and_head_foc
     page.page_fade.mount();
     assert_eq!(request(&mut page), (true, false), "only the full-page fade permits publication away from the head");
 }
+
+mod type_tests { include!("type_tests.rs"); }
+
+mod art_admission_tests { include!("art_admission_tests.rs"); }

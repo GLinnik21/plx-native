@@ -244,7 +244,7 @@ fn a_movie_section_without_a_server_advertised_plays_sort_gains_exactly_one_desc
     let _g = crate::testlock::serial();
     let (_cleanup, mut browse, _, _) = registered_page_source(); // section 0 is SecKind::Movie
     land_page_with_sorts(&mut browse, vec![SortEntry {
-        key: "titleSort".into(),
+        key: "titleSort".into(), desc_key: String::new(),
         title: "Title".into(),
         default_desc: false,
     }]);
@@ -265,7 +265,7 @@ fn a_show_section_without_a_server_advertised_plays_sort_gains_it_too() {
     let _g = crate::testlock::serial();
     let (_cleanup, mut browse, _, _) = registered_page_source_of_kind(SecKind::Show);
     land_page_with_sorts(&mut browse, vec![SortEntry {
-        key: "titleSort".into(),
+        key: "titleSort".into(), desc_key: String::new(),
         title: "Title".into(),
         default_desc: false,
     }]);
@@ -285,8 +285,8 @@ fn a_section_that_already_advertises_view_count_gains_no_duplicate() {
     let _g = crate::testlock::serial();
     let (_cleanup, mut browse, _, _) = registered_page_source();
     land_page_with_sorts(&mut browse, vec![
-        SortEntry { key: "titleSort".into(), title: "Title".into(), default_desc: false },
-        SortEntry { key: "viewCount".into(), title: "Plays".into(), default_desc: true },
+        SortEntry { key: "titleSort".into(), desc_key: String::new(), title: "Title".into(), default_desc: false },
+        SortEntry { key: "viewCount".into(), desc_key: String::new(), title: "Plays".into(), default_desc: true },
     ]);
     let sorts = browse.state.cur_state().unwrap().sorts.clone();
     assert_eq!(
@@ -304,7 +304,7 @@ fn selecting_the_plays_sort_builds_the_proven_viewcount_desc_query() {
     let _g = crate::testlock::serial();
     let (_cleanup, mut browse, _, _) = registered_page_source();
     land_page_with_sorts(&mut browse, vec![SortEntry {
-        key: "titleSort".into(),
+        key: "titleSort".into(), desc_key: String::new(),
         title: "Title".into(),
         default_desc: false,
     }]);
@@ -331,4 +331,23 @@ fn selecting_the_plays_sort_builds_the_proven_viewcount_desc_query() {
 fn artist_and_photo_sections_have_no_seckind_and_so_cannot_reach_the_plays_sort_gate() {
     assert_eq!(SecKind::from_wire("artist"), None);
     assert_eq!(SecKind::from_wire("photo"), None);
+}
+
+#[test]
+fn season_and_episode_lists_use_only_their_server_advertised_sorts() {
+    let _g = crate::testlock::serial();
+    for library_type in [LibraryType::Seasons, LibraryType::Episodes] {
+        let (_cleanup, mut browse, _, _) = registered_page_source_of_kind(SecKind::Show);
+        assert!(browse.state.set_library_type(library_type));
+        land_page_with_sorts(&mut browse, vec![SortEntry {
+            key: "show.titleSort,episode.index".into(),
+            desc_key: "show.titleSort:desc,episode.index".into(),
+            title: "Show".into(),
+            default_desc: true,
+        }]);
+        let state = browse.state.cur_state().unwrap();
+        assert_eq!(state.sorts.len(), 1, "Plays was proven only for movies and shows");
+        assert_eq!(state.sorts[0].key, "show.titleSort,episode.index");
+        assert!(state.sort_desc, "the active type's advertised default direction survives landing");
+    }
 }

@@ -46,6 +46,10 @@ pub trait Host: 'static {
     /// See `stores/metadata.rs`'s module doc for the worked case (`Spot`) and
     /// the rationale for landing it here rather than as tier-3 store state.
     type Memory: Clone + Default + std::fmt::Debug + LogicalState + 'static;
+
+    /// Whether this effect needs the emitting page's frozen navigation bookmark. Hosts may
+    /// exempt housekeeping which never navigates; unknown effects retain the safe default.
+    fn app_fx_needs_return(_fx: &Self::Fx) -> bool { true }
 }
 
 macro_rules! newtype {
@@ -174,6 +178,12 @@ pub trait Measure {
     fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32;
     fn cap_h(&self, sz: i32) -> f32;
     fn line_h(&self, sz: i32) -> f32;
+
+    /// A drawable, ellipsised run through this capability. Native fonts may retain fitted runs;
+    /// replay and recording use the supplied metrics on every call, including missing-key checks.
+    fn fit_line(&self, s: &str, budget: f32, sz: i32, bold: bool) -> std::rc::Rc<CStr> {
+        crate::text::fit_line_by(self, s, budget, sz, bold)
+    }
 
     /// `width` for a borrowed `&str` (spec §4.3, phase 12 D4): builds the transient `CString` so
     /// a draw-time call site measures a `String`/`&str` slice without hand-rolling one — the exact

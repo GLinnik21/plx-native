@@ -80,8 +80,9 @@ above. What Developer Mode costs you is renewal: if the session lapses, LG remov
 installed through it ([how to keep them](docs/install-and-verify.md#important-developer-mode-expires)).
 A rooted TV with Homebrew Channel has no expiry.
 
-If something goes wrong, [tell me what happened](https://github.com/GLinnik21/plx-native/issues) —
-and if you own one of the sets above, it working is as useful a report as it failing.
+If something goes wrong, check [Troubleshooting](docs/troubleshooting.md) first, then
+[tell me what happened](https://github.com/GLinnik21/plx-native/issues) — and if you own one of the
+sets above, it working is as useful a report as it failing.
 
 ## Installing
 

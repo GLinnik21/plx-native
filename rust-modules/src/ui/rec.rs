@@ -1002,6 +1002,10 @@ impl Measurements {
     }
 }
 impl Measure for Measurements {
+    fn fit_line(&self, s: &str, budget: f32, sz: i32, bold: bool) -> std::rc::Rc<CStr> {
+        if let Self::Live(source) = self { return source.fit_line(s, budget, sz, bold); }
+        crate::text::fit_line_by(self, s, budget, sz, bold)
+    }
     fn width(&self,s:&CStr,sz:i32,bold:bool)->f32 {
         if let Self::Live(source)=self { return source.width(s,sz,bold); }
         self.query(MetricKey::Width {text:s.to_bytes().to_vec(),sz,bold},|m|m.width(s,sz,bold))

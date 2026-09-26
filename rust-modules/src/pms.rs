@@ -99,7 +99,7 @@ pub struct PmsMovie {
     pub(crate) resume_ms: i64,  // viewOffset — drives the Continue Watching resume bar
     pub(crate) show_rk: String, // parent show rk (episode: grandparent; season: parent)
     pub(crate) season_index: c_int, // season number (episode: parentIndex; season: index)
-    pub(crate) show_title: String, // episode only: grandparentTitle (the hero headlines the SHOW)
+    pub(crate) show_title: String, // episode: grandparentTitle; season: parentTitle
     pub(crate) ep_index: c_int, // episode only: episode number within the season
     /// Fully unwatched (movie/episode: no viewCount; show/season: zero viewed leaves).
     pub(crate) unwatched: bool,
@@ -303,6 +303,7 @@ pub(crate) fn parse_item(it: &crate::plex::Metadata, sid: ServerId) -> PmsMovie 
             // season: parent show = parent, season number = index
             m.show_rk = clean(&it.parent_rating_key);
             m.season_index = it.index as c_int;
+            m.show_title = clean(&it.parent_title);
         }
         _ => {}
     }

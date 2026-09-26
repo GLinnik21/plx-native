@@ -298,12 +298,57 @@ pub(crate) struct BrowseSection {
     pub(crate) pinned: bool,
 }
 
+/// The flat listings offered by a TV library. Separate from the section's kind: selecting
+/// episodes changes the query, while the section remains a TV library in the tab strip.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum LibraryType {
+    #[default]
+    Shows,
+    Seasons,
+    Episodes,
+}
+
+impl LibraryType {
+    pub(crate) fn title(self) -> &'static str {
+        match self {
+            Self::Shows => "TV Shows",
+            Self::Seasons => "Seasons",
+            Self::Episodes => "Episodes",
+        }
+    }
+
+    pub(crate) fn plex_type(self) -> i64 {
+        match self {
+            Self::Shows => 2,
+            Self::Seasons => 3,
+            Self::Episodes => 4,
+        }
+    }
+}
+
 /// One sort-menu entry (from `Meta.Type[].Sort` — server-driven).
 #[derive(Clone)]
 pub(crate) struct SortEntry {
     pub(crate) key: String,   // "titleSort"
+    pub(crate) desc_key: String,
     pub(crate) title: String, // "Title"
     pub(crate) default_desc: bool,
+}
+
+impl SortEntry {
+    fn query(&self, desc: bool) -> String {
+        if !desc {
+            if self.key.contains(',') { self.key.clone() } else { format!("{}:asc", self.key) }
+        } else if !self.desc_key.is_empty() {
+            self.desc_key.clone()
+        } else if let Some((first, rest)) = self.key.split_once(',') {
+            // Show ordering reverses the show name while its seasons and episodes keep
+            // their natural order. Older menus may omit the explicit descending key.
+            format!("{first}:desc,{rest}")
+        } else {
+            format!("{}:desc", self.key)
+        }
+    }
 }
 
 /// One genre value (tag id + display title), from the section's `/genre` value list.
@@ -373,6 +418,7 @@ pub(crate) enum CursorAt {
 #[derive(Clone)]
 struct SecState {
     // query
+    library_type: LibraryType,
     sort_idx: usize,
     sort_desc: bool,
     unwatched: bool,
@@ -510,6 +556,7 @@ impl SecItems {
 impl Default for SecState {
     fn default() -> Self {
         SecState {
+            library_type: LibraryType::default(),
             sort_idx: 0,
             sort_desc: false,
             unwatched: false,
@@ -525,6 +572,26 @@ impl Default for SecState {
             items: SecItems::default(),
             cursor: None,
         }
+    }
+}
+
+impl SecState {
+    fn query_filters(&self, section_kind: SecKind) -> Vec<(String, String)> {
+        let mut filters = Vec::new();
+        if section_kind == SecKind::Show {
+            filters.push(("type".into(), self.library_type.plex_type().to_string()));
+        }
+        if self.unwatched {
+            let key = match (section_kind, self.library_type) {
+                (SecKind::Show, LibraryType::Shows | LibraryType::Seasons) => "unwatchedLeaves",
+                _ => "unwatched",
+            };
+            filters.push((key.into(), "1".into()));
+        }
+        if let Some(genre) = &self.genre {
+            filters.push(("genre".into(), genre.id.clone()));
+        }
+        filters
     }
 }
 
@@ -858,6 +925,29 @@ impl BrowseState {
         self.requery();
         true
     }
+    fn set_library_type(&mut self, library_type: LibraryType) -> bool {
+        let current = self.cur();
+        if self.section_kind(current) != Some(SecKind::Show) {
+            return false;
+        }
+        let Some(state) = self.states.get_mut(current) else { return false };
+        if state.library_type == library_type {
+            return true;
+        }
+        state.library_type = library_type;
+        // Menus and letter counts describe a metadata type. Never reuse the show's menus
+        // or offsets for episodes, and never send a sort key the new type hasn't advertised.
+        state.sorts = Arc::default();
+        state.sort_idx = 0;
+        state.sort_desc = false;
+        state.genre = None;
+        state.genres = Arc::default();
+        state.genres_done = false;
+        state.letters = Arc::default();
+        state.letters_done = false;
+        self.requery();
+        true
+    }
     fn set_genre(&mut self, index: Option<usize>) {
         let current = self.cur();
         let Some(state) = self.states.get_mut(current) else {
@@ -869,6 +959,11 @@ impl BrowseState {
         self.requery();
     }
     fn set_genre_by_id(&mut self, id: Option<&str>) -> bool {
+        if id.is_some() && self.cur_state().is_some_and(|state| {
+            state.library_type != LibraryType::Shows
+        }) {
+            return false;
+        }
         match id {
             None => {
                 self.set_genre(None);
@@ -1013,12 +1108,15 @@ impl BrowseState {
             return;
         }
         let key = self.sections[current].key;
+        let library_type = self.states[current].library_type;
+        let metadata_type = (self.sections[current].kind == SecKind::Show)
+            .then(|| library_type.plex_type());
         let epoch = self.table_epoch();
         let worker_adapter = Arc::clone(&adapter);
         let spawned = crate::task::spawn_small("directory", move || {
             let list = catch_unwind(|| {
                 let mut values = Vec::new();
-                if let Some(container) = client.section_directory(key, dir) {
+                if let Some(container) = client.section_directory(key, dir, metadata_type) {
                     values.extend(container.directory.iter().filter_map(project));
                 }
                 values
@@ -1029,6 +1127,7 @@ impl BrowseState {
                 sec: current,
                 client,
                 token_gen,
+                library_type,
                 list,
             });
         });
@@ -1103,6 +1202,7 @@ impl BrowseState {
                     Some(QueryEdit::Sort { key, desc }) => self.set_sort_by_key(&key, desc),
                     Some(QueryEdit::Unwatched(on)) => self.set_unwatched(on),
                     Some(QueryEdit::Genre(id)) => self.set_genre_by_id(id.as_deref()),
+                    Some(QueryEdit::LibraryType(library_type)) => self.set_library_type(library_type),
                     None => true,
                 }
             }
@@ -1949,10 +2049,13 @@ impl BrowseState {
         if result.epoch != self.table_epoch() {
             return false;
         }
-        let DirectoryResult { sec, client, token_gen, list, .. } = result;
+        let DirectoryResult { sec, client, token_gen, library_type, list, .. } = result;
         crate::plex::commit_if_current(client.id(), client, token_gen, || {
             if self.section_sid(sec) == Some(client.id()) {
                 if let Some(state) = self.state_mut(sec) {
+                    if state.library_type != library_type {
+                        return false;
+                    }
                     apply(state, list);
                     return true;
                 }
@@ -1996,19 +2099,10 @@ impl BrowseState {
         };
         let include_meta = state.sorts.is_empty();
         let sort = state.sorts.get(state.sort_idx)
-            .map(|sort| format!("{}:{}", sort.key,
-                if state.sort_desc { "desc" } else { "asc" }))
+            .map(|sort| sort.query(state.sort_desc))
             .unwrap_or_default();
-        let mut filters = Vec::new();
-        if state.unwatched {
-            filters.push((match section.kind {
-                SecKind::Show => "unwatchedLeaves",
-                SecKind::Movie => "unwatched",
-            }.to_string(), "1".to_string()));
-        }
-        if let Some(genre) = &state.genre {
-            filters.push(("genre".to_string(), genre.id.clone()));
-        }
+        let filters = state.query_filters(section.kind);
+        let confirm_sort = section.kind == SecKind::Show && state.library_type != LibraryType::Shows;
         let gen = self.query_gen();
         let key = section.key;
         let Some(sid) = self.section_sid(current) else { return };
@@ -2022,29 +2116,7 @@ impl BrowseState {
                     section_key: key, sort: &sort, filters: &filters,
                     start: start as i64, size: PAGE as i64, include_meta,
                 };
-                let Some(container) = client.section_items_query(&query) else {
-                    return (Vec::new(), -1, None);
-                };
-                let items = container.metadata.iter().map(|item| parse_item(item, sid)).collect();
-                let total = if container.total_size > 0 {
-                    container.total_size
-                } else {
-                    start as i64 + container.metadata.len() as i64
-                };
-                let sorts = container.meta.as_ref().and_then(|meta| {
-                    meta.types.iter().find(|kind| kind.active != 0)
-                        .or_else(|| meta.types.first()).map(|kind| kind.sort.iter()
-                            .filter(|sort| !sort.key.is_empty()).map(|sort| SortEntry {
-                                key: sort.key.clone(),
-                                title: if sort.title.is_empty() {
-                                    sort.key.clone()
-                                } else {
-                                    sort.title.clone()
-                                },
-                                default_desc: sort.default_direction == "desc",
-                            }).collect())
-                });
-                (items, total, sorts)
+                fetch_listing_page(client, sid, &query, confirm_sort)
             }).unwrap_or((Vec::new(), -1, None));
             *worker_adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) =
                 Some(PageResult {
@@ -2135,9 +2207,14 @@ impl BrowseState {
                                 state.fetch = SecFetch::Ready;
                                 if let Some(sorts) = result.sorts {
                                     if state.sorts.is_empty() {
-                                        let sorts = match kind {
-                                            Some(kind) => with_plays_sort(sorts, kind),
-                                            None => sorts,
+                                        let sorts = if state.library_type == LibraryType::Shows {
+                                            match kind {
+                                                Some(kind) => with_plays_sort(sorts, kind),
+                                                None => sorts,
+                                            }
+                                        } else {
+                                            state.sort_desc = sorts.first().is_some_and(|sort| sort.default_desc);
+                                            sorts
                                         };
                                         state.sorts = Arc::new(sorts);
                                     }
@@ -2167,6 +2244,44 @@ impl BrowseState {
 }
 
 // ---- fetch plumbing (generation + single-flight + mailboxes) --------------------------------
+
+fn fetch_listing_page(
+    client: &crate::plex::Client,
+    sid: ServerId,
+    query: &SectionQuery<'_>,
+    confirm_sort: bool,
+) -> (Vec<PmsMovie>, i64, Option<Vec<SortEntry>>) {
+    let Some(mut container) = client.section_items_query(query) else {
+        return (Vec::new(), -1, None);
+    };
+    let sorts: Option<Vec<SortEntry>> = container.meta.as_ref().and_then(|meta| {
+        meta.types.iter().find(|kind| kind.active != 0)
+            .or_else(|| meta.types.first()).map(|kind| kind.sort.iter()
+                .filter(|sort| !sort.key.is_empty()).map(|sort| SortEntry {
+                    key: sort.key.clone(),
+                    desc_key: sort.desc_key.clone(),
+                    title: if sort.title.is_empty() { sort.key.clone() } else { sort.title.clone() },
+                    default_desc: sort.default_direction == "desc",
+                }).collect())
+    });
+    // Seasons and episodes advertise Show ordering first, while an unsorted /all answer
+    // arrives in title order. Publish only after ordering by the menu we just discovered;
+    // later pages use that same key, so no page boundary can duplicate or skip an episode.
+    if confirm_sort && query.include_meta && query.sort.is_empty() {
+        if let Some(first) = sorts.as_ref().and_then(|sorts| sorts.first()) {
+            let sort = first.query(first.default_desc);
+            let sorted = SectionQuery { sort: &sort, include_meta: false, ..*query };
+            let Some(sorted_container) = client.section_items_query(&sorted) else {
+                return (Vec::new(), -1, None);
+            };
+            container = sorted_container;
+        }
+    }
+    let total = if container.total_size > 0 { container.total_size }
+        else { query.start + container.metadata.len() as i64 };
+    let items = container.metadata.iter().map(|item| parse_item(item, sid)).collect();
+    (items, total, sorts)
+}
 
 /// Bumped whenever the section table's SHAPE changes — a source's sections appended, or the whole
 /// table wiped by [`reset`]. Label/measurement caches keyed on the table (the tab strip's pill
@@ -2202,6 +2317,7 @@ struct DirectoryResult<T> {
     sec: usize,
     client: &'static crate::plex::Client,
     token_gen: u32,
+    library_type: LibraryType,
     list: Vec<T>,
 }
 
@@ -2389,6 +2505,7 @@ fn with_plays_sort(mut sorts: Vec<SortEntry>, kind: SecKind) -> Vec<SortEntry> {
     if kind_offers_plays_sort(kind) && !sorts.iter().any(|sort| sort.key == PLAYS_SORT_KEY) {
         sorts.push(SortEntry {
             key: PLAYS_SORT_KEY.into(),
+            desc_key: String::new(),
             title: "Plays".into(),
             default_desc: true,
         });
@@ -2987,6 +3104,7 @@ pub(crate) fn queue_genre_for_owner_test(
     *adapter.genre_result.lock().unwrap_or_else(|e| e.into_inner()) =
         Some(DirectoryResult {
             epoch: state.table_epoch(), sec, client, token_gen: client.token_gen(),
+            library_type: state.states[sec].library_type,
             list: vec![GenreEntry { id: "new".into(), title: "New Genre".into() }],
         });
 }
@@ -3084,3 +3202,6 @@ mod home_and_tabs_tests;
 #[cfg(test)]
 #[path = "browse_reachability_tests.rs"]
 mod reachability_tests;
+
+#[cfg(test)]
+mod library_type_tests;
