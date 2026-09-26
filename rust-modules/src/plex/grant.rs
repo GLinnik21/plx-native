@@ -35,6 +35,8 @@
 //!   installs ([`roster_replaced`]);
 //! * the **network generation** it was minted under ([`network_changed`]: the app returning to the
 //!   foreground, where nothing proves the television is still on the network it consented on).
+//!   Every server that loses its grant there is queued for a fresh endpoint discovery, which
+//!   re-proves the network and, the consent being persisted, mints again without asking.
 //!
 //! A grant whose generations are not the current ones is dead: it admits nothing, and the table
 //! drops it. Nothing about a grant is persisted — a session file that names a plaintext origin
@@ -52,7 +54,9 @@
 //! with the credential it started with, and nothing after it gets a new one. A refusal also moves
 //! the consent generation, so a discovery that captured *Allowed* before it cannot mint the grant
 //! back when it settles; and a refusal whose write has not reached the disk is written again
-//! until it has ([`UpgradeRetry::due`]), so a restart never reads back the *Allowed* it replaced.
+//! until it has ([`UpgradeRetry::due`]), so a restart never reads back the *Allowed* it replaced —
+//! for as long as the account that refused is signed in: [`identity_changed`] drops it, and a
+//! write never lands in a session file that belongs to another account.
 //!
 //! A grant also lives only as long as a FRESH verdict keeps reaching its server: discovery
 //! withdraws it when the latest probe of that server did not reach the granted origin
@@ -105,9 +109,17 @@ static CONSENT: AtomicU64 = AtomicU64::new(1);
 /// before (or without) the session write landing. Cleared with the identity; never a grant.
 static ANSWERS: Mutex<Vec<Answer>> = Mutex::new(Vec::new());
 /// Refusals recorded this launch whose write has not yet been confirmed on disk — see [`record`].
+/// Cleared with the identity ([`identity_changed`]).
 static UNSAVED: Mutex<Vec<Unsaved>> = Mutex::new(Vec::new());
 /// How many entries [`UNSAVED`] holds — the frame step's lock-free fast path.
 static UNSAVED_COUNT: AtomicUsize = AtomicUsize::new(0);
+/// Servers whose grant [`network_changed`] withdrew, each owed one endpoint re-discovery — drained
+/// by the frame step ([`UpgradeRetry::due`]). Without it nothing re-proves the network: the grant
+/// left the upgrade retry's watch list with the withdrawal, and a consented plaintext-only server
+/// would stay tokenless until a manual refresh. Cleared with the identity.
+static STRANDED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// How many entries [`STRANDED`] holds — the frame step's lock-free fast path.
+static STRANDED_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// The fresh eligible verdicts that may be asked about; see the module doc's *Offers*.
 static OFFERS: Mutex<Vec<(GrantScope, PlaintextVerdict)>> = Mutex::new(Vec::new());
 /// Bumped whenever anything a consent surface or the upgrade retry reads moves — the grant table,
@@ -398,9 +410,23 @@ pub(crate) fn revoke(machine_id: &str) -> bool {
 
 /// The signed-in identity changed (sign-out, a sign-in starting): every grant and every offer is
 /// dead from this instant. A profile switch is [`roster_replaced`], at its commit.
+///
+/// This launch's answers go with it — [`UNSAVED`] refusals too: a refusal is the account's that
+/// gave it, and one written after this would land in whatever session follows (the next account's,
+/// whose own answers `Session::with_plaintext_choice` would drop on the way). The row it was
+/// overwriting is keyed to a sign-in that no longer exists, so it can never be honoured again.
+/// A pending re-discovery ([`STRANDED`]) goes too: the new identity discovers everything itself.
 pub(crate) fn identity_changed() {
+    #[cfg(test)]
+    crate::testlock::assert_held("the plaintext grant table (identity_changed)");
     IDENTITY.fetch_add(1, Ordering::AcqRel);
     ANSWERS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    {
+        let mut unsaved = UNSAVED.lock().unwrap_or_else(|e| e.into_inner());
+        unsaved.clear();
+        UNSAVED_COUNT.store(0, Ordering::Release);
+    }
+    take_stranded();
     clear_offers();
     if retain(|_| false) {
         crate::log("security: plaintext credentials withdrawn — identity changed");
@@ -409,10 +435,23 @@ pub(crate) fn identity_changed() {
 }
 
 /// The television may be on a different network (the app returned to the foreground): every grant
-/// and offer is dead from this instant, and the next discovery re-proves the network before
-/// minting again.
+/// and offer is dead from this instant. Each server that lost its grant is queued for a fresh
+/// endpoint discovery ([`STRANDED`], requested by the next [`UpgradeRetry::due`]), which re-proves
+/// the network and — the person's consent being persisted — mints again without asking.
 pub(crate) fn network_changed() {
+    #[cfg(test)]
+    crate::testlock::assert_held("the plaintext grant table (network_changed)");
     NETWORK.fetch_add(1, Ordering::AcqRel);
+    {
+        let grants = GRANTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stranded = STRANDED.lock().unwrap_or_else(|e| e.into_inner());
+        for g in grants.iter() {
+            if !stranded.contains(&g.machine_id) {
+                stranded.push(g.machine_id.clone());
+            }
+        }
+        STRANDED_COUNT.store(stranded.len(), Ordering::Release);
+    }
     clear_offers();
     if retain(|_| false) {
         crate::log("security: plaintext credentials withdrawn — network continuity unknown");
@@ -464,6 +503,16 @@ pub(crate) fn withdraw_offer(machine_id: &str) {
     if changed {
         moved();
     }
+}
+
+/// Take the servers [`network_changed`] stranded. One relaxed load when there are none.
+fn take_stranded() -> Vec<String> {
+    if STRANDED_COUNT.load(Ordering::Acquire) == 0 {
+        return Vec::new();
+    }
+    let mut stranded = STRANDED.lock().unwrap_or_else(|e| e.into_inner());
+    STRANDED_COUNT.store(0, Ordering::Release);
+    std::mem::take(&mut *stranded)
 }
 
 fn clear_offers() {
@@ -559,12 +608,15 @@ pub(crate) fn record(
 }
 
 /// Queue the write of `answer` to the session file; when it is a refusal, report the outcome to
-/// [`UNSAVED`].
+/// [`UNSAVED`]. The write lands only in the session of the account that answered: a file whose
+/// account token is another's (or none) is left alone, and the answer counts as settled — the row
+/// it would have replaced is keyed to a sign-in that is gone.
 fn persist(answer: Answer) {
     let Answer { account, machine_id, choice } = answer.clone();
     super::session::queue_update_settled(
         move |current| {
-            (current.plaintext_choice(&account, &machine_id) != choice)
+            (account_key(&current.account_token) == account
+                && current.plaintext_choice(&account, &machine_id) != choice)
                 .then(|| current.with_plaintext_choice(&account, &machine_id, choice))
         },
         move |landed| written(&answer, landed),
@@ -721,10 +773,14 @@ impl UpgradeRetry {
     /// milliseconds, wrapping). Called every frame; see [`UpgradeRetry::poll`].
     ///
     /// The same step writes again any refusal whose write has not landed ([`record`]).
+    /// And it requests, once, the endpoint of every server a network change stranded
+    /// ([`network_changed`]).
     pub(crate) fn due(&mut self, now: u32) -> crate::stores::EndpointRefreshSet {
         rewrite_unsaved(now);
         let mut out = crate::stores::EndpointRefreshSet::default();
-        for machine in self.poll(now, revision(), granted_machines) {
+        let mut machines = take_stranded();
+        machines.extend(self.poll(now, revision(), granted_machines));
+        for machine in machines {
             if let Some(sid) = super::servers::id_of_machine(&machine) {
                 let _ = out.insert(crate::stores::EndpointRefresh { sid });
             }
@@ -811,6 +867,7 @@ pub(crate) fn reset_for_test() {
     ANSWERS.lock().unwrap_or_else(|e| e.into_inner()).clear();
     UNSAVED.lock().unwrap_or_else(|e| e.into_inner()).clear();
     UNSAVED_COUNT.store(0, Ordering::Release);
+    take_stranded();
     clear_offers();
     moved();
 }
@@ -1083,6 +1140,40 @@ mod tests {
         }
         assert_eq!(crate::plex::session::peek().plaintext_choice(&account, "m"), PlaintextChoice::Revoked,
             "a restart would read back Allowed");
+        reset_for_test();
+    }
+
+    /// **An unsaved refusal is the account's that gave it, and dies with that sign-in.** A refusal
+    /// whose write failed, then a sign-out (or Delete all, or another sign-in): the retry must not
+    /// write the old account's row into the session that follows — `with_plaintext_choice` keeps
+    /// only the writing account's rows, so it would erase the new account's own answers too.
+    #[test]
+    fn an_unsaved_refusal_never_writes_into_the_next_session() {
+        use crate::plex::session::{Session, TempSession};
+        let _g = crate::testlock::serial();
+        let _sess = TempSession::new("grant-unsaved-identity");
+        crate::plex::reset_servers_for_test();
+        reset_for_test();
+        let old = account_key("old-acct");
+        // The store cannot be read: the refusal's write fails and stays queued.
+        crate::plex::session::save(&Session::default());
+        record(&old, "m", PlaintextChoice::Revoked).expect("queued");
+        crate::storage_worker::drain_for_test();
+        // Sign-out, then another account signs in and allows its own server.
+        identity_changed();
+        let new = account_key("new-acct");
+        let next = Session { client_id: "cid".into(), account_token: "new-acct".into(), ..Default::default() }
+            .with_plaintext_choice(&new, "n", PlaintextChoice::Allowed);
+        crate::plex::session::save(&next);
+        let mut clock = UpgradeRetry::default();
+        for now in (0..=60_000u32).step_by(500) {
+            let _ = clock.due(now);
+            crate::storage_worker::drain_for_test();
+        }
+        let after = crate::plex::session::peek();
+        assert_eq!(after.plaintext_consent, next.plaintext_consent,
+            "the previous account's refusal was written into the new session");
+        assert_eq!(after.account_token, "new-acct");
         reset_for_test();
     }
 

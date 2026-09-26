@@ -974,8 +974,10 @@ impl SessionAdapter {
         // account's, and its commit keeps only the grants its roster installs
         // (`plex::grant::roster_replaced`), so a switch that is refused changes nothing. The work
         // below captures the generations — and the answers the account it runs for gave — it may
-        // mint under.
-        if key.op == SessionOp::Login {
+        // mint under. The grant table is a process global, so like every other global effect it
+        // belongs to the LIVE resources: a fixture adapter (a test rig, which runs without the
+        // serial lock) never reaches into it.
+        if key.op == SessionOp::Login && matches!(self.resources, Resources::Live { .. }) {
             crate::plex::grant::identity_changed();
         }
         let ask = crate::plex::grant::PlaintextAsk::capture(input.account_token());

@@ -137,7 +137,8 @@ race. A grant is minted only by discovery, from a FRESH verdict `InsecureEvidenc
 plaintext_eligibility` calls eligible, when the person's recorded answer (`Session::
 plaintext_consent`, captured at the spawn site as `grant::PlaintextAsk`) allows it; it is bound to
 {identity generation, network generation, machine, exact numeric origin}, never persisted, dies on
-sign-in/sign-out, on every DID foreground, on a refusal (which also moves the consent generation
+sign-in/sign-out, on every DID foreground (which queues each stranded server's endpoint
+re-discovery, requested by `grant::UpgradeRetry::due`), on a refusal (which also moves the consent generation
 a `PlaintextAsk` captured) and on a roster commit that does not install its (machine, origin) —
 a roster commit moves no generation — and a stored `SourceRef` naming a
 plaintext origin registers tokenless until discovery re-mints. Ending a grant re-grades the

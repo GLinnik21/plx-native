@@ -795,8 +795,9 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
         super::bridge::foreground(&mut app.pages);
         if et == 0x106 {
             // Nothing proves the television is still on the network the person allowed
-            // unencrypted connections on: every plaintext grant ends here, and the next
-            // discovery re-proves eligibility before minting one (`plex::grant`).
+            // unencrypted connections on: every plaintext grant ends here, and each server that
+            // lost one is queued for a fresh discovery (requested by the upgrade retry's frame
+            // step) that re-proves eligibility before minting again (`plex::grant`).
             crate::plex::grant::network_changed();
             // Reacquire only on DID foreground, before playback restoration and rendering.
             crate::system::sys_grab_wayland(app.win);

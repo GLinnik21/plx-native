@@ -971,6 +971,40 @@ fn revoking_a_grant_blanks_the_published_client_in_place() {
     crate::plex::reset_servers_for_test();
 }
 
+/// **A network change owes the servers it stranded a fresh discovery.** The foreground return
+/// withdraws every grant and the re-grade blanks the slot, which empties the upgrade retry's
+/// watch list — so nothing re-ran eligibility and a consented plaintext-only server stayed
+/// tokenless until a manual refresh. The same frame step that drives the upgrade retry must ask
+/// for that server's endpoint at once, so the discovery re-proves the network and mints again
+/// from the persisted consent. A sign-in owes nothing: the new identity discovers everything.
+#[test]
+fn a_network_change_requests_rediscovery_of_the_servers_it_stranded() {
+    let _g = crate::testlock::serial();
+    let origin = Origin::http("192.168.0.10", 32400);
+    let evidence = crate::plex::grant::eligible_evidence_for_test();
+    for end in ["network", "identity"] {
+        crate::plex::reset_servers_for_test();
+        crate::plex::grant::reset_for_test();
+        crate::plex::grant::mint(crate::plex::grant::scope(), "lan-http", &origin, &evidence).unwrap();
+        let id = install_stored_source(&lan_source("granted-token"), CredentialPolicy::HttpsOnly);
+        let mut clock = crate::plex::grant::UpgradeRetry::default();
+        assert_eq!(clock.due(0).iter().count(), 0, "armed on the first step, not due");
+        match end {
+            "network" => crate::plex::grant::network_changed(),
+            _ => crate::plex::grant::identity_changed(),
+        }
+        let due: Vec<_> = clock.due(16).iter().map(|r| r.sid).collect();
+        if end == "network" {
+            assert_eq!(due, vec![id], "the stranded server was not re-discovered");
+            assert_eq!(clock.due(32).iter().count(), 0, "one request per withdrawal");
+        } else {
+            assert!(due.is_empty(), "{end}");
+        }
+    }
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}
+
 /// **HTTPS verifying later is the upgrade.** The endpoint commit that re-points a granted server
 /// at a TLS origin retires its grant, so nothing can put the credential back on the plaintext one.
 #[test]
