@@ -309,6 +309,28 @@ mod tests {
         );
     }
     #[test]
+    fn reload_seek_keeps_a_known_sign_that_matroska_will_not_resend() {
+        let shared = crate::player::Shared::new();
+        let sign = Event {
+            start_ms: 0,
+            duration_ms: 120_000,
+            payload: b"0,1,Sign,,0,0,0,,long sign".as_slice().into(),
+        };
+        let before = {
+            let mut s = shared.ass_sources.lock().unwrap();
+            let generation = s.begin(vec![(0, b"header".to_vec())], vec![]);
+            s.push(generation, 0, sign.clone(), 0);
+            s.tracks[&0].id
+        };
+        shared.reset_session_for_reload();
+        let mut s = shared.ass_sources.lock().unwrap();
+        s.begin(vec![(0, b"header".to_vec())], vec![]);
+        let source = &s.tracks[&0];
+        assert_ne!(source.id, before, "retire the old raster across a fresh native Load");
+        let Content::Embedded { events, .. } = &source.content else { panic!() };
+        assert_eq!(events.as_ref(), &[sign], "a reload-based seek must preserve already-read media facts");
+    }
+    #[test]
     fn overlapping_ass_events_and_headers_survive_without_flattening() {
         let mut s = Store::default();
         let g = s.begin(vec![(0, b"[V4+ Styles]\nStyle: Sign".to_vec())], vec![]);
