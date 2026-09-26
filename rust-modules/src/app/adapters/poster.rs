@@ -857,10 +857,10 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     if touch == Touch::Warm && !warm_admissible(&g.slots) {
         return (None, Warm::Full);
     }
-    // A MISS while the document is scrolling fast claims nothing at all — no slot, no worker,
-    // no fetch, no decode, no upload. The tile draws its placeholder and asks again next frame;
-    // the demand is deferred, never dropped, exactly like the eviction cooldown above. Art
-    // resolves as the view slows, which is also the reference clients' idiom.
+    // A card MISS with unknown placement or fast on-screen motion claims no slot and starts
+    // no acquisition. That tile draws its placeholder and asks again next frame. Other cards,
+    // featured images, and previously admitted work remain eligible; this gate defers only
+    // the drawn card's new demand until its placement is known and sufficiently still.
     //
     // **Why the request is declined outright rather than merely paced.** Every weaker bound was
     // measured on the dev set against a 1000-movie mock library (`fps:library-scroll`, panel
@@ -1875,9 +1875,9 @@ mod tests {
         store().slots = [Pslot::ZERO; PT_CAP];
     }
 
-    /// A DRAW that misses while the document is scrolling fast claims no slot at all, and the
-    /// very same draw claims one the moment the document settles. The demand is deferred, never
-    /// dropped: nothing about the miss is recorded, so the next frame simply asks again.
+    /// A DRAW in a fast-moving card scope claims no slot for a miss. The same draw claims one
+    /// when that scope permits admission. Demand is deferred, never dropped: the next frame
+    /// asks again without leaving a queued request behind.
     #[test]
     fn a_fast_scroll_declines_a_visible_miss_and_a_settle_takes_it() {
         let (_fresh, sid, _) = one_server();
