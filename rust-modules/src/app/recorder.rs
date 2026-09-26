@@ -2350,6 +2350,16 @@ mod tests {
     }
 
     #[test]
+    fn pre_plaintext_initial_shape_is_refused_before_boot() {
+        // The pre-consent anchors have no SessionInit::plaintext or persisted plaintext_consent.
+        // Their state census must differ before bootstrap tries to decode those initial fields.
+        let old = 0x4224_5ccc_f16a_aba4;
+        let manifest = format!(r#"{{"schema": {}, "state_fp": {old}}}"#, crate::ui::rec::SCHEMA);
+        assert_eq!(Recording::parse(&manifest, &[], state_fp()).err(),
+            Some(RecError::StateShape { theirs: old, ours: state_fp() }));
+    }
+
+    #[test]
     fn consent_and_session_frame_shapes_refuse_their_predecessors() {
         let mut pre_settings = APP_SHAPES.to_vec();
         pre_settings[APP_SHAPES.len() - 2] = super::super::bootstrap::PRE_SETTINGS_SHAPE;
