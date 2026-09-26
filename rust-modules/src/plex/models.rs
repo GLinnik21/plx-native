@@ -144,11 +144,14 @@ pub struct MetaType {
     pub sort: Vec<SortOption>,
 }
 
-/// One sort menu entry: `sort={key}:asc|desc` on the listing.
+/// One sort menu entry. `descKey` carries the server's descending expression when it is
+/// different from appending `:desc` (Show ordering reverses the show, not each episode).
 #[derive(Deserialize, Default)]
 pub struct SortOption {
     #[serde(default)]
     pub key: String, // "titleSort"
+    #[serde(rename = "descKey", default)]
+    pub desc_key: String,
     #[serde(rename = "defaultDirection", default)]
     pub default_direction: String, // "asc" | "desc"
     #[serde(default)]
@@ -324,6 +327,8 @@ pub struct Metadata {
     pub parent_index: i64,
     #[serde(rename = "parentRatingKey", default)]
     pub parent_rating_key: String, // season → its show
+    #[serde(rename = "parentTitle", default)]
+    pub parent_title: String, // season → show title; episode → season title
     #[serde(rename = "grandparentRatingKey", default)]
     pub grandparent_rating_key: String, // episode → its show
     #[serde(rename = "grandparentTitle", default)]

@@ -112,8 +112,19 @@ impl Client {
     /// lists (`genre`/`year`/`decade`/`collection`/…, rows carry the tag id in `key` + a
     /// ready-made `fastKey` listing URL) and the `firstCharacter` per-letter index.
     /// → `.directory[]`.
-    pub fn section_directory(&self, section_key: i64, directory: &str) -> Option<MediaContainer> {
-        self.get_json(&format!("/library/sections/{section_key}/{directory}"))
+    /// `metadata_type` scopes genre values and letter counts to the same flat listing as
+    /// `/all?type=`. Without it a TV library's counts describe shows even in episode view.
+    pub fn section_directory(
+        &self,
+        section_key: i64,
+        directory: &str,
+        metadata_type: Option<i64>,
+    ) -> Option<MediaContainer> {
+        let mut query = QueryBuilder::new(format!("/library/sections/{section_key}/{directory}"));
+        if let Some(metadata_type) = metadata_type {
+            query = query.int("type", metadata_type);
+        }
+        self.get_json(&query.build())
     }
 
     /// A SHOW's language settings (its Advanced dialog in Plex Web: `audioLanguage`,

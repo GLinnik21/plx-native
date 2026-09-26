@@ -145,6 +145,11 @@ impl Host for AppHost {
     // of Detail, Person and Filmography across eviction. The opaque payload belongs to the
     // screen bundle; current focus and group cursors remain the input engine's state.
     type Memory = PageMemory;
+
+    fn app_fx_needs_return(fx: &AppFx) -> bool {
+        !matches!(fx, AppFx::Store(..) | AppFx::StoreWork(_)
+            | AppFx::Library(LibraryReq::PublishShelves { .. }))
+    }
 }
 
 impl HomeLike for AppHost {

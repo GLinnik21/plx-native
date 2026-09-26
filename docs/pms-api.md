@@ -121,6 +121,11 @@ spec's "Media Queries" section documents the full query language.
   type=2 has odd semantics — returned 1 of 10 live); episodes `unwatched=1` normal.
 - **Show granularity:** `?type=2|3|4` on `/all` lists shows/seasons/episodes flat (no
   children-walking). Type ids: movie=1, show=2, season=3, episode=4.
+  Rechecked live 2026-09-26: `includeMeta=1` returns all three `Type` entries and marks the
+  requested one `active`. Seasons and episodes advertise a compound Show sort and its `descKey`;
+  use that descending expression as supplied. Neither advertises a Genre filter. Typed
+  `/firstCharacter?type=2|3|4` counts match the corresponding flat listing totals.
+  Seasons accept `unwatchedLeaves=1`; episodes use `unwatched=1`.
 - **Letter index:** `GET /library/sections/{key}/firstCharacter` → per-letter `Directory[]` with
   `size` counts in titleSort order (articles stripped); `/firstCharacter/{L}` returns the items.
   **`?firstCharacter=X` on `/all` is silently IGNORED** — jump = prefix-summed

@@ -596,6 +596,32 @@ pub(crate) fn draw_heading(
 const MIN_HEADING_RUN: f32 = 48.0;
 
 
+/// Conservative paint bounds for a complete card, including its shadow and focused label.
+/// The label anchors to the unscaled bottom even during a press, just as `draw_focused` does.
+fn tile_paint_bounds(rect: Rect, scale: f32, labelled: bool) -> Rect {
+    let pad = theme::CARD_SHADOW_BLUR + 1.0;
+    let mut bounds = rect.inset(-pad);
+    if labelled {
+        let label_bottom = rect.y + rect.h * 0.5 + rect.h / scale * 0.5 + UNDER_LABEL_H;
+        bounds.h = bounds.h.max(label_bottom - bounds.y);
+    }
+    bounds
+}
+
+/// Reject a whole card before preparing artwork or fitting overlay text. The blur source is a
+/// crop of the page; its primitive-level rejection comes too late to avoid that CPU work.
+pub(crate) fn paint_visible(p: Painter, rect: Rect, scale: f32, labelled: bool) -> bool {
+    // Recording follows the buffered composition's text queries, including its offscreen rows.
+    if p.is_recording() { return true; }
+    let mut bounds = tile_paint_bounds(rect, scale, labelled);
+    bounds.x += p.dx();
+    bounds.y += p.dy();
+    let visible = bounds.intersect(Rect::FULL);
+    visible.w > 0.0 && visible.h > 0.0
+        && (crate::ui::frame::backdrop::discovering()
+            || !crate::gfx::culled(bounds.x, bounds.y, bounds.w, bounds.h))
+}
+
 /// A non-focused cell body: the art tile + an optional resume bar. `rect` is the caller's
 /// already-scaled rect; `s` scales the corner radius. (The home grid's non-focused cell, verbatim.)
 pub(crate) fn draw_tile(
@@ -1377,6 +1403,39 @@ pub(crate) fn resume_bar(p: Painter, r: Rect, frac: f32, rad: f32) {
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn discovery_and_text_recording_keep_visible_cards_when_gl_is_suppressed() {
+        use crate::ui::frame::backdrop::{self, Sources};
+        use std::{cell::RefCell, rc::Rc};
+        let _guard = crate::testlock::serial();
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        sources.borrow_mut().begin(vec![]);
+        let _walk = backdrop::discover(sources);
+        let card = super::Rect::new(100.0, 200.0, 400.0, 220.0);
+        assert!(crate::gfx::culled(card.x, card.y, card.w, card.h));
+        assert!(super::paint_visible(super::Painter::root(), card, 1.0, true));
+        assert!(super::paint_visible(super::Painter::recording(), card, 1.0, true));
+        let offscreen = super::Rect::new(100.0, -500.0, 400.0, 220.0);
+        assert!(!super::paint_visible(super::Painter::root(), offscreen, 1.0, true));
+        assert!(super::paint_visible(super::Painter::recording(), offscreen, 1.0, true));
+    }
+
+    #[test]
+    fn card_paint_culling_keeps_shadow_and_pressed_caption_at_viewport_edges() {
+        let _guard = crate::testlock::serial();
+        let p = super::Painter::root();
+        let just_above = super::Rect::new(100.0, -250.0, 400.0, 220.0);
+        assert!(super::paint_visible(p, just_above, 1.0, false), "the shadow reaches the panel");
+        let label_only = super::Rect::new(100.0, -300.0, 400.0, 220.0);
+        assert!(!super::paint_visible(p, label_only, 1.0, false));
+        assert!(super::paint_visible(p, label_only, 0.94, true), "a pressed card's label remains visible");
+        let far_above = super::Rect::new(100.0, -500.0, 400.0, 220.0);
+        assert!(!super::paint_visible(p, far_above, 0.94, true));
+        assert!(super::paint_visible(p.translate(0.0, 400.0), far_above, 0.94, true));
+        let below = super::Rect::new(100.0, super::SCR_H + 32.0, 400.0, 220.0);
+        assert!(!super::paint_visible(p, below, 1.0, true));
+    }
+
     use super::*;
 
     #[test]

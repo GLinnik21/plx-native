@@ -226,6 +226,7 @@ pub(super) fn queue_directories_from(
 ) {
     let epoch = browse.state.table_epoch();
     *browse.adapter.genre_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(DirectoryResult {
+        library_type: browse.state.states[0].library_type,
         epoch,
         sec: 0,
         client,
@@ -236,6 +237,7 @@ pub(super) fn queue_directories_from(
         }],
     });
     *browse.adapter.letter_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(DirectoryResult {
+        library_type: browse.state.states[0].library_type,
         epoch,
         sec: 0,
         client,

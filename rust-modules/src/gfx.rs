@@ -41,6 +41,13 @@ macro_rules! glsl {
             )
         }
     };
+    ($file:literal, $prefix:literal) => {
+        unsafe {
+            ::std::ffi::CStr::from_bytes_with_nul_unchecked(
+                concat!($prefix, include_str!($file), "\0").as_bytes(),
+            )
+        }
+    };
 }
 pub(crate) use glsl;
 
@@ -124,10 +131,14 @@ const VS_SRC_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_src.vert");
 const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
 const FS_FIELD: &CStr = glsl_dithered!("shaders/fs_field.frag");
 const FS_FIELD_PANEL: &CStr = glsl_dithered!("shaders/fs_field_panel.frag");
+const VS_STILL: &CStr = glsl!("shaders/vs_img.vert", "#define PLX_STILL_GROUND\n");
+const FS_STILL: &CStr = glsl!("shaders/fs_img.frag", "#define PLX_STILL_GROUND\n");
 const FS_HERO: &CStr = glsl!("shaders/fs_hero.frag");
 const FS_BLUR: &CStr = glsl!("shaders/fs_blur.frag");
 const FS_GLASS: &CStr = glsl_dithered!("shaders/fs_glass.frag");
 const FS_FLAT: &CStr = glsl!("shaders/fs_flat.frag");
+const VS_ART_SCRIM: &CStr = glsl!("shaders/vs_art_scrim.vert");
+const FS_ART_SCRIM: &CStr = glsl!("shaders/fs_art_scrim.frag");
 const GL_VERTEX_SHADER: c_uint = 0x8B31;
 const GL_FRAGMENT_SHADER: c_uint = 0x8B30;
 const GL_COMPILE_STATUS: c_uint = 0x8B81;
@@ -475,6 +486,12 @@ static mut FPROG: c_uint = 0;
 static mut FL_RECT: c_int = 0;
 static mut FL_COL: c_int = 0;
 static mut UL_DITHER: c_int = 0;
+// The artwork's bottom gradient has its own small program: no card focus/rim/pill work.
+static mut AS_PROG: c_uint = 0;
+static mut AS_RECT: c_int = 0;
+static mut AS_SIZE: c_int = 0;
+static mut AS_BAND: c_int = 0;
+static mut AS_COL: c_int = 0;
 static mut AL_DITHER: c_int = 0;
 /// The ambient field's PLAIN program (`FS_AMBIENT_PLAIN`) — the hero scrim's (`draw_grad4`), never
 /// the wash's — and its uniforms; 0 when the link failed, in which case `APROG` serves the scrim
@@ -578,12 +595,10 @@ static mut IL_RECT: c_int = 0;
 static mut IL_SCREEN: c_int = 0;
 static mut IL_TINT: c_int = 0;
 static mut IL_UVRECT: c_int = 0;
-static mut IL_RADIUS: c_int = 0;
+static mut IL_CARD: c_int = 0;
 static mut IL_TEX: c_int = 0;
 static mut IL_RIMW: c_int = 0;
 static mut IL_RIMCOL: c_int = 0;
-static mut IL_CH: c_int = 0;
-static mut IL_INNER: c_int = 0;
 static mut IL_SHINV: c_int = 0;
 static mut IL_SHCOL: c_int = 0;
 /// **The UNDERLAY FIELD program** (`shaders/fs_field.frag` over `vs_src.vert`) and its uniforms;
@@ -610,6 +625,13 @@ static mut FP_UVRECT: c_int = 0;
 static mut FP_SIZE: c_int = 0;
 static mut FP_RADIUS: c_int = 0;
 static mut FP_DITHER: c_int = 0;
+#[derive(Clone, Copy)]
+struct ImageUniforms {
+    rect: c_int, tint: c_int, uvrect: c_int, card: c_int, rimw: c_int,
+    rimcol: c_int, shinv: c_int, shcol: c_int,
+}
+// Optional still specialization; the ordinary image shader remains the fallback.
+static mut STILL_IMAGE: Option<(c_uint, ImageUniforms, c_int, c_int)> = None;
 // ---- hero-ground program: the backdrop art with both scrim fields folded into it (fs_hero.frag).
 // Its own program because it is the SAME quad the art already draws, only carrying two more
 // closed-form fields — nothing else in the app wants them, and the card composite must not pay for
@@ -703,6 +725,12 @@ unsafe fn supersample_aa(src: *const c_char) -> Option<std::ffi::CString> {
 }
 
 pub(crate) fn gfx_compile(ty: c_uint, src: *const c_char) -> c_uint {
+    try_compile(ty, src).unwrap_or_else(|| std::process::exit(1))
+}
+
+/// Optional programs may degrade on a driver's compile rejection; required shaders keep the
+/// existing exit policy through `gfx_compile` above.
+fn try_compile(ty: c_uint, src: *const c_char) -> Option<c_uint> {
     unsafe {
         let s = glCreateShader(ty);
         // Two source strings rather than a concatenation: GL joins them itself, so the preamble
@@ -735,11 +763,11 @@ pub(crate) fn gfx_compile(ty: c_uint, src: *const c_char) -> c_uint {
             // "not a crash" with nothing pointing at the shader. `eprintln!` stays because it costs
             // nothing, NOT because it is the durable copy: `main.c` truncates both sinks at every
             // launch, so neither survives the relaunch that `plxnative-crash.log` is append-only for.
-            log(&format!("shader compile FAILED — exiting: {msg}"));
+            log(&format!("shader compile FAILED: {msg}"));
             eprintln!("shader error: {msg}");
-            std::process::exit(1);
+            return None;
         }
-        s
+        Some(s)
     }
 }
 
@@ -747,10 +775,18 @@ pub(crate) fn gfx_compile(ty: c_uint, src: *const c_char) -> c_uint {
 /// (attrib 0, the shared unit quad) → link. `None` = link failure; each caller keeps its
 /// own failure policy (hard-exit, degrade to 0, or early-return).
 pub(crate) fn link_program(vs: *const c_char, fs: *const c_char) -> Option<c_uint> {
+    link_shaders(gfx_compile(GL_VERTEX_SHADER, vs), gfx_compile(GL_FRAGMENT_SHADER, fs))
+}
+
+fn link_optional_program(vs: *const c_char, fs: *const c_char) -> Option<c_uint> {
+    link_shaders(try_compile(GL_VERTEX_SHADER, vs)?, try_compile(GL_FRAGMENT_SHADER, fs)?)
+}
+
+fn link_shaders(vs: c_uint, fs: c_uint) -> Option<c_uint> {
     unsafe {
         let p = glCreateProgram();
-        glAttachShader(p, gfx_compile(GL_VERTEX_SHADER, vs));
-        glAttachShader(p, gfx_compile(GL_FRAGMENT_SHADER, fs));
+        glAttachShader(p, vs);
+        glAttachShader(p, fs);
         glBindAttribLocation(p, 0, c"a_pos".as_ptr());
         glLinkProgram(p);
         let mut ok: c_int = 0;
@@ -984,6 +1020,19 @@ pub(crate) fn init_gl() {
             FP_DITHER = dither_uniforms(PPROG);
         }
 
+        AS_PROG = link_optional_program(VS_ART_SCRIM.as_ptr(), FS_ART_SCRIM.as_ptr()).unwrap_or_else(|| {
+            log("art scrim prog link failed — retaining the scissored corner bands");
+            0
+        });
+        if AS_PROG != 0 {
+            AS_RECT = glGetUniformLocation(AS_PROG, c"u_rect".as_ptr());
+            AS_SIZE = glGetUniformLocation(AS_PROG, c"u_size".as_ptr());
+            AS_BAND = glGetUniformLocation(AS_PROG, c"u_band".as_ptr());
+            AS_COL = glGetUniformLocation(AS_PROG, c"u_col".as_ptr());
+            use_prog(AS_PROG);
+            glUniform2f(glGetUniformLocation(AS_PROG, c"u_screen".as_ptr()), SCR_W, SCR_H);
+        }
+
         // Hoist the compile-time-constant uniforms: uniforms are per-program state, so each
         // program's screen size is set ONCE here instead of on every draw call. (The UI is a
         // fixed 1920x1080 with no DPI scaling — that constancy is what makes this legal.)
@@ -1113,6 +1162,61 @@ unsafe fn draw_flat(x: f32, y: f32, w: f32, h: f32, col: *const f32) {
     glUniform4f(FL_RECT, x, y, w, h);
     glUniform4fv(FL_COL, 1, col);
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+}
+
+/// Only the bottom band and its AA fringe are rasterized; the shader clips to the full card.
+fn art_scrim_quad(x: f32, y: f32, w: f32, h: f32, band: f32) -> Option<[f32; 4]> {
+    let band = band.min(h);
+    if w <= 0.0 || h <= 0.0 || band <= 0.0 {
+        return None;
+    }
+    Some([
+        x - AA_BLEED,
+        y + h - band - AA_BLEED,
+        w + 2.0 * AA_BLEED,
+        band + 2.0 * AA_BLEED,
+    ])
+}
+
+/// The central column's fully covered interior, including the straight bottom above its AA row.
+fn art_scrim_inner(w: f32, h: f32, radius: f32) -> [f32; 2] {
+    [w * 0.5 - radius.max(AA_BLEED), h * 0.5 - AA_BLEED]
+}
+
+/// A seamless bottom gradient inside the card's rounded silhouette. Returns false only when
+/// the optional shader failed to link, so the caller can retain the scissored-band fallback.
+/// Coordinates stay authored pixels, including during a scaled blur-source pass; no scissor
+/// state changes, so an enclosing panel's clip remains in force.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_art_scrim(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    radius: f32,
+    band: f32,
+    col: [f32; 4],
+) -> bool {
+    let Some([qx, qy, qw, qh]) = art_scrim_quad(x, y, w, h, band) else {
+        return true;
+    };
+    unsafe {
+        if AS_PROG == 0 {
+            return false;
+        }
+        if col[3] <= 0.0 || culled(qx, qy, qw, qh) || gate(Class::Grad, qx, qy, qw, qh) {
+            return true;
+        }
+        use_prog(AS_PROG);
+        let radius = radius.max(0.0).min(w * 0.5).min(h * 0.5);
+        let inner = art_scrim_inner(w, h, radius);
+        glUniform4f(AS_RECT, qx, qy, qw, qh);
+        glUniform4f(AS_SIZE, w, h, w * 0.5 - radius, h * 0.5 - radius);
+        glUniform4f(AS_BAND, band.min(h), radius, inner[0], inner[1]);
+        glUniform4fv(AS_COL, 1, col.as_ptr());
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+    true
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1594,12 +1698,10 @@ pub(crate) fn init_image() {
         IL_SCREEN = glGetUniformLocation(IPROG, c"u_tscreen".as_ptr());
         IL_TINT = glGetUniformLocation(IPROG, c"u_tint".as_ptr());
         IL_UVRECT = glGetUniformLocation(IPROG, c"u_uvrect".as_ptr());
-        IL_RADIUS = glGetUniformLocation(IPROG, c"u_iradius".as_ptr());
+        IL_CARD = glGetUniformLocation(IPROG, c"u_card".as_ptr());
         IL_TEX = glGetUniformLocation(IPROG, c"u_tex".as_ptr());
         IL_RIMW = glGetUniformLocation(IPROG, c"u_rimw".as_ptr());
         IL_RIMCOL = glGetUniformLocation(IPROG, c"u_rimcol".as_ptr());
-        IL_CH = glGetUniformLocation(IPROG, c"u_ch".as_ptr());
-        IL_INNER = glGetUniformLocation(IPROG, c"u_inner".as_ptr());
         IL_SHINV = glGetUniformLocation(IPROG, c"u_shinv".as_ptr());
         IL_SHCOL = glGetUniformLocation(IPROG, c"u_shcol".as_ptr());
         // Set this program's constant uniforms once (per-program state): the fixed screen size
@@ -1607,6 +1709,22 @@ pub(crate) fn init_image() {
         use_prog(IPROG);
         glUniform2f(IL_SCREEN, SCR_W, SCR_H);
         glUniform1i(IL_TEX, 0);
+
+        STILL_IMAGE = link_optional_program(VS_STILL.as_ptr(), FS_STILL.as_ptr()).map(|program| {
+            let loc = |name: &CStr| glGetUniformLocation(program, name.as_ptr());
+            let uniforms = ImageUniforms {
+                rect: loc(c"u_trect"), tint: loc(c"u_tint"), uvrect: loc(c"u_uvrect"),
+                card: loc(c"u_card"), rimw: loc(c"u_rimw"), rimcol: loc(c"u_rimcol"),
+                shinv: loc(c"u_shinv"), shcol: loc(c"u_shcol"),
+            };
+            use_prog(program);
+            glUniform2f(loc(c"u_tscreen"), SCR_W, SCR_H);
+            glUniform1i(loc(c"u_tex"), 0);
+            (program, uniforms, loc(c"u_still_band"), loc(c"u_still_col"))
+        });
+        if std::ptr::addr_of!(STILL_IMAGE).read().is_none() {
+            log("still image prog unavailable — using separate artwork scrim");
+        }
 
         use_prog(PROG);
     }
@@ -1966,18 +2084,10 @@ fn uv_compose(crop: [f32; 4], inner: [f32; 4]) -> [f32; 4] {
     ]
 }
 
-/// `fs_img.frag`'s `u_inner`: the half-extent, about the card centre, of the box whose every point
-/// is at least `max(radius, 2) + 1` px inside the rounded rect — so its SDF is below −2, the rim,
-/// the AA edge and the shadow are all exactly zero there, and the fragment is `(tex, ta)` without
-/// evaluating the SDF at all. Inside a rounded box inset by `k ≥ r`, both components of the SDF's
-/// `q` are negative and `d = max(q) − r < −k`. Negative (never true) for a card too small to have
-/// an interior. Measured 2026-09-19: the highp SDF on a card's interior is what made a card
-/// fragment cost ~3 GPU cycles against ~1 for the flat path, and cards were the largest single
-/// class on Home's fold and grid.
-#[inline]
-fn card_inner(chw: f32, chh: f32, radius: f32) -> [f32; 2] {
-    let k = radius.max(2.0) + 1.0;
-    [chw - k, chh - k]
+/// Card corner coordinates and a conservative d<-2 interior threshold, folded off the GPU.
+/// For radii below two pixels, the negative threshold also excludes the antialiased fringe.
+fn image_card_geometry(half_w: f32, half_h: f32, radius: f32) -> [f32; 4] {
+    [half_w - radius, half_h - radius, radius, (radius - 2.0).min(0.0)]
 }
 
 /// The IPROG draw, with every term already in the shader's own units: `q*` is the QUAD (shadow
@@ -2001,24 +2111,26 @@ fn draw_tex_core(
     chh: f32,
     shinv: f32,
     shcol: *const f32,
+    image: Option<(c_uint, ImageUniforms)>,
 ) {
     if tex == 0 || culled(qx, qy, qw, qh) || gate(class, qx, qy, qw, qh) {
         return;
     }
     unsafe {
-        use_prog(IPROG); // IL_SCREEN / IL_TEX / texture unit 0 are set once at init
-        glUniform4fv(IL_TINT, 1, tint);
-        glUniform4f(IL_UVRECT, uv[0], uv[1], uv[2], uv[3]);
-        glUniform1f(IL_RADIUS, radius);
-        glUniform1f(IL_RIMW, rimw);
-        glUniform4fv(IL_RIMCOL, 1, rimcol);
-        glUniform2f(IL_CH, chw, chh);
-        let inner = card_inner(chw, chh, radius);
-        glUniform2f(IL_INNER, inner[0], inner[1]);
-        glUniform1f(IL_SHINV, shinv);
-        glUniform4fv(IL_SHCOL, 1, shcol);
+        let (program, loc) = image.unwrap_or((IPROG, ImageUniforms {
+            rect: IL_RECT, tint: IL_TINT, uvrect: IL_UVRECT, card: IL_CARD,
+            rimw: IL_RIMW, rimcol: IL_RIMCOL, shinv: IL_SHINV, shcol: IL_SHCOL,
+        }));
+        use_prog(program); // fixed screen size and sampler unit are initialized per program
+        if loc.tint >= 0 { glUniform4fv(loc.tint, 1, tint); }
+        glUniform4f(loc.uvrect, uv[0], uv[1], uv[2], uv[3]);
+        glUniform4fv(loc.card, 1, image_card_geometry(chw, chh, radius).as_ptr());
+        glUniform1f(loc.rimw, rimw);
+        glUniform4fv(loc.rimcol, 1, rimcol);
+        glUniform1f(loc.shinv, shinv);
+        glUniform4fv(loc.shcol, 1, shcol);
         glBindTexture(GL_TEXTURE_2D, tex);
-        glUniform4f(IL_RECT, qx, qy, qw, qh);
+        glUniform4f(loc.rect, qx, qy, qw, qh);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     }
 }
@@ -2038,6 +2150,7 @@ fn draw_tex_impl(
     pad: f32,
     shblur: f32,
     shcol: *const f32,
+    image: Option<(c_uint, ImageUniforms)>,
 ) {
     let class = if pad > 0.0 { Class::Card } else { Class::Image };
     let (qx, qy, qw, qh) = (x - pad, y - pad, w + 2.0 * pad, h + 2.0 * pad); // inflate for the penumbra
@@ -2063,6 +2176,7 @@ fn draw_tex_impl(
         h * 0.5,
         shinv,
         shcol,
+        image,
     );
 }
 
@@ -2099,6 +2213,7 @@ pub(crate) fn draw_tex_uv(
         0.0,
         0.0,
         NO_RIM.as_ptr(),
+        None,
     );
 }
 
@@ -2332,6 +2447,7 @@ impl FrameCache {
             SCR_H * 0.5,
             0.0,
             NO_RIM.as_ptr(),
+            None,
         );
         set_page_frozen(was);
         true
@@ -2372,12 +2488,13 @@ pub(crate) fn draw_tex_stroked(
         0.0,
         0.0,
         NO_RIM.as_ptr(),
+        None,
     );
 }
 
 /// The full card composite: texture + edge sheen (`rimw`/`rimcol`) + soft symmetric drop-shadow
-/// (`pad`/`shblur`/`shcol`), one pass. Used for every art tile (posters, episode stills, cast/profile
-/// circles) so the resting-and-rising shadow costs only the inflation ring, not a separate pass.
+/// (`pad`/`shblur`/`shcol`), one pass. Posters and circles use this entry point; episode stills
+/// can also fold their label ground through [`draw_tex_carded_still`]. Both share the compositor.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn draw_tex_carded(
     tex: c_uint,
@@ -2394,6 +2511,11 @@ pub(crate) fn draw_tex_carded(
     shblur: f32,
     shcol: *const f32,
 ) {
+    note_card(x, y, w, h, pad);
+    draw_tex_impl(tex, crop, x, y, w, h, radius, tint, rimw, rimcol, pad, shblur, shcol, None);
+}
+
+fn note_card(x: f32, y: f32, w: f32, h: f32, pad: f32) {
     // Not during a blur source pass: these are read once a frame by the framedrop tool as "cards
     // the panel composited", and a second page draw would report twice the real number.
     if !blur_source_pass() {
@@ -2406,9 +2528,51 @@ pub(crate) fn draw_tex_carded(
             CARD_OFF.fetch_add(1, Ordering::Relaxed);
         }
     }
-    draw_tex_impl(
-        tex, crop, x, y, w, h, radius, tint, rimw, rimcol, pad, shblur, shcol,
-    );
+}
+
+fn still_fusion_eligible(tex: c_uint, tint: [f32; 4], available: bool) -> bool {
+    tex != 0 && tint == [1.0; 4] && available
+}
+
+/// The still program emits premultiplied RGB. Restore the ordinary blend even during unwinding;
+/// no caller and no following text/overlay draw inherits this primitive's private state.
+struct StillBlend;
+impl StillBlend {
+    fn enter() -> Self {
+        unsafe { glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA); }
+        Self
+    }
+}
+impl Drop for StillBlend {
+    fn drop(&mut self) {
+        unsafe { glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA); }
+    }
+}
+
+/// Fold an opaque still's label ground into its card pass. False preserves the two-pass path.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_tex_carded_still(
+    tex: c_uint, crop: [f32; 4], x: f32, y: f32, w: f32, h: f32, radius: f32, tint: [f32; 4],
+    rimw: f32, rimcol: [f32; 4], pad: f32, shblur: f32, shcol: [f32; 4],
+    band: f32, scrim: [f32; 4],
+) -> bool {
+    let image = unsafe { STILL_IMAGE };
+    if !still_fusion_eligible(tex, tint, image.is_some()) || band <= 0.0 || w <= 0.0 || h <= 0.0 || radius < 0.5
+        || crate::ui::overdraw::masked(Class::Card) || crate::ui::overdraw::masked(Class::Grad) {
+        return false;
+    }
+    let (program, uniforms, loc_band, loc_col) = image.expect("eligible specialization");
+    use_prog(program);
+    let band = band.min(h);
+    unsafe {
+        glUniform2f(loc_band, 1.0 / band, h * 0.5 - band);
+        glUniform4fv(loc_col, 1, scrim.as_ptr());
+    }
+    note_card(x, y, w, h, pad);
+    let _blend = StillBlend::enter();
+    draw_tex_impl(tex, crop, x, y, w, h, radius, tint.as_ptr(), rimw, rimcol.as_ptr(), pad,
+        shblur, shcol.as_ptr(), Some((program, uniforms)));
+    true
 }
 
 use crate::log;
@@ -3729,6 +3893,7 @@ fn blur_snapshot_with_taps(reg: [f32; 4], taps: &[f32]) {
                     0.0,
                     0.0,
                     NO_RIM.as_ptr(),
+                    None,
                 );
             });
         }
@@ -4793,8 +4958,8 @@ pub(crate) fn blur_snapshot_direct(reg: [f32; 4], draw_scene: &mut dyn FnMut()) 
                 rw as f32 * SCR_W / c.gw as f32,
                 rh as f32 * SCR_H / c.gh as f32,
             ]);
-            // The scene expects the ordinary blend state; `glBlendFuncSeparate` is set once at
-            // init and never changed, so enabling is the whole requirement.
+            // The scene expects the ordinary blend state initialized at boot. Primitives that
+            // specialize RGB blending restore it before returning, so enabling is sufficient.
             glEnable(GL_BLEND);
             draw_scene();
         });
@@ -5671,6 +5836,7 @@ pub(crate) fn field_kick(src: Option<c_uint>) -> Option<FieldTicket> {
                 0.0,
                 0.0,
                 NO_RIM.as_ptr(),
+                None,
             );
             prev = fbo_tex_of(c, fbo);
         }
@@ -6176,6 +6342,7 @@ mod tests {
             ("fs_src.frag", FS_SRC),
             ("fs_shadow.frag", FS_SHADOW),
             ("fs_flat.frag", FS_FLAT),
+            ("fs_art_scrim.frag", FS_ART_SCRIM),
             ("fs_ambient.frag (plain twin)", FS_AMBIENT_PLAIN),
         ] {
             let code = shader_code(src);
@@ -6189,9 +6356,9 @@ mod tests {
 
     /// **The card composite's box test is an exact subset of its SDF early-out.** `fs_img.frag`
     /// returns `(tex, ta)` without evaluating the highp rounded-box SDF for any fragment strictly
-    /// inside `u_inner`; that is only the same picture if every such point also has `d < -2`, the
+    /// inside the packed `u_card` interior; that is only the same picture if every such point also has `d < -2`, the
     /// SDF path's own early-out. Graded against a replica of `sdBox` over a dense grid of cards,
-    /// radii and points — a margin shaved off `card_inner` would put a rim or an AA edge inside
+    /// radii and points — an unsafe packed interior cutoff would put a rim or an AA edge inside
     /// the box and cut it off.
     #[test]
     fn the_card_interior_box_never_reaches_the_rim() {
@@ -6201,13 +6368,14 @@ mod tests {
             outside + q.0.max(q.1).min(0.0) - r
         }
         let code = shader_code(FS_IMG);
-        let boxed = code.find("all(lessThan(abs(v_p), u_inner))").expect("the interior box test");
-        let sdf = code.find("sdBox(v_p").expect("the SDF");
+        let boxed = code.find("straight < u_card.w").expect("the interior box test");
+        let sdf = code.find("length(q)").expect("the SDF corner distance");
         assert!(boxed < sdf, "the box test must run BEFORE the SDF it exists to skip");
         for &(w, h) in &[(260.0_f32, 390.0_f32), (410.0, 230.0), (12.0, 12.0), (3.0, 40.0)] {
             for &r in &[0.5_f32, 1.0, 6.0, 14.0, 24.0, 60.0] {
                 let (chw, chh) = (w * 0.5, h * 0.5);
-                let inner = card_inner(chw, chh, r);
+                let geometry = image_card_geometry(chw, chh, r);
+                let inner = [geometry[0] + geometry[3], geometry[1] + geometry[3]];
                 let n = 60;
                 for i in 0..=n {
                     for j in 0..=n {
@@ -6239,6 +6407,178 @@ mod tests {
         assert!(same_colour(a.as_ptr(), a.as_ptr()), "the same array twice is the common call");
         assert!(same_colour(a.as_ptr(), b.as_ptr()), "equal components are the same fill");
         assert!(!same_colour(a.as_ptr(), c.as_ptr()), "one component apart is a gradient");
+    }
+
+    #[test]
+    fn art_scrim_draws_only_the_band_and_covers_the_cards_aa_fringe() {
+        // Include fractional scrolling, a focused card, a tiny band and a full-height band.
+        for (x, y, w, h, band) in [
+            (120.0, 270.0, 320.0, 180.0, 64.0),
+            (119.25, 269.625, 336.0, 189.0, 67.2),
+            (-0.25, -3.5, 8.0, 4.0, 0.5),
+            (0.0, 0.0, 8.0, 4.0, 20.0),
+        ] {
+            let [qx, qy, qw, qh] = art_scrim_quad(x, y, w, h, band).unwrap();
+            let close = |a: f32, b: f32| assert!((a - b).abs() < 0.0001, "{a} != {b}");
+            close(qx, x - AA_BLEED);
+            close(qx + qw, x + w + AA_BLEED);
+            close(qy + qh, y + h + AA_BLEED);
+            close(qy + AA_BLEED, y + h - band.min(h));
+            assert!(qh <= h + 2.0 * AA_BLEED, "the band never expands to multiple full cards");
+            // Local shader coordinates must reach both true card sides despite fractional origins.
+            close((x - qx) / qw * qw - AA_BLEED, 0.0);
+            close((y + h - qy) / qh * qh + h - band.min(h) - AA_BLEED, h);
+        }
+        assert!(art_scrim_quad(0.0, 0.0, 320.0, 180.0, 0.0).is_none());
+        assert!(art_scrim_quad(0.0, 0.0, 0.0, 180.0, 64.0).is_none());
+        assert!(art_scrim_quad(0.0, 0.0, 320.0, -1.0, 64.0).is_none());
+    }
+
+    #[test]
+    fn art_scrim_preserves_straight_alpha_and_the_shared_rounded_edge() {
+        let code = shader_code(FS_ART_SCRIM);
+        let vertex = shader_code(VS_ART_SCRIM);
+        assert!(code.contains("varying highp vec2 v_p"), "fractional card coordinates need fp32");
+        assert!(vertex.contains(&format!("const highp float bleed = {AA_BLEED:.1};")));
+        assert!(code.contains("smoothstep(-1.0, 1.0, d)"), "same silhouette as artwork");
+        assert!(code.contains("vec4(u_col.rgb, alpha * coverage)"), "coverage must not darken RGB twice");
+        assert!(code.contains("u_col.a * clamp(v_ramp, 0.0, 1.0)"));
+        assert!(vertex.contains("/ u_band.x"), "divide once per vertex, not once per fragment");
+        assert!(
+            code.lines().all(|line| !line.split("//").next().unwrap().contains('/')),
+            "the fragment has no division after comment removal"
+        );
+        for extra in ["gl_FragCoord", "u_focus", "u_rim", "u_pill", "discard", "texture2D"] {
+            assert!(!code.contains(extra), "scrim must remain independent of {extra}");
+        }
+    }
+
+    #[test]
+    fn art_scrim_corner_only_distance_matches_the_card_sdf() {
+        let code = shader_code(FS_ART_SCRIM);
+        assert!(code.contains("d = max(q.x, q.y) - u_band.y"));
+        assert!(code.contains("if (min(q.x, q.y) > 0.0) d = length(q) - u_band.y"));
+        for source in [FS_IMG, FS_STILL] {
+            let code = shader_code(source);
+            assert!(code.contains("d = straight - u_card.z"));
+            assert!(code.contains("if (min(q.x, q.y) > 0.0) d = length(q) - u_card.z"));
+        }
+        // Sample all quadrants and the branch boundary at subpixel offsets. Negative q covers
+        // the interior and straight edges; two positive coordinates cover the rounded arcs.
+        let samples: [f32; 10] = [-200.0, -14.0, -1.0, -0.25, 0.0, 0.25, 1.0, 13.0, 14.0, 15.0];
+        for x in samples {
+            for y in samples {
+                let reference = x.max(0.0).hypot(y.max(0.0)) + x.max(y).min(0.0) - 14.0;
+                let scrim = if x.min(y) > 0.0 { x.hypot(y) } else { x.max(y) } - 14.0;
+                assert!((scrim - reference).abs() < 0.0001, "SDF differs at ({x}, {y})");
+            }
+        }
+    }
+
+    #[test]
+    fn still_fusion_requires_opaque_paint_resident_art_and_a_linked_program() {
+        assert!(still_fusion_eligible(7, [1.0; 4], true));
+        for alpha in [0.0, 0.5, 0.9999, 1.0001, f32::NAN] {
+            assert!(!still_fusion_eligible(7, [1.0, 1.0, 1.0, alpha], true));
+        }
+        for channel in 0..3 {
+            let mut dim = [1.0; 4];
+            dim[channel] = 0.9999;
+            assert!(!still_fusion_eligible(7, dim, true));
+        }
+        assert!(!still_fusion_eligible(0, [1.0; 4], true));
+        assert!(!still_fusion_eligible(7, [1.0; 4], false));
+    }
+
+    #[test]
+    fn image_interior_shortcut_preserves_small_radii_circles_and_fractional_cards() {
+        let code = shader_code(FS_IMG);
+        assert!(code.find("straight < u_card.w").unwrap() < code.find("min(q.x, q.y)").unwrap());
+        for (w, h, radius) in [(420.0f32, 236.0f32, 0.0f32), (420.0, 236.0, 0.5),
+            (420.0, 236.0, 1.0), (420.0, 236.0, 2.0), (420.0, 236.0, 14.0),
+            (457.8, 257.24, 15.26), (190.0, 190.0, 95.0), (8.0, 4.0, 2.0)] {
+            let g = image_card_geometry(w * 0.5, h * 0.5, radius);
+            let sample = |half: f32, corner: f32| [-half - 1.0, -half, -corner - 0.25,
+                -corner + 0.25, 0.0, corner - 0.25, corner + 0.25, half, half + 1.0];
+            for x in sample(w * 0.5, g[0]) {
+                for y in sample(h * 0.5, g[1]) {
+                    let q = [x.abs() - g[0], y.abs() - g[1]];
+                    let old = [x.abs() - w * 0.5 + radius, y.abs() - h * 0.5 + radius];
+                    let reference = old[0].max(0.0).hypot(old[1].max(0.0))
+                        + old[0].max(old[1]).min(0.0) - radius;
+                    if q[0].max(q[1]) < g[3] { assert!(reference < -1.9999); }
+                    let distance = if q[0].min(q[1]) > 0.0 { q[0].hypot(q[1]) }
+                        else { q[0].max(q[1]) } - radius;
+                    assert!((distance - reference).abs() < 0.0001);
+                }
+            }
+        }
+        let g = image_card_geometry(210.0, 118.0, 14.0);
+        assert!((g[0] * g[1]) / (210.0 * 118.0) > 0.80, "shortcut must cover the broad interior");
+    }
+
+    #[test]
+    fn still_fusion_matches_two_passes_at_edges_shadows_and_transparent_texels() {
+        let code = shader_code(FS_STILL);
+        assert!(code.contains("keep = alpha * (1.0 - s)"));
+        assert!(code.contains("rgb * keep + u_still_col.rgb * s, s + keep"));
+        let compositor = code.split("vec4 stillOver").nth(1).unwrap().split('}').next().unwrap();
+        assert!(!compositor.contains('/') && !compositor.contains("if ("),
+            "the specialized compositor must not carry a divide or alpha branch");
+        let ink = crate::ui::theme::SCRIM_INK;
+        for coverage in [0.0f32, 0.000001, 0.00006, 0.05, 0.25, 0.5, 0.9, 1.0] {
+            for tex_alpha in [0.0f32, 0.000001, 0.00006, 0.25, 0.8, 1.0] {
+                for shadow in [0.0f32, 0.1, 0.4] {
+                    for ramp in [0.0f32, 0.1, 0.4, 0.78] {
+                        let card_a = tex_alpha * coverage + shadow * (1.0 - coverage);
+                        let s = ramp * coverage;
+                        let out_a = s + card_a * (1.0 - s);
+                        for channel in 0..3 {
+                            for rim in [0.0f32, 0.22, 1.0] {
+                                let tex = [0.9, 0.5, 0.2][channel];
+                                let card_rgb = (tex * (1.0 - rim) + 0.95 * rim) * coverage;
+                                let fused_rgb = card_rgb * (card_a * (1.0 - s)) + ink[channel] * s;
+                                for background in [0.0f32, 0.15, 1.0] {
+                                    let first = card_rgb * card_a + background * (1.0 - card_a);
+                                    let two_pass = ink[channel] * s + first * (1.0 - s);
+                                    let one_pass = fused_rgb + background * (1.0 - out_a);
+                                    assert!((one_pass - two_pass).abs() < 0.00001);
+                                }
+                            }
+                        }
+                        for background_alpha in [0.0f32, 0.5, 1.0] {
+                            let first = card_a + background_alpha * (1.0 - card_a);
+                            assert!((s + first * (1.0 - s)
+                                - (out_a + background_alpha * (1.0 - out_a))).abs() < 0.00001);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn art_scrim_central_rectangle_accepts_only_fully_covered_fragments() {
+        let code = shader_code(FS_ART_SCRIM);
+        assert!(code.contains("all(lessThan(abs(v_p), u_band.zw))"));
+        for (w, h, radius) in [(420.0, 236.0, 14.0), (457.8, 257.24, 15.26),
+            (8.0, 4.0, 2.0), (8.0, 4.0, 0.0), (8.0, 4.0, 0.5), (1.0, 1.0, 0.5)] {
+            let inner = art_scrim_inner(w, h, radius);
+            let samples = |half: f32, inset: f32| [-half - 1.0, -half, -inset - 0.25,
+                -inset + 0.25, 0.0, inset - 0.25, inset + 0.25, half, half + 1.0];
+            for x in samples(w * 0.5, inner[0]) {
+                for y in samples(h * 0.5, inner[1]) {
+                    if x.abs() < inner[0] && y.abs() < inner[1] {
+                        let qx = x.abs() - w * 0.5 + radius;
+                        let qy = y.abs() - h * 0.5 + radius;
+                        let d = qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - radius;
+                        assert!(d <= -AA_BLEED, "early return lost edge coverage: d={d}");
+                    }
+                }
+            }
+        }
+        let inner = art_scrim_inner(420.0, 236.0, 14.0);
+        assert!(236.0 * 0.5 - 1.5 < inner[1], "straight bottom interior takes the cheap path");
     }
 
     /// **The policy, at the two edges that decide whether a fragment pays anything at all.**

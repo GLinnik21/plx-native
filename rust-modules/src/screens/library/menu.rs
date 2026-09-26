@@ -1,5 +1,5 @@
 //! A registered Library menu surface. Navigation owns its lifetime, phase, and input scope.
-use crate::browse::{GenreEntry, SortEntry, SrcGroup, SrcRow};
+use crate::browse::{LibraryType, GenreEntry, SortEntry, SrcGroup, SrcRow};
 use crate::screens::registry::{AppFx, AppMsg, LibraryLike, LibraryMenuArg, LibraryMenuKind};
 use crate::stores::browse::{BrowseCmd, LibraryWork, QueryEdit, SectionAddress};
 use crate::stores::{StoreCmd, StoreId};
@@ -235,16 +235,32 @@ fn sort_draft(sorts: &[SortEntry], sort_index: usize, sort_desc: bool) -> MenuDr
     }
 }
 
-fn filter_draft(unwatched: bool, genre: Option<&GenreEntry>) -> MenuDraft {
-    let section = Section::new("Filter")
-        .row(Row::new("Unwatched only").toggle(unwatched))
-        .row(
+fn type_draft(current: LibraryType) -> MenuDraft {
+    let mut section = Section::new("Filter by");
+    let mut rows = Vec::new();
+    let mut selected = 0;
+    for (index, kind) in [LibraryType::Shows, LibraryType::Seasons, LibraryType::Episodes].into_iter().enumerate() {
+        section = section.row(Row::new(kind.title()).checked(kind == current));
+        rows.push((format!("type:{}", kind.plex_type()), Action::Edit(QueryEdit::LibraryType(kind)), index as i32));
+        if kind == current { selected = index as i32; }
+    }
+    let mut stamp = Stamp::default();
+    stamp.tag(13);
+    stamp.i64(current.plex_type());
+    MenuDraft { stamp: stamp.finish(), sections: vec![section], rows, selected }
+}
+
+fn filter_draft(unwatched: bool, genre: Option<&GenreEntry>, genres_supported: bool) -> MenuDraft {
+    let mut section = Section::new("Filter")
+        .row(Row::new("Unwatched only").toggle(unwatched));
+    if genres_supported { section = section.row(
             Row::new("Genre")
                 .value(genre.map(|g| g.title.as_str()).unwrap_or("All"))
                 .chevron(true),
-        );
+        ); }
     let mut stamp = Stamp::default();
     stamp.tag(9);
+    stamp.bool(genres_supported);
     stamp.bool(unwatched);
     stamp.tag(u8::from(genre.is_some()));
     if let Some(genre) = genre {
@@ -254,14 +270,11 @@ fn filter_draft(unwatched: bool, genre: Option<&GenreEntry>) -> MenuDraft {
     MenuDraft {
         stamp: stamp.finish(),
         sections: vec![section],
-        rows: vec![
-            (
-                "unwatched".into(),
-                Action::Edit(QueryEdit::Unwatched(!unwatched)),
-                0,
-            ),
-            ("genre".into(), Action::Genre, 1),
-        ],
+        rows: {
+            let mut rows = vec![("unwatched".into(), Action::Edit(QueryEdit::Unwatched(!unwatched)), 0)];
+            if genres_supported { rows.push(("genre".into(), Action::Genre, 1)); }
+            rows
+        },
         selected: 0,
     }
 }
@@ -392,6 +405,7 @@ impl LibraryMenu {
         let mut sections = Vec::new();
         let selected = 0i32;
         let title = match self.kind {
+            LibraryMenuKind::Type => "Filter by",
             LibraryMenuKind::Sort => "Sort by",
             LibraryMenuKind::Filter => "Filter",
             LibraryMenuKind::Genre => "Genre",
@@ -399,11 +413,12 @@ impl LibraryMenu {
         };
         let mut section = Section::new(title);
         match self.kind {
+            LibraryMenuKind::Type => return type_draft(listing.library_type()),
             LibraryMenuKind::Sort => {
                 return sort_draft(listing.sorts(), listing.sort_index(), listing.sort_desc());
             }
             LibraryMenuKind::Filter => {
-                return filter_draft(self.desired_unwatched.unwrap_or(listing.unwatched()), listing.genre());
+                return filter_draft(self.desired_unwatched.unwrap_or(listing.unwatched()), listing.genre(), listing.library_type() == LibraryType::Shows);
             }
             LibraryMenuKind::Genre => {
                 return genre_draft(listing.genres(), listing.genre());
@@ -793,6 +808,7 @@ mod tests {
     #[test]
     fn sort_refresh_updates_icon_and_the_next_action_direction() {
         let sorts = vec![SortEntry {
+            desc_key: String::new(),
             key: "titleSort".into(),
             title: "Title".into(),
             default_desc: false,
@@ -833,8 +849,8 @@ mod tests {
             kind: LibraryMenuKind::Sort, anchor: [0; 4],
         });
         let mut sorts = vec![
-            SortEntry { key: "titleSort".into(), title: "Title".into(), default_desc: false },
-            SortEntry { key: "addedAt".into(), title: "Added".into(), default_desc: true },
+            SortEntry { key: "titleSort".into(), desc_key: String::new(), title: "Title".into(), default_desc: false },
+            SortEntry { key: "addedAt".into(), desc_key: String::new(), title: "Added".into(), default_desc: true },
         ];
         menu.apply_draft(sort_draft(&sorts, 0, false));
         let identities = menu.identities.clone();
@@ -876,19 +892,34 @@ mod tests {
     }
 
     #[test]
+    fn tv_type_menu_checks_and_commits_each_granularity() {
+        for (selected, current) in [LibraryType::Shows, LibraryType::Seasons, LibraryType::Episodes].into_iter().enumerate() {
+            let draft = type_draft(current);
+            assert_eq!(draft.selected, selected as i32);
+            assert_eq!(draft.sections[0].rows.iter().map(|row| row.label.as_str()).collect::<Vec<_>>(),
+                ["TV Shows", "Seasons", "Episodes"]);
+            for (index, row) in draft.sections[0].rows.iter().enumerate() {
+                assert_eq!(row.checked, index == selected);
+            }
+            assert!(matches!(draft.rows[selected].1, Action::Edit(QueryEdit::LibraryType(kind)) if kind == current));
+        }
+        assert_ne!(type_draft(LibraryType::Shows).stamp, type_draft(LibraryType::Episodes).stamp);
+    }
+
+    #[test]
     fn filter_refresh_updates_genre_value_and_unwatched_action() {
         let drama = GenreEntry {
             id: "7".into(),
             title: "Drama".into(),
         };
-        let all = filter_draft(false, None);
+        let all = filter_draft(false, None, true);
         assert_eq!(all.sections[0].rows[1].value.as_deref(), Some("All"));
         assert!(matches!(
             all.rows[0].1,
             Action::Edit(QueryEdit::Unwatched(true))
         ));
 
-        let filtered = filter_draft(true, Some(&drama));
+        let filtered = filter_draft(true, Some(&drama), true);
         assert_eq!(filtered.sections[0].rows[1].value.as_deref(), Some("Drama"));
         assert!(filtered.sections[0].rows[0].toggle == Some(true));
         assert!(matches!(

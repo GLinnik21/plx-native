@@ -223,7 +223,7 @@ pub(crate) enum LibraryReq {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LibraryMenuKind { Sort, Filter, Genre, Sources }
+pub(crate) enum LibraryMenuKind { Sort, Filter, Genre, Sources, Type }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LibraryMenuArg {
@@ -239,7 +239,7 @@ impl crate::ui::machine::LogicalState for LibraryMenuArg {
         c.u32(self.host.0).u32(self.target.epoch).u32(u32::from(self.target.sid.raw()))
             .u64(self.target.section as u64).u32(match self.kind {
                 LibraryMenuKind::Sort => 0, LibraryMenuKind::Filter => 1,
-                LibraryMenuKind::Genre => 2, LibraryMenuKind::Sources => 3,
+                LibraryMenuKind::Genre => 2, LibraryMenuKind::Sources => 3, LibraryMenuKind::Type => 4,
             });
         for value in self.anchor { c.u32(value); }
     }
@@ -1897,7 +1897,8 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 /// item changes libraries while still distinguishing section-specific rows. Recorded fixtures need
 /// `tools/plxnative-rec rerecord` like any other shape-pin bump before replay is trusted.
 #[cfg(test)]
-const SCREEN_SHAPES_PIN: u64 = 0xc0de_ced9_ee95_3632;
+// TV library types and sparse All-row caption bands add to the current screen inventory.
+const SCREEN_SHAPES_PIN: u64 = 0x1e24_e0f5_8c3d_0844;
 
 #[cfg(test)]
 mod arg_tests {

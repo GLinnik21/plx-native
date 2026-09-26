@@ -47,11 +47,13 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
                 browse.seed_items_for_test(120);
                 browse.seed_query_choices_for_test(vec![
                     crate::stores::browse::SortEntry {
+                        desc_key: String::new(),
                         key: "titleSort".into(),
                         title: "Title".into(),
                         default_desc: false,
                     },
                     crate::stores::browse::SortEntry {
+                        desc_key: String::new(),
                         key: "year".into(),
                         title: "Year".into(),
                         default_desc: false,

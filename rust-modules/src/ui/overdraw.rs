@@ -33,7 +33,7 @@
 pub(crate) enum Class {
     /// `draw_ambient` — the OPAQUE four-corner page wash.
     Ambient = 0,
-    /// `draw_grad4` — the translucent four-corner gradient (hero corner scrim).
+    /// `draw_grad4`/`draw_art_scrim` — translucent hero gradients and artwork bottom scrims.
     Grad = 1,
     /// `draw_rect`/`draw_rrect` and their sheened twins — every SDF fill, focus glow included.
     Rect = 2,
