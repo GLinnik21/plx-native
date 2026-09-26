@@ -85,12 +85,14 @@ NO recorded frame hash changed. The committed artifacts could not be loaded at a
 (`replay: REFUSED — state shape 0x2ee80fef41949b4b recorded, 0x489bbd488180e355 here`, all three),
 which is the machine-checkable condition `rerecord` verifies for itself; nothing was accepted,
 because nothing could be compared. All three anchors were subsequently re-recorded against the current state shape
-`10871066530039414812` (`0x96ddc96964a3401c`). The plaintext-consent initial
+`10372147871357755035` (`0x8ff14588f61a5e9b`). The plaintext-consent initial
 fields moved the declared census to `ControlledHomeInitV5` / `SessionInitV4`; all three
 anchors were freshly recorded after the old inputs were observed being refused. The library-type
 and compact-row change in #258 subsequently moved the screen census; all three anchors were
 recorded again on that combined shape and replayed in both modes with every difference counter
-at zero. The controlled effect encoder now covers preview
+at zero. The `CaptureReadinessV1` input subsequently moved the product wire shape; all three
+anchors were freshly recorded again, and both modes graded every frame with every difference
+counter at zero. The controlled effect encoder now covers preview
 start/stop/transport/seek, item-menu requests, and every content-panel payload with exhaustive
 matches. Replay regenerates those typed requests and compares their complete JSON payloads;
 it does not decode recorded effects into executable requests. Full playback remains outside
