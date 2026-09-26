@@ -285,6 +285,21 @@ def validate(path, expected_snapshot=None, private_values=()):
     for required in ['ffmpeg', 'sentry-native', 'cargo-vendor', 'rust-runtime']:
         if required not in ids:
             fail('missing dependency source mapping: ' + required)
+    # Older source bundles predate the renderer. For a tree carrying its build
+    # recipe, every statically contained font dependency is a required source.
+    if 'ci/build-libass.py' in contents or 'src/ass.c' in contents:
+        for required in ['ci/libass-dependencies.json', 'ci/build-libass.sh',
+                         'ci/build-libass.py', 'src/ass.c', 'include/ass.h']:
+            if required not in contents:
+                fail('missing ASS renderer source: ' + required)
+        # Earlier published facades did not use this private implementation header.
+        if re.search(rb'^\s*#\s*include\s*"ass_composite\.h"', contents['src/ass.c'], re.M):
+            if 'src/ass_composite.h' not in contents:
+                fail('missing ASS renderer source: src/ass_composite.h')
+    if 'ci/libass-dependencies.json' in contents:
+        for required in json.loads(contents['ci/libass-dependencies.json']):
+            if required['id'] not in ids:
+                fail('missing dependency source mapping: ' + required['id'])
     for dep in dependencies:
         for key in ['id', 'version', 'license']:
             if not dep.get(key) or dep[key] in {'UNKNOWN', 'NOASSERTION'}:

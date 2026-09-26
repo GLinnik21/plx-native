@@ -131,6 +131,10 @@ questions, each answerable with Don't Share, both reversible later under Account
 Privacy & data. No title, search term, subtitle line, server name or address can appear in any
 report. [`PRIVACY.md`](PRIVACY.md) is the whole statement, including the schemas.
 
+ASS/SSA subtitles render natively during direct play, including styles, positioning, overlapping
+signs and dialogue, karaoke, and embedded fonts. External ASS files retain their original scripts.
+Transcoded playback continues to use the server's subtitle burn-in.
+
 ## The honest scope
 
 I built this for how *I* watch, so it's narrower than Plex's:
@@ -139,9 +143,6 @@ I built this for how *I* watch, so it's narrower than Plex's:
 - **No typing in server addresses.** Servers come from your Plex account; set them up on a phone or
   PC and choose from what's there. Servers reached through Plex's relay, or that require an
   encrypted connection, are supported but haven't been watched end to end.
-- **Styled ASS subtitles** (common on anime) show as plain text when a video plays directly
-  ([#73](https://github.com/GLinnik21/plx-native/issues/73)). Pick a lower quality in the player's
-  menu and the server draws them into the picture, styling included.
 - **One person's spare time.** There will be bugs I haven't hit, because I don't watch the way you do.
 
 If that fits, it's genuinely nice to use. If it doesn't, the official app will serve you better.

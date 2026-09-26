@@ -65,7 +65,43 @@ byte offsets fixed for the ABI of the versions above, and refuses to demux at al
 it loads reports different majors. A replacement built from the same upstream release works; one
 built from a different release will be declined rather than misread.
 
-### 1.2 Libraries provided by your television
+### 1.2 Native ASS rendering — redistributed inside this package
+
+`libass-plx.so.0` contains the PlxNative facade and this pinned, statically linked stack.
+The macOS simulator uses the same sources in `libass-plx.0.dylib`; the Linux simulator
+uses `libass-plx-host.so.0`.
+
+| Component | Version | Licence |
+|---|---|---|
+| libass | 0.17.5 | ISC (`licenses/libass-ISC.txt`) |
+| FreeType | 2.14.3 | Elected FreeType License; contributed MIT and Zlib code (`licenses/FreeType.txt`, `licenses/Zlib.txt`) |
+| FriBidi | 1.0.17 | LGPL-2.1-or-later (`licenses/LGPL-2.1.txt`) |
+| HarfBuzz | 14.5.0 | Old MIT (`licenses/HarfBuzz-Old-MIT.txt`) |
+
+Portions of this software are copyright © 2026 The FreeType Project
+(https://freetype.org). All rights reserved. Its built-in gzip reader contains
+zlib 1.3.1, Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler. FriBidi is
+Copyright (C) 1999, 2000, 2017-2019 Dov Grobgeld; 2001, 2002, 2004, 2005 Behdad Esfahbod;
+2004 Sharif FarsiWeb, Inc.; and other contributors;
+the complete per-file notices accompany its source. libass and HarfBuzz copyright
+notices are retained in their licence files above.
+
+The exact upstream archives, checksums and licences are recorded in
+`ci/libass-dependencies.json`. Each versioned PlxNative source release contains all
+four archives, the facade (`src/ass.c`, `include/ass.h`), and its complete build
+recipe (`ci/build-libass.sh`, `ci/build-libass.py`). Upstream sources are unmodified.
+The library is built without system font providers or external font-library
+dependencies. FreeType's optional external compression/image libraries are disabled;
+HarfBuzz uses FreeType and its built-in Unicode data, without ICU or platform shapers.
+
+You may modify and rebuild the complete library, including FriBidi, using the
+matching source release, then replace `libass-plx.so.0` in the app directory. The
+application loads that file by absolute path and checks the PlxNative facade ABI.
+This distribution supplies source for the entire combined library, including the
+GPL-3.0-or-later facade, so recipients can rebuild and relink it. No library in this
+stack is taken from, or installed into, the television's firmware.
+
+### 1.3 Libraries provided by your television
 
 PlxNative also links dynamically against the following libraries (glibc/GLib are
 **LGPL-2.1-or-later**; libcurl is **curl** licensed), which are
@@ -349,12 +385,15 @@ runtime notices listed below:
 
 | File | Required by |
 |---|---|
-| `licenses/LGPL-2.1.txt` | FFmpeg, GLib, GNU C Library (§1) — GNU Lesser General Public License, version 2.1 |
+| `licenses/LGPL-2.1.txt` | FFmpeg, FriBidi, GLib, GNU C Library (§1) — GNU Lesser General Public License, version 2.1 |
 | `licenses/MIT.txt` | Feather Icons, Heroicons, the MIT-elected Rust packages, Sentry Native and libunwind (§2.2, §2.4, §2.6). One copy of the MIT text; the copyright holders it refers to are the ones named in this file |
 | `licenses/Apache-2.0.txt` | Google Material Design Icons; moxcms; pxfm; compiler_builtins (§2.2, §2.4) |
 | `licenses/LLVM-exception.txt` | compiler_builtins (§2.4) |
 | `licenses/Unicode-3.0.txt` | Unicode Character Database tables in Rust `core` (§2.4) — UNICODE LICENSE V3, "Copyright © 1991-2024 Unicode, Inc." |
-| `licenses/Zlib.txt` | nanosvg (§2.1) |
+| `licenses/Zlib.txt` | nanosvg (§2.1), FreeType's built-in gzip reader (§1.2) |
+| `licenses/libass-ISC.txt` | libass (§1.2), including its copyright notice |
+| `licenses/FreeType.txt` | FreeType's elected FTL and contributed module notices (§1.2) |
+| `licenses/HarfBuzz-Old-MIT.txt` | HarfBuzz and its copyright holders (§1.2) |
 
 `OFL.txt` (SIL Open Font License 1.1, for **Inter and Noto Sans CJK KR** — §2.3) already ships at
 the root of this package. Keep it there; do not add a second copy under `licenses/`, and do not

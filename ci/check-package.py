@@ -1440,6 +1440,9 @@ NEEDED_LICENCES = {
     "LLVM-exception.txt": "compiler_builtins",
     "Unicode-3.0.txt": "the Unicode tables inside Rust core",
     "Zlib.txt": "nanosvg — vendored and compiled into the binary",
+    "libass-ISC.txt": "the bundled native ASS renderer",
+    "FreeType.txt": "FreeType's elected FTL and its contributed modules",
+    "HarfBuzz-Old-MIT.txt": "the bundled text shaper",
 }
 for name, why in NEEDED_LICENCES.items():
     p = ROOT / "licenses" / name
@@ -1473,7 +1476,7 @@ for loc in staged_locales:
 
 print("== ipk payload ==")
 expected = {
-    "plxnative", "sentry-crash", "appinfo.json", "icon.png", "largeIcon.png", "splash.png",
+    "plxnative", "sentry-crash", "libass-plx.so.0", "appinfo.json", "icon.png", "largeIcon.png", "splash.png",
     # appfont-cjk.ttf is the fallback face. Its absence is not a cosmetic loss: every Korean,
     # Japanese and Chinese title in the library becomes tofu, which is LG checklist #6 and #48.
     "appfont.ttf", "appfont-bold.ttf", "appfont-cjk.ttf", "OFL.txt",

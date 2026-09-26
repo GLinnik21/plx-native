@@ -38,6 +38,8 @@
 #   --owner           boot as the household account (the config.local.h owner token). This is
 #                     also what a bare `up` does with neither flag — spelling it out is for a
 #                     script that wants the choice to be visible in its own command line.
+#   --mock            with --guest, use only tests/mock_pms.py at the configured PMS endpoint.
+#                     Verifies its synthetic identity; never uses an account token or contacts plex.tv.
 #   --dry-run         resolve and print the identity `up` would use (including a real --guest
 #                     token lookup, which touches plex.tv but never the TV) and the shape of the
 #                     commands it would run, then exit 0 without contacting the television at all.
@@ -408,7 +410,11 @@ resolve_guest_token() {
   GUEST_TOKEN=""; GUEST_ERROR=""
   local errfile tok rc
   errfile=$(mktemp 2>/dev/null) || errfile=/dev/null
+  if [ "${mock:-0}" = 1 ]; then
+    tok=$(python3 "$REPO/tools/mock-guest.py" "$REPO/src/config.local.h" 2>"$errfile")
+  else
   tok=$(cd "$REPO/tests" && python3 run.py --print-test-token 2>"$errfile")
+  fi
   rc=$?
   if [ $rc -ne 0 ] || [ -z "$tok" ]; then
     GUEST_ERROR=$(cat "$errfile" 2>/dev/null)
@@ -443,7 +449,11 @@ resolve_identity() {
   if [ "$guest" = 1 ]; then
     if resolve_guest_token; then
       push_guest=1
+      if [ "${mock:-0}" = 1 ]; then
+        identity_desc="guest — synthetic mock PMS (no Plex account or account token)"
+      else
       identity_desc="guest — the manifest's managed test user (token via tests/run.py, value not printed)"
+      fi
       return 0
     fi
     bad "cannot resolve a guest identity: $GUEST_ERROR"
@@ -646,7 +656,7 @@ await_direct_screen() {
 
 # ------------------------------------------------------------ commands -------
 cmd_up() {
-  local screen=home guest=0 owner=0 dry_run=0 stream="" no_token=0 keep=0 remote="" server_slot="" server_set=0
+  local screen=home guest=0 mock=0 owner=0 dry_run=0 stream="" no_token=0 keep=0 remote="" server_slot="" server_set=0
   local direct_kind="" direct_rk="" direct_marker=""
   local identity_desc="" push_guest=0 push_owner=0
   while [ $# -gt 0 ]; do
@@ -657,6 +667,7 @@ cmd_up() {
                 server_slot="$2"; server_set=1; shift 2 ;;
       --server=*) server_slot="${1#*=}"; server_set=1; shift ;;
       --guest) guest=1; shift ;;
+      --mock) mock=1; shift ;;
       --owner) owner=1; shift ;;
       --dry-run) dry_run=1; shift ;;
       --stream) stream=8909; shift ;;
@@ -668,6 +679,12 @@ cmd_up() {
       *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
   done
+  if [ "$mock" = 1 ] && [ "$guest" != 1 ]; then
+    bad "--mock requires --guest (synthetic identity only)"; exit 2
+  fi
+  if [ "$mock" = 1 ] && [ "$FLAVOR" != debug ]; then
+    bad "--mock requires the debug install"; exit 2
+  fi
   if [ "$guest" = 1 ] && [ "$owner" = 1 ]; then
     echo "--guest and --owner are mutually exclusive" >&2; exit 2
   fi
@@ -1006,6 +1023,22 @@ cmd_selftest() {
     { [ "$push_guest" = 0 ] && [ "$push_owner" = 0 ]; } || {
       bad "--no-token must inject no identity at all"; _identity_rc=1
     }
+  fi
+
+  if [ "$_identity_rc" = 0 ]; then
+    _guest_stub_ok=1
+    local mock_dry
+    mock_dry=$(cmd_up --guest --mock --dry-run 2>&1) || _identity_rc=1
+    case "$mock_dry" in
+      *"identity: guest — synthetic mock PMS"*) ;;
+      *) bad "mock guest dry run did not select a synthetic identity"; _identity_rc=1 ;;
+    esac
+    if (cmd_up --mock --dry-run) >/dev/null 2>&1; then
+      bad "mock without guest must refuse"; _identity_rc=1
+    fi
+    if (FLAVOR=stable; cmd_up --guest --mock --dry-run) >/dev/null 2>&1; then
+      bad "mock on stable must refuse"; _identity_rc=1
+    fi
   fi
 
   # Restore the REAL resolve_guest_token unconditionally, whichever branch above set _identity_rc.

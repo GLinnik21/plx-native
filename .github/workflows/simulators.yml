@@ -8,6 +8,9 @@ on:
       - 'Makefile'
       - 'rust-modules/**'
       - 'src/svg.c'
+      - 'src/ass.c'
+      - 'src/ass_composite.h'
+      - 'include/ass.h'
       - 'assets/icons/**'
       - 'vendor/nanosvg/**'
       - 'pkg/appfont*.ttf'
@@ -15,6 +18,9 @@ on:
       - 'LICENSE'
       - 'ci/build-ffmpeg.sh'
       - 'ci/stage-host-ffmpeg.sh'
+      - 'ci/build-libass.sh'
+      - 'ci/build-libass.py'
+      - 'ci/libass-dependencies.json'
       - 'ci/ffabi-assert.c'
       - 'tests/fixtures/mkv_zlib_subs.mkv'
       - 'tools/sim.ps1'
@@ -40,7 +46,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libsdl2-dev libsdl2-ttf-dev libgl1-mesa-dev \
-            libgl1-mesa-dri xvfb xauth gdb
+            libgl1-mesa-dri xvfb xauth gdb cmake pkg-config
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: rust-modules -> target-sim-ci
@@ -93,7 +99,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install SDL
-        run: brew install sdl2_ttf
+        run: brew install sdl2_ttf cmake pkg-config
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -116,6 +122,8 @@ jobs:
         # The one place the host FFmpeg (built above, same component list as the shipped one) is
         # available to the test suite — `make check` has none, so these are #[ignore]d there.
         run: make check-ffmpeg
+      - name: Tests against the bundled ASS renderer
+        run: make check-ass
       - name: Launch and capture 1080p frame
         run: |
           python3 tools/sim-smoke.py \

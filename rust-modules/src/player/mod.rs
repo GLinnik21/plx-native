@@ -16,6 +16,8 @@
 //! `threads::load_thread` calls `sf_load` off-main by design (see `ffi`).
 #![allow(non_upper_case_globals)]
 pub(crate) mod adapter;
+pub(crate) mod ass; // pinned libass worker and immutable rendered frames
+pub(crate) mod ass_source; // bounded embedded scripts and subtitle presentation clock
 pub(crate) mod engine;
 pub(crate) mod machine;
 pub(crate) mod preview;
@@ -27,6 +29,7 @@ pub(crate) mod sidecar;
 #[cfg(feature = "hostsim")]
 pub(crate) mod sim_video; // the simulator's decoded picture, for screenshots (see its doc)
 pub(crate) mod threads;
+pub(crate) mod video_geometry;
 
 use crate::task::MainThread;
 pub(crate) use shared::HlsAutomaticTransition;
@@ -419,6 +422,21 @@ pub(crate) fn observe_video_plane(
 pub(crate) fn is_started() -> bool {
     TX.started.load(Relaxed)
 }
+/// Coded video raster, atomically published by the demuxer. Subtitle renderers need this
+/// independently of the output canvas for anamorphic glyph/blur scaling.
+pub(crate) fn video_raster() -> (i32, i32) {
+    SHARED.video_raster()
+}
+
+/// The picture inside the full-screen video window, including non-square pixels.
+pub(crate) fn video_viewport(width: i32, height: i32) -> video_geometry::Viewport {
+    let (w, h) = SHARED.video_raster();
+    video_geometry::Aspect::unpack(SHARED.video_aspect.load(std::sync::atomic::Ordering::Acquire))
+        .or_else(|| video_geometry::Aspect::from_raster(w, h))
+        .unwrap_or_else(|| video_geometry::Aspect::from_raster(width, height).unwrap())
+        .fit(width, height)
+}
+
 pub(crate) fn playpos_ns() -> i64 {
     SHARED.playpos_ns.load(Relaxed)
 }
@@ -1413,12 +1431,12 @@ fn subtitle_offset_ns() -> i64 {
 ///
 /// The sidecar holds its whole file, so any offset in its range is exact there. An EMBEDDED track
 /// only has the cues the demuxer has read, which is why [`subtitle_offset_range_ms`] gives it no
-/// advance at all; a delay is served from the store, except in the first seconds after a seek
-/// (the demuxer restarts AT the target, never before it), which find nothing to draw until the
-/// playhead has moved on by the delay. A native audio-track switch (`engine::switch_audio_native`
-/// → `reload_at`) is the same case: its teardown clears both cue stores and the demuxer restarts
-/// at the playhead, so an embedded track under a delay shows nothing for about the delay after the
-/// switch.
+/// advance at all. A delay is served from retained cues, but a seek can leave embedded text and
+/// image stores without the required history: the demuxer restarts at the target, not before it.
+/// Embedded ASS retains known events across an in-place seek, so buffered delayed cues remain
+/// available. A full pipeline reload, including a native audio-track switch
+/// (`engine::switch_audio_native` → `reload_at`), discards embedded history and can leave a delayed
+/// track empty until enough history has been read again.
 pub(crate) fn subtitle_clock_ns(now_ns: i64) -> i64 {
     now_ns.saturating_sub(subtitle_offset_ns())
 }
@@ -1431,10 +1449,19 @@ pub(crate) fn subtitle_clock_ns(now_ns: i64) -> i64 {
 /// reads ahead of the playhead, which this floor never prunes. What bounds memory is each store's
 /// cap and its eviction order ([`push_subtitle_text`], [`SUB_BITMAP_BUDGET`]), not this floor.
 fn subtitle_floor_ns() -> i64 {
-    SHARED
-        .playpos_ns
-        .load(Relaxed)
-        .saturating_sub((SUBTITLE_OFFSET_LATEST_MS + 2_000) * 1_000_000)
+    subtitle_floor_for(
+        SHARED.playpos_ns.load(Relaxed),
+        SHARED.seeking.load(Relaxed),
+        SHARED.seek_display_ns.load(Relaxed),
+    )
+}
+
+fn subtitle_floor_for(position_ns: i64, seeking: bool, target_ns: i64) -> i64 {
+    // The demuxer can already be at a backward seek's target while the native clock still
+    // reports the old picture. Keep those newly read cues through the rebase. min also makes
+    // independently sampled atomics conservative if a new request races this read.
+    let anchor = if seeking && target_ns >= 0 { position_ns.min(target_ns) } else { position_ns };
+    anchor.saturating_sub((SUBTITLE_OFFSET_LATEST_MS + 2_000) * 1_000_000)
 }
 
 /// The latest the offset goes, for every kind of track: a DELAY is served from cues already in the
@@ -1545,15 +1572,14 @@ pub(crate) fn push_subtitle_text(track: i32, start_ns: i64, end_ns: i64, text: S
     });
 }
 /// demux (D-thread) pushes a subtitle cue (content-time ns) for track `track`. Called for
-/// EVERY text track so a mid-play switch is instant; only the selected track's cues are logged.
+/// EVERY plain-text track so a mid-play switch is instant; only the selected track's cues are logged.
 pub(crate) fn push_subtitle_cue(
     track: i32,
     start_ns: i64,
     end_ns: i64,
     payload: &[u8],
-    is_ass: bool,
 ) {
-    let text = sub_text(payload, is_ass);
+    let text = sub_text(payload);
     if text.is_empty() {
         return;
     }
@@ -1731,15 +1757,10 @@ pub(crate) fn bitmap_by_key(key: i64) -> Option<(i32, i32, Vec<SubRect>)> {
         .find(|c| c.track == sel && c.start_ns == key)
         .map(|c| (c.cw, c.ch, c.rects.clone()))
 }
-/// extract displayable text from a subtitle block (SRT = raw UTF-8; ASS = the field
-/// after the 8th comma), stripping tags/override codes and normalizing line breaks.
-fn sub_text(payload: &[u8], is_ass: bool) -> String {
-    let raw = String::from_utf8_lossy(payload);
-    let s = if is_ass {
-        raw.splitn(9, ',').nth(8).unwrap_or("").to_string()
-    } else {
-        raw.into_owned()
-    };
+/// Extract plain caption text, stripping markup and normalizing line breaks.
+/// ASS/SSA never enters this path: the native renderer receives its complete script/events.
+fn sub_text(payload: &[u8]) -> String {
+    let s = String::from_utf8_lossy(payload);
     let mut out = String::with_capacity(s.len());
     let mut ch = s.chars().peekable();
     while let Some(c) = ch.next() {
@@ -2003,6 +2024,11 @@ fn sf_on_event_inner(ty: c_int, num: i64, s: *const c_char) {
 
     if let Some(fps_milli) = source_fps_milli(b) {
         SHARED.video_fps_milli.store(fps_milli, Relaxed);
+    }
+    if find(b, b"\"video\"") {
+        if let Some(aspect) = video_geometry::source_aspect(b) {
+            SHARED.video_aspect.store(aspect.pack(), std::sync::atomic::Ordering::Release);
+        }
     }
 
     {

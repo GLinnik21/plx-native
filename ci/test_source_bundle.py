@@ -122,10 +122,40 @@ class BundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'rust-runtime'):
             self.check()
 
+    def test_ass_source_requires_every_static_dependency(self):
+        self.contents['ci/libass-dependencies.json'] = json.dumps([
+            {'id': name} for name in ['libass', 'freetype', 'fribidi', 'harfbuzz']]).encode(), 0o644
+        for name in ['libass', 'freetype', 'fribidi', 'harfbuzz']:
+            self.refresh()
+            with self.assertRaisesRegex(ValueError, 'missing dependency source mapping: ' + name):
+                self.check()
+            path = 'dependencies/' + name + '/' + name + '.tar.xz'
+            self.contents[path] = b'corresponding source', 0o644
+            self.manifest['dependencies'].append({'id': name, 'version': 'pinned-test', 'license': 'MIT',
+                'sources': [{'path': path, 'sha256': digest(b'corresponding source')}],
+                'recipes': ['Makefile'], 'patches': []})
+        self.refresh()
+        self.check()
+
     def test_unknown_license(self):
         self.manifest['dependencies'][0]['license'] = 'NOASSERTION'
         with self.assertRaisesRegex(ValueError, 'unresolved dependency license'):
             self.check()
+
+    def test_ass_compositor_header_is_required_when_the_facade_includes_it(self):
+        self.test_ass_source_requires_every_static_dependency()
+        for name in ['ci/build-libass.sh', 'ci/build-libass.py', 'include/ass.h']:
+            self.contents[name] = b'fixture recipe', 0o644
+        self.contents['src/ass.c'] = b'/* older facade without the private header */', 0o644
+        self.refresh()
+        self.check()  # Existing source bundles remain valid.
+        self.contents['src/ass.c'] = b'#include "ass_composite.h"\n', 0o644
+        self.refresh()
+        with self.assertRaisesRegex(ValueError, 'missing ASS renderer source: src/ass_composite.h'):
+            self.check()
+        self.contents['src/ass_composite.h'] = b'fixture compositor', 0o644
+        self.refresh()
+        self.check()
 
     def test_corrupt_compression_requires_exact_reviewed_hash(self):
         data = b'\x1f\x8bintentionally invalid gzip fixture'
@@ -252,6 +282,7 @@ class BundleTests(unittest.TestCase):
             self.check()
 
     def test_restore_wires_supplied_cargo_and_runtime_sources(self):
+        self.test_ass_source_requires_every_static_dependency()
         self.contents['rust-modules/.cargo/config.toml'] = b'[build]\n', 0o644
         for name, files in [
             ('cargo-vendor', {'cargo-vendor/test-crate/Cargo.toml': (b'[package]\nname="fixture"\n', 0o644)}),
@@ -282,6 +313,9 @@ class BundleTests(unittest.TestCase):
                       (destination / 'rust-modules/.cargo/config.toml').read_text())
         self.assertTrue((destination / 'vendor/ffmpeg-build/source.txt').is_file())
         self.assertTrue((destination / 'vendor/source.txt').is_file())
+        for name in ['libass', 'freetype', 'fribidi', 'harfbuzz']:
+            self.assertEqual((destination / 'vendor/libass-sources' / (name + '.tar.xz')).read_bytes(),
+                             b'corresponding source')
         result = subprocess.run([sys.executable, str(Path(__file__).with_name('restore-source-inputs.py')),
                                  str(self.path), '--expect-snapshot', self.manifest['snapshot_sha256'],
                                  '--destination', str(destination), '--rust-sysroot', str(sysroot)],

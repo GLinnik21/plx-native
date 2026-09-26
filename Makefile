@@ -630,7 +630,8 @@ RUST_TARGET = arm-unknown-linux-gnueabi
 RUST_LIB    = rust-modules/$(RUST_TDIR)/$(RUST_TARGET)/release/libplxnative_modules.a
 
 # Every ordinary C translation unit ships; gpdebug remains an opt-in allocator guard.
-SRCS = $(filter-out src/gpdebug.c,$(wildcard src/*.c)) src/compat/getauxval.c
+# ass.c belongs to the privately bundled renderer, never the application ELF.
+SRCS = $(filter-out src/gpdebug.c src/ass.c,$(wildcard src/*.c)) src/compat/getauxval.c
 OBJS = $(SRCS:.c=.o)
 
 all: pkg/plxnative pkg/plxnative-storage
@@ -677,6 +678,17 @@ FFMPEG_INC    = $(FFMPEG_PREFIX)/include
 FFMPEG_SONAMES = libavutil-plx.so.61 libavcodec-plx.so.63 libavformat-plx.so.63 \
                  $(if $(RELEASE),,libswscale-plx.so.10)
 FFMPEG_STAGED = $(addprefix pkg/,$(FFMPEG_SONAMES))
+
+# One pinned ASS renderer and font stack on every firmware. Only the plx_ass_* facade
+# is exported; FreeType/FriBidi/HarfBuzz are static and cannot bind to firmware copies.
+LIBASS_STAGED = pkg/libass-plx.so.0
+LIBASS_INPUTS = ci/build-libass.sh ci/build-libass.py ci/libass-dependencies.json \
+                ci/arm-cc.py ci/check-link-evidence.py ci/stage-link-evidence.py \
+                src/ass.c src/ass_composite.h include/ass.h
+$(LIBASS_STAGED): $(LIBASS_INPUTS)
+	WEBOS_SDK=$(WEBOS_SDK) ./ci/build-libass.sh
+
+libass: $(LIBASS_STAGED)
 
 # Sentry Native supplies only the async-signal-safe capture and out-of-process ARM stack walk. Its
 # HTTP transport is compiled out: the resulting envelope is handed back to this executable in
@@ -784,7 +796,7 @@ pkg/plxnative-storage: LICENSE $(RUST_INPUTS) rust-modules/Cargo.toml rust-modul
 # this to -E/--export-dynamic: no other executable-private symbol is part of the native ABI.
 SMP_CALLBACK_HOOK = _ZN17StarfishMediaAPIs20callbackFunctionHookEixPKc
 SMP_INTERPOSER_LDFLAG = -Wl,--export-dynamic-symbol=$(SMP_CALLBACK_HOOK)
-pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) $(SENTRY_NATIVE_STAMP) Makefile ci/arm-cc.py ci/check-link-evidence.py
+pkg/plxnative: $(OBJS) $(RUST_LIB) $(FFMPEG_STAGED) $(LIBASS_STAGED) $(SENTRY_NATIVE_STAMP) Makefile ci/arm-cc.py ci/check-link-evidence.py
 	$(CC) $(CFLAGS) -Wl,--build-id=sha1 $(SMP_INTERPOSER_LDFLAG) \
 	  $(OBJS) $(RUST_LIB) $(SENTRY_NATIVE_LIB) \
 	  $(SENTRY_UNWIND_LIB) $(LIBS_REAL) -ldl -lrt -lpthread -lm -o $@
@@ -896,7 +908,7 @@ APP_FILES = pkg/plxnative $(SENTRY_HANDLER) $(APPINFO) $(ICONS) pkg/splash.png \
             pkg/appfont.ttf pkg/appfont-bold.ttf pkg/appfont-cjk.ttf pkg/OFL.txt \
             THIRD-PARTY-NOTICES.md LICENSING.md \
             $(LAB_FILES) \
-            $(FFMPEG_STAGED)
+            $(FFMPEG_STAGED) $(LIBASS_STAGED)
 
 # Everything `deploy` scp's as a PLAIN file, in one connection — the SAME set `ipk` stages via
 # `cp $(APP_FILES) $(STAGE)/`, minus the three entries that need their own handling for a reason
@@ -992,7 +1004,7 @@ deploy: pkg/plxnative pkg/plxnative-storage $(FFMPEG_STAGED) $(SENTRY_NATIVE_STA
 	# live .63/.61. Harmless (ff.rs opens by exact name) but it accumulates, and it ships nothing:
 	# the .ipk only ever contains the current set. Removal comes AFTER the copy so there is never
 	# a moment with no FFmpeg on the device.
-	$(SSH) 'cd $(APPDIR) && for f in lib*-plx.so.*; do case " $(FFMPEG_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done'
+	$(SSH) 'cd $(APPDIR) && for f in libav*-plx.so.* libswscale-plx.so.*; do case " $(FFMPEG_SONAMES) " in *" $$f "*) ;; *) rm -f "$$f";; esac; done'
 
 	$(SCP) pkg/plxnative root@$(TV):$(APPDIR)/plxnative.new
 	@# The lab session file, under LAB=1 only. Shipped by deploy as well as by the .ipk so the
@@ -1163,6 +1175,8 @@ CRASHTRACE_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-crashtrace-test
 PRIVATE_LOG_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-private-log-test
 
 check: lint
+	python3 ci/test_ass_composite.py
+	python3 ci/test_ass_regions.py
 	@# EVERY host test runs in a THROWAWAY runtime root, and that is a correctness fix rather than
 	@# hygiene. `paths` resolves the session file out of the runtime dir, which on the host defaults
 	@# to a bare `/tmp` — so `browse::record_pins` writing a profile's library selection wrote the
@@ -1278,6 +1292,7 @@ check: lint
 	@# The direct-screen TV command's own host-only contract: `--server N` must suppress the
 	@# singular token boot (which cannot register N>0) and must construct the exact identity marker
 	@# that `up` requires after launch. No SSH or television access occurs in this self-test.
+	python3 tools/mock-guest.py --selftest
 	tools/tv-session.sh selftest
 	python3 ci/test_tv_session.py
 	@# The three PreToolUse/PostToolUse hooks' own suites (~0.6s together). They were not in this
@@ -1420,7 +1435,7 @@ sentry-symbols: symbols
 	  $(SENTRY_CLI) debug-files upload --include-sources pkg/plxnative.debug pkg/plxnative
 
 ipk: pkg/plxnative pkg/plxnative-storage $(APPINFO) release-guard
-	python3 ci/check-link-evidence.py pkg/plxnative pkg/plxnative-storage $(SENTRY_HANDLER) $(FFMPEG_STAGED)
+	python3 ci/check-link-evidence.py pkg/plxnative pkg/plxnative-storage $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(LIBASS_STAGED)
 	@echo "packaging $(if $(RELEASE),RELEASE,dev) build ($(RUST_CFG)) as $(APPID) [$(FLAVOR)]"
 	rm -rf ipkroot/data/usr && mkdir -p $(STAGE)/licenses
 	cp $(APP_FILES) $(STAGE)/
@@ -1433,7 +1448,7 @@ ipk: pkg/plxnative pkg/plxnative-storage $(APPINFO) release-guard
 	@# release crash report. Deploy ships the unstripped one by design; only the ipk is stripped.
 	$(TOOLPREFIX)strip --strip-unneeded $(STAGE)/plxnative
 	rm -rf pkg/link-evidence/$(FLAVOR)
-	@for source in pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED); do \
+	@for source in pkg/plxnative $(SENTRY_HANDLER) $(FFMPEG_STAGED) $(LIBASS_STAGED); do \
 	  python3 ci/stage-link-evidence.py "$$source" "$(STAGE)/$$(basename "$$source")" --stripped \
 	    --evidence-base "pkg/link-evidence/$(FLAVOR)/$$(basename "$$source")" || exit $$?; \
 	done
@@ -1652,6 +1667,20 @@ FFMPEG_HOST_PREFIX = vendor/ffmpeg-prefix-host
 FFMPEG_HOST_INC    = $(FFMPEG_HOST_PREFIX)/include
 FFMPEG_HOST_NAMES  = libavutil-plx.61 libavcodec-plx.63 libavformat-plx.63 libswscale-plx.10
 FFMPEG_HOST_STAGED = $(addprefix pkg/,$(addsuffix .dylib,$(FFMPEG_HOST_NAMES)))
+LIBASS_HOST_NAME = $(if $(filter Darwin,$(shell uname -s)),libass-plx.0.dylib,libass-plx-host.so.0)
+LIBASS_HOST_STAGED = pkg/$(LIBASS_HOST_NAME)
+
+$(LIBASS_HOST_STAGED): $(LIBASS_INPUTS)
+	HOST=1 ./ci/build-libass.sh
+
+libass-host: $(LIBASS_HOST_STAGED)
+
+# Ordinary host tests cannot see native glyph pixels. Exercise the same pinned renderer and
+# fonts that ship, including cancellation and source-lifecycle regressions beside the pixels.
+.PHONY: check-ass
+check-ass: $(LIBASS_HOST_STAGED)
+	cd rust-modules && CARGO_INCREMENTAL=0 PLXNATIVE_APP_DIR="$(CURDIR)/pkg" PATH="$$HOME/.cargo/bin:$$PATH" \
+	  cargo +$(RUST_NIGHTLY) test --lib player::ass::tests -- --include-ignored
 
 $(FFMPEG_HOST_INC)/libavformat/avformat.h: ci/build-ffmpeg.sh
 	HOST=1 ./ci/build-ffmpeg.sh
@@ -1690,7 +1719,7 @@ pkg/.ffabi-host-ok: ci/ffabi-assert.c $(FFMPEG_HOST_INC)/libavformat/avformat.h 
 # macOS simulator; new automation should name the platform it expects.
 sim: sim-macos
 
-sim-macos: $(FFMPEG_HOST_STAGED) pkg/.ffabi-host-ok
+sim-macos: $(FFMPEG_HOST_STAGED) $(LIBASS_HOST_STAGED) pkg/.ffabi-host-ok
 	PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
 	  cargo build --manifest-path rust-modules/Cargo.toml --target-dir $(SIM_TDIR)$(if $(LAB),-lab,) --features hostsim$(if $(LAB), --features lab-diagnostics,) --bin plxnative-sim
@@ -1719,7 +1748,7 @@ SHOT_OUT    ?=
 SHOT_CHECK  ?=
 SHOT_HERO   ?=
 SHOT_HERO_VARIANTS ?=
-screenshots-sim: $(FFMPEG_HOST_STAGED) pkg/.ffabi-host-ok
+screenshots-sim: $(FFMPEG_HOST_STAGED) $(LIBASS_HOST_STAGED) pkg/.ffabi-host-ok
 	CARGO_INCREMENTAL=0 cargo build --manifest-path rust-modules/Cargo.toml --target-dir $(SHOT_TDIR) \
 	  --no-default-features --features hostsim,devtriggers --bin plxnative-sim
 
@@ -1735,7 +1764,7 @@ screenshots: screenshots-sim demo-library
 # Optimized Linux UI/Plex simulator with no host FFmpeg prerequisite. It runs natively on Linux;
 # Windows/WSLg uses the same binary through `tools/sim.ps1`. Play intentionally reaches the host
 # seam's existing "no video path" result.
-sim-linux:
+sim-linux: $(LIBASS_HOST_STAGED)
 	PLX_SENTRY_DSN='$(PLX_SENTRY_DSN)' PLX_POSTHOG_KEY='$(PLX_POSTHOG_KEY)' \
 	  PLX_SENTRY_DSN_DEV='$(PLX_SENTRY_DSN_DEV)' PLX_POSTHOG_KEY_DEV='$(PLX_POSTHOG_KEY_DEV)' \
 	  cargo build --release --manifest-path rust-modules/Cargo.toml --target-dir "$$SIM_LINUX_TDIR_ENV" \
@@ -1881,5 +1910,5 @@ fetch-profile:
 	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
-.PHONY: screenshots screenshots-sim demo-library disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check check-ffmpeg lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe tv-capture-bench mali-irq-sample plxnative-stackwalk sim sim-macos sim-linux sim-wsl sim-run sim-macos-run sim-shot sim-macos-shot sim-token sim-macos-token sim-play sim-macos-play sim-clean sim-macos-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
+.PHONY: libass libass-host screenshots screenshots-sim demo-library disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check check-ffmpeg lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe tv-capture-bench mali-irq-sample plxnative-stackwalk sim sim-macos sim-linux sim-wsl sim-run sim-macos-run sim-shot sim-macos-shot sim-token sim-macos-token sim-play sim-macos-play sim-clean sim-macos-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
         release-guard lab-guard install uninstall $(QUERY_GOALS)

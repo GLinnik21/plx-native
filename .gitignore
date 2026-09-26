@@ -103,6 +103,11 @@ vendor/sentry-native-*.tar.gz
 vendor/sentry-native-src
 vendor/sentry-native-build
 vendor/sentry-native-prefix
+vendor/libass-sources
+vendor/libass-build
+vendor/libass-build-host
+vendor/libass-prefix
+vendor/libass-prefix-host
 # A NESTED vendor/, which is not a thing anyone writes on purpose — it is what
 # `cp -R <repo>/vendor <worktree>/vendor` produces when the destination already exists,
 # and seeding parallel worktrees that way put 30,247 build-artefact files (280 MB, plus
@@ -114,6 +119,8 @@ vendor/vendor/
 # them, so a fresh clone rebuilds FFmpeg either way, and tracking them costs 2.1 MB per version
 # bump forever in a repo whose reproducibility rests on the pinned tarball.
 pkg/lib*-plx.so.*
+pkg/libass-plx-host.so.0*
+pkg/libass-plx.0.dylib.*.new
 pkg/.ffabi-ok
 
 # Session file the app writes next to its payload. The desktop simulator is pointed at
