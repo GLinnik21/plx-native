@@ -694,7 +694,7 @@ impl HomeScreen {
                 .current
                 .is_none_or(|key| key.elem >= crate::ui::dispatch::STRIP_BASE)
         {
-            self.reseat(FocusTarget::ContainerGroup(HERO_GROUP), fx);
+            self.reseat(FocusTarget::ContainerGroup(HERO_GROUP), cx, fx);
         }
         self.cta_available = cta_available;
         if self.rows.is_empty() {
@@ -854,7 +854,11 @@ impl HomeScreen {
         })
     }
 
-    fn reseat<H: HomeLike>(&self, focus: FocusTarget<u32>, fx: &mut Effects<'_, H>) {
+    fn reseat<H: HomeLike>(&mut self, focus: FocusTarget<u32>, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        // Enter is queued behind this frame's Tick. Consume the CTA availability observed by
+        // this seating request now, so that Tick cannot queue an implicit initial Hero seat
+        // over the accepted target while the engine still holds its previous focus.
+        self.cta_available = hero_group_len(H::hubs(cx)) > 0;
         fx.push(Fx::Deliver(
             MachineId::Instance(self.instance),
             Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus })),
@@ -893,11 +897,11 @@ impl HomeScreen {
                 let Some(key) = self.dev_focus_key(row, col, cx) else {
                     return Handled::No;
                 };
-                self.reseat(FocusTarget::Elem(key), fx);
+                self.reseat(FocusTarget::Elem(key), cx, fx);
             }
             HomeCmd::Hero => {
                 self.strip_chosen = false;
-                self.reseat(FocusTarget::ContainerGroup(HERO_GROUP), fx);
+                self.reseat(FocusTarget::ContainerGroup(HERO_GROUP), cx, fx);
             }
             HomeCmd::FocusStrip(tab) => {
                 let elem = match tab {
@@ -912,6 +916,7 @@ impl HomeScreen {
                         entry: self.entry,
                         elem,
                     }),
+                    cx,
                     fx,
                 );
             }
@@ -1823,7 +1828,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 if let Some(cmd) = cmd {
                     fx.push(Fx::App(AppFx::Session(cmd)));
                 }
-                self.reseat(FocusTarget::ContainerGroup(HERO_GROUP), fx);
+                self.reseat(FocusTarget::ContainerGroup(HERO_GROUP), cx, fx);
                 fx.invalidate(Provenance::Input);
                 return Handled::Yes;
             }
