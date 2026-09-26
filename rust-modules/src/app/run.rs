@@ -638,6 +638,13 @@ fn ingest_text(app: &mut App, text: &str, panel: bool, source: crate::ui::machin
 
 /// One polled event. Shared by ordinary polling and ordered FIFO/replay ingestion.
 unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
+    ingest_sdl_event_with_window(app, fr, crate::system::sys_grab_wayland);
+}
+
+/// The window reacquisition is a platform operation, supplied separately so the
+/// recorded/live ingress boundary can be exercised without an SDL/GL context.
+unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
+    restore_window: impl FnOnce(*mut c_void)) {
     let et = rd_u32(&app.ev, 0);
     app.window_activity.event(et);
     crate::telemetry::window::lifecycle(et, matches!(app.route(), AppArg::Player));
@@ -646,7 +653,7 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
         // counted a second time. The real compositor still owns window safety.
         // Only its DID foreground reacquires native handles. Recorded notifications
         // below never reacquire them, revoke grants or resume a native player.
-        if et == 0x106 { crate::system::sys_grab_wayland(app.win); }
+        if et == 0x106 { restore_window(app.win); }
         if matches!(et, 0x103 | 0x104 | SDL_QUIT) {
             app.rec.refuse("live window exit interrupted controlled replay");
             app.running = false;
@@ -813,7 +820,7 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
             // step) that re-proves eligibility before minting again (`plex::grant`).
             crate::plex::grant::network_changed();
             // Reacquire only on DID foreground, before playback restoration and rendering.
-            crate::system::sys_grab_wayland(app.win);
+            restore_window(app.win);
             crate::ui::idle::invalidate();
             let activation = drive_foreground(
                 &mut app.player.lifecycle,
@@ -3130,9 +3137,12 @@ mod lifecycle_regression_tests {
 
             // The actual compositor's startup pair may arrive at another frame. It
             // restores physical window safety without consuming extra tape inputs.
-            event(&mut app, &mut fr, 0x105);
-            event(&mut app, &mut fr, 0x106);
-            event(&mut app, &mut fr, SDL_KEYDOWN);
+            let mut restored_windows = 0;
+            for code in [0x105u32, 0x106, SDL_KEYDOWN] {
+                app.ev[..4].copy_from_slice(&code.to_ne_bytes());
+                unsafe { ingest_sdl_event_with_window(&mut app, &mut fr, |_| restored_windows += 1); }
+            }
+            assert_eq!(restored_windows, 1, "only the real DID foreground restores native handles");
             assert!(app.window_activity.allow_present(true));
             assert!(app.inputs.is_empty(), "ambient keys cannot enter the recorded scenario");
             assert_eq!(crate::plex::grant::revision(), revision);
