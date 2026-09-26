@@ -1,6 +1,12 @@
 (() => {
+  const html = document.documentElement;
   const reducedMotion = () =>
     window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const narrowQuery = window.matchMedia ? window.matchMedia("(max-width: 759px)") : null;
+  const isNarrow = () => !!(narrowQuery && narrowQuery.matches);
+
+  const clamp01 = (v) => Math.max(0, Math.min(1, v));
+  const easeOut3 = (t) => 1 - Math.pow(1 - t, 3);
 
   /* ---------- Scroll reveal ---------- */
   // Reveals [data-reveal] elements as they enter the viewport, staggering the
@@ -9,7 +15,6 @@
   // moves it further down, so the reset can never pull it back into view and
   // flicker, and scrolling down again replays the animation.
   function initReveal() {
-    const html = document.documentElement;
     window.plxReveal = true;
     if (reducedMotion() || !("IntersectionObserver" in window)) {
       html.classList.remove("reveal");
@@ -67,16 +72,45 @@
     revealAtBottom();
   }
 
+  /* ---------- Pointer-lit cards ---------- */
+  // A light follows the mouse across [data-spot] cards and the card leans
+  // slightly toward it. Touch and pen get the plain card.
+  function initSpotlights() {
+    if (reducedMotion()) return;
+    document.querySelectorAll("[data-spot]").forEach((el) => {
+      el.addEventListener("pointermove", (e) => {
+        if (e.pointerType !== "mouse") return;
+        const b = el.getBoundingClientRect();
+        const x = (e.clientX - b.left) / b.width;
+        const y = (e.clientY - b.top) / b.height;
+        el.style.setProperty("--mx", (x * 100).toFixed(1) + "%");
+        el.style.setProperty("--my", (y * 100).toFixed(1) + "%");
+        el.style.setProperty("--spot", "1");
+        el.style.transform =
+          `perspective(1200px) rotateX(${((0.5 - y) * 5).toFixed(2)}deg) ` +
+          `rotateY(${((x - 0.5) * 6).toFixed(2)}deg)`;
+      });
+      el.addEventListener("pointerleave", () => {
+        el.style.setProperty("--spot", "0");
+        el.style.transform = "";
+      });
+    });
+  }
+
   /* ---------- Demo video ---------- */
-  // Plays by itself while at least half of it is on screen, like a product
-  // page loop. The markup ships native controls so the video still works
-  // without JS; with JS they are replaced by a single pause/play button.
-  // Reduced motion starts paused, and a viewer's pause is never overridden.
-  function initDemoVideo() {
+  // Plays by itself while it is the thing on screen, like a product page
+  // loop. The markup ships native controls so the video still works without
+  // JS; with JS they are replaced by a single pause/play button. Reduced
+  // motion starts paused, and a viewer's pause is never overridden.
+  //
+  // Returns setInView(bool). The pinned TV scene calls it, since it knows
+  // better than an IntersectionObserver when the video is actually showing;
+  // without the scene, an observer drives it.
+  function initDemoVideo(sceneDriven) {
     const video = document.getElementById("demo-video");
     const card = document.getElementById("demo-card");
     const toggle = document.getElementById("demo-toggle");
-    if (!video || !card || !toggle) return;
+    if (!video || !card || !toggle) return null;
 
     video.controls = false;
     video.muted = true;
@@ -106,24 +140,324 @@
       if (userPaused) video.pause();
       else play();
     });
-
-    if ("IntersectionObserver" in window) {
-      new IntersectionObserver(
-        (entries) => {
-          entries.forEach((entry) => {
-            inView = entry.isIntersecting;
-          });
-          update();
-        },
-        { threshold: 0.5 }
-      ).observe(card);
-    } else {
-      inView = true;
-      update();
-    }
     sync();
+
+    const setInView = (v) => {
+      if (v === inView) return;
+      inView = v;
+      update();
+    };
+
+    if (!sceneDriven) {
+      if ("IntersectionObserver" in window) {
+        new IntersectionObserver((entries) => entries.forEach((e) => setInView(e.isIntersecting)), {
+          threshold: 0.5,
+        }).observe(card);
+      } else {
+        setInView(true);
+      }
+    }
+    return setInView;
+  }
+
+  /* ---------- Scroll-driven scenes ---------- */
+  // Everything that moves with the scroll position rather than on a timer:
+  // the hero receding, the pinned TV scene, the close-ups opening, the Why
+  // sentence lighting up word by word, the quotes drifting and the big
+  // headlines settling. One rAF-throttled pass per scroll frame.
+  function initScenes() {
+    const header = document.querySelector(".site-header");
+    const hero = document.querySelector(".hero");
+    const pin = document.querySelector(".feel");
+    const q = (sel) => (pin ? pin.querySelector(sel) : null);
+    const sticky = q(".feel-sticky");
+    const heading = q(".feel-heading");
+    const stage = q(".feel-stage");
+    const glow = q(".feel-glow");
+    const bezel = q(".feel-bezel");
+    const screen = q(".demo-card");
+    const poster = q(".feel-poster");
+    const video = q("video");
+    const toggle = q(".demo-toggle");
+    const stand = q(".stand");
+    const caption = q(".feel-caption");
+    const frames = [...document.querySelectorAll(".closeup-box")].map((frame) => ({
+      frame,
+      img: frame.querySelector("img"),
+      glow: frame.parentElement.querySelector(".closeup-glow"),
+    }));
+    const drifters = [...document.querySelectorAll("[data-drift]")].map((el) => ({
+      el,
+      k: Number(el.getAttribute("data-drift")) || 0,
+    }));
+    const bigs = [...document.querySelectorAll("[data-scrub-big]")];
+    const words = splitWords(document.querySelector("[data-words]"));
+
+    // The glow behind the TV follows what is on its screen: the Home
+    // screenshot, then the video's first frame.
+    const glowHome = glow ? glow.getAttribute("src") : "";
+    const glowVideo = video ? video.getAttribute("poster") : "";
+    let glowOnVideo = false;
+    const setVideoInView = initDemoVideo(true);
+
+    // Measure the viewport once per width. On iPhone the toolbar collapses
+    // mid-scroll and changes innerHeight; recomputing from it makes the
+    // pinned scene jump.
+    let vh = 0;
+    let vhWidth = -1;
+    const viewportHeight = () => {
+      if (vhWidth !== window.innerWidth || !vh) {
+        vhWidth = window.innerWidth;
+        vh = document.documentElement.clientHeight || window.innerHeight;
+      }
+      return vh;
+    };
+
+    let raf = 0;
+    const tick = () => {
+      raf = 0;
+      const vh = viewportHeight();
+      const vw = document.documentElement.clientWidth;
+      const narrow = isNarrow();
+      const y = window.scrollY;
+
+      if (header) header.classList.toggle("is-stuck", y > 4);
+
+      if (hero) {
+        const p = clamp01(y / (vh * 0.7));
+        hero.style.opacity = (1 - p * 0.85).toFixed(3);
+        hero.style.transform = p > 0 ? `translateY(${(p * 60).toFixed(1)}px) scale(${(1 - p * 0.06).toFixed(4)})` : "";
+        hero.style.filter = p > 0.01 ? `blur(${(p * 6).toFixed(2)}px)` : "";
+      }
+
+      if (pin && sticky && stage && bezel && screen) {
+        const r = pin.getBoundingClientRect();
+        const enter = easeOut3(clamp01((vh - r.top) / vh));
+        const p = clamp01(-r.top / Math.max(1, r.height - vh));
+        const ss = (a, b) => {
+          const t = clamp01((p - a) / (b - a));
+          return t * t * (3 - 2 * t);
+        };
+        // 0.14–0.30: the video fades in over the Home screen.
+        // 0.42–0.62: the screen grows to the full window width…
+        // 0.84–1.00: …and settles back before the page moves on.
+        const vid = ss(0.14, 0.3);
+        const zoom = ss(0.42, 0.62) * (1 - ss(0.84, 1));
+
+        const cx = bezel.offsetLeft + screen.offsetLeft + screen.offsetWidth / 2;
+        const cy = bezel.offsetTop + screen.offsetTop + screen.offsetHeight / 2;
+        const host = sticky.getBoundingClientRect();
+        const dx = vw / 2 - (host.left + stage.offsetLeft + cx);
+        const dy = vh / 2 - (host.top + stage.offsetTop + cy);
+        const full = vw / Math.max(1, screen.offsetWidth);
+        const scale = (0.8 + 0.2 * enter) * (1 + (full - 1) * zoom);
+        stage.style.transformOrigin = `${cx.toFixed(1)}px ${cy.toFixed(1)}px`;
+        stage.style.transform =
+          `translate(${(dx * zoom).toFixed(1)}px, ${((1 - enter) * 60 + dy * zoom).toFixed(1)}px) ` +
+          `rotateX(${((1 - enter) * 22).toFixed(2)}deg) scale(${scale.toFixed(4)})`;
+        stage.style.opacity = (0.3 + 0.7 * enter).toFixed(3);
+
+        if (poster) {
+          poster.style.transform = `scale(${(1 + 0.05 * clamp01(p / 0.3)).toFixed(4)})`;
+          poster.style.opacity = vid > 0.98 ? "0" : "1";
+        }
+        if (video) {
+          video.style.opacity = vid.toFixed(3);
+          video.style.transform = `scale(${(1.06 - 0.055 * vid).toFixed(4)})`;
+        }
+        if (toggle) {
+          // Counter-scale so the button keeps its size while the TV zooms.
+          toggle.style.transform = `scale(${(1 / scale).toFixed(4)})`;
+          toggle.style.opacity = vid > 0.9 ? "1" : "0";
+          toggle.style.pointerEvents = vid > 0.9 ? "auto" : "none";
+        }
+        if (stand) stand.style.opacity = (1 - zoom).toFixed(3);
+        if (caption) caption.style.opacity = (vid * (1 - zoom)).toFixed(3);
+        if (glow) {
+          glow.style.opacity = (0.55 * (1 - zoom)).toFixed(3);
+          if (glowOnVideo !== vid > 0.5) {
+            glowOnVideo = vid > 0.5;
+            glow.src = glowOnVideo ? glowVideo : glowHome;
+          }
+        }
+        if (heading) {
+          const hv = easeOut3(clamp01((vh - r.top) / (vh * 0.6))) * (1 - ss(0.38, 0.5));
+          heading.style.opacity = hv.toFixed(3);
+          heading.style.transform = `translateY(${((1 - hv) * (p < 0.3 ? 40 : -24)).toFixed(1)}px)`;
+          heading.style.filter = hv < 0.99 ? `blur(${((1 - hv) * 10).toFixed(2)}px)` : "";
+        }
+        if (setVideoInView) setVideoInView(r.top < vh * 0.5 && r.bottom > vh * 0.5 && vid > 0.5);
+      }
+
+      // Close-ups open from slightly smaller while the picture inside settles
+      // from slightly larger, and their glow comes up behind them. Nothing is
+      // cropped at rest.
+      frames.forEach(({ frame, img, glow }) => {
+        const t = easeOut3(clamp01((vh - frame.getBoundingClientRect().top) / (vh * 0.85)));
+        const k = 1 - t;
+        frame.style.transform = k > 0.001 ? `scale(${(1 - 0.1 * k).toFixed(4)})` : "";
+        if (img) img.style.transform = k > 0.001 ? `scale(${(1 + 0.12 * k).toFixed(4)})` : "";
+        if (glow) glow.style.opacity = (0.5 * t).toFixed(3);
+      });
+
+      // Community quotes drift sideways a little at different rates, so the
+      // group reads as layered. Off on phones, where they are one column.
+      drifters.forEach(({ el, k }) => {
+        if (narrow) {
+          el.style.transform = "";
+          return;
+        }
+        const r = el.getBoundingClientRect();
+        const t = clamp01((vh - r.top) / (vh + r.height));
+        el.style.transform = `translateX(${((0.5 - t) * k * 40).toFixed(1)}px)`;
+      });
+
+      // Big headlines start large and faint and settle into place. A scale,
+      // not a font-size change, so their line breaks never move.
+      bigs.forEach((big) => {
+        const t = easeOut3(clamp01((vh - big.getBoundingClientRect().top) / (vh * 0.75)));
+        const s0 = narrow ? 0.12 : 0.35;
+        big.style.transform = `scale(${(1 + s0 - s0 * t).toFixed(4)})`;
+        big.style.opacity = (0.15 + 0.85 * t).toFixed(3);
+      });
+
+      if (words.length) {
+        const r = words[0].parentElement.getBoundingClientRect();
+        const lit = clamp01((vh * 0.8 - r.top) / (r.height + vh * 0.3)) * words.length;
+        words.forEach((w, i) => {
+          w.style.opacity = (0.2 + 0.8 * clamp01(lit - i)).toFixed(3);
+        });
+      }
+    };
+
+    const schedule = () => {
+      if (!raf) raf = requestAnimationFrame(tick);
+    };
+    const snap = initSnap(pin, viewportHeight);
+    window.addEventListener(
+      "scroll",
+      () => {
+        snap.onScroll();
+        schedule();
+      },
+      { passive: true }
+    );
+    window.addEventListener("resize", schedule);
+    // Late-decoding images and fonts shift the layout under the scene.
+    window.addEventListener("load", schedule);
+    tick();
+  }
+
+  // Wraps each word of the Why sentence in a span so it can light up on its own.
+  function splitWords(el) {
+    if (!el) return [];
+    const text = el.textContent.trim().replace(/\s+/g, " ");
+    el.textContent = "";
+    return text.split(" ").map((word, i, all) => {
+      const span = document.createElement("span");
+      span.className = "word";
+      span.textContent = word;
+      el.appendChild(span);
+      if (i < all.length - 1) el.appendChild(document.createTextNode(" "));
+      return span;
+    });
+  }
+
+  /* ---------- TV scene snap ---------- */
+  // Stopping halfway through the Home→video crossfade or the zoom leaves the
+  // TV on a muddled in-between frame. Shortly after scrolling stops (and only
+  // with no finger on the screen), glide on to the end of that transition in
+  // the direction the reader was going; a small nudge is enough to carry on.
+  // The glide is done by hand because CSS scroll snapping cannot target
+  // points inside one tall pinned section. Any new input cancels it.
+  function initSnap(pin, viewportHeight) {
+    const ZONES = [
+      [0.13, 0.31],
+      [0.41, 0.63],
+    ];
+    const DURATION_MS = 420;
+    let lastY = window.scrollY;
+    let dir = 1;
+    let touching = false;
+    let snapping = false;
+    let cancelled = false;
+    let timer = 0;
+
+    const glide = () => {
+      if (!pin || touching) return;
+      const r = pin.getBoundingClientRect();
+      const span = Math.max(1, r.height - viewportHeight());
+      const p = -r.top / span;
+      const zone = ZONES.find(([a, b]) => p > a + 0.003 && p < b - 0.003);
+      if (!zone) return;
+      const [a, b] = zone;
+      const f = (p - a) / (b - a);
+      const goOn = dir > 0 ? f > 0.15 : f > 0.85;
+      const from = window.scrollY;
+      const dist = Math.round((goOn ? b : a) * span + r.top + from) - from;
+      const t0 = performance.now();
+      const prevBehavior = html.style.scrollBehavior;
+      html.style.scrollBehavior = "auto";
+      snapping = true;
+      cancelled = false;
+      const done = () => {
+        html.style.scrollBehavior = prevBehavior;
+        setTimeout(() => {
+          snapping = false;
+        }, 60);
+      };
+      const step = (now) => {
+        if (cancelled || touching) return done();
+        const k = Math.min(1, (now - t0) / DURATION_MS);
+        window.scrollTo(0, from + dist * easeOut3(k));
+        if (k < 1) requestAnimationFrame(step);
+        else done();
+      };
+      requestAnimationFrame(step);
+    };
+
+    const arm = () => {
+      if (snapping) return;
+      clearTimeout(timer);
+      timer = setTimeout(glide, 160);
+    };
+    const interrupt = () => {
+      clearTimeout(timer);
+      if (snapping) cancelled = true;
+    };
+    const onTouch = (e) => {
+      touching = e.type === "touchstart";
+      if (touching) interrupt();
+      else arm();
+    };
+    window.addEventListener("touchstart", onTouch, { passive: true });
+    window.addEventListener("touchend", onTouch, { passive: true });
+    window.addEventListener("touchcancel", onTouch, { passive: true });
+    window.addEventListener("wheel", interrupt, { passive: true });
+    window.addEventListener("keydown", interrupt);
+    window.addEventListener("pointerdown", interrupt);
+
+    return {
+      onScroll() {
+        const y = window.scrollY;
+        if (y !== lastY) {
+          dir = y > lastY ? 1 : -1;
+          lastY = y;
+        }
+        arm();
+      },
+    };
   }
 
   initReveal();
-  initDemoVideo();
+  initSpotlights();
+  // Scroll scenes are motion by definition: under reduced motion the page
+  // keeps its static layout (html.fx off) with an ordinary video.
+  if (reducedMotion()) {
+    html.classList.remove("fx");
+    initDemoVideo(false);
+  } else {
+    html.classList.add("fx");
+    initScenes();
+  }
 })();

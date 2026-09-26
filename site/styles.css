@@ -16,6 +16,8 @@
   --color-white-a22: rgba(255, 255, 255, 0.22);
   --color-white-a55: rgba(255, 255, 255, 0.55);
 
+  --gutter: clamp(20px, 4vw, 56px);
+
   --text-primary: var(--color-cool-0);
   --text-reading: var(--color-cool-200);
   --text-secondary: var(--color-cool-300);
@@ -84,14 +86,26 @@ a:hover {
 img {
   max-width: 100%;
 }
+/* The demo video has its own pause/play button; never let Safari draw its big
+   start-playback glyph over it (it does so whenever autoplay is refused, e.g.
+   in Low Power Mode). */
+video::-webkit-media-controls-overlay-play-button,
+video::-webkit-media-controls-start-playback-button {
+  display: none !important;
+  -webkit-appearance: none;
+}
 
 .page-shell {
   background: var(--surface-app);
   color: var(--text-primary);
-  padding: 0 clamp(20px, 4vw, 56px);
+  padding: 0 var(--gutter);
   box-sizing: border-box;
   position: relative;
+  /* clip, not hidden: `hidden` makes the shell a scroll container, and the
+     sticky header and the pinned TV scene would then stick to it instead of
+     the viewport (that is, never). */
   overflow: hidden;
+  overflow: clip;
 }
 .ambient-ground {
   position: fixed;
@@ -105,20 +119,23 @@ img {
   position: relative;
 }
 
-/* Scroll reveal. Elements marked data-reveal rise and fade in as they enter
-   the viewport; media also grows in from slightly smaller. site.js sets
-   .is-revealed and a per-batch --reveal-delay, and clears it once an element is
-   back below the viewport, so scrolling down again replays it. Hidden states
-   carry no transition, so a reset is never visible. The head script adds
-   html.reveal; without it (no JS) or under reduced motion nothing is hidden. */
+/* Scroll reveal. Elements marked data-reveal rise, fade and come into focus as
+   they enter the viewport; media grows in from slightly smaller instead of
+   blurring. site.js sets .is-revealed and a per-batch --reveal-delay, and
+   clears it once an element is back below the viewport, so scrolling down
+   again replays it. Hidden states carry no transition, so a reset is never
+   visible. The head script adds html.reveal; without it (no JS) or under
+   reduced motion nothing is hidden. */
 @media (prefers-reduced-motion: no-preference) {
   .reveal [data-reveal] {
     opacity: 0;
     translate: 0 40px;
+    filter: blur(10px);
   }
   .reveal [data-reveal="media"] {
     translate: 0 72px;
-    scale: var(--reveal-scale, 0.92);
+    scale: 0.92;
+    filter: none;
   }
   /* A card is tall enough that a text-sized rise finishes while most of it is
      still below the fold, so it travels further and settles from a little
@@ -131,25 +148,79 @@ img {
     opacity: 1;
     translate: none;
     scale: none;
+    filter: none;
     transition:
       opacity 1000ms cubic-bezier(0.25, 0.1, 0.25, 1) var(--reveal-delay, 0ms),
       translate 1200ms cubic-bezier(0.19, 1, 0.22, 1) var(--reveal-delay, 0ms),
-      scale 1400ms cubic-bezier(0.19, 1, 0.22, 1) var(--reveal-delay, 0ms);
+      scale 1400ms cubic-bezier(0.19, 1, 0.22, 1) var(--reveal-delay, 0ms),
+      filter 900ms cubic-bezier(0.25, 0.1, 0.25, 1) var(--reveal-delay, 0ms),
+      transform 500ms cubic-bezier(0.16, 1, 0.3, 1);
   }
-  .reveal .television[data-reveal] {
-    --reveal-scale: 0.86;
+
+  /* Hero opening: each line comes into focus after the one before it. */
+  [data-intro] {
+    animation: intro 1400ms cubic-bezier(0.19, 1, 0.22, 1) both;
+  }
+  .hero-line:nth-child(1) {
+    animation-delay: 120ms;
+  }
+  .hero-line:nth-child(2) {
+    animation-delay: 270ms;
+  }
+  .hero-lede {
+    animation-delay: 420ms;
+  }
+  .hero-actions {
+    animation-delay: 570ms;
+  }
+  .hero-meta {
+    animation-delay: 720ms;
+  }
+}
+@keyframes intro {
+  from {
+    opacity: 0;
+    transform: translateY(34px);
+    filter: blur(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+    filter: none;
   }
 }
 
 /* ---------- Header ---------- */
+/* A thin frosted bar that stays on top. On the landing page (html.fx) the
+   glass only appears once the page has scrolled, so the hero opens clean. */
 .site-header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  isolation: isolate;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px 20px;
-  padding: 20px 0 18px;
+  padding: 12px 0;
+}
+.site-header::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -100vw;
+  right: -100vw;
+  z-index: -1;
+  background: color-mix(in srgb, var(--surface-app) 72%, transparent);
+  -webkit-backdrop-filter: saturate(1.8) blur(20px);
+  backdrop-filter: saturate(1.8) blur(20px);
   box-shadow: inset 0 -1px 0 var(--hairline);
+  transition: opacity 300ms ease;
+}
+.fx .site-header:not(.is-stuck)::before {
+  opacity: 0;
 }
 .brand {
   display: flex;
@@ -225,44 +296,50 @@ img {
 
 /* ---------- Hero ---------- */
 .hero {
-  padding: clamp(40px, 7vh, 84px) 0 clamp(24px, 3.2vh, 36px);
+  padding: clamp(56px, 12vh, 140px) 0 clamp(8px, 3vh, 40px);
   display: flex;
-  flex-wrap: wrap;
-  gap: clamp(26px, 4vw, 64px);
-  align-items: flex-start;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  transform-origin: 50% 0;
 }
 .hero h1 {
-  flex: 3 1 560px;
-  font-size: clamp(32px, 5vw, 64px);
-  line-height: 1.06;
+  font-size: clamp(40px, 7.4vw, 104px);
+  line-height: 1.02;
   font-weight: 700;
-  margin: 0;
-  letter-spacing: -0.03em;
+  margin: 0 0 clamp(22px, 3vh, 34px);
+  letter-spacing: -0.045em;
   text-wrap: balance;
-  max-width: 900px;
+  max-width: 1100px;
 }
-.hero h1 span {
+.hero-line {
+  display: block;
+}
+.hero-line--sub {
   color: var(--text-secondary);
 }
 .hero-copy {
-  flex: 1 1 300px;
-  max-width: 400px;
-  padding-top: clamp(6px, 3.2vw, 48px);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 680px;
 }
-.hero-copy p {
-  font-size: clamp(17px, 1.5vw, 19px);
-  line-height: 1.55;
+.hero-lede {
+  font-size: clamp(18px, 1.8vw, 23px);
+  line-height: 1.45;
+  letter-spacing: -0.01em;
   color: var(--text-reading);
-  margin: 0 0 22px;
-  max-width: 56ch;
-  text-wrap: pretty;
+  margin: 0 0 30px;
+  max-width: 44ch;
+  text-wrap: balance;
 }
 .hero-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px 20px;
+  gap: 12px 24px;
   align-items: center;
-  margin-bottom: 14px;
+  justify-content: center;
+  margin-bottom: 18px;
 }
 .button {
   display: inline-flex;
@@ -300,8 +377,9 @@ img {
 .hero-gh-link:hover {
   color: var(--text-primary);
 }
-.hero-copy .hero-meta {
+.hero-meta {
   font-size: 15px;
+  line-height: 1.5;
   color: var(--text-secondary);
   margin: 0;
   text-wrap: pretty;
@@ -310,33 +388,120 @@ img {
   color: var(--text-separator);
 }
 
-/* Hero stacks full width below 1120px */
-@media (max-width: 1119px) {
-  .hero h1 {
-    flex: 1 1 100%;
-  }
-  .hero-copy {
-    flex: 1 1 100%;
-    max-width: 760px;
-    padding-top: 0;
-  }
+/* ---------- "See how it feels": the pinned TV scene ---------- */
+/* Without html.fx (no JS, or reduced motion) this is a plain TV playing the
+   demo video. With it, the section is several screens tall and its content
+   stays pinned while site.js scrubs the scene from the scroll position. */
+.feel {
+  position: relative;
+  padding: clamp(40px, 6vh, 72px) 0 0;
 }
-
-/* ---------- TV frame + stand ---------- */
-.television {
-  padding-bottom: clamp(44px, 6.5vh, 76px);
+.feel-sticky {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: clamp(18px, 3vh, 34px);
+  gap: clamp(18px, 3svh, 34px);
+  perspective: 2200px;
 }
-.screen-frame {
+.fx .feel {
+  height: 340vh;
+  height: 340svh;
+  padding: 0;
+}
+.fx .feel-sticky {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  height: 100svh;
+  justify-content: center;
+  padding-top: 60px;
+}
+.feel-heading {
+  position: relative;
+  z-index: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+}
+.feel-heading h2 {
+  font-size: clamp(30px, 4.6vw, 64px);
+  line-height: 1.04;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: -0.04em;
+  text-wrap: balance;
+}
+.feel-heading p {
+  max-width: 40ch;
+  font-size: clamp(16px, 1.6vw, 21px);
+  line-height: 1.45;
+  letter-spacing: -0.01em;
+  color: var(--text-reading);
+  margin: 0;
+  text-wrap: balance;
+}
+.feel-stage {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+}
+.fx .feel-stage {
+  /* As wide as the column allows while the whole TV still fits the window. */
+  width: min(100%, calc((100vh - 260px) * 16 / 9));
+  width: min(100%, calc((100svh - 260px) * 16 / 9));
+  will-change: transform, opacity;
+}
+.feel-glow {
+  position: absolute;
+  inset: 6% 4% 0;
+  width: 92%;
+  height: 94%;
+  max-width: none;
+  object-fit: cover;
+  filter: blur(70px) saturate(1.5);
+  opacity: 0.55;
+  pointer-events: none;
+  z-index: 0;
+}
+.feel-bezel {
+  position: relative;
+  z-index: 1;
   background: #08080a;
   padding: clamp(5px, 0.6%, 10px) clamp(5px, 0.6%, 10px) clamp(10px, 1.3%, 18px);
   box-shadow: 0 34px 76px rgba(0, 0, 0, 0.62), inset 0 0 0 1px var(--color-white-a10);
 }
-.screen-frame img {
-  display: block;
+.demo-card {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background: #08080a;
+}
+.demo-card .feel-poster,
+.demo-card video {
+  position: absolute;
+  inset: 0;
   width: 100%;
-  height: auto;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.feel-poster {
+  display: none;
+}
+.fx .demo-card .feel-poster {
+  display: block;
+  will-change: transform;
+}
+.fx .demo-card video {
+  opacity: 0;
+  will-change: opacity, transform;
 }
 .stand {
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -354,103 +519,17 @@ img {
   background: #141417;
   box-shadow: 0 12px 26px rgba(0, 0, 0, 0.5), inset 0 1px 0 var(--color-white-a10);
 }
-
-/* ---------- Split section (Why) ---------- */
-.split-section {
-  padding: clamp(40px, 5.5vh, 60px) 0;
-  scroll-margin-top: 32px;
-  box-shadow: inset 0 1px 0 var(--hairline);
-  display: flex;
-  flex-wrap: wrap;
-  gap: clamp(20px, 3.5vw, 72px);
-}
-.split-section h2 {
-  flex: 1 1 300px;
-  max-width: 420px;
-  font-size: clamp(25px, 3vw, 37px);
-  font-weight: 700;
-  margin: 0;
-  letter-spacing: -1px;
-  text-wrap: pretty;
-  align-self: flex-start;
-}
-.split-section .section-copy {
-  flex: 1 1 380px;
-  max-width: 640px;
-}
-.split-section .section-copy .lead {
-  font-size: clamp(17px, 1.7vw, 21px);
-  line-height: 1.55;
-  margin: 0 0 18px;
-  text-wrap: pretty;
-}
-.split-section .section-copy p:not(.lead) {
-  font-size: 17px;
-  line-height: 1.65;
-  color: var(--text-reading);
-  margin: 0;
-  text-wrap: pretty;
-}
-
-/* ---------- Section heading (shared by feel / showcase) ---------- */
-.section-heading {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 14px clamp(20px, 3.5vw, 72px);
-  align-items: baseline;
-  margin-bottom: clamp(28px, 4vh, 44px);
-}
-.section-heading h2 {
-  flex: 1 1 300px;
-  max-width: 420px;
-  font-size: clamp(25px, 3vw, 37px);
-  font-weight: 700;
-  margin: 0;
-  letter-spacing: -1px;
-  text-wrap: pretty;
-}
-.section-heading p {
-  flex: 1 1 380px;
-  max-width: 640px;
-  font-size: clamp(17px, 1.7vw, 21px);
-  line-height: 1.55;
-  color: var(--text-reading);
-  margin: 0;
-  text-wrap: pretty;
-}
-.section-heading--showcase {
-  margin-bottom: clamp(24px, 3.5vh, 40px);
-}
-.section-heading--showcase h2 {
-  flex: 1 1 340px;
-  max-width: 460px;
-}
-.section-heading--showcase p {
-  flex: 1 1 340px;
-  max-width: 600px;
-}
-
-/* ---------- Demo / feel section ---------- */
-.showcase-section {
-  padding: clamp(40px, 5.5vh, 60px) 0 clamp(44px, 6vh, 68px);
-  scroll-margin-top: 32px;
-  box-shadow: inset 0 1px 0 var(--hairline);
-}
-.demo-figure {
-  margin: 0;
-}
-.demo-card {
+.feel-caption {
   position: relative;
-  border-radius: 14px;
-  overflow: hidden;
-  background: #08080a;
-  box-shadow: 0 20px 52px rgba(0, 0, 0, 0.5), inset 0 0 0 1px var(--card-sheen);
+  z-index: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text-tertiary);
+  margin: 0;
+  text-align: center;
 }
-.demo-card video {
-  display: block;
-  width: 100%;
-  height: auto;
-  aspect-ratio: 16 / 9;
+.fx .feel-caption {
+  opacity: 0;
 }
 /* The video plays itself while it is on screen, with no native controls; this
    is the one control left, so motion can always be stopped. */
@@ -471,7 +550,12 @@ img {
   backdrop-filter: blur(14px) saturate(1.4);
   box-shadow: inset 0 0 0 1px var(--color-white-a22);
   cursor: pointer;
-  transition: background 160ms ease;
+  transform-origin: 100% 100%;
+  transition: background 160ms ease, opacity 300ms ease;
+}
+.fx .demo-toggle {
+  opacity: 0;
+  pointer-events: none;
 }
 .demo-toggle[hidden] {
   display: none;
@@ -483,38 +567,125 @@ img {
   outline: 2px solid var(--text-primary);
   outline-offset: 3px;
 }
+/* A triangle centred by its box looks right-heavy; this puts its visual
+   weight, not its bounding box, in the middle of the circle. */
 .demo-toggle .demo-toggle-play {
-  margin-left: 2px;
+  translate: -0.7px 0;
 }
 .demo-toggle[data-state="playing"] .demo-toggle-play,
 .demo-toggle:not([data-state="playing"]) .demo-toggle-pause {
   display: none;
 }
-.demo-figure figcaption {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px 28px;
-  align-items: center;
-  justify-content: space-between;
-  margin: 18px 0 0;
+
+/* ---------- Why ---------- */
+.why-section {
+  padding: clamp(72px, 11vh, 140px) 0;
+  scroll-margin-top: 64px;
 }
-.demo-figure figcaption span {
-  font-size: 15px;
-  line-height: 1.6;
+.why-section h2 {
+  font-size: clamp(17px, 1.5vw, 21px);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-tertiary);
+  margin: 0 0 clamp(20px, 3vh, 32px);
+}
+.why-lead {
+  font-size: clamp(28px, 4.4vw, 60px);
+  line-height: 1.12;
+  letter-spacing: -0.035em;
+  font-weight: 700;
+  margin: 0 0 clamp(28px, 4vh, 44px);
+  max-width: 1100px;
+  text-wrap: pretty;
+}
+/* site.js wraps each word; they light up in reading order as you scroll. */
+.why-lead .word {
+  transition: opacity 180ms linear;
+}
+.why-copy {
+  font-size: clamp(18px, 1.8vw, 23px);
+  line-height: 1.5;
+  letter-spacing: -0.01em;
   color: var(--text-reading);
+  margin: 0;
+  max-width: 40ch;
+  text-wrap: pretty;
+}
+
+/* ---------- Big centred section headings (showcase / install) ---------- */
+.section-heading,
+.install-intro {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 16px;
+  margin: 0 auto clamp(36px, 5.5vh, 64px);
+}
+.install-intro {
+  max-width: 900px;
+}
+.section-heading h2,
+.install-intro h2 {
+  font-size: clamp(34px, 5.6vw, 80px);
+  line-height: 1.04;
+  font-weight: 700;
+  margin: 0;
+  letter-spacing: -0.04em;
+  text-wrap: balance;
+  transform-origin: 50% 100%;
+}
+.fx [data-scrub-big] {
+  will-change: transform, opacity;
+}
+.section-heading p,
+.install-intro p {
+  max-width: 40ch;
+  font-size: clamp(18px, 1.8vw, 23px);
+  line-height: 1.45;
+  letter-spacing: -0.01em;
+  color: var(--text-reading);
+  margin: 0;
+  text-wrap: balance;
+}
+.install-intro p {
+  max-width: 44ch;
 }
 
 /* ---------- Close-up showcase ---------- */
-.closeup-figure {
-  margin: 0 0 clamp(18px, 2.4vw, 30px);
-  min-width: 0;
+.showcase-section {
+  padding: clamp(56px, 8vh, 100px) 0 clamp(44px, 6vh, 68px);
 }
-.closeup-figure:last-child {
-  margin-bottom: 0;
+.closeup-figure {
+  margin: 0;
+  min-width: 0;
+  position: relative;
+}
+.closeup-figure--full {
+  margin-bottom: clamp(18px, 2.4vw, 30px);
+}
+/* A soft, blurred copy of each close-up glows behind it; site.js brings it up
+   as the close-up opens. */
+.closeup-glow {
+  position: absolute;
+  top: 10%;
+  left: 6%;
+  width: 88%;
+  height: 80%;
+  max-width: none;
+  object-fit: cover;
+  filter: blur(64px) saturate(1.6);
+  opacity: 0.5;
+  pointer-events: none;
+  z-index: 0;
+}
+.fx .closeup-glow {
+  opacity: 0;
 }
 .closeup-box {
   position: relative;
-  aspect-ratio: var(--crop-w) / var(--crop-h);
+  z-index: 1;
+  aspect-ratio: var(--ar);
   border-radius: 14px;
   overflow: hidden;
   background: #08080a;
@@ -522,49 +693,33 @@ img {
 }
 .closeup-box img {
   position: absolute;
-  height: auto;
+  inset: 0;
+  width: 100%;
+  height: 100%;
   max-width: none;
-  width: calc(var(--src-w) / var(--crop-w) * 100%);
-  left: calc(-1 * var(--crop-x) / var(--crop-w) * 100%);
-  top: calc(-1 * var(--crop-y) / var(--crop-h) * 100%);
+  object-fit: cover;
+  object-position: var(--focus, 50% 50%);
+  display: block;
 }
 .closeup-box--glass {
-  --crop-x: 0;
-  --crop-y: 0;
-  --crop-w: 2640;
-  --crop-h: 480;
-  --src-w: 2640;
+  --ar: 2640 / 480;
 }
 .closeup-box--tiles {
-  --crop-x: 0;
-  --crop-y: 0;
-  --crop-w: 2540;
-  --crop-h: 1540;
-  --src-w: 2540;
+  --ar: 2540 / 1540;
 }
 .closeup-box--player {
-  --crop-x: 0;
-  --crop-y: 0;
-  --crop-w: 1920;
-  --crop-h: 1164;
-  --src-w: 1920;
+  --ar: 1920 / 1164;
+}
+.closeup-figure figcaption {
+  position: relative;
+  z-index: 1;
+  margin: clamp(14px, 1.8vw, 20px) 0 0;
 }
 .closeup-figure--full figcaption {
   display: flex;
   flex-wrap: wrap;
   gap: 6px clamp(14px, 2vw, 26px);
   align-items: baseline;
-  margin: clamp(14px, 1.8vw, 20px) 0 0;
-}
-.closeup-figure--full figcaption h3 {
-  flex: 0 1 auto;
-}
-.closeup-figure--full figcaption p {
-  flex: 1 1 300px;
-  max-width: 56ch;
-}
-.closeup-figure figcaption {
-  margin: clamp(14px, 1.8vw, 20px) 0 0;
 }
 .closeup-figure figcaption h3 {
   font-size: clamp(19px, 2vw, 24px);
@@ -573,6 +728,7 @@ img {
   letter-spacing: -0.4px;
 }
 .closeup-figure--full figcaption h3 {
+  flex: 0 1 auto;
   margin: 0;
 }
 .closeup-figure figcaption p {
@@ -582,42 +738,59 @@ img {
   margin: 0;
   text-wrap: pretty;
 }
-.closeup-grid {
+.closeup-figure--full figcaption p {
+  flex: 1 1 300px;
+  max-width: 56ch;
+}
+.closeup-row {
   display: grid;
-  /* Both crops share one aspect ratio, so equal columns give equal heights. */
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: clamp(18px, 2.4vw, 30px);
   align-items: start;
 }
 
+/* ---------- Pointer-lit cards ---------- */
+/* A soft light follows the pointer and the card leans toward it (site.js sets
+   --mx/--my/--spot and the tilt). Mouse only; touch gets the plain card. */
+[data-spot] {
+  position: relative;
+  overflow: hidden;
+  transition: transform 500ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+[data-spot]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background: radial-gradient(var(--spot-size, 520px) circle at var(--mx, 50%) var(--my, 0%), var(--color-white-a10), transparent 60%);
+  opacity: var(--spot, 0);
+  transition: opacity 400ms ease;
+}
+
 /* ---------- Built differently ---------- */
 .built-section {
-  padding: 0 0 clamp(36px, 5vh, 60px);
+  padding: 0 0 clamp(56px, 8vh, 100px);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(18px, 2.4vw, 30px);
 }
 .built-card {
-  display: flex;
-  flex-wrap: wrap;
-  gap: clamp(16px, 3.5vw, 56px);
-  padding: clamp(20px, 2.6vw, 34px) clamp(20px, 2.8vw, 38px);
-  border-radius: 12px;
+  padding: clamp(28px, 3.4vw, 48px);
+  border-radius: 14px;
   background: var(--color-white-a07);
   box-shadow: inset 0 0 0 1px var(--hairline);
 }
-.built-card .built-copy {
-  flex: 1 1 440px;
-}
-.built-card .built-copy--offline {
-  flex: 1 1 340px;
-}
 .built-card .built-title {
-  font-size: clamp(18px, 1.9vw, 21px);
+  font-size: clamp(24px, 2.6vw, 34px);
+  line-height: 1.1;
   font-weight: 700;
-  letter-spacing: -0.3px;
+  letter-spacing: -0.03em;
   color: var(--text-primary);
-  margin: 0 0 10px;
-  text-wrap: pretty;
+  margin: 0 0 16px;
+  text-wrap: balance;
 }
-.built-card .built-copy p {
+.built-card p {
   font-size: clamp(16px, 1.6vw, 17px);
   line-height: 1.55;
   color: var(--text-reading);
@@ -625,10 +798,10 @@ img {
   max-width: 68ch;
   text-wrap: pretty;
 }
-.built-card .built-copy--offline p {
+.built-card--offline p {
   max-width: 62ch;
 }
-.built-card .built-copy p.built-tech {
+.built-card p.built-tech {
   font-size: 14px;
   line-height: 1.5;
   color: var(--text-tertiary);
@@ -748,27 +921,8 @@ img {
 
 /* ---------- Install ---------- */
 .install-section {
-  padding: clamp(40px, 5.5vh, 60px) 0 clamp(44px, 6vh, 68px);
-  scroll-margin-top: 32px;
-  box-shadow: inset 0 1px 0 var(--hairline);
-}
-.install-intro {
-  max-width: 720px;
-  margin-bottom: clamp(28px, 4.5vh, 44px);
-}
-.install-intro h2 {
-  font-size: clamp(26px, 3.6vw, 42px);
-  font-weight: 700;
-  margin: 0 0 16px;
-  letter-spacing: -1px;
-  text-wrap: pretty;
-}
-.install-intro p {
-  font-size: clamp(17px, 1.8vw, 20px);
-  line-height: 1.55;
-  color: var(--text-reading);
-  margin: 0;
-  text-wrap: pretty;
+  padding: clamp(72px, 11vh, 140px) 0 clamp(44px, 6vh, 68px);
+  scroll-margin-top: 64px;
 }
 .install-grid {
   display: grid;
@@ -778,6 +932,7 @@ img {
 }
 .install-card {
   border-radius: 14px;
+  --spot-size: 420px;
   background: var(--color-white-a07);
   box-shadow: inset 0 0 0 1px var(--hairline);
   padding: clamp(22px, 2.4vw, 30px);
@@ -836,6 +991,7 @@ img {
 .install-footnote span {
   color: var(--text-secondary);
 }
+
 
 /* ---------- Notes ---------- */
 .notes-section {
@@ -1333,25 +1489,68 @@ img {
     padding: 10px 2px;
   }
 
-  /* Phones get their own taller crop (a <picture> source) so the bar reads
-     larger instead of shrinking the wide strip. */
-  .closeup-box--glass {
-    --crop-w: 1120;
-    --crop-h: 530;
-    --src-w: 1120;
+  /* The TV scene pins just under the header and is only as tall as its
+     content, so the Why section follows right after the caption. */
+  .fx .feel {
+    height: 260vh;
+    height: 260svh;
   }
-  .closeup-box--tiles {
-    --crop-x: 334;
-    --crop-w: 1900;
+  .fx .feel-sticky {
+    top: 64px;
+    height: auto;
+    justify-content: flex-start;
+    padding: 20px 0 8px;
   }
-  .closeup-grid {
-    grid-template-columns: minmax(0, 1fr);
+  .why-section {
+    padding-top: 40px;
   }
 
-  .built-card {
-    row-gap: 26px;
+  /* Phones get their own taller glass crop (a <picture> source) so the bar
+     reads larger instead of shrinking the wide strip. */
+  .closeup-box--glass {
+    --ar: 1120 / 530;
   }
-  .built-card .built-copy p.built-tech {
+  /* The two smaller close-ups become one swipeable row, edge to edge, each
+     card the same shape; the next one peeks in from the right. */
+  .closeup-row {
+    display: flex;
+    gap: 14px;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scroll-padding-left: var(--gutter);
+    margin: 0 calc(-1 * var(--gutter));
+    padding: 0 0 8px var(--gutter);
+    align-items: start;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .closeup-row::-webkit-scrollbar {
+    display: none;
+  }
+  /* Safari ignores a scroller's end padding; a spacer keeps the last card's
+     right margin equal to the page's left one. */
+  .closeup-row::after {
+    content: "";
+    flex: 0 0 calc(var(--gutter) - 14px);
+    align-self: stretch;
+  }
+  .closeup-row .closeup-figure {
+    flex: 0 0 86%;
+    scroll-snap-align: start;
+  }
+  .closeup-box--tiles {
+    --ar: 1900 / 1540;
+    --focus: 52% 0;
+  }
+  .closeup-box--player {
+    --ar: 1900 / 1540;
+    --focus: 100% 50%;
+  }
+
+  .built-section {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .built-card p.built-tech {
     font-size: 13px;
     text-wrap: balance;
   }
