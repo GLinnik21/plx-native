@@ -64,7 +64,7 @@ pub(super) enum TrailerKey {
 
 /// PURE: what `key` does in full-trailer mode.
 ///
-/// `sym`/`wcode` are the raw pair, classified by [`consts::classify`] for the keys the four-way
+/// `sym`/`wcode` are the raw pair, classified by [`consts::classify_input`] for the keys the four-way
 /// `machine::Key` alphabet cannot name (PLAY, PAUSE, PLAYPAUSE and the FF/REW alternates). The
 /// machine key is preferred where it HAS an answer, because that is the value the input engine
 /// itself navigated by.
@@ -81,15 +81,7 @@ pub(super) fn trailer_key(
     sym: u32,
     wcode: u32,
 ) -> Option<TrailerKey> {
-    use crate::ui::machine::Key as MKey;
-    let key = match key {
-        MKey::Up => return Some(TrailerKey::Reveal),
-        MKey::Left => return Some(TrailerKey::Scrub(false)),
-        MKey::Right => return Some(TrailerKey::Scrub(true)),
-        MKey::Down | MKey::Back => return Some(TrailerKey::Collapse),
-        MKey::Ok => return Some(TrailerKey::Toggle),
-        MKey::Other => consts::classify(sym, wcode),
-    };
+    let key = consts::classify_input(key, sym, wcode);
     match key {
         consts::Key::Play => Some(TrailerKey::Play),
         consts::Key::Pause => Some(TrailerKey::Pause),
