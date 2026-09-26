@@ -503,7 +503,6 @@ impl GridPart {
         let style = self.layout.style();
         let scale = self.treatment_scale(index, f.press.scale);
         if !card_row::paint_visible(p, rect, scale, true) {
-            if !crate::gfx::blur_source_pass() { crate::ui::widgets::warm_card_art(grid_art(item)); }
             return;
         }
         let label = grid_label(item).revealed(card_row::band_reveal(
@@ -626,8 +625,9 @@ impl<H: LibraryLike> Part<H> for GridPart {
             if selected { continue; }
             let rect = self.rect_at(index, false, 1.0);
             let scale = self.tile_scale(index, false, 1.0);
+            // Metadata still pages ahead via LibraryWork::Want. Hidden artwork must wait
+            // until visible: repeated warms recycle cold cache slots and keep idle uploading.
             if !card_row::paint_visible(p, rect, scale, false) {
-                if !crate::gfx::blur_source_pass() { crate::ui::widgets::warm_card_art(grid_art(item)); }
                 continue;
             }
             let resume = if item.kind == 3 { None } else { item.resume_frac() };

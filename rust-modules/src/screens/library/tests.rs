@@ -1165,3 +1165,5 @@ fn shelf_publication_request_distinguishes_page_fade_from_grid_fade_and_head_foc
 }
 
 mod type_tests { include!("type_tests.rs"); }
+
+mod art_admission_tests { include!("art_admission_tests.rs"); }

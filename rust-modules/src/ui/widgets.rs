@@ -268,19 +268,6 @@ pub(crate) enum Art<'a> {
     },
 }
 
-/// Warm exactly the image a card would resolve, without drawing or retaining its cache slot.
-/// Used for buffered grid rows after whole-card paint culling, so scrolling still fetches ahead.
-pub(crate) fn warm_card_art(art: Art<'_>) {
-    match art {
-        Art::Poster(Some(item)) => { warm_tex_on(item.sid, &item.thumb, 250, 375, 0); }
-        Art::Still(Some(item)) => { warm_tex_on(item.sid, still_key(item), STILL_RES.0, STILL_RES.1, 0); }
-        Art::Thumb { sid, key, res } | Art::Person { sid, key, res } => {
-            warm_tex_on(sid, key, res.0, res.1, 0);
-        }
-        Art::Poster(None) | Art::Still(None) => {}
-    }
-}
-
 /// The one art-tile draw op. Resolves `art` to a texture (or a dark skeleton) and draws it at `frame`,
 /// scaled about its centre when `focused`. Textured tiles share the CARD COMPOSITE
 /// ([`Painter::tex_carded`], with [`Painter::tex_carded_still`] folding a still's label ground):
