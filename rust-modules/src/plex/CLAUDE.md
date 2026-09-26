@@ -125,7 +125,11 @@ issue #95 itself.
 
 **"May a credential go to this origin" has ONE answer: `grant::credential_allowed`** (or
 `grant::allowed_under` where a pure function receives the policy). It is the build's
-`CredentialPolicy` OR a live `PlaintextGrant` for that exact origin (PLX-NATIVE-10). Nothing else
+`CredentialPolicy` OR a live `PlaintextGrant` for that exact origin (PLX-NATIVE-10). Whoever puts a
+particular SERVER's token on an origin — registry and endpoint admission — asks
+`grant::allowed_for(policy, machine_id, origin)`: a grant admits only the machine it was minted
+for. A remembered (cached) origin asks `grant::remembered_allowed`: the policy alone, never a
+grant. Nothing else
 asks `CredentialPolicy::may_carry_credential` or `Origin::is_tls` for a credential decision —
 `grep -rn may_carry_credential src/` finds only `grant.rs` (plus doc links). `probe::candidates`
 stamps the policy half at synthesis, and `auth::settle_plaintext` adds the grant half after the
@@ -133,7 +137,9 @@ race. A grant is minted only by discovery, from a FRESH verdict `InsecureEvidenc
 plaintext_eligibility` calls eligible, when the person's recorded answer (`Session::
 plaintext_consent`, captured at the spawn site as `grant::PlaintextAsk`) allows it; it is bound to
 {identity generation, network generation, machine, exact numeric origin}, never persisted, dies on
-sign-in/profile switch/sign-out and on every DID foreground, and a stored `SourceRef` naming a
+sign-in/sign-out, on every DID foreground, on a refusal (which also moves the consent generation
+a `PlaintextAsk` captured) and on a roster commit that does not install its (machine, origin) —
+a roster commit moves no generation — and a stored `SourceRef` naming a
 plaintext origin registers tokenless until discovery re-mints. Ending a grant re-grades the
 registry (`servers::regrade_credentials` blanks every client a grant was carrying, `ON_GRANT`);
 `grant::UpgradeRetry` re-discovers a granted server on the hub-retry backoff and the HTTPS

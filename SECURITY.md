@@ -35,9 +35,12 @@ looking at:
   any PMS control or media URL that would carry a Plex token over plaintext HTTP, with one
   consented exception: a server that answers only unencrypted at a numeric private address on the
   television's own network, where the person answered "Connect without encryption?" for that
-  server (`plex::grant`). The grant names that exact origin, is never persisted, and is revoked on
-  sign-in, profile switch, sign-out and return to the foreground, and whenever a fresh probe no
-  longer reaches it. A token sent over plaintext to any origin outside a live grant is in scope.
+  server (`plex::grant`). The grant names that server and that exact origin, is never persisted,
+  and is revoked on sign-in, sign-out and return to the foreground, at a profile switch whose
+  roster does not install that server at that origin, whenever a fresh probe no longer reaches it,
+  and at once when the person says no (a refusal is written again until it reaches the disk). A
+  token sent over plaintext to any origin outside a live grant, or to a server other than the one
+  it names, is in scope.
   Only an explicit developer-trigger build can otherwise allow the lab path, and it logs the
   exception without the URL.
   Anything that disables, downgrades or bypasses these rules is in scope; so is any path where a

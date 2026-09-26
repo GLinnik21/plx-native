@@ -44,8 +44,9 @@ the random Analytics ID if you turned product analytics on, any report waiting t
 marker recording how much of the crash log has already been read, and — for a server you were
 asked about — whether you allowed it to be reached without encryption on your home network (the
 answer only, for the Plex account that gave it: the permission itself is never stored, and ends
-when a fresh check of the server no longer reaches the same address, at a sign-in, sign-out or
-profile switch, or when the app returns from the background).
+when a fresh check of the server no longer reaches the same address, at a sign-in or sign-out, at
+a profile switch unless the new profile reaches that server at the same address, or when the app
+returns from the background).
 It keeps no bookmark of its own for where you stopped watching: playback position is held by your
 Plex Media Server. The Settings screen can sign out and remove PlxNative data from this television.
 

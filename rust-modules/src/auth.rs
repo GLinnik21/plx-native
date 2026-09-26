@@ -3678,10 +3678,11 @@ impl<S: FnOnce(&AccountClient, &str, Option<&str>) -> SwitchOutcome> ProfileWork
         rejected: &[String]) -> Option<(Option<SourceRef>, SettledProbe)> {
         let origin = cached.origin()?;
         if rejected.iter().any(|rejected| rejected == &origin.base()) { return None; }
-        // A cached origin is an address remembered from disk, not an authority: one this build may
-        // not put a credential on right now (a plaintext origin with no live grant) is never
-        // re-credentialed here. The full probe below it re-proves eligibility and consent instead.
-        if !crate::plex::grant::credential_allowed(&origin) { return None; }
+        // A cached origin is an address remembered from disk, not an authority: one the build's
+        // policy does not credential is never re-credentialed here, grant or no grant
+        // (`plex::grant::remembered_allowed`). The fresh probe above it already dialled every
+        // granted origin; one it did not reach stays unreached.
+        if !crate::plex::grant::remembered_allowed(CredentialPolicy::build(), &origin) { return None; }
         let plan = probe::plan(resource, CredentialPolicy::build());
         let pin = cached.resolve_pin();
         let budget = if cached.tier == Some(probe::Location::Local) {

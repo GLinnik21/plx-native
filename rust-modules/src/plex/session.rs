@@ -2214,6 +2214,34 @@ pub(crate) fn queue_update_ticket(edit: impl FnOnce(&Session) -> Option<Session>
     }))
 }
 
+/// [`queue_update_ticket`] for an edit whose LANDING matters — a consent refusal
+/// (`plex::grant::record`), which must not be lost to a failed write. `settled` runs on the
+/// storage worker once the attempt is over: `true` when the file holds the edit afterwards (it
+/// already did, or the write persisted) or the edit no longer applies (a sign-out or another
+/// account replaced the one it was queued for), `false` when the store could not be read or the
+/// write failed — the caller's cue to try again.
+pub(crate) fn queue_update_settled(
+    edit: impl FnOnce(&Session) -> Option<Session> + Send + 'static,
+    settled: impl FnOnce(bool) + Send + 'static,
+) {
+    let expected = peek();
+    let tenure = REVOCATION_GENERATION.load(std::sync::atomic::Ordering::Acquire);
+    drop(crate::storage_worker::submit_retained(move || {
+        let (mut read, mut moot) = (false, false);
+        let write = update_with_outcome(|current| {
+            if REVOCATION_GENERATION.load(std::sync::atomic::Ordering::Acquire) != tenure
+                || (!expected.client_id.is_empty() && (current.client_id != expected.client_id
+                    || current.account_token != expected.account_token)) {
+                moot = true;
+                return None;
+            }
+            read = true;
+            edit(current)
+        });
+        settled(moot || write.map_or(read, |w| w.outcome.persisted()));
+    }));
+}
+
 /// Read the persisted session without minting or preference edits. A worker may migrate a marked
 /// fallback into recovered canonical storage. For readers that merely want to know what the
 /// session says (the account surfaces, and now every per-frame reader too):

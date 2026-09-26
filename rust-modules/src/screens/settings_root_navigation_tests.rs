@@ -665,6 +665,7 @@ fn turning_an_unencrypted_connection_on_asks_the_shared_question_first() {
     let row = root.rows.iter().position(|a| matches!(a, Action::Plaintext(0)))
         .expect("an offered, never-asked server has its switch");
     let drawn = root.table.sections.iter().flat_map(|s| &s.rows).nth(row).unwrap();
+    assert_eq!(drawn.label, "Basement", "an offered server is named from its discovery, not the session file");
     assert_eq!(drawn.toggle, Some(false));
     assert_eq!(drawn.detail, "Not allowed. Only encrypted connections.");
 

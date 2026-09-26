@@ -890,6 +890,58 @@ fn a_stored_plaintext_source_stays_tokenless_without_a_fresh_grant() {
     crate::plex::reset_servers_for_test();
 }
 
+/// **A grant is the server's, not the address's.** Another machine registered at the granted
+/// plaintext origin — a remembered source whose address the granted server now holds, a share
+/// advertising the same private address — gets no token there, so nothing (its server-info
+/// refresh first) sends its credential to the granted server.
+#[test]
+fn another_server_at_a_granted_origin_registers_tokenless() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    crate::plex::grant::mint(crate::plex::grant::scope(), "lan-http", &Origin::http("192.168.0.10", 32400),
+        &crate::plex::grant::eligible_evidence_for_test()).unwrap();
+    let mut other = lan_source("other-token");
+    other.machine_id = "other-http".into();
+    let id = install_stored_source(&other, CredentialPolicy::HttpsOnly);
+    assert!(crate::plex::client_for(id).unwrap()
+        .image_transcode_path("/thumb", 2, 2, false).ends_with("X-Plex-Token="),
+        "another machine was credentialed on the granted origin");
+    assert_eq!(crate::plex::server_probe_result(id), Some(Outcome::InsecureOnly));
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}
+
+/// **A roster commit moves no generation.** A profile switch's (or a roster refresh's) install
+/// keeps what the new roster installs and drops the rest, but the identity is the ACCOUNT's
+/// sign-in: the switch's own late probes of its secondary servers, captured before the commit,
+/// still mint under it, and an offer for a server the commit did not touch stays askable.
+#[test]
+fn a_roster_commit_leaves_in_flight_asks_and_other_offers_live() {
+    use crate::plex::session::PlaintextChoice;
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    let evidence = crate::plex::grant::eligible_evidence_for_test();
+    let other = Origin::http("192.168.0.20", 32400);
+    let ask = crate::plex::grant::PlaintextAsk::undecided().with("other-http", PlaintextChoice::Allowed);
+    crate::plex::grant::offered(crate::plex::grant::scope(), crate::plex::grant::PlaintextVerdict {
+        machine_id: "offered-http".into(), name: "Den".into(), shared_by: String::new(),
+        eligibility: crate::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided,
+    });
+    let mut installed = lan_source("kid-token");
+    installed.tier = Some(probe::Location::Local);
+    assert!(execute_session_registry(&owner::RegistryPlan::Install {
+        sources: vec![installed], primary: Some(0), replace: true,
+    }, "registry-test-client"));
+    assert!(crate::plex::grant::offer("offered-http").is_some(), "the commit cleared another server's offer");
+    assert_eq!(ask.settle("other-http", &other, &evidence), Ok(()),
+        "the switch's own late probe could not mint");
+    assert_eq!(crate::plex::grant::granted_origin("other-http"), Some(other));
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}
+
 /// **Revocation takes the credential off every published client at once.** Under a live grant the
 /// slot is credentialed and current; revoking the grant (Settings), a network change or a sign-in
 /// blanks the token in place — every reference already handed out follows — marks the slot
@@ -968,10 +1020,9 @@ fn an_https_install_commit_retires_the_plaintext_grant() {
     crate::plex::reset_servers_for_test();
 }
 
-/// **A profile switch's COMMIT is the identity change.** The commit keeps a grant only for the
-/// exact (server, plaintext origin) the new profile's roster installs — minted by the switch's own
-/// fresh probe — and every other grant dies with the old profile; a grant minted under the old
-/// generations after the commit is refused as stale.
+/// **A profile switch's COMMIT keeps only what it installs.** The commit keeps a grant only for the
+/// exact (server, plaintext origin) the new profile's roster installs, re-tokened with the new
+/// profile's credential, and every other grant dies with the old roster.
 #[test]
 fn a_profile_switch_commit_keeps_only_the_grants_it_installs() {
     let _g = crate::testlock::serial();
@@ -992,9 +1043,6 @@ fn a_profile_switch_commit_keeps_only_the_grants_it_installs() {
     assert_eq!(crate::plex::grant::granted_origin("other-http"), None);
     let active = crate::plex::client_opt().expect("the kept grant keeps the slot current");
     assert!(active.image_transcode_path("/thumb", 2, 2, false).ends_with("X-Plex-Token=kid-token"));
-    assert_ne!(crate::plex::grant::scope(), before, "the commit moved the identity");
-    assert_eq!(crate::plex::grant::mint(before, "other-http", &other, &evidence),
-        Err(crate::plex::grant::MintRefusal::Stale));
     crate::plex::grant::reset_for_test();
     crate::plex::reset_servers_for_test();
 }

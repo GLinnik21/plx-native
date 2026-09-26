@@ -970,10 +970,11 @@ impl SessionAdapter {
         };
         let spawn = self.spawn;
         // A sign-in starting is a new identity: every plaintext grant minted under the previous
-        // one is dead from here (`plex::grant`). A profile switch is NOT — it changes the identity
-        // at its commit (`plex::grant::roster_replaced`), so a switch that is refused changes
-        // nothing. The work below captures the generations — and the answers the account it runs
-        // for gave — it may mint under.
+        // one is dead from here (`plex::grant`). A profile switch is NOT — consent is the
+        // account's, and its commit keeps only the grants its roster installs
+        // (`plex::grant::roster_replaced`), so a switch that is refused changes nothing. The work
+        // below captures the generations — and the answers the account it runs for gave — it may
+        // mint under.
         if key.op == SessionOp::Login {
             crate::plex::grant::identity_changed();
         }
@@ -2338,8 +2339,8 @@ mod tests {
 /// executor. This launch's authority first (`plex::grant::answer`: anything but *Allowed* withdraws
 /// the server's grant at once, and the retry a *Connect* starts captures the answer even before
 /// the write lands), then the persisted choice through the session's one read-modify-write door.
-/// A write that fails costs only the memory of the answer across a restart — the person is asked
-/// again, the closed direction.
+/// An *Allowed* whose write fails costs only its memory across a restart — the person is asked
+/// again, the closed direction; a refusal is written again until it lands (`plex::grant::record`).
 pub(crate) fn record_plaintext_answer(account: &str, machine_id: &str,
     choice: crate::plex::session::PlaintextChoice) {
     if crate::plex::grant::record(account, machine_id, choice).is_err() {

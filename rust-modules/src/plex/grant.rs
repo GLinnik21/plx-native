@@ -25,12 +25,14 @@
 //! television is asked again.
 //! It names:
 //!
-//! * the server's `machineIdentifier`;
+//! * the server's `machineIdentifier` — a grant admits THAT server's credential ([`allowed_for`]),
+//!   never another machine's that happens to register at the same address;
 //! * the exact plaintext origin — scheme, NUMERIC private host and port — that verified; a name is
 //!   never granted, because a resolver could answer it with anything;
 //! * the **identity generation** it was minted under ([`identity_changed`]: sign-out, a sign-in
-//!   starting; [`roster_replaced`]: a profile switch's COMMIT, which keeps only the grants for the
-//!   exact origins the new profile's roster installs);
+//!   starting). A roster replacement — a profile switch's commit, a roster refresh — moves no
+//!   generation; it keeps only the grants for the exact `(server, origin)` pairs the new roster
+//!   installs ([`roster_replaced`]);
 //! * the **network generation** it was minted under ([`network_changed`]: the app returning to the
 //!   foreground, where nothing proves the television is still on the network it consented on).
 //!
@@ -41,13 +43,16 @@
 //!
 //! ## Revocation
 //!
-//! [`revoke`], [`identity_changed`], [`network_changed`] and [`roster_replaced`] change the table
-//! at once, and the authority is asked when a request STARTS: every request that starts after
+//! [`revoke`], a refusing [`answer`], [`identity_changed`], [`network_changed`] and
+//! [`roster_replaced`] change the table at once, and the authority is asked when a request STARTS: every request that starts after
 //! the change — queued, retried, a cached token-bearing URL, a media reopen — is refused at the
 //! transport, and the registry re-grades every published client
 //! ([`super::servers::regrade_credentials`]), blanking the token of any whose origin may no
 //! longer carry one. A request already on the wire is not interrupted: it completes (or fails)
-//! with the credential it started with, and nothing after it gets a new one.
+//! with the credential it started with, and nothing after it gets a new one. A refusal also moves
+//! the consent generation, so a discovery that captured *Allowed* before it cannot mint the grant
+//! back when it settles; and a refusal whose write has not reached the disk is written again
+//! until it has ([`UpgradeRetry::due`]), so a restart never reads back the *Allowed* it replaced.
 //!
 //! A grant also lives only as long as a FRESH verdict keeps reaching its server: discovery
 //! withdraws it when the latest probe of that server did not reach the granted origin
@@ -91,10 +96,18 @@ static GRANTS: Mutex<Vec<PlaintextGrant>> = Mutex::new(Vec::new());
 static COUNT: AtomicUsize = AtomicUsize::new(0);
 static IDENTITY: AtomicU64 = AtomicU64::new(1);
 static NETWORK: AtomicU64 = AtomicU64::new(1);
+/// Bumped by every answer that does not allow (a *Not now*, a switch turned off), under the grant
+/// table's lock and before the grant goes. A [`PlaintextAsk`] records it at capture, so a discovery
+/// already in flight when the person said no finds its capture stale and mints nothing back.
+static CONSENT: AtomicU64 = AtomicU64::new(1);
 /// Answers given THIS launch, under the current identity, overlaying the persisted ones
 /// (`Session::plaintext_consent`) — so a *Connect* is honoured by the retry it triggers even
 /// before (or without) the session write landing. Cleared with the identity; never a grant.
 static ANSWERS: Mutex<Vec<Answer>> = Mutex::new(Vec::new());
+/// Refusals recorded this launch whose write has not yet been confirmed on disk — see [`record`].
+static UNSAVED: Mutex<Vec<Unsaved>> = Mutex::new(Vec::new());
+/// How many entries [`UNSAVED`] holds — the frame step's lock-free fast path.
+static UNSAVED_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// The fresh eligible verdicts that may be asked about; see the module doc's *Offers*.
 static OFFERS: Mutex<Vec<(GrantScope, PlaintextVerdict)>> = Mutex::new(Vec::new());
 /// Bumped whenever anything a consent surface or the upgrade retry reads moves — the grant table,
@@ -108,6 +121,17 @@ struct Answer {
     account: String,
     machine_id: String,
     choice: PlaintextChoice,
+}
+
+/// One refusal waiting for its write: the answer, whether a write of it is on the storage worker
+/// now, when the next attempt is due (frame ms, armed by the frame step after a failure), and how
+/// many attempts were made.
+#[derive(Debug)]
+struct Unsaved {
+    answer: Answer,
+    in_flight: bool,
+    due: Option<u32>,
+    attempts: u32,
 }
 
 fn moved() {
@@ -174,7 +198,10 @@ pub(crate) fn scope() -> GrantScope {
     }
 }
 
-/// **May a credential go to `origin` — the live answer**, under the build's own policy.
+/// **May a credential go to `origin` — the live answer**, under the build's own policy, for a
+/// request that holds a URL rather than a server: the transport (`crate::http`, `crate::curlio`,
+/// `crate::stream_redirect`). The token on such a request was put there by a registration that
+/// asked [`allowed_for`], so here a grant admits its origin whichever server it was minted for.
 pub fn credential_allowed(origin: &Origin) -> bool {
     allowed_under(CredentialPolicy::build(), origin)
 }
@@ -182,33 +209,61 @@ pub fn credential_allowed(origin: &Origin) -> bool {
 /// [`credential_allowed`] with the policy supplied — for the pure functions that receive the
 /// build's policy as a parameter, and their tests. The grant half is always the live table.
 pub(crate) fn allowed_under(policy: CredentialPolicy, origin: &Origin) -> bool {
-    policy.may_carry_credential(origin) || (!origin.is_tls() && granted(origin))
+    policy.may_carry_credential(origin) || (!origin.is_tls() && granted(None, origin))
 }
 
-/// Does `origin`'s credential rest on a grant — `policy` alone refuses it and a live grant admits
-/// it? The registry records this per slot so a revocation re-grades exactly the slots a grant was
-/// carrying, whatever the build's own policy.
-pub(crate) fn rests_on_grant(policy: CredentialPolicy, origin: &Origin) -> bool {
-    !policy.may_carry_credential(origin) && granted_now(origin)
+/// **May `machine_id`'s credential go to `origin`** — the question for whoever is about to put a
+/// server's own token on an origin: registry admission (`super::servers`), endpoint admission
+/// (`super::admit_source_until`). A grant admits only the server it was minted for, so another
+/// machine whose address collides with a granted origin (a DHCP reshuffle, a share advertising
+/// the same private address) never gets its token sent there. An empty `machine_id` names no
+/// server, and no grant admits it.
+pub(crate) fn allowed_for(policy: CredentialPolicy, machine_id: &str, origin: &Origin) -> bool {
+    policy.may_carry_credential(origin) || granted_now(machine_id, origin)
 }
 
-/// Is `origin` admitted by a live grant right now (the grant half of [`allowed_under`] alone)?
-pub(crate) fn granted_now(origin: &Origin) -> bool {
-    !origin.is_tls() && granted(origin)
+/// [`allowed_for`] under the build's own policy.
+pub(crate) fn credential_allowed_for(machine_id: &str, origin: &Origin) -> bool {
+    allowed_for(CredentialPolicy::build(), machine_id, origin)
 }
 
-fn granted(origin: &Origin) -> bool {
+/// **May a REMEMBERED origin carry a credential** — an address read back from the session file
+/// (`auth`'s cached-source probe), not one a fresh verdict just reached. The build's policy alone:
+/// a grant is re-proved by discovery's own race, which already dials the granted origin, so a
+/// cached plaintext origin standing in for a fresh probe that did NOT reach it (HTTPS now refuses,
+/// the server now requires HTTPS) would override exactly the verdict that should withdraw it.
+pub(crate) fn remembered_allowed(policy: CredentialPolicy, origin: &Origin) -> bool {
+    policy.may_carry_credential(origin)
+}
+
+/// Does `machine_id`'s credential at `origin` rest on a grant — `policy` alone refuses it and a
+/// live grant admits it? The registry records this per slot so a revocation re-grades exactly the
+/// slots a grant was carrying, whatever the build's own policy.
+pub(crate) fn rests_on_grant(policy: CredentialPolicy, machine_id: &str, origin: &Origin) -> bool {
+    !policy.may_carry_credential(origin) && granted_now(machine_id, origin)
+}
+
+/// Is `machine_id` at `origin` admitted by a live grant right now (the grant half of
+/// [`allowed_for`] alone)?
+pub(crate) fn granted_now(machine_id: &str, origin: &Origin) -> bool {
+    !machine_id.is_empty() && !origin.is_tls() && granted(Some(machine_id), origin)
+}
+
+fn granted(machine_id: Option<&str>, origin: &Origin) -> bool {
     if COUNT.load(Ordering::Acquire) == 0 {
         return false;
     }
     let grants = GRANTS.lock().unwrap_or_else(|e| e.into_inner());
-    admits(&grants, scope(), origin)
+    admits(&grants, scope(), machine_id, origin)
 }
 
-/// Pure: does any grant in `grants` admit `origin` at `now`? Only a grant minted under the current
-/// generations counts, and only for its exact origin — scheme, host and port.
-fn admits(grants: &[PlaintextGrant], now: GrantScope, origin: &Origin) -> bool {
-    grants.iter().any(|g| g.scope == now && g.origin == *origin)
+/// Pure: does any grant in `grants` admit `origin` at `now` — for `machine_id` when one is named?
+/// Only a grant minted under the current generations counts, and only for its exact origin —
+/// scheme, host and port.
+fn admits(grants: &[PlaintextGrant], now: GrantScope, machine_id: Option<&str>, origin: &Origin) -> bool {
+    grants.iter().any(|g| {
+        g.scope == now && g.origin == *origin && machine_id.is_none_or(|m| g.machine_id == m)
+    })
 }
 
 /// Why [`mint`] refused.
@@ -220,7 +275,8 @@ pub(crate) enum MintRefusal {
     NotPlaintext,
     /// The origin's host is not the numeric private literal the verdict classified.
     NotPrivateLiteral,
-    /// The identity or the network moved since the minting worker started.
+    /// The identity or the network moved since the minting worker started, or the person answered
+    /// a refusal since it captured their consent.
     Stale,
     /// The person has not allowed plaintext for this server (undecided, declined or revoked).
     NotConsented,
@@ -264,8 +320,27 @@ pub(crate) fn mint(
     origin: &Origin,
     evidence: &InsecureEvidence,
 ) -> Result<(), MintRefusal> {
+    mint_consented(scope, CONSENT.load(Ordering::Acquire), machine_id, origin, evidence)
+}
+
+/// [`mint`] for a capture that recorded the [`CONSENT`] generation `consent`: refused as stale when
+/// any refusal was answered since. Checked under the table's lock, which a refusal also takes, so
+/// a revocation and an in-flight mint cannot interleave into a grant nobody consented to.
+fn mint_consented(
+    scope: GrantScope,
+    consent: u64,
+    machine_id: &str,
+    origin: &Origin,
+    evidence: &InsecureEvidence,
+) -> Result<(), MintRefusal> {
+    if machine_id.is_empty() {
+        return Err(MintRefusal::NotConsented);
+    }
     let mut grants = GRANTS.lock().unwrap_or_else(|e| e.into_inner());
     mint_check(origin, evidence, scope, self::scope())?;
+    if consent != CONSENT.load(Ordering::Acquire) {
+        return Err(MintRefusal::Stale);
+    }
     let fresh = PlaintextGrant { scope, machine_id: machine_id.to_owned(), origin: origin.clone() };
     let already = grants.contains(&fresh);
     let before = grants.len();
@@ -345,36 +420,25 @@ pub(crate) fn network_changed() {
     moved();
 }
 
-/// **A profile switch COMMITTED** (`RegistryPlan::Install { replace: true }` — the same commit
-/// that blanks every published token, `plex::servers::revoke_for_profile_switch`). The identity
-/// moves here, not when the switch starts: a switch that is refused or abandoned changed nobody.
-/// A grant survives only when it was live until now and names exactly a `(machine, origin)` the
-/// new roster `installed` — which the switch's own fresh probe minted under the consent of the
-/// same account ([`account_key`]; this launch's answers are kept for that reason). Every other
-/// grant and every offer dies.
+/// **A roster replacement COMMITTED** (`RegistryPlan::Install { replace: true }` — a profile
+/// switch, its late roster, or a roster refresh; the same commit that blanks every published
+/// token, `plex::servers::revoke_for_profile_switch`). A grant survives only when it names exactly
+/// a `(machine, origin)` the new roster `installed`; every other grant dies here.
+///
+/// No generation moves: the identity a grant is bound to is the ACCOUNT's sign-in
+/// ([`identity_changed`]), which is also what consent is keyed by ([`account_key`]) — every
+/// profile of the account shares the answer, and a grant admits only its own server
+/// ([`allowed_for`]), whose token the registry takes from the roster being installed. So a
+/// discovery captured before the commit (the switch's own probes of its secondary servers) still
+/// mints and offers, and an offer for a server this commit did not touch stays askable; an offer
+/// lives exactly as long as that server's latest verdict (`auth::publish_settled_probe`).
 pub(crate) fn roster_replaced(installed: &[(String, Origin)]) {
-    let before = scope();
-    IDENTITY.fetch_add(1, Ordering::AcqRel);
-    let now = scope();
-    clear_offers();
-    let mut grants = GRANTS.lock().unwrap_or_else(|e| e.into_inner());
-    let n = grants.len();
-    grants.retain_mut(|g| {
-        let keep = g.scope == before
-            && installed.iter().any(|(machine, origin)| *machine == g.machine_id && *origin == g.origin);
-        if keep {
-            g.scope = now;
-        }
-        keep
+    let removed = retain(|g| {
+        installed.iter().any(|(machine, origin)| *machine == g.machine_id && *origin == g.origin)
     });
-    let removed = grants.len() != n;
-    COUNT.store(grants.len(), Ordering::Release);
-    drop(grants);
     if removed {
-        super::servers::regrade_credentials();
-        crate::log("security: plaintext credentials withdrawn — profile changed");
+        crate::log("security: plaintext credentials withdrawn — the roster no longer installs them");
     }
-    moved();
 }
 
 /// **Offer `verdict`** — a fresh insecure-only verdict discovery settled under `scope`. An eligible
@@ -440,9 +504,25 @@ pub(crate) fn answer(account: &str, machine_id: &str, choice: PlaintextChoice) {
         }
     }
     if !choice.allows() {
-        revoke(machine_id);
+        refuse(machine_id);
     }
     moved();
+}
+
+/// A refusal answered for `machine_id`: under the table's lock, move [`CONSENT`] (every capture
+/// taken before now is stale for minting) and withdraw the server's grant.
+fn refuse(machine_id: &str) {
+    let mut grants = GRANTS.lock().unwrap_or_else(|e| e.into_inner());
+    CONSENT.fetch_add(1, Ordering::AcqRel);
+    let before = grants.len();
+    grants.retain(|g| g.machine_id != machine_id);
+    let removed = grants.len() != before;
+    COUNT.store(grants.len(), Ordering::Release);
+    drop(grants);
+    if removed {
+        super::servers::regrade_credentials();
+        crate::log("security: plaintext credentials withdrawn for one server");
+    }
 }
 
 /// **Record the person's answer everywhere it lives**: [`answer`] for this launch (withdrawing the
@@ -450,6 +530,12 @@ pub(crate) fn answer(account: &str, machine_id: &str, choice: PlaintextChoice) {
 /// the key the owner computed from the account that answered, never re-read from whatever the
 /// file holds when the write lands. Every consent surface comes through here, by way of
 /// `auth::SessionCmd::AnswerPlaintext` and the session adapter.
+///
+/// **A refusal is fail-safe.** An *Allowed* whose write fails costs only the memory of it — the
+/// person is asked again next launch. A refusal whose write fails would leave the file saying
+/// *Allowed*, and the next launch would mint from it with nobody asked; so a refusal is held in
+/// [`UNSAVED`] until the storage worker confirms the file holds it, and the frame step
+/// ([`UpgradeRetry::due`]) writes it again on the upgrade backoff until it does.
 pub(crate) fn record(
     account: &str,
     machine_id: &str,
@@ -459,12 +545,73 @@ pub(crate) fn record(
     if account.is_empty() {
         return Ok(());
     }
-    let (account, machine) = (account.to_owned(), machine_id.to_owned());
-    super::session::queue_update_ticket(move |current| {
-        (current.plaintext_choice(&account, &machine) != choice)
-            .then(|| current.with_plaintext_choice(&account, &machine, choice))
-    })
-    .map(|_| ())
+    let answer = Answer { account: account.to_owned(), machine_id: machine_id.to_owned(), choice };
+    {
+        let mut unsaved = UNSAVED.lock().unwrap_or_else(|e| e.into_inner());
+        unsaved.retain(|u| u.answer.account != account || u.answer.machine_id != machine_id);
+        if !choice.allows() {
+            unsaved.push(Unsaved { answer: answer.clone(), in_flight: true, due: None, attempts: 1 });
+        }
+        UNSAVED_COUNT.store(unsaved.len(), Ordering::Release);
+    }
+    persist(answer);
+    Ok(())
+}
+
+/// Queue the write of `answer` to the session file; when it is a refusal, report the outcome to
+/// [`UNSAVED`].
+fn persist(answer: Answer) {
+    let Answer { account, machine_id, choice } = answer.clone();
+    super::session::queue_update_settled(
+        move |current| {
+            (current.plaintext_choice(&account, &machine_id) != choice)
+                .then(|| current.with_plaintext_choice(&account, &machine_id, choice))
+        },
+        move |landed| written(&answer, landed),
+    );
+}
+
+/// The storage worker finished writing `answer`: drop it from [`UNSAVED`] when it landed, else
+/// leave it for the frame step to try again. An entry a newer answer replaced is left alone.
+fn written(answer: &Answer, landed: bool) {
+    let mut unsaved = UNSAVED.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(i) = unsaved.iter().position(|u| u.answer == *answer) else { return };
+    if landed {
+        unsaved.remove(i);
+    } else {
+        if unsaved[i].attempts == 1 {
+            crate::log("security: a refused plaintext connection was not saved yet — retrying");
+        }
+        unsaved[i].in_flight = false;
+    }
+    UNSAVED_COUNT.store(unsaved.len(), Ordering::Release);
+}
+
+/// The frame step for [`UNSAVED`]: arm a failed refusal on the upgrade backoff ([`after`]) and
+/// write it again when due. One relaxed load when nothing is waiting.
+fn rewrite_unsaved(now: u32) {
+    if UNSAVED_COUNT.load(Ordering::Acquire) == 0 {
+        return;
+    }
+    let mut again = Vec::new();
+    {
+        let mut unsaved = UNSAVED.lock().unwrap_or_else(|e| e.into_inner());
+        for u in unsaved.iter_mut().filter(|u| !u.in_flight) {
+            match u.due {
+                None => u.due = Some(after(now, u.attempts)),
+                Some(at) if now.wrapping_sub(at) < 0x8000_0000 => {
+                    u.due = None;
+                    u.in_flight = true;
+                    u.attempts = u.attempts.saturating_add(1);
+                    again.push(u.answer.clone());
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    for answer in again {
+        persist(answer);
+    }
 }
 
 /// **What the person has answered, as the account `account_token` belongs to** — the persisted
@@ -494,6 +641,8 @@ pub(crate) fn choices(persisted: &[PlaintextConsent], account_token: &str) -> Ve
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PlaintextAsk {
     scope: GrantScope,
+    /// The [`CONSENT`] generation `choices` was read at.
+    consent: u64,
     choices: Vec<(String, PlaintextChoice)>,
 }
 
@@ -503,7 +652,8 @@ impl PlaintextAsk {
     /// token (a fresh sign-in) captures none.
     pub(crate) fn capture(account_token: &str) -> Self {
         let session = super::session::peek();
-        Self { scope: scope(), choices: choices(&session.plaintext_consent, account_token) }
+        let consent = CONSENT.load(Ordering::Acquire);
+        Self { scope: scope(), consent, choices: choices(&session.plaintext_consent, account_token) }
     }
 
     /// The generations this capture may mint and offer under.
@@ -514,7 +664,7 @@ impl PlaintextAsk {
     /// Nobody has answered anything — the capture for a test or a path that never asks.
     #[cfg(test)]
     pub(crate) fn undecided() -> Self {
-        Self { scope: scope(), choices: Vec::new() }
+        Self { scope: scope(), consent: CONSENT.load(Ordering::Acquire), choices: Vec::new() }
     }
 
     /// This capture with one answer set — the tests' consent.
@@ -532,8 +682,9 @@ impl PlaintextAsk {
             .map_or(PlaintextChoice::Undecided, |(_, c)| *c)
     }
 
-    /// Mint `machine_id`'s grant at `origin` when — and only when — the person allowed it and
-    /// [`mint`] finds the fresh verdict eligible under this capture's generations.
+    /// Mint `machine_id`'s grant at `origin` when — and only when — the person allowed it, no
+    /// refusal was answered since this capture, and [`mint`] finds the fresh verdict eligible
+    /// under this capture's generations.
     pub(crate) fn settle(
         &self,
         machine_id: &str,
@@ -543,7 +694,7 @@ impl PlaintextAsk {
         if !self.choice(machine_id).allows() {
             return Err(MintRefusal::NotConsented);
         }
-        mint(self.scope, machine_id, origin, evidence)
+        mint_consented(self.scope, self.consent, machine_id, origin, evidence)
     }
 }
 
@@ -568,7 +719,10 @@ pub(crate) struct UpgradeRetry {
 impl UpgradeRetry {
     /// The live step: the servers on a grant now, and the slots whose retry is due at `now` (frame
     /// milliseconds, wrapping). Called every frame; see [`UpgradeRetry::poll`].
+    ///
+    /// The same step writes again any refusal whose write has not landed ([`record`]).
     pub(crate) fn due(&mut self, now: u32) -> crate::stores::EndpointRefreshSet {
+        rewrite_unsaved(now);
         let mut out = crate::stores::EndpointRefreshSet::default();
         for machine in self.poll(now, revision(), granted_machines) {
             if let Some(sid) = super::servers::id_of_machine(&machine) {
@@ -655,6 +809,8 @@ pub(crate) fn reset_for_test() {
     COUNT.store(0, Ordering::Release);
     drop(grants);
     ANSWERS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    UNSAVED.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    UNSAVED_COUNT.store(0, Ordering::Release);
     clear_offers();
     moved();
 }
@@ -697,16 +853,18 @@ mod tests {
     fn a_grant_admits_only_its_exact_origin_under_the_current_generations() {
         let now = GrantScope { identity: 3, network: 5 };
         let grants = [PlaintextGrant { scope: now, machine_id: "m".into(), origin: lan() }];
-        assert!(admits(&grants, now, &lan()));
-        assert!(!admits(&grants, now, &Origin::http("192.168.0.10", 32401)), "another port");
-        assert!(!admits(&grants, now, &Origin::http("192.168.0.11", 32400)), "another host");
+        assert!(admits(&grants, now, None, &lan()));
+        assert!(!admits(&grants, now, None, &Origin::http("192.168.0.10", 32401)), "another port");
+        assert!(!admits(&grants, now, None, &Origin::http("192.168.0.11", 32400)), "another host");
         assert!(
-            !admits(&grants, now, &Origin::new(Scheme::Https, "192.168.0.10", 32400)),
+            !admits(&grants, now, None, &Origin::new(Scheme::Https, "192.168.0.10", 32400)),
             "another scheme"
         );
-        assert!(!admits(&grants, GrantScope { identity: 4, network: 5 }, &lan()), "identity moved");
-        assert!(!admits(&grants, GrantScope { identity: 3, network: 6 }, &lan()), "network moved");
-        assert!(!admits(&[], now, &lan()));
+        assert!(!admits(&grants, GrantScope { identity: 4, network: 5 }, None, &lan()), "identity moved");
+        assert!(!admits(&grants, GrantScope { identity: 3, network: 6 }, None, &lan()), "network moved");
+        assert!(!admits(&[], now, None, &lan()));
+        assert!(admits(&grants, now, Some("m"), &lan()));
+        assert!(!admits(&grants, now, Some("other"), &lan()), "another server");
     }
 
     /// Minting re-checks everything the origin itself can answer, then the eligibility rule, then
@@ -872,6 +1030,91 @@ mod tests {
         assert_eq!(choices(&persisted, "other-token"), vec![("m".to_owned(), PlaintextChoice::Declined)]);
         answer("", "n", PlaintextChoice::Allowed);
         assert!(choices(&[], "").is_empty(), "an answer with no account is never honoured");
+        reset_for_test();
+    }
+
+    /// **A revocation outlives every capture taken before it.** A discovery already in flight when
+    /// the person turns the switch off (the upgrade retry re-discovers a granted server every few
+    /// seconds) captured *Allowed*; when it settles it must not mint the grant back.
+    #[test]
+    fn a_capture_from_before_a_revocation_never_mints_the_grant_back() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        reset_for_test();
+        let ask = PlaintextAsk::undecided().with("m", PlaintextChoice::Allowed);
+        ask.settle("m", &lan(), &eligible()).expect("consented and eligible");
+        assert_eq!(granted_origin("m"), Some(lan()));
+        answer(&account_key("t"), "m", PlaintextChoice::Revoked);
+        assert_eq!(granted_origin("m"), None);
+        assert_eq!(ask.settle("m", &lan(), &eligible()), Err(MintRefusal::Stale));
+        assert_eq!(granted_origin("m"), None, "the in-flight capture re-granted a revoked server");
+        assert!(!allowed_under(CredentialPolicy::HttpsOnly, &lan()));
+        let fresh = PlaintextAsk::undecided().with("m", PlaintextChoice::Allowed);
+        fresh.settle("m", &lan(), &eligible()).expect("a capture after a new Allowed mints");
+        reset_for_test();
+    }
+
+    /// **A refusal that did not reach the disk is written again until it does.** A *Not now* or a
+    /// switch turned off while the preferences store could not be read (keymanager3 locked, the
+    /// storage worker's write failing) used to be dropped; the store coming back still held the
+    /// old *Allowed*, and the next launch minted the grant from it with nobody asked. The refusal
+    /// holds this launch at once, and the frame step writes it again until the file says it.
+    #[test]
+    fn a_refusal_whose_write_failed_is_written_again_until_it_lands() {
+        use crate::plex::session::{Session, TempSession};
+        let _g = crate::testlock::serial();
+        let _sess = TempSession::new("grant-unsaved-refusal");
+        crate::plex::reset_servers_for_test();
+        reset_for_test();
+        let account = account_key("acct");
+        // The store cannot be read: an empty client id is the locked/blocked read.
+        crate::plex::session::save(&Session::default());
+        record(&account, "m", PlaintextChoice::Revoked).expect("queued");
+        crate::storage_worker::drain_for_test();
+        assert_eq!(choices(&[], "acct"), vec![("m".to_owned(), PlaintextChoice::Revoked)],
+            "the refusal holds this launch at once");
+        // The store reads again — still holding the answer the refusal replaced.
+        let readable = Session { client_id: "cid".into(), account_token: "acct".into(), ..Default::default() };
+        crate::plex::session::save(&readable.with_plaintext_choice(&account, "m", PlaintextChoice::Allowed));
+        let mut clock = UpgradeRetry::default();
+        for now in (0..=60_000u32).step_by(500) {
+            let _ = clock.due(now);
+            crate::storage_worker::drain_for_test();
+        }
+        assert_eq!(crate::plex::session::peek().plaintext_choice(&account, "m"), PlaintextChoice::Revoked,
+            "a restart would read back Allowed");
+        reset_for_test();
+    }
+
+    /// **A grant admits its SERVER at its origin, not whoever registers that address.** Another
+    /// machine whose remembered or advertised address collides with a granted origin (a DHCP
+    /// reshuffle, a friend's share advertising the same private address) gets no credential there.
+    #[test]
+    fn a_grant_admits_only_the_server_it_was_minted_for() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        reset_for_test();
+        mint(scope(), "a", &lan(), &eligible()).expect("eligible");
+        let store = CredentialPolicy::HttpsOnly;
+        assert!(allowed_for(store, "a", &lan()));
+        assert!(!allowed_for(store, "b", &lan()), "another server at the granted address");
+        assert!(!allowed_for(store, "", &lan()), "a server of unknown identity");
+        reset_for_test();
+    }
+
+    /// **A remembered origin never rests on a grant.** A cached source is an address from disk; a
+    /// fresh discovery that did not re-reach the granted origin (HTTPS now refuses, the server now
+    /// requires HTTPS) must not be overridden by re-credentialing the cached plaintext one.
+    #[test]
+    fn a_remembered_origin_is_allowed_by_the_build_alone() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        reset_for_test();
+        mint(scope(), "a", &lan(), &eligible()).expect("eligible");
+        let tls = Origin::parse("https://192-168-0-10.hash.plex.direct:32400").unwrap();
+        assert!(remembered_allowed(CredentialPolicy::HttpsOnly, &tls));
+        assert!(!remembered_allowed(CredentialPolicy::HttpsOnly, &lan()), "the grant carried a cached origin");
+        assert!(remembered_allowed(CredentialPolicy::AllowPlaintext, &lan()));
         reset_for_test();
     }
 

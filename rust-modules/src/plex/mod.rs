@@ -161,7 +161,7 @@ pub(crate) fn endpoint_admission_from_reply(status: i32, body: &[u8]) -> Endpoin
 pub(crate) fn admit_source_until(source: &session::SourceRef, client_id: &str,
     overall_deadline: std::time::Instant) -> EndpointAdmission {
     let Some(origin) = source.origin() else { return EndpointAdmission::Transport };
-    if !grant::credential_allowed(&origin) {
+    if !grant::credential_allowed_for(&source.machine_id, &origin) {
         return EndpointAdmission::InsecureOnly;
     }
     let client = Client::new(ServerId::UNSET, &source.machine_id, origin, &source.token, client_id)

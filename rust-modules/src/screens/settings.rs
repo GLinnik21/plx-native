@@ -1148,12 +1148,18 @@ impl RootPage {
             return None;
         }
         let mut section = Section::new("Unencrypted connections");
+        let offers = crate::plex::grant::offers();
         for (i, (machine, on)) in self.plaintext_rows.iter().enumerate() {
-            let name = sess
-                .sources
+            // An offered server was never reached, so the session file does not know it yet:
+            // the name discovery settled with comes first.
+            let name = offers
                 .iter()
-                .find(|s| s.machine_id == *machine && !s.name.is_empty())
-                .map_or("Plex server", |s| s.name.as_str());
+                .find(|o| o.machine_id == *machine && !o.name.is_empty())
+                .map(|o| o.name.as_str())
+                .or_else(|| sess.sources.iter()
+                    .find(|s| s.machine_id == *machine && !s.name.is_empty())
+                    .map(|s| s.name.as_str()))
+                .unwrap_or("Plex server");
             let connected = *on && crate::plex::grant::granted_origin(machine).is_some();
             section = section.row(Row::new(name).detail(plaintext_question::settings_detail(*on, connected)).toggle(*on));
             actions.push(Action::Plaintext(i));

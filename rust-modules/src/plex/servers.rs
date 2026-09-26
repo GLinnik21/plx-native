@@ -932,7 +932,7 @@ pub(crate) fn register_captured_origin_with_connection(machine_id: &str, origin:
         machine_id, origin, token, pin, connection, policy, &|| client_id.to_owned(),
     );
     #[cfg(not(test))]
-    if super::grant::allowed_under(policy, origin) {
+    if super::grant::allowed_for(policy, machine_id, origin) {
         super::serverinfo::refresh(id);
     }
     id
@@ -958,7 +958,7 @@ pub(crate) fn register_origin(
     });
     // Both this cached-identity path and the captured-identity path refresh the server's
     // self-description. The worker is single-flighted per server; registration never waits.
-    if super::grant::allowed_under(policy, origin) {
+    if super::grant::allowed_for(policy, machine_id, origin) {
         super::serverinfo::refresh(id);
     }
     id
@@ -1067,12 +1067,6 @@ fn register_lazy(
         _ => String::new(),
     };
     let _w = WRITE.lock().unwrap_or_else(|e| e.into_inner());
-    // THE authority (`super::grant`): TLS, a developer build, or a live consented grant for this
-    // exact plaintext origin. Asked under the write lock, so a revocation that lands after this
-    // line re-grades the slot it publishes (`regrade_credentials`), never misses it.
-    let credential_eligible = super::grant::allowed_under(policy, origin);
-    let on_grant = super::grant::rests_on_grant(policy, origin);
-    let admitted_token = if credential_eligible { token } else { "" };
     let n = COUNT.load(Ordering::Acquire);
     let floor = FLOOR.load(Ordering::Acquire).min(n);
     // Search every populated slot in THIS account's window, including one deactivated by a profile
@@ -1081,6 +1075,18 @@ fn register_lazy(
     let found = (floor..n)
         .map(|i| ServerId(i as u16))
         .find(|&id| populated(id).is_some_and(|c| same_server(c, machine_id, origin)));
+    // THE authority (`super::grant`): TLS, a developer build, or a live consented grant for this
+    // SERVER at this exact plaintext origin — the machine this registration is for (a legacy
+    // id-less call adopting a slot is that slot's machine; with none known, no grant applies).
+    // Asked under the write lock, so a revocation that lands after this line re-grades the slot
+    // it publishes (`regrade_credentials`), never misses it.
+    let grant_machine = match found.and_then(populated) {
+        Some(c) if machine_id.is_empty() => c.machine_id(),
+        _ => machine_id,
+    };
+    let credential_eligible = super::grant::allowed_for(policy, grant_machine, origin);
+    let on_grant = super::grant::rests_on_grant(policy, grant_machine, origin);
+    let admitted_token = if credential_eligible { token } else { "" };
 
     if let Some(id) = found {
         let c = populated(id).expect("the matched slot is populated");
@@ -1352,7 +1358,9 @@ pub(crate) fn regrade_credentials() {
         let Some(c) = client_for(id) else { continue };
         let Some(i) = id.index() else { continue };
         let bit = 1u32 << i;
-        if ON_GRANT.load(Ordering::Acquire) & bit == 0 || super::grant::granted_now(c.origin()) {
+        if ON_GRANT.load(Ordering::Acquire) & bit == 0
+            || super::grant::granted_now(c.machine_id(), c.origin())
+        {
             continue;
         }
         c.set_token("");
