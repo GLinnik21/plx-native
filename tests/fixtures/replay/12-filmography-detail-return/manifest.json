@@ -61,8 +61,8 @@
        "address": "127.0.0.1",
        "machine_id": "",
        "name": "",
-       "origin": "http://127.0.0.1:32619",
-       "port": 32619,
+       "origin": "http://127.0.0.1:32623",
+       "port": 32623,
        "tier": "local",
        "token": "s00000002"
       }
@@ -125,6 +125,7 @@
      "home_users": [],
      "last_hero_blur": null,
      "last_library": [],
+     "plaintext_consent": [],
      "playback_quality": null,
      "profiles": [],
      "recent_searches": [],
@@ -155,6 +156,7 @@
     "picker": "Boot",
     "pin_code": "",
     "pin_denied": false,
+    "plaintext": null,
     "profile_scope": 0,
     "pump_pending": false,
     "qr_gen": 0,
@@ -179,11 +181,11 @@
    ],
    "version": 1
   },
-  "hash": 2728831299102762005,
+  "hash": 15825798426725251044,
   "probe": "controlled=home version=1"
  },
  "schema": 3,
- "state_fp": 4766036340958210980,
+ "state_fp": 17365088699144604602,
  "triggers": [
   "plxnative-app-init",
   "plxnative-rec",
