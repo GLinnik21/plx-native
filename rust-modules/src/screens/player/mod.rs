@@ -404,7 +404,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Machine<H> for Play
     /// **The transport's key/click ladder, as the receiving end of the phase-12 contract freeze.**
     ///
     /// `Tick`/`Unmount` are unchanged from before this phase; `Input` is this package's addition.
-    /// A raw key is classified with [`consts::classify`] into the full [`consts::Key`] alphabet —
+    /// An owned key is classified with [`consts::classify_input`] into the full [`consts::Key`] alphabet —
     /// never a type under `crate::app::`, which `ci/check-deps.sh`'s `layer` gate forbids `screens/`
     /// from naming — and dispatched to one of the private `key_*` helpers below, each a direct port
     /// of the `app/run.rs` arm it replaces (`key_ok`/`key_player_updown`/`key_scrub`'s Route::Player
@@ -459,7 +459,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Machine<H> for Play
                 ScreenEvent::Input(input) => {
                     if !self.repair_alert.is_open() { return Handled::Yes; }
                     return match input.kind {
-                        InputKind::Key { sym, wcode, edge, .. } => match consts::classify(sym, wcode) {
+                        InputKind::Key { key, sym, wcode, edge, .. } => match consts::classify_input(key, sym, wcode) {
                             consts::Key::Back | consts::Key::Stop if edge == Edge::Down => {
                                 self.repair_answer(false, fx); Handled::Yes
                             }
@@ -508,8 +508,8 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Machine<H> for Play
             ScreenEvent::Input(input) => {
                 let ps = H::session(cx);
                 match &input.kind {
-                    InputKind::Key { sym, wcode, edge, .. } => {
-                        self.handle_key(ps, consts::classify(*sym, *wcode), *edge, input.at.ms, fx, H::metadata(cx))
+                    InputKind::Key { key, sym, wcode, edge, .. } => {
+                        self.handle_key(ps, consts::classify_input(*key, *sym, *wcode), *edge, input.at.ms, fx, H::metadata(cx))
                     }
                     InputKind::Click { hit, x, .. } => {
                         self.handle_click(ps, *hit, *x, input.at.ms, fx)
@@ -691,6 +691,7 @@ impl PlayerScreen {
         }
         self.scrub.drag = false;
         if self.scrub.ns >= 0 {
+            crate::log(&format!("scrub: pointer commit ns={}", self.scrub.ns));
             Self::ask(fx, PlayerReq::CommitSeek(self.scrub.ns));
             self.scrub.ns = -1;
         }
@@ -2204,6 +2205,56 @@ mod scrub_ownership_tests {
     /// dispatcher's `InputKind` has — commits it. Before this, the registered stop fell through to
     /// `key_ok`'s final `else` and TOGGLED PLAY/PAUSE, and `app.ptr.drag` had no producer left at
     /// all, so pointer scrubbing was gone.
+    #[test]
+    fn session_eight_click_coordinates_need_a_presented_hud_not_a_pointer_gate_override() {
+        use crate::ui::hit::{HitMap, PointerKind};
+        use crate::ui::screen::DrawFrame;
+        let _g = crate::testlock::serial();
+        let _f = Fixture::new(false);
+        let was = crate::player::swap_state_for_test(crate::player::PlaybackState::Playing);
+        for y in [870.0, 890.0] {
+            let mut page = page_on_the_bar();
+            page.hud.dismissed = true;
+            let mut map = HitMap::new();
+            let cx = cx();
+            let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+            page.record_stops(&mut f, false);
+            map.fill(f.into_stops());
+            map.swap();
+            map.note_dpad();
+
+            // All four ck events enter before another frame can paint. Motion reveals the HUD
+            // state, but click still resolves against the LAST presented frame's empty hit map.
+            pointer(&mut page, InputKind::Pointer { x: 1400.0, y, hit: None }, 1_000);
+            assert!(!page.hud.dismissed && page.hud_up(TestHost::session(&cx), 1_000));
+            let hit = map.resolve(Some(ENTRY), PointerKind::Click, 1400.0, y, None);
+            assert!(hit.hit.is_none());
+            let (_, reqs) = pointer(&mut page, InputKind::Click { x: 1400.0, y, hit: None }, 1_000);
+            assert_eq!(reqs, vec![PlayerReq::Transport(None)], "a hidden scrubber is the picture's click");
+            assert!(!page.scrub.drag);
+
+            // A separate pm token lets a frame present the HUD before pd/ck. Register precisely
+            // the stops the production draw uses, then keep D-pad hover suppression armed at the
+            // SAME point: even with zero pointer travel, a click on a drawn control must work.
+            let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+            page.record_stops(&mut f, true);
+            map.fill(f.into_stops());
+            map.swap();
+            map.note_dpad();
+            let hit = map.resolve(Some(ENTRY), PointerKind::Click, 1400.0, y, None);
+            assert!(map.dpad_mode, "the hover gate remains armed");
+            assert_eq!(hit.hit.map(|key| key.elem), Some(player_hud::ELEM_SCRUB));
+            let (_, reqs) = pointer(&mut page,
+                InputKind::Click { x: 1400.0, y, hit: hit.hit.map(|key| key.elem) }, 1_040);
+            assert!(reqs.is_empty());
+            assert!(page.scrub.drag);
+            let previewed = page.scrub.ns;
+            assert_eq!(seeks(key(&mut page, SDLK_RETURN, Edge::Up, 1_080).1),
+                vec![PlayerReq::CommitSeek(previewed)]);
+        }
+        crate::player::restore_state_for_test(was);
+    }
+
     #[test]
     fn a_click_on_the_scrubber_seeks_and_a_drag_previews_before_it() {
         let _g = crate::testlock::serial();

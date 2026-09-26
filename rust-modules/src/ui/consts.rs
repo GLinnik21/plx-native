@@ -362,6 +362,48 @@ pub fn classify(sym: c_uint, wcode: c_uint) -> Key {
     Key::Other
 }
 
+/// Classify an owned input event. The Input machine's canonical key is authoritative: pointer
+/// releases and scripted navigation have no raw SDL pair at all. Only `Other` needs raw fields
+/// to distinguish transport actions outside the small navigation alphabet. Screens must use
+/// this boundary instead of reclassifying raw fields and losing the machine's decision.
+pub fn classify_input(key: super::machine::Key, sym: c_uint, wcode: c_uint) -> Key {
+    use super::machine::Key as Canonical;
+    match key {
+        Canonical::Up => Key::Up,
+        Canonical::Down => Key::Down,
+        Canonical::Left => Key::Left { alt: false },
+        Canonical::Right => Key::Right { alt: false },
+        Canonical::Ok => Key::Ok,
+        Canonical::Back => Key::Back,
+        Canonical::Other => classify(sym, wcode),
+    }
+}
+
+#[cfg(test)]
+mod canonical_input_tests {
+    use super::*;
+    use crate::ui::machine::Key as Canonical;
+
+    #[test]
+    fn canonical_keys_work_without_raw_codes_and_outrank_them() {
+        for (canonical, expected) in [(Canonical::Up, Key::Up), (Canonical::Down, Key::Down),
+            (Canonical::Left, Key::Left { alt: false }), (Canonical::Right, Key::Right { alt: false }),
+            (Canonical::Ok, Key::Ok), (Canonical::Back, Key::Back)] {
+            assert_eq!(classify_input(canonical, 0, 0), expected);
+            assert_eq!(classify_input(canonical, 0, WCODE_PAUSE), expected);
+        }
+    }
+
+    #[test]
+    fn other_preserves_physical_transport_and_scrub_codes() {
+        for (sym, wcode) in [(0, WCODE_PLAY), (0, WCODE_PAUSE), (0, WCODE_PLAYPAUSE),
+            (0, WCODE_STOP), (0, WCODE_REWIND), (0, WCODE_FASTFORWARD), (0, WCODE_EXIT),
+            (0, WCODE_POINTER_HIDDEN), (0, 0)] {
+            assert_eq!(classify_input(Canonical::Other, sym, wcode), classify(sym, wcode));
+        }
+    }
+}
+
 /// **Which way the Library grid pages, if this press pages it at all.** `Some(-1)` up, `Some(1)`
 /// down, `None` for everything else.
 ///
