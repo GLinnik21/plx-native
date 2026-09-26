@@ -460,3 +460,22 @@ fn native_script_font_revision_and_cjk_fallback_use_real_glyphs() {
         "the bundled CJK fallback yields distinct glyphs, not identical missing-glyph boxes"
     );
 }
+
+/// The TV stress fixture regressed from 60 to 52 UI FPS when distant captions
+/// were uploaded as one mostly transparent rectangle. Bound the useful pixels
+/// independently of the empty distance between authored signs.
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_sparse_signs_do_not_publish_the_transparent_canvas_between_them() {
+    let source = script(concat!(
+        "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\\an7\\pos(20,20)\\c&H0000FF&\\p1}m 0 0 l 20 0 20 20 0 20\n",
+        "Dialogue: 1,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\\an7\\pos(280,140)\\c&HFF0000&\\p1}m 0 0 l 20 0 20 20 0 20\n",
+        "Dialogue: 2,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\\an7\\move(120,80,200,80,0,1000)\\p1}m 0 0 l 20 0 20 20 0 20\n",
+    ));
+    let mut engine = Engine::default();
+    let first = render(&mut engine, &source, 100);
+    assert_eq!(pixel(&first, 25, 25), [255, 0, 0, 255]);
+    assert_eq!(pixel(&first, 285, 145), [0, 0, 255, 255]);
+    let bytes = first.rect.as_ref().unwrap().rgba.len();
+    assert!(bytes < 320 * 180, "sparse signs published {bytes} RGBA bytes");
+}
