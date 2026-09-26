@@ -2201,20 +2201,38 @@ fn plx10_dial(origin: &Origin, _pin: Option<&crate::plex::ResolvePin>, _budget: 
 /// as `(origin_url, token)` — the only step of discovery that puts a credential on a request (the
 /// identity race is tokenless by construction: `ProbeDial` is handed no token at all).
 fn plx10_discover(resource: Resource, ask: &PlaintextAsk) -> (Resolution, Vec<(String, String)>) {
-    let dial: ProbeDial = status_dial(plx10_dial);
-    let mut probe_one = |plan: &ProbePlan, _: &[String]| {
-        probe_server_racing(plan, Arc::clone(&dial), &threaded_spawn, test_policy(), &mut |_, _, _| {})
+    let (resolved, admitted, _) =
+        plx10_discover_with(resource, ask, plx10_dial, |_| crate::plex::EndpointAdmission::Usable);
+    (resolved, admitted)
+}
+
+/// [`plx10_discover`] with the dial and the admission answer chosen by the test. The probe honours
+/// the origins admission already rejected exactly as the live one does ([`ProbePlan::without`]),
+/// so a re-probe after a refusal sees the plan production would. The third value is each server's
+/// settled verdict, as the owner would publish it (`RegistryPlan::Probe`).
+fn plx10_discover_with(
+    resource: Resource,
+    ask: &PlaintextAsk,
+    dial: fn(&Origin, Option<&crate::plex::ResolvePin>, Duration) -> (i32, Vec<u8>),
+    answer: impl Fn(&SourceRef) -> crate::plex::EndpointAdmission,
+) -> (Resolution, Vec<(String, String)>, Vec<SettledProbe>) {
+    let dial: ProbeDial = status_dial(dial);
+    let mut probe_one = |plan: &ProbePlan, rejected: &[String]| {
+        probe_server_racing(&plan.without(rejected), Arc::clone(&dial), &threaded_spawn,
+            test_policy(), &mut |_, _, _| {})
     };
     let mut admitted = Vec::new();
+    let mut settled = Vec::new();
     let resolved = resolve_roster_using_admission(
         &[resource], &[], CredentialPolicy::HttpsOnly, ask, &mut probe_one,
         &mut |source| {
             admitted.push((source.origin_url.clone(), source.token.clone()));
-            crate::plex::EndpointAdmission::Usable
+            answer(source)
         },
-        &mut |_, _, _| {}, &mut || {}, &mut |_, _, _, _| {},
+        &mut |_, _, _| {}, &mut || {},
+        &mut |plan, outcome, tier, address| settled.push(settled_probe(plan, outcome, tier, address)),
     );
-    (resolved, admitted)
+    (resolved, admitted, settled)
 }
 
 fn plx10_offer(resolved: &Resolution) -> Option<&PlaintextVerdict> {
@@ -2311,4 +2329,118 @@ fn plx10_consent_never_downgrades_an_ineligible_topology() {
         assert!(plx10_offer(&resolved).is_none_or(|v| !v.offers()), "{label}: offered");
     }
     crate::plex::reset_servers_for_test();
+}
+
+/// **An HTTPS origin refused at ADMISSION is an HTTPS answer, not an absent route.** The server's
+/// LAN `plex.direct` origin verifies `/identity` and then refuses the grant (401); admission drops
+/// it and the probe runs again without it. That re-probe must not read the refused route as never
+/// having existed and call the plaintext twin eligible — HTTPS reached the server; the token
+/// problem is not the network's, and consent recorded earlier must not turn it into a plaintext
+/// sign-in.
+#[test]
+fn plx10_an_https_origin_refused_at_admission_is_not_a_reason_to_go_plaintext() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    fn dial(origin: &Origin, _pin: Option<&crate::plex::ResolvePin>, _budget: Duration) -> (i32, Vec<u8>) {
+        match (origin.host(), origin.is_tls()) {
+            ("192-168-1-50.h.plex.direct", true) => (200, identity_json("issue95mid")),
+            ("192.168.1.50", false) => (200, identity_json("issue95mid")),
+            _ => (0, Vec::new()),
+        }
+    }
+    let allowed = PlaintextAsk::undecided().with("issue95mid", PlaintextChoice::Allowed);
+    let (resolved, admitted, _) = plx10_discover_with(issue_95_account(false), &allowed, dial,
+        |source| if source.origin_url.starts_with("https://") {
+            crate::plex::EndpointAdmission::Refused(401)
+        } else {
+            crate::plex::EndpointAdmission::Usable
+        });
+    assert!(admitted.iter().all(|(url, _)| url.starts_with("https://")), "{admitted:?}");
+    assert!(crate::plex::grant::granted_machines().is_empty(), "a grant was minted");
+    assert!(plx10_offer(&resolved).is_none_or(|v| !v.offers()), "offered");
+    crate::plex::reset_servers_for_test();
+}
+
+/// **A grant does not outlive the verdict that justified it.** A server connected under consent,
+/// then re-discovered on a network where it is no longer eligible (plex.tv now says the client is
+/// outside the server's NAT) or no longer answers at all: the published verdict for that machine
+/// is not a reach at the granted origin, so the grant is withdrawn — the next request would
+/// otherwise carry the token to an origin nothing re-proved.
+#[test]
+fn plx10_a_fresh_verdict_that_does_not_reach_the_granted_origin_revokes_the_grant() {
+    let _g = crate::testlock::serial();
+    let allowed = PlaintextAsk::undecided().with("issue95mid", PlaintextChoice::Allowed);
+    let silent = |_: &Origin, _: Option<&crate::plex::ResolvePin>, _: Duration| (0, Vec::new());
+    for (label, resource, dial) in [
+        ("no longer eligible", {
+            let mut r = issue_95_account(false); r.public_address_matches = false; r
+        }, plx10_dial as fn(&Origin, Option<&crate::plex::ResolvePin>, Duration) -> (i32, Vec<u8>)),
+        ("no longer answers", issue_95_account(false), silent),
+    ] {
+        crate::plex::reset_servers_for_test();
+        crate::plex::grant::reset_for_test();
+        let _ = plx10_discover(issue_95_account(false), &allowed);
+        assert_eq!(crate::plex::grant::granted_machines(), vec!["issue95mid".to_owned()], "{label}");
+        let (_, admitted, settled) = plx10_discover_with(resource, &allowed, dial,
+            |_| crate::plex::EndpointAdmission::Usable);
+        assert!(admitted.is_empty(), "{label}: {admitted:?}");
+        publish_settled_probes(&settled);
+        assert!(crate::plex::grant::granted_machines().is_empty(), "{label}: the grant survived");
+    }
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}
+
+/// **Every insecure-only reason fits the read-out's two-line slot, and names its action.** The
+/// failed read-out's reason is drawn at `StatusOverlay::REASON_W` and never grows past two lines
+/// (`StatusOverlay::reason_view`); a longer one is cut, and the part cut is the tail — which is
+/// where every one of these says what to do. The host has no LG font, so the check is twofold: the
+/// fixture measurer's wrap at the real width and size, and a character budget
+/// ([`READOUT_REASON_BUDGET`]) that holds with room for the real face's wider glyphs. The shared
+/// forms are measured with a long owner name. The owner-approved
+/// `DISCOVERY_INSECURE_ONLY_MESSAGE` predates the budget and is kept byte-identical; it is held to
+/// the measured wrap only.
+#[test]
+fn every_insecure_only_reason_fits_two_lines_and_names_its_action() {
+    use crate::ui::text_view::TextView;
+    use crate::ui::widgets::StatusOverlay;
+    const READOUT_REASON_BUDGET: usize = 125;
+    let fits = |text: &str| !TextView::new(text, crate::ui::theme::size::BODY, crate::ui::theme::TEXT_SECONDARY)
+        .max_lines(2)
+        .with_measure(&crate::ui::fixture::FixtureMeasure)
+        .truncates(StatusOverlay::REASON_W);
+    assert!(fits(DISCOVERY_INSECURE_ONLY_MESSAGE));
+    let mut seen = 0;
+    for owner in ["", "a-longish-owner18"] {
+        for eligibility in [probe::PlaintextEligibility::Eligible, probe::PlaintextEligibility::NotLocal,
+            probe::PlaintextEligibility::NotPrivateAddress, probe::PlaintextEligibility::HttpsAnswered] {
+            for choice in [PlaintextChoice::Undecided, PlaintextChoice::Allowed, PlaintextChoice::Declined,
+                PlaintextChoice::Revoked] {
+                for surface in [ReadoutSurface::SignIn, ReadoutSurface::SignedIn] {
+                    let v = PlaintextVerdict {
+                        machine_id: "m".into(), name: "nas".into(), shared_by: owner.into(),
+                        eligibility, choice,
+                    };
+                    let copy = plaintext_copy(Some(&v), surface);
+                    if copy == DISCOVERY_INSECURE_ONLY_MESSAGE { continue; }
+                    seen += 1;
+                    assert!(copy.chars().count() <= READOUT_REASON_BUDGET, "{} chars: {copy}", copy.chars().count());
+                    assert!(fits(&copy), "wraps past two lines: {copy}");
+                    if v.offers() {
+                        assert!(copy.contains("without encryption") && copy.contains("this network")
+                            || copy.contains("Settings \u{2192} Unencrypted connections")
+                            || copy.contains("Try again"), "{copy}");
+                        let action = match (choice, surface) {
+                            (PlaintextChoice::Undecided, _) => "Select Connect",
+                            (PlaintextChoice::Allowed, _) | (_, ReadoutSurface::SignIn) => "Select Try again",
+                            (_, ReadoutSurface::SignedIn) => "Settings \u{2192} Unencrypted connections",
+                        };
+                        assert!(copy.contains(action), "{choice:?}/{surface:?}: {copy}");
+                    }
+                }
+            }
+        }
+    }
+    assert!(seen > 20);
 }

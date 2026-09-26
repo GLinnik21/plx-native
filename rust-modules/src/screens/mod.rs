@@ -29,6 +29,7 @@ pub(crate) mod family;
 pub(crate) mod legal;
 pub(crate) mod login;
 pub(crate) mod onboard;
+pub(crate) mod plaintext_question;
 pub(crate) mod player;
 pub(crate) mod profiles;
 pub(crate) mod registry;

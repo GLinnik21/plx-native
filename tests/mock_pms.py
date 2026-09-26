@@ -53,7 +53,9 @@ refuse it, correctly.
 Every mode also answers the four plex.tv calls of the QR sign-in (`/api/v2/pins`, the poll, the
 QR image, and `/api/v2/user`) with a fixed demo code, for an app booted with
 `plxnative-plextv=http://127.0.0.1:<port>`: the sign-in screen can then be driven and captured
-without touching plex.tv.
+without touching plex.tv. The poll stays pending unless `--authorize-after N` (implied, N=2, by
+`--plaintext-only-lan`) links the code on the Nth poll with a synthetic account token, so a
+sign-in completes end to end without any real account.
 
 The app reaches it as any other server: `make sim-shot SIM_PMS=127.0.0.1 SIM_PORT=32499` with
 any non-empty string in `$SIM_DIR/plxnative-token` (the token is accepted, never checked).
@@ -72,6 +74,30 @@ loopback, which the app's own eligibility check classifies as NOT a LAN address,
 path this mode exists to exercise will never trigger with that fallback; pass a real address).
 Bind with `--host 0.0.0.0` so a device other than this one can actually reach it. Expected app
 behaviour: a "Connect without encryption?" consent offer, never a dead end.
+
+The full reproduction needs a developer build to take the STORE credential policy — every
+`devtriggers` build otherwise lets a token ride plaintext and never needs the consent — and a QR
+sign-in against this mock (it authorizes the code by itself, on the 2nd poll):
+
+    1. python3 tests/mock_pms.py --host 0.0.0.0 --plaintext-only-lan --advertise-ip <HOST-LAN-IP>
+    2. in the install's runtime root, arm (empty files unless shown):
+         plxnative-storepolicy                       store HttpsOnly policy (dev builds only)
+         plxnative-login                             boot to the QR sign-in
+         plxnative-plextv = http://<HOST-LAN-IP>:32499
+    3. launch. The events log shows, in order:
+         - the sign-in read-out "Couldn't sign in" with the reason "Your Plex server is on this
+           network but can't be reached securely. Select Connect to connect without encryption."
+           and the primary *Connect*
+         - *Connect* opens "Connect without encryption?" seated on *Not now*; its *Connect* logs
+           `plaintext: user allowed an unencrypted connection on this network` and retries
+         - the retry mints the grant (`security: consented plaintext credentials for one server at …`),
+           then `security: plaintext PMS credentials sent under a consented grant` — the token
+           rides http://<HOST-LAN-IP>:32499 under it — Home loads from this mock
+         - Settings → Unencrypted connections shows the server ON; turning it off logs
+           `settings: unencrypted connections turned off for one server` and withdraws the grant
+           at once
+Loopback (the simulator) is never LAN-eligible, so steps 2–3 on the Mac stop at the ineligible
+read-out; the consent flow itself needs the TV and a real LAN address.
 
     # TV (replace 192.168.0.10 with the host's actual LAN IPv4; never a real private address from
     # a gitignored file):
@@ -721,6 +747,9 @@ class Library:
 
 DEMO_PIN_ID = 1790000001
 DEMO_PIN_CODE = "DEMO"
+# The account token `--authorize-after` links the demo code with: synthetic, in the harness's own
+# token alphabet (`ALPHABET_TOKEN`), and accepted — never checked — by every endpoint here.
+DEMO_ACCOUNT_TOKEN = "s" + hashlib.sha1(b"mock-pms-demo-account").hexdigest()[:8]
 # What the demo sign-in QR encodes: the page a person types a code into. A scan of a screenshot
 # lands on plex.tv's own link page, which asks for a code this server invented — harmless.
 DEMO_QR_TEXT = b"https://plex.tv/link"
@@ -1139,6 +1168,9 @@ class MockPms:
         # Set by `serve(..., plaintext_only_lan=True)` to a dict with ip/http_port/fail_port/
         # access_token; `None` means /api/v2/resources is unimplemented, like any other mode.
         self.plaintext_only_lan = None
+        # `--authorize-after N`: the pin poll links the demo code on the Nth poll; `None` never.
+        self.authorize_after = None
+        self.pin_polls = 0
 
     @staticmethod
     def safe_path(path):
@@ -1192,13 +1224,17 @@ class MockPms:
         if write_path and not (method in ("GET", "HEAD") and p.startswith("/library/parts/")):
             self.note_write(method, path, body)
 
-        # plex.tv's QR sign-in, for `plxnative-plextv` (see the module doc). Never linked: the poll
-        # stays pending, which is the state the sign-in screen is captured in.
+        # plex.tv's QR sign-in, for `plxnative-plextv` (see the module doc). Pending — the state
+        # the sign-in screen is captured in — unless `--authorize-after N` links it on the Nth poll.
         if p == "/api/v2/pins" and method == "POST":
             return j({"id": DEMO_PIN_ID, "code": DEMO_PIN_CODE, "expiresIn": 1800, "authToken": None,
                       "qr": ""}, 201)
         if p == f"/api/v2/pins/{DEMO_PIN_ID}":
-            return j({"id": DEMO_PIN_ID, "code": DEMO_PIN_CODE, "expiresIn": 1800, "authToken": None})
+            with self.lock:
+                self.pin_polls += 1
+                linked = self.authorize_after is not None and self.pin_polls >= self.authorize_after
+            return j({"id": DEMO_PIN_ID, "code": DEMO_PIN_CODE, "expiresIn": 1800,
+                      "authToken": DEMO_ACCOUNT_TOKEN if linked else None})
         if p == f"/api/v2/pins/qr/{DEMO_PIN_CODE}":
             import demo_library.qr as qr
             return (200, "image/png", qr.png(qr.encode(DEMO_QR_TEXT, "M"), scale=8, border=0, plex_style=True))
@@ -1547,7 +1583,8 @@ class Server(ThreadingHTTPServer):
 
 def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture=False,
           media=None, extra_media=None, catalog=None, catalog_cache=None, hero=None,
-          plaintext_only_lan=False, advertise_ip=None, insecure_fail_mode="handshake"):
+          plaintext_only_lan=False, advertise_ip=None, insecure_fail_mode="handshake",
+          authorize_after=None):
     """Start a mock PMS in a daemon thread; returns (server, pms). Loopback only by default: the
     app on the simulator is on this machine, and a LAN-facing listener would be one more thing
     the outbound guard has to reason about. `catalog` serves the demo library instead of a seed.
@@ -1558,13 +1595,19 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     back to `"127.0.0.1"` with a stderr warning if nothing routes. The chosen address and the
     fail listener's port end up on `pms.plaintext_only_lan`; the fail listener itself (`None` for
     `insecure_fail_mode="unreachable"`) is on `srv.insecure_fail_listener`, for the caller to
-    `.close()` alongside `srv.shutdown()`."""
+    `.close()` alongside `srv.shutdown()`.
+
+    `authorize_after=N` links the QR sign-in's demo code on the Nth pin poll (`None`: never, except
+    that `plaintext_only_lan` implies 2 so its reproduction signs in by itself)."""
     if catalog is not None:
         lib = CatalogLibrary(catalog, cache=catalog_cache, hero=hero)
     else:
         lib = Library(seed=seed, movies=movies, rail_fixture=rail_fixture, media=media,
                       extra_media=extra_media)
     pms = MockPms(lib)
+    if authorize_after is None and plaintext_only_lan:
+        authorize_after = 2
+    pms.authorize_after = authorize_after
     srv = Server((host, port), Handler)
     srv.pms = pms
     srv.verbose = verbose
@@ -1790,6 +1833,16 @@ def _selftest_plaintext_only_lan():
         with urllib.request.urlopen(f"http://127.0.0.1:{http_port}/identity", timeout=5) as r:
             identity = json.loads(r.read())["MediaContainer"]
         assert identity["machineIdentifier"] == pms.lib.machine
+
+        # the mode signs in by itself: the demo code links on the 2nd poll, with the synthetic
+        # account token (T2 — the reproduction needs no real account).
+        def poll():
+            with urllib.request.urlopen(f"http://127.0.0.1:{http_port}/api/v2/pins/{DEMO_PIN_ID}",
+                                        timeout=5) as r:
+                return json.loads(r.read())["authToken"]
+        assert poll() is None, "the first poll is still pending"
+        assert poll() == DEMO_ACCOUNT_TOKEN
+        assert re.fullmatch(ALPHABET_TOKEN, DEMO_ACCOUNT_TOKEN)
     finally:
         _teardown(srv)
 
@@ -1810,7 +1863,10 @@ def _selftest_plaintext_only_lan():
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    # The PLX-NATIVE-10 reproduction (module doc) is the help's epilog, so `--help` carries it.
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0],
+                                 epilog=__doc__[__doc__.index("`--plaintext-only-lan` reproduces"):],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=32499)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--seed", type=int, default=1)
@@ -1835,7 +1891,8 @@ def main():
                          "--advertise-ip 192.168.0.10`, then point the device's plex.tv trigger "
                          "at http://192.168.0.10:<port>. Simulator: `python3 tests/mock_pms.py "
                          "--plaintext-only-lan --advertise-ip 127.0.0.1`. Expect the app to offer "
-                         "\"Connect without encryption?\", never a dead end.")
+                         "\"Connect without encryption?\", never a dead end. The full reproduction "
+                         "(store policy trigger, QR sign-in, expected log lines) follows below.")
     ap.add_argument("--advertise-ip",
                     help="with --plaintext-only-lan: the LAN IPv4 the resources row advertises; "
                          "default: this host's detected primary LAN IPv4, else 127.0.0.1 WITH A "
@@ -1846,6 +1903,9 @@ def main():
                     help="with --plaintext-only-lan: how the advertised HTTPS route fails — "
                          "'handshake' (default) accepts and immediately closes, a real TLS "
                          "handshake failure; 'unreachable' advertises a port nothing listens on")
+    ap.add_argument("--authorize-after", type=int, metavar="N",
+                    help="link the QR sign-in's demo code on the Nth pin poll with a synthetic "
+                         "account token (default: never; --plaintext-only-lan implies 2)")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
@@ -1855,6 +1915,8 @@ def main():
         ap.error("--movies must be between 0 and 1000")
     if (a.advertise_ip or a.insecure_fail_mode != "handshake") and not a.plaintext_only_lan:
         ap.error("--advertise-ip/--insecure-fail-mode need --plaintext-only-lan")
+    if a.authorize_after is not None and a.authorize_after < 1:
+        ap.error("--authorize-after must be at least 1")
     if a.selftest:
         selftest()
         return
@@ -1863,7 +1925,8 @@ def main():
                          movies=a.movies, rail_fixture=a.rail_fixture, media=a.media,
                          extra_media=a.extra_media, catalog=a.catalog, catalog_cache=a.catalog_cache,
                          hero=a.hero, plaintext_only_lan=a.plaintext_only_lan,
-                         advertise_ip=a.advertise_ip, insecure_fail_mode=a.insecure_fail_mode)
+                         advertise_ip=a.advertise_ip, insecure_fail_mode=a.insecure_fail_mode,
+                         authorize_after=a.authorize_after)
     except ValueError as e:
         ap.error(str(e))
     what = f"catalog={a.catalog}" if a.catalog else f"seed={a.seed}"

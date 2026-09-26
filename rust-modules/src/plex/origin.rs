@@ -111,7 +111,10 @@ pub const DEFAULT_PORT: i32 = 32400;
 /// (a grant is the one exception, and it lives in `grant`, not here). A
 /// developer build (`devtriggers`) is [`CredentialPolicy::AllowPlaintext`]: the rule exists so a
 /// lane with no TLS server of its own can still exercise the credentialed path against a plain
-/// `dev::DevServer`. Nothing about WHICH origin is eligible ever depends on where the policy came
+/// `dev::DevServer` — unless `/tmp/plxnative-storepolicy` was armed at boot, which
+/// gives a developer build the store's `HttpsOnly` so the consent flow (reachable only under it)
+/// can be exercised in the sim and on the TV. The trigger only ever tightens, and a store build
+/// has no trigger to read. Nothing about WHICH origin is eligible ever depends on where the policy came
 /// from — a pure function receives it as a parameter. [`build`](CredentialPolicy::build) itself is
 /// no longer just the two discovery live edges (`auth::resolve_roster_live_while`,
 /// `auth::probe_profile_resource_live`): the registry asks it too, at every write that admits an
@@ -121,19 +124,40 @@ pub const DEFAULT_PORT: i32 = 32400;
 /// it a third time, per request, as the backstop if either ever admitted one wrongly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CredentialPolicy {
-    /// A store build: only a TLS origin may ever carry a credential.
+    /// A store build: only a TLS origin may carry a credential by policy — the one exception, a
+    /// live consented plaintext grant, is `super::grant`'s, never this type's.
     HttpsOnly,
     /// A developer build: any origin may, matching every build's behaviour before this type
     /// existed.
     AllowPlaintext,
 }
 
+#[cfg(all(feature = "devtriggers", not(test)))]
+crate::dev::latched_flag!(
+    /// `/tmp/plxnative-storepolicy` — a developer build takes the store's
+    /// [`CredentialPolicy::HttpsOnly`], read once at boot, so the PLX-NATIVE-10 consent flow (which
+    /// `AllowPlaintext` never needs) is reachable in the sim and on the TV. Absent from a store
+    /// build, and never read by a host test: a stray file on a developer's machine must not change
+    /// what the suite grades.
+    fn store_policy_forced = "storepolicy";
+);
+#[cfg(not(all(feature = "devtriggers", not(test))))]
+fn store_policy_forced() -> bool {
+    false
+}
+
 impl CredentialPolicy {
     /// The build's own policy — **the only `cfg!` for this rule in the whole crate.** Every other
     /// caller either receives this value as a parameter (a pure function) or calls this directly
     /// at a live edge; nothing else re-derives it.
-    pub const fn build() -> Self {
-        if cfg!(feature = "devtriggers") {
+    pub fn build() -> Self {
+        Self::of_build(cfg!(feature = "devtriggers"), store_policy_forced())
+    }
+
+    /// [`build`](Self::build)'s rule, pure: a developer build allows plaintext unless the store
+    /// policy was forced; anything else is `HttpsOnly`. Forcing can only tighten.
+    pub(crate) const fn of_build(devtriggers: bool, store_forced: bool) -> Self {
+        if devtriggers && !store_forced {
             CredentialPolicy::AllowPlaintext
         } else {
             CredentialPolicy::HttpsOnly
@@ -554,6 +578,16 @@ fn is_v6_literal(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// T1: the store-policy trigger makes a developer build `HttpsOnly`, and nothing can loosen a
+    /// store build.
+    #[test]
+    fn the_store_policy_trigger_only_tightens() {
+        assert_eq!(CredentialPolicy::of_build(true, false), CredentialPolicy::AllowPlaintext);
+        assert_eq!(CredentialPolicy::of_build(true, true), CredentialPolicy::HttpsOnly);
+        assert_eq!(CredentialPolicy::of_build(false, false), CredentialPolicy::HttpsOnly);
+        assert_eq!(CredentialPolicy::of_build(false, true), CredentialPolicy::HttpsOnly);
+    }
 
     /// `parse_connection` falls back to the connection's advertised port for a portless custom URL,
     /// keeps a port the URL DID write, and still refuses a written-but-garbage one. This is the

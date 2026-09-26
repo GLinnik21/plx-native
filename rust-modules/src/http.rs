@@ -311,18 +311,30 @@ pub(crate) fn credential_transport_allowed(origin: &Origin, path: &str, headers:
         CredentialPolicy::build(),
     );
     if !origin.is_tls() && carries_credential(path, headers) {
-        static REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-        if !REPORTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            if CredentialPolicy::build() == CredentialPolicy::AllowPlaintext {
-                crate::log("security: developer build allows plaintext PMS credentials");
-            } else if allowed {
-                crate::log("security: plaintext PMS credentials sent under a consented grant");
-            } else {
-                crate::log("security: refused plaintext PMS credentials; HTTPS required");
-            }
+        static REPORTED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+        if let Some(line) = plaintext_credential_report(&REPORTED, CredentialPolicy::build(), allowed) {
+            crate::log(line);
         }
     }
     allowed
+}
+
+/// The plaintext-credential log line for this outcome, the first time the process meets it —
+/// once per OUTCOME, not once per process: a store build meets the refusal before the person
+/// consents, and the consented send after it is the line a device check looks for.
+fn plaintext_credential_report(
+    seen: &std::sync::atomic::AtomicU8,
+    policy: CredentialPolicy,
+    allowed: bool,
+) -> Option<&'static str> {
+    let (bit, line) = if policy == CredentialPolicy::AllowPlaintext {
+        (1, "security: developer build allows plaintext PMS credentials")
+    } else if allowed {
+        (2, "security: plaintext PMS credentials sent under a consented grant")
+    } else {
+        (4, "security: refused plaintext PMS credentials; HTTPS required")
+    };
+    (seen.fetch_or(bit, std::sync::atomic::Ordering::Relaxed) & bit == 0).then_some(line)
 }
 
 /// The plaintext arm: [`crate::stream`]'s raw socket.
@@ -837,6 +849,26 @@ mod tests {
     fn the_shared_accept_header_is_a_bare_line() {
         assert_eq!(ACCEPT_JSON, "Accept: application/json");
         assert!(!ACCEPT_JSON.contains('\r') && !ACCEPT_JSON.contains('\n'));
+    }
+
+    /// A store build refuses plaintext credentials until the person consents — so a refusal is
+    /// normally met FIRST, and the consented send after it must still be said once: the log is
+    /// the only evidence a grant carried a token (PLX-NATIVE-10's device check reads it).
+    #[test]
+    fn each_plaintext_credential_outcome_is_reported_once() {
+        let seen = std::sync::atomic::AtomicU8::new(0);
+        let store = CredentialPolicy::HttpsOnly;
+        assert_eq!(
+            plaintext_credential_report(&seen, store, false),
+            Some("security: refused plaintext PMS credentials; HTTPS required")
+        );
+        assert_eq!(plaintext_credential_report(&seen, store, false), None, "once per outcome");
+        assert_eq!(
+            plaintext_credential_report(&seen, store, true),
+            Some("security: plaintext PMS credentials sent under a consented grant"),
+            "a consented send after a refusal is a different outcome"
+        );
+        assert_eq!(plaintext_credential_report(&seen, store, true), None);
     }
 
     #[test]

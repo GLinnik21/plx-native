@@ -945,3 +945,56 @@ fn an_https_endpoint_commit_retires_the_plaintext_grant() {
     assert!(active.image_transcode_path("/thumb", 2, 2, false).ends_with("X-Plex-Token=profile-token"));
     crate::plex::reset_servers_for_test();
 }
+
+/// **An HTTPS roster install is the upgrade too.** A whole-roster commit (discovery, a roster
+/// refresh) that registers a granted server at a TLS origin retires its grant exactly as the
+/// endpoint commit does.
+#[test]
+fn an_https_install_commit_retires_the_plaintext_grant() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    let origin = Origin::http("192.168.0.10", 32400);
+    crate::plex::grant::mint(crate::plex::grant::scope(), "lan-http", &origin,
+        &crate::plex::grant::eligible_evidence_for_test()).unwrap();
+    let mut upgraded = lan_source("profile-token");
+    upgraded.origin_url = "https://192-168-0-10.example.test:32400".into();
+    upgraded.tier = Some(probe::Location::Local);
+    assert!(execute_session_registry(&owner::RegistryPlan::Install {
+        sources: vec![upgraded], primary: Some(0), replace: false,
+    }, "registry-test-client"));
+    assert_eq!(crate::plex::grant::granted_origin("lan-http"), None);
+    assert!(!crate::plex::grant::allowed_under(CredentialPolicy::HttpsOnly, &origin));
+    crate::plex::reset_servers_for_test();
+}
+
+/// **A profile switch's COMMIT is the identity change.** The commit keeps a grant only for the
+/// exact (server, plaintext origin) the new profile's roster installs — minted by the switch's own
+/// fresh probe — and every other grant dies with the old profile; a grant minted under the old
+/// generations after the commit is refused as stale.
+#[test]
+fn a_profile_switch_commit_keeps_only_the_grants_it_installs() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    let evidence = crate::plex::grant::eligible_evidence_for_test();
+    let lan = Origin::http("192.168.0.10", 32400);
+    let other = Origin::http("192.168.0.20", 32400);
+    let before = crate::plex::grant::scope();
+    crate::plex::grant::mint(before, "lan-http", &lan, &evidence).unwrap();
+    crate::plex::grant::mint(before, "other-http", &other, &evidence).unwrap();
+    let mut installed = lan_source("kid-token");
+    installed.tier = Some(probe::Location::Local);
+    assert!(execute_session_registry(&owner::RegistryPlan::Install {
+        sources: vec![installed], primary: Some(0), replace: true,
+    }, "registry-test-client"));
+    assert_eq!(crate::plex::grant::granted_origin("lan-http"), Some(lan.clone()));
+    assert_eq!(crate::plex::grant::granted_origin("other-http"), None);
+    let active = crate::plex::client_opt().expect("the kept grant keeps the slot current");
+    assert!(active.image_transcode_path("/thumb", 2, 2, false).ends_with("X-Plex-Token=kid-token"));
+    assert_ne!(crate::plex::grant::scope(), before, "the commit moved the identity");
+    assert_eq!(crate::plex::grant::mint(before, "other-http", &other, &evidence),
+        Err(crate::plex::grant::MintRefusal::Stale));
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}

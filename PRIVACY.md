@@ -43,7 +43,9 @@ to the two optional-reporting questions, the random Crash report ID if you turne
 the random Analytics ID if you turned product analytics on, any report waiting to be sent, a
 marker recording how much of the crash log has already been read, and — for a server you were
 asked about — whether you allowed it to be reached without encryption on your home network (the
-answer only: the permission itself lasts one launch on one network and is never stored).
+answer only, for the Plex account that gave it: the permission itself is never stored, and ends
+when a fresh check of the server no longer reaches the same address, at a sign-in, sign-out or
+profile switch, or when the app returns from the background).
 It keeps no bookmark of its own for where you stopped watching: playback position is held by your
 Plex Media Server. The Settings screen can sign out and remove PlxNative data from this television.
 
@@ -120,7 +122,7 @@ private, link-local, unique-local, loopback, public or a name) and its family
 (`plaintext_family`: v4, v6 or unknown), whether the app could offer to connect without encryption
 on your home network or the fixed reason it could not (`plaintext_eligibility`: eligible,
 https_required, not_local, not_same_network, not_private_address, identity_unverified,
-https_unsettled or https_refused) and, when it asked, what became of the question
+https_unsettled or https_answered) and, when it asked, what became of the question
 (`plaintext_consent`: offered, accepted, declined or revoked) — never the address itself, the
 server or whose it is. When the account has no
 server, it carries how many other devices plex.tv listed (`resources`, bucketed) and whether that

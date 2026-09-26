@@ -50,7 +50,8 @@ use crate::ui::table::{Row, Section, TableView};
 use crate::ui::table_screen::{Header, TableScreen};
 use crate::ui::{theme, Painter, Rect};
 
-use super::family::{inner_cx, table_focus, InnerHost, SettingsPage};
+use super::family::{inner_cx, table_focus, InnerHost, SettingsPage, ALERT_GROUP};
+use super::plaintext_question::{self, AlertStep, PlaintextAlert};
 use super::registry::{word, DirectoryLike};
 
 /// Which ceremony the surface carries.
@@ -965,10 +966,17 @@ pub(crate) struct RootPage {
     session_snapshot: std::sync::Arc<crate::plex::session::Session>,
     pending_auto: Option<(bool, crate::storage_worker::TypedTicket<bool>)>,
     pending_trailer: Option<(bool, crate::storage_worker::TypedTicket<bool>)>,
-    /// The servers the person has answered "Connect without encryption?" for, by row — the
-    /// `(machine_id, allowed)` each switch shows.
+    /// The servers the signed-in account answered "Connect without encryption?" for, then the
+    /// ones discovery offers it for and nobody has answered, by row — the `(machine_id, allowed)`
+    /// each switch shows.
     plaintext_rows: Vec<(String, bool)>,
-    pending_plaintext: Option<(String, bool, crate::storage_worker::TypedTicket<bool>)>,
+    /// A switch flipped here and not yet reflected by the answers it reads (`grant::choices`):
+    /// shown optimistically until they agree.
+    pending_plaintext: Option<(String, bool)>,
+    /// The shared question (`screens::plaintext_question`), asked when a switch is turned ON.
+    alert: PlaintextAlert,
+    /// `plex::grant::revision` as last read — an offer or an answer landing rebuilds the rows.
+    grant_seen: u64,
 }
 
 struct RootState {
@@ -1012,6 +1020,8 @@ impl RootPage {
             pending_auto: None, pending_trailer: None,
             plaintext_rows: Vec::new(),
             pending_plaintext: None,
+            alert: PlaintextAlert::new(ALERT_GROUP, super::registry::ALERT, super::registry::ALERT + 1),
+            grant_seen: crate::plex::grant::revision(),
             state: RootState {
                 sel: 0,
                 auto_sign_in: false,
@@ -1103,26 +1113,36 @@ impl RootPage {
         self.table.list_focused = true;
     }
 
-    /// **Unencrypted connections**: one switch per server the person has answered "Connect without
-    /// encryption?" for (on the sign-in read-out), from the session file — so it is there to
-    /// turn off again. A server connected over plaintext right now says so, quietly, in its detail
-    /// line; `None` when nobody was ever asked.
+    /// **Unencrypted connections**: one switch per server the signed-in account answered
+    /// "Connect without encryption?" for (`grant::choices` — this session's answers over the
+    /// session file's, for THIS account only), so an allowed one is here to turn off again — and,
+    /// switched off, one per server discovery offers the question for that nobody has answered
+    /// (`grant::offers`), so a signed-in person whose server went plaintext-only has a place to
+    /// say yes. The detail line states what the switch means first, then — quietly — whether a
+    /// grant carries the server right now; `None` when there is nothing to show.
     fn plaintext_section(&mut self, actions: &mut Vec<Action>) -> Option<Section> {
         use crate::plex::session::PlaintextChoice;
         let sess = &self.session_snapshot;
-        let pending = self.pending_plaintext.as_ref().map(|(m, on, _)| (m.clone(), *on));
-        self.plaintext_rows = sess
-            .plaintext_consent
+        let answered = crate::plex::grant::choices(&sess.plaintext_consent, &sess.account_token);
+        let mut rows: Vec<(String, bool)> = answered
             .iter()
-            .filter(|c| c.choice != PlaintextChoice::Undecided)
-            .map(|c| {
-                let on = match &pending {
-                    Some((m, on)) if *m == c.machine_id => *on,
-                    _ => c.choice.allows(),
-                };
-                (c.machine_id.clone(), on)
-            })
+            .filter(|(_, choice)| *choice != PlaintextChoice::Undecided)
+            .map(|(machine, choice)| (machine.clone(), choice.allows()))
             .collect();
+        for offer in crate::plex::grant::offers() {
+            if plaintext_question::asks(Some(&offer)) && !rows.iter().any(|(m, _)| *m == offer.machine_id) {
+                rows.push((offer.machine_id, false));
+            }
+        }
+        // The optimistic value holds until the answers read agree with it.
+        if let Some((machine, on)) = &self.pending_plaintext {
+            match rows.iter_mut().find(|(m, _)| m == machine) {
+                Some(row) if row.1 == *on => self.pending_plaintext = None,
+                Some(row) => row.1 = *on,
+                None => {}
+            }
+        }
+        self.plaintext_rows = rows;
         self.state.plaintext = self.plaintext_rows.iter().map(|(_, on)| *on).collect();
         if self.plaintext_rows.is_empty() {
             return None;
@@ -1134,14 +1154,8 @@ impl RootPage {
                 .iter()
                 .find(|s| s.machine_id == *machine && !s.name.is_empty())
                 .map_or("Plex server", |s| s.name.as_str());
-            let detail = if !on {
-                "Only encrypted connections."
-            } else if crate::plex::grant::granted_origin(machine).is_some() {
-                "Not encrypted. Connected without encryption on this network."
-            } else {
-                "May connect without encryption on your home network."
-            };
-            section = section.row(Row::new(name).detail(detail).toggle(*on));
+            let connected = *on && crate::plex::grant::granted_origin(machine).is_some();
+            section = section.row(Row::new(name).detail(plaintext_question::settings_detail(*on, connected)).toggle(*on));
             actions.push(Action::Plaintext(i));
         }
         Some(section)
@@ -1186,23 +1200,19 @@ impl RootPage {
             Action::Plaintext(i) => {
                 use crate::plex::session::PlaintextChoice;
                 let Some((machine, on)) = self.plaintext_rows.get(i).cloned() else { return };
-                let on = !on;
-                // Turning it off withdraws the grant NOW (`plex::grant::answer`), before the
-                // preferences write lands; turning it on asks the server's endpoint to be found
-                // again, which mints a fresh grant only if the network still proves eligible.
-                let choice = if on { PlaintextChoice::Allowed } else { PlaintextChoice::Revoked };
-                crate::log(if on {
-                    "settings: unencrypted connections allowed for one server"
-                } else {
-                    "settings: unencrypted connections turned off for one server"
-                });
-                if let Ok(ticket) = crate::plex::grant::record(&machine, choice) {
-                    self.pending_plaintext = Some((machine.clone(), on, ticket));
+                if !on {
+                    // ON asks first — the same question the sign-in and the failure read-outs
+                    // put, seated on *Not now*; only its *Connect* allows (`alert_answer`).
+                    let sid = crate::plex::id_of_machine(&machine);
+                    self.alert.open(&machine, sid, MachineId::Instance(InstanceId(0)), fx);
+                    return;
                 }
-                if on {
-                    if let Some(sid) = crate::plex::id_of_machine(&machine) {
-                        fx.push(Fx::App(super::registry::AppFx::Session(crate::auth::SessionCmd::RequestEndpoint { sid })));
-                    }
+                // OFF is immediate: `grant::record` withdraws the grant NOW, before the
+                // preferences write lands, and records the revocation for this account.
+                crate::log("settings: unencrypted connections turned off for one server");
+                let account = crate::plex::grant::account_key(&self.session_snapshot.account_token);
+                if crate::plex::grant::record(&account, &machine, PlaintextChoice::Revoked).is_ok() {
+                    self.pending_plaintext = Some((machine, false));
                 }
                 self.rebuild(self.table.sel, directory);
             }
@@ -1214,6 +1224,25 @@ impl RootPage {
     }
 }
 
+impl RootPage {
+    /// The question was answered: send the one command it became (a *Connect* shows the switch
+    /// on at once; Session records it and re-finds the server), and hand focus back to the table.
+    fn alert_answer(&mut self, cmd: Option<crate::auth::SessionCmd>, directory: crate::stores::browse::DirectoryView<'_>,
+        fx: &mut Effects<'_, InnerHost>) {
+        if let Some(cmd) = cmd {
+            if let crate::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. } = &cmd {
+                if choice.allows() {
+                    self.pending_plaintext = Some((machine_id.clone(), true));
+                }
+            }
+            fx.push(Fx::App(super::registry::AppFx::Session(cmd)));
+        }
+        plaintext_question::enter_group(fx, MachineId::Instance(InstanceId(0)), GroupId(0));
+        self.rebuild(self.table.sel, directory);
+        fx.invalidate(Provenance::Input);
+    }
+}
+
 impl Machine<InnerHost> for RootPage {
     type Ev = ScreenEvent<InnerHost>;
     fn step(
@@ -1222,6 +1251,14 @@ impl Machine<InnerHost> for RootPage {
         cx: &Cx<'_, InnerHost>,
         fx: &mut Effects<'_, InnerHost>,
     ) -> Handled {
+        match self.alert.step(ev, cx) {
+            AlertStep::Pass => {}
+            AlertStep::Done(handled) => return handled,
+            AlertStep::Answer(cmd) => {
+                self.alert_answer(cmd, cx.views, fx);
+                return Handled::Yes;
+            }
+        }
         match ev {
             ScreenEvent::Enter(_) => {
                 // a return from a child: the favourite count may have changed
@@ -1244,14 +1281,18 @@ impl Machine<InnerHost> for RootPage {
                         }
                     }
                 }
-                if self.pending_plaintext.as_ref().is_some_and(|(_, _, ticket)| !matches!(ticket.try_recv(),
-                    Err(std::sync::mpsc::TryRecvError::Empty))) {
-                    if let Some(snapshot) = crate::plex::session::peek_settled() {
-                        self.session_snapshot = snapshot;
-                        self.pending_plaintext = None;
-                        landed = true;
-                    }
+                // An offer or an answer landed (`grant::revision`): the switches re-read.
+                let revision = crate::plex::grant::revision();
+                if revision != self.grant_seen {
+                    self.grant_seen = revision;
+                    landed = true;
                 }
+                if self.alert.is_open() && !self.alert.subject().is_some_and(|m|
+                    self.plaintext_rows.iter().any(|(row, on)| row == m && !on)) {
+                    // the server the question is about left the list, or is on already
+                    self.alert.withdraw();
+                }
+                self.alert.update(t.dt());
                 if landed { self.rebuild(self.table.sel, cx.views); fx.invalidate(crate::ui::present::Provenance::Landing(MachineId::Session)); }
 
                 self.table
@@ -1289,7 +1330,48 @@ impl Machine<InnerHost> for RootPage {
     }
 }
 
-crate::focusable_via_view!(RootPage, InnerHost, view);
+/// The table's focus, unless the question is open — then its two answers ALONE (a modal traps
+/// focus, §7.3 step 7), exactly as Privacy & data's delete alert.
+impl Focusable<InnerHost> for RootPage {
+    fn groups(&self, cx: &Cx<'_, InnerHost>, out: &mut Vec<GroupSpec>) {
+        if !self.alert.groups(out) {
+            Focusable::<InnerHost>::groups(&self.view(), cx, out)
+        }
+    }
+    fn group_of(&self, key: &u32, cx: &Cx<'_, InnerHost>) -> Option<GroupId> {
+        match self.alert.group_of(*key) {
+            Some(answer) => answer,
+            None => Focusable::<InnerHost>::group_of(&self.view(), key, cx),
+        }
+    }
+    fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, InnerHost>) -> Step<u32> {
+        match self.alert.neighbour(key, dir) {
+            Some(step) => step,
+            None => Focusable::<InnerHost>::neighbour(&self.view(), key, dir, cx),
+        }
+    }
+    fn place(&self, key: &u32, cx: &Cx<'_, InnerHost>, at: At) -> Option<Placed> {
+        match self.alert.place(*key) {
+            Some(placed) => placed,
+            None => Focusable::<InnerHost>::place(&self.view(), key, cx, at),
+        }
+    }
+    fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, InnerHost>) -> FocusKey<u32> {
+        if let Some(key) = self.alert.reconcile(want) {
+            return key;
+        }
+        if self.alert.owns(want.elem) {
+            return FocusKey { entry: self.entry, elem: self.table.sel.max(0) as u32 };
+        }
+        Focusable::<InnerHost>::reconcile(&self.view(), want, cx)
+    }
+    fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, InnerHost>) -> FocusKey<u32> {
+        match self.alert.seat(g, self.entry) {
+            Some(key) => key,
+            None => Focusable::<InnerHost>::seat(&self.view(), g, from, cx),
+        }
+    }
+}
 
 impl Screen<InnerHost> for RootPage {
     fn name(&self) -> &'static str {
@@ -1305,6 +1387,7 @@ impl Screen<InnerHost> for RootPage {
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         let mut v = self.view();
         crate::ui::screen::Part::<InnerHost>::draw(&mut v, f, Rect::FULL);
+        self.alert.draw(f, self.entry);
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page

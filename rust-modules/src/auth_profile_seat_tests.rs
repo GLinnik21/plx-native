@@ -26,14 +26,14 @@ fn a_seated_profile_is_recorded_under_the_roster_uuid() {
     );
 }
 
-/// The plaintext twin may answer first, but a store build cannot make it live: only an
-/// https origin can carry a credential there, while a developer build keeps its lab
-/// plaintext. Superseded `activation_allowed_by_policy`, deleted with the race-semantics
-/// change: `CredentialPolicy::may_carry_credential` is the one place this rule lives now, and
-/// `settle_probe_message`/`probe_server_racing` ask it once, at synthesis, through
-/// `Candidate::credential_eligible` — not a second time here at activation.
+/// The plaintext twin may answer first, but the store POLICY alone cannot make it live: under
+/// `HttpsOnly` only an https origin can carry a credential, while a developer build keeps its lab
+/// plaintext. A store build's one plaintext exception is a consented grant, and that is not this
+/// policy's to give: `plex::grant::credential_allowed` (or `allowed_under`, where the policy is a
+/// parameter) is the one answer, and it consults the grant table on top of this rule.
+/// Superseded `activation_allowed_by_policy`, deleted with the race-semantics change.
 #[test]
-fn a_store_build_never_makes_a_plaintext_origin_live() {
+fn https_only_policy_alone_never_makes_a_plaintext_origin_live() {
     let plain = Origin::http("192.168.0.10", 32400);
     let tls = Origin::parse("https://192-168-0-10.abc.plex.direct:32400").unwrap();
     assert!(!CredentialPolicy::HttpsOnly.may_carry_credential(&plain));

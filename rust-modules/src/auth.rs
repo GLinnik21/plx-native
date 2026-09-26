@@ -620,9 +620,20 @@ pub(crate) fn execute_session_registry(plan: &owner::RegistryPlan, client_id: &s
             retire_grant_on_https(&source.machine_id, &origin);
         }
         owner::RegistryPlan::Install { sources, primary, replace } => {
-            if *replace { crate::plex::revoke_for_profile_switch(); }
+            if *replace {
+                // The profile's identity changes HERE, at the commit, with the tokens: grants
+                // survive only for the exact origins this roster installs (`plex::grant`).
+                let installing: Vec<(String, Origin)> = sources.iter()
+                    .filter_map(|s| s.origin().map(|origin| (s.machine_id.clone(), origin)))
+                    .collect();
+                crate::plex::grant::roster_replaced(&installing);
+                crate::plex::revoke_for_profile_switch();
+            }
             let installed = install_roster(sources, *primary, client_id);
             if *replace { crate::plex::finish_profile_switch(&installed); }
+            for source in sources {
+                if let Some(origin) = source.origin() { retire_grant_on_https(&source.machine_id, &origin); }
+            }
         }
         owner::RegistryPlan::Endpoint { expected, source } => {
             let Some(origin) = source.origin() else { return false };
@@ -1490,58 +1501,81 @@ const DISCOVERY_INSECURE_ONLY_MESSAGE: &str =
     "Found your Plex server, but couldn't connect to it securely (HTTPS). Check that your server \
      allows secure connections, then try again.";
 
-/// **What the read-out says about an insecure-only verdict** — one table for sign-in, rediscovery
-/// and the owner's re-wording after an answer, so no two of them can describe the same verdict
-/// differently. The cases are the ones that send the person to different places:
+/// Which read-out a [`plaintext_copy`] is for: the two differ only in where an answered question
+/// can be changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReadoutSurface {
+    /// The sign-in read-out. Settings is out of reach before sign-in, so its *Try again* is how a
+    /// person who said *Not now* is asked again (`auth::owner`'s retry).
+    SignIn,
+    /// Home's and a Library source's failure read-out: an answered question is changed in
+    /// Settings → Unencrypted connections.
+    SignedIn,
+}
+
+/// **What a read-out says about an insecure-only verdict** — one table for sign-in, rediscovery,
+/// the owner's re-wording after an answer, and the signed-in failure read-outs
+/// (`screens::plaintext_question`), so no two of them can describe the same verdict differently.
+/// Every line fits the failed read-out's two-line reason slot (`StatusOverlay::reason_view`) with
+/// its action last, and every one that can be acted on names the action:
 ///
-/// * **eligible, never asked** — the server is on this network and the person may connect without
-///   encryption; the read-out's primary asks them ("Connect without encryption?");
-/// * **eligible, declined or turned off** — the same offer, saying how to allow it again;
-/// * **remote-only plaintext** — never offered; the fix is the server's Remote Access (and a relay,
-///   if it has one — it is optional, so it is not promised);
+/// * **eligible, never asked** — the server is on this network; the primary is *Connect*, which
+///   asks "Connect without encryption?";
+/// * **eligible, allowed** — the primary is *Try again*, which connects without encryption;
+/// * **eligible, declined or turned off** — the primary is *Try again*; on the sign-in read-out it
+///   asks again, signed in the reason points at Settings → Unencrypted connections;
+/// * **remote-only plaintext** — never offered; the fix is the server's Remote Access;
 /// * everything else — the owner-approved [`DISCOVERY_INSECURE_ONLY_MESSAGE`], unchanged for the
-///   household's own server.
+///   household's own server, and a line naming the owner for a shared one.
 ///
 /// A SHARED server is named by its owner ([`PlaintextVerdict::shared_by`]) — on screen only; the
 /// report never carries it.
-pub(crate) fn insecure_only_copy(verdict: Option<&PlaintextVerdict>) -> std::borrow::Cow<'static, str> {
+pub(crate) fn plaintext_copy(verdict: Option<&PlaintextVerdict>, surface: ReadoutSurface) -> std::borrow::Cow<'static, str> {
     use std::borrow::Cow;
     let Some(v) = verdict else { return Cow::Borrowed(DISCOVERY_INSECURE_ONLY_MESSAGE) };
     let owner = v.shared_by.as_str();
-    let server = if owner.is_empty() {
-        "your Plex server".to_owned()
+    let (server, subject) = if owner.is_empty() {
+        ("your Plex server".to_owned(), "Your Plex server".to_owned())
     } else {
-        format!("the Plex server {owner} shares with you")
+        (format!("{owner}\u{2019}s server"), format!("{owner}\u{2019}s server"))
     };
     if v.offers() {
-        let tail = match v.choice {
-            PlaintextChoice::Undecided | PlaintextChoice::Allowed =>
-                "You can connect to it without encryption on this network.",
-            PlaintextChoice::Declined =>
-                "You chose not to connect to it without encryption. Select Connect to allow it.",
-            PlaintextChoice::Revoked =>
-                "Unencrypted connections to it are turned off in Settings. Select Connect to allow them again.",
-        };
-        return Cow::Owned(format!(
-            "Found {server} on this network, but couldn't connect to it securely (HTTPS). {tail}"
-        ));
+        return Cow::Owned(match (v.choice, surface) {
+            (PlaintextChoice::Undecided, _) => format!(
+                "{subject} is on this network but can\u{2019}t be reached securely. Select Connect to connect without encryption."),
+            (PlaintextChoice::Allowed, _) => format!(
+                "{subject} is on this network but can\u{2019}t be reached securely. Select Try again to connect without encryption."),
+            (PlaintextChoice::Declined, ReadoutSurface::SignIn) => format!(
+                "You chose not to connect to {server} without encryption. Select Try again to be asked again."),
+            (PlaintextChoice::Revoked, ReadoutSurface::SignIn) => format!(
+                "Unencrypted connections to {server} are off. Select Try again to be asked again."),
+            (PlaintextChoice::Declined, ReadoutSurface::SignedIn) => format!(
+                "You chose not to connect to {server} without encryption. Allow it in Settings \u{2192} Unencrypted connections."),
+            (PlaintextChoice::Revoked, ReadoutSurface::SignedIn) => format!(
+                "Unencrypted connections to {server} are off. Turn them on in Settings \u{2192} Unencrypted connections."),
+        });
     }
     match (v.eligibility, owner.is_empty()) {
         (PlaintextEligibility::NotLocal, true) => Cow::Borrowed(
-            "Found your Plex server, but only over an unencrypted connection from outside this \
-             network. Check Remote Access in your server's settings — or its relay, if it has \
-             one — then try again.",
+            "Your Plex server answered only without encryption, from outside this network. Check \
+             Remote Access in its settings.",
         ),
         (PlaintextEligibility::NotLocal, false) => Cow::Owned(format!(
-            "Found {server}, but only over an unencrypted connection from outside this network. \
-             {owner} can check Remote Access in the server's settings, then try again."
+            "{subject} answered only without encryption, from outside this network. Its Remote \
+             Access needs checking."
+        )),
+        (_, false) => Cow::Owned(format!(
+            "{subject} answered only without encryption. Its owner can check it allows secure \
+             connections."
         )),
         (_, true) => Cow::Borrowed(DISCOVERY_INSECURE_ONLY_MESSAGE),
-        (_, false) => Cow::Owned(format!(
-            "Found {server}, but couldn't connect to it securely (HTTPS). {owner} can check that \
-             the server allows secure connections, then try again."
-        )),
     }
+}
+
+/// The sign-in read-out's copy for an insecure-only verdict: [`plaintext_copy`] on
+/// [`ReadoutSurface::SignIn`].
+pub(crate) fn insecure_only_copy(verdict: Option<&PlaintextVerdict>) -> std::borrow::Cow<'static, str> {
+    plaintext_copy(verdict, ReadoutSurface::SignIn)
 }
 
 /// The consent outcome a report carries for an insecure-only verdict — a closed code, never the
@@ -2265,6 +2299,19 @@ fn probe_verdict(reach: &Reach) -> (Outcome, Option<probe::Location>, Option<Str
 }
 
 fn publish_settled_probe(probe: &SettledProbe) {
+    // **A grant lives exactly as long as a fresh verdict keeps reaching its server.** A reach at
+    // the granted origin re-minted (or kept) it in `settle_plaintext`, and a reach over HTTPS
+    // retires it at the registration commit (`retire_grant_on_https`); every other settled answer
+    // — ineligible now, insecure-only without consent, 401, silence — withdraws it here, at the
+    // one point every discovery path publishes through, so a token is never left standing for an
+    // origin the latest probe did not re-prove.
+    if probe.outcome != Outcome::Reachable {
+        crate::plex::grant::revoke(&probe.machine_id);
+    }
+    // …and an offer lives exactly as long as the latest verdict is still insecure-only.
+    if probe.outcome != Outcome::InsecureOnly {
+        crate::plex::grant::withdraw_offer(&probe.machine_id);
+    }
     let Some((id, client)) = crate::plex::server_ids()
         .filter_map(|id| crate::plex::client_for(id).map(|client| (id, client)))
         .find(|(_, client)| client.machine_id() == probe.machine_id)
@@ -2359,39 +2406,9 @@ fn probe_server(plan: &ProbePlan, dial: &dyn Fn(&Origin) -> (i32, Vec<u8>)) -> R
     Reach::No
 }
 
-/// **One insecure-only server, as the read-out needs it** — which server, whose it is, whether the
-/// same-network rule lets the person be asked ([`InsecureEvidence::plaintext_eligibility`]), and
-/// what they already answered. The name and the credit are for the SCREEN only: the report carries
-/// the closed eligibility and consent codes, never these strings (`PRIVACY.md`).
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct PlaintextVerdict {
-    pub machine_id: String,
-    pub name: String,
-    /// Whom to name for a SHARED server ([`credit_of`]); empty for the household's own.
-    pub shared_by: String,
-    pub eligibility: PlaintextEligibility,
-    pub choice: PlaintextChoice,
-}
-
-impl PlaintextVerdict {
-    /// The person may be asked "Connect without encryption?" about this server.
-    pub(crate) fn offers(&self) -> bool {
-        self.eligibility == PlaintextEligibility::Eligible
-    }
-
-    /// Of two insecure-only servers, the one the read-out should speak about: the first that can
-    /// be offered, else the first at all. A household's own non-eligible server does not hide a
-    /// share the person could connect to, and the order stays plex.tv's (ours first).
-    fn prefer(
-        held: Option<(InsecureEvidence, PlaintextVerdict)>,
-        next: (InsecureEvidence, PlaintextVerdict),
-    ) -> Option<(InsecureEvidence, PlaintextVerdict)> {
-        match held {
-            Some(held) if held.1.offers() || !next.1.offers() => Some(held),
-            _ => Some(next),
-        }
-    }
-}
+/// One insecure-only server, as the read-out needs it — `plex::grant` owns the type, because the
+/// consent surfaces outside sign-in read it from the grant table's offers.
+pub(crate) use crate::plex::grant::PlaintextVerdict;
 
 /// **A verified plaintext answer becomes usable only under a grant.** The race holds plaintext
 /// aside until every HTTPS route, the relay included, has settled ([`probe_server_racing`]); what
@@ -2400,8 +2417,24 @@ impl PlaintextVerdict {
 /// `plex::grant::mint` finds the fresh verdict eligible. Anything else leaves it insecure-only, so
 /// no admission, registration or token follows. A dev build whose policy already allows plaintext
 /// never reaches this (its candidates are eligible at synthesis).
-fn settle_plaintext(res: &Resource, plan: &ProbePlan, reach: Reach, ask: &PlaintextAsk) -> Reach {
+///
+/// A verdict left insecure-only is published as the server's OFFER (`plex::grant::offered`) —
+/// eligible ones become the question every consent surface can ask, anything else withdraws it.
+///
+/// `plan` is the WHOLE plan and `rejected` the origins admission already refused for this server
+/// (the race itself dialled [`ProbePlan::without`] them): an HTTPS origin that verified and was
+/// then refused is an HTTPS answer ([`probe::HttpsRoutes::with_admission_rejected`]), so the
+/// verdict this returns — and the read-out built from it — never calls that server eligible.
+fn settle_plaintext(
+    res: &Resource,
+    plan: &ProbePlan,
+    rejected: &[String],
+    household: &[i64],
+    reach: Reach,
+    ask: &PlaintextAsk,
+) -> Reach {
     let Reach::InsecureOnly(c, routes) = reach else { return reach };
+    let routes = routes.with_admission_rejected(&plan.candidates, rejected);
     let Some(origin) = dial_target(&c) else { return Reach::InsecureOnly(c, routes) };
     let evidence = InsecureEvidence::new(res, &c, routes);
     match ask.settle(&plan.machine_id, &origin, &evidence) {
@@ -2413,7 +2446,11 @@ fn settle_plaintext(res: &Resource, plan: &ProbePlan, reach: Reach, ask: &Plaint
             ));
             Reach::At(c, origin)
         }
-        Err(_) => Reach::InsecureOnly(c, routes),
+        Err(_) => {
+            crate::plex::grant::offered(ask.scope(),
+                plaintext_verdict(res, plan, &evidence, household, ask));
+            Reach::InsecureOnly(c, routes)
+        }
     }
 }
 
@@ -2507,7 +2544,8 @@ fn resolve_roster_using_admission(
         let plan = probe::plan(r, policy);
         let mut rejected_origins = Vec::new();
         let reach = loop {
-            let reach = settle_plaintext(r, &plan, probe_one(&plan, &rejected_origins), ask);
+            let reach = settle_plaintext(r, &plan, &rejected_origins, household,
+                probe_one(&plan, &rejected_origins), ask);
             let Some(s) = source_from_reach(r, &plan, &reach, household) else { break reach };
             // Admission chooses the primary. Once one source is seated, every secondary keeps the
             // profile-specific grant plex.tv returned; its identity probe still decides endpoint
@@ -2711,15 +2749,7 @@ fn resolve_roster_live_while(
     let spawn = |_index: usize, job: ProbeJob| crate::task::spawn_small("probe", job);
     let mut probe_one = |plan: &ProbePlan, rejected: &[String]| {
         if !live() { return Reach::No; }
-        let plan = ProbePlan {
-            machine_id: plan.machine_id.clone(), token: plan.token.clone(), owned: plan.owned,
-            name: plan.name.clone(), source_title: plan.source_title.clone(), policy: plan.policy,
-            candidates: plan.candidates.iter().filter(|candidate|
-                dial_target(candidate).is_some_and(|origin|
-                    !rejected.iter().any(|rejected| rejected == &origin.base())))
-                .cloned().collect(),
-        };
-        probe_server_racing(&plan, Arc::clone(&dial), &spawn, PROBE_DEADLINES,
+        probe_server_racing(&plan.without(rejected), Arc::clone(&dial), &spawn, PROBE_DEADLINES,
             &mut |_, _, _| {})
     };
     let mut admission_budget = AdmissionBudget::new(ADMISSION_BUDGET);
@@ -2792,13 +2822,12 @@ fn probe_profile_resource_live_after(
     rejected_origins: &[String],
     ask: &PlaintextAsk,
 ) -> (Option<SourceRef>, SettledProbe) {
-    let mut plan = probe::plan(resource, CredentialPolicy::build());
-    plan.candidates.retain(|candidate| dial_target(candidate).is_some_and(|origin|
-        !rejected_origins.iter().any(|rejected| rejected == &origin.base())));
+    let plan = probe::plan(resource, CredentialPolicy::build());
     let dial: ProbeDial = Arc::new(get_identity);
     let spawn = |_index: usize, job: ProbeJob| crate::task::spawn_small("probe", job);
-    let reach = probe_server_racing(&plan, dial, &spawn, PROBE_DEADLINES, &mut |_, _, _| {});
-    let reach = settle_plaintext(resource, &plan, reach, ask);
+    let reach = probe_server_racing(&plan.without(rejected_origins), dial, &spawn, PROBE_DEADLINES,
+        &mut |_, _, _| {});
+    let reach = settle_plaintext(resource, &plan, rejected_origins, household, reach, ask);
     let (outcome, tier, address) = probe_verdict(&reach);
     let source = source_from_reach(resource, &plan, &reach, household);
     (source, settled_probe(&plan, outcome, tier, address))

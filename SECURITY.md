@@ -32,8 +32,14 @@ looking at:
   token, a `plex.direct` hostname, a household name or anything about what is being watched is a
   valid report — see [PRIVACY.md](PRIVACY.md) for the contract that is meant to hold.
 - **TLS.** Certificate verification is on for every HTTPS request (`net.rs`). Stable builds refuse
-  any PMS control or media URL that would carry a Plex token over plaintext HTTP; only an explicit
-  developer-trigger build can allow that lab path, and it logs the exception without the URL.
+  any PMS control or media URL that would carry a Plex token over plaintext HTTP, with one
+  consented exception: a server that answers only unencrypted at a numeric private address on the
+  television's own network, where the person answered "Connect without encryption?" for that
+  server (`plex::grant`). The grant names that exact origin, is never persisted, and is revoked on
+  sign-in, profile switch, sign-out and return to the foreground, and whenever a fresh probe no
+  longer reaches it. A token sent over plaintext to any origin outside a live grant is in scope.
+  Only an explicit developer-trigger build can otherwise allow the lab path, and it logs the
+  exception without the URL.
   Anything that disables, downgrades or bypasses these rules is in scope; so is any path where a
   failure to *set* a security option results in a request going out anyway.
 - **The session file.** `<id>-auth.json` holds one access token per server your account can reach.

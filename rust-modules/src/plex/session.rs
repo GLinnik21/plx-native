@@ -1406,6 +1406,11 @@ impl PlaintextChoice {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PlaintextConsent {
     pub machine_id: String,
+    /// The account that answered — `plex::grant::account_key`, a one-way fingerprint of its
+    /// plex.tv token. An entry is honoured only while that account is signed in; one with no
+    /// account (or another's) reads as never asked.
+    #[serde(default)]
+    pub account: String,
     pub choice: PlaintextChoice,
     #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
     pub(crate) extensions: OpaqueExtensions,
@@ -1734,22 +1739,25 @@ impl Session {
         next
     }
 
-    /// The recorded answer for one server — [`PlaintextChoice::Undecided`] when it was never
-    /// asked (see [`Session::plaintext_consent`]).
-    pub(crate) fn plaintext_choice(&self, machine_id: &str) -> PlaintextChoice {
+    /// The answer `account` (`plex::grant::account_key`) recorded for one server —
+    /// [`PlaintextChoice::Undecided`] when it was never asked (see [`Session::plaintext_consent`]).
+    pub(crate) fn plaintext_choice(&self, account: &str, machine_id: &str) -> PlaintextChoice {
         self.plaintext_consent
             .iter()
-            .find(|c| c.machine_id == machine_id)
+            .find(|c| c.account == account && c.machine_id == machine_id)
             .map_or(PlaintextChoice::Undecided, |c| c.choice)
     }
 
-    /// Record one server's answer, leaving every other server's alone. `Undecided` forgets it.
-    pub(crate) fn with_plaintext_choice(&self, machine_id: &str, choice: PlaintextChoice) -> Self {
+    /// Record one server's answer for `account`, leaving that account's other servers alone.
+    /// `Undecided` forgets it. Another account's answers are dropped on the way: they could never
+    /// be honoured again while this one answers, and the file keeps only the live account's.
+    pub(crate) fn with_plaintext_choice(&self, account: &str, machine_id: &str, choice: PlaintextChoice) -> Self {
         let mut next = self.clone();
-        next.plaintext_consent.retain(|c| c.machine_id != machine_id);
-        if choice != PlaintextChoice::Undecided && !machine_id.is_empty() {
+        next.plaintext_consent.retain(|c| c.account == account && c.machine_id != machine_id);
+        if choice != PlaintextChoice::Undecided && !machine_id.is_empty() && !account.is_empty() {
             next.plaintext_consent.push(PlaintextConsent {
                 machine_id: machine_id.to_owned(),
+                account: account.to_owned(),
                 choice,
                 extensions: Default::default(),
             });

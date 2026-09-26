@@ -26,8 +26,9 @@ the simulator's contract; the bundle inherits it. A Mac playback backend would b
 engine, not a packaging change.
 
 Browsing is not LAN-only: the same `http.rs` control façade runs here through `net.rs`/libcurl for
-HTTPS PMS control. The plaintext transport remains in the shared core, but authenticated requests
-cannot use it because the distributable host build has developer triggers disabled. The HTTPS
+HTTPS PMS control. The plaintext transport remains in the shared core; the distributable host build has developer
+triggers disabled, so authenticated requests use it only under the same consented home-network
+grant as the television (`plex::grant`). The HTTPS
 media path is also present structurally (`curlio.rs`), but playback still ends at the host FFI seam
 described above because macOS has no Starfish/ACB decoder backend.
 

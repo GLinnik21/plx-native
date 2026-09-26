@@ -1613,7 +1613,13 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   by-hand run inherits whatever the last session armed; and any non-DIAG trigger left behind also
   suppresses the who's-watching picker, silently changing which screen you boot to. The
   **`tv-session` skill** drives all of this (clear → arm → launch → assert) and owns the
-  screen-to-trigger recipes. **Controlled-bootstrap update:** `plxnative-rec` and
+  screen-to-trigger recipes. **`/tmp/plxnative-storepolicy`** gives a developer build the STORE's
+  credential policy (`CredentialPolicy::HttpsOnly`, `plex/origin.rs`) for the whole launch: every
+  `devtriggers` build otherwise lets a token ride plaintext, so the PLX-NATIVE-10 "Connect without
+  encryption?" flow — reachable only when plaintext needs a consented grant — cannot be reached in
+  the sim or on the TV without it. It only tightens, and a store build has no trigger to read. The
+  end-to-end reproduction against `tests/mock_pms.py --plaintext-only-lan` is in the mock's
+  `--help`. **Controlled-bootstrap update:** `plxnative-rec` and
   `plxnative-recplay` support Home, Settings, and typed Flow 12 content with typed pre-effect
   initialization, explicit recorded Client bindings, recorded Home/Browse and Detail/Person
   results, and exact request admissions. Replay denies content resource execution and compares

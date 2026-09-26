@@ -67,6 +67,7 @@ use crate::ui::decision_alert::{Choice, DecisionAlert, Tone};
 use crate::ui::widgets::{Button, CtlPop, Spinner, StatusKind, StatusOverlay};
 use crate::ui::{theme, Env, Painter, Rect, View};
 
+use super::plaintext_question::{self, PlaintextQuestion, CONNECT};
 use super::registry::{word, AppFx, AppLike, AppMsg, AuthLike};
 
 /// The screen's elements. The read-out's primary action and *Details* share [`CONTROL_GROUP`];
@@ -90,15 +91,6 @@ const SEND_REPORT: &CStr = c"Send report";
 const NOT_NOW: &CStr = c"Not now";
 const CLOSE: &CStr = c"Close";
 const REPORT_QUESTION: &CStr = c"Send a report about this sign-in problem?";
-/// The read-out's primary action while the failure is an eligible plaintext-only server
-/// (`auth::PlaintextVerdict::offers`) — and the question's affirmative verb, the same word, so the
-/// copy's "Select Connect" names the button either way.
-const CONNECT: &CStr = c"Connect";
-/// The consent question (PLX-NATIVE-10) — a choice, not a failure report.
-const PLAINTEXT_QUESTION: &CStr = c"Connect without encryption?";
-/// Its one line: what saying yes does, in the words a person uses. True of
-/// `crate::plex::grant`: the token travels only to the one verified address on this network.
-const PLAINTEXT_BODY: &str = "Your Plex sign-in will travel unencrypted over this home network to this server only.";
 /// The report alert's disclosure — short, because it is read from the sofa. **Every clause is a
 /// claim about `telemetry::incident::event_body`** and must stay true of it: "which sign-in step
 /// failed and how the connection answered" is the `incident` context (kind, link class, HTTP
@@ -363,8 +355,10 @@ enum ControlKind {
     /// AUTH-03: acknowledges an unconfirmed fresh save and releases the held Ready handoff (or,
     /// for a Discovery-site warning, re-admits the final commit that produces one).
     ContinueUnsaved,
-    /// `Phase::Error` for an eligible plaintext-only server: `Connect` asks the consent question
-    /// ([`Sheet::Plaintext`]) — the read-out keeps one primary, never a third button.
+    /// `Phase::Error` for an eligible plaintext-only server not yet answered
+    /// (`plaintext_question::asks`): `Connect` asks the consent question ([`Sheet::Plaintext`]) —
+    /// the read-out keeps one primary, never a third button. Once answered the primary is *Try
+    /// again* ([`ControlKind::Retry`]), and the reason says what it does.
     ConnectPlaintext,
 }
 
@@ -744,6 +738,8 @@ pub(crate) struct LoginScreen {
     /// The insecure-only verdict the failure read-out is about (`SessionSnapshot::plaintext`),
     /// synced every `resync`.
     plaintext: Option<auth::PlaintextVerdict>,
+    /// The shared question, asked on the report's alert ([`Sheet::Plaintext`]).
+    question: PlaintextQuestion,
     ground: RouteGround,
     report: Report,
     state: LoginState,
@@ -772,6 +768,7 @@ impl LoginScreen {
             pending_restart: None,
             persistence_warning: None,
             plaintext: None,
+            question: PlaintextQuestion::new(),
             ground: RouteGround::new(),
             report: Report::new(),
             state: LoginState {
@@ -847,7 +844,7 @@ impl LoginScreen {
             pending_restart: self.pending_restart.map(|pending| pending.correlation),
             warning: self.persistence_warning.is_some(),
             report: self.report.state(),
-            plaintext: self.plaintext_offered().then(|| {
+            plaintext: self.plaintext_asks().then(|| {
                 self.report.alert.is_open() && self.report.sheet == Sheet::Plaintext
             }),
         };
@@ -980,7 +977,7 @@ impl LoginScreen {
             // An eligible plaintext-only server is a CHOICE, not a failure: the read-out asks
             // it through *Connect*, and the report stays one press away behind *Details*.
             if matches!(o.state, S::Offered { .. })
-                && !self.plaintext_offered()
+                && !self.plaintext_eligible()
                 && !self.report.alert.visible()
                 && self.report.alert_for != Some(o.id)
             {
@@ -998,9 +995,9 @@ impl LoginScreen {
             // or erased by a sign-out. Nothing to answer, so no fade either.
             self.report.alert.close();
         }
-        if self.report.alert.is_open() && self.report.sheet == Sheet::Plaintext && !self.plaintext_offered() {
+        if self.report.alert.is_open() && self.report.sheet == Sheet::Plaintext && !self.plaintext_asks() {
             // The server the question is about is no longer the failure on screen.
-            self.report.alert.close();
+            self.question.withdraw(&mut self.report.alert);
         }
         if self.report.alert.is_open() && self.report.sheet == Sheet::Details {
             use crate::ui::decision_alert::Answers;
@@ -1024,7 +1021,7 @@ impl LoginScreen {
         }
         match self.phase {
             Phase::Deleted => Some(ControlKind::StartLogin),
-            Phase::Error if self.plaintext_offered() => Some(ControlKind::ConnectPlaintext),
+            Phase::Error if self.plaintext_asks() => Some(ControlKind::ConnectPlaintext),
             Phase::Error => Some(ControlKind::Retry),
             Phase::Waiting if qr_escape_offered(self.phase_ms) => Some(ControlKind::RestartWait),
             p if working_phase(p) && escape_offered(self.phase_ms) => {
@@ -1034,19 +1031,25 @@ impl LoginScreen {
         }
     }
 
-    /// Whether the failure on screen is an eligible plaintext-only server the person may connect to.
-    fn plaintext_offered(&self) -> bool {
+    /// Whether the failure on screen is an eligible plaintext-only server — answered or not. Such
+    /// a failure is a choice, not a fault, so the report question is not raised over it.
+    fn plaintext_eligible(&self) -> bool {
         self.phase == Phase::Error && self.plaintext.as_ref().is_some_and(|v| v.offers())
     }
 
-    /// Ask "Connect without encryption?" — seated on *Not now*, so an OK held through the press
-    /// that opened it never answers yes.
+    /// Whether the failure on screen still ASKS: eligible and not yet answered
+    /// (`plaintext_question::asks`).
+    fn plaintext_asks(&self) -> bool {
+        self.phase == Phase::Error && plaintext_question::asks(self.plaintext.as_ref())
+    }
+
+    /// Ask "Connect without encryption?" — the shared question on this screen's alert.
     fn open_plaintext<H: AppLike>(&mut self, fx: &mut Effects<'_, H>) {
-        if !self.plaintext_offered() {
+        let Some(v) = self.plaintext.as_ref().filter(|_| self.plaintext_asks()) else {
             return;
-        }
+        };
         self.report.sheet = Sheet::Plaintext;
-        self.report.alert.open_with_body(PLAINTEXT_QUESTION, PLAINTEXT_BODY);
+        self.question.open(&mut self.report.alert, &v.machine_id, None);
         Self::enter_group(fx, ALERT_GROUP);
     }
 
@@ -1240,20 +1243,12 @@ impl LoginScreen {
         if !self.report.alert.is_open() {
             return;
         }
-        self.report.alert.dismiss();
         if self.report.sheet == Sheet::Plaintext {
             // *Connect* allows this server and retries at once; *Not now* and BACK record the
-            // refusal, and the read-out says how to allow it later. Session persists either.
-            if let Some(v) = &self.plaintext {
-                crate::log(if send {
-                    "login: user allowed an unencrypted connection on this network"
-                } else {
-                    "login: user declined an unencrypted connection"
-                });
-                fx.push(Fx::App(AppFx::Session(auth::SessionCmd::AnswerPlaintext {
-                    machine_id: v.machine_id.clone(),
-                    allow: send,
-                })));
+            // refusal, and the read-out says how to be asked again. Session persists either. The
+            // shared question dismisses the alert.
+            if let Some(cmd) = self.question.answer(&mut self.report.alert, send) {
+                fx.push(Fx::App(AppFx::Session(cmd)));
             }
             if self.has_control() {
                 Self::enter_group(fx, CONTROL_GROUP);
@@ -1261,6 +1256,7 @@ impl LoginScreen {
             self.sync_state();
             return;
         }
+        self.report.alert.dismiss();
         if self.report.sheet == Sheet::Details {
             if let Some(o) = self.report.offer.as_ref().filter(|o| send && o.sendable()) {
                 crate::log("login: user sent a sign-in report from Details");
@@ -1355,17 +1351,49 @@ impl LoginScreen {
         caption: &CStr,
         kind: StatusKind,
         reason: Option<&CStr>,
-        action: Option<&'static CStr>,
         focus: Option<u32>,
     ) {
-        debug_assert_eq!(kind, self.readout_kind(), "the geometry reads the same kind the draw paints");
-        let (mut labels, _) = self.readout_labels();
-        labels[0] = action;
         let note = self.report_note();
+        let o = self.readout(caption, kind, reason, note.as_ref());
+        self.draw_overlay(f, p, env, o, focus);
+    }
+
+    /// **The read-out as it is drawn** — the one overlay `draw_overlay` paints and the tests read.
+    /// Its controls are [`Self::readout_labels`], the same answer the geometry and the press read,
+    /// so the pill on screen always names what OK does: no stage passes a label of its own.
+    fn readout<'a>(
+        &self,
+        caption: &'a CStr,
+        kind: StatusKind,
+        reason: Option<&'a CStr>,
+        note: Option<&'a Note>,
+    ) -> StatusOverlay<'a> {
+        debug_assert_eq!(kind, self.readout_kind(), "the geometry reads the same kind the draw paints");
+        let (labels, _) = self.readout_labels();
+        readout_overlay(caption, kind, reason, labels, note).phase(self.spin_ms as u32)
+    }
+
+    /// The failed sign-in's read-out: the verdict, the phase's reason and its controls.
+    fn failed_readout<'a>(&self, reason: &'a CStr, note: Option<&'a Note>) -> StatusOverlay<'a> {
+        self.readout(
+            c"Couldn\u{2019}t sign in",
+            StatusKind::Failed,
+            (!reason.is_empty()).then_some(reason),
+            note,
+        )
+    }
+
+    fn draw_overlay<H: AppLike>(
+        &self,
+        f: &mut DrawFrame<'_, '_, H>,
+        p: Painter,
+        env: &Env,
+        mut o: StatusOverlay<'_>,
+        focus: Option<u32>,
+    ) {
         let press = f.press.scale;
         let pop = &self.report.pop;
-        let mut o = readout_overlay(caption, kind, reason, labels, note.as_ref()).phase(self.spin_ms as u32);
-        if action.is_some() {
+        if o.action.is_some() {
             o = o
                 .focus(focus.and_then(slot_of))
                 .scales([0, 1].map(|i| pop.scale_with(i, press)));
@@ -1420,7 +1448,6 @@ impl LoginScreen {
             // The reason arrives WITH the control, and only then: it exists to explain why a
             // button just appeared under a spinner that was doing fine a moment ago.
             stuck.then_some(c"This is taking longer than usual."),
-            stuck.then_some(ESCAPE),
             focus,
         );
     }
@@ -1441,7 +1468,6 @@ impl LoginScreen {
             c"Couldn\u{2019}t save your sign-in",
             StatusKind::Failed,
             Some(c"Your sign-in couldn\u{2019}t be saved on this TV. You can continue, but you\u{2019}ll be asked to sign in again next time."),
-            Some(CONTINUE_UNSAVED),
             focus,
         );
     }
@@ -1454,16 +1480,9 @@ impl LoginScreen {
         focus: Option<u32>,
     ) {
         let reason = CString::new(self.error.as_ref()).unwrap_or_default();
-        self.draw_readout(
-            f,
-            p,
-            env,
-            c"Couldn\u{2019}t sign in",
-            StatusKind::Failed,
-            (!reason.is_empty()).then_some(reason.as_c_str()),
-            Some(ESCAPE),
-            focus,
-        );
+        let note = self.report_note();
+        let o = self.failed_readout(&reason, note.as_ref());
+        self.draw_overlay(f, p, env, o, focus);
     }
 
     /// **Empty, not Failed.** Deleting everything is a completed action the user asked for, so it
@@ -1485,7 +1504,6 @@ impl LoginScreen {
             verdict,
             StatusKind::Empty,
             Some(reason),
-            Some(SIGN_IN),
             focus,
         );
     }
@@ -1633,7 +1651,7 @@ impl LoginScreen {
         let (cancel, affirm) = match self.report.sheet {
             Sheet::Question => (NOT_NOW, SEND_REPORT),
             Sheet::Details => (CLOSE, SEND_REPORT),
-            Sheet::Plaintext => (NOT_NOW, CONNECT),
+            Sheet::Plaintext => PlaintextQuestion::verbs(),
         };
         self.report.alert.draw(cancel, affirm);
         let frames = self.report.alert.frames();
@@ -2324,6 +2342,7 @@ mod tests {
             pending_restart: None,
             persistence_warning: None,
             plaintext: None,
+            question: PlaintextQuestion::new(),
             ground: RouteGround::new(),
             report: Report::new(),
             state: LoginState {
@@ -3314,8 +3333,8 @@ mod tests {
 
     fn answers(effects: &[Stamped<SessionHost>]) -> Vec<bool> {
         effects.iter().filter_map(|st| match &st.fx {
-            Fx::App(AppFx::Session(auth::SessionCmd::AnswerPlaintext { machine_id, allow }))
-                if machine_id == "lan-machine" => Some(*allow),
+            Fx::App(AppFx::Session(auth::SessionCmd::AnswerPlaintext { machine_id, choice, sid: None }))
+                if machine_id == "lan-machine" => Some(*choice == crate::plex::session::PlaintextChoice::Allowed),
             _ => None,
         }).collect()
     }
@@ -3337,6 +3356,31 @@ mod tests {
         assert_eq!(s.row().as_slice(), [CONTROL, DETAILS]);
         assert_eq!(s.state.plaintext, Some(false));
         assert!(answers(&fx).is_empty(), "nothing is answered for the person");
+    }
+
+    /// **The DRAWN primary is the one the press acts on** (design review D1). The failed read-out
+    /// painted *Try again* over a primary that asked the question — the geometry and the press
+    /// read `control_kind`, the paint a hard-coded label. Every stage is checked on the overlay
+    /// the draw paints (`failed_readout`), not on `readout_labels`: an unanswered eligible server
+    /// draws *Connect*; once answered (*Not now*) it draws *Try again*, which is what it does.
+    #[test]
+    fn the_failed_readout_draws_the_label_its_press_acts_on() {
+        use crate::plex::session::PlaintextChoice;
+        let _serial = crate::testlock::serial();
+        let m = crate::ui::fixture::FixtureMeasure;
+        let mut failed = insecure_failure(crate::plex::probe::PlaintextEligibility::Eligible);
+        for (choice, want) in [(PlaintextChoice::Undecided, CONNECT), (PlaintextChoice::Declined, ESCAPE),
+            (PlaintextChoice::Revoked, ESCAPE), (PlaintextChoice::Allowed, ESCAPE)] {
+            if let Some(v) = failed.plaintext.as_mut() {
+                v.choice = choice;
+            }
+            let mut s = LoginScreen::new(EntryId(0), failed.read());
+            step_ev_with(&mut s, &tick_ev(16), &failed, InstanceId(0), &m);
+            let reason = CString::new(s.error.as_ref()).unwrap();
+            let drawn = s.failed_readout(&reason, None);
+            assert_eq!(drawn.action, Some(want), "{choice:?}: the drawn primary");
+            assert_eq!(drawn.action, s.control_kind().map(label_for), "{choice:?}: drawn = pressed");
+        }
     }
 
     /// **Connect asks, and only the answer reaches Session.** The question opens seated on

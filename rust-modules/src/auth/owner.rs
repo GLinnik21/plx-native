@@ -119,6 +119,19 @@ pub(crate) enum SessionWork {
         machine_id: String },
 }
 
+impl SessionWork {
+    /// The plex.tv account token this work runs for — empty for a sign-in, which has none yet.
+    /// What `plex::grant::PlaintextAsk::capture` keys the person's answers by.
+    pub(crate) fn account_token(&self) -> &str {
+        match self {
+            Self::Login { .. } => "",
+            Self::Rediscover { account_token, .. } | Self::HomeRoster { account_token, .. } => account_token,
+            Self::ServerRoster { session, .. } | Self::ProfileSwitch { session, .. }
+                | Self::Endpoint { session, .. } => &session.account_token,
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct ProfilePublication {
     pub epoch: u64,
@@ -169,9 +182,18 @@ pub(crate) enum Command {
     ReportIncident { id: u32 },
     /// Not now: the offer is answered for this launch.
     DeclineIncident { id: u32 },
-    /// The person's answer to "Connect without encryption?" for the server the failure read-out
-    /// offered ([`SessionInit::plaintext`]). A different machine, or no offer on screen, is inert.
-    AnswerPlaintext { machine_id: String, allow: bool },
+    /// The person's answer to "Connect without encryption?" (or Settings' switch) for one server
+    /// — every consent surface sends this one command. On the sign-in read-out it answers the
+    /// offer shown there ([`SessionInit::plaintext`]; another machine is inert) and an *Allowed*
+    /// retries the discovery. Signed in, it answers a server Home, the Library or Settings showed
+    /// (`plex::grant::offers`, or an earlier answer), and an *Allowed* re-finds `sid`'s endpoint —
+    /// or the whole roster when the server has no slot — so a fresh probe can mint the grant.
+    AnswerPlaintext {
+        machine_id: String,
+        choice: crate::plex::session::PlaintextChoice,
+        #[serde(with = "super::observation::optional_server_id")]
+        sid: Option<crate::plex::ServerId>,
+    },
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -519,8 +541,9 @@ pub(crate) enum SessionFx {
     SelectionReply { to: ReplyTo, accepted: bool, flow_epoch: u64 },
     BackReply { to: ReplyTo, resumed: bool },
     /// Record the person's plaintext answer for one server: this launch's grant authority
-    /// (`plex::grant::answer`) and the persisted choice (`Session::plaintext_consent`).
-    PlaintextAnswer { machine_id: String, choice: crate::plex::session::PlaintextChoice },
+    /// (`plex::grant::answer`) and the persisted choice (`Session::plaintext_consent`), under
+    /// `account` — `plex::grant::account_key` of the account signed in when it was given.
+    PlaintextAnswer { machine_id: String, choice: crate::plex::session::PlaintextChoice, account: String },
 }
 
 pub(crate) trait SessionHost: crate::ui::machine::Host {
@@ -2349,26 +2372,64 @@ impl SessionMachine {
         true
     }
 
-    /// **The answer to the read-out's "Connect without encryption?"** — recorded through
-    /// [`SessionFx::PlaintextAnswer`] first, so the retry a *Connect* starts captures it; a *Not
-    /// now* re-words the read-out to say how to allow it again and starts nothing.
-    fn answer_plaintext(&mut self, machine_id: &str, allow: bool, emit: &mut impl FnMut(SessionFx)) -> bool {
+    /// **The sign-in read-out's *Try again*.** Over an eligible server the person said *Not now*
+    /// to (or turned off), it is also how they are asked again — Settings, where a signed-in person
+    /// changes that answer, is out of reach before sign-in — so the answer is withdrawn (recorded
+    /// `Undecided`, through the same [`SessionFx::PlaintextAnswer`]) BEFORE the retry's work
+    /// captures the answers, and the retry that follows asks.
+    fn retry(&mut self, emit: &mut impl FnMut(SessionFx)) -> bool {
         use crate::plex::session::PlaintextChoice;
-        if self.state.phase != Phase::Error
-            || !self.state.plaintext.as_ref().is_some_and(|v| v.machine_id == machine_id)
-        {
+        if self.state.phase == Phase::Error {
+            let account = crate::plex::grant::account_key(&self.state.persisted.account_token);
+            let answered = self.state.plaintext.as_ref().filter(|v| v.offers()
+                && matches!(v.choice, PlaintextChoice::Declined | PlaintextChoice::Revoked));
+            if let (Some(v), false) = (answered, account.is_empty()) {
+                emit(SessionFx::PlaintextAnswer {
+                    machine_id: v.machine_id.clone(), choice: PlaintextChoice::Undecided, account,
+                });
+            }
+        }
+        self.restart_login(false, emit)
+    }
+
+    /// **The answer to "Connect without encryption?"** — recorded through
+    /// [`SessionFx::PlaintextAnswer`] first, so the work an *Allowed* starts captures it
+    /// (`plex::grant::PlaintextAsk`).
+    ///
+    /// On the sign-in read-out it must answer the server shown there: *Connect* retries the
+    /// discovery, *Not now* re-words the read-out (its primary becomes *Try again*, which
+    /// withdraws the answer and asks again — [`Self::retry`]) and starts nothing. Signed in (Home's or the Library's read-out, Settings), any server may be
+    /// answered; an *Allowed* re-finds `sid`'s endpoint, or the whole roster without one. Nothing
+    /// is recorded without an account to bind it to.
+    fn answer_plaintext(&mut self, machine_id: &str, choice: crate::plex::session::PlaintextChoice,
+        sid: Option<crate::plex::ServerId>, emit: &mut impl FnMut(SessionFx)) -> bool {
+        use crate::plex::session::PlaintextChoice;
+        let account = crate::plex::grant::account_key(&self.state.persisted.account_token);
+        if account.is_empty() || machine_id.is_empty() || choice == PlaintextChoice::Undecided {
             return false;
         }
-        let choice = if allow { PlaintextChoice::Allowed } else { PlaintextChoice::Declined };
-        emit(SessionFx::PlaintextAnswer { machine_id: machine_id.to_owned(), choice });
-        if allow {
-            return self.restart_login(false, emit);
+        let on_sign_in = self.state.phase == Phase::Error;
+        if on_sign_in && !self.state.plaintext.as_ref().is_some_and(|v| v.machine_id == machine_id) {
+            return false;
         }
-        if let Some(verdict) = self.state.plaintext.as_mut() {
-            verdict.choice = choice;
-            self.state.error = super::insecure_only_copy(Some(verdict)).into_owned();
+        emit(SessionFx::PlaintextAnswer { machine_id: machine_id.to_owned(), choice, account });
+        if on_sign_in {
+            if choice.allows() {
+                return self.restart_login(false, emit);
+            }
+            if let Some(verdict) = self.state.plaintext.as_mut() {
+                verdict.choice = choice;
+                self.state.error = super::insecure_only_copy(Some(verdict)).into_owned();
+            }
+            self.replace_publication();
+            return true;
         }
-        self.replace_publication();
+        if choice.allows() {
+            let _ = match sid {
+                Some(sid) => self.request_endpoint(sid, emit),
+                None => self.refresh_roster(emit),
+            };
+        }
         true
     }
 
@@ -2553,7 +2614,7 @@ impl<H: SessionHost> crate::ui::machine::Machine<H> for SessionMachine {
             SessionEvent::Command(Command::ActivateDevBootstrap) => self.activate_dev(&mut emit),
             SessionEvent::Command(Command::ResumeStored) => self.resume_stored(&mut emit),
             SessionEvent::Command(Command::StartLogin) => self.restart_login(true, &mut emit),
-            SessionEvent::Command(Command::Retry) => self.restart_login(false, &mut emit),
+            SessionEvent::Command(Command::Retry) => self.retry(&mut emit),
             SessionEvent::Command(Command::TakeReady) => self.take_ready(&mut emit),
             SessionEvent::Command(Command::AcknowledgePersistenceWarning { key }) =>
                 self.acknowledge_persistence_warning(*key, &mut emit),
@@ -2575,8 +2636,8 @@ impl<H: SessionHost> crate::ui::machine::Machine<H> for SessionMachine {
             SessionEvent::Command(Command::EraseLocal) => self.erase(false, &mut emit),
             SessionEvent::Command(Command::RefreshRoster) => self.refresh_roster(&mut emit),
             SessionEvent::Command(Command::RequestEndpoint { sid }) => self.request_endpoint(*sid, &mut emit),
-            SessionEvent::Command(Command::AnswerPlaintext { machine_id, allow }) =>
-                self.answer_plaintext(machine_id, *allow, &mut emit),
+            SessionEvent::Command(Command::AnswerPlaintext { machine_id, choice, sid }) =>
+                self.answer_plaintext(machine_id, *choice, *sid, &mut emit),
             SessionEvent::Command(Command::RestartWait { phase, qr_generation, reply }) => {
                 let accepted = matches!(self.state.authority, BootstrapAuthority::Account { .. })
                     && super::restart_permitted(Some((*phase, *qr_generation)),
@@ -3917,12 +3978,13 @@ mod tests {
             assert!(owner.apply_qr_observation(&failed, &mut |_| {}));
             assert_eq!(owner.read().0.plaintext.as_ref().map(|v| v.machine_id.as_str()), Some("lan-machine"));
 
-            assert!(!owner.answer_plaintext("another-machine", allow, &mut |_| panic!("not this server")));
-            let mut effects = Vec::new();
-            assert!(owner.answer_plaintext("lan-machine", allow, &mut |fx| effects.push(fx)));
             let want = if allow { PlaintextChoice::Allowed } else { PlaintextChoice::Declined };
-            assert!(matches!(effects.first(), Some(SessionFx::PlaintextAnswer { machine_id, choice })
-                if machine_id == "lan-machine" && *choice == want), "allow={allow}");
+            assert!(!owner.answer_plaintext("another-machine", want, None, &mut |_| panic!("not this server")));
+            let mut effects = Vec::new();
+            assert!(owner.answer_plaintext("lan-machine", want, None, &mut |fx| effects.push(fx)));
+            let key = crate::plex::grant::account_key("synthetic-token");
+            assert!(matches!(effects.first(), Some(SessionFx::PlaintextAnswer { machine_id, choice, account })
+                if machine_id == "lan-machine" && *choice == want && *account == key), "allow={allow}");
             if allow {
                 assert_eq!(owner.state.phase, Phase::Discovering);
                 assert!(owner.read().0.plaintext.is_none(), "the question is answered");
@@ -3933,9 +3995,52 @@ mod tests {
                 assert_eq!(owner.state.phase, Phase::Error);
                 let shown = owner.read().0;
                 assert_eq!(shown.plaintext.as_ref().map(|v| v.choice), Some(PlaintextChoice::Declined));
-                assert!(shown.error.contains("Select Connect to allow it."), "{}", shown.error);
+                assert!(shown.error.contains("Select Try again to be asked again."), "{}", shown.error);
+                // Settings is out of reach before sign-in, so *Try again* is how the person is
+                // asked again: the answer is withdrawn (recorded Undecided) BEFORE the retry's
+                // work captures the answers, and the retry runs.
+                let retried = step(&mut owner, SessionEvent::Command(Command::Retry));
+                let withdrawn = retried.iter().position(|fx| matches!(fx, SessionFx::PlaintextAnswer {
+                    machine_id, choice: PlaintextChoice::Undecided, account } if machine_id == "lan-machine" && *account == key));
+                let work = retried.iter().position(|fx| matches!(fx, SessionFx::Work { .. }));
+                assert!(withdrawn.is_some() && withdrawn < work, "the declined answer is withdrawn before the retry: {:?}",
+                    retried.iter().map(|fx| std::mem::discriminant(fx)).collect::<Vec<_>>());
+                assert_eq!(owner.state.phase, Phase::Discovering);
             }
         }
+    }
+
+    /// **A signed-in person has a consent path too.** Outside the sign-in read-out the answer is
+    /// recorded under the signed-in account's key, and an *Allowed* re-finds that server's
+    /// endpoint (or, with no slot, the roster) so a fresh probe can mint; a *Revoked* or *Declined*
+    /// starts nothing. With no account signed in nothing is recorded at all.
+    #[test]
+    fn a_signed_in_answer_is_recorded_for_the_account_and_re_finds_the_server() {
+        use crate::plex::session::PlaintextChoice;
+        let key = crate::plex::grant::account_key("synthetic-account");
+        let sid = crate::plex::ServerId::from_raw(3);
+        let mut owner = SessionMachine::from_init(local_session());
+        let fx = step(&mut owner, SessionEvent::Command(Command::AnswerPlaintext {
+            machine_id: "lan-machine".into(), choice: PlaintextChoice::Allowed, sid: Some(sid) }));
+        assert!(matches!(fx.first(), Some(SessionFx::PlaintextAnswer { machine_id, choice, account })
+            if machine_id == "lan-machine" && *choice == PlaintextChoice::Allowed && *account == key));
+        assert!(fx.iter().any(|f| matches!(f,
+            SessionFx::Capture { request: SessionReadRequest::Endpoint { sid: 3 }, .. })));
+
+        let mut owner = SessionMachine::from_init(local_session());
+        let fx = step(&mut owner, SessionEvent::Command(Command::AnswerPlaintext {
+            machine_id: "lan-machine".into(), choice: PlaintextChoice::Allowed, sid: None }));
+        assert!(fx.iter().any(|f| matches!(f, SessionFx::Work { input: SessionWork::ServerRoster { .. }, .. })));
+
+        let mut owner = SessionMachine::from_init(local_session());
+        let fx = step(&mut owner, SessionEvent::Command(Command::AnswerPlaintext {
+            machine_id: "lan-machine".into(), choice: PlaintextChoice::Revoked, sid: Some(sid) }));
+        assert_eq!(fx.len(), 1, "a revocation records and starts nothing");
+
+        let mut owner = SessionMachine::from_init(captured_session());
+        let fx = step(&mut owner, SessionEvent::Command(Command::AnswerPlaintext {
+            machine_id: "lan-machine".into(), choice: PlaintextChoice::Allowed, sid: Some(sid) }));
+        assert!(fx.is_empty(), "no account, nothing to bind the answer to");
     }
 
     #[test]

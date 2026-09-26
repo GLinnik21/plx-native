@@ -388,6 +388,17 @@ pub(super) mod server_id {
     }
 }
 
+/// [`server_id`] for an optional slot.
+pub(super) mod optional_server_id {
+    use super::*;
+    pub fn serialize<S: serde::Serializer>(value: &Option<ServerId>, serializer: S) -> Result<S::Ok, S::Error> {
+        value.map(ServerId::raw).serialize(serializer)
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<ServerId>, D::Error> {
+        Option::<u16>::deserialize(deserializer).map(|raw| raw.map(ServerId::from_raw))
+    }
+}
+
 #[cfg(test)]
 mod insecure_only_outcome_tests {
     use super::*;

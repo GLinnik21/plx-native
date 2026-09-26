@@ -969,13 +969,15 @@ impl SessionAdapter {
             }),
         };
         let spawn = self.spawn;
-        // A sign-in or a profile switch starting is a new identity: every plaintext grant minted
-        // under the previous one is dead from here (`plex::grant`), and the work below captures
-        // the generations — and the person's plaintext answers — it may mint under.
-        if matches!(key.op, SessionOp::Login | SessionOp::ProfileSwitch) {
+        // A sign-in starting is a new identity: every plaintext grant minted under the previous
+        // one is dead from here (`plex::grant`). A profile switch is NOT — it changes the identity
+        // at its commit (`plex::grant::roster_replaced`), so a switch that is refused changes
+        // nothing. The work below captures the generations — and the answers the account it runs
+        // for gave — it may mint under.
+        if key.op == SessionOp::Login {
             crate::plex::grant::identity_changed();
         }
-        let ask = crate::plex::grant::PlaintextAsk::capture();
+        let ask = crate::plex::grant::PlaintextAsk::capture(input.account_token());
         #[cfg(test)]
         let launched = if let Some(run) = self.fixture_work.remove(&req.0) {
             self.launch_correlated(req, key, admission, stream, |job| { job(); true },
@@ -2338,8 +2340,9 @@ mod tests {
 /// the write lands), then the persisted choice through the session's one read-modify-write door.
 /// A write that fails costs only the memory of the answer across a restart — the person is asked
 /// again, the closed direction.
-pub(crate) fn record_plaintext_answer(machine_id: &str, choice: crate::plex::session::PlaintextChoice) {
-    if crate::plex::grant::record(machine_id, choice).is_err() {
+pub(crate) fn record_plaintext_answer(account: &str, machine_id: &str,
+    choice: crate::plex::session::PlaintextChoice) {
+    if crate::plex::grant::record(account, machine_id, choice).is_err() {
         crate::log("session: plaintext answer not saved (storage worker unavailable)");
     }
 }

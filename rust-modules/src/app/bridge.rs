@@ -1606,8 +1606,8 @@ impl Bridge {
             SessionFx::SelectionReply { to, accepted, flow_epoch } => out.push(Fx::Deliver(
                 MachineId::Instance(InstanceId(to.instance)), Delivery::Screen(ScreenEvent::Async(
                     RequestId(to.correlation), AppMsg::SelectionReply { correlation: to.correlation, accepted, flow_epoch })))),
-            SessionFx::PlaintextAnswer { machine_id, choice } => {
-                crate::app::adapters::session::record_plaintext_answer(&machine_id, choice);
+            SessionFx::PlaintextAnswer { machine_id, choice, account } => {
+                crate::app::adapters::session::record_plaintext_answer(&account, &machine_id, choice);
             }
             SessionFx::BackReply { to, resumed } => {
                 self.session_adapter.finish_back(resumed);
