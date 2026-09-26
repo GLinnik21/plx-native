@@ -29,9 +29,12 @@ delivery key and codec. Backward seeks and Off→On do not re-download a loaded 
 
 `player::ass` owns the native objects on one worker. A single latest-request slot coalesces clock
 updates; a completed frame is accepted only for the current source/selection epoch. The UI never
-waits for font parsing or rasterization. Native change detection avoids copying and uploading an
-unchanged image. `ui::ass_subtitles` owns the resulting texture through the player screen's render
-lifetime and reports its memory to the shared render accounting.
+waits for font parsing or rasterization. Native change detection avoids work for unchanged output. Overlapping libass images are composed
+in order into disjoint regions, with a maximum of 64 regions and one bounded pixel arena.
+Unchanged region pixels retain their shared allocation, including across translations, so the
+player screen’s `ass_subtitles` cache reuses their GL uploads. Changed regions recycle the
+remaining textures; gaps, Off and unmount release them. The cache reports all retained texture
+bytes to the shared render accounting.
 
 The subtitle clock interpolates between the pipeline's sparse position callbacks, with at most
 250 ms of extrapolation. Pause, seek and discontinuities re-anchor it. Output dimensions and the

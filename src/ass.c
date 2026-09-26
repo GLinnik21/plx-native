@@ -20,6 +20,7 @@ struct PlxAss {
     ASS_Track *track;
     uint8_t *rgba;
     size_t bytes, font_bytes;
+    PlxAssBitmap regions[PLX_ASS_MAX_REGIONS];
     int width, height, storage_width, storage_height;
     int first;
     char *default_font;
@@ -32,7 +33,7 @@ static void quiet_message(int level, const char *format, va_list args, void *dat
     (void)level; (void)format; (void)args; (void)data;
 }
 
-unsigned plx_ass_abi_version(void) { return 1; }
+unsigned plx_ass_abi_version(void) { return 2; }
 
 void plx_ass_destroy(PlxAss *ctx)
 {
@@ -134,11 +135,47 @@ static int clipped_bounds(const ASS_Image *image, int width, int height,
     return *right > *left && *bottom > *top;
 }
 
+struct Bounds { int left, top, right, bottom; };
+
+static struct Bounds unite(struct Bounds a, struct Bounds b)
+{
+    return (struct Bounds){
+        a.left < b.left ? a.left : b.left,
+        a.top < b.top ? a.top : b.top,
+        a.right > b.right ? a.right : b.right,
+        a.bottom > b.bottom ? a.bottom : b.bottom
+    };
+}
+
+/* Merge to a fixed point: a union can overlap a previously separate region.
+ * Every image ends in exactly one region, so rendering the regions independently
+ * preserves the upstream list's layer order, including translucent overlaps. */
+static void add_bounds(struct Bounds *regions, size_t *count, struct Bounds box)
+{
+    for (size_t i = 0; i < *count;) {
+        struct Bounds other = regions[i];
+        if (box.left <= other.right && other.left <= box.right &&
+            box.top <= other.bottom && other.top <= box.bottom) {
+            box = unite(box, other);
+            regions[i] = regions[--(*count)];
+            i = 0;
+        } else {
+            ++i;
+        }
+    }
+    /* An unusually fragmented script stays bounded without dropping any image. */
+    if (*count == PLX_ASS_MAX_REGIONS) {
+        for (size_t i = 0; i < *count; ++i) box = unite(box, regions[i]);
+        *count = 0;
+    }
+    regions[(*count)++] = box;
+}
+
 int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
                    int storage_width, int storage_height,
-                   PlxAssBitmap *bitmap)
+                   PlxAssFrame *frame)
 {
-    if (!ctx || !ctx->track || !bitmap || width <= 0 || height <= 0 ||
+    if (!ctx || !ctx->track || !frame || width <= 0 || height <= 0 ||
         width > 4096 || height > 2160 || (size_t)width * height > MAX_PIXELS ||
         storage_width <= 0 || storage_height <= 0 ||
         storage_width > 65536 || storage_height > 65536)
@@ -159,21 +196,32 @@ int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
     ASS_Image *images = ass_render_frame(ctx->renderer, ctx->track, now_ms, &changed);
     if (!changed && !resized && !ctx->first) return 0;
     ctx->first = 0;
-    int x0 = width, y0 = height, x1 = 0, y1 = 0, count = 0;
+    struct Bounds bounds[PLX_ASS_MAX_REGIONS];
+    size_t region_count = 0;
+    int image_count = 0;
     for (ASS_Image *p = images; p; p = p->next) {
-        if (++count > MAX_IMAGES) return -1;
+        if (++image_count > MAX_IMAGES) return -1;
         int l, t, r, b;
         int valid = clipped_bounds(p, width, height, &l, &t, &r, &b);
         if (valid < 0) return -1;
         if (!valid) continue;
-        if (l < x0) x0 = l;
-        if (t < y0) y0 = t;
-        if (r > x1) x1 = r;
-        if (b > y1) y1 = b;
+        /* Transparent border preserves linear filtering at each new texture edge. */
+        add_bounds(bounds, &region_count, (struct Bounds){
+            l > 0 ? l - 1 : 0, t > 0 ? t - 1 : 0,
+            r < width ? r + 1 : width, b < height ? b + 1 : height
+        });
     }
-    memset(bitmap, 0, sizeof(*bitmap));
-    if (x1 <= x0 || y1 <= y0) return 1;
-    size_t bytes = (size_t)(x1 - x0) * (y1 - y0) * 4;
+    memset(frame, 0, sizeof(*frame));
+    if (!region_count) return 1;
+    size_t bytes = 0;
+    for (size_t i = 0; i < region_count; ++i) {
+        struct Bounds b = bounds[i];
+        size_t n = (size_t)(b.right - b.left) * (b.bottom - b.top) * 4;
+        if (n > MAX_PIXELS * 4 || bytes > MAX_PIXELS * 4 - n) return -1;
+        bytes += n;
+    }
+    /* One arena bounds retained capacity too: keeping a separate high-water
+     * allocation per region could retain 64 full canvases as signs move. */
     if (ctx->bytes < bytes) {
         uint8_t *next = realloc(ctx->rgba, bytes);
         if (!next) return -1;
@@ -181,18 +229,40 @@ int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
         ctx->bytes = bytes;
     }
     memset(ctx->rgba, 0, bytes);
+    size_t offset = 0;
+    for (size_t i = 0; i < region_count; ++i) {
+        struct Bounds b = bounds[i];
+        PlxAssBitmap *bitmap = &ctx->regions[i];
+        bitmap->x = b.left;
+        bitmap->y = b.top;
+        bitmap->width = b.right - b.left;
+        bitmap->height = b.bottom - b.top;
+        bitmap->bytes = (size_t)bitmap->width * bitmap->height * 4;
+        bitmap->rgba = ctx->rgba + offset;
+        offset += bitmap->bytes;
+    }
     /* ASS_Image is an ordered list (shadow, outline, glyph, next event). Compose
      * every layer in that order in premultiplied space before converting to the
      * straight RGBA expected by SDL's ordinary blend mode. */
     for (ASS_Image *p = images; p; p = p->next) {
         int l, t, r, b;
         if (clipped_bounds(p, width, height, &l, &t, &r, &b) <= 0) continue;
+        PlxAssBitmap *bitmap = NULL;
+        for (size_t i = 0; i < region_count; ++i) {
+            struct Bounds box = bounds[i];
+            if (l >= box.left && t >= box.top && r <= box.right && b <= box.bottom) {
+                bitmap = &ctx->regions[i];
+                break;
+            }
+        }
+        if (!bitmap) return -1;
         unsigned color[3] = {p->color >> 24, (p->color >> 16) & 255,
                              (p->color >> 8) & 255};
         unsigned opacity = 255 - (p->color & 255);
         for (int y = t; y < b; ++y) {
             const uint8_t *mask = p->bitmap + (size_t)(y - p->dst_y) * p->stride;
-            uint8_t *dst = ctx->rgba + ((size_t)(y - y0) * (x1 - x0) + l - x0) * 4;
+            uint8_t *dst = (uint8_t *)bitmap->rgba +
+                ((size_t)(y - bitmap->y) * bitmap->width + l - bitmap->x) * 4;
             for (int x = l; x < r; ++x, dst += 4) {
                 unsigned a = (mask[x - p->dst_x] * opacity + 127) / 255;
                 unsigned inverse = 255 - a;
@@ -210,11 +280,7 @@ int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
             ctx->rgba[i + c] = (uint8_t)(v > 255 ? 255 : v);
         }
     }
-    bitmap->x = x0;
-    bitmap->y = y0;
-    bitmap->width = x1 - x0;
-    bitmap->height = y1 - y0;
-    bitmap->bytes = bytes;
-    bitmap->rgba = ctx->rgba;
+    frame->count = region_count;
+    frame->regions = ctx->regions;
     return 1;
 }

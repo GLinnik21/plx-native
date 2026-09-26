@@ -12,6 +12,7 @@ const MAX_EVENTS: usize = 20_000;
 const MAX_FONT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_FONTS: usize = 128;
 const MAX_PIXELS: usize = 3840 * 2160;
+const MAX_REGIONS: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Event {
@@ -68,8 +69,8 @@ pub(crate) struct Frame {
     pub serial: u64,
     pub width: i32,
     pub height: i32,
-    /// None clears the old texture (a valid gap between dialogue events).
-    pub rect: Option<Rect>,
+    /// Disjoint regions; an empty list clears output between dialogue events.
+    pub rects: Vec<Rect>,
     pub error: Option<&'static str>,
 }
 
@@ -249,7 +250,7 @@ fn error_frame(key: Key, message: &'static str) -> Arc<Frame> {
         serial: next_serial(),
         width: key.width,
         height: key.height,
-        rect: None,
+        rects: Vec::new(),
         error: Some(message),
     })
 }
@@ -486,7 +487,20 @@ impl Engine {
             self.frame = Some(frame.clone());
             return frame;
         }
-        let result = self.native.as_mut().expect("loaded ASS source").render(key);
+        let previous = self
+            .frame
+            .as_ref()
+            .filter(|frame| {
+                frame.source_id == key.source_id
+                    && frame.width == key.width
+                    && frame.height == key.height
+            })
+            .map_or(&[][..], |frame| frame.rects.as_slice());
+        let result = self
+            .native
+            .as_mut()
+            .expect("loaded ASS source")
+            .render(key, previous);
         let frame = match result {
             Ok(None) => {
                 if let Some(frame) = &self.frame {
@@ -494,13 +508,13 @@ impl Engine {
                 }
                 error_frame(key, "Couldn't render this styled subtitle")
             }
-            Ok(Some(rect)) => {
+            Ok(Some(rects)) => {
                 if let Some(old) = &self.frame {
                     if old.source_id == key.source_id
                         && old.width == key.width
                         && old.height == key.height
                         && old.error.is_none()
-                        && old.rect == rect
+                        && old.rects == rects
                     {
                         return old.clone();
                     }
@@ -510,7 +524,7 @@ impl Engine {
                     serial: next_serial(),
                     width: key.width,
                     height: key.height,
-                    rect,
+                    rects,
                     error: None,
                 })
             }
@@ -536,6 +550,13 @@ pub(crate) struct Bitmap {
     rgba: *const u8,
 }
 
+#[repr(C)]
+#[derive(Default)]
+pub(crate) struct NativeFrame {
+    count: usize,
+    regions: *const Bitmap,
+}
+
 crate::dynlib! {
     native_ass: ["libass-plx-host.so.0", "libass-plx.so.0", "libass-plx.0.dylib"] {
         fn plx_ass_abi_version() -> u32;
@@ -546,7 +567,7 @@ crate::dynlib! {
         fn plx_ass_chunk(ctx: *mut c_void, data: *const u8, len: usize, start_ms: i64, duration_ms: i64) -> i32;
         fn plx_ass_prune_before(ctx: *mut c_void, deadline_ms: i64);
         fn plx_ass_flush_events(ctx: *mut c_void);
-        fn plx_ass_render(ctx: *mut c_void, now_ms: i64, width: i32, height: i32, storage_width: i32, storage_height: i32, bitmap: *mut Bitmap) -> i32;
+        fn plx_ass_render(ctx: *mut c_void, now_ms: i64, width: i32, height: i32, storage_width: i32, storage_height: i32, frame: *mut NativeFrame) -> i32;
     }
 }
 
@@ -575,7 +596,7 @@ impl Native {
     fn open(source: &Source) -> Result<Self, &'static str> {
         static LOADED: OnceLock<bool> = OnceLock::new();
         let loaded = *LOADED.get_or_init(|| {
-            native_ass::load(Some(asset_dir())).ok() && unsafe { plx_ass_abi_version() } == 1
+            native_ass::load(Some(asset_dir())).ok() && unsafe { plx_ass_abi_version() } == 2
         });
         if !loaded {
             return Err("Styled subtitle support is unavailable in this installation");
@@ -639,8 +660,8 @@ impl Native {
         Ok(())
     }
 
-    fn render(&mut self, key: Key) -> Result<Option<Option<Rect>>, &'static str> {
-        let mut bitmap = Bitmap::default();
+    fn render(&mut self, key: Key, previous: &[Rect]) -> Result<Option<Vec<Rect>>, &'static str> {
+        let mut frame = NativeFrame::default();
         let result = unsafe {
             plx_ass_render(
                 self.0,
@@ -649,7 +670,7 @@ impl Native {
                 key.height,
                 key.storage_width,
                 key.storage_height,
-                &mut bitmap,
+                &mut frame,
             )
         };
         if result < 0 {
@@ -658,35 +679,68 @@ impl Native {
         if result == 0 {
             return Ok(None);
         }
-        if bitmap.width == 0 && bitmap.height == 0 {
-            return Ok(Some(None));
+        if frame.count == 0 {
+            return Ok(Some(Vec::new()));
         }
-        let pixels = (bitmap.width as usize).checked_mul(bitmap.height as usize);
-        if bitmap.width <= 0
-            || bitmap.height <= 0
-            || bitmap.x < 0
-            || bitmap.y < 0
-            || bitmap
-                .x
-                .checked_add(bitmap.width)
-                .is_none_or(|x| x > key.width)
-            || bitmap
-                .y
-                .checked_add(bitmap.height)
-                .is_none_or(|y| y > key.height)
-            || pixels.is_none_or(|n| n > MAX_PIXELS || n * 4 != bitmap.bytes)
-            || bitmap.rgba.is_null()
-        {
-            return Err("The styled subtitle renderer returned invalid pixels");
+        if frame.count > MAX_REGIONS || frame.regions.is_null() {
+            return Err("The styled subtitle renderer returned invalid regions");
         }
-        let rgba = unsafe { std::slice::from_raw_parts(bitmap.rgba, bitmap.bytes) };
-        Ok(Some(Some(Rect {
-            x: bitmap.x,
-            y: bitmap.y,
-            width: bitmap.width,
-            height: bitmap.height,
-            rgba: Arc::from(rgba),
-        })))
+        let bitmaps = unsafe { std::slice::from_raw_parts(frame.regions, frame.count) };
+        let mut rects: Vec<Rect> = Vec::with_capacity(frame.count);
+        let mut total_pixels = 0usize;
+        for bitmap in bitmaps {
+            let pixels = (bitmap.width as usize).checked_mul(bitmap.height as usize);
+            if bitmap.width <= 0
+                || bitmap.height <= 0
+                || bitmap.x < 0
+                || bitmap.y < 0
+                || bitmap
+                    .x
+                    .checked_add(bitmap.width)
+                    .is_none_or(|x| x > key.width)
+                || bitmap
+                    .y
+                    .checked_add(bitmap.height)
+                    .is_none_or(|y| y > key.height)
+                || pixels.is_none_or(|n| n > MAX_PIXELS || n * 4 != bitmap.bytes)
+                || bitmap.rgba.is_null()
+            {
+                return Err("The styled subtitle renderer returned invalid pixels");
+            }
+            total_pixels += pixels.unwrap();
+            if total_pixels > MAX_PIXELS
+                || rects.iter().any(|r| {
+                    r.x < bitmap.x + bitmap.width
+                        && bitmap.x < r.x + r.width
+                        && r.y < bitmap.y + bitmap.height
+                        && bitmap.y < r.y + r.height
+                })
+            {
+                return Err("The styled subtitle renderer returned overlapping regions");
+            }
+            let pixels = unsafe { std::slice::from_raw_parts(bitmap.rgba, bitmap.bytes) };
+            let same_pixels = |old: &&Rect| {
+                old.width == bitmap.width
+                    && old.height == bitmap.height
+                    && old.rgba.as_ref() == pixels
+            };
+            // Compare before copying. Static signs retain their immutable pixel allocation
+            // while another region animates; translations can reuse it at a new position too.
+            let old = previous
+                .iter()
+                .filter(|r| r.x == bitmap.x && r.y == bitmap.y)
+                .find(same_pixels)
+                .or_else(|| previous.iter().find(same_pixels));
+            let rgba = old.map_or_else(|| Arc::from(pixels), |r| r.rgba.clone());
+            rects.push(Rect {
+                x: bitmap.x,
+                y: bitmap.y,
+                width: bitmap.width,
+                height: bitmap.height,
+                rgba,
+            });
+        }
+        Ok(Some(rects))
     }
 }
 

@@ -244,12 +244,13 @@ fn render(engine: &mut Engine, source: &Arc<Source>, now_ms: i64) -> Arc<Frame> 
 }
 
 fn pixel(frame: &Frame, x: i32, y: i32) -> [u8; 4] {
-    let r = frame.rect.as_ref().expect("visible pixels");
-    assert!(
-        x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height,
-        "({x},{y}) outside {:?}",
-        (r.x, r.y, r.width, r.height)
-    );
+    let Some(r) = frame
+        .rects
+        .iter()
+        .find(|r| x >= r.x && y >= r.y && x < r.x + r.width && y < r.y + r.height)
+    else {
+        return [0; 4];
+    };
     let start = ((y - r.y) * r.width + x - r.x) as usize * 4;
     r.rgba[start..start + 4].try_into().unwrap()
 }
@@ -299,7 +300,7 @@ fn native_pixels_preserve_position_layers_alpha_motion_karaoke_and_readorder() {
         "static dialogue must reuse pixels while playing"
     );
     assert!(
-        render(&mut engine, &source, 2100).rect.is_none(),
+        render(&mut engine, &source, 2100).rects.is_empty(),
         "expired output clears"
     );
 
@@ -332,8 +333,7 @@ fn native_pixels_preserve_position_layers_alpha_motion_karaoke_and_readorder() {
     });
     let packet_frame = render(&mut engine, &embedded, 100);
     assert_eq!(
-        packet_frame.rect.as_ref().unwrap().rgba,
-        first.rect.as_ref().unwrap().rgba,
+        packet_frame.rects, first.rects,
         "Matroska chunks and a standalone script must render identical composed pixels"
     );
 
@@ -341,7 +341,7 @@ fn native_pixels_preserve_position_layers_alpha_motion_karaoke_and_readorder() {
     let start = render(&mut engine, &moving, 0);
     let halfway = render(&mut engine, &moving, 500);
     assert_eq!(
-        halfway.rect.as_ref().unwrap().x - start.rect.as_ref().unwrap().x,
+        halfway.rects[0].x - start.rects[0].x,
         70,
         "motion uses subtitle time, including between native position callbacks"
     );
@@ -354,11 +354,9 @@ fn native_pixels_preserve_position_layers_alpha_motion_karaoke_and_readorder() {
     let early = render(&mut engine, &karaoke, 100);
     let late = render(&mut engine, &karaoke, 900);
     let green = |f: &Frame| {
-        f.rect
-            .as_ref()
-            .unwrap()
-            .rgba
-            .chunks_exact(4)
+        f.rects
+            .iter()
+            .flat_map(|r| r.rgba.chunks_exact(4))
             .filter(|p| p[1] > 200 && p[0] < 20 && p[3] > 100)
             .count()
     };
@@ -446,8 +444,7 @@ fn native_script_font_revision_and_cjk_fallback_use_real_glyphs() {
     });
     let rendered = render(&mut engine, &attached, 100);
     assert_ne!(
-        rendered.rect.as_ref().unwrap().rgba,
-        fallback.rect.as_ref().unwrap().rgba,
+        rendered.rects, fallback.rects,
         "a late attached font replaces fallback even when the source identity is unchanged"
     );
     let korean = script("Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\\pos(20,40)}한\n");
@@ -455,8 +452,7 @@ fn native_script_font_revision_and_cjk_fallback_use_real_glyphs() {
     let a = render(&mut engine, &korean, 100);
     let b = render(&mut engine, &chinese, 100);
     assert_ne!(
-        a.rect.as_ref().unwrap().rgba,
-        b.rect.as_ref().unwrap().rgba,
+        a.rects, b.rects,
         "the bundled CJK fallback yields distinct glyphs, not identical missing-glyph boxes"
     );
 }
@@ -476,6 +472,77 @@ fn native_sparse_signs_do_not_publish_the_transparent_canvas_between_them() {
     let first = render(&mut engine, &source, 100);
     assert_eq!(pixel(&first, 25, 25), [255, 0, 0, 255]);
     assert_eq!(pixel(&first, 285, 145), [0, 0, 255, 255]);
-    let bytes = first.rect.as_ref().unwrap().rgba.len();
-    assert!(bytes < 320 * 180, "sparse signs published {bytes} RGBA bytes");
+    let bytes: usize = first.rects.iter().map(|r| r.rgba.len()).sum();
+    assert!(
+        bytes < 320 * 180,
+        "sparse signs published {bytes} RGBA bytes"
+    );
+    assert_eq!(first.rects.len(), 3);
+    let later = render(&mut engine, &source, 500);
+    assert_ne!(first.serial, later.serial);
+    assert_eq!(later.rects.len(), 3);
+    for region in &later.rects {
+        assert!(
+            first
+                .rects
+                .iter()
+                .any(|old| Arc::ptr_eq(&old.rgba, &region.rgba)),
+            "unchanged signs and a pure translation retain their pixel allocations"
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_region_unions_preserve_layers_and_transparent_holes() {
+    let source = script(concat!(
+        "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\\an7\\pos(20,90)\\c&HFF0000&\\p1}m 0 0 l 10 0 10 10 0 10\n",
+        "Dialogue: 1,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\\an7\\pos(20,20)\\c&H0000FF&\\p1}m 0 0 l 100 0 100 10 0 10\n",
+        "Dialogue: 2,0:00:00.00,0:00:02.00,Default,,0,0,0,,{\\an7\\pos(110,20)\\c&H00FF00&\\p1}m 0 0 l 10 0 10 100 0 100\n",
+    ));
+    let frame = render(&mut Engine::default(), &source, 100);
+    assert_eq!(
+        frame.rects.len(),
+        1,
+        "the L-shaped union must absorb the earlier isolated sign"
+    );
+    assert_eq!(pixel(&frame, 25, 95), [0, 0, 255, 255]);
+    assert_eq!(pixel(&frame, 25, 25), [255, 0, 0, 255]);
+    assert_eq!(pixel(&frame, 115, 25), [0, 255, 0, 255]);
+    assert_eq!(pixel(&frame, 50, 60), [0; 4]);
+}
+
+#[test]
+#[ignore = "requires the pinned native host libass artifact and packaged fonts"]
+fn native_fragmented_script_stays_bounded_without_dropping_signs() {
+    let mut lines = String::new();
+    for i in 0..70 {
+        let (x, y) = (8 + (i % 18) * 16, 8 + (i / 18) * 36);
+        lines.push_str(&format!(
+            "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,{{\\an7\\pos({x},{y})\\p1}}m 0 0 l 4 0 4 4 0 4\n"));
+    }
+    let source = script(&lines);
+    let frame = Engine::default().render(&Request {
+        source: source.clone(),
+        key: Key {
+            epoch: 1,
+            source_id: source.id,
+            revision: 1,
+            now_ms: 100,
+            width: 1920,
+            height: 1080,
+            storage_width: 1920,
+            storage_height: 1080,
+        },
+    });
+    assert_eq!(frame.error, None);
+    assert!(frame.rects.len() <= MAX_REGIONS);
+    for i in 0..70 {
+        let (x, y) = ((10 + (i % 18) * 16) * 6, (10 + (i / 18) * 36) * 6);
+        assert_eq!(
+            pixel(&frame, x, y)[3],
+            255,
+            "sign {i} must survive region compaction"
+        );
+    }
 }

@@ -22,6 +22,7 @@
 //! [`PlayerScreen::publish`] mirrors both into the atomics the draw path and the engine read, and
 //! is the only writer of either.
 
+mod ass_subtitles;
 pub(crate) mod input;
 pub(crate) mod overlay;
 /// The Skip Intro / Skip Credits pill — a `ControlSlot` occupant of this screen's HUD, not a
@@ -85,7 +86,7 @@ pub(crate) struct Origin {
 pub(crate) struct PlayerRender {
     /// The decoded image-subtitle display set and its cache key (`player_hud`'s `SET`/`KEY`/`SEL`).
     pub(crate) subs: SubtitleBitmaps,
-    pub(crate) ass: crate::ui::ass_subtitles::AssSubtitles,
+    pub(crate) ass: ass_subtitles::AssSubtitles,
 }
 
 impl Default for SubtitleBitmaps {

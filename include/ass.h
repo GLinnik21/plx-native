@@ -13,6 +13,12 @@ typedef struct {
     const uint8_t *rgba; /* straight RGBA; valid until the next render or destroy */
 } PlxAssBitmap;
 
+#define PLX_ASS_MAX_REGIONS 64
+typedef struct {
+    size_t count;
+    const PlxAssBitmap *regions; /* disjoint bounds; same lifetime as their pixels */
+} PlxAssFrame;
+
 unsigned plx_ass_abi_version(void);
 PlxAss *plx_ass_create(const char *default_font);
 void plx_ass_destroy(PlxAss *ctx);
@@ -22,10 +28,10 @@ int plx_ass_chunk(PlxAss *ctx, const uint8_t *data, size_t len,
                   int64_t start_ms, int64_t duration_ms);
 void plx_ass_prune_before(PlxAss *ctx, int64_t deadline_ms);
 void plx_ass_flush_events(PlxAss *ctx);
-/* -1: refused/failed, 0: identical output (bitmap unchanged), 1: changed output.
- * A changed bitmap with width=height=0 clears the old subtitle. */
+/* -1: refused/failed, 0: identical output (frame unchanged), 1: changed output.
+ * A changed frame with count=0 clears the old subtitle. */
 int plx_ass_render(PlxAss *ctx, int64_t now_ms, int width, int height,
                    int storage_width, int storage_height,
-                   PlxAssBitmap *bitmap);
+                   PlxAssFrame *frame);
 
 #endif
