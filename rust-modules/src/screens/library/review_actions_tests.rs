@@ -280,7 +280,7 @@ fn live_engine_memory_wins_over_a_stale_store_bookmark_and_saves_from_toolbar() 
         Some(page.pair.groups_config().detail),
         By::Restore,
     );
-    engine.set(OWNER, page.key(SORT), Some(TOOLBAR_GROUP), By::Restore);
+    engine.set(OWNER, page.key(SORT), Some(page.toolbar_group()), By::Restore);
     let mut cx = fixture.cx(engine.current(OWNER));
     cx.focus = engine.read(OWNER);
     let mut output = Vec::new();

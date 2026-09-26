@@ -439,7 +439,7 @@ fn a_fully_discovered_missing_kind_finishes_its_fade_and_has_no_foreign_grid() {
         "waiting for Shows cannot page through the retained Movies listing");
     let mut groups = Vec::new();
     page.groups(&fixture.cx(None), &mut groups);
-    assert!(!groups.iter().any(|g| g.id == page.pair.groups_config().detail || g.id == TOOLBAR_GROUP));
+    assert!(!groups.iter().any(|g| g.id == page.pair.groups_config().detail || g.id == page.toolbar_group()));
     assert!(page.focused_item(Some(page.key(page.keys.keys().first().map_or(0, |k| k.elem))), &fixture.cx(None)).is_none());
 }
 
@@ -783,7 +783,7 @@ fn section_grid_memories_do_not_overwrite_one_another() {
     engine.enter(OWNER, &page, FocusTarget::ContainerGroup(group_a), None, &fixture.cx(engine.current(OWNER)));
     assert_eq!(engine.current(OWNER), Some(card_a), "Remembered seating restores the exact section card");
     // Enter the rail through a toolbar: projection must consult only this section's grid memory.
-    engine.set(OWNER, page.key(FILTER), Some(TOOLBAR_GROUP), By::Dir);
+    engine.set(OWNER, page.key(FILTER), Some(page.toolbar_group()), By::Dir);
     direction(&mut page, &mut engine, &fixture, Dir::Right);
     assert_eq!(page.pair.master.start_for_elem(engine.current(OWNER).unwrap().elem), Some(0));
 }
@@ -969,7 +969,7 @@ fn toolbar_rail_entry_uses_engine_grid_memory_and_returns_to_toolbar() {
     let mut engine = FocusEngine::new();
     let exact = page.key(page.pair.detail.elem_at(23).unwrap());
     engine.set(OWNER, exact, Some(page.pair.groups_config().detail), By::Restore);
-    engine.set(OWNER, page.key(FILTER), Some(TOOLBAR_GROUP), By::Dir);
+    engine.set(OWNER, page.key(FILTER), Some(page.toolbar_group()), By::Dir);
     assert_eq!(direction(&mut page, &mut engine, &fixture, Dir::Right), 0);
     assert_eq!(page.pair.master.start_for_elem(engine.current(OWNER).unwrap().elem), Some(18));
     direction(&mut page, &mut engine, &fixture, Dir::Left);

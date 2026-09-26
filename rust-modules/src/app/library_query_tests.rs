@@ -87,14 +87,20 @@ fn leaving_after_query_commit_before_arrival_cannot_restore_the_old_query_bookma
     let new_entry = d.nav.top_page().unwrap().id;
     assert_ne!(entry, new_entry);
     let instance = d.nav.top_page().unwrap().inst.as_ref().unwrap().id;
+    let heading = d
+        .top_screen()
+        .unwrap()
+        .as_any()
+        .unwrap()
+        .downcast_ref::<crate::screens::library::LibraryScreen>()
+        .unwrap()
+        .toolbar_group();
     d.emit(
         MachineId::Nav,
         Fx::Deliver(
             MachineId::Instance(instance),
             Delivery::Screen(ScreenEvent::Enter(crate::ui::screen::Enter::Fresh {
-                focus: crate::ui::screen::FocusTarget::ContainerGroup(
-                    crate::screens::library::TOOLBAR_GROUP,
-                ),
+                focus: crate::ui::screen::FocusTarget::ContainerGroup(heading),
             })),
         ),
     );
@@ -156,14 +162,20 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
         .find(|(_, elem)| *elem == grid.elem)
         .unwrap()
         .0;
+    let heading = d
+        .top_screen()
+        .unwrap()
+        .as_any()
+        .unwrap()
+        .downcast_ref::<crate::screens::library::LibraryScreen>()
+        .unwrap()
+        .toolbar_group();
     d.emit(
         MachineId::Nav,
         Fx::Deliver(
             MachineId::Instance(instance),
             Delivery::Screen(ScreenEvent::Enter(crate::ui::screen::Enter::Fresh {
-                focus: crate::ui::screen::FocusTarget::ContainerGroup(
-                    crate::screens::library::TOOLBAR_GROUP,
-                ),
+                focus: crate::ui::screen::FocusTarget::ContainerGroup(heading),
             })),
         ),
     );
@@ -309,5 +321,14 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
         tick(290),
         script_key(Key::Down, tick(290)),
     );
-    assert_eq!(d.focus(), Some(FocusKey { entry, elem: first }));
+    // DOWN from the heading lands in the grid's first row, under the chip it left
+    // (`focus::projects_across`); the reset memory above is what the rail's door reads.
+    let page = d
+        .top_screen()
+        .unwrap()
+        .as_any()
+        .unwrap()
+        .downcast_ref::<crate::screens::library::LibraryScreen>()
+        .unwrap();
+    assert_eq!(page.grid_position(d.focus()).map(|(row, _)| row), Some(0));
 }

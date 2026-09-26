@@ -301,12 +301,13 @@ fn foreign_table_replacement_during_grid_query_mounts_incoming_engine_focus_and_
             incoming.frame(&mut page, &mut engine, n);
         }
         incoming.down(&mut page, &mut engine); // selected library -> toolbar
-        assert_eq!(engine.current_group(OWNER), Some(TOOLBAR_GROUP));
-        incoming.down(&mut page, &mut engine); // toolbar -> incoming remembered grid (empty history)
-        assert_eq!(page.grid_position(engine.current(OWNER)), Some((0, 0)));
+        assert_eq!(engine.current_group(OWNER), Some(page.toolbar_group()));
+        incoming.down(&mut page, &mut engine); // toolbar -> the incoming grid's first row, under the chip
+        let (row, col) = page.grid_position(engine.current(OWNER)).expect("DOWN lands in the grid");
+        assert_eq!(row, 0);
         let key = engine.current(OWNER).unwrap();
         let item = page.focused_item(Some(key), &incoming.cx(&engine)).unwrap();
-        let expected = incoming.listing.view().item(0).unwrap();
+        let expected = incoming.listing.view().item(col).unwrap();
         assert_eq!(
             (item.sid, item.rk.as_str()),
             (expected.sid, expected.rk.as_str())
@@ -324,7 +325,7 @@ fn foreign_table_replacement_during_grid_query_mounts_incoming_engine_focus_and_
         }
         let moved = engine.current(OWNER);
         let moved_scroll = page.scroll.pos;
-        assert_eq!(page.grid_position(moved), Some((1, 0)));
+        assert_eq!(page.grid_position(moved), Some((1, col)));
         incoming.deliver(
             &mut page,
             &mut engine,
