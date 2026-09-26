@@ -54,7 +54,7 @@ pub trait Source {
     /// A DRAW's probe: `Some(key)` once the source has handed the cache this key's pixels (the
     /// texture may still be waiting for upload). A miss claims a slot and starts the fetch —
     /// UNLESS the source declines the request, which it may do for its own admission reasons
-    /// (today: a document scrolling faster than the source's art threshold, and a slot cooling
+    /// (today: an unknown or fast-moving card placement, and a slot cooling
     /// down from rapid re-eviction). So `None` means empty, DEFERRED, in flight or failed, and
     /// the cache must go on drawing its placeholder without inferring that work is under way —
     /// asking again next frame is how a deferred request is eventually honoured. Touches the
@@ -176,8 +176,8 @@ fn with_source<T>(f: impl FnOnce(&dyn Source) -> T, absent: T) -> T {
 }
 
 /// The renderer's question for art on a named server: the resident texture id, or 0 (the
-/// absent-resource rule: draw the placeholder at the final geometry; the request is already
-/// in flight).
+/// absent-resource rule: draw the placeholder at the final geometry; work may be
+/// in flight or deferred by the card's placement admission).
 pub fn resolve_on(srv: u16, path: &str, w: i32, h: i32, png: bool) -> u32 {
     resolve_wh_on(srv, path, w, h, png).0
 }
