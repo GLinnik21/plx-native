@@ -1521,15 +1521,19 @@ video::-webkit-media-controls-start-playback-button {
      its padding) and fills the rest of the screen with heading, TV and
      caption centred in it, so no empty band is left under the caption while
      it is pinned. The space below the caption already separates it from
-     the Why section, which therefore needs no top padding of its own. */
+     the Why section, which therefore needs no top padding of its own.
+     It stops 24px short of the bottom edge: iOS Safari fills the area behind
+     its toolbar with one colour sampled from a pinned element touching that
+     edge, and this one is mostly black TV bezel while it zooms, which left a
+     black strip under the toolbar for the rest of the page. */
   .fx .feel {
     height: 260vh;
     height: 260svh;
   }
   .fx .feel-sticky {
     top: 68px;
-    height: calc(100vh - 68px);
-    height: calc(100svh - 68px);
+    height: calc(100vh - 92px);
+    height: calc(100svh - 92px);
     justify-content: center;
     padding: 0;
   }
