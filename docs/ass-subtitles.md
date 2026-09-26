@@ -38,8 +38,10 @@ bytes to the shared render accounting.
 
 The subtitle clock interpolates between the pipeline's sparse position callbacks, with at most
 250 ms of extrapolation. Pause, seek and discontinuities re-anchor it. Output dimensions and the
-original coded video dimensions are passed separately to libass. The output uses the player's
-video-plane destination canvas; authored subtitles are not moved when the transport HUD appears.
+original coded video dimensions are passed separately to libass. The output canvas fits the
+picture's display aspect, including `sourceInfo`'s pixel aspect ratio, and is offset inside the
+video window to account for pillarboxing or letterboxing. Authored subtitles are not moved when
+the transport HUD appears.
 
 The device fixture generator requires FFmpeg/ffprobe and MKVToolNix (`mkvmerge`). It verifies
 subtitle packet counts, timestamps and mux interleaving before publishing a video.

@@ -9,6 +9,7 @@ on:
       - 'rust-modules/**'
       - 'src/svg.c'
       - 'src/ass.c'
+      - 'src/ass_composite.h'
       - 'include/ass.h'
       - 'assets/icons/**'
       - 'vendor/nanosvg/**'

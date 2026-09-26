@@ -142,6 +142,21 @@ class BundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'unresolved dependency license'):
             self.check()
 
+    def test_ass_compositor_header_is_required_when_the_facade_includes_it(self):
+        self.test_ass_source_requires_every_static_dependency()
+        for name in ['ci/build-libass.sh', 'ci/build-libass.py', 'include/ass.h']:
+            self.contents[name] = b'fixture recipe', 0o644
+        self.contents['src/ass.c'] = b'/* older facade without the private header */', 0o644
+        self.refresh()
+        self.check()  # Existing source bundles remain valid.
+        self.contents['src/ass.c'] = b'#include "ass_composite.h"\n', 0o644
+        self.refresh()
+        with self.assertRaisesRegex(ValueError, 'missing ASS renderer source: src/ass_composite.h'):
+            self.check()
+        self.contents['src/ass_composite.h'] = b'fixture compositor', 0o644
+        self.refresh()
+        self.check()
+
     def test_corrupt_compression_requires_exact_reviewed_hash(self):
         data = b'\x1f\x8bintentionally invalid gzip fixture'
         self.contents['dependencies/ffmpeg/corrupt.bin'] = data, 0o644

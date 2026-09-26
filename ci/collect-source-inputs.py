@@ -83,7 +83,7 @@ def main():
         deps.append({'id': dep['id'], 'version': dep['version'], 'license': dep['license'],
                      'sources': [{'path': filename, 'sha256': dep['sha256']}],
                      'recipes': ['ci/build-libass.sh', 'ci/build-libass.py', 'ci/libass-dependencies.json',
-                                 'src/ass.c', 'include/ass.h'], 'patches': []})
+                                 'src/ass.c', 'src/ass_composite.h', 'include/ass.h'], 'patches': []})
     with tempfile.TemporaryDirectory(prefix='collect-', dir=output) as temp:
         vendor = Path(temp) / 'cargo-vendor'
         # Only Cargo's explicitly selected locked sources are read, never a whole private cache.
