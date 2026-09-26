@@ -180,6 +180,16 @@ video::-webkit-media-controls-start-playback-button {
       filter 900ms cubic-bezier(0.25, 0.1, 0.25, 1) var(--reveal-delay, 0ms),
       transform 500ms cubic-bezier(0.16, 1, 0.3, 1);
   }
+  /* Cards fade in over longer, starting slowly: the text curve above puts
+     most of its fade in the first few hundred ms, which on a panel this size
+     reads as the card popping in rather than fading. */
+  .reveal [data-reveal="card"].is-revealed {
+    transition:
+      opacity 1500ms cubic-bezier(0.45, 0, 0.25, 1) var(--reveal-delay, 0ms),
+      translate 1500ms cubic-bezier(0.19, 1, 0.22, 1) var(--reveal-delay, 0ms),
+      scale 1700ms cubic-bezier(0.19, 1, 0.22, 1) var(--reveal-delay, 0ms),
+      transform 500ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
 
   /* Hero opening: each line comes into focus after the one before it. */
   [data-intro] {

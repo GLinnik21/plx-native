@@ -26,19 +26,22 @@
     const STAGGER_MS = 90;
     const MAX_DELAY_MS = 540;
 
-    const enter = new IntersectionObserver(
-      (entries) => {
-        const entering = entries
-          .filter((e) => e.isIntersecting && !e.target.classList.contains("is-revealed"))
-          .map((e) => e.target)
-          .sort((x, y) => (x.compareDocumentPosition(y) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
-        entering.forEach((el, i) => {
-          el.style.setProperty("--reveal-delay", Math.min(i * STAGGER_MS, MAX_DELAY_MS) + "ms");
-          el.classList.add("is-revealed");
-        });
-      },
-      { rootMargin: "0px 0px -18% 0px", threshold: 0 }
-    );
+    const onEnter = (entries) => {
+      const entering = entries
+        .filter((e) => e.isIntersecting && !e.target.classList.contains("is-revealed"))
+        .map((e) => e.target)
+        .sort((x, y) => (x.compareDocumentPosition(y) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+      entering.forEach((el, i) => {
+        el.style.setProperty("--reveal-delay", Math.min(i * STAGGER_MS, MAX_DELAY_MS) + "ms");
+        el.classList.add("is-revealed");
+      });
+    };
+    const enter = new IntersectionObserver(onEnter, { rootMargin: "0px 0px -18% 0px", threshold: 0 });
+    // Cards are big solid panels: waiting for the 82% line leaves a card-sized
+    // blank on a phone screen that is then filled all at once, which reads as
+    // a pop. They start as soon as their top is on screen (with a slower fade,
+    // in styles.css).
+    const enterCard = new IntersectionObserver(onEnter, { rootMargin: "0px 0px -2% 0px", threshold: 0 });
 
     const reset = new IntersectionObserver(
       (entries) => {
@@ -52,7 +55,7 @@
     );
 
     targets.forEach((el) => {
-      enter.observe(el);
+      (el.getAttribute("data-reveal") === "card" ? enterCard : enter).observe(el);
       reset.observe(el);
     });
 
