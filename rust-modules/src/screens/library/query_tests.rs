@@ -78,7 +78,7 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
             } else {
                 FILTER
             });
-            engine.set(OWNER, toolbar, Some(TOOLBAR_GROUP), By::Restore);
+            engine.set(OWNER, toolbar, Some(page.toolbar_group()), By::Restore);
             page.scroll.jump(page.target_layout.row_reveal(8));
             page.scroll_target = page.scroll.pos;
             let mut cx = fixture.cx(Some(toolbar));
@@ -234,13 +234,20 @@ fn accepted_queries_reset_engine_grid_memory_but_keep_the_toolbar_during_loading
                 }
             }
             assert_eq!(engine.current(OWNER), Some(toolbar));
+            // The remembered cell is what a sideways door (the rail) re-enters by; a vertical
+            // entry from the heading projects under the chip instead (`focus::projects_across`).
+            assert_eq!(
+                engine.read(OWNER).remembered(group),
+                Some(page.pair.detail.elems[0]),
+                "accepted query must reset the engine's remembered grid target: {edit:?}"
+            );
             let mut links = Vec::new();
             <LibraryScreen as Screen<HostFixture>>::links(&page, &mut links);
             engine.move_dir(OWNER, &page, &links, Dir::Down, &fixture.cx(Some(toolbar)));
             assert_eq!(
-                engine.current(OWNER),
-                Some(page.key(page.pair.detail.elems[0])),
-                "accepted query must reset the engine's remembered grid target: {edit:?}"
+                page.grid_position(engine.current(OWNER)).map(|(row, _)| row),
+                Some(0),
+                "DOWN from the heading lands in the first row, never the old cell 52: {edit:?}"
             );
             assert!((page.scroll_target - page.target_layout.row_reveal(0)).abs() < 0.01);
         }

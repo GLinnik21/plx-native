@@ -408,6 +408,10 @@ pub enum GroupKind {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Seat {
     Nearest,
+    /// The group's remembered element — except an UP/DOWN press into a card lattice
+    /// (`ElemKind::Card` `Row` or `Grid`), which lands through `seat` on the card above or below
+    /// the cursor, so "down, right, up" closes a square (`focus::projects_across`). Sideways
+    /// doors, entries and restores, selector rows and columns keep the remembered element.
     Remembered,
     RememberedNear { rows: u8 },
     First,

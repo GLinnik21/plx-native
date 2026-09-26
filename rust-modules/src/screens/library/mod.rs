@@ -62,6 +62,9 @@ use parts::{GridPart, RailPart, GRID_GROUP, RAIL_GROUP};
 use transactions::{PendingTransactions, SectionTarget, GridTarget, GridAction};
 
 pub(crate) const LIBRARY_GROUP: GroupId = GroupId(0x4c49_4210);
+/// The heading row's group before a section is known. A known section's heading is its own
+/// group (`LibraryScreen::toolbar_group`), like its grid and rail: Movies and Shows are one page
+/// and one entry, so a shared id carried Movies' heading cursor into Shows as a "restore".
 pub(crate) const TOOLBAR_GROUP: GroupId = GroupId(0x4c49_4211);
 const STATUS_GROUP: GroupId = GroupId(0x4c49_4212);
 const SORT: u32 = 1;
@@ -133,6 +136,8 @@ pub(crate) struct LibraryScreen {
     wanted_kind: Option<SecKind>,
     keys: KeyRegistry,
     pair: MasterDetail<RailPart, GridPart, Regions>,
+    /// The heading row's group: per section and epoch, registered beside the pair's.
+    toolbar: GroupId,
     libraries: Vec<(u32, usize)>,
     shelves: Vec<Shelf>,
     section: Option<LibrarySectionIdentity>,
@@ -157,8 +162,8 @@ pub(crate) struct LibraryScreen {
     /// head is — the shelves arrive async, usually after a prepared grid, and commit above it.
     provisional: Option<GroupId>,
     /// Remembered cursors the PAGE wrote by seating itself, which the reader has not confirmed.
-    /// The engine remembers every seat alike, and `TOOLBAR_GROUP` is one group across sections,
-    /// so its memory alone cannot tell a restore from the page's own earlier seat.
+    /// The engine remembers every seat alike, so its memory alone cannot tell a restore from the
+    /// page's own earlier seat in the same section.
     placed: Vec<(GroupId, u32)>,
     sweep_down: bool,
     // Paint-only state: neither capsule travel nor ambient colours choose focus or activation.
@@ -184,6 +189,7 @@ impl LibraryScreen {
                 MasterDetailGroups { master: RAIL_GROUP, detail: GRID_GROUP },
                 MasterDetailPolicy::new(MasterSide::Right, Follow::Live), Regions,
             ),
+            toolbar: TOOLBAR_GROUP,
             libraries: Vec::new(), shelves: Vec::new(), section: None, epoch: None, query: None, grid_reset_pending: false,
             shelf_publication: None, layout, target_layout: layout,
             scroll: Spring::at(0.0), scroll_target: 0.0, restore_scroll: None,
@@ -216,6 +222,10 @@ impl LibraryScreen {
     }
 
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: self.entry, elem } }
+
+    /// The heading row's group for the section on the page.
+    #[cfg(test)]
+    pub(crate) fn toolbar_group(&self) -> GroupId { self.toolbar }
 
     fn reseat<H: LibraryLike>(&self, focus: FocusTarget<u32>, fx: &mut Effects<'_, H>) {
         fx.push(Fx::Deliver(MachineId::Instance(self.instance),
@@ -258,6 +268,7 @@ impl LibraryScreen {
                 section: section.clone(), kind: kind.into(), key: epoch.to_string(),
             }, GroupId(0), 0));
             let groups = MasterDetailGroups { master: group("rail-group"), detail: group("grid-group") };
+            self.toolbar = group("toolbar-group");
             if self.pair.groups_config() != groups {
                 self.pair = MasterDetail::new(
                     RailPart::new(self.entry, groups.master), GridPart::new(self.entry, groups.detail),
@@ -427,7 +438,7 @@ impl LibraryScreen {
             Some(Block::LibraryRow) => LIBRARY_GROUP,
             Some(Block::Shelf(index)) => self.shelves[index].group,
             Some(Block::Status) => STATUS_GROUP,
-            Some(Block::Toolbar | Block::Grid(_)) => TOOLBAR_GROUP,
+            Some(Block::Toolbar | Block::Grid(_)) => self.toolbar,
             None => STRIP,
         }
     }
@@ -994,7 +1005,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
             out.push(row_group(row.group, row.elems.len(), Rect::new(MARGIN_X, self.target_layout.shelf_y(index, self.scroll_target) + CARD_DY, SCR_W - 2.0 * MARGIN_X, row_style(row).h), ElemKind::Card));
         }
         if self.layout.grid_head {
-            out.push(row_group(TOOLBAR_GROUP, self.toolbar_elems().len(), self.toolbar_chip_rect(self.toolbar_elems()[0], cx, At::SpringTarget), ElemKind::Control));
+            out.push(row_group(self.toolbar, self.toolbar_elems().len(), self.toolbar_chip_rect(self.toolbar_elems()[0], cx, At::SpringTarget), ElemKind::Control));
         }
         if self.readout == Readout::Failed {
             if let Some(rect) = self.status_rect(cx) {
@@ -1012,7 +1023,7 @@ impl<H: LibraryLike> Focusable<H> for LibraryScreen {
         if let Some(answer) = self.plaintext_alert.group_of(*elem) { return answer; }
         if self.libraries.iter().any(|(key, _)| key == elem) { return Some(LIBRARY_GROUP); }
         if let Some(row) = self.shelves.iter().find(|row| row.elems.contains(elem)) { return Some(row.group); }
-        if self.layout.grid_head && self.toolbar_elems().contains(elem) { return Some(TOOLBAR_GROUP); }
+        if self.layout.grid_head && self.toolbar_elems().contains(elem) { return Some(self.toolbar); }
         if self.readout == Readout::Failed && *elem == RETRY { return Some(STATUS_GROUP); }
         self.pair.group_of(elem, cx)
     }
@@ -1075,7 +1086,7 @@ impl LibraryScreen {
     fn row_elems(&self, group: Option<GroupId>) -> Vec<u32> {
         match group {
             Some(LIBRARY_GROUP) => self.libraries.iter().map(|(elem, _)| *elem).collect(),
-            Some(TOOLBAR_GROUP) => self.toolbar_elems().to_vec(),
+            Some(group) if group == self.toolbar => self.toolbar_elems().to_vec(),
             Some(STATUS_GROUP) => vec![RETRY],
             Some(group) => self.shelves.iter().find(|row| row.group == group).map(|row| row.elems.clone()).unwrap_or_default(),
             None => Vec::new(),
@@ -1136,7 +1147,7 @@ impl<H: LibraryLike> Screen<H> for LibraryScreen {
         let mut document = Vec::new();
         if !self.libraries.is_empty() { document.push(LIBRARY_GROUP); }
         document.extend(self.shelves.iter().map(|row| row.group));
-        if self.layout.grid_head { document.push(TOOLBAR_GROUP); }
+        if self.layout.grid_head { document.push(self.toolbar); }
         if self.readout == Readout::Failed { document.push(STATUS_GROUP); }
         if !self.pair.detail.elems.is_empty() { document.push(self.pair.groups_config().detail); }
         for pair in document.windows(2) {
@@ -1144,7 +1155,7 @@ impl<H: LibraryLike> Screen<H> for LibraryScreen {
             out.push(Link { from: pair[1], dir: Dir::Up, to: pair[0] });
         }
         self.pair.links(out);
-        out.push(Link { from: TOOLBAR_GROUP, dir: Dir::Right, to: self.pair.groups_config().master });
+        out.push(Link { from: self.toolbar, dir: Dir::Right, to: self.pair.groups_config().master });
     }
     fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
 }
@@ -1170,6 +1181,8 @@ impl LogicalState for LibraryScreen {
         self.page_fade.write(c);
         self.grid_fade.write(c);
         self.pair.state().write(c);
+        // `toolbar` is not written: like the pair's ids it is registered in `keys` for the section
+        // and epoch, all three of which `page_memory` below already carries.
         c.u32(self.pair.groups_config().master.0).u32(self.pair.groups_config().detail.0);
         self.pending.write(c);
         c.bool(self.ground_seeded);

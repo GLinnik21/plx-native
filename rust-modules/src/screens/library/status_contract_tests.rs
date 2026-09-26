@@ -1,4 +1,4 @@
-use super::super::{readout, LibraryScreen, Readout, FILTER, LIBRARY_GROUP, RETRY, SORT, STATUS_GROUP, TOOLBAR_GROUP};
+use super::super::{readout, LibraryScreen, Readout, FILTER, LIBRARY_GROUP, RETRY, SORT, STATUS_GROUP};
 use crate::stores::browse::{SecFetch, SecKind, SrcGroup, SourceState, SrcRow};
 use crate::screens::registry::{LibraryLike, PageMemory};
 use crate::ui::fixture::FixtureMeasure;
@@ -151,7 +151,7 @@ fn failed_status_occupies_content_and_keeps_only_navigation_and_retry() {
     page.groups(&cx, &mut groups);
     assert!(groups.iter().any(|group| group.id == LIBRARY_GROUP), "the library row remains the way out");
     assert!(groups.iter().any(|group| group.id == STATUS_GROUP), "failure publishes its Retry control");
-    assert!(!groups.iter().any(|group| group.id == TOOLBAR_GROUP));
+    assert!(!groups.iter().any(|group| group.id == page.toolbar_group()));
     assert!(!groups.iter().any(|group| group.id == page.pair.groups_config().detail));
     assert!(!groups.iter().any(|group| group.id == page.pair.groups_config().master));
     assert!(page.place(&SORT, &cx, At::SpringTarget).is_none());
@@ -197,7 +197,7 @@ fn empty_loading_and_failed_discovery_publish_no_false_grid_controls() {
         assert_eq!(page.place(&RETRY, &cx, At::SpringTarget).is_some(), retry, "{name}");
         assert!(page.place(&SORT, &cx, At::SpringTarget).is_none(), "{name}");
         assert!(page.place(&FILTER, &cx, At::SpringTarget).is_none(), "{name}");
-        assert!(!groups.iter().any(|group| group.id == TOOLBAR_GROUP), "{name}");
+        assert!(!groups.iter().any(|group| group.id == page.toolbar_group()), "{name}");
         assert!(!groups.iter().any(|group| group.id == page.pair.groups_config().detail), "{name}");
         assert!(!groups.iter().any(|group| group.id == page.pair.groups_config().master), "{name}");
     }

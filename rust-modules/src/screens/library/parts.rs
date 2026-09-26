@@ -601,12 +601,32 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
             .unwrap_or(want)
     }
 
+    /// The cell a crossing lands on, projected from where the source stands (§7.3 step 4,
+    /// `column_near_x`'s contract): the column whose centre is nearest the source's, in the row
+    /// nearest it — the first row from the heading above. A source's own `index` names a slot
+    /// in ITS container, never one of these cells.
     fn seat(&self, _group: GroupId, from: Placed, _cx: &Cx<'_, H>) -> FocusKey<u32> {
-        let index = from.index.unwrap_or(0) as usize;
-        FocusKey {
-            entry: self.entry,
-            elem: self.elems.get(index.min(self.elems.len().saturating_sub(1))).copied().unwrap_or(0),
-        }
+        let layout = self.target_layout;
+        let cols = layout.cols();
+        let rows = self.elems.len().div_ceil(cols).max(1);
+        let half_w = layout.card_w() / 2.0;
+        let col = (0..cols)
+            .min_by(|&a, &b| {
+                let d = |c: usize| (layout.cell_x(c) + half_w - from.rect.cx()).abs();
+                d(a).total_cmp(&d(b))
+            })
+            .unwrap_or(0);
+        // Rows are one pitch apart but for the focused row's caption band, so the pitch estimate
+        // is at most a row long; settle it on the nearest centre.
+        let centre = |row: usize| layout.row_y(row, self.scroll_target) + layout.card_h() / 2.0;
+        let estimate = ((from.rect.cy() - centre(0)) / layout.grid_pitch()).round().max(0.0) as usize;
+        let row = [estimate.saturating_sub(1), estimate, estimate + 1]
+            .into_iter()
+            .map(|row| row.min(rows - 1))
+            .min_by(|&a, &b| (centre(a) - from.rect.cy()).abs().total_cmp(&(centre(b) - from.rect.cy()).abs()))
+            .unwrap_or(0);
+        let index = (row * cols + col).min(self.elems.len().saturating_sub(1));
+        FocusKey { entry: self.entry, elem: self.elems.get(index).copied().unwrap_or(0) }
     }
 }
 
