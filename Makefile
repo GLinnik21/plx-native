@@ -1176,6 +1176,7 @@ PRIVATE_LOG_TEST_BIN := $(or $(TMPDIR),/tmp/)plx-private-log-test
 
 check: lint
 	python3 ci/test_ass_composite.py
+	python3 ci/test_ass_regions.py
 	@# EVERY host test runs in a THROWAWAY runtime root, and that is a correctness fix rather than
 	@# hygiene. `paths` resolves the session file out of the runtime dir, which on the host defaults
 	@# to a bare `/tmp` — so `browse::record_pins` writing a profile's library selection wrote the
