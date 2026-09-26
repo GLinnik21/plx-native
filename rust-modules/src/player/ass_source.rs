@@ -14,10 +14,13 @@ pub(crate) const MAX_FONT_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PACKET_BYTES: usize = 256 * 1024;
 const MAX_EVENTS: usize = 8192;
 const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_MEDIA_KEY_BYTES: usize = 64 * 1024;
 
 #[derive(Default)]
 pub(crate) struct Store {
     generation: u64,
+    // Exact delivery identity, never logged: it may include an authentication token.
+    media_key: Option<String>,
     tracks: BTreeMap<i32, Arc<Source>>,
     fonts: Option<Arc<[Font]>>,
 }
@@ -32,6 +35,7 @@ impl Store {
     pub(crate) const fn new() -> Self {
         Self {
             generation: 0,
+            media_key: None,
             tracks: BTreeMap::new(),
             fonts: None,
         }
@@ -39,12 +43,38 @@ impl Store {
 
     pub(super) fn reset(&mut self) {
         self.generation = self.generation.wrapping_add(1);
+        self.media_key = None;
         self.tracks.clear();
         self.fonts = None;
     }
 
-    fn begin(&mut self, headers: Vec<(i32, Vec<u8>)>, fonts: Vec<Font>) -> u64 {
+    /// Retire producer/raster identities while retaining immutable facts about the
+    /// current file. The reopened demuxer must prove its identity and header inventory
+    /// again in `begin` before it can inherit any packets.
+    pub(super) fn retain_for_reload(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.seek(self.generation);
+    }
+
+    fn begin(&mut self, media_key: &str, headers: Vec<(i32, Vec<u8>)>, fonts: Vec<Font>) -> u64 {
+        let same_file = !media_key.is_empty()
+            && self.media_key.as_deref() == Some(media_key)
+            && headers.len() == self.tracks.len()
+            && headers.iter().all(|(track, bytes)| {
+                self.tracks.get(track).is_some_and(|source| {
+                    matches!(&source.content, Content::Embedded { header, .. }
+                        if header.as_ref() == bytes.as_slice())
+                })
+            });
+        let previous = if same_file {
+            std::mem::take(&mut self.tracks)
+        } else {
+            BTreeMap::new()
+        };
         self.reset();
+        if !media_key.is_empty() && media_key.len() <= MAX_MEDIA_KEY_BYTES {
+            self.media_key = Some(media_key.to_owned());
+        }
         let mut bytes = 0;
         let fonts: Arc<[Font]> = fonts
             .into_iter()
@@ -62,6 +92,12 @@ impl Store {
                 continue;
             }
             header_bytes += header.len();
+            // An unchanged inventory also preserves the per-track/global byte budgets.
+            // A demux reopen seeks to a video cue and may never resend a long sign.
+            let events = previous.get(&track).and_then(|source| match &source.content {
+                Content::Embedded { events, .. } => Some(events.clone()),
+                _ => None,
+            }).unwrap_or_else(|| Arc::from([]));
             self.tracks.insert(
                 track,
                 Arc::new(Source {
@@ -69,7 +105,7 @@ impl Store {
                     revision: 0,
                     content: Content::Embedded {
                         header: header.into(),
-                        events: Arc::from([]),
+                        events,
                         fonts: fonts.clone(),
                     },
                 }),
@@ -163,8 +199,8 @@ impl Store {
     }
 }
 
-pub(crate) fn begin(headers: Vec<(i32, Vec<u8>)>, fonts: Vec<Font>) -> u64 {
-    store().begin(headers, fonts)
+pub(crate) fn begin(media_key: &str, headers: Vec<(i32, Vec<u8>)>, fonts: Vec<Font>) -> u64 {
+    store().begin(media_key, headers, fonts)
 }
 pub(crate) fn push(generation: u64, track: i32, start_ns: i64, end_ns: i64, payload: &[u8]) {
     if payload.len() > MAX_PACKET_BYTES {
@@ -242,7 +278,7 @@ mod tests {
     #[test]
     fn resetting_another_playback_owner_cannot_retire_the_live_subtitles() {
         let _guard = crate::testlock::serial();
-        begin(vec![(0, b"header".to_vec())], vec![]);
+        begin("fixture", vec![(0, b"header".to_vec())], vec![]);
         let id = selected(0).unwrap().id;
         let other = crate::player::Shared::new();
         other.reset_session();
@@ -261,7 +297,7 @@ mod tests {
     #[test]
     fn an_in_place_seek_preserves_a_known_sign_spanning_the_target() {
         let mut s = Store::default();
-        let generation = s.begin(vec![(0, b"header".to_vec())], vec![]);
+        let generation = s.begin("fixture", vec![(0, b"header".to_vec())], vec![]);
         let sign = Event {
             start_ms: 0,
             duration_ms: 120_000,
@@ -292,7 +328,7 @@ mod tests {
     #[test]
     fn backward_seek_packets_survive_until_the_presentation_clock_rebases() {
         let mut s = Store::default();
-        let generation = s.begin(vec![(0, b"header".to_vec())], vec![]);
+        let generation = s.begin("fixture", vec![(0, b"header".to_vec())], vec![]);
         // The demuxer is reading the requested ten-second position, while the native
         // presentation callback still reports ninety seconds until the first new picture.
         let floor_ms =
@@ -318,22 +354,59 @@ mod tests {
         };
         let before = {
             let mut s = shared.ass_sources.lock().unwrap();
-            let generation = s.begin(vec![(0, b"header".to_vec())], vec![]);
+            let generation = s.begin("fixture", vec![(0, b"header".to_vec())], vec![]);
             s.push(generation, 0, sign.clone(), 0);
             s.tracks[&0].id
         };
         shared.reset_session_for_reload();
         let mut s = shared.ass_sources.lock().unwrap();
-        s.begin(vec![(0, b"header".to_vec())], vec![]);
+        s.begin("fixture", vec![(0, b"header".to_vec())], vec![]);
         let source = &s.tracks[&0];
         assert_ne!(source.id, before, "retire the old raster across a fresh native Load");
         let Content::Embedded { events, .. } = &source.content else { panic!() };
         assert_eq!(events.as_ref(), &[sign], "a reload-based seek must preserve already-read media facts");
     }
     #[test]
+    fn demux_reopen_keeps_known_events_and_rejects_the_old_producer() {
+        let mut s = Store::new();
+        let old_generation = s.begin("part-A", vec![(0, b"header".to_vec())], vec![]);
+        let cue = event("known", 1000);
+        s.push(old_generation, 0, cue.clone(), 0);
+        let old_id = s.tracks[&0].id;
+        let generation = s.begin("part-A", vec![(0, b"header".to_vec())], vec![]);
+        assert_ne!(old_generation, generation);
+        assert_ne!(old_id, s.tracks[&0].id);
+        s.push(old_generation, 0, event("stale producer", 1000), 0);
+        s.push(generation, 0, cue.clone(), 0); // a reread still deduplicates
+        let Content::Embedded { events, .. } = &s.tracks[&0].content else { panic!() };
+        assert_eq!(events.as_ref(), &[cue]);
+    }
+
+    #[test]
+    fn new_playback_or_changed_file_inventory_cannot_inherit_subtitle_events() {
+        for (fresh, key, headers) in [
+            (true, "part-A", vec![(0, b"header".to_vec())]),
+            (false, "part-B", vec![(0, b"header".to_vec())]),
+            (false, "part-A", vec![(0, b"different style sheet".to_vec())]),
+            (false, "part-A", vec![(0, b"header".to_vec()), (1, b"new track".to_vec())]),
+        ] {
+            let shared = crate::player::Shared::new();
+            {
+                let mut s = shared.ass_sources.lock().unwrap();
+                let generation = s.begin("part-A", vec![(0, b"header".to_vec())], vec![]);
+                s.push(generation, 0, event("belongs to previous source", 1000), 0);
+            }
+            if fresh { shared.reset_session(); } else { shared.reset_session_for_reload(); }
+            let mut s = shared.ass_sources.lock().unwrap();
+            s.begin(key, headers, vec![]);
+            let Content::Embedded { events, .. } = &s.tracks[&0].content else { panic!() };
+            assert!(events.is_empty(), "only the same active playback and file inventory may reuse events");
+        }
+    }
+    #[test]
     fn overlapping_ass_events_and_headers_survive_without_flattening() {
         let mut s = Store::default();
-        let g = s.begin(vec![(0, b"[V4+ Styles]\nStyle: Sign".to_vec())], vec![]);
+        let g = s.begin("fixture", vec![(0, b"[V4+ Styles]\nStyle: Sign".to_vec())], vec![]);
         let sign = r"0,1,Sign,,0,0,0,,{\pos(120,80)\c&H0000FF&}sign";
         let dialogue = r"1,0,Default,,0,0,0,,{\k20}dialogue";
         s.push(g, 0, event(sign, 1000), 0);
@@ -350,6 +423,7 @@ mod tests {
     fn seek_retires_old_frames_but_keeps_headers_and_fonts() {
         let mut s = Store::default();
         let g = s.begin(
+            "fixture",
             vec![(0, b"header".to_vec())],
             vec![Font {
                 name: "font.ttf".into(),

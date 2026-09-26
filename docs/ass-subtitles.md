@@ -20,6 +20,9 @@ can use the already-read portion of the file. A seek changes source identities w
 events, headers and fonts: Matroska does not resend earlier signs spanning the seek target.
 Reread packets are deduplicated, and pruning follows a backward seek before the native clock
 rebases; a new session discards the previous media's sources.
+Reload-based seeks and demux reopens also retain known events, after revalidating the exact
+delivery identity and complete ASS header inventory. A different file or a new playback cannot
+inherit them. This matters when an in-place seek falls back to a fresh native Load.
 Reaching demux EOF does not discard subtitles while queued video still plays.
 
 For an external ASS/SSA track, `player::sidecar` requests UTF-8 without converting to SubRip and

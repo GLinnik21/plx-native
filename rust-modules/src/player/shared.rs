@@ -1437,13 +1437,13 @@ impl Shared {
     }
 
     /// [`Self::reset_session`] for a RELOAD of the same item — everything a fresh Load must not
-    /// inherit is cleared, and the one fact that belongs to the FILE rather than to the session
-    /// survives: its duration. The demuxer re-publishes it when it reopens, a few hundred ms
+    /// inherit is cleared; file facts survive: duration and bounded, already-read ASS sources.
+    /// The demuxer re-publishes duration when it reopens, a few hundred ms
     /// later, and until then a zero here is a playbar drawn at position ÷ 0 (`engine::teardown`
     /// has the account).
     pub(crate) fn reset_session_for_reload(&self) {
         let duration_ns = self.duration_ns.load(Ordering::Relaxed);
-        self.reset_session();
+        self.reset_session_inner(true);
         self.duration_ns.store(duration_ns, Ordering::Relaxed);
     }
 
@@ -1451,6 +1451,10 @@ impl Shared {
     /// [`Shared::clear_abr_seed`] and [`Shared::clear_abr_failure`]. Everything else here describes
     /// one engine's session and must not outlive it.
     pub fn reset_session(&self) {
+        self.reset_session_inner(false);
+    }
+
+    fn reset_session_inner(&self, for_reload: bool) {
         // This lock is held through the whole reset. A callback that entered before retirement
         // finishes first; one arriving afterwards sees no owner. It can therefore never validate
         // session A and then publish into the zeroed/reused storage of session B.
@@ -1544,9 +1548,14 @@ impl Shared {
         self.load_timed_out.store(false, Ordering::Relaxed);
         // NB: desired_sub_idx is NOT reset here — like desired_audio_idx it persists across
         // seeks/reloads so a reload-based seek keeps the chosen subtitle. It is reset on a new
-        // item (player::reset_subtitle). The cue/bitmap STORES below are transient render state
-        // and DO clear (the fresh demuxer re-populates them).
-        self.ass_sources.lock().unwrap_or_else(|e| e.into_inner()).reset();
+        // item (player::reset_subtitle). ASS packets are immutable file facts, not
+        // rendered frames: a reload must keep long signs that a seek will not resend.
+        // A fresh playback clears them; a reopen additionally revalidates URL + headers.
+        {
+            let mut sources = self.ass_sources.lock().unwrap_or_else(|e| e.into_inner());
+            if for_reload { sources.retain_for_reload(); } else { sources.reset(); }
+        }
+        // These decoded cue/bitmap stores are transient render state and refill on read.
         self.sub_cues.lock().unwrap().clear();
         self.sub_bitmaps.lock().unwrap().clear();
         // Cleared with them, and for the same reason: they describe the FILE the last demuxer had

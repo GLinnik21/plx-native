@@ -458,7 +458,7 @@ mod tests {
         let before = ass_source(false).unwrap();
         let font = super::super::ass::Font { name: "sign.ttf".into(), data: Arc::from(&b"font"[..]) };
         // Fonts belong to the media even when it has no embedded ASS track.
-        super::super::ass_source::begin(Vec::new(), vec![font]);
+        super::super::ass_source::begin("fixture", Vec::new(), vec![font]);
         let after = ass_source(false).unwrap();
         assert_eq!(after.id, before.id, "the script's identity is stable");
         assert!(after.revision > before.revision, "new fonts invalidate native rasterization");

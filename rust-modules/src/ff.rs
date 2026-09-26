@@ -1175,6 +1175,7 @@ unsafe fn sub_kind(codec_id: c_int) -> SubKind {
 /// dictionary layouts are already compile-asserted against our bundled FFmpeg headers; the
 /// attachment media-type constant is asserted beside them. No firmware layout is inferred.
 unsafe fn begin_ass_sources(
+    media_key: &str,
     fmt: *mut AVFormatContext,
     streams: *mut *mut AVStream,
     subs: &[(c_int, SubKind, *mut AVCodecContext)],
@@ -1222,7 +1223,7 @@ unsafe fn begin_ass_sources(
             crate::player::log(&format!("ass: embedded tracks={} fonts={} font_bytes={font_bytes}", headers.len(), fonts.len()));
         }
     }
-    ass_source::begin(headers, fonts)
+    ass_source::begin(media_key, headers, fonts)
 }
 
 /// Open a software decoder for an image-subtitle stream (PGS/VobSub/DVB). Returns a
@@ -7976,7 +7977,7 @@ pub(crate) fn demux(
                         sub_streams.push((i as c_int, k, dec));
                     }
                 }
-                let ass_generation = begin_ass_sources(fmt, streams, &sub_streams);
+                let ass_generation = begin_ass_sources(&url, fmt, streams, &sub_streams);
                 if !sub_streams.is_empty() {
                     let desc: Vec<String> = sub_streams
                         .iter()
