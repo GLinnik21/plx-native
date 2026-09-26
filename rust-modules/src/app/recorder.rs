@@ -1312,6 +1312,35 @@ mod tests {
     }
 
     #[test]
+    fn controlled_recording_accepts_the_tvs_startup_foreground_pair() {
+        let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
+        let mut header = Header::new(state_fp(), &initial);
+        header.features = features();
+        header.triggers = initial.triggers.clone();
+        // Minimized from the ARM recording: its first native inputs were the
+        // compositor's WILL/DID foreground pair, before any navigation key.
+        let mut recording = Recording {
+            header,
+            frames: vec![
+                crate::ui::rec::Frame { f: 0, tick: Some(Tick { ms: 0, dt_us: 0 }),
+                    st: Some(7), focus: Some(None), ..Default::default() },
+                crate::ui::rec::Frame { f: 1, tick: Some(Tick { ms: 16, dt_us: 16_000 }),
+                    present: Some(true), st: Some(7), focus: Some(None),
+                    inputs: vec![json!({"f":1,"t":"in","kind":"lifecycle","code":0x105}),
+                        json!({"f":1,"t":"in","kind":"lifecycle","code":0x106})],
+                    ..Default::default() },
+            ],
+            metrics: Default::default(), stopped_at: None,
+        };
+        assert_eq!(validate_controlled(&recording, &initial), Ok(()));
+        for code in [0x103, 0x104, 0, u32::MAX] {
+            recording.frames[1].inputs = vec![json!({"f":1,"t":"in","kind":"lifecycle","code":code})];
+            assert!(validate_controlled(&recording, &initial).is_err(),
+                "background and unknown lifecycle remain outside the controlled domain");
+        }
+    }
+
+    #[test]
     fn product_mode_encoding_is_bounded_explicit_and_fail_closed() {
         assert_eq!(ReplayMode::parse("/tmp/synthetic"),Ok((ReplayMode::Targets,"/tmp/synthetic")));
         assert_eq!(ReplayMode::parse("v1\ntargets\n/tmp/synthetic"),Ok((ReplayMode::Targets,"/tmp/synthetic")));
