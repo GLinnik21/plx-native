@@ -21,6 +21,7 @@ pub(crate) struct Store {
     generation: u64,
     // Exact delivery identity, never logged: it may include an authentication token.
     media_key: Option<String>,
+    awaiting_reopen: bool,
     tracks: BTreeMap<i32, Arc<Source>>,
     fonts: Option<Arc<[Font]>>,
 }
@@ -36,6 +37,7 @@ impl Store {
         Self {
             generation: 0,
             media_key: None,
+            awaiting_reopen: false,
             tracks: BTreeMap::new(),
             fonts: None,
         }
@@ -44,6 +46,7 @@ impl Store {
     pub(super) fn reset(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.media_key = None;
+        self.awaiting_reopen = false;
         self.tracks.clear();
         self.fonts = None;
     }
@@ -54,6 +57,12 @@ impl Store {
     pub(super) fn retain_for_reload(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.seek(self.generation);
+        self.awaiting_reopen = true;
+        self.fonts = None;
+    }
+
+    fn selected(&self, track: i32) -> Option<Arc<Source>> {
+        (!self.awaiting_reopen).then(|| self.tracks.get(&track).cloned()).flatten()
     }
 
     fn begin(&mut self, media_key: &str, headers: Vec<(i32, Vec<u8>)>, fonts: Vec<Font>) -> u64 {
@@ -230,7 +239,7 @@ pub(crate) fn font_snapshot() -> (u64, Arc<[Font]>) {
     (store.generation, fonts)
 }
 pub(crate) fn selected(track: i32) -> Option<Arc<Source>> {
-    store().tracks.get(&track).cloned()
+    store().selected(track)
 }
 
 /// Interpolate the sparse native clock only while it is advancing. Limit extrapolation to
@@ -380,6 +389,23 @@ mod tests {
         s.push(generation, 0, cue.clone(), 0); // a reread still deduplicates
         let Content::Embedded { events, .. } = &s.tracks[&0].content else { panic!() };
         assert_eq!(events.as_ref(), &[cue]);
+    }
+
+    #[test]
+    fn cached_reload_sources_stay_hidden_until_the_demuxer_revalidates_them() {
+        let mut s = Store::new();
+        let generation = s.begin("part-A", vec![(0, b"header".to_vec())], vec![]);
+        s.push(generation, 0, event("known", 1000), 0);
+        assert!(s.selected(0).is_some());
+        s.retain_for_reload();
+        assert!(s.selected(0).is_none());
+        assert!(s.fonts.is_none());
+        s.push(generation, 0, event("late", 1000), 0);
+        s.begin("part-A", vec![(0, b"header".to_vec())], vec![]);
+        let source = s.selected(0).unwrap();
+        let Content::Embedded { events, .. } = &source.content else { panic!() };
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload.as_ref(), b"known");
     }
 
     #[test]
