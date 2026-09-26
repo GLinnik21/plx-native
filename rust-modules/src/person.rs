@@ -844,9 +844,13 @@ fn open(
     {
         return;
     }
-    let _ = state.session_watch.changed();
-    if let Some(session) = crate::plex::session::peek_settled() {
-        state.session_identity = (session.client_id.clone(), session.account_token.clone());
+    // Controlled content uses captured authority and supplied provider replies. The ambient
+    // session cache recovers asynchronously and is not an input in that transcript.
+    if !crate::app::bootstrap::stores::active() {
+        let _ = state.session_watch.changed();
+        if let Some(session) = crate::plex::session::peek_settled() {
+            state.session_identity = (session.client_id.clone(), session.account_token.clone());
+        }
     }
     state.supersede(adapter);
     let srcs = sources(sid, key, name);
@@ -1036,7 +1040,7 @@ pub(crate) fn media_resolving(p: &Person, sid: ServerId) -> bool {
 impl PersonState {
     pub(crate) fn pump_with_gate(&mut self, adapter: &Arc<PersonAdapter>, gate: &crate::ui::landgate::Gate) -> bool {
         let mut session_changed = false;
-        if self.session_watch.changed() {
+        if !crate::app::bootstrap::stores::active() && self.session_watch.changed() {
             if let Some(session) = crate::plex::session::peek_settled() {
                 let identity = (session.client_id.clone(), session.account_token.clone());
                 if self.session_identity != identity {
@@ -1493,7 +1497,7 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize) 
     let guid = p.guid.clone();
     if i == F_PROFILE || i == F_CREDITS {
         let controlled = crate::app::bootstrap::stores::active();
-        let session = crate::plex::session::peek_settled();
+        let session = if controlled { None } else { crate::plex::session::peek_settled() };
         if !controlled && session.as_ref().is_none_or(|s| s.client_id.is_empty()) { return; }
         let profile = i == F_PROFILE;
         adapter.fetch[i].claim();
