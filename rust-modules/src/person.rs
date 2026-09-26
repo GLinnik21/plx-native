@@ -844,9 +844,13 @@ fn open(
     {
         return;
     }
-    let _ = state.session_watch.changed();
-    if let Some(session) = crate::plex::session::peek_settled() {
-        state.session_identity = (session.client_id.clone(), session.account_token.clone());
+    // Controlled content uses captured authority and supplied provider replies. The ambient
+    // session cache recovers asynchronously and is not an input in that transcript.
+    if !crate::app::bootstrap::stores::active() {
+        let _ = state.session_watch.changed();
+        if let Some(session) = crate::plex::session::peek_settled() {
+            state.session_identity = (session.client_id.clone(), session.account_token.clone());
+        }
     }
     state.supersede(adapter);
     let srcs = sources(sid, key, name);
@@ -1036,7 +1040,7 @@ pub(crate) fn media_resolving(p: &Person, sid: ServerId) -> bool {
 impl PersonState {
     pub(crate) fn pump_with_gate(&mut self, adapter: &Arc<PersonAdapter>, gate: &crate::ui::landgate::Gate) -> bool {
         let mut session_changed = false;
-        if self.session_watch.changed() {
+        if !crate::app::bootstrap::stores::active() && self.session_watch.changed() {
             if let Some(session) = crate::plex::session::peek_settled() {
                 let identity = (session.client_id.clone(), session.account_token.clone());
                 if self.session_identity != identity {
@@ -1493,7 +1497,7 @@ fn maybe_spawn(state: &mut PersonState, adapter: &Arc<PersonAdapter>, i: usize) 
     let guid = p.guid.clone();
     if i == F_PROFILE || i == F_CREDITS {
         let controlled = crate::app::bootstrap::stores::active();
-        let session = crate::plex::session::peek_settled();
+        let session = if controlled { None } else { crate::plex::session::peek_settled() };
         if !controlled && session.as_ref().is_none_or(|s| s.client_id.is_empty()) { return; }
         let profile = i == F_PROFILE;
         adapter.fetch[i].claim();
@@ -2061,6 +2065,41 @@ mod tests {
         fn loading(&self) -> bool { self.state.view().loading() }
         fn hold_off(&mut self) { self.state.retry_cd = [RETRY_FRAMES; NFETCH]; }
         fn supersede(&mut self) { self.state.supersede(&self.adapter); }
+    }
+
+    #[test]
+    fn controlled_person_ignores_ambient_session_recovery() {
+        let _g = crate::testlock::serial();
+        struct ResetTape;
+        impl Drop for ResetTape {
+            fn drop(&mut self) { crate::app::bootstrap::stores::reset_for_test(); }
+        }
+        for replay in [false, true] {
+            let _session = crate::plex::session::TempSession::new("controlled-person-recovery");
+            crate::plex::reset_servers_for_test();
+            let saved = crate::plex::session::peek();
+            crate::plex::session::install_transient_for_test(true);
+            let initial = crate::app::bootstrap::Initial::synthetic_home(23, 32517, None).unwrap();
+            crate::app::bootstrap::stores::init(&initial, replay);
+            let _tape = ResetTape;
+            let mut owner = Owner::default();
+            owner.open(S0, "1001", "", "Synthetic person", "");
+            owner.state.current.as_mut().unwrap().profiled = true;
+            owner.state.current.as_mut().unwrap().credited = true;
+            let generation = owner.gen();
+            // Minimized from ARM: the ambient cache recovered at frame 26 while
+            // recording, but frame 20 on replay, retiring/reissuing Person work.
+            crate::plex::session::save(&saved);
+            let changed = owner.pump();
+            assert_eq!(owner.gen(), generation,
+                "controlled Person must not retire recorded work on an ambient storage completion");
+            assert!(!changed);
+            assert!(owner.current().unwrap().profiled);
+            assert!(owner.current().unwrap().credited);
+            let (requests, failure) = crate::app::bootstrap::stores::finish();
+            assert!(requests.is_empty());
+            assert_eq!(failure, None);
+        }
     }
 
     #[test]

@@ -32,6 +32,23 @@ unlisted domain remain unsupported and fail closed before IO. Product replay has
 modes: Targets substitutes each recorded Focus/Hit resolution before dependent effects, while
 Resolve runs the current engine/map and grades every resolution pointwise before continuing.
 
+Person's provider requests use the captured authority throughout controlled recording and replay.
+Ambient session-cache recovery cannot retire those requests or introduce unrecorded retries.
+
+The TV's startup WILL/DID foreground notifications are recorded and replayed through the
+navigation owner. Recorded notifications cannot restore native playback, change network grants,
+or authorize drawing into a physically backgrounded window. During replay the real compositor
+still owns window activation, while live keys and FIFO commands cannot join the recorded input
+stream. A real background/quit event interrupts replay; recorded background lifecycle remains
+unsupported.
+
+Page-capture GPU readiness is also a recorded input, sampled before dispatch. Replay supplies
+that observation to the ordinary motion and presentation gates, then computes and grades the
+final present decision. Faster GPU completion cannot introduce extra presents or advance a held
+transition early. Missing, duplicate, late or unconsumed readiness fails closed; the independent
+physical window gate still blocks drawing while backgrounded. Recordings predating this input
+are refused at the product shape boundary and must be recorded afresh.
+
 The admission contract also records each synchronous worker-spawn answer with its full request
 identity and frame ordering. A refused attempt stays refused during replay, including its normal
 retry/backoff; it is not turned into an admitted worker or an asynchronous failure. Natural
@@ -70,15 +87,21 @@ gained the seven page names flat — `state_fp` moved from `0x2ee80fef41949b4b` 
 NO recorded frame hash changed. The committed artifacts could not be loaded at all
 (`replay: REFUSED — state shape 0x2ee80fef41949b4b recorded, 0x489bbd488180e355 here`, all three),
 which is the machine-checkable condition `rerecord` verifies for itself; nothing was accepted,
-because nothing could be compared. The three anchor manifests no longer share one `state_fp`:
-the store-ownership migration re-recorded `1-boot-home-chip-grid` and `6-settings-family` onto
-`state_fp` `1538339256646369256` (`0x155947674871ffe8`), but `12-filmography-detail-return` still
-carries the earlier `10352703632114781766` (`0x8fac311a39190e46`) and REFUSES to load — the
-controlled-effect encoder (`app/bootstrap/effects.rs`) only handles
-`ContentReq::Push`/`Present`/`Back`, and Flow 12's own flow trips the Detail hero-preview
-autostart, which the encoder cannot record yet. `tests/test_harness.py`'s schema-drift check
-quarantines it with that reason until the encoder gains that effect; do not treat the next
-`rerecord` of 1 or 6 as proof 12 is current too. Clean replay summaries require
+because nothing could be compared. All three anchors were subsequently re-recorded against the current state shape
+`10372147871357755035` (`0x8ff14588f61a5e9b`). The plaintext-consent initial
+fields moved the declared census to `ControlledHomeInitV5` / `SessionInitV4`; all three
+anchors were freshly recorded after the old inputs were observed being refused. The library-type
+and compact-row change in #258 subsequently moved the screen census; all three anchors were
+recorded again on that combined shape and replayed in both modes with every difference counter
+at zero. The `CaptureReadinessV1` input subsequently moved the product wire shape; all three
+anchors were freshly recorded again, and both modes graded every frame with every difference
+counter at zero. The controlled effect encoder now covers preview
+start/stop/transport/seek, item-menu requests, and every content-panel payload with exhaustive
+matches. Replay regenerates those typed requests and compares their complete JSON payloads;
+it does not decode recorded effects into executable requests. Full playback remains outside
+this controlled domain. Flow 12 also waits for the initial Home root to mount before opening
+Detail, so a cold renderer taking longer than the 500 ms scenario delay cannot discard the
+Detail request. Fixture 12's quarantine is removed. Clean replay summaries require
 `input_diffs=0 effect_diffs=0 focus_diffs=0 hit_diffs=0` as well as zero state, presentation,
 result, and landing diffs.
 

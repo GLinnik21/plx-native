@@ -1624,7 +1624,9 @@ path. Never run only this one before a release. `tests/README.md` has the tier t
   initialization, explicit recorded Client bindings, recorded Home/Browse and Detail/Person
   results, and exact request admissions. Replay denies content resource execution and compares
   supported effects as well as state; malformed/unsupported input fails closed before resource
-  activation. `AppFrameV4` includes physical Consent and the initial-input digest. Private recordings can contain
+  activation. Page-capture GPU readiness is sampled before dispatch and replayed as an input;
+  final present decisions are still computed and graded, with live physical-window protection.
+  `AppFrameV4` includes physical Consent and the initial-input digest. Private recordings can contain
   credentials in typed initialization/effects: only explicitly synthetic inputs may become
   fixtures. `tests/controlled_bootstrap.py` exercises this representative production path with
   fresh/contrasting roots and outbound IO denied. Blobs, cross-target operation and unsupported

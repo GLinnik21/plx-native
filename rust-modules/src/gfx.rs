@@ -1949,7 +1949,8 @@ pub(crate) mod tex_ledger {
 /// page render.
 ///
 /// Bounded by [`SNAPSHOT_DEFER_MAX`] frames, so a fence that never signals costs a few frames
-/// once and never a frozen screen; with no fences (the simulator) nothing is ever deferred.
+/// once and never a frozen screen; with no fences (the simulator), ordinary frames never defer.
+/// Controlled replay instead supplies the readiness observed by its recording.
 static SNAPSHOT_THIS_FRAME: AtomicBool = AtomicBool::new(false);
 /// The capture frame's fence. Main render thread only, like the chain.
 static mut SNAPSHOT_FENCE: Option<crate::egl::fence::Fence> = None;
@@ -1976,9 +1977,11 @@ pub(crate) fn snapshot_frame_end() {
     }
 }
 
-/// Start an iteration: is a capture still in flight on the GPU? Latched for
-/// [`snapshot_pending`]; a signalled fence (or the cap) drops it.
-pub(crate) fn snapshot_frame_begin() {
+/// Start an iteration: sample the capture fence, then let the frame's readiness capability
+/// supply the observation used by motion and presentation. Ordinary frames retain the live
+/// answer; controlled replay supplies the recorded one. Native fence retirement still follows
+/// the actual GPU, and the independent physical window gate still governs every swap.
+pub(crate) fn snapshot_frame_begin(readiness: impl FnOnce(bool) -> bool) {
     // SAFETY: main render thread.
     let fence = unsafe { (*std::ptr::addr_of!(SNAPSHOT_FENCE)).as_ref().map(|f| f.signaled()) };
     let n = SNAPSHOT_DEFERRED.load(Ordering::Relaxed);
@@ -1988,7 +1991,7 @@ pub(crate) fn snapshot_frame_begin() {
     } else if fence.is_some() {
         unsafe { SNAPSHOT_FENCE = None };
     }
-    SNAPSHOT_PENDING.store(defer, Ordering::Relaxed);
+    SNAPSHOT_PENDING.store(readiness(defer), Ordering::Relaxed);
 }
 
 /// Has this frame captured the page so far? Its GPU work will be waited out before the next
