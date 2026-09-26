@@ -268,6 +268,11 @@ impl CardRow {
     pub(crate) fn scroll_x(&self) -> f32 {
         self.scroll_x.pos
     }
+    /// Read-only witness for the finite hero/grid device scene. A retained offset
+    /// must have a stationary shelf spring while snap transforms its placement.
+    #[cfg(feature = "devtriggers")]
+    pub(crate) fn scroll_velocity(&self) -> f32 { self.scroll_x.vel }
+
     /// Restore a saved viewport without animating from the constructor's origin. Clamp against
     /// current content because the row may have shrunk while its screen was covered or evicted.
     pub(crate) fn restore_scroll(&mut self, scroll: f32, n: usize, sty: &RowStyle) {

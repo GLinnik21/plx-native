@@ -614,6 +614,8 @@ pub(crate) fn last_change_ms() -> u32 {
 pub(crate) fn note_present(now: u32) {
     LAST_PRESENT.store(now, Relaxed);
     PRESENTS.fetch_add(1, Relaxed);
+    #[cfg(feature = "devtriggers")]
+    super::card_motion_metrics::presented(now);
 }
 
 /// Presents since the last call — drained once a second into the heartbeat as `fps=`, which is the

@@ -1230,6 +1230,8 @@ pub(crate) unsafe fn construct(
         bridge,
         // Every dev-trigger arm's own state (spec: `dev/scenarios.rs`'s module doc).
         scenarios: crate::dev::scenarios::Scenarios {
+            #[cfg(feature = "devtriggers")]
+            poster_gate: Default::default(),
             pick_user,
             home_osc_last,
             hero_osc_last,
