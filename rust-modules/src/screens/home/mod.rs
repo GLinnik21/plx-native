@@ -1384,6 +1384,14 @@ impl HomeScreen {
         self.focused_grid(focus)
     }
 
+    /// Diagnostic view of the actual animated state: snap, retained shelf offset,
+    /// shelf velocity. No second motion owner or stored telemetry state.
+    #[cfg(feature = "devtriggers")]
+    pub(crate) fn motion_witness(&self, row: usize) -> Option<[f32; 3]> {
+        self.rows.get(row)?;
+        Some([self.snap.pos, self.grid.shelves[row].scroll_x(), self.grid.shelves[row].scroll_velocity()])
+    }
+
     pub(crate) fn snap_target(&self) -> f32 {
         self.snap_target
     }

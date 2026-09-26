@@ -433,6 +433,25 @@ cast+about / info-panel regressions.
 ./tests/run.py --list          # scenes print as `fps:<name>`
 ```
 
+The finite `poster-scroll-settle`, `poster-eviction-reversal` and `poster-hero-grid-dive`
+scenes additionally grade `poster-gate:` telemetry. Run them with `--fps --only poster-`.
+Their moving FPS counts actual swaps between the first and last moving-card frames using the
+unclamped frame clock; source admissions during that motion must be zero. The final settled
+window must request and upload missing art and then draw every artwork-bearing card resident.
+A high FPS with no poster work cannot pass. The reversal also requires real texture losses,
+refusals of evicted slots during reversal, and rearming afterward. The dive records
+actual snap plus shelf offset/velocity throughout Hero, dive and settle, requiring
+its horizontal spring to stay stationary while the retained offset is transformed.
+The dive hands over at snap 0.9, while that horizontal product is still moving fast;
+the settle phase captures its natural deceleration and resulting art arrivals.
+
+These scenes send focus commands only. Use a mock catalog for repeatable coverage: at least
+152 library items and 12 items in Home shelf 0, all with working artwork. Eviction and dive
+explicitly lower the real texture byte-LRU ceiling to 12 MiB so cached textures are lost before
+the source's 64 identities recycle; other scenes retain the production 44 MiB ceiling. A
+missing target, missing art, incomplete phase sequence or unavailable telemetry fails the
+scene. The ordinary `library-scroll` scene remains the continuous-motion performance control.
+
 For a diagnosis rather than a regression gate, select exactly one reproducible scene and ask for
 the three-layer bundle:
 
@@ -456,7 +475,7 @@ marks pacing invalid if a render-profiler trigger is armed.
     and on a settled screen it grades nothing at all — `home-hero` carries an `_idle_gate_note`
     saying so. It is the only one left: this line said "three scenes" long after the other two
     (`home-grid`, `library-scroll`) were given oscillators and real `fps_floor`s, which is exactly
-    the fix that note asks for. The remaining `loop_floor`-only scenes are `info-panel`, `chapters-panel` and
+    the fix that note asks for. The remaining scenes graded only by `loop_floor` are `info-panel`, `chapters-panel` and
     `track-menu`, and they need no such note — the video plane stays **bound** throughout those
     scenes, and the gate treats a bound plane as always-present (`ui/idle.rs`'s `VIDEO_PLANE`),
     so their `loop_floor` still grades a fill rate the way it always did.

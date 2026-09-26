@@ -2888,6 +2888,8 @@ mod lifecycle_regression_tests {
             t0: Default::default(),
             instr: crate::diag::heartbeat::Instruments::new(false, 22.0),
             scenarios: crate::dev::scenarios::Scenarios {
+            #[cfg(feature = "devtriggers")]
+            poster_gate: Default::default(),
                 pick_user: Default::default(),
                 home_osc_last: Default::default(),
                 hero_osc_last: Default::default(),

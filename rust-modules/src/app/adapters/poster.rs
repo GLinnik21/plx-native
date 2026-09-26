@@ -771,8 +771,12 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                 } else if retry_due(&g.slots[i], now) {
                     if decline {
                         crate::ui::card_motion::deferred();
+                        #[cfg(feature = "devtriggers")]
+                        crate::ui::card_motion_metrics::refused(crate::ui::card_motion_metrics::Refused::Retry);
                         return (None, Warm::Known);
                     }
+                    #[cfg(feature = "devtriggers")]
+                    crate::ui::card_motion_metrics::request();
                     g.slots[i].state = P_WANT;
                     g.slots[i].retry_at = None;
                     g.slots[i].retry_wake_sent = false;
@@ -808,9 +812,16 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
                 }
                 if decline {
                     crate::ui::card_motion::deferred();
+                    #[cfg(feature = "devtriggers")]
+                    crate::ui::card_motion_metrics::refused(crate::ui::card_motion_metrics::Refused::Evicted);
                     // The same deferral the cooldown just made, for the same reason: the slot
                     // stays EVICTED and the first draw at a settled speed re-arms it as usual.
                     return (None, Warm::Known);
+                }
+                #[cfg(feature = "devtriggers")]
+                {
+                    crate::ui::card_motion_metrics::request();
+                    crate::ui::card_motion_metrics::rearmed();
                 }
                 g.slots[i].state = P_WANT;
                 g.slots[i].evict_wake_sent = false;
@@ -856,6 +867,8 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // can still be declined for free.
     if decline {
         crate::ui::card_motion::deferred();
+        #[cfg(feature = "devtriggers")]
+        crate::ui::card_motion_metrics::refused(crate::ui::card_motion_metrics::Refused::New);
         return (None, Warm::Full);
     }
     // miss: prefer EMPTY, else LRU-evict a settled slot not used this frame
@@ -906,6 +919,8 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     if old_px != 0 {
         img::img_free(old_px as *mut c_uchar);
     }
+    #[cfg(feature = "devtriggers")]
+    crate::ui::card_motion_metrics::request();
     CV.notify_one();
     (None, Warm::Claimed)
 }
@@ -970,6 +985,8 @@ impl tex::Source for PosterSource {
         drop(g);
         if lost {
             RESIDENCY_LOST.fetch_add(1, Ordering::Relaxed);
+        #[cfg(feature = "devtriggers")]
+        crate::ui::card_motion_metrics::evicted();
             log_residency();
         }
     }
@@ -1090,6 +1107,8 @@ impl Uploader for GfxUploader {
     fn upload(&mut self, d: &Decoded) -> Tex {
         let id = img::img_upload_rgba(d.rgba.as_ptr(), d.w as c_int, d.h as c_int);
         UP_CT.fetch_add(1, Ordering::Relaxed);
+        #[cfg(feature = "devtriggers")]
+        crate::ui::card_motion_metrics::upload();
         UP_PX.fetch_add((d.w as u64) * (d.h as u64), Ordering::Relaxed);
         Tex {
             id,

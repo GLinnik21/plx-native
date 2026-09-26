@@ -23,6 +23,8 @@ use std::os::raw::{c_char, c_int};
 pub mod anim;
 pub mod card_row;
 pub(crate) mod card_motion;
+#[cfg(feature = "devtriggers")]
+pub(crate) mod card_motion_metrics;
 pub(crate) mod value_chip; // shared label/value/owner capsule used by menu-opening controls
 pub mod chapters_panel;
 pub(crate) mod containers; // RESTRUCTURE (spec §6.2): Navigation = TabContainer → NavStack → ModalStack, the transitions, the host fold
