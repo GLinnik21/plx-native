@@ -185,7 +185,7 @@
   "probe": "controlled=home version=1"
  },
  "schema": 3,
- "state_fp": 17365088699144604602,
+ "state_fp": 10871066530039414812,
  "triggers": [
   "plxnative-app-init",
   "plxnative-rec",
