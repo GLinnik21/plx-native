@@ -40,6 +40,8 @@ use std::os::raw::c_int;
 
 pub(crate) mod bench;
 pub(crate) mod screenshot;
+#[cfg(feature = "devtriggers")]
+pub(crate) mod poster_gate;
 
 /// The dev triggers read ONCE at boot and consulted by the loop every frame after (each is
 /// documented where it is READ, below). Formerly `App::dev: DevFlags`; unchanged in shape.
@@ -71,6 +73,8 @@ pub(crate) struct DevFlags {
 /// `pub(crate)` throughout: `app::boot`/`app::run`/`app::content` still read and write these
 /// fields directly through `&mut App`, exactly as they read `App`'s own fields.
 pub(crate) struct Scenarios {
+    #[cfg(feature = "devtriggers")]
+    pub(crate) poster_gate: poster_gate::Scene,
     pub(crate) pick_user: Option<usize>,
     pub(crate) home_osc_last: u32,
     pub(crate) hero_osc_last: u32,
@@ -1385,6 +1389,8 @@ pub(crate) fn failure_fixture(session: &mut crate::route::PlaybackSession) {
 /// `plxnative-server` slot) — the loop `continue`s exactly as it always did, skipping the rest of
 /// this frame's arms and phases alike.
 pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
+    #[cfg(feature = "devtriggers")]
+    poster_gate::tick(app, fr.now);
     autoplay_arm(app, fr);
     grid_library_search_heroidx_arm(app, fr);
     settings_boot_arm(app, fr);

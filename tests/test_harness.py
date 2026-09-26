@@ -5362,5 +5362,50 @@ impl PersonOwnerGateFixture {
             )
 
 
+class PosterGateCoverage(unittest.TestCase):
+    def test_device_manifest_has_settle_eviction_and_dive_workloads(self):
+        scenes = {s.get('poster_gate', {}).get('kind'): s for s in _manifest()['fps_scenes'] if s.get('poster_gate')}
+        self.assertEqual(set(scenes), {'settle', 'eviction', 'dive'})
+        for scene in scenes.values():
+            self.assertGreaterEqual(scene['poster_gate']['moving_fps_floor'], 55)
+            self.assertIn('plxnative-postergate', scene['triggers'])
+
+    def test_poster_grade_requires_real_work_and_complete_settle(self):
+        import poster_gate
+        def evidence(kind):
+            records = []
+            for phase in poster_gate.PHASES[kind]:
+                values = {k: 0 for k in poster_gate.FIELDS}
+                values.update(ms=1000, frames=60, draws=720, ready=720, moving=700,
+                              moving_frames=60, moving_ms=983, requested=12,
+                              refused_new=20, refused_evicted=10, rearmed=12,
+                              uploads=12, lost=12, last_draws=12, last_ready=12, complete=1)
+                if kind == 'dive':
+                    values.update(shelf_start_px=1500, shelf_end_px=1500,
+                                  snap_end_milli=0 if phase == 'hero' else 1000,
+                                  snap_begin_milli=0 if phase in ('warm','dive') else 1000)
+                records.append('poster-gate: kind='+kind+' phase='+phase+' '+' '.join(f'{k}={v}' for k,v in values.items()))
+            records.append('poster-gate: kind='+kind+' phase=done')
+            return records
+        for kind in poster_gate.PHASES:
+            scene = {'poster_gate': {'kind': kind, 'moving_fps_floor': 55}}
+            lines = evidence(kind)
+            self.assertTrue(run.grade_poster_gate(scene, lines)[0])
+            for bad, replacement in [('requested_moving=0','requested_moving=1'), ('uploads=12','uploads=0'),
+                                     ('last_ready=12','last_ready=0'), ('moving_frames=60','moving_frames=0'),
+                                     ('refused_new=20 refused_evicted=10','refused_new=0 refused_evicted=0')]:
+                broken = [line.replace(bad,replacement) for line in lines]
+                self.assertFalse(run.grade_poster_gate(scene, broken)[0], (kind,bad))
+            self.assertFalse(run.grade_poster_gate(scene, lines[:-1])[0])
+            self.assertFalse(run.grade_poster_gate(scene, ['loop=60 route=library fps=60'])[0])
+        dive = {'poster_gate': {'kind': 'dive', 'moving_fps_floor': 55}}
+        for bad,replacement in [('shelf_end_px=1500','shelf_end_px=0'), ('shelf_span_px=0','shelf_span_px=20'),
+                                ('shelf_v_milli=0','shelf_v_milli=2000'), ('snap_end_milli=1000','snap_end_milli=700')]:
+            self.assertFalse(run.grade_poster_gate(dive,[line.replace(bad,replacement) for line in evidence('dive')])[0])
+        scene = {'poster_gate': {'kind': 'eviction','moving_fps_floor':55}}
+        for bad in ('lost=12','rearmed=12','refused_evicted=10'):
+            self.assertFalse(run.grade_poster_gate(scene,[line.replace(bad,bad.split('=')[0]+'=0') for line in evidence('eviction')])[0])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

@@ -5,6 +5,56 @@
   "_fps_comment": "On-device UI framerate regression scenes (./tests/run.py --fps, or --fps-player to add the player tier). Each sets its plxnative-* triggers, runs profiler-OFF, parses the once/sec `loop=<n> route=<r> fps=<n>` heartbeat for its route(+overlay), skips warmup_s samples, and requires the 2nd-lowest loop= >= loop_floor plus whichever of fps_floor / fps_ceiling the scene declares. loop= counts LOOP ITERATIONS (liveness only — a settled screen reads ~62 while swapping nothing); fps= counts FRAMES ACTUALLY SWAPPED and is the only real frame rate here. RENAMED 2026-08-01 with the old name REUSED: a pre-rename log's FPS= is this loop=, and its pres= is this fps=. `item` keys resolve through manifest.local.json exactly like the cases below; detail-transition needs an in-home-catalog (recently-added/on-deck) movie or it FAILs with 'never entered route=detail'. NOTE (who's-watching): a multi-user Plex Home roster boots to the who's-watching PICKER (route=profiles), so any home/detail scene MUST set at least one non-diagnostic plxnative-* trigger — that marks the boot automated and skips the picker to land on route=home. home-hero continuously pages the carousel with plxnative-heroosc; home-fold alternates Hero and the first shelf with plxnative-homefoldosc; home-grid starts in the grid and sweeps its rows. A scene with empty triggers stalls on the picker and FAILs with 'never entered route=home'.",
   "fps_scenes": [
     {
+      "name": "poster-scroll-settle",
+      "tier": "ui",
+      "route": "library",
+      "loop_floor": 50,
+      "run_secs": 30,
+      "warmup_s": 4,
+      "poster_gate": {
+        "kind": "settle",
+        "moving_fps_floor": 55
+      },
+      "triggers": {
+        "plxnative-postergate": "settle",
+        "plxnative-library": true
+      },
+      "comment": "Finite 18-row scroll followed by a complete art window. Requires >=152 library items with reachable artwork. Motion FPS and zero source admissions while moving are graded separately from the settled request/upload/render proof. No activation or viewing-history writes."
+    },
+    {
+      "name": "poster-eviction-reversal",
+      "tier": "ui",
+      "route": "library",
+      "loop_floor": 50,
+      "run_secs": 42,
+      "warmup_s": 4,
+      "poster_gate": {
+        "kind": "eviction",
+        "moving_fps_floor": 55
+      },
+      "triggers": {
+        "plxnative-postergate": "eviction",
+        "plxnative-library": true
+      },
+      "comment": "Warm grid rows 0, 6 and 12 under an explicit 12 MiB texture ceiling, reverse quickly across the actually evicted rows, then require them to rearm and render fully. The source retains 64 slots; this scene exercises real byte-LRU eviction before source identity recycling. Requires >=104 library items. No activation or viewing-history writes."
+    },
+    {
+      "name": "poster-hero-grid-dive",
+      "tier": "ui",
+      "route": "home",
+      "loop_floor": 50,
+      "run_secs": 30,
+      "warmup_s": 4,
+      "poster_gate": {
+        "kind": "dive",
+        "moving_fps_floor": 55
+      },
+      "triggers": {
+        "plxnative-postergate": "dive"
+      },
+      "comment": "Warm Home shelf 0 at column 11, return to the hero, then dive back through the retained horizontal offset. The explicit 12 MiB texture ceiling makes hero art evict shelf art, so the dive must refuse actual demand and refill it at rest. Requires >=12 items in Home shelf 0. No activation or viewing-history writes."
+    },
+    {
       "name": "home-hero",
       "tier": "ui",
       "route": "home",
@@ -2796,7 +2846,7 @@
         "no_playing_error": true,
         "abr_shape": {}
       },
-      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the bottom of the ladder: the 1 MiB AUDIO queue should bind, not the 8 MiB video one. The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. `start_hls` is what puts this case in HLS, and it is the honest replacement for what used to: `source_kbps: 900000` was declared so that the starvation horizon would fire and drop Auto out of Original, on an unshaped link where the reserve was visibly FILLING. That entry only ever worked because the horizon did not check whether anything was draining, and it stopped working the day that was fixed -- correctly, since a growing reserve is not a starvation. `route::arm_auto_fixture` now installs the post-fallback state directly. The declared rate is kept because it still bounds the actuator raster and keeps Original RECOVERY out of the case, and it no longer forces anything. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
+      "_census_note": "Measurement step M4 of docs/adaptive-playback-plan.md, as ONE command: this case writes the play URL, quality=auto and plxnative-abrpin together, so the census needs no manual prerequisite. the bottom of the ladder: the 1 MiB audio queue should bind before the video queue capped by engine::AQ_VIDEO_BYTES. The link is deliberately UNSHAPED (no network_profile) so the AU queue byte cap is the only limiter -- a shaped leg would measure the shaper instead. `start_hls` is what puts this case in HLS, and it is the honest replacement for what used to: `source_kbps: 900000` was declared so that the starvation horizon would fire and drop Auto out of Original, on an unshaped link where the reserve was visibly FILLING. That entry only ever worked because the horizon did not check whether anything was draining, and it stopped working the day that was fixed -- correctly, since a growing reserve is not a starvation. `route::arm_auto_fixture` now installs the post-fallback state directly. The declared rate is kept because it still bounds the actuator raster and keeps Original RECOVERY out of the case, and it no longer forces anything. `abr_shape: {}` reports every I0 metric and asserts none of them: this case exists to produce evidence, and a bound written before the baseline exists would be a number somebody guessed. Run it with --no-early: the census needs the FULL window, and a case that satisfied every assertion would otherwise stop as soon as it had. min_pos_climb_s stays below the 60 s entry fixture's own duration, which the harness checks up front."
     },
     {
       "name": "pipe_abr_pin_720",

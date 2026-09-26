@@ -5244,6 +5244,14 @@ def rate_stats(vals):
             "robust_min": robust_min, "head": head, "tail": tail, "drift": tail - head}
 
 
+def grade_poster_gate(scene, lines):
+    if not scene.get("poster_gate"):
+        return True, ""
+    import poster_gate
+    ok, detail = poster_gate.grade(scene["poster_gate"], lines)
+    return ok, " | " + detail
+
+
 def fps_scene_needs_token(scene, has_shared_server=False):
     """Whether this scene must cross the signed-in boot gate.
 
@@ -5456,6 +5464,9 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     ok = ok and ok_o
     detail += detail_o
 
+    ok_p, detail_p = grade_poster_gate(scene, lines)
+    ok = ok and ok_p
+    detail += detail_p
     print(f"    [{'PASS' if ok else 'FAIL'}] {detail}")
     return ok, detail
 

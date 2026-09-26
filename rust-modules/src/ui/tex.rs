@@ -161,6 +161,13 @@ pub fn install(src: &'static dyn Source) {
     SOURCE.with(|s| s.set(Some(src)));
 }
 
+/// The eviction-reversal scene uses a smaller REAL residency ceiling so it can
+/// evict textures while their source slots still exist; ordinary runs keep 44 MiB.
+#[cfg(feature = "devtriggers")]
+pub(crate) fn scene_residency_budget(bytes: usize) {
+    CACHE.with(|c| c.borrow_mut().bytes_max = bytes * render_area());
+}
+
 /// Start a host test with the real product wrapper/cache but a deliberately small byte ceiling.
 /// The cache is thread-local, so this changes only the calling test's instance.
 #[cfg(test)]
