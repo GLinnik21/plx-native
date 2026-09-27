@@ -136,3 +136,9 @@ against a REAL server lives in `plxnative-recordings/` (gitignored, refused by t
 never comes here. A fixture whose `manifest.json` carries `"anchor": true` refuses `--rebaseline`
 (a behaviour-change replacement, evidenced by a divergence record); `rerecord`, above, is the
 shape-bump escape an anchor does not refuse.
+
+The playback-settings change (#217) adds the two Settings page arguments and their logical
+state to the screen census. The prior anchors were observed being refused, then all three were
+freshly recorded against shape `13142456728797643905` and passed Targets and Resolve with zero
+difference counters. Account/preference I/O remains outside the controlled replay domain: typed
+preference effects are rejected by the bridge before capture, worker admission, or persistence.

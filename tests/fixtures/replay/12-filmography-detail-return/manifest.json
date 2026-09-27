@@ -61,8 +61,8 @@
        "address": "127.0.0.1",
        "machine_id": "",
        "name": "",
-       "origin": "http://127.0.0.1:32623",
-       "port": 32623,
+       "origin": "http://127.0.0.1:32722",
+       "port": 32722,
        "tier": "local",
        "token": "s00000002"
       }
@@ -121,6 +121,7 @@
      "account_token": "",
      "auto_sign_in": false,
      "client_id": "s00000001",
+     "direct_play_mode": "auto",
      "home_pins": [],
      "home_users": [],
      "last_hero_blur": null,
@@ -181,11 +182,11 @@
    ],
    "version": 1
   },
-  "hash": 15825798426725251044,
+  "hash": 15964143816878761839,
   "probe": "controlled=home version=1"
  },
  "schema": 3,
- "state_fp": 10372147871357755035,
+ "state_fp": 13142456728797643905,
  "triggers": [
   "plxnative-app-init",
   "plxnative-rec",
