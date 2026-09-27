@@ -324,12 +324,12 @@
     "description": "Settings, account, onboarding or privacy UI: settings.consent.usage_subtitle"
   },
   "settings.consent.share_analytics": {
-    "value": "Share analytics",
-    "description": "Settings, account, onboarding or privacy UI: settings.consent.share_analytics"
+    "value": "Share",
+    "description": "Short affirmative action for the consent question above; keep paired actions on one row."
   },
   "settings.consent.share_reports": {
-    "value": "Share reports",
-    "description": "Settings, account, onboarding or privacy UI: settings.consent.share_reports"
+    "value": "Share",
+    "description": "Short affirmative action for the consent question above; keep paired actions on one row."
   },
   "settings.consent.do_not_share": {
     "value": "Don’t share",
@@ -591,19 +591,5 @@
   "settings.consent.preview.usage_heading": {
     "value": "Usage events (only when usage reporting is on):\n",
     "description": "Settings, account, onboarding or privacy UI: settings.consent.preview.usage"
-  },
-  "settings.read_details": {
-    "value": "{key} Read details",
-    "args": {
-      "key": "str"
-    },
-    "description": "Remote key hint shown only when a disclosure has more text than fits. The key argument is a drawn keycap."
-  },
-  "settings.scroll_details": {
-    "value": "{key} Scroll details",
-    "args": {
-      "key": "str"
-    },
-    "description": "Remote key hint while reading a scrollable disclosure. The key argument is a drawn keycap."
   }
 }

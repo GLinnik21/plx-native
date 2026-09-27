@@ -1761,7 +1761,7 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
     crate::screens::tracks_panel::SHAPE,
     crate::screens::about_panel::SHAPE,
     crate::screens::person_bio::SHAPE,
-    "LocalizationSettingsV2{Root:{language:system|en|es|be},Language:{selected:system|en|es|be,focus:u32,failed:bool},Contribute:QrLink,ConsentDisclosure:{scroll_steps:u32,overflow_focus:0x20000000,group:3},ConsentDeleteDisclosure:{scroll_target_bits:u32},BandPart:MeasuredRowOrColumn}",
+    "LocalizationSettingsV3{Root:{language:system|en|es|be},Language:{selected:system|en|es|be,focus:u32,failed:bool},Contribute:QrLink,ConsentDisclosure:{scroll_target_bits:u32,scroll_owner:answer_band},ConsentDeleteDisclosure:{scroll_target_bits:u32},BandPart:MeasuredRowOrColumn}",
 ];
 
 /// The pin over [`SCREEN_SHAPES`] — bump it in the same edit that adds an entry, and say why.
@@ -1820,7 +1820,7 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 /// replay is trusted. Host unit tests do not replay them.
 #[cfg(test)]
 // Localization includes language routes and paint-independent delete-disclosure scrolling.
-const SCREEN_SHAPES_PIN: u64 = 0x1d8fe1bf5107479b;
+const SCREEN_SHAPES_PIN: u64 = 0x62ec63160517c59c;
 
 #[cfg(test)]
 mod arg_tests {

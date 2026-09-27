@@ -104,6 +104,14 @@ pub(crate) struct LocaleContext {
     >,
 }
 impl LocaleContext {
+    /// Exercise expanded catalogs without changing the process-wide locale or environment.
+    #[cfg(test)]
+    pub(crate) fn pseudo_for_test() -> Self {
+        let mut context = Self::resolve(Preference::En, None, None, None, None);
+        context.language = Language::Pseudo;
+        context
+    }
+
     pub(crate) fn resolve(
         preference: Preference,
         ui: Option<&str>,

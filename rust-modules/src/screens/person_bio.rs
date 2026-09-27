@@ -471,7 +471,7 @@ fn text_w() -> f32 {
 /// One paragraph's view. Built in ONE place so its measure and its draw cannot disagree about the
 /// rung, the ink or the leading — `person.rs::bio_view` carries the same note for the same reason.
 fn para_view(text: &str) -> TextView<'_> {
-    TextView::new(text, theme::size::BODY, theme::TEXT_READING).leading(BIO_LEAD)
+    TextView::new(text, theme::size::BODY, theme::TEXT_READING).h(theme::alert::TEXT_ALIGN).leading(BIO_LEAD)
 }
 
 /// The scrolling viewport's rect — what the clip cuts to and what the feather rides.
@@ -623,7 +623,7 @@ pub(crate) fn library_line(films: usize, shows: usize) -> Option<String> {
 fn draw_head(p: Painter, person: &Person, c: Rect, measure: &dyn crate::ui::machine::Measure) {
     let mut y = c.y;
     Label::new(crate::i18n::msg::browse_person_eyebrow_c().as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
-        .bold().v(VAlign::CapTop).draw(p, Rect::new(c.x, y, c.w, 0.0));
+        .bold().h(theme::alert::TEXT_ALIGN).v(VAlign::CapTop).draw(p, Rect::new(c.x, y, c.w, 0.0));
     y += theme::alert::EYEBROW_LEAD + theme::alert::GAP_EYEBROW_TITLE;
 
     // The name is ELIDED to the content box, not wrapped: this is an identity, and a two-line name
@@ -633,6 +633,7 @@ fn draw_head(p: Painter, person: &Person, c: Rect, measure: &dyn crate::ui::mach
         measure.width_str(t, theme::size::TITLE, true)
     })) {
         Label::new(cs.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
+            .h(theme::alert::TEXT_ALIGN)
             .bold()
             .v(VAlign::CapTop)
             .draw(p, Rect::new(c.x, y, c.w, 0.0));

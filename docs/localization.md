@@ -102,8 +102,9 @@ language screenshots.
 On 2026-09-27, the host suite, shipping-feature type check, ARM build, ELF audit and supported
 firmware loader matrix passed. Simulator captures covered English, Spanish, Belarusian and the
 expanded pseudo-locale across browsing, detail, search, sign-in, language settings, privacy,
-contribution and consent screens. Long consent actions reflow; disclosures remain scrollable
-at the standard body size.
+contribution and consent screens. In that initial version, long consent actions reflowed and
+disclosures remained scrollable at the standard body size. The later design correction uses
+concise answer verbs in one measured row and allocates more space to the disclosure.
 
 The installed native debug app on the webOS 4.5 television successfully queried the Settings
 Service. Remote-driven language selection remained unchanged during the running session and

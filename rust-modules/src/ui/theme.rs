@@ -1210,6 +1210,9 @@ pub const ALERT_PANEL_RAD: f32 = 32.0;
 /// title band. Those two BANDS are half the ladder, which is why the leads live here too — a caller
 /// that advanced by measured cap heights instead is exactly how §1C ended up 12px tight.
 pub mod alert {
+    /// Titles and reading text share the panel's left padding edge in every alert.
+    /// Button labels and paired trailing values keep their own control/column alignment.
+    pub const TEXT_ALIGN: crate::ui::label::HAlign = crate::ui::label::HAlign::Left;
     /// The alert panel's inset — the pad every read-only alert lays its head ladder and its body
     /// against. **One number, because [`super::ALERT_PANEL_RAD`]'s own argument depends on it**:
     /// "32 is the largest corner whose arc still clears a 48px pad" cannot be checked while the pad

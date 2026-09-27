@@ -1,6 +1,6 @@
 //! Reusable two-choice decision alert. It owns measured geometry and destructive styling; the
 //! caller owns focus and supplies the question, two verbs and optional disclosure. Question and
-//! body wrap completely at their existing text sizes. The panel grows within the safe area;
+//! body share the left padding edge and wrap completely at their existing text sizes. The panel grows within the safe area;
 //! exceptionally long text scrolls with UP/DOWN while both answers remain directly available.
 //!
 //! [`layout`] is the pure half, `layout(question_h, body_h)`, and `body_h == 0.0` is byte-identical
@@ -42,11 +42,10 @@
 //! fading over the host it returned to.
 
 use crate::ui::consts::{K_SCROLL, SAFE};
-use crate::ui::label::HAlign;
 use crate::ui::machine::Measure;
 use crate::ui::popover::Popover;
 use crate::ui::text_view::TextView;
-use crate::ui::widgets::{Button, ControlStyle, CtlPop, KeyHint, StatusOverlay};
+use crate::ui::widgets::{Button, ControlStyle, CtlPop, StatusOverlay};
 use crate::ui::{theme, Env, Rect, Spring, View};
 
 const PANEL_W: f32 = 660.0;
@@ -81,7 +80,6 @@ pub(crate) struct Layout {
     /// The complete text keeps its natural height; only this viewport is bounded.
     pub(crate) text_viewport: Rect,
     pub(crate) scroll_max: f32,
-    hint: Option<Rect>,
 }
 
 /// The panel, **pure**, from the two measured text heights. `body_h` is 0.0 for an alert that asks
@@ -92,9 +90,8 @@ pub(crate) fn layout(question_h: f32, body_h: f32) -> Layout {
     let text_h = question_h + body_block;
     let fixed_h = PAD_TOP + QUESTION_GAP + StatusOverlay::CTRL_H + PAD_BOTTOM;
     let overflow = text_h + fixed_h > SAFE.h;
-    let hint_h = if overflow { KeyHint::height() + theme::space::MD } else { 0.0 };
-    let viewport_h = text_h.min(SAFE.h - fixed_h - hint_h);
-    let h = fixed_h + viewport_h + hint_h;
+    let viewport_h = text_h.min(SAFE.h - fixed_h);
+    let h = fixed_h + viewport_h;
     let panel = Rect::new(
         (Rect::FULL.w - PANEL_W) * 0.5,
         (Rect::FULL.h - h) * 0.5,
@@ -103,7 +100,7 @@ pub(crate) fn layout(question_h: f32, body_h: f32) -> Layout {
     );
     let row_w = BUTTON_W * 2.0 + BUTTON_GAP;
     let x = panel.cx() - row_w * 0.5;
-    let by = panel.y + PAD_TOP + viewport_h + hint_h + QUESTION_GAP;
+    let by = panel.y + PAD_TOP + viewport_h + QUESTION_GAP;
     Layout {
         panel,
         question: Rect::new(
@@ -128,8 +125,6 @@ pub(crate) fn layout(question_h: f32, body_h: f32) -> Layout {
         text_viewport: Rect::new(panel.x + PAD_X, panel.y + PAD_TOP, BODY_W, viewport_h),
         // Leave air after the final line when the text is clipped into a scrolling viewport.
         scroll_max: if overflow { text_h + theme::space::XS - viewport_h } else { 0.0 },
-        hint: overflow.then(|| Rect::new(panel.x + PAD_X,
-            panel.y + PAD_TOP + viewport_h + theme::space::MD, BODY_W, KeyHint::height())),
     }
 }
 
@@ -208,12 +203,12 @@ impl DecisionAlert {
         (l.cancel, l.destructive)
     }
     fn question_view(text: &str) -> TextView<'_> {
-        TextView::new(text, theme::size::TITLE, theme::TEXT_PRIMARY).bold().h(HAlign::Center)
+        TextView::new(text, theme::size::TITLE, theme::TEXT_PRIMARY).bold().h(theme::alert::TEXT_ALIGN)
             .break_long_words()
     }
     fn body_view(text: &str) -> TextView<'_> {
         TextView::new(text, theme::size::BODY, theme::TEXT_READING)
-            .h(HAlign::Center)
+            .h(theme::alert::TEXT_ALIGN)
             .break_long_words()
     }
     /// The remote's vertical axis reads the disclosure; horizontal focus still owns the answers.
@@ -303,10 +298,6 @@ impl DecisionAlert {
                         l.text_viewport.y, crate::ui::widgets::RAIL_W, l.text_viewport.h),
                     scroll, l.text_viewport.h + l.scroll_max, l.text_viewport.h);
             }
-            if let Some(frame) = l.hint {
-                let hint = KeyHint::translated(crate::i18n::msg::settings_scroll_details("\u{fffc}"), c"↑↓");
-                hint.draw(p, frame.cx() - hint.width(measure) * 0.5, frame.cy(), measure);
-            }
         });
         let env = Env::inert();
         crate::ui::profile::phase("da.ctl", || {
@@ -375,7 +366,7 @@ mod tests {
         alert.open_with_body("All local data is removed. Data already sent to Plex, Sentry and PostHog is not removed.");
         let question = "A future translated question with a long scope ".repeat(100);
         let l = alert.measured(&question, &measure);
-        assert!(l.scroll_max > 0.0 && l.hint.is_some());
+        assert!(l.scroll_max > 0.0);
         assert_eq!(l.panel.h, SAFE.h);
         assert!(l.cancel.y >= l.text_viewport.y + l.text_viewport.h);
         assert!(l.cancel.y + l.cancel.h <= SAFE.y + SAFE.h);

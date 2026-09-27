@@ -79,9 +79,9 @@
 
 //! **Long translated action labels reflow as a column.** In that shape UP/DOWN move between
 //! the two answers, RIGHT reaches the content column, and UP above the first action leaves the
-//! band. First-run consent reserves this measured band extent from a BODY-sized document reader;
-//! when its disclosure overflows, UP from the answers reaches that reader and DOWN at its end
-//! returns to the answers. The paragraph is never shortened to make translated actions fit.
+//! band. First-run consent uses contextual answer labels in one row and a measured reading
+//! column. Exceptional overflow scrolls on UP/DOWN while the selected answer retains focus.
+//! The paragraph is never shortened to make translated actions fit.
 
 use crate::ui::consts::SAFE;
 use crate::ui::icons::{self, Icon};
@@ -731,6 +731,27 @@ impl RouteLayout {
         Self::screen_with_copy_w(preferred_copy_w.max(longest_word).max(title_width).ceil().min(max_copy_w))
     }
 
+    /// Keep a complete disclosure above its peer actions, reclaiming unused narrative width
+    /// before requiring scrolling. The other column keeps its measured minimum width. `fits`
+    /// uses the same title/body flow as drawing; the returned columns serve focus and paint.
+    pub(crate) fn screen_for_reading(
+        min_action_w: f32,
+        min_content_w: f32,
+        fits: impl Fn(Self) -> bool,
+    ) -> Self {
+        let max_copy_w = (SAFE.w - COLUMN_GAP - min_content_w).max(NARRATIVE_W);
+        let mut width = NARRATIVE_W.max(min_action_w).min(max_copy_w);
+        loop {
+            let mut layout = Self::screen_with_copy_w(width);
+            // The answer row can use the inter-column whitespace without narrowing either
+            // reading column. Keep one control gap before the related-link column.
+            let action_limit = layout.content.x - layout.action.x - crate::ui::widgets::CONTROL_GAP;
+            layout.action.w = layout.action.w.max(min_action_w.min(action_limit));
+            if fits(layout) || width >= max_copy_w { return layout; }
+            width = (width + theme::space::MD).min(max_copy_w);
+        }
+    }
+
     /// Frame for a table whose first section has a label.
     ///
     /// [`TableView`](crate::ui::table::TableView) owns internal breathing room above that label.
@@ -833,7 +854,7 @@ impl RouteLayout {
         let title_h = Self::narrative_title(title).with_measure(measure).measure_h(self.narrative.w);
         let top = self.narrative_top(has_crumb) + title_h + theme::space::MD;
         Rect::new(self.narrative.x, top, self.narrative.w,
-            (actions_top - theme::space::XL - top).max(0.0))
+            (actions_top - theme::space::MD - top).max(0.0))
     }
 
     fn draw_crumb(self, p: Painter, top: f32, back_to: &str, measure: &dyn Measure) {
@@ -866,12 +887,12 @@ impl RouteLayout {
     /// `.leading(TITLE_LEADING)` from the builder below — reverting the whole fix, putting the copy
     /// 19.4px back down on all eight callers of this function — left it green. A test that grades a
     /// constant grades the constant. Building the view here lets it grade the thing that is drawn.
+    /// App-owned titles and questions wrap completely; following content uses their measured height.
     pub(crate) fn narrative_title(title: &str) -> TextView<'_> {
         TextView::new(title, theme::size::HERO, theme::TEXT_HEADING)
             .bold()
             .break_long_words()
             .leading(TITLE_LEADING)
-            .max_lines(3)
     }
 
     /// Draw a measured crumb→title→copy flow.  Each block begins after the previous one's actual

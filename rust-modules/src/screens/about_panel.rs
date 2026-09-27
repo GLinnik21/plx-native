@@ -297,6 +297,7 @@ impl AboutPanelScreen {
             tagline: if d.tagline.is_empty() { 0.0 } else { FINE_LEAD },
         };
         let syn = TextView::new(&d.summary, theme::size::BODY, theme::TEXT_READING)
+            .h(theme::alert::TEXT_ALIGN)
             .leading(SYN_LEAD)
             .max_lines(syn_lines(b));
         b.synopsis = if d.summary.is_empty() {
@@ -313,7 +314,7 @@ impl AboutPanelScreen {
         // ---- content ----
         let cx = r.x + PAD;
         let run = |text: &str, y: f32, sz, lead: f32, col, bold| {
-            let mut v = TextView::new(text, sz, col).leading(lead).max_lines(1);
+            let mut v = TextView::new(text, sz, col).h(theme::alert::TEXT_ALIGN).leading(lead).max_lines(1);
             if bold {
                 v = v.bold();
             }

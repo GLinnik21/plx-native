@@ -83,8 +83,8 @@
   "settings.consent.policy_subtitle": "Cómo gestiona PlxNative los datos locales, los servicios de Plex y los informes opcionales.",
   "settings.consent.crash_subtitle": "Qué se envía realmente: los campos exactos de un informe de fallos o errores, solo si los informes están activados.",
   "settings.consent.usage_subtitle": "Qué se envía realmente: los campos exactos de un evento de análisis de uso, solo si los análisis están activados.",
-  "settings.consent.share_analytics": "Compartir análisis",
-  "settings.consent.share_reports": "Compartir informes",
+  "settings.consent.share_analytics": "Compartir",
+  "settings.consent.share_reports": "Compartir",
   "settings.consent.do_not_share": "No compartir",
   "settings.consent.delete_question": "¿Borrar todos los datos locales?",
   "settings.cancel": "Cancelar",
@@ -144,7 +144,5 @@
   "settings.consent.analytics.present": "TU ID DE ANÁLISIS\n\n{id}\n\nQUÉ ES\n\nUn identificador aleatorio creado en este televisor al activar los análisis de uso. Se adjunta a los eventos para contarlos como procedentes de un único ID de análisis: una aceptación ininterrumpida en un televisor. No se deriva de tu cuenta de Plex, tu televisor ni de información sobre ti, y nunca se envía con informes de fallos, que llevan su propio ID separado.\n\nCÓMO PEDIR QUE SE BORREN ESTOS EVENTOS\n\nEscribe a {contact} e indica el identificador anterior. Es la única referencia de estos eventos, por lo que una solicitud sin él no puede vincularse a nada.\n\nCÓMO TERMINA\n\nDesactivar los análisis elimina este identificador; activarlos de nuevo crea otro distinto. Cerrar sesión también lo elimina y se vuelve a preguntar a quien entre después; Borrar todos los datos locales hace lo mismo. Los eventos ya enviados conservan el identificador anterior: anótalo antes de desactivar los análisis si vas a pedir que se borren.",
   "settings.consent.errors.absent": "NO HAY ID DE INFORME DE FALLOS\n\nLos informes de fallos están desactivados, por lo que esta instalación no tiene identificador de informe de fallos ni envía informes de fallos o errores.\n\nEl identificador se crea solo al activar los informes y se elimina al desactivarlos. Si antes los tenías activados y quieres borrar los informes de ese período, escribe a {contact}; ten en cuenta que su identificador se destruyó al desactivarlos y ya no se puede recuperar desde este televisor.",
   "settings.consent.errors.present": "TU ID DE INFORME DE FALLOS\n\n{id}\n\nQUÉ ES\n\nUn identificador aleatorio creado en este televisor al activar los informes de fallos. Se adjunta a cada informe de fallos y errores para que los fallos repetidos con el mismo ID se cuenten una sola vez y distinguir un problema que afecta a muchas personas de uno que se repite en un televisor. No se deriva de tu cuenta de Plex, tu televisor ni de información sobre ti, y nunca se envía con los análisis de uso, que tienen su propio ID separado.\n\nCÓMO PEDIR QUE SE BORREN ESTOS INFORMES\n\nEscribe a {contact} e indica el identificador anterior. Es la única referencia de estos informes, por lo que una solicitud sin él no puede vincularse a nada.\n\nCÓMO TERMINA\n\nDesactivar los informes de fallos elimina este identificador; activarlos de nuevo crea otro distinto. Cerrar sesión también lo elimina y se vuelve a preguntar a quien entre después; Borrar todos los datos locales hace lo mismo. Los informes ya enviados conservan el identificador anterior: anótalo antes de desactivarlos si vas a pedir que se borren.",
-  "settings.consent.preview.usage_heading": "Eventos de uso (solo con los análisis de uso activados):\n",
-  "settings.read_details": "{key} Leer detalles",
-  "settings.scroll_details": "{key} Desplazar detalles"
+  "settings.consent.preview.usage_heading": "Eventos de uso (solo con los análisis de uso activados):\n"
 }

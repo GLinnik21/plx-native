@@ -810,7 +810,7 @@ fn head(f: &mut Flow, text: &str, x: f32, w: f32) {
         theme::size::CAPTION,
         true,
         theme::TEXT_TERTIARY,
-        HAlign::Left,
+        theme::alert::TEXT_ALIGN,
     );
 }
 
@@ -824,7 +824,7 @@ fn pair(f: &mut Flow, pr: &Pair, x: f32, w: f32) {
         theme::size::CAPTION,
         false,
         theme::TEXT_TERTIARY,
-        HAlign::Left,
+        theme::alert::TEXT_ALIGN,
     );
     f.advance(PAIR_GAP);
     f.run(
@@ -835,7 +835,7 @@ fn pair(f: &mut Flow, pr: &Pair, x: f32, w: f32) {
         theme::size::LABEL,
         true,
         theme::TEXT_HEADING,
-        HAlign::Left,
+        theme::alert::TEXT_ALIGN,
     );
 }
 
@@ -991,7 +991,7 @@ impl TracksPanelScreen {
         let cw = PANEL_W - 2.0 * PAD;
         let mut y = r.y + PAD;
         let eyebrow = crate::i18n::msg::widgets_tracks_heading_c();
-        Label::new(eyebrow.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY)
+        Label::new(eyebrow.as_ptr(), theme::size::CAPTION, theme::TEXT_TERTIARY).h(theme::alert::TEXT_ALIGN)
             .bold()
             .v(VAlign::CapTop)
             .draw(p, Rect::new(cx, y, cw, theme::alert::EYEBROW_LEAD));
@@ -999,7 +999,7 @@ impl TracksPanelScreen {
         if let Ok(cs) = CString::new(crate::text::elide_by(&d.title, cw, false, |t| {
             measure.width_str(t, theme::size::TITLE, true)
         })) {
-            Label::new(cs.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
+            Label::new(cs.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY).h(theme::alert::TEXT_ALIGN)
                 .bold()
                 .v(VAlign::CapTop)
                 .draw(p, Rect::new(cx, y, cw, TITLE_H));
@@ -1011,7 +1011,7 @@ impl TracksPanelScreen {
             if let Ok(cs) = CString::new(crate::text::elide_by(&d.file, cw, false, |t| {
                 measure.width_str(t, theme::size::MICRO, false)
             })) {
-                Label::new(cs.as_ptr(), theme::size::MICRO, theme::TEXT_TERTIARY)
+                Label::new(cs.as_ptr(), theme::size::MICRO, theme::TEXT_TERTIARY).h(theme::alert::TEXT_ALIGN)
                     .v(VAlign::CapTop)
                     .draw(p, Rect::new(cx, y, cw, PATH_H));
             }

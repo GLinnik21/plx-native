@@ -835,7 +835,7 @@ mod tests {
     /// the simulator. Use Unicode-scalar measurement so UTF-8 byte length cannot create this
     /// regression artificially; each individual label still fits the normal narrative width.
     #[test]
-    fn belarusian_consent_actions_reflow_without_clipping_or_losing_remote_navigation() {
+    fn long_cyrillic_actions_reflow_without_clipping_or_losing_remote_navigation() {
         struct CyrillicMeasure;
         impl Measure for CyrillicMeasure {
             fn width(&self, text: &CStr, size: i32, _bold: bool) -> f32 {
@@ -844,9 +844,8 @@ mod tests {
             fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
             fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
         }
-        let locale = crate::i18n::LocaleContext::resolve(crate::i18n::Preference::Be, None, None, None, None);
-        let labels = [crate::i18n::msg::settings_consent_share_reports_c_in(&locale),
-            crate::i18n::msg::settings_consent_do_not_share_c_in(&locale)];
+        // Preserve the generic long-action fallback independently of consent's concise verbs.
+        let labels = [c"Адпраўляць справаздачы", c"Не адпраўляць"];
         let layout = RouteLayout::screen();
         let band = BandPart { layout, labels: &labels, group: G, entry: E,
             uncommitted: false, scales: [1.0; 2], palette: ControlPalette::default(), danger: None };

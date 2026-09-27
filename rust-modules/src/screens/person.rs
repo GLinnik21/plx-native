@@ -1,5 +1,6 @@
-//! The owned person page for restructure phase 7. It preserves the legacy page's measured layout,
-//! shelves, biography panel and animation, while navigation and focus are now explicit contracts:
+//! The owned person page for restructure phase 7. Its measured header keeps the Filmography
+//! action below the biography in the text column. Shelves, biography panel and animation share
+//! the UI system, while navigation and focus are explicit contracts:
 //! the engine is the only cursor, card keys preserve item identity across store reshapes, and page
 //! changes leave through `ContentReq` effects. Filmography is a separate modal `Screen`; this page
 //! presents it and never imports or stores a sibling screen.
@@ -66,8 +67,7 @@ enum Located {
 }
 
 // -------------------------------------------------------------------------------------------
-// geometry constants — verbatim from `ui/person.rs` (the port this screen replaces); the values
-// are the shipped, photographed design, not a re-derivation
+// geometry constants — the shared person header, biography and compact Filmography action
 // -------------------------------------------------------------------------------------------
 
 const PORTRAIT_EXP: f32 = 320.0;
@@ -182,6 +182,14 @@ struct HeaderFlow {
     entry_y: Option<f32>,
 }
 
+impl HeaderFlow {
+    /// Header-local geometry shared by paint and the page's focus/hit conversion. The action
+    /// belongs to the biography's text column, including the compact header with no biography.
+    fn entry_frame(&self, width: f32) -> Option<Rect> {
+        self.entry_y.map(|y| Rect::new(col_x(self.exp_d), y, width, ENTRY_H))
+    }
+}
+
 /// Pure over the facts it needs, so it is testable with no `Person`/`PersonScreen` in scope — see
 /// [`has_entry_of`]'s doc for why that matters here specifically (the PENDING header state, which
 /// this decides the placeholder geometry for, has no live `Person` seam to exercise it through).
@@ -232,7 +240,7 @@ fn header_flow(
         f.portrait_y = (f.exp_h - f.exp_d) * 0.5;
         let ty = (f.exp_h - y) * 0.5;
         f.name_y = ty;
-        for v in [&mut f.meta_y, &mut f.life_y, &mut f.bio_y]
+        for v in [&mut f.meta_y, &mut f.life_y, &mut f.bio_y, &mut f.entry_y]
             .into_iter()
             .flatten()
         {
@@ -867,11 +875,24 @@ impl PersonScreen {
     }
 
     fn entry_rect(&self, p: &Person, measure: &dyn Measure) -> Rect {
-        let Some(ey) = self.header.entry_y else {
-            return Rect::new(MARGIN_X, HEADER_TOP, 0.0, 1.0);
-        };
+        let top = HEADER_TOP - self.scroll.scroll.pos;
+        if self.header.entry_y.is_none() {
+            return Rect::new(col_x(self.header.exp_d), top, 0.0, 1.0);
+        }
         let w = entry_w(p, &self.entry_count_c, measure);
-        Rect::new(MARGIN_X, HEADER_TOP + ey, w.max(1.0), ENTRY_H)
+        let mut frame = self.header.entry_frame(w.max(1.0)).expect("entry presence checked above");
+        frame.y += top;
+        frame
+    }
+
+    fn entry_placed(&self, p: &Person, measure: &dyn Measure, focused: bool) -> Placed {
+        let rest_rect = self.entry_rect(p, measure);
+        Placed {
+            rect: entry_pill_frame(rest_rect, focused),
+            rest_rect,
+            clip: Rect::FULL,
+            index: Some(0),
+        }
     }
 
     /// A shelf's absolute SCREEN-space row-y, given its flow position among the present shelves —
@@ -1181,8 +1202,10 @@ impl PersonScreen {
                 );
             }
         }
-        if let Some(y) = flow.entry_y {
-            self.draw_entry(p, person, MARGIN_X, y, focus_elem == Some(ENTRY_ELEM), measure);
+        if flow.entry_y.is_some() {
+            let frame = flow.entry_frame(entry_w(person, &self.entry_count_c, measure))
+                .expect("entry presence checked above");
+            self.draw_entry(p, frame, focus_elem == Some(ENTRY_ELEM));
         }
     }
 
@@ -1272,15 +1295,14 @@ impl PersonScreen {
         .draw(env, p);
     }
 
-    fn draw_entry(&self, p: Painter, person: &Person, x: f32, y: f32, focused: bool, measure: &dyn Measure) {
-        let w = entry_w(person, &self.entry_count_c, measure);
+    fn draw_entry(&self, p: Painter, frame: Rect, focused: bool) {
+        let w = frame.w;
         let e = if focused {
             crate::ui::widgets::CTRL_FOCUS_SCALE
         } else {
             1.0
         };
-        let (pw, ph) = (w * e, ENTRY_H * e);
-        let pill = Rect::new(x, y - (ph - ENTRY_H) * 0.5, pw, ph);
+        let pill = entry_pill_frame(frame, focused);
         crate::ui::widgets::draw_control_face(
             p,
             pill,
@@ -1298,7 +1320,7 @@ impl PersonScreen {
             (theme::TEXT_PRIMARY, theme::TEXT_TERTIARY)
         };
         let cy = pill.y + pill.h * 0.5;
-        let mut rx = x + entry_run_x(w, e);
+        let mut rx = frame.x + entry_run_x(w, e);
         rx += Label::new(crate::i18n::msg::browse_person_filmography_c().as_ptr(), theme::size::LABEL, ink)
             .bold()
             .v(VAlign::Middle)
@@ -1324,7 +1346,6 @@ impl PersonScreen {
             Rect::new(rx, cy - ENTRY_MARK * 0.5, ENTRY_MARK, ENTRY_MARK),
             ink,
         );
-        let _ = person;
     }
 }
 
@@ -1333,7 +1354,11 @@ fn shelf_title() -> [&'static std::ffi::CStr; NSHELF] { [crate::i18n::msg::brows
 
 /// The Filmography entry pill's width, sized to its own runs.
 fn entry_w(_p: &Person, entry_count_c: &std::ffi::CStr, m: &dyn Measure) -> f32 {
-    let label = m.width(crate::i18n::msg::browse_person_filmography_c(), theme::size::LABEL, true);
+    entry_w_for(crate::i18n::msg::browse_person_filmography_c(), entry_count_c, m)
+}
+
+fn entry_w_for(label: &std::ffi::CStr, entry_count_c: &std::ffi::CStr, m: &dyn Measure) -> f32 {
+    let label = m.width(label, theme::size::LABEL, true);
     let count = if entry_count_c.to_bytes().is_empty() {
         0.0
     } else {
@@ -1345,6 +1370,14 @@ fn entry_w(_p: &Person, entry_count_c: &std::ffi::CStr, m: &dyn Measure) -> f32 
     2.0 * ENTRY_OUTER_PAD + label + count + ENTRY_CHEVRON_GAP + ENTRY_MARK
         - ENTRY_MARK_BEARING_L
         - ENTRY_MARK_BEARING_R
+}
+
+/// The focused face expands from the text-column guide. Paint, engine placement and pointer
+/// registration all consume this same geometry, so the visible tail remains clickable.
+fn entry_pill_frame(frame: Rect, focused: bool) -> Rect {
+    let scale = if focused { crate::ui::widgets::CTRL_FOCUS_SCALE } else { 1.0 };
+    Rect::new(frame.x, frame.y - frame.h * (scale - 1.0) * 0.5,
+        frame.w * scale, frame.h * scale)
 }
 
 fn entry_run_x(w: f32, e: f32) -> f32 {
@@ -1444,13 +1477,8 @@ impl<H: ContentLike> Focusable<H> for PersonScreen {
                 if !entry_reachable(p) {
                     return None;
                 }
-                let r = self.entry_rect(p, cx.measure);
-                Some(Placed {
-                    rect: r,
-                    rest_rect: r,
-                    clip: Rect::FULL,
-                    index: Some(0),
-                })
+                let focused = cx.focus.current.is_some_and(|key| key.entry == self.entry && key.elem == ENTRY_ELEM);
+                Some(self.entry_placed(p, cx.measure, focused))
             }
             Located::Shelf(kind, _) => self
                 .offset_shelf(p, kind)
@@ -1809,7 +1837,7 @@ impl PersonScreen {
             },
         );
         if entry_reachable(person) {
-            let r = self.entry_rect(person, f.measure);
+            let placed = self.entry_placed(person, f.measure, cur == Some(ENTRY_ELEM));
             f.stop(
                 hp,
                 Stop {
@@ -1817,9 +1845,9 @@ impl PersonScreen {
                         entry: self.entry,
                         elem: ENTRY_ELEM,
                     },
-                    rect: r,
-                    rest_rect: r,
-                    clip: Rect::FULL,
+                    rect: placed.rect,
+                    rest_rect: placed.rest_rect,
+                    clip: placed.clip,
                     hover: Hover::Focus,
                     activate: Activate::Direct,
                 },
@@ -2127,6 +2155,88 @@ mod tests {
             "movies is the only present shelf left"
         );
         let _ = &mut s;
+        crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
+    }
+
+    struct PersonTextMeasure;
+    impl Measure for PersonTextMeasure {
+        fn width(&self, text: &std::ffi::CStr, size: i32, _bold: bool) -> f32 {
+            text.to_string_lossy().chars().count() as f32 * size as f32 * 0.6
+        }
+        fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
+        fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+    }
+
+    #[test]
+    fn person_filmography_entry_follows_the_biography_text_column() {
+        let measure = PersonTextMeasure;
+        let long = "A long biography whose visible lines must all remain above Filmography. ".repeat(60);
+        for (pending, bio) in [(false, "Short biography."), (false, long.as_str()), (true, "")] {
+            let flow = header_flow(pending, bio, c"Actor", c"Born in a city", true, &measure);
+            let frame = flow.entry_frame(400.0).expect("credits offer the entry");
+            let biography_top = flow.bio_y.expect("biography or its placeholder is present");
+            let biography_h = if pending { BIO_LEAD * BIO_LINES as f32 }
+                else { bio_view(bio, 1.0, &measure).measure_h(BIO_W) };
+            assert_eq!(frame.x, col_x(flow.exp_d));
+            assert!(frame.x >= MARGIN_X + flow.exp_d + BAND_GAP,
+                "the action must sit under the text, not the portrait");
+            assert!((frame.y - biography_top - biography_h - ENTRY_GAP).abs() < 0.01);
+            assert!(flow.exp_h >= frame.y + frame.h, "the next shelf clears the action");
+        }
+        let bare = header_flow(false, "", c"", c"", true, &measure);
+        let frame = bare.entry_frame(400.0).unwrap();
+        assert_eq!(frame.x, col_x(PORTRAIT_BARE));
+        assert!((frame.y - bare.name_y - measure.cap_h(theme::size::DISPLAY) - ENTRY_GAP).abs() < 0.01,
+            "without biography the centered identity and action remain one text stack");
+        assert!(bare.exp_h >= frame.y + frame.h);
+    }
+
+    #[test]
+    fn person_filmography_entry_keeps_translated_labels_and_focus_inside_the_safe_frame() {
+        let measure = PersonTextMeasure;
+        let flow = header_flow(false, "A short biography.", c"Actor", c"", true, &measure);
+        let mut labels = Vec::new();
+        for preference in [crate::i18n::Preference::En, crate::i18n::Preference::Es, crate::i18n::Preference::Be] {
+            let locale = crate::i18n::LocaleContext::resolve(preference, None, None, None, None);
+            labels.push(CString::new(crate::i18n::msg::browse_person_filmography_in(&locale)).unwrap());
+        }
+        labels.push(CString::new("[!! Fïlmöögrááphy !!]").unwrap());
+        for label in labels {
+            let width = entry_w_for(&label, c"9 223 372 036 854 775 807", &measure);
+            let mut frame = flow.entry_frame(width).unwrap();
+            frame.y += HEADER_TOP;
+            assert!(inside_safe(entry_pill_frame(frame, false)));
+            assert!(inside_safe(entry_pill_frame(frame, true)), "focus expansion must preserve the safe inset");
+            assert!(width >= measure.width(&label, theme::size::LABEL, true)
+                + 2.0 * ENTRY_OUTER_PAD, "the whole label has room at its existing size");
+        }
+    }
+
+    #[test]
+    fn person_filmography_focus_and_hit_geometry_match_the_scrolled_painted_pill() {
+        let _serial = crate::testlock::serial();
+        let mut screen = seed(2, 0);
+        crate::person::install_credits_for_test(&[("Actor", 7)]);
+        let measure = PersonTextMeasure;
+        screen.remeasure_header(screen.person().unwrap(), &measure);
+        screen.scroll.scroll.jump(73.0);
+        let person = screen.person().unwrap();
+        let local = screen.header.entry_frame(entry_w(person, &screen.entry_count_c, &measure)).unwrap();
+        for focused in [false, true] {
+            let key = crate::ui::machine::FocusKey { entry: screen.entry, elem: ENTRY_ELEM };
+            let context = Cx { focus: FocusRead { current: focused.then_some(key), ..Default::default() }, ..cx(&measure) };
+            let placed = Focusable::<PersonHost>::place(&screen, &ENTRY_ELEM, &context, At::Drawn).unwrap();
+            let mut painted = entry_pill_frame(local, focused);
+            painted.y += HEADER_TOP - screen.scroll.scroll.pos;
+            assert!([placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h].into_iter()
+                .zip([painted.x, painted.y, painted.w, painted.h])
+                .all(|(a, b)| (a - b).abs() < 0.001));
+            let hit = screen.entry_placed(person, &measure, focused);
+            assert_eq!((hit.rect.x, hit.rect.y, hit.rect.w, hit.rect.h),
+                (placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h));
+            assert!(hit.rect.contains(painted.x + painted.w - 1.0, painted.cy()),
+                "the expanded visible tail remains clickable");
+        }
         crate::stores::person::apply(crate::stores::person::PersonCmd::Close);
     }
 

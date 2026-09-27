@@ -636,48 +636,125 @@ mod composed {
 }
 
 #[test]
-fn overflowing_disclosure_is_readable_without_committing_a_consent_choice() {
-    use crate::ui::focus::{FocusEngine, Outcome};
-    use crate::ui::screen::By;
+fn translated_first_run_disclosures_fit_above_one_row_of_complete_answers() {
+    use crate::ui::machine::Measure;
+    use crate::i18n::{msg, LocaleContext, Preference};
+    struct ReadingMeasure;
+    impl Measure for ReadingMeasure {
+        fn width(&self, text: &core::ffi::CStr, size: i32, _bold: bool) -> f32 {
+            text.to_string_lossy().chars().count() as f32 * size as f32 * 0.6
+        }
+        fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
+        fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+    }
     let _guard = crate::testlock::serial();
-    let measure = FixtureMeasure;
-    let mut cx = test_cx(&measure);
-    let (mut out, mut present) = sink();
-    let mut page = ConsentPage::first_run(EntryId(1), 0, &cx, &mut mk_fx(&mut out, &mut present));
-    out.clear();
-    assert!(page.view().disclosure_cue_frame(cx.measure).is_none(),
-        "a disclosure that fits needs neither an extra focus stop nor a reading hint");
-    // Simulate the measured content overflowing the available narrative area. The simulator
-    // separately measures the actual Belarusian paragraph with the shipped font.
-    page.disclosure.set_extent_for_test(500.0);
-    let owner = InputOwner::Entry(EntryId(1));
-    let mut engine: FocusEngine<u32> = FocusEngine::new();
-    engine.set(owner, FocusKey { entry: EntryId(1), elem: BAND }, Some(BAND_GROUP), By::Dir);
-    let result = engine.move_dir(owner, &page.view(), &[], Dir::Up, &cx);
-    assert!(matches!(result, Outcome::Moved { .. }));
-    let reading = FocusKey { entry: EntryId(1), elem: DISCLOSURE };
-    assert_eq!(engine.current(owner), Some(reading));
-    let frame = page.view().disclosure_frame(cx.measure);
-    let band_top = page.view().screen().band.as_ref().unwrap().extent(cx.measure).y;
-    assert!(frame.y + frame.h + theme::space::XL <= band_top + 0.01);
-    let cue = page.view().disclosure_cue_frame(cx.measure).expect("overflow must explain how to read more");
-    assert!(cue.y > frame.y + frame.h);
-    assert!(cue.y + cue.h < band_top, "the entry hint must not cover either choice");
-    assert_eq!(cue.h, crate::ui::widgets::KeyHint::height());
-    cx.focus.current = Some(reading);
-    let before = page.state.hash();
-    for _ in 0..3 { page.step(&key_down(Key::Down), &cx, &mut mk_fx(&mut out, &mut present)); }
-    assert!(page.disclosure.at_end());
-    assert_ne!(page.state.hash(), before, "reading position must be visible to replay");
-    assert_eq!(page.draft, (false, false));
-    assert!(out.is_empty(), "reading cannot submit a consent answer");
-    let result = engine.move_dir(owner, &page.view(), &[], Dir::Down, &cx);
-    assert!(matches!(result, Outcome::Moved { .. }));
-    assert!(engine.current(owner).is_some_and(|key| band_index(key.elem).is_some()));
-    engine.set(owner, reading, Some(DISCLOSURE_GROUP), By::Dir);
-    engine.move_dir(owner, &page.view(), &[], Dir::Right, &cx);
-    assert!(engine.current(owner).is_some_and(|key| key.elem < page.rows.len() as u32));
-    page.step(&key_down(Key::Back), &cx, &mut mk_fx(&mut out, &mut present));
-    assert!(out.iter().any(|event| matches!(event.fx, Fx::App(AppFx::Loop(LoopReq::BackAtRoot)))));
-    assert_eq!(page.draft, (false, false));
+    let _no_live_font = crate::ui::text_view::ForbidLive::enter();
+    let measure = ReadingMeasure;
+    let reader = DocumentReader::new().with_size(theme::size::BODY);
+    for (name, locale) in [
+        ("en", LocaleContext::resolve(Preference::En, None, None, None, None)),
+        ("es", LocaleContext::resolve(Preference::Es, None, None, None, None)),
+        ("be", LocaleContext::resolve(Preference::Be, None, None, None, None)),
+        ("pseudo", LocaleContext::pseudo_for_test()),
+    ] {
+        let mut table = TableView::new();
+        table.set_sections(vec![Section::new("")
+            .row(Row::new(msg::settings_consent_example_in(&locale)).chevron(true))
+            .row(Row::new(msg::settings_consent_policy_in(&locale)).chevron(true))], 0, false);
+        for product in [false, true] {
+            let (title, body, positive) = if product {
+                (msg::settings_consent_product_title_in(&locale), msg::settings_consent_product_body_in(&locale),
+                    msg::settings_consent_share_analytics_c_in(&locale))
+            } else {
+                (msg::settings_consent_crash_title_in(&locale), msg::settings_consent_crash_body_in(&locale),
+                    msg::settings_consent_share_reports_c_in(&locale))
+            };
+            let labels = [positive, msg::settings_consent_do_not_share_c_in(&locale)];
+            let layout = ConsentPage::first_run_layout(title, body, product, &table, &labels, &measure);
+            let frame = layout.narrative_copy_frame(product, title, layout.action.y, &measure);
+            assert!(!RouteLayout::narrative_title(title).with_measure(&measure).truncates(layout.narrative.w),
+                "{name} product={product}: the complete question remains visible");
+            if name != "pseudo" {
+                assert!(reader.measured_height(body, frame.w, &measure) <= frame.h,
+                    "{name} product={product}: complete real disclosure must fit at BODY size");
+            }
+            assert!((frame.y + frame.h + theme::space::MD - layout.action.y).abs() < 0.01);
+            assert!(layout.content.w >= table.measured_width(&measure));
+            let band = BandPart { layout, labels: &labels, group: BAND_GROUP, entry: EntryId(1),
+                uncommitted: false, scales: [1.0, 1.0], palette: palette(), danger: None };
+            let rects = band.rects(&measure);
+            assert_eq!(rects[0].y, rects[1].y, "{name}: both answers must stay in one row: available={}, first={}, second={}, link_min={}, labels={labels:?}", layout.action.w, rects[0].w, rects[1].w, table.measured_width(&measure));
+            assert_eq!(rects[0].h, rects[1].h, "both answers retain equal treatment");
+            assert!(rects[1].x + rects[1].w <= layout.action.x + layout.action.w);
+            for (rect, label) in rects.iter().zip(labels) {
+                assert_eq!(rect.w, crate::ui::table_screen::pill_w(&measure, label, theme::size::BODY),
+                    "{name}: no answer text may be elided or scaled down");
+            }
+        }
+    }
+}
+
+#[test]
+fn overflowing_disclosure_scrolls_before_draw_with_visible_choice_focus_and_replays() {
+    use crate::ui::focus::{FocusEngine, Outcome};
+    use crate::ui::machine::Measure;
+    use crate::ui::rec::{Measurements, TableMeasure};
+    use crate::ui::screen::By;
+    // Expand only BODY text: titles and links remain normal, while a future long disclosure
+    // cannot fit even after its column has used all available width.
+    struct ExpandedBody;
+    impl Measure for ExpandedBody {
+        fn width(&self, text: &core::ffi::CStr, size: i32, _bold: bool) -> f32 {
+            let factor = if size == theme::size::BODY { 1.5 } else { 0.5 };
+            text.to_string_lossy().chars().count() as f32 * size as f32 * factor
+        }
+        fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
+        fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+    }
+    static METRICS: ExpandedBody = ExpandedBody;
+    let _guard = crate::testlock::serial();
+    let _no_live_font = crate::ui::text_view::ForbidLive::enter();
+    let run = |measure: &dyn Measure| {
+        let fixture = FixtureMeasure;
+        let mut cx = test_cx(&fixture);
+        cx.measure = measure;
+        let (mut out, mut present) = sink();
+        let mut page = ConsentPage::first_run(EntryId(1), 0, &cx, &mut mk_fx(&mut out, &mut present));
+        out.clear();
+        let owner = InputOwner::Entry(EntryId(1));
+        let share = FocusKey { entry: EntryId(1), elem: BAND };
+        let mut engine: FocusEngine<u32> = FocusEngine::new();
+        engine.set(owner, share, Some(BAND_GROUP), By::Dir);
+        cx.focus.current = Some(share);
+        let mut groups = Vec::new();
+        page.groups(&cx, &mut groups);
+        assert_eq!(groups.len(), 2, "reading never creates an invisible third focus stop");
+        assert!(groups.iter().any(|g| g.id == BAND_GROUP && matches!(g.kind, GroupKind::Row { .. })));
+        let before = page.state.hash();
+        assert_eq!(page.step(&key_down(Key::Down), &cx, &mut mk_fx(&mut out, &mut present)), Handled::Yes);
+        let after = page.state.hash();
+        assert_ne!(before, after, "scrolling is measured and hashed before the first paint");
+        assert_eq!(cx.focus.current, Some(share));
+        assert!(page.place(&BAND, &cx, At::SpringTarget).is_some(), "the visible action keeps the input focus");
+        assert!(out.is_empty(), "reading cannot submit or change focus");
+        assert_eq!(page.draft, (false, false));
+        let outcome = engine.move_dir(owner, &page.view(), &[], Dir::Right, &cx);
+        assert!(matches!(outcome, Outcome::Moved { .. }));
+        cx.focus.current = engine.current(owner);
+        assert_eq!(cx.focus.current.unwrap().elem, BAND + 1, "the other answer stays directly reachable");
+        page.step(&key_down(Key::Up), &cx, &mut mk_fx(&mut out, &mut present));
+        assert_eq!(page.state.hash(), before, "either answer can scroll back to the same position");
+        engine.move_dir(owner, &page.view(), &[], Dir::Right, &cx);
+        assert!(engine.current(owner).is_some_and(|key| key.elem < page.rows.len() as u32));
+        page.step(&key_down(Key::Back), &cx, &mut mk_fx(&mut out, &mut present));
+        assert!(out.iter().any(|event| matches!(event.fx, Fx::App(AppFx::Loop(LoopReq::BackAtRoot)))));
+        [before, after, page.state.hash()]
+    };
+    let recorded = Measurements::record(&METRICS);
+    let expected = run(&recorded);
+    let table = recorded.drain().unwrap().into_iter().collect::<std::collections::HashMap<_, _>>();
+    assert!(!table.is_empty());
+    let replay = Measurements::Replay(TableMeasure::new(table));
+    assert_eq!(run(&replay), expected);
+    replay.drain().expect("mount layout and no-draw scrolling must use recorded measurements");
 }

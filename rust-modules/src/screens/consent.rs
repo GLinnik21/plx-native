@@ -3,8 +3,9 @@
 //! type, two modes (§6.2 "mounts twice"): [`ConsentPage::settings`] is the Privacy & data page
 //! under the Settings root — two toggles, five documents, Delete all local data, and a Done that
 //! appears only once the draft differs from the stored answer; [`ConsentPage::first_run`] is one
-//! STAGE of the sign-in's question — a full disclosure, the reading list and two equal answers —
-//! the disclosure scrolls at BODY size when it overflows, and the second
+//! STAGE of the sign-in's question — a full disclosure, the reading list and two equal answers
+//! in one row. Exceptional overflow scrolls at BODY size while the selected answer retains focus;
+//! the second
 //! stage is a push of the same type carrying the first answer in its argument, so BACK from the
 //! second is the surface's ordinary pop.
 //!
@@ -94,9 +95,6 @@ enum Mode {
     FirstRun { product: bool, errors: bool },
 }
 
-const DISCLOSURE: u32 = 0x2000_0000;
-const DISCLOSURE_GROUP: GroupId = GroupId(3);
-
 pub(crate) struct ConsentPage {
     entry: EntryId,
     mode: Mode,
@@ -110,6 +108,8 @@ pub(crate) struct ConsentPage {
     alert_frames: std::cell::Cell<Option<(Rect, Rect)>>,
     pop: CtlPop<2>,
     disclosure: DocumentReader,
+    /// Measured at mount through Cx, so focus and draw use identical, replayable columns.
+    layout: RouteLayout,
     state: ConsentState,
 }
 
@@ -117,6 +117,7 @@ struct ConsentState {
     mode: u8,
     draft: (bool, bool),
     alert: bool,
+    /// Canonical f32 target bits, not the number of scroll keys pressed.
     disclosure_pos: u32,
     alert_scroll: u32,
 }
@@ -141,13 +142,15 @@ impl ConsentPage {
     }
 
     /// One stage of the first-run question.
-    pub(crate) fn first_run(entry: EntryId, stage: u8, _cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Self {
+    pub(crate) fn first_run(entry: EntryId, stage: u8, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Self {
         let mode = Mode::FirstRun {
             product: stage & STAGE_PRODUCT != 0,
             errors: stage & ERRORS_SHARED != 0,
         };
         let mut s = Self::bare(entry, mode, (false, false));
         s.rebuild(0);
+        s.layout = Self::first_run_layout(s.title(), s.body(), s.crumb().is_some(),
+            &s.table, &s.band_labels(), cx.measure);
         s.table.list_focused = false;
         // First run's whole point (the legacy module's doc, and this page's own
         // `first_run_answers_are_the_action_row_and_not_table_rows`) is that the two answers ARE
@@ -191,6 +194,7 @@ impl ConsentPage {
             alert_frames: std::cell::Cell::new(None),
             pop: CtlPop::new(),
             disclosure: DocumentReader::new().with_size(theme::size::BODY),
+            layout: RouteLayout::screen(),
             state: ConsentState {
                 mode: match mode {
                     Mode::Settings => 0,
@@ -304,8 +308,22 @@ impl ConsentPage {
         }
     }
 
+    fn first_run_layout(title: &str, body: &str, has_crumb: bool, table: &TableView,
+        labels: &[&std::ffi::CStr], measure: &dyn crate::ui::machine::Measure) -> RouteLayout {
+        let action_w = labels.iter().map(|label|
+            crate::ui::table_screen::pill_w(measure, label, theme::size::BODY)).sum::<f32>()
+            + crate::ui::widgets::CONTROL_GAP;
+        let action_w = action_w.ceil();
+        let reader = DocumentReader::new().with_size(theme::size::BODY);
+        RouteLayout::screen_for_reading(action_w, table.measured_width(measure), |layout| {
+            let frame = layout.narrative_copy_frame(has_crumb, title, layout.action.y, measure);
+            !RouteLayout::narrative_title(title).with_measure(measure).truncates(layout.narrative.w)
+                && reader.measured_height(body, frame.w, measure) <= frame.h
+        })
+    }
+
     fn list_frame(&self) -> Rect {
-        let l = RouteLayout::screen();
+        let l = self.layout;
         match self.mode {
             Mode::Settings => l.sectioned_table(),
             Mode::FirstRun { .. } => l.content,
@@ -313,13 +331,12 @@ impl ConsentPage {
     }
 
     fn view(&self) -> ConsentView<'_> {
-        let layout = RouteLayout::screen();
+        let layout = self.layout;
         let labels = self.band_labels();
         ConsentView {
             layout,
             table: &self.table,
             frame: self.list_frame(),
-            disclosure: matches!(self.mode, Mode::FirstRun { .. }).then_some(&self.disclosure),
             title: self.title(),
             has_crumb: self.crumb().is_some(),
             entry: self.entry,
@@ -451,7 +468,6 @@ struct ConsentView<'a> {
     frame: Rect,
     entry: EntryId,
     labels: Vec<&'static std::ffi::CStr>,
-    disclosure: Option<&'a DocumentReader>,
     title: &'static str,
     has_crumb: bool,
     scales: [f32; 2],
@@ -484,19 +500,9 @@ impl<'a> ConsentView<'a> {
             danger: None,
         })
     }
-    fn disclosure_visible(&self) -> bool {
-        self.disclosure.is_some_and(DocumentReader::overflows)
-    }
-    fn disclosure_key(&self) -> FocusKey<u32> { FocusKey { entry: self.entry, elem: DISCLOSURE } }
     fn disclosure_frame(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
         let top = self.screen().band.as_ref().map(|b| b.extent(measure).y).unwrap_or(self.layout.action.y);
         self.layout.narrative_copy_frame(self.has_crumb, self.title, top, measure)
-    }
-    fn disclosure_cue_frame(&self, measure: &dyn crate::ui::machine::Measure) -> Option<Rect> {
-        if !self.disclosure_visible() { return None; }
-        let body = self.disclosure_frame(measure);
-        let h = crate::ui::widgets::KeyHint::height();
-        Some(Rect::new(body.x, body.y + body.h + (theme::space::XL - h) * 0.5, body.w, h))
     }
     fn alert_key(&self, i: usize) -> FocusKey<u32> {
         FocusKey {
@@ -529,18 +535,11 @@ impl Focusable<InnerHost> for ConsentView<'_> {
             return;
         }
         Focusable::<InnerHost>::groups(&self.screen(), cx, out);
-        if self.disclosure_visible() {
-            out.push(GroupSpec { id: DISCLOSURE_GROUP, kind: GroupKind::Document,
-                seat: Seat::First, reachable: AxisMask::BOTH,
-                edge: [EdgeRule::Stop, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Geometric],
-                extent: self.disclosure_frame(cx.measure), len: 1, elem: ElemKind::Bare });
-        }
     }
     fn group_of(&self, key: &u32, cx: &Cx<'_, InnerHost>) -> Option<GroupId> {
         if self.alert_open {
             return alert_index(*key).map(|_| ALERT_GROUP);
         }
-        if *key == DISCLOSURE && self.disclosure_visible() { return Some(DISCLOSURE_GROUP); }
         Focusable::<InnerHost>::group_of(&self.screen(), key, cx)
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, InnerHost>) -> Step<u32> {
@@ -548,14 +547,6 @@ impl Focusable<InnerHost> for ConsentView<'_> {
             return match (alert_index(key.elem), dir) {
                 (Some(0), Dir::Right) => Step::Move(self.alert_key(1)),
                 (Some(1), Dir::Left) => Step::Move(self.alert_key(0)),
-                _ => Step::Edge,
-            };
-        }
-        if key.elem == DISCLOSURE && self.disclosure_visible() {
-            let reader = self.disclosure.unwrap();
-            return match dir {
-                Dir::Up if !reader.at_top() => Step::Move(key),
-                Dir::Down if !reader.at_end() => Step::Move(key),
                 _ => Step::Edge,
             };
         }
@@ -571,10 +562,6 @@ impl Focusable<InnerHost> for ConsentView<'_> {
                 clip: Rect::FULL,
                 index: Some(i as u32),
             });
-        }
-        if *key == DISCLOSURE && self.disclosure_visible() {
-            let frame = self.disclosure_frame(cx.measure);
-            return Some(Placed { rect: frame, rest_rect: frame, clip: frame, index: Some(0) });
         }
         Focusable::<InnerHost>::place(&self.screen(), key, cx, at)
     }
@@ -607,7 +594,6 @@ impl Focusable<InnerHost> for ConsentView<'_> {
                 },
             });
         }
-        if want.elem == DISCLOSURE && self.disclosure_visible() { return want; }
         if alert_index(want.elem).is_some() {
             return FocusKey {
                 entry: self.entry,
@@ -620,7 +606,6 @@ impl Focusable<InnerHost> for ConsentView<'_> {
         if self.alert_open {
             return self.alert_key(0);
         }
-        if g == DISCLOSURE_GROUP && self.disclosure_visible() { return self.disclosure_key(); }
         Focusable::<InnerHost>::seat(&self.screen(), g, from, cx)
     }
 }
@@ -738,15 +723,16 @@ impl Machine<InnerHost> for ConsentPage {
                 kind: InputKind::Key { key: key @ (Key::Up | Key::Down), edge, .. }, ..
             }) if *edge != crate::ui::machine::Edge::Up
                 && !self.alert.visible()
-                && cx.focus.current.is_some_and(|key| key.elem == DISCLOSURE)
+                && cx.focus.current.is_some_and(|key| band_index(key.elem).is_some())
                 && matches!(self.mode, Mode::FirstRun { .. }) => {
-                let inside = if *key == Key::Up { !self.disclosure.at_top() } else { !self.disclosure.at_end() };
-                if inside {
-                    self.disclosure.move_by(if *key == Key::Up { -1 } else { 1 });
-                    if *key == Key::Up { self.state.disclosure_pos = self.state.disclosure_pos.saturating_sub(1); }
-                    else { self.state.disclosure_pos += 1; }
-                    Handled::Yes
-                } else { Handled::No }
+                let frame = self.view().disclosure_frame(cx.measure);
+                let body = self.body();
+                let (position, moved) = self.disclosure.move_measured(
+                    if *key == Key::Up { -1 } else { 1 }, body, frame, cx.measure);
+                self.state.disclosure_pos = position;
+                // Reading never transfers focus away from the visible answer. LEFT/RIGHT and
+                // OK remain immediately available; at the top UP resumes the normal route.
+                if moved { Handled::Yes } else { Handled::No }
             }
             ScreenEvent::Input(InputEvent {
                 kind: InputKind::Key { key, edge: crate::ui::machine::Edge::Down, at_edge, .. },
@@ -842,27 +828,12 @@ impl Screen<InnerHost> for ConsentPage {
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         let p = f.painter;
-        let layout = RouteLayout::screen();
+        let layout = self.layout;
         if matches!(self.mode, Mode::FirstRun { .. }) {
             Header::new(layout, self.crumb(), self.title(), "").paint(p, f.measure);
             let frame = self.view().disclosure_frame(f.measure);
             let body = self.body();
-            let focused = f.focus.current.is_some_and(|key| key.elem == DISCLOSURE);
-            self.disclosure.draw_focusable(p, frame, None, body, focused);
-            if let Some(cue_frame) = self.view().disclosure_cue_frame(f.measure) {
-                let (message, key) = if focused {
-                    (crate::i18n::msg::settings_scroll_details("\u{fffc}"), c"↑↓")
-                } else {
-                    (crate::i18n::msg::settings_read_details("\u{fffc}"), c"↑")
-                };
-                let hint = crate::ui::widgets::KeyHint::translated(message, key);
-                hint.draw(p, cue_frame.x, cue_frame.cy(), f.measure);
-            }
-            if self.disclosure.overflows() {
-                f.stop(p, Stop { key: FocusKey { entry: self.entry, elem: DISCLOSURE },
-                    rect: frame, rest_rect: frame, clip: frame, hover: Hover::Focus,
-                    activate: Activate::Direct });
-            }
+            self.disclosure.draw(p, frame, None, body);
         } else {
             Header::new(layout, self.crumb(), self.title(), self.body())
                 .with_copy_size(self.copy_size()).paint(p, f.measure);

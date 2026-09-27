@@ -10,6 +10,7 @@
 //! runs only on a miss, and drawing already only touches the lines the clip rect can see.
 
 use crate::ui::consts::K_SCROLL;
+use crate::ui::machine::Measure;
 use crate::ui::text_view::TextView;
 use crate::ui::widgets;
 use crate::ui::{theme, Painter, Rect, Spring};
@@ -17,15 +18,6 @@ use std::hash::{Hash, Hasher};
 
 const INDENT: f32 = theme::space::XS;
 const RAIL_GAP: f32 = theme::space::MD;
-
-/// Focusable readers keep an inset whether focused or not, so entering the document never
-/// changes its wrapping or scroll position. The ring stays inside the caller's focus/hit frame.
-fn reader_frames(frame: Rect, focused: Option<bool>) -> (Rect, Option<Rect>) {
-    match focused {
-        Some(focused) => (frame.inset(theme::space::XS), focused.then_some(frame)),
-        None => (frame, None),
-    }
-}
 
 /// One measured line: its top offset within the document, its height, its indentation, whether it
 /// draws bold (an all-caps "heading" line), and its own trimmed text.
@@ -36,7 +28,8 @@ fn reader_frames(frame: Rect, focused: Option<bool>) -> (Rect, Option<Rect>) {
 /// Owning it is what lets the layout be CACHED across those calls at all: `TextView<'a>` itself is
 /// reconstructed fresh each draw (cheap — a struct literal, and `TextView`'s own wrap step is
 /// separately memoized by content hash, see its module doc), but the expensive per-line
-/// measurement below only reruns when this struct is rebuilt.
+/// paint-side measurement below reruns when this struct is rebuilt. Layout and input may
+/// separately measure the same flow through their supplied measurement capability.
 struct LineLayout {
     y: f32,
     h: f32,
@@ -86,9 +79,39 @@ impl DocumentReader {
         self
     }
 
-    pub(crate) fn overflows(&self) -> bool { self.max_scroll > 0.0 }
-
     fn body_leading(&self) -> f32 { self.body_size as f32 + theme::space::XS }
+
+    /// The same preserved-line flow used by painting, measured through the caller's capability.
+    /// Layout and input can ask before the first draw, including during controlled replay.
+    pub(crate) fn measured_height(&self, body: &str, frame_w: f32, measure: &dyn Measure) -> f32 {
+        let text_w = (frame_w - widgets::RAIL_W - RAIL_GAP).max(1.0);
+        body.lines().map(|line| self.line_layout(line, text_w, Some(measure)).0).sum()
+    }
+
+    /// Scroll from event-time measurements; return the logical target and whether it moved.
+    /// Never depend on a previous paint to discover the document's bounds.
+    pub(crate) fn move_measured(&mut self, delta: i32, body: &str, frame: Rect,
+        measure: &dyn Measure) -> (u32, bool) {
+        self.max_scroll = (self.measured_height(body, frame.w, measure) - frame.h).max(0.0);
+        let before = self.target;
+        self.move_by(delta);
+        (self.target.to_bits(), self.target != before)
+    }
+
+    fn line_layout(&self, line: &str, text_w: f32, measure: Option<&dyn Measure>) -> (f32, f32, bool) {
+        let trimmed = line.trim_start();
+        let indentation = (line.len() - trimmed.len()) as f32 * INDENT;
+        let heading = !trimmed.is_empty()
+            && trimmed.chars().any(char::is_alphabetic)
+            && trimmed.chars().all(|c| !c.is_alphabetic() || c.is_uppercase());
+        let mut view = TextView::new(trimmed, self.body_size, theme::TEXT_READING)
+            .leading(self.body_leading()).break_long_words();
+        if heading { view = view.bold(); }
+        if let Some(measure) = measure { view = view.with_measure(measure); }
+        let h = if trimmed.is_empty() { self.body_leading() }
+            else { view.measure_h((text_w - indentation).max(1.0)) };
+        (h, indentation, heading)
+    }
 
     pub(crate) fn reset(&mut self) {
         self.target = 0.0;
@@ -147,22 +170,7 @@ impl DocumentReader {
         let mut y = 0.0;
         for line in body.lines() {
             let trimmed = line.trim_start();
-            let indentation = (line.len() - trimmed.len()) as f32 * INDENT;
-            let heading = !trimmed.is_empty()
-                && trimmed.chars().any(char::is_alphabetic)
-                && trimmed
-                    .chars()
-                    .all(|c| !c.is_alphabetic() || c.is_uppercase());
-            let mut view = TextView::new(trimmed, self.body_size, theme::TEXT_READING)
-                .leading(self.body_leading());
-            if heading {
-                view = view.bold();
-            }
-            let h = if trimmed.is_empty() {
-                self.body_leading()
-            } else {
-                view.measure_h((text_w - indentation).max(1.0))
-            };
+            let (h, indentation, heading) = self.line_layout(line, text_w, None);
             self.layout.push(LineLayout {
                 y,
                 h,
@@ -184,21 +192,6 @@ impl DocumentReader {
     /// only the lines the clip rect can see; measures lines only when `(body, text_w)` changed
     /// since the last call.
     pub(crate) fn draw(&mut self, p: Painter, frame: Rect, title: Option<&str>, body: &str) {
-        self.draw_inner(p, frame, title, body, None);
-    }
-
-    /// A reader sharing a route with other controls must identify when it owns the D-pad.
-    /// Its focus frame is the same rectangle the owning screen registers for navigation.
-    pub(crate) fn draw_focusable(&mut self, p: Painter, frame: Rect, title: Option<&str>, body: &str, focused: bool) {
-        self.draw_inner(p, frame, title, body, Some(focused));
-    }
-
-    fn draw_inner(&mut self, p: Painter, frame: Rect, title: Option<&str>, body: &str, focused: Option<bool>) {
-        let (frame, focus_frame) = reader_frames(frame, focused);
-        if let Some(ring) = focus_frame {
-            p.rring(ring, theme::space::XS, theme::CONTROL_RIM_FOCUS_UNKEYED_W,
-                theme::CONTROL_RIM_FOCUS_UNKEYED);
-        }
         let mut body_frame = frame;
         if let Some(title) = title {
             let title = TextView::new(title, theme::size::HEADLINE, theme::TEXT_HEADING).bold();
@@ -227,7 +220,7 @@ impl DocumentReader {
             // separately by content hash (`text_view.rs`'s module doc) — the cost this cache
             // exists to remove is the MEASUREMENT above, done once per rebuild, not this.
             let mut view = TextView::new(&line.text, self.body_size, theme::TEXT_READING)
-                .leading(self.body_leading());
+                .leading(self.body_leading()).break_long_words();
             if line.heading {
                 view = view.bold();
             }
@@ -263,19 +256,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn focus_is_visible_without_reflowing_or_leaving_the_registered_frame() {
-        let frame = Rect::new(96.0, 280.0, 700.0, 420.0);
-        let (idle_body, idle_ring) = reader_frames(frame, Some(false));
-        let (focused_body, focused_ring) = reader_frames(frame, Some(true));
-        assert!(idle_ring.is_none());
-        let ring = focused_ring.expect("D-pad ownership must have a visible focus treatment");
-        assert_eq!((ring.x, ring.y, ring.w, ring.h), (frame.x, frame.y, frame.w, frame.h));
-        assert_eq!((idle_body.x, idle_body.y, idle_body.w, idle_body.h),
-            (focused_body.x, focused_body.y, focused_body.w, focused_body.h),
-            "entering the text must preserve wrapping and scroll bounds");
-        assert!(focused_body.x > ring.x && focused_body.y > ring.y);
-        assert!(focused_body.x + focused_body.w < ring.x + ring.w);
-        assert!(focused_body.y + focused_body.h < ring.y + ring.h);
+    fn event_measurement_preserves_blank_lines_indentation_and_long_tokens() {
+        let _guard = crate::testlock::serial();
+        let _no_live = crate::ui::text_view::ForbidLive::enter();
+        let measure = crate::ui::fixture::FixtureMeasure;
+        let mut reader = DocumentReader::new().with_size(theme::size::BODY);
+        let body = "TITLE\n\n  abcdefghijklmnopqrstuvwxyz\nlast line";
+        let frame = Rect::new(96.0, 280.0, 210.0, 100.0);
+        let content = reader.measured_height(body, frame.w, &measure);
+        assert!(content > reader.body_leading() * 4.0,
+            "the indented long token must wrap, with the blank line retained");
+        let (target, moved) = reader.move_measured(100, body, frame, &measure);
+        assert!(moved && reader.at_end());
+        assert_eq!(f32::from_bits(target), content - frame.h);
+        assert!(reader.layout_key.is_none(), "scrolling never needs a prior draw");
+        let (target, moved) = reader.move_measured(-100, body, frame, &measure);
+        assert!(moved && reader.at_top());
+        assert_eq!(target, 0.0f32.to_bits());
     }
 
     #[test]
