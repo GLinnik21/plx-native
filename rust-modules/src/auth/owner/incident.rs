@@ -30,8 +30,9 @@
 //! * **Dedup is per LAUNCH, keyed on (flow, kind, link).** A resolved key is remembered in
 //!   `SessionInit::incidents_seen`; `restart_login` mints a new epoch on every *Try again*, and a
 //!   per-epoch key would ask the same question after every press. The failure already held keeps
-//!   its offer and its answer. A seen key coming back after a DIFFERENT failure is raised again —
-//!   the read-out must never show another failure's Details — but resolved quietly: OnRequest,
+//!   its offer and its answer, while its separate read-out context advances to the current run. A
+//!   seen key coming back after a DIFFERENT failure is raised again — the read-out must never show
+//!   another failure's Details — but resolved quietly: OnRequest,
 //!   behind Details only, never the alert and never a standing send.
 //! * **A newer incident supersedes** whatever is held — never a second alert. A reply for the
 //!   superseded one is fenced by its id.
@@ -113,12 +114,21 @@ pub(crate) struct IncidentOffer {
     /// Owner-allocated, never reused in a launch — fences a reply for a superseded offer.
     pub id: u32,
     pub key: IncidentKey,
-    /// The report context. `None` once Dropped; the visible warning keeps its closed failure evidence.
+    /// The report context. `None` once Dropped; `readout_context` keeps the visible facts.
     pub context: Option<IncidentContext>,
+    /// The failure facts currently on the read-out. A repeated deduplicated incident refreshes
+    /// these without replacing the report context, answer, receipt or offer id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub readout_context: Option<IncidentContext>,
     pub state: IncidentState,
 }
 
 impl IncidentOffer {
+    /// The current failure facts shown by Details, independently of the report offer's lifecycle.
+    pub(crate) fn readout_context(&self) -> Option<&IncidentContext> {
+        self.readout_context.as_ref().or(self.context.as_ref())
+    }
+
     /// Whether a person's Send report press is accepted in this state.
     pub(crate) fn sendable(&self) -> bool {
         matches!(
@@ -232,6 +242,7 @@ pub(super) fn write_offer(w: &mut Canon, offer: &IncidentOffer) {
     w.u32(offer.id);
     write_key(w, &offer.key);
     w.option(offer.context.as_ref(), |w, c| write_context(w, c));
+    w.option(offer.readout_context(), |w, c| write_context(w, c));
     match &offer.state {
         IncidentState::Pending => {
             w.u8(0);
@@ -277,7 +288,9 @@ impl SessionMachine {
         let key = IncidentKey { flow, kind: context.kind, link: context.link };
         if let Some(held) = self.state.incident.as_mut().filter(|held| held.key == key) {
             // The same failure again. Unresolved (a second stalled report in one wait): keep the
-            // offer, take the fresher evidence. Resolved: keep the answer it already has.
+            // offer, take the fresher report evidence. Resolved: keep the answer and report
+            // evidence it already has. Details always reads the current failure facts.
+            held.readout_context = Some(context);
             if !is_settled(held) {
                 held.context = Some(context);
             }
@@ -288,6 +301,7 @@ impl SessionMachine {
             id: self.state.next_incident,
             key,
             context: Some(context),
+            readout_context: Some(context),
             state: IncidentState::Pending,
         });
     }

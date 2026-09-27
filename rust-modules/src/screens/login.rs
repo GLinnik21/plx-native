@@ -647,9 +647,8 @@ struct Note {
 /// The support line a person reads out or photographs: what is running, on which firmware and
 /// set, and which failure — codes only, never an address or an account. The trailing segment is
 /// [`crate::telemetry::incident::storage_evidence_line`] — the persistence class, key-manager
-/// stage and service error code, read from the SAME [`auth::owner::IncidentOffer::context`] this
-/// screen's report would send, so a photograph of this line and the report Sentry receives can
-/// never disagree about what failed.
+/// stage and service error code, read from the offer's current read-out facts. Those facts advance
+/// on a deduplicated retry even when the report's already-resolved context and receipt stay put.
 fn support_line(offer: &auth::owner::IncidentOffer) -> String {
     use crate::telemetry::incident::LinkClass;
     let set = crate::webos::device().set_line();
@@ -658,8 +657,8 @@ fn support_line(offer: &auth::owner::IncidentOffer) -> String {
         LinkClass::Unknown => offer.key.kind.code().to_string(),
         link => format!("{}.{}", offer.key.kind.code(), link.code()),
     };
-    let storage = crate::telemetry::incident::storage_evidence_line(offer.context.as_ref());
-    let discovery = offer.context.as_ref().and_then(|ctx| ctx.discovery.map(|e| {
+    let storage = crate::telemetry::incident::storage_evidence_line(offer.readout_context());
+    let discovery = offer.readout_context().and_then(|ctx| ctx.discovery.map(|e| {
         let target = e.target.map_or("discovery", |target| match target {
             crate::telemetry::incident::DiscoveryTarget::PlexTv => "plex.tv",
             crate::telemetry::incident::DiscoveryTarget::Servers => "your servers",
@@ -848,7 +847,6 @@ impl LoginScreen {
         }
         if self.discovery_retry != snapshot.discovery_retry {
             self.discovery_retry = snapshot.discovery_retry;
-            self.discovery_retry_observed_phase_ms = self.phase_ms;
         }
         if self.phase == Phase::Deleted {
             self.delete_leftovers = snapshot.delete_leftovers;
@@ -888,6 +886,7 @@ impl LoginScreen {
         // again independently right here, a few lines before calling `resync`, which read the
         // identical pair a second time on its own; a retry (or an automatic pin replacement)
         // landing in the gap between the two reads could disagree with itself within one tick.
+        let retry_before = self.discovery_retry;
         let live: Wait = self.resync(H::auth(cx));
 
         // Each wait gets its own clock. A flow that walks Creating → Waiting → Discovering is
@@ -898,6 +897,9 @@ impl LoginScreen {
             self.pending_restart = None;
             self.phase_clock.reset(t);
             self.phase_ms = 0.0;
+        }
+        if retry_before != self.discovery_retry {
+            self.discovery_retry_observed_phase_ms = self.phase_ms;
         }
 
         // Both clocks are `motion::Phase` (spec phase 12 D4): the raw `+= dt` this used to be, and
@@ -2249,6 +2251,33 @@ mod tests {
         assert!(!discovery_trouble_visible(Phase::Waiting, Some(first), 20_000.0, 0.0));
     }
 
+    #[test]
+    fn first_discovery_miss_arriving_with_the_phase_anchors_after_its_clock_reset() {
+        let waiting = snapshot(Phase::Waiting, 7, "AAAA");
+        let mut discovering = snapshot(Phase::Discovering, 7, "");
+        discovering.discovery_retry = Some(auth::DiscoveryRetryProgress {
+            run: auth::DiscoveryRetryRun::Resources,
+            misses: 1,
+            elapsed_ms: 0,
+        });
+        let m = crate::ui::fixture::FixtureMeasure;
+        let mut screen = LoginScreen::new(EntryId(0), waiting.read());
+
+        step_ev_with(&mut screen, &tick_ev(100), &waiting, InstanceId(0), &m);
+        step_ev_with(&mut screen, &tick_ev(5_100), &waiting, InstanceId(0), &m);
+        assert_eq!(screen.phase_ms, 5_000.0, "the QR wait has its own older clock");
+
+        step_ev_with(&mut screen, &tick_ev(5_100), &discovering, InstanceId(0), &m);
+        assert_eq!(screen.phase_ms, 0.0, "Discovering resets the phase clock");
+        assert!(!discovery_trouble_visible(screen.phase, screen.discovery_retry,
+            screen.phase_ms, screen.discovery_retry_observed_phase_ms));
+
+        step_ev_with(&mut screen, &tick_ev(13_100), &discovering, InstanceId(0), &m);
+        assert!(discovery_trouble_visible(screen.phase, screen.discovery_retry,
+            screen.phase_ms, screen.discovery_retry_observed_phase_ms),
+            "the line appears eight seconds after this retry run began");
+    }
+
     /// **The escape belongs ONLY to the two phases that wait on a network call.** Ported verbatim.
     #[test]
     fn only_a_phase_waiting_on_the_network_can_be_stalled() {
@@ -3108,6 +3137,7 @@ mod tests {
                 link: context.link,
             },
             context: Some(context),
+            readout_context: Some(context),
             state,
         }
     }
@@ -3529,13 +3559,12 @@ mod tests {
         assert_eq!(report_id_line("0123abcd"), "Report ID: 0123 abcd");
     }
 
-    /// **The Details card's support line names the same storage evidence `event_body` would
-    /// send** — one source, two projections (spec: `telemetry::incident::storage_evidence_line`).
-    /// An offer with no persistence/key-manager/service evidence still shows the fixed `unknown`
-    /// triple rather than dropping the segment, and an offer with none at all (a Declined incident
-    /// keeps no context) reads identically.
+    /// **The Details card's support line names the current read-out's storage evidence.** An offer
+    /// with no persistence/key-manager/service evidence still shows the fixed `unknown` triple
+    /// rather than dropping the segment. A Declined incident clears the report context but keeps
+    /// the separate read-out facts, which project to the same line.
     #[test]
-    fn support_line_carries_the_same_storage_evidence_event_body_would_send() {
+    fn support_line_carries_the_current_readout_storage_evidence() {
         let plain = incident(
             auth::owner::IncidentState::NotNow,
             crate::telemetry::incident::IncidentKind::PinCreate,
@@ -3554,6 +3583,7 @@ mod tests {
         ctx.service_error_code = Some(-17);
         with_evidence.key.kind = ctx.kind;
         with_evidence.context = Some(ctx);
+        with_evidence.readout_context = Some(ctx);
         assert!(
             support_line(&with_evidence)
                 .ends_with("persistence:write_failed keymgr:begin svc:-17"),
@@ -3565,7 +3595,7 @@ mod tests {
         declined.context = None;
         assert!(
             support_line(&declined).ends_with("persistence:unknown keymgr:unknown svc:unknown"),
-            "a declined offer keeps no context, and the line still reads unknown, not blank"
+            "a declined offer drops report context but keeps its read-out facts"
         );
     }
 
@@ -3581,13 +3611,19 @@ mod tests {
         offer.context = Some(crate::auth::synthetic_incident()
             .with_discovery(discovery)
             .with_retry_run(2, std::time::Duration::from_secs(3)));
-        assert!(support_line(&offer).contains("attempts:2"), "{}", support_line(&offer));
+        offer.readout_context = Some(crate::auth::synthetic_incident()
+            .with_discovery(discovery)
+            .with_retry_run(3, std::time::Duration::from_secs(7)));
+        assert!(support_line(&offer).contains("attempts:3"), "{}", support_line(&offer));
+        assert!(!support_line(&offer).contains("attempts:2"),
+            "Details must not show the deduplicated report's older run: {}", support_line(&offer));
 
         offer.context = Some(crate::auth::synthetic_incident().with_discovery(
             crate::telemetry::incident::DiscoveryEvidence {
                 trigger: crate::telemetry::incident::DiscoveryTrigger::Rediscover,
                 target: Some(crate::telemetry::incident::DiscoveryTarget::Servers),
             }));
+        offer.readout_context = offer.context;
         assert!(!support_line(&offer).contains("attempts:"), "{}", support_line(&offer));
     }
 

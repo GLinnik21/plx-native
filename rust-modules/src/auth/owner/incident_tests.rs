@@ -591,6 +591,74 @@ fn a_discovery_retry_that_fails_the_same_way_is_not_asked_about_again() {
     assert_eq!((after.id, after.state), (first.id, IncidentState::NotNow), "the Not now stands");
 }
 
+#[test]
+fn a_settled_discovery_offer_keeps_one_answer_but_details_reads_the_latest_run() {
+    let evidence = crate::telemetry::incident::DiscoveryEvidence {
+        trigger: crate::telemetry::incident::DiscoveryTrigger::Login,
+        target: Some(crate::telemetry::incident::DiscoveryTarget::PlexTv),
+    };
+    for final_state in [
+        IncidentState::NotNow,
+        IncidentState::Queued { receipt: "receipt-1".into() },
+        IncidentState::Delivered { receipt: "receipt-1".into() },
+    ] {
+        let mut owner = signing_in();
+        let epoch = owner.state.epoch;
+        observe(&mut owner, LoginProgress::Authorized {
+            epoch, token: "synthetic-token".into(),
+        }, false);
+        let first_context = IncidentContext {
+            occurred_at_ms: 3,
+            ..IncidentContext::new(IncidentKind::Discovery(
+                crate::telemetry::incident::DiscoveryClass::Silent), Some(Err(dns())))
+                .with_discovery(evidence)
+                .with_retry_run(2, std::time::Duration::from_secs(3))
+        };
+        fail(&mut owner, first_context);
+        resolve(&mut owner, Permission::NotDetermined, 1);
+        let first = offer(&owner).unwrap();
+        match &final_state {
+            IncidentState::NotNow => {
+                command(&mut owner, Command::DeclineIncident { id: first.id });
+            }
+            IncidentState::Queued { receipt } | IncidentState::Delivered { receipt } => {
+                command(&mut owner, Command::ReportIncident { id: first.id });
+                step(&mut owner, SessionEvent::IncidentReported {
+                    id: first.id,
+                    delivery: IncidentDelivery::OneOff { receipt: Some(receipt.clone()) },
+                });
+                if matches!(&final_state, IncidentState::Delivered { .. }) {
+                    step(&mut owner, SessionEvent::IncidentReported {
+                        id: first.id,
+                        delivery: IncidentDelivery::Delivered { receipt: receipt.clone() },
+                    });
+                }
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(&offer(&owner).unwrap().state, &final_state);
+        command(&mut owner, Command::Retry);
+
+        let latest_context = IncidentContext {
+            occurred_at_ms: 9,
+            ..IncidentContext::new(IncidentKind::Discovery(
+                crate::telemetry::incident::DiscoveryClass::Silent), Some(Err(dns())))
+                .with_discovery(evidence)
+                .with_retry_run(3, std::time::Duration::from_secs(7))
+        };
+        fail(&mut owner, latest_context);
+
+        let after = offer(&owner).unwrap();
+        assert_eq!((after.id, &after.state), (first.id, &final_state),
+            "the same dedup key keeps one report offer and its settled state");
+        assert_eq!(owner.state.next_incident, 1, "no second report offer was allocated");
+        assert_eq!(after.context.and_then(|context| context.discovery_attempts), Some(2),
+            "the deduplicated report keeps its original evidence");
+        assert_eq!(after.readout_context().and_then(|context| context.discovery_attempts), Some(3),
+            "Details reads the latest discovery run");
+    }
+}
+
 /// **Try again after plex.tv refused the account token is a new QR sign-in.** An
 /// [`IncidentKind::Authorization`] failure means `/resources` answered 401/403 to the token the
 /// pin had just yielded; a discovery-only retry would hand plex.tv that same refused token again

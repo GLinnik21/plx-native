@@ -78,6 +78,23 @@ use crate::ui::machine::{InputEvent, InputKind, Key, Edge, Source, Tick};
 use serde_json::json;
 
 #[test]
+fn committed_replay_initials_remain_canonical_and_hash_bound() {
+    for (name, manifest) in [
+        ("1-boot-home-chip-grid", include_str!("../../../../tests/fixtures/replay/1-boot-home-chip-grid/manifest.json")),
+        ("6-settings-family", include_str!("../../../../tests/fixtures/replay/6-settings-family/manifest.json")),
+        ("12-filmography-detail-return", include_str!("../../../../tests/fixtures/replay/12-filmography-detail-return/manifest.json")),
+    ] {
+        let manifest: serde_json::Value = serde_json::from_str(manifest).unwrap();
+        let value = manifest["init"]["data"].clone();
+        let expected_hash = manifest["init"]["hash"].as_u64().unwrap();
+        Initial::from_value(value.clone()).unwrap_or_else(|error| panic!("{name}: {error}"));
+        let decoded = Initial::decode(value, expected_hash)
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert_eq!(decoded.hash(), expected_hash, "{name}");
+    }
+}
+
+#[test]
 fn typed_initial_roundtrip_and_hidden_input_hash_are_complete() {
     let initial = Initial::synthetic_home(17, 32517, None).unwrap();
     let value = serde_json::to_value(&initial).unwrap();

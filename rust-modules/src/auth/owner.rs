@@ -712,7 +712,7 @@ pub(crate) struct SessionInit {
     pub link_trouble: bool,
     /// The one account retry run currently outstanding during discovery. Its elapsed value is
     /// sampled at the last miss; the screen advances from that anchor with its frame clock.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery_retry: Option<super::DiscoveryRetryProgress>,
     /// The server the failure read-out may offer a consented plaintext connection to, with the
     /// person's answer so far (`auth::PlaintextVerdict`). Set only by an insecure-only discovery
