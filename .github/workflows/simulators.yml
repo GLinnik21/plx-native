@@ -23,6 +23,9 @@ on:
       - 'ci/libass-dependencies.json'
       - 'ci/ffabi-assert.c'
       - 'tests/fixtures/mkv_zlib_subs.mkv'
+      - 'tests/fixtures/replay/**'
+      - 'tests/replay_fixtures.py'
+      - 'tests/test_replay_fixtures.py'
       - 'tools/sim.ps1'
       - 'tools/sim-smoke.py'
   pull_request:
@@ -112,6 +115,21 @@ jobs:
           key: simulator-macos
       - name: Build native macOS simulator
         run: make sim-macos SIM_TDIR=rust-modules/target-sim-ci
+      - name: Replay all committed product recordings
+        run: |
+          python3 tests/replay_fixtures.py \
+            --sim "$GITHUB_WORKSPACE/rust-modules/target-sim-ci/debug/plxnative-sim" \
+            --output "$RUNNER_TEMP/plxnative-replay"
+      - name: Preserve replay evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: simulator-replay-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/plxnative-replay/**/plxnative-events.log
+            ${{ runner.temp }}/plxnative-replay/**/sim.out
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Install nightly Rust
         # `make check-ffmpeg` runs the host suite's FFmpeg-backed tests on the toolchain `make
         # check` uses; the simulator above builds on the runner's default one. `rust-src` is not
