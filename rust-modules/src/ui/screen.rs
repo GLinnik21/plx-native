@@ -413,6 +413,10 @@ pub enum Seat {
     /// the cursor, so "down, right, up" closes a square (`focus::projects_across`). Sideways
     /// doors, entries and restores, selector rows and columns keep the remembered element.
     Remembered,
+    /// The group's remembered element even across a vertical card-lattice door, falling back to
+    /// its first element. Linked shelf headings use this for their one DOWN transition; ordinary
+    /// row-to-row movement keeps [`Seat::Remembered`]'s square-closing projection.
+    RememberedFirst,
     RememberedNear { rows: u8 },
     First,
     Projected,

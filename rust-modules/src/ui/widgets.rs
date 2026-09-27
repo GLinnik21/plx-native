@@ -4760,7 +4760,7 @@ impl TabStrip {
                 // `Button::plate`) — owner correction, 2026-09-06: a plated strip's focused pill IS
                 // a control face (this fn's own doc says so, two paragraphs down) and a control face
                 // that never casts reads as a sticker pasted on the artwork rather than a pressable
-                // button, exactly the defect `person.rs::draw_entry` had before its own fix. Never
+                // button, exactly the defect `linked_heading::Entry` had before its own fix. Never
                 // for a TRACKED pill or the selection plate — see the call sites' own comments for
                 // why each of those stays flat.
                 if cast {
@@ -4823,7 +4823,7 @@ impl TabStrip {
         // was missing the fifth thing a control face wears, the CAST** — `Button::plate`'s own
         // `control_cast` before the fill, which is what turns a flat coloured shape sitting flush
         // against the artwork into something that reads as a pressable control lifted off it. This
-        // pill sits bare on artwork exactly the way `person.rs::draw_entry` sits bare on the page,
+        // pill sits bare on artwork exactly the way `linked_heading::Entry` sits bare on the page,
         // and it had the identical defect for the identical reason, so `cast: true` below.
         match ground {
             TabGround::Plated { pop } => {
@@ -6825,8 +6825,8 @@ impl Button {
 /// **A standalone control face for a caller outside this module** — the same plate
 /// [`Button::plate`] draws (the capsule outline, the edge sheen, and the focus cast), for a control
 /// whose layout does not fit `Button`'s one-label-two-icons shape and so cannot be a `Button`
-/// itself. `person.rs`'s Filmography route entry is the one caller today: three independent text
-/// runs (label, separator, count) and a trailing chevron, drawn by hand rather than through
+/// itself. [`super::linked_heading`] uses it for its entry and heading presentations: independent
+/// text runs (label, separator, count) and a trailing chevron, drawn by hand rather than through
 /// `Button::icon`/`label`/`trailing_icon`. It used to fill itself with a bare `Painter::rrect`/
 /// `rrect_sheened` — a plain rounded rect with no capsule outline, no edge sheen and no focus cast,
 /// the one pill-shaped control in the app that skipped the construction [`control_rim`] gives every
