@@ -13,7 +13,10 @@ impl LibraryScreen {
         // lines (`StatusOverlay::page`) — level with Home's and the sign-in failure's — rather than
         // centring in the content region, which dropped it ~250px below them. Loading and the
         // empty answer keep the region.
-        let mut overlay = StatusOverlay::new(self.status_frame(), caption, kind).page().phase(cx.tick.ms)
+        // Same untyped "can't reach" verdict as Home's — no typed cause here either, so the two
+        // pages share the glyph.
+        let mut overlay = StatusOverlay::new(self.status_frame(), caption, kind)
+            .page(crate::ui::icons::Icon::ServerBadgeMinus).phase(cx.tick.ms)
             .focused(cx.focus.current == Some(self.key(RETRY)));
         if let Some(reason) = reason { overlay = overlay.reason(reason); }
         if self.readout == Readout::Failed {

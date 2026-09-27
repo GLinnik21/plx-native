@@ -428,7 +428,7 @@ fn retry_stop_matches_the_shared_measured_status_action_with_and_without_reason(
         let (caption, reason) = page.status_text(&cx);
         assert_eq!(reason.is_some(), !owner.is_empty());
         let mut overlay = crate::ui::widgets::StatusOverlay::new(page.status_frame(), &caption,
-            crate::ui::widgets::StatusKind::Failed).page().action(c"Try again");
+            crate::ui::widgets::StatusKind::Failed).page(crate::ui::icons::Icon::ServerBadgeMinus).action(c"Try again");
         if let Some(reason) = &reason { overlay = overlay.reason(reason); }
         let expected = overlay.action_frame_measured(cx.measure).unwrap();
         for at in [At::Drawn, At::SpringTarget] {
@@ -450,7 +450,7 @@ fn a_failed_library_section_and_a_failed_home_share_the_verdict_and_the_row() {
     use crate::ui::widgets::{StatusKind, StatusOverlay};
     let _guard = crate::testlock::serial();
     let home = StatusOverlay::new(Rect::FULL, c"Can\u{2019}t reach your Plex server", StatusKind::Failed)
-        .page()
+        .page(crate::ui::icons::Icon::ServerBadgeMinus)
         .action(c"Try again");
     for owner in ["", "friend"] {
         let mut fixture = Fixture::new();
@@ -1227,6 +1227,35 @@ fn shelf_publication_request_distinguishes_page_fade_from_grid_fade_and_head_foc
     assert_eq!(request(&mut page), (false, false), "the outgoing page remains visible until the fade floor");
     page.page_fade.mount();
     assert_eq!(request(&mut page), (true, false), "only the full-page fade permits publication away from the head");
+}
+
+/// **Measured, not fixed: the Library's live tab strip and the page-glyph box overlap when a
+/// failed section shares a page with a populated library list.** `status.rs`'s own comment says
+/// "the Library keeps its chrome live ABOVE the read-out" — the tab strip (`draw_library_controls`,
+/// `CONTENT_TOP..CONTENT_TOP+CTRL_H` = library/layout's `CONTENT_TOP` = `ui::consts::GRID_TOP_Y` =
+/// 194, height `StatusOverlay::CTRL_H` = 60, so screen y 194..254) can be visible at the same time
+/// `readout()` reaches `Readout::Failed` for the CURRENT section (`SecFetch::Failed` with a
+/// negative total) while `self.libraries` — the tabs — still lists other sections, e.g. a second
+/// server the fetch never touched. The glyph box (`StatusOverlay::page`, spec "1A") is fixed at
+/// screen y `FULL_ANCHOR_TOP - GLYPH_GAP - GLYPH_SIZE`..`FULL_ANCHOR_TOP - GLYPH_GAP` = 216..328.
+/// The task that added the glyph was explicit: if this collides, report the measured overlap
+/// rather than moving the verdict — this test is that report, pinned so a future geometry change
+/// on either side is caught rather than silently re-measured. The overlap today is 254-216 = 38px.
+#[test]
+fn the_page_glyph_box_overlaps_the_librarys_own_live_tab_strip() {
+    use crate::ui::widgets::StatusOverlay;
+    let tab_strip_top = CONTENT_TOP;
+    let tab_strip_bottom = CONTENT_TOP + StatusOverlay::CTRL_H;
+    assert_eq!((tab_strip_top, tab_strip_bottom), (194.0, 254.0), "the tab strip band moved — re-measure the overlap below");
+    let glyph_top = StatusOverlay::FULL_ANCHOR_TOP - StatusOverlay::GLYPH_GAP - StatusOverlay::GLYPH_SIZE;
+    let glyph_bottom = StatusOverlay::FULL_ANCHOR_TOP - StatusOverlay::GLYPH_GAP;
+    assert_eq!((glyph_top, glyph_bottom), (216.0, 328.0), "the glyph band moved — re-measure the overlap below");
+    let overlap = tab_strip_bottom - glyph_top;
+    assert_eq!(overlap, 38.0,
+        "KNOWN, REPORTED collision: the tab strip (194..254) and the page glyph (216..328) overlap \
+         by {overlap}px whenever a failed section's page still carries other, populated tabs. Per \
+         the read-out glyph task, this is reported rather than fixed by moving the verdict; if this \
+         assertion changes, the report needs updating, not silencing.");
 }
 
 mod type_tests { include!("type_tests.rs"); }
