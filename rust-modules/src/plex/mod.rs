@@ -44,6 +44,7 @@ pub(crate) mod serverinfo;
 // `Client` above (own host + HTTPS transport), so it's its own `AccountClient`, not an `impl`.
 // pub(crate): the login/boot code (app.rs) + the UI screens construct these directly.
 pub(crate) mod account;
+pub(crate) mod languages;
 pub(crate) mod session;
 
 // WHERE a server is, as one value: scheme + host + port, parsed from a URL and never assembled
