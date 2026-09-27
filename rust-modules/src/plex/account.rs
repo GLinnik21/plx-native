@@ -265,6 +265,14 @@ impl AccountClient {
         decode_evidence("GET", url, self.get_raw(url))
     }
 
+    fn get_evidence_with<T: DeserializeOwned>(&self, url: &str, timeouts: crate::net::Timeouts)
+        -> Result<T, CallEvidence> {
+        let response = crate::net::request_evidence(url, &self.headers(), "GET", None,
+            timeouts, false, None, None);
+        note_response_contact(url, &response);
+        decode_evidence("GET", url, response)
+    }
+
     fn get_raw(&self, url: &str) -> Result<crate::net::Resp, crate::net::RequestFailure> {
         let resp = crate::net::request_evidence(url, &self.headers(), "GET", None,
             crate::net::API, false, None, None);
@@ -332,6 +340,14 @@ impl AccountClient {
         decode_evidence("POST", &url, self.post_raw(&url))
     }
 
+    pub(crate) fn create_pin_with(&self, timeouts: crate::net::Timeouts) -> Result<Pin, CallEvidence> {
+        let url = format!("{}/api/v2/pins?strong=false", plex_tv());
+        let response = crate::net::request_evidence(&url, &self.headers(), "POST", Some(b""),
+            timeouts, false, None, None);
+        note_response_contact(&url, &response);
+        decode_evidence("POST", &url, response)
+    }
+
     /// GET /api/v2/pins/{id} — poll a pending PIN, GRADED. `Pin.auth_token` becomes `Some` once
     /// the user approves it (scans the QR / enters the code + signs in); poll until then, or until
     /// the pin stops existing.
@@ -363,6 +379,13 @@ impl AccountClient {
         ))
     }
 
+    pub(crate) fn resources_with(&self, timeouts: crate::net::Timeouts)
+        -> Result<Vec<Resource>, CallEvidence> {
+        self.get_evidence_with(&format!(
+            "{}/api/v2/resources?includeHttps=1&includeRelay=1&includeIPv6=1", plex_tv()
+        ), timeouts)
+    }
+
     // ---- Plex Home managed users ----
 
     /// GET /api/v2/home/users — the Home (managed) users for the account: the "who's watching"
@@ -374,6 +397,13 @@ impl AccountClient {
     /// it. `Err` keeps the status ([`refused_identity`]) so the roster worker can say so.
     pub fn home_users(&self) -> Result<Vec<HomeUser>, CallEvidence> {
         let hu: HomeUsers = self.get_evidence(&format!("{}/api/v2/home/users", plex_tv()))?;
+        Ok(hu.users)
+    }
+
+    pub(crate) fn home_users_with(&self, timeouts: crate::net::Timeouts)
+        -> Result<Vec<HomeUser>, CallEvidence> {
+        let hu: HomeUsers = self.get_evidence_with(
+            &format!("{}/api/v2/home/users", plex_tv()), timeouts)?;
         Ok(hu.users)
     }
 
@@ -515,6 +545,20 @@ mod evidence_tests {
         assert_eq!(describe_evidence(&Err(timed_out)), "no answer (timed out)");
         let dns = RequestFailure { cause: RequestError::Transport, status: None, body_limit: None, curl_rc: Some(6) };
         assert_eq!(describe_evidence(&Err(dns)), "no answer (curl rc=6)");
+    }
+
+    #[test]
+    fn account_retryability_is_closed_over_status_and_curl_evidence() {
+        let failure = |rc| Err(RequestFailure { cause: RequestError::Transport, status: None,
+            body_limit: None, curl_rc: rc });
+        for evidence in [failure(Some(6)), failure(Some(7)), failure(Some(28)), failure(Some(35)),
+            Ok(408), Ok(429), Ok(500), Ok(502), Ok(503), Ok(504)] {
+            assert!(transient(&evidence), "{evidence:?}");
+        }
+        for evidence in [failure(Some(60)), failure(Some(77)), failure(Some(90)), failure(None),
+            Ok(200), Ok(400), Ok(401), Ok(403), Ok(404)] {
+            assert!(!transient(&evidence), "{evidence:?}");
+        }
     }
 
     fn failure(status: Option<u16>, body_limit: Option<usize>) -> Result<Resp, RequestFailure> {
@@ -806,6 +850,27 @@ pub fn refused_identity(evidence: &CallEvidence) -> Option<u16> {
     status.filter(|status| refuses_identity(*status))
 }
 
+/// Whether repeating an account call may turn this observation into a usable answer.
+/// Certificate/CA verification failures are stable until the TV is fixed; TLS connect failure
+/// (curl 35) is a transient handshake/transport observation and remains retryable.
+pub(crate) fn transient(evidence: &CallEvidence) -> bool {
+    let status = match evidence { Ok(status) => Some(*status), Err(failure) => failure.status };
+    if let Some(status) = status {
+        return matches!(status, 408 | 429 | 500 | 502 | 503 | 504);
+    }
+    match evidence {
+        Err(failure) => matches!(failure.curl_rc, Some(rc) if !matches!(rc, 60 | 77 | 90)),
+        Ok(_) => false,
+    }
+}
+
+/// Shared capped geometric delay. `misses == 0` is the base cadence; callers which count the
+/// first failure as one pass `misses - 1` to preserve their established schedule.
+pub(crate) fn backoff(misses: u32, base: Duration, ceiling: Duration) -> Duration {
+    let factor = 1u32.checked_shl(misses.min(30)).unwrap_or(u32::MAX);
+    base.checked_mul(factor).unwrap_or(ceiling).min(ceiling)
+}
+
 /// One event-log phrase for a failed account call's evidence: the HTTP status when a response
 /// arrived, the cause and curl code when none did. Closed evidence only — no URL, body or header.
 pub fn describe_evidence(evidence: &CallEvidence) -> String {
@@ -857,11 +922,11 @@ fn pin_is_gone(status: u16) -> bool {
 /// request that *completed*, whatever the server said in it. So the two failures that reach here
 /// arrive carrying no description of themselves: a status this client declines, and a 2xx body
 /// that will not deserialize. Both still leave by the same `None` — the callers' contract does not
-/// change — and the callers cannot tell them apart afterwards: `auth::discover_and_store` logs the
-/// pair as one line, `auth: resources request FAILED (no response/deser)`, and ends the sign-in at
-/// "Couldn't reach any Plex server — check the connection.", which is advice about a network for
-/// something that may be an identity. The status is what separates those two, and this function is
-/// where it exists.
+/// change — but the evidence-preserving account methods keep the status after this function
+/// returns: auth can therefore distinguish an identity refusal, a service answer and transport
+/// silence, retry only the transient classes, and describe the failed plex.tv edge without
+/// pretending it contacted a Plex Media Server. The status is what separates those outcomes, and
+/// this function is where it exists.
 ///
 /// QR uses `net::https_get_public` and grades `r.ok()` itself. Switch refusal and poll Gone
 /// classify received status before decoding, including incomplete responses. Every typed body

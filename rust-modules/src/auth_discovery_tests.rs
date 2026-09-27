@@ -5,6 +5,151 @@ use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
 
+/// PLX-NATIVE-12: authorization has already succeeded, so a transient failure listing plex.tv
+/// resources must be retried in place instead of becoming the terminal silent verdict.
+#[test]
+fn authorized_discovery_retries_a_dns_blip_before_settling() {
+    use std::sync::Mutex;
+    struct Live(Mutex<Vec<AuthProgress>>);
+    impl owner::ObservationSink for Live {
+        fn live(&self) -> bool { true }
+        fn progress(&self, progress: AuthProgress) -> bool {
+            self.0.lock().unwrap().push(progress);
+            true
+        }
+        fn terminal(&self, _: AuthProgress) -> bool { true }
+    }
+    let dns = crate::net::RequestFailure {
+        cause: crate::net::RequestError::Transport,
+        status: None,
+        body_limit: None,
+        curl_rc: Some(6),
+    };
+    let account = AccountClient::new("client", Some("authorized-token"));
+    let mut servers = Some(vec![resource(r#"{"name":"ours","clientIdentifier":"machine","provides":"server",
+        "owned":true,"accessToken":"profile-token","connections":[]}"#)]);
+    struct Clock(Duration);
+    impl RetryClock for Clock {
+        fn elapsed(&self) -> Duration { self.0 }
+        fn wait(&mut self, duration: Duration) -> bool { self.0 += duration; true }
+    }
+    let mut clock = Clock(Duration::ZERO);
+    let mut calls = 0;
+    let output = Live(Mutex::new(Vec::new()));
+    let outcome = discover_and_store_with_resources_and_clock(
+        &account,
+        "client",
+        1,
+        DiscoveryTrigger::Login,
+        &PlaintextAsk::undecided(),
+        &output,
+        &mut clock,
+        |_, _| {
+            calls += 1;
+            if calls == 1 { Err(Err(dns)) } else { Ok(servers.take().unwrap()) }
+        },
+    );
+    let progress = output.0.lock().unwrap();
+    assert!(matches!(progress.first(),
+        Some(AuthProgress::Login(LoginProgress::DiscoveryTrouble { progress:
+            DiscoveryRetryProgress { run: DiscoveryRetryRun::Resources, misses: 1, .. }, .. }))));
+    assert!(matches!(progress.get(1),
+        Some(AuthProgress::Login(LoginProgress::DiscoveryRetrySettled {
+            run: DiscoveryRetryRun::Resources, .. }))),
+        "a recovered resources retry is cleared before probing continues");
+    assert!(
+        !matches!(outcome, Discovery::PlexTvFailed(_)),
+        "an authorized discovery must retry a transient plex.tv resources failure"
+    );
+    assert_eq!(calls, 2);
+}
+
+#[test]
+fn login_home_users_retries_then_falls_back_to_an_empty_roster() {
+    struct Live;
+    impl owner::ObservationSink for Live {
+        fn live(&self) -> bool { true }
+        fn progress(&self, _: AuthProgress) -> bool { true }
+        fn terminal(&self, _: AuthProgress) -> bool { true }
+    }
+    struct Clock(Duration);
+    impl RetryClock for Clock {
+        fn elapsed(&self) -> Duration { self.0 }
+        fn wait(&mut self, duration: Duration) -> bool { self.0 += duration; true }
+    }
+    let account = AccountClient::new("client", Some("authorized-token"));
+    let dns = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+        status: None, body_limit: None, curl_rc: Some(6) });
+    let mut calls = 0;
+    let users = sign_in_home_users_with_clock(&account, 7, &Live,
+        &mut Clock(Duration::ZERO), |_, _| {
+            calls += 1;
+            Err(dns)
+        }).expect("the live login continues after roster fallback");
+    assert_eq!(calls, INTERACTIVE_ACCOUNT.max_attempts as usize);
+    assert!(users.is_empty(), "roster failure keeps the existing single-user fallback");
+}
+
+#[test]
+fn login_home_users_publishes_the_first_miss_before_the_second_request_returns() {
+    use std::sync::Mutex;
+    struct Capture(Mutex<Vec<AuthProgress>>);
+    impl owner::ObservationSink for Capture {
+        fn live(&self) -> bool { true }
+        fn progress(&self, progress: AuthProgress) -> bool {
+            self.0.lock().unwrap().push(progress);
+            true
+        }
+        fn terminal(&self, _: AuthProgress) -> bool { true }
+    }
+    struct Clock(Duration);
+    impl RetryClock for Clock {
+        fn elapsed(&self) -> Duration { self.0 }
+        fn wait(&mut self, duration: Duration) -> bool { self.0 += duration; true }
+    }
+    let output = Capture(Mutex::new(Vec::new()));
+    let account = AccountClient::new("client", Some("authorized-token"));
+    let dns = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+        status: None, body_limit: None, curl_rc: Some(6) });
+    let mut calls = 0;
+    let users = sign_in_home_users_with_clock(&account, 9, &output,
+        &mut Clock(Duration::ZERO), |_, _| {
+            calls += 1;
+            if calls == 1 { return Err(dns) }
+            assert!(matches!(output.0.lock().unwrap().as_slice(),
+                [AuthProgress::Login(LoginProgress::DiscoveryTrouble { epoch: 9,
+                    progress: DiscoveryRetryProgress {
+                        run: DiscoveryRetryRun::HomeUsers, misses: 1, ..
+                    } })]),
+                "the screen must know about the first miss while attempt two is outstanding");
+            Ok(Vec::new())
+        }).unwrap();
+    assert!(users.is_empty());
+    assert!(matches!(output.0.lock().unwrap().last(),
+        Some(AuthProgress::Login(LoginProgress::DiscoveryRetrySettled {
+            epoch: 9, run: DiscoveryRetryRun::HomeUsers,
+        }))));
+}
+
+#[test]
+fn background_home_roster_refresh_retries_before_preserving_the_cache() {
+    struct Clock(Duration);
+    impl RetryClock for Clock {
+        fn elapsed(&self) -> Duration { self.0 }
+        fn wait(&mut self, duration: Duration) -> bool { self.0 += duration; true }
+    }
+    let account = AccountClient::new("client", Some("token"));
+    let dns = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+        status: None, body_limit: None, curl_rc: Some(6) });
+    let mut calls = 0;
+    let graded = home_roster_with_io_and_clock(&account, &mut Clock(Duration::ZERO), |_, _| {
+        calls += 1;
+        Err(dns)
+    }).expect("the worker remains live");
+    assert_eq!(calls, BACKGROUND_ACCOUNT.max_attempts as usize);
+    assert!(graded.is_none(), "an unanswered refresh preserves the cached roster");
+}
+
 #[test]
 fn retry_reuses_an_authorized_account_only_for_discovery_errors() {
     let mut old = owner::SessionInit::captured(Session {
@@ -790,7 +935,7 @@ fn resolved_none_insecure_outranks_refused_and_every_other_shape_is_unchanged() 
     ));
     assert!(matches!(
         resolved_without_roster(Resolved::None { refused: false, insecure: false, evidence: None }, DiscoveryTrigger::Login),
-        Err(Discovery::Silent(None))
+        Err(Discovery::ServersUnreachable { trigger: DiscoveryTrigger::Login })
     ));
     assert!(
         matches!(
@@ -1938,7 +2083,9 @@ fn the_discovery_retry_reports_the_failure_it_retried() {
             "`{name}` names its own discovery incident kind instead of taking the shared table's:\n{body}"
         );
     }
-    let (_, silent) = discovery_failure(&Discovery::Silent(None)).expect("a failure");
+    let (_, silent) = discovery_failure(&Discovery::ServersUnreachable {
+        trigger: DiscoveryTrigger::Login,
+    }).expect("a failure");
     assert_eq!(silent.kind, IncidentKind::Discovery(DiscoveryClass::Silent));
 }
 
@@ -1960,18 +2107,84 @@ fn a_refused_token_is_reported_as_authorization_not_as_silence() {
         ];
         for last in refused {
             let (message, incident) =
-                discovery_failure(&Discovery::Silent(Some(last))).expect("a failure");
+                discovery_failure(&Discovery::PlexTvFailed(PlexTvFailure {
+                    last, attempts: 1, elapsed: Duration::ZERO, trigger: DiscoveryTrigger::Login,
+                })).expect("a failure");
             assert_eq!(incident.kind, IncidentKind::Authorization, "{status}");
             assert_eq!(incident.http_status, Some(status));
             assert!(!message.contains("connection"), "{status}: {message:?} blames the network");
         }
     }
     // Real silence, and other answers, stay what they were.
-    for last in [None, Some(Ok(503)), Some(Ok(429))] {
-        let (message, incident) = discovery_failure(&Discovery::Silent(last)).expect("a failure");
+    for last in [Ok(503), Ok(429)] {
+        let (message, incident) = discovery_failure(&Discovery::PlexTvFailed(PlexTvFailure {
+            last, attempts: 3, elapsed: Duration::from_secs(6), trigger: DiscoveryTrigger::Login,
+        })).expect("a failure");
         assert_eq!(incident.kind, IncidentKind::Discovery(DiscoveryClass::Silent), "{last:?}");
-        assert!(message.contains("connection"));
+        assert!(message.contains("plex.tv"));
     }
+}
+
+#[test]
+fn terminal_discovery_copy_names_the_target_cause_retry_and_action() {
+    let failure = |rc, cause| Err(crate::net::RequestFailure { cause, status: None,
+        body_limit: None, curl_rc: rc });
+    let message = |last| discovery_failure(&Discovery::PlexTvFailed(PlexTvFailure {
+        last, attempts: 3, elapsed: Duration::from_secs(6), trigger: DiscoveryTrigger::Login,
+    })).unwrap().0.into_owned();
+    assert_eq!(message(failure(Some(6), crate::net::RequestError::Transport)),
+        "This TV couldn't find plex.tv, so your servers weren't checked. We tried 3 times. Check the TV's internet connection, then try again.");
+    assert_eq!(message(failure(Some(28), crate::net::RequestError::TimedOut)),
+        "This TV couldn't reach plex.tv, so your servers weren't checked. We tried 3 times. Check the TV's internet connection, then try again.");
+    assert_eq!(message(failure(Some(60), crate::net::RequestError::Transport)),
+        "This TV couldn't make a secure connection to plex.tv. Check the TV's date and time, then try again.");
+    for evidence in [Ok(200), Ok(408), Ok(429), Ok(503)] {
+        assert_eq!(message(evidence),
+            "plex.tv is having trouble right now, so your servers weren't checked. Try again in a few minutes.");
+    }
+    let servers = discovery_failure(&Discovery::ServersUnreachable {
+        trigger: DiscoveryTrigger::Rediscover,
+    }).unwrap().0;
+    assert_eq!(servers,
+        "plex.tv listed your servers, but none of them answered. Make sure your Plex Media Server is on and online, then try again.");
+}
+
+#[test]
+fn a_single_discovery_attempt_uses_grammatical_retry_copy() {
+    let last = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+        status: None, body_limit: None, curl_rc: Some(6) });
+    let (message, _) = discovery_failure(&Discovery::PlexTvFailed(PlexTvFailure {
+        last, attempts: 1, elapsed: Duration::ZERO, trigger: DiscoveryTrigger::Login,
+    })).unwrap();
+    assert!(message.contains("We tried once."), "{message}");
+    assert!(!message.contains("1 times"), "{message}");
+}
+
+#[test]
+fn background_resource_call_sites_clamp_each_request_to_the_runner_budget() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/auth.rs"),
+    ).unwrap();
+    let roster = extract_fn_body(&src, "server_roster_worker_with_output");
+    assert!(roster.contains("resources_with(account_timeouts(remaining))"), "{roster}");
+    let endpoint = extract_fn_body(&src, "probe_endpoint_work");
+    assert!(endpoint.contains("resources(&ac, remaining)"),
+        "the endpoint runner must pass its remaining budget through the injected seam:\n{endpoint}");
+    let production = extract_fn_body(&src, "run_session_work");
+    assert!(production.contains("resources_with(account_timeouts(remaining))"),
+        "the production endpoint seam must clamp the account request:\n{production}");
+}
+
+#[test]
+fn dns_copy_never_claims_that_a_plex_server_was_contacted() {
+    let last = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+        status: None, body_limit: None, curl_rc: Some(6) });
+    let (caption, _) = discovery_failure(&Discovery::PlexTvFailed(PlexTvFailure {
+        last, attempts: 3, elapsed: Duration::from_secs(6), trigger: DiscoveryTrigger::Login,
+    })).unwrap();
+    assert!(caption.contains("plex.tv"));
+    assert!(caption.contains("TV's internet connection"));
+    assert!(!caption.contains("Plex server"), "{caption}");
 }
 
 /// **Discovery writes the grant evidence down beside the credit.** The sign-in ingest is one of

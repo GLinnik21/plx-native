@@ -504,7 +504,8 @@ mod tests {
             code_replaced: false, users: std::sync::Arc::from(Vec::new()),
             error: std::sync::Arc::from(""), pin_denied: false, profile: None,
             scope: crate::auth::owner::ProfileScope(0), delete_leftovers: 0,
-            persistence_warning: None, incident: None, link_trouble: false, plaintext: None,
+            persistence_warning: None, incident: None, link_trouble: false,
+            discovery_retry: None, plaintext: None,
             switch_refused, readout_back_resumes: false,
         }
     }

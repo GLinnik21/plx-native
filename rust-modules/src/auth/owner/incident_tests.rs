@@ -92,6 +92,11 @@ fn stalled() -> IncidentContext {
     }
 }
 
+fn retry(run: crate::auth::DiscoveryRetryRun, misses: u32, elapsed_ms: u32)
+    -> crate::auth::DiscoveryRetryProgress {
+    crate::auth::DiscoveryRetryProgress { run, misses, elapsed_ms }
+}
+
 /// A sign-in on its way: the QR flow started, a login request in flight.
 fn signing_in() -> SessionMachine {
     let mut owner = SessionMachine::from_init(SessionInit::captured(PersistedSession {
@@ -129,6 +134,34 @@ fn incident_effects(effects: &[SessionFx]) -> Vec<(IncidentLane, IncidentReport)
             _ => None,
         })
         .collect()
+}
+
+#[test]
+fn legacy_no_servers_context_keeps_the_parent_canonical_digest() {
+    const E437F264: &str = r#"{"kind":{"Discovery":"NoServers"},"link":"Unknown","http_status":null,"curl_rc":null,"unanswered":"Zero","failing_for":"None","code_generation":null,"persistence":null,"helper":null,"candidate_errnos":[null,null,null,null,null,null,null,null],"keymanager_stage":null,"service_error_code":null,"insecure":null,"plaintext_consent":null,"no_servers":{"resources":"TwoToFive","trigger":"Rediscover"},"occurred_at_ms":1}"#;
+    const N79EF8433: &str = r#"{"kind":{"Discovery":"NoServers"},"link":"Unknown","http_status":null,"curl_rc":null,"unanswered":"Zero","failing_for":"None","code_generation":null,"persistence":null,"helper":null,"candidate_errnos":[null,null,null,null,null,null,null,null],"keymanager_stage":null,"service_error_code":null,"insecure":null,"plaintext_consent":null,"no_servers":{"resources":"One","trigger":"Login"},"occurred_at_ms":2}"#;
+    for (fixture, resources, trigger, occurred_at_ms) in [
+        (E437F264, crate::telemetry::incident::CountBucket::TwoToFive,
+            crate::telemetry::incident::DiscoveryTrigger::Rediscover, 1),
+        (N79EF8433, crate::telemetry::incident::CountBucket::One,
+            crate::telemetry::incident::DiscoveryTrigger::Login, 2),
+    ] {
+        let restored: IncidentContext = serde_json::from_str(fixture).unwrap();
+        let expected = IncidentContext {
+            occurred_at_ms,
+            ..IncidentContext::new(
+                IncidentKind::Discovery(crate::telemetry::incident::DiscoveryClass::NoServers), None)
+                .with_no_servers(crate::telemetry::incident::NoServersEvidence {
+                    resources, trigger,
+                })
+        };
+        let mut old = crate::ui::machine::Canon::new();
+        write_context(&mut old, &restored);
+        let mut current = crate::ui::machine::Canon::new();
+        write_context(&mut current, &expected);
+        assert_eq!(old.finish(), current.finish(),
+            "NoServers must not acquire the new discovery canonical suffix");
+    }
 }
 
 // ---- (a) -----------------------------------------------------------------------------------------
@@ -224,6 +257,58 @@ fn a_stalled_wait_is_never_sent_standing() {
     observe(&mut owner, LoginProgress::LinkTrouble { epoch, trouble: None }, false);
     assert!(!owner.read().0.link_trouble, "an answer clears the status line");
     assert_eq!(offer(&owner).unwrap().id, held.id, "but not the offer");
+}
+
+#[test]
+fn discovery_trouble_is_non_terminal_and_never_an_incident() {
+    let mut owner = signing_in();
+    let epoch = owner.state.epoch;
+    observe(&mut owner, LoginProgress::Authorized { epoch, token: "token".into() }, false);
+    assert_eq!(owner.read().0.phase, Phase::Discovering);
+    let progress = retry(crate::auth::DiscoveryRetryRun::Resources, 2, 2_000);
+    observe(&mut owner, LoginProgress::DiscoveryTrouble { epoch, progress }, false);
+    let read = owner.read();
+    assert_eq!(read.0.phase, Phase::Discovering);
+    assert_eq!(read.0.discovery_retry, Some(progress));
+    assert!(read.0.incident.is_none(), "an in-flight retry is not a terminal incident");
+}
+
+#[test]
+fn discovery_trouble_is_accepted_for_rediscover_and_stale_epochs_are_fenced() {
+    let mut owner = signing_in();
+    let first_epoch = owner.state.epoch;
+    observe(&mut owner, LoginProgress::Authorized {
+        epoch: first_epoch, token: "token".into(),
+    }, false);
+    fail(&mut owner, IncidentContext::new(
+        IncidentKind::Discovery(crate::telemetry::incident::DiscoveryClass::Silent), None));
+    command(&mut owner, Command::Retry);
+    let epoch = owner.state.epoch;
+    assert_eq!(owner.state.phase, Phase::Discovering);
+
+    let progress = retry(crate::auth::DiscoveryRetryRun::Resources, 1, 50);
+    observe(&mut owner, LoginProgress::DiscoveryTrouble { epoch, progress }, false);
+    assert_eq!(owner.state.discovery_retry, Some(progress),
+        "Rediscover accepts the same non-terminal progress as Login");
+
+    let stale = retry(crate::auth::DiscoveryRetryRun::HomeUsers, 2, 9_000);
+    observe(&mut owner, LoginProgress::DiscoveryTrouble {
+        epoch: first_epoch, progress: stale,
+    }, false);
+    assert_eq!(owner.state.discovery_retry, Some(progress),
+        "a stale worker cannot publish trouble into the new retry epoch");
+
+    observe(&mut owner, LoginProgress::DiscoveryRetrySettled {
+        epoch: first_epoch, run: crate::auth::DiscoveryRetryRun::Resources,
+    }, false);
+    assert_eq!(owner.state.discovery_retry, Some(progress),
+        "a stale-epoch reset cannot clear the current run");
+
+    observe(&mut owner, LoginProgress::DiscoveryRetrySettled {
+        epoch, run: crate::auth::DiscoveryRetryRun::Resources,
+    }, false);
+    assert_eq!(owner.state.discovery_retry, None,
+        "the matching current run clears before slow probing continues");
 }
 
 /// The QR code is still on screen during a stall, possibly mid-scan: no permission state may put
@@ -504,6 +589,74 @@ fn a_discovery_retry_that_fails_the_same_way_is_not_asked_about_again() {
     fail(&mut owner, silent);
     let after = offer(&owner).unwrap();
     assert_eq!((after.id, after.state), (first.id, IncidentState::NotNow), "the Not now stands");
+}
+
+#[test]
+fn a_settled_discovery_offer_keeps_one_answer_but_details_reads_the_latest_run() {
+    let evidence = crate::telemetry::incident::DiscoveryEvidence {
+        trigger: crate::telemetry::incident::DiscoveryTrigger::Login,
+        target: Some(crate::telemetry::incident::DiscoveryTarget::PlexTv),
+    };
+    for final_state in [
+        IncidentState::NotNow,
+        IncidentState::Queued { receipt: "receipt-1".into() },
+        IncidentState::Delivered { receipt: "receipt-1".into() },
+    ] {
+        let mut owner = signing_in();
+        let epoch = owner.state.epoch;
+        observe(&mut owner, LoginProgress::Authorized {
+            epoch, token: "synthetic-token".into(),
+        }, false);
+        let first_context = IncidentContext {
+            occurred_at_ms: 3,
+            ..IncidentContext::new(IncidentKind::Discovery(
+                crate::telemetry::incident::DiscoveryClass::Silent), Some(Err(dns())))
+                .with_discovery(evidence)
+                .with_retry_run(2, std::time::Duration::from_secs(3))
+        };
+        fail(&mut owner, first_context);
+        resolve(&mut owner, Permission::NotDetermined, 1);
+        let first = offer(&owner).unwrap();
+        match &final_state {
+            IncidentState::NotNow => {
+                command(&mut owner, Command::DeclineIncident { id: first.id });
+            }
+            IncidentState::Queued { receipt } | IncidentState::Delivered { receipt } => {
+                command(&mut owner, Command::ReportIncident { id: first.id });
+                step(&mut owner, SessionEvent::IncidentReported {
+                    id: first.id,
+                    delivery: IncidentDelivery::OneOff { receipt: Some(receipt.clone()) },
+                });
+                if matches!(&final_state, IncidentState::Delivered { .. }) {
+                    step(&mut owner, SessionEvent::IncidentReported {
+                        id: first.id,
+                        delivery: IncidentDelivery::Delivered { receipt: receipt.clone() },
+                    });
+                }
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(&offer(&owner).unwrap().state, &final_state);
+        command(&mut owner, Command::Retry);
+
+        let latest_context = IncidentContext {
+            occurred_at_ms: 9,
+            ..IncidentContext::new(IncidentKind::Discovery(
+                crate::telemetry::incident::DiscoveryClass::Silent), Some(Err(dns())))
+                .with_discovery(evidence)
+                .with_retry_run(3, std::time::Duration::from_secs(7))
+        };
+        fail(&mut owner, latest_context);
+
+        let after = offer(&owner).unwrap();
+        assert_eq!((after.id, &after.state), (first.id, &final_state),
+            "the same dedup key keeps one report offer and its settled state");
+        assert_eq!(owner.state.next_incident, 1, "no second report offer was allocated");
+        assert_eq!(after.context.and_then(|context| context.discovery_attempts), Some(2),
+            "the deduplicated report keeps its original evidence");
+        assert_eq!(after.readout_context().and_then(|context| context.discovery_attempts), Some(3),
+            "Details reads the latest discovery run");
+    }
 }
 
 /// **Try again after plex.tv refused the account token is a new QR sign-in.** An

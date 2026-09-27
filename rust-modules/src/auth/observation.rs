@@ -42,6 +42,20 @@ impl Observation {
                         for byte in qr_png { w.u8(*byte); }
                     }
                     LoginProgress::Authorized { epoch, token } => { w.u8(2).u64(*epoch).str(token); }
+                    LoginProgress::DiscoveryTrouble { epoch, progress } => {
+                        w.u8(6).u64(*epoch)
+                            .u8(match progress.run {
+                                super::DiscoveryRetryRun::Resources => 0,
+                                super::DiscoveryRetryRun::HomeUsers => 1,
+                            })
+                            .u32(progress.misses).u32(progress.elapsed_ms);
+                    }
+                    LoginProgress::DiscoveryRetrySettled { epoch, run } => {
+                        w.u8(7).u64(*epoch).u8(match run {
+                            super::DiscoveryRetryRun::Resources => 0,
+                            super::DiscoveryRetryRun::HomeUsers => 1,
+                        });
+                    }
                     LoginProgress::Failed { epoch, message, incident, plaintext } => {
                         w.u8(3).u64(*epoch).str(message);
                         owner::write_incident_context(w, incident);
@@ -136,6 +150,9 @@ impl Observation {
                     LoginProgress::CodeReplacing { epoch } | LoginProgress::CodeReady { epoch, .. }
                     | LoginProgress::Authorized { epoch, .. } | LoginProgress::LinkTrouble { epoch, .. } =>
                         (*epoch, None, pending.key.op == SessionOp::Login && !terminal),
+                    LoginProgress::DiscoveryTrouble { epoch, .. }
+                    | LoginProgress::DiscoveryRetrySettled { epoch, .. } =>
+                        (*epoch, None, login && !terminal),
                     LoginProgress::Failed { epoch, .. } | LoginProgress::SignedIn { epoch, .. } =>
                         (*epoch, None, login && terminal),
                 }

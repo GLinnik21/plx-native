@@ -1198,8 +1198,9 @@ const RETRY_MAX_S: f32 = 30.0;
 
 /// Wait before attempt `fails + 1`: 2s, 4s, 8s, 16s, then 30s forever. Pure — host-tested.
 pub(crate) fn backoff_secs(fails: u32) -> f32 {
-    let steps = fails.saturating_sub(1).min(6); // 1<<6 already exceeds the cap; guards the shift
-    (RETRY_MIN_S * (1u32 << steps) as f32).min(RETRY_MAX_S)
+    crate::plex::account::backoff(fails.saturating_sub(1),
+        std::time::Duration::from_secs_f32(RETRY_MIN_S),
+        std::time::Duration::from_secs_f32(RETRY_MAX_S)).as_secs_f32()
 }
 
 /// Home's fetch state, folded from every source — what the loading / empty / error read-out reads.

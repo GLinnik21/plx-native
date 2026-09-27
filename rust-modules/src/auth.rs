@@ -11,7 +11,8 @@
 //! authority. Network/PIN derivation remain worker operations; offline policy is retained below.
 use crate::plex::account::{AccountClient, CallEvidence, HomeUser, PinPoll, Resource, SwitchOutcome};
 use crate::telemetry::incident::{
-    CountBucket, DiscoveryClass, DiscoveryTrigger, IncidentContext, IncidentKind, NoServersEvidence,
+    CountBucket, DiscoveryClass, DiscoveryEvidence, DiscoveryTarget, DiscoveryTrigger,
+    IncidentContext, IncidentKind, NoServersEvidence,
 };
 use crate::plex::grant::PlaintextAsk;
 use crate::plex::probe::{
@@ -54,7 +55,8 @@ pub(crate) fn run_session_work(key: owner::SessionWorkKey,
                 recently_unreachable, &ask, output, |ac, uuid, pin| ac.switch_user(uuid, pin)),
         owner::SessionWork::Endpoint { session, expected, lifecycle, machine_id } => {
             endpoint_worker_with_io(epoch, session, expected, lifecycle, machine_id, output,
-                |ac| ac.resources(), |resource, household| probe_profile_resource_live(resource, household, &ask));
+                |ac, remaining| ac.resources_with(account_timeouts(remaining)),
+                |resource, household| probe_profile_resource_live(resource, household, &ask));
         }
     }
 }
@@ -63,7 +65,7 @@ pub(crate) fn run_session_work(key: owner::SessionWorkKey,
 /// adapter metadata and only main can apply the terminal observation.
 pub(crate) fn endpoint_worker_with_io(epoch: u64, session: Session, expected: owner::Identity,
     lifecycle: owner::ServerLifecycle, machine_id: String, output: &dyn owner::ObservationSink,
-    resources: impl FnOnce(&AccountClient) -> Result<Vec<Resource>, CallEvidence>,
+    resources: impl FnMut(&AccountClient, Duration) -> Result<Vec<Resource>, CallEvidence>,
     probe: impl FnOnce(&Resource, &[i64]) -> (Option<SourceRef>, SettledProbe)) {
     let (fresh, probe) = probe_endpoint_work(ServerId::from_raw(lifecycle.sid), &machine_id, &session,
         resources, probe, &|| output.live());
@@ -106,6 +108,18 @@ pub enum Phase {
     Error,
     /// All local state was erased. No worker runs until the user explicitly starts sign-in.
     Deleted,
+}
+
+pub(crate) const DISCOVERY_TROUBLE: &str = "Plex isn't responding. Still trying…";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum DiscoveryRetryRun { Resources, HomeUsers }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DiscoveryRetryProgress {
+    pub run: DiscoveryRetryRun,
+    pub misses: u32,
+    pub elapsed_ms: u32,
 }
 
 /// Does an error retry need a new account sign-in, or only another server-discovery pass?
@@ -440,14 +454,35 @@ fn grade_roster(answer: Result<Vec<HomeUser>, CallEvidence>) -> Option<Vec<UserT
 
 fn home_roster_worker_with_output(epoch: u64, expected: SessionIdentity, cid: String,
     token: String, output: &dyn owner::ObservationSink) {
+    home_roster_worker_with_io(epoch, expected, cid, token, output,
+        |ac, remaining| ac.home_users_with(account_timeouts(remaining)));
+}
+
+fn home_roster_worker_with_io(epoch: u64, expected: SessionIdentity, cid: String,
+    token: String, output: &dyn owner::ObservationSink,
+    mut home_users: impl FnMut(&AccountClient, Duration) -> Result<Vec<HomeUser>, CallEvidence>) {
     if !output.live() { return; }
     let ac = AccountClient::new(&cid, Some(&token));
-    let users = grade_roster(ac.home_users());
+    let mut clock = LiveRetryClock { output, started: Instant::now() };
+    let Some(users) = home_roster_with_io_and_clock(&ac, &mut clock, &mut home_users) else { return };
     output.terminal(AuthProgress::HomeRoster(HomeRosterProgress {
         epoch,
         expected,
         users,
     }));
+}
+
+fn home_roster_with_io_and_clock(ac: &AccountClient, clock: &mut impl RetryClock,
+    mut home_users: impl FnMut(&AccountClient, Duration) -> Result<Vec<HomeUser>, CallEvidence>)
+    -> Option<Option<Vec<UserTile>>> {
+    let run = retry_account_call(BACKGROUND_ACCOUNT, clock, |_, _, _| {},
+        |remaining| home_users(ac, remaining));
+    let users = match run.result {
+        AccountCallEnd::Answer(users) => grade_roster(Ok(users)),
+        AccountCallEnd::Failed(evidence) => grade_roster(Err(evidence)),
+        AccountCallEnd::Cancelled => return None,
+    };
+    Some(users)
 }
 
 // QR, profile, roster and endpoint workers share the adapter's addressed observation stream.
@@ -777,6 +812,12 @@ pub(crate) enum LoginProgress {
     CodeReady { epoch: u64, code: String, qr_png: Vec<u8> },
     /// The user authorized on their phone; discovery is starting.
     Authorized { epoch: u64, token: String },
+    /// One account edge missed. Non-terminal: the phase remains Discovering and the screen uses
+    /// this run-relative elapsed anchor to reveal trouble after the second miss or eight seconds.
+    DiscoveryTrouble { epoch: u64, progress: DiscoveryRetryProgress },
+    /// The named account retry run is no longer outstanding. Matching by run prevents a delayed
+    /// completion from clearing a newer account edge within the same discovery epoch.
+    DiscoveryRetrySettled { epoch: u64, run: DiscoveryRetryRun },
     /// The whole attempt failed for the stated, already-user-facing reason — no server on the
     /// account, discovery unreachable/refused, the pin ran out of automatic replacements, or pin
     /// creation itself could not reach plex.tv. Only the current owner may publish that failure.
@@ -878,7 +919,8 @@ fn output_failed(output: &dyn owner::ObservationSink, epoch: u64, message: &str,
 /// [`IncidentKind::Authorization`] failure, with a caption that does not send the person to a
 /// network that is working.
 fn discovery_failure(d: &Discovery) -> Option<(std::borrow::Cow<'static, str>, IncidentContext)> {
-    if let Discovery::Silent(Some(last)) = d {
+    if let Discovery::PlexTvFailed(run) = d {
+        let last = &run.last;
         let status = match last {
             Ok(status) => Some(*status),
             Err(failure) => failure.status,
@@ -904,11 +946,33 @@ fn discovery_failure(d: &Discovery) -> Option<(std::borrow::Cow<'static, str>, I
             DiscoveryClass::Refused,
             None,
         ),
-        Discovery::Silent(last) => (
-            "Couldn't reach any Plex server — check the connection.",
-            DiscoveryClass::Silent,
-            *last,
-        ),
+        Discovery::ServersUnreachable { trigger } => return Some((
+            "plex.tv listed your servers, but none of them answered. Make sure your Plex Media Server is on and online, then try again.".into(),
+            IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::Silent), None)
+                .with_discovery(DiscoveryEvidence { trigger: *trigger,
+                    target: Some(DiscoveryTarget::Servers) }),
+        )),
+        Discovery::PlexTvFailed(run) => {
+            let (link, _, _) = crate::telemetry::incident::classify(Some(run.last));
+            let message = match link {
+                crate::telemetry::incident::LinkClass::Dns => retry_copy(
+                    "This TV couldn't find plex.tv, so your servers weren't checked.", run.attempts),
+                crate::telemetry::incident::LinkClass::Tls =>
+                    "This TV couldn't make a secure connection to plex.tv. Check the TV's date and time, then try again.".into(),
+                crate::telemetry::incident::LinkClass::Answered2xx
+                | crate::telemetry::incident::LinkClass::Answered4xx
+                | crate::telemetry::incident::LinkClass::Answered5xx
+                | crate::telemetry::incident::LinkClass::AnsweredOther =>
+                    "plex.tv is having trouble right now, so your servers weren't checked. Try again in a few minutes.".into(),
+                _ => retry_copy(
+                    "This TV couldn't reach plex.tv, so your servers weren't checked.", run.attempts),
+            };
+            let incident = IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::Silent), Some(run.last))
+                .with_retry_run(run.attempts, run.elapsed)
+                .with_discovery(DiscoveryEvidence { trigger: run.trigger,
+                    target: Some(DiscoveryTarget::PlexTv) });
+            return Some((message.into(), incident));
+        }
         Discovery::InsecureOnly(evidence) => {
             let incident = IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::InsecureOnly), None);
             let verdict = evidence.as_ref().map(|(_, verdict)| verdict);
@@ -924,6 +988,14 @@ fn discovery_failure(d: &Discovery) -> Option<(std::borrow::Cow<'static, str>, I
         }
     };
     Some((message.into(), IncidentContext::new(IncidentKind::Discovery(class), last)))
+}
+
+fn retry_copy(prefix: &str, attempts: u32) -> String {
+    if attempts == 1 {
+        format!("{prefix} We tried once. Check the TV's internet connection, then try again.")
+    } else {
+        format!("{prefix} We tried {attempts} times. Check the TV's internet connection, then try again.")
+    }
 }
 
 /// The server a failed discovery may offer a plaintext connection to — the read-out's primary asks
@@ -1033,14 +1105,22 @@ fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32,
     if generation > 1 {
         // Liveness only, no write — see the section doc above [`login_thread`]. This is the same
         // "stop wasting plex.tv calls on a dead flow" courtesy the old synchronous check made:
-        // without it, `ac.create_pin()` below would still burn a network round trip minting a code
+        // without it, the account call below would still burn a network round trip minting a code
         // nobody is left to scan.
         if !output.live() {
             return None;
         }
         if !output.progress(LoginProgress::CodeReplacing { epoch }.into()) { return None; }
     }
-    let created = crate::dev::scenarios::signin_trouble_create().unwrap_or_else(|| ac.create_pin());
+    let mut clock = LiveRetryClock { output, started: Instant::now() };
+    let created = retry_account_call(INTERACTIVE_ACCOUNT, &mut clock, |_, _, _| {},
+        |remaining| crate::dev::scenarios::signin_trouble_create()
+            .unwrap_or_else(|| ac.create_pin_with(account_timeouts(remaining))));
+    let created = match created.result {
+        AccountCallEnd::Answer(pin) => Ok(pin),
+        AccountCallEnd::Failed(evidence) => Err(evidence),
+        AccountCallEnd::Cancelled => return None,
+    };
     let pin = match created {
         Ok(p) if p.id != 0 && !p.code.is_empty() => p,
         failed => {
@@ -1136,15 +1216,9 @@ fn finish_sign_in(ac: &AccountClient, epoch: u64, server: ServerRef, sources: Ve
     // A failed fetch still signs in (as a single user) and persists an empty roster, which the
     // session reads as "unknown" (`Session::account`) — but it now says WHY in the log, in the
     // same grading the Change-profile refresh uses, rather than a bare `n=0`.
-    let users = match ac.home_users() {
-        Ok(users) => users.iter().map(UserTile::of).collect(),
-        Err(evidence) => {
-            log(&format!("auth: home users {} ({})",
-                if crate::plex::account::refused_identity(&evidence).is_some() { "refused" } else { "unavailable" },
-                crate::plex::account::describe_evidence(&evidence)));
-            Vec::<UserTile>::new()
-        }
-    };
+    let mut clock = LiveRetryClock { output, started: Instant::now() };
+    let Some(users) = sign_in_home_users_with_clock(ac, epoch, output, &mut clock,
+        |ac, remaining| ac.home_users_with(account_timeouts(remaining))) else { return };
     log(&format!("auth: home users n={}", users.len()));
     // One observation carrying everything the owner needs to commit the session at once —
     // see [`LoginProgress::SignedIn`] for why this used to be three separate `with_ctl` writes and
@@ -1155,6 +1229,36 @@ fn finish_sign_in(ac: &AccountClient, epoch: u64, server: ServerRef, sources: Ve
         sources,
         users,
     }.into());
+}
+
+fn sign_in_home_users_with_clock(ac: &AccountClient, epoch: u64,
+    output: &dyn owner::ObservationSink, clock: &mut impl RetryClock,
+    mut home_users: impl FnMut(&AccountClient, Duration) -> Result<Vec<HomeUser>, CallEvidence>)
+    -> Option<Vec<UserTile>> {
+    let users_run = retry_account_call(INTERACTIVE_ACCOUNT, clock,
+        |attempts, elapsed, _| {
+            output.progress(LoginProgress::DiscoveryTrouble { epoch,
+                progress: discovery_retry_progress(DiscoveryRetryRun::HomeUsers,
+                    attempts, elapsed) }.into());
+        }, |remaining| home_users(ac, remaining));
+    if !output.progress(LoginProgress::DiscoveryRetrySettled {
+        epoch, run: DiscoveryRetryRun::HomeUsers,
+    }.into()) { return None; }
+    let users = match users_run.result {
+        AccountCallEnd::Answer(users) => Ok(users),
+        AccountCallEnd::Failed(evidence) => Err(evidence),
+        AccountCallEnd::Cancelled => return None,
+    };
+    let users = match users {
+        Ok(users) => users.iter().map(UserTile::of).collect(),
+        Err(evidence) => {
+            log(&format!("auth: home users {} ({})",
+                if crate::plex::account::refused_identity(&evidence).is_some() { "refused" } else { "unavailable" },
+                crate::plex::account::describe_evidence(&evidence)));
+            Vec::<UserTile>::new()
+        }
+    };
+    Some(users)
 }
 
 fn rediscovery_worker_with_output(cid: String, token: String, epoch: u64, ask: &PlaintextAsk,
@@ -1236,7 +1340,128 @@ fn pin_window(expires_in: i64) -> Duration {
 fn poll_delay(misses: u32) -> Duration {
     const BASE_MS: u64 = 2_000;
     const CEILING_MS: u64 = 16_000;
-    Duration::from_millis((BASE_MS << misses.min(8)).min(CEILING_MS))
+    crate::plex::account::backoff(misses, Duration::from_millis(BASE_MS),
+        Duration::from_millis(CEILING_MS))
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AccountRetryPolicy {
+    max_attempts: u32,
+    budget: Duration,
+}
+
+/// The account-call policy table. Profile switch deliberately stays single-shot: its recovery is
+/// the cached offline credential, not keeping the person behind a network spinner.
+const INTERACTIVE_ACCOUNT: AccountRetryPolicy = AccountRetryPolicy {
+    max_attempts: 3, budget: Duration::from_secs(30),
+};
+const BACKGROUND_ACCOUNT: AccountRetryPolicy = AccountRetryPolicy {
+    max_attempts: 2, budget: Duration::from_secs(30),
+};
+const PROFILE_SWITCH_ACCOUNT: AccountRetryPolicy = AccountRetryPolicy {
+    max_attempts: 1, budget: Duration::from_secs(30),
+};
+
+#[derive(Debug, PartialEq, Eq)]
+enum AccountCallEnd<T> {
+    Answer(T),
+    Failed(CallEvidence),
+    Cancelled,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct Retried<T> {
+    result: AccountCallEnd<T>,
+    attempts: u32,
+    elapsed: Duration,
+}
+
+trait RetryClock {
+    fn elapsed(&self) -> Duration;
+    fn wait(&mut self, duration: Duration) -> bool;
+}
+
+/// Run one account edge under a bounded, cancellable retry policy. A call already in flight is
+/// always allowed to answer; the deadline is inspected only after it returns. plex.tv's 429 is
+/// deliberately terminal here because `Resp` exposes no Retry-After header, so the app cannot
+/// prove that another request fits inside the budget.
+fn retry_account_call<T>(policy: AccountRetryPolicy, clock: &mut impl RetryClock,
+    mut on_miss: impl FnMut(u32, Duration, CallEvidence),
+    mut call: impl FnMut(Duration) -> Result<T, CallEvidence>) -> Retried<T> {
+    let mut attempts = 0u32;
+    loop {
+        attempts = attempts.saturating_add(1);
+        let remaining = policy.budget.saturating_sub(clock.elapsed());
+        match call(remaining) {
+            Ok(value) => return Retried { result: AccountCallEnd::Answer(value), attempts,
+                elapsed: clock.elapsed() },
+            Err(evidence) => {
+                let elapsed = clock.elapsed();
+                on_miss(attempts, elapsed, evidence);
+                let status = match evidence { Ok(status) => Some(status), Err(f) => f.status };
+                let can_retry = crate::plex::account::transient(&evidence)
+                    && status != Some(429)
+                    && attempts < policy.max_attempts
+                    && elapsed < policy.budget;
+                if !can_retry {
+                    return Retried { result: AccountCallEnd::Failed(evidence), attempts, elapsed };
+                }
+                let pause = crate::plex::account::backoff(attempts - 1,
+                    Duration::from_secs(2), Duration::from_secs(4))
+                    .min(policy.budget.saturating_sub(elapsed));
+                if !clock.wait(pause) {
+                    return Retried { result: AccountCallEnd::Cancelled, attempts,
+                        elapsed: clock.elapsed() };
+                }
+            }
+        }
+    }
+}
+
+fn discovery_retry_progress(run: DiscoveryRetryRun, misses: u32,
+    elapsed: Duration) -> DiscoveryRetryProgress {
+    DiscoveryRetryProgress {
+        run,
+        misses,
+        elapsed_ms: elapsed.as_millis().min(u32::MAX as u128) as u32,
+    }
+}
+
+fn account_timeouts(remaining: Duration) -> crate::net::Timeouts {
+    let capped = remaining.min(Duration::from_secs(8));
+    let millis = capped.as_millis().max(1).min(i32::MAX as u128) as _;
+    crate::net::Timeouts { total_ms: millis, connect_s: capped.as_secs().max(1) as _,
+        ..crate::net::API }
+}
+
+fn cancellable_wait_while(duration: Duration, live: impl Fn() -> bool) -> bool {
+    const SLICE: Duration = Duration::from_secs(1);
+    let deadline = Instant::now() + duration;
+    loop {
+        if !live() { return false; }
+        let now = Instant::now();
+        if now >= deadline { return true; }
+        std::thread::sleep((deadline - now).min(SLICE));
+    }
+}
+
+struct LiveRetryClock<'a> {
+    output: &'a dyn owner::ObservationSink,
+    started: Instant,
+}
+impl RetryClock for LiveRetryClock<'_> {
+    fn elapsed(&self) -> Duration { self.started.elapsed() }
+    fn wait(&mut self, duration: Duration) -> bool {
+        cancellable_wait_while(duration, || self.output.live())
+    }
+}
+
+struct LiveFnClock<'a> { live: &'a dyn Fn() -> bool, started: Instant }
+impl RetryClock for LiveFnClock<'_> {
+    fn elapsed(&self) -> Duration { self.started.elapsed() }
+    fn wait(&mut self, duration: Duration) -> bool {
+        cancellable_wait_while(duration, self.live)
+    }
 }
 
 /// Everything [`poll_for_token`] needs from the world: one network answer, one interruptible
@@ -1294,18 +1519,7 @@ impl PinWatch for LivePin<'_> {
         // worker's answer would be discarded anyway, but a thread that lingers for the whole of a
         // 16 s backoff after the user has left the screen is a thread the next flow shares the
         // device with.
-        const SLICE: Duration = Duration::from_secs(1);
-        let deadline = Instant::now() + d;
-        loop {
-            if !self.output.live() {
-                return false;
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return true;
-            }
-            std::thread::sleep((deadline - now).min(SLICE));
-        }
+        cancellable_wait_while(d, || self.output.live())
     }
     fn elapsed(&self) -> Duration {
         self.started.elapsed()
@@ -1465,16 +1679,16 @@ enum Discovery {
     /// Superseded while network work was in flight. Silent: the newer flow owns the UI/session.
     Cancelled,
     /// `/api/v2/resources` named no server at all. NOT the case where it could not be fetched —
-    /// that is [`Discovery::Silent`], because a request that never arrived says nothing about what
+    /// that is [`Discovery::PlexTvFailed`], because a request that never arrived says nothing about what
     /// the account owns.
     ///
     /// Carries how many resources `/resources` did return and which flow asked (closed evidence
     /// for the incident).
     NoServers(NoServersEvidence),
-    /// Servers exist; none of them answered (or plex.tv itself did not). Carries the failed
-    /// `/api/v2/resources` call's evidence when that is what went silent; `None` when the servers
-    /// themselves did.
-    Silent(Option<CallEvidence>),
+    /// plex.tv itself did not yield a usable resource list, after the bounded retry run.
+    PlexTvFailed(PlexTvFailure),
+    /// plex.tv listed servers, but none of those servers answered.
+    ServersUnreachable { trigger: DiscoveryTrigger },
     /// At least one answered **401**, and none was reachable. Something in front of that server
     /// refuses unauthenticated requests — an auth proxy, or `allowedNetworks` excluding this
     /// subnet. It is not a network fault and not a dead server, so it must not be worded as one.
@@ -1491,6 +1705,14 @@ enum Discovery {
     /// admission refusing an origin the build cannot credential, where no plaintext answer exists
     /// to describe.
     InsecureOnly(Option<(InsecureEvidence, PlaintextVerdict)>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PlexTvFailure {
+    last: CallEvidence,
+    attempts: u32,
+    elapsed: Duration,
+    trigger: DiscoveryTrigger,
 }
 
 /// Copy for [`Discovery::InsecureOnly`], shared by sign-in and rediscovery so the two paths
@@ -2866,7 +3088,8 @@ fn resolved_without_roster(
             Err(Discovery::InsecureOnly(evidence))
         }
         Resolved::None { refused: true, insecure: false, .. } => Err(Discovery::Refused),
-        Resolved::None { refused: false, insecure: false, .. } => Err(Discovery::Silent(None)),
+        Resolved::None { refused: false, insecure: false, .. } =>
+            Err(Discovery::ServersUnreachable { trigger }),
         Resolved::Reached(found) => Ok(found),
     }
 }
@@ -2883,15 +3106,47 @@ fn resolved_without_roster(
 /// same session file it always did (plus a one-entry roster beside it).
 fn discover_and_store(ac: &AccountClient, client_id: &str, epoch: u64, trigger: DiscoveryTrigger,
     ask: &PlaintextAsk, output: &dyn owner::ObservationSink) -> Discovery {
+    discover_and_store_with_resources(ac, client_id, epoch, trigger, ask, output,
+        |account, remaining| crate::dev::scenarios::signin_trouble_resources()
+            .unwrap_or_else(|| account.resources_with(account_timeouts(remaining))))
+}
+
+/// Injectable account edge for discovery. Production supplies [`AccountClient::resources`]; the
+/// seam keeps retry policy host-testable without putting a socket behind an auth worker test.
+fn discover_and_store_with_resources(ac: &AccountClient, client_id: &str, epoch: u64,
+    trigger: DiscoveryTrigger, ask: &PlaintextAsk, output: &dyn owner::ObservationSink,
+    resources_call: impl FnMut(&AccountClient, Duration) -> Result<Vec<Resource>, CallEvidence>) -> Discovery {
+    let mut clock = LiveRetryClock { output, started: Instant::now() };
+    discover_and_store_with_resources_and_clock(ac, client_id, epoch, trigger, ask, output,
+        &mut clock, resources_call)
+}
+
+fn discover_and_store_with_resources_and_clock(ac: &AccountClient, client_id: &str, epoch: u64,
+    trigger: DiscoveryTrigger, ask: &PlaintextAsk, output: &dyn owner::ObservationSink,
+    clock: &mut impl RetryClock,
+    mut resources_call: impl FnMut(&AccountClient, Duration) -> Result<Vec<Resource>, CallEvidence>) -> Discovery {
     if !output.live() { return Discovery::Cancelled; }
-    let resources = match ac.resources() {
-        Ok(r) => r,
-        Err(last) => {
+    let run = retry_account_call(INTERACTIVE_ACCOUNT, clock,
+        |attempts, elapsed, _| {
+            output.progress(LoginProgress::DiscoveryTrouble { epoch,
+                progress: discovery_retry_progress(DiscoveryRetryRun::Resources,
+                    attempts, elapsed) }.into());
+        },
+        |remaining| resources_call(ac, remaining));
+    if !output.progress(LoginProgress::DiscoveryRetrySettled {
+        epoch, run: DiscoveryRetryRun::Resources,
+    }.into()) { return Discovery::Cancelled; }
+    let resources = match run.result {
+        AccountCallEnd::Answer(r) => r,
+        AccountCallEnd::Cancelled => return Discovery::Cancelled,
+        AccountCallEnd::Failed(last) => {
             // No response, or one that would not deserialize: plex.tv is unreachable from here.
             // NOT `NoServers` — that copy tells the user their account owns no server, which is a
             // statement about their account made on the strength of never having heard from it.
             log("auth: resources request FAILED (no response/deser)");
-            return Discovery::Silent(Some(last));
+            return Discovery::PlexTvFailed(PlexTvFailure {
+                last, attempts: run.attempts, elapsed: run.elapsed, trigger,
+            });
         }
     };
     log(&format!(
@@ -3142,9 +3397,13 @@ fn server_roster_worker_with_output(sess: Session, epoch: u64, expected: Session
     household: Vec<i64>, ask: &PlaintextAsk, output: &dyn owner::ObservationSink) {
     if !output.live() { return; }
     let ac = AccountClient::new(&sess.client_id, Some(&sess.account_token));
-    let resources = match ac.resources() {
-        Ok(resources) => resources,
-        Err(evidence) => {
+    let mut clock = LiveRetryClock { output, started: Instant::now() };
+    let run = retry_account_call(BACKGROUND_ACCOUNT, &mut clock, |_, _, _| {},
+        |remaining| ac.resources_with(account_timeouts(remaining)));
+    let resources = match run.result {
+        AccountCallEnd::Answer(resources) => resources,
+        AccountCallEnd::Cancelled => return,
+        AccountCallEnd::Failed(evidence) => {
             log(&format!("auth: server roster refresh could not list resources ({})",
                 crate::plex::account::describe_evidence(&evidence)));
             output.terminal(AuthProgress::ServerRoster(ServerRosterProgress {
@@ -3262,7 +3521,7 @@ fn probe_endpoint_work(
     id: ServerId,
     machine_id: &str,
     sess: &Session,
-    resources: impl FnOnce(&AccountClient) -> Result<Vec<Resource>, CallEvidence>,
+    mut resources: impl FnMut(&AccountClient, Duration) -> Result<Vec<Resource>, CallEvidence>,
     probe: impl FnOnce(&Resource, &[i64]) -> (Option<SourceRef>, SettledProbe),
     live: &dyn Fn() -> bool,
 ) -> (Option<SourceRef>, Option<SettledProbe>) {
@@ -3272,9 +3531,13 @@ fn probe_endpoint_work(
     // (`InsecureOnly`/`Unauthorized`) into "Not reachable" once it reached the registry.
     if !live() { return (None, None); }
     let ac = AccountClient::new(&sess.client_id, Some(&sess.account_token));
-    let resources = match resources(&ac) {
-        Ok(resources) => resources,
-        Err(evidence) => {
+    let mut clock = LiveFnClock { live, started: Instant::now() };
+    let run = retry_account_call(BACKGROUND_ACCOUNT, &mut clock, |_, _, _| {},
+        |remaining| resources(&ac, remaining));
+    let resources = match run.result {
+        AccountCallEnd::Answer(resources) => resources,
+        AccountCallEnd::Cancelled => return (None, None),
+        AccountCallEnd::Failed(evidence) => {
             log(&format!(
                 "auth: endpoint refresh for source {} could not list resources ({})",
                 id.raw(),
@@ -3777,9 +4040,14 @@ pub(crate) fn profile_switch_worker_with_io(
         }
     };
     if !output.live() { return; }
-    let resources = match io.resources(&AccountClient::new(&cid, Some(&user.auth_token))) {
-        Ok(resources) => resources,
-        Err(evidence) => {
+    let profile_account = AccountClient::new(&cid, Some(&user.auth_token));
+    let mut clock = LiveRetryClock { output, started: Instant::now() };
+    let run = retry_account_call(PROFILE_SWITCH_ACCOUNT, &mut clock, |_, _, _| {},
+        |_| io.resources(&profile_account));
+    let resources = match run.result {
+        AccountCallEnd::Answer(resources) => resources,
+        AccountCallEnd::Cancelled => return,
+        AccountCallEnd::Failed(evidence) => {
             log(&format!("auth: profile resources request failed ({})",
                 crate::plex::account::describe_evidence(&evidence)));
             // A refusal is an answer, not a dead link: "check the connection" would send the
