@@ -1009,6 +1009,16 @@ fn plaintext_offer(d: &Discovery) -> Option<PlaintextVerdict> {
 
 fn login_worker_with_output(epoch: u64, cid: String, ask: &PlaintextAsk, output: &dyn owner::ObservationSink) {
     if !output.live() { return; }
+    // dev: `/tmp/plxnative-readout=<case>` (paired with `/tmp/plxnative-login`, which already
+    // forces this screen with no session) — skip straight to the terminal failure a real run
+    // would have reached, with no PIN minted and no call made. `readout_case` reads through
+    // `dev::read`, which is compile-time `None` without `devtriggers` — no cfg needed here, per
+    // this module's own doc. See `dev::scenarios::readout_case`'s doc for why this is the one seam
+    // that can show every sign-in cause's glyph without a network call or an account.
+    if let Some(case) = crate::dev::scenarios::readout_case() {
+        let (message, incident) = case.canned_login_failure();
+        return output_failed(output, epoch, message, incident, None);
+    }
     let ac = AccountClient::new(&cid, None);
 
     // 1) create a pin, and KEEP creating one for as long as this screen is up and the last one
