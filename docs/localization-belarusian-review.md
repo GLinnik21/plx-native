@@ -15,7 +15,7 @@ The source limitations for specialist terms are recorded below.
 
 | Catalog key | Change and reason | Evidence |
 | --- | --- | --- |
-| `settings.consent.share_reports`, `settings.consent.share_analytics` | Use **Адпраўляць** for both affirmative actions. Each visible question already names the reports or analytics; repeating that object made the action unnecessarily long for one row. The negative action remains **Не адпраўляць**. | Skarnik gives [отправлять → адпраўляць](https://www.skarnik.by/rusbel/56235). The contextual shortening is a UI wording choice, not a correction of the former verb. |
+| `settings.consent.share_reports`, `settings.consent.share_analytics` | Use **Дасылаць** for both affirmative actions and **Не дасылаць** for the negative action, following the language review supplied on September 28. Each visible question already names the reports or analytics, so the actions need not repeat that object. | Skarnik confirms [дасылаць](https://www.skarnik.by/belrus/26647). The verb preference and contextual shortening are editorial choices; the former **адпраўляць** was not a dictionary error. |
 | `browse.detail.direct_stream` | Use **Прамы паток**, matching `widgets.playback.direct_stream` for the same Plex playback mode. The former **Прамая трансляцыя** could suggest a live broadcast. | [поток → паток](https://www.skarnik.by/rusbel/69587); distinguishing this Plex mode from broadcasting is an application-context judgment. |
 | `settings.legal.privacy.local_body` | Remove the comma before the final **і** in the list of locally stored settings. | Sentence-level punctuation correction; not a dictionary claim. |
 | `settings.legal.trademarks.body`, `settings.about.body` | Give the creation/endorsement verbs their own explicit subject, the named companies, and put non-affiliation in a separate sentence. The former coordination attached **з** to predicates that need different complements. The same correction is applied in both repeated passages. | [создать → стварыць](https://www.skarnik.by/rusbel/88806), [одобрить → ухваліць](https://www.skarnik.by/rusbel/52410); the sentence construction is an editorial grammar correction. |
@@ -26,7 +26,7 @@ Belarusian entries. Their removal is a feature change, not a language finding.
 
 ## Checked wording retained
 
-No alternative was substituted merely because a different synonym is possible.
+The initial dictionary pass did not substitute alternatives merely because another synonym was possible.
 These existing terms have direct support in Skarnik:
 
 | Existing wording | Skarnik evidence |
@@ -83,7 +83,7 @@ count.
 
 The edited JSON was parsed successfully. A comparison with the starting catalogs
 confirmed that retained entries preserve every placeholder and plural-category
-set. Core and widget catalogs were unchanged. Runtime, layout, and target-device
+set. Core and widget catalogs were unchanged in the initial September 27 pass. Runtime, layout, and target-device
 verification are separate from this language review.
 
 ## Follow-up corrections — 2026-09-28
@@ -99,3 +99,13 @@ The contribution action now uses the user-requested **Дапамажыце з п
 with the GitHub destination named in its supporting text. The former **унёсак**
 is supported by [Skarnik's figurative contribution sense](https://www.skarnik.by/rusbel/9136);
 the action was changed for clarity, not because the noun was incorrect.
+
+The supplied language review also prefers **Змены набудуць сілу** and
+**каб гэтая змена набыла сілу** in Language settings. The report-sending verb is
+now consistently **дасылаць** across questions, answers, disclosures, previews,
+and privacy text. One-shot diagnostic upload actions use **Даслаць дыягностыку**;
+four widget entries were updated in this follow-up. Related forms include
+**даслана**, **дасыланне**, and the neuter agreement **дасыланне было ўключана** /
+**пры яго выключэнні**. Skarnik also records [даслаць](https://www.skarnik.by/belrus/26517)
+and [дасланы](https://www.skarnik.by/belrus/26516). These confirm word forms,
+while the supplied review determines the interface wording. **Справаздачы** is retained.
