@@ -234,7 +234,7 @@ class Library:
         for i in range(1, 9):
             self.genres[i] = {"id": i, "tag": sname(rng), "filter": f"genre={i}"}
         for i in range(1, 4):
-            self.collections[i] = {"id": i, "tag": sname(rng)}
+            self.collections[i] = {"id": i, "ratingKey": 50000 + i, "tag": sname(rng)}
         rk = 1000
         part = 1
         for _ in range(movies):
@@ -254,6 +254,10 @@ class Library:
                     erk = srk * 10 + e
                     part += 1
                     self.items[erk] = self._episode(rng, erk, season, show, e, part)
+        empty_id = len(self.collections) + 1
+        self.collections[empty_id] = {
+            "id": empty_id, "ratingKey": 50000 + empty_id, "tag": "Empty Collection"
+        }
         # watch state: a third watched, a sixth in progress (the Continue Watching deck)
         for i, it in enumerate(sorted(self.items.values(), key=lambda x: x["ratingKey"])):
             if it["type"] not in ("movie", "episode"):
@@ -720,6 +724,32 @@ class Library:
         return [it for it in self.items.values() if it["type"] in ("movie", "show") and any(
             t["id"] == pid for t in it.get("Role", []) + it.get("Director", []) + it.get("Writer", []))]
 
+    def collection_rows(self, cid):
+        rows = [it for it in self.items.values()
+                if any(c["id"] == cid for c in it.get("Collection", []))]
+        rows.sort(key=lambda it: -it["addedAt"])
+        return rows
+
+    def collection_metadata(self, section):
+        if int(section) != 1:
+            return []
+        rows = []
+        for c in self.collections.values():
+            members = self.collection_rows(c["id"])
+            updated = max((it.get("updatedAt", 0) for it in members), default=1_700_000_000)
+            rk = c["ratingKey"]
+            rows.append({
+                "ratingKey": str(rk), "key": f"/library/collections/{rk}/children",
+                "type": "collection", "title": c["tag"], "titleSort": c["tag"],
+                "index": c["id"], "childCount": len(members),
+                "thumb": f"/library/collections/{rk}/composite/{updated}",
+                "updatedAt": updated, "librarySectionID": int(section), "smart": 0,
+            })
+        return rows
+
+    def collection_by_rating_key(self, rk):
+        return next((c for c in self.collections.values() if c["ratingKey"] == rk), None)
+
     def search(self, query, limit=3):
         """`/hubs/search` as hubs. Each hub holds at most `limit` rows and its `size` is the number
         it holds, as measured (docs/pms-api.md: "`limit` caps each hub separately", 3 when absent,
@@ -816,7 +846,7 @@ class CatalogLibrary(Library):
         self._scaled = {}
         self._lock = threading.Lock()
         for n, name in enumerate(cat["collections"], start=1):
-            self.collections[n] = {"id": n, "tag": name}
+            self.collections[n] = {"id": n, "ratingKey": 50000 + n, "tag": name}
         coll_id = {c["tag"]: c["id"] for c in self.collections.values()}
 
         def person(name):
@@ -934,6 +964,10 @@ class CatalogLibrary(Library):
                     if "art" in self.images[rk]:
                         self.images[erk]["art"] = self.images[rk]["art"]
                     self.items[erk] = ep
+        empty_id = len(self.collections) + 1
+        self.collections[empty_id] = {
+            "id": empty_id, "ratingKey": 50000 + empty_id, "tag": "Empty Collection"
+        }
         self._pin_clock(hero or cat["hero"])
         self._roll_up()
         for it in self.items.values():
@@ -1046,11 +1080,33 @@ class CatalogLibrary(Library):
         rows = [it for it in self.items.values()
                 if any(c["id"] == cid for c in it.get("Collection", []))]
         rows.sort(key=lambda it: -it["addedAt"])
-        order = self.catalog.get("collection_order", {}).get(self.collections[cid]["tag"])
+        order = getattr(self, "catalog", {}).get("collection_order", {}).get(
+            self.collections[cid]["tag"])
         if order:
             rank = {self.by_slug[slug]: n for n, slug in enumerate(order)}
             rows.sort(key=lambda it: rank[int(it["ratingKey"])])
         return rows
+
+    def collection_metadata(self, section):
+        if int(section) != 1:
+            return []
+        rows = []
+        for c in self.collections.values():
+            members = [it for it in self.collection_rows(c["id"])
+                       if it["librarySectionID"] == int(section)]
+            updated = max((it.get("updatedAt", 0) for it in members), default=1_700_000_000)
+            rk = c["ratingKey"]
+            rows.append({
+                "ratingKey": str(rk), "key": f"/library/collections/{rk}/children",
+                "type": "collection", "title": c["tag"], "titleSort": c["tag"],
+                "index": c["id"], "childCount": len(members),
+                "thumb": f"/library/collections/{rk}/composite/{updated}",
+                "updatedAt": updated, "librarySectionID": int(section), "smart": 0,
+            })
+        return rows
+
+    def collection_by_rating_key(self, rk):
+        return next((c for c in self.collections.values() if c["ratingKey"] == rk), None)
 
     def section_collection_hubs(self, section, kind):
         """The catalog's collections in one library, as the shelves a real server lists after
@@ -1061,7 +1117,7 @@ class CatalogLibrary(Library):
             if rows:
                 hubs.append({"title": c["tag"], "type": kind, "size": len(rows),
                              "hubIdentifier": f"custom.collection.{section}.{c['id']}.{c['id']}",
-                             "key": f"/library/collections/{c['id']}/children", "Metadata": rows[:12]})
+                             "key": f"/library/collections/{c['ratingKey']}/children", "Metadata": rows[:12]})
         return hubs
 
     def home_hubs(self):
@@ -1239,14 +1295,22 @@ class MockPms:
                                    {"key": "lastViewedAt", "defaultDirection": "desc", "title": "Date Viewed"},
                                    {"key": "random", "defaultDirection": "asc", "title": "Randomly"}]}]}
 
-    def handle(self, method, path, body=b""):
+    def handle(self, method, path, body=b"", headers=None):
         """Returns (status, content_type, bytes)."""
         u = urllib.parse.urlsplit(path)
         p = u.path
         q = {k: v[-1] for k, v in urllib.parse.parse_qs(u.query, keep_blank_values=True).items()}
+        headers = headers or {}
         lib = self.lib
         j = lambda obj, status=200: (status, "application/json", json.dumps(obj).encode())
         segs = [s for s in p.split("/") if s]
+
+        def paged(rows):
+            start = int(q.get("X-Plex-Container-Start",
+                              headers.get("X-Plex-Container-Start", 0)))
+            size = int(q.get("X-Plex-Container-Size",
+                             headers.get("X-Plex-Container-Size", len(rows))))
+            return rows[start:start + size], {"totalSize": len(rows), "offset": start}
 
         write_path = (p in ("/:/timeline", "/:/scrobble", "/:/unscrobble", "/:/progress",
                             "/actions/removeFromContinueWatching", "/status/sessions/close",
@@ -1325,16 +1389,27 @@ class MockPms:
                                                     refreshing=False, allowSync=False)
                                                for s in lib.sections]))
         if len(segs) == 4 and segs[:2] == ["library", "sections"] and segs[3] == "all":
-            rows = lib.section_items(segs[2], q)
-            start = int(q.get("X-Plex-Container-Start", 0))
-            size = int(q.get("X-Plex-Container-Size", len(rows)))
-            page = rows[start:start + size]
-            extra = {"totalSize": len(rows), "offset": start}
+            if q.get("type") == "18":
+                rows = lib.collection_metadata(segs[2])
+                field, _, direction = q.get("sort", "titleSort").partition(":")
+                keyf = {
+                    "titleSort": lambda row: row["titleSort"],
+                    "updatedAt": lambda row: row["updatedAt"],
+                    "childCount": lambda row: row["childCount"],
+                    "random": lambda row: hashlib.md5(row["ratingKey"].encode()).hexdigest(),
+                }.get(field, lambda row: row["titleSort"])
+                rows.sort(key=keyf, reverse=(direction == "desc"))
+            else:
+                rows = lib.section_items(segs[2], q)
+            page, extra = paged(rows)
             if q.get("includeMeta") == "1":
                 extra["Meta"] = self.sort_meta()
             return j(self.container(Metadata=page, **extra))
         if len(segs) == 4 and segs[:2] == ["library", "sections"]:
             d = segs[3]
+            if d == "collections":
+                rows, extra = paged(lib.collection_metadata(segs[2]))
+                return j(self.container(Metadata=rows, **extra))
             if d == "genre":
                 return j(self.container(Directory=[{"key": str(g["id"]), "title": g["tag"],
                                                     "fastKey": f"/library/sections/{segs[2]}/all?genre={g['id']}"}
@@ -1346,6 +1421,10 @@ class MockPms:
             ids = segs[2]
             if len(segs) == 3:
                 rows = [lib.items[int(x)] for x in ids.split(",") if x.isdigit() and int(x) in lib.items]
+                if not rows and ids.isdigit():
+                    coll = lib.collection_by_rating_key(int(ids))
+                    rows = [row for row in lib.collection_metadata(1)
+                            if coll and int(row["ratingKey"]) == coll["ratingKey"]]
                 if not rows:
                     return j(self.container(Metadata=[]), 404)
                 if q.get("includePreferences") == "1" and len(rows) == 1 \
@@ -1373,6 +1452,13 @@ class MockPms:
                 png = flat_png(q.get("width", 250), q.get("height", 375), colour_for(p))
                 return (200, "image/png", png)
             return j(self.container())
+        if len(segs) == 4 and segs[:2] == ["library", "collections"] \
+                and segs[3] == "children":
+            rk = int(segs[2]) if segs[2].isdigit() else -1
+            coll = lib.collection_by_rating_key(rk)
+            rows = lib.collection_rows(coll["id"]) if coll else []
+            page, extra = paged(rows)
+            return j(self.container(Metadata=page, **extra), 200 if coll else 404)
         if segs[:2] == ["library", "people"] and len(segs) == 4 and segs[3] == "media":
             pid = int(segs[2]) if segs[2].isdigit() else -1
             return j(self.container(Metadata=lib.person_media(pid)))
@@ -1606,7 +1692,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         n = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(n) if n else b""
-        status, ctype, data = self.server.pms.handle(method, self.path, body)
+        status, ctype, data = self.server.pms.handle(method, self.path, body, self.headers)
         with self.server.pms.lock:
             self.server.pms.requests.append((self.path, status))
         self.send_response(status)

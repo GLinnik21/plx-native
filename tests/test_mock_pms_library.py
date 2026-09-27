@@ -27,10 +27,34 @@ def get(pms, path):
 
 
 class LibraryRail(unittest.TestCase):
-    def test_default_generated_data_is_byte_identical_to_the_previous_fixture(self):
+    def test_collection_ids_and_collection_routes_match_pms(self):
+        pms = MockPms(Library())
+        collections = get(pms, "/library/sections/1/collections")["Metadata"]
+        self.assertTrue(collections)
+        row = collections[0]
+        self.assertNotEqual(row["index"], int(row["ratingKey"]))
+        own = get(pms, f"/library/metadata/{row['ratingKey']}")["Metadata"]
+        self.assertEqual(own, [row])
+        children = get(pms, f"/library/collections/{row['ratingKey']}/children"
+                            "?X-Plex-Container-Start=0&X-Plex-Container-Size=2")
+        self.assertLessEqual(len(children["Metadata"]), 2)
+        self.assertEqual(children["offset"], 0)
+        via_all = get(pms, "/library/sections/1/all?type=18&sort=titleSort:asc"
+                           "&X-Plex-Container-Start=0&X-Plex-Container-Size=2")
+        self.assertEqual(via_all["Metadata"], sorted(collections, key=lambda c: c["titleSort"])[:2])
+        status, ctype, body = pms.handle(
+            "GET", f"/library/collections/{row['ratingKey']}/children", headers={
+                "X-Plex-Container-Start": "0", "X-Plex-Container-Size": "1",
+            })
+        self.assertEqual((status, ctype), (200, "application/json"))
+        self.assertLessEqual(len(json.loads(body)["MediaContainer"]["Metadata"]), 1)
+        self.assertTrue(any(c.get("childCount") == 0 for c in collections),
+                        "the fixture includes an empty collection")
+
+    def test_default_generated_data_is_stable(self):
         hashes = {
-            1: "27a636047b17af9f68108417af4cc9b11d70ab84bf43bf27d62a4aeba08c117b",
-            7: "c287cf05261367f9e8f4640b1b4617ccb9389ccef5947342413c52b61eaa5472",
+            1: "d6de46102484a4fa867e459da01b3d83fd3b631854bf5e1bc472a5ca4ee3a73c",
+            7: "c529e55987409704cbc6b694d29a339eaa046ad557848850f2745fb35da9d6c7",
         }
         for seed, expected in hashes.items():
             payload = json.dumps(Library(seed=seed).__dict__, sort_keys=True).encode()

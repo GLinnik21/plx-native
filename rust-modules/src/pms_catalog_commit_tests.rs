@@ -6,6 +6,21 @@ use super::*;
 use super::test_support::*;
 
 #[test]
+fn collection_rows_have_their_own_kind_and_unknown_types_are_not_listable() {
+    let row = |kind: &str| crate::plex::Metadata {
+        kind: kind.into(), rating_key: "42".into(), title: "Not a movie".into(),
+        thumb: "/poster".into(), ..Default::default()
+    };
+    assert_eq!(parse_item(&row("collection"), sid(0)).kind, 4, "a collection is not a movie");
+    for kind in ["movie", "show", "season", "episode"] {
+        assert!(listable(kind), "{kind} remains listable");
+    }
+    for kind in ["collection", "playlist", "clip", "something-new"] {
+        assert!(!listable(kind), "{kind} must not surface as a playable catalog row");
+    }
+}
+
+#[test]
 #[should_panic(expected = "requires its server in the retained Browse directory")]
 fn a_directory_scoped_hubs_fixture_refuses_an_empty_browse_publication() {
     let _guard = crate::testlock::serial();

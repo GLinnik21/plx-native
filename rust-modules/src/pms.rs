@@ -56,6 +56,12 @@ pub(crate) const MAX_SHELVES: usize = 16;
 /// data and the two can never disagree.
 pub(crate) const MAX_SHELF_ITEMS: usize = 24;
 
+pub(crate) const KIND_COLLECTION: c_int = 4;
+
+pub(crate) fn listable(type_str: &str) -> bool {
+    matches!(type_str, "movie" | "show" | "season" | "episode")
+}
+
 /// Items asked of each hub endpoint, per source. `/hubs?count=` is items-per-hub, so this bounds
 /// a shelf, never the number of shelves.
 const HUB_FETCH_COUNT: i64 = 12;
@@ -95,7 +101,7 @@ pub struct PmsMovie {
     #[serde(with = "record::blur_bits")]
     pub(crate) blur: [[f32; 3]; 4],
     pub(crate) has_blur: bool,
-    pub(crate) kind: c_int,     // 0 = movie, 1 = show, 2 = season, 3 = episode
+    pub(crate) kind: c_int, // 0 = movie, 1 = show, 2 = season, 3 = episode, 4 = collection
     pub(crate) resume_ms: i64,  // viewOffset — drives the Continue Watching resume bar
     pub(crate) show_rk: String, // parent show rk (episode: grandparent; season: parent)
     pub(crate) season_index: c_int, // season number (episode: parentIndex; season: index)
@@ -136,7 +142,8 @@ impl PmsMovie {
     /// end up with a full bar and no check. `ui::detail::ep_state` has always applied this rule to
     /// an episode still; now a poster and the filmstrip beside it cannot describe one item two ways.
     pub(crate) fn resume_frac(&self) -> Option<f32> {
-        (self.resume_ms > 0 && self.dur_ns > 0 && self.resume_ms * 1_000_000 < self.dur_ns)
+        (self.kind != KIND_COLLECTION && self.resume_ms > 0 && self.dur_ns > 0
+            && self.resume_ms * 1_000_000 < self.dur_ns)
             .then(|| (self.resume_ms as f32 * 1_000_000.0 / self.dur_ns as f32).clamp(0.0, 1.0))
     }
 }
@@ -289,6 +296,7 @@ pub(crate) fn parse_item(it: &crate::plex::Metadata, sid: ServerId) -> PmsMovie 
         "show" => 1,
         "season" => 2,
         "episode" => 3,
+        "collection" => KIND_COLLECTION,
         _ => 0,
     };
     match m.kind {
@@ -311,12 +319,14 @@ pub(crate) fn parse_item(it: &crate::plex::Metadata, sid: ServerId) -> PmsMovie 
     // movies/episodes key on viewCount absence (docs/pms-api.md §2)
     m.unwatched = match m.kind {
         1 | 2 => it.viewed_leaf_count == 0 && it.leaf_count > 0,
+        KIND_COLLECTION => false,
         _ => it.view_count == 0,
     };
     // …and DONE is its own question, not the negation of that one: for a container it takes ALL the
     // leaves, so a show three episodes in is neither (see the `watched` field's doc).
     m.watched = match m.kind {
         1 | 2 => it.leaf_count > 0 && it.viewed_leaf_count >= it.leaf_count,
+        KIND_COLLECTION => false,
         _ => it.view_count > 0,
     };
     m.title = clean(&it.title);
@@ -767,9 +777,9 @@ fn project(
     cw: &crate::plex::MediaContainer,
     sid: ServerId,
 ) -> SourceBuild {
-    const SKIP: [&str; 6] = ["album", "artist", "track", "photo", "clip", "playlist"];
     // need a poster to show it in a shelf
     let keep = |it: &crate::plex::Metadata| {
+        if !listable(&it.kind) { return None; }
         let m = parse_item(it, sid);
         (!m.title.is_empty() && !m.thumb.is_empty()).then_some(m)
     };
@@ -790,7 +800,6 @@ fn project(
         out.cw = hub
             .metadata
             .iter()
-            .filter(|m| !SKIP.contains(&m.kind.as_str()))
             .filter_map(|it| {
                 keep(it).map(|m| CwItem {
                     last_viewed_at: it.last_viewed_at,
@@ -804,7 +813,7 @@ fn project(
     }
 
     for hub in &mc.hub {
-        if SKIP.contains(&hub.kind.as_str()) {
+        if hub.kind != "mixed" && !listable(&hub.kind) {
             continue;
         }
         if hub.hub_identifier == "home.continue" || hub.hub_identifier == "home.ondeck" {
@@ -981,7 +990,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
                 break;
             }
             let m = &new_cat[idx];
-            if m.art.is_empty() || m.kind == 2 {
+            if m.art.is_empty() || m.kind == 2 || m.kind == KIND_COLLECTION {
                 continue; // need landscape art; skip seasons
             }
             // dedup by the item's IDENTITY, not by its bare key: two shelves merged from two
@@ -2173,9 +2182,9 @@ impl crate::ui::tile::Tile for PmsMovie {
         self.resume_frac()
     }
     fn watched(&self) -> bool {
-        self.watched
+        self.kind != KIND_COLLECTION && self.watched
     }
     fn unwatched(&self) -> bool {
-        self.unwatched
+        self.kind != KIND_COLLECTION && self.unwatched
     }
 }
