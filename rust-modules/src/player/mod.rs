@@ -620,6 +620,8 @@ pub(crate) enum FailureKind {
     /// `/decision` refused the item outright — the server can neither direct play nor convert it.
     /// The earliest and most certain failure: it happens before an engine exists.
     DecisionRefused,
+    /// The explicit Direct Play policy cannot deliver the requested original stream.
+    PlaybackPolicy,
     /// Transcoding, and the server produced no video stream — it found no usable video target.
     NoVideoTranscodeTarget,
     /// Direct playing, and the stream carries no video track, so the file disagrees with the PMS
@@ -655,6 +657,7 @@ impl FailureKind {
     pub(crate) fn code(self) -> &'static str {
         match self {
             FailureKind::DecisionRefused => "decision_refused",
+            FailureKind::PlaybackPolicy => "playback_policy",
             FailureKind::NoVideoTranscodeTarget => "no_video_transcode_target",
             FailureKind::NoVideoTrack => "no_video_track",
             FailureKind::MediaSource => "media_source",
@@ -686,15 +689,9 @@ pub(crate) struct ErrorShape {
     /// the read-out's reason line — sentence case, subscription fact NOT baked in (the
     /// read-out states it as its own line, with the capsule)
     pub readout: &'static str,
-    /// The SERVER's own sentence, quoted VERBATIM under the reason ("" = none). The one field
-    /// here whose text is not OURS: it arrives at runtime off `/decision` and is reproduced
-    /// unedited — not sentence-cased, not re-worded — since its wording is the server's. Only the
-    /// pre-flight arm ever fills it; every other arm's reason is something the app worked out
-    /// itself.
-    ///
-    /// A `Cow`, and borrowed in practice: `route::play_verdict` hands out a `&'static str` off the
-    /// main-thread static, and this whole shape is rebuilt 2–3× per frame while a read-out is up
-    /// (HUD caption, read-out, diagnostics panel), two of those only to read a `&'static` field.
+    /// Additional reason and recovery instructions for the viewer. A PMS verdict is preserved
+    /// verbatim; local policy failures and Force recovery copy are authored by the app.
+    /// Owned strings borrow from the playback session only while this shape is constructed.
     ///
     /// **It deliberately does NOT reach `panel`.** The diagnostics panel is a PHOTOGRAPH — its
     /// module doc bans URLs, paths and item titles from it, and a PMS decision sentence is
@@ -899,6 +896,27 @@ fn playing_subscription(ps: &crate::route::PlaybackSession) -> crate::plex::serv
     crate::plex::serverinfo::subscription_of(crate::route::cur_sid(ps))
 }
 
+/// Keep the runtime diagnosis while making the active override and its recovery path visible.
+/// A failed strict-original request is a policy failure, not evidence that PMS cannot convert
+/// the file: conversion was never allowed. The mode snapshot supplies that distinction; no
+/// user-facing sentence or firmware error string is parsed to decide it.
+fn with_forced_playback_context(mut shape: ErrorShape, forced: bool) -> ErrorShape {
+    if !forced { return shape; }
+    if shape.kind == FailureKind::DecisionRefused {
+        shape.kind = FailureKind::PlaybackPolicy;
+        shape.caption = c"Playback failed — Force Direct Play could not play this stream";
+        shape.panel = "Force Direct Play could not use the original stream; automatic fallback is disabled";
+        shape.readout = "Force Direct Play could not play this stream";
+        // The policy verdict already names the specific limitation and the return-to-Auto step.
+    } else {
+        shape.detail = std::borrow::Cow::Borrowed(
+            "Force Direct Play is enabled. Automatic fallback is off. Return Direct Play to Auto in Settings. Restart the app if it stops responding.",
+        );
+    }
+    shape.no_pass = false;
+    shape
+}
+
 /// The live [`ErrorShape`] for `PlaybackState::Error` (main thread — `route::is_transcoding` and
 /// `route::play_verdict` read main-thread state).
 pub(crate) fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
@@ -917,7 +935,7 @@ pub(crate) fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
     let demux_io_failed = SHARED
         .demux_io_failed
         .load(std::sync::atomic::Ordering::Acquire);
-    error_shape(
+    with_forced_playback_context(error_shape(
         SHARED.demux_no_video.load(Relaxed),
         crate::route::is_transcoding(ps),
         playing_subscription(&ps),
@@ -928,7 +946,7 @@ pub(crate) fn error_now(ps: &crate::route::PlaybackSession) -> ErrorShape {
             SHARED.load_failed.load(Relaxed),
             SHARED.load_timed_out.load(Relaxed),
         ),
-    )
+    ), crate::route::forced_direct_play(ps))
 }
 
 /// A sample PMS refusal, for the `verdict` variant of the dev trigger below. Real wording: this is
@@ -1159,6 +1177,7 @@ impl Diag {
             1 => "AC3",
             2 => "AC3 PLUS",
             3 => "AAC",
+            4 => "DTS",
             _ => "NONE (needAudio:false)",
         }
     }
@@ -2092,6 +2111,43 @@ mod tests {
     // refusal retiring on route exit) is exercised by
     // `native_failure_regressions::jail_refusal_enters_error_without_engine_and_retires_on_exit`
     // below, against the real `ps.jail_load_blocked`-based gate in `engine.rs` — see that test.
+
+    #[test]
+    fn forced_runtime_failures_keep_the_cause_and_explain_how_to_leave_force() {
+        use crate::plex::serverinfo::Subscription as Sub;
+        for runtime in [RuntimeFailure::Unknown, RuntimeFailure::MediaSource,
+            RuntimeFailure::PlaybackInterrupted, RuntimeFailure::TvPipeline, RuntimeFailure::LoadTimeout] {
+            let normal = error_shape(false, false, Sub::No, None, runtime);
+            let forced = with_forced_playback_context(error_shape(false, false, Sub::No, None, runtime), true);
+            assert_eq!(forced.kind, normal.kind);
+            assert_eq!(forced.readout, normal.readout);
+            assert!(forced.detail.contains("Force Direct Play is enabled"));
+            assert!(forced.detail.contains("Automatic fallback is off"));
+            assert!(forced.detail.contains("Return Direct Play to Auto in Settings"));
+            assert!(!forced.no_pass);
+            let ordinary = with_forced_playback_context(normal, false);
+            assert!(ordinary.detail.is_empty(), "Auto/Disabled retain their ordinary error detail");
+        }
+    }
+
+    #[test]
+    fn forced_policy_refusal_does_not_claim_the_server_cannot_convert() {
+        use crate::plex::serverinfo::Subscription as Sub;
+        let reason = "Force Direct Play is enabled. This audio format needs conversion. Return Direct Play to Auto in Settings.";
+        let forced = with_forced_playback_context(
+            error_shape(false, false, Sub::No, Some(reason), RuntimeFailure::Unknown), true);
+        assert_eq!(forced.kind, FailureKind::PlaybackPolicy);
+        assert_eq!(forced.kind.code(), "playback_policy");
+        assert_eq!(forced.detail, reason);
+        assert!(!forced.readout.contains("server"));
+        assert!(!forced.caption.to_str().unwrap().contains("convert"));
+        assert!(forced.panel.contains("automatic fallback is disabled"));
+        assert!(!forced.no_pass);
+        let server = with_forced_playback_context(
+            error_shape(false, true, Sub::No, Some("PMS cannot convert this item"), RuntimeFailure::Unknown), false);
+        assert_eq!(server.kind, FailureKind::DecisionRefused);
+        assert!(server.readout.contains("server"));
+    }
 
     #[test]
     fn acb_pause_resume_cannot_overtake_the_bind_transaction() {

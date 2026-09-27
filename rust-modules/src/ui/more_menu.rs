@@ -402,7 +402,8 @@ fn row_for(ps: &crate::route::PlaybackSession, a: Action) -> Row {
     match a {
         Action::SetQuality(q) => Row::new(label(a))
             .checked(crate::route::quality() == q)
-            .detail(quality_detail(q, crate::route::source_decodable(ps))),
+            .detail(if crate::route::forced_direct_play(ps) { "Saved preference; Force Direct Play uses Original." }
+                else { quality_detail(q, crate::route::source_decodable(ps)) }),
         _ => Row::new(label(a)).toggle(is_on(a)),
     }
 }

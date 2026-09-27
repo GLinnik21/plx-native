@@ -37,6 +37,8 @@ use crate::ui::screen::{Mounter, ReturnState, Screen};
 pub(crate) enum AppFx {
     Session(crate::auth::SessionCmd),
     SessionEffect(crate::auth::owner::SessionFx),
+    /// Account and install preference IO, admitted by the application before work starts.
+    Preferences(PreferenceCmd),
     /// A store command, executed as a `Deliver` to the store machine in the same drain.
     Store(StoreId, StoreCmd),
     /// Poll only the store work this visible route owns, after its read-only step returns.
@@ -58,6 +60,26 @@ pub(crate) enum AppFx {
     Player(PlayerReq),
     /// The item context menu's committed row (phase 10) — see [`ItemMenuReq`].
     ItemMenu(ItemMenuReq),
+}
+
+/// A private live receipt. Requests contain account credentials and are intentionally unsupported
+/// by the controlled recorder/replay codec; the bridge must reject them before execution.
+pub(crate) struct AccountPreferenceReply {
+    pub request: Option<crate::plex::account::PreferenceRequest>,
+    pub outcome: Result<crate::plex::account::PreferenceSnapshot, crate::plex::account::PreferenceError>,
+}
+
+pub(crate) enum PreferenceCmd {
+    /// Capture the live profile only after admission: even session::peek can schedule storage IO.
+    Load { reply: std::sync::mpsc::Sender<AccountPreferenceReply> },
+    Save {
+        request: crate::plex::account::PreferenceRequest,
+        base: crate::plex::account::PreferenceSnapshot,
+        update: crate::plex::account::PreferenceUpdate,
+        reply: std::sync::mpsc::Sender<AccountPreferenceReply>,
+    },
+    Quality { quality: crate::plex::session::PlaybackQuality, reply: std::sync::mpsc::Sender<bool> },
+    DirectPlay { mode: crate::plex::session::DirectPlayMode, reply: std::sync::mpsc::Sender<bool> },
 }
 
 /// **What the item context menu asks of the loop**, once its own `step` has resolved the pressed
@@ -1373,7 +1395,7 @@ pub(crate) enum AppArg {
     FirstRunConsent(u8),
 }
 
-pub(crate) const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,Search,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str}},Settings:SettingsPage{Root,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8)},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
+pub(crate) const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,Search,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8)},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
      PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(quality:bool)},\
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      TracksPanel{page:i32},AboutPanel,PersonBio,AccountMenu,\
@@ -1827,6 +1849,7 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
     crate::screens::tracks_panel::SHAPE,
     crate::screens::about_panel::SHAPE,
     crate::screens::person_bio::SHAPE,
+    crate::screens::preferences::SHAPE,
 ];
 
 /// The pin over [`SCREEN_SHAPES`] — bump it in the same edit that adds an entry, and say why.
@@ -1900,8 +1923,8 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 /// item changes libraries while still distinguishing section-specific rows. Recorded fixtures need
 /// `tools/plxnative-rec rerecord` like any other shape-pin bump before replay is trusted.
 #[cfg(test)]
-// TV library types and sparse All-row caption bands add to the current screen inventory.
-const SCREEN_SHAPES_PIN: u64 = 0x1e24_e0f5_8c3d_0844;
+// Playback/account preference pages add their arguments and logical state to the inventory.
+const SCREEN_SHAPES_PIN: u64 = 0x54b17d5fd41a2606;
 
 #[cfg(test)]
 mod arg_tests {

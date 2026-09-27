@@ -53,10 +53,9 @@ is not a subset failure, it is a whole bypassed layer:
   and a regression there passes it green;
 - it reaches **no resume, no markers, no Up Next, no `/:/timeline` reporter, no track SELECTION,
   and no transcode path** whatsoever;
-- `engine`'s `_ =>` arm maps an unrecognised audio codec to `"AC3"` and a non-`hevc` video codec to
-  the H264 payload — so a trigger that was **never read** still produces exactly the right payload
-  for the AC-3 baseline case. That is the tier's own false-PASS shape, and it is why the matrix
-  carries cases expecting `"AC3 PLUS"` and `"AAC"`.
+- Unsupported audio declarations fail before Load. The matrix's codec assertions still verify
+  that each fixture supplies the intended declaration; an omitted trigger cannot be inferred
+  from a generic liveness assertion.
 
 **Never ship on the default alone.** `tests/README.md` has the full tier table.
 

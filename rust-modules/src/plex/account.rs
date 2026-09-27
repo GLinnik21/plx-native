@@ -28,6 +28,10 @@ use std::time::{Duration, Instant};
 // while the PMS DTOs keep theirs as `i64`.
 use super::models::{de_bool, de_i64, de_str, de_vec};
 
+mod preferences;
+#[allow(unused_imports)]
+pub(crate) use preferences::{PreferenceError, PreferenceRequest, PreferenceSnapshot, PreferenceUpdate};
+
 const PLEX_TV: &str = "https://plex.tv";
 
 /// plex.tv's base URL: [`PLEX_TV`], or — in a dev build only — a LOOPBACK stand-in named by
@@ -74,6 +78,12 @@ pub struct AudioPreferences {
     /// log: auto-select off and no language set otherwise read identically.
     pub auto_select_audio: Option<bool>,
     pub stated_language: Option<String>,
+    pub subtitle_language: Option<String>,
+    /// Plex autoSelectSubtitle: 0 manually selected, 1 foreign audio, 2 always.
+    pub subtitle_mode: i64,
+    /// Plex defaultSubtitleForced: 0 prefer non-forced, 1 prefer forced,
+    /// 2 only forced, 3 only non-forced.
+    pub subtitle_forced: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,7 +119,7 @@ struct AudioPreferencesFlight { key: AudioPreferencesKey, id: u64 }
 
 struct AudioPreferencesState {
     key: Option<AudioPreferencesKey>, entry: Option<AudioPreferencesEntry>,
-    flight: Option<u64>, next_flight: u64,
+    flight: Option<u64>, next_flight: u64, revision: u64,
 }
 struct AudioPreferencesCache { state: Mutex<AudioPreferencesState>, changed: Condvar }
 #[derive(Clone, Copy)]
@@ -117,7 +127,7 @@ enum FetchPath { Play, Warm }
 
 impl AudioPreferencesCache {
     const fn new() -> Self { Self { state: Mutex::new(AudioPreferencesState {
-        key: None, entry: None, flight: None, next_flight: 0,
+        key: None, entry: None, flight: None, next_flight: 0, revision: 0,
     }), changed: Condvar::new() } }
 
     fn publish(&self, key: AudioPreferencesKey) {
@@ -160,6 +170,9 @@ impl AudioPreferencesCache {
         if state.key.as_ref() != Some(&flight.key) || state.flight != Some(flight.id)
             || !still_current() { return false; }
         state.flight = None;
+        if matches!(outcome, AudioPreferencesOutcome::Available(_)) {
+            state.revision = state.revision.wrapping_add(1);
+        }
         match (&outcome, path) {
             (AudioPreferencesOutcome::TimedOut, FetchPath::Play) => {}
             (AudioPreferencesOutcome::Available(_), _) => state.entry = Some(AudioPreferencesEntry {
@@ -1041,6 +1054,9 @@ where F: FnOnce(Duration) -> AudioPreferencesOutcome, N: Fn() -> Instant, C: Fn(
     let deadline = now() + budget;
     let flight = {
         let mut state = cache.state.lock().unwrap_or_else(|e| e.into_inner());
+        // An old playback worker must not evict the active profile's saved preferences or
+        // settings request merely by entering after the profile publication changed.
+        if !still_current() { return AudioPreferencesOutcome::Failed; }
         if state.key.as_ref() != Some(&key) {
             state.key = Some(key.clone()); state.entry = None; state.flight = None;
             cache.changed.notify_all();
@@ -1158,6 +1174,27 @@ struct AccountAudioProfile {
     auto_select_audio: Option<bool>,
     #[serde(deserialize_with = "de_soft_string")]
     default_audio_language: Option<String>,
+    #[serde(deserialize_with = "de_soft_string")]
+    default_subtitle_language: Option<String>,
+    #[serde(deserialize_with = "de_soft_i64", alias = "subtitleMode")]
+    auto_select_subtitle: Option<i64>,
+    #[serde(deserialize_with = "de_soft_i64", alias = "subtitleForced")]
+    default_subtitle_forced: Option<i64>,
+}
+impl AccountAudioProfile {
+    fn preferences(self) -> AudioPreferences {
+        let clean_language = |value: Option<String>| value.map(|language| language.trim().to_owned())
+            .filter(|language| !language.is_empty() && language != "-1");
+        let stated_language = clean_language(self.default_audio_language);
+        let language = (self.auto_select_audio == Some(true))
+            .then(|| stated_language.clone()).flatten();
+        AudioPreferences {
+            language, auto_select_audio: self.auto_select_audio, stated_language,
+            subtitle_language: clean_language(self.default_subtitle_language),
+            subtitle_mode: self.auto_select_subtitle.unwrap_or(0),
+            subtitle_forced: self.default_subtitle_forced.unwrap_or(0),
+        }
+    }
 }
 impl AccountUser {
     fn audio_preferences_for(self, expected: &super::session::UserRef)
@@ -1176,15 +1213,7 @@ impl AccountUser {
         {
             return None;
         }
-        let profile = self.profile.unwrap_or_default();
-        let stated_language = profile.default_audio_language
-            .map(|language| language.trim().to_owned())
-            .filter(|language| !language.is_empty() && language != "-1");
-        let language = (profile.auto_select_audio == Some(true))
-            .then(|| stated_language.clone()).flatten();
-        Some(AudioPreferences {
-            language, auto_select_audio: profile.auto_select_audio, stated_language,
-        })
+        Some(self.profile.unwrap_or_default().preferences())
     }
 }
 
@@ -1387,6 +1416,18 @@ mod tests {
     }
 
     #[test]
+    fn account_subtitle_preferences_reach_the_playback_cache() {
+        let user = audio_user(7, "profile-uuid");
+        let body = r#"{"id":7,"profile":{"autoSelectAudio":true,
+            "defaultAudioLanguage":"en-GB","defaultSubtitleLanguage":"fr-CA",
+            "autoSelectSubtitle":"2","defaultSubtitleForced":3}}"#;
+        let prefs = parsed_audio(body, &user).unwrap();
+        assert_eq!(prefs.subtitle_language.as_deref(), Some("fr-CA"));
+        assert_eq!(prefs.subtitle_mode, 2);
+        assert_eq!(prefs.subtitle_forced, 3);
+    }
+
+    #[test]
     fn account_audio_preferences_require_auto_select_audio() {
         let user = audio_user(7, "profile-uuid");
         for (body, auto_select_audio) in [
@@ -1396,6 +1437,7 @@ mod tests {
         ] {
             assert_eq!(parsed_audio(body, &user), Some(super::AudioPreferences {
                 language: None, auto_select_audio, stated_language: Some("fr".into()),
+                ..Default::default()
             }));
         }
     }
@@ -1439,7 +1481,7 @@ mod tests {
     fn french_prefs() -> super::AudioPreferences {
         super::AudioPreferences {
             language: Some("fr".into()), auto_select_audio: Some(true),
-            stated_language: Some("fr".into()),
+            stated_language: Some("fr".into()), ..Default::default()
         }
     }
     fn french() -> super::AudioPreferencesOutcome {
@@ -1535,6 +1577,23 @@ mod tests {
             std::time::Instant::now(), || true));
         assert_eq!(super::audio_preferences_cached_at(&cache, new, Duration::from_millis(3),
             std::time::Instant::now, |_| panic!("new result was not cached"), || true), german);
+    }
+
+    #[test]
+    fn account_regression_stale_fetch_start_cannot_evict_current_profile() {
+        let cache = super::AudioPreferencesCache::new();
+        let old = audio_key(1, 1); let current = audio_key(2, 2);
+        let flight = cache.reserve(current.clone(), std::time::Instant::now()).unwrap();
+        let result = super::audio_preferences_cached_at(&cache, old, Duration::from_millis(10),
+            std::time::Instant::now, |_| panic!("stale identity reached the network"), || false);
+        assert_eq!(result, super::AudioPreferencesOutcome::Failed);
+        {
+            let state = cache.state.lock().unwrap();
+            assert_eq!(state.key.as_ref(), Some(&current));
+            assert_eq!(state.flight, Some(flight.id));
+        }
+        assert!(cache.complete(flight, french(), super::FetchPath::Warm,
+            std::time::Instant::now(), || true));
     }
 
     #[test]

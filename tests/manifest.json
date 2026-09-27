@@ -1412,11 +1412,11 @@
       "name": "dp_h264_ac3_many_audio",
       "item": "movie_h264_ac3_many_audio",
       "kind": "movie",
-      "title": "movie · h264/ac3 · 1080p · 8 audio tracks (dts + vorbis present)",
+      "title": "movie · h264/ac3 · 1080p · 8 audio tracks (truehd + vorbis present)",
       "covers": [
         "h264+ac3",
         "many-audio-tracks",
-        "dts+vorbis-present"
+        "truehd+vorbis-present"
       ],
       "run_secs": 60,
       "operations": [
@@ -1683,11 +1683,11 @@
       "name": "audio_switch_transcode",
       "item": "movie_h264_ac3_many_audio",
       "kind": "movie",
-      "title": "movie · h264/ac3 · 1080p · 8 audio tracks — switch to the English dts track (forces transcode)",
+      "title": "movie · h264/ac3 · 1080p · 8 audio tracks — switch to the English truehd track (forces transcode)",
       "covers": [
         "audio-switch-transcode",
         "lang-forces-transcode",
-        "dca-target"
+        "truehd-target"
       ],
       "run_secs": 70,
       "operations": [
@@ -1826,6 +1826,21 @@
         "server_opens_min": 1,
         "load_max": "1920x1080@24",
         "sink_echo": "1920x1080@24"
+      }
+    },
+    {
+      "name": "pipe_h264_dts_1080p",
+      "fixture": "pipe_h264_dts_1080p.mkv",
+      "title": "1080p H264 + DTS core 5.1 — capability-gated DTS audio feed",
+      "covers": ["DTS Load payload", "DTS core audio", "audio sync", "seek"],
+      "declare": {"vcodec": "h264", "acodec": "dts", "fps": 24.0, "source_raster": [1920, 1080]},
+      "run_secs": 40,
+      "operations": [{"op": "play"}, {"op": "seek", "target_s": 20, "mode": "inplace", "delay_ms": 12000}],
+      "expect": {
+        "codec": "h264", "video_size": "1920x1080", "load_video": "H264", "load_audio": "DTS",
+        "load_dovi": "none", "load_atmos": false, "min_pos_climb_s": 8,
+        "require_video_bound": true, "no_playing_error": true, "server_opens_min": 1,
+        "load_max": "1920x1080@24", "sink_echo": "1920x1080@24"
       }
     },
     {
@@ -3702,7 +3717,7 @@
       "flac",
       "pcm/lpcm",
       "mp3",
-      "dts-only-at-movie-level (reachable only via language selection on a many-audio movie, never as the item's own default)"
+      "dts-only-at-movie-level (pipeline DTS 5.1 is covered; no mapped Plex item exercises the account/server route)"
     ],
     "subtitles": [
       "ass/ssa",

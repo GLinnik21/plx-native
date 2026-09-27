@@ -1514,6 +1514,7 @@ impl Bridge {
             AppFx::Session(command) => out.push(Fx::Deliver(MachineId::Session,
                 Delivery::Machine(AppMsg::Session(crate::auth::owner::SessionEvent::Command(command))))),
             AppFx::SessionEffect(effect) => self.session_effect(effect, out),
+            AppFx::Preferences(command) => super::preferences::execute(command),
             AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
             AppFx::StoreWork(work) => out.push(Fx::Deliver(
                 MachineId::Store(work.store().ord()), Delivery::Machine(AppMsg::StoreWork(work)))),
@@ -2479,6 +2480,7 @@ pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut 
         crate::route::restore_quality(
             crate::dev::playback_quality_override().unwrap_or_else(|| saved.playback_quality()),
         );
+        crate::route::restore_direct_play_mode(saved.direct_play_mode());
         crate::player::restore_subtitle_tone(saved.subtitle_tone());
         let endpoints = super::boot::install_pms_owned(bridge, &c.origin,
             &c.address, &c.token, c.tier, c.pin.as_ref(), &c.install);
@@ -3311,3 +3313,47 @@ mod viewstate_directory_policy_tests;
 #[cfg(test)]
 #[path = "person_lifecycle_tests.rs"]
 mod person_lifecycle_tests;
+
+#[cfg(test)]
+mod preference_effect_tests {
+    use super::*;
+    use crate::screens::registry::PreferenceCmd;
+    use std::sync::mpsc::{self, TryRecvError};
+
+    #[test]
+    fn controlled_preferences_are_rejected_before_capture_or_persistence() {
+        let _serial = crate::testlock::serial();
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let temp = crate::plex::session::TempSession::new("controlled-preference-effects");
+        let before = std::fs::read(temp.path()).unwrap();
+        let quality = crate::route::quality();
+        let mode = crate::route::direct_play_mode();
+        for replay in [false, true] {
+            let initial = super::super::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
+            let mut bridge = Bridge::controlled_home(|| 0, &initial, &mt, replay);
+            let mut emitted = Vec::new(); let mut present = Present::new();
+            let mut out = Effects::new(&mut emitted, MachineId::Instance(InstanceId(1)), &mut present);
+            let (reply, receipt) = mpsc::channel();
+            bridge.app_effect(MachineId::Instance(InstanceId(1)),
+                AppFx::Preferences(PreferenceCmd::Load { reply }), &mut out);
+            assert!(matches!(receipt.try_recv(), Err(TryRecvError::Disconnected)),
+                "controlled account load must drop the reply without capturing a live profile");
+            for save_quality in [false, true] {
+                let (reply, receipt) = mpsc::channel();
+                let command = if save_quality {
+                    PreferenceCmd::Quality { quality: crate::route::Quality::P480, reply }
+                } else {
+                    PreferenceCmd::DirectPlay { mode: crate::route::DirectPlayMode::Forced, reply }
+                };
+                bridge.app_effect(MachineId::Instance(InstanceId(1)), AppFx::Preferences(command), &mut out);
+                assert!(matches!(receipt.try_recv(), Err(TryRecvError::Disconnected)),
+                    "controlled local preference must not enqueue persistence");
+            }
+            assert_eq!(bridge.controlled_failure(), Some("unsupported controlled preferences effect"));
+            assert!(emitted.is_empty());
+        }
+        assert_eq!(crate::route::quality(), quality);
+        assert_eq!(crate::route::direct_play_mode(), mode);
+        assert_eq!(std::fs::read(temp.path()).unwrap(), before);
+    }
+}

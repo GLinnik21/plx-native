@@ -5,7 +5,7 @@
 `tests/manifest.local.json` maps each shape to a ratingKey on whatever PMS you own. That
 mapping is the entire barrier to entry, and it is a real one: the shapes include a TrueHD
 default track with an AC-3 sibling, a Dolby Vision profile 8.1 base layer, a PGS bitmap
-subtitle track, and an eight-track audio file with **English DTS at ordinal 6**. Nobody
+subtitle track, and an eight-track audio file with **English TrueHD at ordinal 6**. Nobody
 has that lying around by accident, and two of those — TrueHD and Dolby Vision — have no
 freely-licensed example anywhere in the world, so "go and find one" is not advice, it is a
 dead end.
@@ -253,9 +253,9 @@ the real one.)
 | `episode_hevc_4k_hdr10_eac3` (+`_next`) | 300 s ×2 | HEVC Main10 4K HDR10 (real mastering-display + CLL in-band) with a **German default** E-AC-3 at index 0 and English at index 1 — with no Plex language preference the file's default (row 0, German) is what plays at start (#210), so `audio_switch_native` picks row 1 to switch to the English track and expects a native switch. Built as a pair for `marker_credits_up_next`, with a shared 130 s intro and a 40 s black credits tail (see *markers*, below). Also carries a `min_mbit` floor. |
 | `movie_hevc_4k_hdr10_truehd` | 90 s | TrueHD 5.1 default + AC-3 5.1 sibling: the smart-direct-play shape. Also the item every player-tier fps scene decodes under its overlay. |
 | `movie_hevc_4k_dovi_p8` | 90 s | Dolby Vision **8.1**, RPU authored from scratch by `dovi_tool generate` and injected into a synthetic HDR10 base layer, muxed by `mkvmerge`. ffprobe reads back `dv_profile=8, bl_compat=1, el_present=0, rpu_present=1`, plus in-band `Dolby Vision RPU Data`. Carries the **four-track SRT stack** as well — its case covers `embedded-srt-many`. |
-| `movie_hevc_aac_mp4` | 90 s | HEVC/AAC in mp4 (`hvc1`, faststart) with a **sidecar** `.en.srt`. AAC **stereo**: this case is the mov-demuxer/ADTS path, real-world mp4s are usually 2.0, and `devcaps::audio_has` ignores the channel count so a 5.1 claim is one nothing in the app would ever check. |
+| `movie_hevc_aac_mp4` | 90 s | HEVC/AAC in mp4 (`hvc1`, faststart) with a **sidecar** `.en.srt`. AAC **stereo**: this case is the mov-demuxer/ADTS path, real-world mp4s are usually 2.0, and Auto checks the device table’s per-codec channel limit. |
 | `episode_h264_aac` | 90 s | H.264/AAC episode with no subtitle tracks at all. |
-| `movie_h264_ac3_many_audio` | 90 s | **Eight** audio tracks, each language-tagged, with **DTS English at index 6** — `audio_switch_transcode` picks row 6 and expects the switch to force a transcode. |
+| `movie_h264_ac3_many_audio` | 90 s | **Eight** audio tracks, each language-tagged, with **TrueHD English at index 6** — `audio_switch_transcode` picks row 6 and expects the switch to force a transcode. |
 | `movie_av1_no_dp_audio` | 780 s | AV1 4K + Opus: no direct-playable video *and* no direct-playable audio, so the server must transcode. 780 s because `resume_transcode` seeds 600 s. **Its three cases need a Plex Pass server** — see below. |
 | `movie_hevc_4k_pgs_subs` | 780 s | HEVC 4K HDR10 + a **PGS bitmap** subtitle track at index 0 (`subtitle_image_pgs` picks row 1; row 0 is *Off*). Seeds 600 s. |
 
@@ -401,7 +401,7 @@ a Mac. Four things were not, and saying which is which is the point of this sect
 * **Nothing here has been through a real Plex scan.** Steps 3–5 (agent choice, scan and
   analysis timing, ratingKey mapping) are reasoned from `docs/pms-api.md` and prior art, not
   executed. In particular: whether PMS enumerates a nine-stream file in **container index
-  order** is what the `audio row 6 = English DTS` and `subtitle row 3 = English` contracts
+  order** is what the `audio row 6 = English TrueHD` and `subtitle row 3 = English` contracts
   rest on. Everything client-side checks out; the server half is untested.
 * **Whether the rapid-seek cases actually coalesce** at the bitrate these files carry
   depends on the LAN round trip and the television. The `min_mbit` floor puts the H.264 seek
@@ -506,3 +506,13 @@ and right for HEVC.
 **The rate/size table is measured, not guessed.** `SHAPES[k]["rate"]` (encode seconds per
 output second) and `MBIT[k]` exist only to print an honest ETA. Re-measure both if the CRFs
 move; a wrong ETA on a twenty-minute job is how somebody concludes it hung.
+
+### DTS core packet regression artifact
+
+`dts-core-frame.dts` is the first 1,884-byte audio packet of the generated
+`pipe_h264_dts_1080p` fixture (48 kHz, DTS core 5.1, synthetic tone). Generate the fixture
+with `make_fixtures.py --tier pipeline --only pipe_h264_dts_1080p`, then extract with
+`ffmpeg -i pipe_h264_dts_1080p.mkv -map 0:a:0 -c:a copy -frames:a 1 -f dts dts-core-frame.dts`.
+The host regression grades exact preservation and extension stripping; audible decoding,
+synchronization and seeking are TV checks. The many-audio fixture now uses TrueHD at ordinal
+6 so its forced-transcode case remains a test of an unsupported format on DTS-capable TVs.

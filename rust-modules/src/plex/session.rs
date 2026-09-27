@@ -536,6 +536,9 @@ pub struct Session {
     /// instead of making the credentials file fail to parse.
     #[serde(default, deserialize_with = "de_soft_playback_quality")]
     pub(crate) playback_quality: Option<PlaybackQuality>,
+    /// Install-wide original-stream override; malformed/future values remain automatic.
+    #[serde(default, deserialize_with = "de_soft_direct_play_mode")]
+    pub(crate) direct_play_mode: DirectPlayMode,
     /// **Automatically Sign In** — skip the boot who's-watching picker and enter as
     /// [`Session::user`]. Install-wide, not per profile: the boot gate reads it before anyone is
     /// seated this run. Absence is **off**, which is today's picker. Enabling it from Settings
@@ -613,6 +616,8 @@ struct CanonicalSessionAuth {
 struct CanonicalSessionPreferences {
     #[serde(default, deserialize_with = "de_soft_playback_quality")]
     playback_quality: Option<PlaybackQuality>,
+    #[serde(default, deserialize_with = "de_soft_direct_play_mode")]
+    direct_play_mode: DirectPlayMode,
     #[serde(default, deserialize_with = "de_soft_bool")]
     auto_sign_in: bool,
     #[serde(default, deserialize_with = "de_soft_vec")]
@@ -643,6 +648,7 @@ impl Default for CanonicalSessionPreferences {
     fn default() -> Self {
         Self {
             playback_quality: None,
+            direct_play_mode: DirectPlayMode::Auto,
             auto_sign_in: false,
             last_library: Vec::new(),
             last_hero_blur: None,
@@ -684,6 +690,7 @@ pub(crate) fn split_canonical(
 fn split_public(session: &Session) -> Result<crate::storage::state::PublicPayload, ()> {
     let preferences = serde_json::to_value(CanonicalSessionPreferences {
         playback_quality: session.playback_quality,
+        direct_play_mode: session.direct_play_mode,
         auto_sign_in: session.auto_sign_in,
         last_library: session.last_library.clone(),
         last_hero_blur: session.last_hero_blur,
@@ -747,6 +754,7 @@ pub(crate) fn join_canonical(
         home_pins,
         recent_searches,
         playback_quality: preferences.playback_quality,
+        direct_play_mode: preferences.direct_play_mode,
         auto_sign_in: preferences.auto_sign_in,
         last_library: preferences.last_library,
         last_hero_blur: preferences.last_hero_blur,
@@ -769,6 +777,7 @@ fn public_session(public: &crate::storage::state::PublicPayload) -> Session {
     Session {
         client_id: public.client_id.clone().unwrap_or_default(),
         playback_quality: preferences.playback_quality,
+        direct_play_mode: preferences.direct_play_mode,
         auto_sign_in: preferences.auto_sign_in,
         last_library: preferences.last_library,
         last_hero_blur: preferences.last_hero_blur,
@@ -889,8 +898,17 @@ pub(crate) fn set_subtitle_tone(tone: SubtitleTone) -> bool {
     })
 }
 
-/// The persisted playback-quality modes. The spelling on disk is explicit rather than derived
-/// from Rust variant names: these strings are a file-format contract and must survive refactors.
+/// Original-stream routing policy. A forced route may never create a compatible fallback.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DirectPlayMode {
+    #[default]
+    Auto,
+    Forced,
+    Disabled,
+}
+
+/// Persisted quality names are a file-format contract and must survive refactors.
 #[derive(Serialize, Deserialize, Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PlaybackQuality {
     /// Automatic adaptation. It is offered only after the playback readiness gate opens.
@@ -1609,6 +1627,13 @@ where
     Ok(serde_json::from_value::<Option<Location>>(v).unwrap_or(None))
 }
 
+/// Future or malformed direct-play policies retain the automatic compatibility checks.
+fn de_soft_direct_play_mode<'de, D>(d: D) -> Result<DirectPlayMode, D::Error>
+where D: Deserializer<'de> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
 /// Playback quality is a preference, not a credential gate. A value written by a newer build or
 /// damaged by a hand edit therefore degrades to the legacy-safe Original mode rather than making
 /// the enclosing [`Session`] disappear.
@@ -1707,6 +1732,15 @@ impl Session {
 
     /// The effective persisted playback quality. Absence is the literal legacy migration rule:
     /// builds that predate the field played Original, so they continue to play Original.
+    #[allow(dead_code)]
+    pub(crate) fn direct_play_mode(&self) -> DirectPlayMode { self.direct_play_mode }
+
+    pub(crate) fn with_direct_play_mode(&self, mode: DirectPlayMode) -> Self {
+        let mut next = self.clone();
+        next.direct_play_mode = mode;
+        next
+    }
+
     pub(crate) fn playback_quality(&self) -> PlaybackQuality {
         self.playback_quality.unwrap_or(PlaybackQuality::Original)
     }
@@ -4569,3 +4603,22 @@ mod migration_tests;
 
 #[allow(dead_code)] // Stage B connects typed owner admission/completions.
 pub(crate) mod async_persistence;
+
+#[cfg(test)]
+mod direct_play_mode_tests {
+    use super::*;
+    #[test]
+    fn direct_play_mode_defaults_and_round_trips_through_both_storage_formats() {
+        for value in [serde_json::json!({}), serde_json::json!({"direct_play_mode":"future"}), serde_json::json!({"direct_play_mode":17})] {
+            let session: Session = serde_json::from_value(value).unwrap();
+            assert_eq!(session.direct_play_mode(), DirectPlayMode::Auto);
+        }
+        for mode in [DirectPlayMode::Auto, DirectPlayMode::Forced, DirectPlayMode::Disabled] {
+            let session = Session::default().with_direct_play_mode(mode);
+            let round: Session = serde_json::from_slice(&serde_json::to_vec(&session).unwrap()).unwrap();
+            assert_eq!(round.direct_play_mode(), mode);
+            let prefs: CanonicalSessionPreferences = serde_json::from_value(split_public(&session).unwrap().preferences).unwrap();
+            assert_eq!(prefs.direct_play_mode, mode);
+        }
+    }
+}

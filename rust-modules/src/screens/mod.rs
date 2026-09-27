@@ -34,3 +34,4 @@ pub(crate) mod player;
 pub(crate) mod profiles;
 pub(crate) mod registry;
 pub(crate) mod settings;
+pub(crate) mod preferences;

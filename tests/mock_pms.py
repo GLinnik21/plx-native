@@ -56,6 +56,11 @@ QR image, and `/api/v2/user`) with a fixed demo code, for an app booted with
 without touching plex.tv. The poll stays pending unless `--authorize-after N` (implied, N=2, by
 `--plaintext-only-lan`) links the code on the Nth poll with a synthetic account token, so a
 sign-in completes end to end without any real account.
+`GET`/`PUT /api/v2/user/profile` also reads and edits an in-memory synthetic profile;
+`/api/v2/user` returns the same preferences for playback warmup. Changes last only until the
+mock stops, and PUTs are recorded in the mock write log. Ordinary mode advertises itself through
+`/api/v2/resources` and supplies one synthetic Demo owner in the Home roster, so mock QR sign-in
+can reach Settings without a pre-seeded session.
 
 The app reaches it as any other server: `make sim-shot SIM_PMS=127.0.0.1 SIM_PORT=32499` with
 any non-empty string in `$SIM_DIR/plxnative-token` (the token is accepted, never checked).
@@ -1187,12 +1192,17 @@ class MockPms:
         self.requests = []  # (path, status) in arrival order, for the harness
         self.unknown = []
         self.writes = []
-        # Set by `serve(..., plaintext_only_lan=True)` to a dict with ip/http_port/fail_port/
-        # access_token; `None` means /api/v2/resources is unimplemented, like any other mode.
+        # Set by `serve` after binding the listener; ordinary sign-in advertises only this mock.
+        self.account_resource = None
+        # The specialized TLS-failure reproduction overrides ordinary resource discovery.
+        # Set by `serve(..., plaintext_only_lan=True)` to ip/http_port/fail_port/access_token.
         self.plaintext_only_lan = None
         # `--authorize-after N`: the pin poll links the demo code on the Nth poll; `None` never.
         self.authorize_after = None
         self.pin_polls = 0
+        self.user_profile = {"autoSelectAudio": True, "defaultAudioLanguage": "en",
+                             "defaultSubtitleLanguage": "en", "autoSelectSubtitle": 1,
+                             "defaultSubtitleForced": 0, "defaultSubtitleAccessibility": 0}
 
     @staticmethod
     def safe_path(path):
@@ -1261,15 +1271,47 @@ class MockPms:
             import demo_library.qr as qr
             return (200, "image/png", qr.png(qr.encode(DEMO_QR_TEXT, "M"), scale=8, border=0, plex_style=True))
         if p == "/api/v2/user":
+            with self.lock:
+                profile = dict(self.user_profile)
             return j({"id": 1, "uuid": "demo-user", "username": "demo", "title": "Demo",
                       "friendlyName": "Demo", "email": "demo@example.invalid", "thumb": "",
+                      "profile": profile,
                       "subscription": {"active": True, "status": "Active", "plan": "lifetime"}})
-        # `--plaintext-only-lan` (PLX-NATIVE-10): the account's discovered servers. No other mode
-        # implements this plex.tv endpoint, so it falls through to the UNKNOWN path below there.
-        if p == "/api/v2/resources" and self.plaintext_only_lan is not None:
-            cfg = self.plaintext_only_lan
-            return j(plaintext_only_lan_resources(
-                lib, cfg["ip"], cfg["http_port"], cfg["fail_port"], cfg["access_token"]))
+        if p == "/api/v2/user/profile":
+            if method == "PUT":
+                if body:
+                    return j({"error": "profile PUT requires an empty body"}, 400)
+                patch = {}
+                for key, value in q.items():
+                    if key in ("defaultAudioLanguage", "defaultSubtitleLanguage"):
+                        patch[key] = value
+                    elif key == "autoSelectAudio" and value in ("true", "false", "1", "0"):
+                        patch[key] = value in ("true", "1")
+                    elif key in ("autoSelectSubtitle", "defaultSubtitleForced"):
+                        limit = 2 if key == "autoSelectSubtitle" else 3
+                        if not value.isdigit() or int(value) > limit:
+                            return j({"error": "invalid profile preference"}, 400)
+                        patch[key] = int(value)
+                    else:
+                        return j({"error": "unknown profile preference"}, 400)
+                self.note_write(method, path, body)
+                with self.lock:
+                    self.user_profile.update(patch)
+            elif method not in ("GET", "HEAD"):
+                return j({"error": "method not allowed"}, 405)
+            with self.lock:
+                return j(dict(self.user_profile))
+        if p == "/api/v2/home/users":
+            return j({"users": [{"id": 1, "uuid": "demo-user", "title": "Demo", "thumb": "",
+                                  "admin": True, "restricted": False, "protected": False}]})
+        if p == "/api/v2/home/users/demo-user/switch" and method == "POST":
+            return j({"id": 1, "uuid": "demo-user", "title": "Demo", "authToken": DEMO_ACCOUNT_TOKEN})
+        if p == "/api/v2/resources":
+            if self.plaintext_only_lan is not None:
+                cfg = self.plaintext_only_lan
+                return j(plaintext_only_lan_resources(
+                    lib, cfg["ip"], cfg["http_port"], cfg["fail_port"], cfg["access_token"]))
+            return j([self.account_resource] if self.account_resource is not None else [])
         catalog = isinstance(lib, CatalogLibrary)
         if p == "/" or p == "/identity":
             return j(self.container(machineIdentifier=lib.machine, friendlyName=lib.friendly,
@@ -1634,6 +1676,17 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     srv.pms = pms
     srv.verbose = verbose
     srv.insecure_fail_listener = None
+    account_ip = advertise_ip or ("127.0.0.1" if host in ("0.0.0.0", "::") else host)
+    account_port = srv.server_address[1]
+    pms.account_resource = {
+        "name": lib.friendly, "clientIdentifier": lib.machine, "provides": "server",
+        "owned": True, "home": False, "ownerId": 1, "presence": True,
+        "accessToken": "s" + hashlib.sha1(lib.machine.encode()).hexdigest()[:8],
+        "httpsRequired": False, "publicAddressMatches": True,
+        "connections": [{"protocol": "http", "address": account_ip, "port": account_port,
+                         "uri": f"http://{account_ip}:{account_port}", "local": True,
+                         "relay": False, "IPv6": False}],
+    }
     if plaintext_only_lan:
         ip = advertise_ip
         if ip is None:
@@ -1678,6 +1731,31 @@ def selftest():
         s, ct, b = get(path)
         assert s == 200 and ct == "application/json", (path, s, ct)
         return json.loads(b)["MediaContainer"]
+
+    resources = json.loads(get("/api/v2/resources")[2])
+    assert len(resources) == 1 and resources[0]["clientIdentifier"] == pms.lib.machine
+    assert resources[0]["connections"][0]["uri"] == base
+    users = json.loads(get("/api/v2/home/users")[2])["users"]
+    user = json.loads(get("/api/v2/user")[2])
+    assert len(users) == 1 and users[0]["uuid"] == user["uuid"] == "demo-user"
+    switch = urllib.request.Request(base + "/api/v2/home/users/demo-user/switch", data=b"", method="POST")
+    with urllib.request.urlopen(switch, timeout=5) as reply:
+        switched = json.load(reply)
+    assert switched["id"] == user["id"] and switched["uuid"] == user["uuid"]
+    assert switched["authToken"] == DEMO_ACCOUNT_TOKEN
+
+    # Account preferences live only in this mock. Empty-body PUT changes just named keys,
+    # including an empty language, and /user serves the same state to the playback cache.
+    profile = json.loads(get("/api/v2/user/profile")[2])
+    update = urllib.request.Request(base + "/api/v2/user/profile?defaultAudioLanguage=&autoSelectAudio=true&defaultSubtitleForced=3",
+                                    data=b"", method="PUT")
+    with urllib.request.urlopen(update, timeout=5) as reply:
+        changed = json.load(reply)
+    assert changed["defaultAudioLanguage"] == "" and changed["autoSelectAudio"] is True
+    assert changed["defaultSubtitleForced"] == 3
+    assert changed["defaultSubtitleLanguage"] == profile["defaultSubtitleLanguage"]
+    assert json.loads(get("/api/v2/user")[2])["profile"] == changed
+    assert pms.writes[-1][0] == "PUT" and pms.writes[-1][2] == b""
 
     secs = jget("/library/sections")["Directory"]
     assert [s["key"] for s in secs] == ["1", "2"]

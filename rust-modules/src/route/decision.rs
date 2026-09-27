@@ -44,6 +44,7 @@ struct RetryContext {
     audio_sid: i64,
     sub_sid: i64,
     sub_offset_ms: i64,
+    direct_play_mode: DirectPlayMode,
 }
 
 /// Everything the main thread needs to resolve and render the playback in progress, in one struct.
@@ -71,6 +72,8 @@ struct RetryContext {
 /// asserted: a frame's draw cannot hold one across [`apply_plan`] or [`request_play`], because
 /// those take `&mut`.
 pub(crate) struct PlaybackSession {
+    /// Frozen for one logical playback, including its retries and track changes.
+    direct_play_mode: DirectPlayMode,
     /// This playback was refused by the cached device sandbox preflight. No Engine exists.
     /// Cleared with the playback verdict on exit/reset, never a process-global error latch.
     pub(crate) jail_load_blocked: bool,
@@ -337,6 +340,7 @@ impl PlaybackSession {
     /// Nothing playing: what the module holds before the first play, and the value the static is
     /// born as. Every String empty, every id 0 or `UNSET`, both HUD buffers NUL.
     pub(crate) const IDLE: PlaybackSession = PlaybackSession {
+        direct_play_mode: DirectPlayMode::Auto,
         jail_load_blocked: false,
         repair_status: crate::webos::jail_repair::State::Idle,
         request: None,
@@ -405,6 +409,7 @@ impl PlaybackSession {
     /// it or silently dropping it.
     pub(crate) fn publication(&self) -> PlaybackSession {
         let PlaybackSession {
+            direct_play_mode,
             jail_load_blocked,
             repair_status,
             request,
@@ -454,6 +459,7 @@ impl PlaybackSession {
             resolved_as_preview,
         } = self;
         PlaybackSession {
+            direct_play_mode: *direct_play_mode,
             jail_load_blocked: *jail_load_blocked,
             repair_status: *repair_status,
             request: request.clone(),
@@ -2855,6 +2861,7 @@ fn auto_original_features(ps: &PlaybackSession) -> crate::abr::SourceFeatures {
 
 /// Main-thread capture immediately before spawning the HLS demux worker.
 pub(crate) fn hls_abr_control(ps: &PlaybackSession) -> Option<(HlsAbrControl, WorkerTicket)> {
+    if forced_direct_play(ps) { return None; }
     let seconds_per_segment = match cur_delivery(ps) {
         crate::plex::TranscodeDelivery::FixedHls {
             seconds_per_segment,
@@ -2960,6 +2967,7 @@ impl AutoOriginalWatch {
 }
 
 pub(crate) fn auto_original_watch(ps: &PlaybackSession) -> Option<AutoOriginalWatch> {
+    if forced_direct_play(ps) { return None; }
     let s = &*ps;
     if applied_quality() != Quality::Auto
         || !s.cur_auto_original_watched
@@ -3113,6 +3121,7 @@ pub(crate) fn fallback_auto_to_hls_for(
     measured_kbps: u32,
     offset_secs: i64,
 ) -> Option<String> {
+    if forced_direct_play(ps) { return None; }
     if !is_worker_ticket_current(expected) {
         return None;
     }
@@ -3300,6 +3309,7 @@ pub(crate) fn recover_auto_to_original_for(
     offset_secs: i64,
     automatic: bool,
 ) -> Option<AutoOriginalReload> {
+    if forced_direct_play(ps) { return None; }
     // One handoff owns both the unproven replacement and the retained client-side HLS route until
     // decoded frames commit it or an open failure restores that route snapshot. PMS-side HLS
     // cursor continuity is proved only by an actual later HLS response. Re-entering here would
@@ -3475,13 +3485,13 @@ struct PendingOriginal {
     /// They travel with this exact transaction and are applied only after a replacement Engine is
     /// proven; a terminal failure drops them rather than leaking them into a later trial.
     deferred_quality: Option<Quality>,
-    deferred_audio: Option<(i32, String, i64)>,
+    deferred_audio: Option<(i32, String, i64, i64)>,
 }
 
 #[derive(Default)]
 pub(crate) struct DeferredOriginalEffects {
     quality: Option<Quality>,
-    audio: Option<(i32, String, i64)>,
+    audio: Option<(i32, String, i64, i64)>,
 }
 
 impl DeferredOriginalEffects {
@@ -4505,6 +4515,7 @@ pub(crate) fn drain_scrobble() {
 /// is not a transcode or PMS refuses the replacement. The old stream stays live until the new
 /// decision has succeeded and the route publication wins, so a failed seek cannot cut playback.
 pub(crate) fn transcode_seek(ps: &mut PlaybackSession, offset_secs: i64) -> Option<String> {
+    if forced_direct_play(ps) { return None; }
     if transcode_session(ps).is_empty() {
         return None;
     }
@@ -4717,6 +4728,51 @@ impl Quality {
     }
 }
 
+/// Install-wide preference; each resolve captures its own immutable mode.
+static DIRECT_PLAY_MODE: AtomicU8 = AtomicU8::new(0);
+
+pub(crate) fn direct_play_mode() -> DirectPlayMode {
+    match DIRECT_PLAY_MODE.load(Ordering::Relaxed) {
+        1 => DirectPlayMode::Forced,
+        2 => DirectPlayMode::Disabled,
+        _ => DirectPlayMode::Auto,
+    }
+}
+
+pub(crate) fn restore_direct_play_mode(mode: DirectPlayMode) {
+    #[cfg(test)]
+    crate::testlock::assert_held("direct-play preference");
+    DIRECT_PLAY_MODE.store(match mode {
+        DirectPlayMode::Auto => 0, DirectPlayMode::Forced => 1, DirectPlayMode::Disabled => 2,
+    }, Ordering::Relaxed);
+}
+
+/// Blocking persistence seam; Settings dispatches it on the storage worker.
+pub(crate) fn set_direct_play_mode(mode: DirectPlayMode) -> bool {
+    let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_direct_play_mode(mode)))
+        .is_some_and(|write| matches!(write.classify(),
+            crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
+    if saved { restore_direct_play_mode(mode); crate::ui::idle::invalidate(); }
+    saved
+}
+
+pub(crate) fn set_default_quality(q: Quality) -> bool {
+    let q = supported_quality(q);
+    let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_playback_quality(q)))
+        .is_some_and(|write| matches!(write.classify(),
+            crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
+    if saved { restore_quality(q); crate::ui::idle::invalidate(); }
+    saved
+}
+
+pub(crate) fn forced_direct_play(ps: &PlaybackSession) -> bool {
+    ps.direct_play_mode == DirectPlayMode::Forced
+}
+
+pub(crate) fn audio_track_direct_plays(ps: &PlaybackSession, codec: &str, channels: i64) -> bool {
+    audio_direct_plays(ps.direct_play_mode, codec, channels)
+}
+
 /// The user's current pick. An atomic rather than a field on [`Session`] because it OUTLIVES a
 /// playback — it is a preference, not session state — and because `ui::more_menu` reads it to draw
 /// the checkmark while [`ResolveEnv::snapshot`] reads it to hand the worker a copy.
@@ -4795,6 +4851,11 @@ pub(crate) fn set_quality_for_retry(q: Quality) {
 }
 
 pub(crate) fn set_quality(ps: &mut PlaybackSession, q: Quality) {
+    if forced_direct_play(ps) {
+        let _ = persist_quality_choice(q);
+        return;
+    }
+
     let q = supported_quality(q);
     let unchanged = q == quality();
     // Hold the explicit user-staging phase across persistence, Session projection changes and
@@ -4833,6 +4894,7 @@ pub(crate) fn set_quality(ps: &mut PlaybackSession, q: Quality) {
 }
 
 fn apply_quality_choice(ps: &mut PlaybackSession, q: Quality) {
+    if forced_direct_play(ps) { return; }
     // A later non-Auto pick supersedes an Auto restart that the pump has not consumed yet. If the
     // live worker really was adaptive, the route comparison below schedules the symmetric restart
     // which removes its watchdog; if it was still Manual, this cancellation avoids a stale Auto
@@ -5083,6 +5145,11 @@ pub(super) fn server_decision(
             return None;
         }
     };
+    mde_verdict(&mc)
+}
+
+fn mde_verdict(mc: &crate::plex::MediaContainer) -> Option<MdeVerdict> {
+    if refusal(mc).is_some() { return None; }
     // Part.decision is the Original-vs-not verdict (Media/container carry none). Video copy
     // is the VIDEO stream's own decision — Part=transcode + video=copy is a remux.
     let part = match mc
@@ -5125,6 +5192,12 @@ pub(super) fn server_decision(
         original,
         video_forbids_copy,
     })
+}
+
+pub(super) fn forced_server_decision(
+    c: &crate::plex::Client, rk: &str, session: &str, audio: i64, sub: i64,
+) -> Option<MdeVerdict> {
+    mde_verdict(&c.mde_decision_forced(rk, session, audio, sub)?)
 }
 
 /// Select the audio + subtitle streams server-side for the current part before a
@@ -5293,8 +5366,10 @@ impl ResolveEnv {
             },
             audio_sid: cur_audio_sid(ps),
             sub_sid: cur_sub_sid(ps),
+            subtitle_override: None,
             cached_item: meta.cached_playing(sid, rk),
             quality: quality(),
+            direct_play_mode: direct_play_mode(),
             src_kbps: resolve_src_kbps(meta.current(), sid, rk),
             omit_queue_continuous: false,
             preview: false,
@@ -5327,6 +5402,13 @@ fn playback_preview_with_capability(
         ),
         None => d.dovi.presentation_now(vcodec.eq_ignore_ascii_case("hevc")),
     };
+    let mode = direct_play_mode();
+    if mode == DirectPlayMode::Forced {
+        return (!part.is_empty() && part_is_streamable(part)
+            && video_feed_supported(vcodec, presentation)
+            && d.audio.iter().any(|a| audio_direct_plays(mode, &a.codec, a.channels)))
+            .then_some(Preview::DirectPlay);
+    }
     let p = playback_preview_of(
         part,
         vcodec,
@@ -5344,11 +5426,12 @@ fn playback_preview_with_capability(
     // A detail page has not downloaded the file yet, so it reports what can preserve the source,
     // not a fictitious failed bandwidth result. Remote Auto is measured at Play. Relay remains a
     // conversion because its independent link policy refuses both original-rate flavors.
-    let policy = flavors_allowed(
+    let policy = direct_play_policy(mode, flavors_allowed(
         crate::plex::link_policy(location),
         quality_policy(quality(), true, d.bitrate, d.width, d.height),
-    );
+    ));
     Some(match p {
+        Preview::DirectPlay if !policy.direct_play && policy.remux && mode == DirectPlayMode::Disabled => Preview::Remux,
         Preview::DirectPlay if !policy.direct_play => Preview::Converts,
         Preview::Remux if !policy.remux => Preview::Converts,
         _ => p,
@@ -5628,8 +5711,10 @@ fn request_play_inner(
         // `request_play` resets the live selection because that is correct for a new item.  A
         // retry is the SAME item: override the fresh defaults with the selection captured before
         // that reset so a rescue does not silently turn subtitles/audio back to server default.
+        env.direct_play_mode = retry.direct_play_mode;
         env.audio_sid = retry.audio_sid;
         env.sub_sid = retry.sub_sid;
+        env.subtitle_override = Some(retry.sub_sid);
     }
     let gen = PLAY_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     if let Some(resume_ns) = retry.map(|r| r.resume_ns).filter(|ns| *ns > 0) {
@@ -5647,7 +5732,7 @@ fn request_play_inner(
         // catch_unwind OUTSIDE the mailbox write, like load_season: a panicking resolve must still
         // land (as !ok) or PLAY_BUSY latches and the screen wedges on a spinner forever.
         let plan = std::panic::catch_unwind(|| build_stream(&rk, &part, &vc, &ac, &env))
-            .unwrap_or_default();
+            .unwrap_or_else(|_| Plan { direct_play_mode: env.direct_play_mode, ..Default::default() });
         let landing = PlayLanding {
             gen,
             trace_generation,
@@ -5731,6 +5816,7 @@ fn current_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
         audio_sid: cur_audio_sid(ps),
         sub_sid: cur_sub_sid(ps),
         sub_offset_ms: crate::player::subtitle_offset_ms(),
+        direct_play_mode: ps.direct_play_mode,
     }
 }
 
@@ -5993,6 +6079,7 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
         let now_ms = s.now_ms;
         let preview = request.as_ref().is_some_and(|r| r.preview);
         *s = PlaybackSession {
+            direct_play_mode: plan.direct_play_mode,
             jail_load_blocked: false,
             repair_status: crate::webos::jail_repair::State::Idle,
             request,
@@ -6206,6 +6293,7 @@ pub(crate) fn retranscode_for(ps: &mut PlaybackSession, expected: &WorkerTicket,
 }
 
 fn retranscode_as(ps: &mut PlaybackSession, expected: &WorkerTicket, offset_secs: i64, remux: bool) -> Option<String> {
+    if forced_direct_play(ps) { return None; }
     let c = cur_client(ps)?;
     let rk = cur_rk(ps);
     if rk.is_empty() || !is_worker_ticket_current(expected) {
@@ -6336,7 +6424,11 @@ fn retranscode_as(ps: &mut PlaybackSession, expected: &WorkerTicket, offset_secs
 /// file — no transcode, keeps 4K HEVC) when the item direct-plays AND the target codec is
 /// direct-playable; else a server re-transcode with that stream selected. `idx` is the
 /// CONTAINER audio ordinal (the menu converts its row via metadata::audio_ordinal).
-pub(crate) fn commit_audio_selection(ps: &mut PlaybackSession, idx: i32, codec: &str, stream_id: i64) {
+pub(crate) fn commit_audio_selection(ps: &mut PlaybackSession, idx: i32, codec: &str, stream_id: i64, channels: i64) {
+    if forced_direct_play(ps) && !audio_track_direct_plays(ps, codec, channels) {
+        ps.play_verdict = Some("Force Direct Play is enabled. This audio format needs conversion. Return Direct Play to Auto in Settings.".into());
+        return;
+    }
     if original_recovery_pending() {
         if let Some(pending) = PLAYER_CONTROL
             .lock()
@@ -6344,7 +6436,7 @@ pub(crate) fn commit_audio_selection(ps: &mut PlaybackSession, idx: i32, codec: 
             .pending_original
             .as_mut()
         {
-            pending.deferred_audio = Some((idx, codec.to_owned(), stream_id));
+            pending.deferred_audio = Some((idx, codec.to_owned(), stream_id, channels));
         }
         crate::player::log("audio: deferred until pending Original handoff commits or rolls back");
         return;
@@ -6362,7 +6454,7 @@ pub(crate) fn commit_audio_selection(ps: &mut PlaybackSession, idx: i32, codec: 
     ) {
         ps.auto_original = None;
     }
-    if !is_transcoding(ps) && crate::plex::is_dp_audio(codec) {
+    if !is_transcoding(ps) && audio_track_direct_plays(ps, codec, channels) {
         // record the pick: the timeline then reports the stream that actually plays, and a
         // later transcode event (subtitle burn refresh / transcode seek) keeps this track
         { let s = &mut *ps; s.cur_audio_sid = stream_id };
@@ -6384,8 +6476,8 @@ pub(crate) fn apply_deferred_original_effects(ps: &mut PlaybackSession, mut effe
     if let Some(q) = effects.quality.take() {
         apply_quality_choice(ps, q);
     }
-    if let Some((idx, codec, stream_id)) = effects.audio.take() {
-        commit_audio_selection(ps, idx, &codec, stream_id);
+    if let Some((idx, codec, stream_id, channels)) = effects.audio.take() {
+        commit_audio_selection(ps, idx, &codec, stream_id, channels);
     }
 }
 
@@ -6573,3 +6665,7 @@ mod quality_recovery_tests;
 #[cfg(test)]
 #[path = "decision_timeline_tests.rs"]
 mod timeline_tests;
+
+#[cfg(test)]
+#[path = "decision_direct_play_mode_tests.rs"]
+mod direct_play_mode_tests;

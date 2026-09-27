@@ -23,12 +23,18 @@ use super::probe::Location;
 /// two-sided test — what our demuxer/payload path can feed, before asking whether this
 /// particular SoC can decode it. The live set is `devcaps::Caps::audio` (this list ∩ the
 /// device's own codec table), and the ONE-definition rule moved there with it: the
-/// [`is_dp_audio`] predicate that gates every direct-play decision (route + the track menu's
-/// native-switch) and the profile string's audio lists BOTH read the caps snapshot, so the
-/// claim sent to PMS and the gate applied locally cannot drift apart.
-pub const DP_AUDIO_CODECS: &str = "aac,ac3,eac3";
+/// Normal routing uses [`is_dp_audio_track`] for membership and channel bounds, shared with
+/// the device profile. Forced mode instead uses the implemented software feed formats and
+/// its separate profile, without conservative device bounds.
+pub const DP_AUDIO_CODECS: &str = "aac,ac3,eac3,dts";
 pub fn is_dp_audio(codec: &str) -> bool {
     crate::devcaps::caps().audio_has(codec)
+}
+
+/// Codec and channel check for an actual selected track. Codec-only membership is insufficient
+/// on devices whose DTS decoder stops at 5.1 or whose AAC decoder stops at stereo.
+pub fn is_dp_audio_track(codec: &str, channels: i64) -> bool {
+    crate::devcaps::caps().audio_supports(codec, channels)
 }
 
 /// Subtitle codecs Original client-renders (`ff.rs` / the track menu). This is the
@@ -174,7 +180,7 @@ pub fn link_policy(link: Option<Location>) -> LinkPolicy {
 ///   lane: MDE logged "Cannot direct stream audio stream due to codec aac when profile only
 ///   allows ac3" and re-encoded audio that the pipeline decodes natively. The list is exactly
 ///   the caps audio subset, so anything copied is something we both feed and decode; a track
-///   that genuinely needs encoding (TrueHD/DTS) goes to the first entry.
+///   that genuinely needs encoding (TrueHD or unsupported DTS) goes to the first entry.
 ///
 /// The Load payload cannot drift whatever PMS chooses: `route.rs` reads the OUTPUT codecs off
 /// the /decision response (`decision_codecs`) and describes those, not the profile's wish.
@@ -192,11 +198,19 @@ fn profile_for_delivery(caps: &crate::devcaps::Caps, delivery: TranscodeDelivery
     let (w, h) = caps.hevc_max;
     let dp_audio = &caps.audio;
     // ac3 first — the preferred ENCODE target — then the rest of the caps subset as copy lanes.
-    let target_audio = ["ac3", "eac3", "aac"]
+    let target_audio = ["ac3", "eac3", "aac", "dts"]
         .into_iter()
         .filter(|c| caps.audio_has(c))
         .collect::<Vec<_>>()
         .join(",");
+    // PMS scopes audio carried by a video profile as videoAudioCodec (Plex-for-Kodi's
+    // plexplayer.py uses this scope for audio.channels too); audioCodec is not a valid scope.
+    let audio_limits = caps.audio_channels.iter()
+        .filter(|(codec, _)| caps.audio_has(codec))
+        .map(|(codec, channels)| format!(
+            "+add-limitation(scope=videoAudioCodec&scopeName={codec}&type=upperBound&name=audio.channels&value={channels}&replace=true)"
+        ))
+        .collect::<String>();
     let target = match delivery {
         TranscodeDelivery::ProgressiveMkv => format!(
             "add-transcode-target(type=videoProfile&context=streaming&protocol=http\
@@ -221,7 +235,7 @@ fn profile_for_delivery(caps: &crate::devcaps::Caps, delivery: TranscodeDelivery
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.width&value={w}&replace=true)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.height&value={h}&replace=true)\
          +add-limitation(scope=videoCodec&scopeName=*&type=upperBound&name=video.bitDepth&value=10&replace=true)\
-         +{target}",
+         {audio_limits}+{target}",
     )
 }
 
@@ -232,6 +246,10 @@ fn profile_for(caps: &crate::devcaps::Caps) -> String {
 /// The profile for THIS device — [`profile_for`] over the boot-probed caps snapshot.
 fn profile_extra(delivery: TranscodeDelivery) -> String {
     profile_for_delivery(crate::devcaps::caps(), delivery)
+}
+
+fn forced_direct_profile() -> String {
+    format!("add-direct-play-profile(type=videoProfile&container=mkv,mp4&videoCodec=h264,hevc&audioCodec={DP_AUDIO_CODECS}&subtitleCodec={DP_SUBTITLE_CODECS})")
 }
 
 impl Client {
@@ -370,6 +388,30 @@ impl Client {
         audio_stream_id: i64,
         subtitle_stream_id: i64,
     ) -> Option<MediaContainer> {
+        self.mde_decision_with_profile(rating_key, session, audio_stream_id, subtitle_stream_id, false)
+    }
+
+    /// Strict Original override: advertise the software feed formats without device limits.
+    /// No transcode target or direct-stream alternative is offered. The caller must still reject
+    /// any verdict other than directplay; a server refusal is not permission to transcode.
+    pub fn mde_decision_forced(
+        &self,
+        rating_key: &str,
+        session: &str,
+        audio_stream_id: i64,
+        subtitle_stream_id: i64,
+    ) -> Option<MediaContainer> {
+        self.mde_decision_with_profile(rating_key, session, audio_stream_id, subtitle_stream_id, true)
+    }
+
+    fn mde_decision_with_profile(
+        &self,
+        rating_key: &str,
+        session: &str,
+        audio_stream_id: i64,
+        subtitle_stream_id: i64,
+        forced: bool,
+    ) -> Option<MediaContainer> {
         let q = QueryBuilder::new("/video/:/transcode/universal/decision")
             .str("path", &format!("/library/metadata/{rating_key}"))
             .int("mediaIndex", 0)
@@ -377,8 +419,8 @@ impl Client {
             .str("protocol", "http")
             .int("hasMDE", 1)
             .int("directPlay", 1)
-            .int("directStream", 1)
-            .int("directStreamAudio", 1)
+            .int("directStream", i64::from(!forced))
+            .int("directStreamAudio", i64::from(!forced))
             .int("mediaBufferSize", 20971)
             .str("session", session)
             .str("X-Plex-Session-Identifier", session)
@@ -390,7 +432,7 @@ impl Client {
             .str("X-Plex-Client-Profile-Name", "Generic")
             .str(
                 "X-Plex-Client-Profile-Extra",
-                &profile_extra(TranscodeDelivery::ProgressiveMkv),
+                &if forced { forced_direct_profile() } else { profile_extra(TranscodeDelivery::ProgressiveMkv) },
             );
         self.get_json(&q.build())
     }
@@ -925,6 +967,7 @@ mod tests {
                 hevc_row: (0, 0, 0),
                 vp9: true,
                 audio: "aac,ac3,eac3".into(),
+            audio_channels: Default::default(),
             },
             s.delivery,
         );
@@ -1066,10 +1109,33 @@ mod tests {
             "no subscription-free video fallback in {video:?} — a free server drops the video track");
         assert_eq!(video.first().map(String::as_str), Some("hevc"),
             "hevc must stay FIRST: order is preference, and hevc is what keeps 4K+HDR10 through a re-encode");
-        for c in super::DP_AUDIO_CODECS.split(',') {
+        for c in crate::devcaps::Caps::assumed().audio.split(',') {
             assert!(list_of(target, "audioCodec=").contains(&c.to_string()),
                 "{c} is direct-playable but absent from the target — the server would re-encode a track we decode natively");
         }
+    }
+
+    #[test]
+    fn dts_is_device_gated_and_channel_limited_in_both_profiles() {
+        let mut caps = Caps::assumed();
+        assert!(!super::profile_for(&caps).contains("dts"));
+        caps.audio.push_str(",dts");
+        caps.audio_channels.insert("dts".into(), 6);
+        let profile = super::profile_for(&caps);
+        assert!(list_of(&profile, "audioCodec=").contains(&"dts".into()));
+        assert!(list_of(target_of(&profile), "audioCodec=").contains(&"dts".into()));
+        assert!(profile.contains("scope=videoAudioCodec&scopeName=dts&type=upperBound&name=audio.channels&value=6&replace=true"));
+        assert!(!profile.contains("truehd"));
+    }
+
+    #[test]
+    fn force_profile_advertises_engine_formats_without_device_limits_or_transcode() {
+        let p = super::forced_direct_profile();
+        assert_eq!(list_of(&p, "audioCodec="), ["aac", "ac3", "eac3", "dts"]);
+        assert_eq!(list_of(&p, "videoCodec="), ["h264", "hevc"]);
+        assert!(!p.contains("add-limitation"));
+        assert!(!p.contains("transcode-target"));
+        assert!(!p.contains("truehd"));
     }
 
     /// The other side of issue #22's fallback-chain rule: on a SoC whose table has no HEVC row,
@@ -1085,6 +1151,7 @@ mod tests {
             hevc_row: (0, 0, 0),
             vp9: false,
             audio: "aac,ac3,eac3".into(),
+            audio_channels: Default::default(),
         };
         let p = super::profile_for(&caps);
         assert!(!p.contains("hevc"), "hevc must not appear anywhere in {p}");
@@ -1111,6 +1178,7 @@ mod tests {
                 hevc_row: (0, 0, 0),
                 vp9: false,
                 audio: "aac".into(),
+                audio_channels: Default::default(),
             },
         ] {
             let p = super::profile_for(&caps);
@@ -1134,6 +1202,7 @@ mod tests {
             hevc_row: (0, 0, 0),
             vp9: true,
             audio: "aac".into(),
+            audio_channels: Default::default(),
         };
         let p = super::profile_for(&caps);
         let dp = p.split("add-transcode-target").next().unwrap();

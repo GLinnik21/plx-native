@@ -30,6 +30,7 @@ pub mod chapters_panel;
 pub(crate) mod containers; // RESTRUCTURE (spec §6.2): Navigation = TabContainer → NavStack → ModalStack, the transitions, the host fold
 pub mod consts;
 pub(crate) mod decision_alert;
+pub(crate) mod decision_prompt;
 pub(crate) mod detail_layout;
 pub(crate) mod dispatch; // RESTRUCTURE spike (spec §3.3): the one frame algorithm, generic over `machine::Host`
 pub(crate) mod adapters; // RESTRUCTURE (spec §2.2): the one door out of the machine world, and its test stub

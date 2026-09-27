@@ -68,7 +68,7 @@ pub(crate) struct TrackMenuState {
 /// panel cannot distinguish from "unchanged" without knowing what the renderer currently has).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum TrackCommit {
-    Audio { ordinal: c_int, codec: String, stream_id: i64 },
+    Audio { ordinal: c_int, codec: String, stream_id: i64, channels: i64 },
     /// `sidecar_key` is `Some` when the pick is an EXTERNAL text subtitle the client can draw
     /// on direct play (`metadata::Stream::sidecar_renderable`): it has no demuxer ordinal
     /// (`render_ordinal` is -1), so the loop hands it to `player::sidecar` beside the unchanged
@@ -249,6 +249,7 @@ impl TrackMenuState {
                         ordinal: ord,
                         codec: s.codec.clone(),
                         stream_id: s.id,
+                        channels: s.channels,
                     });
                 }
             }

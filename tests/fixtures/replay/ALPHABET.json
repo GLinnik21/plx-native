@@ -1,6 +1,7 @@
 {
   "_comment": "The CLOSED ALPHABET every string value in a committed replay fixture must belong to (restructure spec §5.6 rule 2). Match literals exactly or patterns with fullmatch. Synthetic construction against tests/mock_pms.py remains required: membership is a vocabulary check, not proof of data provenance, and cannot distinguish private values coincidentally equal to allowed words/numbers. CLI, outbound guard and host tests share this policy. Add new protocol constants by source-backed name, never by harvesting an unchecked recording.",
   "_sources": {
+    "playback_settings": "plex/session.rs DirectPlayMode serializes auto/forced/disabled. screens/settings.rs supplies the added Playback destinations, detail lines and root copy.",
     "controlled_content": "app/bootstrap/effects.rs and bootstrap/stores.rs name content/metadata; metadata.rs MarkerKind/RatingArt; person.rs seed_dev_credits and filmography name the finite departments. tests/mock_pms.py builds people thumb paths, plex GUIDs from sname, two-sname mkv filenames, a four-sname tagline and en/eng/srt/mkv media values. ContentReq::PreviewStop and ContentPanel::{About,Bio} serialize preview_stop/about/bio; the other preview/panel discriminators are object keys.",
     "effect_and_machine_names": "rust-modules/src/app/recorder.rs: Recplay::effect Fx match and machine_name exhaustive MachineId match",
     "provenance": "rust-modules/src/ui/present.rs: Provenance/ResourceKind; ui/machine.rs: MachineId and derived Debug InstanceId/StoreOrd/TimerId; ui/fixture.rs: Recorder::present formats Debug. Landing(Instance(4)) is NOT that format.",
@@ -50,6 +51,15 @@
     "press phase=(idle|down|up) live=[01] active=[01] long=[01]"
   ],
   "literals": [
+    "auto",
+    "forced",
+    "disabled",
+    "Playback",
+    "Video & playback",
+    "Audio & subtitles",
+    "Default quality and Direct Play.",
+    "Language preferences synced with your Plex account.",
+    "Manage this television and your Plex profile. Language preferences sync with your Plex account; playback defaults apply to this television.",
     "preview_stop", "about", "bio", "white", "capture",
     "content", "metadata", "en", "eng", "srt", "mkv", "Credits", "Imdb",
     " ", "/10", "1080p", "14 Mar 2011", "2 hr 24 min", "7.1",

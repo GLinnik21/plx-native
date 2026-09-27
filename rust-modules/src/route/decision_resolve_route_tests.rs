@@ -956,7 +956,7 @@ fn audio_change_invalidates_a_pending_original_recovery() {
     );
     request_user_route_intent(&ps, UserRouteIntent::RecoverOriginal);
 
-    commit_audio_selection(&mut ps, 1, "aac", 99);
+    commit_audio_selection(&mut ps, 1, "aac", 99, 2);
 
     assert!(ps.auto_original.is_none());
     let action = claim_route_action().expect("the new audio track needs HLS retranscode");
@@ -1387,6 +1387,7 @@ fn a_retry_keeps_the_subtitle_offset_a_new_item_does_not() {
     crate::player::reset_subtitle();
     crate::player::set_subtitle_offset(2_000);
     let retry = RetryContext {
+            direct_play_mode: DirectPlayMode::Auto,
         resume_ns: 0,
         audio_sid: 17,
         sub_sid: 23,
@@ -1445,6 +1446,7 @@ fn a_refused_retry_keeps_its_position_and_full_request_for_the_next_quality() {
     assert_eq!(
         current_retry_context(&ps, 3_600_000_000_000),
         RetryContext {
+            direct_play_mode: DirectPlayMode::Auto,
             resume_ns: 3_600_000_000_000,
             audio_sid: 17,
             sub_sid: 23,

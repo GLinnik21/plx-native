@@ -6,7 +6,7 @@ WHY THIS EXISTS. `tests/run.py` grades the player against nine symbolic *item sh
 maps each to a ratingKey on whatever PMS the contributor owns. That mapping is the whole
 barrier to entry: the shapes include a TrueHD default with an AC-3 sibling, a Dolby Vision
 profile 8.1 base layer, a PGS bitmap subtitle track and an eight-track audio file with
-English DTS at ordinal 6. Nobody has all of that lying around, and two of them (TrueHD,
+English TrueHD at ordinal 6. Nobody has all of that lying around, and two of them (TrueHD,
 Dolby Vision) have no freely-licensed example anywhere in the world. So a contributor
 either owns an exotic library or cannot run the suite at all. This script removes that:
 it builds every shape from lavfi sources, lays them out in two Plex-scannable trees, and
@@ -163,7 +163,7 @@ ORDERING IS PART OF THE SPEC — the cases assert track POSITIONS, not just pres
 row 0 is *Off* and row r is subtitle index r-1. So:
 
  * `audio_switch_transcode` picks audio row 6 on `movie_h264_ac3_many_audio` and expects a
-   transcode, so index 6 is the ENGLISH DTS track (DTS is outside the direct-play set).
+   transcode, so index 6 is the ENGLISH TrueHD track (TrueHD is outside the direct-play set).
  * `audio_switch_native` picks audio row 1 on `episode_hevc_4k_hdr10_eac3` and expects a
    NATIVE switch, and its title says "foreign default + eng … file default picked at start".
    So index 0 is a German E-AC-3 track carrying the default disposition and index 1 is the
@@ -896,9 +896,8 @@ SHAPES = {
         # Stereo, and NO `title`. Two deliberate differences from every other shape here.
         # Stereo because this case is the mov-demuxer/ADTS-reframing path and a real-world
         # mp4 is usually 2.0 — 5.1 AAC coverage lives on episode_h264_aac — while
-        # `devcaps::audio_has` ignores the manufacturer table's channel count, so a set
-        # that advertises AAC at 2 channels would still be told to direct-play a 5.1 track
-        # and nothing in this repo would notice. No title because mp4 does not carry a
+        # Auto enforces the device table's channel ceiling, so a stereo-only AAC decoder
+        # still direct-plays this container case. No title because mp4 does not carry a
         # per-track title through this path at all: the spec used to claim one, the file
         # never had one, and verify() asserted neither.
         "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "192k", "pitch": 294,
@@ -922,7 +921,7 @@ SHAPES = {
         "duration": 120, "rate": 0.08,
         "video": {"codec": "h264", "size": "1920x1080", "crf": 25},
         # EIGHT tracks, and the ORDER is asserted: audio_switch_transcode picks row 6 and
-        # expects a transcode, so index 6 is English DTS (outside the direct-play set).
+        # expects a transcode, so index 6 is English TrueHD (outside the direct-play set).
         "audio": [
             {"codec": "ac3", "ch": 6, "lang": "eng", "br": "448k", "pitch": 200,
              "default": True, "title": "AC-3 5.1 English"},
@@ -936,8 +935,8 @@ SHAPES = {
              "title": "AC-3 5.1 Francais"},
             {"codec": "aac", "ch": 2, "lang": "deu", "br": "256k", "pitch": 450,
              "title": "AAC 2.0 Deutsch"},
-            {"codec": "dts", "ch": 6, "lang": "eng", "pitch": 500,
-             "title": "DTS 5.1 English"},
+            {"codec": "truehd", "ch": 6, "lang": "eng", "pitch": 500,
+             "title": "TrueHD 5.1 English"},
             {"codec": "vorbis", "ch": 2, "lang": "jpn", "pitch": 550,
              "title": "Vorbis 2.0 Japanese"},
         ],
@@ -1037,6 +1036,15 @@ PIPE_SHAPES = {
         "video": {"codec": "h264", "size": "1920x1080", "crf": 20},
         "audio": [{"codec": "ac3", "ch": 6, "lang": "eng", "br": "448k", "pitch": 220,
                    "default": True, "title": "AC-3 5.1 English"}],
+        "subs": [],
+    },
+    "pipe_h264_dts_1080p": {
+        "kind": "clip", "ext": "mkv",
+        "duration": PIPE_SECS, "rate": 0.06,
+        "declare": {"vcodec": "h264", "acodec": "dts", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "h264", "size": "1920x1080", "crf": 20},
+        "audio": [{"codec": "dts", "ch": 6, "lang": "eng", "br": "1411k", "pitch": 440,
+                   "default": True, "title": "DTS core 5.1 English"}],
         "subs": [],
     },
     "pipe_hevc_eac3_4k_hdr10": {
@@ -1517,6 +1525,7 @@ MBIT = {
 # over-estimates by the five tracks it does not have, which is the safe direction for a
 # disk-space warning.
 PIPE_MBIT = {
+    "pipe_h264_dts_1080p": 8.20,        # baseline picture + 1.4 Mbit/s DTS 5.1
     "pipe_h264_ac3_1080p": 7.24,        # measured, from a full 60 s build
     "pipe_hevc_eac3_4k_hdr10": 8.80,    # = episode_hevc_4k_hdr10_eac3 (hevc 4K crf 30 HDR)
     "pipe_hevc_eac3_4k_dovi_p8": 9.80,  # = movie_hevc_4k_dovi_p8

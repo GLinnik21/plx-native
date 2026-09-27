@@ -235,15 +235,27 @@ class PlaintextOnlyLan(unittest.TestCase):
                                  "uri": "http://127.0.0.1:32499", "local": True, "relay": False,
                                  "IPv6": False})
 
-    def test_serve_wires_api_v2_resources_only_in_this_mode(self):
+    def test_resource_discovery_advertises_only_the_bound_mock(self):
         pms = MockPms(Library(seed=7))
         status, ctype, body = pms.handle("GET", "/api/v2/resources")
         self.assertEqual(status, 200)
-        # unimplemented outside the mode: falls through like any other unknown plex.tv path.
-        self.assertEqual(json.loads(body), {"MediaContainer": {
-            "size": 0, "allowSync": False, "identifier": "com.plexapp.plugins.library",
-            "mediaTagPrefix": "/system/bundle/media/flags/", "mediaTagVersion": 1}})
-        self.assertEqual(pms.unknown, ["/api/v2/resources"])
+        self.assertEqual(json.loads(body), [], "an unbound fixture advertises no listener")
+        self.assertEqual(pms.unknown, [])
+        server, pms = serve(0, seed=7)
+        try:
+            status, _, body = pms.handle("GET", "/api/v2/resources")
+            self.assertEqual(status, 200)
+            resources = json.loads(body)
+            self.assertEqual(len(resources), 1)
+            self.assertEqual(resources[0]["clientIdentifier"], pms.lib.machine)
+            self.assertEqual(resources[0]["connections"], [{
+                "protocol": "http", "address": "127.0.0.1", "port": server.server_address[1],
+                "uri": f"http://127.0.0.1:{server.server_address[1]}", "local": True,
+                "relay": False, "IPv6": False,
+            }])
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_advertise_ip_none_falls_back_to_loopback_with_a_warning_when_undetectable(self):
         import ipaddress

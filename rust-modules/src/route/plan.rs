@@ -13,7 +13,7 @@ use std::sync::atomic::Ordering;
 
 use super::decision::{
     measure_remote_original, measure_remote_remux, put_selection, resolve_playqueue,
-    server_decision, ActiveEncoderState, AutomaticRouteIntent, MdeVerdict, PlayerControl,
+    server_decision, forced_server_decision, ActiveEncoderState, AutomaticRouteIntent, MdeVerdict, PlayerControl,
     ENCODER_GENERATION,
 };
 
@@ -247,7 +247,7 @@ pub(super) fn transcode_spec<'a>(
 }
 
 
-pub(crate) use crate::plex::session::PlaybackQuality as Quality;
+pub(crate) use crate::plex::session::{PlaybackQuality as Quality, DirectPlayMode};
 
 
 /// The ladder IN ORDER, best first. The ONE place row order lives, so the picker's index mapping
@@ -531,12 +531,16 @@ pub(crate) struct ResolveEnv {
     pub machine_id: String,
     pub audio_sid: i64,
     pub sub_sid: i64,
+    /// A retry carries the viewer's explicit Off as well as a positive subtitle id.
+    pub subtitle_override: Option<i64>,
     /// the loaded detail's streams when it IS this item — saves the worker a GET
     pub cached_item: Option<crate::metadata::PlayingItem>,
     /// The user's pick off the quality ladder, captured at the press like everything else here.
     /// The worker must not call [`quality`] itself for the reason this struct exists: it reads a
     /// process-global the main thread can move while the resolve is in flight.
     pub quality: Quality,
+    /// Captured with the quality preference; never re-read by a worker.
+    pub direct_play_mode: DirectPlayMode,
     /// The SOURCE's whole-stream bitrate in **kbps**, or `0` when nobody has measured it — the
     /// other half of what [`quality_policy`] needs, beside the frame size the playing-item store
     /// already carries.
@@ -640,6 +644,7 @@ pub(super) fn resolve_src_kbps(
 /// from the worker is how you reintroduce the races the audit found.
 #[derive(Default)]
 pub(crate) struct Plan {
+    pub direct_play_mode: DirectPlayMode,
     /// The server this plan was resolved against — copied straight from [`ResolveEnv::sid`], so
     /// what `apply_plan` installs as `cur_sid` is the id the request captured and not a re-read of
     /// whatever became current while the worker ran. `UNSET` only on the default `Plan` a panicking
@@ -765,6 +770,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         // carried through every exit below, the failing ones included: a plan without a server is
         // a plan `apply_plan` cannot install an honest `cur_sid` from.
         sid: env.sid,
+        direct_play_mode: env.direct_play_mode,
         part_id: part_id_of(part),
         src_vcodec: vcodec.to_string(),
         src_acodec: acodec.to_string(),
@@ -776,6 +782,12 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         source_decodable: true,
         ..Default::default()
     };
+    if env.direct_play_mode == DirectPlayMode::Disabled && rk.is_empty() {
+        plan.verdict = Some("Direct Play is disabled. This original-only stream requires Direct Play to be set to Auto.".into());
+        return plan;
+    }
+    let forced = env.direct_play_mode == DirectPlayMode::Forced;
+    let playback_quality = if forced { Quality::Original } else { env.quality };
     let client = match crate::plex::client_for(env.sid) {
         Some(c) => c,
         None => return plan,
@@ -805,6 +817,11 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         .cached_item
         .clone()
         .or_else(|| crate::metadata::fetch_playing_item(env.sid, rk));
+    if let (Some(id), Some(item)) = (env.subtitle_override, plan.playing.as_mut()) {
+        // The retry's explicit selection owns both embedded and sidecar restoration; a stale
+        // server-side selection must not turn subtitles back on after the viewer chose Off.
+        for sub in &mut item.subs { sub.selected = id > 0 && sub.id == id; }
+    }
     // Server-adjudicated: the Media Decision Engine decides direct-play vs transcode from our
     // capability profile. An unusable / unreachable `/decision` must not Original (PMS 1.43
     // 503s a Part without a registered decision); remux/re-encode still registers via a
@@ -855,7 +872,9 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     #[cfg(not(test))]
     let dv_decision = dovi.decision_now(vcodec == "hevc");
     let dv = dv_decision.presentation;
-    let video_dp = video_direct_plays(vcodec, src_w, src_h, dv, crate::devcaps::caps());
+    let video_dp = if forced { video_feed_supported(vcodec, dv) } else {
+        video_direct_plays(vcodec, src_w, src_h, dv, crate::devcaps::caps())
+    };
     // Carried to the session so the quality menu can say whether "Original" means anything for
     // this item without evaluating the gate a second time against a different set of facts.
     plan.source_decodable = video_dp;
@@ -935,6 +954,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // and PMS authority separate and permits the owner account-token fallback only for a proven
     // legacy owner session.
     let active_profile = crate::plex::session::current_snapshot();
+    let mut account_subtitles = None;
     let account_audio = match active_profile.user.as_ref() {
         Some(user) => match crate::plex::session::plex_tv_credential(user) {
             Some(credential) => {
@@ -945,13 +965,15 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
                     match crate::plex::account::AccountClient::audio_preferences(
                         &stored_session.client_id, &credential, user, active_profile.generation,
                     ) {
-                        crate::plex::account::AudioPreferencesOutcome::Available(prefs) => match prefs.language {
+                        crate::plex::account::AudioPreferencesOutcome::Available(prefs) => {
+                            account_subtitles = Some((prefs.subtitle_language.clone(), prefs.subtitle_mode, prefs.subtitle_forced));
+                            match prefs.language {
                             Some(language) => AccountAudioLanguage::Set(language),
                             None => AccountAudioLanguage::NotSet {
                                 auto_select_audio: prefs.auto_select_audio,
                                 stated_language: prefs.stated_language,
                             },
-                        },
+                        } },
                         crate::plex::account::AudioPreferencesOutcome::TimedOut =>
                             AccountAudioLanguage::TimedOut,
                         crate::plex::account::AudioPreferencesOutcome::Failed =>
@@ -966,10 +988,15 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // every audio pick below (direct play, remux, re-encode) ranks against these same prefs
     let audio_prefs = AudioLangPrefs { show: show_prefs.audio.as_deref(),
         account: account_audio.language() };
-    let audio_sel = if rk.is_empty() {
+    let audio_sel = if env.audio_sid > 0 {
+        tracks.iter().enumerate().find(|(_, t)| t.id == env.audio_sid
+            && audio_direct_plays(env.direct_play_mode, &t.codec, t.channels))
+            .map(|(i, t)| (i as i32, t.codec.to_lowercase(), t.id))
+            .or_else(|| (!forced).then(|| pick_dp_audio_pref(tracks, acodec, audio_prefs)).flatten())
+    } else if rk.is_empty() {
         None
     } else {
-        pick_dp_audio_pref(tracks, acodec, audio_prefs)
+        pick_dp_audio_mode(tracks, acodec, audio_prefs, env.direct_play_mode)
     };
     if let Some(lang) = show_prefs.audio.as_deref() {
         let hit = audio_sel
@@ -1005,7 +1032,17 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     let sub_pick = plan
         .playing
         .as_ref()
-        .and_then(|p| pick_dp_subtitle_pref(&p.subs, &show_prefs, &audio_lang));
+        .and_then(|p| {
+            let account = account_subtitles.as_ref().map(|(language, mode, forced)| SubtitleLangPrefs {
+                language: language.as_deref(), mode: *mode, forced: *forced,
+            }).unwrap_or_default();
+            if let Some(id) = env.subtitle_override {
+                p.subs.iter().position(|s| s.id == id && !s.external && embedded_subtitle_renderable(&s.codec))
+                    .and_then(|i| (id > 0).then_some((id, crate::metadata::sub_render_ordinal(&p.subs, i))))
+            } else {
+                pick_dp_subtitle_account(&p.subs, &show_prefs, account, &audio_lang)
+            }
+        });
     if sub_pick.is_some()
         && show_prefs.subtitle.is_some()
         && !plan.playing.as_ref().is_some_and(|p| p.subs.iter().any(|s| s.selected))
@@ -1037,8 +1074,8 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // Auto tentatively admits Original. A direct Remote earns that admission below with an
     // actual-file sample; Local gets it immediately, while Relay is still denied independently
     // by `link`. Fixed rungs retain their ordinary ceiling policy.
-    let tentative_quality = quality_policy(env.quality, true, env.src_kbps, src_w, src_h);
-    let mut allowed = flavors_allowed(link, tentative_quality);
+    let tentative_quality = quality_policy(playback_quality, true, env.src_kbps, src_w, src_h);
+    let mut allowed = direct_play_policy(env.direct_play_mode, flavors_allowed(link, tentative_quality));
     // MDE verdict for this resolve: Some(original)=Part.decision=directplay, Some(!original)=
     // start.mkv, None=unreachable/unusable OR never asked (gates already refused Original).
     // PMS 1.43 503s a Part GET without a registered decision, so None must never become Original.
@@ -1056,9 +1093,23 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         // TrueHD/DTS). The play-path PUT and start.mkv use `encode_audio_id`: remux still names
         // the sibling; a re-encode walks the same `audio_intents` ranking (the PMS selection, then
         // show/account language, then the direct-play pick), so 720p does not copy a foreign AC3.
-        server_decision(client, rk, &session, audio_id, subtitle_id)
+        if forced { forced_server_decision(client, rk, &session, audio_id, subtitle_id) }
+        else { server_decision(client, rk, &session, audio_id, subtitle_id) }
     };
-    let mut directplay = mde.as_ref().is_some_and(|v| v.original);
+    let mut directplay = mde.as_ref().is_some_and(|v| v.original && (!forced || !v.video_forbids_copy));
+    if forced {
+        let failure = if part.is_empty() { Some("No original media is available.") }
+            else if !streamable { Some("This original container is not supported by the playback engine.") }
+            else if !video_dp { Some("This video format is not supported by the playback engine.") }
+            else if audio_sel.is_none() && (!tracks.is_empty() || !audio_direct_plays(env.direct_play_mode, acodec, 0)) {
+                Some("This audio format is not supported by the playback engine.")
+            } else if !rk.is_empty() && !directplay { Some("The server did not authorize original playback.") }
+            else { None };
+        if let Some(failure) = failure {
+            plan.verdict = Some(format!("Force Direct Play is enabled. {failure} Return Direct Play to Auto in Settings."));
+            return plan;
+        }
+    }
     // An unreachable MDE (None after we asked, or never asked) still allows remux when the
     // video gate and link policy do. A video-stream `transcode` (bit depth, …) forbids remux.
     let mde_forbids_copy = mde.as_ref().is_some_and(|v| v.video_forbids_copy);
@@ -1078,7 +1129,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // it too: after a fixed rung with a burned subtitle, returning to Original must restore direct
     // play and the client-rendered subtitle rather than build another encoder. Remote Auto also
     // uses the candidate as the target of its throughput probes.
-    if matches!(env.quality, Quality::Auto | Quality::Original)
+    if !forced && matches!(playback_quality, Quality::Auto | Quality::Original)
         && matches!(
             location,
             Some(crate::plex::probe::Location::Local) | Some(crate::plex::probe::Location::Remote)
@@ -1175,7 +1226,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // guarding: it is the one place this function does live network I/O before that refusal
     // check, and a preview is exactly the request most likely to hit a non-direct-playable item.
     let preview_already_refused = env.preview && (!directplay || part.is_empty());
-    let decision = match (env.quality, link_kind) {
+    let decision = match (playback_quality, link_kind) {
         (Quality::Auto, Some(link)) => {
             // The probe is the only expensive input, so it is only taken where it can change the
             // answer: a direct Remote with a feasible Original. Local needs no proof and Relay
@@ -1224,11 +1275,11 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         plan.auto_bootstrap_rung = Some(decision.rung);
     }
     let auto_original = decision.as_ref().is_some_and(|d| d.original);
-    let adaptive = auto_uses_hls(env.quality, auto_original);
+    let adaptive = auto_uses_hls(playback_quality, auto_original);
     if adaptive {
         allowed = flavors_allowed(
             link,
-            quality_policy(env.quality, false, env.src_kbps, src_w, src_h),
+            quality_policy(playback_quality, false, env.src_kbps, src_w, src_h),
         );
         directplay = false;
         plan.delivery = crate::plex::TranscodeDelivery::FixedHls {
@@ -1245,8 +1296,8 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
             decision.as_ref().map(|d| d.reason),
         ));
     } else {
-        plan.ceiling = env.quality.ceiling();
-        if env.quality == Quality::Auto {
+        plan.ceiling = playback_quality.ceiling();
+        if playback_quality == Quality::Auto {
             crate::player::log(&format!(
                 "route: Auto Original — source {source_transport_kbps}kbps {src_w}x{src_h}; no video encode"
             ));
@@ -1260,11 +1311,11 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // the link's tier is not part of it.
     // A preview is direct-play or nothing: an Original→HLS rescue would turn a trailer into a
     // transcode, so its Original is never watched.
-    plan.auto_original_watched = env.quality == Quality::Auto && auto_original && !env.preview;
-    if env.quality != Quality::Auto && !tentative_quality.direct_play {
+    plan.auto_original_watched = playback_quality == Quality::Auto && auto_original && !env.preview;
+    if playback_quality != Quality::Auto && !tentative_quality.direct_play {
         crate::player::log(&format!(
             "route: quality ceiling {} — source {}kbps {src_w}x{src_h}; denying direct play + remux, re-encoding",
-            env.quality.label(),
+            playback_quality.label(),
             env.src_kbps
         ));
     }
@@ -1346,6 +1397,10 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         // session id + identity on the file GET so PMS keys the /status/sessions entry by
         // SESS (not a token= fallback), keeping the timeline correlation consistent.
         plan.url = client.direct_play_url(part, &session).to_url();
+        return plan;
+    }
+    if forced {
+        plan.verdict = Some("Force Direct Play could not open the original. Return Direct Play to Auto in Settings.".into());
         return plan;
     }
     // Transcode OR container-remux, both served via start.mkv. If the SOURCE video is
@@ -1537,7 +1592,7 @@ fn account_audio_language_log(
                 lang_matches(lang, &track.lang_code)
             };
             let direct_playable_match = tracks.iter().any(|track| {
-                matching_track(track) && crate::plex::is_dp_audio(&track.codec.to_lowercase())
+                matching_track(track) && crate::plex::is_dp_audio_track(&track.codec, track.channels)
             });
             let outcome = if picked_language {
                 "playing that track"
@@ -1613,7 +1668,7 @@ fn audio_intents<'a>(tracks: &[crate::metadata::Stream], prefs: AudioLangPrefs<'
 /// timeline can report the truth. [`audio_intents`] ranks what to honour; this takes the first
 /// entry it can carry:
 ///   - [`AudioIntent::Selection`]: that track when it is direct-playable, else a direct-playable track
-///     in ITS language (an English DTS picked on a phone plays as the English AC3 beside it, not
+///     in ITS language (an unsupported English DTS pick plays as the English AC3 beside it, not
 ///     as the default dub) — the Load payload uses THAT track's codec so there is no mismatch;
 ///   - [`AudioIntent::Language`]: the first direct-playable track in it;
 ///   - [`AudioIntent::FileDefault`]: the file's flagged default track if its codec
@@ -1650,7 +1705,30 @@ pub(super) fn pick_dp_audio_pref(
     default_acodec: &str,
     prefs: AudioLangPrefs<'_>,
 ) -> Option<(i32, String, i64)> {
-    let dp = crate::plex::is_dp_audio;
+    pick_dp_audio_mode(tracks, default_acodec, prefs, DirectPlayMode::Auto)
+}
+
+pub(super) fn audio_direct_plays(mode: DirectPlayMode, codec: &str, channels: i64) -> bool {
+    if mode == DirectPlayMode::Forced {
+        crate::plex::DP_AUDIO_CODECS.split(',').any(|c| c.eq_ignore_ascii_case(codec))
+    } else {
+        crate::plex::is_dp_audio_track(codec, channels)
+    }
+}
+
+fn pick_dp_audio_mode(
+    tracks: &[crate::metadata::Stream], default_acodec: &str,
+    prefs: AudioLangPrefs<'_>, mode: DirectPlayMode,
+) -> Option<(i32, String, i64)> {
+    pick_dp_audio_eligible(tracks, default_acodec, prefs,
+        |codec, channels| audio_direct_plays(mode, codec, channels))
+}
+
+fn pick_dp_audio_eligible(
+    tracks: &[crate::metadata::Stream], default_acodec: &str, prefs: AudioLangPrefs<'_>,
+    eligible: impl Fn(&str, i64) -> bool,
+) -> Option<(i32, String, i64)> {
+    let dp = |codec: &str| eligible(codec, 0);
     if tracks.is_empty() {
         // no track info — fall back to the codec-default (or transcode if that isn't DP)
         return if dp(default_acodec) {
@@ -1660,7 +1738,7 @@ pub(super) fn pick_dp_audio_pref(
         };
     }
     let pick = |i: usize| (i as i32, tracks[i].codec.to_lowercase(), tracks[i].id);
-    let dp_at = |s: &crate::metadata::Stream| dp(&s.codec.to_lowercase());
+    let dp_at = |s: &crate::metadata::Stream| eligible(&s.codec, s.channels);
     let honoured = audio_intents(tracks, prefs).into_iter().find_map(|intent| match intent {
         AudioIntent::Selection(i) if dp_at(&tracks[i]) => Some(i),
         AudioIntent::Selection(i) => tracks
@@ -1675,54 +1753,204 @@ pub(super) fn pick_dp_audio_pref(
     if let Some(i) = honoured {
         return Some(pick(i));
     }
-    if dp(default_acodec) && !tracks.iter().any(|s| s.default) {
-        // Media[0].audioCodec is DP but no stream carries the default flag — codec-match
-        return Some((-1, default_acodec.to_string(), 0));
+    if !tracks.iter().any(|s| s.default) {
+        // Once PMS supplied tracks, their concrete channel count outranks the codec-only
+        // Media default. Never erase a known 8-channel refusal by rechecking it as unknown/0.
+        if let Some(i) = tracks.iter().position(|s| s.codec.eq_ignore_ascii_case(default_acodec) && dp_at(s)) {
+            return Some(pick(i));
+        }
     }
     // any direct-playable track (smart direct-play over a non-DP default)
     tracks.iter().position(dp_at).map(pick)
 }
 
-/// Every spelling of each language a Plex language setting offers (its `enumValues` in
-/// `docs/plex-openapi.json`): the two-letter tag, then the bibliographic and terminology
-/// three-letter codes, because files carry either.
+/// ISO 639-1 / 639-2 bibliographic and terminology spellings from Debian iso-codes:
+/// https://salsa.debian.org/iso-codes-team/iso-codes/-/raw/main/data/iso_639-2.json
+/// (retrieved 2026-09-27). Plex preferences use 639-1; PMS commonly uses either 639-2 form.
 const LANG_SPELLINGS: &[&[&str]] = &[
+    &["aa", "aar"],
+    &["ab", "abk"],
+    &["af", "afr"],
+    &["ak", "aka"],
+    &["am", "amh"],
     &["ar", "ara"],
+    &["an", "arg"],
+    &["as", "asm"],
+    &["av", "ava"],
+    &["ae", "ave"],
+    &["ay", "aym"],
+    &["az", "aze"],
+    &["ba", "bak"],
+    &["bm", "bam"],
+    &["be", "bel"],
+    &["bn", "ben"],
+    &["bi", "bis"],
+    &["bo", "bod", "tib"],
+    &["bs", "bos"],
+    &["br", "bre"],
     &["bg", "bul"],
     &["ca", "cat"],
-    &["zh", "chi", "zho"],
-    &["hr", "hrv", "scr"],
-    &["cs", "cze", "ces"],
+    &["cs", "ces", "cze"],
+    &["ch", "cha"],
+    &["ce", "che"],
+    &["cu", "chu"],
+    &["cv", "chv"],
+    &["kw", "cor"],
+    &["co", "cos"],
+    &["cr", "cre"],
+    &["cy", "cym", "wel"],
     &["da", "dan"],
-    &["nl", "dut", "nld"],
+    &["de", "deu", "ger"],
+    &["dv", "div"],
+    &["dz", "dzo"],
+    &["el", "ell", "gre"],
     &["en", "eng"],
+    &["eo", "epo"],
     &["et", "est"],
+    &["eu", "eus", "baq"],
+    &["ee", "ewe"],
+    &["fo", "fao"],
+    &["fa", "fas", "per"],
+    &["fj", "fij"],
     &["fi", "fin"],
-    &["fr", "fre", "fra"],
-    &["de", "ger", "deu"],
-    &["el", "gre", "ell"],
+    &["fr", "fra", "fre"],
+    &["fy", "fry"],
+    &["ff", "ful"],
+    &["gd", "gla"],
+    &["ga", "gle"],
+    &["gl", "glg"],
+    &["gv", "glv"],
+    &["gn", "grn"],
+    &["gu", "guj"],
+    &["ht", "hat"],
+    &["ha", "hau"],
     &["he", "heb"],
+    &["hz", "her"],
     &["hi", "hin"],
+    &["ho", "hmo"],
+    &["hr", "hrv", "scr"],
     &["hu", "hun"],
+    &["hy", "hye", "arm"],
+    &["ig", "ibo"],
+    &["io", "ido"],
+    &["ii", "iii"],
+    &["iu", "iku"],
+    &["ie", "ile"],
+    &["ia", "ina"],
     &["id", "ind"],
+    &["ik", "ipk"],
+    &["is", "isl", "ice"],
     &["it", "ita"],
+    &["jv", "jav"],
     &["ja", "jpn"],
+    &["kl", "kal"],
+    &["kn", "kan"],
+    &["ks", "kas"],
+    &["ka", "kat", "geo"],
+    &["kr", "kau"],
+    &["kk", "kaz"],
+    &["km", "khm"],
+    &["ki", "kik"],
+    &["rw", "kin"],
+    &["ky", "kir"],
+    &["kv", "kom"],
+    &["kg", "kon"],
     &["ko", "kor"],
+    &["kj", "kua"],
+    &["ku", "kur"],
+    &["lo", "lao"],
+    &["la", "lat"],
     &["lv", "lav"],
+    &["li", "lim"],
+    &["ln", "lin"],
     &["lt", "lit"],
-    &["nb", "no", "nob", "nor"],
-    &["fa", "per", "fas"],
+    &["lb", "ltz"],
+    &["lu", "lub"],
+    &["lg", "lug"],
+    &["mh", "mah"],
+    &["ml", "mal"],
+    &["mr", "mar"],
+    &["mk", "mkd", "mac"],
+    &["mg", "mlg"],
+    &["mt", "mlt"],
+    &["mn", "mon"],
+    &["mi", "mri", "mao"],
+    &["ms", "msa", "may"],
+    &["my", "mya", "bur"],
+    &["na", "nau"],
+    &["nv", "nav"],
+    &["nr", "nbl"],
+    &["nd", "nde"],
+    &["ng", "ndo"],
+    &["ne", "nep"],
+    &["nl", "nld", "dut"],
+    &["nn", "nno"],
+    &["nb", "nob"],
+    &["no", "nor", "nb", "nob"],
+    &["ny", "nya"],
+    &["oc", "oci"],
+    &["oj", "oji"],
+    &["or", "ori"],
+    &["om", "orm"],
+    &["os", "oss"],
+    &["pa", "pan"],
+    &["pi", "pli"],
     &["pl", "pol"],
     &["pt", "por"],
-    &["ro", "rum", "ron"],
+    &["ps", "pus"],
+    &["qu", "que"],
+    &["rm", "roh"],
+    &["ro", "ron", "rum"],
+    &["rn", "run"],
     &["ru", "rus"],
-    &["sk", "slo", "slk"],
+    &["sg", "sag"],
+    &["sa", "san"],
+    &["si", "sin"],
+    &["sk", "slk", "slo"],
+    &["sl", "slv"],
+    &["se", "sme"],
+    &["sm", "smo"],
+    &["sn", "sna"],
+    &["sd", "snd"],
+    &["so", "som"],
+    &["st", "sot"],
     &["es", "spa"],
+    &["sq", "sqi", "alb"],
+    &["sc", "srd"],
+    &["sr", "srp"],
+    &["ss", "ssw"],
+    &["su", "sun"],
+    &["sw", "swa"],
     &["sv", "swe"],
+    &["ty", "tah"],
+    &["ta", "tam"],
+    &["tt", "tat"],
+    &["te", "tel"],
+    &["tg", "tgk"],
+    &["tl", "tgl"],
     &["th", "tha"],
+    &["ti", "tir"],
+    &["to", "ton"],
+    &["tn", "tsn"],
+    &["ts", "tso"],
+    &["tk", "tuk"],
     &["tr", "tur"],
+    &["tw", "twi"],
+    &["ug", "uig"],
     &["uk", "ukr"],
+    &["ur", "urd"],
+    &["uz", "uzb"],
+    &["ve", "ven"],
     &["vi", "vie"],
+    &["vo", "vol"],
+    &["wa", "wln"],
+    &["wo", "wol"],
+    &["xh", "xho"],
+    &["yi", "yid"],
+    &["yo", "yor"],
+    &["za", "zha"],
+    &["zh", "zho", "chi"],
+    &["zu", "zul"],
 ];
 
 /// Do two language tags name the same language? Either side may be a Plex preference
@@ -1747,7 +1975,7 @@ pub(super) fn lang_matches(a: &str, b: &str) -> bool {
 /// by an encoder instead of a direct play (the first entry with a usable id wins).
 ///
 /// A remux COPIES, so this is the smart-DP sibling (`dp_audio_id`) — putting a selected
-/// TrueHD/DTS track would ship audio the TV cannot decode. `env_audio_sid` is the session/retry
+/// TrueHD or unsupported DTS track would ship audio the TV cannot decode. `env_audio_sid` is the session/retry
 /// pick and wins on re-encode when set, including a remux leftover sibling (mid-play quality drop
 /// keeps what is already playing); a cold play zeros it (`request_play`). Otherwise:
 ///   - [`AudioIntent::Selection`]: that track itself — a re-encode can transcode a selected DTS to
@@ -1789,6 +2017,14 @@ fn encode_audio_id(
 }
 
 
+/// Whether the client can render this embedded subtitle codec.
+fn embedded_subtitle_renderable(codec: &str) -> bool {
+    // Advertised bitmap/ASS/text codecs plus ff::sub_kind's raw UTF-8 packet formats.
+    crate::plex::is_dp_subtitle(codec) || matches!(codec,
+        "vplayer" | "pjs" | "jacosub" | "microdvd" | "sami" | "realtext" |
+        "subviewer" | "subviewer1" | "stl" | "mpl2")
+}
+
 /// The subtitle to turn ON at the start of a DIRECT-PLAY, from the server's own per-part
 /// selection — returning (stream id, embedded-subtitle ordinal for the client renderer), or
 /// None to start with subtitles off (the shipped behaviour when the server has no selection).
@@ -1816,8 +2052,8 @@ fn encode_audio_id(
 ///   - this is the direct-play path only. The transcode path keeps PUTting `subtitleStreamID=0`
 ///     (subs off) as before: honouring a selection there means a server-side BURN, i.e. a
 ///     re-encode carrying a picture-quality cost, which is a trade to put behind the settings
-///     surface this app does not have yet rather than to make silently at every play. Once a
-///     direct-played item DOES go to the transcoder mid-session (a DTS/TrueHD audio pick), the
+///     surface explicitly rather than to make silently at every play. Once a
+///     direct-played item DOES go to the transcoder mid-session (an unsupported DTS/TrueHD audio pick), the
 ///     seeded `cur_sub_sid` rides along, so the subtitle already on screen keeps burning. Note the
 ///     read-back is therefore ONE-WAY on that path: an item that starts as a transcode still PUTs
 ///     `subtitleStreamID=0`, which not only suppresses the burn but CLEARS the server's selection
@@ -1829,7 +2065,7 @@ pub(super) fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64,
     // timeline report key on, so rendering a stream we cannot NAME would show a subtitle while
     // the menu says Off. (`ord < 0` is unreachable through the `!external` filter above — it is
     // kept so a change on either side degrades to "off" instead of feeding the renderer a -1.)
-    if ord < 0 || subs[i].id <= 0 {
+    if ord < 0 || subs[i].id <= 0 || !embedded_subtitle_renderable(&subs[i].codec) {
         return None;
     }
     Some((subs[i].id, ord))
@@ -1860,24 +2096,26 @@ fn mde_subtitle_id_of(subs: &[crate::metadata::Stream], pick: Option<(i64, i32)>
 }
 
 
-/// [`pick_dp_subtitle`] plus the SHOW's subtitle settings (`subtitleLanguage` + `subtitleMode`),
-/// returning (stream id, embedded ordinal) of the subtitle a DIRECT PLAY starts with.
-///
-/// The server's own per-part selection still wins, and ANY selected subtitle — a sidecar
-/// included — means someone chose, so the show's default stays out of it. Otherwise, with a
-/// preferred subtitle language set:
-///   - mode 2, **always enabled**: a subtitle in that language is turned on;
-///   - mode 1, **shown with foreign audio**: turned on only when the audio that will play is NOT
-///     in that language (`audio_lang`);
-///   - mode 0 (manual) and -1 (account default — on plex.tv, which this client does not read):
-///     nothing, as before.
-/// Among EMBEDDED tracks in the language (a sidecar is not client-renderable on direct play): a
-/// full track that is not SDH first, then any full track, then a forced one. Direct play only — a
-/// transcode keeps subtitles off, as it always has (turning one on there means a burn).
+/// Account subtitle defaults; each explicit show field overrides its inherited counterpart.
+/// PMS per-part selection always wins. Automatic picks stay embedded/client-rendered: selecting
+/// an account default never requests a subtitle burn on the transcode path.
+#[derive(Clone, Copy, Default)]
+pub(super) struct SubtitleLangPrefs<'a> {
+    pub language: Option<&'a str>,
+    pub mode: i64,
+    pub forced: i64,
+}
+
+#[cfg(test)]
 pub(super) fn pick_dp_subtitle_pref(
-    subs: &[crate::metadata::Stream],
-    prefs: &crate::plex::ShowLangPrefs,
-    audio_lang: &str,
+    subs: &[crate::metadata::Stream], prefs: &crate::plex::ShowLangPrefs, audio_lang: &str,
+) -> Option<(i64, i32)> {
+    pick_dp_subtitle_account(subs, prefs, SubtitleLangPrefs::default(), audio_lang)
+}
+
+fn pick_dp_subtitle_account(
+    subs: &[crate::metadata::Stream], prefs: &crate::plex::ShowLangPrefs,
+    account: SubtitleLangPrefs<'_>, audio_lang: &str,
 ) -> Option<(i64, i32)> {
     if let Some(pick) = pick_dp_subtitle(subs) {
         return Some(pick);
@@ -1885,8 +2123,9 @@ pub(super) fn pick_dp_subtitle_pref(
     if subs.iter().any(|s| s.selected) {
         return None;
     }
-    let lang = prefs.subtitle.as_deref()?;
-    let want = match prefs.subtitle_mode {
+    let mode = if prefs.subtitle_mode == -1 { account.mode } else { i64::from(prefs.subtitle_mode) };
+    let lang = prefs.subtitle.as_deref().or(account.language)?;
+    let want = match mode {
         2 => true,
         1 => !audio_lang.is_empty() && !lang_matches(lang, audio_lang),
         _ => false,
@@ -1898,16 +2137,34 @@ pub(super) fn pick_dp_subtitle_pref(
         let ord = crate::metadata::sub_render_ordinal(subs, i);
         (ord >= 0 && subs[i].id > 0).then_some((subs[i].id, ord))
     };
+    let prefer_forced = account.forced == 1 || account.forced == 2;
     let tiers: [&dyn Fn(&crate::metadata::Stream) -> bool; 3] = [
-        &|s| !s.forced && !s.sdh,
-        &|s| !s.forced,
+        &|s| s.forced == prefer_forced && !s.sdh,
+        &|s| s.forced == prefer_forced,
         &|_| true,
     ];
     tiers.iter().find_map(|tier| {
         (0..subs.len())
-            .filter(|&i| !subs[i].external && lang_matches(lang, &subs[i].lang_code) && tier(&subs[i]))
+            .filter(|&i| !subs[i].external && embedded_subtitle_renderable(&subs[i].codec)
+                && lang_matches(lang, &subs[i].lang_code)
+                && (account.forced != 2 || subs[i].forced)
+                && (account.forced != 3 || !subs[i].forced)
+                && tier(&subs[i]))
             .find_map(embedded)
     })
+}
+
+/// Software feed formats and Dolby Vision declaration support, independent of device limits.
+pub(super) fn video_feed_supported(vcodec: &str, dv: crate::metadata::DvPresentation) -> bool {
+    matches!(vcodec, "h264" | "hevc") && dv.refusal().is_none()
+}
+
+pub(super) fn direct_play_policy(mode: DirectPlayMode, policy: crate::plex::LinkPolicy) -> crate::plex::LinkPolicy {
+    match mode {
+        DirectPlayMode::Auto => policy,
+        DirectPlayMode::Forced => crate::plex::LinkPolicy { direct_play: true, remux: false },
+        DirectPlayMode::Disabled => crate::plex::LinkPolicy { direct_play: false, remux: policy.remux },
+    }
 }
 
 /// PURE: the local direct-play VIDEO test — the codec, the source's stated frame size and its
@@ -2015,7 +2272,7 @@ pub(crate) fn playback_preview_of(
     let video = video_direct_plays(vcodec, width, height, dv, crate::devcaps::caps());
     let audio = audio_streams
         .iter()
-        .any(|a| crate::plex::is_dp_audio(&a.codec));
+        .any(|a| crate::plex::is_dp_audio_track(&a.codec, a.channels));
     // Mirrors `build_stream`'s own ladder: the video gate decides whether an ENCODER runs at all,
     // and only once it has passed do the container and the audio decide between pulling the file
     // ourselves and asking the server to repackage it.

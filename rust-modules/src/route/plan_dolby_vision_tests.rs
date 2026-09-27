@@ -14,6 +14,7 @@ fn p8_without_confirmed_dv_support_uses_base_layer() {
         hevc_row: (0, 0, 0),
         vp9: false,
         audio: "aac,ac3,eac3".into(),
+        audio_channels: Default::default(),
     };
     for bl_compat in [1, 2, 4] {
         let dovi = Dovi {
@@ -49,6 +50,7 @@ fn p5_without_confirmed_dv_support_requires_video_encode() {
         hevc_row: (0, 0, 0),
         vp9: false,
         audio: "aac,ac3,eac3".into(),
+        audio_channels: Default::default(),
     };
     for capability in [
         crate::webos::caps::DvCapability::Unknown,
@@ -135,6 +137,7 @@ fn a_profile_5_source_does_not_direct_play_undeclared() {
         hevc_row: (0, 0, 0),
         vp9: false,
         audio: "aac,ac3,eac3".into(),
+        audio_channels: Default::default(),
     };
     // the live P5 item's own shape: 3840x1602 hevc, well inside the bound
     assert!(
@@ -173,6 +176,7 @@ fn declaring_dolby_vision_inverts_the_profile_5_refusal() {
         hevc_row: (0, 0, 0),
         vp9: false,
         audio: "aac,ac3,eac3".into(),
+        audio_channels: Default::default(),
     };
     let dv = p5().presentation(DECLARED, crate::webos::caps::DvCapability::Supported, true);
     assert!(
@@ -211,6 +215,7 @@ fn a_dual_layer_profile_7_source_does_not_direct_play() {
         hevc_row: (0, 0, 0),
         vp9: false,
         audio: "eac3".into(),
+        audio_channels: Default::default(),
     };
     // and it is refused in BOTH worlds: no payload key can hand the pipeline a layer we do
     // not feed it, so arming the trigger must not open this gate the way it opens P5's
@@ -246,6 +251,7 @@ fn profile_8_and_plain_files_are_unaffected() {
         hevc_row: (0, 0, 0),
         vp9: false,
         audio: "aac,ac3,eac3".into(),
+        audio_channels: Default::default(),
     };
     for signal in [SILENT, DECLARED] {
         assert!(
@@ -392,6 +398,7 @@ fn the_direct_play_gate_and_the_payload_node_can_never_disagree() {
         hevc_row: (0, 0, 0),
         vp9: false,
         audio: "aac,ac3,eac3".into(),
+        audio_channels: Default::default(),
     };
     for capability in [
         crate::webos::caps::DvCapability::Unknown,
@@ -535,6 +542,7 @@ fn a_source_beyond_the_device_bound_does_not_direct_play() {
         hevc_row: (0, 0, 0),
         vp9: false,
         audio: "aac,ac3,eac3".into(),
+        audio_channels: Default::default(),
     };
     // the codec agrees; the frame size must still refuse — on either codec
     assert!(!video_direct_plays(
@@ -580,6 +588,7 @@ fn unknown_dimensions_fail_open_and_the_codec_half_still_gates() {
         hevc_row: (0, 0, 0),
         vp9: false,
         audio: "aac".into(),
+        audio_channels: Default::default(),
     };
     assert!(video_direct_plays(
         "h264",
