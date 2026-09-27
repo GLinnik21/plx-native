@@ -2,6 +2,14 @@
 nanosvg (src/svg.c) has no <mask>/<clipPath>, so the knockout and the badge's cut-through mark are
 computed here as polygon booleans and emitted as one even-odd path per icon.
 
+The polygon booleans are Shapely/GEOS, and their output is not guaranteed stable across GEOS
+versions (vertex order, collinear-point handling). The COMMITTED SVGs under assets/icons/ are the
+source of truth, not a from-scratch regeneration — generated with Shapely 2.0.7 / GEOS 3.11.4,
+which reproduces them byte for byte (verified 2026-09-28: `cmp` on all twelve after a fresh
+regenerate into a scratch directory). Regenerating with a different GEOS is not expected to match
+byte for byte, and a mismatch alone is not evidence anything is wrong — diff the rendered shape,
+not the path data.
+
 Regenerate with: python3 tools/readout-glyphs.py assets/icons"""
 import math, re, sys, os
 from shapely.geometry import LineString, LinearRing, Point, Polygon, MultiPolygon
