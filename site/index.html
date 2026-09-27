@@ -5,13 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="A fast, native Plex client for LG webOS TVs (4.0+). Smooth browsing when the official Plex app feels slow on your LG TV. Free and open source, no root."
+      content="PlxNative is an independent, native Plex client for LG webOS TVs (4.0+): a fast, fluid interface for your Plex Media Server. Open source, no root required."
     />
     <meta name="robots" content="index,follow,max-image-preview:large" />
     <title>PlxNative — Native Plex Client for LG webOS TVs</title>
     <link rel="canonical" href="https://plxnative.com/" />
-    <link rel="icon" type="image/png" href="assets/logo-master.png" />
-    <link rel="apple-touch-icon" href="assets/logo-master.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="48x48" href="icons/favicon-48.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png" />
     <meta name="theme-color" content="#202022" />
 
     <!-- Link previews (forums, messengers, social). The card is rendered from site/og/card.html
@@ -22,7 +23,7 @@
     <meta property="og:title" content="PlxNative — Native Plex Client for LG webOS TVs" />
     <meta
       property="og:description"
-      content="A fast, native Plex client for LG webOS TVs (4.0+). Smooth browsing when the official Plex app feels slow on your LG TV. Free and open source, no root."
+      content="PlxNative is an independent, native Plex client for LG webOS TVs (4.0+): a fast, fluid interface for your Plex Media Server. Open source, no root required."
     />
     <meta property="og:image" content="https://plxnative.com/media/og-card.jpg" />
     <meta property="og:image:type" content="image/jpeg" />
@@ -34,7 +35,7 @@
     <meta name="twitter:title" content="PlxNative — Native Plex Client for LG webOS TVs" />
     <meta
       name="twitter:description"
-      content="A fast, native Plex client for LG webOS TVs (4.0+). Smooth browsing when the official Plex app feels slow on your LG TV. Free and open source, no root."
+      content="PlxNative is an independent, native Plex client for LG webOS TVs (4.0+): a fast, fluid interface for your Plex Media Server. Open source, no root required."
     />
     <meta name="twitter:image" content="https://plxnative.com/media/og-card.jpg" />
     <meta name="twitter:image:alt" content="PlxNative home screen on an LG TV, next to the headline: Plex that feels fast on LG TVs." />
@@ -42,12 +43,18 @@
     <!-- The one custom font the app UI mirrors on the site (see @font-face in styles.css);
          preloading the regular weight avoids a flash of fallback text on first paint. -->
     <link rel="preload" href="fonts/appfont.ttf" as="font" type="font/ttf" crossorigin />
+    <!-- The demo video's poster (feel-poster*.jpg) is a CSS background-image on
+         `.demo-card video` (styles.css), not the `poster` attribute, so it can vary by
+         viewport — the preload scanner cannot discover a background-image on its own, and this
+         is very likely the mobile LCP element, so it is spelled out here instead. -->
+    <link rel="preload" href="media/feel-poster-narrow.jpg" as="image" media="(max-width: 759px)" fetchpriority="high" />
+    <link rel="preload" href="media/feel-poster.jpg" as="image" media="(min-width: 760px)" fetchpriority="high" />
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
         "@type": "SoftwareApplication",
         "name": "PlxNative",
-        "description": "A fast, native Plex client for LG webOS TVs (4.0+). Smooth browsing when the official Plex app feels slow on your LG TV. Free and open source, no root.",
+        "description": "PlxNative is an independent, native Plex client for LG webOS TVs (4.0+): a fast, fluid interface for your Plex Media Server. Open source, no root required.",
         "operatingSystem": "LG webOS 4.0 or later",
         "applicationCategory": "MultimediaApplication",
         "offers": {
@@ -132,7 +139,7 @@
         <header class="site-header">
           <div class="header-bar">
             <a class="brand" href="#top" aria-label="PlxNative home">
-              <span class="brand-mark"><img src="assets/logo-master.png" alt="" /></span>
+              <span class="brand-mark"><img src="icons/brand-mark.png" alt="" width="22" height="22" /></span>
               <span class="brand-name">PlxNative</span>
             </a>
             <nav class="site-nav" aria-label="Primary navigation">
@@ -201,7 +208,6 @@
                     disablepictureinpicture
                     disableremoteplayback
                     preload="none"
-                    poster="media/feel-poster.jpg"
                     width="1920"
                     height="1080"
                   >
@@ -250,7 +256,9 @@
             </picture>
             <div data-reveal="media" class="closeup-box closeup-box--glass">
               <picture>
+                <source media="(max-width: 759px)" srcset="media/closeup-glass-narrow.webp" type="image/webp" />
                 <source media="(max-width: 759px)" srcset="media/closeup-glass-narrow.jpg" />
+                <source srcset="media/closeup-glass.webp" type="image/webp" />
                 <img
                   src="media/closeup-glass.jpg"
                   alt="Close-up of the translucent tab bar blurring the posters behind it"
@@ -269,12 +277,17 @@
             <figure class="closeup-figure">
               <img class="closeup-glow" src="media/closeup-tiles-glow.png" alt="" aria-hidden="true" loading="lazy" decoding="async" />
               <div data-reveal="media" class="closeup-box closeup-box--tiles">
-                <img
-                  src="media/closeup-tiles.jpg"
-                  alt="Close-up of a poster row with the focused tile raised above its neighbours"
-                  loading="lazy"
-                  decoding="async"
-                />
+                <picture>
+                  <source media="(max-width: 759px)" srcset="media/closeup-tiles-narrow.webp" type="image/webp" />
+                  <source media="(max-width: 759px)" srcset="media/closeup-tiles-narrow.jpg" />
+                  <source srcset="media/closeup-tiles.webp" type="image/webp" />
+                  <img
+                    src="media/closeup-tiles.jpg"
+                    alt="Close-up of a poster row with the focused tile raised above its neighbours"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                </picture>
               </div>
               <figcaption data-reveal>
                 <h3>Designed for ten feet away</h3>
@@ -284,12 +297,17 @@
             <figure class="closeup-figure">
               <img class="closeup-glow" src="media/closeup-player-glow.png" alt="" aria-hidden="true" loading="lazy" decoding="async" />
               <div data-reveal="media" class="closeup-box closeup-box--player">
-                <img
-                  src="media/closeup-player.jpg"
-                  alt="Close-up of the Up Next card with the Next Episode countdown button"
-                  loading="lazy"
-                  decoding="async"
-                />
+                <picture>
+                  <source media="(max-width: 759px)" srcset="media/closeup-player-narrow.webp" type="image/webp" />
+                  <source media="(max-width: 759px)" srcset="media/closeup-player-narrow.jpg" />
+                  <source srcset="media/closeup-player.webp" type="image/webp" />
+                  <img
+                    src="media/closeup-player.jpg"
+                    alt="Close-up of the Up Next card with the Next Episode countdown button"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                </picture>
               </div>
               <figcaption data-reveal>
                 <h3>Ready for the next episode</h3>

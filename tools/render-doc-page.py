@@ -64,7 +64,10 @@ REPO_ROOT = SCRIPT_DIR.parent
 PAGES = {
     "install-and-verify.md": {
         "route": "/install/",
-        "title": "Installing PlxNative — PlxNative",
+        "title": "Install PlxNative on LG webOS TV — No Root Required",
+        # Short, sensible label for the breadcrumb rich result (not derived from the SEO
+        # title above by splitting on " — ": that title no longer ends in "PlxNative").
+        "name": "Install",
         "description": (
             "Step-by-step guide to installing PlxNative on an LG webOS TV with Developer Mode "
             "or Homebrew Channel. No root required."
@@ -72,7 +75,8 @@ PAGES = {
     },
     "troubleshooting.md": {
         "route": "/troubleshooting/",
-        "title": "Troubleshooting — PlxNative",
+        "title": "PlxNative Troubleshooting — LG webOS Installation & Playback",
+        "name": "Troubleshooting",
         "description": (
             "Fixes for common PlxNative problems on LG webOS TVs: the app tile doing nothing, "
             "an expired Developer Mode session, sign-in, and playback failures."
@@ -192,7 +196,9 @@ PAGE_TEMPLATE = """<!doctype html>
     <meta name="robots" content="index,follow,max-image-preview:large" />
     <title>{title}</title>
     <link rel="canonical" href="{canonical}" />
-    <link rel="icon" type="image/png" href="{root}assets/logo-master.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="{root}icons/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="48x48" href="{root}icons/favicon-48.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="{root}icons/apple-touch-icon.png" />
     <meta name="theme-color" content="#202022" />
     <meta property="og:type" content="article" />
     <meta property="og:site_name" content="PlxNative" />
@@ -225,7 +231,7 @@ PAGE_TEMPLATE = """<!doctype html>
         <header class="site-header">
           <div class="header-bar">
             <a class="brand" href="{root}" aria-label="Back to PlxNative">
-              <span class="brand-mark"><img src="{root}assets/logo-master.png" alt="" /></span>
+              <span class="brand-mark"><img src="{root}icons/brand-mark.png" alt="" width="22" height="22" /></span>
               <span class="brand-name"><span class="back-arrow" aria-hidden="true">&larr;</span> PlxNative</span>
             </a>
             <nav class="site-nav" aria-label="Primary navigation">
@@ -263,9 +269,9 @@ PAGE_TEMPLATE = """<!doctype html>
 
 
 def breadcrumb_json(page: dict, canonical: str) -> str:
-    """Home -> this page, for the rich-result breadcrumb trail. Page titles are all
-    "<name> — PlxNative"; the crumb wants just <name>."""
-    name = page["title"].split(" — ", 1)[0]
+    """Home -> this page, for the rich-result breadcrumb trail. `name` is the page's own
+    short label (PAGES[...]["name"]), not derived from the longer SEO `title`."""
+    name = page["name"]
     data = {
         "@context": "https://schema.org",
         "@type": "BreadcrumbList",
@@ -284,7 +290,7 @@ def article_json(basename: str, page: dict, canonical: str, headings: list[tuple
     """TechArticle for most docs; install-and-verify.md really is a numbered walkthrough (its
     own top-level headings are "1. ...", "2. ..."), so it gets HowTo with those as steps instead
     — Google's own guidance is HowTo only for content that is actually sequential steps."""
-    name = page["title"].split(" — ", 1)[0]
+    name = page["title"]
     steps = [
         {"@type": "HowToStep", "name": m.group(1), "url": f"{canonical}#{slug}"}
         for level, slug, text in headings

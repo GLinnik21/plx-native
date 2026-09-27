@@ -14,7 +14,6 @@ on:
       - "docs/troubleshooting.md"
       - "tools/render-doc-page.py"
       - "tools/requirements-docs.txt"
-      - "assets/logo-master.png"
       - "pkg/appfont.ttf"
       - "pkg/appfont-bold.ttf"
       - ".github/workflows/pages.yml"
@@ -51,7 +50,7 @@ jobs:
           set -euo pipefail
 
           mkdir -p _site/media
-          mkdir -p _site/assets
+          mkdir -p _site/icons
           mkdir -p _site/docs/screenshots
           mkdir -p _site/fonts
           mkdir -p _site/nightly
@@ -72,19 +71,31 @@ jobs:
           cp site/media/feel-720p60.av1.mp4 _site/media/feel-720p60.av1.mp4
           cp site/media/feel-720p60.h264.mp4 _site/media/feel-720p60.h264.mp4
           cp site/media/feel-poster.jpg _site/media/feel-poster.jpg
+          cp site/media/feel-poster-narrow.jpg _site/media/feel-poster-narrow.jpg
           cp site/media/feel-glow.png _site/media/feel-glow.png
           cp site/media/feel-glow-narrow.png _site/media/feel-glow-narrow.png
           cp site/media/closeup-glass.jpg _site/media/closeup-glass.jpg
+          cp site/media/closeup-glass.webp _site/media/closeup-glass.webp
           cp site/media/closeup-glass-narrow.jpg _site/media/closeup-glass-narrow.jpg
+          cp site/media/closeup-glass-narrow.webp _site/media/closeup-glass-narrow.webp
           cp site/media/closeup-tiles.jpg _site/media/closeup-tiles.jpg
+          cp site/media/closeup-tiles.webp _site/media/closeup-tiles.webp
+          cp site/media/closeup-tiles-narrow.jpg _site/media/closeup-tiles-narrow.jpg
+          cp site/media/closeup-tiles-narrow.webp _site/media/closeup-tiles-narrow.webp
           cp site/media/closeup-player.jpg _site/media/closeup-player.jpg
+          cp site/media/closeup-player.webp _site/media/closeup-player.webp
+          cp site/media/closeup-player-narrow.jpg _site/media/closeup-player-narrow.jpg
+          cp site/media/closeup-player-narrow.webp _site/media/closeup-player-narrow.webp
           cp site/media/closeup-glass-glow.png _site/media/closeup-glass-glow.png
           cp site/media/closeup-glass-narrow-glow.png _site/media/closeup-glass-narrow-glow.png
           cp site/media/closeup-tiles-glow.png _site/media/closeup-tiles-glow.png
           cp site/media/closeup-player-glow.png _site/media/closeup-player-glow.png
           cp site/media/og-card.jpg _site/media/og-card.jpg
 
-          cp assets/logo-master.png _site/assets/logo-master.png
+          cp site/icons/favicon-32.png _site/icons/favicon-32.png
+          cp site/icons/favicon-48.png _site/icons/favicon-48.png
+          cp site/icons/apple-touch-icon.png _site/icons/apple-touch-icon.png
+          cp site/icons/brand-mark.png _site/icons/brand-mark.png
 
           cp docs/screenshots/home.jpg _site/docs/screenshots/home.jpg
 

@@ -791,9 +791,13 @@ video::-webkit-media-controls-start-playback-button {
   overflow: hidden;
   background: #08080a;
 }
-/* The screen shows the demo video from the start. Until it has a frame the
-   video shows its poster, which is the video's own first frame, so starting
-   playback swaps nothing visible. */
+/* The screen shows the demo video from the start. Until it has a frame it
+   shows this CSS background as its poster — not the `poster` attribute,
+   which cannot vary by viewport — so a phone gets a much smaller image than
+   a desktop window; once the video has a frame it paints over this and
+   nothing visible swaps. The two files are preloaded with fetchpriority
+   "high" in index.html's head, since a background-image is invisible to the
+   preload scanner. */
 .demo-card video {
   position: absolute;
   inset: 0;
@@ -801,6 +805,12 @@ video::-webkit-media-controls-start-playback-button {
   height: 100%;
   object-fit: cover;
   display: block;
+  background: #08080a url("media/feel-poster.jpg") center / cover no-repeat;
+}
+@media (max-width: 759px) {
+  .demo-card video {
+    background-image: url("media/feel-poster-narrow.jpg");
+  }
 }
 /* The scene's one timed state: site.js sets .is-zoomed while the screen is
    well on its way to the window's width (from a sixth of the way), and the
