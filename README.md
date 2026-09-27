@@ -181,10 +181,10 @@ respective owners; where they appear in the app, they identify whose service or 
 
 ## Star history
 
-<a href="https://www.star-history.com/?repos=GLinnik21%2Fplx-native&type=date&legend=bottom-right">
+<a href="https://www.star-history.com/?repos=glinnik21%2Fplx-native&type=date&legend=bottom-right">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=GLinnik21/plx-native&type=date&theme=dark&legend=bottom-right">
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=GLinnik21/plx-native&type=date&legend=bottom-right">
-    <img alt="Star history chart" src="https://api.star-history.com/chart?repos=GLinnik21/plx-native&type=date&legend=bottom-right">
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=glinnik21/plx-native&type=date&theme=dark&legend=bottom-right">
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=glinnik21/plx-native&type=date&legend=bottom-right">
+    <img alt="Star history chart" src="https://api.star-history.com/chart?repos=glinnik21/plx-native&type=date&legend=bottom-right">
   </picture>
 </a>
