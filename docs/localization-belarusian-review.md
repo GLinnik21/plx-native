@@ -46,7 +46,6 @@ These existing terms have direct support in Skarnik:
 | **пазначыць** | [пазначыць](https://www.skarnik.by/belrus/62798), marking sense |
 | **разрозненне** | [разрешение](https://www.skarnik.by/rusbel/79044), resolving-capacity sense |
 | **слой** | [слой](https://www.skarnik.by/rusbel/87759) |
-| **унёсак** | [вклад](https://www.skarnik.by/rusbel/9136), figurative contribution |
 | **сканіраваць** | [сканировать](https://www.skarnik.by/rusbel/86644) |
 
 The user-approved **Укл.** and **Выкл.**, including their periods, are unchanged.
@@ -95,3 +94,8 @@ existing interface term **сервер Plex** with Belarusian case agreement, in
 **на вашы серверы Plex** and **з абранымі вамі серверамі Plex**. The exact product
 name **Plex Media Server** remains in the trademark notice. These are contextual
 localization corrections, not additional dictionary findings.
+
+The contribution action now uses the user-requested **Дапамажыце з перакладам**,
+with the GitHub destination named in its supporting text. The former **унёсак**
+is supported by [Skarnik's figurative contribution sense](https://www.skarnik.by/rusbel/9136);
+the action was changed for clarity, not because the noun was incorrect.
