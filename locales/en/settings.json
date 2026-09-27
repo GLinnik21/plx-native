@@ -44,7 +44,7 @@
     "description": "Settings, account, onboarding or privacy UI: settings.auto_sign_in.title"
   },
   "settings.auto_sign_in.detail": {
-    "value": "Skip the profile list and enter as this profile when the app starts.",
+    "value": "Skip the profile list when the app starts.",
     "description": "Settings, account, onboarding or privacy UI: settings.auto_sign_in.detail"
   },
   "settings.trailers.title": {
@@ -52,7 +52,7 @@
     "description": "Settings, account, onboarding or privacy UI: settings.trailers.title"
   },
   "settings.trailers.detail": {
-    "value": "After a few seconds on a title, play its trailer in the background. This is also the sound control.",
+    "value": "After a moment on a title, play its trailer with sound.",
     "description": "Settings, account, onboarding or privacy UI: settings.trailers.detail"
   },
   "settings.about.title": {
@@ -64,7 +64,7 @@
     "description": "Settings, account, onboarding or privacy UI: settings.about.detail"
   },
   "settings.root.copy": {
-    "value": "Settings apply to this Plex profile on this television. Language applies to the whole app. Return here from the profile menu at any time.",
+    "value": "Manage this television and your Plex profile. Audio and subtitle language preferences sync with your Plex account; playback defaults and the app language apply to this television.",
     "description": "Settings, account, onboarding or privacy UI: settings.root.copy"
   },
   "settings.libraries.count": {
@@ -208,7 +208,7 @@
     "description": "Settings, account, onboarding or privacy UI: settings.consent.product.title"
   },
   "settings.consent.crash.body": {
-    "value": "If PlxNative crashes, it can send technical details that help find and fix the problem. Reports may include the signal, code addresses, thread information and device compatibility details, plus a random crash report identifier, created when you turn this on and deleted when you turn it off or sign out, so that repeated crashes under one crash report identifier are counted once rather than once each. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or the product analytics identifier.",
+    "value": "If PlxNative crashes, or signing in fails, it can send technical details that help find and fix the problem. Reports may include the signal, code addresses, thread information and device compatibility details, or which sign-in step failed and how the connection answered, plus a random crash report identifier, created when you turn this on and deleted when you turn it off or sign out, so that repeated crashes under one crash report identifier are counted once rather than once each. They never include titles, Plex accounts, searches, server names or addresses, tokens, subtitle text, or the product analytics identifier.",
     "description": "Settings, account, onboarding or privacy UI: settings.consent.crash.body"
   },
   "settings.consent.product.body": {
@@ -440,7 +440,7 @@
     "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.local"
   },
   "settings.legal.privacy.local_body": {
-    "value": "PlxNative stores your Plex account token and a separate token for each server you use, the addresses and identifiers of those servers, the profile you selected together with the profile names and pictures on your account, your Home library choices, your recent searches, your playback quality preference, your app language preference, and a small rotating local log. It also stores your answers to the two optional-reporting questions, the random Crash report ID if you turned crash reports on, the random Analytics ID if you turned product analytics on, any report waiting to be sent, and a marker recording how much of the crash log has already been read. It keeps no bookmark of its own for where you stopped watching: playback position is held by your Plex Media Server. Delete all local data in Settings signs out and removes PlxNative data from this television.",
+    "value": "PlxNative stores your Plex account token and a separate token for each server you use. For every profile you have switched to on this television, it also keeps that profile's own server access token(s) and, for a PIN-protected profile, a one-way check computed from that PIN rather than the PIN itself. It also keeps the addresses and identifiers of those servers, the profile names and pictures on your account (pictures and other downloaded artwork are cached as bounded files for reuse across restarts), your Home library choices, your recent searches, your playback quality, Direct Play and app language preferences, and local technical logs: a small rotating event log and a bounded storage status snapshot. It also stores your answers to the two optional-reporting questions, the random Crash report ID if you turned crash reports on, the random Analytics ID if you turned product analytics on, any report waiting to be sent, and a marker recording how much of the crash log has already been read. It keeps no bookmark of its own for where you stopped watching: playback position is held by your Plex Media Server. Delete all local data in Settings signs out and removes PlxNative data from this television.",
     "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.local_body"
   },
   "settings.legal.privacy.crashes": {
@@ -472,7 +472,7 @@
     "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.retention"
   },
   "settings.legal.privacy.retention_body": {
-    "value": "Different things here have different lifetimes, so this is stated for each. Your sign-in, the servers registered with it and their tokens are removed when you sign out. Your answers to the two optional-reporting questions, and the Crash report ID and Analytics ID if they exist, belong to that sign-in: signing out removes them with it, and whoever signs in next is asked afresh. Switching between the profiles of one Plex account is not a sign-out and keeps them. A report waiting to be sent is deleted once it is sent, and a queued report of a category you switch off, or that you sign out of, is deleted at that moment; one report that the sender had already picked up at that moment may still be sent, and no further report is picked up after it. The local log rotates, so its oldest lines are discarded continuously. Delete all local data removes all of it. A report that has already been sent is held by the service that received it, under that service’s own retention schedule; write to the contact below to ask what those periods currently are.",
+    "value": "Different things here have different lifetimes, so this is stated for each. Your sign-in, the servers registered with it and their tokens, every profile's own cached server access token(s) and PIN check, cached profile pictures and other downloaded artwork, and your answers about unencrypted connections, are removed when you sign out. Your answers to the two optional-reporting questions, and the Crash report ID and Analytics ID if they exist, belong to that sign-in: signing out removes them with it, and whoever signs in next is asked afresh. Switching between the profiles of one Plex account is not a sign-out and keeps all of it, including the server access token(s) and PIN check cached for a profile you are not currently using, so that profile can be switched to again with no internet. A report waiting to be sent is deleted once it is sent, and a queued report of a category you switch off, or that you sign out of, is deleted at that moment; one report that the sender had already picked up at that moment may still be sent, and no further report is picked up after it. The event log rotates continuously and the storage snapshot is replaced when its bounded status changes. Delete all local data removes all of it. A report that has already been sent is held by the service that received it, under that service’s own retention schedule; write to the contact below to ask what those periods currently are. The app language preference belongs to this television and is kept when you sign out; Delete all local data resets it.",
     "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.retention_body"
   },
   "settings.legal.privacy.choices": {
@@ -480,7 +480,7 @@
     "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.choices"
   },
   "settings.legal.privacy.choices_body": {
-    "value": "Both optional reports are off until you turn them on, and either can be turned off again at any time in Settings. Delete all local data removes what PlxNative stored on this television; it does not reach anything already sent. To ask what crash reports or product analytics hold for your installation, or to have them deleted, write to the contact below and quote your Crash report ID or Analytics ID from Settings. Each identifier is the only handle its reports carry. Turning a category off deletes its identifier from this television, and so does signing out; reports already sent keep the old one, so copy it down first if you intend to ask for their deletion.",
+    "value": "Both optional reports are off until you turn them on, and either can be turned off again at any time in Settings. A one-off sign-in problem report is sent only when you press Send report. Delete all local data removes what PlxNative stored on this television; it does not reach anything already sent. To ask what crash reports or product analytics hold for your installation, or to have them deleted, write to the contact below and quote your Crash report ID or Analytics ID from Settings, or the Report ID shown after a one-off report. Each identifier is the only handle its reports carry. Turning a category off deletes its identifier from this television, and so does signing out; reports already sent keep the old one, so copy it down first if you intend to ask for their deletion.",
     "description": "Settings, account, onboarding or privacy UI: settings.legal.privacy.choices_body"
   },
   "settings.legal.privacy.processing": {
@@ -591,5 +591,291 @@
   "settings.consent.preview.usage_heading": {
     "value": "Usage events (only when usage reporting is on):\n",
     "description": "Settings, account, onboarding or privacy UI: settings.consent.preview.usage"
+  },
+  "settings.back": {
+    "value": "Back",
+    "description": "Settings, consent or sign-in UI: settings.back"
+  },
+  "settings.profiles.failed": {
+    "value": "Can’t change profile",
+    "description": "Settings, consent or sign-in UI: settings.profiles.failed"
+  },
+  "settings.playback.section": {
+    "value": "Playback",
+    "description": "Settings, consent or sign-in UI: settings.playback.section"
+  },
+  "settings.playback.title": {
+    "value": "Video & playback",
+    "description": "Settings, consent or sign-in UI: settings.playback.title"
+  },
+  "settings.playback.detail": {
+    "value": "Default quality and Direct Play.",
+    "description": "Settings, consent or sign-in UI: settings.playback.detail"
+  },
+  "settings.audio.title": {
+    "value": "Audio & subtitles",
+    "description": "Settings, consent or sign-in UI: settings.audio.title"
+  },
+  "settings.audio.detail": {
+    "value": "Language preferences synced with your Plex account.",
+    "description": "Settings, consent or sign-in UI: settings.audio.detail"
+  },
+  "settings.playback.quality": {
+    "value": "Default quality",
+    "description": "Settings, consent or sign-in UI: settings.playback.quality"
+  },
+  "settings.playback.direct_play": {
+    "value": "Direct Play",
+    "description": "Settings, consent or sign-in UI: settings.playback.direct_play"
+  },
+  "settings.audio.language": {
+    "value": "Preferred audio language",
+    "description": "Settings, consent or sign-in UI: settings.audio.language"
+  },
+  "settings.audio.subtitles": {
+    "value": "Subtitles",
+    "description": "Settings, consent or sign-in UI: settings.audio.subtitles"
+  },
+  "settings.audio.subtitle_language": {
+    "value": "Subtitle language",
+    "description": "Settings, consent or sign-in UI: settings.audio.subtitle_language"
+  },
+  "settings.audio.forced_subtitles": {
+    "value": "Forced subtitles",
+    "description": "Settings, consent or sign-in UI: settings.audio.forced_subtitles"
+  },
+  "settings.playback.force_body": {
+    "value": "Bypasses playback compatibility checks and always uses original quality. Playback may have no sound, display incorrectly, freeze, or crash the app. PlxNative will not automatically switch to compatible playback and may not recover gracefully.\n\nEnable this only if you understand these risks and know how to restart the app and return Direct Play to Auto.",
+    "description": "Settings, consent or sign-in UI: settings.playback.force_body"
+  },
+  "settings.playback.force_note": {
+    "value": "Advanced override. Playback may fail or crash; automatic fallback is off. Return to Auto if problems occur.",
+    "description": "Settings, consent or sign-in UI: settings.playback.force_note"
+  },
+  "settings.audio.account_note": {
+    "value": "Saved to this Plex profile and shared with your other Plex apps. Changes may take time to affect playback; selections already made for an item still take priority.",
+    "description": "Settings, consent or sign-in UI: settings.audio.account_note"
+  },
+  "settings.playback.copy": {
+    "value": "Playback defaults for this television. Quality is also available in the player's More menu. Changes here apply to the next playback.",
+    "description": "Settings, consent or sign-in UI: settings.playback.copy"
+  },
+  "settings.playback.enable_force": {
+    "value": "Enable Force",
+    "description": "Settings, consent or sign-in UI: settings.playback.enable_force"
+  },
+  "settings.playback.force_question": {
+    "value": "Force Direct Play?",
+    "description": "Settings, consent or sign-in UI: settings.playback.force_question"
+  },
+  "settings.audio.saving": {
+    "value": "Saving to your Plex account…",
+    "description": "Settings, consent or sign-in UI: settings.audio.saving"
+  },
+  "settings.audio.loading": {
+    "value": "Loading your Plex account preferences…",
+    "description": "Settings, consent or sign-in UI: settings.audio.loading"
+  },
+  "settings.playback.saving": {
+    "value": "Saving playback preference…",
+    "description": "Settings, consent or sign-in UI: settings.playback.saving"
+  },
+  "settings.audio.manual": {
+    "value": "Off (manual selection)",
+    "description": "Settings, consent or sign-in UI: settings.audio.manual"
+  },
+  "settings.audio.foreign": {
+    "value": "When audio isn't in my language",
+    "description": "Settings, consent or sign-in UI: settings.audio.foreign"
+  },
+  "settings.audio.always": {
+    "value": "Always",
+    "description": "Settings, consent or sign-in UI: settings.audio.always"
+  },
+  "settings.audio.prefer_regular": {
+    "value": "Prefer non-forced subtitles",
+    "description": "Settings, consent or sign-in UI: settings.audio.prefer_regular"
+  },
+  "settings.audio.prefer_forced": {
+    "value": "Prefer forced subtitles",
+    "description": "Settings, consent or sign-in UI: settings.audio.prefer_forced"
+  },
+  "settings.audio.only_forced": {
+    "value": "Only forced subtitles",
+    "description": "Settings, consent or sign-in UI: settings.audio.only_forced"
+  },
+  "settings.audio.only_regular": {
+    "value": "Only non-forced subtitles",
+    "description": "Settings, consent or sign-in UI: settings.audio.only_regular"
+  },
+  "settings.audio.original": {
+    "value": "Original",
+    "description": "Settings, consent or sign-in UI: settings.audio.original"
+  },
+  "settings.audio.no_preference": {
+    "value": "No preference",
+    "description": "Settings, consent or sign-in UI: settings.audio.no_preference"
+  },
+  "settings.audio.not_set": {
+    "value": "Not set",
+    "description": "Settings, consent or sign-in UI: settings.audio.not_set"
+  },
+  "settings.playback.overridden": {
+    "value": "Overridden by Force Direct Play: Original quality.",
+    "description": "Settings, consent or sign-in UI: settings.playback.overridden"
+  },
+  "settings.audio.selection_off": {
+    "value": "Automatic selection is off in Plex. Choosing a language enables it.",
+    "description": "Settings, consent or sign-in UI: settings.audio.selection_off"
+  },
+  "settings.audio.retry": {
+    "value": "Retry",
+    "description": "Settings, consent or sign-in UI: settings.audio.retry"
+  },
+  "settings.audio.retry_detail": {
+    "value": "Try the account request again.",
+    "description": "Settings, consent or sign-in UI: settings.audio.retry_detail"
+  },
+  "settings.audio.sign_in_again": {
+    "value": "Sign in to this Plex profile again to edit its account preferences.",
+    "description": "Settings, consent or sign-in UI: settings.audio.sign_in_again"
+  },
+  "settings.playback.save_failed": {
+    "value": "Could not save or load this preference. Please try again.",
+    "description": "Settings, consent or sign-in UI: settings.playback.save_failed"
+  },
+  "settings.playback.auto": {
+    "value": "Auto",
+    "description": "Settings, consent or sign-in UI: settings.playback.auto"
+  },
+  "settings.playback.forced": {
+    "value": "Force Direct Play (advanced)",
+    "description": "Settings, consent or sign-in UI: settings.playback.forced"
+  },
+  "settings.playback.disabled": {
+    "value": "Disabled",
+    "description": "Settings, consent or sign-in UI: settings.playback.disabled"
+  },
+  "settings.plaintext.connect": {
+    "value": "Connect",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.connect"
+  },
+  "settings.plaintext.not_now": {
+    "value": "Not now",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.not_now"
+  },
+  "settings.plaintext.question": {
+    "value": "Connect without encryption?",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.question"
+  },
+  "settings.plaintext.body": {
+    "value": "Your Plex sign-in will travel without encryption over this network, to this server only.",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.body"
+  },
+  "settings.plaintext.section": {
+    "value": "Unencrypted connections",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.section"
+  },
+  "settings.plaintext.server": {
+    "value": "Plex server",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.server"
+  },
+  "settings.plaintext.denied": {
+    "value": "Not allowed. Only encrypted connections.",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.denied"
+  },
+  "settings.plaintext.connected": {
+    "value": "Allowed on this network. Connected without encryption.",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.connected"
+  },
+  "settings.plaintext.allowed": {
+    "value": "Allowed on this network when a secure connection fails.",
+    "description": "Settings, consent or sign-in UI: settings.plaintext.allowed"
+  },
+  "settings.login.continue_unsaved": {
+    "value": "Continue",
+    "description": "Settings, consent or sign-in UI: settings.login.continue_unsaved"
+  },
+  "settings.login.details": {
+    "value": "Details",
+    "description": "Settings, consent or sign-in UI: settings.login.details"
+  },
+  "settings.login.send_report": {
+    "value": "Send report",
+    "description": "Settings, consent or sign-in UI: settings.login.send_report"
+  },
+  "settings.login.close": {
+    "value": "Close",
+    "description": "Settings, consent or sign-in UI: settings.login.close"
+  },
+  "settings.login.report_question": {
+    "value": "Send a report about this sign-in problem?",
+    "description": "Settings, consent or sign-in UI: settings.login.report_question"
+  },
+  "settings.login.report_body": {
+    "value": "The report says which sign-in step failed and how the connection answered, storage failure stages and error numbers, plus the app version. It never includes your account name, tokens, PIN, sign-in code or network addresses.",
+    "description": "Settings, consent or sign-in UI: settings.login.report_body"
+  },
+  "settings.login.unreachable": {
+    "value": "Can’t reach Plex. Check your TV’s internet connection.",
+    "description": "Settings, consent or sign-in UI: settings.login.unreachable"
+  },
+  "settings.login.report_sending": {
+    "value": "Sending report…",
+    "description": "Settings, consent or sign-in UI: settings.login.report_sending"
+  },
+  "settings.login.report_sent": {
+    "value": "Report sent. Thank you.",
+    "description": "Settings, consent or sign-in UI: settings.login.report_sent"
+  },
+  "settings.login.report_saved": {
+    "value": "Report saved. It will be sent later.",
+    "description": "Settings, consent or sign-in UI: settings.login.report_saved"
+  },
+  "settings.login.report_failed": {
+    "value": "Report couldn’t be sent.",
+    "description": "Settings, consent or sign-in UI: settings.login.report_failed"
+  },
+  "settings.login.save_failed_title": {
+    "value": "Couldn’t save your sign-in",
+    "description": "Settings, consent or sign-in UI: settings.login.save_failed_title"
+  },
+  "settings.login.save_failed_body": {
+    "value": "Your sign-in couldn’t be saved on this TV. You can continue, but you’ll be asked to sign in again next time.",
+    "description": "Settings, consent or sign-in UI: settings.login.save_failed_body"
+  },
+  "settings.login.unknown_device": {
+    "value": "unknown set",
+    "description": "Settings, consent or sign-in UI: settings.login.unknown_device"
+  },
+  "settings.login.your_servers": {
+    "value": "your servers",
+    "description": "Settings, consent or sign-in UI: settings.login.your_servers"
+  },
+  "settings.language.saving": {
+    "value": "Saving language…",
+    "description": "Settings, consent or sign-in UI: settings.language.saving"
+  },
+  "settings.audio.error_retry": {
+    "value": "{reason} Select Retry.",
+    "description": "Settings, consent or sign-in UI: settings.audio.error_retry",
+    "args": {
+      "reason": "str"
+    }
+  },
+  "settings.login.report_id": {
+    "value": "Report ID: {id}",
+    "description": "Settings, consent or sign-in UI: settings.login.report_id",
+    "args": {
+      "id": "str"
+    }
+  },
+  "settings.legal.privacy.plaintext_body": {
+    "description": "In-app privacy disclosure, aligned with PRIVACY.md.",
+    "value": "For a server you were asked about, PlxNative also keeps whether you allowed an unencrypted connection on your home network, for the Plex account that answered. Only the answer is stored. The permission itself is never stored and ends when a fresh check no longer reaches the same server address, at sign-in or sign-out, at a profile switch unless the new profile reaches that server at the same address, or when the app returns from the background."
+  },
+  "settings.legal.privacy.signin_body": {
+    "description": "In-app privacy disclosure, aligned with PRIVACY.md.",
+    "value": "If signing in fails, the same channel can carry a sign-in problem report: which sign-in step failed (or which fixed kind of failure inside the app stopped it), how the connection answered (an error class with its HTTP status or network error number), rounded try counts and durations, how many codes were shown, and, when a sign-in could not be saved, a storage failure class, which key-service step it stopped at and the key service's own numeric error code, fixed storage-helper failure stages and error codes, storage-candidate errno numbers (never file paths or owners), the app version and when it happened. It never includes your account name, tokens, PIN, sign-in code or network addresses. With crash reports on, it is sent automatically under your Crash report ID, and the sign-in screen shows its Report ID. Otherwise it is sent only if you press Send report on the sign-in screen, once, without any Crash report ID and with a random Report ID that identifies only that one report."
   }
 }

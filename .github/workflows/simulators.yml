@@ -8,6 +8,9 @@ on:
       - 'Makefile'
       - 'rust-modules/**'
       - 'src/svg.c'
+      - 'src/ass.c'
+      - 'src/ass_composite.h'
+      - 'include/ass.h'
       - 'assets/icons/**'
       - 'vendor/nanosvg/**'
       - 'pkg/appfont*.ttf'
@@ -15,7 +18,14 @@ on:
       - 'LICENSE'
       - 'ci/build-ffmpeg.sh'
       - 'ci/stage-host-ffmpeg.sh'
+      - 'ci/build-libass.sh'
+      - 'ci/build-libass.py'
+      - 'ci/libass-dependencies.json'
       - 'ci/ffabi-assert.c'
+      - 'tests/fixtures/mkv_zlib_subs.mkv'
+      - 'tests/fixtures/replay/**'
+      - 'tests/replay_fixtures.py'
+      - 'tests/test_replay_fixtures.py'
       - 'tools/sim.ps1'
       - 'tools/sim-smoke.py'
   pull_request:
@@ -39,13 +49,23 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libsdl2-dev libsdl2-ttf-dev libgl1-mesa-dev \
-            libgl1-mesa-dri xvfb xauth
+            libgl1-mesa-dri xvfb xauth gdb cmake pkg-config
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
         with:
           workspaces: rust-modules -> target-sim-ci
           key: simulator-linux
       - name: Build native Linux simulator
+        # Line tables only: a crash's core then symbolizes to file:line in the smoke step below.
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
         run: make sim-linux SIM_TDIR=rust-modules/target-sim-ci
+      - name: Route core dumps to the runner's temp directory
+        # The runner's default core_pattern pipes to apport, which discards a crash in a binary
+        # that no package owns. A launch that dies on a signal must leave a core that
+        # `tools/sim-smoke.py --core-dir` can print every thread's stack from.
+        run: |
+          mkdir -p "$RUNNER_TEMP/cores"
+          sudo sysctl -w kernel.core_pattern="$RUNNER_TEMP/cores/core.%e.%p"
       - name: Launch and capture 1080p frame
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
@@ -54,13 +74,25 @@ jobs:
             --binary "$GITHUB_WORKSPACE/rust-modules/target-sim-ci/release/plxnative-sim" \
             --runtime "$RUNNER_TEMP/plxnative-sim-runtime" \
             --assets "$GITHUB_WORKSPACE/pkg" \
-            --output "$RUNNER_TEMP/plxnative-linux.png"
+            --output "$RUNNER_TEMP/plxnative-linux.png" \
+            --core-dir "$RUNNER_TEMP/cores"
       - name: Preserve Linux capture
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: simulator-linux-${{ github.sha }}
           path: ${{ runner.temp }}/plxnative-linux.png
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Preserve Linux event log and core on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: simulator-linux-crash-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/plxnative-sim-runtime/plxnative-events.log
+            ${{ runner.temp }}/cores
+            rust-modules/target-sim-ci/release/plxnative-sim
           if-no-files-found: ignore
           retention-days: 7
 
@@ -70,7 +102,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install SDL
-        run: brew install sdl2_ttf
+        run: brew install sdl2_ttf cmake pkg-config
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -83,6 +115,33 @@ jobs:
           key: simulator-macos
       - name: Build native macOS simulator
         run: make sim-macos SIM_TDIR=rust-modules/target-sim-ci
+      - name: Replay all committed product recordings
+        run: |
+          python3 tests/replay_fixtures.py \
+            --sim "$GITHUB_WORKSPACE/rust-modules/target-sim-ci/debug/plxnative-sim" \
+            --output "$RUNNER_TEMP/plxnative-replay"
+      - name: Preserve replay evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: simulator-replay-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/plxnative-replay/**/plxnative-events.log
+            ${{ runner.temp }}/plxnative-replay/**/sim.out
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Install nightly Rust
+        # `make check-ffmpeg` runs the host suite's FFmpeg-backed tests on the toolchain `make
+        # check` uses; the simulator above builds on the runner's default one. `rust-src` is not
+        # optional: rust-modules/.cargo/config.toml sets `[unstable] build-std` for every nightly
+        # cargo run, host tests included — the same component ci.yml's host checks install.
+        run: rustup toolchain install nightly --profile minimal --component rust-src
+      - name: Tests against the bundled FFmpeg
+        # The one place the host FFmpeg (built above, same component list as the shipped one) is
+        # available to the test suite — `make check` has none, so these are #[ignore]d there.
+        run: make check-ffmpeg
+      - name: Tests against the bundled ASS renderer
+        run: make check-ass
       - name: Launch and capture 1080p frame
         run: |
           python3 tools/sim-smoke.py \

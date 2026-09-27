@@ -135,7 +135,7 @@ ALL_TRIGGERS = [
     # UI/FPS scenes (both profiler triggers MUST be cleared; either invalidates production pacing)
     "plxnative-detailosc", "plxnative-homeosc", "plxnative-heroosc", "plxnative-homefoldosc",
     "plxnative-info", "plxnative-chapters", "plxnative-profile",
-    "plxnative-hwcnt", "plxnative-glassboth", "plxnative-glasshz",
+    "plxnative-hwcnt",
     # the track's material and the instruments that override or narrate it. `flattabs` is the one
     # that MUST be cleared: it swaps the shipped material for the flat capsule, so a leftover turns
     # every glass assertion into a measurement of something else.
@@ -621,16 +621,42 @@ def tv_wan(state, ttl_s=None):
             print(f"    WARNING: wan on returned rc={r.returncode}; the on-device watchdog restores it")
 
 
-def require_stored_session(tv, name):
-    """A `session: stored` case needs a sign-in ON THE INSTALL, in one of the two places
-    `paths::session_candidates` reads for a flavoured install. Refused with the reason rather than
-    skipped: an offline case that silently ran as the injected identity would be the false pass
-    the attribute exists to prevent."""
+def stored_session_reason(tv):
+    """Why `session: stored` cases cannot run on this install, or None when a stored sign-in
+    exists in one of the two places `paths::session_candidates` reads for a flavoured install.
+    Returned rather than raised: whether an unmet precondition SKIPS the affected cases or aborts
+    the whole batch is the caller's call, not this probe's — a batch that also has cases which
+    don't need a stored session must not die for want of one that a few of them do."""
     r = ssh(tv, f"test -s /media/developer/{APPID}-auth.json || test -s /media/internal/.{APPID}-auth.json")
     if r.returncode != 0:
-        sys.exit(f"{name}: `session: stored` needs a signed-in session on {APPID} "
-                 f"(none at /media/developer/{APPID}-auth.json) — sign in on that install once, "
-                 f"with the internet up, and rerun")
+        return (f"needs a signed-in session on {APPID} (none at /media/developer/{APPID}-auth.json) "
+                f"— sign in on that install once, with the internet up, and rerun")
+    return None
+
+
+def partition_stored_sessions(cases, reason):
+    """Split `cases` into (still-runnable, skipped-for-stored-session) given `reason` — the
+    string `stored_session_reason()` returned, or None when a stored sign-in is present. Pure and
+    TV-independent, so the skip-vs-run decision is unit-testable without an ssh mock: the bug this
+    guards against (a missing stored session taking the whole batch down via an uncaught
+    `SystemExit`) is a property of what ends up in `cases`, not of any device state."""
+    if not reason:
+        return cases, []
+    stored = [c for c in cases if c.get("session") == "stored"]
+    if not stored:
+        return cases, []
+    return [c for c in cases if c.get("session") != "stored"], stored
+
+
+def require_stored_session(tv, name):
+    """A `session: stored` case needs a sign-in ON THE INSTALL. Refused with the reason rather
+    than silently running as the injected identity, which would be the false pass the attribute
+    exists to prevent. This is the single-case belt to the batch-level suspenders in main(): a
+    case reaching here whose batch-level check already found the session missing is a bug, not a
+    new thing to discover, so it still refuses loudly rather than playing as the wrong identity."""
+    reason = stored_session_reason(tv)
+    if reason:
+        sys.exit(f"{name}: `session: stored` {reason}")
 
 
 def ssh_argv(tv, remote_cmd):
@@ -3488,6 +3514,12 @@ def _find_any(lines, needles):
 def op_audio_native(lines):
     hit = _find_any(lines, AUDIO_NATIVE_SWITCH_LINES)
     if hit is None:
+        # A row already active at menupick time commits nothing and never reaches the
+        # transition line at all; scenarios.rs logs that case explicitly, so surface it
+        # here instead of leaving a bare "not native" that looks like a route regression.
+        no_commit = find(lines, "menupick: row")
+        if no_commit is not None:
+            return False, f"no `route transition: native audio` line :: {no_commit.strip()}"
         return False, "no `route transition: native audio` line (switch was not native)"
     cs = codec_ids(lines)
     if not cs:
@@ -4948,6 +4980,250 @@ def grade_frame_ceilings(scene, lines, route, overlay, warmup):
     return ok, detail
 
 
+# `bench: kind=<push|modal> cycle=<i>/<n> target=<name> worst_ms=<f> frames=<k> dur_ms=<d>
+# rss_kb=<r>` — one line per completed stress-bench cycle (`dev::scenarios::push_bench_tick` /
+# `modal_bench_tick`), and a terminal `bench: kind=<k> done cycles=<n>` once every cycle ran.
+BENCH_RE = re.compile(
+    r"^bench: kind=(?P<kind>push|modal) cycle=(?P<cycle>\d+)/(?P<n>\d+) "
+    r"target=(?P<target>[\w-]+) worst_ms=(?P<worst>\d+(?:\.\d+)?) frames=(?P<frames>\d+) "
+    r"dur_ms=(?P<dur>\d+) rss_kb=(?P<rss>\d+)")
+BENCH_DONE_RE = re.compile(r"^bench: kind=(?P<kind>push|modal) done cycles=(?P<n>\d+)")
+
+
+def parse_bench(lines, kind):
+    """Every completed `bench:` cycle for `kind` ("push"|"modal"), in log order, plus whether the
+    terminal `done` line was seen. Each cycle: `{cycle, n, target, worst_ms, frames, dur_ms,
+    rss_kb}`, `cycle` 1-based (the wire format's own `cycle=<i>/<n>` is 1-based)."""
+    reject_simulator(lines)
+    cycles = []
+    done = False
+    for ln in lines:
+        s = ln.strip()
+        m = BENCH_RE.match(s)
+        if m and m.group("kind") == kind:
+            cycles.append({
+                "cycle": int(m.group("cycle")),
+                "n": int(m.group("n")),
+                "target": m.group("target"),
+                "worst_ms": float(m.group("worst")),
+                "frames": int(m.group("frames")),
+                "dur_ms": int(m.group("dur")),
+                "rss_kb": int(m.group("rss")),
+            })
+            continue
+        m = BENCH_DONE_RE.match(s)
+        if m and m.group("kind") == kind:
+            done = True
+    return cycles, done
+
+
+def grade_bench(scene, lines):
+    """Grade a `bench: push`/`bench: modal` stress run (spec: 100 counted push/modal cycles).
+
+    FAILS unless: the `done` line is present (every cycle completed); every cycle's `worst_ms` is
+    <= `bench_worst_ms` (default 20.0 — a single missed 60 Hz frame is ~16.7 ms, so 20 gives a
+    hair of margin before calling it a miss); the mean `worst_ms` of the last 10 cycles is <= the
+    first 10's mean + `bench_drift_ms` (default 2.0); and the last cycle's `rss_kb` is <= cycle
+    10's `rss_kb` + `bench_rss_growth_kb` (default 8192).
+
+    `bench_latch_exempt_ms`, if the scene sets it, permits ONE FRAME's worth of overage per cycle
+    up to that ceiling — i.e. a cycle whose `worst_ms` is over `bench_worst_ms` but at or under
+    `bench_latch_exempt_ms` is not counted as a miss — and every such exemption is named in the
+    detail string rather than silently absorbed, so the report always says which cycle it was.
+
+    Returns `(ok, detail)`, `detail` already prefixed with a leading space+`|` per clause,
+    matching every other `grade_*` helper's contract with the caller's `print`."""
+    kind = scene["bench"]
+    cycles, done = parse_bench(lines, kind)
+    if not cycles:
+        return False, f" | no `bench: kind={kind}` cycle lines — the bench never armed, or logged nothing"
+
+    worst_ceiling = scene.get("bench_worst_ms", 20.0)
+    drift_ceiling = scene.get("bench_drift_ms", 2.0)
+    rss_ceiling = scene.get("bench_rss_growth_kb", 8192)
+    latch_exempt = scene.get("bench_latch_exempt_ms")
+
+    ok = True
+    detail = f" | bench:{kind} {len(cycles)} cycle line(s) (expect n={cycles[-1]['n']})"
+
+    if not done:
+        ok = False
+        detail += " | FAIL: no `done` line — not every cycle completed"
+
+    misses, exempted = [], []
+    for c in cycles:
+        if c["worst_ms"] <= worst_ceiling:
+            continue
+        if latch_exempt is not None and c["worst_ms"] <= latch_exempt:
+            exempted.append(c)
+        else:
+            misses.append(c)
+    if misses:
+        ok = False
+        worst_ex = max(misses, key=lambda c: c["worst_ms"])
+        detail += (f" | FAIL: {len(misses)} cycle(s) over bench_worst_ms={worst_ceiling} (worst "
+                   f"cycle={worst_ex['cycle']}/{worst_ex['n']} target={worst_ex['target']} "
+                   f"worst_ms={worst_ex['worst_ms']:.1f})")
+    if exempted:
+        named = ", ".join(f"cycle={c['cycle']} target={c['target']} worst_ms={c['worst_ms']:.1f}"
+                          for c in exempted)
+        detail += (f" | {len(exempted)} cycle(s) exempted under bench_latch_exempt_ms="
+                   f"{latch_exempt}: {named}")
+
+    worst_vals = [c["worst_ms"] for c in cycles]
+    if len(worst_vals) >= 10:
+        mean_first = sum(worst_vals[:10]) / 10.0
+        mean_last = sum(worst_vals[-10:]) / 10.0
+        drift = mean_last - mean_first
+        ok = ok and drift <= drift_ceiling
+        detail += (f" | drift(last10-first10)={drift:+.2f}ms (first10 mean={mean_first:.2f}, "
+                   f"last10 mean={mean_last:.2f}) vs bench_drift_ms {drift_ceiling}")
+    else:
+        detail += f" | drift: only {len(worst_vals)} cycle(s), need >= 10 — not graded"
+
+    if len(cycles) >= 10:
+        rss10 = cycles[9]["rss_kb"]
+        rss_last = cycles[-1]["rss_kb"]
+        growth = rss_last - rss10
+        ok = ok and growth <= rss_ceiling
+        detail += (f" | rss growth(last-cycle10)={growth}kB (cycle10={rss10}, last={rss_last}) "
+                   f"vs bench_rss_growth_kb {rss_ceiling}")
+    else:
+        detail += f" | rss growth: only {len(cycles)} cycle(s), need >= 10 — not graded"
+
+    sw = sorted(worst_vals)
+    n = len(sw)
+    p50 = sw[n // 2]
+    p95 = sw[min(n - 1, int(n * 0.95))]
+    worst3 = sorted(cycles, key=lambda c: c["worst_ms"], reverse=True)[:3]
+    worst3_str = ", ".join(f"cycle={c['cycle']}/{c['n']} target={c['target']} worst_ms={c['worst_ms']:.1f}"
+                           for c in worst3)
+    detail += (f" | worst_ms p50={p50:.1f} p95={p95:.1f} max={sw[-1]:.1f} n={n} | worst 3: {worst3_str}")
+    return ok, detail
+
+
+# `bench: kind=deep cycle=<i>/<n> target=<name> dir=<push|pop> depth=<d> worst_ms=<f> frames=<k>
+# dur_ms=<d> rss_kb=<r>` — one line per completed DEEP-stack bench step (`dev::scenarios::
+# deep_bench_tick`), and a terminal `bench: kind=deep done cycles=<n> rss_root_kb=<r>` once every
+# step ran. Unlike `push`/`modal` (one open+close round trip per line), a `deep` line is ONE nav op
+# — a push OR a pop, never both — which is why it carries its own `dir`/`depth` fields the other
+# two kinds don't need.
+BENCH_DEEP_RE = re.compile(
+    r"^bench: kind=deep cycle=(?P<cycle>\d+)/(?P<n>\d+) target=(?P<target>[\w-]+) "
+    r"dir=(?P<dir>push|pop) depth=(?P<depth>\d+) worst_ms=(?P<worst>\d+(?:\.\d+)?) "
+    r"frames=(?P<frames>\d+) dur_ms=(?P<dur>\d+) rss_kb=(?P<rss>\d+)")
+BENCH_DEEP_DONE_RE = re.compile(r"^bench: kind=deep done cycles=(?P<n>\d+) rss_root_kb=(?P<rss>\d+)")
+
+
+def parse_deep_bench(lines):
+    """Every completed `bench: kind=deep` step, in log order, plus the `done` line's own
+    `rss_root_kb` (`None` if it never printed). Each step: `{cycle, n, target, dir, depth,
+    worst_ms, frames, dur_ms, rss_kb}`, `cycle` 1-based exactly like `parse_bench`."""
+    reject_simulator(lines)
+    steps = []
+    rss_root_kb = None
+    for ln in lines:
+        s = ln.strip()
+        m = BENCH_DEEP_RE.match(s)
+        if m:
+            steps.append({
+                "cycle": int(m.group("cycle")),
+                "n": int(m.group("n")),
+                "target": m.group("target"),
+                "dir": m.group("dir"),
+                "depth": int(m.group("depth")),
+                "worst_ms": float(m.group("worst")),
+                "frames": int(m.group("frames")),
+                "dur_ms": int(m.group("dur")),
+                "rss_kb": int(m.group("rss")),
+            })
+            continue
+        m = BENCH_DEEP_DONE_RE.match(s)
+        if m:
+            rss_root_kb = int(m.group("rss"))
+    return steps, rss_root_kb
+
+
+def grade_deep_bench(scene, lines):
+    """Grade a `bench: kind=deep` DEEP nav-stack stress run (spec: `depth` pushes with no pop in
+    between, then `depth` pops back to the root one page at a time — `2*depth` steps total).
+
+    FAILS unless: all `2*depth` steps AND the terminal `done` line are present; every step's
+    `worst_ms` is <= `bench_worst_ms` (default 20.0, same ceiling `grade_bench` uses); the mean
+    `worst_ms` of the LAST 10 pushes is <= the FIRST 10 pushes' mean + `bench_drift_ms` (default
+    2.0) — catches per-push cost growing with depth — and the identical check over pops, where the
+    FIRST 10 pops are the DEEPEST (recorded right after the walk turns around) and the LAST 10 are
+    the SHALLOWEST (just before the root); the deepest push's `rss_kb` is <= the 10th step's
+    `rss_kb` + `bench_depth_rss_kb` (default 16384 — ~180kB/level over the 90 levels past the
+    first 10, retained STATE rather than pixels) — catches memory growing with depth; and the
+    `done` line's own `rss_root_kb` is <= the 10th step's `rss_kb` + `bench_rss_growth_kb` (default
+    8192, the same key `grade_bench` uses) — the stack must give everything back once fully
+    unwound.
+
+    Returns `(ok, detail)`, same contract as `grade_bench`."""
+    steps, rss_root_kb = parse_deep_bench(lines)
+    if not steps:
+        return False, " | no `bench: kind=deep` step lines — the bench never armed, or logged nothing"
+
+    n = steps[0]["n"]
+    worst_ceiling = scene.get("bench_worst_ms", 20.0)
+    drift_ceiling = scene.get("bench_drift_ms", 2.0)
+    rss_ceiling = scene.get("bench_rss_growth_kb", 8192)
+    depth_rss_ceiling = scene.get("bench_depth_rss_kb", 16384)
+
+    ok = True
+    detail = f" | bench:deep {len(steps)} step line(s) (expect n={n})"
+
+    if rss_root_kb is None or len(steps) < n:
+        ok = False
+        detail += " | FAIL: no `done` line, or fewer than the expected step count — not every step completed"
+
+    misses = [s for s in steps if s["worst_ms"] > worst_ceiling]
+    if misses:
+        ok = False
+        worst_ex = max(misses, key=lambda s: s["worst_ms"])
+        detail += (f" | FAIL: {len(misses)} step(s) over bench_worst_ms={worst_ceiling} (worst "
+                   f"step cycle={worst_ex['cycle']}/{worst_ex['n']} dir={worst_ex['dir']} "
+                   f"target={worst_ex['target']} worst_ms={worst_ex['worst_ms']:.1f})")
+
+    pushes = [s for s in steps if s["dir"] == "push"]
+    pops = [s for s in steps if s["dir"] == "pop"]
+
+    def drift_check(label, samples):
+        nonlocal ok, detail
+        if len(samples) < 10:
+            detail += f" | {label} drift: only {len(samples)} step(s), need >= 10 — not graded"
+            return
+        vals = [s["worst_ms"] for s in samples]
+        mean_first = sum(vals[:10]) / 10.0
+        mean_last = sum(vals[-10:]) / 10.0
+        drift = mean_last - mean_first
+        ok = ok and drift <= drift_ceiling
+        detail += (f" | {label} drift(last10-first10)={drift:+.2f}ms (first10 mean={mean_first:.2f}, "
+                   f"last10 mean={mean_last:.2f}) vs bench_drift_ms {drift_ceiling}")
+
+    drift_check("push", pushes)
+    drift_check("pop", pops)
+
+    if len(steps) >= 10:
+        rss10 = steps[9]["rss_kb"]
+        if pushes:
+            rss_depth_max = pushes[-1]["rss_kb"]
+            depth_growth = rss_depth_max - rss10
+            ok = ok and depth_growth <= depth_rss_ceiling
+            detail += (f" | depth rss growth(maxdepth-step10)={depth_growth}kB (step10={rss10}, "
+                       f"maxdepth={rss_depth_max}) vs bench_depth_rss_kb {depth_rss_ceiling}")
+        if rss_root_kb is not None:
+            root_growth = rss_root_kb - rss10
+            ok = ok and root_growth <= rss_ceiling
+            detail += (f" | root rss growth(root-step10)={root_growth}kB (step10={rss10}, "
+                       f"root={rss_root_kb}) vs bench_rss_growth_kb {rss_ceiling}")
+    else:
+        detail += f" | rss growth: only {len(steps)} step(s), need >= 10 — not graded"
+
+    return ok, detail
+
+
 def rate_stats(vals):
     s = sorted(vals)
     n = len(s)
@@ -4966,6 +5242,14 @@ def rate_stats(vals):
     tail = sum(vals[-third:]) / float(third) if n else 0.0
     return {"n": n, "min": s[0] if s else 0, "median": s[n // 2] if n else 0,
             "robust_min": robust_min, "head": head, "tail": tail, "drift": tail - head}
+
+
+def grade_poster_gate(scene, lines):
+    if not scene.get("poster_gate"):
+        return True, ""
+    import poster_gate
+    ok, detail = poster_gate.grade(scene["poster_gate"], lines)
+    return ok, " | " + detail
 
 
 def fps_scene_needs_token(scene, has_shared_server=False):
@@ -5002,7 +5286,10 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     tv = cfg["tv"]
     route = scene["route"]
     overlay = scene.get("overlay")  # None for home/detail
-    loop_floor = scene["loop_floor"]
+    # A `bench` scene (see grade_bench) is graded entirely off its own `bench:` lines, never off
+    # loop_floor — optional rather than `scene["loop_floor"]` so those scenes need not carry a
+    # value nothing reads.
+    loop_floor = scene.get("loop_floor", 0)
     warmup = scene.get("warmup_s", 5)
     run_secs = scene.get("run_secs", 18)
     tag = route + (f"/{overlay}" if overlay else "")
@@ -5013,8 +5300,11 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     for tname, tval in scene.get("triggers", {}).items():
         if tval is True:
             files.append((tname, None))
-        elif tval == "$rk":
-            files.append((tname, str(scene["rk"])))
+        elif isinstance(tval, str) and "$rk" in tval:
+            # Exact `"$rk"` is the common case (home-detail-nav's `plxnative-navosc`); the
+            # substring form is what a bench scene's `plxnative-pushbench=<n>,$rk` needs, since
+            # its ratingKey rides inside a larger, comma-joined value.
+            files.append((tname, tval.replace("$rk", str(scene["rk"]))))
         else:
             files.append((tname, str(tval)))
     # Player FPS baselines were calibrated on the established Original route. Pin that route just
@@ -5067,6 +5357,20 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     # against the wrong install's log, or against a release build that never read its triggers,
     # fails on the <5-samples guard and reads as "the app never reached this screen".
     require_install(lines, cfg)
+
+    # A `bench` scene (push-100/modal-100/deep-100) is graded entirely off its own `bench:` lines
+    # — see `grade_bench`/`grade_deep_bench`. It shares every line above (triggers, `make run`, log
+    # capture, install check) with an ordinary fps scene, and diverges only here: none of
+    # loop_floor/fps_floor/fps_ceiling/worst_ceiling_ms/coldopen_ceiling_ms describes what a
+    # counted, stop-after-n bench run is answering. `deep` is graded separately from `push`/`modal`
+    # because its wire format carries `dir`/`depth` the other two kinds don't.
+    if scene.get("bench"):
+        if scene["bench"] == "deep":
+            ok, detail = grade_deep_bench(scene, lines)
+        else:
+            ok, detail = grade_bench(scene, lines)
+        print(f"    [{'PASS' if ok else 'FAIL'}]{detail}")
+        return ok, detail
 
     alls = parse_loop(lines, route, overlay)
     samples = alls[warmup:]  # heartbeat is ~1/sec, so drop the first `warmup` matching samples
@@ -5160,6 +5464,9 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     ok = ok and ok_o
     detail += detail_o
 
+    ok_p, detail_p = grade_poster_gate(scene, lines)
+    ok = ok and ok_p
+    detail += detail_p
     print(f"    [{'PASS' if ok else 'FAIL'}] {detail}")
     return ok, detail
 
@@ -5184,7 +5491,8 @@ def run_fps_suite(scenes, cfg, token, include_player, skipped=()):
     # is OFF and the sound is OFF for EVERY device run, fps scenes included — rendering continues
     # with the LCD off. The 2026-09-06 "panel ON for fps" form is superseded.
     print("    panel rule: run this suite with the television's panel OFF and the sound OFF "
-          "(tools/tv-session.sh screen off; mute from the remote) — the owner's standing directive")
+          "(tools/tv-session.sh screen off; tools/tv-session.sh sound off) — the owner's "
+          "standing directive")
     results = []
     for s in scenes:
         try:
@@ -5771,6 +6079,25 @@ def main():
     if args.build:
         do_build(cfg["tv"])
 
+    # `session: stored` cases need a sign-in already on the install (see stored_session_reason).
+    # That is a property of the INSTALL, not of any one case, so it is checked once here — same
+    # shape as the link conditioner below — and an unmet precondition SKIPS just those cases
+    # instead of aborting the whole batch (`sys.exit` inside a per-case `run_case` is NOT caught
+    # by that loop's `except Exception`, so one offline case used to take the other 34 down with
+    # it). A `--filter`/`--suite` that selected ONLY stored-session cases still gets a loud exit
+    # naming the reason, so the operator sees why nothing ran rather than a quiet "0 passed".
+    stored_reason = None
+    if any(c.get("session") == "stored" for c in cases):
+        stored_reason = stored_session_reason(cfg["tv"])
+    cases, stored_skipped = partition_stored_sessions(cases, stored_reason)
+    if stored_skipped:
+        print(f"stored session UNAVAILABLE — {stored_reason}")
+        for c in stored_skipped:
+            print(f"    SKIP {c['name']}: `session: stored` {stored_reason}")
+        if not cases:
+            sys.exit(f"every case matching --filter {args.filter!r} / --suite {args.suite!r} "
+                     f"is `session: stored` and none can run: {stored_reason}")
+
     # The link conditioner, started ONCE for the tier — the binary points at its port for every
     # case, conditioned or not, so it cannot be a per-case resource. `usable` decides whether a
     # case that names a `link_profile` runs or skips; nothing else changes.
@@ -5830,7 +6157,9 @@ def main():
               f"{os.path.basename(MANIFEST_LOCAL)}")
     for c in link_skipped:
         print(f"  [SKIP] {c['name']}  <- needs a conditioned link: {cond.why}")
-    nskip = len(shared_skipped) + len(item_skipped) + len(link_skipped)
+    for c in stored_skipped:
+        print(f"  [SKIP] {c['name']}  <- `session: stored` {stored_reason}")
+    nskip = len(shared_skipped) + len(item_skipped) + len(link_skipped) + len(stored_skipped)
     tail = f", {nskip} skipped" if nskip else ""
     print(f"\n{npass} passed, {real_fail} failed, {nxfail} known-gap of {len(summary)}{tail}")
     return 0 if real_fail == 0 else 1

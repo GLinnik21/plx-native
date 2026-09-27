@@ -13,9 +13,12 @@
 //! 10 rather than deferred again. Two properties rule it out and both are stated at their own call
 //! sites below: the panel takes NO KEYS AT ALL (see [`ON`]), so it can never be an input owner,
 //! which is the whole of what a surface IS; and it draws at TWO z-positions — genuinely last on the
-//! player route, and over the page but UNDER the account/item menus everywhere else, because on
-//! that path the menu carrying its own off-switch sits in its corner. One entry in a z-ordered
-//! stack cannot express "sometimes above and sometimes below the other entries".
+//! player route WHEN NONE OF THE PLAYER'S OWN PANELS IS OPEN (`bridge::player_diagnostics_visible`
+//! skips the draw entirely instead, rather than reordering it, while one is — issue #163: `More`
+//! carries this panel's own toggle, so painting over it hid the control), and over the page but
+//! UNDER the account/item menus everywhere else, because on that path the menu carrying its own
+//! off-switch sits in its corner. One entry in a z-ordered stack cannot express "sometimes above,
+//! sometimes below, and sometimes not drawn at all".
 //!
 //! It was PLAYER-ONLY until then, and this doc said so: `app.rs` drew it inside the player branch,
 //! so a toggle offered anywhere else would have ticked a box and shown nothing. The gap that
@@ -23,9 +26,11 @@
 //! this app most often needs from a stranger and was the one it could not produce. The draw call
 //! now runs on both sides of `app.rs`'s player/non-player split, and the `else` half covers every
 //! other route at once, so no route can be forgotten. The two positions differ deliberately: on the
-//! player it is genuinely last, and off it the panel draws over the PAGE but UNDER the app's modal
-//! surfaces — because on that path something sits in its corner, namely the account popover that
-//! carries the row turning it off. Drawn last it hid its own off-switch.
+//! player it is genuinely last EXCEPT while one of the player's own panels is open, and off it the
+//! panel draws over the PAGE but UNDER the app's modal surfaces — because on that path something
+//! sits in its corner, namely the account popover that carries the row turning it off. Drawn last
+//! it hid its own off-switch — the same failure the player route grew once `More` gained the very
+//! same kind of row (issue #163), fixed there by skipping the draw rather than reordering it.
 //!
 //! **Off the player the panel shows a DIFFERENT set of rows, and that is not a decoration.** Every
 //! pipeline row reads a [`crate::player::Diag`] that has never been filled in, so all nine of them
@@ -113,8 +118,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 ///
 /// It was nine `static mut`s. It is deliberately NOT a `ModalStack` surface, which is what §13
 /// files it under: the panel takes no keys at all (see [`ON`]), and it draws at TWO z-positions —
-/// above the player's own panels on the player route and below the account/item menus everywhere
-/// else — so it is neither an input owner nor a single entry in a stack that orders by z. What it
+/// above the player's own panels on the player route when none of them is open (skipped, not
+/// drawn, while one is — `bridge::player_diagnostics_visible`, issue #163) and below the
+/// account/item menus everywhere else — so it is neither an input owner nor a single entry in a
+/// stack that orders by z. What it
 /// is, is a component with state, and the state belongs to the application that samples it.
 ///
 /// Everything here is main-thread: [`update`](Self::update) is called from the frame loop's update
@@ -454,14 +461,15 @@ fn header(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32)
         // The firmware CODENAME is dropped — it identifies the release no better than the release
         // number does, and this line has to fit beside it.
         format!(
-            "{} {} · {} · {os} · surface {vw}x{vh}",
+            "{} {} · {} · {os} · DV {} · surface {vw}x{vh}",
             crate::plex::identity::PRODUCT,
             crate::plex::identity::VERSION,
             if cfg!(feature = "devtriggers") {
                 "dev"
             } else {
                 "release"
-            }
+            },
+            crate::webos::caps::capability().compact(),
         ),
         playback_line(ps, d, now),
     ]
@@ -522,7 +530,7 @@ fn never_played(d: &crate::player::Diag, st: crate::player::PlaybackState) -> bo
 /// The report this app cannot otherwise get. Every diagnostic surface it has — the event log, the
 /// ~40 triggers, the remote FIFO, ssh — needs either a rooted television or a `devtriggers` build,
 /// and the one failure that reaches us most often ("it installs, it opens, it finds nothing") never
-/// reaches a player at all, so until now it could produce no artefact whatsoever. These five rows
+/// reaches a player at all, so until now it could produce no artefact whatsoever. These rows
 /// are photographable from a Home screen with the remote alone.
 ///
 /// The panel's content rules are unchanged and every one of them holds here by construction: no
@@ -534,7 +542,7 @@ fn device_rows() -> Vec<Field> {
     let hw = crate::webos::device();
     let i = crate::webos::info();
     let c = crate::devcaps::caps();
-    let mut v = Vec::with_capacity(5);
+    let mut v = Vec::with_capacity(6);
 
     // WHICH SET. The question every report from hardware nobody here owns opens with, and the one
     // no log a stranger can reach has ever answered. Empty when nyx did not answer — never a
@@ -561,7 +569,7 @@ fn device_rows() -> Vec<Field> {
         match (i.name.as_str(), i.codename.as_str()) {
             // Bare "unknown": the head line above already carries the REASON in this state
             // ("webOS unknown — os_info.json unreadable"), and a photograph should not spend two
-            // of its five rows on one fact.
+            // of its compact rows on one fact.
             ("", "") => crate::i18n::msg::browse_diagnostics_unknown().to_string(),
             ("", cn) => cn.to_string(),
             (n, "") => n.to_string(),
@@ -591,6 +599,12 @@ fn device_rows() -> Vec<Field> {
         .fault(!measured),
     );
     v.push(Field::new("Audio", c.audio.clone()));
+
+    let dv = crate::webos::caps::probe();
+    v.push(
+        Field::new("Dolby Vision", dv.full_state())
+            .fault(dv.capability == crate::webos::caps::DvCapability::Unknown),
+    );
 
     // The same row the pipeline block leads with, minus the direct-play/transcode half that has no
     // meaning yet: it answers "did the server ever reply", which IS the failure when nothing plays.
@@ -632,7 +646,14 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
     );
     let dv = crate::route::stream_dovi(ps);
     if dv.present {
-        video.push_str(&format!(" · Dolby Vision P{}.{}", dv.profile, dv.bl_compat));
+        let decision = crate::route::stream_dv_decision(ps);
+        video.push_str(&format!(
+            " · Dolby Vision P{}.{} · {} ({})",
+            dv.profile,
+            dv.bl_compat,
+            decision.presentation.label(),
+            decision.capability.label(),
+        ));
     }
     v.push(Field::new("Video", video));
 
@@ -2954,6 +2975,33 @@ mod tests {
             .find(|f| f.key == "Connection")
             .expect("Connection row");
         assert_ne!(row.tone, crate::ui::widgets::Tone::Fault);
+    }
+
+    #[test]
+    fn playback_diagnostics_show_the_frozen_dv_presentation() {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        let dovi = crate::metadata::Dovi {
+            present: true,
+            profile: 8,
+            bl_compat: 1,
+            el_present: false,
+            ..crate::metadata::Dovi::NONE
+        };
+        assert!(crate::route::set_stream_declaration_for_test(
+            &mut ps,
+            "hevc",
+            "eac3",
+            23.976,
+            dovi,
+            false,
+            crate::webos::caps::DvCapability::Supported,
+        ));
+        let video = rows(&ps, &crate::player::Diag::default(), (0, 0, 0), 1_000)
+            .into_iter()
+            .find(|field| field.key == "Video")
+            .and_then(|field| field.val)
+            .expect("Video row");
+        assert!(video.contains("declare (supported)"), "{video}");
     }
 
     #[test]

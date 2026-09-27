@@ -78,7 +78,6 @@ pub(super) fn directory_policy_fixture(
 ) -> crate::stores::browse::DirectorySnapshot {
     let section = |sid, key, section, title: &str, pinned| {
         crate::stores::browse::SectionView {
-            borrowed: false,
             sid: Some(sid),
             key,
             kind: crate::stores::browse::SecKind::Movie,
@@ -101,9 +100,8 @@ pub(super) struct DirectoryPolicyCleanup;
 
 impl Drop for DirectoryPolicyCleanup {
     fn drop(&mut self) {
-        crate::stores::search::apply(crate::stores::search::SearchCmd::Reset);
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
+        // Search and Hubs are now owned per-Bridge (`rig`, dropped with the test's own stack
+        // frame), so there is no process-wide store state left for this cleanup to reset.
         crate::plex::reset_servers_for_test();
-        let _ = crate::stores::take_notices();
     }
 }

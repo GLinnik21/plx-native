@@ -91,7 +91,9 @@ Four layers, so there is no "I forgot" path:
 2. **Queue**: `tools/tv-lock.sh acquire --wait 540 --why "…"` polls every 5 s. Keep it under ~9
    minutes so it fits inside one tool call; re-run it if it times out.
 3. **Meanwhile, do the host half.** Most work does not need a television:
-   - `make check` — the host unit suite, sub-second;
+   - `make check` — the host gate. Not filler: it runs in MINUTES (616 s measured 2026-09-17,
+     most of it `tests/test_harness.py`), so start it and let it run, or reach for `make lint` if
+     you want something that answers inside the poll window;
    - **`make sim`** — the real app core on macOS against the real PMS, screenshotting itself, and
      **N instances run at once**. Layout, focus, navigation, every screen and the whole Plex data
      layer are answerable there. See the **`ui-sim`** skill. It cannot answer frame rate, text

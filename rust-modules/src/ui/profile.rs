@@ -274,7 +274,7 @@ mod imp {
                 return;
             }
         };
-        let path = crate::paths::in_runtime_dir("plxnative-hwcnt.jsonl");
+        let path = crate::paths::in_runtime_dir(crate::paths::runtime_file::HARDWARE_COUNTERS);
         let file = match OpenOptions::new()
             .create(true)
             .truncate(true)

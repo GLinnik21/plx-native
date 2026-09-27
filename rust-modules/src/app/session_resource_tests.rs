@@ -39,8 +39,8 @@ mod tests {
         fn resources(
             &mut self,
             _: &crate::plex::account::AccountClient,
-        ) -> Option<Vec<crate::plex::account::Resource>> {
-            Some(vec![
+        ) -> Result<Vec<crate::plex::account::Resource>, crate::plex::account::CallEvidence> {
+            Ok(vec![
                 serde_json::from_value(serde_json::json!({"clientIdentifier":"resource-server",
                     "name":"Synthetic", "provides":"server", "owned":true,
                     "accessToken":"synthetic-kid-token"}))
@@ -198,6 +198,7 @@ mod tests {
                     next.recent_searches = vec![session::RecentSearches {
                         user: "kid".into(),
                         terms: vec!["preference after handoff".into()],
+                        extensions: Default::default(),
                     }];
                     Some(next)
                 });
@@ -247,7 +248,7 @@ mod tests {
         fn resources(
             &mut self,
             _: &crate::plex::account::AccountClient,
-        ) -> Option<Vec<crate::plex::account::Resource>> {
+        ) -> Result<Vec<crate::plex::account::Resource>, crate::plex::account::CallEvidence> {
             panic!("offline worker fetched resources")
         }
         fn probe(
@@ -311,9 +312,21 @@ mod tests {
                 server,
                 sources: vec![source],
                 pin: None,
+                extensions: Default::default(),
             }],
             ..Default::default()
         }
+    }
+
+    fn stored_admin() -> Session {
+        let mut session = stored();
+        session.home_users = vec![session::HomeUserRef {
+            uuid: session.user.uuid.clone(),
+            title: session.user.title.clone(),
+            admin: true,
+            ..Default::default()
+        }];
+        session
     }
 
     fn frame(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, records: Vec<SessionEnvelope>) {
@@ -322,6 +335,7 @@ mod tests {
             .map(|r| (r.addr, AppMsg::Session(SessionEvent::Result(r))))
             .collect();
         d.frame_with(rig, Tick::default(), Vec::new(), results, &mut NoTap, false);
+        rig.settle_session_io_for_test(d);
     }
 
     fn command(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, cmd: SessionCmd) {
@@ -533,6 +547,7 @@ mod tests {
                     next.recent_searches = vec![session::RecentSearches {
                         user: "kid".into(),
                         terms: vec![format!("newer preference {address}")],
+                        extensions: Default::default(),
                     }];
                     Some(next)
                 });
@@ -591,11 +606,11 @@ mod tests {
             let _cleanup = ResourceCleanup(&mt);
             tmp.assert_only_target();
             crate::plex::reset_servers_for_test();
-            session::save(&stored());
+            session::save(&stored_admin());
             let before = std::fs::read(tmp.path()).unwrap();
             let origin = crate::plex::Origin::parse("https://192-0-2-10.h.plex.direct:32400").unwrap();
             let pin = crate::plex::ResolvePin::for_origin(&origin, "192.0.2.10").unwrap();
-            let mut rig = live(stored(), &mt);
+            let mut rig = live(stored_admin(), &mt);
             let candidate_origin = origin.base();
             rig.session_adapter.inject_fixture_work(1, move |output, input| {
                 let SessionWork::ServerRoster { session, .. } = input else { panic!("expected roster work") };
@@ -642,6 +657,34 @@ mod tests {
         }
 
         #[test]
+        fn kid_seated_refresh_activation_does_not_install_the_account_grant() {
+            let _lock = crate::testlock::serial();
+            let mt = unsafe { crate::task::MainThread::assume() };
+            let _cleanup = ResourceCleanup(&mt);
+            crate::plex::reset_servers_for_test();
+            let mut rig = live(stored(), &mt);
+            rig.session_adapter.inject_fixture_work(1, |output, input| {
+                let SessionWork::ServerRoster { session, .. } = input else {
+                    panic!("expected roster work")
+                };
+                let activation = serde_json::from_value(serde_json::json!({"Activate": {
+                    "epoch": EPOCH, "expected": crate::auth::SessionIdentity::of(&session),
+                    "candidate": {"machine_id":"account-server", "token":"account-grant",
+                        "name":"Account server", "credit":"", "owned":true,
+                        "origin":"https://192-0-2-10.h.plex.direct:32400",
+                        "address":"192.0.2.10", "location":crate::plex::probe::Location::Local,
+                        "ipv6":false}
+                }})).unwrap();
+                output.progress(crate::auth::AuthProgress::Registry(activation)).unwrap();
+            });
+            let mut d = Dispatcher::<AppHost>::new();
+            command(&mut rig, &mut d, SessionCmd::RefreshRoster);
+            let records = rig.session_adapter.take_results();
+            frame(&mut rig, &mut d, records);
+            assert_eq!(crate::plex::server_ids().count(), 0);
+        }
+
+        #[test]
         fn endpoint_result_from_a_replaced_client_incarnation_cannot_overwrite_its_route() {
             let _lock = crate::testlock::serial();
             let mt = unsafe { crate::task::MainThread::assume() };
@@ -684,7 +727,7 @@ mod tests {
             let mut newer = saved;
             newer.server.address = "127.0.0.2".into();
             newer.server.origin_url = "http://127.0.0.2:32400".into();
-            newer.server.token = "synthetic-new-profile-token".into();
+            newer.server.token = "synthetic-new-tok".into();
             newer.user.token = newer.server.token.clone();
             newer.sources[0].address = newer.server.address.clone();
             newer.sources[0].origin_url = newer.server.origin_url.clone();
@@ -694,7 +737,7 @@ mod tests {
             session::save(&newer);
             let disk = std::fs::read(tmp.path()).unwrap();
             let replacement = crate::plex::register_for_test("resource-server", "127.0.0.2", 32400,
-                "synthetic-new-profile-token", "synthetic-resource-client");
+                "synthetic-new-tok", "synthetic-resource-client");
             assert_eq!(replacement, id);
             let new_client = crate::plex::client_for(id).unwrap();
             assert!(!std::ptr::eq(old_client, new_client));
@@ -703,7 +746,7 @@ mod tests {
             let replacement_generation = new_client.token_gen();
             // URL construction reads the actual Client token without making any request.
             let replacement_url = new_client.direct_play_url("/synthetic", "test").to_url();
-            assert!(replacement_url.contains("X-Plex-Token=synthetic-new-profile-token"));
+            assert!(replacement_url.contains("X-Plex-Token=synthetic-new-tok"));
             let terminal = records[0].clone();
             frame(&mut rig, &mut d, records);
             assert!(std::ptr::eq(new_client, crate::plex::client_for(id).unwrap()));
@@ -751,9 +794,14 @@ mod tests {
                     "clientIdentifier":source.machine_id, "name":source.name, "provides":"server",
                     "owned":source.owned, "accessToken":source.token
                 })).collect();
+                // The wrong-identity rejection fixture below deliberately carries an impossible
+                // empty reconcile. It still has to deserialize before the owner rejects it.
+                let admitted_machine_id = found.first()
+                    .map(|source| source.machine_id.clone()).unwrap_or_default();
                 let progress = serde_json::from_value(serde_json::json!({
                     "epoch":epoch, "expected":identity, "outcome":{"Reconcile":{
-                        "resources":resources, "found":found, "household":[], "settled":[]
+                        "resources":resources, "found":found,
+                        "admitted_machine_id":admitted_machine_id, "household":[], "settled":[]
                     }}
                 })).unwrap();
                 output.complete(crate::auth::AuthProgress::ServerRoster(progress)).unwrap();
@@ -781,7 +829,7 @@ mod tests {
 
         #[test]
         fn a_refresh_reconciles_the_picker_snapshot_before_take_ready_can_save_it() {
-            let mut init = crate::auth::SessionInit::captured(stored());
+            let mut init = crate::auth::SessionInit::captured(stored_admin());
             init.phase = Phase::Profiles;
             init.epoch = u64::from(u32::MAX) + 160;
             init.users = vec![crate::auth::UserTile { uuid: "admin".into(), protected: false,
@@ -837,6 +885,24 @@ mod tests {
             assert_eq!(final_state.server.address, "127.0.0.99");
             assert_eq!(final_state.pms_token(), "contrasting-token");
             assert_eq!(final_state.sources.len(), 1);
+        }
+
+        #[test]
+        fn kid_seated_picker_refresh_does_not_take_the_account_grant() {
+            let mut init = crate::auth::SessionInit::captured(stored());
+            init.phase = Phase::Profiles;
+            init.epoch = u64::from(u32::MAX) + 161;
+            let mut rig = Bridge::for_session_test(init);
+            let mut d = Dispatcher::<AppHost>::new();
+            let before = data(&mut rig);
+            let account = SourceRef {
+                address: "127.0.0.42".into(),
+                origin_url: "http://127.0.0.42:32400".into(),
+                token: "account-grant".into(),
+                ..stored().sources[0].clone()
+            };
+            refresh(&mut rig, &mut d, vec![account], false);
+            assert_eq!(data(&mut rig), before);
         }
     }
 }

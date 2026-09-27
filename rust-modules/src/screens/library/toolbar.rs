@@ -15,6 +15,10 @@ impl Chip {
 }
 
 impl LibraryScreen {
+    pub(super) fn toolbar_elems(&self) -> &'static [u32] {
+        if self.kind == SecKind::Show { &[TYPE, SORT, FILTER] } else { &[SORT, FILTER] }
+    }
+
     pub(super) fn view_section<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<usize> {
         let directory = H::directory(cx);
         self.pending.section().filter(|target| Some(target.epoch) == directory.epoch())
@@ -44,23 +48,16 @@ impl LibraryScreen {
             crate::ui::widgets::STRIP_GAP_WIDE, cx.measure)
     }
 
-    pub(super) fn source_chip<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<Chip> {
-        if self.libraries.len() != 1 { return None; }
-        let directory = H::directory(cx);
-        let section = self.pending.section().map(|target| target.index)
-            .or_else(|| self.libraries.first().map(|(_, section)| *section))?;
-        let section = directory.sections().get(section)?;
-        let owner = section.sid.and_then(|sid| directory.sources().iter().find(|(id, _)| *id == sid))
-            .map(|(_, source)| source.handle.as_str()).unwrap_or("");
-        Some(Chip { name: crate::i18n::msg::browse_library_name_c(),
-            value: CString::new(format!(" · {}", section.row.title)).unwrap_or_default(),
-            note: (!owner.is_empty()).then(|| CString::new(format!("  {owner}")).unwrap_or_default()) })
-    }
-
     pub(super) fn toolbar_chip<H: LibraryLike>(&self, elem: u32, cx: &Cx<'_, H>) -> Chip {
         let listing = H::listing(cx);
         let queued = self.pending.grid().filter(|(target, _)| target.matches(listing)).map(|(_, action)| action);
-        let (name, value) = if elem == SORT {
+        let (name, value) = if elem == TYPE {
+            let kind = match queued {
+                Some(GridAction::LibraryType(kind)) => *kind,
+                _ => listing.library_type(),
+            };
+            (crate::i18n::msg::browse_library_type_c(), kind.title().to_owned())
+        } else if elem == SORT {
             let sort = match queued {
                 Some(GridAction::Sort { key, .. }) => listing.sorts().iter().find(|sort| &sort.key == key),
                 _ => listing.sorts().get(listing.sort_index()),
@@ -86,7 +83,8 @@ impl LibraryScreen {
     }
 
     pub(super) fn toolbar_chip_rect<H: LibraryLike>(&self, elem: u32, cx: &Cx<'_, H>, at: At) -> Rect {
-        let x = MARGIN_X + if elem == FILTER { self.toolbar_chip(SORT, cx).width(cx.measure) + 16.0 } else { 0.0 };
+        let x = MARGIN_X + self.toolbar_elems().iter().take_while(|&&key| key != elem)
+            .map(|&key| self.toolbar_chip(key, cx).width(cx.measure) + 16.0).sum::<f32>();
         let (layout, scroll) = match at {
             At::Drawn => (&self.layout, self.scroll.pos),
             At::SpringTarget => (&self.target_layout, self.scroll_target),

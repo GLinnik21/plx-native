@@ -99,6 +99,12 @@ impl<H: Host> Navigation<H> {
         self.tabs.stack.top()
     }
 
+    /// Reserve the pending page destination's identity during a dip-out, without making it the
+    /// committed top or input owner. The dispatcher constructs its body through the one mounter.
+    pub fn stage_page_target(&mut self) -> Option<EntryId> {
+        self.tabs.stack.stage_pending_target(&mut self.ids)
+    }
+
     pub fn entry(&self, id: EntryId) -> Option<&Entry<H>> {
         self.tabs.stack.entry(id).or_else(|| self.modals.entry(id))
             .or_else(|| self.covered_modals.iter().find_map(|(_, m)| m.entry(id)))
@@ -407,7 +413,13 @@ impl<H: Host> Navigation<H> {
 
     /// `NavEvent::ResetForProfile` (§6.1): every entry is dropped — surfaces first, then the
     /// page stack top-down. The next `Root` rebuilds the tree.
+    ///
+    /// **Also clears the page stack's own pending op and due flag.** A `Root`/`SelectTab`/`PopTo`
+    /// parked before the reset (a per-frame follower's, say) would otherwise still be sitting
+    /// there, and apply — at its own transition's floor, some frames later — over the tree this
+    /// just emptied, minting or restoring an entry the caller never asked for post-reset.
     pub fn reset_for_profile(&mut self) -> Vec<Life<H>> {
+        self.tabs.stack.clear_pending();
         let mut out = Vec::new();
         for (_, modal) in &mut self.covered_modals {
             for surface in modal.surfaces.drain(..).rev() {

@@ -46,6 +46,10 @@ pub trait Host: 'static {
     /// See `stores/metadata.rs`'s module doc for the worked case (`Spot`) and
     /// the rationale for landing it here rather than as tier-3 store state.
     type Memory: Clone + Default + std::fmt::Debug + LogicalState + 'static;
+
+    /// Whether this effect needs the emitting page's frozen navigation bookmark. Hosts may
+    /// exempt housekeeping which never navigates; unknown effects retain the safe default.
+    fn app_fx_needs_return(_fx: &Self::Fx) -> bool { true }
 }
 
 macro_rules! newtype {
@@ -175,6 +179,12 @@ pub trait Measure {
     fn cap_h(&self, sz: i32) -> f32;
     fn line_h(&self, sz: i32) -> f32;
 
+    /// A drawable, ellipsised run through this capability. Native fonts may retain fitted runs;
+    /// replay and recording use the supplied metrics on every call, including missing-key checks.
+    fn fit_line(&self, s: &str, budget: f32, sz: i32, bold: bool) -> std::rc::Rc<CStr> {
+        crate::text::fit_line_by(self, s, budget, sz, bold)
+    }
+
     /// `width` for a borrowed `&str` (spec §4.3, phase 12 D4): builds the transient `CString` so
     /// a draw-time call site measures a `String`/`&str` slice without hand-rolling one — the exact
     /// conversion every `crate::text::text_width(c.as_ptr(), …)` call site already did, moved
@@ -185,6 +195,20 @@ pub trait Measure {
         std::ffi::CString::new(s)
             .map(|c| self.width(&c, sz, bold))
             .unwrap_or(0.0)
+    }
+
+    /// **Are these answers the process's live font, and nothing else?** `true` only for the
+    /// device/simulator font (`TtfMeasure`, the widgets' `LegacyMeasure`) and for
+    /// `ui::rec::Measurements::Live` over one of them. Such a capability may share a result
+    /// memoised from the SAME font across frames and views (`TextView`'s wrap memo) — a wrap
+    /// through it cannot differ from one through the free functions.
+    ///
+    /// Every other capability answers `false`: a recording must SEE each query to write it into
+    /// its table, and a replay or fixture answers from a table that a live-font memo would mask.
+    /// Measured 2026-09-19: with no such sharing, the Detail page re-wrapped every paragraph
+    /// through TrueType on every frame — the page was CPU-bound at 50 fps with nothing drawn.
+    fn live_font(&self) -> bool {
+        false
     }
 }
 

@@ -42,8 +42,7 @@ fn a_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
             first_byte_at: None,
             reserve_deadline: ReserveDeadlineState::new(None, false),
             transport_watchdog: None,
-            stall: None,
-            stall_aborted: false,
+            acquisition: None,
             bounce: Vec::new(),
             bounce_pos: 0,
         };
@@ -98,8 +97,7 @@ fn an_aborted_read_and_seek_cannot_ping_pong_into_new_connections() {
             first_byte_at: None,
             reserve_deadline: ReserveDeadlineState::new(None, false),
             transport_watchdog: None,
-            stall: None,
-            stall_aborted: false,
+            acquisition: None,
             bounce: Vec::new(),
             bounce_pos: 0,
         };
@@ -150,8 +148,7 @@ fn an_expired_candidate_deadline_stops_before_touching_its_transport() {
         first_byte_at: None,
         reserve_deadline: ReserveDeadlineState::new(Some(std::time::Instant::now()), false),
         transport_watchdog: None,
-        stall: None,
-        stall_aborted: false,
+        acquisition: None,
         bounce: Vec::new(),
         bounce_pos: 0,
     };
@@ -236,8 +233,7 @@ fn a_stalled_candidate_body_ends_at_transport_liveness_not_recursive_reserve_ret
         transport_watchdog: Some(TransportWatchdog::with_inactivity(
             std::time::Duration::from_millis(35),
         )),
-        stall: None,
-        stall_aborted: false,
+        acquisition: None,
         bounce: Vec::new(),
         bounce_pos: 0,
     };
@@ -436,8 +432,7 @@ fn io_failed_after_drain_surfaces_once_bounce_is_empty() {
         first_byte_at: None,
         reserve_deadline: ReserveDeadlineState::new(None, false),
         transport_watchdog: None,
-        stall: None,
-        stall_aborted: false,
+        acquisition: None,
         bounce: b"ABCD".to_vec(),
         bounce_pos: 0,
     };
@@ -479,8 +474,7 @@ fn take_curl_leaves_idle_and_seek_on_idle_does_not_open() {
         first_byte_at: None,
         reserve_deadline: ReserveDeadlineState::new(None, false),
         transport_watchdog: None,
-        stall: None,
-        stall_aborted: false,
+        acquisition: None,
         bounce: Vec::new(),
         bounce_pos: 0,
     };
@@ -539,8 +533,7 @@ fn a_curl_seek_after_teardown_fails_instead_of_opening_a_second_connection() {
             first_byte_at: None,
             reserve_deadline: ReserveDeadlineState::new(None, false),
             transport_watchdog: None,
-            stall: None,
-            stall_aborted: false,
+            acquisition: None,
             bounce: Vec::new(),
             bounce_pos: 0,
         };
@@ -588,8 +581,7 @@ fn an_aborted_curl_read_and_seek_cannot_ping_pong_into_new_connections() {
             first_byte_at: None,
             reserve_deadline: ReserveDeadlineState::new(None, false),
             transport_watchdog: None,
-            stall: None,
-            stall_aborted: false,
+            acquisition: None,
             bounce: Vec::new(),
             bounce_pos: 0,
         };
@@ -656,8 +648,7 @@ fn a_curl_transport_failure_crosses_avio_as_io_error_not_eof() {
             first_byte_at: None,
             reserve_deadline: ReserveDeadlineState::new(None, false),
             transport_watchdog: None,
-            stall: None,
-            stall_aborted: false,
+            acquisition: None,
             bounce: Vec::new(),
             bounce_pos: 0,
         };

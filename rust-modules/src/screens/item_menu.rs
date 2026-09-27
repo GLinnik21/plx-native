@@ -56,7 +56,7 @@ use crate::ui::screen::{
     Hover, Placed, RenderStrategy, Screen, ScreenEvent, Scrim, Seat, Step, Stop,
 };
 use crate::ui::table::{Row, Section, TableView};
-use crate::ui::widgets::{Glass, GlassState, PosterMark};
+use crate::ui::widgets::PosterMark;
 use crate::ui::{theme, Rect};
 
 /// What the highlighted row does on OK. Every variant carries the identity it needs, captured when
@@ -165,10 +165,6 @@ const CARD_GAP: f32 = theme::space::MD;
 /// outside `MARGIN_X`.
 const EDGE: f32 = theme::space::XL;
 const EDGE_X: f32 = crate::ui::consts::MARGIN_X;
-/// Scrim peak alpha. Deliberately LIGHTER than the in-player panels' 0.58: the design's whole point
-/// is that the card and the shelf stay legible behind the popover, so this recesses them rather than
-/// blanking them.
-const SCRIM_A: f32 = 0.34;
 
 pub(crate) const SHAPE: &str =
     "ItemMenu{arg:ItemMenuArg,acts:[Option<Action{tag:u32,rk:str,season:u32,part:str,vcodec:str,acodec:str,title:str}>],sel:i32,\
@@ -280,7 +276,7 @@ fn build_with(
     if from_deck {
         // This hides the item from the deck and leaves its resume point intact. Panel sizing
         // follows the translated action, so the destination remains readable before confirming.
-        sec = sec.row(Row::new(crate::i18n::msg::browse_menu_remove_deck()).licon(Icon::Close));
+        sec = sec.row(Row::new(crate::i18n::msg::browse_menu_remove_deck()).licon(Icon::Close).destructive(true));
         acts.push(Some(Action::RemoveFromDeck(m.rk.clone())));
     }
     debug_assert_eq!(acts.len(), sec.rows.len(), "{ACTS_PARALLEL}");
@@ -324,8 +320,13 @@ fn state_rows(
         acts.push(Some(Action::MarkWatched(rk.to_string())));
     }
     if mark != PosterMark::None {
-        sec =
-            sec.row(Row::new(crate::ui::widgets::mark_unwatched_verb()).licon(Icon::MinusCircleFill));
+        // Destructive: it throws the watch record away, so a menu never OPENS on it
+        // (`TableView::opening_row`) — a watched episode opens on Play from Start instead.
+        sec = sec.row(
+            Row::new(crate::ui::widgets::mark_unwatched_verb())
+                .licon(Icon::MinusCircleFill)
+                .destructive(true),
+        );
         acts.push(Some(Action::MarkUnwatched(rk.to_string())));
     }
     if leaf {
@@ -421,7 +422,6 @@ pub(crate) struct ItemMenuScreen {
     /// [`ACTS_PARALLEL`].
     acts: Vec<Option<Action>>,
     table: TableView,
-    glass: GlassState,
     /// The cadence a HELD direction walks this panel's list at. `app/run.rs`'s client-side repeat
     /// timer (`App::held_key`) did this at 110 ms for exactly this menu and, before phase 9, for
     /// the player's four panels; the dispatcher delivers the hardware's ~50 ms `Edge::Repeat`
@@ -433,11 +433,15 @@ pub(crate) struct ItemMenuScreen {
 
 /// Play Trailer only when the already-loaded Detail is this movie/show and already has a trailer.
 /// The menu never talks to PMS.
-fn cached_trailer(sid: crate::plex::ServerId, m: &PmsMovie) -> Option<crate::metadata::Extra> {
+fn cached_trailer(
+    sid: crate::plex::ServerId,
+    m: &PmsMovie,
+    meta: crate::metadata::MetadataView<'_>,
+) -> Option<crate::metadata::Extra> {
     if m.kind != 0 && m.kind != 1 {
         return None;
     }
-    let d = crate::metadata::current()?;
+    let d = meta.current()?;
     if !crate::plex::same_item((d.sid, d.rk.as_str()), (sid, m.rk.as_str())) {
         return None;
     }
@@ -451,7 +455,6 @@ impl ItemMenuScreen {
             arg,
             acts: Vec::new(),
             table: TableView::new(),
-            glass: GlassState::new(),
             repeat: RepeatGate::IDLE,
             built: false,
         }
@@ -460,14 +463,14 @@ impl ItemMenuScreen {
     /// The rows, built ONCE at `Mount`. A hub refetch can re-order the catalog underneath an open
     /// panel, so nothing here is rebuilt while the menu is up — which is also why every [`Action`]
     /// carries the identity it needs rather than an index.
-    fn build_rows(&mut self) {
+    fn build_rows(&mut self, meta: crate::metadata::MetadataView<'_>) {
         if self.built {
             return;
         }
         self.built = true;
         let (sec, acts) = match &self.arg.kind {
             ItemMenuKind::Card { row, from_deck } => {
-                let trailer = cached_trailer(self.arg.sid, row);
+                let trailer = cached_trailer(self.arg.sid, row, meta);
                 build_with(row, *from_deck, trailer.as_ref())
             }
             ItemMenuKind::Episode { mark } => build_episode(&self.arg.rk, *mark),
@@ -476,7 +479,14 @@ impl ItemMenuScreen {
         self.acts = acts;
         // a short list of one-line actions — BODY labels, not menu-size HEADLINE
         self.table.compact = true;
-        self.table.set_sections(vec![sec], 0, false);
+        self.table.open_sections(vec![sec]);
+    }
+
+    /// Where focus starts, and where it falls back to when the key it had is gone — the table's
+    /// opening row, which skips the separator and never lands on a destructive row while any other
+    /// is on offer.
+    fn opening(&self) -> u32 {
+        u32::try_from(self.table.opening_row()).unwrap_or(0)
     }
 
     fn frame(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
@@ -551,11 +561,11 @@ impl ItemMenuScreen {
     }
 }
 
-impl<H: AppLike> Machine<H> for ItemMenuScreen {
+impl<H: AppLike + crate::screens::registry::MetadataLike> Machine<H> for ItemMenuScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
-            ScreenEvent::Mount => self.build_rows(),
+            ScreenEvent::Mount => self.build_rows(H::metadata(cx)),
             ScreenEvent::Tick(tick) => {
                 self.table.sel = cx
                     .focus
@@ -652,7 +662,7 @@ impl<H: AppLike> Focusable<H> for ItemMenuScreen {
         } else {
             FocusKey {
                 entry: self.entry,
-                elem: self.focusable().next().unwrap_or(0),
+                elem: self.opening(),
             }
         }
     }
@@ -663,13 +673,13 @@ impl<H: AppLike> Focusable<H> for ItemMenuScreen {
             elem: if self.acts.get(sel as usize).is_some_and(|a| a.is_some()) {
                 sel
             } else {
-                self.focusable().next().unwrap_or(0)
+                self.opening()
             },
         }
     }
 }
 
-impl<H: AppLike> Screen<H> for ItemMenuScreen {
+impl<H: AppLike + crate::screens::registry::MetadataLike> Screen<H> for ItemMenuScreen {
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -691,18 +701,18 @@ impl<H: AppLike> Screen<H> for ItemMenuScreen {
     ///
     /// That tile is the panel's whole subject: the design's stated point is that "the card and the
     /// rest of the shelf stay where they are, visible behind it", which a scrim over the card
-    /// itself quietly contradicts. The un-dimmed copy is also what the host snapshot holds, so the
-    /// panel's own glass never frosts a dimmed picture of the very card it is about.
+    /// itself quietly contradicts. The un-dimmed copy is also what the host snapshot holds.
     fn scrim(&self) -> Scrim {
-        Scrim::dim(SCRIM_A)
+        // The COMPACT role — the lightest dim in `theme::underlay`: the design's whole point is that
+        // the card and the shelf stay legible behind the popover, so this recesses them rather
+        // than blanking them.
+        Scrim::dim(theme::underlay::DIM_COMPACT)
     }
-    fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {
-        Glass::CACHED.prepare(&mut self.glass, false);
-    }
+    fn prepare(&mut self, _: &mut Budget, _: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
         let r = self.frame(f.measure);
-        Glass::CACHED.panel(p, r, 0.0, PANEL_RAD);
+        crate::ui::widgets::panel_ground(p, r, PANEL_RAD, f.underlay);
         self.table.draw(p, r, f.measure);
         for elem in self.focusable().collect::<Vec<_>>() {
             if let Some(placed) = <Self as Focusable<H>>::place(self, &elem, f.cx, At::Drawn) {
@@ -1006,6 +1016,28 @@ mod tests {
             .any(|a| matches!(a, Action::GoToShow(..) | Action::GoToItem(_))));
     }
 
+    /// **A menu never opens with its focus on a destructive action.** *Mark as Unwatched* throws the
+    /// watch record away (and propagates to the other copies), so a watched episode's menu opens on
+    /// *Play from Start*; a watched season, whose one row it is, still opens on it. *Remove from
+    /// Deck* is last in the shelf menu and is tagged too, so no reorder can make it the opening row.
+    #[test]
+    fn a_menu_never_opens_on_a_destructive_row() {
+        let opening = |(sec, acts): (Section, Vec<Option<Action>>)| {
+            let mut t = TableView::new();
+            t.open_sections(vec![sec]);
+            acts[t.sel as usize].clone().expect("the opening row acts")
+        };
+        assert!(matches!(opening(build_episode("77", PosterMark::Watched)),
+            Action::PlayFromStart(_)), "a watched episode opened on Mark as Unwatched");
+        assert!(matches!(opening(build_season("78", PosterMark::Watched)),
+            Action::MarkUnwatched(_)), "the only row is the one on offer");
+        assert!(matches!(opening(build_episode("79", PosterMark::None)),
+            Action::MarkWatched(_)));
+        let (sec, acts) = build(&item(3, PosterMark::None), true);
+        let deck = acts.iter().position(|a| matches!(a, Some(Action::RemoveFromDeck(_))));
+        assert!(sec.rows[deck.expect("rig: a deck card")].destructive);
+    }
+
     /// **The owner-reported gap, at both entry points.** An item in the MIDDLE is at neither end of
     /// the watch range, so no single toggle can express both destinations — it gets both rows, ✓
     /// then −, the order the two ends of the range read in.
@@ -1255,7 +1287,7 @@ mod tests {
         m.part = "/library/parts/42/file.mkv".to_string();
 
         let mut screen = ItemMenuScreen::new(EntryId(7), card_arg(&m, false));
-        screen.build_rows();
+        screen.build_rows(test_store().view());
         let elem = first_action(&screen, |a| matches!(a, Action::PlayFromStart(_)));
         let req = commit(&mut screen, elem);
         assert_eq!(
@@ -1289,7 +1321,7 @@ mod tests {
                 from_home: false,
             },
         );
-        strip.build_rows();
+        strip.build_rows(test_store().view());
         let elem = first_action(&strip, |a| matches!(a, Action::PlayFromStart(_)));
         let req = commit(&mut strip, elem);
         assert!(
@@ -1469,6 +1501,22 @@ mod tests {
         type Init = Arg;
         type Memory = PageMemory;
     }
+    thread_local! {
+        // TEST ONLY: see `screens::detail::tests`'s `TEST_METADATA` for why this lives here
+        // rather than being threaded as a parameter.
+        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    }
+
+    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+        TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+    }
+
+    impl crate::screens::registry::MetadataLike for HostFixture {
+        fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+            test_store().view()
+        }
+    }
 
     fn with_cx<R>(test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {
         let measure = FixtureMeasure;
@@ -1636,29 +1684,29 @@ mod tests {
     #[test]
     fn play_trailer_is_cache_only_on_the_loaded_detail() {
         let _g = crate::testlock::serial();
-        crate::metadata::set_current_for_test(None);
+        crate::metadata::set_current_for_test(test_store().state_mut(), None);
         assert!(
-            cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None)).is_none(),
+            cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None), test_store().view()).is_none(),
             "no loaded Detail → no row"
         );
 
-        crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+        crate::metadata::set_current_for_test(test_store().state_mut(), Some(crate::metadata::Detail {
             sid: crate::plex::ServerId::UNSET,
             rk: "42".into(),
             kind: "movie".into(),
             extras: vec![extra()],
             ..Default::default()
         }));
-        let hit = cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None)).unwrap();
+        let hit = cached_trailer(crate::plex::ServerId::UNSET, &item(0, PosterMark::None), test_store().view()).unwrap();
         assert_eq!(hit.rk, "99");
 
         let mut other = item(0, PosterMark::None);
         other.rk = "other".into();
         assert!(
-            cached_trailer(crate::plex::ServerId::UNSET, &other).is_none(),
+            cached_trailer(crate::plex::ServerId::UNSET, &other, test_store().view()).is_none(),
             "a related tile of a different item must not steal the loaded trailer"
         );
-        crate::metadata::set_current_for_test(None);
+        crate::metadata::set_current_for_test(test_store().state_mut(), None);
     }
 
     #[test]

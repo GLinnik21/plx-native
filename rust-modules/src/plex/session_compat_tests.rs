@@ -58,6 +58,94 @@ fn a_session_file_written_before_origins_existed_still_boots_as_plain_http() {
     );
 }
 
+#[test]
+fn a_session_written_before_profile_plex_tv_credentials_loads_without_reauth() {
+    let session: Session = serde_json::from_str(two_server_json()).unwrap();
+    assert!(session.can_go_local());
+    assert_eq!(session.user.plex_tv_token, None);
+}
+
+#[test]
+fn a_malformed_or_empty_profile_plex_tv_credential_is_harmless() {
+    for malformed in ["null", "7", "{}", "[]", r#""""#] {
+        let json = format!(r#"{{"client_id":"c","account_token":"a","user":{{
+            "uuid":"u","token":"pms","plex_tv_token":{malformed}}}}}"#);
+        let session: Session = serde_json::from_str(&json).unwrap();
+        assert_eq!(session.user.token, "pms");
+        assert_eq!(session.user.plex_tv_token, None, "{malformed}");
+    }
+}
+
+#[test]
+fn profile_plex_tv_credential_stays_only_in_the_protected_canonical_half() {
+    let mut session = Session::default();
+    session.user.uuid = "managed".into();
+    session.user.plex_tv_token = Some("plex-tv-secret".into());
+    session.remember_profile(ProfileCreds { uuid: "managed".into(),
+        user: session.user.clone(), ..Default::default() });
+    let (public, protected) = split_canonical(&session).unwrap();
+    assert!(!serde_json::to_string(&public).unwrap().contains("plex_tv_token"));
+    assert!(!serde_json::to_string(&public).unwrap().contains("plex-tv-secret"));
+    assert!(protected.contains("plex_tv_token"));
+    let joined = join_canonical(&public, &protected).unwrap();
+    assert_eq!(joined.user.plex_tv_token.as_deref(), Some("plex-tv-secret"));
+    assert_eq!(joined.profiles[0].user.plex_tv_token.as_deref(), Some("plex-tv-secret"));
+
+    assert!(protected_matches(&session, &protected));
+    session.user.plex_tv_token = Some("rotated-secret".into());
+    assert!(!protected_matches(&session, &protected), "credential rotation is a protected change");
+}
+
+#[test]
+fn plex_tv_credential_never_borrows_owner_or_pms_tokens_for_a_managed_profile() {
+    let _serial = crate::testlock::serial();
+    let _temp = super::test_support::TempSession::new("managed-plex-tv-credential");
+    let mut stored = dialable_home(2, "u-1", false);
+    stored.account_token = "owner-account".into();
+    stored.user.token = "managed-pms".into();
+    save(&stored);
+
+    let mut captured = stored.user.clone();
+    captured.plex_tv_token = Some("managed-plex-tv".into());
+    assert_eq!(plex_tv_credential(&captured).as_deref(), Some("managed-plex-tv"));
+    captured.plex_tv_token = None;
+    assert_eq!(plex_tv_credential(&captured), None);
+
+    stored.home_users.clear();
+    save(&stored);
+    assert_eq!(plex_tv_credential(&captured), None,
+        "unknown legacy scope must not borrow the owner or PMS credential");
+}
+
+#[test]
+fn legacy_owner_credential_fallback_requires_admin_scope_and_the_same_stored_user() {
+    let _serial = crate::testlock::serial();
+    let _temp = super::test_support::TempSession::new("legacy-owner-plex-tv-credential");
+    let mut stored = dialable_home(2, "u-0", false);
+    stored.account_token = "owner-account".into();
+    stored.user.token = "owner-pms".into();
+    save(&stored);
+    assert_eq!(plex_tv_credential(&stored.user).as_deref(), Some("owner-account"));
+
+    let mut mismatched = stored.user.clone();
+    mismatched.uuid = "u-other".into();
+    assert_eq!(plex_tv_credential(&mismatched), None);
+}
+
+#[test]
+fn legacy_single_user_owner_with_no_identity_fields_uses_the_account_credential() {
+    let _serial = crate::testlock::serial();
+    let _temp = super::test_support::TempSession::new("legacy-zero-id-owner-plex-tv-credential");
+    let mut stored = dialable_home(0, "", false);
+    stored.account_token = "owner-account".into();
+    stored.user.id = 0;
+    stored.user.uuid.clear();
+    stored.user.plex_tv_token = None;
+    save(&stored);
+
+    assert_eq!(plex_tv_credential(&stored.user).as_deref(), Some("owner-account"));
+}
+
 /// Tier persistence is additive: old files have no field, and a value written by a future
 /// build must not make the PRIMARY fail to parse (which would route a signed-in TV to QR).
 #[test]
@@ -161,6 +249,45 @@ fn an_absent_trailer_autoplay_field_stays_on() {
     assert!(!off.trailer_autoplay());
 }
 
+const MINIMAL_PROTECTED_AUTH: &str = r#"{"format":"plxnative-session-auth","version":1,"account_token":"tok","server":{},"user":{},"home_users":[],"sources":[],"extensions":{}}"#;
+
+/// #92's contract is "absence is on". `join_canonical` reconstructs a `Session` from a
+/// canonical `PublicPayload` + a decrypted protected auth string — a null/absent
+/// `preferences` blob must not silently turn the hero trailer off.
+#[test]
+fn join_canonical_with_null_preferences_keeps_trailer_autoplay_on() {
+    let public = crate::storage::state::PublicPayload::default();
+    assert_eq!(public.preferences, Value::Null);
+    let session = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
+    assert!(session.trailer_autoplay());
+}
+
+#[test]
+fn join_canonical_with_explicit_false_keeps_trailer_autoplay_off() {
+    let mut public = crate::storage::state::PublicPayload::default();
+    public.preferences = serde_json::json!({"trailer_autoplay": false});
+    let session = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
+    assert!(!session.trailer_autoplay());
+}
+
+/// `public_session` is the Locked/protected-bundle snapshot constructor — it must surface the
+/// same public preference even though it never sees the decrypted credentials.
+#[test]
+fn public_session_with_null_preferences_keeps_trailer_autoplay_on() {
+    let public = crate::storage::state::PublicPayload::default();
+    assert_eq!(public.preferences, Value::Null);
+    let session = public_session(&public);
+    assert!(session.trailer_autoplay());
+}
+
+#[test]
+fn public_session_with_explicit_false_keeps_trailer_autoplay_off() {
+    let mut public = crate::storage::state::PublicPayload::default();
+    public.preferences = serde_json::json!({"trailer_autoplay": false});
+    let session = public_session(&public);
+    assert!(!session.trailer_autoplay());
+}
+
 #[test]
 fn a_fresh_install_defaults_to_auto_only_after_readiness() {
     assert_eq!(
@@ -212,4 +339,120 @@ fn invalid_auto_sign_in_is_soft_and_off() {
         assert!(s.can_go_local());
         assert!(!s.auto_sign_in(), "{value}");
     }
+}
+
+/// The subtitle tone's file contract, in both directions: absence is WHITE (every file written
+/// before the field existed must keep drawing what it drew), a spelling this build does not know
+/// is white rather than a parse failure that would cost the credentials, and every rung survives
+/// the wire under its own explicit name.
+#[test]
+fn the_subtitle_tone_is_white_when_absent_or_unknown_and_round_trips_every_rung() {
+    let parsed: Session = serde_json::from_str(r#"{"client_id":"c"}"#).unwrap();
+    assert_eq!(parsed.subtitle_tone(), SubtitleTone::White);
+    for damaged in [r#""mauve""#, "7", "null", r#"{"a":1}"#] {
+        let text = format!(r#"{{"client_id":"c","subtitle_tone":{damaged}}}"#);
+        let parsed: Session = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed.client_id, "c", "a bad tone must not cost the session: {damaged}");
+        assert_eq!(parsed.subtitle_tone(), SubtitleTone::White, "{damaged}");
+    }
+    for (tone, wire) in [
+        (SubtitleTone::White, "white"),
+        (SubtitleTone::Silver, "grey_85"),
+        (SubtitleTone::LightGrey, "grey_70"),
+        (SubtitleTone::Grey, "grey_55"),
+        (SubtitleTone::DarkGrey, "grey_40"),
+        (SubtitleTone::Charcoal, "grey_28"),
+    ] {
+        let json = serde_json::to_value(Session::default().with_subtitle_tone(tone)).unwrap();
+        assert_eq!(json["subtitle_tone"], wire);
+        let again: Session = serde_json::from_value(json).unwrap();
+        assert_eq!(again.subtitle_tone(), tone);
+    }
+    // the ladder is every rung once, lightest first, and the index is its own inverse
+    assert_eq!(SubtitleTone::LADDER[0], SubtitleTone::White);
+    for (i, tone) in SubtitleTone::LADDER.iter().enumerate() {
+        assert_eq!(tone.index() as usize, i);
+        assert_eq!(SubtitleTone::from_index(i as u8), *tone);
+        assert!(!tone.label().is_empty());
+    }
+    assert_eq!(SubtitleTone::from_index(200), SubtitleTone::White, "out of range is white");
+}
+
+/// The tone lives in the PUBLIC preferences half of the canonical split, so it must survive
+/// `split_public` → `join_canonical` and the locked-bundle `public_session` snapshot alike.
+#[test]
+fn the_subtitle_tone_survives_the_canonical_split() {
+    let session = Session::default().with_subtitle_tone(SubtitleTone::DarkGrey);
+    let public = split_public(&session).unwrap();
+    assert_eq!(public.preferences["subtitle_tone"], "grey_40");
+    let joined = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
+    assert_eq!(joined.subtitle_tone(), SubtitleTone::DarkGrey);
+    assert_eq!(public_session(&public).subtitle_tone(), SubtitleTone::DarkGrey);
+    // …and a null preferences blob is white, not a failure
+    let empty = crate::storage::state::PublicPayload::default();
+    assert_eq!(public_session(&empty).subtitle_tone(), SubtitleTone::White);
+}
+
+/// **A session written before household evidence existed reads as TODAY's behaviour, not worse.**
+///
+/// `SourceRef::home`/`owner_id` are absent from every file on every television right now, and the
+/// deserializer defaults them to `false`/`0`. That pair is chosen, not inherited: with no
+/// evidence, [`crate::plex::is_household`] answers exactly what raw `owned` answers — which is
+/// what the whole app did before the field existed — and the record self-corrects on the next
+/// `/api/v2/resources`, which every boot and every profile switch performs.
+///
+/// It is graded rather than merely documented because the failure is silent in the wrong
+/// direction: a household server defaulting to "outside" is the bug this evidence exists to
+/// remove, and a future serde change that made `home` default `true`, or that dropped the
+/// `#[serde(default)]`, would sign the device out or invent a household on the strength of
+/// nothing.
+#[test]
+fn a_session_written_before_household_evidence_falls_back_to_raw_owned() {
+    let legacy = r#"{"client_id":"cid-1","account_token":"acct",
+        "server":{"name":"Mac mini","machine_id":"aaaa1111","address":"192.168.0.10",
+                  "port":32400,"token":"tok-own"},
+        "user":{"id":7,"uuid":"u-7","title":"Gleb","thumb":"","token":"tok-user"},
+        "home_users":[{"id":111111,"uuid":"u-admin","title":"admin","admin":true}],
+        "sources":[
+          {"machine_id":"aaaa1111","name":"Mac mini","shared_by":"","owned":true,
+           "address":"192.168.0.10","port":32400,"token":"tok-own"},
+          {"machine_id":"bbbb2222","name":"nas-home","shared_by":"friend","owned":false,
+           "address":"203.0.113.9","port":31234,"token":"tok-share"}]}"#;
+    let s: Session = serde_json::from_str(legacy).expect("a pre-evidence session file parses");
+
+    assert!(
+        s.sources.iter().all(|x| !x.home && x.owner_id == 0),
+        "no file on disk carries either field yet"
+    );
+    let household = s.household_ids();
+    assert_eq!(household, [111_111], "the roster is unaffected by the source shape");
+    for source in &s.sources {
+        assert_eq!(
+            crate::plex::is_household(
+                crate::plex::GrantEvidence {
+                    owned: source.owned, home: source.home, owner_id: source.owner_id,
+                }
+                .grant(),
+                &household,
+            ),
+            source.owned,
+            "with no evidence the verdict is raw `owned` — {}", source.machine_id,
+        );
+    }
+}
+
+/// **The subtitle timing offset is not in the session file.** A timing error belongs to one
+/// subtitle track against one media file, so the offset lives and dies with the playback
+/// (`player::set_subtitle_offset`) and a stored one would put the last film's correction on the
+/// next film. Neither the flat session nor the DB8 public preferences carry the key.
+#[test]
+fn the_session_file_carries_no_subtitle_offset() {
+    let json = serde_json::to_value(Session::default()).unwrap();
+    assert!(json.get("subtitle_offset_ms").is_none(), "the session file names no offset: {json}");
+    let public = split_public(&Session::default()).unwrap();
+    assert!(
+        public.preferences.get("subtitle_offset_ms").is_none(),
+        "the public preferences name no offset: {}",
+        public.preferences
+    );
 }

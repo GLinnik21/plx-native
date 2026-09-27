@@ -1,0 +1,17 @@
+[
+  {
+    "name": "stable",
+    "app_id": "com.beb.plxnative",
+    "object_id": "plxstate.stable"
+  },
+  {
+    "name": "debug",
+    "app_id": "com.beb.plxnative.debug",
+    "object_id": "plxstate.debug"
+  },
+  {
+    "name": "nightly",
+    "app_id": "com.beb.plxnative.nightly",
+    "object_id": "plxstate.night"
+  }
+]

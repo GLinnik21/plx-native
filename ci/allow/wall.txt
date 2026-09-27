@@ -1,4 +1,5 @@
-# count: 2
+# count: 3
 # Wall-clock reads in ui/ and app/ are INSTRUMENTS only (spec §15.2); logical state ticks.
 rust-modules/src/ui/profile.rs	the draw-phase profiler
 rust-modules/src/app/recorder.rs	the recorder times its own spend (rec=)
+rust-modules/src/app/adapters/poster.rs	throttles the residency-loss log line; app/clock.rs is main-thread only and unresident/lookup also run on worker threads

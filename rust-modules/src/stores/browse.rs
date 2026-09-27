@@ -14,7 +14,7 @@ use super::StoreId;
 
 #[allow(unused_imports)] // Shared owner vocabulary; some members are feature/test specific.
 pub(crate) use crate::browse::{
-    Cursor, CursorAt, GenreEntry, SecFetch, SecKind, SortEntry, SourceState, SrcGroup, SrcRow,
+    Cursor, CursorAt, GenreEntry, LibraryType, SecFetch, SecKind, SortEntry, SourceState, SrcGroup, SrcRow,
 };
 #[allow(unused_imports)] // Shared owner vocabulary; some members are feature/test specific.
 pub(crate) use crate::browse::section_hubs::{HubsId, HubsSnapshot, HubsView, Publication};
@@ -62,7 +62,16 @@ pub(crate) enum BrowseCmd {
     #[cfg(test)]
     SetCur(usize),
     RecheckShares,
-    /// The Home editor's draft commit: one record for the whole session.
+    /// The Home editor's draft commit: one record for the whole session, carrying **the rows the
+    /// viewer ANSWERED** — `(section index, the value they left it at)` — and not the rows the
+    /// editor happened to be showing.
+    ///
+    /// The distinction is provenance, and only the screen holding the draft has it
+    /// (`screens::onboard`'s `answered`, which is the set of rows a press actually moved, recorded
+    /// by the press rather than recovered from the values afterwards). A row missing from this list
+    /// is a value nobody chose: it keeps re-deriving from its default rather than being frozen as
+    /// though it were a decision (`plex::pins::answers`). An EMPTY list is still a commit — the
+    /// question was put and every default was left alone.
     ApplyPins(Vec<(usize, bool)>),
     RetryDiscovery,
     /// The profile/account switch: wipe everything and supersede everything in flight.
@@ -114,8 +123,8 @@ impl BrowseStore {
     }
 
     pub(crate) fn run(&mut self, cmd: BrowseCmd) -> bool {
-        let save_cursor = matches!(&cmd, BrowseCmd::Addressed {
-            work: LibraryWork::SaveCursor { .. }, ..
+        let change_sensitive = matches!(&cmd, BrowseCmd::Discovery(_) | BrowseCmd::Addressed {
+            work: LibraryWork::SaveCursor { .. } | LibraryWork::Hubs { .. }, ..
         });
         let quiet = matches!(&cmd, BrowseCmd::Addressed {
             work: LibraryWork::Want { .. } | LibraryWork::Letters | LibraryWork::Genres, ..
@@ -128,38 +137,45 @@ impl BrowseStore {
         if matches!(&cmd, BrowseCmd::Reset) {
             self.adapter = Arc::new(Default::default());
         }
-        let discovery = matches!(&cmd, BrowseCmd::Discovery(_));
         let changed = self.state.run_owned(&self.adapter, cmd) || roster_changed;
-        if (save_cursor && changed) || (!quiet && !save_cursor && (!discovery || changed)) {
+        if !quiet && (!change_sensitive || changed) {
             self.bump();
         }
         changed
     }
 
-    pub(crate) fn pump(&mut self) -> super::StoreOutcome {
+    pub(crate) fn pump_with_gate(&mut self, gate: &crate::ui::landgate::Gate) -> super::StoreOutcome {
         if !self.state.pump_needs_work(&self.adapter) {
             return Default::default();
         }
         let roster_changed = self.sync_roster();
         let source_gen = self.state.source_list_gen();
-        let mut outcome = self.state.pump_owned(&self.adapter);
+        let mut outcome = self.state.pump_owned_with_gate(&self.adapter, gate);
         outcome.changed |= roster_changed || source_gen != self.state.source_list_gen();
         if outcome.changed {
             self.bump();
         }
         outcome
     }
+    #[cfg(test)]
+    pub(crate) fn pump(&mut self) -> super::StoreOutcome {
+        self.pump_with_gate(crate::ui::landgate::fixture_gate())
+    }
 
-    pub(crate) fn discover_pump(&mut self) -> super::StoreOutcome {
+    pub(crate) fn discover_pump_with_gate(&mut self, gate: &crate::ui::landgate::Gate) -> super::StoreOutcome {
         if !self.state.discovery_needs_pump(&self.adapter) {
             return Default::default();
         }
         let roster_changed = self.sync_roster();
         let source_gen = self.state.source_list_gen();
-        let mut outcome = self.state.discover_pump_owned(&self.adapter);
+        let mut outcome = self.state.discover_pump_owned_with_gate(&self.adapter, gate);
         outcome.changed |= roster_changed || source_gen != self.state.source_list_gen();
         if outcome.changed { self.bump(); }
         outcome
+    }
+    #[cfg(test)]
+    pub(crate) fn discover_pump(&mut self) -> super::StoreOutcome {
+        self.discover_pump_with_gate(crate::ui::landgate::fixture_gate())
     }
 
     pub(crate) fn listing_snapshot(&mut self) -> ListingSnapshot {
@@ -389,6 +405,7 @@ pub(crate) enum QueryEdit {
     Sort { key: String, desc: bool },
     Unwatched(bool),
     Genre(Option<String>),
+    LibraryType(LibraryType),
 }
 
 #[derive(Clone, Debug)]
@@ -423,7 +440,7 @@ impl<H: super::StoreEffectHost> Machine<H> for BrowseStore {
                 self.run(c.clone());
             }
             StoreEv::Pump { .. } => {
-                self.pump().endpoints.emit(fx);
+                self.pump_with_gate(&crate::ui::landgate::Gate::default()).endpoints.emit(fx);
             }
         }
         Handled::Yes
@@ -482,6 +499,14 @@ mod contract_tests {
             &first.browse.borrow().adapter,
             &second.browse.borrow().adapter,
         ));
+        // Establish a clean baseline on `first` before the real op: notices are owned per
+        // `Stores` instance (one per `Bridge`), not shared, so this has no effect on `second` —
+        // it just guards against a notice this test's own seeding might one day bump (it
+        // currently doesn't: seeding writes `self.state` directly and never calls `bump()`,
+        // which is exactly why the assertion below expects generation 1, not 2+) — the same
+        // idiom the other contract tests in this module already use before their own
+        // exact-equality check.
+        let _ = first.take_notices();
         first.browse_run(BrowseCmd::Reset);
         assert_eq!(first.take_notices(), [(StoreId::Browse, 1)]);
         assert!(second.take_notices().is_empty());
@@ -492,6 +517,7 @@ mod contract_tests {
         let _guard = crate::testlock::serial();
         crate::plex::reset_servers_for_test();
         let stores = crate::stores::Stores::default();
+        let _ = stores.take_notices();
         let before = stores.browse.borrow().gen();
         let mut directory = DirectorySnapshot::default();
         {
@@ -504,6 +530,38 @@ mod contract_tests {
         }
         assert_eq!(stores.browse.borrow().gen(), before);
         assert!(stores.take_notices().is_empty());
+    }
+
+    #[test]
+    fn hubs_housekeeping_notices_only_a_new_publication() {
+        let _guard = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        let mut browse = BrowseStore::default();
+        browse.seed_two_source_table_for_test();
+        browse.seed_shelves_for_test(0, &["published"], 1);
+        let id = browse.hubs_snapshot().view().id().unwrap();
+        let target = SectionAddress { epoch: id.epoch, sid: id.sid, section: id.section };
+        browse.take_notice();
+        let before = browse.gen();
+        let request = |target, may_publish| BrowseCmd::Addressed {
+            target, work: LibraryWork::Hubs { may_publish },
+        };
+        for may_publish in [false, true] {
+            assert!(!browse.run(request(target, may_publish)));
+            assert!(!browse.run(request(SectionAddress { epoch: target.epoch + 1, ..target }, may_publish)));
+        }
+        assert_eq!(browse.gen(), before, "unchanged and stale Hubs work must stay quiet");
+        assert_eq!(browse.take_notice(), None);
+
+        crate::browse::section_hubs::stage_shelves_for_owner_test(&mut browse.state, 0);
+        assert!(!browse.run(request(target, false)));
+        assert_eq!(browse.gen(), before, "a held staged publication is still unchanged");
+        assert!(browse.run(request(target, true)));
+        assert_eq!(browse.gen(), before + 1);
+        assert_eq!(browse.take_notice(), Some(before + 1), "a committed shelf set still owes its notice");
+        assert!(!browse.run(request(target, true)));
+        assert_eq!(browse.take_notice(), None, "the same publication is noticed once");
+        assert_eq!(browse.gen(), before + 1);
     }
 
     #[test]
@@ -651,6 +709,9 @@ mod contract_tests {
     #[test]
     fn controlled_roster_addition_is_one_published_change_even_when_spawn_is_refused() {
         let _guard = crate::testlock::serial();
+        // `sync_roster_owned` also watches the process-global session generation. Keep it settled
+        // so the exact notice count below grades this roster addition, not an async session read.
+        let _session = crate::plex::session::TempSession::new("controlled-roster-spawn-refused");
         crate::plex::reset_servers_for_test();
         let stores = crate::stores::Stores::default();
         let _ = stores.take_notices();

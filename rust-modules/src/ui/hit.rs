@@ -170,6 +170,35 @@ impl<K: Copy + Eq> HitMap<K> {
     }
 }
 
+/// **The pointer census: every control the D-pad can activate, clicked all over** (issue #162).
+///
+/// `controls` is what a screen's `Focusable` declares — each element's key and the rect `place`
+/// gives it, i.e. what D-pad focus lands on. Each is clicked on a 5×5 grid inset 1 px from its
+/// edges against the map the screen's draw filled, and every point must ACTIVATE that element.
+/// Returns one line per point that did not: a control with no stop, a stop smaller than its
+/// control, or — the #162 shape — another stop registered above it. Empty means clickable.
+#[cfg(test)]
+pub(crate) fn pointer_gaps<K: Copy + Eq + std::fmt::Debug>(
+    map: &mut HitMap<K>,
+    owner: EntryId,
+    controls: &[(FocusKey<K>, crate::ui::Rect)],
+) -> Vec<String> {
+    let mut gaps = Vec::new();
+    for &(key, r) in controls {
+        for ix in 0..5 {
+            for iy in 0..5 {
+                let x = r.x + 1.0 + (r.w - 2.0) * ix as f32 / 4.0;
+                let y = r.y + 1.0 + (r.h - 2.0) * iy as f32 / 4.0;
+                let got = map.resolve(Some(owner), PointerKind::Click, x, y, None).activate.map(|(k, _)| k.elem);
+                if got != Some(key.elem) {
+                    gaps.push(format!("{:?} at ({x}, {y}) activates {got:?}", key.elem));
+                }
+            }
+        }
+    }
+    gaps
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

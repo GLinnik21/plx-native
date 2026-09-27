@@ -3,8 +3,8 @@
 A fast, unofficial [Plex](https://www.plex.tv/) client for LG webOS televisions. Native, not a web
 page — the interface is drawn straight on the GPU at 60 fps, and video plays on the TV's own decoder.
 
-*In daily use on a 2019 LG set. Get it from the
-[latest release](https://github.com/GLinnik21/plx-native/releases/latest).*
+*In daily use on a 2019 LG set. Get started with the
+[installation guide](docs/install-and-verify.md).*
 
 ## Why this exists
 
@@ -20,7 +20,9 @@ day to watch things off my server in the next room.
 
 ## What it looks like
 
-Real screenshots off the television, not mockups.
+Real captures of the app, not mockups: the same code that runs on the television, on the desktop
+simulator, browsing a demo library of openly licensed films
+([credits](docs/screenshots/CREDITS.md)). `make screenshots` regenerates them.
 
 ![Home](docs/screenshots/home.jpg)
 
@@ -28,7 +30,10 @@ Real screenshots off the television, not mockups.
 
 ![Library](docs/screenshots/library.jpg)
 
-**Library** — sort, filter (including unwatched-only), and an A–Z rail down the side.
+**Library** — a library opens on its own shelves: what you're partway through, with the time
+left under the focused card, and what just landed. Further down is the full grid, with sort,
+filter (including unwatched-only) and an A–Z rail down the side
+([pictured here](docs/screenshots/ux-library-grid.jpg)).
 
 ![Search](docs/screenshots/search.jpg)
 
@@ -36,8 +41,8 @@ Real screenshots off the television, not mockups.
 
 ![Player](docs/screenshots/player.jpg)
 
-**Player** — the transport with chapters and track menus, drawn on top of video the
-television is decoding itself.
+**Player** — the transport with chapters and track menus, drawn over video the television decodes
+itself. (In this capture the frame under it was decoded by the simulator.)
 
 ## What it does
 
@@ -55,38 +60,66 @@ television is decoding itself.
 
 ## Will it work on my television?
 
-Video has been watched on two sets in the world, so this is deliberately specific about which:
+**It needs webOS 4.0 or newer**; older firmware won't start — you'd get a tile that does nothing.
+Past that, it most likely will. I develop and test on a 2019 set, and opt-in usage reports show
+video playing on sets from 2018 through the newest, on webOS 11 — both direct play and server
+transcodes, Developer Mode installs included.
 
-| Your set | What's known |
+### Known issues
+
+| Where | What happens |
 |---|---|
-| **webOS 4.5** — LG 49SM9000PLA | Plays video. My own television; tested before every release. |
-| **webOS 6.5.2** — one LG 65UP7560AUD | Plays video, [reported by someone else](https://github.com/GLinnik21/plx-native/issues/22) — six of eight attempts. |
-| **webOS 10.3.1** — one rented set | The pipeline accepted HEVC direct play, though nobody watched the picture. Every server transcode is refused, so a file this app can't direct-play won't play at all. |
-| **Anything else from webOS 4.0 up** | Starts — the binary resolves cleanly against nine real firmware images. Nothing further is known. |
-| **webOS 3.9 and older** | Won't start — you'd get a tile that does nothing. |
+| **Some 2019 sets on LG's k5lp or k3lp chip**, installed through Developer Mode | Video won't play. On these sets LG's Developer Mode sandbox can withhold a device the video path needs — Kodi and Moonlight hit the same wall. The app checks for it and says so instead of crashing; other sets on the same chip play normally. On a rooted TV with Homebrew Channel, the failure screen offers **Repair**, which applies the Homebrew Channel fix to the sandbox (one owner fixed it this way from a root shell; the button itself hasn't been run on an affected set yet). Without root there is no fix. |
+| **2018 sets on firmware that reports platform release 3.9.3** | Sign-in and browsing work, but video has never been seen to start on one, and no error is reported either: [#249](https://github.com/GLinnik21/plx-native/issues/249). |
+| **Sets on LG's k6hp chip** | A crash seen in opt-in crash reports and not reproduced here, because I have no such set: [#174](https://github.com/GLinnik21/plx-native/issues/174). |
 
-If your set is in the middle, [tell me what happened](https://github.com/GLinnik21/plx-native/issues)
-— it working is as useful a report as it failing.
+### Rooted or not
+
+**No root is needed.** A regular TV in Developer Mode runs everything except the k5lp/k3lp Repair
+above. What Developer Mode costs you is renewal: if the session lapses, LG removes the apps
+installed through it ([how to keep them](docs/install-and-verify.md#important-developer-mode-expires)).
+A rooted TV with Homebrew Channel has no expiry.
+
+If something goes wrong, check [Troubleshooting](docs/troubleshooting.md) first, then
+[tell me what happened](https://github.com/GLinnik21/plx-native/issues) — and if you own one of the
+sets above, it working is as useful a report as it failing.
 
 ## Installing
 
-You need a Plex account and server, and a way to install unsigned apps: the
-[Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel) or LG Developer Mode. You do
-**not** need a rooted TV — the app runs in LG's normal sandbox like anything else on the set.
+**First time installing an app outside the LG Content Store?** Follow the
+[**step-by-step installation guide**](docs/install-and-verify.md). It starts with a regular LG
+webOS TV, a computer on the same network, and a Plex account with access to your own or a shared
+server. **No root is required.**
 
-**PlxNative is in the Homebrew Channel's app list** — install it from there directly, no manual
-`.ipk` needed. Or grab the `.ipk` from the
-[latest release](https://github.com/GLinnik21/plx-native/releases) and install it with
-[dev-manager-desktop](https://github.com/webosbrew/dev-manager-desktop).
+Set up LG Developer Mode and connect with webOS Dev Manager, then choose:
 
-**Check the download against `ipk.sha256` before you sideload it.** Nothing in this chain is
-code-signed, and pointing the Channel at a bare `.ipk` skips the hash check it would otherwise do
-for you. [docs/install-and-verify.md](docs/install-and-verify.md) has the commands, which release
-asset is which, and what the app writes, reads and reaches once it's on your set.
+- **Install PlxNative directly:** add only PlxNative to the TV; install future `.ipk` updates from
+  your computer.
+- **Install Homebrew Channel first:** get an app catalogue on the TV, then install PlxNative and
+  its updates with the remote.
 
-Installing through **Developer Mode** also means LG expires the session after 1000 hours and
-*uninstalls your apps* when it does; dev-manager-desktop can renew it. The Homebrew Channel has no
-expiry.
+**Already have Homebrew Channel?** Find [PlxNative in its catalogue](https://repo.webosbrew.org/apps/com.beb.plxnative/)
+and select **Install**. Skip the computer setup.
+
+**Developer Mode needs periodic renewal.** If it expires and LG disables Developer Mode, apps
+installed through it are removed. Installing Homebrew Channel through Developer Mode does not
+remove that requirement. The guide explains [how to renew the session](docs/install-and-verify.md#important-developer-mode-expires).
+
+For manual `.ipk` downloads, [verify the release checksum](docs/install-and-verify.md#verifying-the-package)
+before installing. Homebrew Channel verifies catalogue downloads for you.
+
+## Nightly builds
+
+Every day `main` moves, CI cuts a nightly `.ipk` from wherever it stands and publishes it as a
+[prerelease](https://github.com/GLinnik21/plx-native/releases?q=nightly). It installs beside the
+regular app as **"PlxNative Nightly"** — its own tile, its own sign-in — so trying it never touches
+the release you already trust. The newest one is always linked from
+[plxnative.com/nightly/latest.json](https://plxnative.com/nightly/latest.json).
+
+**It is not tested on a television.** It passes the same automated build and packaging checks a
+release does, but nobody has watched it play. It is not in the Homebrew Channel and does not
+update itself — reinstall by hand whenever you want the next one — and each nightly is deleted
+30 days after it is published, so link to a specific `.ipk` at your own risk.
 
 ## Privacy
 
@@ -97,6 +130,10 @@ and to `discover.provider.plex.tv` for cast biographies.
 questions, each answerable with Don't Share, both reversible later under Account → Settings →
 Privacy & data. No title, search term, subtitle line, server name or address can appear in any
 report. [`PRIVACY.md`](PRIVACY.md) is the whole statement, including the schemas.
+
+ASS/SSA subtitles render natively during direct play, including styles, positioning, overlapping
+signs and dialogue, karaoke, and embedded fonts. External ASS files retain their original scripts.
+Transcoded playback continues to use the server's subtitle burn-in.
 
 ## The honest scope
 
@@ -141,3 +178,13 @@ with the binary and not only with this repository.
 This is an unofficial client, not affiliated with, endorsed by, or sponsored by Plex GmbH or LG
 Electronics. "Plex", "Rotten Tomatoes", "IMDb", "TMDB", "LG" and "webOS" are trademarks of their
 respective owners; where they appear in the app, they identify whose service or score is being shown.
+
+## Star history
+
+<a href="https://www.star-history.com/?repos=glinnik21%2Fplx-native&type=date&legend=bottom-right">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=glinnik21/plx-native&type=date&theme=dark&legend=bottom-right">
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=glinnik21/plx-native&type=date&legend=bottom-right">
+    <img alt="Star history chart" src="https://api.star-history.com/chart?repos=glinnik21/plx-native&type=date&legend=bottom-right">
+  </picture>
+</a>

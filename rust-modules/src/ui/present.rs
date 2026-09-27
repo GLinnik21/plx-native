@@ -146,6 +146,13 @@ impl Present {
         }
     }
 
+    /// Side-effect-free: did anything CHANGE since the last take — damage, motion or a worker's
+    /// wake? `peek` without its two unconditional terms (the bound video plane and the keepalive),
+    /// which present a frame without anything on it having moved.
+    pub fn changed(&self) -> bool {
+        self.dirty || self.motion || self.door.load(Ordering::Acquire)
+    }
+
     /// Side-effect-free: what `take` would answer (the worker door included, un-consumed).
     pub fn peek(&self, tick_ms: u32) -> bool {
         self.video_plane

@@ -34,6 +34,15 @@ CASES = [
     (BLOCK, "tests/run.py --list-foo"),
     (BLOCK, "tools/tv-session.sh up --screen home"),
     (BLOCK, "tools/tv-session.sh key down ok"),
+    (BLOCK, "tools/tv-session.sh screen off"),
+    # `sound` is a device command exactly like `screen` -- it reaches the television over ssh for
+    # off/on AND for status (getVolume is still a round trip to the set), so all three subcommands
+    # block. The classifier keys on the tv-session.sh SUBCOMMAND word ("sound"), not on the literal
+    # word "status" (which only the top-level `tv-session.sh status` allows through read-only) --
+    # `tv-session.sh sound status` is a different, nested word and must still block.
+    (BLOCK, "tools/tv-session.sh sound off"),
+    (BLOCK, "tools/tv-session.sh sound on"),
+    (BLOCK, "tools/tv-session.sh sound status"),
     (BLOCK, "tools/capture-screen.sh out.png DISPLAY"),
     (BLOCK, "ssh root@192.0.2.10 'cat /tmp/plxnative-events.log'"),
     (BLOCK, "sshpass -p alpine scp pkg/plxnative root@192.0.2.10:/tmp/"),
@@ -71,6 +80,11 @@ CASES = [
     (ALLOW, 'grep -rn "ssh root@" docs/'),
     (ALLOW, "ssh someserver.example.com uptime"),
     (ALLOW, "PLX_TV_LOCK_BYPASS=1 ssh root@1.2.3.4 uptime"),          # the documented hatch
+    # "sound" alone, off the tv-session.sh command word, must not trip the classifier -- it keys
+    # on the SUBCOMMAND of tv-session.sh specifically, not on the word appearing anywhere on the
+    # line (prose, a commit message, an unrelated script).
+    (ALLOW, 'git commit -m "tools: add tv-session.sh sound off|on|status"'),
+    (ALLOW, 'grep -rn "sound off" .agents/skills/tv-session/SKILL.md'),
 ]
 
 

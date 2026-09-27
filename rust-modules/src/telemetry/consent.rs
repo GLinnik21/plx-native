@@ -107,6 +107,165 @@ pub(crate) struct Consent {
     /// which destroys both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub errors_id: Option<String>,
+    /// The scope a category was accepted at; `0` while it is off. Carried losslessly from 0.6.6,
+    /// whose scope-based re-ask rules read it: rewriting a 0.6.6 record without these fields would
+    /// forget which extensions a person already accepted or declined.
+    #[serde(default)]
+    pub errors_scope: u32,
+    #[serde(default)]
+    pub usage_scope: u32,
+    /// The extension scope a person declined while keeping the category on. A No to an extension
+    /// is not a withdrawal, and must not be asked again.
+    #[serde(default)]
+    pub errors_declined_scope: u32,
+    #[serde(default)]
+    pub usage_declined_scope: u32,
+    /// Fields this build does not know, kept verbatim so another writer's data survives a rewrite
+    /// by this one.
+    #[serde(flatten, default)]
+    pub(crate) extensions: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Category {
+    Errors,
+    Usage,
+}
+
+/// The Errors scope of the onboarding incident report (`telemetry::incident`): a failed sign-in,
+/// server discovery, sign-in save, locked saved sign-in, profile switch or first content load.
+/// Above 0.6.6's 5 (sign-in error report) and 6 (storage facts) because it is a new report kind
+/// with its own field set, so neither of those acceptances covers it.
+///
+/// **A scope, not a [`POLICY_VERSION`].** Bumping the policy version would turn every stored No
+/// into "unanswered" and re-ask it; a scope only decides what an existing Yes covers. A person who
+/// said Yes before this scope existed is not Granted it — [`report_permission`] answers
+/// `NotDetermined` and the incident is offered, one report at a time, instead of sent.
+pub(crate) const ONBOARDING_REPORT_SCOPE: u32 = 7;
+
+/// One row per (category, scope) bump. Rows 4–6 are the scopes 0.6.6 recorded at the policy
+/// version of the same number, which is what lets [`scope_at_policy_version`] backfill a record
+/// written before scopes existed; a row above 6 is a scope only this line has, never a policy
+/// version any shipped build stored, so the backfill of a 0.6.x record never reaches it.
+const SCOPE_CHANGES: &[(Category, u32)] = &[
+    // playback error report with its steps
+    (Category::Errors, 4),
+    // 0.6.6: sign-in error report
+    (Category::Errors, 5),
+    // 0.6.6: how the sign-in is stored
+    (Category::Errors, 6),
+    // onboarding incident report — [`ONBOARDING_REPORT_SCOPE`]
+    (Category::Errors, ONBOARDING_REPORT_SCOPE),
+    // 0.6.6: how the sign-in is stored, on usage events
+    (Category::Usage, 6),
+];
+
+fn scope_at_policy_version(version: u32, cat: Category) -> u32 {
+    SCOPE_CHANGES
+        .iter()
+        .filter(|&&(c, v)| c == cat && v <= version)
+        .map(|&(_, v)| v)
+        .max()
+        .unwrap_or(version)
+}
+
+/// The scope a fresh opt-in in THIS build accepts: what this build collects. Errors reach
+/// [`ONBOARDING_REPORT_SCOPE`], the onboarding incident report this build sends to whoever accepts
+/// it here. Usage stays at the [`POLICY_VERSION`] baseline: 0.6.6's usage scope 6 (the
+/// `session_storage` property) is not collected here, so this build does not claim consent for it.
+fn current_scope(cat: Category) -> u32 {
+    match cat {
+        Category::Errors => ONBOARDING_REPORT_SCOPE,
+        Category::Usage => scope_at_policy_version(POLICY_VERSION, Category::Usage),
+    }
+}
+
+/// Backfill the accepted scope of a record written before per-category scope existed. Only a
+/// category that is ON with scope still `0` changes, so it is idempotent and never lowers or
+/// overwrites a scope a person already accepted.
+pub(crate) fn migrate_loaded(mut c: Consent) -> Consent {
+    if c.asked_version >= 1 {
+        if c.errors && c.errors_scope == 0 {
+            c.errors_scope = scope_at_policy_version(c.asked_version, Category::Errors);
+        }
+        if c.usage && c.usage_scope == 0 {
+            c.usage_scope = scope_at_policy_version(c.asked_version, Category::Usage);
+        }
+    }
+    c
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalDecision {
+    asked_version: u32,
+    errors: bool,
+    usage: bool,
+    errors_declined_scope: u32,
+    usage_declined_scope: u32,
+    extensions: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalScopes {
+    errors: u32,
+    usage: u32,
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CanonicalIds {
+    analytics: Option<String>,
+    errors: Option<String>,
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+/// Split consent into the three DB8-public slots the canonical state clears atomically on logout.
+pub(crate) fn split_canonical(consent: &Consent) -> Result<crate::storage::state::ConsentPayload, ()> {
+    Ok(crate::storage::state::ConsentPayload {
+        consent: serde_json::to_value(CanonicalDecision {
+            asked_version: consent.asked_version,
+            errors: consent.errors,
+            usage: consent.usage,
+            errors_declined_scope: consent.errors_declined_scope,
+            usage_declined_scope: consent.usage_declined_scope,
+            extensions: consent.extensions.clone(),
+        })
+        .map_err(|_| ())?,
+        scopes: serde_json::to_value(CanonicalScopes {
+            errors: consent.errors_scope,
+            usage: consent.usage_scope,
+        })
+        .map_err(|_| ())?,
+        ids: serde_json::to_value(CanonicalIds {
+            analytics: consent.install_id.clone(),
+            errors: consent.errors_id.clone(),
+        })
+        .map_err(|_| ())?,
+    })
+}
+
+#[cfg(any(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)), test))]
+pub(crate) fn join_canonical(payload: &crate::storage::state::ConsentPayload) -> Result<Consent, ()> {
+    let decision: CanonicalDecision = serde_json::from_value(payload.consent.clone()).map_err(|_| ())?;
+    let scopes: CanonicalScopes = serde_json::from_value(payload.scopes.clone()).map_err(|_| ())?;
+    let ids: CanonicalIds = serde_json::from_value(payload.ids.clone()).map_err(|_| ())?;
+    Ok(Consent {
+        asked_version: decision.asked_version,
+        errors: decision.errors,
+        usage: decision.usage,
+        install_id: ids.analytics,
+        errors_id: ids.errors,
+        errors_scope: scopes.errors,
+        usage_scope: scopes.usage,
+        errors_declined_scope: decision.errors_declined_scope,
+        usage_declined_scope: decision.usage_declined_scope,
+        extensions: decision.extensions,
+    })
 }
 
 impl Consent {
@@ -170,13 +329,72 @@ pub(crate) fn apply(
     };
     let errors_id = keep_or_mint(errors, &prev.errors_id);
     let install_id = keep_or_mint(usage, &prev.install_id);
+    let errors = errors && errors_id.is_some();
+    let usage = usage && install_id.is_some();
+    // A category already on that stays on keeps its OLD accepted scope and whatever extension it
+    // declined — so a record 0.6.6 wrote at a wider scope is not narrowed, and an edit of one
+    // category never accepts or forgets the other's decision. Only a genuinely new opt-in takes
+    // this build's scope, with no prior decline.
+    let scope = |on: bool, was_on: bool, prev_scope: u32, cat: Category| {
+        if !on { 0 } else if was_on { prev_scope } else { current_scope(cat) }
+    };
+    let declined = |on: bool, was_on: bool, prev_declined: u32| if on && was_on { prev_declined } else { 0 };
     Consent {
-        asked_version: POLICY_VERSION,
-        errors: errors && errors_id.is_some(),
-        usage: usage && install_id.is_some(),
+        // Never lower: a record answered against a newer policy stays answered against it.
+        asked_version: prev.asked_version.max(POLICY_VERSION),
+        errors,
+        usage,
         install_id,
         errors_id,
+        errors_scope: scope(errors, prev.errors, prev.errors_scope, Category::Errors),
+        usage_scope: scope(usage, prev.usage, prev.usage_scope, Category::Usage),
+        errors_declined_scope: declined(errors, prev.errors, prev.errors_declined_scope),
+        usage_declined_scope: declined(usage, prev.usage, prev.usage_declined_scope),
+        extensions: prev.extensions.clone(),
     }
+}
+
+/// Whether a report of a given Errors scope may be sent without asking, must be asked about, or
+/// must not be offered at all. Derived, never stored: the stored decision is [`Consent`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum Permission {
+    /// Never answered, or a Yes given before this scope existed and never declined at it. The
+    /// report is OFFERED — sent only on an explicit press, as a one-off with no identifier.
+    NotDetermined,
+    /// Error reports are on at this scope or above: the report is a standing one, sent with the
+    /// crash-report id like any other.
+    Granted,
+    /// Error reports are off, or this scope was declined while they stayed on. Nothing automatic
+    /// and no offer; only a report the person asks for from Details can leave.
+    Declined,
+}
+
+/// **The one question an incident asks consent.** Pure over the stored decision, so every row of
+/// its table is a host test.
+///
+/// "Never answered" is `asked_version == 0`, deliberately not `!answered()`: an answer given
+/// against an older [`POLICY_VERSION`] is still an answer, and a stored No must stay No. Among
+/// Yes answers the accepted scope decides; a decline recorded at or above `scope` is a No to it.
+pub(crate) fn report_permission(c: &Consent, scope: u32) -> Permission {
+    if c.asked_version == 0 {
+        return Permission::NotDetermined;
+    }
+    if !c.errors {
+        return Permission::Declined;
+    }
+    if c.errors_scope >= scope {
+        return Permission::Granted;
+    }
+    if c.errors_declined_scope >= scope {
+        return Permission::Declined;
+    }
+    Permission::NotDetermined
+}
+
+/// [`report_permission`] over the published snapshot. Nothing published yet is `NotDetermined`:
+/// the only thing that answer can lead to is an offer, and an offer sends nothing by itself.
+pub(crate) fn report_permission_now(scope: u32) -> Permission {
+    current().map_or(Permission::NotDetermined, |c| report_permission(&c, scope))
 }
 
 // ---- the cached snapshot, and the disk under it ------------------------------------------------
@@ -220,7 +438,7 @@ pub(crate) fn allows_usage() -> bool {
 }
 
 /// May an ERROR report be sent? The crash channel's twin of [`allows_usage`], failing closed for
-/// the same reason. It gates both `crashreport::report_pending` (the only thing that opens the
+/// the same reason. It gates both `crashreport::recover_pending` (the only thing that opens the
 /// crash log at all) and the sparse in-memory playback-error trace. Consent gates collection, not
 /// just the send: a television whose owner said no is neither scanned for faults nor traced.
 pub(crate) fn allows_errors() -> bool {
@@ -246,6 +464,125 @@ pub(crate) fn errors_id() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_consent_slots_roundtrip_every_policy_field_and_identifier() {
+        let original = Consent {
+            asked_version: 9,
+            errors: true,
+            usage: true,
+            install_id: Some("analytics-fixture".into()),
+            errors_id: Some("errors-fixture".into()),
+            errors_scope: 7,
+            usage_scope: 8,
+            errors_declined_scope: 5,
+            usage_declined_scope: 6,
+            extensions: [("future".into(), serde_json::json!({"enabled":true}))]
+                .into_iter()
+                .collect(),
+        };
+        let slots = split_canonical(&original).unwrap();
+        assert_eq!(join_canonical(&slots).unwrap(), original);
+        assert!(slots.ids.to_string().contains("analytics-fixture"));
+        assert!(!slots.consent.to_string().contains("analytics-fixture"));
+    }
+
+    /// **The report-permission table.** Every row is a stored decision some television really
+    /// has: nothing yet, a Yes on this line before scope 7, a Yes on this build, a No, and 0.6.6's
+    /// migrated "Yes, but not the storage extension" record.
+    #[test]
+    fn report_permission_follows_the_accepted_and_declined_scope() {
+        let s = ONBOARDING_REPORT_SCOPE;
+        assert_eq!(report_permission(&Consent::default(), s), Permission::NotDetermined);
+
+        let yes_at_4 = Consent {
+            asked_version: 4,
+            errors: true,
+            errors_id: Some("e".into()),
+            errors_scope: 4,
+            ..Default::default()
+        };
+        assert_eq!(
+            report_permission(&yes_at_4, s),
+            Permission::NotDetermined,
+            "a Yes given before the onboarding report existed does not cover it"
+        );
+        assert_eq!(report_permission(&yes_at_4, 4), Permission::Granted);
+
+        let yes_here = apply(&Consent::default(), true, false, || Some("e".into()));
+        assert_eq!(yes_here.errors_scope, s);
+        assert_eq!(report_permission(&yes_here, s), Permission::Granted);
+
+        let no = apply(&Consent::default(), false, false, || panic!("minted for a refusal"));
+        assert_eq!(report_permission(&no, s), Permission::Declined);
+        // A No given against an OLDER policy is still a No — never re-read as unanswered.
+        let old_no = Consent { asked_version: 2, ..Default::default() };
+        assert_eq!(report_permission(&old_no, s), Permission::Declined);
+
+        // 0.6.6: errors on at 4 or 5, the scope-6 extension declined. Neither acceptance nor that
+        // decline reaches scope 7, so the report is offered, not sent.
+        for errors_scope in [4, 5] {
+            let migrated = migrate_loaded(Consent {
+                asked_version: 6,
+                errors: true,
+                errors_id: Some("e".into()),
+                errors_scope,
+                errors_declined_scope: 6,
+                ..Default::default()
+            });
+            assert_eq!(report_permission(&migrated, s), Permission::NotDetermined);
+        }
+        let declined_here = Consent { errors_declined_scope: s, ..yes_at_4.clone() };
+        assert_eq!(report_permission(&declined_here, s), Permission::Declined);
+    }
+
+    #[test]
+    fn report_permission_now_reads_the_snapshot() {
+        let _g = crate::testlock::serial();
+        let saved = CURRENT.read().ok().and_then(|g| g.clone());
+        if let Ok(mut g) = CURRENT.write() {
+            *g = None;
+        }
+        assert_eq!(report_permission_now(ONBOARDING_REPORT_SCOPE), Permission::NotDetermined);
+        install(apply(&Consent::default(), true, false, || Some("e".into())));
+        assert_eq!(report_permission_now(ONBOARDING_REPORT_SCOPE), Permission::Granted);
+        install(apply(&Consent::default(), false, true, || Some("u".into())));
+        assert_eq!(report_permission_now(ONBOARDING_REPORT_SCOPE), Permission::Declined);
+        if let Ok(mut g) = CURRENT.write() {
+            *g = saved;
+        }
+    }
+
+    /// Every Errors scope a fresh opt-in can accept has its row, and the backfill of a record any
+    /// shipped build wrote (policy versions 1–6) never lands on a scope that build did not have.
+    #[test]
+    fn every_scope_bump_has_a_row_and_the_backfill_never_reaches_scope_7() {
+        for v in 4..=current_scope(Category::Errors) {
+            assert!(
+                SCOPE_CHANGES.iter().any(|&(c, s)| c == Category::Errors && s == v),
+                "errors scope {v} has no SCOPE_CHANGES row"
+            );
+        }
+        assert_eq!(current_scope(Category::Errors), ONBOARDING_REPORT_SCOPE);
+        assert_eq!(current_scope(Category::Usage), POLICY_VERSION);
+        for version in 1..=6 {
+            let c = migrate_loaded(Consent {
+                asked_version: version,
+                errors: true,
+                ..Default::default()
+            });
+            assert_eq!(c.errors_scope, version, "policy version {version} backfilled wrong");
+        }
+        // An existing Yes is never widened by an edit that keeps it on.
+        let yes_at_4 = Consent {
+            asked_version: 4,
+            errors: true,
+            errors_id: Some("e".into()),
+            errors_scope: 4,
+            ..Default::default()
+        };
+        assert_eq!(apply(&yes_at_4, true, true, || Some("u".into())).errors_scope, 4);
+    }
 
     /// The default is OFF, for both, and unanswered — not "off because someone said no".
     #[test]

@@ -124,5 +124,6 @@ pub(super) fn creds(uuid: &str, token: &str, pin: Option<&str>) -> ProfileCreds 
         },
         sources: vec![],
         pin: pin.map(PinVerifier::new),
+        extensions: Default::default(),
     }
 }

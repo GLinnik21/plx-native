@@ -27,8 +27,9 @@
 //! eviction loop and either can fire first.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::frame::{Budget, Class};
 use super::machine::{PosterKey, PresentHandle};
@@ -42,7 +43,7 @@ pub enum Warm {
     Known,
     /// a slot was claimed and the fetch enqueued — this frame's one prefetch is spent
     Claimed,
-    /// every slot is in flight or evict-protected; try again on a later frame
+    /// the source refused this prefetch for capacity, protection, or admission policy; try later
     Full,
 }
 
@@ -52,14 +53,24 @@ pub enum Warm {
 /// the library never names an application type. Installed once at boot ([`install`]).
 pub trait Source {
     /// A DRAW's probe: `Some(key)` once the source has handed the cache this key's pixels (the
-    /// texture may still be waiting for upload); `None` while empty, in flight or failed. A miss
-    /// claims a slot and starts the fetch. Touches the source's LRU.
+    /// texture may still be waiting for upload). A miss claims a slot and starts the fetch —
+    /// UNLESS the source declines the request, which it may do for its own admission reasons
+    /// (today: an unknown or fast-moving card placement, and a slot cooling
+    /// down from rapid re-eviction). So `None` means empty, DEFERRED, in flight or failed, and
+    /// the cache must go on drawing its placeholder without inferring that work is under way —
+    /// asking again next frame is how a deferred request is eventually honoured. Touches the
+    /// source's LRU.
     fn probe(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> Option<PosterKey>;
     /// The prefetch twin: start the fetch, take nothing, protect nothing.
     fn warm(&self, srv: u16, path: &str, w: i32, h: i32, png: bool) -> Warm;
     /// An item's clearLogo, at the source's one logo request box.
     fn logo(&self, srv: u16, rk: &str) -> Option<PosterKey>;
     fn logo_warm(&self, srv: u16, rk: &str) -> Warm;
+    /// The render cache cannot keep this key resident: either its decoded result was rejected or
+    /// count/byte pressure released its texture. This is one residency notification, not a fetch
+    /// request; before it returns, the source must stop answering READY for the key. A later
+    /// source probe decides whether and when to fetch again.
+    fn unresident(&self, key: PosterKey);
     /// Nothing wanted, fetching or decoded-but-unaccepted — the prefetch gate.
     fn idle(&self) -> bool;
 }
@@ -68,8 +79,19 @@ thread_local! {
     /// The render cache, on the GL thread. A named render-cache static (spec §15.2): screens
     /// reach it through the free functions below until they take it from `Cx` (phases 5–8).
     static CACHE: RefCell<TexCache<PosterKey>> =
-        RefCell::new(TexCache::with_budget(CACHE_CAP, TEX_RESIDENT_BYTES_MAX));
+        RefCell::new(TexCache::with_budget(CACHE_CAP, TEX_RESIDENT_BYTES_MAX * render_area()));
     static SOURCE: Cell<Option<&'static dyn Source>> = const { Cell::new(None) };
+}
+
+static PENDING_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+fn mutate_cache<R>(f: impl FnOnce(&mut TexCache<PosterKey>) -> R) -> R {
+    CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        let result = f(&mut cache);
+        PENDING_BYTES.store(cache.pending.iter().map(|(_, d)| d.rgba.len()).sum(), Ordering::Release);
+        result
+    })
 }
 
 /// One entry per source slot: the source's own eviction policy (`free` on recycle) is the one
@@ -117,6 +139,15 @@ const CACHE_CAP: usize = 64;
 /// than the side that ships a breach.
 pub const TEX_RESIDENT_BYTES_MAX: usize = 44 << 20;
 
+/// How many texels one authored pixel costs: 1 on a television, `n²` under the simulator's
+/// supersampled rendering (`surface::render_scale`), whose images are requested at `n`x per axis.
+/// Every byte ceiling derived from a 1080p frame scales by it, or an `n`x backdrop alone breaches.
+#[inline]
+pub(crate) fn render_area() -> usize {
+    let n = crate::surface::render_scale() as usize;
+    n * n
+}
+
 /// Decoded bytes above which an upload is a [`Class::Residency`] take rather than a
 /// [`Class::Poster`] one (spec §8.1).
 ///
@@ -142,6 +173,20 @@ pub fn install(src: &'static dyn Source) {
     SOURCE.with(|s| s.set(Some(src)));
 }
 
+/// The eviction-reversal scene uses a smaller REAL residency ceiling so it can
+/// evict textures while their source slots still exist; ordinary runs keep 44 MiB.
+#[cfg(feature = "devtriggers")]
+pub(crate) fn scene_residency_budget(bytes: usize) {
+    CACHE.with(|c| c.borrow_mut().bytes_max = bytes * render_area());
+}
+
+/// Start a host test with the real product wrapper/cache but a deliberately small byte ceiling.
+/// The cache is thread-local, so this changes only the calling test's instance.
+#[cfg(test)]
+pub(crate) fn reset_for_test(bytes_max: usize) {
+    mutate_cache(|c| *c = TexCache::with_budget(CACHE_CAP, bytes_max));
+}
+
 fn with_source<T>(f: impl FnOnce(&dyn Source) -> T, absent: T) -> T {
     match SOURCE.with(|s| s.get()) {
         Some(src) => f(src),
@@ -150,8 +195,8 @@ fn with_source<T>(f: impl FnOnce(&dyn Source) -> T, absent: T) -> T {
 }
 
 /// The renderer's question for art on a named server: the resident texture id, or 0 (the
-/// absent-resource rule: draw the placeholder at the final geometry; the request is already
-/// in flight).
+/// absent-resource rule: draw the placeholder at the final geometry; work may be
+/// in flight or deferred by the card's placement admission).
 pub fn resolve_on(srv: u16, path: &str, w: i32, h: i32, png: bool) -> u32 {
     resolve_wh_on(srv, path, w, h, png).0
 }
@@ -201,18 +246,34 @@ pub fn source_idle() -> bool {
 
 /// The source's delivery: one decoded image (or a failure) for a key. Touches no GL.
 pub fn accept(r: PosterReady<PosterKey>) {
-    CACHE.with(|c| c.borrow_mut().accept(r));
+    let unresident = mutate_cache(|c| {
+        c.accept(r);
+        c.take_unresident().collect::<Vec<_>>()
+    });
+    for key in unresident {
+        with_source(|s| s.unresident(key), ());
+    }
 }
 
 /// The source recycled a slot: its texture, if resident, is freed now (GL thread).
 pub fn free(key: PosterKey, up: &mut dyn Uploader) {
-    CACHE.with(|c| c.borrow_mut().free(key, up));
+    mutate_cache(|c| c.free(key, up));
 }
 
 /// The upload step, once per frame in the GL scope (§3.3 step 9). Returns how many landed.
 pub fn prepare(b: &mut Budget, up: &mut dyn Uploader, present: &mut PresentHandle<'_>, now_us: impl Fn() -> u64) -> usize {
-    CACHE.with(|c| c.borrow_mut().prepare(b, up, present, now_us))
+    let (n, unresident) = mutate_cache(|c| {
+        let n = c.prepare(b, up, present, now_us);
+        (n, c.take_unresident().collect::<Vec<_>>())
+    });
+    for key in unresident {
+        with_source(|s| s.unresident(key), ());
+    }
+    n
 }
+
+/// Unuploaded pixels, published after queue mutations and readable by demand workers.
+pub fn pending_bytes() -> usize { PENDING_BYTES.load(Ordering::Acquire) }
 
 /// Whether the upload queue holds work — what forces a present (§3.3 step 8).
 pub fn has_pending() -> bool {
@@ -235,7 +296,7 @@ pub fn resident_bytes() -> usize {
 
 /// Free every resident texture (app exit, GL thread).
 pub fn shutdown(up: &mut dyn Uploader) {
-    CACHE.with(|c| c.borrow_mut().drain_all(up));
+    mutate_cache(|c| c.drain_all(up));
 }
 
 /// A decoded image: an OWNED render resource.
@@ -286,7 +347,10 @@ struct Entry {
 pub struct TexCache<K> {
     resident: HashMap<K, Entry>,
     pending: VecDeque<(K, Decoded)>,
-    failed: HashSet<K>,
+    /// Keys the cache could not keep resident, waiting to cross the key-only [`Source`] seam.
+    /// Rejection and pressure release deliberately share this queue: both revoke the source's
+    /// READY claim, and neither is itself a request to fetch the resource again.
+    unresident: VecDeque<K>,
     cap: usize,
     /// The byte ceiling `evict_for` holds residency under, independent of `cap`
     /// ([`TexCache::with_budget`]). `usize::MAX` (via [`TexCache::new`]) means "count-capped
@@ -309,7 +373,7 @@ impl<K: Copy + Eq + Hash> TexCache<K> {
         Self {
             resident: HashMap::new(),
             pending: VecDeque::new(),
-            failed: HashSet::new(),
+            unresident: VecDeque::new(),
             cap,
             bytes_max,
             clock: 0,
@@ -317,22 +381,36 @@ impl<K: Copy + Eq + Hash> TexCache<K> {
         }
     }
 
-    /// The result handler: moves the pixels into the pending queue and touches no GL.
+    /// The result handler: moves pixels into the pending queue and touches no GL. A rejected
+    /// result queues the same not-resident notification as pressure eviction: recoverability is
+    /// source state, not a second cache-owned failed set.
     pub fn accept(&mut self, r: PosterReady<K>) {
         match r.result {
             Ok(d) => {
-                self.failed.remove(&r.key);
                 self.pending.push_back((r.key, d));
             }
             Err(_) => {
-                self.failed.insert(r.key);
+                self.unresident.push_back(r.key);
             }
         }
     }
 
-    /// Whether `prepare` has work — `Budget::note_queued` reads it at the top of the frame.
+    /// Whether the cache has work: pixels for `prepare`, or an eviction notification that its
+    /// owner must reconcile. Product [`prepare`] drains notifications before it returns; exposing
+    /// them here makes a bare `TexCache` unable to silently lose the other half of an eviction.
     pub fn has_pending(&self) -> bool {
-        !self.pending.is_empty()
+        !self.pending.is_empty() || !self.unresident.is_empty()
+    }
+
+    /// Take keys the cache rejected or released. The product wrappers forward these to
+    /// [`Source::unresident`] immediately after releasing the cache borrow, so the callback may
+    /// inspect application state without coupling this library cache to it. `pub(crate)`, not
+    /// private: a caller that owns a BARE cache and drives `prepare` directly instead of through
+    /// the free-function wrapper above (`ui::fixture`'s `FixtureRig`, which owns no `Source` to
+    /// forward to) still has to drain this queue itself, or `has_pending` never reports false
+    /// again once the cache first evicts past its cap.
+    pub(crate) fn take_unresident(&mut self) -> impl Iterator<Item = K> + '_ {
+        self.unresident.drain(..)
     }
 
     /// The upload step (§3.3 step 9). `now_us` is read before EVERY take — one clock reading per
@@ -404,7 +482,7 @@ impl<K: Copy + Eq + Hash> TexCache<K> {
             up.free(e.tex);
         }
         self.pending.retain(|(pk, _)| *pk != k);
-        self.failed.remove(&k);
+        self.unresident.retain(|ek| *ek != k);
     }
 
     /// Free everything (exit).
@@ -413,7 +491,7 @@ impl<K: Copy + Eq + Hash> TexCache<K> {
             up.free(e.tex);
         }
         self.pending.clear();
-        self.failed.clear();
+        self.unresident.clear();
         self.bytes = 0;
     }
 
@@ -443,6 +521,7 @@ impl<K: Copy + Eq + Hash> TexCache<K> {
             if let Some(e) = self.resident.remove(&k) {
                 self.bytes = self.bytes.saturating_sub(e.bytes);
                 up.free(e.tex);
+                self.unresident.push_back(k);
             }
         }
     }
@@ -460,10 +539,6 @@ impl<K: Copy + Eq + Hash> TexCache<K> {
 
     pub fn resolve_wh(&mut self, k: K) -> Option<(u16, u16)> {
         self.resolve(k).map(|t| (t.w, t.h))
-    }
-
-    pub fn is_failed(&self, k: K) -> bool {
-        self.failed.contains(&k)
     }
 
     pub fn resident_count(&self) -> usize {
@@ -512,6 +587,41 @@ mod tests {
                 rgba: vec![0; 16].into_boxed_slice(),
             }),
         }
+    }
+
+    #[test]
+    fn pending_byte_snapshot_tracks_accept_upload_recycle_and_shutdown() {
+        let _guard = crate::testlock::serial();
+        let old_cache = mutate_cache(|c| std::mem::replace(c, TexCache::with_budget(8, 32)));
+        let image = |key, bytes| PosterReady {
+            key: PosterKey(key),
+            result: Ok(Decoded { w: 1, h: 1, rgba: vec![0; bytes].into_boxed_slice() }),
+        };
+        let mut up = StubUp { next: 0, freed: vec![], warmed: vec![] };
+        let mut present = Present::new();
+        let mut budget = Budget::new();
+        assert_eq!(pending_bytes(), 0);
+        for (key, bytes) in [16, 20, 24, 28, 32].into_iter().enumerate() {
+            accept(image(key as u32, bytes));
+        }
+        accept(PosterReady { key: PosterKey(9), result: Err(PosterError::Decode) });
+        assert_eq!(pending_bytes(), 120, "failures contribute no pixels");
+        free(PosterKey(1), &mut up);
+        assert_eq!(pending_bytes(), 100, "recycled pending pixels release their bytes");
+        budget.begin_frame(0);
+        assert_eq!(prepare(&mut budget, &mut up, &mut PresentHandle(&mut present), || 0), 3);
+        assert_eq!(pending_bytes(), 32, "the fourth image waits beyond the upload quota");
+        assert_eq!(resident_bytes(), 28, "GPU byte eviction is independent of pending bytes");
+        assert_eq!(std::thread::spawn(pending_bytes).join().unwrap(), 32,
+            "workers see the main thread's snapshot, not an empty thread-local cache");
+        accept(image(3, 8));
+        assert_eq!(pending_bytes(), 40, "a replacement's pixels count while queued");
+        free(PosterKey(3), &mut up);
+        assert_eq!(pending_bytes(), 32, "free releases queued replacements as well as residency");
+        shutdown(&mut up);
+        assert_eq!(pending_bytes(), 0, "shutdown releases the remaining queue");
+        assert_eq!(resident_bytes(), 0);
+        mutate_cache(|c| *c = old_cache);
     }
 
     #[test]
@@ -653,6 +763,11 @@ mod tests {
         );
         assert!(c.resolve(4).is_some(), "the newest upload is resident");
         assert!(c.resolve(3).is_some(), "the previous frame's newest survives — LRU, oldest first");
+        assert_eq!(
+            c.take_unresident().collect::<Vec<_>>(),
+            vec![1, 2],
+            "both byte-pressure releases are exposed for source reconciliation"
+        );
         assert!(!c.has_pending());
     }
 

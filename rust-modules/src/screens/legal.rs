@@ -92,8 +92,10 @@ static PRIVACY: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| [
     crate::i18n::msg::settings_legal_privacy_servers_body(),
     crate::i18n::msg::settings_legal_privacy_local(),
     crate::i18n::msg::settings_legal_privacy_local_body(),
+    crate::i18n::msg::settings_legal_privacy_plaintext_body(),
     crate::i18n::msg::settings_legal_privacy_crashes(),
     crate::i18n::msg::settings_legal_privacy_crashes_body(),
+    crate::i18n::msg::settings_legal_privacy_signin_body(),
     crate::i18n::msg::settings_legal_privacy_analytics(),
     crate::i18n::msg::settings_legal_privacy_analytics_body(),
     crate::i18n::msg::settings_legal_privacy_excluded(),
@@ -572,6 +574,10 @@ mod tests {
         assert!(p.contains("Settings shows that identifier as your Analytics ID"));
         // …and the policy says what `auth::forget_account` does to them.
         assert!(p.contains("signing out removes them with it"));
+        // Every profile switched to on this television keeps its own offline access: a server
+        // token and, for a PIN-protected profile, a one-way check of the PIN — never the PIN.
+        assert!(p.contains("server access token"), "the policy never mentions per-profile offline access");
+        assert!(p.contains("PIN"), "the policy never mentions the PIN check");
     }
 
     #[test]

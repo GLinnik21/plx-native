@@ -242,14 +242,6 @@ struct HlsAutomaticOwner {
     user_sequence: u64,
 }
 
-/// Ownership of the callback function installed in one native Starfish `Load`.
-///
-/// [`Shared`] survives reloads, while the library may deliver an event on its own thread after
-/// teardown has started. Each Starfish object address is now session-unique, but Rust still needs
-/// a generation check and drain before resetting this process-long state. A check without this mutex
-/// still has a check/use race against [`Shared::reset_session`]: a callback could validate the
-/// old generation, get descheduled, and then write into the freshly reset next session. Holding
-/// this lock for the complete callback makes retirement a drain barrier as well as a token check.
 /// issue #74 D.1: whether the epoch's Starfish `Load` call has returned yet. Mirrors, on the Rust
 /// side, the `g_load_returned` flag `starfish.c`'s `sf_ready_object()` now requires alongside
 /// `SMP_READY()` — every session begins `InFlight`, and `threads::load_thread` flips it to
@@ -270,6 +262,14 @@ enum LoadCall {
     },
 }
 
+/// Ownership of the callback function installed in one native Starfish `Load`.
+///
+/// [`Shared`] survives reloads, while the library may deliver an event on its own thread after
+/// teardown has started. Each Starfish object address is now session-unique, but Rust still needs
+/// a generation check and drain before resetting this process-long state. A check without this mutex
+/// still has a check/use race against [`Shared::reset_session`]: a callback could validate the
+/// old generation, get descheduled, and then write into the freshly reset next session. Holding
+/// this lock for the complete callback makes retirement a drain barrier as well as a token check.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NativeSessionPhase {
     Idle,
@@ -290,6 +290,15 @@ enum NativeSessionPhase {
     /// evidence, not a producer barrier: native callback admission is closed and drained in the C
     /// interposer before the main thread retires this phase and considers D1.
     Unloaded {
+        epoch: u32,
+    },
+    /// Teardown gave up on this epoch's `Load` while it was still in flight (the D.1.4 budget
+    /// had fired and the media thread had not returned). The native object belongs to no engine
+    /// any more: it is held by `PlayerAdapter`'s abandoned-Load slot until `sf_load` returns and
+    /// the main thread releases it. Only the firmware's UNLOADCOMPLETED is admitted (that is the
+    /// release's own lifecycle evidence); every other callback is dropped, and no new native
+    /// session may begin, because the C seam still owns exactly this one object.
+    Abandoned {
         epoch: u32,
     },
 }
@@ -389,23 +398,50 @@ pub(crate) struct SubCue {
     pub text: String,
 }
 
-/// one rect of a decoded image-subtitle display set. `rgba` is a straight-alpha bitmap of
-/// `w`×`h` at position (`x`,`y`) **in the subtitle stream's own authoring canvas** (see
-/// [`SubBitmap::cw`]) — NOT in screen pixels; the renderer scales it into the video rect.
+/// one rect of a decoded image-subtitle display set: `w`×`h` at position (`x`,`y`) **in the
+/// subtitle stream's own authoring canvas** (see [`SubBitmap::cw`]) — NOT in screen pixels; the
+/// renderer scales it into the video rect.
+///
+/// **Held INDEXED, the way the decoder produced it** — one palette index per pixel plus the
+/// set's 256-entry palette — and expanded to RGBA only when the renderer uploads it
+/// ([`SubRect::to_rgba`], once per cue change). A quarter of the RGBA bytes is what lets the
+/// store hold the whole window a delayed caption needs (`player::SUB_BITMAP_BUDGET` states the
+/// arithmetic).
 #[derive(Clone)]
 pub(crate) struct SubRect {
     pub x: i32,
     pub y: i32,
     pub w: i32,
     pub h: i32,
-    pub rgba: Vec<u8>,
+    /// `w*h` palette indices, row-major, no padding.
+    pub index: Vec<u8>,
+    /// Straight-alpha RGBA per palette entry. All 256 entries, so any index byte is in range.
+    pub palette: Box<[[u8; 4]; 256]>,
+}
+
+impl SubRect {
+    /// the bytes this rect holds in the store (what the byte budget counts)
+    pub fn bytes(&self) -> usize {
+        self.index.len() + std::mem::size_of::<[[u8; 4]; 256]>()
+    }
+
+    /// The straight-alpha RGBA bitmap of `w`×`h` the renderer uploads.
+    pub fn to_rgba(&self) -> Vec<u8> {
+        let mut rgba = Vec::with_capacity(self.index.len() * 4);
+        for &i in &self.index {
+            rgba.extend_from_slice(&self.palette[i as usize]);
+        }
+        rgba
+    }
 }
 
 /// one decoded image-subtitle display set (PGS/VobSub/DVB) — every rect of it, not just the
 /// first: a two-line dialogue or a sign-plus-dialogue set is authored as several rects and they
 /// belong to the same on-screen moment. `end_ns` is i64::MAX until a CLEAR display-set (or a
-/// superseding set) truncates it. Unlike text cues we push ONLY the selected track (bitmaps are
-/// heavier than text on this RAM-tight TV), keyed by `start_ns` for the renderer.
+/// superseding set) truncates it. Pushed for EVERY image track while subtitles are on (ff.rs
+/// decodes them all so a switch between image tracks is instant) and keyed by `start_ns` for the
+/// renderer; the store's byte budget and eviction order (`player::push_subtitle_bitmap`) keep the
+/// selected track's sets first.
 pub(crate) struct SubBitmap {
     pub track: i32,
     pub start_ns: i64,
@@ -418,9 +454,9 @@ pub(crate) struct SubBitmap {
     pub rects: Vec<SubRect>,
 }
 impl SubBitmap {
-    /// total RGBA bytes held by this display set (what the store's byte budget counts)
+    /// total bytes held by this display set (what the store's byte budget counts)
     pub fn bytes(&self) -> usize {
-        self.rects.iter().map(|r| r.rgba.len()).sum()
+        self.rects.iter().map(SubRect::bytes).sum()
     }
 }
 
@@ -606,7 +642,9 @@ pub(crate) struct Shared {
     /// remux the server built, and its tags are whatever the server put there.
     pub track_names: Mutex<TrackNames>,
     pub sub_cues: Mutex<Vec<SubCue>>,
-    pub sub_bitmaps: Mutex<Vec<SubBitmap>>, // image-sub cues (selected track only)
+    pub ass_sources: Mutex<super::ass_source::Store>,
+    pub ass_renderer: super::ass::Runtime,
+    pub sub_bitmaps: Mutex<Vec<SubBitmap>>, // image-sub cues (every image track while subs are on)
 
     // demux (D) -> main (M)
     pub file_size: AtomicI64, // g_file_size
@@ -624,6 +662,9 @@ pub(crate) struct Shared {
     /// Coherent `{w,h}` publication for actuator consumers. The individual fields above remain
     /// diagnostic mirrors; reading them independently can manufacture a raster no stream owned.
     video_raster: AtomicU64,
+    /// Coherent display aspect from sourceInfo, including non-square pixels. Zero
+    /// until reported; overlays temporarily fall back to the demuxer's coded raster.
+    pub video_aspect: AtomicU64,
     /// Decoder-reported source frame rate in thousandths of a frame per second. 0 means the
     /// sourceInfo callback has not supplied one; unlike `FRAMEREADY`, this is stream metadata and
     /// therefore does not mistake the firmware's ~5 Hz position tick for video cadence.
@@ -914,11 +955,14 @@ impl Shared {
             desired_sub_idx: AtomicI32::new(-1),
             track_names: Mutex::new(TrackNames::new()),
             sub_cues: Mutex::new(Vec::new()),
+            ass_sources: Mutex::new(super::ass_source::Store::new()),
+            ass_renderer: super::ass::Runtime::new(),
             sub_bitmaps: Mutex::new(Vec::new()),
             file_size: AtomicI64::new(0),
             video_w: AtomicI32::new(0),
             video_h: AtomicI32::new(0),
             video_raster: AtomicU64::new(0),
+            video_aspect: AtomicU64::new(0),
             video_fps_milli: AtomicI64::new(0),
             duration_ns: AtomicI64::new(0),
             hls_video_tail_ns: AtomicI64::new(-1),
@@ -986,6 +1030,17 @@ impl Shared {
             }
             _ => None,
         }
+    }
+
+    /// Publish a synchronous refusal only while this exact epoch owns the active session.
+    /// Hold the retirement/reset barrier across check and write, as callback admission does.
+    pub(crate) fn publish_native_load_failure(&self, epoch: u32) -> bool {
+        let state = self.native_session.lock().unwrap_or_else(|e| e.into_inner());
+        if !matches!(state.phase, NativeSessionPhase::Active { epoch: active, .. } if epoch != 0 && active == epoch) {
+            return false;
+        }
+        self.load_failed.store(true, Ordering::Release);
+        true
     }
 
     /// Whether `epoch`'s Starfish `Load` call has returned yet. Required by `pump.rs`'s
@@ -1119,6 +1174,7 @@ impl Shared {
             state.phase,
             NativeSessionPhase::Active { epoch: active, .. }
                 | NativeSessionPhase::Unloaded { epoch: active }
+                | NativeSessionPhase::Abandoned { epoch: active }
                 if epoch != 0 && active == epoch
         );
         if !owns {
@@ -1126,6 +1182,31 @@ impl Shared {
         }
         state.phase = NativeSessionPhase::Idle;
         true
+    }
+
+    /// Hand `epoch`'s still-in-flight Load to the abandoned-Load release (see
+    /// [`NativeSessionPhase::Abandoned`]). `false` when `epoch` does not own the `Active` phase.
+    pub(crate) fn abandon_native_session(&self, epoch: u32) -> bool {
+        let mut state = self
+            .native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if !matches!(state.phase, NativeSessionPhase::Active { epoch: active, .. } if epoch != 0 && active == epoch)
+        {
+            return false;
+        }
+        state.phase = NativeSessionPhase::Abandoned { epoch };
+        true
+    }
+
+    /// Test-only: drop an abandoned phase that a failing test left behind, which
+    /// [`reset_session`](Self::reset_session) deliberately preserves.
+    #[cfg(all(test, feature = "hostsim"))]
+    pub(crate) fn test_force_native_idle(&self) {
+        self.native_session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .phase = NativeSessionPhase::Idle;
     }
 
     /// Whether this exact object crossed firmware's synchronous unload-complete callback path.
@@ -1266,6 +1347,16 @@ impl Shared {
             .native_session
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        if let NativeSessionPhase::Abandoned { epoch: abandoned } = state.phase {
+            // The release of an abandoned object needs its own UNLOADCOMPLETED evidence; nothing
+            // else from that object may reach the process-long state a later session will own.
+            if epoch == 0 || abandoned != epoch || class != NativeEventClass::UnloadCompleted {
+                return None;
+            }
+            let result = event();
+            state.phase = NativeSessionPhase::Unloaded { epoch };
+            return Some(result);
+        }
         let NativeSessionPhase::Active {
             epoch: active,
             presentation_gate,
@@ -1345,10 +1436,25 @@ impl Shared {
         ((packed >> 32) as u32 as i32, packed as u32 as i32)
     }
 
+    /// [`Self::reset_session`] for a RELOAD of the same item — everything a fresh Load must not
+    /// inherit is cleared; file facts survive: duration and bounded, already-read ASS sources.
+    /// The demuxer re-publishes duration when it reopens, a few hundred ms
+    /// later, and until then a zero here is a playbar drawn at position ÷ 0 (`engine::teardown`
+    /// has the account).
+    pub(crate) fn reset_session_for_reload(&self) {
+        let duration_ns = self.duration_ns.load(Ordering::Relaxed);
+        self.reset_session_inner(true);
+        self.duration_ns.store(duration_ns, Ordering::Relaxed);
+    }
+
     /// **NB: this does NOT clear the ABR seed OR Original failure** — see
     /// [`Shared::clear_abr_seed`] and [`Shared::clear_abr_failure`]. Everything else here describes
     /// one engine's session and must not outlive it.
     pub fn reset_session(&self) {
+        self.reset_session_inner(false);
+    }
+
+    fn reset_session_inner(&self, for_reload: bool) {
         // This lock is held through the whole reset. A callback that entered before retirement
         // finishes first; one arriving afterwards sees no owner. It can therefore never validate
         // session A and then publish into the zeroed/reused storage of session B.
@@ -1356,7 +1462,12 @@ impl Shared {
             .native_session
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        native.phase = NativeSessionPhase::Idle;
+        // An ABANDONED native object is not this engine's session: it outlives the engine by
+        // design until its `Load` returns and `engine::reap_abandoned_load` releases it. Clearing
+        // it here would let the next session begin while the C seam still owns that object.
+        if !matches!(native.phase, NativeSessionPhase::Abandoned { .. }) {
+            native.phase = NativeSessionPhase::Idle;
+        }
         // the diagnostics mirror is per-session too — a stale bind outcome from the last item is
         // exactly the misleading answer the read-out exists to avoid
         self.dg_stage.store(0, Ordering::Relaxed);
@@ -1437,8 +1548,14 @@ impl Shared {
         self.load_timed_out.store(false, Ordering::Relaxed);
         // NB: desired_sub_idx is NOT reset here — like desired_audio_idx it persists across
         // seeks/reloads so a reload-based seek keeps the chosen subtitle. It is reset on a new
-        // item (player::reset_subtitle). The cue/bitmap STORES below are transient render state
-        // and DO clear (the fresh demuxer re-populates them).
+        // item (player::reset_subtitle). ASS packets are immutable file facts, not
+        // rendered frames: a reload must keep long signs that a seek will not resend.
+        // A fresh playback clears them; a reopen additionally revalidates URL + headers.
+        {
+            let mut sources = self.ass_sources.lock().unwrap_or_else(|e| e.into_inner());
+            if for_reload { sources.retain_for_reload(); } else { sources.reset(); }
+        }
+        // These decoded cue/bitmap stores are transient render state and refill on read.
         self.sub_cues.lock().unwrap().clear();
         self.sub_bitmaps.lock().unwrap().clear();
         // Cleared with them, and for the same reason: they describe the FILE the last demuxer had
@@ -1450,6 +1567,7 @@ impl Shared {
         self.video_w.store(0, Ordering::Relaxed);
         self.video_h.store(0, Ordering::Relaxed);
         self.video_raster.store(0, Ordering::Release);
+        self.video_aspect.store(0, Ordering::Release);
         self.video_fps_milli.store(0, Ordering::Relaxed);
         self.duration_ns.store(0, Ordering::Relaxed);
         self.hls_video_tail_ns.store(-1, Ordering::Relaxed);

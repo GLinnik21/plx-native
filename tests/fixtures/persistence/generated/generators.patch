@@ -1,0 +1,255 @@
+diff --git a/rust-modules/src/telemetry/mod.rs b/rust-modules/src/telemetry/mod.rs
+index 93293ce8..60599d79 100644
+--- a/rust-modules/src/telemetry/mod.rs
++++ b/rust-modules/src/telemetry/mod.rs
+@@ -573,3 +573,41 @@ mod tests {
+         assert!(newer.usage);
+     }
+ }
++
++#[cfg(test)]
++mod plx_fixture_gen {
++    const ERR_ID: &str = "0123456789abcdef0123456789abcdef";
++    const SESSION: &str = r#"{"client_id":"synthetic-client-id","account_token":"synthetic-account-token",
++        "server":{"name":"Server A","machine_id":"aaaa1111","address":"192.0.2.10","port":32400,"token":"synthetic-server-token"},
++        "user":{"id":7,"uuid":"u-7","title":"Profile A","thumb":"","token":"synthetic-user-token"},
++        "home_users":[{"id":7,"uuid":"u-7","title":"Profile A","thumb":"","protected":false,"admin":true},
++                      {"id":8,"uuid":"u-8","title":"Profile B","thumb":"","protected":true,"admin":false}],
++        "sources":[{"machine_id":"aaaa1111","name":"Server A","shared_by":"","owned":true,"address":"192.0.2.10","port":32400,"token":"synthetic-server-token"},
++                   {"machine_id":"bbbb2222","name":"Server B","shared_by":"Friend","owned":false,"address":"198.51.100.9","port":31234,"token":"synthetic-share-token"}],
++        "home_pins":[{"user":"u-7","asked":true,"on":[{"machine_id":"bbbb2222","key":1}],"off":[{"machine_id":"aaaa1111","key":2}]}],
++        "recent_searches":[{"user":"u-7","terms":["alpha","beta"]}],
++        "playback_quality":"1080p_8_mbps"}"#;
++
++    #[test]
++    fn emit() {
++        let Ok(out) = std::env::var("PLX_FIXTURE_OUT") else { return };
++        let out = std::path::PathBuf::from(out);
++        let _g = crate::testlock::serial();
++        for (name, errors) in [("v0.6.0-errors-yes.consent.json", true), ("v0.6.0-no.consent.json", false)] {
++            let p = out.join(name);
++            let _ = std::fs::remove_file(&p);
++            super::redirect_for_test(Some(p.clone()));
++            let c = super::consent::apply(&super::Consent::default(), errors, false, || Some(ERR_ID.to_string()));
++            super::record(c);
++            assert!(p.exists(), "{name}");
++        }
++        super::redirect_for_test(None);
++        let sp = out.join("v0.6.0.session.json");
++        let _ = std::fs::remove_file(&sp);
++        crate::plex::session::redirect_for_test(Some(sp.clone()));
++        let s: crate::plex::session::Session = serde_json::from_str(SESSION).unwrap();
++        crate::plex::session::save(&s);
++        crate::plex::session::redirect_for_test(None);
++        assert!(sp.exists());
++    }
++}
+diff --git a/rust-modules/src/telemetry/mod.rs b/rust-modules/src/telemetry/mod.rs
+index 136e975e..2ee53526 100644
+--- a/rust-modules/src/telemetry/mod.rs
++++ b/rust-modules/src/telemetry/mod.rs
+@@ -876,3 +876,33 @@ mod tests {
+         assert!(newer.usage);
+     }
+ }
++
++#[cfg(test)]
++mod plx_fixture_gen {
++    #[test]
++    fn emit() {
++        let Ok(out) = std::env::var("PLX_FIXTURE_OUT") else { return };
++        let out = std::path::PathBuf::from(out);
++        let _g = crate::testlock::serial();
++        // A 0.6.0 errors-yes file upgraded in place by 0.6.5, which then declines the extension.
++        let p = out.join("v0.6.5-errors-yes-declined-extension.consent.json");
++        std::fs::copy(out.join("v0.6.0-errors-yes.consent.json"), &p).unwrap();
++        let loaded = super::load_from(&[p.clone()]);
++        assert!(loaded.errors && loaded.errors_id.is_some());
++        let next = super::consent::apply_extension(&loaded, super::consent::Category::Errors, false, || None);
++        super::redirect_for_test(Some(p.clone()));
++        super::record(next);
++        // A fresh 0.6.5 both-yes answer.
++        let q = out.join("v0.6.5-both-yes.consent.json");
++        let _ = std::fs::remove_file(&q);
++        super::redirect_for_test(Some(q.clone()));
++        let mut n = 0;
++        let c = super::consent::apply(&super::Consent::default(), true, true, || {
++            n += 1;
++            Some(format!("{n:0>32}"))
++        });
++        super::record(c);
++        super::redirect_for_test(None);
++        assert!(q.exists());
++    }
++}
+diff --git a/rust-modules/src/storage/client.rs b/rust-modules/src/storage/client.rs
+index 1050b6a3..e5b27b06 100644
+--- a/rust-modules/src/storage/client.rs
++++ b/rust-modules/src/storage/client.rs
+@@ -375,3 +375,4 @@ mod tests {
+         );
+     }
+ }
++
+diff --git a/rust-modules/src/storage/mod.rs b/rust-modules/src/storage/mod.rs
+index 4b58cea6..1282bdc7 100644
+--- a/rust-modules/src/storage/mod.rs
++++ b/rust-modules/src/storage/mod.rs
+@@ -1175,3 +1175,109 @@ mod tests {
+         assert!(JsonStore::new(link).is_err());
+     }
+ }
++
++// Fixture generator only: mount the shipping helper backend into the lib test build (as 0.7 does).
++#[cfg(test)]
++#[path = "../storage_service/backend.rs"]
++pub(crate) mod backend;
++#[cfg(test)]
++#[path = "../storage_service/keymanager.rs"]
++pub(crate) mod keymanager;
++
++#[cfg(test)]
++mod plx_fixture_gen {
++    use super::state::{self, CanonicalState, Expected, Generation};
++    use super::wire::{self, *};
++    use serde_json::Value;
++
++    fn generation_text(generation: Generation) -> String {
++        generation.0.iter().map(|byte| format!("{byte:02x}")).collect()
++    }
++
++    fn wire_expectation(expected: Option<(&str, Expected)>) -> Expectation {
++        match expected {
++            None => Expectation::Missing {},
++            Some((db_rev, expected)) => Expectation::Present {
++                db_rev: db_rev.to_string(),
++                epoch: expected.epoch.to_string(),
++                auth_generation: generation_text(expected.auth_generation),
++            },
++        }
++    }
++
++    #[derive(Default)]
++    struct Db8 {
++        record: Option<Value>,
++        puts: usize,
++    }
++    impl crate::storage::keymanager::Rpc for Db8 {
++        fn call(&mut self, uri: &str, payload: &Value) -> Result<Value, ErrorCode> {
++            match uri {
++                "luna://com.palm.db/get" => Ok(serde_json::json!({"returnValue":true,"results":self.record.iter().cloned().collect::<Vec<_>>()})),
++                "luna://com.palm.db/put" => {
++                    let mut next = payload["objects"][0].clone();
++                    self.puts += 1;
++                    next["_rev"] = serde_json::json!(self.puts);
++                    self.record = Some(next);
++                    Ok(serde_json::json!({"returnValue":true,"results":[{"id":"plxstate.stable","rev":self.puts}]}))
++                }
++                other => panic!("unexpected rpc {other}"),
++            }
++        }
++    }
++
++    fn snapshot(backend: &mut crate::storage::backend::Backend<Db8>) -> Option<(String, Expected)> {
++        match backend.dispatch(Request::Load {}) {
++            Response::Missing => None,
++            Response::Loaded { db_rev, state: value, .. } => {
++                let st = CanonicalState::decode(&serde_json::to_vec(&value).unwrap(), state::Flavor::Stable).unwrap();
++                Some((db_rev, st.expected()))
++            }
++            _ => panic!("load failed"),
++        }
++    }
++
++    fn commit(backend: &mut crate::storage::backend::Backend<Db8>, mutation: WireMutation) {
++        let expected = snapshot(backend);
++        let mut request = Request::Commit {
++            expected: wire_expectation(expected.as_ref().map(|(r, e)| (r.as_str(), *e))),
++            operation_id: generation_text(Generation::random().unwrap()),
++            digest: String::new(),
++            mutation,
++        };
++        let digest = state::digest_bytes(&wire::request_digest_bytes(&request).unwrap());
++        if let Request::Commit { digest: d, .. } = &mut request {
++            *d = digest;
++        }
++        match backend.dispatch(request) {
++            Response::Commit { status: CommitStatus::Committed, applied: Some(_), .. } => {}
++            _ => panic!("commit refused"),
++        }
++    }
++
++    #[test]
++    fn emit() {
++        let Ok(out) = std::env::var("PLX_FIXTURE_OUT") else { return };
++        let out = std::path::PathBuf::from(out);
++        let mut backend = crate::storage::backend::Backend::new(Db8::default(), state::Flavor::Stable, "com.beb.plxnative.storage".into());
++        let session: crate::plex::session::Session =
++            serde_json::from_slice(&std::fs::read(out.join("v0.6.0.session.json")).unwrap()).unwrap();
++        let (public, protected) = crate::plex::session::split_canonical(&session).unwrap();
++        commit(&mut backend, WireMutation::AdvanceMigration {
++            migration: MigrationMutation::SessionComplete {
++                public: serde_json::to_value(&public).unwrap(),
++                auth_plaintext: SecretString(protected),
++                protection: ProtectionRequest::Db8AclOnlyExplicit,
++            },
++        });
++        let consent: crate::telemetry::consent::Consent = serde_json::from_slice(
++            &std::fs::read(out.join("v0.6.5-errors-yes-declined-extension.consent.json")).unwrap(),
++        ).unwrap();
++        let slots = crate::telemetry::consent::split_canonical(&crate::telemetry::consent::migrate_loaded(consent)).unwrap();
++        commit(&mut backend, WireMutation::AdvanceMigration {
++            migration: MigrationMutation::ConsentComplete { consent: serde_json::to_value(slots).unwrap() },
++        });
++        let record = backend.rpc.record.clone().unwrap();
++        std::fs::write(out.join("v0.6.6-db8-record.json"), serde_json::to_vec_pretty(&record).unwrap()).unwrap();
++    }
++}
+diff --git a/rust-modules/src/storage_service/backend.rs b/rust-modules/src/storage_service/backend.rs
+index fd941756..a31248ea 100644
+--- a/rust-modules/src/storage_service/backend.rs
++++ b/rust-modules/src/storage_service/backend.rs
+@@ -3,7 +3,7 @@ use super::{
+     keymanager::{self, Rpc},
+     wire::*,
+ };
+-use crate::state::{
++use super::state::{
+     self, Applied, CanonicalState, Flavor, Generation, Mutation, Operation, OperationStatus,
+     StateError,
+ };
+diff --git a/rust-modules/src/telemetry/mod.rs b/rust-modules/src/telemetry/mod.rs
+index 18d60948..f6abf7ab 100644
+--- a/rust-modules/src/telemetry/mod.rs
++++ b/rust-modules/src/telemetry/mod.rs
+@@ -2023,3 +2023,30 @@ mod tests {
+         assert!(newer.usage);
+     }
+ }
++
++#[cfg(test)]
++mod plx_fixture_gen {
++    #[test]
++    fn emit() {
++        let Ok(out) = std::env::var("PLX_FIXTURE_OUT") else { return };
++        let out = std::path::PathBuf::from(out);
++        let _g = crate::testlock::serial();
++        let dir = out.join("v0.6.6-upgraded");
++        let _ = std::fs::remove_dir_all(&dir);
++        std::fs::create_dir_all(&dir).unwrap();
++        let auth = dir.join("auth.json");
++        std::fs::copy(out.join("v0.6.0.session.json"), &auth).unwrap();
++        crate::plex::session::redirect_for_test(Some(auth.clone()));
++        let s = crate::plex::session::load();
++        assert_eq!(s.account_token, "synthetic-account-token");
++        let tele = dir.join("telemetry.json");
++        std::fs::copy(out.join("v0.6.5-errors-yes-declined-extension.consent.json"), &tele).unwrap();
++        super::redirect_for_test(Some(tele.clone()));
++        let c = super::persistence::load(std::slice::from_ref(&tele));
++        assert!(c.errors && c.errors_declined_scope == 6);
++        crate::storage_worker::drain_for_test();
++        super::redirect_for_test(None);
++        crate::plex::session::redirect_for_test(None);
++        crate::paths::redirect_persistent_state_root_for_test(None);
++    }
++}

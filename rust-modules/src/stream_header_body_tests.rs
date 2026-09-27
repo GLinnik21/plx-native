@@ -318,6 +318,7 @@ fn a_500_response_remains_a_status_after_its_deadline_passes() {
         std::ptr::null(),
         "GET",
         deadline,
+        &mut NoCheckpoint,
     );
     h.join().unwrap();
     let until_boundary = deadline.saturating_duration_since(Instant::now());

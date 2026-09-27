@@ -30,11 +30,12 @@ token gets a **401** from it, and its section key `1` is a different library fro
 `1`. So this layer is keyed on servers, not on one host and port.
 
 `client()` and `client_opt()` still mean what they always did, they just mean **the CURRENT
-server** now — which is why nothing outside `plex/` changed when the `OnceLock<Client>` singleton
-became a table. `client_for(id)` is the multi-server addition; `register_origin(machine_id,
-&Origin, token, Option<&ResolvePin>, ConnectionFacts)` puts a server in the table. **`install(&Origin,
-token, Option<&ResolvePin>, ConnectionFacts)` is the SESSION path** (boot, QR login, profile switch)
-and always retargets — it grew the fourth parameter in #95 step 8: `ConnectionFacts{tier, ip}` is
+credential-eligible server** now — which is why nothing outside `plex/` changed when the
+`OnceLock<Client>` singleton became a table. `client_for(id)` is the multi-server addition;
+`register_origin(machine_id, &Origin, token, Option<&ResolvePin>, ConnectionFacts)` puts a server
+in the table. **`install(&Origin, token, Option<&ResolvePin>, ConnectionFacts)` is the SESSION
+path** (boot, QR login, profile switch) and retargets when the origin may carry a credential — it
+grew the fourth parameter in #95 step 8: `ConnectionFacts{tier, ip}` is
 applied to the published `Client` INSIDE the same registration write that creates or re-points its
 slot, never as a separate post-hoc `set_link`/`set_connection` call a caller could forget or a
 re-point could race. `None` in either field means **leave unchanged**, not "set unknown" — a
@@ -73,7 +74,8 @@ available* store to the data layer beside the resolve that fills it.)
 own server is normally `https://192-168-0-10.<hash>.plex.direct:32400`, a name only Plex's public
 zone resolves, so a LAN whose uplink was down could not reach a server one hop away — and the
 plaintext twin `probe::candidates` documents as "the offline fallback" cannot carry a token in a
-store build (`http::credential_transport_allowed`). A pin is built ONLY when the dashed label
+store build (`http::credential_transport_allowed`; a consented `grant` needs a fresh plex.tv
+resource list, which an offline boot does not have). A pin is built ONLY when the dashed label
 encodes the stored `address` (v4 or the eight-group v6 spelling), so it is a pure function of the
 hostname; `register_origin`/`install` take it, the `Client` carries it for the control plane, and
 `net::resolve` holds an append-only table the media plane (`curlio`) consults by host and port.
@@ -120,6 +122,44 @@ relay leg. If nothing eligible verifies, the result is `Reach::InsecureOnly` (pl
 `Discovery::InsecureOnly` / `SourceState::InsecureOnly` ("Not secure") — a fifth sentence, told
 apart from `Unreachable`, that **outranks a 401**. Before this it counted as reached, which was
 issue #95 itself.
+
+**"May a credential go to this origin" has ONE answer: `grant::credential_allowed`** (or
+`grant::allowed_under` where a pure function receives the policy). It is the build's
+`CredentialPolicy` OR a live `PlaintextGrant` for that exact origin (PLX-NATIVE-10). Whoever puts a
+particular SERVER's token on an origin — registry and endpoint admission — asks
+`grant::allowed_for(policy, machine_id, origin)`: a grant admits only the machine it was minted
+for. A remembered (cached) origin asks `grant::remembered_allowed`: the policy alone, never a
+grant. Nothing else
+asks `CredentialPolicy::may_carry_credential` or `Origin::is_tls` for a credential decision —
+`grep -rn may_carry_credential src/` finds only `grant.rs` (plus doc links). `probe::candidates`
+stamps the policy half at synthesis, and `auth::settle_plaintext` adds the grant half after the
+race. A grant is minted only by discovery, from a FRESH verdict `InsecureEvidence::
+plaintext_eligibility` calls eligible, when the person's recorded answer (`Session::
+plaintext_consent`, captured at the spawn site as `grant::PlaintextAsk`) allows it; it is bound to
+{identity generation, network generation, machine, exact numeric origin}, never persisted, dies on
+sign-in/sign-out, on every DID foreground (which queues each stranded server's endpoint
+re-discovery, requested by `grant::UpgradeRetry::due`), on a refusal (which also moves the consent generation
+a `PlaintextAsk` captured) and on a roster commit that does not install its (machine, origin) —
+a roster commit moves no generation — and a stored `SourceRef` naming a
+plaintext origin registers tokenless until discovery re-mints. Ending a grant re-grades the
+registry (`servers::regrade_credentials` blanks every client a grant was carrying, `ON_GRANT`);
+`grant::UpgradeRetry` re-discovers a granted server on the hub-retry backoff and the HTTPS
+registration retires the grant (`auth::retire_grant_on_https`).
+
+**Online primary selection also proves the token after it proves the machine.** `/identity` is
+deliberately unauthenticated, so a fresh identity winner is only a known endpoint. Before sign-in,
+rediscovery or a profile switch may select it as primary, auth sends `GET /library/sections`
+through that source's exact origin, resolve pin, transport policy and per-machine token. A valid
+empty sections container is success; 401/403, timeout, transport refusal and malformed JSON remain
+distinct evidence, and primary selection continues with the next eligible endpoint/server.
+Secondary servers keep the profile-specific grants plex.tv returned live and cached; their identity
+probes refresh endpoint and reachability facts without making every secondary browse before it can
+be registered. Direct identity candidates settle as one race, and a relay fallback receives its own
+local/remote probe opportunity. Authenticated fallback attempts share a separate 20-second budget,
+with each request still capped at 5 seconds for Local and 10 seconds for Remote/Relay. Only time
+inside those authenticated requests is deducted: identity probing (including later direct/cached
+or relay attempts) and inter-server pacing do not spend admission time. Offline cached-profile
+seating keeps its existing PIN/cache contract.
 
 Slots are keyed on `machineIdentifier` because that is the only identity that survives a server
 changing address — and a registration that has *learned* an id **adopts** an address-only slot
@@ -237,9 +277,41 @@ a dead source is **absent** from Home and states itself in its own library secti
   (sign-in, profile switch). Reach for `update` for anything that touches one field — the roster,
   the search terms — because the others are workers and the two failures are both silent: a lost
   update resumes the next boot as the wrong profile, and a torn `O_TRUNC` write is an unparseable
-  file, which is a QR code on the next boot rather than a stale roster. The lock is held across the
-  write's `sync_all`, so **nothing per-frame may read this file**; snapshot it (as
-  `search::recents` does, keyed on `session::current_gen`).
+  file, which is a QR code on the next boot rather than a stale roster. The lock (`IO`) is held
+  across the write's `sync_all`, so **nothing per-frame may take it directly** — but a per-frame
+  reader may now call `session::peek()`, because `peek()` is backed by a live in-memory read
+  cache, not a per-call file transaction.
+- **`session::peek()` is a write-through cache over the persisted session, not a fresh read.** A
+  hit is one uncontended `Mutex` lock and an `Arc<Session>` clone — no `IO`, no helper round trip —
+  which is what makes it safe to call every frame (`player::preview::enabled` does). The invariants
+  that keep it correct, all in `session.rs`'s module doc and worth knowing before touching either
+  the cache or a write path:
+  - Cached records come from completed reads or durable writes under `IO`. `Revoked` separately
+    suppresses credentials immediately during a queued sign-out, even if its disk clear fails.
+    Reads and preference edits preserve it; only an explicit proven credential write ends it.
+  - Only `session.rs` writes the session domain of the record; every `persistence::commit_*`/
+    `write_session`/`commit_cleared` caller updates the cache through a read install, proven-write
+    install, cache drop, or local revocation. Read installs cannot undo revocation.
+  - `peek` never takes `IO`, including on a miss. It returns the previous snapshot and schedules
+    one refresh on `storage_worker`'s bounded FIFO. The worker reads and installs under `IO`,
+    then advances a visible-session generation only if the served content changed. The bridge
+    observes it and invalidates on the frame thread. Cached views also observe it through
+    `VisibleSessionWatch` (or include `visible_generation()` in their cache key) and rebuild;
+    invalidating drawing alone cannot refresh a retained value. `peek_settled()` keeps transient
+    reads distinct from an authoritative empty session. Unchanged retries remain quiet. A queued
+    read cannot overwrite a newer write or sign-out.
+  - Writers never read the cache to decide what to write — they always re-read the authority under
+    `IO` first (the fence/OCC check), then install their own proven outcome. A miss can therefore
+    never overwrite a newer concurrent write.
+  - A `Locked`/`Blocked` read (keymanager unavailable, a helper hiccup) is cached only
+    transiently, for `LOCKED_RETRY` (about a second) after completion — never latched forever the way a naive
+    per-field cache once was (the bug PR #120's stopgap shipped and this cache replaced).
+  - Sign-out (`clear()`) drops the cached `Arc` immediately; the tokens it held must not remain
+    reachable in memory after a sign-out just because nothing had overwritten the cache yet.
+  - `plex::session::async_persistence`'s Stage B coordinator is unwired and keeps its own,
+    separate `CACHE` today; when it is wired up, it must install into/drop the cache above
+    (`install_locked`/`drop_cache_locked`, under `IO`) instead of maintaining a second copy of the
+    session.
 - **Track selection is server-side, via `PUT /library/parts/{id}`** (set the chosen audio/subtitle
   stream + subtitle burn), **not** query params on the stream URL. The server re-selects for the next
   decision; the client re-requests the part. See `[[audio-subtitle-track-switching]]`.

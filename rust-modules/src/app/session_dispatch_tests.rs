@@ -276,7 +276,7 @@ fn session_cancel_preserves_carried_receipts_until_unique_discard() {
         assert!(output.progress(AuthProgress::Registry(RegistryProgress::Install {
             epoch: 1, expected: None, sources: Vec::new(), primary: None,
         })).is_ok());
-        assert!(output.complete(LoginProgress::Failed { epoch: 1, message: "synthetic".into() }.into()).is_ok());
+        assert!(output.complete(LoginProgress::Failed { epoch: 1, message: "synthetic".into(), incident: crate::auth::synthetic_incident(), plaintext: None }.into()).is_ok());
     }).unwrap();
     let records = rig.session_adapter.take_results();
     assert_eq!(records.len(), 2);
@@ -301,7 +301,7 @@ fn session_cancel_preserves_carried_receipts_until_unique_discard() {
 
     let next_key = SessionWorkKey { epoch: 2, op: SessionOp::Login };
     rig.session_adapter.launch(RequestId(2), next_key, true, |job| { job(); true }, |output| {
-        assert!(output.complete(LoginProgress::Failed { epoch: 2, message: "synthetic-new".into() }.into()).is_ok());
+        assert!(output.complete(LoginProgress::Failed { epoch: 2, message: "synthetic-new".into(), incident: crate::auth::synthetic_incident(), plaintext: None }.into()).is_ok());
     }).unwrap();
     // Return A's unique credit twice while B is still carried. Neither can release B.
     rig.session_adapter.acknowledge(&[old_ack, old_ack]);
@@ -407,7 +407,7 @@ fn session_registry_then_terminal_waits_for_queued_commit_replies() {
                     port: 32400, token: "synthetic-server-token".into(), ..Default::default()
                 }, sources: Vec::new(), users: Vec::new() }
             } else {
-                LoginProgress::Failed { epoch: key.epoch, message: "synthetic failure".into() }
+                LoginProgress::Failed { epoch: key.epoch, message: "synthetic failure".into(), incident: crate::auth::synthetic_incident(), plaintext: None }
             };
             assert!(output.complete(AuthProgress::Login(terminal)).is_ok());
         }).unwrap();
@@ -508,21 +508,20 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
     let _g = crate::testlock::serial();
     let _session = crate::plex::session::TempSession::new("endpoint-edges");
     crate::plex::reset_servers_for_test();
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     let a = crate::plex::register_for_test("endpoint-a", "127.0.0.1", 9, "synthetic", "cid");
     let b = crate::plex::register_for_test("endpoint-b", "127.0.0.1", 10, "synthetic", "cid");
-    crate::plex::describe_server(a, "Synthetic", "Synthetic share", false);
+    crate::plex::describe_server(a, "Synthetic", "Synthetic share", crate::plex::GrantEvidence::outside());
     let expected = [b, a]; // Home's own-first observation order, deliberately not slot order.
     crate::pms::with_refused_fetches_for_test(|| {
+        let mut rig = Bridge::for_test(|| 0);
         for cmd in [crate::stores::hubs::HubsCmd::RefetchHubs, crate::stores::hubs::HubsCmd::Retry] {
-            let _ = crate::stores::take_notices();
-            let generation = crate::stores::gen(StoreId::Hubs);
-            let outcome = crate::stores::apply(StoreCmd::Hubs(cmd));
+            let _ = rig.stores.take_notices();
+            let generation = rig.stores.gen(StoreId::Hubs);
+            let outcome = rig.stores.hubs.run(cmd);
             assert!(outcome.changed);
             assert_eq!(outcome.endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), expected);
-            assert_eq!(crate::stores::take_notices(), [(StoreId::Hubs, generation + 1)]);
+            assert_eq!(rig.stores.take_notices(), [(StoreId::Hubs, generation + 1)]);
         }
-        let mut rig = Bridge::for_test(|| 0);
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
         let mut present = crate::ui::present::Present::default();
@@ -548,16 +547,17 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
             executed.push(sid);
         }
         assert_eq!(executed, expected);
-        let stores = crate::stores::Stores::default();
+        let mut stores = crate::stores::Stores::default();
         stores.viewstate.borrow_mut().owe_hubs_refresh_for_test();
         let split = rig.split();
         let cx = parts.cx::<AppHost>(split.views, split.measure);
         let mut out = Vec::new();
         let mut fx: Effects<'_, AppHost> = Effects::new(
             &mut out, MachineId::Store(StoreId::ViewState.ord()), &mut present);
+        let hubs = &mut stores.hubs;
         stores.viewstate.borrow_mut().pump(&mut |_| false, &mut |cmd| {
-            crate::stores::hubs::apply(cmd)
-        }).emit(&mut fx);
+            hubs.run(cmd)
+        }, &mut |_| false, &mut |_| false, &mut |_| false).emit(&mut fx);
         drop(fx);
         drop(cx);
         assert_eq!(out.len(), 2);
@@ -566,8 +566,8 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
             _ => panic!("ViewState pump discarded its recovery outcome"),
         }).collect();
         assert_eq!(actual, expected);
-        crate::pms::queue_test_landing(None);
-        let result = crate::stores::hubs::take_results().pop().unwrap();
+        rig.stores.hubs.queue_test_landing(None);
+        let result = rig.stores.hubs.take_results().pop().unwrap();
         let mut out = Vec::new();
         let mut fx = Effects::new(&mut out, MachineId::Store(StoreId::Hubs.ord()), &mut present);
         rig.deliver(MachineId::Store(StoreId::Hubs.ord()), &AppMsg::HubsResult(result), &parts, &mut fx);
@@ -597,6 +597,5 @@ fn endpoint_outcomes_cross_central_dispatch_machine_bridge_and_boot() {
             assert_eq!(boot_executed, expected);
         });
     });
-    crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     crate::plex::reset_servers_for_test();
 }

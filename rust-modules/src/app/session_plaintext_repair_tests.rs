@@ -20,6 +20,7 @@ mod tests {
     fn frame(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, records: Vec<crate::auth::owner::SessionEnvelope>) {
         let results = records.into_iter().map(|r| (r.addr, AppMsg::Session(SessionEvent::Result(r)))).collect();
         d.frame_with(rig, Tick::default(), Vec::new(), results, &mut NoTap, false);
+        rig.settle_session_io_for_test(d);
     }
 
     #[test]
@@ -53,7 +54,7 @@ mod tests {
             sources: vec![plain.clone()],
             profiles: vec![ProfileCreds {
                 uuid: kid.uuid.clone(), user: kid, server: server.clone(),
-                sources: vec![plain.clone()], pin: None,
+                sources: vec![plain.clone()], pin: None, extensions: Default::default(),
             }],
             ..Default::default()
         };
@@ -71,7 +72,7 @@ mod tests {
                 let SessionWork::Endpoint { session, expected, lifecycle, machine_id } = input
                     else { panic!("wrong worker family") };
                 crate::auth::endpoint_worker_with_io(epoch, session, expected, lifecycle, machine_id, &output,
-                    |_| Some(vec![serde_json::from_value(serde_json::json!({
+                    |_, _| Ok(vec![serde_json::from_value(serde_json::json!({
                         "clientIdentifier": "synthetic-server", "provides": "server"
                     })).unwrap()]),
                     |resource, _| {

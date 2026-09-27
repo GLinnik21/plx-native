@@ -3,6 +3,31 @@
 use super::*;
 use std::sync::atomic::Ordering;
 
+// TEST ONLY: the split test modules below (`metadata_detail_mailbox_tests`,
+// `metadata_season_mailbox_tests`, `metadata_watch_state_tests`, ...) call these fixtures as
+// free, argument-less functions at hundreds of call sites, a shape written for the old
+// crate-global `CURRENT`/`SEASON_GEN` statics. Now that a `MetadataState`/`MetadataAdapter` pair
+// is owned per `MetadataStore` rather than global, threading an owner through every one of those
+// call sites would rewrite most of three large files for no behavioural change. Instead the pair
+// lives here, confined to the thread each test body runs on (see `screens::detail::tests`'s
+// `TEST_METADATA` for the same reasoning) — reached only through the real, non-test accessors
+// (`current`, `land_detail`, the `MetadataState`/`MetadataAdapter` fields), never a second
+// mechanism.
+thread_local! {
+    static TEST_STATE: std::cell::UnsafeCell<MetadataState> =
+        std::cell::UnsafeCell::new(MetadataState::default());
+    static TEST_ADAPTER: std::cell::UnsafeCell<std::sync::Arc<MetadataAdapter>> =
+        std::cell::UnsafeCell::new(std::sync::Arc::new(MetadataAdapter::default()));
+}
+
+pub(super) fn test_state() -> &'static mut MetadataState {
+    TEST_STATE.with(|cell| unsafe { &mut *cell.get() })
+}
+
+pub(super) fn test_adapter() -> &'static std::sync::Arc<MetadataAdapter> {
+    TEST_ADAPTER.with(|cell| unsafe { &*cell.get() })
+}
+
 // ---- convert_streams: the Dolby Vision record's survival ------------------------------
 
 pub(super) fn video_stream(dovi: Option<(i64, i64, i64)>) -> crate::plex::Stream {
@@ -25,6 +50,7 @@ pub(super) fn video_stream(dovi: Option<(i64, i64, i64)>) -> crate::plex::Stream
 /// bypassed (an unconditional store here would make the "older lands late" case vacuous)
 pub(super) fn landing(gen: u32, rk: &str) {
     land_detail(
+        test_adapter(),
         crate::plex::ServerId::UNSET,
         rk,
         gen,
@@ -36,7 +62,7 @@ pub(super) fn landing(gen: u32, rk: &str) {
 }
 
 pub(super) fn cur_rk() -> Option<String> {
-    current().map(|d| d.rk.clone())
+    current(test_state()).map(|d| d.rk.clone())
 }
 
 // ---- the season mailbox -----------------------------------------------------------------
@@ -55,32 +81,30 @@ pub(super) fn install_show(rk: &str, cur: usize, eps: &[&str]) {
 }
 
 pub(super) fn install_show_on(sid: crate::plex::ServerId, rk: &str, cur: usize, eps: &[&str]) {
-    unsafe {
-        *addr_of_mut!(CURRENT) = Some(Detail {
-            sid,
-            rk: rk.to_string(),
-            is_show: true,
-            seasons: vec![
-                Season {
-                    rk: "sk1".to_string(),
-                    index: 1,
-                    title: "Season 1".to_string(),
-                    leaf_count: 0,
-                    viewed_leaf_count: 0,
-                },
-                Season {
-                    rk: "sk2".to_string(),
-                    index: 2,
-                    title: "Season 2".to_string(),
-                    leaf_count: 0,
-                    viewed_leaf_count: 0,
-                },
-            ],
-            episodes: eps.iter().map(|e| episode(e)).collect(),
-            cur_season: cur,
-            ..Default::default()
-        })
-    };
+    test_state().current = Some(Detail {
+        sid,
+        rk: rk.to_string(),
+        is_show: true,
+        seasons: vec![
+            Season {
+                rk: "sk1".to_string(),
+                index: 1,
+                title: "Season 1".to_string(),
+                leaf_count: 0,
+                viewed_leaf_count: 0,
+            },
+            Season {
+                rk: "sk2".to_string(),
+                index: 2,
+                title: "Season 2".to_string(),
+                leaf_count: 0,
+                viewed_leaf_count: 0,
+            },
+        ],
+        episodes: eps.iter().map(|e| episode(e)).collect(),
+        cur_season: cur,
+        ..Default::default()
+    });
 }
 
 pub(super) fn episode(rk: &str) -> Episode {
@@ -91,7 +115,7 @@ pub(super) fn episode(rk: &str) -> Episode {
 }
 
 pub(super) fn listed_eps() -> Vec<String> {
-    current()
+    current(test_state())
         .map(|d| d.episodes.iter().map(|e| e.rk.clone()).collect())
         .unwrap_or_default()
 }
@@ -99,17 +123,15 @@ pub(super) fn listed_eps() -> Vec<String> {
 /// which season tab reads *selected* — the tabs pill `d.cur_season`; the focus ring is a
 /// separate, view-local column
 pub(super) fn selected_tab() -> usize {
-    current().map(|d| d.cur_season).unwrap_or(usize::MAX)
+    current(test_state()).map(|d| d.cur_season).unwrap_or(usize::MAX)
 }
 
 /// arm a season switch exactly as `load_season` does — flip the tab optimistically, then take
 /// the generation. Hands back what the worker carries to `land_season`.
 pub(super) fn begin_switch(to: usize) -> (u32, usize) {
     let prev = selected_tab();
-    unsafe {
-        if let Some(d) = (*addr_of_mut!(CURRENT)).as_mut() {
-            d.cur_season = to;
-        }
+    if let Some(d) = test_state().current.as_mut() {
+        d.cur_season = to;
     }
-    (SEASON_GEN.fetch_add(1, Ordering::SeqCst) + 1, prev)
+    (test_adapter().season_gen.fetch_add(1, Ordering::SeqCst) + 1, prev)
 }

@@ -6,6 +6,8 @@
 //! are interned into `HomeMemory` so reorder and eviction preserve meaning rather than position.
 //! Shared top chrome is container-owned: Home declares the strip doors and handles semantic strip
 //! activation, but neither draws the bar nor stores a bar cursor.
+//! The container's first-`Cover`/last-`Uncover` lifecycle pauses hero auto-rotation beneath every
+//! modal style and restarts its countdown when the page becomes active again.
 
 use std::borrow::Cow;
 use std::ffi::CString;
@@ -41,6 +43,7 @@ use crate::ui::widgets::{
 };
 use crate::ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
 
+use super::plaintext_question::{self, AlertStep, Near, OfferWatch, PlaintextAlert};
 use super::registry::{
     AppFx, AppMsg, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
     HomeMemory, HomeReq, HomeTab, LoopReq, PageMemory,
@@ -52,6 +55,11 @@ const HERO_PLAY_ELEM: u32 = 0;
 const HERO_INFO_ELEM: u32 = 1;
 const FIRST_ITEM_ELEM: u32 = 0x1000;
 const HERO_NBTN: usize = 2;
+/// "Connect without encryption?" over the failure read-out (`screens::plaintext_question`): its
+/// group sits between the hero's and the first hub's, its two answers below the first item key.
+const PLAINTEXT_GROUP: GroupId = GroupId(0xF0);
+const PLAINTEXT_CANCEL_ELEM: u32 = 0x0F00;
+const PLAINTEXT_CONNECT_ELEM: u32 = 0x0F01;
 
 /// Parent/container semantic strip keys. Positions are deliberately not encoded here.
 pub(crate) const STRIP_HOME_ELEM: u32 = crate::ui::dispatch::STRIP_BASE;
@@ -66,6 +74,14 @@ const HERO_FLIP_CD: f32 = 0.35;
 const HERO_AUTO_S: f32 = 8.0;
 const K_SLIDE: f32 = 130.0;
 const HERO_SLIDE_REST_PX: f32 = 0.5;
+/// How near its target the snap dive has to be, in snap units (0 = hero, 1 = grid), before this
+/// page calls the dive over — **together with [`SNAP_REST_VEL`], never alone.** `K_SNAP` is
+/// critically damped, so the dive spends its last dozen frames inside any position threshold worth
+/// picking while the picture is still visibly moving. Read by the present gate.
+const SNAP_REST_POS: f32 = 0.002;
+/// The velocity half of [`SNAP_REST_POS`], in snap units per second — the term that sees the
+/// critically damped tail the position test is blind to.
+const SNAP_REST_VEL: f32 = 0.01;
 const HERO_PREFETCH: usize = 1;
 const HERO_ART_CULL: f32 = 0.996;
 const HERO_WASH_W: [f32; 4] = [0.55, 0.55, 0.40, 0.40];
@@ -87,7 +103,7 @@ const SOURCE_PAD: f32 = theme::space::XS;
 const HERO_ICON_RATIO: f32 = 1.15;
 const HERO_ICON_GAP: f32 = 12.0;
 
-pub(crate) const SHAPE: &str = "HomeScreen{snap_target:f32,snap:{pos:f32,vel:f32},hero_flip_cd:f32,hero_auto:f32,visible_activation:Option<u32>,cta_available:bool,strip_chosen:bool,next_group:u32,next_elem:u32,groups:[HomeGroupKey{identity:HomeHubIdentity,group:u32}],items:[HomeItemKey{identity:HomeItemIdentity,elem:u32,last_row:u32,last_col:u32}],carousel:Option<(sid:u32,rk:str)>,outgoing:Option<(sid:u32,rk:str)>,hero_slide:{pos:f32,vel:f32},hero_dir:f32,hero_pop:{sp:[Spring{pos:f32,vel:f32};2],focused:Option<u32>},projected_generation:Option<u32>,grid:{scroll_y:{pos:f32,vel:f32},scroll_target:f32,rows:[{identity:HomeHubIdentity,group:u32,elems:[u32],motion:CardRow{scale:[Spring;24],overflow:Spring,scroll_x:Spring,lift:Spring,band:Spring,focus:i32,base_y:f32}}]},restored_scroll:[(group:u32,scroll:f32)],restore_reveal:bool}";
+pub(crate) const SHAPE: &str = "HomeScreen{snap_target:f32,snap:{pos:f32,vel:f32},hero_flip_cd:f32,hero_auto:f32,covered:bool,visible_activation:Option<u32>,cta_available:bool,strip_chosen:bool,next_group:u32,next_elem:u32,groups:[HomeGroupKey{identity:HomeHubIdentity,group:u32}],items:[HomeItemKey{identity:HomeItemIdentity,elem:u32,last_row:u32,last_col:u32}],carousel:Option<(sid:u32,rk:str)>,outgoing:Option<(sid:u32,rk:str)>,hero_slide:{pos:f32,vel:f32},hero_dir:f32,hero_pop:{sp:[Spring{pos:f32,vel:f32};2],focused:Option<u32>},projected_generation:Option<u32>,grid:{scroll_y:{pos:f32,vel:f32},scroll_target:f32,rows:[{identity:HomeHubIdentity,group:u32,elems:[u32],motion:CardRow{scale:[Spring;24],overflow:Spring,scroll_x:Spring,lift:Spring,band:Spring,focus:i32,base_y:f32}}]},restored_scroll:[(group:u32,scroll:f32)],restore_reveal:bool}";
 
 #[derive(Clone)]
 struct HubProjection {
@@ -152,7 +168,6 @@ impl Backdrop {
         grid_item: Option<&PmsMovie>,
         selected: Option<&(crate::plex::ServerId, String)>,
         snap: f32,
-        sliding: bool,
         dt: f32,
     ) {
         let resolve = |h: Option<HeroRef<'_>>| {
@@ -196,7 +211,6 @@ impl Backdrop {
             AmbientWash::K,
             dt,
         );
-        let _ = sliding;
     }
 
     fn draw(&self, p: Painter, env: &Env, slide: Option<(f32, f32)>) {
@@ -205,9 +219,7 @@ impl Backdrop {
         if !wash_hidden(env.sp, incoming_a, slide.map(|_| outgoing_a))
             && !self.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS)
         {
-            let still = (env.sp <= 0.005 || env.sp >= 0.995) && slide.is_none();
-            self.wash
-                .draw_with(p, Rect::FULL, crate::gfx::page_wash_dither(still));
+            self.wash.draw(p, Rect::FULL);
         }
 
         let folded = env.hero_a > 0.01
@@ -278,9 +290,16 @@ pub(crate) struct HomeScreen {
     /// `hero_auto:f32`). Deliberately still a raw per-frame decrement (phase 12 D4 did NOT move
     /// this onto `motion::Ramp`): it is hashed across three committed replay fixtures, and a
     /// `Ramp`'s absolute-`Tick.ms` math computes the same real quantity through a different float
-    /// operation sequence that measurably diverges the hash. `tick`'s own doc explains the fix
-    /// that DID land — the countdown now reports `Motion`, which it never did before.
+    /// operation sequence that measurably diverges the hash. `tick`'s own comment explains why
+    /// the timer deliberately reports no `Motion` while it counts.
     hero_auto: f32,
+    /// `HomeCmd::PinHero` holds the billboard: the countdown above stops for the life of the page.
+    /// A screenshot pin only, never set by the product, and not logical state (no replay sets it).
+    hero_pinned: bool,
+    /// The container says this page is covered. For modals, `Navigation` emits `Cover` for the
+    /// first presentation and `Uncover` only when the last surface is dismissed, independent of
+    /// whether that surface's host-update policy is Live or Frozen.
+    covered: bool,
 
     snap_target: f32,
     /// Stable element still visible while the engine has already crossed the hero/grid door.
@@ -290,6 +309,11 @@ pub(crate) struct HomeScreen {
     strip_chosen: bool,
     snap: Spring,
     status_ms: f32,
+    /// The plaintext-only server the failure read-out speaks about, when discovery offers the
+    /// question for one (`plex::grant::offers`) — not logical state: it is the grant table's.
+    plaintext: OfferWatch,
+    /// The question, asked from the read-out's *Connect*.
+    plaintext_alert: PlaintextAlert,
     hero_pop: CtlPop<HERO_NBTN>,
     backdrop: Backdrop,
     grid: Grid,
@@ -314,12 +338,16 @@ impl HomeScreen {
             hero_slide: Spring::at(1.0),
             hero_dir: 1.0,
             hero_auto: HERO_AUTO_S,
+            hero_pinned: false,
+            covered: false,
             snap_target: 0.0,
             visible_activation: None,
             cta_available: false,
             strip_chosen: false,
             snap: Spring::at(0.0),
             status_ms: 0.0,
+            plaintext: OfferWatch::default(),
+            plaintext_alert: PlaintextAlert::new(PLAINTEXT_GROUP, PLAINTEXT_CANCEL_ELEM, PLAINTEXT_CONNECT_ELEM),
             hero_pop: CtlPop::new(),
             backdrop: Backdrop::new(),
             grid: Grid::new(),
@@ -362,9 +390,10 @@ impl HomeScreen {
     fn hub_identity(view: HubsView<'_>, row: usize, hub: HubRef<'_>) -> HomeHubIdentity {
         match hub.identity {
             Some(HubIdentity::ContinueWatching) => HomeHubIdentity::ContinueWatching,
-            Some(HubIdentity::Identifier { sid, id }) => HomeHubIdentity::Identifier {
+            Some(HubIdentity::Identifier { sid, id, key }) => HomeHubIdentity::Identifier {
                 sid,
                 id: id.to_owned(),
+                key: key.to_owned(),
             },
             Some(HubIdentity::Key { sid, key }) => HomeHubIdentity::Key {
                 sid,
@@ -665,13 +694,26 @@ impl HomeScreen {
                 .current
                 .is_none_or(|key| key.elem >= crate::ui::dispatch::STRIP_BASE)
         {
-            self.reseat(FocusTarget::ContainerGroup(HERO_GROUP), fx);
+            self.reseat(FocusTarget::ContainerGroup(HERO_GROUP), cx, fx);
         }
         self.cta_available = cta_available;
         if self.rows.is_empty() {
             self.snap_target = 0.0;
             self.snap.jump(0.0);
         }
+        let current = crate::plex::client_for(crate::plex::current_server()).map(|c| c.machine_id());
+        if self.plaintext.refresh(current, Near::First) {
+            fx.invalidate(Provenance::Landing(fx.from()));
+        }
+        if self.plaintext_alert.is_open()
+            && !(status_read(view).is_some_and(|(_, kind, _)| kind == StatusKind::Failed)
+                && self.plaintext_alert.subject() == self.plaintext.verdict().map(|v| v.machine_id.as_str())
+                && plaintext_question::asks(self.plaintext.verdict()))
+        {
+            // the read-out it was asked from is gone, or no longer asks about that server
+            self.plaintext_alert.withdraw();
+        }
+        self.plaintext_alert.update(dt);
         self.status_ms = (self.status_ms + dt * 1000.0)
             % (crate::ui::widgets::Spinner::PERIOD_MS as f32 * 1000.0);
         self.hero_flip_cd = (self.hero_flip_cd - dt).max(0.0);
@@ -682,20 +724,33 @@ impl HomeScreen {
                 self.outgoing = None;
             }
         }
-        if self.snap.pos < 0.05 && view.hero_count() > 1 {
+        if self.covered {
+            // Compact surfaces keep ticking their host page, unlike Sheet/Alert/Opaque surfaces.
+            // Cover/Uncover is the shared modal lifecycle across BOTH policies, so retain the
+            // countdown here and restart it exactly once when the last surface is dismissed.
+        } else if self.hero_pinned {
+            // Held by `HomeCmd::PinHero`: no countdown, no flip.
+        } else if self.snap.pos < 0.05 && view.hero_count() > 1 {
             // Spelled as an assignment, not `-= dt`: bit-for-bit identical arithmetic to the
             // pre-D4 accumulator, deliberately UNCHANGED — `hero_auto` is HASHED `LogicalState`
             // (`SHAPE`'s `hero_auto:f32`) across three committed replay fixtures, and a
             // `motion::Ramp`'s absolute-`Tick.ms` math computes the same real quantity through a
             // different float operation sequence that measurably diverges the hash (verified:
             // `tests/focusfp.sh --replay` on flow 1 disagreed from frame 7 on, once the arithmetic
-            // changed). What WAS a real bug — this countdown never reported `Motion`, so a hero
-            // left mid-count-down on an otherwise-settled screen could silently freeze under
-            // `ui::idle`'s present gate, exactly the regression class this whole conversion
-            // exists to catch — is fixed by the explicit `note` just below, with no change to the
-            // number itself.
+            // changed).
+            //
+            // It reports NO `Motion`, deliberately. Nothing draws `hero_auto`: it is a TIMER, not
+            // an animator (the `Timer` class of `docs/retui-invalidation-design.md`, not its
+            // `Ramp`), and the dispatcher delivers `Tick` to the page every loop iteration whether or not the
+            // frame presents (`ui::idle`, "What this module does NOT do"), so the countdown runs
+            // on a closed gate while the page is uncovered and the flip it ends in is what wakes
+            // it — `outgoing` is set, and `moving` below reports the slide. Noting `Motion` on
+            // every countdown tick made a still billboard present at the full frame rate forever:
+            // every modal dismiss and every page pop came back to a Home that never went idle
+            // (~24 ms of GPU a frame on the TV), and the next transition's first frame paid that
+            // queue in its `glClear`.
+            // `a_settled_hero_counting_down_lets_the_gate_close_and_still_flips` holds both halves.
             self.hero_auto = self.hero_auto - dt;
-            fx.present().note(PresentEvent::Motion);
             if self.hero_auto <= 0.0 {
                 self.hero_flip_cd = 0.0;
                 self.flip(view, 1);
@@ -705,6 +760,10 @@ impl HomeScreen {
         }
         self.snap
             .step(pinned_snap(self.snap_target, self.rows.len()), K_SNAP, dt);
+        // ONE answer for "is the dive still running", read by the present gate below. See
+        // `SNAP_REST_POS`/`SNAP_REST_VEL` for why both terms are needed.
+        let snap_moving = (self.snap.pos - self.snap_target).abs() > SNAP_REST_POS
+            || self.snap.vel.abs() > SNAP_REST_VEL;
         let engine_on_grid = self.focused_grid(cx.focus.current).is_some();
         let picture_is_grid = self.snap.pos >= 0.5;
         if engine_on_grid == picture_is_grid {
@@ -739,14 +798,12 @@ impl HomeScreen {
             grid_item,
             self.carousel.as_ref(),
             self.snap.pos,
-            self.outgoing.is_some(),
             dt,
         );
         self.prefetch(view);
 
         let moving = self.outgoing.is_some()
-            || (self.snap.pos - self.snap_target).abs() > 0.002
-            || self.snap.vel.abs() > 0.01
+            || snap_moving
             || matches!(status_read(view), Some((_, StatusKind::Working, _)));
         if moving {
             fx.note(PresentEvent::Motion);
@@ -797,7 +854,11 @@ impl HomeScreen {
         })
     }
 
-    fn reseat<H: HomeLike>(&self, focus: FocusTarget<u32>, fx: &mut Effects<'_, H>) {
+    fn reseat<H: HomeLike>(&mut self, focus: FocusTarget<u32>, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        // Enter is queued behind this frame's Tick. Consume the CTA availability observed by
+        // this seating request now, so that Tick cannot queue an implicit initial Hero seat
+        // over the accepted target while the engine still holds its previous focus.
+        self.cta_available = hero_group_len(H::hubs(cx)) > 0;
         fx.push(Fx::Deliver(
             MachineId::Instance(self.instance),
             Delivery::Screen(ScreenEvent::Enter(Enter::Fresh { focus })),
@@ -836,11 +897,11 @@ impl HomeScreen {
                 let Some(key) = self.dev_focus_key(row, col, cx) else {
                     return Handled::No;
                 };
-                self.reseat(FocusTarget::Elem(key), fx);
+                self.reseat(FocusTarget::Elem(key), cx, fx);
             }
             HomeCmd::Hero => {
                 self.strip_chosen = false;
-                self.reseat(FocusTarget::ContainerGroup(HERO_GROUP), fx);
+                self.reseat(FocusTarget::ContainerGroup(HERO_GROUP), cx, fx);
             }
             HomeCmd::FocusStrip(tab) => {
                 let elem = match tab {
@@ -855,6 +916,7 @@ impl HomeScreen {
                         entry: self.entry,
                         elem,
                     }),
+                    cx,
                     fx,
                 );
             }
@@ -864,7 +926,7 @@ impl HomeScreen {
                 }
                 fx.invalidate(Provenance::Input);
             }
-            HomeCmd::SelectHero(index) => {
+            HomeCmd::SelectHero(index) | HomeCmd::PinHero(index) => {
                 let view = H::hubs(cx);
                 if view.hero_count() == 0 {
                     return Handled::No;
@@ -879,6 +941,10 @@ impl HomeScreen {
                 self.carousel = Some(identity);
                 self.outgoing = None;
                 self.hero_slide.jump(1.0);
+                if matches!(command, HomeCmd::PinHero(_)) {
+                    self.hero_pinned = true;
+                    crate::log(&format!("home: hero pinned at slot {index}"));
+                }
                 fx.invalidate(Provenance::Input);
             }
             HomeCmd::ItemMenu => return self.emit_item_menu(cx, fx),
@@ -892,6 +958,20 @@ impl HomeScreen {
             return;
         }
         let view = H::hubs(cx);
+        if status_read(view).is_some_and(|(_, kind, _)| kind == StatusKind::Failed)
+            && elem == HERO_PLAY_ELEM
+            && plaintext_question::asks(self.plaintext.verdict())
+        {
+            // The server is on this network and only answers without encryption: *Connect*
+            // asks the shared question rather than retrying what cannot succeed.
+            if let Some(v) = self.plaintext.verdict() {
+                let machine = v.machine_id.clone();
+                let sid = crate::plex::id_of_machine(&machine);
+                self.plaintext_alert.open(&machine, sid, MachineId::Instance(self.instance), fx);
+                fx.invalidate(Provenance::Input);
+            }
+            return;
+        }
         if status_read(view).is_some() && elem == HERO_PLAY_ELEM {
             fx.push(Fx::App(AppFx::Store(
                 StoreId::Hubs,
@@ -995,7 +1075,11 @@ impl HomeScreen {
         crate::ui::profile::phase("hm.status", || self.draw_status(view, &env, p, focus));
         crate::ui::testpat::underlay(p);
         crate::ui::testpat::draw(p);
-        self.record_stops(f, view);
+        if !self.plaintext_alert.visible() {
+            // the question owns the pointer while it is up; nothing under it is a target
+            self.record_stops(f, view);
+        }
+        self.plaintext_alert.draw(f, self.entry);
     }
 
     fn draw_hero(
@@ -1201,17 +1285,13 @@ impl HomeScreen {
     }
 
     fn draw_status(&self, view: HubsView<'_>, env: &Env, p: Painter, focus: Option<Located>) {
-        let Some((caption, kind, action)) = status_read(view) else {
+        let Some(overlay) = status_overlay(view, &self.plaintext) else {
             return;
         };
-        let focused = focus == Some(Located::Hero(0));
-        let mut overlay = StatusOverlay::new(Rect::FULL, caption, kind)
+        overlay
             .phase(self.status_ms as u32)
-            .focused(focused);
-        if let Some(label) = action {
-            overlay = overlay.action(label);
-        }
-        overlay.draw(env, p);
+            .focused(focus == Some(Located::Hero(0)))
+            .draw(env, p);
     }
 
     pub(crate) fn record_stops<H: HomeLike>(&self, f: &mut DrawFrame<'_, '_, H>, view: HubsView<'_>) {
@@ -1309,6 +1389,14 @@ impl HomeScreen {
         self.focused_grid(focus)
     }
 
+    /// Diagnostic view of the actual animated state: snap, retained shelf offset,
+    /// shelf velocity. No second motion owner or stored telemetry state.
+    #[cfg(feature = "devtriggers")]
+    pub(crate) fn motion_witness(&self, row: usize) -> Option<[f32; 3]> {
+        self.rows.get(row)?;
+        Some([self.snap.pos, self.grid.shelves[row].scroll_x(), self.grid.shelves[row].scroll_velocity()])
+    }
+
     pub(crate) fn snap_target(&self) -> f32 {
         self.snap_target
     }
@@ -1363,14 +1451,18 @@ impl LogicalState for HomeScreen {
         // is encoded below, including velocities that determine the next Tick's answer.
         let Self { entry: _, instance: _, groups: _, items: _, next_group: _, next_elem: _,
             rows: _, projected_generation: _, restored_scroll: _, restore_reveal: _, carousel: _,
-            outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _,
+            outgoing: _, hero_flip_cd: _, hero_slide: _, hero_dir: _, hero_auto: _, hero_pinned: _, covered: _,
             snap_target: _,
             visible_activation: _, cta_available: _, strip_chosen: _, snap: _, status_ms: _,
-            hero_pop: _, backdrop: _, grid: _ } = self;
+            hero_pop: _, backdrop: _, grid: _,
+            // The plaintext question is the grant table's (`plex::grant::offers`), which no
+            // recording can raise, and its alert only paints over a failed read-out.
+            plaintext: _, plaintext_alert: _ } = self;
         c.f32(self.snap_target)
             .f32(self.snap.pos).f32(self.snap.vel)
             .f32(self.hero_flip_cd)
             .f32(self.hero_auto)
+            .bool(self.covered)
             .option(self.visible_activation, |c, elem| {
                 c.u32(elem);
             })
@@ -1417,6 +1509,9 @@ impl LogicalState for HomeScreen {
 
 impl<H: HomeLike> Focusable<H> for HomeScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        if self.plaintext_alert.groups(out) {
+            return;
+        }
         let view = H::hubs(cx);
         let hero_len = hero_group_len(view);
         let hero_end = self
@@ -1475,6 +1570,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     }
 
     fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
+        if let Some(answer) = self.plaintext_alert.group_of(*key) {
+            return answer;
+        }
         match self.locate(*key)? {
             Located::Hero(index) => (index < hero_group_len(H::hubs(cx))).then_some(HERO_GROUP),
             Located::Item(row, _) => self.rows.get(row).map(|r| r.group),
@@ -1482,6 +1580,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     }
 
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
+        if let Some(step) = self.plaintext_alert.neighbour(key, dir) {
+            return step;
+        }
         let hero_len = hero_group_len(H::hubs(cx));
         let next = match self.locate(key.elem) {
             Some(Located::Hero(i)) => match dir {
@@ -1514,6 +1615,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     }
 
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
+        if let Some(placed) = self.plaintext_alert.place(*key) {
+            return placed;
+        }
         let view = H::hubs(cx);
         match self.locate(*key)? {
             Located::Hero(index) => {
@@ -1595,6 +1699,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     }
 
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
+        if let Some(key) = self.plaintext_alert.reconcile(want) {
+            return key;
+        }
         if let Some(located) = self.locate(want.elem) {
             let valid = match located {
                 Located::Hero(index) => index < hero_group_len(H::hubs(cx)),
@@ -1633,6 +1740,9 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
     }
 
     fn seat(&self, group: GroupId, from: Placed, _cx: &Cx<'_, H>) -> FocusKey<u32> {
+        if let Some(key) = self.plaintext_alert.seat(group, self.entry) {
+            return key;
+        }
         if group == HERO_GROUP {
             return FocusKey {
                 entry: self.entry,
@@ -1683,8 +1793,7 @@ impl HomeScreen {
             if index != 0 || action.is_none() {
                 return None;
             }
-            let overlay = StatusOverlay::new(Rect::FULL, c"", StatusKind::Empty).action(action?);
-            return overlay.action_frame_measured(measure);
+            return status_overlay(view, &self.plaintext)?.action_frame_measured(measure);
         }
         let hero = self.selected_hero(view)?.item;
         let resumes = crate::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
@@ -1712,6 +1821,18 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
     type Ev = ScreenEvent<H>;
 
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        match self.plaintext_alert.step(ev, cx) {
+            AlertStep::Pass => {}
+            AlertStep::Done(handled) => return handled,
+            AlertStep::Answer(cmd) => {
+                if let Some(cmd) = cmd {
+                    fx.push(Fx::App(AppFx::Session(cmd)));
+                }
+                self.reseat(FocusTarget::ContainerGroup(HERO_GROUP), cx, fx);
+                fx.invalidate(Provenance::Input);
+                return Handled::Yes;
+            }
+        }
         match ev {
             ScreenEvent::Mount => {
                 self.sync_catalog(cx);
@@ -1723,7 +1844,18 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
                 self.cta_available = hero_group_len(H::hubs(cx)) > 0;
                 Handled::Yes
             }
-            ScreenEvent::Enter(_) | ScreenEvent::Uncover => {
+            ScreenEvent::Enter(_) => {
+                self.sync_catalog(cx);
+                fx.invalidate(Provenance::Nav);
+                Handled::Yes
+            }
+            ScreenEvent::Cover => {
+                self.covered = true;
+                Handled::Yes
+            }
+            ScreenEvent::Uncover => {
+                self.covered = false;
+                self.hero_auto = HERO_AUTO_S;
                 self.sync_catalog(cx);
                 fx.invalidate(Provenance::Nav);
                 Handled::Yes
@@ -1934,8 +2066,8 @@ fn write_hub_identity(identity: &HomeHubIdentity, c: &mut Canon) {
         HomeHubIdentity::ContinueWatching => {
             c.u32(0);
         }
-        HomeHubIdentity::Identifier { sid, id } => {
-            c.u32(1).u32(u32::from(sid.raw())).str(id);
+        HomeHubIdentity::Identifier { sid, id, key } => {
+            c.u32(1).u32(u32::from(sid.raw())).str(id).str(key);
         }
         HomeHubIdentity::Key { sid, key } => {
             c.u32(2).u32(u32::from(sid.raw())).str(key);
@@ -1996,7 +2128,7 @@ fn status_read(
         crate::pms::HubState::Failed => (
             crate::i18n::msg::browse_home_failed_c(),
             StatusKind::Failed,
-            Some(crate::i18n::msg::browse_action_retry_home_c()),
+            Some(crate::i18n::msg::browse_action_retry_c()),
         ),
         crate::pms::HubState::Ready => (
             crate::i18n::msg::browse_home_empty_c(),
@@ -2005,6 +2137,31 @@ fn status_read(
         ),
     })
 }
+
+/// **The hub read-out, built ONCE for its draw and its hit rect** — the same kind, caption and
+/// action on both, so the pill a click lands in is the pill on screen. It fills the page, so a
+/// failure stands on the shared page lines (`StatusOverlay::page`), level with the sign-in
+/// failure's and a Library section's; loading and the empty answer stay centred.
+///
+/// A failure while discovery offers "Connect without encryption?" for a server (`plaintext`)
+/// says why in the reason slot and — until it is answered — makes *Connect* the primary
+/// (`screens::plaintext_question`, shared with the sign-in and a Library source's read-out).
+fn status_overlay<'a>(view: HubsView<'_>, plaintext: &'a OfferWatch) -> Option<StatusOverlay<'a>> {
+    let (caption, kind, action) = status_read(view)?;
+    let mut overlay = StatusOverlay::new(Rect::FULL, caption, kind).page();
+    let mut action = action;
+    if kind == StatusKind::Failed {
+        if let (Some(verdict), Some(reason)) = (plaintext.verdict(), plaintext.reason()) {
+            overlay = overlay.reason(reason);
+            action = Some(plaintext_question::primary(Some(verdict)));
+        }
+    }
+    Some(match action {
+        Some(label) => overlay.action(label),
+        None => overlay,
+    })
+}
+
 
 fn hero_group_len(view: HubsView<'_>) -> usize {
     match status_read(view) {

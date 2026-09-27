@@ -60,7 +60,12 @@ pub const CAP_BYTES: usize = 64 * 1024 * 1024;
 /// Only this application's runtime namespace, never the target named by recplay or a header.
 /// Caller must first consume the active Writer. remove_dir_all does not follow directory
 /// symlinks; the explicit symlink branch also handles dangling links as owned entries.
-pub(crate) fn erase_owned_artifacts(root: &Path) -> Vec<String> {
+///
+/// `remove_file` is the application's file-removal rule, injected because `ui/` names no storage
+/// layer (§2.1): the app passes the erase sweep's shared rule, under which a refused unlink of a
+/// name proven gone counts as removed.
+pub(crate) fn erase_owned_artifacts(root: &Path,
+    remove_file: fn(&Path) -> std::io::Result<()>) -> Vec<String> {
     let mut failures = Vec::new();
     for name in ["plxnative-rec", "plxnative-recplay", "plxnative-app-init", "plxnative-recordings"] {
         let path = root.join(name);
@@ -68,7 +73,7 @@ pub(crate) fn erase_owned_artifacts(root: &Path) -> Vec<String> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error),
             Ok(metadata) if name == "plxnative-recordings" && metadata.is_dir() => fs::remove_dir_all(&path),
-            Ok(_) => fs::remove_file(&path),
+            Ok(_) => remove_file(&path),
         };
         if result.is_err() { failures.push(format!("{name}: could not remove owned recording artifact")); }
     }
@@ -496,6 +501,10 @@ impl Writer {
         self.line(json!({"f": f, "t": "tick", "ms": t.ms, "dt_us": t.dt_us}));
     }
 
+    pub fn capture_readiness(&mut self, f: u64, pending: bool) {
+        self.line(json!({"f": f, "t": "capture", "pending": pending}));
+    }
+
     pub fn present(&mut self, f: u64, bit: bool, why: Option<&str>) {
         self.line(json!({"f": f, "t": "present", "bit": bit, "why": why}));
     }
@@ -642,6 +651,9 @@ impl Writer {
 pub struct Frame {
     pub f: u64,
     pub tick: Option<Tick>,
+    /// Page-capture readiness sampled before input/tick dispatch. Product replay consumes
+    /// this once; it is an input to motion/presentation, not the recorded present verdict.
+    pub snapshot_pending: Option<bool>,
     pub present: Option<bool>,
     pub present_why: Option<String>,
     pub inputs: Vec<Value>,
@@ -694,6 +706,7 @@ impl Recording {
         let mut metrics = HashMap::new();
         let mut stopped_at = None;
         let mut n = 0usize;
+        let mut after_tick = false;
         for seg in segments {
             for line in seg.split(|&b| b == b'\n') {
                 if line.is_empty() {
@@ -720,6 +733,19 @@ impl Recording {
                             ms: checked_u32(&v,"ms",n)?,
                             dt_us: checked_u32(&v,"dt_us",n)?,
                         })
+                    }
+                    "capture" => {
+                        if fr.snapshot_pending.is_some() { return Err(malformed(n,"duplicate capture readiness")); }
+                        // Native/direct ingress can precede the clock row. The capture sample
+                        // itself is immediately after that row, before logical tick dispatch.
+                        if !after_tick || fr.tick.is_none() {
+                            return Err(malformed(n,"capture readiness is not immediately after tick"));
+                        }
+                        if v.as_object().is_none_or(|o| o.len() != 3) {
+                            return Err(malformed(n,"capture readiness envelope"));
+                        }
+                        fr.snapshot_pending = Some(v["pending"].as_bool()
+                            .ok_or_else(|| malformed(n,"capture readiness bit"))?);
                     }
                     "present" => {
                         if fr.present.is_some() { return Err(malformed(n,"duplicate present")); }
@@ -787,6 +813,7 @@ impl Recording {
                     }
                     _ => return Err(malformed(n, "record kind")),
                 }
+                after_tick = kind == "tick";
             }
         }
         if frames.last().is_some_and(|frame| frame.tick.is_none()) { return Err(malformed(n,"completed frame lacks tick")); }
@@ -997,6 +1024,10 @@ impl Measurements {
     }
 }
 impl Measure for Measurements {
+    fn fit_line(&self, s: &str, budget: f32, sz: i32, bold: bool) -> std::rc::Rc<CStr> {
+        if let Self::Live(source) = self { return source.fit_line(s, budget, sz, bold); }
+        crate::text::fit_line_by(self, s, budget, sz, bold)
+    }
     fn width(&self,s:&CStr,sz:i32,bold:bool)->f32 {
         if let Self::Live(source)=self { return source.width(s,sz,bold); }
         self.query(MetricKey::Width {text:s.to_bytes().to_vec(),sz,bold},|m|m.width(s,sz,bold))
@@ -1008,6 +1039,11 @@ impl Measure for Measurements {
     fn line_h(&self,sz:i32)->f32 {
         if let Self::Live(source)=self { return source.line_h(sz); }
         self.query(MetricKey::Line {sz},|m|m.line_h(sz))
+    }
+    /// Only `Live` passes its source's answer through: `Record` must see every query, and
+    /// `Pending`/`Replay` must never be answered from the font.
+    fn live_font(&self)->bool {
+        matches!(self, Self::Live(source) if source.live_font())
     }
 }
 
@@ -1068,6 +1104,31 @@ pub fn state_fp(shapes: &[&str]) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn capture_readiness_is_one_boolean_before_dispatch() {
+        use super::*;
+        let manifest = json!({"schema":SCHEMA,"state_fp":1}).to_string();
+        let tick = json!({"f":0,"t":"tick","ms":0,"dt_us":0}).to_string() + "\n";
+        let capture = json!({"f":0,"t":"capture","pending":true}).to_string() + "\n";
+        let good = Recording::parse(&manifest, &[format!("{tick}{capture}").as_bytes()], 1).unwrap();
+        assert_eq!(good.frames[0].snapshot_pending, Some(true));
+        let ingress = json!({"f":0,"t":"in","kind":"lifecycle","code":262}).to_string();
+        assert!(Recording::parse(&manifest, &[format!("{ingress}\n{tick}{capture}").as_bytes()], 1).is_ok(),
+            "native ingress is recorded before clock_and_press samples the GPU");
+        for bad in [
+            format!("{capture}{tick}"), format!("{tick}{capture}{capture}"),
+            format!("{tick}{}\n{}\n", json!({"f":1,"t":"capture","pending":true}),
+                json!({"f":1,"t":"tick","ms":16,"dt_us":16000})),
+            format!("{tick}{}\n", json!({"f":0,"t":"capture","pending":0})),
+            format!("{tick}{}\n", json!({"f":0,"t":"capture","pending":null})),
+            format!("{tick}{}\n", json!({"f":0,"t":"capture","pending":true,"extra":0})),
+            format!("{tick}{}\n{capture}", json!({"f":0,"t":"in"})),
+            format!("{tick}{}\n{capture}", json!({"f":0,"t":"present","bit":true})),
+        ] {
+            assert!(Recording::parse(&manifest, &[bad.as_bytes()], 1).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn focus_truth_requires_exact_nullable_fields_and_post_input_order() {
         use super::*;

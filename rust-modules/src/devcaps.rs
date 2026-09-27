@@ -78,10 +78,12 @@ pub(crate) struct Caps {
     pub vp9: bool,
     /// The direct-playable AUDIO subset: `plex::DP_AUDIO_CODECS` (what the pipeline decodes)
     /// intersected with the table's audio rows, in `DP_AUDIO_CODECS`'s own URL form/order.
-    /// This field is the one definition both consumers read — `plex::is_dp_audio` (the gate on
-    /// every direct-play decision) and the profile string's audio lists — so the two cannot
-    /// drift apart (the coupling `DP_AUDIO_CODECS`'s doc has always promised).
+    /// Normal routing reads this and the channel ceilings through `plex::is_dp_audio_track`,
+    /// as does its PMS profile. Forced mode uses the software feed set independently.
     pub audio: String,
+    /// Nonzero, per-codec channel ceilings from the device table, duplicate rows MIN-merged.
+    /// Missing legacy limits remain unknown; DTS is admitted only with a measured limit.
+    pub audio_channels: std::collections::BTreeMap<String, u32>,
 }
 
 impl Caps {
@@ -95,13 +97,25 @@ impl Caps {
             h264_row: (0, 0, 0),
             hevc_row: (0, 0, 0),
             vp9: true,
-            audio: crate::plex::DP_AUDIO_CODECS.to_string(),
+            audio: "aac,ac3,eac3".to_string(),
+            audio_channels: Default::default(),
         }
     }
 
     /// Membership test on [`Caps::audio`] — `codec` already lowercase (PMS codec ids are).
     pub(crate) fn audio_has(&self, codec: &str) -> bool {
         self.audio.split(',').any(|c| c == codec)
+    }
+
+    /// Local counterpart of the profile's codec-scoped audio.channels limitations.
+    pub(crate) fn audio_supports(&self, codec: &str, channels: i64) -> bool {
+        if !self.audio_has(codec) {
+            return false;
+        }
+        match self.audio_channels.get(codec) {
+            Some(&limit) => (channels > 0 || codec != "dts") && channels <= i64::from(limit),
+            None => codec != "dts",
+        }
     }
 
     /// The transcode-target chain's HEAD — the codec the profile asks PMS to ENCODE when a
@@ -162,7 +176,7 @@ fn min_nz(a: u32, b: u32) -> u32 {
     }
 }
 
-/// The table's shape, structurally: unknown fields (maxBitRate, channels, the license blurb) are
+/// The table's shape, structurally: unknown fields (maxBitRate, the license blurb) are
 /// ignored by serde, and every field is defaulted so one malformed row degrades to "row said
 /// nothing" instead of failing the whole parse. `maxFrameRate` was in that ignored list until
 /// 2026-09-03; it is read now for the per-codec rows and nothing else.
@@ -191,6 +205,8 @@ struct VideoRow {
 struct AudioRow {
     #[serde(default)]
     name: String,
+    #[serde(default)]
+    channels: u32,
 }
 
 /// Everything [`probe`] extracts, as a pure function of the file's text — testable without a
@@ -249,10 +265,19 @@ fn parse(s: &str) -> Option<Caps> {
     }
     // DP_AUDIO_CODECS ∩ the table, keeping DP_AUDIO_CODECS's order so the profile string stays
     // stable across firmwares that merely reorder their rows.
+    let mut audio_channels = std::collections::BTreeMap::new();
+    for row in &t.audio_codecs {
+        if row.channels > 0 {
+            let codec = canon(&row.name);
+            let old = audio_channels.get(&codec).copied().unwrap_or(0);
+            audio_channels.insert(codec, min_nz(old, row.channels));
+        }
+    }
     let table_audio: Vec<String> = t.audio_codecs.iter().map(|r| canon(&r.name)).collect();
     let audio: Vec<&str> = crate::plex::DP_AUDIO_CODECS
         .split(',')
         .filter(|c| table_audio.iter().any(|t| t == c))
+        .filter(|c| *c != "dts" || audio_channels.contains_key("dts"))
         .collect();
     let audio = if audio.is_empty() {
         // Every webOS SoC decodes AAC; a table naming none of the three is evidence about our
@@ -272,6 +297,7 @@ fn parse(s: &str) -> Option<Caps> {
         },
         vp9,
         audio,
+        audio_channels,
     })
 }
 
@@ -427,9 +453,33 @@ mod tests {
         // a fractional cap is a CEILING the stream must fit under: 59.94 reads as 60, never 59
         let frac = parse(r#"{"videoCodecs":[{"name":"H.264","maxWidth":1920,"maxHeight":1088,"maxFrameRate":59.94}]}"#).unwrap();
         assert_eq!(frac.h264_row, (1920, 1088, 60));
-        // DTS/FLAC/MPEG are in the table but not in the pipeline's decode set; the subset keeps
+        // FLAC/MPEG are in the table but not in the pipeline's decode set; the subset keeps
         // DP_AUDIO_CODECS's own order, not the table's.
-        assert_eq!(c.audio, "aac,ac3,eac3");
+        assert_eq!(c.audio, "aac,ac3,eac3,dts");
+    }
+
+    #[test]
+    fn dts_requires_an_explicit_device_row() {
+        assert!(parse(REAL).unwrap().audio_has("dts"));
+        assert!(!Caps::assumed().audio_has("dts"));
+        assert!(!parse(&REAL.replace("DTS", "WMA")).unwrap().audio_has("dts"));
+    }
+
+    #[test]
+    fn audio_limits_retain_and_merge_the_devices_channel_bounds() {
+        let caps = parse(REAL).unwrap();
+        assert!(caps.audio_supports("dts", 6));
+        assert!(!caps.audio_supports("dts", 8));
+        assert!(!caps.audio_supports("dts", 0));
+        assert!(caps.audio_supports("aac", 2));
+        assert!(caps.audio_supports("aac", 6));
+        assert!(!caps.audio_supports("aac", 8));
+        assert!(caps.audio_supports("eac3", 8));
+        let merged = parse(&REAL.replace("\"name\" : \"FLAC\"", "\"name\" : \"EAC3\"" )).unwrap();
+        assert!(!merged.audio_supports("eac3", 8));
+        let unbounded = parse(&REAL.replace("\"channels\" : 6", "\"channels\" : 0")).unwrap();
+        assert!(!unbounded.audio_has("dts"));
+        assert!(!Caps::assumed().audio_supports("truehd", 6));
     }
 
     /// The merge is per-AXIS min, not a pick of the smaller row: a table whose duplicate rows
@@ -542,7 +592,7 @@ mod tests {
                 "audioCodecs":[{"name":"DTS"},{"name":"WMA"}]}"#,
         )
         .unwrap();
-        assert_eq!(c.audio, crate::plex::DP_AUDIO_CODECS);
+        assert_eq!(c.audio, "aac,ac3,eac3");
     }
 
     /// The fallback IS yesterday's constants — the values the app asserted for every device

@@ -30,6 +30,7 @@ fn saved() -> Session {
 fn frame(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, records: Vec<SessionEnvelope>) {
     let results = records.into_iter().map(|r| (r.addr, AppMsg::Session(SessionEvent::Result(r)))).collect();
     d.frame_with(rig, Tick::default(), Vec::new(), results, &mut NoTap, false);
+        rig.settle_session_io_for_test(d);
 }
 
 fn command(rig: &mut Bridge, d: &mut Dispatcher<AppHost>, cmd: crate::auth::SessionCmd) {
@@ -62,7 +63,8 @@ fn inject_roster_terminal(rig: &mut Bridge, expected: crate::auth::SessionIdenti
             "outcome":{"Reconcile":{
                 "resources":[{"name":"Synthetic", "clientIdentifier":"stored-machine",
                     "provides":"server", "owned":true, "accessToken":"profile-token-b"}],
-                "found":[source("127.0.0.2", "profile-token-b")], "household":[], "settled":[]
+                "found":[source("127.0.0.2", "profile-token-b")],
+                "admitted_machine_id":"stored-machine", "household":[], "settled":[]
             }}
         })).unwrap();
         output.complete(crate::auth::AuthProgress::ServerRoster(roster)).unwrap();
@@ -109,8 +111,11 @@ fn prove_home_observations(conflicting_owner: bool) {
     assert_eq!(crate::plex::server_probe_result(id), if conflicting_owner { None }
         else { Some(crate::plex::probe::Outcome::Reachable) });
     frame(&mut rig, &mut d, vec![roster]);
-    let address = if conflicting_owner { "127.0.0.1" } else { "127.0.0.2" };
+    // A stored non-admin (the roster is unknown here, so admin cannot be proved) publishes the
+    // credential-free probe but rejects the account-token roster endpoint and token.
+    let address = "127.0.0.1";
     assert_eq!(session::peek().sources[0].address, address);
+    assert_eq!(session::peek().sources[0].token, "profile-token-a");
     assert_eq!(crate::plex::client_for(id).unwrap().host(), address);
     assert!(rig.session.snapshot_init().persisted.can_go_local(),
         "stored Home now has an explicit owner; it does not require a default global Ctl");
@@ -157,7 +162,8 @@ fn prove_home_observations(conflicting_owner: bool) {
     let address = if conflicting_owner { "127.0.0.1" } else { "127.0.0.3" };
     let landed = session::peek();
     assert_eq!(landed.sources[0].address, address);
-    assert_eq!(landed.sources[0].token, if conflicting_owner { "profile-token-a" } else { "profile-token-b" });
+    assert_eq!(landed.sources[0].token, "profile-token-a",
+        "endpoint repair may move the profile's route but cannot import the account token");
     assert_eq!(crate::plex::client_for(id).unwrap().host(), address);
     if conflicting_owner { assert_eq!(std::fs::read(tmp.path()).unwrap(), before); }
     assert!(!rig.session.snapshot_init().pending.contains_key(&req),

@@ -13,33 +13,56 @@ fn activate(page: &mut LanguagePage, row: u32) -> Vec<Stamped<InnerHost>> {
     out
 }
 
-#[test]
-fn choosing_language_preserves_credentials_and_applies_only_on_next_launch() {
-    let _guard = crate::testlock::serial();
-    let _session = multi_user_session("language-persistence");
-    let before = crate::plex::session::peek();
-    let running = crate::i18n::current().language().tag();
-    let mut page = LanguagePage::new(EntryId(0));
-    assert!(activate(&mut page, 3).is_empty());
-    let saved = crate::plex::session::peek();
-    assert_eq!(saved.language, Preference::Be);
-    assert_eq!(saved.account_token, before.account_token);
-    assert_eq!(saved.client_id, before.client_id);
-    assert_eq!(saved.home_users.len(), before.home_users.len());
-    assert_eq!(crate::i18n::current().language().tag(), running);
-    let reopened = LanguagePage::new(EntryId(0));
-    assert_eq!(reopened.state.selected, Preference::Be);
-    assert_eq!(reopened.pending(), Preference::Be != crate::i18n::current().preference());
+struct SavedLanguage(Preference);
+impl SavedLanguage {
+    fn new(value: Preference) -> Self { Self(crate::i18n::saved_preference_for_test(value)) }
+}
+impl Drop for SavedLanguage {
+    fn drop(&mut self) { crate::i18n::saved_preference_for_test(self.0); }
+}
+
+fn save_request(effects: Vec<Stamped<InnerHost>>) -> (Preference, std::sync::mpsc::Sender<bool>) {
+    let mut requests = effects.into_iter().filter_map(|event| match event.fx {
+        Fx::App(AppFx::Preferences(super::super::registry::PreferenceCmd::Language { language, reply })) => Some((language, reply)),
+        _ => None,
+    });
+    let request = requests.next().expect("language save is an asynchronous application command");
+    assert!(requests.next().is_none(), "one activation submits one save");
+    request
 }
 
 #[test]
-fn choosing_system_default_persists_the_preference_instead_of_resolved_language() {
+fn language_selection_waits_for_durable_receipt_and_keeps_running_locale() {
     let _guard = crate::testlock::serial();
-    let _session = multi_user_session("language-system");
+    let _saved = SavedLanguage::new(Preference::System);
+    let running = crate::i18n::current().language().tag();
     let mut page = LanguagePage::new(EntryId(0));
-    activate(&mut page, 2);
-    activate(&mut page, 0);
-    assert_eq!(crate::plex::session::peek().language, Preference::System);
+    let before = page.state.hash();
+    let (requested, reply) = save_request(activate(&mut page, 3));
+    assert_eq!(requested, Preference::Be);
+    assert!(page.state.busy);
+    assert_eq!(page.state.selected, Preference::System, "queue admission is not durable success");
+    assert_ne!(page.state.hash(), before, "pending saves belong to replay state");
+    assert!(!page.poll_save(), "waiting never blocks the frame thread");
+    assert!(activate(&mut page, 2).is_empty(), "repeated saves are suppressed until the receipt");
+    reply.send(true).unwrap();
+    assert!(page.poll_save());
+    assert_eq!(page.state.selected, Preference::Be);
+    assert!(!page.state.busy && !page.state.failed);
+    assert_eq!(crate::i18n::current().language().tag(), running);
+    assert_eq!(page.pending(), Preference::Be != crate::i18n::current().preference());
+}
+
+#[test]
+fn choosing_system_default_saves_the_preference_instead_of_resolved_language() {
+    let _guard = crate::testlock::serial();
+    let _saved = SavedLanguage::new(Preference::Be);
+    let mut page = LanguagePage::new(EntryId(0));
+    let (requested, reply) = save_request(activate(&mut page, 0));
+    assert_eq!(requested, Preference::System);
+    assert_eq!(page.state.selected, Preference::Be);
+    reply.send(true).unwrap();
+    assert!(page.poll_save());
     assert_eq!(page.state.selected, Preference::System);
 }
 
@@ -48,10 +71,7 @@ fn language_entry_seats_the_engine_on_the_saved_preference() {
     let _guard = crate::testlock::serial();
     let _session = scratch_session("language-saved-seat");
     for (index, preference) in LANGUAGES.iter().copied().enumerate() {
-        crate::plex::session::save(&crate::plex::session::Session {
-            language: preference,
-            ..Default::default()
-        });
+        let _saved = SavedLanguage::new(preference);
         let entry = EntryId(7);
         let mut surface = RouteSurface::new(
             entry, InstanceId(0), Family::Settings, SettingsPage::Language,
@@ -77,14 +97,24 @@ fn language_entry_seats_the_engine_on_the_saved_preference() {
 }
 
 #[test]
-fn unavailable_session_does_not_show_an_unsaved_language_as_selected() {
+fn failed_or_disconnected_language_save_keeps_confirmed_selection_and_can_retry() {
     let _guard = crate::testlock::serial();
-    let session = scratch_session("language-no-session");
-    std::fs::remove_file(session.path()).unwrap();
-    let mut page = LanguagePage::new(EntryId(0));
-    activate(&mut page, 2);
-    assert_eq!(page.state.selected, Preference::System);
-    assert!(page.state.failed);
+    let _saved = SavedLanguage::new(Preference::En);
+    for disconnected in [false, true] {
+        let mut page = LanguagePage::new(EntryId(0));
+        let (_, reply) = save_request(activate(&mut page, 2));
+        if !disconnected { reply.send(false).unwrap(); }
+        drop(reply);
+        assert!(page.poll_save());
+        assert_eq!(page.state.selected, Preference::En);
+        assert!(page.state.failed && !page.state.busy);
+        let (preference, reply) = save_request(activate(&mut page, 2));
+        assert_eq!(preference, Preference::Es);
+        assert!(page.state.busy && !page.state.failed);
+        reply.send(true).unwrap();
+        assert!(page.poll_save());
+        assert_eq!(page.state.selected, Preference::Es);
+    }
 }
 
 #[test]

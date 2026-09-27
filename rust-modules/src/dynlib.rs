@@ -114,6 +114,22 @@ impl Handle {
         None
     }
 
+    /// As [`open`], but only a library that is **already mapped** into the process
+    /// (`RTLD_NOLOAD`): the first candidate somebody else already loaded, never a fresh load.
+    ///
+    /// For asking questions of the library another component is using — SDL `dlopen`s EGL
+    /// `RTLD_LOCAL`, so `RTLD_DEFAULT` cannot see it, and loading a second copy (or a different
+    /// implementation under a candidate SONAME) would answer about state that library does not
+    /// own. `RTLD_NOW` because glibc requires one of LAZY/NOW alongside NOLOAD; the mode of an
+    /// already-loaded object is not downgraded by it.
+    pub fn open_loaded<'a>(candidates: &[&'a str]) -> Option<(Handle, &'a str)> {
+        candidates.iter().find_map(|name| {
+            let c = CString::new(*name).ok()?;
+            let h = unsafe { dlopen(c.as_ptr(), RTLD_NOW | libc::RTLD_NOLOAD) };
+            (!h.is_null()).then_some((Handle(h), *name))
+        })
+    }
+
     /// A handle to the process's own global symbol scope (`RTLD_DEFAULT`), for asking "did the
     /// library that actually loaded bring this entry point" about something already linked.
     ///
@@ -421,5 +437,87 @@ mod tests {
     #[test]
     fn first_openable_candidate_wins() {
         assert!(Handle::open(&["libplxnative-nope.so.1", HOST_LIBC[0]]).is_some());
+    }
+
+    /// `open_loaded` answers only for a library that is already mapped, and never loads one:
+    /// the C library every process has is found, a name nothing loaded is not, and the first
+    /// mapped candidate is the one reported.
+    #[test]
+    fn open_loaded_finds_only_what_is_already_mapped() {
+        #[cfg(target_os = "macos")]
+        let mapped = "/usr/lib/libSystem.B.dylib";
+        #[cfg(not(target_os = "macos"))]
+        let mapped = "libc.so.6";
+        assert!(Handle::open_loaded(&["libplxnative-nope.so.1"]).is_none());
+        let (h, name) = Handle::open_loaded(&["libplxnative-nope.so.1", mapped])
+            .expect("the C library is mapped in every process");
+        assert_eq!(name, mapped);
+        assert!(h.sym("malloc").is_some_and(|p| !p.is_null()));
+    }
+
+    /// Libraries that ship with the base system but that a test process has no reason to map.
+    /// A LIST, because no single one is on every host: the GitHub Ubuntu runner has no
+    /// `libthread_db.so.1`. glibc ships the rest in `libc6` itself (`libanl`/`libutil` survive
+    /// 2.34's merge as compat stubs; `libBrokenLocale`, the NSS modules and `libresolv` never
+    /// moved).
+    #[cfg(target_os = "macos")]
+    const UNMAPPED_CANDIDATES: &[&str] = &[
+        "/usr/lib/libpanel.5.4.dylib",
+        "/usr/lib/libform.5.4.dylib",
+        "/usr/lib/libmenu.5.4.dylib",
+    ];
+    #[cfg(not(target_os = "macos"))]
+    const UNMAPPED_CANDIDATES: &[&str] = &[
+        "libthread_db.so.1",
+        "libBrokenLocale.so.1",
+        "libanl.so.1",
+        "libnss_dns.so.2",
+        "libnss_files.so.2",
+        "libutil.so.1",
+        "libresolv.so.2",
+    ];
+
+    /// The half that needs `RTLD_NOLOAD`: a library that EXISTS but nothing loaded is not
+    /// answered — and is still not mapped afterwards, so `open_loaded` did not load it either.
+    /// Only then does a real `open` load it, after which `open_loaded` finds it.
+    ///
+    /// Grades the first candidate that is not mapped AND exists. Never skips: a host where none
+    /// qualifies FAILS with the list tried, because a skip would make the NOLOAD mutation guard
+    /// vacuous on exactly the machine (CI) that is meant to enforce it.
+    #[test]
+    fn open_loaded_does_not_load_an_existing_library() {
+        let _g = crate::testlock::serial();
+        // Mapped-ness is read with a raw NOLOAD `dlopen`, never through the function under
+        // test: an `open_loaded` that lost its NOLOAD would otherwise load the library here and
+        // pass itself off as "already mapped".
+        let is_mapped = |lib: &str| {
+            let c = CString::new(lib).unwrap();
+            !unsafe { dlopen(c.as_ptr(), RTLD_NOW | libc::RTLD_NOLOAD) }.is_null()
+        };
+        let mut tried = Vec::new();
+        for &lib in UNMAPPED_CANDIDATES {
+            if is_mapped(lib) {
+                tried.push(format!("{lib}: already mapped"));
+                continue;
+            }
+            assert!(
+                Handle::open_loaded(&[lib]).is_none(),
+                "open_loaded answered for {lib}, which is not mapped"
+            );
+            assert!(!is_mapped(lib), "open_loaded loaded {lib}");
+            // Existence is learned only now, by loading it for real; a missing one is the next
+            // candidate's turn.
+            if Handle::open(&[lib]).is_none() {
+                tried.push(format!("{lib}: not present"));
+                continue;
+            }
+            assert!(
+                Handle::open_loaded(&[lib]).is_some(),
+                "open_loaded missed {lib} once it was mapped"
+            );
+            eprintln!("open_loaded NOLOAD graded against {lib}");
+            return;
+        }
+        panic!("no candidate library is present and unmapped on this host: {tried:?}");
     }
 }

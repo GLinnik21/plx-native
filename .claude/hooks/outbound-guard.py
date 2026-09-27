@@ -252,7 +252,7 @@ I32_MAX = (1 << 31) - 1
 # purpose. Compared lowercased.
 GENERIC = frozenset({
     "localhost", "127.0.0.1", "0.0.0.0", "255.255.255.255", "1.2.3.4",
-    "32400", "8910", "8911", "alpine", "example.com", "stable", "debug",
+    "32400", "8910", "8911", "8912", "alpine", "example.com", "stable", "debug", "nightly",
 })
 PLACEHOLDER = re.compile(
     r"^(?:<.*>|\{\{.*\}\}|\$\{?\w+\}?|(?:your|my|the)[_\-].+|x{3,}|redacted|changeme"

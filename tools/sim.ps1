@@ -155,9 +155,17 @@ runtime="${PLX_RUNTIME:-$HOME/.local/state/plxnative-sim}"
 target="${PLX_TARGET:-$HOME/.cache/plxnative-sim/target}"
 assets="${PLX_ASSETS:-$HOME/.local/share/plxnative-sim/assets}"
 mkdir -p "$runtime" "$target" "$assets"
-for file in appfont.ttf appfont-bold.ttf appfont-cjk.ttf OFL.txt; do
-    install -m 0644 "$repo/pkg/$file" "$assets/$file"
-done
+# All launch paths use the same build-and-stage operation. The ASS library is
+# produced by make, and the process loads it from PLXNATIVE_APP_DIR, not pkg/.
+build_simulator() {
+    cd "$repo"
+    make sim-wsl SIM_TDIR="$target"
+    for file in appfont.ttf appfont-bold.ttf appfont-cjk.ttf OFL.txt libass-plx-host.so.0; do
+        staged="$assets/$file.$$.new"
+        install -m 0644 "$repo/pkg/$file" "$staged"
+        mv -f "$staged" "$assets/$file"
+    done
+}
 if [ "${PLX_STAGE_TOKEN:-}" = 1 ]; then
     token=""
     if [ -f "$repo/src/config.local.h" ]; then
@@ -211,7 +219,7 @@ switch ($Action) {
 set -e
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y build-essential pkg-config libsdl2-dev libsdl2-ttf-dev libgl1-mesa-dev mesa-utils curl ca-certificates util-linux
+apt-get install -y build-essential cmake pkg-config libsdl2-dev libsdl2-ttf-dev libgl1-mesa-dev mesa-utils curl ca-certificates util-linux
 '@
         Invoke-WslShell -Script @'
 set -e
@@ -232,16 +240,14 @@ echo "WSLg simulator dependencies are ready."
     }
     "build" {
         Invoke-WslShell -Environment $commonEnvironment -Script ($instanceLocks + "`n" + $prepare + "`n" + @'
-cd "$repo"
-make sim-wsl SIM_TDIR="$target"
+build_simulator
 echo "Built $target/release/plxnative-sim"
 '@)
     }
     "run" {
         Assert-WslgFastTransport
         Invoke-WslShell -Environment $commonEnvironment -Script ($instanceLocks + "`n" + $prepare + "`n" + @'
-cd "$repo"
-make sim-wsl SIM_TDIR="$target"
+build_simulator
 printf '%s\n' "$$" > "$runtime/plxnative-sim.pid"
 exec "$target/release/plxnative-sim" "$pms" "$port"
 '@)
@@ -254,8 +260,7 @@ exec "$target/release/plxnative-sim" "$pms" "$port"
         $outputAbsolute = Get-AbsoluteWindowsPath $Output
         $commonEnvironment.PLX_OUTPUT = ConvertTo-WslPath $outputAbsolute
         Invoke-WslShell -Environment $commonEnvironment -Script ($instanceLocks + "`n" + $prepare + "`n" + @'
-cd "$repo"
-make sim-wsl SIM_TDIR="$target"
+build_simulator
 mkdir -p "$(dirname "$PLX_OUTPUT")"
 base="$runtime/windows-shot.png"
 captured="$runtime/windows-shot-1.png"

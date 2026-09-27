@@ -33,7 +33,9 @@ make ipk                          # pkg/com.beb.plxnative.debug_<version>_arm.ip
 Build trees are per-checkout and large. `make disk` reports what this machine is holding, and
 `tools/build-gc.sh --incremental|--lanes|--all` reclaims it — it deletes nothing `make` cannot
 rebuild. Run `tools/build-gc.sh --orphans` after tearing down a set of worktrees: lane target
-directories live outside the repo and outlive the worktree that made them.
+directories live outside the repo and outlive the worktree that made them. `--worktrees` is
+different in kind, not degree: it removes FINISHED lane checkouts themselves (clean, unlocked,
+already on `main`) — not just their build output — so it is not part of `--all`.
 
 The bundled FFmpeg is not rebuilt per checkout. Its source and object tree is machine-wide under
 `$PLX_BUILD_CACHE` (default `~/.cache/plxnative`), keyed by configure flags and toolchain, so a

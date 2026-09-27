@@ -12,7 +12,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from source_bundle import canonical, digest, read_regular, snapshot, validate, write_archive
+from source_bundle import (PRIVATE_KEY_PATTERN, SENTRY_DSN_PATTERN, canonical, digest, read_regular,
+                           snapshot, validate, write_archive)
 
 
 class BundleTests(unittest.TestCase):
@@ -121,10 +122,40 @@ class BundleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'rust-runtime'):
             self.check()
 
+    def test_ass_source_requires_every_static_dependency(self):
+        self.contents['ci/libass-dependencies.json'] = json.dumps([
+            {'id': name} for name in ['libass', 'freetype', 'fribidi', 'harfbuzz']]).encode(), 0o644
+        for name in ['libass', 'freetype', 'fribidi', 'harfbuzz']:
+            self.refresh()
+            with self.assertRaisesRegex(ValueError, 'missing dependency source mapping: ' + name):
+                self.check()
+            path = 'dependencies/' + name + '/' + name + '.tar.xz'
+            self.contents[path] = b'corresponding source', 0o644
+            self.manifest['dependencies'].append({'id': name, 'version': 'pinned-test', 'license': 'MIT',
+                'sources': [{'path': path, 'sha256': digest(b'corresponding source')}],
+                'recipes': ['Makefile'], 'patches': []})
+        self.refresh()
+        self.check()
+
     def test_unknown_license(self):
         self.manifest['dependencies'][0]['license'] = 'NOASSERTION'
         with self.assertRaisesRegex(ValueError, 'unresolved dependency license'):
             self.check()
+
+    def test_ass_compositor_header_is_required_when_the_facade_includes_it(self):
+        self.test_ass_source_requires_every_static_dependency()
+        for name in ['ci/build-libass.sh', 'ci/build-libass.py', 'include/ass.h']:
+            self.contents[name] = b'fixture recipe', 0o644
+        self.contents['src/ass.c'] = b'/* older facade without the private header */', 0o644
+        self.refresh()
+        self.check()  # Existing source bundles remain valid.
+        self.contents['src/ass.c'] = b'#include "ass_composite.h"\n', 0o644
+        self.refresh()
+        with self.assertRaisesRegex(ValueError, 'missing ASS renderer source: src/ass_composite.h'):
+            self.check()
+        self.contents['src/ass_composite.h'] = b'fixture compositor', 0o644
+        self.refresh()
+        self.check()
 
     def test_corrupt_compression_requires_exact_reviewed_hash(self):
         data = b'\x1f\x8bintentionally invalid gzip fixture'
@@ -210,7 +241,7 @@ class BundleTests(unittest.TestCase):
         from source_bundle import scan
         sample = b'https://' + b'0' * 32 + b'@o0.ingest.sentry.io/1'
         name = 'fixture/sample.java'
-        with patch('source_bundle.PUBLIC_DEMO_DSN_FILES', {name: digest(sample)}):
+        with patch('source_bundle.PUBLIC_SAMPLE_FILES', {name: (SENTRY_DSN_PATTERN, digest(sample))}):
             scan(sample, 'outer.tar.gz:' + name)
             with self.assertRaisesRegex(ValueError, 'credential pattern'):
                 scan(sample + b'changed', 'outer.tar.gz:' + name)
@@ -218,6 +249,17 @@ class BundleTests(unittest.TestCase):
                 scan(sample, 'another.java')
             with self.assertRaisesRegex(ValueError, 'private value'):
                 scan(sample, name, [sample])
+
+    def test_public_sample_exception_is_pattern_scoped(self):
+        from source_bundle import scan
+        key = b'-----BEGIN PRIVATE KEY-----\n' + b'A' * 64 + b'\n-----END PRIVATE KEY-----\n'
+        name = 'cargo-vendor/fixture/src/lib.rs'
+        with patch('source_bundle.PUBLIC_SAMPLE_FILES', {name: (PRIVATE_KEY_PATTERN, digest(key))}):
+            scan(key, 'cargo-vendor.tar.gz:' + name)
+        # The same file exempted for a DIFFERENT pattern is still refused.
+        with patch('source_bundle.PUBLIC_SAMPLE_FILES', {name: (SENTRY_DSN_PATTERN, digest(key))}):
+            with self.assertRaisesRegex(ValueError, 'credential pattern'):
+                scan(key, 'cargo-vendor.tar.gz:' + name)
 
     def test_input_symlink_escape(self):
         (self.root / 'link').symlink_to('/etc/passwd')
@@ -240,6 +282,7 @@ class BundleTests(unittest.TestCase):
             self.check()
 
     def test_restore_wires_supplied_cargo_and_runtime_sources(self):
+        self.test_ass_source_requires_every_static_dependency()
         self.contents['rust-modules/.cargo/config.toml'] = b'[build]\n', 0o644
         for name, files in [
             ('cargo-vendor', {'cargo-vendor/test-crate/Cargo.toml': (b'[package]\nname="fixture"\n', 0o644)}),
@@ -270,6 +313,9 @@ class BundleTests(unittest.TestCase):
                       (destination / 'rust-modules/.cargo/config.toml').read_text())
         self.assertTrue((destination / 'vendor/ffmpeg-build/source.txt').is_file())
         self.assertTrue((destination / 'vendor/source.txt').is_file())
+        for name in ['libass', 'freetype', 'fribidi', 'harfbuzz']:
+            self.assertEqual((destination / 'vendor/libass-sources' / (name + '.tar.xz')).read_bytes(),
+                             b'corresponding source')
         result = subprocess.run([sys.executable, str(Path(__file__).with_name('restore-source-inputs.py')),
                                  str(self.path), '--expect-snapshot', self.manifest['snapshot_sha256'],
                                  '--destination', str(destination), '--rust-sysroot', str(sysroot)],
@@ -384,6 +430,27 @@ class BundleTests(unittest.TestCase):
                                  str(self.path), '--expect-snapshot', '0' * 64], capture_output=True)
         self.assertEqual(result.returncode, 1)
         self.assertIn(b'expected candidate', result.stderr)
+
+
+class RepositoryTreeScan(unittest.TestCase):
+    """Run the bundle's credential scan over the REAL tree, before any ARM build.
+
+    The release step scans the bundle only after a full cross-build; a first-party fixture that
+    looked like a token (X-Plex-Token=<20+ chars>) surfaced there and nowhere earlier.
+    """
+
+    def test_every_bundled_file_passes_the_credential_scan(self):
+        from source_bundle import scan, tracked_sources
+        root = Path(__file__).resolve().parents[1]
+        failures, count = [], 0
+        for name, data, _mode, _transformation in tracked_sources(root):
+            count += 1
+            try:
+                scan(data, name, [])
+            except ValueError as error:
+                failures.append(str(error))
+        self.assertGreater(count, 100)
+        self.assertEqual(failures, [])
 
 
 if __name__ == '__main__':

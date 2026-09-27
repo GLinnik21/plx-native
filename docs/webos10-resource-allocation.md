@@ -17,7 +17,10 @@ stream presented on a 30 fps lattice; declared `@24` or `@30` it is announced as
 (payload `streamQualityInfoNonFlushable`, callback type 47) measured the consequence: **13.0 fps
 presented under `@60`, 24.1 fps under `@24`, zero counted drops either way.** H.264 therefore
 declares the stream's rate class now (`engine::fps_class`). Whether declaring 24 at 4K also loads on 10.3.1 is the one leg
-still unrun. The account below is left as it was written, as the evidence.
+still unrun. **Field evidence, 2026-09:** opt-in PostHog events from v0.6.6 show `playback.started`
+with `mode=transcode` on four different chips reporting release 10.3.1 (K24_DVB, O22A3_DVB,
+LM21A_DVB, O24_ATSC), so the fix holds on that firmware in the field; nobody here has watched it.
+The account below is left as it was written, as the evidence.
 
 > **Provenance.** LG Cloud Test Lab, 2026-08-27, one hour, on a set nobody here owns:
 > board `k24` / `K24_DVB`, **release 10.3.1**, booked as "webOS24". The log came back through the

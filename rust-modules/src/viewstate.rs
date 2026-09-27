@@ -269,6 +269,9 @@ impl ViewStateState {
     guid: &str,
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
     hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
+    person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+    search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
+    metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
 ) -> bool {
     // `client_for`, never `client()`: the item may live on a share, and a scrobble sent to the wrong
     // machine marks a DIFFERENT film watched there (both servers number their items from 1). None is
@@ -285,7 +288,7 @@ impl ViewStateState {
     // OPTIMISTIC, before the request: the press must land on the panel now, not one WAN round trip
     // from now. Only THIS copy — the other sources' keys are not known until the fan-out resolves
     // them, which is what [`pump`] finishes the job with.
-    edit_local_with_owners(sid, rk, w, browse, hubs);
+    edit_local_with_owners(sid, rk, w, browse, hubs, person, search, metadata);
     self.coalesce(sid, rk, w);
     let id = self.mint_request_id();
     self.queue.push(Req {
@@ -316,6 +319,9 @@ fn edit_local_with_owners(
     w: Write,
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
     hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
+    person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+    search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
+    metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
 ) {
     match w {
         Write::Watched | Write::Unwatched => {
@@ -342,7 +348,7 @@ fn edit_local_with_owners(
                 rk: rk.to_string(),
                 edit: crate::pms::LocalEdit::Watched(on),
             }).changed;
-            crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::SetWatchedLocal {
+            metadata(crate::stores::metadata::MetadataCmd::SetWatchedLocal {
                 sid,
                 rk: rk.to_string(),
                 on,
@@ -352,12 +358,12 @@ fn edit_local_with_owners(
                 rk: rk.to_string(),
                 on,
             });
-            crate::stores::search::apply(crate::stores::search::SearchCmd::SetWatchedLocal {
+            search(crate::stores::search::SearchCmd::SetWatchedLocal {
                 sid,
                 rk: rk.to_string(),
                 on,
             });
-            crate::stores::person::apply(crate::stores::person::PersonCmd::SetWatchedLocal {
+            person(crate::stores::person::PersonCmd::SetWatchedLocal {
                 sid,
                 rk: rk.to_string(),
                 on,
@@ -468,17 +474,21 @@ impl ViewStateState {
 /// MAIN THREAD, once a frame, ROUTE-UNCONDITIONAL — a landing must never depend on which screen is
 /// mounted, because the user can walk off Home (or off the detail page) between the press and the
 /// answer, and the refresh is owed either way.
-pub(crate) fn pump(
+pub(crate) fn pump_with_gate(
     &mut self,
     adapter: &Arc<ViewStateAdapter>,
+    gate: &crate::ui::landgate::Gate,
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
     hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
+    person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+    search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
+    metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
 ) -> crate::stores::EndpointRefreshSet {
     let mut endpoints = crate::stores::EndpointRefreshSet::default();
     let due = self.retry_tick();
     // the landing GATE (§3.3 step 3, `ui::landgate`): under a replay the server's answer is taken
     // on the frame the recording took it on. The retry tick and `kick` below stay outside it.
-    let landed = crate::stores::take_landing(crate::stores::StoreId::ViewState, || {
+    let landed = crate::stores::take_landing(gate, crate::stores::StoreId::ViewState, || {
         adapter.mail.lock().unwrap_or_else(|e| e.into_inner()).take()
     });
     if let Some(completion) = landed {
@@ -498,7 +508,7 @@ pub(crate) fn pump(
             // the ones their server took. A press that reached no other source does nothing here,
             // which is every press on a one-server install.
             for (osid, ork) in &done.also {
-                edit_local_with_owners(*osid, ork, r.w, browse, hubs);
+                edit_local_with_owners(*osid, ork, r.w, browse, hubs, person, search, metadata);
             }
             // The refresh is owed whether or not the server took it: on success it is the reconcile,
             // and on failure it is what puts the optimistic edit back to whatever the server really
@@ -532,6 +542,20 @@ pub(crate) fn pump(
         crate::ui::idle::invalidate();
     }
     endpoints
+}
+
+#[cfg(test)]
+pub(crate) fn pump(
+    &mut self,
+    adapter: &Arc<ViewStateAdapter>,
+    browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
+    hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
+    person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+    search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
+    metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
+) -> crate::stores::EndpointRefreshSet {
+    self.pump_with_gate(adapter, crate::ui::landgate::fixture_gate(), browse, hubs, person,
+        search, metadata)
 }
 
 #[cfg(test)]
@@ -787,11 +811,14 @@ pub(crate) fn run(
     cmd: crate::stores::viewstate::ViewStateCmd,
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
     hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
+    person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+    search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
+    metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
 ) -> bool {
     use crate::stores::viewstate::ViewStateCmd;
     match cmd {
         ViewStateCmd::Request { sid, rk, write, detail, guid } => {
-            self.request(adapter, sid, &rk, write, detail, &guid, browse, hubs)
+            self.request(adapter, sid, &rk, write, detail, &guid, browse, hubs, person, search, metadata)
         }
         ViewStateCmd::Reset => {
             self.reset();
@@ -814,7 +841,9 @@ mod tests {
         store.hold_inflight_for_test(sid, "held");
         let mut browse = Vec::new();
         let mut hubs = Vec::new();
-        let _ = crate::stores::take_notices();
+        let mut person = Vec::new();
+        let mut search = Vec::new();
+        let mut metadata_store = crate::stores::metadata::MetadataStore::default();
 
         assert!(store.run(
             crate::stores::viewstate::ViewStateCmd::Request {
@@ -829,6 +858,9 @@ mod tests {
                 hubs.push(cmd);
                 crate::stores::StoreOutcome::default()
             },
+            &mut |cmd| { person.push(cmd); true },
+            &mut |cmd| { search.push(cmd); true },
+            &mut |cmd| metadata_store.run(cmd),
         ));
 
         assert!(matches!(hubs.as_slice(), [crate::stores::hubs::HubsCmd::EditItem {
@@ -837,12 +869,14 @@ mod tests {
         assert!(matches!(browse.as_slice(), [crate::stores::browse::BrowseCmd::SetWatchedLocal {
             sid: seen, rk, on: true
         }] if *seen == sid && rk == "7"));
-        let notices = crate::stores::take_notices();
-        for id in [crate::stores::StoreId::Metadata, crate::stores::StoreId::Search,
-            crate::stores::StoreId::Person] {
-            assert_eq!(notices.iter().filter(|(seen, _)| *seen == id).count(), 1,
-                "the optimistic edit reaches {} before run returns", id.name());
-        }
+        assert!(matches!(person.as_slice(), [crate::stores::person::PersonCmd::SetWatchedLocal {
+            sid: seen, rk, on: true
+        }] if *seen == sid && rk == "7"));
+        assert!(matches!(search.as_slice(), [crate::stores::search::SearchCmd::SetWatchedLocal {
+            sid: seen, rk, on: true
+        }] if *seen == sid && rk == "7"));
+        assert!(metadata_store.take_notice().is_some(),
+            "the optimistic edit reaches {} before run returns", crate::stores::StoreId::Metadata.name());
         assert!(store.take_notice().is_some(), "the owning ViewState store notices its command");
         crate::plex::reset_servers_for_test();
     }
@@ -853,7 +887,7 @@ mod tests {
         crate::plex::reset_servers_for_test();
         let sid = crate::plex::register_for_test(
             "viewstate-stores-owner", "127.0.0.1", 9, "synthetic", "fixture");
-        let selected = crate::stores::Stores::default();
+        let mut selected = crate::stores::Stores::default();
         selected.browse.borrow_mut().seed_registered_table_for_test([sid, sid]);
         selected.browse.borrow_mut().seed_items_for_test(1);
         let decoy = crate::stores::Stores::default();
@@ -879,8 +913,7 @@ mod tests {
     #[test]
     fn owner_callback_receives_fanout_edits_and_the_terminal_hubs_invalidation() {
         let _g = crate::testlock::serial();
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
-        let origin = ServerId::from_raw(0);
+                let origin = ServerId::from_raw(0);
         let other = ServerId::from_raw(1);
         let mut state = ViewStateState::default();
         let adapter = Arc::new(ViewStateAdapter::default());
@@ -893,6 +926,7 @@ mod tests {
         });
         let mut browse = Vec::new();
         let mut hubs = Vec::new();
+        let mut person = Vec::new();
 
         let _ = state.pump(&adapter,
             &mut |cmd| { browse.push(cmd); true },
@@ -900,6 +934,9 @@ mod tests {
                 hubs.push(cmd);
                 crate::stores::StoreOutcome::default()
             },
+            &mut |cmd| { person.push(cmd); true },
+            &mut |_| false,
+            &mut |_| false,
         );
 
         assert!(matches!(&hubs[0], crate::stores::hubs::HubsCmd::EditItem {
@@ -911,17 +948,16 @@ mod tests {
             sid, rk, on: true
         } if *sid == other && rk == "70"));
         assert!(matches!(browse[1], crate::stores::browse::BrowseCmd::HubsInvalidateAll));
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
-    }
+        assert_eq!(person.len(), 1, "the fan-out reaches the supplied Person owner callback");
+            }
 
     #[test]
     fn endpoint_outcomes_survive_the_viewstate_refetch_pump() {
         let _g = crate::testlock::serial();
         let _session = crate::plex::session::TempSession::new("endpoint-viewstate");
         crate::plex::reset_servers_for_test();
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
-        let sid = crate::plex::register_for_test("endpoint-viewstate", "127.0.0.1", 9, "synthetic", "cid");
-        let stores = crate::stores::Stores::default();
+                let sid = crate::plex::register_for_test("endpoint-viewstate", "127.0.0.1", 9, "synthetic", "cid");
+        let mut stores = crate::stores::Stores::default();
         stores.viewstate.borrow_mut().owe_hubs_refresh_for_test();
         let directory = crate::stores::browse::DirectorySnapshot::default();
         let endpoints = crate::pms::with_refused_fetches_for_test(||
@@ -929,8 +965,7 @@ mod tests {
         assert_eq!(endpoints.iter().map(|r| r.sid).collect::<Vec<_>>(), [sid]);
         assert_eq!(stores.viewstate_pump(directory.view()).iter().count(), 0,
             "refetch is consumed once");
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
-        crate::plex::reset_servers_for_test();
+                crate::plex::reset_servers_for_test();
     }
     use super::*;
 
@@ -1236,8 +1271,9 @@ mod tests {
     #[test]
     fn the_landing_flips_another_sources_copy_the_press_could_not_reach() {
         let _g = crate::testlock::serial();
+        let mut metadata_store = crate::stores::metadata::MetadataStore::default();
         // the page is mounted on the SHARE's copy, which the press on our own copy never touched
-        crate::metadata::install_for_test(Some(crate::metadata::Detail {
+        crate::metadata::install_for_test(metadata_store.state_mut(), Some(crate::metadata::Detail {
             sid: SRV_B,
             rk: "4".into(),
             resume_ms: 900_000,
@@ -1245,22 +1281,24 @@ mod tests {
         }));
 
         edit_local_with_owners(SRV_A, "4", Write::Watched, &mut |_| false,
-            &mut |cmd| crate::stores::hubs::apply(cmd));
+            &mut |_cmd| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false,
+            &mut |cmd| metadata_store.run(cmd));
         assert!(
-            !crate::metadata::current().unwrap().watched,
+            !metadata_store.view().current().unwrap().watched,
             "A's 4 is not B's 4"
         );
 
         edit_local_with_owners(SRV_B, "4", Write::Watched, &mut |_| false,
-            &mut |cmd| crate::stores::hubs::apply(cmd));
-        assert!(crate::metadata::current().unwrap().watched);
+            &mut |_cmd| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false,
+            &mut |cmd| metadata_store.run(cmd));
+        assert!(metadata_store.view().current().unwrap().watched);
         assert_eq!(
-            crate::metadata::current().unwrap().resume_ms,
+            metadata_store.view().current().unwrap().resume_ms,
             0,
             "watched stops offering to resume"
         );
 
-        crate::metadata::install_for_test(None);
+        crate::metadata::install_for_test(metadata_store.state_mut(), None);
     }
 
     /// **The landing itself, driven through [`ViewStateState::pump`].** The test above grades what
@@ -1271,8 +1309,9 @@ mod tests {
     #[test]
     fn the_landing_applies_the_workers_whole_report_and_retires_the_write() {
         let _g = crate::testlock::serial();
+        let mut metadata_store = crate::stores::metadata::MetadataStore::default();
         // the mounted page is the SHARE's copy — the one the press could not reach
-        crate::metadata::install_for_test(Some(crate::metadata::Detail {
+        crate::metadata::install_for_test(metadata_store.state_mut(), Some(crate::metadata::Detail {
             sid: SRV_B,
             rk: "4".into(),
             ..Default::default()
@@ -1296,10 +1335,11 @@ mod tests {
         });
 
         let _outcome = state.pump(&adapter, &mut |_| false,
-            &mut |cmd| crate::stores::hubs::apply(cmd));
+            &mut |_cmd| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false,
+            &mut |cmd| metadata_store.run(cmd));
 
         assert!(
-            crate::metadata::current().unwrap().watched,
+            metadata_store.view().current().unwrap().watched,
             "the page mounted on the share's copy is flipped by the landing, not by the press"
         );
         assert!(
@@ -1311,7 +1351,7 @@ mod tests {
             "the mailbox is drained"
         );
 
-        crate::metadata::install_for_test(None);
+        crate::metadata::install_for_test(metadata_store.state_mut(), None);
     }
 
     #[test]
@@ -1333,7 +1373,8 @@ mod tests {
         });
 
         let _ = state.pump(&adapter, &mut |_| false,
-            &mut |_| crate::stores::StoreOutcome::default());
+            &mut |_| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false,
+            &mut |_| false);
 
         assert_eq!(state.sent.as_ref().map(|request| request.id), Some(second_id),
             "a stale or mismatched completion cannot satisfy the current in-flight identity");
@@ -1358,7 +1399,8 @@ mod tests {
             Some(Completion { id, done: Done::default() });
 
         let _ = state.pump(&adapter, &mut |_| false,
-            &mut |_| crate::stores::StoreOutcome::default());
+            &mut |_| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false,
+            &mut |_| false);
 
         assert_eq!(state.take_detail_refresh(), Some(target));
     }

@@ -43,6 +43,8 @@ struct RetryContext {
     resume_ns: i64,
     audio_sid: i64,
     sub_sid: i64,
+    sub_offset_ms: i64,
+    direct_play_mode: DirectPlayMode,
 }
 
 /// Everything the main thread needs to resolve and render the playback in progress, in one struct.
@@ -70,6 +72,13 @@ struct RetryContext {
 /// asserted: a frame's draw cannot hold one across [`apply_plan`] or [`request_play`], because
 /// those take `&mut`.
 pub(crate) struct PlaybackSession {
+    /// Frozen for one logical playback, including its retries and track changes.
+    direct_play_mode: DirectPlayMode,
+    /// This playback was refused by the cached device sandbox preflight. No Engine exists.
+    /// Cleared with the playback verdict on exit/reset, never a process-global error latch.
+    pub(crate) jail_load_blocked: bool,
+    /// Read-only publication of Player.repair for the HUD. Never authorizes a resource effect.
+    pub(crate) repair_status: crate::webos::jail_repair::State,
     /// The request which produced this attempt, retained for terminal Retry / Choose quality.
     /// Written synchronously by [`request_play`] rather than by [`apply_plan`], because the
     /// server can refuse before a playable plan exists.
@@ -262,15 +271,16 @@ pub(crate) struct PlaybackSession {
     stream_acodec: String,
     /// Direct-play source video frame rate (0 = unknown/transcode → omit from the Load esInfo).
     stream_fps: f64,
-    /// The direct-played file's own Dolby Vision layering, carried for one consumer: the Load
-    /// payload's `DolbyHdrInfo` node ([`crate::metadata::Dovi::presentation`]). Rides the session
-    /// exactly like `stream_fps` and for the same reason — an audio-track switch tears the engine
-    /// down and rebuilds the payload from here, and a payload that lost the node mid-film would
-    /// put the rest of the picture up in the wrong colours.
+    /// The direct-played file's raw Dolby Vision layering, retained for diagnostics. The Load
+    /// payload consumes `stream_dv_decision` below: re-evaluating this record after a late probe
+    /// would make a reload describe a different route from the one which passed the gate.
     ///
     /// `Dovi::NONE` on every transcode and remux: what arrives then is the server's output, and
     /// the only DV file that reaches those paths is one we refused to declare in the first place.
     stream_dovi: crate::metadata::Dovi,
+    /// Capability and presentation frozen when `stream_dovi` entered this physical route. An
+    /// audio switch, reload, Original recovery and rollback all copy this beside the raw record.
+    stream_dv_decision: crate::metadata::DvDecision,
     /// **Does the audio elementary stream we are feeding carry Dolby Atmos?** The Load payload's
     /// `contents.immersive` node turns on it ([`crate::player::engine`]).
     ///
@@ -319,12 +329,20 @@ pub(crate) struct PlaybackSession {
     /// This session is a hero preview. Skips watch-state writes and must not be repaired onto
     /// the player route.
     preview: bool,
+    /// This session was RESOLVED for a hero preview. Installed with `preview` by [`apply_plan`]
+    /// and, unlike it, never cleared by the preview machinery: `preview` tracks whether the
+    /// machine still owns the engine, this says what the session may write. See
+    /// [`preview_request`].
+    resolved_as_preview: bool,
 }
 
 impl PlaybackSession {
     /// Nothing playing: what the module holds before the first play, and the value the static is
     /// born as. Every String empty, every id 0 or `UNSET`, both HUD buffers NUL.
     pub(crate) const IDLE: PlaybackSession = PlaybackSession {
+        direct_play_mode: DirectPlayMode::Auto,
+        jail_load_blocked: false,
+        repair_status: crate::webos::jail_repair::State::Idle,
         request: None,
         requested_resume_ns: 0,
         url: String::new(),
@@ -361,6 +379,7 @@ impl PlaybackSession {
         stream_acodec: String::new(),
         stream_fps: 0.0,
         stream_dovi: crate::metadata::Dovi::NONE,
+        stream_dv_decision: crate::metadata::DvDecision::NONE,
         stream_immersive: false,
         title: [0; 128],
         ctxline: [0; 96],
@@ -368,6 +387,7 @@ impl PlaybackSession {
         queue: Vec::new(),
         now_ms: 0,
         preview: false,
+        resolved_as_preview: false,
     };
 }
 
@@ -389,6 +409,9 @@ impl PlaybackSession {
     /// it or silently dropping it.
     pub(crate) fn publication(&self) -> PlaybackSession {
         let PlaybackSession {
+            direct_play_mode,
+            jail_load_blocked,
+            repair_status,
             request,
             requested_resume_ns,
             url,
@@ -425,6 +448,7 @@ impl PlaybackSession {
             stream_acodec,
             stream_fps,
             stream_dovi,
+            stream_dv_decision,
             stream_immersive,
             title,
             ctxline,
@@ -432,8 +456,12 @@ impl PlaybackSession {
             now_ms,
             queue: _,
             preview: _,
+            resolved_as_preview,
         } = self;
         PlaybackSession {
+            direct_play_mode: *direct_play_mode,
+            jail_load_blocked: *jail_load_blocked,
+            repair_status: *repair_status,
             request: request.clone(),
             requested_resume_ns: *requested_resume_ns,
             url: url.clone(),
@@ -470,6 +498,7 @@ impl PlaybackSession {
             stream_acodec: stream_acodec.clone(),
             stream_fps: *stream_fps,
             stream_dovi: *stream_dovi,
+            stream_dv_decision: *stream_dv_decision,
             stream_immersive: *stream_immersive,
             title: *title,
             ctxline: *ctxline,
@@ -478,6 +507,7 @@ impl PlaybackSession {
             queue: Vec::new(),
             // A screen copy is not the live preview. The loop reads the real session.
             preview: false,
+            resolved_as_preview: *resolved_as_preview,
         }
     }
 }
@@ -683,6 +713,7 @@ struct AppliedRouteProjection {
     stream_acodec: String,
     stream_fps: f64,
     stream_dovi: crate::metadata::Dovi,
+    stream_dv_decision: crate::metadata::DvDecision,
     stream_immersive: bool,
 }
 
@@ -703,6 +734,7 @@ fn route_projection(ps: &PlaybackSession) -> AppliedRouteProjection {
         stream_acodec: s.stream_acodec.clone(),
         stream_fps: s.stream_fps,
         stream_dovi: s.stream_dovi,
+        stream_dv_decision: s.stream_dv_decision,
         stream_immersive: s.stream_immersive,
     }
 }
@@ -723,6 +755,7 @@ fn install_route_projection(ps: &mut PlaybackSession, projection: &AppliedRouteP
         s.stream_acodec = projection.stream_acodec.clone();
         s.stream_fps = projection.stream_fps;
         s.stream_dovi = projection.stream_dovi;
+        s.stream_dv_decision = projection.stream_dv_decision;
         s.stream_immersive = projection.stream_immersive;
     } };
 }
@@ -2828,6 +2861,7 @@ fn auto_original_features(ps: &PlaybackSession) -> crate::abr::SourceFeatures {
 
 /// Main-thread capture immediately before spawning the HLS demux worker.
 pub(crate) fn hls_abr_control(ps: &PlaybackSession) -> Option<(HlsAbrControl, WorkerTicket)> {
+    if forced_direct_play(ps) { return None; }
     let seconds_per_segment = match cur_delivery(ps) {
         crate::plex::TranscodeDelivery::FixedHls {
             seconds_per_segment,
@@ -2933,6 +2967,7 @@ impl AutoOriginalWatch {
 }
 
 pub(crate) fn auto_original_watch(ps: &PlaybackSession) -> Option<AutoOriginalWatch> {
+    if forced_direct_play(ps) { return None; }
     let s = &*ps;
     if applied_quality() != Quality::Auto
         || !s.cur_auto_original_watched
@@ -3006,6 +3041,7 @@ pub(crate) fn arm_auto_fixture(
             acodec: "aac".into(),
             fps: 0.0,
             dovi: crate::metadata::Dovi::NONE,
+            dv_decision: crate::metadata::DvDecision::NONE,
             immersive: false,
             audio_sid: 0,
             audio_ordinal: None,
@@ -3085,6 +3121,7 @@ pub(crate) fn fallback_auto_to_hls_for(
     measured_kbps: u32,
     offset_secs: i64,
 ) -> Option<String> {
+    if forced_direct_play(ps) { return None; }
     if !is_worker_ticket_current(expected) {
         return None;
     }
@@ -3178,6 +3215,7 @@ fn install_auto_hls(
             s.stream_acodec.clone(),
             s.stream_fps,
             s.stream_dovi,
+            s.stream_dv_decision,
             s.stream_immersive,
         )
     };
@@ -3193,7 +3231,8 @@ fn install_auto_hls(
             s.stream_acodec = previous.7.clone();
             s.stream_fps = previous.8;
             s.stream_dovi = previous.9;
-            s.stream_immersive = previous.10;
+            s.stream_dv_decision = previous.10;
+            s.stream_immersive = previous.11;
         } };
     };
     { let s = &mut *ps; {
@@ -3209,7 +3248,7 @@ fn install_auto_hls(
         s.stream_vcodec = "h264".into();
         s.stream_acodec = "aac".into();
         s.stream_fps = 0.0;
-        s.stream_dovi = crate::metadata::Dovi::NONE;
+        clear_output_dv(s);
         s.stream_immersive = false;
     } };
     let finish = |ps: &mut PlaybackSession, url: String| {
@@ -3270,6 +3309,7 @@ pub(crate) fn recover_auto_to_original_for(
     offset_secs: i64,
     automatic: bool,
 ) -> Option<AutoOriginalReload> {
+    if forced_direct_play(ps) { return None; }
     // One handoff owns both the unproven replacement and the retained client-side HLS route until
     // decoded frames commit it or an open failure restores that route snapshot. PMS-side HLS
     // cursor continuity is proved only by an actual later HLS response. Re-entering here would
@@ -3338,6 +3378,7 @@ pub(crate) fn recover_auto_to_original_for(
             s.stream_acodec = candidate.acodec.clone();
             s.stream_fps = candidate.fps;
             s.stream_dovi = candidate.dovi;
+            s.stream_dv_decision = candidate.dv_decision;
             s.stream_immersive = candidate.immersive;
         } };
         crate::player::set_audio_track(candidate.audio_ordinal.unwrap_or(-1));
@@ -3431,6 +3472,7 @@ struct PendingOriginal {
     stream_acodec: String,
     stream_fps: f64,
     stream_dovi: crate::metadata::Dovi,
+    stream_dv_decision: crate::metadata::DvDecision,
     stream_immersive: bool,
     /// A manual Original pick can adopt an automatic trial without issuing a second Load. The
     /// first decoded frame then transfers the applied contract to Manual and invalidates the
@@ -3443,13 +3485,13 @@ struct PendingOriginal {
     /// They travel with this exact transaction and are applied only after a replacement Engine is
     /// proven; a terminal failure drops them rather than leaking them into a later trial.
     deferred_quality: Option<Quality>,
-    deferred_audio: Option<(i32, String, i64)>,
+    deferred_audio: Option<(i32, String, i64, i64)>,
 }
 
 #[derive(Default)]
 pub(crate) struct DeferredOriginalEffects {
     quality: Option<Quality>,
-    audio: Option<(i32, String, i64)>,
+    audio: Option<(i32, String, i64, i64)>,
 }
 
 impl DeferredOriginalEffects {
@@ -3498,6 +3540,7 @@ fn snapshot_route(ps: &PlaybackSession, encoder: String, offset_secs: i64) -> Pe
         stream_acodec: s.stream_acodec.clone(),
         stream_fps: s.stream_fps,
         stream_dovi: s.stream_dovi,
+        stream_dv_decision: s.stream_dv_decision,
         stream_immersive: s.stream_immersive,
         adopted_by_user: false,
         charge_visible_switch_on_commit: false,
@@ -3664,6 +3707,7 @@ pub(crate) fn rollback_original_recovery(ps: &mut PlaybackSession) -> Option<Ori
         s.stream_acodec = pending.stream_acodec.clone();
         s.stream_fps = pending.stream_fps;
         s.stream_dovi = pending.stream_dovi;
+        s.stream_dv_decision = pending.stream_dv_decision;
         s.stream_immersive = pending.stream_immersive;
     } };
     if let Some(rung) = restored_hls {
@@ -3798,6 +3842,7 @@ pub(crate) fn play_verdict(ps: &PlaybackSession) -> Option<&str> {
 fn clear_play_verdict(ps: &mut PlaybackSession) {
     { let s = &mut *ps; {
         s.play_verdict = None;
+        s.jail_load_blocked = false;
         s.resolve_failed = false;
         s.requested_resume_ns = 0;
     } }
@@ -3896,6 +3941,27 @@ pub(crate) fn stream_dovi(ps: &PlaybackSession) -> crate::metadata::Dovi {
         crate::metadata::Dovi::NONE
     }
 }
+/// The capability and presentation frozen into this installed route. Unlike the raw DOVI metadata,
+/// this is the value the Load payload must consume without consulting the live capability cache.
+pub(crate) fn stream_dv_presentation(ps: &PlaybackSession) -> crate::metadata::DvPresentation {
+    if ps.stream_vcodec.eq_ignore_ascii_case("hevc") {
+        ps.stream_dv_decision.presentation
+    } else {
+        crate::metadata::DvPresentation::NotDv
+    }
+}
+
+pub(crate) fn stream_dv_decision(ps: &PlaybackSession) -> crate::metadata::DvDecision {
+    ps.stream_dv_decision
+}
+
+/// Server output (HLS encode, progressive encode or container remux) carries no client-frozen
+/// source declaration. Centralizing the paired reset prevents a future route mutation from
+/// clearing the raw metadata while leaving a stale `Declare` behind for Load.
+fn clear_output_dv(session: &mut PlaybackSession) {
+    session.stream_dovi = crate::metadata::Dovi::NONE;
+    session.stream_dv_decision = crate::metadata::DvDecision::NONE;
+}
 /// Is the audio being fed a Dolby Atmos stream? — the Load payload's `contents.immersive` node.
 /// See [`PlaybackSession::stream_immersive`].
 pub(crate) fn stream_immersive(ps: &PlaybackSession) -> bool {
@@ -3992,14 +4058,65 @@ pub(crate) fn set_stream_declaration(
     fps: f64,
     dovi: crate::metadata::Dovi,
     immersive: bool,
-) {
+) -> bool {
+    set_stream_declaration_with_capability(
+        ps,
+        vc,
+        ac,
+        fps,
+        dovi,
+        immersive,
+        crate::webos::caps::capability(),
+    )
+}
+
+fn set_stream_declaration_with_capability(
+    ps: &mut PlaybackSession,
+    vc: &str,
+    ac: &str,
+    fps: f64,
+    dovi: crate::metadata::Dovi,
+    immersive: bool,
+    capability: crate::webos::caps::DvCapability,
+) -> bool {
+    let decision = crate::metadata::DvDecision {
+        capability,
+        presentation: dovi.presentation(
+            !crate::metadata::dv_withheld(),
+            capability,
+            vc.eq_ignore_ascii_case("hevc"),
+        ),
+    };
+    if decision.presentation.refusal().is_some() {
+        crate::player::log(&format!(
+            "playurl: refusing Dolby Vision declaration capability={} presentation={}",
+            decision.capability.label(),
+            decision.presentation.label(),
+        ));
+        return false;
+    }
     { let s = &mut *ps; {
         s.stream_vcodec = vc.to_owned();
         s.stream_acodec = ac.to_owned();
         s.stream_fps = fps;
         s.stream_dovi = dovi;
+        s.stream_dv_decision = decision;
         s.stream_immersive = immersive;
     } }
+    true
+}
+
+#[cfg(test)]
+pub(crate) fn set_stream_declaration_for_test(
+    ps: &mut PlaybackSession,
+    vc: &str,
+    ac: &str,
+    fps: f64,
+    dovi: crate::metadata::Dovi,
+    immersive: bool,
+    capability: crate::webos::caps::DvCapability,
+) -> bool {
+    set_stream_declaration_with_capability(ps, vc, ac, fps, dovi, immersive, capability)
 }
 
 // (`set_source_codecs` stood here: a two-line setter for `src_vcodec`/`src_acodec` whose one
@@ -4141,7 +4258,7 @@ pub(crate) fn scrobble_stop(
     final_report: Option<(String, i64, i64)>,
     report_th: Option<std::thread::JoinHandle<()>>,
 ) {
-    if ps.preview {
+    if preview_request(ps) {
         return;
     }
     let (logical_session, pq, pqi) = (sess(ps), pq_id(ps), pq_item_id(ps));
@@ -4398,6 +4515,7 @@ pub(crate) fn drain_scrobble() {
 /// is not a transcode or PMS refuses the replacement. The old stream stays live until the new
 /// decision has succeeded and the route publication wins, so a failed seek cannot cut playback.
 pub(crate) fn transcode_seek(ps: &mut PlaybackSession, offset_secs: i64) -> Option<String> {
+    if forced_direct_play(ps) { return None; }
     if transcode_session(ps).is_empty() {
         return None;
     }
@@ -4610,6 +4728,51 @@ impl Quality {
     }
 }
 
+/// Install-wide preference; each resolve captures its own immutable mode.
+static DIRECT_PLAY_MODE: AtomicU8 = AtomicU8::new(0);
+
+pub(crate) fn direct_play_mode() -> DirectPlayMode {
+    match DIRECT_PLAY_MODE.load(Ordering::Relaxed) {
+        1 => DirectPlayMode::Forced,
+        2 => DirectPlayMode::Disabled,
+        _ => DirectPlayMode::Auto,
+    }
+}
+
+pub(crate) fn restore_direct_play_mode(mode: DirectPlayMode) {
+    #[cfg(test)]
+    crate::testlock::assert_held("direct-play preference");
+    DIRECT_PLAY_MODE.store(match mode {
+        DirectPlayMode::Auto => 0, DirectPlayMode::Forced => 1, DirectPlayMode::Disabled => 2,
+    }, Ordering::Relaxed);
+}
+
+/// Blocking persistence seam; Settings dispatches it on the storage worker.
+pub(crate) fn set_direct_play_mode(mode: DirectPlayMode) -> bool {
+    let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_direct_play_mode(mode)))
+        .is_some_and(|write| matches!(write.classify(),
+            crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
+    if saved { restore_direct_play_mode(mode); crate::ui::idle::invalidate(); }
+    saved
+}
+
+pub(crate) fn set_default_quality(q: Quality) -> bool {
+    let q = supported_quality(q);
+    let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_playback_quality(q)))
+        .is_some_and(|write| matches!(write.classify(),
+            crate::plex::session::async_persistence::CompletionOutcome::Durable(_)));
+    if saved { restore_quality(q); crate::ui::idle::invalidate(); }
+    saved
+}
+
+pub(crate) fn forced_direct_play(ps: &PlaybackSession) -> bool {
+    ps.direct_play_mode == DirectPlayMode::Forced
+}
+
+pub(crate) fn audio_track_direct_plays(ps: &PlaybackSession, codec: &str, channels: i64) -> bool {
+    audio_direct_plays(ps.direct_play_mode, codec, channels)
+}
+
 /// The user's current pick. An atomic rather than a field on [`Session`] because it OUTLIVES a
 /// playback — it is a preference, not session state — and because `ui::more_menu` reads it to draw
 /// the checkmark while [`ResolveEnv::snapshot`] reads it to hand the worker a copy.
@@ -4628,6 +4791,12 @@ pub(crate) fn quality() -> Quality {
 /// sessions: their missing field resolves to Original but remains missing until the user makes an
 /// explicit choice, so a future Auto-ready build still cannot reinterpret that old install.
 pub(crate) fn restore_quality(q: Quality) {
+    // `QUALITY` is a process global `quality()` reads without taking any lock, so a test that
+    // writes it without `testlock::serial()` lands the write mid some OTHER test's read —
+    // `on_deck_hevc_p5_preview_uses_the_selected_episodes_codec` flaked exactly this way. Same
+    // guard as the plex server registry (`plex::servers::register_with_client_id`).
+    #[cfg(test)]
+    crate::testlock::assert_held("the playback quality ceiling (restore_quality)");
     QUALITY.store(supported_quality(q).index(), Ordering::Relaxed);
 }
 
@@ -4655,10 +4824,13 @@ pub(crate) fn restore_quality(q: Quality) {
 fn persist_quality_choice(q: Quality) -> Quality {
     let q = supported_quality(q);
     crate::player::report::note_quality_selected_for(playback_trace_generation(), q);
+    // See `restore_quality`: the same process global, the same lock requirement in tests.
+    #[cfg(test)]
+    crate::testlock::assert_held("the playback quality ceiling (persist_quality_choice)");
     QUALITY.store(q.index(), Ordering::Relaxed);
     // A session write is a read-modify-write under the session lock: changing this preference
     // must not overwrite a roster refresh, a profile switch, or another profile's recents.
-    let _ = crate::plex::session::update(|s| {
+    let _ = crate::plex::session::queue_update(move |s| {
         if s.playback_quality == Some(q) {
             None
         } else {
@@ -4679,6 +4851,11 @@ pub(crate) fn set_quality_for_retry(q: Quality) {
 }
 
 pub(crate) fn set_quality(ps: &mut PlaybackSession, q: Quality) {
+    if forced_direct_play(ps) {
+        let _ = persist_quality_choice(q);
+        return;
+    }
+
     let q = supported_quality(q);
     let unchanged = q == quality();
     // Hold the explicit user-staging phase across persistence, Session projection changes and
@@ -4717,6 +4894,7 @@ pub(crate) fn set_quality(ps: &mut PlaybackSession, q: Quality) {
 }
 
 fn apply_quality_choice(ps: &mut PlaybackSession, q: Quality) {
+    if forced_direct_play(ps) { return; }
     // A later non-Auto pick supersedes an Auto restart that the pump has not consumed yet. If the
     // live worker really was adaptive, the route comparison below schedules the symmetric restart
     // which removes its watchdog; if it was still Manual, this cancellation avoids a stale Auto
@@ -4967,6 +5145,11 @@ pub(super) fn server_decision(
             return None;
         }
     };
+    mde_verdict(&mc)
+}
+
+fn mde_verdict(mc: &crate::plex::MediaContainer) -> Option<MdeVerdict> {
+    if refusal(mc).is_some() { return None; }
     // Part.decision is the Original-vs-not verdict (Media/container carry none). Video copy
     // is the VIDEO stream's own decision — Part=transcode + video=copy is a remux.
     let part = match mc
@@ -5011,6 +5194,12 @@ pub(super) fn server_decision(
     })
 }
 
+pub(super) fn forced_server_decision(
+    c: &crate::plex::Client, rk: &str, session: &str, audio: i64, sub: i64,
+) -> Option<MdeVerdict> {
+    mde_verdict(&c.mde_decision_forced(rk, session, audio, sub)?)
+}
+
 /// Select the audio + subtitle streams server-side for the current part before a
 /// transcode. The transcoder encodes the part's SELECTED audio and, when a subtitle id is
 /// non-zero, BURNS that subtitle (query-param subtitleStreamID does NOT suppress a
@@ -5052,8 +5241,9 @@ pub(super) struct QueueInfo {
     pub(super) rows: Vec<crate::plex::QueueRow>,
 }
 
-/// The queued next episode. Main-thread only, and — like `metadata::playing()` — it hands out a
-/// `&'static` the Up Next control reads across a frame, so `apply_plan` (main thread) staying its
+/// The queued next episode. Main-thread only, and — like `metadata::playing()` (via
+/// `MetadataView`, which hands out a `&'a` borrow of the owner's state) — it hands out a
+/// reference the Up Next control reads across a frame, so `apply_plan` (main thread) staying its
 /// only writer is what keeps that reference sound. A caller that STARTS the next episode must
 /// clone first: `request_play` clears this before the new plan lands.
 pub(crate) fn up_next(ps: &PlaybackSession) -> Option<&UpNext> {
@@ -5164,7 +5354,7 @@ impl ResolveEnv {
     /// carries the server it came from (`PmsMovie`/`UpNext`/`Detail` all hold one now), so a play
     /// raised off a merged shelf resolves against the server that shelf's row belongs to rather
     /// than whichever server happens to be current when the worker gets around to asking.
-    fn snapshot(ps: &PlaybackSession, sid: ServerId, rk: &str) -> ResolveEnv {
+    fn snapshot(ps: &PlaybackSession, meta: crate::metadata::MetadataView<'_>, sid: ServerId, rk: &str) -> ResolveEnv {
         let s = ps;
         ResolveEnv {
             sid,
@@ -5176,16 +5366,27 @@ impl ResolveEnv {
             },
             audio_sid: cur_audio_sid(ps),
             sub_sid: cur_sub_sid(ps),
-            cached_item: crate::metadata::cached_playing(sid, rk),
+            subtitle_override: None,
+            cached_item: meta.cached_playing(sid, rk),
             quality: quality(),
-            src_kbps: resolve_src_kbps(crate::metadata::current(), sid, rk),
+            direct_play_mode: direct_play_mode(),
+            src_kbps: resolve_src_kbps(meta.current(), sid, rk),
             omit_queue_continuous: false,
             preview: false,
+            #[cfg(test)]
+            dv_capability: None,
         }
     }
 }
 
 pub(crate) fn playback_preview(d: &crate::metadata::Detail) -> Option<Preview> {
+    playback_preview_with_capability(d, None)
+}
+
+fn playback_preview_with_capability(
+    d: &crate::metadata::Detail,
+    capability: Option<crate::webos::caps::DvCapability>,
+) -> Option<Preview> {
     // A SHOW's container carries no file of its own, so the page answers for the episode its Play
     // button would start — the one the hero is already about. Its frame size and audio list are
     // the show Detail's, which `fetch_item_streams` backfilled from that same episode.
@@ -5193,12 +5394,27 @@ pub(crate) fn playback_preview(d: &crate::metadata::Detail) -> Option<Preview> {
         Some(ep) => (ep.part.as_str(), ep.vcodec.as_str()),
         None => (d.part.as_str(), d.vcodec.as_str()),
     };
+    let presentation = match capability {
+        Some(capability) => d.dovi.presentation(
+            !crate::metadata::dv_withheld(),
+            capability,
+            vcodec.eq_ignore_ascii_case("hevc"),
+        ),
+        None => d.dovi.presentation_now(vcodec.eq_ignore_ascii_case("hevc")),
+    };
+    let mode = direct_play_mode();
+    if mode == DirectPlayMode::Forced {
+        return (!part.is_empty() && part_is_streamable(part)
+            && video_feed_supported(vcodec, presentation)
+            && d.audio.iter().any(|a| audio_direct_plays(mode, &a.codec, a.channels)))
+            .then_some(Preview::DirectPlay);
+    }
     let p = playback_preview_of(
         part,
         vcodec,
         d.width,
         d.height,
-        d.dovi.presentation_now(),
+        presentation,
         &d.audio,
     )?;
     // The user's quality ceiling is the LAST gate `build_stream` applies, so it is the last one
@@ -5210,15 +5426,24 @@ pub(crate) fn playback_preview(d: &crate::metadata::Detail) -> Option<Preview> {
     // A detail page has not downloaded the file yet, so it reports what can preserve the source,
     // not a fictitious failed bandwidth result. Remote Auto is measured at Play. Relay remains a
     // conversion because its independent link policy refuses both original-rate flavors.
-    let policy = flavors_allowed(
+    let policy = direct_play_policy(mode, flavors_allowed(
         crate::plex::link_policy(location),
         quality_policy(quality(), true, d.bitrate, d.width, d.height),
-    );
+    ));
     Some(match p {
+        Preview::DirectPlay if !policy.direct_play && policy.remux && mode == DirectPlayMode::Disabled => Preview::Remux,
         Preview::DirectPlay if !policy.direct_play => Preview::Converts,
         Preview::Remux if !policy.remux => Preview::Converts,
         _ => p,
     })
+}
+
+#[cfg(test)]
+pub(crate) fn playback_preview_with_capability_for_test(
+    d: &crate::metadata::Detail,
+    capability: crate::webos::caps::DvCapability,
+) -> Option<Preview> {
+    playback_preview_with_capability(d, Some(capability))
 }
 
 static PLAY_GEN: AtomicU32 = AtomicU32::new(0);
@@ -5288,6 +5513,19 @@ pub(crate) fn clear_preview(ps: &mut PlaybackSession) {
     ps.preview = false;
 }
 
+/// Was the installed session resolved for a hero preview? Unlike [`is_preview`], which the
+/// preview machinery clears as it retires the session, this is fixed at landing and only the next
+/// landing replaces it — so no teardown bookkeeping can turn a trailer into a playback.
+///
+/// **The one gate on every account write a session makes**: the timeline lease
+/// ([`begin_timeline_reporting`]) and the stop scrobble ([`scrobble_stop`]) both ask it, as do the
+/// pump's failure arms before any Original→HLS rescue. Read from the INSTALLED session rather
+/// than from `request`: a preview requested while a film's engine is still live replaces
+/// `request` at the press, and that film's final stop must still be reported.
+pub(crate) fn preview_request(ps: &PlaybackSession) -> bool {
+    ps.preview || ps.resolved_as_preview
+}
+
 /// Attach the UI's resume point to the resolve currently in flight.
 ///
 /// `request_play_*` is issued immediately before `app::start_playback`, so the latter knows the
@@ -5325,6 +5563,7 @@ pub(crate) fn surface_sid() -> ServerId {
 /// PlayQueue, the resume point) belongs to the former.
 pub(crate) fn request_play(
     ps: &mut PlaybackSession,
+    meta: &mut crate::stores::metadata::MetadataStore,
     sid: ServerId,
     rk: &str,
     part: &str,
@@ -5335,6 +5574,7 @@ pub(crate) fn request_play(
 ) -> bool {
     request_play_inner(
         ps,
+        meta,
         PlaybackRequest {
             sid,
             rk: rk.to_owned(),
@@ -5355,6 +5595,7 @@ pub(crate) fn request_play(
 /// zero. The caller keeps the detail page mounted.
 pub(crate) fn request_preview(
     ps: &mut PlaybackSession,
+    meta: &mut crate::stores::metadata::MetadataStore,
     sid: ServerId,
     rk: &str,
     part: &str,
@@ -5364,6 +5605,7 @@ pub(crate) fn request_preview(
 ) -> bool {
     request_play_inner(
         ps,
+        meta,
         PlaybackRequest {
             sid,
             rk: rk.to_owned(),
@@ -5385,6 +5627,7 @@ pub(crate) fn request_preview(
 /// a replacement timeline lease still waits for any stop announced before its publication.
 fn request_play_inner(
     ps: &mut PlaybackSession,
+    meta: &mut crate::stores::metadata::MetadataStore,
     request: PlaybackRequest,
     retry: Option<RetryContext>,
     trace_generation: Option<u32>,
@@ -5447,29 +5690,31 @@ fn request_play_inner(
         // the item now being resolved. `play_pending()` outranks it for this frame either way, but
         // a resolve that never lands (a refused spawn) would leave nothing else to clear it.
         s.play_verdict = None;
+        s.jail_load_blocked = false;
         s.resolve_failed = false;
     } };
     // …and the outgoing item's track/marker/chapter store, for exactly the reason above: it stays
     // the PREVIOUS leaf's until this resolve lands. See `metadata::retire_playing_item`.
     if !request.preview {
-        crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RetirePlayingItem);
-        crate::player::reset_audio_track();
-        crate::player::reset_subtitle();
+        meta.run(crate::stores::metadata::MetadataCmd::RetirePlayingItem);
+        reset_track_selection(retry);
     }
     // Capture the reducer revision BEFORE projecting the environment. Both happen on the main
     // thread, so a later quality/track edit necessarily advances this revision after the snapshot
     // and makes the landing stale instead of installing an old plan beneath a new checkmark.
     let contract_revision = desired_contract_revision();
     // captured HERE, on the main thread, and moved into the worker — see ResolveEnv
-    let mut env = ResolveEnv::snapshot(ps, sid, rk);
+    let mut env = ResolveEnv::snapshot(ps, meta.view(), sid, rk);
     env.omit_queue_continuous = crate::metadata::context_omits_queue_continuous(ctx);
     env.preview = request.preview;
     if let Some(retry) = retry {
         // `request_play` resets the live selection because that is correct for a new item.  A
         // retry is the SAME item: override the fresh defaults with the selection captured before
         // that reset so a rescue does not silently turn subtitles/audio back to server default.
+        env.direct_play_mode = retry.direct_play_mode;
         env.audio_sid = retry.audio_sid;
         env.sub_sid = retry.sub_sid;
+        env.subtitle_override = Some(retry.sub_sid);
     }
     let gen = PLAY_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     if let Some(resume_ns) = retry.map(|r| r.resume_ns).filter(|ns| *ns > 0) {
@@ -5487,7 +5732,7 @@ fn request_play_inner(
         // catch_unwind OUTSIDE the mailbox write, like load_season: a panicking resolve must still
         // land (as !ok) or PLAY_BUSY latches and the screen wedges on a spinner forever.
         let plan = std::panic::catch_unwind(|| build_stream(&rk, &part, &vc, &ac, &env))
-            .unwrap_or_default();
+            .unwrap_or_else(|_| Plan { direct_play_mode: env.direct_play_mode, ..Default::default() });
         let landing = PlayLanding {
             gen,
             trace_generation,
@@ -5528,6 +5773,20 @@ fn request_play_inner(
     spawned
 }
 
+/// Clear the outgoing item's live track selection for a play request. A retry is the SAME item
+/// resolved again with the subtitle it had (`RetryContext::sub_sid`, applied to the resolve env
+/// below), so the timing offset tuned against that subtitle is carried with it; a new item starts at
+/// 0. The landing re-clamps it once the subtitle is re-selected
+/// (`player::reclamp_subtitle_offset`), since the reset has just deselected the sidecar whose
+/// range allows an advance.
+fn reset_track_selection(retry: Option<RetryContext>) {
+    crate::player::reset_audio_track();
+    crate::player::reset_subtitle();
+    if let Some(retry) = retry {
+        crate::player::restore_subtitle_offset(retry.sub_offset_ms);
+    }
+}
+
 /// Start a fresh resolve for the item whose terminal error is still on screen.
 ///
 /// The caller owns Engine teardown; this module owns the immutable request descriptor, track
@@ -5556,10 +5815,12 @@ fn current_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
         resume_ns: resume_ns.max(0),
         audio_sid: cur_audio_sid(ps),
         sub_sid: cur_sub_sid(ps),
+        sub_offset_ms: crate::player::subtitle_offset_ms(),
+        direct_play_mode: ps.direct_play_mode,
     }
 }
 
-pub(crate) fn retry_current_play(ps: &mut PlaybackSession, resume_ns: i64) -> bool {
+pub(crate) fn retry_current_play(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, resume_ns: i64) -> bool {
     let Some(request) = ps.request.clone() else {
         crate::player::log("playback retry: no Plex request descriptor");
         return false;
@@ -5568,14 +5829,14 @@ pub(crate) fn retry_current_play(ps: &mut PlaybackSession, resume_ns: i64) -> bo
         "playback retry: resolving item again at quality {}",
         quality().label(),
     ));
-    request_play_inner(ps, request, Some(current_retry_context(ps, resume_ns)), None, true)
+    request_play_inner(ps, meta, request, Some(current_retry_context(ps, resume_ns)), None, true)
 }
 
 /// ASYNC twins of `play_movie` / `play_episode`: identical HUD strings and inputs. On `true`, the
 /// network work runs on a worker and the caller flips the route THIS frame; an empty or Busy request
 /// returns `false` and leaves the current route alone. `app.rs` drains `pump_play` once a frame and
 /// starts the engine when the plan lands.
-pub(crate) fn request_play_movie(ps: &mut PlaybackSession, m: &PmsMovie) -> bool {
+pub(crate) fn request_play_movie(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, m: &PmsMovie) -> bool {
     if m.part.is_empty() {
         return false;
     }
@@ -5598,6 +5859,7 @@ pub(crate) fn request_play_movie(ps: &mut PlaybackSession, m: &PmsMovie) -> bool
     // tests, and any row parsed before a registry existed, carry `UNSET`.
     request_play(
         ps,
+        meta,
         item_sid(m.sid),
         &m.rk,
         &m.part,
@@ -5629,7 +5891,7 @@ pub(crate) fn item_sid(sid: ServerId) -> ServerId {
 ///
 /// The HUD strings mirror the episode layout `draw_hud` uses once `now_playing` lands, so the
 /// pre-roll doesn't change shape underneath the user when it does.
-pub(crate) fn request_play_up_next(ps: &mut PlaybackSession, u: UpNext) -> bool {
+pub(crate) fn request_play_up_next(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, u: UpNext) -> bool {
     let ctx = crate::ui::fmt::episode_kicker(u.season, u.index, &u.ep_title);
     let title = if u.show_title.is_empty() {
         &u.ep_title
@@ -5644,7 +5906,7 @@ pub(crate) fn request_play_up_next(ps: &mut PlaybackSession, u: UpNext) -> bool 
     } else {
         surface_sid()
     };
-    request_play(ps, sid, &u.rk, &u.part, &u.vcodec, &u.acodec, title, &ctx)
+    request_play(ps, meta, sid, &u.rk, &u.part, &u.vcodec, &u.acodec, title, &ctx)
 }
 
 /// Supersede an in-flight resolve (BACK during a load). The landing is dropped by generation.
@@ -5667,7 +5929,7 @@ pub(crate) fn cancel_play(ps: &mut PlaybackSession) {
 /// MAIN THREAD, once a frame. Returns the generation-owned resume point when a playable fresh plan
 /// was installed. `Some(0)` means start from the beginning; `None` means no playable landing. A
 /// stale landing (and its resume) is dropped.
-pub(crate) fn pump_play(ps: &mut PlaybackSession) -> Option<i64> {
+pub(crate) fn pump_play(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore) -> Option<i64> {
     let taken = PLAY_SLOT.lock().unwrap_or_else(|e| e.into_inner()).take();
     let Some(PlayLanding {
         gen,
@@ -5700,7 +5962,7 @@ pub(crate) fn pump_play(ps: &mut PlaybackSession) -> Option<i64> {
             crate::player::log(
                 "playback resolve: desired contract changed in flight; discarding and resolving the latest contract",
             );
-            let _ = request_play_inner(ps, request, Some(retry), Some(trace_generation), false);
+            let _ = request_play_inner(ps, meta, request, Some(retry), Some(trace_generation), false);
         } else {
             cancel_playback_request(ps, has_url(ps));
         }
@@ -5723,14 +5985,14 @@ pub(crate) fn pump_play(ps: &mut PlaybackSession) -> Option<i64> {
     if !is_preview(ps) {
         ACTIVE_TRACE_GENERATION.store(trace_generation, Ordering::SeqCst);
     }
-    let _start = apply_plan(ps, plan, &rk);
+    let _start = apply_plan(ps, meta, plan, &rk);
     if let Some(resources) = refused_resources {
         retire_plan_resources(resources);
     }
     // Warm the next episode's still NOW rather than at first draw. The URL has been known since
     // this plan resolved — tens of minutes before the credits — and the fetch is async, so touching
     // it here costs nothing and spares the control a skeleton for one image-transcode round trip at
-    // exactly the moment it appears in front of the user. `warm_tex`, not `resolve_tex`: this wants
+    // exactly the moment it appears in front of the user. `warm_tex`, not `resolve_tex_wh_on`: this wants
     // the fetch and nothing else, and a slot warmed tens of minutes early must NOT be carrying the
     // evict-protection a draw takes (see `ui::tex::warm_on`). At the tile's OWN 480×270 —
     // `(server, path, w, h, png)` IS the store key, so a warm at any other size buys nothing.
@@ -5758,7 +6020,7 @@ pub(crate) fn pump_play(ps: &mut PlaybackSession) -> Option<i64> {
 /// to set and are carried across it explicitly — the HUD strings, the `/identity` cache when this
 /// plan learned no id, and the codec quartet when the plan resolved no video codec — and each says
 /// below why it stays.
-fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) -> Option<RouteStartTransaction> {
+fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::MetadataStore, plan: Plan, rk: &str) -> Option<RouteStartTransaction> {
     // ACTIVE_ENCODER is the final server-resource owner, even when there is no encoder. A raw
     // Part URL opens/adopts its Streaming Resource under the logical playback id; retaining that
     // id lets scrobble_stop exact-close it while PlaybackSession::tsession stays empty and Direct remains
@@ -5772,7 +6034,7 @@ fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) -> Option<RouteSta
         String::new()
     };
     let resolve_failed = plan.url.is_empty() && plan.verdict.is_none();
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::InstallPlaying(
+    meta.run(crate::stores::metadata::MetadataCmd::InstallPlaying(
         plan.playing,
     ));
     // main thread only — `up_next()`/`with_queue()` lend out of this (see their docs). The rows
@@ -5817,6 +6079,9 @@ fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) -> Option<RouteSta
         let now_ms = s.now_ms;
         let preview = request.as_ref().is_some_and(|r| r.preview);
         *s = PlaybackSession {
+            direct_play_mode: plan.direct_play_mode,
+            jail_load_blocked: false,
+            repair_status: crate::webos::jail_repair::State::Idle,
             request,
             requested_resume_ns,
             url: plan.url,
@@ -5849,7 +6114,7 @@ fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) -> Option<RouteSta
             cur_rk: rk.to_string(),
             cur_sid: plan.sid,
             cur_audio_sid: plan.audio_sid,
-            // the server-selected subtitle (0 = none), so the menu checkmark, the timeline report
+            // the part/show-selected subtitle (0 = none), so the menu checkmark, the timeline report
             // and any later transcode of this item all agree with what the renderer is told below
             cur_sub_sid: plan.sub_sid,
             cur_part_id: plan.part_id,
@@ -5864,6 +6129,7 @@ fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) -> Option<RouteSta
             stream_acodec,
             stream_fps: plan.fps,
             stream_dovi: plan.dovi,
+            stream_dv_decision: plan.dv_decision,
             stream_immersive: plan.immersive,
             title,
             ctxline,
@@ -5873,6 +6139,7 @@ fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) -> Option<RouteSta
             // contents and must not rewind the stamp `Player::set_now` wrote this iteration.
             now_ms,
             preview,
+            resolved_as_preview: preview,
         };
     } };
     if let (crate::plex::TranscodeDelivery::FixedHls { .. }, Some(rung)) = (
@@ -5885,12 +6152,19 @@ fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) -> Option<RouteSta
     } else {
         install_active_encoder(&active_encoder);
     }
+    // Restore the external renderer AND the route's stream identity before publishing the
+    // start contract, so timeline reports and later audio/quality transcodes keep this pick.
+    if plan.sub_render_ordinal.is_none() && !is_transcoding(ps) {
+        if let Some(id) = crate::player::sidecar::restore_server_selection(cur_sid(ps), meta.view()) {
+            set_subtitle(ps, id);
+        }
+    }
     let start = prepare_playback_landing(ps, !ps.url.is_empty());
     // SHARED.desired_audio_idx is read by the DEMUX THREAD on every reopen — main thread only.
     if let Some(ord) = plan.feed_audio_ordinal {
         crate::player::set_audio_track(ord);
     }
-    // `request_play` turned subtitles off for the new item; turn the server's selection back on
+    // `request_play` turned subtitles off; apply the resolved part/show selection
     // AFTER that reset (this lands a frame or more later, on the main thread, before the engine
     // starts — so the demuxer's per-block `desired_sub_idx` gate sees it from the first cue).
     if let Some(ord) = plan.sub_render_ordinal {
@@ -5900,6 +6174,9 @@ fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) -> Option<RouteSta
         ));
         crate::player::request_subtitle(ord);
     }
+    // A retry carried its subtitle offset through the reset (`reset_track_selection`); hold it to
+    // the range of the subtitle that actually landed, so an advance never outlives its sidecar.
+    crate::player::reclamp_subtitle_offset();
     // A landing is a DISCRETE change to what is on screen, so it owes the present gate a poke —
     // `ui::idle::invalidate`'s call-site list is that module's correctness argument. The caller
     // (`app.rs`'s pump) invalidates only when `pump_play` returns TRUE, and a REFUSING plan returns
@@ -5983,7 +6260,7 @@ fn prepare_original_remux(
         s.stream_vcodec = output_codecs.0.clone();
         s.stream_acodec = output_codecs.1.clone();
         s.stream_fps = 0.0;
-        s.stream_dovi = crate::metadata::Dovi::NONE;
+        clear_output_dv(s);
         s.stream_immersive = false;
     } };
     crate::player::log(&format!(
@@ -6016,6 +6293,7 @@ pub(crate) fn retranscode_for(ps: &mut PlaybackSession, expected: &WorkerTicket,
 }
 
 fn retranscode_as(ps: &mut PlaybackSession, expected: &WorkerTicket, offset_secs: i64, remux: bool) -> Option<String> {
+    if forced_direct_play(ps) { return None; }
     let c = cur_client(ps)?;
     let rk = cur_rk(ps);
     if rk.is_empty() || !is_worker_ticket_current(expected) {
@@ -6108,7 +6386,7 @@ fn retranscode_as(ps: &mut PlaybackSession, expected: &WorkerTicket, offset_secs
         s.stream_vcodec = output_codecs.0.clone();
         s.stream_acodec = output_codecs.1.clone();
         s.stream_fps = 0.0;
-        s.stream_dovi = crate::metadata::Dovi::NONE;
+        clear_output_dv(s);
         s.stream_immersive = false;
     } };
     crate::player::log(&format!(
@@ -6146,7 +6424,11 @@ fn retranscode_as(ps: &mut PlaybackSession, expected: &WorkerTicket, offset_secs
 /// file — no transcode, keeps 4K HEVC) when the item direct-plays AND the target codec is
 /// direct-playable; else a server re-transcode with that stream selected. `idx` is the
 /// CONTAINER audio ordinal (the menu converts its row via metadata::audio_ordinal).
-pub(crate) fn commit_audio_selection(ps: &mut PlaybackSession, idx: i32, codec: &str, stream_id: i64) {
+pub(crate) fn commit_audio_selection(ps: &mut PlaybackSession, idx: i32, codec: &str, stream_id: i64, channels: i64) {
+    if forced_direct_play(ps) && !audio_track_direct_plays(ps, codec, channels) {
+        ps.play_verdict = Some("Force Direct Play is enabled. This audio format needs conversion. Return Direct Play to Auto in Settings.".into());
+        return;
+    }
     if original_recovery_pending() {
         if let Some(pending) = PLAYER_CONTROL
             .lock()
@@ -6154,7 +6436,7 @@ pub(crate) fn commit_audio_selection(ps: &mut PlaybackSession, idx: i32, codec: 
             .pending_original
             .as_mut()
         {
-            pending.deferred_audio = Some((idx, codec.to_owned(), stream_id));
+            pending.deferred_audio = Some((idx, codec.to_owned(), stream_id, channels));
         }
         crate::player::log("audio: deferred until pending Original handoff commits or rolls back");
         return;
@@ -6172,7 +6454,7 @@ pub(crate) fn commit_audio_selection(ps: &mut PlaybackSession, idx: i32, codec: 
     ) {
         ps.auto_original = None;
     }
-    if !is_transcoding(ps) && crate::plex::is_dp_audio(codec) {
+    if !is_transcoding(ps) && audio_track_direct_plays(ps, codec, channels) {
         // record the pick: the timeline then reports the stream that actually plays, and a
         // later transcode event (subtitle burn refresh / transcode seek) keeps this track
         { let s = &mut *ps; s.cur_audio_sid = stream_id };
@@ -6194,8 +6476,8 @@ pub(crate) fn apply_deferred_original_effects(ps: &mut PlaybackSession, mut effe
     if let Some(q) = effects.quality.take() {
         apply_quality_choice(ps, q);
     }
-    if let Some((idx, codec, stream_id)) = effects.audio.take() {
-        commit_audio_selection(ps, idx, &codec, stream_id);
+    if let Some((idx, codec, stream_id, channels)) = effects.audio.take() {
+        commit_audio_selection(ps, idx, &codec, stream_id, channels);
     }
 }
 
@@ -6215,7 +6497,7 @@ pub(crate) fn commit_subtitle_selection(ps: &mut PlaybackSession, sub_idx: i32, 
         crate::plex::TranscodeDelivery::FixedHls { .. }
     ) {
         { let s = &mut *ps; {
-            if sub_idx < 0 {
+            if stream_id == 0 {
                 if let Some(candidate) = s.auto_original.as_mut() {
                     candidate.subtitle_ordinal = None;
                 }
@@ -6223,6 +6505,12 @@ pub(crate) fn commit_subtitle_selection(ps: &mut PlaybackSession, sub_idx: i32, 
                 s.auto_original = None;
             }
         } };
+    }
+    // A timing offset was tuned against the track that was showing; a DIFFERENT pick (another
+    // track, a sidecar, or Off) starts at zero. Re-committing the same track — a subtitle OK
+    // always republishes — keeps what the viewer found.
+    if stream_id != ps.cur_sub_sid {
+        crate::player::set_subtitle_offset(0);
     }
     crate::player::request_subtitle(sub_idx);
     set_subtitle(ps, stream_id);
@@ -6244,6 +6532,10 @@ pub(crate) fn commit_subtitle_selection(ps: &mut PlaybackSession, sub_idx: i32, 
 /// remains in `PlayerControl`, so a later in-place ABR commit changes the wire session and this
 /// projection under one lock without touching main-thread-only `Session`.
 pub(crate) fn begin_timeline_reporting(ps: &PlaybackSession) -> Option<TimelineLease> {
+    // A trailer never writes watch state, whatever became of its preview flag.
+    if preview_request(ps) {
+        return None;
+    }
     let projection = TimelineProjection {
         sid: cur_sid(ps),
         rating_key: cur_rk(ps),
@@ -6373,3 +6665,7 @@ mod quality_recovery_tests;
 #[cfg(test)]
 #[path = "decision_timeline_tests.rs"]
 mod timeline_tests;
+
+#[cfg(test)]
+#[path = "decision_direct_play_mode_tests.rs"]
+mod direct_play_mode_tests;

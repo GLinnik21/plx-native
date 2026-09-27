@@ -306,6 +306,8 @@ impl LogicalState for FixtureState {
 /// Library's scroll. One page rather than all of them: a spring in flight keeps the present gate
 /// awake, and every other test in this bundle grades quiet frames.
 pub const ANIMATED_PAGE: u32 = 950;
+/// A transition fixture whose page-owned motion intentionally outlives PageDip's 140 ms In ramp.
+pub const QUIESCENCE_PAGE: u32 = 951;
 
 pub struct FixtureScreen {
     pub arg: FixtureArg,
@@ -419,6 +421,10 @@ impl Machine<FixtureHost> for FixtureScreen {
                 self.spring.step(1.0, 300.0, t.dt());
                 Handled::Yes
             }
+            ScreenEvent::Tick(t) if self.arg == FixtureArg::Page(QUIESCENCE_PAGE) && t.ms < 400 => {
+                fx.note(super::present::PresentEvent::Motion);
+                Handled::Yes
+            }
             ScreenEvent::Enter(super::screen::Enter::Fresh { .. }) if self.arg == FixtureArg::Page(2) => {
                 // a structural op emitted from a FRESH Enter: parked for the NEXT frame's commit
                 // (§3.3); a Restored Enter (a pop back onto this page) pushes nothing, or a BACK
@@ -474,6 +480,17 @@ impl Screen<FixtureHost> for FixtureScreen {
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
         self.draw_at = draw_order();
         composed_draw(self, f);
+        if matches!(self.arg, FixtureArg::Page(_)) {
+            f.painter.text(
+                c"pending page text".as_ptr(),
+                100.0,
+                100.0,
+                24,
+                [1.0; 4],
+                0,
+                0,
+            );
+        }
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::Page
@@ -574,6 +591,8 @@ impl FixtureModal {
                                 draw_at: 0,
                             }),
                             inflight: Vec::new(),
+                            staged: false,
+                            staged_effects: Vec::new(),
                         });
                     }
                 }
@@ -894,6 +913,7 @@ impl Screen<FixtureHost> for VideoPlaneScreen {
 pub struct FixtureRig {
     pub page_alpha: f32,
     pub chrome_alpha: f32,
+    pub chrome_draws: usize,
     pub view_tab: Option<u32>,
     pub blur_amount: f32,
     pub navigation_reads: std::cell::Cell<usize>,
@@ -920,6 +940,7 @@ impl FixtureRig {
         Self {
             page_alpha: 1.0,
             chrome_alpha: 1.0,
+            chrome_draws: 0,
             view_tab: None,
             blur_amount: 0.0,
             navigation_reads: std::cell::Cell::new(0),
@@ -959,6 +980,10 @@ impl Rig<FixtureHost> for FixtureRig {
             page_alpha: self.page_alpha, chrome_alpha: self.chrome_alpha,
             view_tab: self.view_tab, blur_amount: self.blur_amount,
         }
+    }
+    fn draw_chrome(&mut self, _arg: &FixtureArg, _parts: &CxParts<u32>,
+        _nav: super::screen::NavPresentation, _glass: Option<&mut super::frame::glass::GlassPlan>) {
+        self.chrome_draws += 1;
     }
     fn scrim_chrome_read(&self) -> Option<super::widgets::ChromeRead<'_>> {
         self.scrim_chrome.then(|| super::widgets::ChromeRead {
@@ -1029,6 +1054,12 @@ impl Rig<FixtureHost> for FixtureRig {
         let mut ph = super::machine::PresentHandle(present);
         let us = self.us;
         self.cache.prepare(b, &mut self.uploader, &mut ph, || us);
+        // The rig owns a bare `TexCache` with no `Source` behind it (see the module doc above the
+        // smoke test), so there is nowhere to FORWARD an eviction notification — but the queue
+        // still has to be DRAINED, or `has_pending` latches true forever the first time this
+        // cache evicts past its 8-slot cap, and every later frame looks like it still has upload
+        // work pending.
+        self.cache.take_unresident().for_each(drop);
     }
 
     fn ls2_pump(&mut self) {
@@ -1826,6 +1857,46 @@ fn a_poster_result_is_accepted_in_the_drain_and_uploaded_in_prepare() {
     d.budget.note_queued(false);
 }
 
+/// The rig's cache is bare (`TexCache::new(8)`, no `Source` behind it) and its `Rig::prepare`
+/// calls `TexCache::prepare` directly rather than through `ui::tex`'s free-function wrapper —
+/// the wrapper is what drains `take_unresident` and forwards each key to a `Source` on the
+/// product path. Push a 9th distinct poster through a cap-8 cache and `evict_for` queues an
+/// eviction notification with nowhere to go: if `Rig::prepare` never drains it, `has_pending`
+/// never reports false again, which would force every later frame in a long-running fixture test
+/// to look like it still has upload work pending.
+#[test]
+fn a_bare_cache_driven_past_capacity_does_not_latch_pending_forever() {
+    let _g = crate::testlock::serial();
+    let mut d: Dispatcher<FixtureHost> = Dispatcher::new();
+    let mut rig = FixtureRig::new();
+    d.request(MachineId::Nav, NavOp::Root(FixtureArg::Home));
+    let r1 = d.frame(&mut rig, tick(0), vec![], vec![], &mut NoTap);
+    assert!(r1.presented, "boot always presents the first frame");
+
+    // One distinct key per frame, nine total — the 9th must evict the 1st under the 8-slot cap.
+    for i in 0..9u32 {
+        rig.cache.accept(PosterReady {
+            key: PosterKey(100 + i),
+            result: Ok(Decoded { w: 4, h: 4, rgba: vec![0; 64].into_boxed_slice() }),
+        });
+        d.budget.note_queued(rig.cache.has_pending());
+        let r = d.frame(&mut rig, tick(16 * (i + 1)), vec![], vec![], &mut NoTap);
+        assert!(r.presented, "queued prepare work forces a present");
+    }
+
+    assert_eq!(
+        rig.cache.resident_count(),
+        8,
+        "the 9th upload evicted the LRU victim under the 8-slot cap"
+    );
+    assert!(
+        !rig.cache.has_pending(),
+        "the 9th poster's eviction notification must be drained by prepare, not left to latch \
+         has_pending forever with no Source to forward it to"
+    );
+    d.budget.note_queued(false);
+}
+
 /// How many frames the level BELOW the top page has drawn.
 fn below_drawn(d: &Dispatcher<FixtureHost>) -> u32 {
     d.nav
@@ -1855,7 +1926,8 @@ fn below_drawn(d: &Dispatcher<FixtureHost>) -> u32 {
 /// so the fade back out of the player would begin already over.
 ///
 /// *Takes no snapshot.* Four doors read framebuffer 0 back — the frozen-host snapshot
-/// (`popover::host::begin_frame`), Glass, `RouteGround`'s ambient sample and `FrameCache::capture`
+/// (`popover::host::begin_frame`), Glass, the underlay field's live-frame sample
+/// (`gfx::field_kick`, `RouteGround::draw_host`'s source) and `FrameCache::capture`
 /// — and on this frame framebuffer 0 IS the hole. What each of them would cache is a photograph of
 /// transparent black, served back over the film for as long as the cache lives. Before phase 9 the
 /// only statement of that rule was prose ("never call it on the player route") plus the loop
@@ -1964,7 +2036,7 @@ fn a_video_plane_screen_replaces_its_host_and_takes_no_snapshot() {
         ("src/gfx.rs", "video_plane_refuses(\"FrameCache::capture\")"),
         ("src/gfx.rs", "video_plane_refuses(\"Glass::backdrop\")"),
         ("src/ui/popover.rs", "video_plane_refuses(\"popover::host::begin_frame\")"),
-        ("src/ui/route_screen.rs", "video_plane_refuses(\"RouteGround::draw_host\")"),
+        ("src/gfx.rs", "video_plane_refuses(\"gfx::field_kick\")"),
     ] {
         let src =
             std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file))

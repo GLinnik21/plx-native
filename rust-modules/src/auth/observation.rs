@@ -42,7 +42,32 @@ impl Observation {
                         for byte in qr_png { w.u8(*byte); }
                     }
                     LoginProgress::Authorized { epoch, token } => { w.u8(2).u64(*epoch).str(token); }
-                    LoginProgress::Failed { epoch, message } => { w.u8(3).u64(*epoch).str(message); }
+                    LoginProgress::DiscoveryTrouble { epoch, progress } => {
+                        w.u8(6).u64(*epoch)
+                            .u8(match progress.run {
+                                super::DiscoveryRetryRun::Resources => 0,
+                                super::DiscoveryRetryRun::HomeUsers => 1,
+                            })
+                            .u32(progress.misses).u32(progress.elapsed_ms);
+                    }
+                    LoginProgress::DiscoveryRetrySettled { epoch, run } => {
+                        w.u8(7).u64(*epoch).u8(match run {
+                            super::DiscoveryRetryRun::Resources => 0,
+                            super::DiscoveryRetryRun::HomeUsers => 1,
+                        });
+                    }
+                    LoginProgress::Failed { epoch, message, incident, plaintext } => {
+                        w.u8(3).u64(*epoch).str(message);
+                        owner::write_incident_context(w, incident);
+                        // Appended only when present, so a failure without one keeps its digest.
+                        if let Some(verdict) = plaintext {
+                            owner::write_plaintext_verdict(w, verdict);
+                        }
+                    }
+                    LoginProgress::LinkTrouble { epoch, trouble } => {
+                        w.u8(5).u64(*epoch);
+                        w.option(trouble.as_ref(), |w, c| owner::write_incident_context(w, c));
+                    }
                     LoginProgress::SignedIn { epoch, server, sources, users } => {
                         w.u8(4).u64(*epoch); write_server(w, server); write_sources(w, sources);
                         w.seq(users.len()); for user in users { write_tile(w, user); }
@@ -55,7 +80,9 @@ impl Observation {
                     RegistryProgress::Activate { epoch, expected, candidate } => {
                         w.u8(0).u64(*epoch); w.option(expected.as_ref(), write_identity);
                         w.str(&candidate.machine_id).str(&candidate.token).str(&candidate.name)
-                            .str(&candidate.credit).bool(candidate.owned).str(&candidate.origin.base())
+                            .str(&candidate.credit).bool(candidate.owned)
+                            .bool(candidate.home).u64(candidate.owner_id as u64)
+                            .str(&candidate.origin.base())
                             .str(&candidate.address);
                         owner::write_tier(w, Some(candidate.location)); w.bool(candidate.ipv6);
                     }
@@ -79,8 +106,11 @@ impl Observation {
                 match &progress.outcome {
                     ServerRosterOutcome::Unreachable => { w.u8(0); }
                     ServerRosterOutcome::NoReachable { settled } => { w.u8(1); write_probes(w, settled); }
-                    ServerRosterOutcome::Reconcile { resources, found, household, settled } => {
+                    ServerRosterOutcome::Reconcile {
+                        resources, found, admitted_machine_id, household, settled,
+                    } => {
                         w.u8(2); write_resources(w, resources); write_sources(w, found);
+                        w.str(admitted_machine_id);
                         w.seq(household.len()); for id in household { w.u64(*id as u64); }
                         write_probes(w, settled);
                     }
@@ -118,8 +148,11 @@ impl Observation {
                 let login = matches!(pending.key.op, SessionOp::Login | SessionOp::Rediscover);
                 match p {
                     LoginProgress::CodeReplacing { epoch } | LoginProgress::CodeReady { epoch, .. }
-                    | LoginProgress::Authorized { epoch, .. } =>
+                    | LoginProgress::Authorized { epoch, .. } | LoginProgress::LinkTrouble { epoch, .. } =>
                         (*epoch, None, pending.key.op == SessionOp::Login && !terminal),
+                    LoginProgress::DiscoveryTrouble { epoch, .. }
+                    | LoginProgress::DiscoveryRetrySettled { epoch, .. } =>
+                        (*epoch, None, login && !terminal),
                     LoginProgress::Failed { epoch, .. } | LoginProgress::SignedIn { epoch, .. } =>
                         (*epoch, None, login && terminal),
                 }
@@ -369,6 +402,17 @@ pub(super) mod server_id {
     }
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<ServerId, D::Error> {
         u16::deserialize(deserializer).map(ServerId::from_raw)
+    }
+}
+
+/// [`server_id`] for an optional slot.
+pub(super) mod optional_server_id {
+    use super::*;
+    pub fn serialize<S: serde::Serializer>(value: &Option<ServerId>, serializer: S) -> Result<S::Ok, S::Error> {
+        value.map(ServerId::raw).serialize(serializer)
+    }
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<ServerId>, D::Error> {
+        Option::<u16>::deserialize(deserializer).map(|raw| raw.map(ServerId::from_raw))
     }
 }
 

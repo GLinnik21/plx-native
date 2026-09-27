@@ -61,11 +61,26 @@ fn wrap(s: &str, max: usize) -> Vec<String> {
 /// client-rendered subtitle line(s), bottom-center, synced to the video clock. Drawn
 /// every frame independent of the transport HUD; hidden when subtitles are off or no
 /// cue is active at the current position.
-pub(crate) fn draw_subtitles(hud_up: bool) {
-    let text = match crate::player::active_subtitle(crate::player::playpos_ns()) {
+///
+/// TWO producers, one renderer: an external (sidecar) selection is asked first — it is no
+/// demuxer track, so `desired_sub_idx` is -1 while one is up and the embedded store answers
+/// nothing — then the embedded cue store. `transcoding` silences the sidecar, because a
+/// transcode BURNS the selection into the picture and drawing it too would double the line.
+pub(crate) fn draw_subtitles(hud_up: bool, transcoding: bool) {
+    let now_ns = crate::player::playpos_ns();
+    // the sidecar is looked up on the SUBTITLE clock (the playhead less the viewer's timing
+    // offset); the embedded store applies the same subtraction inside `active_subtitle`
+    let cue = crate::player::sidecar::active(crate::player::subtitle_clock_ns(now_ns), transcoding)
+        .or_else(|| crate::player::active_subtitle(now_ns));
+    let text = match cue {
         Some(t) if !t.trim().is_empty() => t,
         _ => return,
     };
+    draw_subtitle_message(&text, hud_up);
+}
+
+/// Shared caption placement for plain text and a styled-renderer failure message.
+pub(crate) fn draw_subtitle_message(text: &str, hud_up: bool) {
     let mut lines: Vec<String> = Vec::new();
     for seg in text.split('\n') {
         let seg = seg.trim();
@@ -88,19 +103,33 @@ pub(crate) fn draw_subtitles(hud_up: bool) {
     // sit near the bottom normally; lift above the scrubber/tabs while the HUD is up
     let baseline = if hud_up { SUB_CEIL_Y } else { SUB_BASE_Y };
     let block_top = baseline - n * lh;
-    let white = [1.0f32, 1.0, 1.0, 1.0]; // subtitles stay pure white for legibility (carve-out)
+    let ink = subtitle_ink(); // white unless the viewer picked a dimmer tone (track menu)
     let outline = theme::scrim_black(0.85);
     let p = Painter::root();
     for (i, ln) in lines.iter().enumerate() {
         let top = block_top + i as f32 * lh;
         if let Ok(cs) = CString::new(ln.as_str()) {
-            // dark outline (4 offsets) then bright white bold text — legible over any scene
+            // dark outline (4 offsets) then the bold caption in its tone — legible over any scene
             for (dx, dy) in [(-2.0f32, 0.0f32), (2.0, 0.0), (0.0, -2.0), (0.0, 2.0)] {
                 p.text(cs.as_ptr(), cx + dx, top + 4.0 + dy, sz, outline, 1, 1);
             }
-            p.text(cs.as_ptr(), cx, top + 4.0, sz, white, 1, 1);
+            p.text(cs.as_ptr(), cx, top + 4.0, sz, ink, 1, 1);
         }
     }
+}
+
+/// The ink both subtitle draws use this frame: the viewer's tone ([`crate::player::subtitle_tone`])
+/// resolved on [`theme::SUBTITLE_INKS`]. A rung the table does not have is white, never a
+/// neighbour.
+pub(crate) fn subtitle_ink() -> [f32; 4] {
+    subtitle_ink_for(crate::player::subtitle_tone())
+}
+
+fn subtitle_ink_for(tone: crate::plex::session::SubtitleTone) -> [f32; 4] {
+    theme::SUBTITLE_INKS
+        .get(tone.index() as usize)
+        .copied()
+        .unwrap_or(theme::SUBTITLE_INKS[0])
 }
 
 /// Subtitle baseline: where the caption block sits with the transport DOWN, and the ceiling it
@@ -197,7 +226,9 @@ pub(crate) fn draw_subtitle_bitmap(cache: &mut SubtitleBitmaps, hud_up: bool) {
                 for (i, r) in rects.iter().enumerate() {
                     let dst = sub_screen_rect((r.x, r.y, r.w, r.h), cw, ch);
                     let prev = set.get(i).map_or(0, |(t, _)| *t);
-                    let tex = upload_rgba(prev, r.w, r.h, r.rgba.as_ptr());
+                    // the store holds the set indexed; expand it once, here, per cue change
+                    let rgba = r.to_rgba();
+                    let tex = upload_rgba(prev, r.w, r.h, rgba.as_ptr());
                     match set.get_mut(i) {
                         Some(slot) => *slot = (tex, dst),
                         None => set.push((tex, dst)),
@@ -214,11 +245,13 @@ pub(crate) fn draw_subtitle_bitmap(cache: &mut SubtitleBitmaps, hud_up: bool) {
                 cache.sel = sel;
             }
             let lift = hud_lift(set.iter().map(|(_, r)| *r), hud_up);
-            let white = [1.0f32, 1.0, 1.0, 1.0];
+            // the tone TINTS a bitmap: the image shader multiplies by it, so a PGS cue keeps its
+            // authored colours and outline and only gives up light (white is the identity)
+            let tint = subtitle_ink();
             let p = Painter::root();
             for (tex, r) in set.iter() {
                 let dy = if overhangs(*r) { lift } else { 0.0 };
-                p.tex(*tex, Rect::new(r.x, r.y - dy, r.w, r.h), 0.0, white);
+                p.tex(*tex, Rect::new(r.x, r.y - dy, r.w, r.h), 0.0, tint);
             }
         }
     }
@@ -349,9 +382,8 @@ pub(crate) struct TransportRow {
     /// **The measured width of every control-row stand-in label seen so far** — a RENDER memo, the
     /// one half of this struct that is not logical state.
     ///
-    /// `text::text_width` is an uncached `TTF_SizeUTF8` and the labels are compile-time constants
-    /// whose width can never change, so re-measuring them 2-3x a frame is exactly the thrash
-    /// `text::elide`'s memo exists to avoid. It rides here rather than in a struct of its own
+    /// Native font metrics share a cache; this local memo also avoids repeated capability calls
+    /// and string preparation for the fixed control labels. It rides here rather than in a struct of its own
     /// because `ctrl_slot` is reached from the same three places the springs are — `draw_hud`,
     /// `up_next` and `skip_pill` — and one borrow through those paths is one borrow.
     widths: Vec<(String, f32)>,
@@ -461,17 +493,14 @@ pub(crate) const CTRL_ROW_W: f32 = 3.0 * BTN_S + 2.0 * BTN_GAP;
 /// discs' own edge, and never narrower than the pair it replaces so the row does not visibly shrink
 /// when it appears. ONE geometry for both stand-ins and for the pointer hit-test.
 ///
-/// The measured width is memoised per label: `text::text_width` is an uncached `TTF_SizeUTF8`, and
-/// the labels are compile-time constants whose width can never change — re-measuring them 2-3× a
-/// frame is exactly the thrash `text::elide`'s memo exists to avoid.
+/// The measured width is memoised per label, avoiding repeated capability calls and string
+/// preparation for fixed labels in addition to the native font-metric cache.
 pub(crate) fn ctrl_slot(row: &mut TransportRow, label: &str, measure: &dyn crate::ui::machine::Measure) -> Rect {
-    const PAD_X: f32 = 34.0;
     let memo = &mut row.widths;
     let w = match memo.iter().find(|(l, _)| l == label) {
         Some((_, w)) => *w,
         None => {
-            let measured = measure.width_str(label, theme::size::BODY, true) + 2.0 * PAD_X;
-            let measured = measured.max(CTRL_ROW_W);
+            let measured = ctrl_slot_measure(label, measure);
             // `text_width` reads 0 until `init_text` has run — don't cache a pre-init measurement
             if measured > CTRL_ROW_W {
                 memo.push((label.to_string(), measured));
@@ -480,6 +509,17 @@ pub(crate) fn ctrl_slot(row: &mut TransportRow, label: &str, measure: &dyn crate
         }
     };
     Rect::new(CTRL_RIGHT - w, CTRL_Y, w, CTRL_H)
+}
+
+/// [`ctrl_slot`]'s width without writing the memo — the cached width when the draw has measured
+/// `label`, else the same measurement it would cache.
+pub(crate) fn ctrl_slot_w(row: &TransportRow, label: &str, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    row.widths.iter().find(|(l, _)| l == label).map_or_else(|| ctrl_slot_measure(label, measure), |(_, w)| *w)
+}
+
+fn ctrl_slot_measure(label: &str, measure: &dyn crate::ui::machine::Measure) -> f32 {
+    const PAD_X: f32 = 34.0;
+    (measure.width_str(label, theme::size::BODY, true) + 2.0 * PAD_X).max(CTRL_ROW_W)
 }
 
 /// What currently occupies the transport's right-hand control row.
@@ -536,23 +576,28 @@ impl ControlSlot {
             ControlSlot::UpNext(m) => Some((m.kind, m.start_ms)),
         }
     }
-    /// Pointer hit-test for whatever occupies the row — ONE entry point, so the click path can
-    /// never consult geometry belonging to a control that is not on screen. It answers with the
-    /// ITEM index rather than a bool because Up Next has two: the click has to park `hud_nav.btn`
-    /// before dispatching, or the shared `activate_ctrl_row` would act on wherever the ring
-    /// happened to be rather than on what was clicked.
+    /// **Item `idx` of whatever occupies the row, at the rect it is DRAWN at** — the one
+    /// geometry `PlayerScreen`'s `Focusable::place` answers with, and therefore the rect its stop
+    /// is registered at, for all three occupants and every item of each (`0..items()`). `None`
+    /// past the occupant's last item.
     ///
-    /// `row` is the transport's own measurement cache: both stand-ins lay out against the same
-    /// slot geometry the draw path measures, and that cache is a `PlayerScreen` field now rather
-    /// than a `static mut`, so the hit-test is handed it exactly as the draw is.
-    pub(crate) fn hit(self, row: &mut TransportRow, cx: f32, cy: f32, measure: &dyn crate::ui::machine::Measure) -> Option<c_int> {
-        match self {
-            ControlSlot::UpNext(_) => crate::ui::up_next::hit(row, cx, cy, measure),
-            ControlSlot::Skip(pr) => crate::screens::player::skip_pill::rect(row, pr, measure)
-                .contains(cx, cy)
-                .then_some(0),
-            ControlSlot::Discs => None,
+    /// Read-only over `row`'s label-width memo ([`ctrl_slot_w`]): `place` is `&self`, and a width
+    /// the draw has not cached yet is measured the same way the draw measures it.
+    pub(crate) fn item_rect(self, row: &TransportRow, idx: c_int, measure: &dyn crate::ui::machine::Measure) -> Option<Rect> {
+        if idx < 0 || idx >= self.items() {
+            return None;
         }
+        Some(match self {
+            ControlSlot::Discs => disc_hit_rect(idx),
+            ControlSlot::Skip(pr) => {
+                let w = ctrl_slot_w(row, pr.label(), measure);
+                Rect::new(CTRL_RIGHT - w, CTRL_Y, w, CTRL_H)
+            }
+            ControlSlot::UpNext(_) => {
+                let l = crate::ui::up_next::layout_peek(row, measure);
+                if idx == crate::ui::up_next::BTN_NEXT { l.next } else { l.credits }
+            }
+        })
     }
 }
 
@@ -579,12 +624,11 @@ pub(crate) fn slot_for(marker: Option<crate::metadata::Marker>, has_next: bool) 
 /// around: `playpos_ns` is written by LG's media thread and `player::pump` runs between the input
 /// handlers and the draw, so re-deriving per call site let a keypress dispatch to a control that
 /// the same frame then declined to draw.
-pub(crate) fn slot(ps: &crate::route::PlaybackSession) -> ControlSlot {
+pub(crate) fn slot(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>) -> ControlSlot {
     let has_next = crate::route::up_next(ps).is_some();
     // Server marker first; the synthesized tail only exists where credits DETECTION does not
     // (a Plex Pass server feature) — see `metadata::synthesized_tail_marker`.
-    let m = crate::metadata::active_marker(ps)
-        .or_else(|| crate::metadata::synthesized_tail_marker(ps, has_next));
+    let m = meta.active_marker(ps).or_else(|| meta.synthesized_tail_marker(ps, has_next));
     slot_for(m, has_next)
 }
 
@@ -666,7 +710,7 @@ pub(crate) fn busy_surface(ps: &crate::route::PlaybackSession, st: crate::player
 /// and the transport is what the user reads the moment the first frame lands. Hiding it there would
 /// blank the HUD through every cold start and every pre-roll — which is why this asks the KIND and
 /// not merely "is a read-out up".
-fn readout_owns_frame(busy: Busy) -> bool {
+pub(crate) fn readout_owns_frame(busy: Busy) -> bool {
     matches!(busy, Busy::Readout(StatusKind::Failed, _))
 }
 
@@ -678,7 +722,7 @@ fn readout_owns_frame(busy: Busy) -> bool {
 /// (PX-PLAYER) retired the loop's player input path — so the precedence that used to be an arm's
 /// HEIGHT is one condition at the top of one function.
 ///
-/// A control that is not drawn must not be activatable — the rule [`ControlSlot::hit`] keeps for
+/// A control that is not drawn must not be activatable — the rule `PlayerScreen::record_stops` keeps for
 /// the pointer, at the row's own altitude. Without this the failure was hidden but
 /// still drivable: `start_playback` stamps a ~4.5 s HUD linger on the way in, so a `/decision`
 /// refusal lands with `hud_visible` true and focus parked on the scrubber, and two blind presses
@@ -832,7 +876,6 @@ pub(crate) fn draw_readout(
     ps: &crate::route::PlaybackSession,
     busy: Busy,
     now: u32,
-    stops: &mut Vec<(u32, Rect)>,
     measure: &dyn crate::ui::machine::Measure,
 ) {
     let Busy::Readout(kind, caption) = busy else {
@@ -846,7 +889,6 @@ pub(crate) fn draw_readout(
         // ("lands at the same y in all three variants, so a user who has seen it once recognises
         // it before reading") and the caption's suffix is re-derived as the reason.
         draw_failed_readout(ps, Painter::root(), measure);
-        stops.push((ELEM_FAILURE_OK, failure_ok_hit_rect()));
         return;
     }
     StatusOverlay::new(readout_frame(), caption, kind)
@@ -861,7 +903,9 @@ pub(crate) fn draw_readout(
 // zero-, one- or two-element reason leaves the hint at the same y. All on the video ground —
 // pure black by the time an error is up — so there is no card chrome.
 const FR_GLYPH_S: f32 = 96.0;
-const FR_GLYPH_TOP: f32 = 372.0;
+/// The full-screen read-out's shared top anchor — the same line a full-frame `Failed`
+/// [`StatusOverlay`] hangs its verdict from.
+const FR_GLYPH_TOP: f32 = StatusOverlay::FULL_ANCHOR_TOP;
 const FR_VERDICT_TOP: f32 = FR_GLYPH_TOP + FR_GLYPH_S + 44.0;
 const FR_REASON_TOP: f32 = FR_VERDICT_TOP + 48.0 + 24.0;
 /// two BODY lines' worth of slot, reserved whether or not anything is in it
@@ -896,8 +940,8 @@ pub(crate) fn failure_quality_hit(x: f32, y: f32) -> bool {
 
 // ---- element addresses for the Engine's hit map / `Focusable` groups (restructure phase 12) --
 //
-// `PlayerScreen` (`screens/player/mod.rs`) registers one `ui::screen::Stop` per hit-testable
-// region below through `DrawFrame::stop` at draw time, keyed on these addresses, instead of the
+// `PlayerScreen` (`screens/player/mod.rs`) registers one `ui::screen::Stop` per element of its
+// `Focusable` groups (`record_stops`, in z-order, at `place`'s rect), keyed on these addresses, instead of the
 // old `app/run.rs` ladder calling `icon_hit`/`scrub_hit`/`failure_quality_hit` on the raw pointer
 // position by hand. The GEOMETRY those functions describe is unchanged — only how a caller LEARNS
 // it: a registered `Stop` (and its mirror in `PlayerScreen`'s own `Focusable::place`) rather than
@@ -906,18 +950,18 @@ pub(crate) fn failure_quality_hit(x: f32, y: f32) -> bool {
 // not an enum, so `PlayerScreen` can address a control-row/tab-row ITEM by `BASE + index` exactly
 // as `icon_hit`'s `0..BTN_N` scan already did.
 pub(crate) const ELEM_SCRUB: u32 = 0;
-/// `+ 0..BTN_N` for the disc row, or `+ 0` alone for a stand-in ([`ControlSlot::Skip`]/
-/// [`ControlSlot::UpNext`]) — see [`ctrl_row_hit_rect`]'s doc for why a stand-in gets one region.
+/// `+ 0..items()` for whatever occupies the row — the discs, the Skip pill, or both Up Next
+/// buttons, each at its own rect ([`ControlSlot::item_rect`]).
 pub(crate) const ELEM_ROW_BASE: u32 = 10;
 /// `+ 0..=1` — Info, then Chapters when the item has any.
 pub(crate) const ELEM_TAB_BASE: u32 = 20;
-/// The failure read-out's "choose quality or retry" hint — the only focusable/clickable region a
+/// The failure read-out's retry-options hint — the only focusable/clickable region a
 /// FAILED playback draws (`OverlayKind::More { quality: true }`'s own opener).
 pub(crate) const ELEM_FAILURE_OK: u32 = 30;
 
 /// The scrubber's GRAB band — deliberately much taller than the bar itself, because it is a
-/// pointer grab zone. Registered as this page's `ELEM_SCRUB` stop by [`draw_hud`] and mirrored by
-/// `PlayerScreen::place`; it was `scrub_hit`'s own rectangle, spelled inline, until phase 12 made
+/// pointer grab zone. Placed by `PlayerScreen::place` and registered from it as the LOWEST stop, so
+/// every control over the band outranks it (issue #162); it was `scrub_hit`'s own rectangle until phase 12 made
 /// the hit map the one thing that tests it.
 pub(crate) fn scrub_hit_rect() -> Rect {
     Rect::new(SB_X, SCR_H - 270.0, sb_w(), 160.0)
@@ -928,14 +972,13 @@ pub(crate) fn disc_hit_rect(idx: i32) -> Rect {
     Rect::new(btn_x(idx), BTN_Y, BTN_S, BTN_S)
 }
 
-/// **The control row's ONE registered region while a stand-in (Skip/Up Next) owns it.**
+/// **The control row's band at its floor width** ([`CTRL_ROW_W`]) — the row GROUP's extent only.
 ///
-/// The old `icon_hit` never hit-tested a stand-in at all — `!slot.is_discs()` returned `None`
-/// unconditionally, so a stand-in's only affordance was ever the keyboard's deferred OK press
-/// (`PlayerReq::ArmControlRow`), never a pointer click. This keeps that parity rather than
-/// inventing a click path the shipped app never had: one region, at the row's floor width
-/// ([`CTRL_ROW_W`]), which is enough for keyboard-driven focus/hover bookkeeping and is never
-/// consulted by a click handler for a stand-in occupant.
+/// It is not any item's hit region: every item of whatever occupies the row — a disc, the Skip
+/// pill, either Up Next button — is placed and registered at its own drawn rect by
+/// [`ControlSlot::item_rect`]. This one region used to BE the stand-ins' registered stop, which
+/// left *Watch Credits* (drawn left of it) unclickable and made a click on *Next Episode* land on
+/// item 0, *Watch Credits* (issue #162's audit).
 pub(crate) fn ctrl_row_hit_rect() -> Rect {
     Rect::new(CTRL_RIGHT - CTRL_ROW_W, CTRL_Y, CTRL_ROW_W, CTRL_H)
 }
@@ -956,6 +999,14 @@ pub(crate) fn tab_hit_rect(idx: i32, has_chapters: bool, measure: &dyn crate::ui
     }
     let _ = label;
     None
+}
+
+/// Is the failure read-out's escape ON SCREEN — a failure owns the frame, and it is not the
+/// sandbox failure whose repair is already under way (that read-out offers nothing to press).
+pub(crate) fn failure_ok_drawn(ps: &crate::route::PlaybackSession, busy: Busy) -> bool {
+    readout_owns_frame(busy)
+        && (crate::player::error_now(ps).kind != crate::player::FailureKind::JailMissingRtkmem
+            || ps.repair_status == crate::webos::jail_repair::State::Idle)
 }
 
 /// The failure read-out's own escape, as a `Rect` — see [`FR_QUALITY_HIT`].
@@ -986,12 +1037,36 @@ fn fr_line(
     );
 }
 
+/// Product copy is resolved here; the worker's technical error identity stays unchanged.
+fn repair_failure_message(reason: crate::webos::jail_repair::Failure) -> &'static str {
+    use crate::webos::jail_repair::Failure;
+    match reason {
+        Failure::StartFailed => crate::i18n::msg::widgets_repair_start_failed(),
+        Failure::HbcUnavailable => crate::i18n::msg::widgets_repair_hbc_unavailable(),
+        Failure::NotRoot => crate::i18n::msg::widgets_repair_not_root(),
+        Failure::CommandFailed => crate::i18n::msg::widgets_repair_command_failed(),
+        Failure::Timeout => crate::i18n::msg::widgets_repair_timeout(),
+        Failure::Unreadable => crate::i18n::msg::widgets_repair_unreadable(),
+        Failure::Unsupported => crate::i18n::msg::widgets_repair_unsupported(),
+    }
+}
+
 fn draw_failed_readout(
     ps: &crate::route::PlaybackSession,
     p: Painter,
     measure: &dyn crate::ui::machine::Measure,
 ) {
-    let e = crate::player::error_now(ps);
+    let mut e = crate::player::error_now(ps);
+    let jail = e.kind == crate::player::FailureKind::JailMissingRtkmem;
+    if jail {
+        use crate::webos::jail_repair::State;
+        match ps.repair_status {
+            State::Idle => {},
+            State::Running => { e.readout = crate::i18n::msg::widgets_repair_running(); e.detail = crate::i18n::msg::widgets_repair_wait().into(); },
+            State::Repaired => { e.readout = crate::i18n::msg::widgets_repair_completed(); e.detail = crate::i18n::msg::widgets_repair_reopen().into(); },
+            State::Failed(reason) => { e.readout = crate::i18n::msg::widgets_repair_failed(); e.detail = repair_failure_message(reason).into(); },
+        }
+    }
     // The GROUND, first: `Player Screen.dc.html` gives the failed variant `inset:0; background:#000`
     // — a full-bleed opaque black — and it is one quad. Without it this layout stood on whatever the
     // video plane happened to be holding: `app.rs` clears the graphics plane to alpha 0 on the player
@@ -1075,13 +1150,16 @@ fn draw_failed_readout(
     }
     // Both exits stay visible.  OK enters the shared quality ladder (selecting the current rung is
     // a plain retry); BACK still leaves the player.  The key caps are what survive a phone photo.
-    draw_hint_with_keycap(
-        p,
-        crate::i18n::msg::widgets_hint_retry("\u{fffc}"),
-        c"OK",
-        FR_HINT_TOP,
-        measure,
-    );
+    if !jail || ps.repair_status == crate::webos::jail_repair::State::Idle {
+        let message = if jail {
+            crate::i18n::msg::widgets_hint_repair("\u{fffc}")
+        } else if crate::route::forced_direct_play(ps) {
+            crate::i18n::msg::widgets_hint_retry_options("\u{fffc}")
+        } else {
+            crate::i18n::msg::widgets_hint_retry("\u{fffc}")
+        };
+        draw_hint_with_keycap(p, message, c"OK", FR_HINT_TOP, measure);
+    }
     draw_hint_with_keycap(
         p,
         crate::i18n::msg::widgets_hint_return("\u{fffc}"),
@@ -1259,6 +1337,337 @@ fn hud_tab_state(transport: bool, focus: i32, tab: i32, index: i32) -> (bool, bo
     (transport && focus == 2 && current, !transport && current)
 }
 
+/// How long a transport lingers after the input that raised it — the player HUD's
+/// (`screens::player::input::HUD_LINGER_MS`) and the detail page's full-trailer transport alike,
+/// so a trailer's controls leave the screen on the same beat a film's do.
+pub(crate) const LINGER_MS: u32 = 4500;
+
+// ---- scrub tuning, shared by the player HUD's scrubber and the trailer transport's own --------
+//
+// Both hold-to-scrub gestures want the same feel — a press jumps `SCRUB_STEP_NS`; holding engages
+// a continuous scrub ramping `SCRUB_BASE`→`SCRUB_MAX` (playback-seconds per real-second) — but the
+// STATE (`screens::player::input::Scrub`, and `screens::detail::trailer::Transport`'s own fields)
+// cannot live in one shared type: `ci/check-deps.sh`'s `sibling` gate forbids a file under
+// `screens/detail/` from naming `crate::screens::player` at all, the same rule that keeps
+// `LINGER_MS` above defined here rather than in `screens::player::input` for `trailer.rs` to
+// import from a sibling. `screens::player::input::Scrub::clamp_target` is a thin call-through to
+// [`scrub_clamp_target`] below so its own many call sites are untouched.
+pub(crate) const SCRUB_STEP_NS: i64 = 10_000_000_000; // 10s per press
+pub(crate) const SCRUB_BASE: f32 = 10.0;
+pub(crate) const SCRUB_ACCEL: f32 = 45.0; // added per second of hold
+pub(crate) const SCRUB_MAX: f32 = 140.0;
+// tap released → commit after this (further taps accumulate); see `screens::player::input`'s own
+// doc for why this debounce exists (coalescing a rapid tap burst into one Load/reload).
+pub(crate) const TAP_COMMIT_MS: u32 = 450;
+pub(crate) const SCRUB_LOST_MS: u32 = 400; // holding but no repeat this long → lost keyup → commit
+
+/// Where a scrub target may legally land: never before zero, and never inside the last three
+/// seconds, which is a seek past the point the pipeline can prime from.
+pub(crate) fn scrub_clamp_target(ns: i64, duration_ns: i64) -> i64 {
+    let cap = duration_ns - 3_000_000_000;
+    let ns = ns.max(0);
+    if cap > 0 && ns > cap {
+        cap
+    } else {
+        ns
+    }
+}
+
+/// The transport's dark ground: transparent at its top edge, `theme::scrim_black(0.86)` at the
+/// panel bottom, [`SCRIM_H`] tall. Drawn under every transport, the player's and the trailer's.
+pub(crate) fn draw_scrim(p: Painter) {
+    p.rect(
+        Rect::new(0.0, SCR_H - SCRIM_H, SCR_W, SCRIM_H),
+        0.0,
+        theme::scrim_black(0.0),
+        theme::scrim_black(0.86),
+        0.0,
+    );
+}
+
+/// The line over a transport's display title. Non-owning `*const c_char`, the `Label` rule
+/// (`ui/CLAUDE.md`): keep the `CString` (or the session's fixed buffer) alive across the draw.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Kicker {
+    /// an episode's own address and name ("S1, E1 · Pilot"): primary ink, bold — it IS the
+    /// episode's title, with the show's name as the display title under it
+    Episode(*const std::os::raw::c_char),
+    /// a context label (`metadata::TRAILER_CONTEXT`, an extra's kind, a movie's route ctxline):
+    /// secondary ink, regular — it only says what the display title is
+    Context(*const std::os::raw::c_char),
+}
+
+/// The title block above the playbar: the [`Kicker`] line over the [`HUD_TITLE_SZ`] display
+/// title. (Apple-TV layout.)
+pub(crate) fn draw_title(p: Painter, kicker: Kicker, title: *const std::os::raw::c_char) {
+    let (text, ink, bold) = match kicker {
+        Kicker::Episode(text) => (text, theme::TEXT_PRIMARY, 1),
+        Kicker::Context(text) => (text, theme::TEXT_SECONDARY, 0),
+    };
+    p.text(
+        text,
+        SB_X,
+        SCR_H - 312.0,
+        theme::size::CAPTION,
+        ink,
+        0,
+        bold,
+    );
+    p.text(
+        title,
+        SB_X,
+        SCR_H - 278.0,
+        HUD_TITLE_SZ,
+        theme::TEXT_PRIMARY,
+        0,
+        1,
+    );
+}
+
+/// How the playhead is drawn — see [`draw_playbar`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Knob {
+    /// the scrubber holds the focus ring: a glowing knob
+    Focused,
+    /// a scrub preview is being dragged with the ring elsewhere: a plain knob
+    Held,
+    /// neither: a thin tick
+    Tick,
+}
+
+/// Everything [`draw_playbar`] draws from, resolved by its caller. A value rather than a read of
+/// the transport's globals inside the draw, because TWO surfaces draw this bar and they resolve it
+/// differently: the player route from its own scrub gesture, seek target and focus ring
+/// ([`Playbar::live`]), and the detail page's full-trailer transport from a preview session that
+/// has none of the three.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Playbar {
+    /// the DISPLAYED playhead (a seek target, a scrub preview or the published position)
+    pub(crate) pos_ns: i64,
+    pub(crate) dur_ns: i64,
+    pub(crate) knob: Knob,
+    /// the state read-out beside the elapsed clock, from [`transport_mark`]
+    pub(crate) mark: TransportMark,
+    /// drives the inline spinner's rotation
+    pub(crate) now: u32,
+}
+
+impl Playbar {
+    /// The player route's bar: the live scrub preview and seek target over the published
+    /// playhead, the knob from the HUD's own focus ring, and the four-state read-out.
+    fn live(
+        ps: &crate::route::PlaybackSession,
+        busy: Busy,
+        focus: i32,
+        since_play_ms: Option<u32>,
+        now: u32,
+    ) -> Self {
+        let scrub = crate::player::TX.scrub_ns.load(Relaxed);
+        // while a seek is loading, freeze the playhead at the target (no wobble through the reopen);
+        // else follow the live scrub preview, else the real playhead.
+        let loading = crate::player::loading(ps);
+        // Hoisted so the display position and the PUBLISHED one are one sample: the state read-out
+        // takes its travel direction from the difference between them, and two loads of a live
+        // atomic can straddle a tick.
+        let livepos = crate::player::playpos_ns();
+        // ONE sample of the seek target too, for the reason the line above hoists the playhead: the
+        // condition and the value were two loads of the same live atomic and could straddle a tick.
+        let seekdisp = crate::player::seek_display_ns();
+        let dispos = if loading && seekdisp >= 0 {
+            seekdisp
+        } else if scrub >= 0 {
+            scrub
+        } else {
+            livepos
+        };
+        let knob = if focus == 0 {
+            Knob::Focused
+        } else if scrub >= 0 {
+            Knob::Held
+        } else {
+            Knob::Tick
+        };
+        // Gated on `busy`, not on `loading()`: with `loading()` the transport lit the same spinner
+        // the centred read-out was already showing, for the whole of every load AND every seek.
+        let paused = crate::player::TX.paused.load(Relaxed);
+        Self {
+            pos_ns: dispos,
+            dur_ns: crate::player::duration_ns(),
+            knob,
+            mark: transport_mark(paused, busy, scrub >= 0, dispos, livepos, since_play_ms),
+            now,
+        }
+    }
+}
+
+/// The playbar: scrubber, playhead knob, elapsed/remaining clocks and the state read-out. The
+/// player HUD and the detail page's full-trailer transport both draw it, so the two cannot drift.
+pub(crate) fn draw_playbar(p: Painter, bar: Playbar, measure: &dyn crate::ui::machine::Measure) {
+    let e = hud_env();
+    let white = theme::TEXT_PRIMARY;
+    let dim = theme::TEXT_SECONDARY;
+    let track = theme::RAIL_TRACK;
+    let sx = SB_X;
+    let sw = sb_w();
+    let sy = SB_Y;
+    let sh = SB_H;
+    let dispos = bar.pos_ns;
+    let dur = bar.dur_ns;
+    let now = bar.now;
+    let frac = if dur > 0 {
+        (dispos as f64 / dur as f64).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    p.rect(Rect::new(sx, sy, sw, sh), sh * 0.5, track, track, 0.0);
+    let fw = (sw as f64 * frac) as f32;
+    if fw > sh * 0.5 {
+        p.rrect(Rect::new(sx, sy, fw, sh), sh * 0.5, 0.0, white);
+    } else if fw > 0.0 {
+        p.rrect(Rect::new(sx, sy, fw, sh), fw * 0.5, 0.0, white);
+    }
+    // playhead: a focus-glowing knob when the scrubber is focused, a plain knob while scrubbing,
+    // else a thin tick.
+    let hx = sx + fw;
+    let cy = sy + sh * 0.5;
+    if bar.knob == Knob::Focused {
+        let glow = [1.0f32, 1.0, 1.0, 0.22];
+        p.rect(
+            Rect::new(hx - 17.0, cy - 17.0, 34.0, 34.0),
+            17.0,
+            glow,
+            glow,
+            0.0,
+        );
+        p.rect(
+            Rect::new(hx - 11.0, cy - 11.0, 22.0, 22.0),
+            11.0,
+            white,
+            white,
+            0.0,
+        );
+    } else if bar.knob == Knob::Held {
+        p.rect(
+            Rect::new(hx - 9.0, cy - 9.0, 18.0, 18.0),
+            9.0,
+            white,
+            white,
+            0.0,
+        );
+    } else {
+        p.rect(
+            Rect::new(hx - 1.5, sy - 4.0, 3.0, sh + 8.0),
+            0.0,
+            white,
+            white,
+            0.0,
+        );
+    }
+
+    // elapsed under the playhead (':' centered on the knob, clamped to the bar); remaining at the
+    // right — hidden once the moving elapsed label would overlap it (near the end of the movie).
+    let ty = sy + 30.0;
+    let (el_l, el_r) = draw_clock(
+        p,
+        &fmt_time(dispos, false),
+        hx,
+        ty,
+        theme::size::CAPTION,
+        white,
+        sx,
+        sx + sw,
+        measure,
+    );
+    let rem = fmt_time(dur - dispos, true);
+    // MEASURE the label, never estimate it. `chars * CAPTION * 0.52` was an Arial-calibrated
+    // constant guarding a real behaviour — the remaining clock hides before the moving elapsed
+    // clock can reach it — and it only ever worked because it over-estimated: under Arial it
+    // returned ~99.8px against a true ~85px. Under the shipped Inter that margin had already
+    // halved, and freezing tabular figures (which the clock's own template idiom requires, see
+    // `draw_clock`) widens numerals further, leaving about a pixel of slack. At that point the
+    // guard stops guarding and the two clocks can overlap near the end of a long item.
+    // Same '0'-template `draw_clock` uses, so the two agree by construction: with tabular figures
+    // the template's width IS the real string's width at every tick.
+    let rem_tmpl: String = rem
+        .chars()
+        .map(|c| if c.is_ascii_digit() { '0' } else { c })
+        .collect();
+    let rem_w = measure.width_str(&rem_tmpl, theme::size::CAPTION, true);
+    let rem_l = sx + sw - rem_w;
+    let rem_shown = el_r + 20.0 < rem_l;
+    if rem_shown {
+        if let Ok(cs) = CString::new(rem.as_str()) {
+            p.text(cs.as_ptr(), sx + sw, ty, theme::size::CAPTION, dim, 2, 0);
+        }
+    }
+    // transport state indicator just past the elapsed clock — the four-state READ-OUT resolved by
+    // [`transport_mark`] (rewind / pause / fast-forward / play, plus the narrowed spinner), and
+    // NOTHING while playing steadily. A read-out, not an action toggle: nothing here is focusable
+    // or hit-tested, and the control row stays the three discs it has always been.
+    // Gated on `busy`, not on `loading()`: with `loading()` the transport lit the same spinner the
+    // centred read-out was already showing, for the whole of every load AND every seek. Centered on
+    // the clock's line box; drops to the clock's LEFT when the right side is against the remaining
+    // label / screen edge.
+    let mark = bar.mark;
+    if mark != TransportMark::None {
+        // pause bars under-fill their viewBox (14/24 tall) — a 30px box renders ~17px of ink,
+        // matching the CAPTION clock's cap height so the glyph reads as the label's size. The two
+        // travel marks are drawn to that SAME 14-unit band (see `Icon::Rewind`), which is what lets
+        // one box serve the whole family without the slot changing weight as the state flips.
+        let isz = 30.0f32;
+        // The odd member of the family — `play.svg` is authored to 16 units where the other three
+        // are 14 — is corrected by asking `icons::band` rather than by a constant here. See that
+        // function: the metric is a property of the asset, and this was the second screen to
+        // transcribe one out of an SVG by hand.
+        // **The gap is measured to the INK, not to the box.** Every member of this family carries a
+        // different left bearing inside its 24-unit viewBox — pause's bars open at x=7, play's
+        // triangle at x=6, the travel marks at x=2.6 — so ONE box origin gives each state a
+        // visibly different gap after the clock, and the slot appears to twitch as the state flips.
+        // Measuring to the ink makes the gap the eye sees a single number. It is also what the old
+        // spacing really was: a box placed 14px out put pause's ink at 14 + 7/24*30 ~= 23px, which
+        // is the gap that read as too wide. The bearings come from `icons::ink_x`, not from a table
+        // here — they are the asset's, and this screen was the second place to copy them out.
+        const GAP: f32 = 14.0;
+        let glyph = match mark {
+            TransportMark::Pause => Some(crate::ui::icons::Icon::Pause),
+            TransportMark::Play => Some(crate::ui::icons::Icon::Play),
+            TransportMark::Rewind => Some(crate::ui::icons::Icon::Rewind),
+            TransportMark::FastForward => Some(crate::ui::icons::Icon::FastForward),
+            TransportMark::Working | TransportMark::None => None,
+        };
+        let ink = glyph.map_or((0.0, 1.0), crate::ui::icons::ink_x);
+        let icy = ty + crate::text::text_height(theme::size::CAPTION, 1) * 0.5; // vertical center of the clock line
+                                                                                // scaled so every member of the family lands the SAME height of ink in this one box
+        let bs = glyph.map_or(isz, |g| {
+            isz * crate::ui::icons::band(crate::ui::icons::Icon::Pause)
+                / crate::ui::icons::band(g)
+        });
+        // **Rewind sits to the LEFT of the clock; everything else to the right.** The mark points
+        // the way the playhead is travelling, so `<<` after the time would point back at the number
+        // it is leaving. The right-hand placement still falls back to the left when the remaining
+        // label or the screen edge crowds it, which is the case this branch was originally for.
+        let need = (ink.1 - ink.0) * bs + 6.0;
+        let room_right = el_r + GAP + need < if rem_shown { rem_l - 8.0 } else { sx + sw };
+        let on_left = mark == TransportMark::Rewind || !room_right;
+        // Placed by ink on whichever side it lands: the trailing edge sits GAP before the clock's
+        // left, or the leading edge GAP after the clock's right.
+        let bx = if on_left {
+            el_l - GAP - ink.1 * bs
+        } else {
+            el_r + GAP - ink.0 * bs
+        };
+        match glyph {
+            Some(id) => {
+                crate::ui::icons::draw(p, id, Rect::new(bx, icy - bs * 0.5, bs, bs), white)
+            }
+            None => Spinner::new(bx + isz * 0.5, icy, Spinner::R_INLINE)
+                .phase(now)
+                .tint(white)
+                .draw(&e, p),
+        }
+    }
+}
+
 /// The transport HUD, composed from retui widgets through a root `Painter`.
 /// `focus`: 0 = scrubber, 1 = the right control row, 2 = bottom tabs. `btn` (0..1) / `tab` (0..1) are the
 /// focused item within their row (only meaningful when `focus` selects that row). `now` drives the
@@ -1278,8 +1687,8 @@ pub(crate) fn draw_hud(
     tab: i32,
     now: u32,
     transport: bool,
-    stops: &mut Vec<(u32, Rect)>,
     measure: &dyn crate::ui::machine::Measure,
+    meta: crate::metadata::MetadataView<'_>,
 ) {
     // A FAILURE owns the frame, and it outranks every branch below — including the Up Next card,
     // which cannot coexist with one but must not be the arm that decides so. `Player Screen.dc.html`
@@ -1303,20 +1712,7 @@ pub(crate) fn draw_hud(
     let p = Painter::root();
     let e = hud_env();
 
-    // bottom scrim: transparent -> dark
-    let clr = theme::scrim_black(0.0);
-    let drk = theme::scrim_black(0.86);
-    p.rect(
-        Rect::new(0.0, SCR_H - SCRIM_H, SCR_W, SCRIM_H),
-        0.0,
-        clr,
-        drk,
-        0.0,
-    );
-
-    let white = theme::TEXT_PRIMARY;
-    let dim = theme::TEXT_SECONDARY;
-    let track = theme::RAIL_TRACK;
+    draw_scrim(p);
 
     if transport {
         // title block under the playbar: for an episode, "S1, E1 · Episode Name" (white) sits above the
@@ -1325,46 +1721,28 @@ pub(crate) fn draw_hud(
         // has `is_episode == true` (it still labels "Go to Show" elsewhere) but no real S#/E# address,
         // so it takes this same "Trailer" ctxline + title treatment a movie trailer already gets,
         // instead of a fabricated `S0 · E0` kicker.
-        if let Some(n) = crate::metadata::now_playing().filter(|n| n.is_real_episode) {
+        if let Some(n) = meta.now_playing().filter(|n| n.is_real_episode) {
             // `fmt::episode_kicker` outright — this line was a byte-identical hand-spelling of it, which
             // is the drift that formatter exists to prevent (the pre-roll ctx line and the Up Next
             // caption already read it, and the whole point is that all three say the same thing).
-            if let Ok(cs) = CString::new(crate::ui::fmt::episode_kicker(
+            let kicker = CString::new(crate::ui::fmt::episode_kicker(
                 n.season,
                 n.index,
                 &n.ep_title,
-            )) {
-                p.text(
-                    cs.as_ptr(),
-                    SB_X,
-                    SCR_H - 312.0,
-                    theme::size::CAPTION,
-                    white,
-                    0,
-                    1,
-                );
-            }
-            if let Ok(cs) = CString::new(n.title.clone()) {
-                p.text(cs.as_ptr(), SB_X, SCR_H - 278.0, HUD_TITLE_SZ, white, 0, 1);
+            ))
+            .unwrap_or_default();
+            // `if let Ok`, not `.unwrap_or_default()`: before this function was factored out, an
+            // interior-NUL title (the one CString::new can fail on) simply drew nothing — the
+            // refactor was supposed to be visual-no-op, and an `unwrap_or_default()` here draws an
+            // EMPTY title line instead of skipping it, which is a real (if rare) behavior change.
+            if let Ok(title) = CString::new(n.title.clone()) {
+                draw_title(p, Kicker::Episode(kicker.as_ptr()), title.as_ptr());
             }
         } else {
-            p.text(
-                crate::route::ctxline_cptr(ps),
-                SB_X,
-                SCR_H - 312.0,
-                theme::size::CAPTION,
-                dim,
-                0,
-                0,
-            );
-            p.text(
+            draw_title(
+                p,
+                Kicker::Context(crate::route::ctxline_cptr(ps)),
                 crate::route::title_cptr(ps),
-                SB_X,
-                SCR_H - 278.0,
-                HUD_TITLE_SZ,
-                white,
-                0,
-                1,
             );
         }
 
@@ -1373,11 +1751,9 @@ pub(crate) fn draw_hud(
         match slot {
             ControlSlot::UpNext(_) => {
                 crate::ui::up_next::draw(ps, row, up, p, focus == 1, btn, now, measure);
-                stops.push((ELEM_ROW_BASE, ctrl_row_hit_rect()));
             }
             ControlSlot::Skip(pr) => {
                 crate::screens::player::skip_pill::draw(row, p, pr, focus == 1, measure);
-                stops.push((ELEM_ROW_BASE, ctrl_row_hit_rect()));
             }
             ControlSlot::Discs => {
                 for i in 0..BTN_N {
@@ -1391,200 +1767,15 @@ pub(crate) fn draw_hud(
                         .ground(ControlGround::Unkeyed)
                         .scale(pop)
                         .draw(&e, p);
-                    stops.push((ELEM_ROW_BASE + i as u32, disc_hit_rect(i)));
                 }
             }
         }
-        stops.push((ELEM_SCRUB, scrub_hit_rect()));
 
-        // scrubber
-        let sx = SB_X;
-        let sw = sb_w();
-        let sy = SB_Y;
-        let sh = SB_H;
-        let scrub = crate::player::TX.scrub_ns.load(Relaxed);
-        // while a seek is loading, freeze the playhead at the target (no wobble through the reopen);
-        // else follow the live scrub preview, else the real playhead.
-        let loading = crate::player::loading(ps);
-        // Hoisted so the display position and the PUBLISHED one are one sample: the state read-out
-        // below takes its travel direction from the difference between them, and two loads of a live
-        // atomic can straddle a tick.
-        let livepos = crate::player::playpos_ns();
-        // ONE sample of the seek target too, for the reason the line above hoists the playhead: the
-        // condition and the value were two loads of the same live atomic and could straddle a tick.
-        let seekdisp = crate::player::seek_display_ns();
-        let dispos = if loading && seekdisp >= 0 {
-            seekdisp
-        } else if scrub >= 0 {
-            scrub
-        } else {
-            livepos
-        };
-        let dur = crate::player::duration_ns();
-        let frac = if dur > 0 {
-            (dispos as f64 / dur as f64).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        p.rect(Rect::new(sx, sy, sw, sh), sh * 0.5, track, track, 0.0);
-        let fw = (sw as f64 * frac) as f32;
-        if fw > sh * 0.5 {
-            p.rrect(Rect::new(sx, sy, fw, sh), sh * 0.5, 0.0, white);
-        } else if fw > 0.0 {
-            p.rrect(Rect::new(sx, sy, fw, sh), fw * 0.5, 0.0, white);
-        }
-        // playhead: a focus-glowing knob when the scrubber is focused, a plain knob while scrubbing,
-        // else a thin tick.
-        let hx = sx + fw;
-        let cy = sy + sh * 0.5;
-        if focus == 0 {
-            let glow = [1.0f32, 1.0, 1.0, 0.22];
-            p.rect(
-                Rect::new(hx - 17.0, cy - 17.0, 34.0, 34.0),
-                17.0,
-                glow,
-                glow,
-                0.0,
-            );
-            p.rect(
-                Rect::new(hx - 11.0, cy - 11.0, 22.0, 22.0),
-                11.0,
-                white,
-                white,
-                0.0,
-            );
-        } else if scrub >= 0 {
-            p.rect(
-                Rect::new(hx - 9.0, cy - 9.0, 18.0, 18.0),
-                9.0,
-                white,
-                white,
-                0.0,
-            );
-        } else {
-            p.rect(
-                Rect::new(hx - 1.5, sy - 4.0, 3.0, sh + 8.0),
-                0.0,
-                white,
-                white,
-                0.0,
-            );
-        }
-
-        // elapsed under the playhead (':' centered on the knob, clamped to the bar); remaining at the
-        // right — hidden once the moving elapsed label would overlap it (near the end of the movie).
-        let ty = sy + 30.0;
-        let (el_l, el_r) = draw_clock(
-            p,
-            &fmt_time(dispos, false),
-            hx,
-            ty,
-            theme::size::CAPTION,
-            white,
-            sx,
-            sx + sw,
-            measure,
-        );
-        let rem = fmt_time(dur - dispos, true);
-        // MEASURE the label, never estimate it. `chars * CAPTION * 0.52` was an Arial-calibrated
-        // constant guarding a real behaviour — the remaining clock hides before the moving elapsed
-        // clock can reach it — and it only ever worked because it over-estimated: under Arial it
-        // returned ~99.8px against a true ~85px. Under the shipped Inter that margin had already
-        // halved, and freezing tabular figures (which the clock's own template idiom requires, see
-        // `draw_clock`) widens numerals further, leaving about a pixel of slack. At that point the
-        // guard stops guarding and the two clocks can overlap near the end of a long item.
-        // Same '0'-template `draw_clock` uses, so the two agree by construction: with tabular figures
-        // the template's width IS the real string's width at every tick.
-        let rem_tmpl: String = rem
-            .chars()
-            .map(|c| if c.is_ascii_digit() { '0' } else { c })
-            .collect();
-        let rem_w = measure.width_str(&rem_tmpl, theme::size::CAPTION, true);
-        let rem_l = sx + sw - rem_w;
-        let rem_shown = el_r + 20.0 < rem_l;
-        if rem_shown {
-            if let Ok(cs) = CString::new(rem.as_str()) {
-                p.text(cs.as_ptr(), sx + sw, ty, theme::size::CAPTION, dim, 2, 0);
-            }
-        }
-        // transport state indicator just past the elapsed clock — the four-state READ-OUT resolved by
-        // [`transport_mark`] (rewind / pause / fast-forward / play, plus the narrowed spinner), and
-        // NOTHING while playing steadily. A read-out, not an action toggle: nothing here is focusable
-        // or hit-tested, and the control row stays the three discs it has always been.
-        // Gated on `busy`, not on `loading()`: with `loading()` the transport lit the same spinner the
-        // centred read-out was already showing, for the whole of every load AND every seek. Centered on
-        // the clock's line box; drops to the clock's LEFT when the right side is against the remaining
-        // label / screen edge.
-        let paused = crate::player::TX.paused.load(Relaxed);
-        let mark = transport_mark(
-            paused,
-            busy,
-            scrub >= 0,
-            dispos,
-            livepos,
-            row.since_play_ms(now),
-        );
-        if mark != TransportMark::None {
-            // pause bars under-fill their viewBox (14/24 tall) — a 30px box renders ~17px of ink,
-            // matching the CAPTION clock's cap height so the glyph reads as the label's size. The two
-            // travel marks are drawn to that SAME 14-unit band (see `Icon::Rewind`), which is what lets
-            // one box serve the whole family without the slot changing weight as the state flips.
-            let isz = 30.0f32;
-            // The odd member of the family — `play.svg` is authored to 16 units where the other three
-            // are 14 — is corrected by asking `icons::band` rather than by a constant here. See that
-            // function: the metric is a property of the asset, and this was the second screen to
-            // transcribe one out of an SVG by hand.
-            // **The gap is measured to the INK, not to the box.** Every member of this family carries a
-            // different left bearing inside its 24-unit viewBox — pause's bars open at x=7, play's
-            // triangle at x=6, the travel marks at x=2.6 — so ONE box origin gives each state a
-            // visibly different gap after the clock, and the slot appears to twitch as the state flips.
-            // Measuring to the ink makes the gap the eye sees a single number. It is also what the old
-            // spacing really was: a box placed 14px out put pause's ink at 14 + 7/24*30 ~= 23px, which
-            // is the gap that read as too wide. The bearings come from `icons::ink_x`, not from a table
-            // here — they are the asset's, and this screen was the second place to copy them out.
-            const GAP: f32 = 14.0;
-            let glyph = match mark {
-                TransportMark::Pause => Some(crate::ui::icons::Icon::Pause),
-                TransportMark::Play => Some(crate::ui::icons::Icon::Play),
-                TransportMark::Rewind => Some(crate::ui::icons::Icon::Rewind),
-                TransportMark::FastForward => Some(crate::ui::icons::Icon::FastForward),
-                TransportMark::Working | TransportMark::None => None,
-            };
-            let ink = glyph.map_or((0.0, 1.0), crate::ui::icons::ink_x);
-            let icy = ty + crate::text::text_height(theme::size::CAPTION, 1) * 0.5; // vertical center of the clock line
-                                                                                    // scaled so every member of the family lands the SAME height of ink in this one box
-            let bs = glyph.map_or(isz, |g| {
-                isz * crate::ui::icons::band(crate::ui::icons::Icon::Pause)
-                    / crate::ui::icons::band(g)
-            });
-            // **Rewind sits to the LEFT of the clock; everything else to the right.** The mark points
-            // the way the playhead is travelling, so `<<` after the time would point back at the number
-            // it is leaving. The right-hand placement still falls back to the left when the remaining
-            // label or the screen edge crowds it, which is the case this branch was originally for.
-            let need = (ink.1 - ink.0) * bs + 6.0;
-            let room_right = el_r + GAP + need < if rem_shown { rem_l - 8.0 } else { sx + sw };
-            let on_left = mark == TransportMark::Rewind || !room_right;
-            // Placed by ink on whichever side it lands: the trailing edge sits GAP before the clock's
-            // left, or the leading edge GAP after the clock's right.
-            let bx = if on_left {
-                el_l - GAP - ink.1 * bs
-            } else {
-                el_r + GAP - ink.0 * bs
-            };
-            match glyph {
-                Some(id) => {
-                    crate::ui::icons::draw(p, id, Rect::new(bx, icy - bs * 0.5, bs, bs), white)
-                }
-                None => Spinner::new(bx + isz * 0.5, icy, Spinner::R_INLINE)
-                    .phase(now)
-                    .tint(white)
-                    .draw(&e, p),
-            }
-        }
+        draw_playbar(p, Playbar::live(ps, busy, focus, row.since_play_ms(now), now), measure);
     } // end `if transport`
 
     // bottom tabs as pills — Chapters only appears when the item actually has chapters
-    let tabs: &[&str] = if crate::ui::chapters_panel::has_chapters() {
+    let tabs: &[&str] = if crate::ui::chapters_panel::has_chapters(meta) {
         &[crate::i18n::msg::widgets_player_info(), crate::i18n::msg::widgets_player_chapters()]
     } else {
         &[crate::i18n::msg::widgets_player_info()]
@@ -1606,7 +1797,6 @@ pub(crate) fn draw_hud(
                 .ground(ControlGround::Unkeyed)
                 .draw(&e, p);
         }
-        stops.push((ELEM_TAB_BASE + i as u32, Rect::new(px, py, pw, ph)));
         px += pw + 16.0;
     }
 }
@@ -1895,6 +2085,28 @@ mod tests {
             r.w,
             r.h
         );
+    }
+
+    /// **Every tone has an ink, the first is the white every earlier build drew, and each rung
+    /// under it is strictly darker** — the ladder's whole promise is "down is dimmer", and the
+    /// table is indexed by position, so a rung added to `SubtitleTone::LADDER` without an ink
+    /// here would silently draw white. Opaque and achromatic throughout: a tone gives up light,
+    /// never coverage (the outline depends on it) and never hue (it tints image subtitles).
+    #[test]
+    fn the_subtitle_tones_are_a_strictly_darkening_opaque_grey_ladder_from_white() {
+        use crate::plex::session::SubtitleTone;
+        assert_eq!(theme::SUBTITLE_INKS.len(), SubtitleTone::LADDER.len());
+        assert_eq!(subtitle_ink_for(SubtitleTone::White), [1.0, 1.0, 1.0, 1.0]);
+        let mut prev = f32::MAX;
+        for tone in SubtitleTone::LADDER {
+            let ink = subtitle_ink_for(tone);
+            assert!(ink[0] == ink[1] && ink[1] == ink[2], "{tone:?} has a hue");
+            assert_eq!(ink[3], 1.0, "{tone:?} is not opaque");
+            assert!(ink[0] < prev, "{tone:?} is not darker than the rung above it");
+            prev = ink[0];
+        }
+        // the darkest rung still has to be READ over the 0.85 black outline it is drawn on
+        assert!(prev > 0.25, "the darkest tone has sunk into its own outline");
     }
 
     /// A 1080p-authored PGS rect must land EXACTLY where it always did — the scale is identity,

@@ -22,7 +22,6 @@ thread_local! { static TAPE: RefCell<Tape> = RefCell::new(Tape::default()); }
 pub(crate) fn init(initial: &super::Initial, replay: bool) {
     TAPE.with(|t| *t.borrow_mut() = Tape { active: true, replay,
         credits: initial.content.as_ref().map(|v| v.personcredits), ..Default::default() });
-    crate::metadata::record::reset(initial.content.is_some());
 }
 pub(crate) fn active() -> bool { TAPE.with(|t| t.borrow().active) }
 pub(crate) fn replaying() -> bool { TAPE.with(|t| t.borrow().active && t.borrow().replay) }
@@ -250,7 +249,6 @@ pub(crate) fn finish() -> (Vec<Value>, Option<&'static str>) {
 #[cfg(test)]
 pub(crate) fn reset_for_test() {
     TAPE.with(|t| *t.borrow_mut() = Tape::default());
-    crate::metadata::record::reset(false);
 }
 
 #[cfg(test)]

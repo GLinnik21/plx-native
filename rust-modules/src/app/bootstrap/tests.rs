@@ -78,6 +78,23 @@ use crate::ui::machine::{InputEvent, InputKind, Key, Edge, Source, Tick};
 use serde_json::json;
 
 #[test]
+fn committed_replay_initials_remain_canonical_and_hash_bound() {
+    for (name, manifest) in [
+        ("1-boot-home-chip-grid", include_str!("../../../../tests/fixtures/replay/1-boot-home-chip-grid/manifest.json")),
+        ("6-settings-family", include_str!("../../../../tests/fixtures/replay/6-settings-family/manifest.json")),
+        ("12-filmography-detail-return", include_str!("../../../../tests/fixtures/replay/12-filmography-detail-return/manifest.json")),
+    ] {
+        let manifest: serde_json::Value = serde_json::from_str(manifest).unwrap();
+        let value = manifest["init"]["data"].clone();
+        let expected_hash = manifest["init"]["hash"].as_u64().unwrap();
+        Initial::from_value(value.clone()).unwrap_or_else(|error| panic!("{name}: {error}"));
+        let decoded = Initial::decode(value, expected_hash)
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert_eq!(decoded.hash(), expected_hash, "{name}");
+    }
+}
+
+#[test]
 fn typed_initial_roundtrip_and_hidden_input_hash_are_complete() {
     let initial = Initial::synthetic_home(17, 32517, None).unwrap();
     let value = serde_json::to_value(&initial).unwrap();
@@ -172,6 +189,47 @@ fn normal_and_controlled_activation_publish_the_owner_supplied_scope() {
     assert_eq!(controlled.controlled_failure(),Some("unrecorded client IO attempted"));
 }
 
+/// **Stage B regression, device-affecting.** Before `0d466527` (stage B), `stores::init` ended
+/// with `crate::metadata::record::reset(initial.content.is_some())`, arming the crate-global
+/// `Tracker` for controlled-content recording of detail terminals. Stage B deleted that line with
+/// the static and nothing armed the per-owner replacement in production, so a `Bridge` built by
+/// `controlled_home` carried a permanently-disabled Tracker (`Tracker::new(false)`, `MetadataStore`'s
+/// own `Default`): every detail landing while the tape was active silently produced NO recorded
+/// terminal at all (`drain_live` -> `Some(([], drain))`), and the device-side validator rejected
+/// `{"data":[]}` as "noncanonical detail replies". This pins `Bridge::controlled_home` actually
+/// arming its own `MetadataStore`'s Tracker from `initial.content.is_some()`.
+#[test]
+fn controlled_home_arms_the_detail_tracker_when_content_initial_is_present() {
+    let _serial = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let mt = unsafe { crate::task::MainThread::assume() };
+    let mut initial = Initial::synthetic_home(41, 17, None).unwrap();
+    initial.content = Some(ContentInitial {
+        detail: "show".into(), detailsec: 0, detailok: true,
+        filmography: false, personcredits: 0, nowan: false,
+    });
+    crate::app::bootstrap::stores::init(&initial, false);
+    crate::ui::landgate::arm_recording();
+    let mut bridge = super::super::bridge::Bridge::controlled_home(||0,&initial,&mt,false);
+    let sid = crate::plex::ServerId::UNSET;
+    crate::app::bootstrap::stores::begin(Default::default(), Default::default());
+    let gen = crate::metadata::begin_detail_for_test(bridge.metadata_mut().adapter_ref(), sid, "show");
+    {
+        let store = bridge.metadata_mut();
+        let (state, adapter) = store.split_for_test();
+        crate::metadata::land_detail_for_test(state, adapter, sid, "show", gen,
+            Some(crate::metadata::Detail { sid, rk: "show".into(), ..Default::default() }));
+    }
+    let results = crate::app::bootstrap::stores::take_results();
+    assert_eq!(results.len(), 1,
+        "controlled_home must arm this Bridge's own MetadataStore Tracker from initial.content, \
+         or a controlled-content detail landing never reaches bootstrap::stores at all");
+    crate::app::bootstrap::stores::finish();
+    crate::ui::landgate::disarm();
+    crate::app::bootstrap::stores::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}
+
 fn recording(initial: &Initial) -> Recording {
     let mut header = crate::ui::rec::Header::new(super::super::recorder::state_fp(),initial);
     header.init_data = serde_json::to_value(initial).unwrap();
@@ -192,7 +250,7 @@ fn whole_record_preflight_rejects_bad_late_results_and_markers_without_resources
     record.frames.push(crate::ui::rec::Frame { f:1,tick:Some(Tick {ms:16,dt_us:16000}),
         results:vec![json!({"f":1,"t":"async","to":"store:1","req":1,"payload":{
             "kind":"hubs","version":1,"gen":1,"seq":1,"sid":0,"client":1,"token_gen":1,"build":null}})],
-        lands:vec![(1,1,1)],st:Some(0),present:Some(false),..Default::default() });
+        lands:vec![(1,1,1)],st:Some(0),present:Some(false),snapshot_pending:Some(true),..Default::default() });
     super::super::recorder::validate_controlled(&record,&initial).unwrap();
     record.frames[1].present = None;
     assert!(super::super::recorder::validate_controlled(&record,&initial).is_err());
@@ -219,15 +277,16 @@ fn controlled_hubs_commands_preserve_normal_store_notice_bookkeeping() {
     let publisher = crate::plex::session::ProfilePublisher::scoped(&mt);
     let mut io = HomeIo { replay:true,preferences:Default::default(),requests:Vec::new(),admissions:Default::default(),
         failure:None,profile:publisher.snapshot() };
+    let mut hubs = crate::stores::hubs::HubsStore::default();
     for command in [crate::stores::hubs::HubsCmd::Reset,crate::stores::hubs::HubsCmd::RefetchHubs,
         crate::stores::hubs::HubsCmd::Retry] {
-        let before = crate::stores::gen(crate::stores::StoreId::Hubs);
-        let normal = crate::stores::hubs::apply(command.clone());
-        let delta = crate::stores::gen(crate::stores::StoreId::Hubs).wrapping_sub(before);
-        let before = crate::stores::gen(crate::stores::StoreId::Hubs);
-        let controlled = io.hubs(Some(command),0.0);
+        let before = hubs.gen();
+        let normal = hubs.run(command.clone());
+        let delta = hubs.gen().wrapping_sub(before);
+        let before = hubs.gen();
+        let controlled = io.hubs(&mut hubs, Some(command),0.0);
         assert_eq!(controlled.changed,normal.changed);
-        assert_eq!(crate::stores::gen(crate::stores::StoreId::Hubs).wrapping_sub(before),delta,
+        assert_eq!(hubs.gen().wrapping_sub(before),delta,
             "controlled resource execution must not drop the Store machine's notice");
     }
 }
@@ -253,17 +312,17 @@ fn controlled_admission_records_real_discovery_spawn_refusal() {
 fn controlled_admission_records_real_hubs_spawn_refusal() {
     let _serial = crate::testlock::serial();
     crate::plex::reset_servers_for_test();
-    assert!(crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed);
+    let mut hubs = crate::stores::hubs::HubsStore::default();
+    assert!(hubs.run(crate::stores::hubs::HubsCmd::Reset).changed);
     let sid = crate::plex::register_for_test("s00000001", "127.0.0.1", 9, "s00000002", "s00000003");
     assert!(crate::plex::set_current(sid));
     let mt = unsafe { crate::task::MainThread::assume() };
     let publisher = crate::plex::session::ProfilePublisher::scoped(&mt);
     let mut io = HomeIo { replay:false,preferences:Default::default(),requests:Vec::new(),admissions:Default::default(),
         failure:None,profile:publisher.snapshot() };
-    assert!(crate::pms::with_refused_fetches_for_test(|| io.hubs(Some(crate::stores::hubs::HubsCmd::RefetchHubs), 0.0)).changed);
+    assert!(crate::pms::with_refused_fetches_for_test(|| io.hubs(&mut hubs, Some(crate::stores::hubs::HubsCmd::RefetchHubs), 0.0)).changed);
     assert_eq!(io.requests.len(), 1);
     assert_eq!(io.requests[0]["admitted"], serde_json::json!(false), "real refusal must be recorded");
-    assert!(crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed);
     crate::plex::reset_servers_for_test();
 }
 
@@ -281,7 +340,8 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
     let mut completion = None;
     let mut parsed: Option<crate::ui::rec::Recording> = None;
     for replay in [false, true] {
-        initial.restore_boot(&mt).unwrap();
+        let (state, adapter) = initial.restore(&mt).unwrap();
+        let mut hubs = crate::stores::hubs::HubsStore::from_parts(state, adapter);
         let publisher = crate::plex::session::ProfilePublisher::scoped(&mt);
         let mut io = HomeIo { replay,preferences:Default::default(),requests:Vec::new(),
             admissions:Default::default(),failure:None,profile:publisher.snapshot() };
@@ -296,7 +356,7 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
                     .map(|effect| effect["payload"].clone()).collect();
             }
             let command = (frame == 0).then_some(crate::stores::hubs::HubsCmd::RefetchHubs);
-            let outcome = io.hubs_with(command, 0.05, &mut |request| {
+            let outcome = io.hubs_with(&mut hubs, command, 0.05, &mut |request| {
                 assert!(!replay, "no live executor during replay");
                 attempts += 1;
                 if attempts == 1 { return false; }
@@ -310,10 +370,12 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
                 if *at == frame {
                     let result = crate::pms::record::decode(wire.clone(), |id|
                         (id == client.instance_gen()).then_some(client)).unwrap();
-                    assert!(crate::pms::land(&result).endpoints.iter().next().is_none());
+                    let adapter = hubs.adapter();
+                    assert!(crate::pms::land(hubs.state_mut(), &adapter, &result).endpoints.iter().next().is_none());
                 }
             }
-            let state = serde_json::to_value(crate::pms::initial::Initial::capture()).unwrap();
+            let adapter = hubs.adapter_for_test();
+            let state = serde_json::to_value(crate::pms::initial::Initial::capture(hubs.state(), &adapter)).unwrap();
             assert!(io.failure.is_none() && io.admissions.is_empty());
             let requests = std::mem::take(&mut io.requests);
             if replay {
@@ -338,7 +400,6 @@ fn controlled_hubs_replays_refusal_retry_and_success() {
     }
     assert_eq!(transcript[0][0]["admitted"],serde_json::json!(false));
     assert_eq!(transcript.iter().flatten().filter(|r| r["admitted"] == true).count(),1);
-    assert!(crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed);
     crate::plex::reset_servers_for_test();
 }
 

@@ -71,8 +71,17 @@ from `main` — see the `cut-release` skill's `line: release/vX.Y` dispatch inpu
 from `main` at `b074943f` and its 37 commits (issue #74's fix among them, plus #75/#76 sign-in
 fixes, IPv6 redaction, sandbox-repair docs, DB8 persistence) were not merged back as a batch — issue
 #74's fix specifically was re-applied to `main` separately, under commit `6f3486d0`, not by merging
-or cherry-picking `release/v0.6` wholesale. The other 36 commits' status on `main` is unverified by
-this file and should not be assumed either way from the fact that this one was ported.
+or cherry-picking `release/v0.6` wholesale.
+
+**Update, 2026-09-24: all 38 `release/v0.6` commits have been audited against `main`, and every
+real fix is there.** #74's fix is `6f3486d0` as above; the 0.6.x persistence/sign-in/consent line
+was independently re-implemented in #105. The audit found three real gaps, all ported in this
+change: ambiguous bare-IPv6 redaction (`d1aeb238`), hardware context (television model, SoC,
+hardware revision, webOS release, `rtkmem`/install facts) on handled playback-error events
+(`c48770c7` — deliberately not extended to incident reports, since the consent-free one-press
+report promises it identifies "only that one report — not you or this television"), and the
+crash-log mark's identity binding plus bounded read (`e0a9fb36` — its event-id identity mixing was
+not ported).
 
 **Before you spend a device session on a k5lp/k3lp crash shaped like this one**, check whether your
 branch already has the fix — check BOTH possible commits, since a re-applied fix gets a new hash:

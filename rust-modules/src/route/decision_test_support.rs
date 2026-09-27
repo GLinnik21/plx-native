@@ -36,7 +36,7 @@ pub(super) fn p5() -> crate::metadata::Dovi {
 /// synthetic boundary explicit in the fixture layer so production `apply_plan` and tests of
 /// the start reducer both retain the real `Prepared -> Starting -> result` semantics.
 pub(super) fn apply_plan(ps: &mut PlaybackSession, plan: Plan, rk: &str) {
-    let start = super::apply_plan(ps, plan, rk);
+    let start = super::apply_plan(ps, &mut crate::stores::metadata::MetadataStore::default(), plan, rk);
     settle_plan_start_in_unit_test(ps, start);
 }
 
@@ -60,6 +60,7 @@ pub(super) fn test_original_candidate(subtitle_ordinal: Option<i32>) -> AutoOrig
         acodec: "eac3".into(),
         fps: 23.976,
         dovi: crate::metadata::Dovi::NONE,
+        dv_decision: crate::metadata::DvDecision::NONE,
         immersive: true,
         audio_sid: 42,
         audio_ordinal: Some(1),
@@ -96,6 +97,7 @@ pub(super) fn fresh_registry(ps: &mut PlaybackSession) -> crate::testlock::Seria
     // land a route explicitly.
     reset_session(ps);
     restore_quality(Quality::Original);
+    restore_direct_play_mode(DirectPlayMode::Auto);
     crate::player::reset_route_requests_for_test(ps);
     crate::plex::reset_servers_for_test();
     crate::player::clear_original_failure();
@@ -215,13 +217,8 @@ pub(super) fn plan_pms_inner(
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
         let mut requests = Vec::new();
         while requests.len() < n && std::time::Instant::now() < deadline {
-            match listener.accept() {
+            match crate::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
-                    // The listener is nonblocking; on macOS the accepted fd inherits that,
-                    // and a parallel suite can accept before the request line is buffered.
-                    socket
-                        .set_nonblocking(false)
-                        .expect("blocking accepted socket");
                     let first = drain_http(&mut socket);
                     if start_bytes.is_some() && first.contains("/library/parts/") {
                         use std::io::Write;
@@ -300,9 +297,8 @@ pub(super) fn selection_probe_pms(
         let mut selection = (1, 9);
         let mut requests = Vec::new();
         loop {
-            match listener.accept() {
+            match crate::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
-                    socket.set_nonblocking(false).unwrap();
                     let line = drain_http(&mut socket);
                     if line.starts_with("PUT /library/parts/") {
                         selection = (
@@ -361,6 +357,7 @@ pub(super) fn fourk_item_with_subs(
     crate::metadata::PlayingItem {
         sid,
         rk: "rk-4k".into(),
+        show_rk: String::new(),
         audio,
         subs,
         video_fps: 23.976,
@@ -370,6 +367,7 @@ pub(super) fn fourk_item_with_subs(
         dovi: crate::metadata::Dovi::NONE,
         markers: Vec::new(),
         chapters: Vec::new(),
+        blur: None,
     }
 }
 

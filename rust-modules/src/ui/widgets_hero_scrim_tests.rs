@@ -259,7 +259,7 @@ fn the_hero_text_reads_over_bright_artwork() {
     let hc = crate::ui::detail_layout::hero_chain(
         // a two-line blurb — the shape `hero_chain`'s own doc is tuned on. Measuring is the one
         // thing the host cannot do, so the height is quoted, not computed.
-        76.0, true,
+        76.0, true, &crate::ui::fixture::FixtureMeasure,
     );
     let band = crate::ui::hero_logo::band_h(crate::ui::hero_logo::LogoRung::Hero);
     let home_col_r = MARGIN_X + crate::ui::landing_hero::COL_W; // 750 — the column's right end
@@ -334,15 +334,18 @@ fn the_hero_text_reads_over_bright_artwork() {
             3.0,
             2.5,
         ),
-        // ⚠ the deferred ink decision — see the doc above
+        // The deferred ink decision, now taken — `detail::FACTS_INK`, and with it the ordinary
+        // floor. What came due was the hero rhythm: the atmospheric ramp is linear in `y`, so
+        // every rung this row moves up sits in less of it, and at tertiary the row had no
+        // headroom left to spend (2.63 against a lowered 2.6).
         (
             "detail facts",
             1270.0,
             hc.facts_y,
-            theme::TEXT_TERTIARY,
+            crate::ui::detail_layout::FACTS_INK,
             true,
-            2.6,
-            2.1,
+            3.0,
+            2.5,
         ),
         // The people column at its WORST case: the top line of the tallest block it can produce
         // (a wrapped credit over a wrapped cast list), `PEOPLE_MAX_LINES` above the buttons —

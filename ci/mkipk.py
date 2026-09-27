@@ -78,6 +78,72 @@ import flavor  # noqa: E402  — ci/flavor.py, which DECIDES a flavour's id and 
 
 # Any fixed epoch works; 2010-01-01 is safely inside the range old opkg builds accept.
 EPOCH = 1262304000
+STORAGE_PERMISSIONS = ["database.operation", "securitykey.operation"]
+
+
+def stage_storage_service(repo: Path, data: Path, app: dict) -> Path:
+    """Stage the native owner whose installer-generated LS2 name survives app restarts."""
+    executable = repo / "pkg/plxnative-storage"
+    if not executable.is_file() or executable.is_symlink():
+        raise SystemExit("native storage helper is missing; build pkg/plxnative-storage first")
+    service_id = app["id"] + ".storage"
+    target = data / "usr/palm/services" / service_id
+    target.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(executable, target / "plxnative-storage")
+    (target / "plxnative-storage").chmod(0o755)
+    (target / "services.json").write_text(json.dumps({
+        "id": service_id, "description": "PlxNative private storage",
+        "engine": "native", "executable": "plxnative-storage",
+        "services": [{"name": service_id, "commands": []}],
+    }, indent=4) + "\n")
+    return target
+
+
+def storage_archive_errors(blob: bytes, app_id: str) -> list[str]:
+    """Grade the archive itself: private activation-only service, identities, modes, no state."""
+    errors = []
+    service_id = app_id + ".storage"
+    prefix = f"usr/palm/services/{service_id}/"
+    try:
+        with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tf:
+            entries = tf.getmembers()
+            members = {m.name.removeprefix("./"): m for m in entries}
+            if len(members) != len(entries):
+                errors.append("duplicate archive members are forbidden")
+            if any(n.startswith(f"usr/palm/applications/{app_id}/state") for n in members):
+                errors.append("obsolete writable app state is forbidden")
+            files = {n for n, m in members.items() if m.isfile() and n.startswith("usr/palm/services/")}
+            if files != {prefix + "services.json", prefix + "plxnative-storage"}:
+                errors.append("service payload must contain exactly this flavor's descriptor and helper")
+            executable = members.get(prefix + "plxnative-storage")
+            if executable is None or not executable.isfile() or executable.mode & 0o7777 != 0o755:
+                errors.append("storage helper must be a regular executable with mode 0755")
+            elif executable.uid != 0 or executable.gid != 0:
+                errors.append("storage helper must have normalized root ownership")
+            else:
+                header = tf.extractfile(executable).read(20)
+                if len(header) != 20 or header[:6] != b"\x7fELF\x01\x01" or header[18:20] != b"\x28\x00":
+                    errors.append("storage helper must be a little-endian ARM ELF32 binary")
+            for name in (prefix + "services.json", f"usr/palm/packages/{app_id}/packageinfo.json", f"usr/palm/applications/{app_id}/appinfo.json"):
+                member = members.get(name)
+                if member is None or not member.isfile():
+                    errors.append("missing regular " + name)
+                    continue
+                metadata = json.load(tf.extractfile(member))
+                if name.endswith("services.json"):
+                    if metadata != {"id": service_id, "description": "PlxNative private storage", "engine": "native", "executable": "plxnative-storage", "services": [{"name": service_id, "commands": []}]}:
+                        errors.append("service identity/activation-only metadata differs")
+                else:
+                    if metadata.get("id") != app_id or metadata.get("requiredPermissions") != STORAGE_PERMISSIONS:
+                        errors.append("app/package identity or storage capability groups differ")
+                    if name.endswith("packageinfo.json") and (metadata.get("app") != app_id or metadata.get("services") != [service_id]):
+                        errors.append("package/app/service membership differs")
+            if any(Path(n).name in {"auth.json", "session.json", "consent.json", "state.json", "rendezvous.json", "storage.sock"} for n in members):
+                errors.append("runtime credentials or rendezvous files must not be packaged")
+    except (tarfile.TarError, OSError, ValueError) as exc:
+        errors.append("unreadable storage archive: " + type(exc).__name__)
+    return errors
+
 
 
 def add_tree(tf: tarfile.TarFile, src: Path, arc_root: str, skip: set = ()) -> None:
@@ -96,7 +162,7 @@ def add_tree(tf: tarfile.TarFile, src: Path, arc_root: str, skip: set = ()) -> N
         ti.mtime = EPOCH
         # Normalise mode: the binary and directories executable, everything else 0644. Otherwise
         # a stray local chmod changes the archive.
-        ti.mode = 0o755 if (ti.isdir() or p.name in {"plxnative", "sentry-crash"}) else 0o644
+        ti.mode = 0o755 if (ti.isdir() or p.name in {"plxnative", "plxnative-storage", "sentry-crash"}) else 0o644
         if ti.isfile():
             with open(p, "rb") as fh:
                 tf.addfile(ti, fh)
@@ -131,6 +197,8 @@ def write_packageinfo(data: Path, app: dict) -> Path:
     # stock-tooling package shows only the values.
     out.write_text(json.dumps({
         "app": app["id"],
+        "services": [app["id"] + ".storage"],
+        "requiredPermissions": STORAGE_PERMISSIONS,
         "id": app["id"],
         "loc_name": app["title"],
         "package_format_version": 2,
@@ -265,6 +333,7 @@ def main() -> int:
     if [p.name for p in staged] != [app["id"]]:
         sys.exit(f"staged applications/{[p.name for p in staged]} does not match appinfo id {app['id']}")
     write_packageinfo(root / "data", app)
+    stage_storage_service(repo, root / "data", app)
     # Before `control_with_size`, which sums the staged tree for `Installed-Size`.
     locales = stage_resources(repo, root / "data", app)
     control, kib = control_with_size(root / "ctl" / "control", root / "data", flav)

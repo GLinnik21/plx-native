@@ -7,7 +7,7 @@
 //! Browse projection distinguishes independent owners whose local generations happen to match.
 
 use crate::plex::{ServerId, MAX_SERVERS};
-use std::ptr::addr_of_mut;
+use std::cell::RefCell;
 use std::sync::Arc;
 
 /// The retained facts for one granted Search source.
@@ -17,7 +17,24 @@ pub(crate) struct ScopeSource {
     pub(crate) name: String,
     pub(crate) libraries: Vec<String>,
     pub(crate) handle: String,
+    /// plex.tv's raw `owned` — this ACCOUNT owns the server. Kept raw; the household question is
+    /// [`ScopeSource::household`]'s.
     pub(crate) owned: bool,
+    /// plex.tv's `home` on the grant, carried from the registry's `ServerFacts`. Evidence for
+    /// [`household`](Self::household).
+    pub(crate) home: bool,
+    /// plex.tv's `ownerId` on the grant, carried from the registry's `ServerFacts`. Evidence for
+    /// [`household`](Self::household).
+    pub(crate) owner_id: i64,
+    /// **Is this our household's server?** — [`crate::plex::is_household`] on the evidence above
+    /// plus the Plex Home roster, cached at publication like every other fact here.
+    ///
+    /// Search is grant-scoped and does not filter on it (`plex/CLAUDE.md`: a browsing preference
+    /// is not an authorization boundary); it is carried so the scope line can stop calling a
+    /// managed profile's own household server somebody else's. That is exactly what reads it:
+    /// `screens/search/render.rs`'s source line names a household server like an owned one and
+    /// counts only genuine shares as shares. Nothing filters on it, and nothing should.
+    pub(crate) household: bool,
     pub(crate) live: bool,
 }
 
@@ -61,6 +78,7 @@ struct Key {
     sections_gen: u32,
     source_list_gen: u32,
     profile_gen: u32,
+    session_gen: u64,
 }
 
 struct Cache {
@@ -109,11 +127,19 @@ impl DirectoryInput {
     }
 }
 
-static mut CACHE: Option<Cache> = None;
+/// Per-owner memo of the last built [`SourceScopeSnapshot`]. Lives on `SearchState` so each
+/// `Bridge`'s Search owner memoizes its own scope; two owners in one process never share a cache
+/// entry. The production callers only ever reach this through `&self`/`&mut self` on the owning
+/// `SearchState`, so the cell is interior-mutable rather than a plain field.
+#[derive(Default)]
+pub(crate) struct ScopeCache {
+    cache: RefCell<Option<Cache>>,
+}
 
 /// Read every registry input used by a standalone Search fixture. Production adds the retained
 /// Browse directory generations through [`read_key_with_directory`].
 fn read_key() -> Key {
+    let _ = crate::plex::session::peek();
     let mut roster = [ServerId::UNSET; MAX_SERVERS];
     let mut facts = [0; MAX_SERVERS];
     let mut roster_len = 0;
@@ -131,10 +157,12 @@ fn read_key() -> Key {
         sections_gen: 0,
         source_list_gen: 0,
         profile_gen: crate::plex::session::current_gen(),
+        session_gen: crate::plex::session::visible_generation(),
     }
 }
 
 fn read_key_with_directory(directory: crate::stores::browse::DirectoryView<'_>) -> Key {
+    let _ = crate::plex::session::peek();
     let mut key = read_registry_key();
     key.sections_gen = directory.sections_gen();
     key.source_list_gen = directory.source_list_gen();
@@ -159,64 +187,89 @@ fn read_registry_key() -> Key {
         sections_gen: 0,
         source_list_gen: 0,
         profile_gen: crate::plex::session::current_gen(),
+        session_gen: crate::plex::session::visible_generation(),
     }
 }
 
-/// Capture the current source facts, rebuilding only when a cheap semantic input moves.
-pub(crate) fn snapshot() -> SourceScopeSnapshot {
-    let key = read_key();
-    // SAFETY: called by the main-thread Search publication boundary. The retained Arc keeps old
-    // source facts alive after this cache replaces its current publication.
-    let cache = unsafe { &mut *addr_of_mut!(CACHE) };
-    let matches = cache.as_ref().is_some_and(|cached| {
-        cached.key == key && cached.directory.is_none()
-    });
-    if !matches {
-        *cache = Some(Cache {
-            key,
-            directory: None,
-            publication: build(),
+impl ScopeCache {
+    /// Capture the current source facts, rebuilding only when a cheap semantic input moves.
+    pub(crate) fn snapshot(&self) -> SourceScopeSnapshot {
+        let key = read_key();
+        let mut cache = self.cache.borrow_mut();
+        let matches = cache.as_ref().is_some_and(|cached| {
+            cached.key == key && cached.directory.is_none()
         });
+        if !matches {
+            *cache = Some(Cache {
+                key,
+                directory: None,
+                publication: build(),
+            });
+        }
+        cache
+            .as_ref()
+            .expect("source scope cache was just built")
+            .publication
+            .clone()
     }
-    cache
-        .as_ref()
-        .expect("source scope cache was just built")
-        .publication
-        .clone()
+
+    pub(crate) fn snapshot_with_directory(
+        &self,
+        directory: crate::stores::browse::DirectoryView<'_>,
+    ) -> SourceScopeSnapshot {
+        let key = read_key_with_directory(directory);
+        let mut cache = self.cache.borrow_mut();
+        let matches = cache.as_ref().is_some_and(|cached| {
+            cached.key == key
+                && cached.directory.as_ref().is_some_and(|input| input.matches(directory))
+        });
+        if !matches {
+            *cache = Some(Cache {
+                key,
+                directory: Some(DirectoryInput::capture(directory)),
+                publication: build_with_directory(directory),
+            });
+        }
+        cache.as_ref().expect("source scope cache was just built").publication.clone()
+    }
 }
 
-pub(crate) fn snapshot_with_directory(
-    directory: crate::stores::browse::DirectoryView<'_>,
-) -> SourceScopeSnapshot {
-    let key = read_key_with_directory(directory);
-    let cache = unsafe { &mut *addr_of_mut!(CACHE) };
-    let matches = cache.as_ref().is_some_and(|cached| {
-        cached.key == key
-            && cached.directory.as_ref().is_some_and(|input| input.matches(directory))
-    });
-    if !matches {
-        *cache = Some(Cache {
-            key,
-            directory: Some(DirectoryInput::capture(directory)),
-            publication: build_with_directory(directory),
-        });
+/// One published slot's grant evidence: the registry's when it has described the slot, else the
+/// registration-order fallback that `owned` alone already used. An undescribed slot carries no
+/// third-party evidence, which is not a guess — the only registration that does not describe is
+/// the session path, whose server is the account's own.
+fn grant_of(
+    facts: Option<&'static crate::plex::ServerFacts>,
+    registered_first: bool,
+) -> crate::plex::GrantEvidence {
+    match facts {
+        Some(f) => crate::plex::GrantEvidence {
+            owned: f.owned,
+            home: f.home,
+            owner_id: f.owner_id,
+        },
+        None => crate::plex::GrantEvidence { owned: registered_first, home: false, owner_id: 0 },
     }
-    cache.as_ref().expect("source scope cache was just built").publication.clone()
 }
 
 fn build() -> SourceScopeSnapshot {
     let first = crate::plex::server_ids().next();
+    let household = crate::plex::session::peek().household_ids();
     let sources = crate::plex::server_ids()
         .map(|sid| {
             let facts = crate::plex::server_facts(sid);
+            // Registration order is the only honest ownership answer before the roster has
+            // described a slot; the session server is registered first.
+            let grant = grant_of(facts, Some(sid) == first);
             ScopeSource {
                 sid,
                 name: facts.map(|f| f.name.clone()).unwrap_or_default(),
                 libraries: Vec::new(),
                 handle: facts.map(|f| f.handle.clone()).unwrap_or_default(),
-                // Registration order is the only honest ownership answer before the roster has
-                // described a slot; the session server is registered first.
-                owned: facts.map(|f| f.owned).unwrap_or(Some(sid) == first),
+                owned: grant.owned,
+                home: grant.home,
+                owner_id: grant.owner_id,
+                household: crate::plex::is_household(grant.grant(), &household),
                 // A browse source that has not been adopted has not failed yet.
                 live: true,
             }
@@ -231,14 +284,19 @@ fn build_with_directory(
     directory: crate::stores::browse::DirectoryView<'_>,
 ) -> SourceScopeSnapshot {
     let first = crate::plex::server_ids().next();
+    let household = crate::plex::session::peek().household_ids();
     let sources = crate::plex::server_ids().map(|sid| {
         let facts = crate::plex::server_facts(sid);
+        let grant = grant_of(facts, Some(sid) == first);
         ScopeSource {
             sid,
             name: facts.map(|f| f.name.clone()).unwrap_or_default(),
             libraries: directory.library_titles(sid).map(str::to_owned).collect(),
             handle: facts.map(|f| f.handle.clone()).unwrap_or_default(),
-            owned: facts.map(|f| f.owned).unwrap_or(Some(sid) == first),
+            owned: grant.owned,
+            home: grant.home,
+            owner_id: grant.owner_id,
+            household: crate::plex::is_household(grant.grant(), &household),
             live: directory.sources().iter().find(|source| source.0 == sid)
                 .map(|source| source.1.reachable()).unwrap_or(true),
         }
@@ -247,15 +305,76 @@ fn build_with_directory(
 }
 
 #[cfg(test)]
-fn reset_for_test() {
-    unsafe {
-        *addr_of_mut!(CACHE) = None;
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_refresh_rebuilds_search_household_scope() {
+        let _serial = crate::testlock::serial();
+        let _reset = Reset;
+        let _session = crate::plex::session::TempSession::new("scope-session-refresh");
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test("scope-house", "127.0.0.1", 9, "t", "scope");
+        crate::plex::describe_server(sid, "Synthetic house", "", crate::plex::GrantEvidence {
+            owned: false, home: false, owner_id: 123,
+        });
+        crate::plex::session::install_transient_for_test(true);
+        let cache = ScopeCache::default();
+        assert!(!cache.snapshot().sources()[0].household);
+        crate::plex::session::save(&crate::plex::session::Session {
+            client_id: "synthetic-client".into(), home_users: vec![crate::plex::session::HomeUserRef {
+                id: 123, ..Default::default()
+            }], ..Default::default()
+        });
+        assert!(cache.snapshot().sources()[0].household);
+    }
+
+    /// **Search carries the household verdict too, and still does not filter on it.**
+    ///
+    /// The scope publication is where the Search screen's source line comes from, and it read the
+    /// same raw `owned` every other surface did — so a Plex Home managed profile's own household
+    /// server sat in its own scope as an outsider's. The evidence is carried through the registry
+    /// facts and graded once at publication.
+    ///
+    /// Search stays GRANT-scoped by design (`plex/CLAUDE.md`: a browsing preference is not an
+    /// authorization boundary), so `household` changes only what the scope line SAYS — see
+    /// `screens/search/render.rs`. This is the publication-side test that proves the value is
+    /// carried and graded right before any of that reads it.
+    #[test]
+    fn a_published_scope_tells_a_household_server_from_a_share() {
+        const ADMIN_ID: i64 = 111_111;
+        const FRIEND_ID: i64 = 987_654;
+        let _serial = crate::testlock::serial();
+        let _reset = Reset;
+        let _session = crate::plex::session::TempSession::new("scope-household");
+        crate::plex::session::save(&crate::plex::session::Session {
+            client_id: "cid-test".into(),
+            home_users: vec![crate::plex::session::HomeUserRef {
+                id: ADMIN_ID,
+                uuid: "u-admin".into(),
+                admin: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+        crate::plex::reset_servers_for_test();
+        let house = crate::plex::register_for_test("scope-house", "127.0.0.1", 1, "t", "scope");
+        let share = crate::plex::register_for_test("scope-share", "127.0.0.1", 2, "t", "scope");
+        crate::plex::describe_server(house, "Mac mini", "", crate::plex::GrantEvidence {
+            owned: false, home: true, owner_id: ADMIN_ID,
+        });
+        crate::plex::describe_server(share, "nas-home", "friend", crate::plex::GrantEvidence {
+            owned: false, home: false, owner_id: FRIEND_ID,
+        });
+
+        let scope = ScopeCache::default().snapshot();
+
+        assert_eq!(
+            scope.sources().iter().map(|s| (s.owned, s.household)).collect::<Vec<_>>(),
+            [(false, true), (false, false)],
+            "raw `owned` stays the wire fact; the verdict is the derived one",
+        );
+    }
 
     #[test]
     fn source_scope_uses_the_supplied_directory_instead_of_browse_globals() {
@@ -266,7 +385,6 @@ mod tests {
             "retained-machine", "127.0.0.1", 9, "retained", "scope");
         let directory = crate::stores::browse::DirectorySnapshot::fixture(3, 0, vec![
             crate::stores::browse::SectionView {
-                borrowed: false,
                 sid: Some(sid),
                 key: 12,
                 kind: crate::stores::browse::SecKind::Movie,
@@ -280,7 +398,8 @@ mod tests {
             },
         ]);
 
-        let scope = snapshot_with_directory(directory.view());
+        let cache = ScopeCache::default();
+        let scope = cache.snapshot_with_directory(directory.view());
 
         assert_eq!(scope.sources()[0].libraries, ["Retained Library"]);
     }
@@ -296,7 +415,6 @@ mod tests {
             7,
             0,
             vec![crate::stores::browse::SectionView {
-                borrowed: false,
                 sid: Some(sid),
                 key: 12,
                 kind: crate::stores::browse::SecKind::Movie,
@@ -314,8 +432,9 @@ mod tests {
         assert!(read_key_with_directory(alpha.view()) == read_key_with_directory(beta.view()),
             "the regression requires equal owner-local generations");
 
-        let first = snapshot_with_directory(alpha.view());
-        let second = snapshot_with_directory(beta.view());
+        let cache = ScopeCache::default();
+        let first = cache.snapshot_with_directory(alpha.view());
+        let second = cache.snapshot_with_directory(beta.view());
 
         assert_eq!(first.sources()[0].libraries, ["Alpha"]);
         assert_eq!(second.sources()[0].libraries, ["Beta"],
@@ -323,11 +442,64 @@ mod tests {
         assert!(!first.same_publication(&second));
     }
 
+    /// The two-owner proof for the memo's move off `static mut CACHE`. Two independent
+    /// [`ScopeCache`]s (standing in for two `Bridge`s' `SearchState`s) build under the SAME
+    /// registry-generation `Key` but DIFFERENT directory content — equal enough that only owner
+    /// identity, not key or content, could ever distinguish them if the memo were shared. A
+    /// content-identical scenario would pass trivially even on a single process-wide cache (the
+    /// `DirectoryInput` comparison would keep matching), which is exactly the worthless shape the
+    /// migration warns about, so owner B's content must differ from owner A's here. With a shared
+    /// cache, owner B's differing-content call would evict owner A's cached entry, so owner A's
+    /// following call — same key, same content as its first — would needlessly rebuild and lose
+    /// `same_publication`'s Arc identity. Two per-owner caches must not do that.
+    #[test]
+    fn two_owners_do_not_share_the_scope_memo() {
+        let _serial = crate::testlock::serial();
+        let _reset = Reset;
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test(
+            "shared-key-scope", "127.0.0.1", 9, "shared", "scope");
+        let directory = |title: &str| crate::stores::browse::DirectorySnapshot::fixture(4, 0, vec![
+            crate::stores::browse::SectionView {
+                sid: Some(sid),
+                key: 12,
+                kind: crate::stores::browse::SecKind::Movie,
+                row: crate::stores::browse::SrcRow {
+                    section: 0,
+                    title: title.into(),
+                    pinned: true,
+                    current: true,
+                    ..Default::default()
+                },
+            },
+        ]);
+        let dir_a = directory("Owner A's Library");
+        let dir_b = directory("Owner B's Library");
+        assert!(read_key_with_directory(dir_a.view()) == read_key_with_directory(dir_b.view()),
+            "the regression requires equal owner-local generations");
+
+        let owner_a = ScopeCache::default();
+        let owner_b = ScopeCache::default();
+
+        let a1 = owner_a.snapshot_with_directory(dir_a.view());
+        // Owner B observes the same key but different content, interleaved between two of
+        // owner A's calls.
+        let b1 = owner_b.snapshot_with_directory(dir_b.view());
+        let a2 = owner_a.snapshot_with_directory(dir_a.view());
+
+        assert_eq!(b1.sources()[0].libraries, ["Owner B's Library"]);
+        assert!(
+            a1.same_publication(&a2),
+            "owner A's own repeated call must hit its own memo, undisturbed by owner B's call \
+             in between — a shared cache would have owner B's call evict owner A's entry"
+        );
+        assert!(Arc::ptr_eq(&a1.sources, &a2.sources));
+    }
+
     struct Reset;
 
     impl Drop for Reset {
         fn drop(&mut self) {
-            reset_for_test();
             crate::plex::reset_servers_for_test();
             crate::plex::session::publish_profile_for_test(None,
                 crate::plex::session::current_gen().wrapping_add(1));
@@ -356,8 +528,9 @@ mod tests {
         let _serial = crate::testlock::serial();
         let _reset = Reset;
         let (stores, mut directory, own, share) = fixture();
-        let old = snapshot_with_directory(directory.view());
-        let same = snapshot_with_directory(directory.view());
+        let cache = ScopeCache::default();
+        let old = cache.snapshot_with_directory(directory.view());
+        let same = cache.snapshot_with_directory(directory.view());
         assert!(old.same_publication(&same));
         assert!(Arc::ptr_eq(&old.sources, &same.sources));
         assert_eq!(old.sources()[0].sid, own);
@@ -367,11 +540,11 @@ mod tests {
         assert!(!old.sources()[1].owned);
         assert!(old.sources()[0].live && old.sources()[1].live);
 
-        crate::plex::describe_server(share, "renamed-share", "new-friend", false);
+        crate::plex::describe_server(share, "renamed-share", "new-friend", crate::plex::GrantEvidence::outside());
         stores.browse.borrow_mut().append_section_for_test(
             1, 9, "Archive", crate::browse::SecKind::Movie);
         stores.capture_browse(&mut directory);
-        let changed = snapshot_with_directory(directory.view());
+        let changed = cache.snapshot_with_directory(directory.view());
         assert!(!old.same_publication(&changed));
         assert_eq!(old.sources()[1].name, "nas-home");
         assert_eq!(old.sources()[1].handle, "friend");
@@ -386,7 +559,7 @@ mod tests {
 
         stores.browse.borrow_mut().seed_sources_for_test(2, false);
         stores.capture_browse(&mut directory);
-        let unreachable = snapshot_with_directory(directory.view());
+        let unreachable = cache.snapshot_with_directory(directory.view());
         assert!(old.sources()[0].live && old.sources()[1].live);
         assert!(!unreachable.sources()[0].live && !unreachable.sources()[1].live);
     }
@@ -401,11 +574,12 @@ mod tests {
         stores.browse.borrow_mut().seed_sources_for_test(1, true);
         let mut directory = crate::stores::browse::DirectorySnapshot::default();
         stores.capture_browse(&mut directory);
-        let old = snapshot_with_directory(directory.view());
+        let cache = ScopeCache::default();
+        let old = cache.snapshot_with_directory(directory.view());
 
         let share =
             crate::plex::register_for_test("share-machine", "127.0.0.1", 2, "share", "scope");
-        let next = snapshot_with_directory(directory.view());
+        let next = cache.snapshot_with_directory(directory.view());
 
         assert_eq!(old.sources().len(), 1);
         assert_eq!(old.sources()[0].sid, own);
@@ -433,12 +607,13 @@ mod tests {
         let (stores, mut directory, _, share) = fixture();
         stores.browse.borrow_mut().seed_sources_for_test(2, true);
         stores.capture_browse(&mut directory);
-        let old = snapshot_with_directory(directory.view());
+        let cache = ScopeCache::default();
+        let old = cache.snapshot_with_directory(directory.view());
         let before = read_key_with_directory(directory.view());
         assert!(old.sources().iter().all(|source| source.live));
 
-        crate::plex::describe_server(share, "renamed-share", "new-friend", false);
-        let described = snapshot_with_directory(directory.view());
+        crate::plex::describe_server(share, "renamed-share", "new-friend", crate::plex::GrantEvidence::outside());
+        let described = cache.snapshot_with_directory(directory.view());
         let after = read_key_with_directory(directory.view());
         assert!(!old.same_publication(&described), "a described source is a new sentence");
         assert_eq!(described.sources()[1].handle, "new-friend");
@@ -451,7 +626,7 @@ mod tests {
 
         stores.browse.borrow_mut().seed_sources_for_test(2, false);
         stores.capture_browse(&mut directory);
-        let quiet = snapshot_with_directory(directory.view());
+        let quiet = cache.snapshot_with_directory(directory.view());
         assert!(!described.same_publication(&quiet), "a source going quiet is a new sentence");
         assert!(quiet.sources().iter().all(|source| !source.live));
         assert!(described.sources().iter().all(|source| source.live),
@@ -464,7 +639,8 @@ mod tests {
         let _serial = crate::testlock::serial();
         let _reset = Reset;
         let (stores, mut directory, _, old_share) = fixture();
-        let old = snapshot_with_directory(directory.view());
+        let cache = ScopeCache::default();
+        let old = cache.snapshot_with_directory(directory.view());
 
         crate::plex::reset_servers_for_test();
         let replacement =
@@ -473,7 +649,7 @@ mod tests {
         assert_ne!(old_share, replacement);
         stores.browse_run(crate::stores::browse::BrowseCmd::Reset);
         stores.capture_browse(&mut directory);
-        let next = snapshot_with_directory(directory.view());
+        let next = cache.snapshot_with_directory(directory.view());
 
         assert_eq!(old.sources().len(), 2);
         assert_eq!(next.sources().len(), 2);

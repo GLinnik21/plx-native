@@ -12,10 +12,7 @@ description: >
   the skills, and the `//!` module doc on every Rust file —
   and reports contradictions ONLY. NOT for writing or extending documentation, and not for
   "consider documenting X": a doc that fails to mention your new thing is out of scope by
-  construction. It exists because nothing compiles the project's Markdown guidance:
-  the host test count went stale three times running, the `ar` claim in the build section was
-  "exactly backwards" for months, and `stream.rs` was documented as having "no chunked decoding"
-  long after it decoded chunked.
+  construction. Nothing else checks the project's Markdown guidance against the code.
 tools: Read, Grep, Glob, Bash
 ---
 

@@ -29,8 +29,8 @@
 //      the "strange patterns" this surface was reported for — and (b) UNCONDITIONAL, evaluated on
 //      every fragment of every glass surface whether or not the amplitude was non-zero. That is the
 //      exact mistake `fs_ambient.frag`'s COST note records having made and fixed, priced there at
-//      38% of a Home frame, and this program never got the fix. It is one `texture2D` behind a
-//      uniform branch now. The old note, still true of WHY a dither is wanted here:
+//      38% of a Home frame, and this program never got the fix. It is one `texture2D` and one add
+//      now, straight-line (`dither.glsl` cost rule 1). The old note, still true of WHY a dither is wanted here:
 //      A blurred field is nearly a gradient, and a gradient in 8 bits BANDS — the more
 //      so where the lens stretches it. `GL_DITHER` is off on this part and `ui/widgets.rs` already
 //      abandoned one construction over the same staircase, so the noise is not optional polish. It
@@ -135,6 +135,11 @@ uniform float u_rimclear;
 // 56% of its radius vertically. The "on" test is `.x > 0` because a zero radius is exactly the
 // case the flag existed to name.
 uniform vec2 u_deep;
+// A held PageDip image is filtered once at full alpha. Blur is linear, so fading that filtered
+// image over the constant app ground here is exactly the filtered result of the same fade, without
+// re-running the source/reduction chain for every alpha step.
+uniform float u_source_alpha;
+uniform vec3 u_source_ground;
 uniform vec4 u_rimcol;       // the container's perimeter line, over the scrim
 // THE LIT EDGE IS ITS OWN COLOUR, and that is not a refinement — it is the difference between the
 // two polarities being one material and being two. The lamp is above; the grain facing it catches
@@ -157,7 +162,7 @@ vec3 srcRGB(highp vec2 uv){
     c += texture2D(u_tex, uv + vec2(-d.x, -d.y)).rgb;
     c *= 0.2;
   }
-  return c;
+  return mix(u_source_ground, c, u_source_alpha);
 }
 
 highp float sdBox(highp vec2 p, highp vec2 b, highp float r){

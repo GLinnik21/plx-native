@@ -109,15 +109,18 @@ impl LibraryScreen {
                 .detail
                 .index_of(elem)
                 .expect("a published bookmark target");
+            // The remembered row owns its full caption before clamping the saved viewport.
+            // Clamping against an all-collapsed document loses the last row's 74px on return.
+            self.relayout(Some(self.key(elem)));
             let scroll = if index == slot {
                 cursor.scroll
             } else {
-                self.target_layout.row_reveal(index / COLS)
+                self.target_layout.row_reveal(index / self.layout.cols())
             };
             self.scroll_target = scroll.clamp(0.0, self.target_layout.max_scroll());
             self.scroll.jump(self.scroll_target);
             self.restore_scroll = Some(self.scroll_target);
-            self.relayout(cx.focus.current);
+            self.relayout(Some(self.key(elem)));
         }
         true
     }

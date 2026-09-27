@@ -17,16 +17,21 @@
 // that gets to do it.
 #![allow(dead_code)] // widgets are added module-by-module; some land before their first caller
 
+use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 
 pub(crate) mod qr;
 pub mod anim;
 pub mod card_row;
+pub(crate) mod card_motion;
+#[cfg(feature = "devtriggers")]
+pub(crate) mod card_motion_metrics;
 pub(crate) mod value_chip; // shared label/value/owner capsule used by menu-opening controls
 pub mod chapters_panel;
 pub(crate) mod containers; // RESTRUCTURE (spec §6.2): Navigation = TabContainer → NavStack → ModalStack, the transitions, the host fold
 pub mod consts;
 pub(crate) mod decision_alert;
+pub(crate) mod decision_prompt;
 pub(crate) mod detail_layout;
 pub(crate) mod dispatch; // RESTRUCTURE spike (spec §3.3): the one frame algorithm, generic over `machine::Host`
 pub(crate) mod adapters; // RESTRUCTURE (spec §2.2): the one door out of the machine world, and its test stub
@@ -50,6 +55,8 @@ mod input_tests; // RESTRUCTURE (spec §15.1): the dispatcher's input path — e
 pub(crate) mod input; // RESTRUCTURE (spec §2.2): the Input machine — owner of the press (an `App` field)
 #[cfg(feature = "lab-diagnostics")]
 pub mod lab_toast; // the Lab Diagnostics upload read-out (lab builds only — see `crate::lab`)
+#[cfg(feature = "threadcheck")]
+pub(crate) mod runtime_warning;
 pub mod label;
 pub(crate) mod landgate; // RESTRUCTURE (spec §3.3 step 3): a replay delivers a landing on its RECORDED frame
 pub(crate) mod landing; // RESTRUCTURE spike (spec §5.2): the bounded per-addressee result queue
@@ -84,6 +91,7 @@ pub mod text_view;
 pub(crate) mod text_buffer;
 pub mod theme;
 pub mod track_menu;
+pub(crate) mod underlay; // the shared UNDERLAY FIELD: a coarse, spatially faithful colour field of what is drawn beneath an overlay
 pub mod up_next; // end-of-episode Up Next card + auto-advance countdown
 pub mod widgets;
 pub mod xfade; // content cross-fade: fade out → swap the data at the floor → fade in
@@ -147,6 +155,30 @@ pub fn guard(f: impl FnOnce()) {
         // barrier is what is keeping the app alive; the hook's lines say what is wrong.
         if !GUARD_RECOVERED.swap(true, std::sync::atomic::Ordering::Relaxed) {
             crate::log("ui::guard: recovered from a panic — frame dropped, GL clip released (logged once; the panic hook logs every panic)");
+        }
+    }
+}
+
+/// Where a cover crop ([`Rect::cover_uv`]) keeps a picture that does not share its box's aspect.
+/// A source WIDER than the box always loses its sides evenly; this decides only how a TALLER one
+/// splits its vertical overflow between top and bottom.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Crop {
+    /// Even: art whose subject is wherever the artist put it — posters, stills, extras, avatars.
+    Centre,
+    /// A person's photo. A portrait headshot has the face in its upper third, so an even crop into
+    /// a circle keeps the chest and cuts the forehead; this takes a fifth of the overflow off the
+    /// top and the rest off the bottom, so the kept window rides high on the photo.
+    Headshot,
+}
+
+impl Crop {
+    /// The fraction of a vertical overflow cut from the TOP; the rest comes off the bottom.
+    #[inline]
+    pub const fn top_share(self) -> f32 {
+        match self {
+            Crop::Centre => 0.5,
+            Crop::Headshot => 0.2,
         }
     }
 }
@@ -223,6 +255,32 @@ impl Rect {
             w,
             h,
         )
+    }
+    /// The UV window `(u0, v0, su, sv)` of a `tw × th` source that COVERS this rect with its aspect
+    /// preserved — [`cover`](Self::cover) expressed as a crop of the texture instead of an overflow
+    /// of the quad. That is the form a CLIPPED picture needs: a card's rounded rect or a headshot's
+    /// circle is masked by the rect itself, so the only way to keep the frame fully painted without
+    /// squashing the source is to sample less of it. `crop` says where the kept window sits.
+    ///
+    /// Cover and not contain, deliberately: a letterboxed picture inside a circle or a rounded card
+    /// leaves empty bands that read as a broken image, and the source is never scaled unevenly
+    /// either way. A degenerate source or rect (the texture has not decoded yet) answers
+    /// [`crate::gfx::UV_FULL`], the whole texture, exactly as `cover` returns the frame unchanged.
+    #[inline]
+    pub fn cover_uv(&self, tw: f32, th: f32, crop: Crop) -> [f32; 4] {
+        if tw <= 0.0 || th <= 0.0 || self.w <= 0.0 || self.h <= 0.0 {
+            return crate::gfx::UV_FULL;
+        }
+        let (box_a, src_a) = (self.w / self.h, tw / th);
+        if src_a > box_a {
+            // wider than the box: keep the full height, crop the sides evenly
+            let su = box_a / src_a;
+            [(1.0 - su) * 0.5, 0.0, su, 1.0]
+        } else {
+            // taller (or equal — `sv` is then 1 and the window is the identity)
+            let sv = src_a / box_a;
+            [0.0, (1.0 - sv) * crop.top_share(), 1.0, sv]
+        }
     }
     /// The overlap of two rects — the part of `self` that `o` lets through. A miss returns a
     /// ZERO-SIZE rect (never a negative one), so `w > 0` is a clean "any of this is visible?"
@@ -324,6 +382,33 @@ pub trait View {
     fn draw(&self, env: &Env, p: Painter);
 }
 
+/// [`Painter::text`]/[`text_fade`](Painter::text_fade)/[`text_fade_v`](Painter::text_fade_v)'s
+/// recording branch still has to answer a width — the caller lays out from it the same frame — but
+/// `Painter` is `Copy` and threaded through hundreds of draw leaves with no capability parameter to
+/// grow one onto. Rather than a second `impl Measure for` (the `textmeasure` gate's structural
+/// exemption would wave it through, but that is the gate learning to look somewhere new for the
+/// exact raw call it exists to forbid, not the layering it asks for), this reaches for the leaf
+/// already sanctioned for precisely this shape: [`widgets::LegacyMeasure`](widgets::LegacyMeasure)
+/// wraps the identical free functions `TtfMeasure` does, minus its boot-order `debug_assert!`, so a
+/// warming pass recorded before a host test's `init_text` never trips it. The null guard mirrors
+/// `crate::text::draw_text`'s own — the ordinary, non-recording path this stands in for.
+fn recorded_text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
+    if s.is_null() {
+        return 0.0;
+    }
+    use crate::ui::machine::Measure as _;
+    widgets::LegacyMeasure.width(unsafe { CStr::from_ptr(s) }, sz, bold != 0)
+}
+
+fn declared_text_bounds(s: *const c_char, sz: c_int, bold: c_int) -> (f32,f32) {
+    // A discovery walk above the surface band, or inside a completely covered layer, records
+    // nothing. Do not populate/measure the glyph cache merely to discover that exclusion later in
+    // `Painter::declare`; discovery is a description pass, not resource preparation.
+    if frame::backdrop::recording_excluded() { return (0.0, 0.0); }
+    if s.is_null() { return (0.0,0.0); }
+    widgets::LegacyMeasure.bounds(unsafe { CStr::from_ptr(s) },sz,bold!=0)
+}
+
 /// Folds a cascading alpha (+ optional translate) into every primitive call.
 /// Copy + stack-lived, so `p.alpha(x)` / `p.translate(..)` chain with zero alloc.
 /// The gfx/text draw fns are `pub extern "C"` (safe to call from Rust).
@@ -342,6 +427,9 @@ pub struct Painter {
     /// `DrawFrame::stop` clips a registered rect to. The GL scissor is set by `ClipScope`
     /// (`DrawFrame::clip`), never implicitly by a primitive.
     clip: Rect,
+    /// An off-screen layout pass: every visual primitive is inert and text calls only enqueue
+    /// cache misses. Kept on the value so the ordinary screen draw path needs no alternate tree.
+    text_recorder: bool,
 }
 /// Resting→lifted drop-shadow params — penumbra `blur`, downward `off`, ink `alpha` — for a tile of
 /// height `h` at focus-pop `f` (0 = resting/close to the shelf, 1 = fully lifted). Shared by the
@@ -362,6 +450,35 @@ fn card_shadow_params(h: f32, f: f32) -> (f32, f32, f32) {
 }
 
 impl Painter {
+    fn declare(self, r: Rect, tag: u64, values: impl FnOnce(&mut Vec<u64>)) -> bool {
+        if self.text_recorder { return true; }
+        if !frame::backdrop::discovering() { return false; }
+        if frame::backdrop::recording_excluded() {
+            // `paint` would discard this unconditionally (see its comment); skip building
+            // `values` at all rather than build it only to throw it away.
+            //
+            // Only the SURFACES half of that gate is a programming error for a glass. The other
+            // half — content under a frozen host boundary (the tab bar's glass on Home while an
+            // account or item menu holds Home as a snapshot) — is dead content that `paint`
+            // discards by the same rule, and asserting there panicked every such frame.
+            debug_assert!(
+                tag != frame::backdrop::GLASS_COMMAND || !frame::backdrop::in_surfaces_band(),
+                "a glass command was declared at/above the surfaces band, where recording is \
+                 skipped; this glass would never resolve"
+            );
+            return true;
+        }
+        use frame::backdrop::Value;
+        let mut data=vec![tag];
+        [self.a,self.rgb].record(&mut data);
+        [r.x+self.dx,r.y+self.dy,r.w,r.h].record(&mut data);
+        values(&mut data);
+        // The primitive AA/rim can paint just outside its nominal rectangle.
+        let bounds=Rect::new(r.x+self.dx-4.0,r.y+self.dy-4.0,r.w+8.0,r.h+8.0);
+        frame::backdrop::paint(bounds,data);
+        true
+    }
+
     pub const fn root() -> Self {
         Self {
             dx: 0.0,
@@ -370,7 +487,14 @@ impl Painter {
             rgb: 1.0,
             scale: 1.0,
             clip: Rect::FULL,
+            text_recorder: false,
         }
+    }
+    pub(crate) const fn recording() -> Self {
+        Self { text_recorder: true, ..Self::root() }
+    }
+    pub(crate) const fn is_recording(self) -> bool {
+        self.text_recorder
     }
     /// Carry a focus pop on the cascade (multiplicative). See the `scale` field.
     pub fn scaled(self, s: f32) -> Self {
@@ -410,6 +534,12 @@ impl Painter {
             a: self.a * m,
             ..self
         }
+    }
+    /// The opacity carried on the cascade — for a caller whose WORK depends on whether anything it
+    /// draws can be seen this frame (`RouteGround::draw_host` defers its page read to a frame
+    /// on which the ground is invisible).
+    pub fn opacity(self) -> f32 {
+        self.a
     }
     pub fn translate(self, dx: f32, dy: f32) -> Self {
         Self {
@@ -458,6 +588,14 @@ impl Painter {
         ]
     }
     pub fn rect(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4], focus: f32) {
+        if self.declare(r, 1, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            top.record(data);
+            bot.record(data);
+            focus.record(data);
+        }) { return; }
+        if self.text_recorder { return; }
         let (t, b) = (self.c(top), self.c(bot));
         crate::gfx::draw_rect(
             r.x + self.dx,
@@ -473,8 +611,25 @@ impl Painter {
         );
     }
     pub fn rrect(self, r: Rect, rl: f32, rr: f32, col: [f32; 4]) {
+        if self.declare(r, 2, |data| {
+            use frame::backdrop::Value;
+            rl.record(data);
+            rr.record(data);
+            col.record(data);
+        }) { return; }
+        if self.text_recorder { return; }
         let c = self.c(col);
         crate::gfx::draw_rrect(r.x + self.dx, r.y + self.dy, r.w, r.h, rl, rr, c.as_ptr());
+    }
+    /// Bottom artwork gradient; false asks the widget to use its shader-failure fallback.
+    pub(crate) fn art_scrim(self, r: Rect, rad: f32, h: f32, col: [f32; 4]) -> bool {
+        if self.declare(r, 21, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            h.record(data);
+            col.record(data);
+        }) { return true; }
+        crate::gfx::draw_art_scrim(r.x + self.dx, r.y + self.dy, r.w, r.h, rad, h, self.c(col))
     }
     /// A rounded-rect **OUTLINE with nothing inside it** — a `w`-px inset ring in `col`, and the
     /// background composites straight through the middle.
@@ -501,6 +656,13 @@ impl Painter {
     /// card's edge sheen; against a knockout that is wrong while the screen is STILL, it is the far
     /// better trade.
     pub fn rring(self, r: Rect, rad: f32, w: f32, col: [f32; 4]) {
+        if self.declare(r, 3, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            w.record(data);
+            col.record(data);
+        }) { return; }
+        if self.text_recorder { return; }
         let c = self.c(col);
         const HOLLOW: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
         crate::gfx::draw_rrect_sheened(
@@ -524,6 +686,14 @@ impl Painter {
     /// occluder's own rim, ending in a hard step. A tile hides that; anything you can see through
     /// wears it as a drawn frame — use [`shadow_outside`](Self::shadow_outside) there.
     pub fn shadow(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
+        if self.declare(Rect::new(r.x-blur,r.y+off_y-blur,r.w+2.0*blur,r.h+2.0*blur), 4, |data| {
+            use frame::backdrop::Value;
+            radius.record(data);
+            blur.record(data);
+            off_y.record(data);
+            col.record(data);
+        }) { return; }
+        if self.text_recorder { return; }
         let c = self.c(col);
         crate::gfx::draw_shadow(
             r.x + self.dx,
@@ -546,6 +716,14 @@ impl Painter {
     /// entry point rather than a flag on the tile path, because a tile pays a rounded-rect SDF for
     /// a region it covers anyway.
     pub fn shadow_outside(self, r: Rect, radius: f32, blur: f32, off_y: f32, col: [f32; 4]) {
+        if self.declare(Rect::new(r.x-blur,r.y+off_y-blur,r.w+2.0*blur,r.h+2.0*blur), 5, |data| {
+            use frame::backdrop::Value;
+            radius.record(data);
+            blur.record(data);
+            off_y.record(data);
+            col.record(data);
+        }) { return; }
+        if self.text_recorder { return; }
         let c = self.c(col);
         crate::gfx::draw_shadow(
             r.x + self.dx,
@@ -564,6 +742,11 @@ impl Painter {
     /// with the pop `f` (0 = resting/close to the shelf, 1 = lifted). Card tiles fold this into their
     /// texture pass via [`tex_carded`](Self::tex_carded) instead; this remains for the non-folded chip.
     pub fn focus_shadow(self, r: Rect, radius: f32, f: f32) {
+        if self.declare({ let (b,o,_)=card_shadow_params(r.h,f); Rect::new(r.x-b,r.y+o-b,r.w+2.0*b,r.h+2.0*b) }, 6, |data| {
+            use frame::backdrop::Value;
+            radius.record(data);
+            f.record(data);
+        }) { return; }
         let (blur, off, a) = card_shadow_params(r.h, f);
         self.shadow(r, radius, blur, off, theme::with_a(theme::CARD_SHADOW, a));
     }
@@ -576,6 +759,13 @@ impl Painter {
     /// A rounded-rect FILL that also carries the 1px perimeter edge-sheen in the SAME pass (the
     /// no-texture counterpart of [`tex_stroked`](Self::tex_stroked)) — for skeleton / chip-disc tiles.
     pub fn rect_sheened(self, r: Rect, rad: f32, top: [f32; 4], bot: [f32; 4]) {
+        if self.declare(r, 7, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            top.record(data);
+            bot.record(data);
+        }) { return; }
+        if self.text_recorder { return; }
         let (t, b) = (self.c(top), self.c(bot));
         let rim = self.sheen_rim();
         crate::gfx::draw_rect_sheened(
@@ -604,6 +794,14 @@ impl Painter {
         rim: [f32; 4],
         rim_top: f32,
     ) {
+        if self.declare(r, 8, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            top.record(data);
+            bot.record(data);
+            rim.record(data);
+            rim_top.record(data);
+        }) { return; }
         self.rect_rimmed_w(r, rad, top, bot, rim, rim_top, theme::CARD_SHEEN_W)
     }
     /// [`rect_rimmed`](Self::rect_rimmed) with the rim's WIDTH named too — for the one edge in the
@@ -620,6 +818,16 @@ impl Painter {
         rim_top: f32,
         rim_w: f32,
     ) {
+        if self.declare(r, 9, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            top.record(data);
+            bot.record(data);
+            rim.record(data);
+            rim_top.record(data);
+            rim_w.record(data);
+        }) { return; }
+        if self.text_recorder { return; }
         let (t, b) = (self.c(top), self.c(bot));
         let rim = self.c(rim);
         crate::gfx::draw_rect_sheened(
@@ -658,6 +866,18 @@ impl Painter {
         rim_w: f32,
         glow: Option<[f32; 4]>,
     ) {
+        if self.declare(r, 10, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            (pill.map(|p| p.args())).record(data);
+            top.record(data);
+            bot.record(data);
+            rim.record(data);
+            rim_top.record(data);
+            rim_w.record(data);
+            glow.record(data);
+        }) { return; }
+        if self.text_recorder { return; }
         let (t, b) = (self.c(top), self.c(bot));
         let rim = self.c(rim);
         let args = pill.map(|p| p.args());
@@ -680,6 +900,12 @@ impl Painter {
     }
     /// Flat rounded-rect fill + the 1px perimeter edge-sheen in one pass (the flat-colour placeholder tile).
     pub fn rrect_sheened(self, r: Rect, rad: f32, col: [f32; 4]) {
+        if self.declare(r, 11, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            col.record(data);
+        }) { return; }
+        if self.text_recorder { return; }
         let c = self.c(col);
         let rim = self.sheen_rim();
         crate::gfx::draw_rrect_sheened(
@@ -696,8 +922,22 @@ impl Painter {
         );
     }
     pub fn tex(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4]) {
+        self.tex_uv(tex, crate::gfx::UV_FULL, r, rad, tint);
+    }
+    /// [`tex`](Self::tex) sampling only the `uv` window of the texture — [`Rect::cover_uv`]'s
+    /// answer for a picture whose aspect is not `r`'s, so it is cropped rather than squashed.
+    pub fn tex_uv(self, tex: u32, uv: [f32; 4], r: Rect, rad: f32, tint: [f32; 4]) {
+        if self.declare(r, 12, |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            crate::gfx::tex_ledger::revision(tex).record(data);
+            uv.record(data);
+            rad.record(data);
+            tint.record(data);
+        }) { return; }
+        if self.text_recorder { return; }
         let t = self.c(tint);
-        crate::gfx::draw_tex(tex, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr());
+        crate::gfx::draw_tex_uv(tex, uv, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, t.as_ptr());
     }
     /// The FROSTED ground: what the frame drew behind `r`, blurred, clipped to `r`'s rounded rect.
     ///
@@ -733,6 +973,19 @@ impl Painter {
         face: crate::gfx::GlassFace,
         deep: f32,
     ) -> bool {
+        if self.text_recorder { return false; }
+        if frame::backdrop::discovering() {
+            frame::backdrop::surface(Rect::new(r.x+self.dx,r.y+self.dy,r.w,r.h));
+            self.declare(r,frame::backdrop::GLASS_COMMAND,|data| {
+                use frame::backdrop::Value;
+                (rim as u32).record(data);
+                [rest_dy,rad,deep].record(data);
+                tint.record(data);
+                face.scrim_top.record(data); face.scrim_bot.record(data);
+                face.rim.record(data); face.rim_lit.record(data); face.rim_w.record(data);
+            });
+            return true;
+        }
         let t = self.c(tint);
         let (x, y) = (r.x + self.dx, r.y + self.dy);
         crate::gfx::draw_blur_backdrop(
@@ -748,35 +1001,22 @@ impl Painter {
             deep,
         )
     }
-    /// Composite the cached blur through the ordinary image shader. This is for edge-free,
-    /// full-screen modal grounds; shaped glass must use [`backdrop_blur`](Self::backdrop_blur).
-    #[must_use]
-    pub fn backdrop_blur_flat(
-        self,
-        r: Rect,
-        tint: [f32; 4],
-        taps: &[f32],
-        saturation: f32,
-    ) -> bool {
-        let t = self.c(tint);
-        let (x, y) = (r.x + self.dx, r.y + self.dy);
-        crate::gfx::draw_blur_snapshot_flat(
-            x,
-            y,
-            r.w,
-            r.h,
-            [x, y, r.w, r.h],
-            t.as_ptr(),
-            taps,
-            saturation,
-        )
-    }
     /// [`tex`](Self::tex) with the focus edge-sheen (the 1px inset perimeter rim) baked into the SAME
-    /// pass — rim only, no shadow. Used for the profile chip avatar.
-    pub fn tex_stroked(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4]) {
+    /// pass — rim only, no shadow. Used for the profile chip avatar. `uv` as [`tex_uv`](Self::tex_uv).
+    pub fn tex_stroked(self, tex: u32, uv: [f32; 4], r: Rect, rad: f32, tint: [f32; 4]) {
+        if self.declare(r, 13, |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            crate::gfx::tex_ledger::revision(tex).record(data);
+            uv.record(data);
+            rad.record(data);
+            tint.record(data);
+        }) { return; }
+        if self.text_recorder { return; }
         let t = self.c(tint);
         crate::gfx::draw_tex_stroked(
             tex,
+            uv,
             r.x + self.dx,
             r.y + self.dy,
             r.w,
@@ -791,13 +1031,25 @@ impl Painter {
     /// grows with the pop `f` (folded via [`gfx::draw_tex_carded`](crate::gfx::draw_tex_carded)). `r` is
     /// the (already-scaled) card rect; the quad is inflated by the penumbra internally. This is how
     /// every art tile gets its resting-and-rising shadow without a separate soft-shadow pass.
-    pub fn tex_carded(self, tex: u32, r: Rect, rad: f32, tint: [f32; 4], f: f32) {
+    /// `uv` is the window of the texture the card shows ([`tex_uv`](Self::tex_uv)).
+    pub fn tex_carded(self, tex: u32, uv: [f32; 4], r: Rect, rad: f32, tint: [f32; 4], f: f32) {
+        if self.declare({ let (b,o,_)=card_shadow_params(r.h,f); Rect::new(r.x-b,r.y+o-b,r.w+2.0*b,r.h+2.0*b) }, 14, |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            crate::gfx::tex_ledger::revision(tex).record(data);
+            uv.record(data);
+            rad.record(data);
+            tint.record(data);
+            f.record(data);
+        }) { return; }
+        if self.text_recorder { return; }
         let t = self.c(tint);
         let (blur, _off, sa) = card_shadow_params(r.h, f); // cards use a symmetric penumbra — offset is chip-only
         let shcol = self.c(theme::with_a(theme::CARD_SHADOW, sa));
         let pad = blur + 1.0; // inflate for the symmetric penumbra (+1 AA margin)
         crate::gfx::draw_tex_carded(
             tex,
+            uv,
             r.x + self.dx,
             r.y + self.dy,
             r.w,
@@ -811,6 +1063,34 @@ impl Painter {
             shcol.as_ptr(),
         );
     }
+    /// The still specialization composes the label ground with the artwork. A fade or unsupported
+    /// shader returns false so the component can retain its ordinary card and ground passes.
+    #[must_use]
+    pub(crate) fn tex_carded_still(
+        self, tex: u32, uv: [f32; 4], r: Rect, rad: f32, f: f32, band: f32, scrim: [f32; 4],
+    ) -> bool {
+        // Discovery describes the same pixels even when the optional program uses its fallback.
+        // Missing artwork and cascaded fades keep the component's ordinary card/ground path.
+        if tex == 0 || self.c(theme::TINT_WHITE) != [1.0; 4] || band <= 0.0
+            || r.w <= 0.0 || r.h <= 0.0 || rad < 0.5 { return false; }
+        if self.declare({ let (b,o,_) = card_shadow_params(r.h,f);
+            Rect::new(r.x-b,r.y+o-b,r.w+2.0*b,r.h+2.0*b) }, 22, |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            crate::gfx::tex_ledger::revision(tex).record(data);
+            uv.record(data);
+            rad.record(data);
+            f.record(data);
+            band.record(data);
+            scrim.record(data);
+        }) { return true; }
+        let (blur, _, sa) = card_shadow_params(r.h, f);
+        crate::gfx::draw_tex_carded_still(
+            tex, uv, r.x + self.dx, r.y + self.dy, r.w, r.h, rad, self.c(theme::TINT_WHITE),
+            theme::CARD_SHEEN_W, self.sheen_rim(), blur + 1.0, blur,
+            self.c(theme::with_a(theme::CARD_SHADOW, sa)), band, self.c(scrim),
+        )
+    }
     /// THE HERO GROUND IN ONE PASS: the backdrop art with both scrim fields evaluated on it,
     /// instead of the art and then four blended gradient quads over the same 2.78M fragments.
     /// [`crate::ui::widgets::hero_ground`] is the component — reach for that, not for this — and
@@ -821,6 +1101,15 @@ impl Painter {
     /// take the cascade here, exactly as the layers they replace took it through [`Self::c`] — the
     /// composite is not linear in them, so folding it anywhere else would quietly change the mix.
     pub fn hero_ground(self, tex: u32, r: Rect, art_a: f32, ramp: [f32; 4], wedge: [f32; 4]) {
+        if self.declare(r, 15, |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            crate::gfx::tex_ledger::revision(tex).record(data);
+            art_a.record(data);
+            ramp.record(data);
+            wedge.record(data);
+        }) { return; }
+        if self.text_recorder { return; }
         let tint = self.c(theme::with_a(theme::TINT_WHITE, art_a));
         let ink = self.c(theme::scrim(1.0));
         crate::gfx::draw_hero_ground(
@@ -849,10 +1138,15 @@ impl Painter {
     /// a wash cross-fadeable BETWEEN two items — dissolving one item's colours into another's is
     /// still a spring per corner channel; see `AmbientWash`.
     ///
-    /// `dither` says whether this ground is what the eye RESTS on — a still, opaque, slow gradient
-    /// wants the ±1-LSB TPDF noise or it bands; a wash under a moving translucent picture does not, and
-    /// on the set the noise is ~2.5M GPU cycles a frame at full screen (`gfx::draw_ambient`).
-    pub fn ambient(self, r: Rect, dim: f32, k: [[f32; 3]; 4], dither: bool) {
+    /// Always dithered (±1-LSB TPDF noise): an opaque, slow, full-screen gradient bands without it,
+    /// moving or not, and there is no flag to turn it off (`gfx::draw_ambient` says why).
+    pub fn ambient(self, r: Rect, dim: f32, k: [[f32; 3]; 4]) {
+        if self.declare(r, 16, |data| {
+            use frame::backdrop::Value;
+            dim.record(data);
+            k.record(data);
+        }) { return; }
+        if self.text_recorder { return; }
         let a = self.a.clamp(0.0, 1.0);
         let g = theme::SURFACE_APP; // `theme::mix` is rgba; a wash corner is rgb
         let k = if a >= 1.0 {
@@ -871,7 +1165,6 @@ impl Painter {
             k[1].as_ptr(),
             k[2].as_ptr(),
             k[3].as_ptr(),
-            dither,
         );
     }
     /// Bilinear 4-corner gradient with real per-corner ALPHA, folded through the cascade — the
@@ -884,6 +1177,11 @@ impl Painter {
     /// interpolates exactly only when the corners share an rgb, so give it ONE ink at four alphas,
     /// not four hues.
     pub fn grad4(self, r: Rect, k: [[f32; 4]; 4]) {
+        if self.declare(r, 17, |data| {
+            use frame::backdrop::Value;
+            k.record(data);
+        }) { return; }
+        if self.text_recorder { return; }
         // bind the mapped array to a `let` first — pointers into a temporary would dangle
         let c = k.map(|q| self.c(q));
         crate::gfx::draw_grad4(
@@ -897,6 +1195,87 @@ impl Painter {
             c[3].as_ptr(),
         );
     }
+    /// **The UNDERLAY FIELD**: a coarse colour field of what is rendered BENEATH an overlay,
+    /// magnified out of `ui::underlay`'s 60x32 texture — one fetch, one tint multiply and the
+    /// shared dither (`shaders/fs_field.frag`).
+    ///
+    /// The counterpart of [`ambient`](Self::ambient) and [`grad4`](Self::grad4), and the difference
+    /// from both is SPATIAL FIDELITY: those two evaluate a four-corner bilinear, which can say "the
+    /// page is greenish" but not "the green is on the left of the bottom edge". This samples a
+    /// field that was reduced from the frame itself, so it can.
+    ///
+    /// It takes the cascade through [`c`](Self::c) exactly as `grad4` does — the tint is an
+    /// ordinary straight-alpha colour and the shader multiplies it — which is what makes a field
+    /// fade with the surface it belongs to. `ui::underlay::UnderlayField::draw` is the component;
+    /// reach for that, not for this.
+    pub fn field(self, r: Rect, tex: u32, tint: [f32; 4]) {
+        if self.declare(r, 18, |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            crate::gfx::tex_ledger::revision(tex).record(data);
+            tint.record(data);
+        }) { return; }
+        if self.text_recorder { return; }
+        let t = self.c(tint);
+        crate::gfx::draw_field(r.x + self.dx, r.y + self.dy, r.w, r.h, tex, t.as_ptr());
+    }
+    /// [`field`](Self::field) as an OPAQUE GROUND — the field counterpart of
+    /// [`ambient`](Self::ambient), and it reads a fade the same way that one does: an alpha below 1
+    /// mixes the ground toward [`theme::SURFACE_APP`], never toward transparency, because the app's
+    /// own ground is what lies behind a page and "fade this out" has no other reading for an opaque
+    /// full-screen field.
+    ///
+    /// Where `ambient` folds that mix into four corner colours on the CPU, this one lays the
+    /// surface down as a flat rect and lets the FRAMEBUFFER do it — `SURFACE_APP*(1-a) + field*a`,
+    /// the same algebra — because a field's colours live in a texture the frame cannot rebuild.
+    /// The extra quad is a `fs_flat.frag` fill and is drawn only while a fade is actually running;
+    /// at alpha 1, which is every frame outside a transition, this is one draw and the write is
+    /// opaque exactly as `ambient`'s is.
+    pub fn field_ground(self, r: Rect, tex: u32, a: f32) {
+        if self.declare(r, 19, |data| {
+            use frame::backdrop::Value;
+            tex.record(data);
+            crate::gfx::tex_ledger::revision(tex).record(data);
+            a.record(data);
+        }) { return; }
+        let a = (self.a * a).clamp(0.0, 1.0);
+        // The cascade's alpha is spent HERE, on the mix, so neither draw may take it again.
+        let full = Self { a: 1.0, ..self };
+        if a < 1.0 {
+            let g = theme::SURFACE_APP;
+            full.rect(r, 0.0, g, g, 0.0);
+        }
+        full.field(r, tex, theme::with_a(theme::TINT_WHITE, a));
+    }
+    /// [`field`](Self::field) as a POPOVER'S MATERIAL: the rounded rect `r` (corner `rad`) filled
+    /// with the field's own window `uv` into the texture. The field maps the WHOLE SCREEN, so `uv`
+    /// is the rect's drawn screen position over the screen size (`underlay::panel_uv`, the
+    /// cascade's translate folded in) — never the whole field squeezed into the panel.
+    ///
+    /// `false` when the field program or texture is missing — the caller's cue to draw the flat
+    /// sheet. `ui::underlay::UnderlayField::draw_panel` is the component; reach for that.
+    pub fn field_panel(self, r: Rect, rad: f32, tex: u32, uv: [f32; 4], tint: [f32; 4]) -> bool {
+        if self.declare(r, 20, |data| {
+            use frame::backdrop::Value;
+            rad.record(data);
+            tex.record(data);
+            crate::gfx::tex_ledger::revision(tex).record(data);
+            uv.record(data);
+            tint.record(data);
+        }) { return tex != 0; }
+        if self.text_recorder { return false; }
+        let t = self.c(tint);
+        crate::gfx::draw_field_panel(
+            r.x + self.dx,
+            r.y + self.dy,
+            r.w,
+            r.h,
+            rad,
+            uv,
+            tex,
+            t.as_ptr(),
+        )
+    }
     /// draw text at absolute (x,y) plus the cascade translate; returns width
     pub fn text(
         self,
@@ -908,6 +1287,22 @@ impl Painter {
         align: c_int,
         bold: c_int,
     ) -> f32 {
+        if frame::backdrop::discovering() {
+            let (width,height)=declared_text_bounds(s,sz,bold);
+            self.declare(Rect::new(match align { 1 => x-width*0.5, 2 => x-width, _ => x },y,width,height),100,|data| {
+                use frame::backdrop::Value;
+                frame::backdrop::text_value(s,data);
+                sz.record(data);
+                col.record(data);
+                align.record(data);
+                bold.record(data);
+            });
+            return width;
+        }
+        if self.text_recorder {
+            crate::text::queue_prewarm(s, sz, bold);
+            return recorded_text_width(s, sz, bold);
+        }
         let c = self.c(col);
         crate::text::draw_text(s, x + self.dx, y + self.dy, sz, c.as_ptr(), align, bold)
     }
@@ -925,6 +1320,23 @@ impl Painter {
         fade_from: f32,
         fade_to: f32,
     ) -> f32 {
+        if frame::backdrop::discovering() {
+            let (width,height)=declared_text_bounds(s,sz,bold);
+            self.declare(Rect::new(x,y,width,height),101,|data| {
+                use frame::backdrop::Value;
+                frame::backdrop::text_value(s,data);
+                sz.record(data);
+                col.record(data);
+                bold.record(data);
+                fade_from.record(data);
+                fade_to.record(data);
+            });
+            return width;
+        }
+        if self.text_recorder {
+            crate::text::queue_prewarm(s, sz, bold);
+            return recorded_text_width(s, sz, bold);
+        }
         let c = self.c(col);
         crate::text::draw_text_fade(
             s,
@@ -962,6 +1374,23 @@ impl Painter {
         top: Option<(f32, f32)>,
         bot: Option<(f32, f32)>,
     ) -> f32 {
+        if frame::backdrop::discovering() {
+            let (width,height)=declared_text_bounds(s,sz,bold);
+            self.declare(Rect::new(x,y,width,height),102,|data| {
+                use frame::backdrop::Value;
+                frame::backdrop::text_value(s,data);
+                sz.record(data);
+                col.record(data);
+                bold.record(data);
+                top.record(data);
+                bot.record(data);
+            });
+            return width;
+        }
+        if self.text_recorder {
+            crate::text::queue_prewarm(s, sz, bold);
+            return recorded_text_width(s, sz, bold);
+        }
         let c = self.c(col);
         // The bands are given in this painter's LOCAL space (the same space `y` is), so the
         // cascade translate that shifts `y` below has to shift them too, or a popover's entry
@@ -985,10 +1414,14 @@ impl Painter {
     /// cut cleanly at its frame edge instead of poking over the video / control buttons. ALWAYS pair
     /// with [`clip_clear`](Self::clip_clear) before the frame ends — scissor is global GL state.
     pub fn clip(self, r: Rect) {
+        if frame::backdrop::discovering() { frame::backdrop::clip(Some(Rect::new(r.x+self.dx,r.y+self.dy,r.w,r.h))); return; }
+        if self.text_recorder { return; }
         crate::gfx::clip_set(r.x + self.dx, r.y + self.dy, r.w, r.h);
     }
     /// Release the clip set by [`clip`](Self::clip).
     pub fn clip_clear(self) {
+        if frame::backdrop::discovering() { frame::backdrop::clip(None); return; }
+        if self.text_recorder { return; }
         crate::gfx::clip_clear();
     }
 }
@@ -1251,6 +1684,70 @@ mod tests {
         }
     }
 
+    /// The texels one box pixel spans along each axis. Equal on both axes ⇔ the picture is scaled
+    /// evenly, which is the whole claim a crop makes over the stretch it replaces.
+    fn texels_per_px(r: Rect, tw: f32, th: f32, uv: [f32; 4]) -> (f32, f32) {
+        (uv[2] * tw / r.w, uv[3] * th / r.h)
+    }
+
+    fn near4(a: [f32; 4], b: [f32; 4]) -> bool {
+        a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5)
+    }
+
+    /// A 2:3 PORTRAIT headshot into a 1:1 circle — the cast row's case. The full width survives,
+    /// two-thirds of the height is kept, and the headshot crop takes a fifth of the lost third off
+    /// the top (the face lives up there); an even crop takes half. Never an uneven scale.
+    #[test]
+    fn cover_uv_crops_a_portrait_vertically_riding_high_for_a_headshot() {
+        let r = Rect::new(0.0, 0.0, 190.0, 190.0);
+        let (tw, th) = (300.0, 450.0);
+        let head = r.cover_uv(tw, th, Crop::Headshot);
+        assert!(near4(head, [0.0, (1.0 / 3.0) * 0.2, 1.0, 2.0 / 3.0]), "{head:?}");
+        let even = r.cover_uv(tw, th, Crop::Centre);
+        assert!(near4(even, [0.0, 1.0 / 6.0, 1.0, 2.0 / 3.0]), "{even:?}");
+        assert!(head[1] < even[1], "a headshot must keep more of the top than an even crop");
+        for uv in [head, even] {
+            let (sx, sy) = texels_per_px(r, tw, th, uv);
+            assert!((sx - sy).abs() < 1e-4, "scaled unevenly: {sx} vs {sy}");
+            assert!(uv[1] >= 0.0 && uv[1] + uv[3] <= 1.0 + 1e-6, "window must stay inside the texture");
+        }
+    }
+
+    /// A 16:9 source into a 1:1 box crops its SIDES, evenly, whatever the crop's vertical bias —
+    /// a headshot's lean is about faces, and there is no left/right equivalent.
+    #[test]
+    fn cover_uv_crops_a_landscape_horizontally_and_centred() {
+        let r = Rect::new(40.0, 900.0, 190.0, 190.0);
+        for crop in [Crop::Centre, Crop::Headshot] {
+            let uv = r.cover_uv(1600.0, 900.0, crop);
+            let su = 9.0 / 16.0;
+            assert!(near4(uv, [(1.0 - su) * 0.5, 0.0, su, 1.0]), "{crop:?}: {uv:?}");
+            let (sx, sy) = texels_per_px(r, 1600.0, 900.0, uv);
+            assert!((sx - sy).abs() < 1e-4, "scaled unevenly: {sx} vs {sy}");
+        }
+    }
+
+    /// A source already at its box's aspect is the WHOLE texture, at any pixel size — so every
+    /// poster in a poster tile and every 16:9 still in a 16:9 tile draws exactly what it drew before.
+    /// An undecoded texture (size 0) or a degenerate box is the whole texture too, never a NaN.
+    #[test]
+    fn cover_uv_is_the_identity_at_matching_aspect_and_for_an_undecoded_source() {
+        for (r, tw, th) in [
+            (Rect::new(0.0, 0.0, 190.0, 190.0), 300.0, 300.0),
+            (Rect::new(0.0, 0.0, 250.0, 375.0), 250.0, 375.0),
+            (Rect::new(0.0, 0.0, 250.0, 375.0), 500.0, 750.0),
+        ] {
+            for crop in [Crop::Centre, Crop::Headshot] {
+                assert!(near4(r.cover_uv(tw, th, crop), crate::gfx::UV_FULL), "{tw}x{th} {crop:?}");
+            }
+        }
+        let r = Rect::new(0.0, 0.0, 190.0, 190.0);
+        for (tw, th) in [(0.0, 0.0), (0.0, 450.0), (300.0, 0.0), (-1.0, -1.0)] {
+            assert_eq!(r.cover_uv(tw, th, Crop::Headshot), crate::gfx::UV_FULL);
+        }
+        assert_eq!(Rect::new(0.0, 0.0, 0.0, 0.0).cover_uv(300.0, 450.0, Crop::Centre), crate::gfx::UV_FULL);
+    }
+
     /// The centring is about the FRAME, not about the panel: home's backdrop layer is parallaxed to
     /// a non-zero origin and slides horizontally, so a `cover` that centred on (0,0) would drift the
     /// crop across the flip.
@@ -1270,5 +1767,56 @@ mod tests {
             r.y < f.y && r.y + r.h > f.y + f.h,
             "the square must overflow the short axis both ways"
         );
+    }
+
+    #[test]
+    fn recording_still_primitives_never_reach_gl() {
+        let p = Painter::recording();
+        let r = Rect::new(100.0, 200.0, 400.0, 225.0);
+        assert!(p.art_scrim(r, 14.0, 80.0, theme::scrim(0.7)));
+        assert!(p.tex_carded_still(71, [0.1, 0.0, 0.8, 1.0], r, 14.0, 0.0, 80.0, theme::scrim(0.7)));
+        assert!(!p.tex_carded_still(0, crate::gfx::UV_FULL, r, 14.0, 0.0, 80.0, theme::scrim(0.7)),
+            "missing artwork must still traverse the placeholder path");
+    }
+
+    /// A glass declared UNDER a frozen host boundary — the tab bar's backdrop on Home while the
+    /// account menu or an item menu holds Home as a frozen snapshot — is dead content, exactly as
+    /// `backdrop::paint` treats it: skipped silently. The declare pre-check once asserted on every
+    /// skipped glass, so opening either menu over Home panicked every frame of a debug build (the
+    /// frame guard caught it, and the menu never drew).
+    #[test]
+    fn a_glass_under_a_frozen_host_boundary_is_skipped_not_asserted() {
+        use frame::backdrop::{self, Layer, Sources, Z};
+        use std::{cell::RefCell, rc::Rc};
+        let _guard = crate::testlock::serial();
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        sources.borrow_mut().begin(vec![Layer {
+            z: Z::surface(0),
+            rect: backdrop::canvas(),
+            blocks: true,
+            revision: 1,
+            composite_alpha: None,
+        }]);
+        let _walk = backdrop::discover(sources.clone());
+        let _chrome = backdrop::layer(Z::CHROME, true);
+        assert!(backdrop::recording_excluded(), "the chrome sits under a blocking full-canvas layer");
+        let skipped = Painter::root().declare(Rect::new(0.0, 0.0, 100.0, 40.0), backdrop::GLASS_COMMAND, |_| {});
+        assert!(skipped, "an occluded glass is consumed without recording");
+    }
+
+    /// …while a glass declared IN the surfaces band still trips the assertion: nothing there is
+    /// ever resolved, so the declaration itself is the bug.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "surfaces band")]
+    fn a_glass_in_the_surfaces_band_still_asserts() {
+        use frame::backdrop::{self, Sources, Z};
+        use std::{cell::RefCell, rc::Rc};
+        let _guard = crate::testlock::serial();
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        sources.borrow_mut().begin(vec![]);
+        let _walk = backdrop::discover(sources.clone());
+        let _surface = backdrop::layer(Z::surface(0), true);
+        let _ = Painter::root().declare(Rect::new(0.0, 0.0, 100.0, 40.0), backdrop::GLASS_COMMAND, |_| {});
     }
 }

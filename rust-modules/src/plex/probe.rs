@@ -90,9 +90,10 @@ pub struct Candidate {
     /// was built with? TLS always; plaintext only under
     /// [`CredentialPolicy::AllowPlaintext`](super::origin::CredentialPolicy::AllowPlaintext) —
     /// [`CredentialPolicy::may_carry_credential`](super::origin::CredentialPolicy::may_carry_credential)'s
-    /// answer, computed once here rather than re-derived by every consumer. A verified but
-    /// ineligible candidate is still evidence the server is alive on this address; it is the race
-    /// in `auth.rs` that decides what an ineligible-but-verified answer means.
+    /// answer, computed once here rather than re-derived by every consumer. This is the POLICY half
+    /// only: a consented plaintext grant (`super::grant`) is never known at synthesis — the race
+    /// holds an ineligible-but-verified answer aside as `Reach::InsecureOnly`, and
+    /// `auth::settle_plaintext` turns it into a reached origin exactly when a grant is minted for it.
     pub credential_eligible: bool,
 }
 
@@ -140,6 +141,31 @@ pub struct ProbePlan {
     pub policy: CredentialPolicy,
 }
 
+impl ProbePlan {
+    /// This plan less every candidate whose origin admission already rejected (`rejected` holds
+    /// [`Origin::base`] strings). The ONE filter a re-probe after an admission refusal dials
+    /// through — the live roster worker and the profile worker both use it — so what a refused
+    /// origin means to the race cannot drift between them. Only the race sees the smaller plan:
+    /// the eligibility rule is read against the whole one (`auth::settle_plaintext`), where a
+    /// refused HTTPS origin still counts as an HTTPS answer.
+    pub(crate) fn without(&self, rejected: &[String]) -> ProbePlan {
+        ProbePlan {
+            machine_id: self.machine_id.clone(),
+            token: self.token.clone(),
+            owned: self.owned,
+            name: self.name.clone(),
+            source_title: self.source_title.clone(),
+            policy: self.policy,
+            candidates: self
+                .candidates
+                .iter()
+                .filter(|c| c.origin().is_none_or(|origin| !rejected.contains(&origin.base())))
+                .cloned()
+                .collect(),
+        }
+    }
+}
+
 /// How a probe of one candidate ended. Spelled out here because the distinction the caller must not
 /// collapse is structural, not incidental: only [`Unreachable`](Self::Unreachable) and
 /// [`WrongServer`](Self::WrongServer) mean "try the next address".
@@ -156,8 +182,8 @@ pub enum Outcome {
     /// No answer: refused, timed out, or unresolvable. The only outcome the next candidate can fix.
     Unreachable,
     /// The whole-server aggregate for [`crate::auth::Reach::InsecureOnly`] (issue #95, plan §4):
-    /// verified, provably the right server, but only over a transport this build can never put a
-    /// credential on. A single per-candidate probe never classifies to this — [`classify`] has no
+    /// verified, provably the right server, but only over a transport this build may not put a
+    /// credential on without a consented grant (`super::grant`). A single per-candidate probe never classifies to this — [`classify`] has no
     /// arm that produces it — it exists for the coordinator's SETTLED, whole-server verdict, which
     /// is a different question from "what did this one response say". Kept apart from
     /// [`Self::Unreachable`] because the remedy and the words are both different: the server
@@ -340,8 +366,9 @@ fn is_numeric_address(a: &str) -> bool {
 /// (`super::origin::ResolvePin::for_origin`, keyed on the same `address` this file attaches to the
 /// candidate) — the TLS candidate itself can also answer the `/identity` PROBE when DNS cannot, not
 /// only its plaintext twin. **It is not what makes offline play work, and this doc said it was
-/// until 2026-09-05.** A store build refuses to send a token over plaintext
-/// (`crate::http::credential_transport_allowed`), so the twin can prove a server is there and
+/// until 2026-09-05.** A store build sends a token over plaintext only under a consented grant
+/// (`super::grant`), and a grant is minted only from a FRESH plex.tv verdict — which a house with
+/// no route to the internet cannot get — so offline the twin can prove a server is there and
 /// cannot browse it; and a stored-session boot never re-races candidates at all. Offline play on
 /// the house's own server — a LAN with no route to the internet resolves no `plex.direct` name —
 /// is carried by [`super::origin::ResolvePin`] instead: the https uri stays the origin, and the
@@ -412,6 +439,491 @@ pub fn candidates(res: &Resource, policy: CredentialPolicy) -> Vec<Candidate> {
     out
 }
 
+/// Which HTTPS route to a server a candidate is — the rows of [`HttpsRoutes`]. Read off the
+/// candidate's own URL and tier, never off `address`: the `plex.direct` NAME is what makes a route
+/// one plex.tv minted a certificate for, and the tier is plex.tv's own `local`/`relay` flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HttpsRole {
+    /// A `plex.direct` name on a `local` connection — the one `auth::race_batch` pins to the
+    /// advertised address, so it needs no resolver.
+    LanPlexDirect,
+    /// A `plex.direct` name on a remote (not relay) connection.
+    PublicPlexDirect,
+    /// Any other `https://` URL the owner published (a custom server access URL), whatever its tier.
+    CustomHttps,
+    /// Plex's relay tunnel.
+    Relay,
+}
+
+impl Candidate {
+    /// This candidate's [`HttpsRole`], `None` for a plaintext one.
+    pub(crate) fn https_role(&self) -> Option<HttpsRole> {
+        if self.scheme != Scheme::Https {
+            return None;
+        }
+        let plex_direct = url_host(&self.url).to_ascii_lowercase().ends_with(".plex.direct");
+        Some(match (self.location, plex_direct) {
+            (Location::Relay, _) => HttpsRole::Relay,
+            (_, false) => HttpsRole::CustomHttps,
+            (Location::Local, true) => HttpsRole::LanPlexDirect,
+            (Location::Remote, true) => HttpsRole::PublicPlexDirect,
+        })
+    }
+}
+
+/// How one probed route ended, in the incident report's link vocabulary
+/// (`telemetry::incident::LinkClass`) plus the three answers only an identity probe can give —
+/// and the two ways a route can have NO answer at all, which are the whole difference between
+/// "this server has no HTTPS" and "HTTPS failed from this television". Closed; never a status
+/// number, a code or anything the server said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum RouteOutcome {
+    /// plex.tv advertised no candidate for this route.
+    Absent,
+    /// A candidate existed but was never dialled (not dialable, a refused worker spawn, or an
+    /// origin an earlier admission already rejected).
+    NotAttempted,
+    /// Nothing answered before the probe's own deadline — curl's code 28, or the coordinator
+    /// expiring a worker that had not finished.
+    Timeout,
+    /// The name did not resolve (curl code 6).
+    Dns,
+    /// The TLS handshake or certificate check failed (curl codes 35, 60, 77, 90).
+    Tls,
+    /// The connection was refused (curl code 7).
+    Refused,
+    /// Any other transport failure libcurl named.
+    TransportOther,
+    /// A transport failure with no code to classify it by — the plaintext transport, or a request
+    /// refused before libcurl ran.
+    Unknown,
+    /// Answered 401.
+    Unauthorized,
+    /// Answered 2xx as a different machine (or with no identity to check).
+    WrongServer,
+    /// Answered with any other non-2xx status.
+    Answered4xx,
+    Answered5xx,
+    AnsweredOther,
+    /// Answered as the server we asked for.
+    Verified,
+}
+
+impl RouteOutcome {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Absent => "absent",
+            Self::NotAttempted => "not_attempted",
+            Self::Timeout => "timeout",
+            Self::Dns => "dns",
+            Self::Tls => "tls",
+            Self::Refused => "refused",
+            Self::TransportOther => "transport_other",
+            Self::Unknown => "unknown",
+            Self::Unauthorized => "unauthorized",
+            Self::WrongServer => "wrong_server",
+            Self::Answered4xx => "answered_4xx",
+            Self::Answered5xx => "answered_5xx",
+            Self::AnsweredOther => "answered_other",
+            Self::Verified => "verified",
+        }
+    }
+
+    /// A transport failure, through the incident report's own classifier so the two vocabularies
+    /// cannot drift: `None` is a failure no layer could attach evidence to. Connection refused is
+    /// split out of `transport_other` here only — the report's top-level `link` keeps its class,
+    /// because Sentry fingerprints on it.
+    pub(crate) fn of_failure(failure: Option<crate::net::RequestFailure>) -> Self {
+        use crate::telemetry::incident::{classify, LinkClass};
+        let Some(failure) = failure else { return Self::Unknown };
+        match classify(Some(Err(failure))) {
+            (LinkClass::Answered2xx, ..) => Self::WrongServer, // a truncated 2xx verified nothing
+            (LinkClass::Answered4xx, Some(401), _) => Self::Unauthorized,
+            (LinkClass::Answered4xx, ..) => Self::Answered4xx,
+            (LinkClass::Answered5xx, ..) => Self::Answered5xx,
+            (LinkClass::AnsweredOther, ..) => Self::AnsweredOther,
+            (LinkClass::Dns, ..) => Self::Dns,
+            (LinkClass::Tls, ..) => Self::Tls,
+            (LinkClass::Timeout, ..) => Self::Timeout,
+            (LinkClass::TransportOther, _, Some(7)) => Self::Refused,
+            (LinkClass::TransportOther, ..) => Self::TransportOther,
+            (LinkClass::Unknown, ..) => Self::Unknown,
+        }
+    }
+
+    /// A status the server answered, graded by the probe's own [`Outcome`] for it.
+    pub(crate) fn of_answer(status: i32, outcome: Outcome) -> Self {
+        match outcome {
+            Outcome::Reachable => Self::Verified,
+            Outcome::WrongServer => Self::WrongServer,
+            Outcome::Unauthorized => Self::Unauthorized,
+            Outcome::Unreachable | Outcome::InsecureOnly => match status {
+                400..=499 => Self::Answered4xx,
+                500..=599 => Self::Answered5xx,
+                _ => Self::AnsweredOther,
+            },
+        }
+    }
+}
+
+/// What became of each HTTPS route to one server, one [`RouteOutcome`] per [`HttpsRole`].
+///
+/// A role with several candidates (a v4 and a v6 LAN name) reports its STRONGEST outcome
+/// (`RouteOutcome::precedence`: verified, then a refusal, then any other answer, then TLS, then
+/// the other transport failures) — never merely the first dialled, which let a v4 timeout hide a
+/// v6 refusal and read as "HTTPS failed from here" — and [`RouteOutcome::NotAttempted`] only when
+/// none of them was dialled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct HttpsRoutes {
+    pub lan_plex_direct: RouteOutcome,
+    pub public_plex_direct: RouteOutcome,
+    pub custom_https: RouteOutcome,
+    pub relay: RouteOutcome,
+}
+
+impl HttpsRoutes {
+    /// Fold per-candidate observations — `observed[i]` for `candidates[i]`, `None` where that
+    /// candidate was never dialled — into one row per role.
+    pub(crate) fn of(candidates: &[Candidate], observed: &[Option<RouteOutcome>]) -> Self {
+        let mut routes = Self {
+            lan_plex_direct: RouteOutcome::Absent,
+            public_plex_direct: RouteOutcome::Absent,
+            custom_https: RouteOutcome::Absent,
+            relay: RouteOutcome::Absent,
+        };
+        for (i, c) in candidates.iter().enumerate() {
+            let Some(role) = c.https_role() else { continue };
+            let seen = observed.get(i).copied().flatten().unwrap_or(RouteOutcome::NotAttempted);
+            let slot = match role {
+                HttpsRole::LanPlexDirect => &mut routes.lan_plex_direct,
+                HttpsRole::PublicPlexDirect => &mut routes.public_plex_direct,
+                HttpsRole::CustomHttps => &mut routes.custom_https,
+                HttpsRole::Relay => &mut routes.relay,
+            };
+            if seen.precedence() > slot.precedence() {
+                *slot = seen;
+            }
+        }
+        routes
+    }
+
+    /// These routes with every HTTPS candidate whose origin ADMISSION rejected (`rejected`, as
+    /// [`Origin::base`] strings) counted as [`RouteOutcome::Verified`]. A candidate only reaches
+    /// admission by verifying `/identity`, so its role answered over HTTPS; the re-probe that
+    /// follows the refusal dials a plan without it ([`ProbePlan::without`]) and would otherwise
+    /// read the role as absent — which is what made a refused HTTPS origin a reason to go
+    /// plaintext. The refusal is a credential problem, not the network's.
+    pub(crate) fn with_admission_rejected(mut self, candidates: &[Candidate], rejected: &[String]) -> Self {
+        for c in candidates {
+            let Some(role) = c.https_role() else { continue };
+            if !c.origin().is_some_and(|origin| rejected.contains(&origin.base())) {
+                continue;
+            }
+            let slot = match role {
+                HttpsRole::LanPlexDirect => &mut self.lan_plex_direct,
+                HttpsRole::PublicPlexDirect => &mut self.public_plex_direct,
+                HttpsRole::CustomHttps => &mut self.custom_https,
+                HttpsRole::Relay => &mut self.relay,
+            };
+            if RouteOutcome::Verified.precedence() > slot.precedence() {
+                *slot = RouteOutcome::Verified;
+            }
+        }
+        self
+    }
+}
+
+/// What kind of address a literal is — the half of "is this the same network" an address can
+/// answer by itself. Closed: the address never leaves this type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum AddressScope {
+    /// RFC 1918 IPv4.
+    Private,
+    /// IPv4 169.254/16 or IPv6 fe80::/10.
+    LinkLocal,
+    /// IPv6 unique-local fc00::/7.
+    UniqueLocal,
+    Loopback,
+    /// Any other literal.
+    Public,
+    /// Not a literal at all — a hostname.
+    Name,
+}
+
+/// The address family of a literal; `Unknown` for a hostname.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum AddressFamily {
+    V4,
+    V6,
+    Unknown,
+}
+
+impl AddressScope {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Private => "private",
+            Self::LinkLocal => "link_local",
+            Self::UniqueLocal => "unique_local",
+            Self::Loopback => "loopback",
+            Self::Public => "public",
+            Self::Name => "name",
+        }
+    }
+
+    fn of_v4(a: std::net::Ipv4Addr) -> Self {
+        if a.is_loopback() {
+            Self::Loopback
+        } else if a.is_private() {
+            Self::Private
+        } else if a.is_link_local() {
+            Self::LinkLocal
+        } else {
+            Self::Public
+        }
+    }
+
+    /// Classify `address` as plex.tv advertised it (a dotted quad, a v6 literal with or without
+    /// brackets, or a hostname).
+    pub(crate) fn of(address: &str) -> (Self, AddressFamily) {
+        let bare = address
+            .strip_prefix('[')
+            .map_or(address, |h| h.strip_suffix(']').unwrap_or(h));
+        match bare.parse::<std::net::IpAddr>() {
+            Err(_) => (Self::Name, AddressFamily::Unknown),
+            Ok(std::net::IpAddr::V4(a)) => (Self::of_v4(a), AddressFamily::V4),
+            // `::ffff:a.b.c.d` is the v4 host `a.b.c.d` spelled for a v6 socket — the packets go to
+            // the v4 address, so it is classified by that address, never as a public v6 literal.
+            Ok(std::net::IpAddr::V6(a)) if a.to_ipv4_mapped().is_some() => {
+                (Self::of_v4(a.to_ipv4_mapped().expect("checked")), AddressFamily::V4)
+            }
+            Ok(std::net::IpAddr::V6(a)) => {
+                let first = a.segments()[0];
+                (
+                    if a.is_loopback() {
+                        Self::Loopback
+                    } else if first & 0xfe00 == 0xfc00 {
+                        Self::UniqueLocal
+                    } else if first & 0xffc0 == 0xfe80 {
+                        Self::LinkLocal
+                    } else {
+                        Self::Public
+                    },
+                    AddressFamily::V6,
+                )
+            }
+        }
+    }
+}
+
+impl AddressFamily {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::V4 => "v4",
+            Self::V6 => "v6",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// **Why a server settled as insecure-only, as closed facts** — the evidence the
+/// `discovery_insecure_only` incident carries and the local log states, and the input the
+/// same-network plaintext decision ([`InsecureEvidence::plaintext_eligibility`]) is made from: what
+/// became of every HTTPS route, and what the verified plaintext answer was. Every field is an enum
+/// or a bool; no address, name, URL or token is kept, so the value can leave the device as it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct InsecureEvidence {
+    pub https: HttpsRoutes,
+    /// The verified plaintext candidate came from a connection plex.tv marked `local` — not a
+    /// remote connection and not the relay.
+    pub plaintext_local: bool,
+    /// The resource's `publicAddressMatches`: plex.tv saw this client behind the server's NAT.
+    pub public_address_matches: bool,
+    pub owned: bool,
+    /// The resource's `httpsRequired`. A plaintext candidate is never built when it is set
+    /// (rule 2), so an insecure-only verdict always reads `false` here; it is carried so the
+    /// evidence states the rule rather than leaving a reader to know it — and so the eligibility
+    /// rule refuses on it by itself rather than by trusting rule 2 to have run.
+    pub https_required: bool,
+    /// The kind of host the verified plaintext answer came from — read off the ORIGIN that was
+    /// dialled (and that a credential would travel to), not off `Candidate::address`: an
+    /// advertised `http://name:port` URI beside a literal address is a NAME here.
+    pub plaintext_scope: AddressScope,
+    pub plaintext_family: AddressFamily,
+    /// The tokenless `/identity` over plaintext answered as the resource's own
+    /// `machineIdentifier`. Always `true` for a verdict built by [`InsecureEvidence::new`] (only a
+    /// verified answer is kept as insecure-only evidence); carried so the eligibility rule states
+    /// the requirement instead of inheriting it from how the value happened to be built.
+    #[serde(default)]
+    pub identity_verified: bool,
+}
+
+/// **May the person be OFFERED a plaintext connection to this server** — the closed answer of
+/// [`InsecureEvidence::plaintext_eligibility`], and its reason when the answer is no. The order of
+/// the variants after `Eligible` is the order the rule checks them in, so the reason reported is
+/// the first condition that failed. Every value is a telemetry code (`plaintext_eligibility`).
+///
+/// Eligibility is necessary, never sufficient: a credential still goes to a plaintext origin only
+/// under a live `plex::grant::PlaintextGrant`, which is minted from an eligible verdict AND the
+/// person's recorded consent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum PlaintextEligibility {
+    /// Every condition holds: the person may be asked.
+    Eligible,
+    /// The server requires secure connections (`httpsRequired`). Its owner's decision; never
+    /// overridden.
+    HttpsRequired,
+    /// The plaintext connection is not one plex.tv marked `local` — remote or relay. Never offered:
+    /// that is the owner's credential crossing the internet unencrypted.
+    NotLocal,
+    /// plex.tv did not see this television behind the server's own public address
+    /// (`publicAddressMatches == false`), so "the same network" is unproven.
+    NotSameNetwork,
+    /// The host the credential would travel to is not a numeric private literal (RFC 1918,
+    /// 169.254/16, IPv6 ULA or link-local) — a hostname, a public or a loopback address.
+    NotPrivateAddress,
+    /// The tokenless `/identity` did not verify the resource's `machineIdentifier`.
+    IdentityUnverified,
+    /// Some HTTPS route to the server (the relay included) was advertised but never settled.
+    HttpsUnsettled,
+    /// Some HTTPS route ANSWERED — verified, refused (401, or another 4xx such as 403), or failed
+    /// with any other status (a 5xx, anything non-2xx). The server is up over HTTPS from here, and
+    /// no answer there — least of all a refusal — is permission to downgrade.
+    HttpsAnswered,
+}
+
+impl PlaintextEligibility {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Self::Eligible => "eligible",
+            Self::HttpsRequired => "https_required",
+            Self::NotLocal => "not_local",
+            Self::NotSameNetwork => "not_same_network",
+            Self::NotPrivateAddress => "not_private_address",
+            Self::IdentityUnverified => "identity_unverified",
+            Self::HttpsUnsettled => "https_unsettled",
+            Self::HttpsAnswered => "https_answered",
+        }
+    }
+}
+
+impl AddressScope {
+    /// The scopes a plaintext credential may ever travel to: a numeric literal on the local
+    /// network. Loopback is excluded — nothing plex.tv advertises for a household server is on
+    /// this television itself — and so is every name, which a resolver could answer with anything.
+    pub(crate) fn is_private_network(self) -> bool {
+        matches!(self, Self::Private | Self::LinkLocal | Self::UniqueLocal)
+    }
+}
+
+impl RouteOutcome {
+    /// The route settled — it was dialled and ended, or plex.tv never advertised it.
+    fn settled(self) -> bool {
+        self != Self::NotAttempted
+    }
+
+    /// The route ANSWERED with a status of our server's — verified, refused, or failed with a
+    /// status: the server is up over HTTPS from here. A wrong machine is not ours answering, and
+    /// a transport failure is no answer at all.
+    fn answered_over_https(self) -> bool {
+        matches!(
+            self,
+            Self::Verified | Self::Unauthorized | Self::Answered4xx | Self::Answered5xx | Self::AnsweredOther
+        )
+    }
+
+    /// How strongly this outcome speaks for its route — the fold order of [`HttpsRoutes::of`].
+    /// Any answer outranks any failure to get one, so a role's row can never read "failed from
+    /// here" while one of its candidates was answered.
+    fn precedence(self) -> u8 {
+        match self {
+            Self::Verified => 7,
+            Self::Unauthorized | Self::Answered4xx => 6,
+            Self::Answered5xx | Self::AnsweredOther | Self::WrongServer => 5,
+            Self::Tls => 4,
+            Self::Timeout | Self::Dns | Self::Refused | Self::TransportOther | Self::Unknown => 3,
+            Self::NotAttempted => 1,
+            Self::Absent => 0,
+        }
+    }
+}
+
+impl HttpsRoutes {
+    fn all(&self) -> [RouteOutcome; 4] {
+        [self.lan_plex_direct, self.public_plex_direct, self.custom_https, self.relay]
+    }
+}
+
+impl InsecureEvidence {
+    /// The evidence for `res`, whose verified plaintext answer came from `plaintext`.
+    pub(crate) fn new(res: &Resource, plaintext: &Candidate, https: HttpsRoutes) -> Self {
+        // The origin that was dialled — and that a credential would go to — not the address beside
+        // it; a candidate whose URL is unparseable has no host worth classifying.
+        let (plaintext_scope, plaintext_family) = match plaintext.origin() {
+            Some(origin) => AddressScope::of(origin.host()),
+            None => (AddressScope::Name, AddressFamily::Unknown),
+        };
+        Self {
+            https,
+            plaintext_local: plaintext.location == Location::Local && plaintext.scheme == Scheme::Http,
+            public_address_matches: res.public_address_matches,
+            owned: res.owned,
+            https_required: res.https_required,
+            plaintext_scope,
+            plaintext_family,
+            identity_verified: true,
+        }
+    }
+
+    /// **The same-network plaintext rule — pure, and the ONLY place it is written.** A server is
+    /// eligible for the person to be asked about a plaintext connection only when ALL of these
+    /// hold: it does not require secure connections; the verified plaintext connection is one
+    /// plex.tv marked `local` (so never remote, never relay); plex.tv saw this television behind
+    /// the server's public address; the host is a numeric private literal; the tokenless identity
+    /// probe verified the machine; and every advertised HTTPS route — the relay included — settled
+    /// without ANSWERING (no verify, no refusal, no status of any kind). The first condition that fails is the
+    /// reason given.
+    pub(crate) fn plaintext_eligibility(&self) -> PlaintextEligibility {
+        use PlaintextEligibility as E;
+        if self.https_required {
+            E::HttpsRequired
+        } else if !self.plaintext_local {
+            E::NotLocal
+        } else if !self.public_address_matches {
+            E::NotSameNetwork
+        } else if !self.plaintext_scope.is_private_network() {
+            E::NotPrivateAddress
+        } else if !self.identity_verified {
+            E::IdentityUnverified
+        } else if !self.https.all().iter().all(|r| r.settled()) {
+            E::HttpsUnsettled
+        } else if self.https.all().iter().any(|r| r.answered_over_https()) {
+            E::HttpsAnswered
+        } else {
+            E::Eligible
+        }
+    }
+
+    /// The same facts as one log line of closed codes.
+    pub(crate) fn log_form(&self) -> String {
+        format!(
+            "https_lan={} https_public={} https_custom={} https_relay={} plaintext_local={} \
+             public_address_matches={} owned={} https_required={} plaintext_scope={} plaintext_family={} \
+             eligibility={}",
+            self.https.lan_plex_direct.code(),
+            self.https.public_plex_direct.code(),
+            self.https.custom_https.code(),
+            self.https.relay.code(),
+            self.plaintext_local,
+            self.public_address_matches,
+            self.owned,
+            self.https_required,
+            self.plaintext_scope.code(),
+            self.plaintext_family.code(),
+            self.plaintext_eligibility().code(),
+        )
+    }
+}
+
 /// The plan for one server: identity to verify, token to send, addresses to try.
 pub fn plan(res: &Resource, policy: CredentialPolicy) -> ProbePlan {
     ProbePlan {
@@ -428,6 +940,31 @@ pub fn plan(res: &Resource, policy: CredentialPolicy) -> ProbePlan {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The scope is the literal's own class, never a guess from a name; v6 ULA and link-local are
+    /// read by prefix, and brackets are tolerated as plex.tv may send them.
+    #[test]
+    fn address_scope_reads_only_the_literal() {
+        for (address, want) in [
+            ("192.168.0.10", (AddressScope::Private, AddressFamily::V4)),
+            ("10.0.0.2", (AddressScope::Private, AddressFamily::V4)),
+            ("169.254.3.4", (AddressScope::LinkLocal, AddressFamily::V4)),
+            ("127.0.0.1", (AddressScope::Loopback, AddressFamily::V4)),
+            ("203.0.113.9", (AddressScope::Public, AddressFamily::V4)),
+            ("[fd12:3456::1]", (AddressScope::UniqueLocal, AddressFamily::V6)),
+            ("fe80::1", (AddressScope::LinkLocal, AddressFamily::V6)),
+            ("2001:db8::1", (AddressScope::Public, AddressFamily::V6)),
+            ("nas.example.test", (AddressScope::Name, AddressFamily::Unknown)),
+            // An IPv4-mapped v6 literal is its embedded v4 address, not a public v6 one.
+            ("::ffff:192.168.0.10", (AddressScope::Private, AddressFamily::V4)),
+            ("[::ffff:10.1.2.3]", (AddressScope::Private, AddressFamily::V4)),
+            ("::ffff:127.0.0.1", (AddressScope::Loopback, AddressFamily::V4)),
+            ("::ffff:169.254.9.9", (AddressScope::LinkLocal, AddressFamily::V4)),
+            ("::ffff:203.0.113.9", (AddressScope::Public, AddressFamily::V4)),
+        ] {
+            assert_eq!(AddressScope::of(address), want, "{address}");
+        }
+    }
 
     /// The two fixtures are the shapes measured live on 2026-08-11 (`docs/shared-servers.md` §2):
     /// addresses and identifiers are stand-ins, the arrangement of flags is not.
@@ -1003,5 +1540,121 @@ mod tests {
             !is_usable(&c("10.0.0.9", 4_294_999_696)),
             "the wrap that reads as 32400"
         );
+    }
+
+    /// PLX-NATIVE-10's shape: an owned server on this LAN whose every HTTPS route failed from the
+    /// television (the relay included) and whose RFC 1918 plaintext answer verified the machine.
+    fn eligible_evidence() -> InsecureEvidence {
+        InsecureEvidence {
+            https: HttpsRoutes {
+                lan_plex_direct: RouteOutcome::Tls,
+                public_plex_direct: RouteOutcome::Timeout,
+                custom_https: RouteOutcome::Absent,
+                relay: RouteOutcome::Dns,
+            },
+            plaintext_local: true,
+            public_address_matches: true,
+            owned: true,
+            https_required: false,
+            plaintext_scope: AddressScope::Private,
+            plaintext_family: AddressFamily::V4,
+            identity_verified: true,
+        }
+    }
+
+    /// **The eligibility truth table, one condition flipped at a time.** The baseline is eligible;
+    /// every row breaks exactly one fact and must be refused with that fact's own reason — so no
+    /// condition can be deleted from the rule while the suite stays green.
+    #[test]
+    fn plaintext_eligibility_refuses_each_condition_on_its_own() {
+        use PlaintextEligibility as E;
+        assert_eq!(eligible_evidence().plaintext_eligibility(), E::Eligible);
+        let flip = |f: &dyn Fn(&mut InsecureEvidence)| {
+            let mut e = eligible_evidence();
+            f(&mut e);
+            e.plaintext_eligibility()
+        };
+        assert_eq!(flip(&|e| e.https_required = true), E::HttpsRequired);
+        assert_eq!(flip(&|e| e.plaintext_local = false), E::NotLocal, "remote or relay plaintext");
+        assert_eq!(flip(&|e| e.public_address_matches = false), E::NotSameNetwork);
+        for scope in [AddressScope::Name, AddressScope::Public, AddressScope::Loopback] {
+            assert_eq!(flip(&|e| e.plaintext_scope = scope), E::NotPrivateAddress, "{scope:?}");
+        }
+        for scope in [AddressScope::Private, AddressScope::LinkLocal, AddressScope::UniqueLocal] {
+            assert_eq!(flip(&|e| e.plaintext_scope = scope), E::Eligible, "{scope:?}");
+        }
+        assert_eq!(flip(&|e| e.identity_verified = false), E::IdentityUnverified);
+        // The relay is an HTTPS route like any other: advertised and never dialled means the
+        // secure fallback was not tried, so plaintext is not offered yet.
+        assert_eq!(flip(&|e| e.https.relay = RouteOutcome::NotAttempted), E::HttpsUnsettled);
+        assert_eq!(flip(&|e| e.https.lan_plex_direct = RouteOutcome::NotAttempted), E::HttpsUnsettled);
+        // Any ANSWER over HTTPS is the server being up there — a refusal, a server error, anything
+        // with a status — and never permission to downgrade.
+        assert_eq!(flip(&|e| e.https.public_plex_direct = RouteOutcome::Unauthorized), E::HttpsAnswered);
+        assert_eq!(flip(&|e| e.https.custom_https = RouteOutcome::Answered4xx), E::HttpsAnswered);
+        assert_eq!(flip(&|e| e.https.relay = RouteOutcome::Verified), E::HttpsAnswered);
+        assert_eq!(flip(&|e| e.https.lan_plex_direct = RouteOutcome::Answered5xx), E::HttpsAnswered);
+        assert_eq!(flip(&|e| e.https.public_plex_direct = RouteOutcome::AnsweredOther), E::HttpsAnswered);
+        // Transport failures and an absent relay are what "HTTPS failed from here" looks like.
+        for failed in [RouteOutcome::Absent, RouteOutcome::Tls, RouteOutcome::Timeout, RouteOutcome::Refused,
+            RouteOutcome::Dns, RouteOutcome::TransportOther, RouteOutcome::Unknown, RouteOutcome::WrongServer]
+        {
+            assert_eq!(flip(&|e| e.https.relay = failed), E::Eligible, "{failed:?}");
+        }
+    }
+
+    /// **A role with several candidates keeps its STRONGEST outcome, not its first.** A v4 LAN
+    /// name that timed out beside a v6 one that answered 401 is a route that ANSWERED: reporting
+    /// the timeout would read as "HTTPS failed from here" and make a refusal look eligible.
+    /// Precedence: verified > refused (4xx) > answered otherwise (5xx, other, a wrong machine) >
+    /// TLS > the other transport failures > not attempted > absent.
+    #[test]
+    fn a_role_folds_to_its_strongest_outcome() {
+        let lan = |url: &str| Candidate {
+            url: url.into(),
+            scheme: Scheme::Https,
+            location: Location::Local,
+            address: "192.168.0.10".into(),
+            port: 32400,
+            ipv6: false,
+            credential_eligible: true,
+        };
+        let two = [lan("https://192-168-0-10.h.plex.direct:32400"), lan("https://fd00--1.h.plex.direct:32400")];
+        let fold = |a: Option<RouteOutcome>, b: Option<RouteOutcome>| HttpsRoutes::of(&two, &[a, b]).lan_plex_direct;
+        use RouteOutcome as R;
+        assert_eq!(fold(Some(R::Timeout), Some(R::Unauthorized)), R::Unauthorized);
+        assert_eq!(fold(Some(R::Unauthorized), Some(R::Timeout)), R::Unauthorized);
+        assert_eq!(fold(Some(R::Tls), Some(R::Verified)), R::Verified);
+        assert_eq!(fold(Some(R::Answered5xx), Some(R::Answered4xx)), R::Answered4xx);
+        assert_eq!(fold(Some(R::Dns), Some(R::Answered5xx)), R::Answered5xx);
+        assert_eq!(fold(Some(R::Timeout), Some(R::Tls)), R::Tls);
+        assert_eq!(fold(None, Some(R::Timeout)), R::Timeout);
+        assert_eq!(fold(None, None), R::NotAttempted);
+        assert_eq!(HttpsRoutes::of(&[], &[]).lan_plex_direct, R::Absent);
+    }
+
+    /// The scope an eligibility decision reads is the DIALLED origin's host: an advertised
+    /// `http://name` URI beside a literal address is a name, and a name is never eligible.
+    #[test]
+    fn insecure_evidence_reads_the_scope_off_the_dialled_origin() {
+        let res = owned_server();
+        let routes = HttpsRoutes::of(&[], &[]);
+        let at = |url: &str, address: &str| Candidate {
+            url: url.into(),
+            scheme: Scheme::Http,
+            location: Location::Local,
+            address: address.into(),
+            port: 32400,
+            ipv6: false,
+            credential_eligible: false,
+        };
+        let literal = InsecureEvidence::new(&res, &at("http://192.168.0.10:32400", "192.168.0.10"), routes);
+        assert_eq!(literal.plaintext_scope, AddressScope::Private);
+        assert!(literal.identity_verified);
+        let named = InsecureEvidence::new(&res, &at("http://nas.example.test:32400", "192.168.0.10"), routes);
+        assert_eq!(named.plaintext_scope, AddressScope::Name);
+        let mut same_network = named;
+        same_network.public_address_matches = true;
+        assert_eq!(same_network.plaintext_eligibility(), PlaintextEligibility::NotPrivateAddress);
     }
 }

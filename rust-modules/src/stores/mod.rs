@@ -1,26 +1,26 @@
 //! **Stores as machines** (restructure spec §2.1/§2.2, phase 4; `docs/stores-as-machines.md`).
 //!
 //! Six data modules provide the application's server-derived state — `browse`, `pms` (the Home
-//! hubs), `metadata`, `search`, `person`, `viewstate`. Browse and ViewState are physically owned by
-//! one [`Stores`] aggregate per `crate::app::bridge::Bridge`, with per-instance state, adapter and
-//! notice; the other four retain the compatibility global + mailbox shape. This layer puts ONE entrance in
-//! front of each: a [`StoreCmd`] is the complete, enumerated vocabulary of mutations, a store's
-//! owned command decoder is the one place its vocabulary is applied, and every command that changes
-//! observable state or landing that changes the store raises the store's NOTICE (a generation the
-//! bridge dispatcher delivers to every live instance as `ScreenEvent::StoreChanged`, spec §3.4).
+//! hubs), `metadata`, `search`, `person`, `viewstate`. All six are physically owned by one
+//! [`Stores`] aggregate per `crate::app::bridge::Bridge`, each with its own per-instance state,
+//! adapter and notice (Browse/Person/ViewState landed first; Search, Hubs and Metadata completed
+//! the port). This layer puts ONE entrance in front of each: a [`StoreCmd`] is the complete,
+//! enumerated vocabulary of mutations, a store's owned command decoder is the one place its
+//! vocabulary is applied, and every command that changes observable state or landing that changes
+//! the store raises the store's NOTICE (a generation the bridge dispatcher delivers to every live
+//! instance as `ScreenEvent::StoreChanged`, spec §3.4).
 //!
 //! Owned stores have two caller shapes and one explicit owner: screens emit `AppFx::Store(id, cmd)` for
 //! `app/bridge.rs` to deliver, while same-turn application boundaries call a method on the
-//! [`Stores`] value they already hold. The generic `apply(cmd)` dispatcher remains only for the
-//! four not-yet-owned stores and rejects Browse and ViewState commands.
+//! [`Stores`] value they already hold. There is no generic `apply(cmd)` dispatcher any more — every
+//! store's vocabulary is applied only through its own owner.
 //!
-//! What lives here is the vocabulary and machines plus Browse/ViewState's production aggregate; the remaining
-//! data stays in the legacy modules until its ownership slice (§14). This module names data crates, `ui::machine` and — since
+//! What lives here is the vocabulary and machines plus all six stores' production aggregate; no
+//! data stays in a legacy compatibility global any more (§14 complete). This module names data
+//! crates, `ui::machine` and — since
 //! phase 11's landing schedule — `ui::landgate`, and nothing else (spec §2.1's layer rule;
 //! `ci/check-deps.sh`'s `mutators` gate refuses the old spelling outside `stores/` and the data
 //! modules).
-
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::ui::machine::StoreOrd;
 
@@ -80,17 +80,32 @@ pub(crate) mod person;
 pub(crate) mod search;
 pub(crate) mod viewstate;
 
-/// Production store aggregate. Browse and ViewState are physical owners here; the remaining stores
-/// retain their compatibility owners until their corresponding ownership slices land.
+/// Production store aggregate. All six stores are physical owners here — Browse, Person and
+/// ViewState landed first; Search, Hubs and Metadata completed the port.
 pub(crate) struct Stores {
+    /// The landing schedule belongs to the same application owner as these stores. Two Bridges
+    /// may contain the same `StoreId`; they must not share its replay cursor or wait budget.
+    pub(crate) landgate: crate::ui::landgate::Gate,
     pub(crate) browse: std::rc::Rc<std::cell::RefCell<browse::BrowseStore>>,
+    pub(crate) hubs: hubs::HubsStore,
+    pub(crate) metadata: metadata::MetadataStore,
+    pub(crate) person: person::PersonStore,
+    pub(crate) search: search::SearchStore,
     pub(crate) viewstate: std::cell::RefCell<viewstate::ViewStateStore>,
 }
 
 impl Default for Stores {
     fn default() -> Self {
         let browse = std::rc::Rc::new(std::cell::RefCell::new(browse::BrowseStore::default()));
-        Self { browse, viewstate: std::cell::RefCell::new(viewstate::ViewStateStore::default()) }
+        Self {
+            landgate: Default::default(),
+            browse,
+            hubs: hubs::HubsStore::default(),
+            metadata: metadata::MetadataStore::default(),
+            person: person::PersonStore::default(),
+            search: search::SearchStore::default(),
+            viewstate: std::cell::RefCell::new(viewstate::ViewStateStore::default()),
+        }
     }
 }
 
@@ -101,7 +116,47 @@ impl Stores {
     }
 
     pub(crate) fn browse_discover_pump(&self) -> StoreOutcome {
-        self.browse.borrow_mut().discover_pump()
+        self.browse.borrow_mut().discover_pump_with_gate(&self.landgate)
+    }
+
+    pub(crate) fn person_run(&mut self, cmd: person::PersonCmd) -> bool {
+        self.person.run(cmd)
+    }
+
+    pub(crate) fn person_pump(&mut self) -> bool {
+        self.person.pump(&self.landgate)
+    }
+
+    pub(crate) fn person_view(&self) -> crate::person::PersonView<'_> {
+        self.person.view()
+    }
+
+    pub(crate) fn metadata_run(&mut self, cmd: metadata::MetadataCmd) -> bool {
+        self.metadata.run(cmd)
+    }
+
+    pub(crate) fn metadata_pump(&mut self) -> bool {
+        self.metadata.pump(&self.landgate)
+    }
+
+    pub(crate) fn metadata_view(&self) -> crate::metadata::MetadataView<'_> {
+        self.metadata.view()
+    }
+
+    pub(crate) fn search_run(
+        &mut self,
+        cmd: search::SearchCmd,
+        directory: browse::DirectoryView<'_>,
+    ) -> bool {
+        self.search.run_with_directory(cmd, directory)
+    }
+
+    pub(crate) fn search_pump(&mut self, dt: f32, directory: browse::DirectoryView<'_>) -> bool {
+        self.search.pump_with_directory_and_gate(dt, directory, &self.landgate)
+    }
+
+    pub(crate) fn search_snapshot(&self, directory: browse::DirectoryView<'_>) -> search::SearchSnapshot {
+        self.search.snapshot_with_directory(directory)
     }
 
     /// Controlled discovery against this aggregate's Browse owner.
@@ -115,26 +170,43 @@ impl Stores {
     /// ViewState's synchronous command path, with every Browse side effect addressed back to this
     /// aggregate. The callback is invoked inline, preserving the press-frame optimistic edit.
     pub(crate) fn viewstate_run(
-        &self,
+        &mut self,
         cmd: viewstate::ViewStateCmd,
         directory: browse::DirectoryView<'_>,
     ) -> bool {
+        let browse = std::rc::Rc::clone(&self.browse);
+        let hubs = &mut self.hubs;
+        let person = &mut self.person;
+        let search = &mut self.search;
+        let metadata = &mut self.metadata;
         self.viewstate.borrow_mut().run(
             cmd,
-            &mut |browse| self.browse_run(browse),
-            &mut |hubs| hubs::apply_with_directory(hubs, directory),
+            &mut |cmd| browse.borrow_mut().run(cmd),
+            &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
+            &mut |cmd| person.run(cmd),
+            &mut |cmd| search.run_with_directory(cmd, directory),
+            &mut |cmd| metadata.run(cmd),
         )
     }
 
     /// ViewState's route-unconditional landing pass. Fan-out edits and the terminal section-hubs
     /// invalidation are applied to this aggregate's Browse owner before the pump returns.
     pub(crate) fn viewstate_pump(
-        &self,
+        &mut self,
         directory: browse::DirectoryView<'_>,
     ) -> EndpointRefreshSet {
-        self.viewstate.borrow_mut().pump(
-            &mut |browse| self.browse_run(browse),
-            &mut |hubs| hubs::apply_with_directory(hubs, directory),
+        let browse = std::rc::Rc::clone(&self.browse);
+        let hubs = &mut self.hubs;
+        let person = &mut self.person;
+        let search = &mut self.search;
+        let metadata = &mut self.metadata;
+        self.viewstate.borrow_mut().pump_with_gate(
+            &self.landgate,
+            &mut |cmd| browse.borrow_mut().run(cmd),
+            &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
+            &mut |cmd| person.run(cmd),
+            &mut |cmd| search.run_with_directory(cmd, directory),
+            &mut |cmd| metadata.run(cmd),
         )
     }
 
@@ -158,16 +230,30 @@ impl Stores {
     pub(crate) fn gen(&self, id: StoreId) -> u32 {
         match id {
             StoreId::Browse => self.browse.borrow().gen(),
+            StoreId::Hubs => self.hubs.gen(),
+            StoreId::Metadata => self.metadata.gen(),
+            StoreId::Person => self.person.gen(),
+            StoreId::Search => self.search.gen(),
             StoreId::ViewState => self.viewstate.borrow().gen(),
-            _ => gen(id),
         }
     }
 
     pub(crate) fn take_notices(&self) -> Vec<(StoreId, u32)> {
-        let mut notices = take_notices();
-        notices.retain(|(id, _)| !matches!(id, StoreId::Browse | StoreId::ViewState));
+        let mut notices = Vec::new();
         if let Some(generation) = self.browse.borrow().take_notice() {
-            notices.insert(0, (StoreId::Browse, generation));
+            notices.push((StoreId::Browse, generation));
+        }
+        if let Some(generation) = self.hubs.take_notice() {
+            notices.push((StoreId::Hubs, generation));
+        }
+        if let Some(generation) = self.metadata.take_notice() {
+            notices.push((StoreId::Metadata, generation));
+        }
+        if let Some(generation) = self.person.take_notice() {
+            notices.push((StoreId::Person, generation));
+        }
+        if let Some(generation) = self.search.take_notice() {
+            notices.push((StoreId::Search, generation));
         }
         if let Some(generation) = self.viewstate.borrow().take_notice() {
             notices.push((StoreId::ViewState, generation));
@@ -274,87 +360,6 @@ pub(crate) enum StoreEv<C> {
     Pump { dt: f32 },
 }
 
-/// Apply one command to a not-yet-owned store. Browse and ViewState are deliberately rejected:
-/// their dispatcher and synchronous paths require the concrete [`Stores`] owner.
-pub(crate) fn apply(cmd: StoreCmd) -> StoreOutcome {
-    match cmd {
-        StoreCmd::Browse(_) => panic!("Browse commands require an explicit Stores owner"),
-        StoreCmd::ViewState(_) => panic!("ViewState commands require an explicit Stores owner"),
-        StoreCmd::Hubs(c) => hubs::run(c),
-        StoreCmd::Metadata(c) => StoreOutcome::changed(metadata::run(c)),
-        StoreCmd::Search(c) => StoreOutcome::changed(search::run(c)),
-        StoreCmd::Person(c) => StoreOutcome::changed(person::run(c)),
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
-// Compatibility notices for the four not-yet-owned stores. BrowseStore and ViewStateStore carry
-// notices in the per-Bridge aggregate and have no slots in this compatibility array.
-// ---------------------------------------------------------------------------------------------
-
-struct Notice {
-    gen: AtomicU32,
-    dirty: AtomicBool,
-}
-
-const fn notice() -> Notice {
-    Notice {
-        gen: AtomicU32::new(0),
-        dirty: AtomicBool::new(false),
-    }
-}
-
-/// Atomics rather than `static mut`: they are read and written on the main thread only, but an
-/// atomic needs no `unsafe` block at the ~40 call sites and is what the legacy stores already use
-/// for their own generations.
-static NOTICES: [Notice; 4] = [notice(), notice(), notice(), notice()];
-
-fn compatibility_notice(id: StoreId) -> &'static Notice {
-    &NOTICES[match id {
-        StoreId::Hubs => 0,
-        StoreId::Metadata => 1,
-        StoreId::Search => 2,
-        StoreId::Person => 3,
-        StoreId::Browse | StoreId::ViewState => {
-            panic!("owned store notices require an explicit Stores owner")
-        }
-    }]
-}
-
-/// The store changed: bump its generation and owe a notice.
-pub(crate) fn bump(id: StoreId) -> u32 {
-    let n = compatibility_notice(id);
-    n.dirty.store(true, Ordering::Relaxed);
-    n.gen.fetch_add(1, Ordering::Relaxed) + 1
-}
-
-/// The store's generation — what a migrated screen keys a `Memo` on (first reader: 5b).
-#[allow(dead_code)]
-pub(crate) fn gen(id: StoreId) -> u32 {
-    compatibility_notice(id).gen.load(Ordering::Relaxed)
-}
-
-/// Drain the four compatibility notices. `Stores::take_notices` adds both owned notices and is the
-/// aggregate drain used by `app/bridge.rs` once per frame.
-pub(crate) fn take_notices() -> Vec<(StoreId, u32)> {
-    let mut out = Vec::new();
-    for id in [StoreId::Hubs, StoreId::Metadata, StoreId::Search, StoreId::Person] {
-        let n = compatibility_notice(id);
-        if n.dirty.swap(false, Ordering::Relaxed) {
-            out.push((id, n.gen.load(Ordering::Relaxed)));
-        }
-    }
-    out
-}
-
-/// A pump's answer folded into the notice: `true` bumps.
-fn note(id: StoreId, changed: bool) -> bool {
-    if changed {
-        bump(id);
-    }
-    changed
-}
-
 // ---------------------------------------------------------------------------------------------
 // the landing GATE: a pump's mailbox take, on the frame the recording delivered it (§3.3 step 3)
 // ---------------------------------------------------------------------------------------------
@@ -369,14 +374,16 @@ fn note(id: StoreId, changed: bool) -> bool {
 //
 // Off a recording and off a replay each is one relaxed atomic load and the closure's own answer.
 
-/// A one-slot mailbox: `None` while the replay is still waiting for this store's recorded frame.
-pub(crate) fn take_landing<T>(id: StoreId, f: impl FnMut() -> Option<T>) -> Option<T> {
-    crate::ui::landgate::take(id.ord(), f)
+/// A one-slot mailbox: `None` while the replay is still waiting for this owner's store's frame.
+pub(crate) fn take_landing<T>(gate: &crate::ui::landgate::Gate, id: StoreId,
+    f: impl FnMut() -> Option<T>) -> Option<T> {
+    gate.take(id.ord(), f)
 }
 
 /// A mailbox drained as a QUEUE: an empty answer is not a landing.
-pub(crate) fn take_landings<T>(id: StoreId, f: impl FnMut() -> Vec<T>) -> Vec<T> {
-    crate::ui::landgate::take_all(id.ord(), f)
+pub(crate) fn take_landings<T>(gate: &crate::ui::landgate::Gate, id: StoreId,
+    f: impl FnMut() -> Vec<T>) -> Vec<T> {
+    gate.take_all(id.ord(), f)
 }
 
 
@@ -412,26 +419,12 @@ mod tests {
     }
     use super::*;
 
-    #[test]
-    fn a_command_raises_one_notice_and_a_steady_store_none() {
-        let _g = crate::testlock::serial();
-        let _ = take_notices();
-        let before = gen(StoreId::Search);
-        assert!(apply(StoreCmd::Search(search::SearchCmd::Reset)).changed);
-        let n = take_notices();
-        assert!(n.contains(&(StoreId::Search, before + 1)), "{n:?}");
-        assert!(take_notices().is_empty(), "drained once");
-    }
-
-    #[test]
-    fn generic_dispatch_rejects_both_physically_owned_stores() {
-        for command in [
-            StoreCmd::Browse(browse::BrowseCmd::Reset),
-            StoreCmd::ViewState(viewstate::ViewStateCmd::Reset),
-        ] {
-            assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| apply(command))).is_err());
-        }
-    }
+    // `a_command_raises_one_notice_and_a_steady_store_none` (the global `apply(StoreCmd::Metadata
+    // (Clear))` regression) and `generic_dispatch_rejects_all_physically_owned_stores` (which
+    // proved the same global `apply` panicked for the already-owned stores) are deleted: the
+    // free `apply`/`take_notices`/`gen` dispatcher they tested no longer exists anywhere in
+    // production code. Every store — Metadata included, as of this layer — now dispatches
+    // through its own per-owner `run`/`step`, so there is no shared router left to grade.
 
     #[test]
     fn the_ordinal_round_trips_for_every_store() {

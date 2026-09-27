@@ -49,6 +49,9 @@
 //! maps line and breadcrumbs is orders of magnitude larger than `app.launch`, so "200 records" is
 //! not a size. The byte cap is what keeps this off a 615 MB partition shared with every other app.
 //! Crash/error records have priority over usage records; within each category the newest survive.
+//! **A `OneOff` record is highest priority of all** — it is a report a person explicitly pressed
+//! Send for, on the one screen it was offered, and there is no re-offering it if this trim drops
+//! it (unlike Errors/Usage, which the next crash or the next route re-produces).
 //! The dropped count is
 //! returned rather than swallowed, because a queue that silently discards is a queue whose numbers
 //! are wrong in a direction nobody can see.
@@ -64,6 +67,15 @@ pub(crate) enum Category {
     Errors,
     /// which screens and features get used
     Usage,
+    /// **A single report the person explicitly pressed Send for**, on the screen where it was
+    /// offered — `telemetry::incident`'s one-off onboarding report. Its consent is that one press:
+    /// it is answered before it is ever spooled, so `sender::allowed` lets it through regardless of
+    /// the standing consent snapshot, and `spool::purge_withdrawn` never touches it — there is no
+    /// standing decision to withdraw, because none was recorded. It carries no identifier (no
+    /// crash-report id, no analytics id). A record either sends on the next flush or is dropped by
+    /// the ordinary spool caps like any other; it is exempt from consent-driven purge only, and
+    /// `spool::purge_all_local` (sign-out, Delete all local data) erases it with everything else.
+    OneOff,
 }
 
 /// Where the record goes. Stored rather than derived from the category, because the mapping is
@@ -253,7 +265,7 @@ pub(crate) fn trim(mut records: Vec<Record>) -> (Vec<Record>, usize) {
     // Select newest records up to both caps, visiting Errors before Usage, then restore FIFO order.
     let mut selected = Vec::new();
     let mut bytes = 0usize;
-    for category in [Category::Errors, Category::Usage] {
+    for category in [Category::OneOff, Category::Errors, Category::Usage] {
         for (index, record) in records.iter().enumerate().rev() {
             if record.category != category || selected.len() >= MAX_RECORDS {
                 continue;
@@ -501,6 +513,31 @@ mod tests {
             "usage records evicted the crash report"
         );
         assert!(kept.len() <= MAX_RECORDS);
+    }
+
+    /// **`trim` must visit `Category::OneOff` at all** — 0.6.6's priority loop first enumerated
+    /// only `[Errors, Usage]`, so a `OneOff` record was invisible to the selection and every
+    /// compaction silently dropped it, whatever the caps said.
+    #[test]
+    fn trim_never_drops_a_one_off_record() {
+        let one_off = rec("one-off", Category::OneOff, b"report");
+        let (kept, dropped) = trim(vec![one_off.clone()]);
+        assert_eq!(dropped, 0);
+        assert_eq!(kept, vec![one_off]);
+    }
+
+    /// A `OneOff` record outranks both other categories under the record cap: nothing later
+    /// re-produces a report somebody pressed Send for.
+    #[test]
+    fn a_one_off_record_outranks_errors_and_usage_under_the_record_cap() {
+        let one_off = rec("one-off", Category::OneOff, b"report");
+        let mut rs = vec![one_off.clone()];
+        rs.extend((0..MAX_RECORDS + 5).map(|i| rec(&format!("crash-{i}"), Category::Errors, b"x")));
+        rs.extend((0..20).map(|i| rec(&format!("usage-{i}"), Category::Usage, b"x")));
+        let (kept, dropped) = trim(rs);
+        assert!(dropped > 0);
+        assert!(kept.contains(&one_off), "the one-off report was evicted");
+        assert_eq!(kept.first(), Some(&one_off), "FIFO order is restored after selection");
     }
 
     /// The record cap binds independently — many tiny records, well under the byte cap.

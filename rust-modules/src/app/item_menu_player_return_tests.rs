@@ -37,6 +37,7 @@ impl playback::PlaybackResources for Resources {
     fn request_movie(
         &mut self,
         _: &mut crate::route::PlaybackSession,
+        _: &mut crate::stores::metadata::MetadataStore,
         item: &crate::pms::PmsMovie,
     ) -> bool {
         self.calls.push(ResourceCall::Movie {
@@ -47,11 +48,11 @@ impl playback::PlaybackResources for Resources {
         });
         self.accept_request
     }
-    fn request_episode(&mut self, _: &mut crate::route::PlaybackSession, rk: &str) -> bool {
+    fn request_episode(&mut self, _: &mut crate::route::PlaybackSession, _: &mut crate::stores::metadata::MetadataStore, rk: &str) -> bool {
         self.calls.push(ResourceCall::Episode(rk.into()));
         self.accept_request
     }
-    fn describe_movie(&mut self, sid: ServerId, rk: &str) {
+    fn describe_movie(&mut self, _: &mut crate::stores::metadata::MetadataStore, sid: ServerId, rk: &str) {
         self.calls.push(ResourceCall::Describe(sid, rk.into()));
     }
     fn prepare_start(

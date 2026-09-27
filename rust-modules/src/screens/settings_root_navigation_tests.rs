@@ -19,6 +19,7 @@ fn mounting_the_surface_names_its_root_page() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
+        crate::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
     assert_eq!(name(&s), word::SETTINGS);
@@ -35,6 +36,7 @@ fn signed_out_root_does_not_offer_automatically_sign_in() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
+        crate::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
     // Privacy / Legal / About — row 2 is About, not a switch.
@@ -70,6 +72,7 @@ fn a_multi_user_root_toggles_automatically_sign_in_in_place() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
+        crate::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
     let row = FocusKey {
@@ -86,6 +89,7 @@ fn a_multi_user_root_toggles_automatically_sign_in_in_place() {
         Some(row),
     );
     step(&mut s, ScreenEvent::Activate(row.elem), Some(row));
+    crate::storage_worker::drain_for_test();
     assert_eq!(
         name(&s),
         word::SETTINGS,
@@ -94,9 +98,10 @@ fn a_multi_user_root_toggles_automatically_sign_in_in_place() {
     assert_eq!(s.inner.depth(), 1);
     assert!(
         crate::plex::session::peek().auto_sign_in(),
-        "OK commits the switch immediately"
+        "the queued switch is durable after the worker completes"
     );
     step(&mut s, ScreenEvent::Activate(row.elem), Some(row));
+    crate::storage_worker::drain_for_test();
     assert!(!crate::plex::session::peek().auto_sign_in());
     assert_eq!(s.inner.depth(), 1);
 }
@@ -110,6 +115,7 @@ fn right_on_automatically_sign_in_does_not_push() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
+        crate::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
     let row = FocusKey {
@@ -156,6 +162,7 @@ fn back_at_the_surface_s_own_root_is_not_handled() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
+        crate::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
     let back: ScreenEvent<InnerHost> = ScreenEvent::Input(InputEvent {
@@ -199,6 +206,7 @@ fn a_pop_from_legal_restores_focus_to_the_row_that_opened_it() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
+        crate::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
 
@@ -266,6 +274,17 @@ fn a_pop_from_legal_restores_focus_to_the_row_that_opened_it() {
 /// group, never the remembered list — a remembered entry belongs to the page being LEFT, and
 /// reusing it for the page being ENTERED would seat the Legal index on whatever numeric row
 /// happened to be focused on the root.
+///
+/// **Asserting the emitted REQUEST used to be the whole test, and that was never enough.** Every
+/// page in this family shares the surface's outer `EntryId` and `GroupId(0)`, so
+/// `FocusTarget::ContainerGroup(GroupId(0))` and the fixed `FocusTarget::FirstInGroup(GroupId(0))`
+/// below are requests for the exact same group — the difference is invisible at this level and
+/// only shows up one step later, inside `FocusEngine::enter`, where `ContainerGroup` resolves
+/// through the group's `Seat::Remembered` policy and reads the OUTGOING page's row back for the
+/// page being entered (`ui/focus.rs`'s `seat_in`). A version of this test that stopped at the
+/// emitted effect would have kept passing on the old, buggy `ContainerGroup` request forever,
+/// because the request LOOKED right; it just fed a policy that made it wrong two steps later. So
+/// this asserts the new target by name, not merely "some fresh focus target came out".
 #[test]
 fn a_push_seats_the_new_page_fresh_rather_than_from_the_remembered_list() {
     let _g = crate::testlock::serial();
@@ -275,6 +294,7 @@ fn a_push_seats_the_new_page_fresh_rather_than_from_the_remembered_list() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
+        crate::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
     let root_row = FocusKey {
@@ -298,8 +318,10 @@ fn a_push_seats_the_new_page_fresh_rather_than_from_the_remembered_list() {
         _ => None,
     });
     assert!(
-        matches!(seat, Some(FocusTarget::ContainerGroup(GroupId(0)))),
-        "a push seats the destination's own group 0, not a remembered element: {seat:?}"
+        matches!(seat, Some(FocusTarget::FirstInGroup(GroupId(0)))),
+        "a push seats the destination's own group 0 FIRST-in-group, ignoring any remembered \
+         cursor for it (not `ContainerGroup`, whose `Seat::Remembered` would read the outgoing \
+         page's row back): {seat:?}"
     );
 }
 
@@ -316,6 +338,7 @@ fn remembered_does_not_grow_across_repeated_visits_to_the_same_page() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
+        crate::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
     let legal_row = FocusKey {
@@ -379,6 +402,7 @@ fn a_settled_pop_leaves_the_surface_at_rest_at_depth_two() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
+        crate::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
     assert!(
@@ -482,6 +506,7 @@ fn the_logical_state_follows_the_inner_stack() {
         InstanceId(0),
         Family::Settings,
         SettingsPage::Root,
+        crate::pms::HubsSnapshot::empty_for_test().view(),
     );
     step(&mut s, ScreenEvent::Mount, None);
     let at_root = <RouteSurface as Screen<InnerHost>>::state(&s).hash();
@@ -517,4 +542,161 @@ fn the_logical_state_follows_the_inner_stack() {
         probe.starts_with("settings/root:") && probe.contains("/legal:"),
         "the probe names the path the surface is standing on, got {probe:?}"
     );
+}
+
+#[test]
+fn session_refresh_rebuilds_root_without_navigation() {
+    let _g = crate::testlock::serial();
+    let _sess = multi_user_session("root-session-refresh");
+    let saved = crate::plex::session::peek();
+    crate::plex::session::install_transient_for_test(true);
+    let mut root = RootPage::new(EntryId(0), cx(None).views);
+    assert!(!root.rows.iter().any(|a| matches!(a, Action::AutoSignIn)));
+    crate::plex::session::save(&saved.with_auto_sign_in(true));
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
+    root.step(&ScreenEvent::Tick(Tick::default()), &cx(None), &mut fx);
+    assert!(root.state.auto_sign_in, "a landed session must rebuild cached toggle values");
+    assert!(root.rows.iter().any(|a| matches!(a, Action::AutoSignIn)),
+        "a landed roster must restore the multi-user row");
+}
+
+#[test]
+fn session_refresh_keeps_optimistic_setting_through_transient_completion() {
+    let _g = crate::testlock::serial();
+    let _sess = multi_user_session("root-pending-refresh");
+    let saved = crate::plex::session::peek();
+    let mut root = RootPage::new(EntryId(0), cx(None).views);
+    let ticket = crate::storage_worker::submit_retained(|| false);
+    crate::storage_worker::drain_for_test();
+    root.pending_auto = Some((true, ticket));
+    root.rebuild(0, cx(None).views);
+    crate::plex::session::install_transient_for_test(false);
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
+    root.step(&ScreenEvent::Tick(Tick::default()), &cx(None), &mut fx);
+    assert!(root.state.auto_sign_in, "transient completion must not erase the optimistic value");
+    assert!(root.rows.iter().any(|a| matches!(a, Action::AutoSignIn)),
+        "transient storage must not remove the pending toggle");
+    crate::plex::session::save(&saved);
+    root.step(&ScreenEvent::Tick(Tick::default()), &cx(None), &mut fx);
+    assert!(!root.state.auto_sign_in, "settled authority resolves the refused write");
+    assert!(root.pending_auto.is_none());
+}
+
+/// **Unencrypted connections, in Settings** (PLX-NATIVE-10): a server the person allowed shows a
+/// switch, its detail stating what it means and that a grant carries it now; turning the switch
+/// off withdraws the grant AT ONCE — before the preferences write lands — and records the
+/// revocation, so the next discovery keeps the server tokenless.
+#[test]
+fn the_unencrypted_connection_switch_shows_the_grant_and_revokes_it_at_once() {
+    use crate::plex::session::PlaintextChoice;
+    let _g = crate::testlock::serial();
+    let _sess = multi_user_session("root-plaintext-switch");
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    let account = crate::plex::grant::account_key(&crate::plex::session::peek().account_token);
+    assert!(!account.is_empty(), "the fixture session is signed in");
+    let mut saved = crate::plex::session::peek().with_plaintext_choice(&account, "lan-machine", PlaintextChoice::Allowed);
+    saved.sources.push(crate::plex::session::SourceRef {
+        machine_id: "lan-machine".into(),
+        name: "Basement".into(),
+        ..Default::default()
+    });
+    crate::plex::session::save(&saved);
+    let lan = crate::plex::Origin::http("192.168.0.10", 32400);
+    crate::plex::grant::mint(crate::plex::grant::scope(), "lan-machine", &lan,
+        &crate::plex::grant::eligible_evidence_for_test()).unwrap();
+
+    let mut root = RootPage::new(EntryId(0), cx(None).views);
+    let row = root.rows.iter().position(|a| matches!(a, Action::Plaintext(0)))
+        .expect("an allowed server has its switch");
+    let drawn = root.table.sections.iter().flat_map(|s| &s.rows).nth(row).unwrap();
+    assert_eq!(drawn.label, "Basement");
+    assert_eq!(drawn.toggle, Some(true));
+    assert_eq!(drawn.detail, "Allowed on this network. Connected without encryption.");
+    assert_eq!(root.state.plaintext, vec![true]);
+
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
+    root.activate(row as i32, cx(None).views, &mut fx);
+    assert_eq!(crate::plex::grant::granted_origin("lan-machine"), None, "revoked before the write lands");
+    assert!(!crate::plex::grant::allowed_under(crate::plex::CredentialPolicy::HttpsOnly, &lan));
+    assert_eq!(root.state.plaintext, vec![false], "the switch shows the answer optimistically");
+    let drawn = root.table.sections.iter().flat_map(|s| &s.rows).nth(row).unwrap();
+    assert_eq!(drawn.toggle, Some(false));
+    assert_eq!(drawn.detail, "Not allowed. Only encrypted connections.");
+    crate::storage_worker::drain_for_test();
+    assert_eq!(crate::plex::session::peek().plaintext_choice(&account, "lan-machine"), PlaintextChoice::Revoked);
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}
+
+/// Nobody was ever asked, so there is nothing to turn off: no section at all.
+#[test]
+fn no_unencrypted_connection_section_without_an_answer() {
+    let _g = crate::testlock::serial();
+    let _sess = multi_user_session("root-plaintext-none");
+    let root = RootPage::new(EntryId(0), cx(None).views);
+    assert!(!root.rows.iter().any(|a| matches!(a, Action::Plaintext(_))));
+    assert!(root.state.plaintext.is_empty());
+}
+
+/// **Turning a switch ON asks first, and a never-asked server is listed** (PLX-NATIVE-10, code
+/// review 3 and design review D8). A server discovery offers "Connect without encryption?" for
+/// and nobody has answered shows its switch OFF; turning it on records nothing — it opens the
+/// SAME question the read-outs ask (`screens::plaintext_question`), seated on *Not now* — and only
+/// its *Connect* sends the answer (Allowed, re-finding the server), shown on at once.
+#[test]
+fn turning_an_unencrypted_connection_on_asks_the_shared_question_first() {
+    use crate::plex::session::PlaintextChoice;
+    let _g = crate::testlock::serial();
+    let _sess = multi_user_session("root-plaintext-ask");
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    crate::plex::grant::offered(crate::plex::grant::scope(), crate::plex::grant::PlaintextVerdict {
+        machine_id: "lan-machine".into(), name: "Basement".into(), shared_by: String::new(),
+        eligibility: crate::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided,
+    });
+    let mut root = RootPage::new(EntryId(0), cx(None).views);
+    let row = root.rows.iter().position(|a| matches!(a, Action::Plaintext(0)))
+        .expect("an offered, never-asked server has its switch");
+    let drawn = root.table.sections.iter().flat_map(|s| &s.rows).nth(row).unwrap();
+    assert_eq!(drawn.label, "Basement", "an offered server is named from its discovery, not the session file");
+    assert_eq!(drawn.toggle, Some(false));
+    assert_eq!(drawn.detail, "Not allowed. Only encrypted connections.");
+
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
+    root.activate(row as i32, cx(None).views, &mut fx);
+    assert!(root.alert.is_open(), "ON asks before anything is recorded");
+    assert_eq!(root.state.plaintext, vec![false]);
+    assert!(crate::plex::grant::choices(&[], &crate::plex::session::peek().account_token).is_empty(),
+        "nothing is recorded yet");
+    let mut groups = Vec::new();
+    Focusable::<InnerHost>::groups(&root, &cx(None), &mut groups);
+    assert_eq!(groups.iter().map(|g| g.id).collect::<Vec<_>>(), [ALERT_GROUP], "the question traps focus");
+    let from = Placed { rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL, index: None };
+    assert_eq!(Focusable::<InnerHost>::seat(&root, ALERT_GROUP, from, &cx(None)).elem, super::super::registry::ALERT,
+        "seated on Not now");
+
+    let mut out = Vec::new();
+    let mut present = Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Session, &mut present);
+    let connect = FocusKey { entry: EntryId(0), elem: super::super::registry::ALERT + 1 };
+    root.step(&ScreenEvent::PressCommit(crate::ui::machine::PressId(1)), &cx(Some(connect)), &mut fx);
+    let answers: Vec<_> = out.iter().filter_map(|st| match &st.fx {
+        Fx::App(super::super::registry::AppFx::Session(crate::auth::SessionCmd::AnswerPlaintext { machine_id, choice, .. }))
+            if machine_id == "lan-machine" => Some(*choice),
+        _ => None,
+    }).collect();
+    assert_eq!(answers, [PlaintextChoice::Allowed]);
+    assert!(!root.alert.is_open());
+    assert_eq!(root.state.plaintext, vec![true], "the switch shows the answer optimistically");
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
 }

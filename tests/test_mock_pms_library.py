@@ -1,12 +1,23 @@
 """Library fixture contracts: the mock must exercise the real rail and sparse-page boundaries."""
+import contextlib
+import io
 import json
 import hashlib
 import pathlib
 import re
+import shutil
+import socket
+import subprocess
+import tempfile
 import unittest
 import urllib.request
 
-from mock_pms import Library, MockPms, serve
+from mock_pms import (
+    EXTRA_MEDIA_RK_BASE, PLEX_DIRECT_HASH, Library, MockPms, plaintext_only_lan_resources, serve,
+)
+
+
+HAS_FFMPEG_AND_FFPROBE = shutil.which("ffmpeg") and shutil.which("ffprobe")
 
 
 def get(pms, path):
@@ -95,6 +106,196 @@ class LibraryRail(unittest.TestCase):
             with urllib.request.urlopen(base + "/library/sections/1/all?X-Plex-Container-Start=120&X-Plex-Container-Size=60", timeout=5) as response:
                 page = json.load(response)["MediaContainer"]
             self.assertEqual((page["offset"], page["size"], page["totalSize"]), (120, 1, 121))
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+class DoviAndExtraMedia(unittest.TestCase):
+    """The DOVI*/container derivation `--extra-media` relies on — the field NAMES a real PMS
+    sends (docs/pms-api.md, verified live 2026-08-21), mapped from ffprobe's own "DOVI
+    configuration record" side-data shape rather than probed against a real DV file here."""
+
+    def test_dovi_wire_maps_the_real_pms_field_names(self):
+        stream = {
+            "side_data_list": [{
+                "side_data_type": "DOVI configuration record",
+                "dv_version_major": 1, "dv_version_minor": 0,
+                "dv_profile": 8, "dv_level": 6,
+                "rpu_present_flag": 1, "el_present_flag": 0, "bl_present_flag": 1,
+                "dv_bl_signal_compatibility_id": 1,
+            }],
+        }
+        self.assertEqual(Library._dovi_wire(stream), {
+            "DOVIPresent": True, "DOVIProfile": 8, "DOVIBLCompatID": 1,
+            "DOVIELPresent": False, "DOVILevel": 6, "DOVIVersion": "1.0",
+            "DOVIBLPresent": True, "DOVIRPUPresent": True,
+        })
+
+    def test_dovi_wire_is_silent_without_a_configuration_record(self):
+        # Silence must not convict (metadata::Dovi's rule): an ordinary SDR/HDR10 stream, one
+        # with no side-data at all, and one whose side-data is unrelated (e.g. embedded cover
+        # art) must all send NONE of the DOVI* keys rather than a false profile/compat id of 0.
+        self.assertEqual(Library._dovi_wire({"side_data_list": []}), {})
+        self.assertEqual(Library._dovi_wire({}), {})
+        self.assertEqual(
+            Library._dovi_wire({"side_data_list": [{"side_data_type": "Something Else"}]}), {})
+
+    def test_resolution_label_buckets_by_decoded_size_not_a_hardcoded_1080p(self):
+        self.assertEqual(Library._resolution_label(3840, 1604), ("4k", "4K"))
+        self.assertEqual(Library._resolution_label(1920, 1080), ("1080", "1080p"))
+        self.assertEqual(Library._resolution_label(1280, 720), ("720", "720p"))
+        self.assertEqual(Library._resolution_label(64, 64), ("sd", "SD"))
+
+    def test_extra_media_ids_never_collide_with_a_large_generated_library_or_the_verify_block(self):
+        lib = Library(movies=1000, shows=50, rail_fixture=True)
+        self.assertNotIn(EXTRA_MEDIA_RK_BASE, lib.items)
+        self.assertLess(max(lib.items), EXTRA_MEDIA_RK_BASE)
+
+    @unittest.skipUnless(
+        HAS_FFMPEG_AND_FFPROBE,
+        "needs ffmpeg+ffprobe; the host CI runner has neither — the field mapping is covered by the pure tests above",
+    )
+    def test_extra_media_container_and_content_type_come_from_the_file_extension(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mp4 = pathlib.Path(tmp) / "clip.mp4"
+            mkv = pathlib.Path(tmp) / "clip.mkv"
+            for out in (mp4, mkv):
+                subprocess.check_call([
+                    "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                    "color=size=64x64:rate=24:duration=1", "-f", "lavfi", "-i",
+                    "sine=frequency=330:duration=1", "-c:v", "libx264", "-c:a", "aac", "-t", "1",
+                    str(out)])
+            server, pms = serve(0, movies=0, extra_media=[mp4, mkv])
+            try:
+                lib = pms.lib
+                rks = sorted(lib.extra_media_files)
+                self.assertEqual(rks, [EXTRA_MEDIA_RK_BASE, EXTRA_MEDIA_RK_BASE + 1])
+                base = f"http://127.0.0.1:{server.server_address[1]}"
+                for rk, want_container, want_ct in (
+                        (rks[0], "mp4", "video/mp4"), (rks[1], "mkv", "video/x-matroska")):
+                    media = lib.items[rk]["Media"][0]
+                    part = media["Part"][0]
+                    self.assertEqual(media["container"], want_container)
+                    self.assertTrue(part["key"].endswith(f"/file.{want_container}"), part["key"])
+                    self.assertEqual(lib.media_content_type[part["id"]], want_ct)
+                    # the actual byte-serving path (Handler._media), not the synthetic-item
+                    # fallback in MockPms.handle — this is the header the app's part probe sees.
+                    with urllib.request.urlopen(base + part["key"], timeout=5) as response:
+                        self.assertEqual(response.headers["Content-Type"], want_ct)
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    @unittest.skipUnless(
+        HAS_FFMPEG_AND_FFPROBE,
+        "needs ffmpeg+ffprobe; the host CI runner has neither — the field mapping is covered by the pure tests above",
+    )
+    def test_startup_prints_ratingkey_to_filename_for_every_extra_media_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = pathlib.Path(tmp) / "clip.mp4"
+            subprocess.check_call([
+                "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                "color=size=64x64:rate=24:duration=1", "-f", "lavfi", "-i",
+                "sine=frequency=330:duration=1", "-c:v", "libx264", "-c:a", "aac", "-t", "1",
+                str(clip)])
+            server, pms = serve(0, movies=0, extra_media=[clip])
+            try:
+                self.assertEqual(pms.lib.extra_media_files, {EXTRA_MEDIA_RK_BASE: clip})
+            finally:
+                server.shutdown()
+                server.server_close()
+
+
+class PlaintextOnlyLan(unittest.TestCase):
+    """PLX-NATIVE-10: `--plaintext-only-lan`'s wire shape and the fail-mode/advertise-ip
+    plumbing, kept separate from the (also-passing) live-socket assertions in mock_pms.py's own
+    `--selftest`, which additionally proves the https route really fails a TLS handshake."""
+
+    def test_resources_shape_has_no_relay_and_the_two_documented_connections(self):
+        lib = Library(seed=7)
+        rows = plaintext_only_lan_resources(lib, "127.0.0.1", 32499, 32500, "s0a0b0c0d")
+        self.assertEqual(len(rows), 1)
+        res = rows[0]
+        self.assertEqual(res["clientIdentifier"], lib.machine)
+        self.assertEqual(res["provides"], "server")
+        self.assertIs(res["owned"], True)
+        self.assertIs(res["httpsRequired"], False)
+        self.assertIs(res["publicAddressMatches"], True)
+        self.assertIsNone(res["sourceTitle"])
+        conns = res["connections"]
+        self.assertEqual(len(conns), 2)
+        self.assertFalse(any(c["relay"] for c in conns))
+        https = next(c for c in conns if c["protocol"] == "https")
+        http = next(c for c in conns if c["protocol"] == "http")
+        self.assertEqual(https, {"protocol": "https", "address": "127.0.0.1", "port": 32500,
+                                  "uri": f"https://127-0-0-1.{PLEX_DIRECT_HASH}.plex.direct:32500",
+                                  "local": True, "relay": False, "IPv6": False})
+        self.assertEqual(http, {"protocol": "http", "address": "127.0.0.1", "port": 32499,
+                                 "uri": "http://127.0.0.1:32499", "local": True, "relay": False,
+                                 "IPv6": False})
+
+    def test_resource_discovery_advertises_only_the_bound_mock(self):
+        pms = MockPms(Library(seed=7))
+        status, ctype, body = pms.handle("GET", "/api/v2/resources")
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), [], "an unbound fixture advertises no listener")
+        self.assertEqual(pms.unknown, [])
+        server, pms = serve(0, seed=7)
+        try:
+            status, _, body = pms.handle("GET", "/api/v2/resources")
+            self.assertEqual(status, 200)
+            resources = json.loads(body)
+            self.assertEqual(len(resources), 1)
+            self.assertEqual(resources[0]["clientIdentifier"], pms.lib.machine)
+            self.assertEqual(resources[0]["connections"], [{
+                "protocol": "http", "address": "127.0.0.1", "port": server.server_address[1],
+                "uri": f"http://127.0.0.1:{server.server_address[1]}", "local": True,
+                "relay": False, "IPv6": False,
+            }])
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_advertise_ip_none_falls_back_to_loopback_with_a_warning_when_undetectable(self):
+        import ipaddress
+        server, pms = serve(0, seed=7, plaintext_only_lan=True, advertise_ip=None)
+        try:
+            ipaddress.IPv4Address(pms.plaintext_only_lan["ip"])  # a real, parseable IPv4
+            # a real LAN IPv4 needs no warning; the loopback fallback always gets one.
+            if pms.plaintext_only_lan["ip"] == "127.0.0.1":
+                buf = io.StringIO()
+                with contextlib.redirect_stderr(buf):
+                    server2, pms2 = serve(0, seed=7, plaintext_only_lan=True, advertise_ip=None)
+                try:
+                    self.assertEqual(pms2.plaintext_only_lan["ip"], "127.0.0.1")
+                    self.assertIn("NOT LAN-eligible", buf.getvalue())
+                finally:
+                    server2.shutdown()
+                    server2.server_close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_unreachable_fail_mode_opens_no_listener_and_refuses(self):
+        server, pms = serve(0, seed=7, plaintext_only_lan=True, advertise_ip="127.0.0.1",
+                            insecure_fail_mode="unreachable")
+        try:
+            self.assertIsNone(server.insecure_fail_listener)
+            with self.assertRaises(OSError):
+                socket.create_connection(
+                    ("127.0.0.1", pms.plaintext_only_lan["fail_port"]), timeout=5).close()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_identity_over_the_plaintext_connection_is_tokenless_and_matches_the_resource(self):
+        server, pms = serve(0, seed=7, plaintext_only_lan=True, advertise_ip="127.0.0.1")
+        try:
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            with urllib.request.urlopen(base + "/identity", timeout=5) as response:
+                identity = json.load(response)["MediaContainer"]
+            self.assertEqual(identity["machineIdentifier"], pms.lib.machine)
         finally:
             server.shutdown()
             server.server_close()

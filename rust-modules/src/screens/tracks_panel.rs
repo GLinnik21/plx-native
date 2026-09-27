@@ -1,6 +1,6 @@
 //! **Track information** — the detail page's file inspector (`Alert Views.dc.html` §1B).
 //!
-//! One glass panel answering "what actually IS this file": the container and its size, the video
+//! One panel answering "what actually IS this file": the container and its size, the video
 //! stream's own technicals, the Dolby Vision layering when there is any, and then EVERY audio and
 //! subtitle track the part carries. It is opened with OK on the About footer's **Languages**
 //! column — the block that lists those tracks — and closed by BACK; it has no controls of its own,
@@ -62,6 +62,7 @@
 //! "Russian" and "Ukrainian" because its author normalised them by hand. We render what the server
 //! said, which is what `ui::track_menu` already does with the same tracks — the app must not name
 //! one track two ways on two screens — and `appfont.ttf` (Inter) covers Cyrillic in full.
+#[cfg_attr(not(test), allow(unused_imports))]
 use crate::metadata::{self, Detail, Stream};
 use crate::ui::consts::{SCR_H, SCR_W, SDLK_DOWN, SDLK_UP};
 use crate::ui::icons::Icon;
@@ -657,7 +658,6 @@ pub(crate) struct TracksPanelScreen {
     /// page turn can clamp without re-measuring text off the draw path (`text_width` reaches
     /// SDL_ttf, which the host suite cannot link).
     content_h: f32,
-    glass: crate::ui::widgets::GlassState,
 }
 
 impl TracksPanelScreen {
@@ -667,7 +667,6 @@ impl TracksPanelScreen {
             page: arg.page.max(1),
             scroll: Spring::at(0.0),
             content_h: 0.0,
-            glass: crate::ui::widgets::GlassState::new(),
         }
     }
 
@@ -980,11 +979,17 @@ impl TracksPanelScreen {
     /// `&mut self` because the walk MEASURES: the body is laid out twice, once silently to produce the
     /// content height the page count and the rail describe and once for real, and that height is the
     /// panel's state.
-    fn paint(&mut self, d: &Detail, appear: f32, measure: &dyn crate::ui::machine::Measure) {
+    fn paint(
+        &mut self,
+        d: &Detail,
+        appear: f32,
+        measure: &dyn crate::ui::machine::Measure,
+        field: Option<&crate::ui::underlay::UnderlayField>,
+    ) {
         let r = panel_rect();
         let slide = RISE * (1.0 - appear);
         let p = Painter::root().alpha(appear).translate(0.0, slide);
-        crate::ui::widgets::Glass::CACHED.panel(p, r, slide, theme::ALERT_PANEL_RAD);
+        crate::ui::widgets::panel_ground(p, r, theme::ALERT_PANEL_RAD, field);
 
         // ---- header ------------------------------------------------------------------------------
         let cx = r.x + PAD;
@@ -1223,7 +1228,7 @@ impl crate::ui::machine::LogicalState for TracksPanelScreen {
     }
 }
 
-impl<H: crate::screens::registry::AppLike> crate::ui::screen::Screen<H> for TracksPanelScreen {
+impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLike> crate::ui::screen::Screen<H> for TracksPanelScreen {
     fn name(&self) -> &'static str {
         "tracks"
     }
@@ -1233,29 +1238,28 @@ impl<H: crate::screens::registry::AppLike> crate::ui::screen::Screen<H> for Trac
     fn crumb(&self, _cx: &crate::ui::machine::Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> {
         None
     }
-    fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &crate::ui::machine::Cx<'_, H>) {
-        crate::ui::widgets::Glass::CACHED.prepare(&mut self.glass, false);
-    }
-    /// The modal dim, asked for rather than drawn — the design's `scrimStill`, at
-    /// [`SCRIM_A`]. Nothing is lifted: this sheet replaces the middle of the frame and holds no
+    fn prepare(&mut self, _b: &mut crate::ui::frame::Budget, _cx: &crate::ui::machine::Cx<'_, H>) {}
+    /// The modal dim, asked for rather than drawn — the design's `scrimStill`, at the PANEL role
+    /// ([`theme::underlay::DIM_PANEL`]). Nothing is lifted: this sheet replaces the middle of the frame and holds no
     /// control, so there is no element under it the dim must spare.
     ///
-    /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): a
-    /// `Glass::CACHED` ground samples the framebuffer as it stands, so the dim has to be down
-    /// before the sheet's backdrop is taken or the frosted ground reads brighter than the dimmed
-    /// screen around it. `ModalStack::draw_scrims` draws it at the end of the PAGE pass — strictly
+    /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): the
+    /// panel's ground once sampled the framebuffer (`Glass::CACHED`), so the dim had to be down
+    /// before the backdrop was taken; the ground is the latched underlay field now, latched at the
+    /// head of the dims from the undimmed page. `ModalStack::draw_scrims` draws it at the end of the PAGE pass — strictly
     /// earlier than the surface pass this `draw` runs in — and multiplies by the appear spring and
     /// by `nav::page_alpha`, which is `Popover::scrim`'s own arithmetic and one factor more than
     /// the in-`draw` version could reach.
     fn scrim(&self) -> crate::ui::screen::Scrim {
-        crate::ui::screen::Scrim::dim(SCRIM_A)
+        crate::ui::screen::Scrim::dim(theme::underlay::DIM_PANEL)
     }
     fn draw(&mut self, f: &mut crate::ui::screen::DrawFrame<'_, '_, H>) {
         // **The item is the one that LANDED, not the page's.** The panel is presented over exactly
         // one page and dismissed with it, so in practice they are the same item; reading
         // `metadata::current()` keeps this module's own dependency at the store it always had
         // rather than adding a copy of the page's identity to the argument for a string it draws.
-        let Some(d) = metadata::current() else { return };
+        let meta = H::metadata(f.cx);
+        let Some(d) = meta.current() else { return };
         // The container owns the appear spring; `DrawFrame::page_alpha` IS `Surface::motion.appear`
         // for a surface, which is what this panel's own `Popover` used to hold.
         let appear = f.page_alpha;
@@ -1263,7 +1267,8 @@ impl<H: crate::screens::registry::AppLike> crate::ui::screen::Screen<H> for Trac
         // this sheet is up can be read as the PANEL or as the host under it rather than as one
         // `main.ui` total. It is the scene `fps:page-panel` grades.
         let measure = f.measure;
-        crate::ui::profile::phase("dt.tracks", || self.paint(d, appear, measure));
+        let field = f.underlay;
+        crate::ui::profile::phase("dt.tracks", || self.paint(d, appear, measure, field));
     }
     fn render(&self) -> crate::ui::screen::RenderStrategy {
         crate::ui::screen::RenderStrategy::Page
@@ -1287,9 +1292,6 @@ impl<H: crate::screens::registry::AppLike> crate::ui::screen::Screen<H> for Trac
 fn rule(p: Painter, x: f32, y: f32, w: f32) {
     widgets::hairline(p, x, y, w);
 }
-
-/// The modal dim, from the design's `scrimStill: 0.46`.
-const SCRIM_A: f32 = theme::alert::SCRIM_A;
 
 /// How far the sheet rises as it appears, in px — `Popover::RISE`, the one number the whole panel
 /// family shares so that two surfaces leaving together read as one movement. The container owns the
@@ -1850,6 +1852,22 @@ mod tests {
         type Views<'a> = ();
         type Init = FixtureArg;
         type Memory = ();
+    }
+    thread_local! {
+        // TEST ONLY: see `screens::detail::tests`'s `TEST_METADATA` for why this lives here
+        // rather than being threaded as a parameter.
+        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    }
+
+    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+        TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+    }
+
+    impl crate::screens::registry::MetadataLike for HostFixture {
+        fn metadata<'a>(_cx: &crate::ui::machine::Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+            test_store().view()
+        }
     }
     fn fixture_cx(focus: Option<FocusKey<u32>>) -> crate::ui::machine::Cx<'static, HostFixture> {
         crate::ui::machine::Cx {

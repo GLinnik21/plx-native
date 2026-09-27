@@ -5,7 +5,7 @@ use crate::ui::machine::{Host, InputOwner, FocusRead, PressRead, Tick};
 use crate::ui::screen::ScreenArg;
 
 #[derive(Clone)]
-struct Arg;
+pub(super) struct Arg;
 impl LogicalState for Arg {
     fn write(&self, _: &mut Canon) {}
     fn probe(&self, _: &mut String) {}
@@ -16,9 +16,9 @@ impl ScreenArg for Arg {
     fn title(&self) -> Option<&str> { None }
     fn same_instance(&self, _: &Self) -> bool { true }
 }
-struct HostFixture;
+pub(super) struct HostFixture;
 #[derive(Clone, Copy)]
-struct Views<'a> {
+pub(super) struct Views<'a> {
     listing: crate::stores::browse::ListingView<'a>,
     directory: crate::stores::browse::DirectoryView<'a>,
     hubs: crate::stores::browse::HubsView<'a>,
@@ -39,6 +39,139 @@ impl LibraryLike for HostFixture {
 }
 const ENTRY: EntryId = EntryId(81);
 const OWNER: InputOwner = InputOwner::Entry(ENTRY);
+
+/// Return memory is captured several times per frame. A 1,200-item catalog must share its
+/// unchanged keys across those snapshots, while later reconciliation cannot mutate a saved
+/// return position or its canonical state.
+#[test]
+fn page_memory_shares_1200_keys_and_preserves_older_snapshots() {
+    let _guard = crate::testlock::serial();
+    let sid = crate::plex::ServerId::from_raw(1);
+    let section = LibrarySectionIdentity { sid, key: 7 };
+    let mut page = LibraryScreen::new(ENTRY, InstanceId(20), SecKind::Movie);
+    for index in 0..1200 {
+        page.keys.register(LibraryIdentity::Grid {
+            section: section.clone(), sid, rk: format!("fixture-{index}"),
+        }, GRID_GROUP, index);
+    }
+    let original = page.page_memory();
+    let original_hash = PageMemory::Library(original.clone()).hash();
+    assert_eq!(original.keys.len(), 1200);
+    for frame in 0..60 {
+        page.scroll.jump(frame as f32);
+        let next = page.page_memory();
+        assert_eq!(original.keys.as_ptr(), next.keys.as_ptr(),
+            "scroll frame {frame} must not copy the unchanged catalog into return memory");
+        let forwarded = next.clone();
+        assert_eq!(next.keys.as_ptr(), forwarded.keys.as_ptr(),
+            "forwarding return memory must not copy the catalog either");
+    }
+
+    let key = &original.keys[17];
+    let elem = key.elem;
+    let identity = key.identity.clone();
+    assert_eq!(page.keys.register(identity.clone(), GRID_GROUP, 17), elem);
+    page.keys.update_last_place(elem, GRID_GROUP, 17);
+    assert_eq!(page.page_memory().keys.as_ptr(), original.keys.as_ptr(),
+        "unchanged reconciliation must not detach the shared snapshot");
+
+    assert_eq!(page.keys.register(identity, GroupId(90), 23), elem);
+    let moved = page.page_memory();
+    assert_ne!(moved.keys.as_ptr(), original.keys.as_ptr());
+    assert_eq!(moved.keys[17].last_index, 23);
+    assert_eq!(original.keys[17].last_index, 17);
+    page.keys.update_last_place(elem, GroupId(91), 31);
+    let moved_again = page.page_memory();
+    assert_eq!(moved_again.keys[17].last_index, 31);
+    assert_eq!(moved.keys[17].last_index, 23, "a previous reconciliation stays immutable");
+
+    let added = page.keys.register(LibraryIdentity::Grid {
+        section: section.clone(), sid, rk: "fixture-new".into(),
+    }, GRID_GROUP, 1200);
+    let grown = page.page_memory();
+    assert_eq!(grown.keys.len(), 1201);
+    assert_eq!(moved_again.keys.len(), 1200, "appending must not grow an older snapshot");
+    assert_ne!(added, elem);
+
+    let mut restored = KeyRegistry::restore(&original);
+    let restored_memory = restored.remember(original.section.clone(), original.scroll, Vec::new());
+    assert_eq!(restored_memory.keys.as_ptr(), original.keys.as_ptr(),
+        "remounting reuses the immutable key snapshot");
+    assert_eq!(restored.last_place(elem), Some((GRID_GROUP, 17)));
+    restored.update_last_place(elem, GroupId(92), 41);
+    assert_eq!(restored.last_place(elem), Some((GroupId(92), 41)));
+    assert_eq!(original.keys[17].last_index, 17);
+    assert_eq!(PageMemory::Library(original.clone()).hash(), original_hash,
+        "neither live reconciliation nor remount mutation may change saved canonical memory");
+}
+
+#[test]
+fn all_grid_caption_band_restores_with_the_saved_viewport() {
+    let _guard = crate::testlock::serial();
+    let fixture = Fixture::new();
+    let mut page = fixture.screen();
+    let key = page.key(page.pair.detail.elem_at(35).unwrap());
+    page.relayout(Some(key));
+    page.scroll_target = page.target_layout.row_reveal(5);
+    page.scroll.jump(page.scroll_target);
+    page.relayout(Some(key));
+    let before = page.place(&key.elem, &fixture.cx(Some(key)), At::Drawn).unwrap();
+    let PageMemory::Library(memory) = <LibraryScreen as Screen<HostFixture>>::memory(&page) else { panic!() };
+    let mut restored = LibraryScreen::new(ENTRY, InstanceId(20), SecKind::Movie);
+    restored.restore(&memory);
+    restored.sync(&fixture.cx(Some(key)));
+    let after = restored.place(&key.elem, &fixture.cx(Some(key)), At::Drawn).unwrap();
+    assert_eq!(restored.layout.row_expansion(5), 1.0);
+    assert_eq!(restored.layout.row_expansion(4), 0.0);
+    assert_eq!(restored.scroll.pos, page.scroll.pos);
+    assert_eq!([after.rect.x, after.rect.y, after.rect.w, after.rect.h],
+        [before.rect.x, before.rect.y, before.rect.w, before.rect.h]);
+    assert_eq!(restored.layout.doc_h(), page.layout.doc_h());
+}
+
+#[test]
+fn saved_last_all_row_opens_before_the_bookmark_scroll_is_clamped() {
+    let _guard = crate::testlock::serial();
+    let mut fixture = Fixture::new();
+    let saved_scroll = fixture.screen().layout.with_grid_focus(Some(5)).max_scroll();
+    fixture.listing = fixture.listing.clone().with_cursor(crate::stores::browse::Cursor {
+        at: crate::stores::browse::CursorAt::SlotIndex(35), scroll: saved_scroll,
+    });
+    let mut page = fixture.screen();
+    let mut output = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    assert!(page.seed_cursor(&fixture.cx(None),
+        &mut Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present)));
+    assert_eq!(page.scroll.pos, saved_scroll);
+    assert_eq!(page.target_layout.row_expansion(5), 1.0);
+    assert_eq!(page.layout.row_expansion(5), 1.0);
+    assert_eq!(page.restore_scroll, Some(saved_scroll));
+}
+
+#[test]
+fn all_grid_moves_open_only_the_destination_band_and_use_settled_reveal() {
+    let _guard = crate::testlock::serial();
+    let fixture = Fixture::new();
+    let mut page = fixture.screen();
+    page.initial = false;
+    let mut engine = FocusEngine::new();
+    let first = page.key(page.pair.detail.elem_at(12).unwrap());
+    page.relayout(Some(first));
+    engine.set(OWNER, first, Some(page.pair.groups_config().detail), By::Restore);
+    direction(&mut page, &mut engine, &fixture, Dir::Down);
+    let next = engine.current(OWNER).unwrap();
+    assert_eq!(page.grid_position(Some(next)), Some((3, 0)));
+    assert_eq!(page.layout.row_expansion(2), 1.0, "outgoing row starts closing from its live size");
+    assert_eq!(page.layout.row_expansion(3), 0.0, "incoming row starts compact");
+    assert_eq!(page.target_layout.row_expansion(2), 0.0);
+    assert_eq!(page.target_layout.row_expansion(3), 1.0);
+    assert_eq!(page.scroll_target, page.target_layout.row_reveal(3));
+    let target = page.place(&next.elem, &fixture.cx(Some(next)), At::SpringTarget).unwrap();
+    assert_eq!(target.rest_rect.cy(), page.target_layout.row_y(3, page.scroll_target)
+        + page.target_layout.card_h() * 0.5);
+    let (lo, hi) = page.target_layout.visible_rows(page.scroll_target);
+    assert!((lo..hi).contains(&3));
+}
 
 #[test]
 fn grid_paint_window_keeps_cards_above_the_centered_tab_track() {
@@ -295,7 +428,7 @@ fn retry_stop_matches_the_shared_measured_status_action_with_and_without_reason(
         let (caption, reason) = page.status_text(&cx);
         assert_eq!(reason.is_some(), !owner.is_empty());
         let mut overlay = crate::ui::widgets::StatusOverlay::new(page.status_frame(), &caption,
-            crate::ui::widgets::StatusKind::Failed).action(c"Try again");
+            crate::ui::widgets::StatusKind::Failed).page().action(c"Try again");
         if let Some(reason) = &reason { overlay = overlay.reason(reason); }
         let expected = overlay.action_frame_measured(cx.measure).unwrap();
         for at in [At::Drawn, At::SpringTarget] {
@@ -306,12 +439,52 @@ fn retry_stop_matches_the_shared_measured_status_action_with_and_without_reason(
     }
 }
 
+/// **A failed Library section and a failed Home stand on ONE line** (owner, 2026-09-19: the
+/// Library's read-out sat ~y 830 while Home's was near the centre). The Library's verdict hangs
+/// from `StatusOverlay::FULL_ANCHOR_TOP` exactly where Home's failed hub read-out puts its own
+/// (`screens/home`'s `status_overlay`: the full frame, `.page()`, *Try again*, no reason); its own
+/// server's read-out carries no reason, so its *Try again* is Home's too, word for word, while a
+/// borrowed source's reason stacks the row one reason slot lower, on the same column.
+#[test]
+fn a_failed_library_section_and_a_failed_home_share_the_verdict_and_the_row() {
+    use crate::ui::widgets::{StatusKind, StatusOverlay};
+    let _guard = crate::testlock::serial();
+    let home = StatusOverlay::new(Rect::FULL, c"Can\u{2019}t reach your Plex server", StatusKind::Failed)
+        .page()
+        .action(c"Try again");
+    for owner in ["", "friend"] {
+        let mut fixture = Fixture::new();
+        fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
+        fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, crate::plex::ServerId::from_raw(7),
+            crate::browse::SrcGroup { name: "Cinema server".into(), handle: owner.into(),
+                state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
+        let page = fixture.screen();
+        let cx = fixture.cx(Some(page.key(RETRY)));
+        let (caption, reason) = page.status_text(&cx);
+        if owner.is_empty() {
+            assert_eq!(caption.to_str().unwrap(), "Can\u{2019}t reach your Plex server");
+        }
+        let library = page.status_overlay(&cx, &caption, reason.as_deref());
+        let (lv, hv) = (library.verdict_band_measured(cx.measure), home.verdict_band_measured(cx.measure));
+        assert_eq!(lv.y, hv.y, "owner={owner:?}: the verdicts share a line");
+        assert_eq!(lv.y, StatusOverlay::FULL_ANCHOR_TOP);
+        let lr = page.place(&RETRY, &cx, At::Drawn).unwrap().rect;
+        let hr = home.action_frame_measured(cx.measure).unwrap();
+        assert_eq!(lr.cx(), hr.cx(), "owner={owner:?}: one column");
+        if owner.is_empty() {
+            assert_eq!(lr.y, hr.y, "own server: the rows share a line");
+        } else {
+            assert!(lr.y > hr.y, "a borrowed source's reason stacks its row under it");
+        }
+    }
+}
+
 #[test]
 fn a_fully_discovered_missing_kind_finishes_its_fade_and_has_no_foreign_grid() {
     let _guard = crate::testlock::serial();
     let mut fixture = Fixture::new();
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, vec![
-        crate::browse::view::SectionView { borrowed: false, sid: Some(crate::plex::ServerId::from_raw(0)), key: 1,
+        crate::browse::view::SectionView { sid: Some(crate::plex::ServerId::from_raw(0)), key: 1,
             kind: SecKind::Movie, row: crate::browse::SrcRow { section: 0, title: "Cinema".into(),
                 pinned: true, current: true, ..Default::default() } }]);
     let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Show);
@@ -331,7 +504,7 @@ fn a_fully_discovered_missing_kind_finishes_its_fade_and_has_no_foreign_grid() {
         "waiting for Shows cannot page through the retained Movies listing");
     let mut groups = Vec::new();
     page.groups(&fixture.cx(None), &mut groups);
-    assert!(!groups.iter().any(|g| g.id == page.pair.groups_config().detail || g.id == TOOLBAR_GROUP));
+    assert!(!groups.iter().any(|g| g.id == page.pair.groups_config().detail || g.id == page.toolbar_group()));
     assert!(page.focused_item(Some(page.key(page.keys.keys().first().map_or(0, |k| k.elem))), &fixture.cx(None)).is_none());
 }
 
@@ -498,10 +671,12 @@ fn pending_semantic_commits_change_the_library_state_hash() {
     }
 }
 
-struct Fixture {
+// `pub(super)`, not private: `selector_matrix_tests.rs` (a sibling test module) reuses this
+// harness wholesale rather than duplicating it, per the guide at the top of that file.
+pub(super) struct Fixture {
     stores: Option<crate::stores::Stores>,
     listing: crate::stores::browse::ListingSnapshot,
-    directory: crate::stores::browse::DirectorySnapshot,
+    pub(super) directory: crate::stores::browse::DirectorySnapshot,
     hubs: crate::stores::browse::HubsSnapshot,
     measure: FixtureMeasure,
 }
@@ -518,7 +693,7 @@ fn discovery_failure_retry_targets_the_source_without_a_section() {
     let mut page = fixture.screen();
     assert!(fixture.listing.view().id().is_none());
     assert_eq!(page.readout, Readout::Failed);
-    assert_eq!(page.status_text(&fixture.cx(None)).0.to_str().unwrap(), "Can't reach Cinema server");
+    assert_eq!(page.status_text(&fixture.cx(None)).0.to_str().unwrap(), "Can\u{2019}t reach Cinema server");
     let mut out = Vec::new();
     let mut present = crate::ui::present::Present::new();
     page.activate(RETRY, false, &fixture.cx(Some(page.key(RETRY))),
@@ -526,6 +701,65 @@ fn discovery_failure_retry_targets_the_source_without_a_section() {
     assert!(out.iter().any(|effect| matches!(&effect.fx,
         Fx::App(AppFx::Store(StoreId::Browse, StoreCmd::Browse(BrowseCmd::RetrySource { epoch: 4, sid: target }))) if *target == sid)),
         "Retry must issue work even when discovery never produced a section address");
+}
+
+/// **A failed source whose server discovery offers "Connect without encryption?" for asks it**
+/// (PLX-NATIVE-10, code review 3) — the SAME question Home and the sign-in ask
+/// (`screens::plaintext_question`): the reason says why, *Connect* replaces *Try again* and opens
+/// the question seated on *Not now*, and its *Connect* sends one answer, re-finding this source's
+/// slot. Another server's offer does not change this source's read-out.
+#[test]
+fn a_failed_source_over_an_offered_server_asks_the_shared_question() {
+    use crate::plex::session::PlaintextChoice;
+    use super::super::plaintext_question::connect;
+    let _guard = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    let sid = crate::plex::register_pinned_with_client_id("lan-machine", &crate::plex::Origin::http("192.168.1.50", 32400), "", None, "client", Default::default());
+    let mut fixture = Fixture::new();
+    fixture.listing = crate::stores::browse::ListingSnapshot::empty_for_test();
+    fixture.directory = crate::browse::view::DirectorySnapshot::fixture_source(4, sid,
+        crate::browse::SrcGroup { name: "Cinema server".into(), handle: String::new(),
+            state: crate::browse::SourceState::Unreachable, tier: None }, SecFetch::Failed);
+    let mut page = fixture.screen();
+    let offer = |machine: &str| crate::plex::grant::offered(crate::plex::grant::scope(),
+        crate::plex::grant::PlaintextVerdict { machine_id: machine.into(), name: "nas".into(), shared_by: String::new(),
+            eligibility: crate::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided });
+    let tick = |page: &mut LibraryScreen| {
+        let mut out = Vec::new();
+        let mut present = crate::ui::present::Present::new();
+        page.step(&ScreenEvent::Tick(Tick::default()), &fixture.cx(None),
+            &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+    };
+    offer("another-machine");
+    tick(&mut page);
+    let cx = fixture.cx(Some(page.key(RETRY)));
+    let (caption, reason) = page.status_text(&cx);
+    assert_eq!(page.status_overlay(&cx, &caption, reason.as_deref()).action, Some(c"Try again"),
+        "another server's offer is not this source's");
+
+    offer("lan-machine");
+    tick(&mut page);
+    let (caption, reason) = page.status_text(&cx);
+    assert!(reason.as_ref().and_then(|r| r.to_str().ok()).is_some_and(|r| r.contains("Select Connect")), "{reason:?}");
+    assert_eq!(page.status_overlay(&cx, &caption, reason.as_deref()).action, Some(connect()));
+    let mut out = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    page.activate(RETRY, false, &cx, &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+    assert!(!out.iter().any(|e| matches!(&e.fx, Fx::App(AppFx::Store(..)))), "Connect asks; it does not retry");
+    assert!(page.plaintext_alert.is_open());
+    let mut out = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    page.step(&ScreenEvent::PressCommit(crate::ui::machine::PressId(1)), &fixture.cx(Some(page.key(PLAINTEXT_CONNECT))),
+        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(19)), &mut present));
+    let answers: Vec<_> = out.iter().filter_map(|e| match &e.fx {
+        Fx::App(AppFx::Session(crate::auth::SessionCmd::AnswerPlaintext { machine_id, choice, sid: target }))
+            if machine_id == "lan-machine" => Some((*choice, *target)),
+        _ => None,
+    }).collect();
+    assert_eq!(answers, [(PlaintextChoice::Allowed, Some(sid))]);
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
 }
 
 #[test]
@@ -614,7 +848,7 @@ fn section_grid_memories_do_not_overwrite_one_another() {
     engine.enter(OWNER, &page, FocusTarget::ContainerGroup(group_a), None, &fixture.cx(engine.current(OWNER)));
     assert_eq!(engine.current(OWNER), Some(card_a), "Remembered seating restores the exact section card");
     // Enter the rail through a toolbar: projection must consult only this section's grid memory.
-    engine.set(OWNER, page.key(FILTER), Some(TOOLBAR_GROUP), By::Dir);
+    engine.set(OWNER, page.key(FILTER), Some(page.toolbar_group()), By::Dir);
     direction(&mut page, &mut engine, &fixture, Dir::Right);
     assert_eq!(page.pair.master.start_for_elem(engine.current(OWNER).unwrap().elem), Some(0));
 }
@@ -665,13 +899,13 @@ impl Fixture {
         fixture
     }
 
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let sid = crate::plex::ServerId::from_raw(0);
         let listing = crate::browse::view::ListingSnapshot::fixture(sid, (0..36).map(|i|
             Some(crate::pms::PmsMovie { sid, rk: format!("{}", i + 1), title: format!("s{i:04x}"), ..Default::default() })).collect(),
             vec![("A".into(), 18), ("Z".into(), 18)]);
         let directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, vec![
-            crate::browse::view::SectionView { borrowed: false, sid: Some(sid), key: 1, kind: SecKind::Movie,
+            crate::browse::view::SectionView { sid: Some(sid), key: 1, kind: SecKind::Movie,
                 row: crate::browse::SrcRow { section: 0, title: "Cinema".into(), pinned: true, current: true, ..Default::default() } }]);
         Self {
             stores: None,
@@ -681,12 +915,12 @@ impl Fixture {
             measure: FixtureMeasure,
         }
     }
-    fn cx(&self, focus: Option<FocusKey<u32>>) -> Cx<'_, HostFixture> {
+    pub(super) fn cx(&self, focus: Option<FocusKey<u32>>) -> Cx<'_, HostFixture> {
         Cx { views: Views { listing: self.listing.view(), directory: self.directory.view(), hubs: self.hubs.view() },
             tick: Tick::default(), measure: &self.measure, focus: FocusRead { current: focus , ..Default::default() },
             press: PressRead::default(), owner: OWNER }
     }
-    fn screen(&self) -> LibraryScreen {
+    pub(super) fn screen(&self) -> LibraryScreen {
         let mut page = LibraryScreen::new(ENTRY, InstanceId(19), SecKind::Movie);
         page.sync(&self.cx(None));
         page
@@ -800,7 +1034,7 @@ fn toolbar_rail_entry_uses_engine_grid_memory_and_returns_to_toolbar() {
     let mut engine = FocusEngine::new();
     let exact = page.key(page.pair.detail.elem_at(23).unwrap());
     engine.set(OWNER, exact, Some(page.pair.groups_config().detail), By::Restore);
-    engine.set(OWNER, page.key(FILTER), Some(TOOLBAR_GROUP), By::Dir);
+    engine.set(OWNER, page.key(FILTER), Some(page.toolbar_group()), By::Dir);
     assert_eq!(direction(&mut page, &mut engine, &fixture, Dir::Right), 0);
     assert_eq!(page.pair.master.start_for_elem(engine.current(OWNER).unwrap().elem), Some(18));
     direction(&mut page, &mut engine, &fixture, Dir::Left);
@@ -845,7 +1079,7 @@ fn sort_chosen_during_section_fade_commits_to_the_incoming_library() {
     let mut fixture = Fixture::new();
     let sid = crate::plex::ServerId::from_raw(0);
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, (0..2).map(|i|
-        crate::browse::view::SectionView { borrowed: false, sid: Some(sid), key: i as i64 + 1, kind: SecKind::Movie,
+        crate::browse::view::SectionView { sid: Some(sid), key: i as i64 + 1, kind: SecKind::Movie,
             row: crate::browse::SrcRow { section: i, title: format!("s{i:04x}"), pinned: true, current: i == 0, ..Default::default() } }).collect());
     let mut page = fixture.screen();
     let mut output = Vec::new();
@@ -871,26 +1105,42 @@ fn sort_chosen_during_section_fade_commits_to_the_incoming_library() {
         }))) if *target == incoming && key == "titleSort")), "leaving flushes selection and semantic sort in one addressed store command");
 }
 
+/// Issue #100/#165: a Guest or managed profile's own household server always arrives from
+/// `/resources` with `owned: false` (`plex/account.rs:1128-1157`), so on such a profile EVERY
+/// section it sees would once have read as `borrowed`. The 0.6.x server picker's old singleton
+/// exception — carried forward wholesale into the restructure by `3c2de7ad` — read that as "still
+/// ambiguous" and left the legacy `Library · <name> ⌄` chip up, opening the old Sources popover.
+/// That is exactly the symptom the owner saw on a real TV's TV Shows page under `--guest`, and
+/// exactly the gap the maintainer named on #100: "the picker only handles multiple servers, not
+/// multiple libraries per section."
+///
+/// The fix is stronger than "ownership no longer decides this": `SectionView` carries no
+/// ownership bit at all any more, so there is nothing left FOR ownership to decide — a lone
+/// favourite clears the selector unconditionally, on every profile, because the published view
+/// has no field left to ask the old exception's question. Before the `borrowed` field's deletion
+/// this test proved the weaker claim by looping over `[true, false]`; with the field gone the loop
+/// has nothing to vary, so this now asserts the one remaining case directly.
 #[test]
-fn singleton_borrowed_library_opens_sources_and_uses_value_chip_geometry() {
+fn a_single_favourite_library_draws_no_selector() {
     let _guard = crate::testlock::serial();
     let mut fixture = Fixture::new();
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, vec![
-        crate::browse::view::SectionView { borrowed: true, sid: Some(crate::plex::ServerId::from_raw(0)), key: 1,
+        crate::browse::view::SectionView { sid: Some(crate::plex::ServerId::from_raw(0)), key: 1,
             kind: SecKind::Movie, row: crate::browse::SrcRow { section: 0, title: "Cinema".into(),
                 pinned: true, current: true, ..Default::default() } }]);
-    let mut page = fixture.screen();
-    assert_eq!(page.libraries.len(), 1);
-    let elem = page.libraries[0].0;
-    let cx = fixture.cx(Some(page.key(elem)));
-    let rect = page.place(&elem, &cx, At::Drawn).unwrap().rest_rect;
-    assert_eq!(rect.w, crate::ui::value_chip::ValueChip::width(cx.measure, c"Library", c" · Cinema", None));
-    let mut output = Vec::new();
-    let mut present = crate::ui::present::Present::new();
-    page.activate(elem, false, &cx, &mut Effects::new(&mut output, MachineId::Instance(InstanceId(19)), &mut present));
-    assert!(output.iter().any(|effect| matches!(&effect.fx,
-        Fx::App(AppFx::Library(LibraryReq::Menu { kind: crate::screens::registry::LibraryMenuKind::Sources, anchor, .. }))
-            if *anchor == [rect.x.to_bits(), rect.y.to_bits(), rect.w.to_bits(), rect.h.to_bits()])));
+    let page = fixture.screen();
+    assert!(page.libraries.is_empty(), "a lone favourite must clear the selector");
+    assert!(!page.layout.libraries, "no row height is reserved for it");
+    let cx = fixture.cx(None);
+    let mut groups = Vec::new();
+    page.groups(&cx, &mut groups);
+    assert!(!groups.iter().any(|group| group.id == LIBRARY_GROUP),
+        "no selector focus group is offered");
+    let mut draw = DrawFrame::new(&cx, crate::ui::Painter::root());
+    page.record_stops(&mut draw);
+    let stops = draw.into_stops();
+    assert!(!stops.iter().any(|stop| region_of_elem(stop.key.elem) == Some(KeyRegion::Library)),
+        "no pointer stop is registered for the selector row");
 }
 
 #[test]
@@ -899,7 +1149,7 @@ fn favorite_library_row_uses_shared_strip_geometry_and_incoming_type() {
     let mut fixture = Fixture::new();
     let sid = crate::plex::ServerId::from_raw(0);
     fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, (0..4).map(|i|
-        crate::browse::view::SectionView { borrowed: false, sid: Some(sid), key: i as i64 + 1,
+        crate::browse::view::SectionView { sid: Some(sid), key: i as i64 + 1,
             kind: if i < 2 { SecKind::Movie } else { SecKind::Show },
             row: crate::browse::SrcRow { section: i, title: format!("Library {i}"), pinned: true,
                 current: i == 0, ..Default::default() } }).collect());
@@ -978,3 +1228,7 @@ fn shelf_publication_request_distinguishes_page_fade_from_grid_fade_and_head_foc
     page.page_fade.mount();
     assert_eq!(request(&mut page), (true, false), "only the full-page fade permits publication away from the head");
 }
+
+mod type_tests { include!("type_tests.rs"); }
+
+mod art_admission_tests { include!("art_admission_tests.rs"); }

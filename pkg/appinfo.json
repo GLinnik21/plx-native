@@ -1,6 +1,6 @@
 {
   "id": "com.beb.plxnative",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "vendor": "beb",
   "type": "native",
   "main": "plxnative",
@@ -13,5 +13,9 @@
   "nativeLifeCycleInterfaceVersion": 2,
   "handlesRelaunch": false,
   "transparent": true,
-  "requiredMemory": 160
+  "requiredMemory": 160,
+  "requiredPermissions": [
+    "database.operation",
+    "securitykey.operation"
+  ]
 }

@@ -9,11 +9,35 @@ impl LibraryScreen {
             Readout::Failed => StatusKind::Failed, Readout::Loading => StatusKind::Working,
             Readout::Empty | Readout::Grid => StatusKind::Empty,
         };
-        let mut overlay = StatusOverlay::new(self.status_frame(), caption, kind).phase(cx.tick.ms)
+        // A failed source fills the page under the live chrome, so it stands on the shared page
+        // lines (`StatusOverlay::page`) — level with Home's and the sign-in failure's — rather than
+        // centring in the content region, which dropped it ~250px below them. Loading and the
+        // empty answer keep the region.
+        let mut overlay = StatusOverlay::new(self.status_frame(), caption, kind).page().phase(cx.tick.ms)
             .focused(cx.focus.current == Some(self.key(RETRY)));
         if let Some(reason) = reason { overlay = overlay.reason(reason); }
-        if self.readout == Readout::Failed { overlay = overlay.action(crate::i18n::msg::browse_action_retry_c()); }
+        if self.readout == Readout::Failed {
+            overlay = overlay.action(super::super::plaintext_question::primary(self.plaintext.verdict()));
+        }
         overlay
+    }
+
+    /// Follow the offer for the failed source's server (`plex::grant::offers`), and take the
+    /// question down once the read-out it was asked from no longer asks about that server.
+    pub(super) fn watch_plaintext<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
+        use super::super::plaintext_question::{asks, Near};
+        let machine = (self.readout == Readout::Failed)
+            .then(|| H::directory(cx).source().and_then(|(sid, _)| crate::plex::client_for(*sid)))
+            .flatten()
+            .map(|client| client.machine_id());
+        self.plaintext.refresh(machine, Near::Only);
+        if self.plaintext_alert.is_open()
+            && !(self.readout == Readout::Failed
+                && self.plaintext_alert.subject() == self.plaintext.verdict().map(|v| v.machine_id.as_str())
+                && asks(self.plaintext.verdict()))
+        {
+            self.plaintext_alert.withdraw();
+        }
     }
 
     pub(super) fn status_rect<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<Rect> {
@@ -30,7 +54,20 @@ impl LibraryScreen {
                 let source = directory.source().map(|(_, source)| source);
                 let name = source.map(|source| source.name.as_str()).filter(|name| !name.is_empty()).unwrap_or(crate::i18n::msg::browse_library_server());
                 let owner = source.map(|source| source.handle.as_str()).filter(|owner| !owner.is_empty());
-                (crate::i18n::msg::browse_library_unreachable(name), owner.map(|owner| crate::i18n::msg::browse_library_shared_unreachable(owner)))
+                // Your own server is "your Plex server", the words Home uses for the same fault;
+                // a borrowed one is named, since "your" would be untrue of it.
+                let caption = match owner {
+                    None => crate::i18n::msg::browse_home_failed().to_string(),
+                    Some(_) => crate::i18n::msg::browse_library_unreachable(name),
+                };
+                // A server discovery offers "Connect without encryption?" for says why instead,
+                // and names what *Connect* / *Try again* does (`auth::plaintext_copy`).
+                let reason = match self.plaintext.verdict() {
+                    Some(verdict) => Some(crate::auth::plaintext_copy(Some(verdict),
+                        crate::auth::ReadoutSurface::SignedIn).into_owned()),
+                    None => owner.map(|owner| crate::i18n::msg::browse_library_shared_unreachable(owner)),
+                };
+                (caption, reason)
             }
             Readout::Empty => {
                 let caption = if self.wanted_kind.is_some() { crate::i18n::msg::browse_library_no_matches().into() }
@@ -39,7 +76,11 @@ impl LibraryScreen {
                     else if let Some(section) = directory.current().and_then(|i| directory.sections().get(i)) {
                         match section.kind {
                             SecKind::Movie => crate::i18n::msg::browse_library_no_movies(&section.row.title),
-                            SecKind::Show => crate::i18n::msg::browse_library_no_shows(&section.row.title),
+                            SecKind::Show => match listing.library_type() {
+                                crate::browse::LibraryType::Shows => crate::i18n::msg::browse_library_no_shows(&section.row.title),
+                                crate::browse::LibraryType::Seasons => crate::i18n::msg::browse_library_no_seasons(&section.row.title),
+                                crate::browse::LibraryType::Episodes => crate::i18n::msg::browse_library_no_episodes(&section.row.title),
+                            },
                         }
                     } else { crate::i18n::msg::browse_library_no_matches().into() };
                 (caption, None)

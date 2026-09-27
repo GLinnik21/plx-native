@@ -4,8 +4,25 @@
 //! D-pad/OK/BACK here while the menu is open; LEFT/RIGHT switch between the Audio and Subtitles
 //! panels. The selection commit (native audio switch / server transcode / burn) is unchanged
 //! from the previous procedural version — only the presentation moved onto the table.
+//!
+//! The Subtitles panel carries a second section under the tracks: **Color**, the tone the
+//! client-rendered caption is drawn in (`plex::session::SubtitleTone` — white, then a ladder of
+//! grays for a picture whose white is too bright, which is what HDR does to it). Same idiom as
+//! the tracks above it — [`Row::checked`], "the active one of several" — and the same flat
+//! `TableView::sel` over both sections, so [`TrackMenuState::tone_base`] is where one ends.
+//!
+//! On a direct play a third section follows, **Timing**: the subtitle offset
+//! (`player::subtitle_offset_ms`, which lasts one playback of one track) as the header's read-out, and three rows that
+//! step it — Earlier and Later by 100 ms, Reset to zero. The range is the player's
+//! (`player::subtitle_offset_range_ms`): 30 s late for any track, 30 s early for a sidecar, and no
+//! advance for an embedded track, whose Earlier row is drawn dim and does nothing at zero. OK on one of those performs the step and
+//! leaves the panel open ([`TrackMenuState::ok_keeps_open`]); every other row still closes it. A
+//! transcode draws no Timing section: the server burns the captions, and no client-side offset
+//! reaches a burned caption.
 #![allow(dead_code)]
 use crate::metadata;
+use crate::player::SUBTITLE_OFFSET_STEP_MS;
+use crate::plex::session::SubtitleTone;
 use crate::ui::consts::SCR_H;
 use crate::ui::frame::Budget;
 use crate::ui::geom::IndexElem;
@@ -27,6 +44,18 @@ pub(crate) struct TrackMenuState {
     tab: c_int, // 0=Audio, 1=Subtitles
     active_audio: c_int, // index into the playing item's audio list
     active_sub: c_int, // -1 = Off, else index into the playing item's subs list
+    /// The flat row index of the FIRST tone row, captured when the Subtitles table was built — so
+    /// [`Self::on_ok`] splits tracks from tones by what was DRAWN, not by re-asking
+    /// `visible_subs` (whose answer moves when a playback starts transcoding). `None` on the
+    /// Audio tab, which has no such section.
+    tone_base: Option<c_int>,
+    /// The flat row index of the first Timing row, captured the same way as `tone_base`; `None`
+    /// on the Audio tab and during a transcode, which draws no Timing section.
+    offset_base: Option<c_int>,
+    /// The timing offset (ms) the panel shows and steps from — seeded from the player on open and
+    /// advanced by each Timing press, so a burst of presses counts from what the panel DREW, not
+    /// from a commit the loop has not performed yet.
+    offset_ms: i64,
     table: TableView, // main-thread only
 }
 
@@ -39,22 +68,36 @@ pub(crate) struct TrackMenuState {
 /// panel cannot distinguish from "unchanged" without knowing what the renderer currently has).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum TrackCommit {
-    Audio { ordinal: c_int, codec: String, stream_id: i64 },
-    Subtitle { render_ordinal: c_int, stream_id: i64 },
+    Audio { ordinal: c_int, codec: String, stream_id: i64, channels: i64 },
+    /// `sidecar_key` is `Some` when the pick is an EXTERNAL text subtitle the client can draw
+    /// on direct play (`metadata::Stream::sidecar_renderable`): it has no demuxer ordinal
+    /// (`render_ordinal` is -1), so the loop hands it to `player::sidecar` beside the unchanged
+    /// route commit. `sidecar_codec` preserves ASS/SSA on download; a key need not have an
+    /// extension. `None` — Off, or an embedded track — deselects any sidecar.
+    Subtitle { render_ordinal: c_int, stream_id: i64, sidecar_key: Option<String>, sidecar_codec: String },
+    /// The caption's tone. Not a track at all, but it is picked in this panel and it is the
+    /// loop that performs it (`player::set_subtitle_tone` writes the session), like the two above.
+    SubtitleTone(crate::plex::session::SubtitleTone),
+    /// The caption's timing offset in ms (`player::set_subtitle_offset`), from the Timing rows —
+    /// the one commit that leaves the panel open ([`TrackMenuState::ok_keeps_open`]).
+    SubtitleOffset(i64),
 }
 
 impl TrackMenuState {
     /// Build the menu focused on `tab` (0=Audio, 1=Subtitles) — the on-screen audio/subs icons
     /// pick a specific tab this way; the plain open path passes 0.
-    pub(crate) fn new(ps: &crate::route::PlaybackSession, tab: c_int) -> Self {
+    pub(crate) fn new(ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int) -> Self {
         let mut s = TrackMenuState {
             tab,
             active_audio: 0,
             active_sub: -1,
+            tone_base: None,
+            offset_base: None,
+            offset_ms: crate::player::subtitle_offset_ms(),
             table: TableView::new(),
         };
-        s.sync_item(ps);
-        s.rebuild(ps, tab, false);
+        s.sync_item(ps, meta);
+        s.rebuild(ps, meta, tab, false);
         s
     }
 
@@ -83,41 +126,45 @@ impl TrackMenuState {
         self.active_sub
     }
     /// Plex stream id of the chosen audio track (for &audioStreamID), or 0
-    pub(crate) fn audio_stream_id(&self) -> i64 {
+    pub(crate) fn audio_stream_id(&self, meta: metadata::MetadataView<'_>) -> i64 {
         let i = self.active_audio();
-        tracks()
+        tracks(meta)
             .and_then(|t| t.audio.get(i.max(0) as usize))
             .map(|s| s.id)
             .unwrap_or(0)
     }
     /// Plex stream id of the chosen subtitle track (for &subtitleStreamID), or 0 if Off
-    pub(crate) fn sub_stream_id(&self) -> i64 {
+    pub(crate) fn sub_stream_id(&self, meta: metadata::MetadataView<'_>) -> i64 {
         let i = self.active_sub();
         if i < 0 {
             return 0;
         }
-        tracks()
+        tracks(meta)
             .and_then(|t| t.subs.get(i as usize))
             .map(|s| s.id)
             .unwrap_or(0)
     }
 
-    /// selectable rows in a tab — Subtitles has a leading "Off" row
-    fn n_rows(&self, ps: &crate::route::PlaybackSession, tab: c_int) -> c_int {
+    /// selectable rows in a tab — Subtitles has a leading "Off" row and the tone ladder after
+    /// its tracks
+    fn n_rows(&self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int) -> c_int {
         if tab == 0 {
-            n_audio()
+            n_audio(meta)
         } else {
-            visible_subs(ps).len() as c_int + 1
+            visible_subs(ps, meta).len() as c_int
+                + 1
+                + SubtitleTone::LADDER.len() as c_int
+                + (!crate::route::is_transcoding(ps)) as c_int * TimingRow::ALL.len() as c_int
         }
     }
     /// the table row that should be focused when entering `tab` (its active selection)
-    fn sel_for_tab(&self, ps: &crate::route::PlaybackSession, tab: c_int) -> c_int {
+    fn sel_for_tab(&self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int) -> c_int {
         if tab == 0 {
             self.active_audio().max(0)
         } else {
             let a = self.active_sub();
             // the row of the active subs-list index within the VISIBLE rows (+1 for Off)
-            visible_subs(ps)
+            visible_subs(ps, meta)
                 .iter()
                 .position(|&i| a >= 0 && i == a as usize)
                 .map(|p| p as c_int + 1)
@@ -127,12 +174,12 @@ impl TrackMenuState {
 
     /// Derive the checked tracks from the PLAYBACK state on every open — the route owns the truth
     /// (CUR_AUDIO_SID/CUR_SUB_SID, set by the start-of-play pick and every commit), so the menu can
-    /// never show a stale or desynced checkmark: the auto-picked English/smart-DP track is checked
+    /// never show a stale or desynced checkmark: the auto-picked default/smart-DP track is checked
     /// on first open, a replayed item resets with the playback, and a prior pick round-trips by id.
     /// When no id is recorded (codec-default play), the file's flagged default is checked.
     /// Deliberately does NOT touch `tab`: [`TrackMenuState::new`] sets it directly.
-    fn sync_item(&mut self, ps: &crate::route::PlaybackSession) {
-        let (audio, sub) = match tracks() {
+    fn sync_item(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
+        let (audio, sub) = match tracks(meta) {
             Some(t) => {
                 let asid = crate::route::cur_audio_sid(ps);
                 let audio = (asid > 0)
@@ -173,16 +220,16 @@ impl TrackMenuState {
     /// Show `tab` (0=Audio, 1=Subtitles) on a menu that is ALREADY open — the second disc pressed
     /// while the first one's tab is showing. Same body as the LEFT/RIGHT arm below, which is why
     /// that arm calls this rather than repeating it.
-    pub(crate) fn focus_tab(&mut self, ps: &crate::route::PlaybackSession, tab: c_int) {
+    pub(crate) fn focus_tab(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int) {
         if tab != self.tab {
             self.tab = tab;
-            self.rebuild(ps, tab, false); // swap the whole list → snap the pill, no long glide
+            self.rebuild(ps, meta, tab, false); // swap the whole list → snap the pill, no long glide
         }
     }
 
     /// commit the focused row as the active track for its tab — dismissing the panel afterward is
     /// the container's job now, not this method's.
-    pub(crate) fn on_ok(&mut self, ps: &crate::route::PlaybackSession) -> Option<TrackCommit> {
+    pub(crate) fn on_ok(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> Option<TrackCommit> {
         let tab = self.tab;
         let sel = self.table.sel;
         if tab == 0 {
@@ -191,8 +238,8 @@ impl TrackMenuState {
             if changed {
                 // the menu only reports the pick — native-switch vs re-transcode is route's policy.
                 // The demuxer-facing index is the CONTAINER ordinal (audio_ordinal), not the row.
-                if let Some(s) = tracks().and_then(|t| t.audio.get(sel.max(0) as usize)) {
-                    let ord = tracks()
+                if let Some(s) = tracks(meta).and_then(|t| t.audio.get(sel.max(0) as usize)) {
+                    let ord = tracks(meta)
                         .map(|t| metadata::audio_ordinal(&t.audio, sel.max(0) as usize))
                         .unwrap_or(sel);
                     crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
@@ -202,13 +249,34 @@ impl TrackMenuState {
                         ordinal: ord,
                         codec: s.codec.clone(),
                         stream_id: s.id,
+                        channels: s.channels,
                     });
                 }
             }
             None
+        } else if let Some(tone) = tone_at(self.tone_base, sel) {
+            // a row of the Color section: no track changes, so no `TrackCommit::Subtitle` — that
+            // one always republishes, and re-committing the track would re-burn a transcode
+            Some(TrackCommit::SubtitleTone(tone))
+        } else if let Some(row) = timing_at(self.offset_base, sel) {
+            let (earliest, latest) = crate::player::subtitle_offset_range_ms();
+            let next = match row {
+                TimingRow::Earlier => self.offset_ms - SUBTITLE_OFFSET_STEP_MS,
+                TimingRow::Later => self.offset_ms + SUBTITLE_OFFSET_STEP_MS,
+                TimingRow::Reset => 0,
+            }
+            .clamp(earliest, latest);
+            if next == self.offset_ms {
+                return None; // at a limit, or Reset at zero: nothing to perform
+            }
+            self.offset_ms = next;
+            // the panel stays up (`ok_keeps_open`): redraw the read-out in place, focus unmoved
+            let sections = self.subtitle_sections(ps, meta);
+            self.table.set_sections(sections, sel, true);
+            Some(TrackCommit::SubtitleOffset(next))
         } else {
             // row 0 = Off = -1; else map the visible row back to its subs-list index
-            let vis = visible_subs(ps);
+            let vis = visible_subs(ps, meta);
             let new_sub: c_int = if sel <= 0 {
                 -1
             } else {
@@ -219,8 +287,9 @@ impl TrackMenuState {
             let changed = self.active_sub != new_sub;
             self.active_sub = new_sub;
             // the client renderer takes the EMBEDDED-subtitle ordinal (what the demuxer
-            // enumerates); an external pick (transcode-only row) renders nothing — it's burned
-            let ridx = tracks()
+            // enumerates); an external pick has no demux ordinal — it is drawn by the sidecar
+            // renderer on direct play, or burned
+            let ridx = tracks(meta)
                 .filter(|_| new_sub >= 0)
                 .map(|t| metadata::sub_render_ordinal(&t.subs, new_sub as usize))
                 .unwrap_or(-1);
@@ -229,16 +298,22 @@ impl TrackMenuState {
                     feature: crate::diag::schema::Feature::SubtitleTrack,
                 });
             }
+            let sidecar = tracks(meta)
+                .filter(|_| new_sub >= 0)
+                .and_then(|t| t.subs.get(new_sub as usize))
+                .filter(|s| s.sidecar_renderable());
             Some(TrackCommit::Subtitle {
                 render_ordinal: ridx,
-                stream_id: self.sub_stream_id(),
+                stream_id: self.sub_stream_id(meta),
+                sidecar_key: sidecar.map(|s| s.key.clone()),
+                sidecar_codec: sidecar.map(|s| s.codec.clone()).unwrap_or_default(),
             })
         }
     }
 
-    fn build_audio(&self) -> Section {
+    fn build_audio(&self, meta: metadata::MetadataView<'_>) -> Section {
         let mut sec = Section::new(crate::i18n::msg::widgets_tracks_audio());
-        let d = match tracks() {
+        let d = match tracks(meta) {
             Some(t) => t,
             None => return sec,
         };
@@ -279,12 +354,12 @@ impl TrackMenuState {
         sec
     }
 
-    fn build_subs(&self, ps: &crate::route::PlaybackSession) -> Section {
+    fn build_subs(&self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> Section {
         let mut sec = Section::new(crate::i18n::msg::widgets_tracks_subtitles());
         sec = sec.row(Row::new(crate::i18n::msg::widgets_tracks_off()).checked(self.active_sub() < 0));
-        if let Some(t) = tracks() {
+        if let Some(t) = tracks(meta) {
             let names = crate::player::SHARED.track_names.lock().unwrap();
-            for i in visible_subs(ps) {
+            for i in visible_subs(ps, meta) {
                 let s = match t.subs.get(i) {
                     Some(s) => s,
                     None => continue,
@@ -309,6 +384,9 @@ impl TrackMenuState {
                 if s.sdh {
                     row = row.badge(Badge::Sdh);
                 }
+                if s.external {
+                    row = row.badge(Badge::Text(crate::i18n::msg::widgets_tracks_external_badge().to_string()));
+                }
                 if is_image_sub_codec(&s.codec) {
                     row = row.badge(Badge::Text(s.codec.to_uppercase()));
                 }
@@ -318,14 +396,79 @@ impl TrackMenuState {
         sec
     }
 
-    fn rebuild(&mut self, ps: &crate::route::PlaybackSession, tab: c_int, slide: bool) {
-        let sec = if tab == 0 {
-            self.build_audio()
+    /// The Color section: one checked row per rung of the tone ladder, lightest first.
+    fn build_tones(&self) -> Section {
+        let active = crate::player::subtitle_tone();
+        let mut sec = Section::new(crate::i18n::msg::widgets_tracks_color());
+        for tone in SubtitleTone::LADDER {
+            sec = sec.row(Row::new(tone_label(tone)).checked(tone == active));
+        }
+        sec
+    }
+
+    /// The Timing section: the offset as the header's read-out and three fixed rows that step it
+    /// ([`TimingRow`]). A stepper rather than one checked row per value — hundreds of rows at
+    /// 100 ms would be a list nobody could walk and a per-frame layout walk over every one of them.
+    fn build_timing(&self) -> Section {
+        // the player's own range for the selected track's kind — Earlier dims at an embedded
+        // track's 0, which takes no advance, and at a sidecar's -30 s
+        let (earliest, latest) = crate::player::subtitle_offset_range_ms();
+        let mut sec = Section::new(crate::i18n::msg::widgets_tracks_timing()).accessory(format_offset(self.offset_ms));
+        for row in TimingRow::ALL {
+            let r = match row {
+                TimingRow::Earlier => Row::new(crate::i18n::msg::widgets_tracks_earlier())
+                    .value(format_offset(-SUBTITLE_OFFSET_STEP_MS))
+                    .value_dim(true)
+                    .dim(self.offset_ms <= earliest),
+                TimingRow::Later => Row::new(crate::i18n::msg::widgets_tracks_later())
+                    .value(format_offset(SUBTITLE_OFFSET_STEP_MS))
+                    .value_dim(true)
+                    .dim(self.offset_ms >= latest),
+                TimingRow::Reset => Row::new(crate::i18n::msg::widgets_tracks_reset()).dim(self.offset_ms == 0),
+            };
+            sec = sec.row(r);
+        }
+        sec
+    }
+
+    /// The Subtitles tab's sections, recording where each one starts. `TableView::sel` is one
+    /// flat index over all of them (`more_menu`'s contract), so the bases are counted from the
+    /// sections as BUILT — the Timing section is appended after the tones, and deriving the tones'
+    /// base from the table's END (what this once did) put it inside Timing instead.
+    fn subtitle_sections(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> Vec<Section> {
+        let subs = self.build_subs(ps, meta);
+        let tones = self.build_tones();
+        let tone_base = subs.rows.len() as c_int;
+        self.tone_base = Some(tone_base);
+        let mut sections = vec![subs, tones];
+        // Only a direct play draws its own captions; a transcode burns them into the picture,
+        // where no client-side offset can reach.
+        self.offset_base = if crate::route::is_transcoding(ps) {
+            None
         } else {
-            self.build_subs(ps)
+            sections.push(self.build_timing());
+            Some(tone_base + SubtitleTone::LADDER.len() as c_int)
         };
-        let sel = self.sel_for_tab(ps, tab);
-        self.table.set_sections(vec![sec], sel, slide);
+        sections
+    }
+
+    fn rebuild(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int, slide: bool) {
+        let sel = self.sel_for_tab(ps, meta, tab);
+        if tab == 0 {
+            self.tone_base = None;
+            self.offset_base = None;
+            self.table.set_sections(vec![self.build_audio(meta)], sel, slide);
+        } else {
+            let sections = self.subtitle_sections(ps, meta);
+            self.table.set_sections(sections, sel, slide);
+        }
+    }
+
+    /// Whether OK on the focused row leaves the panel OPEN: the Timing rows do, because an offset
+    /// is found by stepping and watching, and a panel that closed on every 100 ms would have to be
+    /// reopened and walked back to Timing between presses.
+    pub(crate) fn ok_keeps_open(&self) -> bool {
+        self.tab == 1 && timing_at(self.offset_base, self.table.sel).is_some()
     }
 
     /// The panel geometry — shared by `update` and `draw` so scrolling math matches.
@@ -353,11 +496,9 @@ impl TrackMenuState {
     }
 
     pub(crate) fn draw(&mut self, appear: f32, measure: &dyn crate::ui::machine::Measure) {
-        // modal scrim (dims the video plane showing through) + the appear fade/rise — the container
-        // now drives the phase and the appear spring; this reproduces exactly what
-        // `Popover::scrim(0.58)` and `Popover::content_painter(20.0)` used to draw.
-        let dim = theme::scrim_black(0.58 * appear);
-        Painter::root().rect(Rect::FULL, 0.0, dim, dim, 0.0);
+        // The appear fade/rise — the container drives the phase and the appear spring. The dim
+        // over the video plane is the container's too (`PlayerOverlayScreen::scrim`,
+        // `theme::underlay::DIM_PLAYER`), painted at the end of the player's page pass.
         let p = Painter::root()
             .alpha(appear)
             .translate(0.0, Popover::RISE * (1.0 - appear));
@@ -489,27 +630,82 @@ where
 /// The PLAYING item's track lists — the menu's ONLY data source. `metadata::current()` is the
 /// detail page's item, which is the SHOW during an episode play (its lists are episode 1's) and
 /// can be a different item entirely when playing straight from Home.
-fn tracks() -> Option<&'static metadata::PlayingItem> {
-    metadata::playing()
+fn tracks<'a>(meta: metadata::MetadataView<'a>) -> Option<&'a metadata::PlayingItem> {
+    meta.playing()
 }
 
-fn n_audio() -> c_int {
-    tracks().map(|t| t.audio.len()).unwrap_or(0) as c_int
+fn n_audio(meta: metadata::MetadataView<'_>) -> c_int {
+    tracks(meta).map(|t| t.audio.len()).unwrap_or(0) as c_int
 }
-/// Subtitle rows currently offered, as indices into the playing subs list. External/sidecar
-/// subs are NOT in the container, so the client renderer can't show them on direct-play —
-/// they're listed only while transcoding (the server can burn them).
-fn visible_subs(ps: &crate::route::PlaybackSession) -> Vec<usize> {
-    tracks()
+/// Subtitle rows offered on this route: text sidecars can be drawn on direct play;
+/// all sidecars are offered during transcoding, when the server burns them.
+fn visible_subs(ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> Vec<usize> {
+    tracks(meta)
         .map(|t| {
             t.subs
                 .iter()
                 .enumerate()
-                .filter(|(_, s)| !s.external || crate::route::is_transcoding(ps))
+                .filter(|(_, s)| {
+                    !s.external || s.sidecar_renderable() || crate::route::is_transcoding(ps)
+                })
                 .map(|(i, _)| i)
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Which tone a flat Subtitles-panel row is, or `None` for a track row (and for anything past
+/// the ladder — `sel` survives a rebuild, so a stale index is no rung rather than a neighbour).
+fn tone_at(tone_base: Option<c_int>, sel: c_int) -> Option<SubtitleTone> {
+    let i = usize::try_from(sel.checked_sub(tone_base?)?).ok()?;
+    SubtitleTone::LADDER.get(i).copied()
+}
+
+/// The Timing section's three rows, in drawn order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TimingRow {
+    Earlier,
+    Later,
+    Reset,
+}
+
+impl TimingRow {
+    const ALL: [TimingRow; 3] = [TimingRow::Earlier, TimingRow::Later, TimingRow::Reset];
+}
+
+/// Which Timing row a flat Subtitles-panel row is — `None` for a track or tone row, on the Audio
+/// tab, and during a transcode (which has no Timing section).
+fn timing_at(offset_base: Option<c_int>, sel: c_int) -> Option<TimingRow> {
+    let i = usize::try_from(sel.checked_sub(offset_base?)?).ok()?;
+    TimingRow::ALL.get(i).copied()
+}
+
+/// Resolve the typed tone at the UI boundary; persisted values and technical logs stay stable.
+fn tone_label(tone: SubtitleTone) -> &'static str {
+    match tone {
+        SubtitleTone::White => crate::i18n::msg::widgets_tracks_tone_white(),
+        SubtitleTone::Silver => crate::i18n::msg::widgets_tracks_tone_silver(),
+        SubtitleTone::LightGrey => crate::i18n::msg::widgets_tracks_tone_light_grey(),
+        SubtitleTone::Grey => crate::i18n::msg::widgets_tracks_tone_grey(),
+        SubtitleTone::DarkGrey => crate::i18n::msg::widgets_tracks_tone_dark_grey(),
+        SubtitleTone::Charcoal => crate::i18n::msg::widgets_tracks_tone_charcoal(),
+    }
+}
+
+/// An offset as localized signed seconds to the tenth; examples below use English formatting.
+/// ASCII hyphen-minus rather than U+2212, which the UI font is not guaranteed to carry.
+fn format_offset(ms: i64) -> String {
+    format_offset_in(ms, crate::i18n::current())
+}
+
+fn format_offset_in(ms: i64, locale: &crate::i18n::LocaleContext) -> String {
+    let sign = match ms.signum() {
+        1 => "+",
+        -1 => "-",
+        _ => "",
+    };
+    let tenths = (ms.unsigned_abs() / 100) as i64;
+    crate::i18n::msg::core_seconds_in(locale, &format!("{sign}{}", locale.decimal(tenths, 1)))
 }
 
 // ---- section building ----
@@ -689,6 +885,186 @@ mod tests {
         );
     }
 
+    /// **A Subtitles-panel row is a track or a tone, never both, and the split is where the table
+    /// was built** — with `Off` + two tracks the ladder starts at row 3. The failure this pins is
+    /// the quiet one: without the split every row past the tracks falls through to the
+    /// `vis.get(..)` miss, which means OFF — so picking a tone would switch the subtitles off.
+    #[test]
+    fn a_row_past_the_tracks_is_a_tone_and_a_track_row_never_is() {
+        let base = Some(3);
+        for track_row in 0..3 {
+            assert_eq!(tone_at(base, track_row), None, "row {track_row} is a track");
+        }
+        for (i, tone) in SubtitleTone::LADDER.iter().enumerate() {
+            assert_eq!(tone_at(base, 3 + i as c_int), Some(*tone));
+        }
+        let past = 3 + SubtitleTone::LADDER.len() as c_int;
+        assert_eq!(tone_at(base, past), None, "past the ladder is no rung, not the last one");
+        assert_eq!(tone_at(base, -1), None);
+        // the Audio tab has no Color section, so nothing there is ever a tone
+        for sel in [-1, 0, 3, c_int::MAX] {
+            assert_eq!(tone_at(None, sel), None);
+        }
+    }
+
+    /// Sidecars are subtitle rows, so the Color section starts after them just as it starts after
+    /// embedded tracks. Exercise the menu's actual flat-row dispatch: row 2 is the EXTERNAL
+    /// sidecar and row 3 is the first tone when the list is Off + embedded + sidecar.
+    #[test]
+    fn sidecar_and_tone_rows_map_to_their_own_commits_in_one_menu() {
+        let _g = crate::testlock::serial(); // the panel seeds its offset from the player's global
+        crate::player::sidecar::reset();
+        crate::player::set_subtitle_offset(0);
+        let ps = crate::route::PlaybackSession::IDLE;
+        let mut store = crate::stores::metadata::MetadataStore::default();
+        assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(
+            crate::metadata::PlayingItem {
+                sid: crate::plex::ServerId::from_raw(0),
+                rk: "rk".into(),
+                show_rk: String::new(),
+                audio: Vec::new(),
+                subs: vec![
+                    crate::metadata::Stream {
+                        id: 41,
+                        index: 0,
+                        lang: "English".into(),
+                        codec: "srt".into(),
+                        ..Default::default()
+                    },
+                    crate::metadata::Stream {
+                        id: 42,
+                        index: 1,
+                        lang: "French".into(),
+                        codec: "srt".into(),
+                        external: true,
+                        key: "/library/streams/42.srt".into(),
+                        ..Default::default()
+                    },
+                ],
+                video_fps: 0.0,
+                width: 0,
+                height: 0,
+                bitrate: 0,
+                dovi: Default::default(),
+                markers: Vec::new(),
+                chapters: Vec::new(),
+                blur: None,
+            },
+        ))));
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1);
+
+        menu.focus_row(2);
+        assert_eq!(
+            menu.on_ok(&ps, store.view()),
+            Some(TrackCommit::Subtitle {
+                render_ordinal: -1,
+                stream_id: 42,
+                sidecar_key: Some("/library/streams/42.srt".into()),
+                sidecar_codec: "srt".into(),
+            })
+        );
+
+        menu.focus_row(3);
+        assert_eq!(
+            menu.on_ok(&ps, store.view()),
+            Some(TrackCommit::SubtitleTone(SubtitleTone::LADDER[0]))
+        );
+
+        // …and the Timing rows start where the ladder ends: Earlier, Later, Reset
+        let timing = 3 + SubtitleTone::LADDER.len() as c_int;
+        menu.focus_row(timing + 1);
+        assert!(menu.ok_keeps_open());
+        assert_eq!(menu.on_ok(&ps, store.view()), Some(TrackCommit::SubtitleOffset(100)));
+    }
+
+    /// **The Timing section is a stepper, three rows whatever the range.** Each Earlier/Later
+    /// press moves the offset one step from what the panel last showed (not from the player's
+    /// atomic, which the loop sets a frame later), keeps the panel open with the cursor where it
+    /// was, and the read-out follows; the limits and a Reset at zero commit nothing.
+    #[test]
+    fn the_timing_rows_step_the_offset_and_keep_the_panel_open() {
+        let _g = crate::testlock::serial();
+        crate::player::sidecar::reset(); // an embedded (or no) track: the range is 0..=+30 s
+        crate::player::set_subtitle_offset(0);
+        let ps = crate::route::PlaybackSession::IDLE;
+        let store = crate::stores::metadata::MetadataStore::default();
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1);
+        // Off + the tone ladder + Timing — not one row per offset value
+        let earlier = 1 + SubtitleTone::LADDER.len() as c_int;
+        let (later, reset) = (earlier + 1, earlier + 2);
+        assert_eq!(menu.table.n_rows(), reset + 1, "a short panel, whatever the range");
+        assert_eq!(menu.table.sections[2].accessory, "0.0 s");
+
+        menu.focus_row(later);
+        for want in [100, 200, 300] {
+            assert_eq!(menu.on_ok(&ps, store.view()), Some(TrackCommit::SubtitleOffset(want)));
+            assert_eq!(menu.sel(), later, "the cursor stays on the row being pressed");
+        }
+        assert_eq!(menu.table.sections[2].accessory, "+0.3 s");
+        menu.focus_row(earlier);
+        assert_eq!(menu.on_ok(&ps, store.view()), Some(TrackCommit::SubtitleOffset(200)));
+        menu.focus_row(reset);
+        assert!(menu.ok_keeps_open());
+        assert_eq!(menu.on_ok(&ps, store.view()), Some(TrackCommit::SubtitleOffset(0)));
+        assert_eq!(menu.on_ok(&ps, store.view()), None, "Reset at zero is nothing to perform");
+
+        crate::player::set_subtitle_offset(30_000);
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1);
+        menu.focus_row(later);
+        assert_eq!(menu.on_ok(&ps, store.view()), None, "the limit clamps rather than wraps");
+        assert_eq!(menu.table.sections[2].accessory, "+30.0 s");
+        crate::player::set_subtitle_offset(0);
+
+        // a track or tone row still closes the panel
+        menu.focus_row(0);
+        assert!(!menu.ok_keeps_open());
+        menu.focus_row(1);
+        assert!(!menu.ok_keeps_open());
+    }
+
+    /// **Earlier is dim and inert at the selected kind's floor.** An embedded track takes a delay
+    /// only (its cues arrive through the A/V queues, a couple of seconds ahead), so at zero the row
+    /// is drawn dim and OK on it performs nothing; a sidecar, whole in memory, steps down to -30 s.
+    /// The menu and the player's clamp read ONE range function, so they cannot disagree.
+    #[test]
+    fn earlier_is_dim_and_inert_at_the_selected_kinds_floor() {
+        let _g = crate::testlock::serial();
+        crate::player::sidecar::reset();
+        crate::player::set_subtitle_offset(0);
+        let ps = crate::route::PlaybackSession::IDLE;
+        let store = crate::stores::metadata::MetadataStore::default();
+        let earlier = 1 + SubtitleTone::LADDER.len() as c_int;
+
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1);
+        assert!(menu.table.sections[2].rows[0].dim, "no advance on an embedded track: Earlier is dim");
+        menu.focus_row(earlier);
+        assert_eq!(menu.on_ok(&ps, store.view()), None, "…and inert");
+        assert_eq!(menu.table.sections[2].accessory, "0.0 s");
+
+        crate::player::sidecar::select_without_fetch_for_test(42);
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1);
+        assert!(!menu.table.sections[2].rows[0].dim, "a sidecar can be advanced");
+        menu.focus_row(earlier);
+        assert_eq!(menu.on_ok(&ps, store.view()), Some(TrackCommit::SubtitleOffset(-100)));
+        crate::player::set_subtitle_offset(-30_000);
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1);
+        assert!(menu.table.sections[2].rows[0].dim, "-30 s is a sidecar's floor");
+        menu.focus_row(earlier);
+        assert_eq!(menu.on_ok(&ps, store.view()), None);
+
+        crate::player::set_subtitle_offset(0);
+        crate::player::sidecar::reset();
+    }
+
+    #[test]
+    fn an_offset_reads_as_signed_seconds_to_the_tenth() {
+        assert_eq!(format_offset(0), "0.0 s");
+        assert_eq!(format_offset(100), "+0.1 s");
+        assert_eq!(format_offset(-100), "-0.1 s");
+        assert_eq!(format_offset(1_300), "+1.3 s");
+        assert_eq!(format_offset(-30_000), "-30.0 s");
+    }
+
     /// **Position is the join, so an unnamed track must occupy a slot rather than be skipped.**
     /// `TrackNames` is dense by contract; this pins the reader's half of it — the N-th entry, an
     /// out-of-range index and the `-1` that `sub_render_ordinal` answers for an external sidecar
@@ -760,6 +1136,9 @@ mod focus_tests {
             tab: 0,
             active_audio: 0,
             active_sub: -1,
+            tone_base: None,
+            offset_base: None,
+            offset_ms: 0,
             table,
         }
     }
@@ -832,5 +1211,22 @@ mod focus_tests {
                 want.map(|r| (r.x, r.y, r.w, r.h))
             );
         });
+    }
+}
+
+#[cfg(test)]
+mod localized_offset_tests {
+    #[test]
+    fn subtitle_timing_uses_locale_decimal_and_unit_without_changing_offset_sign() {
+        use crate::i18n::{LocaleContext, Preference};
+        for (preference, region, negative, positive) in [
+            (Preference::En, "en-US", "-0.1 s", "+1.3 s"),
+            (Preference::Es, "es-ES", "-0,1 s", "+1,3 s"),
+            (Preference::Be, "be-BY", "-0,1 с", "+1,3 с"),
+        ] {
+            let locale = LocaleContext::resolve(preference, None, Some(region), None, None);
+            assert_eq!(super::format_offset_in(-100, &locale), negative);
+            assert_eq!(super::format_offset_in(1300, &locale), positive);
+        }
     }
 }

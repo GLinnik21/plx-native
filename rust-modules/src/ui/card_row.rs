@@ -268,6 +268,11 @@ impl CardRow {
     pub(crate) fn scroll_x(&self) -> f32 {
         self.scroll_x.pos
     }
+    /// Read-only witness for the finite hero/grid device scene. A retained offset
+    /// must have a stationary shelf spring while snap transforms its placement.
+    #[cfg(feature = "devtriggers")]
+    pub(crate) fn scroll_velocity(&self) -> f32 { self.scroll_x.vel }
+
     /// Restore a saved viewport without animating from the constructor's origin. Clamp against
     /// current content because the row may have shrunk while its screen was covered or evicted.
     pub(crate) fn restore_scroll(&mut self, scroll: f32, n: usize, sty: &RowStyle) {
@@ -563,6 +568,32 @@ pub(crate) fn draw_heading(
 const MIN_HEADING_RUN: f32 = 48.0;
 
 
+/// Conservative paint bounds for a complete card, including its shadow and focused label.
+/// The label anchors to the unscaled bottom even during a press, just as `draw_focused` does.
+fn tile_paint_bounds(rect: Rect, scale: f32, labelled: bool) -> Rect {
+    let pad = theme::CARD_SHADOW_BLUR + 1.0;
+    let mut bounds = rect.inset(-pad);
+    if labelled {
+        let label_bottom = rect.y + rect.h * 0.5 + rect.h / scale * 0.5 + UNDER_LABEL_H;
+        bounds.h = bounds.h.max(label_bottom - bounds.y);
+    }
+    bounds
+}
+
+/// Reject a whole card before preparing artwork or fitting overlay text. The blur source is a
+/// crop of the page; its primitive-level rejection comes too late to avoid that CPU work.
+pub(crate) fn paint_visible(p: Painter, rect: Rect, scale: f32, labelled: bool) -> bool {
+    // Recording follows the buffered composition's text queries, including its offscreen rows.
+    if p.is_recording() { return true; }
+    let mut bounds = tile_paint_bounds(rect, scale, labelled);
+    bounds.x += p.dx();
+    bounds.y += p.dy();
+    let visible = bounds.intersect(Rect::FULL);
+    visible.w > 0.0 && visible.h > 0.0
+        && (crate::ui::frame::backdrop::discovering()
+            || !crate::gfx::culled(bounds.x, bounds.y, bounds.w, bounds.h))
+}
+
 /// A non-focused cell body: the art tile + an optional resume bar. `rect` is the caller's
 /// already-scaled rect; `s` scales the corner radius. (The home grid's non-focused cell, verbatim.)
 pub(crate) fn draw_tile(
@@ -742,7 +773,7 @@ pub(crate) fn draw_focused(
 ///
 /// This is the loop the detail page's Related and Cast rows and the person page's Movies/Shows
 /// shelves all run; it lives here rather than in a screen so the culling discipline travels with
-/// it. **Only tiles that pass `on_axis` are drawn, and therefore only they call `resolve_tex`** —
+/// it. **Only tiles that pass `on_axis` are drawn, and therefore only they call `resolve_tex_wh_on`** —
 /// the 64-slot poster LRU must never see an off-screen request, which is exactly what a
 /// hand-rolled per-screen copy of this loop keeps getting wrong.
 ///
@@ -1354,6 +1385,39 @@ pub(crate) fn resume_bar(p: Painter, r: Rect, frac: f32, rad: f32) {
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn discovery_and_text_recording_keep_visible_cards_when_gl_is_suppressed() {
+        use crate::ui::frame::backdrop::{self, Sources};
+        use std::{cell::RefCell, rc::Rc};
+        let _guard = crate::testlock::serial();
+        let sources = Rc::new(RefCell::new(Sources::default()));
+        sources.borrow_mut().begin(vec![]);
+        let _walk = backdrop::discover(sources);
+        let card = super::Rect::new(100.0, 200.0, 400.0, 220.0);
+        assert!(crate::gfx::culled(card.x, card.y, card.w, card.h));
+        assert!(super::paint_visible(super::Painter::root(), card, 1.0, true));
+        assert!(super::paint_visible(super::Painter::recording(), card, 1.0, true));
+        let offscreen = super::Rect::new(100.0, -500.0, 400.0, 220.0);
+        assert!(!super::paint_visible(super::Painter::root(), offscreen, 1.0, true));
+        assert!(super::paint_visible(super::Painter::recording(), offscreen, 1.0, true));
+    }
+
+    #[test]
+    fn card_paint_culling_keeps_shadow_and_pressed_caption_at_viewport_edges() {
+        let _guard = crate::testlock::serial();
+        let p = super::Painter::root();
+        let just_above = super::Rect::new(100.0, -250.0, 400.0, 220.0);
+        assert!(super::paint_visible(p, just_above, 1.0, false), "the shadow reaches the panel");
+        let label_only = super::Rect::new(100.0, -300.0, 400.0, 220.0);
+        assert!(!super::paint_visible(p, label_only, 1.0, false));
+        assert!(super::paint_visible(p, label_only, 0.94, true), "a pressed card's label remains visible");
+        let far_above = super::Rect::new(100.0, -500.0, 400.0, 220.0);
+        assert!(!super::paint_visible(p, far_above, 0.94, true));
+        assert!(super::paint_visible(p.translate(0.0, 400.0), far_above, 0.94, true));
+        let below = super::Rect::new(100.0, super::SCR_H + 32.0, 400.0, 220.0);
+        assert!(!super::paint_visible(p, below, 1.0, true));
+    }
+
     use super::*;
 
     #[test]
@@ -1397,6 +1461,30 @@ mod tests {
     }
 
     const DT: f32 = 1.0 / 60.0;
+
+    #[test]
+    fn a_label_band_reveal_defers_art_and_then_settles() {
+        use crate::ui::card_motion::{History, Identity, Verdict};
+        let mut row = CardRow::new();
+        let mut history = History::default();
+        let mut saw_fast = false;
+        let mut last = Verdict::Unknown;
+        for frame in 0..600 {
+            let before = row.under_band();
+            row.update(3, Some(0), &RowStyle::HOME, DT);
+            assert_eq!(row.scroll_x(), 0.0);
+            history.begin();
+            last = history.observe(Identity { owner: 1, asset: 1 },
+                Rect::new(0.0, ROW_PITCH_FIXED + row.under_band(), 250.0, 375.0), frame * 16);
+            if frame > 0 && (row.under_band() - before).abs() / DT > 120.0 {
+                assert_eq!(last, Verdict::Moving, "band-only displacement must defer poster work");
+                saw_fast = true;
+            }
+        }
+        assert!(saw_fast, "the fixture must exercise a fast band reveal");
+        assert_eq!(last, Verdict::Settled);
+    }
+
     /// The full clearance a HOME shelf's heading needs over a popped tile — asked of
     /// [`heading_lift_max`] rather than restating its three terms, because a screen now RESERVES
     /// this same number in its layout (the home grid's `row_reveal_band`) and a test that re-derived it

@@ -344,7 +344,9 @@ can answer **nothing** about:
 And even within its own remit it grades **starting**, not working. A firmware can export every ACB
 entry point and still refuse to put a picture on the video plane; `docs/webos5-port.md` §4 is the
 standing list of what only a human with a television can settle. Playback is device-verified on
-4.10.0 (the dev set) and 6.5.2 (issue #22) and nowhere else.
+4.10.0 (the dev set) and 6.5.2 (issue #22); beyond those, the only evidence is opt-in PostHog
+`playback.started` events from field sets (4.4.2 to 11.2.0 as of 2026-09), which say a first frame
+was shown and nothing about why a firmware might differ.
 
 For the questions in that list, the answer is not this tool. It is
 `.agents/skills/decompile-tv-lib/` — harvest the actual `.so` off a set and read it — and for a

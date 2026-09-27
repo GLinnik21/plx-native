@@ -114,6 +114,15 @@ pub(super) fn race_plan() -> ProbePlan {
     }
 }
 
+/// A [`ProbeDial`] scripted in the legacy `(status, body)` shape — status `0` is "nothing
+/// answered", with no transport evidence (`ProbeReply::from`). For the racing fixtures that are
+/// about completion order and acceptance, not about how a failure is named.
+pub(super) fn status_dial(
+    f: impl Fn(&Origin, Option<&crate::plex::ResolvePin>, Duration) -> (i32, Vec<u8>) + Send + Sync + 'static,
+) -> ProbeDial {
+    Arc::new(move |origin, pin, budget| ProbeReply::from(f(origin, pin, budget)))
+}
+
 pub(super) fn test_policy() -> ProbeDeadlines {
     ProbeDeadlines {
         local: Duration::from_secs(1),
@@ -190,6 +199,7 @@ pub(super) fn cached_session(protected_pin: Option<&str>) -> Session {
         server: s.server.clone(),
         sources: s.sources.clone(),
         pin: protected_pin.map(session::PinVerifier::new),
+        extensions: Default::default(),
     });
     s.remember_profile(ProfileCreds {
         uuid: "u-kid".into(),
@@ -207,6 +217,7 @@ pub(super) fn cached_session(protected_pin: Option<&str>) -> Session {
         },
         sources: vec![source("ours", true, "kid-token")],
         pin: None,
+        extensions: Default::default(),
     });
     s
 }

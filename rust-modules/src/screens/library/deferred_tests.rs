@@ -126,7 +126,8 @@ impl Fixture {
             page,
             ScreenEvent::WillLeave(crate::ui::machine::Leave::Deeper),
         );
-        let results = apply(&self.stores, out);
+        let directory = self.directory.view();
+        let results = apply(&mut self.stores, directory, out);
         self.capture();
         assert!(
             page.pending.section().is_none() && page.pending.grid().is_none(),
@@ -140,15 +141,35 @@ impl Drop for Fixture {
         crate::plex::reset_servers_for_test();
     }
 }
-fn apply(stores: &crate::stores::Stores, out: Vec<Stamped<TestHost>>) -> Vec<bool> {
+fn apply(
+    stores: &mut crate::stores::Stores,
+    directory: crate::stores::browse::DirectoryView<'_>,
+    out: Vec<Stamped<TestHost>>,
+) -> Vec<bool> {
     // Pump the real synchronous StoreCmd drain; no asynchronous worker is needed to grade
     // selection/query acceptance. The retained fixture views refresh only after this drain.
+    // Only `Browse` ever actually flows through this fixture's screen, but the match stays
+    // exhaustive over every store rather than silently dropping a command a future test adds.
     out.into_iter()
         .filter_map(|effect| match effect.fx {
             Fx::App(AppFx::Store(_, StoreCmd::Browse(command))) => {
                 Some(stores.browse_run(command))
             }
-            Fx::App(AppFx::Store(_, command)) => Some(crate::stores::apply(command).changed),
+            Fx::App(AppFx::Store(_, StoreCmd::Hubs(command))) => {
+                Some(stores.hubs.run_with_directory(command, directory).changed)
+            }
+            Fx::App(AppFx::Store(_, StoreCmd::Metadata(command))) => {
+                Some(stores.metadata.run(command))
+            }
+            Fx::App(AppFx::Store(_, StoreCmd::Person(command))) => {
+                Some(stores.person.run(command))
+            }
+            Fx::App(AppFx::Store(_, StoreCmd::Search(command))) => {
+                Some(stores.search_run(command, directory))
+            }
+            Fx::App(AppFx::Store(_, StoreCmd::ViewState(command))) => {
+                Some(stores.viewstate_run(command, directory))
+            }
             _ => None,
         })
         .collect()

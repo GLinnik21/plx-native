@@ -223,6 +223,9 @@ pub(crate) fn decode_ip(c: u8) -> Option<IpVersion> {
 use super::identity::{device_name, DEVICE, MODEL, PROVIDES};
 
 impl Client {
+    #[cfg(test)]
+    pub(crate) fn client_id_for_test(&self) -> &str { &self.client_id }
+
     pub(crate) fn capture_generation_seed() -> u32 { GEN_SEQ.load(Relaxed) }
 
     /// Called only before constructing controlled resources in an empty registry.
@@ -239,7 +242,7 @@ impl Client {
     /// but `session::load` reads a file and can WRITE one (it mints + persists the uuid on first
     /// boot), which was tolerable behind a `OnceLock` singleton built exactly once and is not on
     /// a registry that constructs a `Client` per server and re-points slots. The registry does
-    /// that read once per registration instead, so this constructor touches no filesystem and no
+    /// receives a captured identity (or consults the non-blocking cache), so this constructor touches no filesystem and no
     /// global but the generation counter.
     pub(super) fn new(
         id: ServerId,
@@ -248,6 +251,7 @@ impl Client {
         token: &str,
         client_id: &str,
     ) -> Client {
+        debug_assert!(!client_id.is_empty(), "Client requires a captured device identity");
         let generation = next_gen();
         Client {
             id,
@@ -459,7 +463,7 @@ impl Client {
         headers: &[&str],
         deadline: std::time::Instant,
     ) -> http::RequestOutcome {
-        if !self.may_send() { return http::RequestOutcome::Transport; }
+        if !self.may_send() { return http::RequestOutcome::Transport(None); }
         let owned = pms_headers(headers);
         let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
         http::request_until_outcome(
@@ -539,7 +543,7 @@ impl Client {
         }
     }
 
-    /// The deadline-bearing twin used only by an in-flight ABR candidate registration. Parsing
+    /// The deadline-bearing twin for ABR registration and optional show preferences. Parsing
     /// and endpoint-safe diagnostics are identical to the ordinary path; only transport policy
     /// differs.
     pub(super) fn get_json_with_headers_until(
@@ -571,13 +575,25 @@ impl Client {
                 JsonDeadlineOutcome::Response { reply, parsed }
             }
             http::RequestOutcome::Deadline => JsonDeadlineOutcome::Deadline,
-            http::RequestOutcome::Transport => JsonDeadlineOutcome::Transport,
+            http::RequestOutcome::Transport(_) => JsonDeadlineOutcome::Transport,
         }
     }
 
     /// GET raw bytes (image transcode / sidecar sub) — caller decodes.
     pub(super) fn get_bytes(&self, path_no_token: &str) -> Option<Vec<u8>> {
         self.body_2xx_bulk(path_no_token, &[])
+    }
+
+    /// A size-bounded body on either transport, with a finite stalled-transfer timeout.
+    pub(super) fn get_sidecar_bytes(&self, path_no_token: &str) -> Option<Vec<u8>> {
+        if !self.may_send() { return None; }
+        let owned = pms_headers(&[]);
+        let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
+        let r = http::request_probe(
+            &self.origin, &self.with_token(path_no_token), Method::Get, &headers,
+            super::SIDECAR_MAX_BYTES, 25, self.resolve_pin.as_ref(),
+        ).ok()?;
+        r.ok().then_some(r.body)
     }
 
     /// GET raw bytes for a path this server ALREADY BUILT — the one entry point that does **not**
@@ -594,19 +610,36 @@ impl Client {
     /// The token is therefore in the CALLER's string. It must not be logged — the poster store
     /// logs no keys, and neither may anything else that holds one.
     pub(crate) fn fetch_built(&self, path_with_token: &str) -> Option<Vec<u8>> {
-        if !self.may_send() { return None; }
+        match self.fetch_built_outcome(path_with_token) {
+            ArtFetch::Bytes(b) => Some(b),
+            ArtFetch::Status(_) | ArtFetch::NoResponse => None,
+        }
+    }
+
+    /// [`Self::fetch_built`] keeping WHY there are no bytes, which is the difference between a
+    /// poster that will never exist (a 404) and one that could not be fetched right now (a refused
+    /// or timed-out connect, a link this client may not send on yet — the shapes a boot's
+    /// address race and an endpoint refresh take). The poster store retries the second kind and
+    /// not the first.
+    pub(crate) fn fetch_built_outcome(&self, path_with_token: &str) -> ArtFetch {
+        if !self.may_send() {
+            return ArtFetch::NoResponse;
+        }
         // NOT `body_2xx`, for the same reason this method exists at all: that helper appends the
         // token, and this path already ends in one.
         let owned = pms_headers(&[]);
         let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
-        let r = http::request_bulk(
+        match http::request_bulk(
             &self.origin,
             path_with_token,
             Method::Get,
             &headers,
             self.resolve_pin.as_ref(),
-        )?;
-        r.ok().then_some(r.body)
+        ) {
+            Some(r) if r.ok() => ArtFetch::Bytes(r.body),
+            Some(r) => ArtFetch::Status(r.status),
+            None => ArtFetch::NoResponse,
+        }
     }
 
     /// GET whose body is discarded (transcode decision / stop registration side effects).
@@ -650,7 +683,7 @@ impl Client {
     ) -> Option<i32> {
         match self.send_until(path_no_token, Method::Get, &[], deadline) {
             http::RequestOutcome::Response(reply) => Some(reply.status),
-            http::RequestOutcome::Deadline | http::RequestOutcome::Transport => None,
+            http::RequestOutcome::Deadline | http::RequestOutcome::Transport(_) => None,
         }
     }
 
@@ -662,7 +695,7 @@ impl Client {
     ) -> Option<i32> {
         match self.send_until(path_no_token, Method::Post, &[], deadline) {
             http::RequestOutcome::Response(reply) => Some(reply.status),
-            http::RequestOutcome::Deadline | http::RequestOutcome::Transport => None,
+            http::RequestOutcome::Deadline | http::RequestOutcome::Transport(_) => None,
         }
     }
 
@@ -1120,4 +1153,14 @@ mod tests {
             8020
         );
     }
+}
+
+/// What [`Client::fetch_built_outcome`] found: bytes, an HTTP status outside 2xx, or no
+/// completed response at all (transport — refused, timed out, refused by this build's own
+/// plaintext-credential rule, or a client that may not send yet).
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ArtFetch {
+    Bytes(Vec<u8>),
+    Status(i32),
+    NoResponse,
 }

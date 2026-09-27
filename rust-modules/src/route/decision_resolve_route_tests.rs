@@ -362,7 +362,7 @@ fn quality_changed_during_resolve_cannot_land_the_old_contract() {
 
     // This is the reducer half of a quality edit after ResolveEnv was snapshotted.
     begin_user_contract_boundary();
-    assert_eq!(pump_play(&mut ps), None);
+    assert_eq!(pump_play(&mut ps, &mut crate::stores::metadata::MetadataStore::default()), None);
     assert!(
         url(&ps).is_empty(),
         "the stale plan must never become the applied URL"
@@ -956,7 +956,7 @@ fn audio_change_invalidates_a_pending_original_recovery() {
     );
     request_user_route_intent(&ps, UserRouteIntent::RecoverOriginal);
 
-    commit_audio_selection(&mut ps, 1, "aac", 99);
+    commit_audio_selection(&mut ps, 1, "aac", 99, 2);
 
     assert!(ps.auto_original.is_none());
     let action = claim_route_action().expect("the new audio track needs HLS retranscode");
@@ -1243,7 +1243,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let mut requests = Vec::new();
         while std::time::Instant::now() < deadline && requests.len() < 2 {
-            match listener.accept() {
+            match crate::testnet::accept(&listener) {
                 Ok((mut socket, _)) => {
                     let mut request = String::new();
                     let mut reader = BufReader::new(socket.try_clone().expect("clone socket"));
@@ -1288,7 +1288,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
     });
 
     assert_eq!(
-        pump_play(&mut ps),
+        pump_play(&mut ps, &mut crate::stores::metadata::MetadataStore::default()),
         None,
         "the superseded plan may not be installed"
     );
@@ -1306,7 +1306,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         },
         rk: "refused-rk".into(),
     });
-    assert_eq!(pump_play(&mut ps), None, "a refusal has no playable URL");
+    assert_eq!(pump_play(&mut ps, &mut crate::stores::metadata::MetadataStore::default()), None, "a refusal has no playable URL");
     assert!(
         play_refused(&ps),
         "its server verdict still reaches the error read-out"
@@ -1378,6 +1378,49 @@ fn the_visible_switch_stamp_is_the_frame_tick_and_a_landing_cannot_rewind_it() {
     install_active_encoder("");
 }
 
+/// Retry, and a quality picked after a failure, resolve the SAME item with the subtitle the viewer
+/// had (`RetryContext::sub_sid`), so the timing offset tuned against that subtitle rides along. A
+/// genuinely new request (no retry) still starts at 0.
+#[test]
+fn a_retry_keeps_the_subtitle_offset_a_new_item_does_not() {
+    let _g = crate::testlock::serial();
+    crate::player::reset_subtitle();
+    crate::player::set_subtitle_offset(2_000);
+    let retry = RetryContext {
+            direct_play_mode: DirectPlayMode::Auto,
+        resume_ns: 0,
+        audio_sid: 17,
+        sub_sid: 23,
+        sub_offset_ms: crate::player::subtitle_offset_ms(),
+    };
+    reset_track_selection(Some(retry));
+    assert_eq!(
+        crate::player::subtitle_offset_ms(),
+        2_000,
+        "a retry of the same item must keep the offset tuned against its subtitle",
+    );
+    reset_track_selection(None);
+    assert_eq!(crate::player::subtitle_offset_ms(), 0, "a new item starts at 0");
+
+    // A sidecar's advance survives the reset (which deselects the sidecar) and is held to the
+    // range of whatever the landing re-selected: kept for the sidecar, dropped for anything else.
+    let advanced = RetryContext { sub_offset_ms: -2_000, ..retry };
+    reset_track_selection(Some(advanced));
+    assert_eq!(crate::player::subtitle_offset_ms(), -2_000);
+    crate::player::sidecar::select_without_fetch_for_test(23);
+    crate::player::reclamp_subtitle_offset();
+    assert_eq!(crate::player::subtitle_offset_ms(), -2_000, "the sidecar landed again");
+    reset_track_selection(Some(advanced));
+    crate::player::reclamp_subtitle_offset();
+    assert_eq!(
+        crate::player::subtitle_offset_ms(),
+        0,
+        "an advance never outlives the sidecar that allowed it",
+    );
+    crate::player::reset_audio_track();
+    crate::player::reset_subtitle();
+}
+
 #[test]
 fn a_refused_retry_keeps_its_position_and_full_request_for_the_next_quality() {
     let mut ps = crate::route::PlaybackSession::IDLE;
@@ -1403,9 +1446,11 @@ fn a_refused_retry_keeps_its_position_and_full_request_for_the_next_quality() {
     assert_eq!(
         current_retry_context(&ps, 3_600_000_000_000),
         RetryContext {
+            direct_play_mode: DirectPlayMode::Auto,
             resume_ns: 3_600_000_000_000,
             audio_sid: 17,
             sub_sid: 23,
+            sub_offset_ms: 0,
         },
         "a rescue must not silently restore the server-default tracks",
     );
@@ -1880,7 +1925,7 @@ fn cold_source_preflight_uses_the_playback_identity_and_does_not_close_it() {
 
         listener.set_nonblocking(true).unwrap();
         for _ in 0..50 {
-            match listener.accept() {
+            match crate::testnet::accept(&listener) {
                 Ok((socket, _)) => {
                     let mut extra = String::new();
                     BufReader::new(socket)
@@ -2042,4 +2087,144 @@ fn the_preview_tells_a_container_remux_apart_from_a_re_encode() {
     );
     // nothing playable loaded (a show still resolving its episode) answers nothing at all
     assert_eq!(playback_preview(&item("h264", "", "aac")), None);
+}
+
+#[test]
+fn on_deck_hevc_p5_preview_uses_the_selected_episodes_codec() {
+    // `playback_preview_with_capability_for_test` reads the process-global quality ceiling
+    // (`quality()`) and the server registry (`crate::plex::client_for`), same as
+    // `the_preview_tells_a_container_remux_apart_from_a_re_encode` above it. Without this guard
+    // another thread's test can move either between the two assertions below and flip
+    // DirectPlay/Converts out from under this one — see `crate::testlock` for why the lock (not a
+    // retry) is the fix.
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Original);
+    let mut show = crate::metadata::Detail {
+        is_show: true,
+        part: String::new(),
+        vcodec: String::new(),
+        width: 3840,
+        height: 1602,
+        dovi: p5(),
+        audio: vec![crate::metadata::Stream {
+            codec: "eac3".into(),
+            ..Default::default()
+        }],
+        on_deck: Some(crate::metadata::Episode {
+            part: "/library/parts/1/2/on-deck.mkv".into(),
+            vcodec: "hevc".into(),
+            acodec: "eac3".into(),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert!(show.vcodec.is_empty(), "a show deliberately has no file codec");
+    assert_eq!(
+        playback_preview_with_capability_for_test(
+            &show,
+            crate::webos::caps::DvCapability::Supported,
+        ),
+        Some(Preview::DirectPlay),
+    );
+    show.on_deck.as_mut().unwrap().vcodec = "h264".into();
+    assert_eq!(
+        playback_preview_with_capability_for_test(
+            &show,
+            crate::webos::caps::DvCapability::Supported,
+        ),
+        Some(Preview::Converts),
+        "the test must prove the selected episode codec reaches DV policy",
+    );
+}
+
+#[test]
+fn restored_sidecar_is_part_of_the_route_contract() {
+    let mut ps = PlaybackSession::IDLE;
+    let _guard = fresh_registry(&mut ps);
+    let sid = ServerId::from_raw(0);
+    let mut meta = crate::stores::metadata::MetadataStore::default();
+    let playing = Some(fourk_item_with_subs(
+        sid, vec![], vec![crate::metadata::Stream {
+            id: 77, external: true, selected: true, codec: "srt".into(),
+            key: "/library/streams/77".into(), ..Default::default()
+        }],
+    ));
+    let start = super::apply_plan(&mut ps, &mut meta, Plan {
+        sid, playing, url: "http://fixture.invalid/movie.mkv".into(), ..Default::default()
+    }, "rk-4k");
+    settle_plan_start_in_unit_test(&mut ps, start);
+    assert_eq!(cur_sub_sid(&ps), 77, "timeline and later audio/quality transcodes must retain the restored sidecar");
+    crate::player::sidecar::reset();
+}
+#[test]
+#[cfg(feature = "devtriggers")]
+fn sidecar_on_invalidates_a_pending_original_recovery() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Original);
+    apply_plan(&mut ps,
+        Plan {
+            url: "http://fixture.invalid/4000/master.m3u8".into(),
+            tsession: "encoder-subtitle-on".into(),
+            delivery: crate::plex::TranscodeDelivery::FixedHls {
+                seconds_per_segment: 2,
+            },
+            ceiling: Some(crate::abr::Rung::P720.ceiling()),
+            auto_original: Some(test_original_candidate(None)),
+            ..Default::default()
+        },
+        "rk-subtitle-on",
+    );
+    request_user_route_intent(&ps, UserRouteIntent::RecoverOriginal);
+
+    commit_subtitle_selection(&mut ps, -1, 88);
+
+    assert!(ps.auto_original.is_none());
+    let action = claim_route_action().expect("the burned subtitle needs HLS retranscode");
+    assert_eq!(
+        action.intent,
+        RouteIntent::User(UserRouteIntent::Retranscode)
+    );
+    finish_route_action(&mut ps, &action, RouteApplyResult::Prepared);
+
+    reset_session(&mut ps);
+    reset_player_control_for_test(&ps);
+    crate::player::reset_subtitle();
+}
+
+/// **A subtitle timing offset belongs to the track it was tuned against.** Picking a DIFFERENT
+/// track (another embedded one, a sidecar, or Off) starts the new one at zero; re-committing the
+/// track already showing — the menu republishes a subtitle OK even when nothing changed — keeps
+/// the offset the viewer found.
+#[test]
+fn picking_a_different_subtitle_track_resets_the_offset_and_re_picking_it_keeps_it() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    apply_plan(&mut ps,
+        Plan {
+            url: "https://example.invalid/source.mkv".into(),
+            delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+            transport_kbps: 22_000,
+            ..Default::default()
+        },
+        "rk-subtitle-offset",
+    );
+    commit_subtitle_selection(&mut ps, 2, 88);
+    crate::player::set_subtitle_offset(1_500);
+
+    commit_subtitle_selection(&mut ps, 2, 88);
+    assert_eq!(crate::player::subtitle_offset_ms(), 1_500, "the same track keeps its offset");
+
+    commit_subtitle_selection(&mut ps, 3, 89);
+    assert_eq!(crate::player::subtitle_offset_ms(), 0, "another track starts at zero");
+
+    crate::player::set_subtitle_offset(700);
+    commit_subtitle_selection(&mut ps, -1, 0);
+    assert_eq!(crate::player::subtitle_offset_ms(), 0, "Off drops the offset too");
+
+    reset_session(&mut ps);
+    reset_player_control_for_test(&ps);
+    crate::player::reset_subtitle();
+    crate::player::set_subtitle_offset(0);
 }

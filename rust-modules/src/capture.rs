@@ -73,14 +73,22 @@ const STABLE_PORT: u16 = 8910;
 /// rather than accidental — but the whole point of that guard having a named hatch is that
 /// somebody will use it.
 ///
-/// The rule is deliberately the simplest one that can be spelled twice: there are two flavours,
-/// so there are two ports. `make -s print-appport` is the same rule for the shell (that is what
+/// There are three flavours now, so there are three named ports rather than "stable, or one
+/// higher" — nightly was the third flavour the old comment here warned would need a real
+/// decision. `make -s print-appport` is the same rule for the shell (that is what
 /// `tools/tv-session.sh` passes to `stream-screen.py --app-port`), and `ci/flavor.py --selftest`
-/// compares the two. A THIRD flavour needs a decision in both places, and the selftest is what
-/// will say so.
+/// compares the two. A FOURTH flavour needs its own decision in both places, the same way nightly
+/// just did, and the selftest is what will say so.
 pub(crate) fn default_port() -> u16 {
     match crate::paths::flavour() {
         None => STABLE_PORT,
+        Some("debug") => STABLE_PORT + 1,
+        Some("nightly") => STABLE_PORT + 2,
+        // Defensive rather than reachable: the Makefile's FLAVORS whitelist and `paths::app_id`'s
+        // install-directory read are what actually decide a real television's flavour, so any
+        // OTHER suffix here means something outside that whitelist got installed by hand. Falling
+        // back to the debug port rather than panicking keeps a stray install's capture stream
+        // merely wrong rather than crashing the app over a dev convenience feature.
         Some(_) => STABLE_PORT + 1,
     }
 }
@@ -208,7 +216,13 @@ pub(crate) fn tick(now: u32) {
     // client must not keep pinning the size). The mpeg encoder is fixed at 960x540.
     let want_960 = (FD_MPEG.load(Ordering::Relaxed) >= 0 && MPEG_960.load(Ordering::Relaxed))
         || (FD_JPEG.load(Ordering::Relaxed) >= 0 && JPEG_960.load(Ordering::Relaxed));
-    match crate::gfx::cap_cycle(want_960, &mut buf) {
+    // A GL downscale and readback: GL work, labelled so for the hang watchdog.
+    let cycle = {
+        #[cfg(feature = "threadcheck")]
+        let _readback = crate::task::watchdog::readback_scope();
+        crate::gfx::cap_cycle(want_960, &mut buf)
+    };
+    match cycle {
         Some((w, h, flip)) => {
             let f = Frame {
                 seq: SEQ.fetch_add(1, Ordering::Relaxed),

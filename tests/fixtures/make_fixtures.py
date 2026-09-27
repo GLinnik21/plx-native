@@ -6,7 +6,7 @@ WHY THIS EXISTS. `tests/run.py` grades the player against nine symbolic *item sh
 maps each to a ratingKey on whatever PMS the contributor owns. That mapping is the whole
 barrier to entry: the shapes include a TrueHD default with an AC-3 sibling, a Dolby Vision
 profile 8.1 base layer, a PGS bitmap subtitle track and an eight-track audio file with
-English DTS at ordinal 6. Nobody has all of that lying around, and two of them (TrueHD,
+English TrueHD at ordinal 6. Nobody has all of that lying around, and two of them (TrueHD,
 Dolby Vision) have no freely-licensed example anywhere in the world. So a contributor
 either owns an exotic library or cannot run the suite at all. This script removes that:
 it builds every shape from lavfi sources, lays them out in two Plex-scannable trees, and
@@ -29,6 +29,11 @@ and `verify()`; what differs is the table (`PIPE_SHAPES`), the on-disk layout, a
 that nothing in that table is derived from Plex's watched threshold, its marker detector or
 a case's seek depth — because none of those exist down there. `PIPE_SHAPES`' own comment is
 where that tier's shapes, and the three it deliberately cannot contain, are argued.
+
+ONE STANDALONE SET (`--only mockverify`) is intentionally outside both manifest packs. It makes
+two small 150-second MKVs and an SRT for `tests/mock_pms.py --media`, so a television can verify
+language preferences and client-rendered subtitles without a Plex server or account. The mock
+ffprobes those files itself; this generator still verifies their exact stream layouts at creation.
 
 --------------------------------------------------------------------------------------
 THE TRAPS THIS SCRIPT IS BUILT AROUND. Every one of them fails SILENTLY — the command
@@ -158,12 +163,13 @@ ORDERING IS PART OF THE SPEC — the cases assert track POSITIONS, not just pres
 row 0 is *Off* and row r is subtitle index r-1. So:
 
  * `audio_switch_transcode` picks audio row 6 on `movie_h264_ac3_many_audio` and expects a
-   transcode, so index 6 is the ENGLISH DTS track (DTS is outside the direct-play set).
- * `audio_switch_native` picks audio row 0 on `episode_hevc_4k_hdr10_eac3` and expects a
-   NATIVE switch, and its title says "foreign default + eng … eng auto-picked at start".
+   transcode, so index 6 is the ENGLISH TrueHD track (TrueHD is outside the direct-play set).
+ * `audio_switch_native` picks audio row 1 on `episode_hevc_4k_hdr10_eac3` and expects a
+   NATIVE switch, and its title says "foreign default + eng … file default picked at start".
    So index 0 is a German E-AC-3 track carrying the default disposition and index 1 is the
-   English one: the route auto-picks English at start, row 0 switches to the German track,
-   and both being E-AC-3 keeps the switch native.
+   English one: with no Plex language preference the route auto-picks the file's default
+   (German, row 0) at start (#210), and row 1 switches to the English track — both being
+   E-AC-3 keeps the switch native.
  * `subtitle_text_srt` picks subtitle row 3 = index 2 and expects English cues, so the four
    text tracks are ordered [rus forced, rus, eng, eng-SDH] — the same order as the real
    library item the case was written against.
@@ -355,7 +361,7 @@ def banner_png(path, lines, scale):
 SUB_STEP, SUB_HOLD = 10, 8
 
 
-def sub_cue_times(duration):
+def sub_cue_times(duration, step=SUB_STEP, hold=SUB_HOLD):
     """The cue schedule, shared by the SRT writer, the PGS writer and verify().
 
     One function rather than three copies of `range(0, dur - hold, step)`, because what
@@ -364,7 +370,7 @@ def sub_cue_times(duration):
     600 s, and a track whose only cue is at t=0 satisfies every other check in this file
     while failing on the television as `no sub cue`, which reads as a demuxer regression.
     """
-    cues = list(range(0, max(0, int(duration) - SUB_HOLD), SUB_STEP))
+    cues = list(range(0, max(0, int(duration) - hold), step))
     # A clip shorter than one cue's hold has to BUILD anyway. `--secs 8` or less made this
     # schedule EMPTY, `write_srt` then wrote a zero-byte .srt, and ffmpeg refused it as an
     # input — so the three subtitle-bearing shapes died with `Invalid data found when
@@ -376,12 +382,16 @@ def sub_cue_times(duration):
     return cues or ([0] if int(duration) >= 1 else [])
 
 
-def write_srt(path, idx, label, duration, step=SUB_STEP, hold=SUB_HOLD):
+def write_srt(path, idx, label, duration, step=SUB_STEP, hold=SUB_HOLD, cover_end=False):
     def ts(t):
         return "%02d:%02d:%02d,000" % (t // 3600, t % 3600 // 60, t % 60)
 
     out = []
-    for n, t in enumerate(sub_cue_times(duration), start=1):
+    times = sub_cue_times(duration, step, hold)
+    final = max(0, int(duration) - hold)
+    if cover_end and final not in times:
+        times.append(final)
+    for n, t in enumerate(times, start=1):
         # The hold is CLAMPED into the clip. At declared length this is a no-op (the schedule
         # never places a cue later than dur - hold), but the floor cue that keeps a very short
         # `--secs` build alive would otherwise end past EOF — and a cue ending at 8 s inside a
@@ -391,6 +401,88 @@ def write_srt(path, idx, label, duration, step=SUB_STEP, hold=SUB_HOLD):
         out.append("%d\n%s --> %s\nS%d %s @ %ds\n" % (n, ts(t), ts(end), idx, label, t))
     path.write_text("\n".join(out), encoding="utf-8")
     return path
+
+
+def build_mockverify(root, duration=150):
+    """Build the compact, account-free media set consumed by tests/mock_pms.py --media."""
+    root = Path(root).expanduser().resolve()
+    try:
+        root.relative_to(REPO_ROOT)
+    except ValueError:
+        pass
+    else:
+        raise Fail("refusing to write mock verification media inside the repository")
+    root.mkdir(parents=True, exist_ok=True)
+    work = root / ".mockverify-work"
+    work.mkdir(parents=True, exist_ok=True)
+    v1_en = write_srt(work / "v1-eng.srt", 0, "V1 ENGLISH EMBEDDED", duration,
+                      step=2, hold=2, cover_end=True)
+    v1_de = write_srt(work / "v1-deu.srt", 1, "V1 GERMAN EMBEDDED", duration,
+                      step=2, hold=2, cover_end=True)
+    v2_embedded = write_srt(work / "v2-eng.srt", 0, "EMBEDDED", duration,
+                            step=2, hold=2, cover_end=True)
+    sidecar = write_srt(root / "mockverify-v2.eng.srt", 0, "SIDECAR", duration,
+                        step=2, hold=2, cover_end=True)
+
+    common = ["ffmpeg", "-y", "-v", "error", "-nostdin", "-t", str(duration),
+              "-f", "lavfi", "-i", "testsrc=size=1920x1080:rate=24"]
+    video = ["-map", "0:v", "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "high",
+             "-crf", "35", "-pix_fmt", "yuv420p", "-g", "48", "-sc_threshold", "0",
+             "-disposition:v:0", "default"]
+
+    v1 = root / "mockverify-v1.mkv"
+    argv = common + [
+        "-t", str(duration), "-f", "lavfi", "-i", f"sine=frequency=330:duration={duration}",
+        "-t", str(duration), "-f", "lavfi", "-i", f"sine=frequency=220:duration={duration}",
+        "-i", str(v1_en), "-i", str(v1_de),
+    ] + video + ["-map", "1:a", "-map", "2:a", "-map", "3:s", "-map", "4:s",
+                 "-c:a", "ac3", "-b:a", "192k", "-ac", "2", "-c:s", "srt",
+                 "-metadata:s:a:0", "language=deu", "-metadata:s:a:0", "title=German",
+                 "-disposition:a:0", "0",
+                 "-metadata:s:a:1", "language=eng", "-metadata:s:a:1", "title=English",
+                 "-disposition:a:1", "default",
+                 "-metadata:s:s:0", "language=eng", "-metadata:s:s:0", "title=English",
+                 "-disposition:s:0", "0",
+                 "-metadata:s:s:1", "language=deu", "-metadata:s:s:1", "title=German",
+                 "-disposition:s:1", "0", "-t", str(duration), str(v1)]
+    run(argv)
+
+    v2 = root / "mockverify-v2.mkv"
+    argv = common + [
+        "-t", str(duration), "-f", "lavfi", "-i", f"sine=frequency=262:duration={duration}",
+        "-i", str(v2_embedded),
+    ] + video + ["-map", "1:a", "-map", "2:s", "-c:a", "aac", "-b:a", "160k", "-ac", "2",
+                 "-c:s", "srt", "-metadata:s:a:0", "language=eng",
+                 "-metadata:s:a:0", "title=English", "-disposition:a:0", "default",
+                 "-metadata:s:s:0", "language=eng", "-metadata:s:s:0", "title=English",
+                 "-disposition:s:0", "0", "-t", str(duration), str(v2)]
+    run(argv)
+
+    expected = {
+        v1: [("video", "h264", None, 1), ("audio", "ac3", "deu", 0),
+             ("audio", "ac3", "eng", 1), ("subtitle", "subrip", "eng", 0),
+             ("subtitle", "subrip", "deu", 0)],
+        v2: [("video", "h264", None, 1), ("audio", "aac", "eng", 1),
+             ("subtitle", "subrip", "eng", 0)],
+    }
+    for path, want in expected.items():
+        got = []
+        info = probe(path)
+        for stream in info["streams"]:
+            got.append((stream["codec_type"], stream["codec_name"],
+                        (stream.get("tags") or {}).get("language"),
+                        int((stream.get("disposition") or {}).get("default", 0))))
+        if got != want:
+            raise Fail("%s stream layout mismatch: %r != %r" % (path.name, got, want))
+        measured = float(info["format"]["duration"])
+        if not 120 <= measured <= 180:
+            raise Fail("%s duration %.3fs is outside 120-180s" % (path.name, measured))
+    side_probe = probe(sidecar)
+    if [s.get("codec_name") for s in side_probe["streams"]] != ["subrip"]:
+        raise Fail("mockverify sidecar did not probe as SubRip")
+    shutil.rmtree(work, ignore_errors=True)
+    print("mockverify: built %s, %s, %s" % (v1, v2, sidecar))
+    return 0
 
 
 # ---------------------------------------------------------------------------------------
@@ -804,9 +896,8 @@ SHAPES = {
         # Stereo, and NO `title`. Two deliberate differences from every other shape here.
         # Stereo because this case is the mov-demuxer/ADTS-reframing path and a real-world
         # mp4 is usually 2.0 — 5.1 AAC coverage lives on episode_h264_aac — while
-        # `devcaps::audio_has` ignores the manufacturer table's channel count, so a set
-        # that advertises AAC at 2 channels would still be told to direct-play a 5.1 track
-        # and nothing in this repo would notice. No title because mp4 does not carry a
+        # Auto enforces the device table's channel ceiling, so a stereo-only AAC decoder
+        # still direct-plays this container case. No title because mp4 does not carry a
         # per-track title through this path at all: the spec used to claim one, the file
         # never had one, and verify() asserted neither.
         "audio": [{"codec": "aac", "ch": 2, "lang": "eng", "br": "192k", "pitch": 294,
@@ -830,7 +921,7 @@ SHAPES = {
         "duration": 120, "rate": 0.08,
         "video": {"codec": "h264", "size": "1920x1080", "crf": 25},
         # EIGHT tracks, and the ORDER is asserted: audio_switch_transcode picks row 6 and
-        # expects a transcode, so index 6 is English DTS (outside the direct-play set).
+        # expects a transcode, so index 6 is English TrueHD (outside the direct-play set).
         "audio": [
             {"codec": "ac3", "ch": 6, "lang": "eng", "br": "448k", "pitch": 200,
              "default": True, "title": "AC-3 5.1 English"},
@@ -844,8 +935,8 @@ SHAPES = {
              "title": "AC-3 5.1 Francais"},
             {"codec": "aac", "ch": 2, "lang": "deu", "br": "256k", "pitch": 450,
              "title": "AAC 2.0 Deutsch"},
-            {"codec": "dts", "ch": 6, "lang": "eng", "pitch": 500,
-             "title": "DTS 5.1 English"},
+            {"codec": "truehd", "ch": 6, "lang": "eng", "pitch": 500,
+             "title": "TrueHD 5.1 English"},
             {"codec": "vorbis", "ch": 2, "lang": "jpn", "pitch": 550,
              "title": "Vorbis 2.0 Japanese"},
         ],
@@ -945,6 +1036,15 @@ PIPE_SHAPES = {
         "video": {"codec": "h264", "size": "1920x1080", "crf": 20},
         "audio": [{"codec": "ac3", "ch": 6, "lang": "eng", "br": "448k", "pitch": 220,
                    "default": True, "title": "AC-3 5.1 English"}],
+        "subs": [],
+    },
+    "pipe_h264_dts_1080p": {
+        "kind": "clip", "ext": "mkv",
+        "duration": PIPE_SECS, "rate": 0.06,
+        "declare": {"vcodec": "h264", "acodec": "dts", "fps": float(FPS), "atmos": False},
+        "video": {"codec": "h264", "size": "1920x1080", "crf": 20},
+        "audio": [{"codec": "dts", "ch": 6, "lang": "eng", "br": "1411k", "pitch": 440,
+                   "default": True, "title": "DTS core 5.1 English"}],
         "subs": [],
     },
     "pipe_hevc_eac3_4k_hdr10": {
@@ -1425,6 +1525,7 @@ MBIT = {
 # over-estimates by the five tracks it does not have, which is the safe direction for a
 # disk-space warning.
 PIPE_MBIT = {
+    "pipe_h264_dts_1080p": 8.20,        # baseline picture + 1.4 Mbit/s DTS 5.1
     "pipe_h264_ac3_1080p": 7.24,        # measured, from a full 60 s build
     "pipe_hevc_eac3_4k_hdr10": 8.80,    # = episode_hevc_4k_hdr10_eac3 (hevc 4K crf 30 HDR)
     "pipe_hevc_eac3_4k_dovi_p8": 9.80,  # = movie_hevc_4k_dovi_p8
@@ -2736,6 +2837,22 @@ def main(argv=None):
         print("--secs must be at least 1", file=sys.stderr)
         return 2
 
+    only_names = [name for chunk in args.only
+                  for name in (x.strip() for x in chunk.split(",")) if name]
+    if "mockverify" in only_names:
+        if only_names != ["mockverify"]:
+            print("mockverify is a standalone set; select it by itself", file=sys.stderr)
+            return 2
+        if args.quick or args.secs is not None or args.tier != "integration":
+            print("mockverify has a fixed 150s layout and does not take tier/length overrides",
+                  file=sys.stderr)
+            return 2
+        try:
+            return build_mockverify(args.out)
+        except (Fail, FileNotFoundError) as e:
+            print("mockverify: FAILED: %s" % e, file=sys.stderr)
+            return 1
+
     tier = TIERS[args.tier]
     shapes = tier["shapes"]
     # One name for "the length this run builds at", None meaning "whatever each shape says".
@@ -2748,6 +2865,9 @@ def main(argv=None):
             for kk, pth in out_paths(label, k, spec):
                 print("%-34s %-8s %8ds  %s"
                       % (kk, spec["kind"], shape_duration(spec, secs), pth))
+        if args.tier == "integration":
+            print("%-34s %-8s %8ds  %s"
+                  % ("mockverify", "set", 150, Path("<out>") / "mockverify-v{1,2}.mkv"))
         # ...and the tooling report, because `--list` is what the README sends a newcomer to FIRST
         # and "which shapes can this machine actually build" is the only question they have at that
         # point. Without this the table above reads as ten happy rows to somebody with no

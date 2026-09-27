@@ -48,7 +48,7 @@ fn concurrent_session_change_after_attachment_rolls_back_only_this_attempt() {
         ..Default::default()
     });
     let newer = std::fs::read(temp.path()).unwrap();
-    assert!(boot::apply_deferred_capture(&mut rec, deferred).is_err());
+    assert!(boot::apply_deferred_capture(&mut rec, crate::ui::landgate::fixture_gate(), deferred).is_err());
     drop(rec); // the production refusal drops App; no later drop may recreate capture files
     assert!(std::fs::read(temp.path()).unwrap() == newer);
     assert!(
@@ -78,7 +78,7 @@ fn concurrent_session_change_after_attachment_rolls_back_only_this_attempt() {
         Box::new(crate::ui::rec::DirSink::create(&latest).unwrap()),
     )
     .expect("immediate next attempt can open");
-    boot::apply_deferred_capture(&mut retry, deferred).unwrap();
+    boot::apply_deferred_capture(&mut retry, crate::ui::landgate::fixture_gate(), deferred).unwrap();
     retry.tick(0, 0.0);
-    assert!(!retry.finish());
+    assert!(!retry.finish(crate::ui::landgate::fixture_gate()));
 }

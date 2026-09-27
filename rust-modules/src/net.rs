@@ -524,10 +524,16 @@ pub(crate) struct RequestFailure {
     pub cause: RequestError,
     pub status: Option<u16>,
     pub body_limit: Option<usize>,
+    /// The non-zero `CURLcode` `curl_easy_perform` returned, when the failure came from a transfer
+    /// at all. `None` for a request refused before libcurl ran (a URL with a NUL, an unloadable
+    /// libcurl, a failed handle setup). A bare number with no identity, which is why it may leave
+    /// the device in `telemetry::incident`'s link class; a DNS failure and a TLS refusal are the
+    /// two answers a failed sign-in most needs told apart.
+    pub curl_rc: Option<i32>,
 }
 
 impl From<RequestError> for RequestFailure {
-    fn from(cause: RequestError) -> Self { Self { cause, status: None, body_limit: None } }
+    fn from(cause: RequestError) -> Self { Self { cause, status: None, body_limit: None, curl_rc: None } }
 }
 
 /// CURLINFO_RESPONSE_CODE is the last response, not the CONNECT proxy response:
@@ -561,6 +567,7 @@ fn finish_response(
             cause: if rc == 28 && !sink.overflowed { RequestError::TimedOut } else { RequestError::Transport },
             status,
             body_limit: if sink.overflowed { max_body } else { None },
+            curl_rc: (rc != 0).then_some(rc as i32),
         });
     }
     Ok(Resp { status: status.unwrap(), body: sink.body })
@@ -673,6 +680,23 @@ pub(crate) fn request_result(
     max_body: Option<usize>,
     resolve: Option<&str>,
 ) -> Result<Resp, RequestError> {
+    request_result_evidence(url, headers, verb, body, t, follow_redirects, max_body, resolve)
+        .map_err(|failure| failure.cause)
+}
+
+/// [`request_result`] keeping the whole [`RequestFailure`] — the `CURLcode` a discovery probe's
+/// evidence names (`plex::probe::RouteOutcome`). The same one entry every such request passes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn request_result_evidence(
+    url: &str,
+    headers: &[String],
+    verb: &str,
+    body: Option<&[u8]>,
+    t: Timeouts,
+    follow_redirects: bool,
+    max_body: Option<usize>,
+    resolve: Option<&str>,
+) -> Result<Resp, RequestFailure> {
     // A host test that needs to drive the REAL discovery-probe path (`http::request_probe`, and
     // through it `auth::get_identity`) against a loopback HTTPS server cannot make libcurl trust
     // that server's self-signed certificate any other way: this function is the one place every
@@ -683,7 +707,7 @@ pub(crate) fn request_result(
     // exists for the lab receiver.
     #[cfg(test)]
     if let Some(bundle) = test_ca_bundle::get() {
-        return request_tls_result(
+        return request_tls_evidence(
             url,
             headers,
             verb,
@@ -695,7 +719,7 @@ pub(crate) fn request_result(
             resolve,
         );
     }
-    request_tls_result(
+    request_tls_evidence(
         url,
         headers,
         verb,
@@ -731,7 +755,7 @@ pub(crate) mod test_ca_bundle {
 }
 
 /// Real loopback PMS doubles for driving the discovery-probe race through the REAL curl/TLS
-/// stack (`auth::get_identity` → `http::request_probe` → `net::request_result`, unmodified) rather
+/// stack (`auth::get_identity` → `http::request_probe` → `net::request_result_evidence`, unmodified) rather
 /// than a fake [`auth::ProbeDial`] closure. `test_ca_bundle` above is the other half: it is how
 /// curl is told to trust the certificate [`mint_cert`] mints here — the same PEM, so a real TLS
 /// handshake against [`spawn_dual_protocol`] genuinely verifies.
@@ -856,6 +880,10 @@ mod loopback_pms {
     /// A loopback double that only ever speaks plaintext HTTP — for the "HTTPS fails" E2E
     /// scenario, where a TLS ClientHello against this listener must fail the handshake (there is
     /// no `rustls::ServerConnection` here to answer it) while a plain request still succeeds.
+    ///
+    /// A ClientHello (first byte `0x16`) gets what a plaintext-only web server sends it — a bare
+    /// `400` — so curl fails the HANDSHAKE at once rather than stalling until its timeout while
+    /// `drain_request` waits for a header terminator a ClientHello never contains.
     pub(crate) fn spawn_plain_only(body: Vec<u8>) -> u16 {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind plaintext listener");
         let port = listener.local_addr().unwrap().port();
@@ -864,6 +892,13 @@ mod loopback_pms {
                 let Ok(mut sock) = stream else { continue };
                 let body = body.clone();
                 std::thread::spawn(move || {
+                    let mut first = [0u8; 1];
+                    if matches!(sock.peek(&mut first), Ok(1)) && first[0] == 0x16 {
+                        let _ = sock.write_all(
+                            b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        );
+                        return;
+                    }
                     drain_request(&mut sock);
                     let _ = sock.write_all(&http_ok(&body));
                 });
@@ -1352,7 +1387,10 @@ pub(crate) fn refuse_name(host: &str, connect_s: c_long) -> bool {
     if nw.slow {
         std::thread::sleep(std::time::Duration::from_secs(connect_s.max(0) as u64));
     }
-    crate::log(&format!("net: nowan — refused name {host}"));
+    // `host=`, not a bare `{host}` interpolation, so `diag::scrub::scrub_local`'s host clause
+    // catches it — a private hostname reaching this line unredacted is the exact device leak
+    // `stream.rs`'s DNS-failure line had.
+    crate::log(&format!("net: nowan — refused name host={host}"));
     true
 }
 
@@ -1471,7 +1509,7 @@ mod request_tests {
             scope.spawn(|| {
                 let until = Instant::now() + Duration::from_secs(5);
                 while !stop.load(Ordering::Acquire) && Instant::now() < until {
-                    if let Ok((mut socket, _)) = server.accept() {
+                    if let Ok((mut socket, _)) = crate::testnet::accept(&server) {
                         socket.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
                         socket.set_write_timeout(Some(Duration::from_secs(2))).unwrap();
                         let _ = socket.read(&mut [0; 4096]);
@@ -1708,7 +1746,7 @@ mod request_tests {
         std::thread::scope(|sc| {
             sc.spawn(|| {
                 while !stop.load(Ordering::Acquire) {
-                    match srv.accept() {
+                    match crate::testnet::accept(&srv) {
                         Ok((mut s, _)) => {
                             accepts.fetch_add(1, Ordering::AcqRel);
                             let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(2)));

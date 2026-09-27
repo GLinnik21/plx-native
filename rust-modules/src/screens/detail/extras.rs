@@ -14,7 +14,8 @@ pub(crate) const EXTRAS_ELEM_RANGE_START: u32 = 1728;
 /// Stops before published detail keys (`FIRST_ITEM_ELEM` 2048). 32 tiles is the shelf cap.
 pub(crate) const EXTRAS_ELEM_RANGE_END: u32 = 1760;
 pub(crate) const EXTRAS_GROUP: GroupId = GroupId(6);
-pub(crate) const LABEL_H: f32 = 46.0;
+/// Heading cap top to card top — the SHARED shelf pitch, as on [`super::related`].
+pub(crate) const LABEL_H: f32 = crate::ui::consts::TITLE_DY + crate::ui::consts::CARD_DY;
 const MAX: usize = (EXTRAS_ELEM_RANGE_END - EXTRAS_ELEM_RANGE_START) as usize;
 const STYLE: RowStyle = RowStyle::EPISODE;
 
@@ -32,8 +33,11 @@ pub(crate) fn len(d: &Detail) -> usize {
     d.extras.len().min(MAX)
 }
 
-pub(crate) fn block_h() -> f32 {
-    LABEL_H + STYLE.h + TileLabel::height(true)
+/// `band` is this shelf's live label-band expansion — see [`super::related::block_h`]. The old
+/// fixed `TileLabel::height(true)` is exactly `card_row::under_band(1.0)`, so a FOCUSED extras
+/// shelf is unchanged and only the unfocused one gives its room back.
+pub(crate) fn block_h(band: f32) -> f32 {
+    LABEL_H + STYLE.h + card_row::under_band(band)
 }
 
 pub(crate) fn rect(row: &CardRow, index: usize, top: f32, at_drawn: bool) -> Rect {

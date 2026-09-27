@@ -1,18 +1,10 @@
 ---
 name: ui-sim
 description: >
-  Verify a UI or Plex-data-layer change on the macOS or Windows/WSLg desktop simulator — build it, boot it to a
-  screen, drive it with keys, screenshot it, and know when the answer does NOT count and you must
-  finish on the television. Use whenever a change needs to be SEEN and a TV is not required or not
-  free: "check this looks right", "screenshot the detail page", "does the library grid still lay
-  out", "iterate on this spacing", "test my change", "run the app locally", "I don't have the TV",
-  "someone else is using the TV", or when several agents need to verify work AT THE SAME TIME.
-  Also covers what the simulator provably cannot answer — frame rates, text rasterization, LG's
-  decoder, the video plane — and hands those to the `tv-session` skill. On macOS, `make sim-macos` DOES
-  stream and demux (`plxnative-clocksink` + a host FFmpeg), so the pipeline between the socket and
-  the decoder is answerable there too. Windows/WSLg's `make sim-wsl` covers UI and Plex browsing.
-  Prefer this over
-  `tv-session` for ordinary UI work; the television is a single shared resource and this is not.
+  Verify UI and Plex data-layer changes in the macOS or Windows/WSLg desktop simulator. Use it for
+  layout, focus, navigation, screenshots, local app runs, and simulator-based validation when a TV
+  is unavailable or unnecessary. It also defines which results still require `tv-session`, including
+  TV frame rate, LG decoding, text rasterization, and the video plane.
 ---
 
 # ui-sim — verify UI work on a desktop, finish on the TV
@@ -111,12 +103,12 @@ Inside a root live that instance's dev triggers, its remote FIFO and its event l
 names and the same contents as on the TV, so **every `tv-session` recipe transfers verbatim**.
 With no `SIM_DIR` the root is `/tmp/plxnative-sim` (the Makefile's default); `/tmp` is the *device's* root, not this one's.
 
-**The flavour axis does not reach here.** The TV now carries two installs with two runtime roots,
-so `tv-session` recipes name theirs via `make -s print-rundir FLAVOR=…`; an explicit instance root
-outranks all of that in `paths::resolve_runtime_dir`, so the simulator is steered by `SIM_DIR`
-alone and takes no `FLAVOR`. Translate a device recipe by substituting `$SIM_DIR` for whatever
-runtime root it names — the trigger and log FILE names are identical either way, which is what
-makes the recipes transfer at all.
+**The flavour axis does not reach here.** The TV now carries three installs with three runtime
+roots, so `tv-session` recipes name theirs via `make -s print-rundir FLAVOR=…`; an explicit
+instance root outranks all of that in `paths::resolve_runtime_dir`, so the simulator is steered
+by `SIM_DIR` alone and takes no `FLAVOR`. Translate a device recipe by substituting `$SIM_DIR`
+for whatever runtime root it names — the trigger and log FILE names are identical either way,
+which is what makes the recipes transfer at all.
 
 `SIM_PMS`/`SIM_PORT` default to `src/config.local.h`. The host must be a **numeric IP**:
 `stream.rs` has no DNS resolver here either.
@@ -143,11 +135,11 @@ when credentials should be copied from `src/config.local.h`.
 
 Three things, and notably no webOS NDK and no nightly:
 
-1. `brew install sdl2_ttf` — pulls `sdl2-compat`. These are the ONLY non-system dynamic
-   dependencies (`otool -L` shows just those two plus OpenGL/iconv/libSystem), and they are linked
-   by absolute Homebrew path, so a copied binary will not run on a machine without them. Build on
-   the machine rather than copying: `build.rs` asks `brew --prefix`, so it is also correct on an
-   Intel Mac where Homebrew lives at `/usr/local`.
+1. `brew install sdl2_ttf cmake pkg-config` — SDL pulls `sdl2-compat`; CMake and pkg-config build
+   the bundled ASS/font stack. The SDL libraries use absolute Homebrew paths, so a copied binary
+   still needs them installed. The simulator also loads the bundled ASS renderer from its staged
+   resources. Build on the machine rather than copying: `build.rs` asks `brew --prefix`, so it is
+   also correct on an Intel Mac where Homebrew lives at `/usr/local`.
 2. **rustup + stable.** Not nightly. `rust-modules/.cargo/config.toml` carries `[unstable]
    build-std`, which looks like it forces nightly, but that table is gated and stable cargo ignores
    it — it only applies to the ARM cross-build, which passes `cargo +nightly` explicitly.
@@ -221,12 +213,81 @@ sign-in may legitimately have advanced by the time the app is foregrounded again
 3. **Give the app time before driving.** Posters and hub data arrive asynchronously; a shot at 2 s
    catches a half-built screen and looks like a layout bug.
 
+## Documentation screenshots
+
+`make screenshots` regenerates every image under `docs/screenshots/`, and the website's close-up
+stills and link-preview card under `site/media/`, from a committed scene manifest, against the
+mock server's demo library — no Plex account, no television, no gitignored file:
+
+```sh
+make demo-library                     # fetch (sha256-pinned, ~390 MB once) + derive; screenshots runs it too
+make screenshots                      # build the sim, render every scene + CREDITS.md into docs/screenshots/
+make screenshots SHOT_SCENES=home,ux-detail.jpg SHOT_OUT=/tmp/shots   # a subset, somewhere else
+make screenshots SHOT_SCENES=home,site-glass,site-glass-narrow,site-tiles,site-up-next   # the site's images
+make screenshots SHOT_CHECK=1         # render each scene twice; fail unless within its bound
+make screenshots SHOT_HERO=sintel     # pin another film as the home hero for this run
+make screenshots SHOT_HERO_VARIANTS=1 # also home-hero-<film>.jpg for each hero candidate
+```
+
+- **Scenes are target STATES, reached by triggers.** `tests/screenshots/scenes.json` names each
+  state, the triggers that reach it, the event-log lines that prove it was reached (`expect`)
+  and the files it becomes. No key is sent. `tools/screenshots.py` arms `token`, `plextv` (plex.tv
+  replaced by the mock) and `stillclock` itself on every scene, and refuses a run whose log shows
+  a `BADTRIGGER`, a trigger that gave up, or a request the mock could not answer.
+- **An output is a file, a crop and a size.** An output's `dest` is `docs` (default,
+  `docs/screenshots/`) or `site` (`site/media/`). A scene may render supersampled
+  (`render_scale` 1..4); an output may `crop` (`[x, y, w, h]` in 1920x1080 canvas pixels,
+  fractions allowed, whatever the scale), resample to `size` (refused if it would change the
+  crop's shape) and set a JPEG `quality`. The `site-*` scenes cut the site's close-ups at 3x/4x
+  on the hand-cut framing (the scene's `state` records how each crop was matched). A `card`
+  output (`og-card.jpg`, on the `home` scene) is not cut from the capture: `tools/render-og-card.sh`
+  composes `site/og/card.html` around the home figure the same run staged, so a run that includes
+  `home` needs a headless Chromium (Chrome, Chromium or a Playwright cache; `CHROME=` overrides).
+  Outputs are all-or-nothing: one failed scene and nothing is written anywhere.
+- **Screenshot triggers worth knowing.** `grid=<row>,<col>` (Home), `libgrid=<row>,<col>` (the
+  library's All grid), `libshelf=<shelf>,<col>` (a library shelf; the view scrolls to it),
+  `libmenu=<kind>,<ms>`, and under `hostsim` `clockstop=<ms>`: the clock sink's clock stops at that
+  position while the player stays PLAYING (Up Next only shows while playing; `autopause` would
+  take it down). The settled capture waits for every armed seat, menu and clock stop to land, so
+  a scene that seeks does not rest before it. `stillclock` also holds the Up Next countdown.
+- **The capture is the app's, once the screen is at rest.** `PLXNATIVE_SHOT_SETTLE=<ms>` makes the
+  simulator write one PNG after the screen has not changed for that long (and not before
+  `PLXNATIVE_SHOT_AFTER`), then exit with `PLXNATIVE_SHOT_EXIT=1`. The driver waits on that
+  process, under a ceiling timeout; there is no sleep anywhere. A screen that never comes to rest
+  is a failure, not a capture. A popover freezes the page under it, so a menu scene opens its menu
+  only after the page has rested (`acct=<ms>`, `libmenu=<kind>,<ms>`).
+- **Everything that moves is pinned.** The mock's clock is the catalog's `now`; watch state,
+  progress and added dates come from the catalog; `stillclock` holds free-running animation; the
+  hero is pinned to slot 0 (`heropin=0`), and the mock puts the hero film at the head of Continue
+  Watching, so its button reads Continue with progress.
+- **Determinism.** `SHOT_CHECK=1` renders every scene twice and compares pixel by pixel: each channel
+  may differ by at most `max_delta` (default 1 — the GPU's run-to-run rounding), except inside a
+  scene's `free_regions`, which must carry a `tolerance_reason`. Search, detail, sign-in and the
+  failure read-out come back byte-identical; scenes with backdrop blur or glass differ by exactly
+  1 in anything from a few pixels to ~120k of them. The player is byte-identical too:
+  `autopause=at=<ms>` waits for the playhead to reach that position, and under `hostsim` it also
+  stops the clock sink exactly there, so the frame, the clocks and the knob are the same every
+  run. Aim `at` between two frames (Sintel is 24 fps), so no PTS rounding picks the neighbour.
+- **The library is openly licensed.** `tests/demo_library/assets.json` pins every source file (URL,
+  sha256, licence, author); `catalog.json` is the library. A film's clear logo (the title art
+  the home hero draws) is cut from that film's own CC BY poster by a `logo` recipe in the
+  catalog, so it is a derivative under the poster's licence and CREDITS.md says so; every hero
+  candidate has one. Cutting it needs Pillow (`python3 -m pip install Pillow`), the one Python
+  package the pipeline uses. `make screenshots` is the one command: a run that succeeds also
+  rewrites `CREDITS.md` beside the images, so the credits cannot lag them.
+  `python3 tools/demo_library.py check` validates both manifests offline. The cache lives outside
+  the repository (`$PLXNATIVE_DEMO_CACHE`, default `~/.cache/plxnative-demo`).
+- **Review before committing.** Open every image. A regenerated set is committed on its own,
+  never in the same commit as a change to the pipeline.
+
 ## What the simulator ANSWERS
 
 Layout and spacing · focus and navigation · route transitions and the page cross-fade · every
 screen (home, library grid, detail, person, menus, popovers, the failure read-out) · the entire
 Plex data layer against a real PMS — browse, metadata, seasons, cast, images, sort/filter · idle
-and repaint behaviour · anything reachable by keys or clicks.
+and repaint behaviour · anything reachable by keys or clicks. **Modals are drawn with the frame cache
+OFF** (`frame cache: CopyTexSubImage error=0x500 — cache off`), so a sim capture cannot show a
+fault in the cached host path a modal card is served from; only the TV can.
 
 That is most UI work, and it is the half that transfers.
 
@@ -299,6 +360,8 @@ device-verified" is a useful, honest status. "Verified" without a TV is not.
   shots come out at the viewport size (e.g. 1650×928). Fine for layout, wrong for pixel work.
 - Without `plxnative-clocksink` there is no `player` route to screenshot beyond the failure
   read-out and the HUD's busy states. With it there is a real one, driven by a real stream — but
-  the video PLANE is still empty, because nothing decodes and the wayland overlay is webOS-only.
-  So a player shot here is the HUD over black, which is the right thing for HUD layout work and
-  the wrong thing for anything about the picture.
+  the video PLANE is empty, because the app decodes nothing and the wayland overlay is webOS-only:
+  the HUD sits over black. Arm `plxnative-simvideo` as well and a system `ffmpeg` child decodes
+  the stream the clock sink accepts and composites it UNDER the UI (`player/sim_video.rs`). That
+  is a screenshot facility for the documentation's player figure; it says nothing about LG's
+  decoder, the video plane or picture timing on the television.

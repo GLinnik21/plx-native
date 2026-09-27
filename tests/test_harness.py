@@ -556,6 +556,8 @@ class ReplayFixtures(unittest.TestCase):
                                         "%s/%s: a %d-char string outside the alphabet" % (name, fn, len(v)))
         self.assertGreater(checked, 0)
 
+    QUARANTINED_FIXTURES = {}
+
     def test_every_committed_fixture_carries_the_trees_recording_schema(self):
         """`ui/rec.rs`'s SCHEMA moved 1 -> 2 in restructure phase 11 and this suite did not
         notice: a stale fixture's manifest only refuses to LOAD at replay time
@@ -563,7 +565,16 @@ class ReplayFixtures(unittest.TestCase):
         the tree the way `ci/flavor.py` reads other Rust constants agreed with a second language —
         a plain regex over the source, no cargo invocation — and check every committed fixture's
         manifest agrees with it, so a fixture left behind by a schema bump fails loudly beside the
-        alphabet check above instead of only at `tests/focusfp.sh --replay` time."""
+        alphabet check above instead of only at `tests/focusfp.sh --replay` time.
+
+        `schema` alone is not the only way a fixture goes stale: two anchors can share `schema`
+        while their `state_fp` (the recorded state SHAPE — route/overlay/focus/tree/session/
+        consent/initial) has moved apart, which is exactly what `tools/plxnative-rec rerecord`
+        reports as a load-time REFUSED and what the README documents happened to fixture 12. So
+        this also checks every non-quarantined fixture's `state_fp` agrees with the majority
+        value among committed anchors, and reports (without reddening `make check`) any
+        quarantined fixture whose `state_fp` has drifted onto the current value — at that point
+        the quarantine itself is stale and should be lifted."""
         rec_rs_path = os.path.join(REPO_ROOT, "rust-modules", "src", "ui", "rec.rs")
         with open(rec_rs_path, encoding="utf-8") as f:
             rec_rs = f.read()
@@ -571,6 +582,7 @@ class ReplayFixtures(unittest.TestCase):
         self.assertIsNotNone(m, "ui/rec.rs SCHEMA constant found")
         schema = int(m.group(1))
         checked = 0
+        fps = {}
         for name in sorted(os.listdir(self.FIXTURES)):
             d = os.path.join(self.FIXTURES, name)
             if not os.path.isdir(d):
@@ -585,7 +597,27 @@ class ReplayFixtures(unittest.TestCase):
                               "%s/manifest.json: schema %r does not match ui/rec.rs SCHEMA=%d "
                               "(tools/plxnative-rec rerecord it)"
                               % (name, manifest.get("schema"), schema))
+            fps[name] = manifest.get("state_fp")
         self.assertGreater(checked, 0)
+
+        live_fps = {n: fp for n, fp in fps.items() if n not in self.QUARANTINED_FIXTURES}
+        if live_fps:
+            from collections import Counter
+            current_fp, _ = Counter(live_fps.values()).most_common(1)[0]
+            for name, fp in live_fps.items():
+                self.assertEqual(fp, current_fp,
+                                  "%s/manifest.json: state_fp %r does not match the other "
+                                  "committed anchors' %r (tools/plxnative-rec rerecord it, or "
+                                  "quarantine it in QUARANTINED_FIXTURES with a reason)"
+                                  % (name, fp, current_fp))
+            for name, reason in self.QUARANTINED_FIXTURES.items():
+                if name not in fps:
+                    continue
+                if fps[name] == current_fp:
+                    print("NOTE: quarantined fixture %s now shares state_fp with the live "
+                          "anchors (%r) — lift its QUARANTINED_FIXTURES entry" % (name, current_fp))
+                else:
+                    print("QUARANTINED: %s/manifest.json — %s" % (name, reason))
 
     def _tool(self, *args):
         tool = os.path.join(os.path.dirname(self.FIXTURES), "..", "..", "tools", "plxnative-rec")
@@ -827,6 +859,51 @@ class TeardownProcessTable(unittest.TestCase):
         with mock.patch.object(run, "RUN_STREAM_MARK", marker):
             self.assertEqual(run._run_stream_pids(fake), {431})
         fake.assert_called_once_with(["ps", "-Ao", "pid,command"], capture_output=True)
+
+
+class StoredSessionGate(unittest.TestCase):
+    """A `session: stored` case with no stored sign-in on the install used to call
+    `require_stored_session()` -> `sys.exit()` from inside `run_case`, and `SystemExit` is not an
+    `Exception` — the per-case `except Exception` in main()'s run loop let it straight through and
+    killed the whole batch at the first such case. The fix moves the check in front of the loop
+    (`stored_session_reason` + `partition_stored_sessions`) so an unmet precondition SKIPS just
+    those cases instead."""
+
+    def test_stored_session_reason_is_none_when_a_session_file_is_present(self):
+        with mock.patch.object(run, "ssh") as ssh:
+            ssh.return_value = subprocess.CompletedProcess([], 0)
+            self.assertIsNone(run.stored_session_reason("192.0.2.5"))
+
+    def test_stored_session_reason_names_how_to_fix_it_when_absent(self):
+        with mock.patch.object(run, "ssh") as ssh:
+            ssh.return_value = subprocess.CompletedProcess([], 1)
+            reason = run.stored_session_reason("192.0.2.5")
+        self.assertIn("signed-in session", reason)
+        self.assertIn("sign in on that install once", reason)
+
+    def test_a_stored_case_is_skipped_not_dropped_as_a_systemexit(self):
+        """This is the regression itself: before the fix, the only way main() learned a stored
+        session was missing was `require_stored_session()` raising `SystemExit` from inside the
+        per-case try/except — which does not catch it. `partition_stored_sessions` must instead
+        move the case out of `cases` and into the skip list, raising nothing."""
+        cases = [{"name": "offline_play", "session": "stored"},
+                 {"name": "normal_case"}]
+        remaining, skipped = run.partition_stored_sessions(
+            cases, "needs a signed-in session on com.beb.plxnative")
+        self.assertEqual([c["name"] for c in remaining], ["normal_case"])
+        self.assertEqual([c["name"] for c in skipped], ["offline_play"])
+
+    def test_a_present_session_leaves_every_case_untouched(self):
+        cases = [{"name": "offline_play", "session": "stored"}, {"name": "normal_case"}]
+        remaining, skipped = run.partition_stored_sessions(cases, None)
+        self.assertEqual(remaining, cases)
+        self.assertEqual(skipped, [])
+
+    def test_no_stored_case_in_the_batch_is_untouched_even_with_a_reason(self):
+        cases = [{"name": "normal_case"}]
+        remaining, skipped = run.partition_stored_sessions(cases, "some reason")
+        self.assertEqual(remaining, cases)
+        self.assertEqual(skipped, [])
 
 
 class ItemResolution(unittest.TestCase):
@@ -1107,6 +1184,245 @@ class FrameCeilingsManifest(unittest.TestCase):
             self.assertIsNotNone(run.frame_ceiling_threshold(s), name)
         self.assertEqual(scenes["cold-open"].get("warmup_s"), 0,
                          "a cold open grades its FIRST frames")
+
+
+class BenchGrading(unittest.TestCase):
+    """`parse_bench`/`grade_bench` — the stress-bench (`push-100`/`modal-100`) parser and its four
+    fail conditions (missed-frame, drift, rss-growth, incomplete-run) plus the latch exemption.
+    Synthetic `bench:` lines, so the arithmetic is pinned here rather than first exercised on the
+    television — the same reason `FrameCeilings` above is synthetic."""
+
+    def _lines(self, kind, worsts, rss=None, n=None, done=True, target="detail"):
+        n = n if n is not None else len(worsts)
+        rss = rss if rss is not None else [1000] * len(worsts)
+        out = [
+            f"bench: kind={kind} cycle={i}/{n} target={target} worst_ms={w:.1f} frames=5 "
+            f"dur_ms=1400 rss_kb={r}"
+            for i, (w, r) in enumerate(zip(worsts, rss), start=1)
+        ]
+        if done:
+            out.append(f"bench: kind={kind} done cycles={n}")
+        return out
+
+    def test_parse_bench_reads_every_field_and_ignores_the_other_kind(self):
+        lines = self._lines("push", [5.0, 6.5]) + self._lines("modal", [9.0])
+        cycles, done = run.parse_bench(lines, "push")
+        self.assertTrue(done)
+        self.assertEqual([c["cycle"] for c in cycles], [1, 2])
+        self.assertEqual(cycles[0],
+                         {"cycle": 1, "n": 2, "target": "detail", "worst_ms": 5.0, "frames": 5,
+                          "dur_ms": 1400, "rss_kb": 1000})
+        modal_cycles, modal_done = run.parse_bench(lines, "modal")
+        self.assertTrue(modal_done)
+        self.assertEqual(len(modal_cycles), 1)
+
+    def test_a_healthy_run_of_100_cycles_passes(self):
+        lines = self._lines("push", [5.0] * 100, rss=[1000] * 100)
+        ok, detail = run.grade_bench({"bench": "push"}, lines)
+        self.assertTrue(ok, detail)
+        self.assertIn("worst_ms p50=", detail)
+
+    def test_one_cycle_over_bench_worst_ms_fails(self):
+        worsts = [5.0] * 11 + [25.0]  # default bench_worst_ms is 20.0
+        lines = self._lines("push", worsts)
+        ok, detail = run.grade_bench({"bench": "push"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("over bench_worst_ms=20.0", detail)
+        self.assertIn("cycle=12/12", detail)
+
+    def test_last_ten_cycles_drifting_above_the_first_ten_fails(self):
+        worsts = [5.0] * 10 + [10.0] * 10  # every value is well under bench_worst_ms
+        lines = self._lines("push", worsts)
+        ok, detail = run.grade_bench({"bench": "push"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("drift(last10-first10)=+5.00ms", detail)
+        # a drift ceiling raised past the measured drift passes the same run
+        ok, _ = run.grade_bench({"bench": "push", "bench_drift_ms": 10.0}, lines)
+        self.assertTrue(ok)
+
+    def test_rss_growing_past_cycle_ten_fails(self):
+        rss = [1000] * 10 + [20000] * 2  # growth is measured from cycle 10, not cycle 1
+        lines = self._lines("push", [5.0] * 12, rss=rss)
+        ok, detail = run.grade_bench({"bench": "push"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("rss growth(last-cycle10)=19000kB", detail)
+        ok, _ = run.grade_bench({"bench": "push", "bench_rss_growth_kb": 20000}, lines)
+        self.assertTrue(ok)
+
+    def test_a_run_missing_the_done_line_fails_even_if_every_cycle_looks_clean(self):
+        lines = self._lines("push", [5.0] * 12, done=False)
+        ok, detail = run.grade_bench({"bench": "push"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("no `done` line", detail)
+
+    def test_no_bench_lines_at_all_fails_rather_than_passing_vacuously(self):
+        ok, detail = run.grade_bench({"bench": "push"}, ["loop=60 route=home fps=12"])
+        self.assertFalse(ok)
+        self.assertIn("no `bench: kind=push` cycle lines", detail)
+
+    def test_bench_latch_exempt_ms_absorbs_one_cycle_and_names_it(self):
+        worsts = [5.0] * 11 + [25.0]  # over bench_worst_ms=20.0, at/under the exemption ceiling
+        lines = self._lines("push", worsts)
+        ok, detail = run.grade_bench({"bench": "push", "bench_latch_exempt_ms": 30.0}, lines)
+        self.assertTrue(ok, detail)
+        self.assertIn("1 cycle(s) exempted under bench_latch_exempt_ms=30.0", detail)
+        self.assertIn("cycle=12 target=detail worst_ms=25.0", detail)
+        # a SECOND cycle over the exemption ceiling still fails
+        worsts2 = [5.0] * 10 + [25.0, 35.0]
+        lines2 = self._lines("push", worsts2)
+        ok2, detail2 = run.grade_bench({"bench": "push", "bench_latch_exempt_ms": 30.0}, lines2)
+        self.assertFalse(ok2, detail2)
+
+    def test_push_and_modal_kinds_are_graded_independently(self):
+        lines = self._lines("push", [5.0] * 12) + self._lines("modal", [25.0] * 12)
+        ok_push, _ = run.grade_bench({"bench": "push"}, lines)
+        ok_modal, _ = run.grade_bench({"bench": "modal"}, lines)
+        self.assertTrue(ok_push)
+        self.assertFalse(ok_modal)
+
+
+class BenchManifest(unittest.TestCase):
+    def test_push_100_and_modal_100_are_bench_scenes_with_an_item_and_enough_run_secs(self):
+        scenes = {s["name"]: s for s in _manifest()["fps_scenes"]}
+        push = scenes["push-100"]
+        modal = scenes["modal-100"]
+        self.assertEqual(push["bench"], "push")
+        self.assertEqual(modal["bench"], "modal")
+        self.assertEqual(push.get("item"), "movie_in_home_catalog")
+        # 100 cycles * 2 half-periods each; run_secs must clear that plus warmup with margin.
+        self.assertGreater(push["run_secs"], 100 * 2 * 1.4 + push.get("warmup_s", 5))
+        self.assertGreater(modal["run_secs"], 100 * 2 * 1.5 + modal.get("warmup_s", 5))
+        for name in ("push-100", "modal-100"):
+            self.assertEqual(scenes[name]["tier"], "ui")
+            self.assertIn("plxnative-framedrop", scenes[name]["triggers"],
+                         f"{name}: bench worst_ms reads 0.0 unarmed — see bench_frame_tick's doc")
+
+
+class DeepBenchGrading(unittest.TestCase):
+    """`parse_deep_bench`/`grade_deep_bench` — the DEEP-stack bench (`deep-100`) parser and its
+    five fail conditions (missed-frame, push drift, pop drift, depth-rss growth, root-rss growth)
+    plus the incomplete-run case. Synthetic `bench: kind=deep` lines, same reasoning as
+    `BenchGrading` above: pinned here rather than first exercised on the television."""
+
+    def _lines(self, depth, worsts=None, rss=None, done=True, target="detail"):
+        n = 2 * depth
+        worsts = worsts if worsts is not None else [5.0] * n
+        rss = rss if rss is not None else [1000] * n
+        out = []
+        for i in range(n):
+            cycle = i + 1
+            if i < depth:
+                dirn, d = "push", i + 1
+            else:
+                dirn, d = "pop", depth - 1 - (i - depth)
+            out.append(
+                f"bench: kind=deep cycle={cycle}/{n} target={target} dir={dirn} depth={d} "
+                f"worst_ms={worsts[i]:.1f} frames=5 dur_ms=1400 rss_kb={rss[i]}"
+            )
+        if done:
+            out.append(f"bench: kind=deep done cycles={n} rss_root_kb={rss[-1] if rss else 1000}")
+        return out
+
+    def test_parse_deep_bench_reads_every_field(self):
+        lines = self._lines(3)
+        steps, rss_root_kb = run.parse_deep_bench(lines)
+        self.assertEqual(len(steps), 6)
+        self.assertEqual(rss_root_kb, 1000)
+        self.assertEqual(
+            steps[0],
+            {"cycle": 1, "n": 6, "target": "detail", "dir": "push", "depth": 1,
+             "worst_ms": 5.0, "frames": 5, "dur_ms": 1400, "rss_kb": 1000},
+        )
+        self.assertEqual([s["dir"] for s in steps], ["push"] * 3 + ["pop"] * 3)
+        self.assertEqual([s["depth"] for s in steps], [1, 2, 3, 2, 1, 0])
+
+    def test_a_healthy_run_of_depth_100_passes(self):
+        lines = self._lines(100)
+        ok, detail = run.grade_deep_bench({"bench": "deep"}, lines)
+        self.assertTrue(ok, detail)
+
+    def test_no_deep_bench_lines_at_all_fails_rather_than_passing_vacuously(self):
+        ok, detail = run.grade_deep_bench({"bench": "deep"}, ["loop=60 route=home fps=12"])
+        self.assertFalse(ok)
+        self.assertIn("no `bench: kind=deep` step lines", detail)
+
+    def test_a_run_missing_the_done_line_fails_even_if_every_step_looks_clean(self):
+        lines = self._lines(20, done=False)
+        ok, detail = run.grade_deep_bench({"bench": "deep"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("no `done` line", detail)
+
+    def test_one_step_over_bench_worst_ms_fails(self):
+        lines = self._lines(10)  # 20 steps (depth=10), default bench_worst_ms is 20.0
+        # make step 12 (a pop) the slow one
+        lines[11] = lines[11].replace("worst_ms=5.0", "worst_ms=25.0")
+        ok, detail = run.grade_deep_bench({"bench": "deep"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("over bench_worst_ms=20.0", detail)
+        self.assertIn("cycle=12/20", detail)
+
+    def test_push_drift_growing_with_depth_fails(self):
+        depth = 20
+        worsts = ([5.0] * 10 + [10.0] * 10) + [5.0] * depth  # pushes drift, pops flat
+        lines = self._lines(depth, worsts=worsts)
+        ok, detail = run.grade_deep_bench({"bench": "deep"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("push drift(last10-first10)=+5.00ms", detail)
+        ok, _ = run.grade_deep_bench({"bench": "deep", "bench_drift_ms": 10.0}, lines)
+        self.assertTrue(ok)
+
+    def test_pop_drift_growing_toward_the_root_fails(self):
+        depth = 20
+        # pops in log order run deepest->shallowest; "last 10 pops" (shallowest) drifting above
+        # "first 10 pops" (deepest) is the failure this catches.
+        worsts = [5.0] * depth + ([5.0] * 10 + [10.0] * 10)
+        lines = self._lines(depth, worsts=worsts)
+        ok, detail = run.grade_deep_bench({"bench": "deep"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("pop drift(last10-first10)=+5.00ms", detail)
+        ok, _ = run.grade_deep_bench({"bench": "deep", "bench_drift_ms": 10.0}, lines)
+        self.assertTrue(ok)
+
+    def test_depth_rss_growing_past_step_ten_fails(self):
+        depth = 20
+        # rss climbs steadily across the 20 pushes, flat across the 20 pops. step10 (push index 9)
+        # to the deepest push (index 19) must clear the default bench_depth_rss_kb=16384.
+        push_rss = [1000 + 2000 * i for i in range(depth)]
+        pop_rss = [push_rss[-1]] * depth
+        lines = self._lines(depth, rss=push_rss + pop_rss)
+        ok, detail = run.grade_deep_bench({"bench": "deep"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("depth rss growth(maxdepth-step10)=", detail)
+        # raising bench_depth_rss_kb alone clears the DEPTH clause; bench_rss_growth_kb (root vs
+        # step10) is a separate clause over the same climb and must be raised too for an overall pass.
+        ok, _ = run.grade_deep_bench(
+            {"bench": "deep", "bench_depth_rss_kb": 1000000, "bench_rss_growth_kb": 1000000}, lines)
+        self.assertTrue(ok)
+
+    def test_root_rss_growing_past_step_ten_fails(self):
+        depth = 20
+        push_rss = [1000] * depth
+        pop_rss = [1000] * (depth - 1) + [50000]  # the `done` line's rss_root_kb comes from here
+        lines = self._lines(depth, rss=push_rss + pop_rss)
+        ok, detail = run.grade_deep_bench({"bench": "deep"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("root rss growth(root-step10)=", detail)
+        ok, _ = run.grade_deep_bench({"bench": "deep", "bench_rss_growth_kb": 1000000}, lines)
+        self.assertTrue(ok)
+
+
+class DeepBenchManifest(unittest.TestCase):
+    def test_deep_100_is_a_bench_scene_with_an_item_and_enough_run_secs(self):
+        scenes = {s["name"]: s for s in _manifest()["fps_scenes"]}
+        deep = scenes["deep-100"]
+        self.assertEqual(deep["bench"], "deep")
+        self.assertEqual(deep.get("item"), "movie_in_home_catalog")
+        self.assertEqual(deep["tier"], "ui")
+        # depth=100 -> 200 steps * 2 half-periods each; run_secs must clear that plus warmup.
+        self.assertGreater(deep["run_secs"], 200 * 2 * 1.4 + deep.get("warmup_s", 5))
+        self.assertIn("plxnative-framedrop", deep["triggers"],
+                     "deep-100: bench worst_ms reads 0.0 unarmed — see bench_frame_tick's doc")
+        self.assertIn("bench_depth_rss_kb", deep)
 
 
 class LoadManifest(unittest.TestCase):
@@ -4840,6 +5156,46 @@ impl ViewStateOwnerGateFixture {
         self.assertIn("libm:", result.stdout)
         self.assertIn(target + ":", result.stdout)
 
+    def test_person_owner_gate_rejects_free_read_and_mutation_facades(self):
+        for declaration in (
+            "pub(crate) fn current() -> Option<()> { None }\n",
+            "#[inline]\npub(super)\nfn\npump() -> bool { false }\n",
+            "pub(crate) fn apply() {}\n",
+        ):
+            with self.subTest(declaration=declaration):
+                r = self._prepend("person.rs", "\n" + declaration)
+                out = r.stdout + r.stderr
+                self.assertNotEqual(r.returncode, 0, out)
+                self.assertIn("person-owner:", out)
+
+    def test_person_owner_gate_rejects_model_transport_and_selector_statics(self):
+        fixtures = (
+            ("person.rs", "static mut CURRENT: Option<Person> = None;\n"),
+            ("person.rs", "static FETCH: Option<Fetch> = None;\n"),
+            ("person.rs", "static RETRY_CD: [u32; 1] = [0];\n"),
+            ("stores/person.rs", "static RETIRED: Option<PersonStore> = None;\n"),
+            ("stores/person.rs", "thread_local! {\n    static ACTIVE: () = ();\n}\n"),
+        )
+        for relpath, declaration in fixtures:
+            with self.subTest(declaration=declaration):
+                r = self._prepend(relpath, "\n" + declaration)
+                out = r.stdout + r.stderr
+                self.assertNotEqual(r.returncode, 0, out)
+                self.assertIn("person-owner:", out)
+
+    def test_person_owner_gate_accepts_receiver_bound_owned_methods(self):
+        fixture = """
+struct PersonOwnerGateFixture;
+impl PersonOwnerGateFixture {
+    pub(crate) fn current(&self) -> Option<()> { None }
+    pub(crate) fn pump(&mut self) -> bool { false }
+    pub(crate) fn apply(&mut self) {}
+}
+"""
+        r = self._prepend("person.rs", fixture)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ok — person-owner", r.stdout)
+
     def test_threads_gate_catches_a_bare_thread_spawn_after_use_std_thread(self):
         """The gate used to match only the fully-qualified `std::thread::spawn(` spelling, so a
         file that does `use std::thread;` and then calls the bare `thread::spawn(` — exactly the
@@ -4996,7 +5352,7 @@ impl ViewStateOwnerGateFixture {
     # rules are absent from the table below on purpose, the same way a deleted allowlist's own
     # entry disappears rather than pinning at 0.
     PINNED_ALLOWLIST_COUNTS = {
-        "libm.txt": 5,
+        "libm.txt": 6,  # widgets.rs's existing test helper moved to widgets_test_support.rs
         "mutators.txt": 0,
         "nav.txt": 0,
         "sibling-migration.txt": 0,
@@ -5005,7 +5361,7 @@ impl ViewStateOwnerGateFixture {
         "store-seams.txt": 0,
         "threads.txt": 0,
         "ticks.txt": 2,
-        "wall.txt": 2,
+        "wall.txt": 3,
     }
 
     def test_allowlist_counts_match_the_pinned_table(self):
@@ -5025,6 +5381,51 @@ impl ViewStateOwnerGateFixture {
                 "deliberate (a real, reasoned new entry, not a workaround), raise the number in "
                 "PINNED_ALLOWLIST_COUNTS in the same change so a reviewer sees it move",
             )
+
+
+class PosterGateCoverage(unittest.TestCase):
+    def test_device_manifest_has_settle_eviction_and_dive_workloads(self):
+        scenes = {s.get('poster_gate', {}).get('kind'): s for s in _manifest()['fps_scenes'] if s.get('poster_gate')}
+        self.assertEqual(set(scenes), {'settle', 'eviction', 'dive'})
+        for scene in scenes.values():
+            self.assertGreaterEqual(scene['poster_gate']['moving_fps_floor'], 55)
+            self.assertIn('plxnative-postergate', scene['triggers'])
+
+    def test_poster_grade_requires_real_work_and_complete_settle(self):
+        import poster_gate
+        def evidence(kind):
+            records = []
+            for phase in poster_gate.PHASES[kind]:
+                values = {k: 0 for k in poster_gate.FIELDS}
+                values.update(ms=1000, frames=60, draws=720, ready=720, moving=700,
+                              moving_frames=60, moving_ms=983, requested=12,
+                              refused_new=20, refused_evicted=10, rearmed=12,
+                              uploads=12, lost=12, last_draws=12, last_ready=12, complete=1)
+                if kind == 'dive':
+                    values.update(shelf_start_px=1500, shelf_end_px=1500,
+                                  snap_end_milli=0 if phase == 'hero' else 1000,
+                                  snap_begin_milli=0 if phase in ('warm','dive') else 1000)
+                records.append('poster-gate: kind='+kind+' phase='+phase+' '+' '.join(f'{k}={v}' for k,v in values.items()))
+            records.append('poster-gate: kind='+kind+' phase=done')
+            return records
+        for kind in poster_gate.PHASES:
+            scene = {'poster_gate': {'kind': kind, 'moving_fps_floor': 55}}
+            lines = evidence(kind)
+            self.assertTrue(run.grade_poster_gate(scene, lines)[0])
+            for bad, replacement in [('requested_moving=0','requested_moving=1'), ('uploads=12','uploads=0'),
+                                     ('last_ready=12','last_ready=0'), ('moving_frames=60','moving_frames=0'),
+                                     ('refused_new=20 refused_evicted=10','refused_new=0 refused_evicted=0')]:
+                broken = [line.replace(bad,replacement) for line in lines]
+                self.assertFalse(run.grade_poster_gate(scene, broken)[0], (kind,bad))
+            self.assertFalse(run.grade_poster_gate(scene, lines[:-1])[0])
+            self.assertFalse(run.grade_poster_gate(scene, ['loop=60 route=library fps=60'])[0])
+        dive = {'poster_gate': {'kind': 'dive', 'moving_fps_floor': 55}}
+        for bad,replacement in [('shelf_end_px=1500','shelf_end_px=0'), ('shelf_span_px=0','shelf_span_px=20'),
+                                ('shelf_v_milli=0','shelf_v_milli=2000'), ('snap_end_milli=1000','snap_end_milli=700')]:
+            self.assertFalse(run.grade_poster_gate(dive,[line.replace(bad,replacement) for line in evidence('dive')])[0])
+        scene = {'poster_gate': {'kind': 'eviction','moving_fps_floor':55}}
+        for bad in ('lost=12','rearmed=12','refused_evicted=10'):
+            self.assertFalse(run.grade_poster_gate(scene,[line.replace(bad,bad.split('=')[0]+'=0') for line in evidence('eviction')])[0])
 
 
 if __name__ == "__main__":

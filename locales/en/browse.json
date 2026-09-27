@@ -200,7 +200,7 @@
     "description": "browse home continue"
   },
   "browse.home.failed": {
-    "value": "Can't reach your Plex server",
+    "value": "Can’t reach your Plex server",
     "description": "browse home failed"
   },
   "browse.home.empty": {
@@ -512,7 +512,7 @@
     "description": "browse library genre_unwatched"
   },
   "browse.library.unreachable": {
-    "value": "Can't reach {name}",
+    "value": "Can’t reach {name}",
     "args": {
       "name": "str"
     },
@@ -686,7 +686,7 @@
     "description": "browse auth unreachable"
   },
   "browse.auth.plex_unreachable": {
-    "value": "Couldn't reach Plex — check the connection. Signing in needs the internet once.",
+    "value": "Couldn’t reach Plex. Check your internet connection. An internet connection is needed to sign in.",
     "description": "browse auth plex_unreachable"
   },
   "browse.auth.switch_failed": {
@@ -1432,5 +1432,209 @@
   "browse.crew.director_writer": {
     "value": "Director, Writer",
     "description": "App-owned crew job caption; preserve stable metadata role keys."
+  },
+  "browse.library.type": {
+    "value": "Type",
+    "description": "Library toolbar label for choosing shows, seasons, or episodes"
+  },
+  "browse.library.filter_by": {
+    "value": "Filter by",
+    "description": "Library content-type menu heading"
+  },
+  "browse.kind.seasons": {
+    "value": "Seasons",
+    "description": "Library content type"
+  },
+  "browse.library.plays": {
+    "value": "Plays",
+    "description": "Library sort by play count"
+  },
+  "browse.library.no_seasons": {
+    "value": "No seasons in {library}",
+    "description": "Empty season listing in the selected library",
+    "args": {
+      "library": "str"
+    }
+  },
+  "browse.library.no_episodes": {
+    "value": "No episodes in {library}",
+    "description": "Empty episode listing in the selected library",
+    "args": {
+      "library": "str"
+    }
+  },
+  "browse.detail.full_screen_hint": {
+    "value": "{key} Full screen",
+    "description": "Trailer hint; key is the up-arrow keycap",
+    "args": {
+      "key": "str"
+    }
+  },
+  "browse.auth.discovery_trouble": {
+    "value": "Plex isn't responding. Still trying…",
+    "description": "browse auth discovery_trouble"
+  },
+  "browse.auth.signin_refused": {
+    "value": "Plex didn't accept this sign-in. Try again.",
+    "description": "browse auth signin_refused"
+  },
+  "browse.auth.servers_unreachable": {
+    "value": "plex.tv listed your servers, but none of them answered. Make sure your Plex Media Server is on and online, then try again.",
+    "description": "browse auth servers_unreachable"
+  },
+  "browse.auth.plex_tls": {
+    "value": "This TV couldn't make a secure connection to plex.tv. Check the TV's date and time, then try again.",
+    "description": "browse auth plex_tls"
+  },
+  "browse.auth.plex_unavailable": {
+    "value": "plex.tv is having trouble right now, so your servers weren't checked. Try again in a few minutes.",
+    "description": "browse auth plex_unavailable"
+  },
+  "browse.auth.profile_signin_refused": {
+    "value": "plex.tv refused {profile}’s sign-in. Try again.",
+    "description": "browse auth profile_signin_refused",
+    "args": {
+      "profile": "str"
+    }
+  },
+  "browse.auth.server_profile_refused": {
+    "value": "{server} refused {profile}. Try again.",
+    "description": "browse auth server_profile_refused",
+    "args": {
+      "profile": "str",
+      "server": "str"
+    }
+  },
+  "browse.auth.switch_invalid": {
+    "value": "Couldn't switch profile — the server sent an invalid response.",
+    "description": "browse auth switch_invalid"
+  },
+  "browse.auth.plex_dns_retry": {
+    "value": {
+      "one": "This TV couldn't find plex.tv, so your servers weren't checked. We tried once. Check the TV's internet connection, then try again.",
+      "other": "This TV couldn't find plex.tv, so your servers weren't checked. We tried {count} times. Check the TV's internet connection, then try again."
+    },
+    "description": "Discovery failed after this many attempts; complete retry explanation and remedy",
+    "args": {
+      "count": "i64"
+    }
+  },
+  "browse.auth.plex_connect_retry": {
+    "value": {
+      "one": "This TV couldn't reach plex.tv, so your servers weren't checked. We tried once. Check the TV's internet connection, then try again.",
+      "other": "This TV couldn't reach plex.tv, so your servers weren't checked. We tried {count} times. Check the TV's internet connection, then try again."
+    },
+    "description": "Discovery failed after this many attempts; complete retry explanation and remedy",
+    "args": {
+      "count": "i64"
+    }
+  },
+  "browse.auth.plaintext_offer": {
+    "value": "Your Plex server is on this network but can’t be reached securely. Select Connect to connect without encryption.",
+    "description": "browse auth plaintext_offer"
+  },
+  "browse.auth.plaintext_allowed": {
+    "value": "Your Plex server is on this network but can’t be reached securely. Select Try again to connect without encryption.",
+    "description": "browse auth plaintext_allowed"
+  },
+  "browse.auth.plaintext_declined_signin": {
+    "value": "You chose not to connect to your Plex server without encryption. Select Try again to be asked again.",
+    "description": "browse auth plaintext_declined_signin"
+  },
+  "browse.auth.plaintext_revoked_signin": {
+    "value": "Unencrypted connections to your Plex server are off. Select Try again to be asked again.",
+    "description": "browse auth plaintext_revoked_signin"
+  },
+  "browse.auth.plaintext_declined_signed_in": {
+    "value": "You chose not to connect to your Plex server without encryption. Allow it in Settings → Unencrypted connections.",
+    "description": "browse auth plaintext_declined_signed_in"
+  },
+  "browse.auth.plaintext_revoked_signed_in": {
+    "value": "Unencrypted connections to your Plex server are off. Turn them on in Settings → Unencrypted connections.",
+    "description": "browse auth plaintext_revoked_signed_in"
+  },
+  "browse.auth.plaintext_shared_offer": {
+    "value": "{owner}’s server is on this network but can’t be reached securely. Select Connect to connect without encryption.",
+    "description": "browse auth plaintext_shared_offer",
+    "args": {
+      "owner": "str"
+    }
+  },
+  "browse.auth.plaintext_shared_allowed": {
+    "value": "{owner}’s server is on this network but can’t be reached securely. Select Try again to connect without encryption.",
+    "description": "browse auth plaintext_shared_allowed",
+    "args": {
+      "owner": "str"
+    }
+  },
+  "browse.auth.plaintext_shared_declined_signin": {
+    "value": "You chose not to connect to {owner}’s server without encryption. Select Try again to be asked again.",
+    "description": "browse auth plaintext_shared_declined_signin",
+    "args": {
+      "owner": "str"
+    }
+  },
+  "browse.auth.plaintext_shared_revoked_signin": {
+    "value": "Unencrypted connections to {owner}’s server are off. Select Try again to be asked again.",
+    "description": "browse auth plaintext_shared_revoked_signin",
+    "args": {
+      "owner": "str"
+    }
+  },
+  "browse.auth.plaintext_shared_declined_signed_in": {
+    "value": "You chose not to connect to {owner}’s server without encryption. Allow it in Settings → Unencrypted connections.",
+    "description": "browse auth plaintext_shared_declined_signed_in",
+    "args": {
+      "owner": "str"
+    }
+  },
+  "browse.auth.plaintext_shared_revoked_signed_in": {
+    "value": "Unencrypted connections to {owner}’s server are off. Turn them on in Settings → Unencrypted connections.",
+    "description": "browse auth plaintext_shared_revoked_signed_in",
+    "args": {
+      "owner": "str"
+    }
+  },
+  "browse.auth.plaintext_remote": {
+    "value": "Your Plex server answered only without encryption, from outside this network. Check Remote Access in its settings.",
+    "description": "browse auth plaintext_remote"
+  },
+  "browse.auth.plaintext_shared_remote": {
+    "value": "{owner}’s server answered only without encryption, from outside this network. Its Remote Access needs checking.",
+    "description": "browse auth plaintext_shared_remote",
+    "args": {
+      "owner": "str"
+    }
+  },
+  "browse.auth.plaintext_shared_insecure": {
+    "value": "{owner}’s server answered only without encryption. Its owner can check it allows secure connections.",
+    "description": "browse auth plaintext_shared_insecure",
+    "args": {
+      "owner": "str"
+    }
+  },
+  "browse.preferences.stale": {
+    "value": "Your profile or preferences changed. Reload settings and try again.",
+    "description": "Plex account preferences: stale error"
+  },
+  "browse.preferences.refused": {
+    "value": "Plex did not authorize this account request. Sign in again and retry.",
+    "description": "Plex account preferences: refused error"
+  },
+  "browse.preferences.timed_out": {
+    "value": "Plex took too long to respond. Please retry.",
+    "description": "Plex account preferences: timed out error"
+  },
+  "browse.preferences.unavailable": {
+    "value": "Could not reach Plex. Check your connection and retry.",
+    "description": "Plex account preferences: unavailable error"
+  },
+  "browse.preferences.invalid_response": {
+    "value": "Plex returned an unexpected response. Please retry.",
+    "description": "Plex account preferences: invalid response error"
+  },
+  "browse.preferences.invalid_preference": {
+    "value": "This preference value is not supported.",
+    "description": "Plex account preferences: invalid preference error"
   }
 }

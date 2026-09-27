@@ -15,7 +15,8 @@ fn viewstate_optimistic_home_edit_keeps_the_frame_directory_policy() {
     let _cleanup = DirectoryPolicyCleanup;
     let mut rig = Bridge::for_test(|| 0);
     rig.directory = directory_policy_fixture(sid, sid);
-    crate::pms::seed_two_library_home_for_test(sid, rig.directory.view());
+    let directory_view = rig.directory.view();
+    rig.stores.hubs.seed_two_library_home_for_test(sid, directory_view);
     rig.stores.viewstate.borrow_mut().hold_inflight_for_test(sid, "held");
     let _ = rig.stores.take_notices();
 
@@ -27,7 +28,7 @@ fn viewstate_optimistic_home_edit_keeps_the_frame_directory_policy() {
         guid: String::new(),
     }));
 
-    let snapshot = crate::pms::hubs_snapshot();
+    let snapshot = rig.stores.hubs.snapshot();
     let hub = snapshot.view().hub(0).expect("the pinned library's shelf");
     assert_eq!(hub.items.iter().map(|item| item.rk.as_str()).collect::<Vec<_>>(), ["alpha"],
         "the optimistic callback cannot restore the unpinned sibling library");
@@ -43,7 +44,7 @@ fn viewstate_optimistic_home_edit_keeps_the_frame_directory_policy() {
 fn separate_bridges_do_not_share_any_viewstate_owner_state_or_notice() {
     let _guard = crate::testlock::serial();
     let first = Bridge::for_test(|| 0);
-    let second = Bridge::for_test(|| 0);
+    let mut second = Bridge::for_test(|| 0);
 
     first.stores.viewstate.borrow_mut().seed_ownership_fixture_for_test();
     let before_reset = first.stores.viewstate.borrow().ownership_fixture_for_test();
@@ -68,7 +69,7 @@ fn separate_bridges_do_not_share_any_viewstate_owner_state_or_notice() {
 #[test]
 fn reset_fences_a_late_old_viewstate_worker_from_the_post_reset_request() {
     let _guard = crate::testlock::serial();
-    let bridge = Bridge::for_test(|| 0);
+    let mut bridge = Bridge::for_test(|| 0);
     bridge.stores.viewstate.borrow_mut().seed_post_reset_flight_for_test();
     let old_adapter = bridge.stores.viewstate.borrow().adapter_for_test();
     let finish_old_worker = bridge.stores.viewstate.borrow().late_completion_for_test();
@@ -83,6 +84,192 @@ fn reset_fences_a_late_old_viewstate_worker_from_the_post_reset_request() {
 
     assert_eq!(bridge.stores.viewstate.borrow().ownership_fixture_for_test().sent.as_deref(), Some("post-reset"),
         "a completion from the retired adapter must not satisfy the replacement request");
+}
+
+fn person_open(sid: crate::plex::ServerId, name: &str) -> crate::stores::person::PersonCmd {
+    crate::stores::person::PersonCmd::Open {
+        sid,
+        key: "person-key".into(),
+        guid: "plex://person/person-guid".into(),
+        name: name.into(),
+        thumb: String::new(),
+    }
+}
+
+fn person_item(sid: crate::plex::ServerId, rk: &str, watched: bool) -> crate::pms::PmsMovie {
+    crate::pms::PmsMovie {
+        sid,
+        rk: rk.into(),
+        watched,
+        unwatched: !watched,
+        ..Default::default()
+    }
+}
+
+fn deliver_person(rig: &mut Bridge, command: crate::stores::person::PersonCmd) {
+    let parts = CxParts { tick: Tick::default(), press: Default::default(),
+        focus: Default::default(), owner: InputOwner::Entry(EntryId(0)) };
+    let mut out = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    let mut fx = Effects::new(&mut out, MachineId::Store(StoreId::Person.ord()), &mut present);
+    assert_eq!(Rig::<AppHost>::deliver(rig, MachineId::Store(StoreId::Person.ord()),
+        &AppMsg::Store(StoreCmd::Person(command)), &parts, &mut fx), Handled::Yes);
+}
+
+#[test]
+fn separate_bridges_do_not_share_any_person_owner_state_or_notice() {
+    let _guard = crate::testlock::serial();
+    let mut first = Bridge::for_test(|| 0);
+    let mut second = Bridge::for_test(|| 0);
+    let sid = crate::plex::ServerId::from_raw(0);
+
+    first.person_run(person_open(sid, "first-owner"));
+    first.stores.person.seed_ownership_fixture_for_test();
+    let before_reset = first.stores.person.ownership_fixture_for_test();
+    second.person_run(crate::stores::person::PersonCmd::Reset);
+    let after_reset = first.stores.person.ownership_fixture_for_test();
+
+    first.stores.person.seed_ownership_fixture_for_test();
+    let before_pump = first.stores.person.ownership_fixture_for_test();
+    let _ = second.person_pump();
+    let after_pump = first.stores.person.ownership_fixture_for_test();
+
+    assert_eq!((after_reset, after_pump), (before_reset, before_pump),
+        "resetting or pumping Bridge B must not alter Bridge A's model, generation, retry, flight or mailbox");
+    assert_eq!(first.person_view().current().map(|person| person.name.as_str()), Some("first-owner"));
+    assert!(second.person_view().current().is_none());
+    let second_notices = second.stores.take_notices();
+    let first_notices = first.stores.take_notices();
+    assert_eq!(second_notices.iter().filter(|(id, _)| *id == StoreId::Person).count(), 1,
+        "Bridge B owns only its reset notice");
+    assert_eq!(first_notices.iter().filter(|(id, _)| *id == StoreId::Person).count(), 1,
+        "Bridge B draining its notices must leave Bridge A's notice untouched");
+}
+
+#[test]
+fn person_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
+    let _guard = crate::testlock::serial();
+    let mut bridge = Bridge::for_test(|| 0);
+    let sid = crate::plex::ServerId::from_raw(0);
+    bridge.person_run(person_open(sid, "old-person"));
+    let old_adapter = bridge.stores.person.adapter_for_test();
+    let finish_old_worker = bridge.stores.person.late_completion_for_test();
+
+    bridge.person_run(crate::stores::person::PersonCmd::Reset);
+    bridge.person_run(person_open(sid, "post-reset-person"));
+    let new_adapter = bridge.stores.person.adapter_for_test();
+    assert!(!std::sync::Arc::ptr_eq(&old_adapter, &new_adapter),
+        "reset must rotate the Person worker adapter");
+    finish_old_worker();
+    let _ = bridge.person_pump();
+
+    let person = bridge.person_view().current().expect("post-reset person remains open");
+    assert_eq!(person.name, "post-reset-person");
+    assert!(person.bio.is_empty(), "the retired worker cannot write the replacement person");
+}
+
+#[test]
+fn person_store_notifies_only_when_a_command_actually_changed_state() {
+    let _guard = crate::testlock::serial();
+    let mut bridge = Bridge::for_test(|| 0);
+    let sid = crate::plex::ServerId::from_raw(0);
+    bridge.person_run(person_open(sid, "reader"));
+    bridge.stores.person.install_for_test(vec![person_item(sid, "movie", false)], Vec::new());
+    let _ = bridge.stores.person.take_notice();
+    let gen_before = bridge.stores.person.gen();
+
+    let changed = bridge.person_run(crate::stores::person::PersonCmd::SetWatchedLocal {
+        sid, rk: "no-such-item".into(), on: true,
+    });
+
+    assert!(!changed, "an unmatched SetWatchedLocal must report no change");
+    assert_eq!(bridge.stores.person.gen(), gen_before,
+        "a no-op command must not bump the Person store's generation");
+    assert_eq!(bridge.stores.person.take_notice(), None,
+        "a no-op command must not raise a Person notice");
+}
+
+#[test]
+fn person_reset_on_an_empty_store_still_notifies() {
+    let _guard = crate::testlock::serial();
+    let mut bridge = Bridge::for_test(|| 0);
+    let _ = bridge.stores.person.take_notice();
+
+    bridge.person_run(crate::stores::person::PersonCmd::Reset);
+
+    assert!(bridge.stores.person.take_notice().is_some(),
+        "Reset must still notify, even on an empty store, so a late owner picks up the rotation");
+}
+
+#[test]
+fn addressed_person_store_command_changes_and_notifies_only_its_bridge() {
+    let _guard = crate::testlock::serial();
+    let mut first = Bridge::for_test(|| 0);
+    let mut second = Bridge::for_test(|| 0);
+    let sid = crate::plex::ServerId::from_raw(0);
+    first.person_run(person_open(sid, "first-reader"));
+    second.person_run(person_open(sid, "second-reader"));
+    first.stores.person.install_for_test(vec![person_item(sid, "movie", false)], Vec::new());
+    second.stores.person.install_for_test(vec![person_item(sid, "movie", false)], Vec::new());
+    let _ = first.stores.take_notices();
+    let _ = second.stores.take_notices();
+
+    deliver_person(&mut first, crate::stores::person::PersonCmd::SetWatchedLocal {
+        sid, rk: "movie".into(), on: true,
+    });
+
+    assert!(first.person_view().current().unwrap().shelf(0)[0].watched,
+        "the addressed Person reader sees the optimistic edit immediately");
+    assert!(!second.person_view().current().unwrap().shelf(0)[0].watched,
+        "an unaddressed Person/Filmography reader keeps its own publication");
+    assert_eq!(first.stores.take_notices().iter().filter(|(id, _)| *id == StoreId::Person).count(), 1);
+    assert_eq!(second.stores.take_notices().iter().filter(|(id, _)| *id == StoreId::Person).count(), 0);
+}
+
+#[test]
+fn profile_activation_clears_the_same_bridge_person_before_a_new_mount() {
+    let _guard = crate::testlock::serial();
+    let mut bridge = Bridge::for_test(|| 0);
+    let sid = crate::plex::ServerId::from_raw(0);
+    bridge.person_run(person_open(sid, "outgoing-profile"));
+    assert!(bridge.person_view().current().is_some());
+
+    let _ = crate::app::boot::activate_server_owned(&mut bridge);
+
+    assert!(bridge.person_view().current().is_none(),
+        "profile activation must clear the Person owner on the same Bridge before any new page mounts");
+}
+
+#[test]
+fn viewstate_optimistic_edit_mutates_only_its_bridge_person_store() {
+    let _guard = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let sid = crate::plex::register_for_test(
+        "bridge-person-viewstate", "127.0.0.1", 9, "synthetic", "fixture");
+    let mut first = Bridge::for_test(|| 0);
+    let mut second = Bridge::for_test(|| 0);
+    for bridge in [&mut first, &mut second] {
+        bridge.person_run(person_open(sid, "shared-subject"));
+        bridge.stores.person.install_for_test(
+            vec![person_item(sid, "movie", false)], Vec::new());
+        bridge.stores.viewstate.borrow_mut().hold_inflight_for_test(sid, "held");
+        let _ = bridge.stores.take_notices();
+    }
+
+    assert!(first.viewstate_run(crate::stores::viewstate::ViewStateCmd::Request {
+        sid,
+        rk: "movie".into(),
+        write: crate::viewstate::Write::Watched,
+        detail: None,
+        guid: String::new(),
+    }));
+
+    assert!(first.person_view().current().unwrap().shelf(0)[0].watched);
+    assert!(!second.person_view().current().unwrap().shelf(0)[0].watched,
+        "ViewState's callback must address the Person owner beside its own queue");
+    assert_eq!(first.stores.take_notices().iter().filter(|(id, _)| *id == StoreId::Person).count(), 1);
+    assert_eq!(second.stores.take_notices().iter().filter(|(id, _)| *id == StoreId::Person).count(), 0);
+    crate::plex::reset_servers_for_test();
 }
 
 /// Detail owns the press decision, but the Bridge owns the retained Browse directory needed
@@ -140,7 +327,7 @@ fn detail_watch_activation_dispatches_the_addressed_store_effect_in_the_press_fr
     dispatcher.request(MachineId::Nav, NavOp::Root(route));
     dispatcher.frame_with(&mut rig, tick(0), Vec::new(), Vec::new(), &mut NoTap, false);
 
-    crate::metadata::set_current_for_test(Some(crate::metadata::Detail {
+    crate::metadata::set_current_for_test(rig.stores.metadata.state_mut(), Some(crate::metadata::Detail {
         sid,
         rk: "movie".into(),
         kind: "movie".into(),
@@ -165,11 +352,10 @@ fn detail_watch_activation_dispatches_the_addressed_store_effect_in_the_press_fr
 
     assert_eq!((tap.app_effects, tap.store_deliveries), (1, 1),
         "the Detail effect must cross the addressed Bridge store delivery exactly once");
-    assert!(crate::metadata::current().is_some_and(|detail| detail.watched),
+    assert!(rig.stores.metadata.view().current().is_some_and(|detail| detail.watched),
         "the owning Bridge applies the optimistic edit before the press frame ends");
     assert_ne!(dispatcher.focus().expect("the watch control remains focused").elem, watch.elem,
         "same-frame reconciliation follows the watch control to its new identity");
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
 }
 
 #[test]
@@ -186,7 +372,7 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
     let directory = rig.directory.clone();
 
     crate::pms::with_refused_fetches_for_test(|| {
-        let _ = crate::stores::hubs::apply_with_directory(
+        let _ = rig.stores.hubs.run_with_directory(
             crate::stores::hubs::HubsCmd::Reset, directory.view());
         let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
             owner: InputOwner::Entry(EntryId(0)) };
@@ -203,30 +389,30 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
         }).collect::<Vec<_>>(), [own],
             "the command must use the retained directory before landing or ticking");
         effects.clear();
-        let _ = crate::stores::take_notices();
+        let _ = rig.stores.take_notices();
 
-        crate::pms::queue_test_landing(Some(1));
-        let result = crate::stores::hubs::take_results().pop().unwrap();
-        let generation_before_landing = crate::stores::gen(StoreId::Hubs);
+        rig.stores.hubs.queue_test_landing(Some(1));
+        let result = rig.stores.hubs.take_results().pop().unwrap();
+        let generation_before_landing = rig.stores.gen(StoreId::Hubs);
         let mut fx = Effects::new(&mut effects, MachineId::Store(StoreId::Hubs.ord()), &mut present);
         assert_eq!(rig.deliver(MachineId::Store(StoreId::Hubs.ord()),
             &AppMsg::HubsResult(result), &parts, &mut fx), Handled::Yes);
         drop(fx);
         assert!(effects.is_empty());
-        let generation = crate::stores::gen(StoreId::Hubs);
+        let generation = rig.stores.gen(StoreId::Hubs);
         assert_eq!(generation, generation_before_landing + 1);
-        assert_eq!(crate::stores::take_notices(), [(StoreId::Hubs, generation)],
+        assert_eq!(rig.stores.take_notices(), [(StoreId::Hubs, generation)],
             "one changed landing owes exactly one Hubs notice");
-        let sources_after_land = crate::stores::hubs::apply_with_directory(
+        let sources_after_land = rig.stores.hubs.run_with_directory(
             crate::stores::hubs::HubsCmd::Retry, directory.view());
         assert_eq!(sources_after_land.endpoints.iter().map(|request| request.sid).collect::<Vec<_>>(), [own],
             "landing must keep the retained frame directory");
 
-        let _ = crate::stores::hubs::apply_with_directory(
+        let _ = rig.stores.hubs.run_with_directory(
             crate::stores::hubs::HubsCmd::Reset, directory.view());
-        let _ = crate::stores::hubs::apply_with_directory(
+        let _ = rig.stores.hubs.run_with_directory(
             crate::stores::hubs::HubsCmd::RefetchHubs, directory.view());
-        let _ = crate::stores::take_notices();
+        let _ = rig.stores.take_notices();
         effects.clear();
         let mut fx = Effects::new(&mut effects, MachineId::Store(StoreId::Hubs.ord()), &mut present);
         assert_eq!(rig.deliver(MachineId::Store(StoreId::Hubs.ord()),
@@ -234,7 +420,7 @@ fn hubs_land_and_tick_keep_the_frame_directory_policy() {
         drop(fx);
         assert!(effects.is_empty(),
             "tick must not admit the source excluded by this frame's retained directory");
-        assert!(crate::stores::take_notices().is_empty(),
+        assert!(rig.stores.take_notices().is_empty(),
             "an idle retained-directory tick invents no Hubs notice");
     });
 }
@@ -261,8 +447,8 @@ fn search_capture_and_pump_keep_the_frame_directory_policy() {
     let directory = directory_policy_fixture(own, hidden);
     rig.directory = directory.clone();
     rig.search_run(crate::stores::search::SearchCmd::SetQuery("same frame".into()));
-    let query_generation = crate::search::query_gen();
-    let _ = crate::stores::take_notices();
+    let query_generation = rig.stores.search.query_gen();
+    let _ = rig.stores.take_notices();
     let parts = CxParts { tick: tick(0), press: Default::default(), focus: Default::default(),
         owner: InputOwner::Entry(EntryId(0)) };
     let mut present = Present::new();
@@ -270,10 +456,203 @@ fn search_capture_and_pump_keep_the_frame_directory_policy() {
     let mut fx = Effects::new(&mut effects, MachineId::Store(StoreId::Search.ord()), &mut present);
     assert_eq!(rig.deliver(MachineId::Store(StoreId::Search.ord()),
         &AppMsg::StoreWork(crate::stores::StoreWork::Search { dt_us: 0 }), &parts, &mut fx), Handled::Yes);
-    assert_eq!(crate::search::query_gen(), query_generation,
+    assert_eq!(rig.stores.search.query_gen(), query_generation,
         "the pump must not supersede against a different directory in the same frame");
-    assert!(crate::stores::take_notices().is_empty(),
+    assert!(rig.stores.take_notices().is_empty(),
         "an idle retained-directory Search pump invents no notice");
+}
+
+/// The Search two-owner regression the store-ownership contract requires: two `Bridge`s must
+/// share neither Search's query/shelves/notice-generation state nor its notice queue — including
+/// a LANDED result, which is the part the query/notice checks alone cannot see, since both live on
+/// `SearchState` and neither exercises the adapter mailbox a real fetch actually lands through.
+/// Simulated RED against the pre-port process-wide `static`s this ported, and independently
+/// against a shared-adapter regression a query/notice-only test would miss: temporarily making
+/// `SearchStore::default` hand out one process-wide `Arc<SearchAdapter>` to every owner makes the
+/// row `land_for_test` posts for A's adapter visible to whichever Bridge pumps next, so Bridge B's
+/// pump would pick up the row landed for A (B's `pump` returns `true`, and its snapshot's shelves
+/// are no longer empty) — that older process-wide code no longer exists on disk to run directly (see
+/// `person.rs`'s and `viewstate.rs`'s sibling tests for the same shape, ported the same way), so
+/// the red here is simulated rather than historical, exactly as `reproduce-before-fixing` requires
+/// when a fix changes the seam a test would otherwise call.
+#[test]
+fn separate_bridges_do_not_share_any_search_owner_state_or_notice() {
+    let _guard = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let server = crate::plex::register_for_test(
+        "bridge-search-landing", "127.0.0.1", 11, "synthetic", "landing");
+    let _cleanup = DirectoryPolicyCleanup;
+    let mut first = Bridge::for_test(|| 0);
+    let mut second = Bridge::for_test(|| 0);
+    // Settle each owner's roster-generation baseline BEFORE landing anything: a store's first pump
+    // ever sees the registry as "changed" from its fresh `visible = 0`, and that path supersedes —
+    // wiping the very mailbox this test is about to fill.
+    first.stores.search.pump(0.0);
+    second.stores.search.pump(0.0);
+
+    first.search_run(crate::stores::search::SearchCmd::SetQuery("first-owner".into()));
+    let before_reset = first.stores.search.query().to_string();
+    second.search_run(crate::stores::search::SearchCmd::Reset);
+    let after_reset = first.stores.search.query().to_string();
+
+    assert_eq!(before_reset, after_reset, "resetting Bridge B must not clear Bridge A's query");
+    assert_eq!(after_reset, "first-owner");
+    assert!(second.stores.search.query().is_empty(), "Bridge B starts with no query of its own");
+
+    // Bridge A searches again (Bridge B's Reset above only had to leave A's TEXT alone; a fresh
+    // query is what actually arms a fetch) and land a row straight into A's adapter, at A's own
+    // generation, bypassing the worker.
+    first.search_run(crate::stores::search::SearchCmd::SetQuery("landed-owner".into()));
+    let gen = first.stores.search.query_gen();
+    let idx = server.raw() as usize;
+    let item = crate::search::Item::Media(crate::pms::PmsMovie {
+        sid: server, rk: "landed-row".into(), title: "Landed row".into(), ..Default::default()
+    });
+    crate::search::land_for_test(&first.stores.search.adapter_for_test(), idx, gen, item);
+
+    // Bridge B pumps FIRST: if the two owners shared an adapter, this is the call that would have
+    // picked A's landing up.
+    second.stores.search.pump(0.0);
+    assert!(second.stores.search.snapshot().view().shelves().is_empty(),
+        "Bridge B must not see a row landed only in Bridge A's adapter");
+
+    assert!(first.stores.search.pump(0.0), "Bridge A's own pump must land its own row");
+    let shelves = first.stores.search.snapshot().view().shelves().to_vec();
+    assert!(shelves.iter().flat_map(|s| &s.items).any(|it| matches!(it,
+        crate::search::Item::Media(m) if m.rk == "landed-row")),
+        "Bridge A's pump must land the row addressed to its own adapter");
+
+    let second_notices = second.stores.take_notices();
+    let first_notices = first.stores.take_notices();
+    assert_eq!(second_notices.iter().filter(|(id, _)| *id == StoreId::Search).count(), 1,
+        "Bridge B owns only its own reset notice");
+    assert_eq!(first_notices.iter().filter(|(id, _)| *id == StoreId::Search).count(), 1,
+        "Bridge A's own notices survive Bridge B draining its own queue");
+}
+
+/// The other half of the contract's Required #3: `Reset` must rotate the live adapter so a worker
+/// spawned before the reset can only land into the retired `Arc`, never the replacement's mailbox
+/// — the same fetch/adapter-bundling pattern `person.rs`'s
+/// `person_reset_rotates_the_adapter_and_fences_a_late_old_worker` pins for Person. Landing into an
+/// adapter NOTHING has spawned against (the shape this test had before) passes even without
+/// rotation, since `reset()` also clears every mailbox on the CURRENT adapter regardless — that
+/// assertion cannot tell "rotated" from "cleared in place" apart. Landing into the RETIRED
+/// `old_adapter`, at the POST-reset generation, is the one scenario only rotation defeats: without
+/// it `old_adapter` and the store's live adapter are the same `Arc`, so this late "worker" writes
+/// straight into the mailbox the next pump reads. Simulated RED the same way: temporarily skip the
+/// `Arc::new(Default::default())` rotation in `SearchStore::run`'s `Reset` arm and this landing
+/// reaches the pump (`pump` returns `true`, the row is in the snapshot's shelves) — that unrotated
+/// shape no longer exists on disk to run directly, so the red is simulated per
+/// `reproduce-before-fixing`.
+#[test]
+fn search_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
+    let _guard = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let server = crate::plex::register_for_test(
+        "bridge-search-late-worker", "127.0.0.1", 12, "synthetic", "late-worker");
+    let _cleanup = DirectoryPolicyCleanup;
+    let mut bridge = Bridge::for_test(|| 0);
+    let old_adapter = bridge.stores.search.adapter_for_test();
+
+    bridge.search_run(crate::stores::search::SearchCmd::Reset);
+    let new_adapter = bridge.stores.search.adapter_for_test();
+    assert!(!std::sync::Arc::ptr_eq(&old_adapter, &new_adapter),
+        "reset must rotate the Search worker adapter");
+
+    // A worker spawned before the reset captured `old_adapter`, not `bridge`'s (now different)
+    // live one; simulate it finishing late by landing straight into the RETIRED `Arc`, at the
+    // generation the store carries right now (i.e. exactly the generation a real late completion
+    // would still match, if it could reach the current adapter at all).
+    let gen = bridge.stores.search.query_gen();
+    let idx = server.raw() as usize;
+    let item = crate::search::Item::Media(crate::pms::PmsMovie {
+        sid: server, rk: "late-row".into(), title: "Late row".into(), ..Default::default()
+    });
+    crate::search::land_for_test(&old_adapter, idx, gen, item);
+
+    // The retired adapter is orphaned, not observed: `pump` only ever drains the CURRENT adapter,
+    // so a worker that captured `old_adapter` before the reset has nothing left to land into.
+    assert!(!bridge.stores.search.pump(0.0), "an idle rotated adapter has nothing to land");
+    assert!(bridge.stores.search.snapshot().view().shelves().is_empty(),
+        "a late landing into the retired adapter must never reach the current store's shelves");
+}
+
+/// The Metadata equivalent of `person_reset_rotates_the_adapter_and_fences_a_late_old_worker` /
+/// `search_reset_rotates_the_adapter_and_fences_a_late_old_worker` (contract Required #3, and the
+/// defect `app/boot.rs::activate_server_owned` used to leave uncovered: it reset Browse, Search,
+/// Hubs, Person and ViewState but not Metadata). Pins BOTH halves:
+///  - state: `Reset` drops the previous profile's detail, alt copies, now-playing caption AND
+///    playing-item track store — unlike `Clear`, which deliberately spares `now`/`playing` (D3,
+///    a Detail page reopened mid-playback).
+///  - fencing: a worker that captured the PRE-reset adapter can still complete (proving the
+///    completion itself is real, not silently refused for some unrelated reason), but that
+///    completion lands nowhere once the store's own adapter has rotated — mirrors search's
+///    `land_for_test` + post-reset `pump` shape.
+#[test]
+fn metadata_reset_rotates_the_adapter_and_fences_a_late_old_worker() {
+    let _guard = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let sid = crate::plex::register_for_test(
+        "bridge-metadata-late-worker", "127.0.0.1", 15, "synthetic", "late-worker");
+    let _cleanup = DirectoryPolicyCleanup;
+    let mut bridge = Bridge::for_test(|| 0);
+
+    // Seed the pre-reset profile's full owned state.
+    crate::metadata::set_current_for_test(bridge.stores.metadata.state_mut(), Some(crate::metadata::Detail {
+        sid, rk: "old-rk".into(), kind: "movie".into(), title: "Old Title".into(),
+        guid: "plex://movie/old".into(), ..Default::default()
+    }));
+    assert!(bridge.metadata_run(crate::stores::metadata::MetadataCmd::SetNowPlaying(Some(crate::metadata::NowPlaying {
+        is_episode: false, is_real_episode: false, title: "Old Playing".into(), ep_title: String::new(),
+        season: 0, index: 0, summary: String::new(), year: 0, dur_ms: 0, rating: String::new(),
+        thumb: String::new(), detail_rk: "old-rk".into(),
+    }))));
+    assert!(bridge.metadata_run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(crate::metadata::PlayingItem {
+        sid, rk: "old-rk".into(), show_rk: String::new(), audio: Vec::new(), subs: Vec::new(), video_fps: 0.0,
+        width: 0, height: 0, bitrate: 0, dovi: Default::default(), markers: Vec::new(), chapters: Vec::new(), blur: None,
+    }))));
+    bridge.metadata_run(crate::stores::metadata::MetadataCmd::AltInstall {
+        sid, rk: "old-rk".into(),
+        copies: vec![crate::metadata::AltCopy { sid, rk: "old-rk".into(), ..Default::default() }],
+    });
+    assert!(!bridge.metadata_view().alt_copies(sid, "old-rk").is_empty(), "alt copies seeded");
+    assert!(bridge.metadata_view().current().is_some());
+    assert!(bridge.metadata_view().now_playing().is_some());
+    assert!(bridge.metadata_view().playing().is_some());
+
+    let old_adapter = bridge.stores.metadata.adapter_for_test();
+    let gen = crate::metadata::begin_detail_for_test(&old_adapter, sid, "late-rk");
+
+    assert!(bridge.metadata_run(crate::stores::metadata::MetadataCmd::Reset));
+
+    let new_adapter = bridge.stores.metadata.adapter_for_test();
+    assert!(!std::sync::Arc::ptr_eq(&old_adapter, &new_adapter),
+        "reset must rotate the Metadata worker adapter");
+
+    // State half: the previous profile's detail/alt/now/playing are gone.
+    assert!(bridge.metadata_view().current().is_none(),
+        "reset must drop the previous profile's detail");
+    assert!(bridge.metadata_view().alt_copies(sid, "old-rk").is_empty(),
+        "reset must drop the previous profile's alt copies");
+    assert!(bridge.metadata_view().now_playing().is_none(),
+        "reset must drop the previous profile's now-playing descriptor");
+    assert!(bridge.metadata_view().playing().is_none(),
+        "reset must drop the previous profile's playing-item track store");
+
+    // Fencing half: a worker spawned BEFORE the reset captured `old_adapter`, not the store's new
+    // one. Land its completion straight into the retired adapter, at the generation it reserved —
+    // a witness state proves the completion is real and deliverable, not silently dropped for some
+    // unrelated reason.
+    let mut witness = crate::metadata::MetadataState::default();
+    assert!(crate::metadata::land_detail_for_test(&mut witness, &old_adapter, sid, "late-rk", gen,
+        Some(crate::metadata::Detail { sid, rk: "late-rk".into(), title: "Late Title".into(), ..Default::default() })),
+        "the pre-reset worker really completes onto the adapter it captured");
+
+    // The live, post-reset store never touches the retired adapter, so its own pump has nothing
+    // to land, and the completion above must not reach it.
+    assert!(!bridge.metadata_pump(), "an idle rotated adapter has nothing to land");
+    assert!(bridge.metadata_view().current().is_none(),
+        "a completion from a worker started before reset must not land in the post-reset store");
 }
 
 /// The account-menu lift is a second PAINT of this bridge's captured chrome, not a second

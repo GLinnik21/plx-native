@@ -50,10 +50,10 @@ pub(super) fn recorder_end_frame(
 ) -> bool {
     rec.measurements(bridge);
     rec.content_end();
-    rec.end_frame(&|| super::recorder::state_hash(
+    rec.end_frame_with_gate(&|| super::recorder::state_hash(
         press, route, overlay, focus, tree, bridge.session_subhash(), bridge.consent_subhash(),
         bridge.initial_subhash(),
-    ))
+    ), &|id| bridge.store_gen(id), bridge.landgate())
 }
 
 /// The per-iteration values that cross a phase boundary. Reset at the top of every iteration
@@ -78,9 +78,9 @@ pub(crate) struct Frame {
 }
 
 impl Frame {
-    fn begin(ps: &crate::route::PlaybackSession) -> Frame {
+    fn begin(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>) -> Frame {
         Frame {
-            ctrl: crate::ui::player_hud::slot(ps),
+            ctrl: crate::ui::player_hud::slot(ps, meta),
             now: 0,
             dt: 0.0,
             underlay_moving: false,
@@ -99,7 +99,10 @@ impl Frame {
 /// `app.adapters.player.mt()`. Threading a second `&MainThread` beside `&mut App` would have
 /// needed a second token, and minting one is the hole `MainThread::assume` documents.
 pub(crate) unsafe fn run(app: &mut App) {
+    let watchdog = crate::task::watchdog::LoopWatch::start();
     while app.running {
+        watchdog.advance();
+        let _frame_scope = crate::task::FrameScope::enter();
         #[cfg(all(feature = "hostsim", target_os = "linux"))]
         let wslg_frame_budget = app.wslg_frame_pacing.then(crate::system::WslgFrameBudget::begin);
         // Resolve the control row ONCE per iteration, before the event pump, and pass this
@@ -111,7 +114,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         // the input. Eight phases between the nine stamps, named after the frame algorithm
         // the restructure moves this loop onto (spec §3.3/§8.4); on THIS loop navcommit
         // precedes tick_drain, and the FRAMEDROP line prints them in the algorithm's order.
-        let mut fr = Frame::begin(&app.player.session);
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
         let first_controlled_frame = app.boot_initial.is_some() && app.prev == 0;
         let fr = &mut fr;
         app.instr.mark(crate::diag::heartbeat::Phase::Top);
@@ -119,7 +122,7 @@ pub(crate) unsafe fn run(app: &mut App) {
         // published at the TOP because a landing site is reachable from the dev scenarios below
         // as well as from `land_results` and the dispatcher's own frame. One relaxed atomic load
         // unless `plxnative-rec` or `plxnative-recplay` is armed.
-        app.rec.begin_frame();
+        app.rec.begin_frame(app.bridge.landgate());
         // REPLAY (`plxnative-recplay`): this frame runs on the recorded tick — set BEFORE
         // ingest, whose key arms stamp `last_input` from the clock — and the frame's recorded
         // inputs are re-injected through the same synthesis the remote FIFO uses, so the poll
@@ -131,10 +134,13 @@ pub(crate) unsafe fn run(app: &mut App) {
             }
         }
         crate::system::ls2_pump();
+        crate::webos::poll_home();
         ingest(app, fr);
         app.instr.mark(crate::diag::heartbeat::Phase::Ingest); // ingest
 
         fr.now = clock::now();
+        // Share the actual/replay frame timestamp, before spring dt is clamped.
+        crate::ui::card_motion::begin_frame(fr.now);
         // **The Player machine's tick** (spec §4.1): set ONCE per iteration, from the same
         // `fr.now` every other phase of this frame reads. `PlaybackSession::auto_last_switch` — the
         // adaptive controller's "how long since the last visible rung change" — is stamped from
@@ -172,6 +178,13 @@ pub(crate) unsafe fn run(app: &mut App) {
         // **Publish the playback session into the tree** (spec §2.3) before the dispatcher's frame
         // and the draw that follows it, so every owned screen in one frame reads one consistent
         // picture. Only while something that reads it is mounted — see `Bridge::publish_playback`.
+        if app.adapters.player.poll_repair(&mut app.player.repair) {
+            crate::ui::idle::invalidate();
+        }
+        // A timed-out native Load parked by teardown is released here, on the main thread, the
+        // first frame after its media thread returns (`player::engine::AbandonedLoad`).
+        crate::player::engine::reap_abandoned_load(&mut app.adapters.player);
+        app.player.session.repair_status = app.player.repair.state();
         app.bridge.publish_playback(&app.player.session, was_player);
         // The container runs its frame: the pending navigation's commit (at `PageDip`'s floor),
         // then the owned screens' inputs, ticks, timers and effects. `app/bridge.rs` is the seam.
@@ -189,17 +202,19 @@ pub(crate) unsafe fn run(app: &mut App) {
             app.pages.nav.tabs.stack.transition.page_alpha(), app.pages.nav.tabs.stack.transition.in_flight())); }
         app.rec.prepare_resources(&mut app.bridge);
         let (_word, tree_report) = if let Some(results) = supplied {
+            let mut stores = std::collections::BTreeSet::new();
+            for (address, _) in &results {
+                if let crate::ui::machine::MachineId::Store(ord) = address.to {
+                    stores.insert(ord.0);
+                }
+            }
+            for ord in stores {
+                app.bridge.landgate().landed(crate::ui::machine::StoreOrd(ord));
+            }
             super::bridge::frame_with_results(&mut app.pages, &mut app.bridge, tick,
                 std::mem::take(&mut app.inputs), || {
                     // One consumed batch per supported store, exactly as the live suppliers
                     // stamp it. No mailbox is polled and no worker is needed for these facts.
-                    let mut stores = std::collections::BTreeSet::new();
-                    for (address, _) in &results {
-                        if let crate::ui::machine::MachineId::Store(ord) = address.to {
-                            stores.insert(ord.0);
-                        }
-                    }
-                    for ord in stores { crate::ui::landgate::landed(crate::ui::machine::StoreOrd(ord)); }
                     results
                 }, &mut app.rec)
         } else { super::bridge::frame_with_tap(
@@ -228,10 +243,12 @@ pub(crate) unsafe fn run(app: &mut App) {
         // `Surface` around every modal tick and surface step — §4.4), so it is exactly the term
         // the legacy loop got from stepping `library::update` inside `idle::scoped_motion`.
         //
-        // Its readers are `popover::host::begin_frame` below: `gfx::page_wash_dither`, which
-        // costs a 2M-fragment dither on a wash that is about to slide, and `host_refresh`'s
-        // `page_moving` term for a page under a FADING panel. Neither could see an owned page
-        // move.
+        // Its host-cache reader is `popover::host::begin_frame` below — `host_refresh`'s `page_moving`
+        // term, which decides whether the frozen snapshot under a FADING panel is taken again,
+        // and which could not see an owned page move. (It fed `gfx::page_wash_dither` too until
+        // 2026-09-19; a page-wide verdict turned out to be the wrong question for a wash, since
+        // the wash's own dissolve is in it, and the function itself is gone now — every wash
+        // dithers on every frame.)
         fr.underlay_moving |= tree_report.underlay_moving;
         if was_player && super::bridge::player(&app.pages).is_none() { restore_played_entry(app); }
         content_requests(app, fr);
@@ -248,6 +265,7 @@ pub(crate) unsafe fn run(app: &mut App) {
             #[cfg(all(feature = "hostsim", target_os = "linux"))]
             wslg_frame_budget,
         );
+        if fr.present { watchdog.presented(); }
         report(app, fr);
         heartbeat(app, fr);
     }
@@ -282,6 +300,9 @@ fn clock_and_press(app: &mut App, fr: &mut Frame) {
     // stamp `dt` so a spring's velocity can be judged as travel-this-frame rather than as
     // a bare units-per-second. The decision itself is taken just above `glViewport`.
     crate::ui::idle::frame_begin(fr.dt);
+    // Is a page capture still in flight on the GPU? Latched once, before the springs step, so
+    // the held appear spring and the present gate below read the same answer.
+    crate::gfx::snapshot_frame_begin(|pending| app.rec.snapshot_pending(pending));
     // ui::press (tvOS click) — advance the dip/spring every frame; when a deferred activation
     // commits (the spring-back bounce has played), run it for whichever CARD view armed the
     // press. A long-press does NOT commit (`press::tick` clears `want_commit` at `LONG_MS`):
@@ -369,8 +390,20 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     crate::ui::tex::note_queued(&mut app.pages.budget);
     // Lifecycle is a hard outer gate: even noidle, a bound plane or queued uploads must
     // not reach EGL/Mali while SDL's window is backgrounded.
-    fr.present = app.window_activity.allow_present(
-        crate::ui::idle::should_present(fr.now) || app.pages.budget.has_queued_work());
+    //
+    // A third term goes FIRST and short-circuits the other two: a page capture still in flight on
+    // the GPU (`gfx::SNAPSHOT_THIS_FRAME`'s doc). Presenting now would only wait a whole vsync for
+    // a buffer; not asking `should_present` leaves its damage and motion for the frame that does.
+    // The simulator's settled capture (`PLXNATIVE_SHOT_SETTLE`): once nothing has changed for the
+    // asked-for quiet, invalidate so the NEXT present is the settled frame and `maybe_capture`
+    // takes it. Before the decision below, so that invalidate selects this very frame.
+    #[cfg(feature = "hostsim")]
+    crate::shot::tick(fr.now, app.pages.budget.has_queued_work() || crate::gfx::snapshot_pending()
+        || app.scenarios.shots.pending());
+    fr.present = !crate::gfx::snapshot_pending()
+        && app.window_activity.allow_present(
+            crate::ui::idle::should_present(fr.now) || app.pages.budget.has_queued_work(),
+        );
     app.rec.present(fr.present);
     if fr.present {
         app.window_activity.begin_present(fr.player);
@@ -409,7 +442,7 @@ unsafe fn prepare_window(app: &mut App, fr: &mut Frame) {
     app.instr.note_prepare();
     // Hoisted: the frame-drop detector reads these after the gate. Seeded to the pump
     // stamp so a skipped frame reports zero draw/cap/swap rather than a stale delta.
-    app.instr.skip_present_phases();
+    app.instr.seed_present_phases();
 }
 
 /// **The `Rig`-delegated privileged primitives** (spec §15.2, D4). `Bridge`'s `Rig` impl
@@ -445,6 +478,9 @@ unsafe fn present_and_swap(
     if fr.present {
         // the glyph cache's frame serial (phase 11, text.rs's hot window): a drawn frame
         crate::text::begin_frame();
+        // A finished underlay-field reduction is read HERE, before framebuffer 0 holds anything
+        // of this frame — a read between the page and the surfaces splits its render pass.
+        crate::gfx::field_frame_begin();
         let (_vx, _vy, _vw, _vh) = draw(app, fr);
         app.instr.mark(crate::diag::heartbeat::Phase::Draw); // draw
         // dev capture stream: grab this finished frame before the swap (after the last draw,
@@ -458,10 +494,26 @@ unsafe fn present_and_swap(
             crate::capture::tick(fr.now);
         }
         app.instr.mark(crate::diag::heartbeat::Phase::Capture); // capture
+        // `plxnative-simvideo`: the decoded picture goes UNDER the finished UI, as the television's
+        // compositor puts its video plane under ours — before the capture, so shots include it.
+        #[cfg(feature = "hostsim")]
+        if fr.player {
+            crate::player::sim_video::composite_under();
+        }
         // Before the swap, never after: the back buffer is undefined once presented.
         #[cfg(feature = "hostsim")]
-        crate::shot::maybe_capture(_vx, _vy, _vw, _vh);
-        SDL_GL_SwapWindow(app.win);
+        if crate::shot::maybe_capture(_vx, _vy, _vw, _vh) {
+            // The headless one-shot is done: finish this frame, then leave through the ordinary
+            // shutdown rather than exiting from inside the frame (see `shot::maybe_capture`).
+            app.running = false;
+        }
+        {
+            #[cfg(feature = "threadcheck")]
+            let _present_scope = crate::task::watchdog::present_scope();
+            #[cfg(feature = "hostsim")]
+            crate::surface::present_supersampled();
+            SDL_GL_SwapWindow(app.win);
+        }
         app.window_activity.presented(fr.player);
         // One increment, then nothing: re-ask EGL for the back buffer's AGE after real
         // presents have happened. The boot reading is 0 by construction. See `egl.rs`.
@@ -470,7 +522,6 @@ unsafe fn present_and_swap(
         {
             app.buffer_flip_count = (app.buffer_flip_count + 1) % 60;
         }
-        crate::ui::widgets::glass_presented();
         app.instr.mark(crate::diag::heartbeat::Phase::Swap); // swap
         // Inside the gate: `frame_end` is the end of a DRAWN frame. Counting frames the
         // idle gate skipped would pace the profiler's once-per-N-frames log off frames
@@ -482,12 +533,20 @@ unsafe fn present_and_swap(
         // first snapshot is taken at. Once that union is known, several surfaces share one
         // capture; a first discovery frame may still need a second non-contained grab.
         crate::gfx::blur_frame_end();
+        app.glass.sources.borrow_mut().finish();
+        // …and a queued underlay-field reduction has had one more drawn frame to finish in.
+        crate::gfx::field_frame_end();
+        // …and a frame that captured the page leaves a fence the next frames wait on.
+        crate::gfx::snapshot_frame_end();
+        // …and a ground probe's queued copy is read back here, between frames, if it is done.
+        crate::gfx::ground_probes_frame_end();
         crate::ui::idle::note_present(fr.now);
         #[cfg(all(feature = "hostsim", target_os = "linux"))]
         if let Some(budget) = wslg_frame_budget {
             budget.finish();
         }
     } else {
+        app.instr.skip_present_phases();
         // Device and macOS presented frames block in swap; WSLg/X11 presented frames use the
         // software budget above. A skipped frame reaches neither path, so sleep here to keep a
         // settled screen from becoming a CPU spinner.
@@ -498,11 +557,12 @@ unsafe fn present_and_swap(
 /// Ingest: the lab command channel, the remote FIFO and the SDL event queue (spec §3.3 step 2).
 /// Every key, pointer, text and lifecycle event the frame acts on enters here.
 pub(crate) unsafe fn ingest(app: &mut App, fr: &mut Frame) {
+        let supplied = controlled_replay(app);
         // Cloud Test Lab has no SSH/FIFO. Its LAB build long-polls outward, then leaves each
         // command here for the SDL thread so the same dispatcher and event queue remain the
         // only input path. Acknowledge acceptance after dispatch, before polling SDL below.
         for command in crate::lab::take_commands() {
-            let ok = ingress_token(app, fr, &command.token);
+            let ok = !supplied && ingress_token(app, fr, &command.token);
             crate::lab::command_done(command.id, ok);
         }
         // The FIFO's tokens are collected first so the recorder (a field beside `remote`) can
@@ -513,7 +573,7 @@ pub(crate) unsafe fn ingest(app: &mut App, fr: &mut Frame) {
             r.drain(|tok| toks.push(tok.to_string()));
         }
         for tok in toks {
-            let _ = ingress_token(app, fr, &tok);
+            if !supplied { let _ = ingress_token(app, fr, &tok); }
         }
         drain_sdl(app, fr);
 }
@@ -525,6 +585,15 @@ unsafe fn drain_sdl(app: &mut App, fr: &mut Frame) {
 }
 
 unsafe fn ingress_token(app: &mut App, fr: &mut Frame, token: &str) -> bool {
+    #[cfg(feature = "devtriggers")]
+    if let Some(probe) = crate::remote::HangProbe::parse(token) {
+        // FIFO, LAB and replay all enter here on the frame thread inside FrameScope.
+        // Earlier keys/clicks may still be in SDL: handle and record them before the stall.
+        drain_sdl(app, fr);
+        app.rec.input(super::recorder::enc_token(token));
+        probe.run();
+        return true;
+    }
     // Keys and clicks use SDL's existing synthesis while coexistence lasts. Consume those
     // before a following direct text token, rather than moving all text ahead of all keys.
     if super::bridge::search_owns_input(&app.pages) { drain_sdl(app, fr); }
@@ -570,9 +639,28 @@ fn ingest_text(app: &mut App, text: &str, panel: bool, source: crate::ui::machin
 
 /// One polled event. Shared by ordinary polling and ordered FIFO/replay ingestion.
 unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
+    ingest_sdl_event_with_window(app, fr, crate::system::sys_grab_wayland);
+}
+
+/// The window reacquisition is a platform operation, supplied separately so the
+/// recorded/live ingress boundary can be exercised without an SDL/GL context.
+unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
+    restore_window: impl FnOnce(*mut c_void)) {
     let et = rd_u32(&app.ev, 0);
     app.window_activity.event(et);
     crate::telemetry::window::lifecycle(et, matches!(app.route(), AppArg::Player));
+    if controlled_replay(app) {
+        // The tape owns logical ingress; real SDL startup notifications must not be
+        // counted a second time. The real compositor still owns window safety.
+        // Only its DID foreground reacquires native handles. Recorded notifications
+        // below never reacquire them, revoke grants or resume a native player.
+        if et == 0x106 { restore_window(app.win); }
+        if matches!(et, 0x103 | 0x104 | SDL_QUIT) {
+            app.rec.refuse("live window exit interrupted controlled replay");
+            app.running = false;
+        }
+        return;
+    }
     // INPUT while a popover holds the page frozen is the POPOVER's: every invalidate
     // such an event raises — the one below, and whatever its handler adds — is
     // attributed to it, so the frozen host is not re-rendered on every key-up
@@ -668,11 +756,17 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
         // Revoke our borrowed SDL proxies before another frame can use them while backgrounded.
         // SDL owns their lifetime; foreground must query its current window again.
         crate::system::sys_release_wayland();
+        // A trailer preview is not parked: the OS taking the screen ends it, like any other way
+        // off its page (`content::halt_preview_off_its_page`). A Load that has not returned is
+        // left Abandoning, and a preview session is never parked for the foreground reload —
+        // that reload would bring the trailer back as ordinary playback.
+        super::content::halt_preview_now(&mut app.player.session, &mut app.adapters.player);
         // Playback owns its resolve and Engine before the queued Player page mounts. Page
         // presence only governs the screen-local cleanup below, never resource suspension.
-        if (crate::route::play_pending()
-            || app.adapters.player.is_live()
-            || crate::route::has_url(&app.player.session))
+        if !crate::route::preview_request(&app.player.session)
+            && (crate::route::play_pending()
+                || app.adapters.player.is_live()
+                || crate::route::has_url(&app.player.session))
             && !app.player.lifecycle.awaiting_load()
         {
             // INTENDED, not published: this snapshot is the only thing the foreground
@@ -721,8 +815,13 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
         // `Navigation::resume` is idempotent, so the pair is safe and a lost one is not.
         super::bridge::foreground(&mut app.pages);
         if et == 0x106 {
+            // Nothing proves the television is still on the network the person allowed
+            // unencrypted connections on: every plaintext grant ends here, and each server that
+            // lost one is queued for a fresh discovery (requested by the upgrade retry's frame
+            // step) that re-proves eligibility before minting again (`plex::grant`).
+            crate::plex::grant::network_changed();
             // Reacquire only on DID foreground, before playback restoration and rendering.
-            crate::system::sys_grab_wayland(app.win);
+            restore_window(app.win);
             crate::ui::idle::invalidate();
             let activation = drive_foreground(
                 &mut app.player.lifecycle,
@@ -974,6 +1073,7 @@ unsafe fn ingest_sdl_event(app: &mut App, fr: &mut Frame) {
                 &mut app.ok_armed,
                 &mut app.input.press,
                 &mut app.pages,
+                &mut app.bridge,
             );
         } else if matches!(key, Key::Pause) {
             key_pause(&mut app.adapters.player, app.last_input, &mut app.pages);
@@ -1284,8 +1384,12 @@ fn playback_may_run(app: &App) -> bool {
 /// poll, the reporter, EOS / Up Next, the hub refresh, the held key, the scrubber and the paused
 /// seek — everything that reads `fr.now` and no `dt`.
 pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
-        if playback_may_run(app) && is_started() {
-            crate::player::pump(&mut app.player.session, &mut app.adapters.player, fr.now);
+        if playback_may_run(app) {
+            if is_started() {
+                crate::player::pump(&mut app.player.session, &mut app.adapters.player, fr.now);
+            }
+            // Outside `is_started`: a refused preview landing or a stale machine has no engine,
+            // and is exactly what must still be settled back to Idle.
             crate::player::preview::after_pump(
                 &mut app.player.session,
                 &mut app.adapters.player,
@@ -1330,14 +1434,29 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
         // show has another episode queued, else leave the player (back to the detail page or
         // home, whichever is behind), instead of freezing on the last frame.
         if playback_may_run(app) && super::bridge::player(&app.pages).is_some() && crate::player::ended() {
-            finish_playback(&mut app.player.session,
+            let handed_off_to_up_next = finish_playback(&mut app.player.session,
                 &mut app.adapters.player,
                 &mut app.refresh_hubs_at,
                 &mut app.pages,
                 &mut app.bridge,
             );
             // dev: REPLAY AFTER COMPLETION (#46) — `crate::dev::scenarios::maybe_replay_after_eos`.
-            crate::dev::scenarios::maybe_replay_after_eos(app);
+            // `finish_playback`'s return, not `app.route()`: `exit_player`'s `PopTo` only PARKS
+            // the navigation (applied at the next commit), so the route still reads `Player` here
+            // even on a real exit — the return value is the only live signal for it this frame.
+            crate::dev::scenarios::maybe_replay_after_eos(app, handed_off_to_up_next);
+        } else if playback_may_run(app)
+            && crate::player::ended()
+            && super::content::off_route_orphan(
+                app.adapters.player.is_live(),
+                crate::route::is_preview(&app.player.session),
+                super::bridge::player(&app.pages).is_some(),
+            )
+        {
+            // The same end with no player page to leave: nothing else would ever stop this
+            // engine, and its reporter would keep posting the final position forever.
+            log("EOS: stopping an off-route engine nothing owns");
+            crate::player::stop_bufferfeed(&mut app.player.session, &mut app.adapters.player);
         }
         // Up Next countdown elapsed → start the queued episode on its own. Beside the EOS
         // handoff so the whole auto-advance chain reads in one place.
@@ -1366,10 +1485,7 @@ pub(crate) unsafe fn playback_tick(app: &mut App, fr: &mut Frame) {
             app.refresh_hubs_at = 0;
             super::bridge::execute_endpoint_outcomes(
                 &mut app.pages,
-                crate::stores::hubs::apply_with_directory(
-                    crate::stores::hubs::HubsCmd::RefetchHubs,
-                    app.bridge.browse_directory(),
-                ).endpoints,
+                app.bridge.hubs_run(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints,
             );
             // …and every library's OWN shelves, for the same reason and at the same moment:
             // a finished playback moves Continue Watching and watch state, so invalidate each
@@ -1607,6 +1723,7 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
                             &mut app.adapters.player,
                             &mut app.refresh_hubs_at,
                             &mut app.pages,
+                            &mut app.bridge,
                         )
                     }
                     AppArg::Player => activate_player_row(&mut app.player.session,
@@ -1642,73 +1759,13 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
         // order before Hubs. This route follower consumes only its exact committed handoff;
         // it neither drains a process-global mailbox nor applies worker facts itself. A
         // carried credential commit keeps its flow page until the queued ACK finishes.
+        //
+        // The routing decision itself is `bridge::follow_auth_landing` — ONE production function,
+        // called from here and from the two tests that used to keep their own inline copy of this
+        // exact `match` (see that function's doc for why sharing it, rather than restating it, is
+        // what makes those tests prove anything).
         if matches!(app.route(), AppArg::Login | AppArg::Profiles) {
-            if let Some(c) = app.bridge.take_session_ready() {
-                // A sign-out followed by a fresh sign-in can replace the session without
-                // restarting the process. Re-read only at this one credentials handoff so the
-                // old account's in-memory preference cannot leak into the new session.
-                let saved = crate::plex::session::peek();
-                crate::route::restore_quality(
-                    crate::dev::playback_quality_override()
-                        .unwrap_or_else(|| saved.playback_quality()),
-                );
-                let endpoints = super::boot::install_pms_owned(&mut app.bridge, &c.origin,
-                    &c.address, &c.token, c.tier, c.pin.as_ref(), &c.install);
-                super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
-                // **A new user must never be able to walk BACK into the previous one's pages**,
-                // which is the fourth store an identity change must not survive beside the
-                // `browse`/`pms`/`person` resets `install_pms` performs. It was `trail.reset()`,
-                // which emptied the loop's mirror and left the CONTAINER's entries — bodies,
-                // `ReturnState`s and all — exactly where they were, because `sync_page` only ever
-                // moved the top. `reset_for_profile` is the whole tree.
-                app.pages.reset_for_profile();
-                // …and only NOW can the first-run question be asked: `install_pms` registers
-                // the granted roster, which is the stable input to this decision even before
-                // asynchronous section discovery lands. It is asked per PROFILE, which is why
-                // it sits after the switch rather than after the sign-in.
-                // The sign-in's question first, before any per-profile step. On a Plex Home
-                // account it was already asked at the picker below and this is a no-op; on a
-                // single-user account this is the earliest authorized moment there is.
-                maybe_ask_consent(&mut app.pages);
-                app.bridge.refresh_browse_directory();
-                if crate::stores::browse::onboard::asks(app.bridge.browse_directory()) {
-                    log("login: server installed — asking which sources feed Home");
-                    // no `enter()`: rooting the stack at the page is what mounts the owned
-                    // screen (`boot.rs`), and a ROOT is right because the sweep above has just
-                    // emptied the tree.
-                    super::bridge::nav_root(&mut app.pages, AppArg::Onboard);
-                } else {
-                    log("login: server installed — entering Home");
-                    super::bridge::nav_root(&mut app.pages, AppArg::Home);
-                }
-            } else {
-                match app.bridge.auth_read().0.phase {
-                    // A Ready decision can still await its queued disk/registry ACK. Keep
-                    // the current flow page until the exact owner handoff is available.
-                    crate::auth::Phase::Ready => {}
-                    crate::auth::Phase::Profiles | crate::auth::Phase::Switching => {
-                        // BEFORE the picker: the account is authorized, so the consent
-                        // question is answerable, and the person holding the remote at this
-                        // moment is the one who signed the television in. It draws over the
-                        // picker's route on its own opaque ground.
-                        maybe_ask_consent(&mut app.pages);
-                        // No `enter()`-on-change guard any more (phase 6): the picker is an
-                        // owned screen, so a route that is ALREADY `Profiles` mints nothing
-                        // (`bridge::frame`'s `Some(_) => {}` arm) and the existing instance's
-                        // state — the roster cursor, an open PIN pad — rides across this
-                        // assignment untouched, exactly as it did behind the old guard; a route
-                        // that is NOT yet `Profiles` gets a fresh `ProfilesScreen` the moment the
-                        // tree follows it, which is the whole of what `ui::profiles::enter()`
-                        // used to reset by hand. `nav_root` is a no-op when the picker is
-                        // already the root (`Root`'s own `PopTo(root)` arm with nothing above
-                        // it), which is what makes calling it every frame of the phase free.
-                        super::bridge::nav_root(&mut app.pages, AppArg::Profiles);
-                    }
-                    _ => {
-                        super::bridge::nav_root(&mut app.pages, AppArg::Login);
-                    }
-                }
-            }
+            super::bridge::follow_auth_landing(&mut app.pages, &mut app.bridge);
         }
         // dev: an `acct` step on the LOAD DIAL asks for the REAL Account popover, so the
         // shipped surface and a synthetic one can be interleaved inside ONE launch. Assigning
@@ -1725,6 +1782,10 @@ pub(crate) unsafe fn land_results(app: &mut App, fr: &mut Frame) {
         }
         // dev: /tmp/plxnative-navosc — `crate::dev::scenarios::nav_osc_tick`.
         crate::dev::scenarios::nav_osc_tick(app, fr.now);
+        // dev: /tmp/plxnative-pushbench — `crate::dev::scenarios::push_bench_tick`.
+        crate::dev::scenarios::push_bench_tick(app, fr.now);
+        // dev: /tmp/plxnative-deepbench — `crate::dev::scenarios::deep_bench_tick`.
+        crate::dev::scenarios::deep_bench_tick(app, fr.now);
 
         // ---- the page cross-fade's commit frame ------------------------------------------
         // Stepped UNCONDITIONALLY, never per-route: a fader only one screen advances is a fader
@@ -1760,7 +1821,7 @@ pub(super) fn request_local_erasure(rec: &mut super::recorder::Recplay,
         rec.refuse("replay cannot authorize local erasure");
         return false;
     }
-    let failed = super::finish_recording(rec);
+    let failed = super::finish_recording(rec, bridge.landgate());
     bridge.recording_retired_for_erasure(failed);
     delete_all_local_data_and_sign_out(pages);
     true
@@ -1815,9 +1876,9 @@ fn loop_requests(app: &mut App) {
             // freshly-mounted sign-in screen. And the confirmed answer's own decision alert
             // (`screens::consent.rs`'s `DecisionAlert`, nested inside this same surface) DOES
             // still fade on its own spring — legacy's `close_delete_and_menu(true)` never made
-            // that one instant either, only the popover behind it — so its `Glass::CACHED` panel
-            // is still serving the one snapshot it took of the Settings page for the length of
-            // that fade. `blur_invalidate()` is the same fix legacy reached for at the same call
+            // that one instant either, only the popover behind it — so its panel is still
+            // fading over the frozen host snapshot of the Settings page for the length of that
+            // fade. `blur_invalidate()` is the same fix legacy reached for at the same call
             // site and for the same reason (`consent.rs::close_delete_and_menu`'s comment): it
             // forces a recapture, so the alert's exit shows whatever is actually on screen now —
             // the incoming sign-in page — rather than a ghost of the screen the sweep just erased.
@@ -1879,6 +1940,7 @@ fn loop_requests(app: &mut App) {
 /// dev oscillators, the play landing and the remaining pumps — `tick_drain` on the FRAMEDROP
 /// line.
 pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
+
 
         // `Route::Login`/`Route::Profiles` no longer have a route-gated `update(dt)` call here
         // (phase 6, mirroring `Route::Onboard`'s own removal in 5b): both are owned screens now,
@@ -1953,6 +2015,8 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // for the modal ramp, 520 ms for the three focus sweeps. Bodies live in
         // `crate::dev::scenarios` now; this frame still runs them at the same phase boundary.
         crate::dev::scenarios::modal_osc_tick(app, fr.now);
+        // dev: /tmp/plxnative-modalbench — `crate::dev::scenarios::modal_bench_tick`.
+        crate::dev::scenarios::modal_bench_tick(app, fr.now);
         crate::dev::scenarios::legal_doc_tick(app, fr.now, fr.dt);
         crate::dev::scenarios::alert_tick(app, fr.now, fr.dt);
         crate::dev::scenarios::settings_osc_tick(app, fr.now, fr.dt);
@@ -1980,6 +2044,8 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         app.diagnostics.update(&app.player.session, fr.now);
         // …and the lab upload's toast, which expires on a clock rather than a spring.
         crate::lab::update(fr.now);
+        #[cfg(feature = "threadcheck")]
+        crate::ui::runtime_warning::update(app.boot_initial.is_some());
         // The Up Next countdown and the control row's focus pop are the PLAYER INSTANCE's and
         // are stepped from its own `Tick` for the reason `TransportRow::step` gives — the row is
         // not drawn on every frame of the route, so a spring advanced in the draw would run at a
@@ -2005,8 +2071,21 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
                 if !playback_may_run(app) {
                     return;
                 }
-                if let Some(r) = crate::route::pump_play(&mut app.player.session) {
+                if let Some(r) = crate::route::pump_play(&mut app.player.session, app.bridge.metadata_mut()) {
                     crate::ui::idle::invalidate();
+                    // A preview landing nobody is waiting for any more (the page halted it while
+                    // the resolve was in flight) must not start an engine: nothing would track
+                    // it, so nothing would stop it at its end or hand the engine to a later Play.
+                    if crate::route::is_preview(&app.player.session)
+                        && !crate::player::preview::expects_landing()
+                    {
+                        if let Some(transaction) = crate::route::pending_route_start() {
+                            let _ = crate::route::reject_route_start_preparation(transaction);
+                        }
+                        crate::player::stop_bufferfeed(&mut app.player.session, &mut app.adapters.player);
+                        crate::route::clear_preview(&mut app.player.session);
+                        return;
+                    }
                     let resume_prepared = r <= 0
                         || matches!(
                             crate::player::resume_at(&mut app.player.session, r),
@@ -2066,8 +2145,18 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // Async detail load: install the worker's item into CURRENT. Route-unconditional for
         // the same reason as pump_play — play_item_now requests a detail from Home and flips
         // straight to the player, so a Detail-gated pump would never land it.
-        if crate::stores::metadata::pump_detail() {
+        if app.bridge.metadata_pump_detail() {
             crate::ui::idle::invalidate(); // a detail landing rewrites the page under us
+        }
+        // Async season load: install the worker's episode list into CURRENT. Route-unconditional
+        // for the same reason as pump_detail above; see `stores/metadata.rs`'s module doc for why
+        // this call site went missing for a whole migration and how it was found.
+        // MUST run AFTER pump_detail(): a landed detail's `install_landed_detail` calls
+        // `supersede_season()`, invalidating any season fetch for the item being replaced.
+        // Pumping season first could apply a stale season landing to CURRENT in the one frame
+        // before pump_detail() replaces it.
+        if app.bridge.metadata_pump_season() {
+            crate::ui::idle::invalidate(); // a season landing rewrites the episode row under us
         }
         // D7: the continuation half of `activate_card`'s show/season Play — see
         // `App::menu_play_await`/`input::menu_play_tick`'s own doc. Right beside the pump above
@@ -2085,24 +2174,29 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         // is owed either way. Invalidates from inside, per landing.
         let endpoints = app.bridge.viewstate_pump();
         super::bridge::execute_endpoint_outcomes(&mut app.pages, endpoints);
-        crate::stores::person::pump();
+        // A server on a plaintext grant keeps trying HTTPS (`plex::grant::UpgradeRetry`): its
+        // endpoint re-discovery races every HTTPS route first and retires the grant when one
+        // verifies. Route-unconditional — the upgrade is owed whatever is on screen.
+        let upgrades = app.plaintext_upgrade.due(fr.now);
+        super::bridge::execute_endpoint_outcomes(&mut app.pages, upgrades);
+        app.bridge.person_pump();
         if let Some(target) = app.bridge.take_detail_refresh() {
-            refresh_content(&mut app.pages, target);
+            refresh_content(&mut app.pages, &mut app.bridge, target);
         }
         // …and the cross-source resolve it kicked off. Route-unconditional for the same reason,
         // and separate because it lands one round trip per source LATER than the page does —
         // "Also available" appears when the other servers have answered, not when the page
         // mounts. It raises the Metadata store's notice, since a landing that grows
         // the actions row must be drawn without waiting for a keypress.
-        if crate::metadata::pump_alt_sources_with_directory(app.bridge.browse_directory()) {
-            crate::stores::bump(crate::stores::StoreId::Metadata);
-        }
+        app.bridge.metadata_pump_alt_sources();
 }
 
 /// The draw phase, entered only on a presenting frame: `clear_opaque_region` at entry, the
 /// viewport, glass owners' prepare, the page pass, the surfaces bottom-to-top and the
 /// instruments. Returns the viewport for the host-side screenshot that follows the draw.
 pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32) {
+    #[cfg(feature = "threadcheck")]
+    let _draw_scope = crate::task::watchdog::draw_scope();
             // EXPERIMENT (`/tmp/plxnative-egldamage`), no-op without the trigger. FIRST, before
             // any GL command of this frame: `EGL_KHR_partial_update` only permits a damage
             // region to be declared before rendering begins. See `egl.rs`.
@@ -2112,7 +2206,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
             // their trigger is absent. HERE and not below the gate, because the dial's cadence
             // is counted in PRESENTS — a loop iteration the gate skipped drew no glass — and
             // because a step rollover invalidates the snapshot, which must precede every glass
-            // surface in the frame exactly as `Glass::prepare` does.
+            // surface drawn by the synthetic dial.
             app.glass.prepare_dial(fr.now);
             // The authored canvas, scaled UNIFORMLY into the drawable and centred. The shaders
             // divide every coordinate by `u_screen` (which stays 1920x1080), so this one call
@@ -2183,12 +2277,16 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // cannot read back, so there is no host snapshot to take
                         // (`RenderStrategy::VideoPlane`).
                         app.pages.draw(&mut app.bridge, true);
-                        app.diagnostics.draw();
+                        // Skipped rather than drawn while one of the player's own four panels is
+                        // up — `More` carries this very panel's own toggle, and the panel's
+                        // content routinely spans wide enough to reach any of their bottom-right
+                        // rects. See `bridge::player_diagnostics_visible` (issue #163).
+                        if super::bridge::player_diagnostics_visible(&app.pages) {
+                            app.diagnostics.draw();
+                        }
                     } else {
-                        // Open the shared popover frame FIRST: it takes this frame's own-damage
-                        // ledger, which every glass owner below then reads through
-                        // `Popover::prepare_present`, and decides whether the frozen-host
-                        // snapshot still describes the page. Route-agnostic by construction —
+                        // Open the shared popover frame FIRST: it takes this frame's page damage
+                        // and decides whether the frozen-host snapshot still describes the page. Route-agnostic by construction —
                         // see `ui::popover::host::begin_frame`.
                         // A bound preview owns the plane the same way the player branch does: there
                         // is no framebuffer to snapshot. Skip the door instead of tripping the
@@ -2197,182 +2295,48 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         if !(app.player.video_plane_bound && crate::route::is_preview(&app.player.session)) {
                             crate::ui::popover::host::begin_frame(fr.underlay_moving);
                         }
-                        // Resolve every glass owner BEFORE anything on this route draws — that is
-                        // `Glass::prepare`'s contract, and the shared top tab track is an owner on
-                        // every route that wears it.
-                        if { use crate::ui::screen::ScreenArg; app.route().chrome() == crate::ui::machine::Chrome::TabBar } {
-                            // Search publishes its own chrome labels through `capture_chrome`
-                            // exactly like Home/Library (its `|| search` clause), so every
-                            // bar-wearing route resolves the shared tab track's glass the same
-                            // way — from the app's OWN captured vocabulary. The retired
-                            // `ui::widgets` legacy label cache this used to fall back to for
-                            // every other bar-wearing route (Search, plus either MENU over one of
-                            // them back when each was a route of its own) is gone with this call.
-                            app.bridge.prepare_home_chrome(&mut app.glass);
-                        }
-                        // The episode tiles' frosted label band — `/tmp/plxnative-tileglass`,
-                        // the 2026-09-05 experiment. Self-gated on the trigger, so a default
-                        // build resolves nothing here; unlike the two owners either side of it
-                        // this one is not routed at all, because the shelves it rides appear on
-                        // Home, the Library and Search and the trigger is the whole condition.
-                        app.glass.prepare_tile_band();
-                        // **Every REFRESHING backdrop on the tree, resolved before anything on
-                        // this route draws** — `Dispatcher::prepare_present`, which folds the
-                        // caller's belief about the page together with each surface's own appear
-                        // state and the shared own-damage ledger and hands each screen one bit.
-                        //
-                        // The slot is load-bearing at BOTH ends and neither boundary exists inside
-                        // the dispatcher's own frame: `popover::host::begin_frame` above latches
-                        // the ledger the fold reads, and `gfx::blur_direct_region()` is sampled
-                        // BELOW, so an invalidation raised here reaches this frame's own blur
-                        // source instead of the next one's.
-                        //
-                        // This line NAMED a screen until phase 10 (`ui::person_bio::prepare_present`,
-                        // and before that with a `matches!(app.route, Route::Person)` around it —
-                        // a rule stated in one module and enforced by a route test three modules
-                        // away, §14). The block states what it resolves rather than who owns it,
-                        // so the next dynamic backdrop joins by being written.
-                        app.pages.prepare_present(
-                            &mut app.glass,
-                            fr.underlay_moving || crate::ui::idle::present_dirty(),
-                        );
-                        // THE PAGE, named once because it is drawn TWICE: the direct source path
-                        // produces a glass surface's backdrop by rendering the page again into a
-                        // small FBO, and that has to happen HERE, before the visible pass — the
-                        // capture path's hook is inside the glass surface itself, far too late to
-                        // run a second scene pass. The visible full-resolution draw is untouched
-                        // either way.
-                        //
-                        // **The route has to be the same on both passes**, and until 2026-08-19 it
-                        // was not: only Home was reachable from this arm, and the source pass drew
-                        // `home_draw` whatever the route actually was. The Library's and Search's
-                        // tab track therefore blurred HOME — a stale hero from a screen the user
-                        // had left, brighter than the grey it sat on and carrying that page's
-                        // colour. Measured in the simulator on the Library: page ground (44,44,46),
-                        // "glass" track (72,77,59). A track whose whole job is to DARKEN was 1.6x
-                        // brighter than its own ground and green. That is the artefact the material
-                        // was rejected for by eye, and it was this dispatch, not the material.
-                        //
-                        // **`page_of`, not the bare route** used to matter here for its own
-                        // binding — a POPOVER ROUTE named the page it stood on, and the closure's
-                        // `else` used to dispatch by hand between `home_draw` and the retired
-                        // legacy screen's own `draw()`, so getting the wrong route (Library,
-                        // Search or the person page falling through to `home_draw` the moment
-                        // they became menu hosts, or the account popover drawing Home over the
-                        // Library once its chip became pressable) was a real, once-shipped bug.
-                        // Phase 7 (the Search cutover) retired the last per-route arm that needed
-                        // its own `page_route` binding, and phase 10 retired `page_of` itself
-                        // along with both popover routes: a `Route` names exactly one page now, so
-                        // `page_owned` below is already the right answer for Home, Library,
-                        // Detail, Person and Search alike, and the closure's `else` is a
-                        // route-agnostic fallback for the one-frame window between a loop request
-                        // selecting a new page and that page's owned body mounting.
-                        //
-                        // Does the DISPATCHER draw the top page (Home, Library, Search, Favourites, Login, Profiles today)?
-                        // Sampled once, before the closure, because both the visible pass and the
-                        // blur source pass below are gated on it — and because `page` borrows
-                        // nothing of `app`, which is what keeps this readable.
+                        use crate::ui::frame::backdrop::Z;
+                        let layers = app.pages.backdrop_layers(crate::ui::nav::page_alpha());
+                        app.glass.sources.borrow_mut().begin(layers);
+                        let sources = app.glass.sources.clone();
+                        let _visible_walk = app.glass.walk(Z::ALL);
                         let page_owned = super::bridge::page_owned(&app.pages);
-                        // …and the host fold: an opaque surface whose ground has drawn REPLACES
-                        // the page, so the legacy page pass is skipped wholesale. This was two
-                        // `host_ground_ready()` reads, one per full-screen popover, which is
-                        // exactly the list that could not be extended without editing this line.
                         let host_replaced = super::bridge::host_replaced(&app.pages);
-                        // …folded with `page_owned` into the one plan both guards below read, so
-                        // the two bits cannot be combined two different ways two screens apart.
                         let plan = super::bridge::page_plan(host_replaced, page_owned);
-                        let mut page = || {
-                            // A compact modal still exposes most of its host, so unlike
-                            // Settings it cannot replace the page with an opaque ground. It
-                            // freezes that page into one framebuffer texture instead: the first
-                            // frame draws the real tree once, later frames submit one quad while
-                            // the popover's own scrim, springs and panel stay live above it.
-                            //
-                            // **Inside the closure, so BOTH passes get it** — the visible one
-                            // and the direct blur-source one below, which re-renders this same
-                            // closure into a small FBO. The guard is RAII because `home_draw`
-                            // catches panics; see `popover::host::PagePass`.
-                            //
-                            // This was the profile menu's private `FrameCache` and applied to
-                            // exactly one popover. Every popover that asked for it now gets it,
-                            // including the four that draw from INSIDE their page and so could
-                            // never have used the old shape.
-                            let _host = crate::ui::popover::host::page_pass();
-                            // `Route::Login`/`Route::Profiles`/`Route::Search` are deliberately
-                            // absent (phase 6/7, mirroring `Route::Onboard`'s own absence here
-                            // since 5b): all three are owned screens now, so `page_owned` reports
-                            // `true` for any of them and this whole closure is skipped in favour
-                            // of the dispatcher's own page pass — see the `page_owned`/
-                            // `host_replaced` guards below.
+                        // One dispatcher walk supplies declarations, strict source prefixes and
+                        // the visible frame. Only the visible walk advances the host cache.
+                        let mut page = |ceiling: Z| {
+                            let _host = (!crate::ui::frame::backdrop::discovering() &&
+                                (ceiling == Z::ALL || crate::ui::popover::host::held_ceiling().is_some_and(|z| z < ceiling)))
+                                .then(crate::ui::popover::host::page_pass);
                             if page_owned {
-                                app.pages.draw_with_glass(&mut app.bridge, &mut app.glass, true);
+                                app.pages.draw_with_glass_below(&mut app.bridge, &mut app.glass, true, ceiling);
                             } else {
-                                // A loop request may have selected Home after this frame's
-                                // commit. Its owned body mounts next frame; never draw a retired
-                                // singleton while waiting for that lifecycle boundary.
                                 crate::gfx::frame_clear(crate::ui::theme::CLEAR_RGB.0, crate::ui::theme::CLEAR_RGB.1, crate::ui::theme::CLEAR_RGB.2);
                             }
-                            // **A popover drawn AFTER this closure owes its scrim TO it.** That is
-                            // the rule, and these are the two popovers in that class — every other
-                            // one is a SURFACE the container draws (the Library's sort menu, *Also available*)
-                            // or is player-route, where there is no page closure and the dim
-                            // is meant to cover the HUD as well.
-                            //
-                            // The scrim sits between the page and the popover's glass, so it is
-                            // part of what that glass looks through, and this closure is what the
-                            // direct source path re-renders. Drawn with the panel instead it
-                            // reaches the visible frame but never the snapshot, and the frosted
-                            // ground comes out at full page brightness inside a dimmed screen —
-                            // which is exactly what the profile menu did.
-                            //
-                            // **The DIM itself is the container's since phase 10** — one
-                            // `ModalStack::draw_scrims` at the end of the dispatcher's own page
-                            // pass, off each surface's `Screen::scrim`, which is inside
-                            // `app.pages.draw(.., true)` above and therefore still inside this
-                            // closure and still before the snapshot. Two hand-written calls stood
-                            // here (`item_menu::draw_scrim` and, until item 2, the account menu's)
-                            // and each self-gated on its own `is_open`.
-                            //
-                            // What is left is the LIFT: the focused tile repainted above that dim.
-                            // The un-dimmed copy has to be in the SNAPSHOT too, or the panel's
-                            // glass frosts a dimmed picture of the very card it is about — and
-                            // only the page that drew the element knows where it landed, which is
-                            // why this half cannot be a `Scrim::lift`'s bare `fn()` the way the
-                            // profile chip's is.
-                            app.bridge.redraw_opener(&app.pages);
-                            // (`settings`/`legal`/`consent`'s scrims stood here — "a notice is
-                            // about the APP, not about anything on the page behind it" — for the
-                            // same reason the two above still do: a popover drawn AFTER this
-                            // closure owes its scrim TO it, or the frosted ground comes out at
-                            // full page brightness inside a dimmed screen. The family draws its
-                            // own scrim INSIDE its page pass now (`RouteSurface::draw` opens with
-                            // it), which satisfies the rule from the other side: the scrim and
-                            // the surface are one draw, so they cannot be separated by a pass.)
+                            if plan != super::bridge::PagePlan::SurfacesOnly && Z::OPENER < ceiling {
+                                let _opener = crate::ui::frame::backdrop::layer(Z::OPENER, false);
+                                app.bridge.redraw_opener(&app.pages);
+                            }
                         };
-                        if let Some(reg) = crate::gfx::blur_direct_region() {
-                            crate::gfx::blur_snapshot_direct(reg, &mut page);
+                        {
+                            let _declarations = crate::ui::frame::backdrop::discover(sources.clone());
+                            crate::diag::spans::span("disc", || page(Z::ALL));
                         }
-                        // Settings owns a frozen, already-blurred image of the host. After its
-                        // first visible draw, repainting the full Home hero and shelves beneath
-                        // an opaque full-screen modal only burns fill-rate on the T820. Closing
-                        // Settings clears the flag, so the live page resumes on the next frame.
-                        //
-                        // The compact modals do NOT take this branch: they expose most of their
-                        // host, so the page still has to be on the framebuffer. `page` runs, and
-                        // the freeze inside it is what makes running it cheap.
-                        //
-                        // **A Replaced host is drawn by nobody, owned or legacy.** This read
-                        // `!host_replaced || page_owned` through phase 7, when `page_owned`
-                        // meant only "the dispatcher draws the page, not this closure" and no
-                        // owned page could host an opaque surface. Phase 8 made Home both, and
-                        // the closure then ran under the Settings ground every frame — its
-                        // `page_pass` serving the frozen snapshot as a full-screen quad beneath
-                        // the ground's own full-screen wash, which is the 60 → 40 fps the
-                        // Settings family measured in TV session 4. `bridge::page_plan` is the
-                        // one fold of the two bits; the surfaces of an owned page under a
-                        // Replaced host are drawn by the call below, as a legacy page's are.
+                        sources.borrow_mut().resolve();
+                        let jobs = sources.borrow().jobs();
+                        // Independent bands replay only the strict prefix below their ceiling.
+                        // A band intersecting lower glass captures that composite in visible order.
+                        for (ceiling, rect) in jobs {
+                            let _source_walk = crate::ui::frame::backdrop::enter(sources.clone(), ceiling);
+                            let reg = crate::gfx::blur_region(rect.x, rect.y, rect.w, rect.h);
+                            if crate::gfx::blur_snapshot_direct(reg, &mut || page(ceiling)) {
+                                crate::gfx::retain_backdrop(ceiling);
+                            }
+                        }
+                        // An opaque route ground replaces the page entirely.
                         if plan != super::bridge::PagePlan::SurfacesOnly {
-                            crate::ui::profile::phase("main.ui", || page());
+                            crate::ui::profile::phase("main.ui", || page(Z::ALL));
                         }
                         // The diagnostics read-out, off the player. It drew ONLY inside the branch
                         // above until 2026-08-29, which is why its module doc had to warn that a
@@ -2381,7 +2345,9 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // could produce no artefact at all: it never reaches a player.
                         //
                         // **Here rather than on the frame's common tail, and the simulator is what
-                        // settled it.** On the player path the panel is genuinely last; here it is
+                        // settled it.** On the player path the panel is genuinely last, except
+                        // while one of the player's own panels is open (issue #163 — skipped
+                        // there instead, see `bridge::player_diagnostics_visible`); here it is
                         // over the PAGE and under the app's modal surfaces, because on this path
                         // something DOES sit in its corner — the profile menu, which carries the row
                         // that turns it off. Drawn last it covered the account chip and then the
@@ -2390,45 +2356,16 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // controls. Two call sites, and the `else` covers every non-player route,
                         // so a new route still cannot be forgotten.
                         app.diagnostics.draw();
-                        // **THE TREE, once, at the slot the family always occupied** — over the
-                        // two compact popovers, under the dev glass. Five calls stood here:
-                        // `settings::draw()`, the Home editor behind its own second push spring,
-                        // `legal::draw()` and `consent::draw()` on top, each self-gated and each
-                        // ordered by hand to mirror the key ladder ("whichever answers BACK first
-                        // must also be the one on top"). One `Dispatcher::draw` states the same
-                        // order structurally: the surfaces are drawn bottom to top and the inner
-                        // stack's push is the surface's own, so Privacy over the root, or the
-                        // second consent stage over the first, is a stack rather than a pair of
-                        // springs somebody has to keep in step.
-                        //
-                        // `pages` is `false` here and it must be: the argument says whether the
-                        // PAGE pass runs too, and an owned page's `true` pass is the one INSIDE
-                        // the closure above — so this call is skipped on the `Owned` plan, and
-                        // runs with the page pass off for a legacy page (whose closure painted
-                        // it) and for either kind under a Replaced host (which paints nothing).
-                        // `Dispatcher::draw` also fills and SWAPS the hit map, so calling it
-                        // twice in a frame — once inside the page closure and once here — would
-                        // register the surfaces' stops twice and hand the pointer a map from the
-                        // wrong pass.
-                        //
-                        // What this call draws lands over the diagnostics read-out — the profile
-                        // and card menus are surfaces of this very stack since phase 10 and are
-                        // drawn BY it — and since phase 8 that is only ever SURFACES: an owned
-                        // page (Home, Library and Search included, all of which wear the tab bar
-                        // and can host both popovers) is painted inside the closure above, under
-                        // them, and reaches this call only under a Replaced host — where the
-                        // page paints nothing and the compact popovers cannot be open, because an
-                        // opaque ground is up. The ordering question this comment used to settle
-                        // by listing the owned pages is therefore the same one the legacy page
-                        // answered on every frame before the migration.
+                        // Owned pages already dispatched their surfaces in the visible walk.
                         if plan != super::bridge::PagePlan::Owned {
-                            app.pages.draw_with_glass(&mut app.bridge, &mut app.glass, false);
+                            app.pages.draw_with_glass_below(&mut app.bridge, &mut app.glass, false, Z::ALL);
                         }
                         // dev: the blurred route transition, then the load dial's glass surfaces.
                         // LAST on the non-player path, so the snapshot either takes is of the
                         // COMPLETE page — which is the honest source for a surface that sits on
                         // top of everything, and the one thing the tab track (drawn inside the
                         // page) cannot have.
+                        drop(_visible_walk);
                         app.glass.draw_nav_blur();
                         app.glass.draw_dial();
                         // The on-screen counter, off the player route (chrome over video). It draws
@@ -2441,8 +2378,10 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // costs the fps scenes nothing: they grade the once/sec heartbeat in the
                         // EVENT LOG, never the pixels, so `loop_floor`/`fps_floor`/`fps_ceiling`
                         // are unaffected by whether the digits are painted.
+                        // A supersampled simulator render (`surface::render_scale`) exists to be
+                        // captured, so it leaves the diagnostic digits out of the picture.
                         #[cfg(feature = "devtools")]
-                        {
+                        if crate::surface::render_scale() == 1 {
                             let fps_col = if app.buffer_flip_count < 30 {
                                 crate::ui::theme::DIAG_FLIP_A
                             } else {
@@ -2461,6 +2400,8 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                                                      // The lab upload read-out, over everything, on every route — including the
                                                      // player, where the two branches above diverge and this one must not.
                     crate::lab::draw(app.diagnostics.frame_if_shown());
+                    #[cfg(feature = "threadcheck")]
+                    crate::ui::runtime_warning::draw(app.boot_initial.is_some());
                 });
             });
     (vx, vy, vw, vh)
@@ -2469,6 +2410,10 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
 /// The iteration's report: the route word (on change), the lab route note, the focus probe
 /// and the FRAMEDROP line.
 pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
+        // dev: the stress-bench oscillators' own frame-time accumulator — right after Swap is
+        // stamped (`present_and_swap`, just above this call in `run()`), the earliest point this
+        // iteration's total is known. See `crate::dev::scenarios::bench_frame_tick`'s doc.
+        crate::dev::scenarios::bench_frame_tick(app, fr.present);
         fr.rn = super::words::route_word(&app.route());
     let rn = fr.rn;
     if crate::text::take_measure_fault() && !app.measure_fault_logged {
@@ -2589,7 +2534,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
         };
         if crate::focusprobe::armed() {
             let content = super::bridge::content_probe(&app.pages, &app.bridge);
-            crate::focusprobe::sample(&app.player.session, fr.rn, probe_screen(app), probe_hud(app), fr.ctrl, &content);
+            crate::focusprobe::sample(&app.player.session, fr.rn, probe_screen(app), probe_hud(app), fr.ctrl, &content, app.bridge.metadata_view());
         }
         // The recorder's frame tail (spec §5.3): on an event frame the logical-state hash —
         // the press machine, the route and overlay words, the focus fingerprint and, since phase
@@ -2604,7 +2549,7 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
         // read lazily by recorder_end_frame for both recording and replay; no raw state is logged.
         if !matches!(app.rec, super::recorder::Recplay::Off) {
             let content = super::bridge::content_probe(&app.pages, &app.bridge);
-            let focus = crate::focusprobe::line(&app.player.session, fr.rn, probe_screen(app), probe_hud(app), fr.ctrl, &content);
+            let focus = crate::focusprobe::line(&app.player.session, fr.rn, probe_screen(app), probe_hud(app), fr.ctrl, &content, app.bridge.metadata_view());
             // The bare WORD, not the heartbeat's ` overlay=<word>` spelling: the prefix is that
             // line's grammar and has no business in a state hash (phase 10 item 4).
             let ov = super::words::overlay_word(&app.pages, &app.route()).unwrap_or("");
@@ -2645,9 +2590,13 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                 cards,
                 cards_off,
             });
+            // Taken on every presented frame for the counters' reason above: a span belongs to
+            // the frame it ran in, never to the next slow one.
+            let spans = crate::diag::spans::take();
             if let Some(line) = app.instr.frame_drop_line(&|| {
                 format!(
-                    "route={rn} load={} snapt={:.2}",
+                    "route={rn} dip={} load={} snapt={:.2} {spans}",
+                    app.pages.dip_word(),
                     crate::ui::glassload::step_index(),
                     app.bridge.home_snap_target(&app.pages)
                 )
@@ -2661,6 +2610,9 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
 pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
     let rn = fr.rn;
         if loop_tick(&mut app.iters_ct, &mut app.loop_t, &mut app.loop_shown, fr.now) {
+            if crate::dev::scenarios::imagecache_stats_armed() {
+                super::adapters::poster::log_cache_stats();
+            }
             // once/sec render heartbeat — greppable without reading the on-screen counter.
             // The harness parses `loop=(\d+) route=(\w+)(?: overlay=(\w+))?` (tests/run.py), so
             // the player's overlay tag stays right after route= and worstframe= stays LAST.
@@ -2740,17 +2692,16 @@ pub(crate) unsafe fn heartbeat(app: &mut App, fr: &mut Frame) {
                 app.fps_shown = pres.min(i32::MAX as u32) as i32;
             }
             // dev: which LOAD-DIAL step these frames belong to, the blur refreshes
-            // actually TAKEN in that second, and the cadence in force. Absent unless the
-            // dial or the cadence knob is armed, and placed after `fps=` / before
+            // actually TAKEN in that second. Absent unless the dial is armed, and placed
+            // after `fps=` / before
             // `worstframe=` so both harness regexes are untouched. `snap=` is the one
             // thing a cadence claim cannot be trusted without: it is the rate that RAN,
             // not the rate that was requested.
-            let ld = if crate::ui::glassload::armed() || app.scenarios.dev.glass_hz_armed {
+            let ld = if crate::ui::glassload::armed() {
                 format!(
-                    " load={} snap={} period={}",
+                    " load={} snap={}",
                     crate::ui::glassload::step_index(),
-                    crate::gfx::take_blur_snapshots(),
-                    crate::ui::widgets::dynamic_period()
+                    crate::gfx::take_blur_snapshots()
                 )
             } else {
                 String::new()
@@ -2812,7 +2763,23 @@ pub(crate) unsafe fn shutdown(
 /// kinds through the same synthesis the remote FIFO uses, direct tokens through the dispatcher.
 /// An unknown kind is logged once per kind rather than silently skipped.
 unsafe fn replay_inject(app: &mut App, fr: &mut Frame, v: &serde_json::Value) {
+    if let Some(token) = super::recorder::direct_token(v) {
+        if !ingress_token(app, fr, token) { app.rec.refuse("recorded direct token was not accepted"); }
+        return;
+    }
     if app.boot_initial.is_some() {
+        match super::recorder::controlled_foreground(v) {
+            Ok(Some(code)) => {
+                app.rec.input(super::recorder::enc_lifecycle(code));
+                // Same navigation owner as ordinary foreground, with platform and
+                // player restoration kept behind actual SDL lifecycle ingress.
+                super::bridge::foreground(&mut app.pages);
+                crate::ui::idle::invalidate();
+                return;
+            }
+            Err(reason) => { app.rec.refuse(reason); return; }
+            Ok(None) => {}
+        }
         match super::recorder::decode_input(v) {
             Ok(input) if input.source == crate::ui::machine::Source::Script => {
                 // The typed initial scenario regenerates this internal step at its recorded
@@ -2853,6 +2820,10 @@ unsafe fn replay_inject(app: &mut App, fr: &mut Frame, v: &serde_json::Value) {
         }
         other => log(&format!("replay: input kind {other:?} is not replayable; skipped")),
     }
+}
+
+fn controlled_replay(app: &App) -> bool {
+    app.boot_initial.is_some() && matches!(&app.rec, super::recorder::Recplay::Replaying(_))
 }
 
 /// The same bounded physical-key bookkeeping for controlled recording and supplied replay.
@@ -2948,6 +2919,7 @@ mod lifecycle_regression_tests {
             menu_play_await: Default::default(),
             prev: Default::default(),
             refresh_hubs_at: Default::default(),
+            plaintext_upgrade: Default::default(),
             ev: [0; 128],
             remote: Default::default(),
             win: Default::default(),
@@ -2956,6 +2928,8 @@ mod lifecycle_regression_tests {
             t0: Default::default(),
             instr: crate::diag::heartbeat::Instruments::new(false, 22.0),
             scenarios: crate::dev::scenarios::Scenarios {
+            #[cfg(feature = "devtriggers")]
+            poster_gate: Default::default(),
                 pick_user: Default::default(),
                 home_osc_last: Default::default(),
                 hero_osc_last: Default::default(),
@@ -2983,6 +2957,8 @@ mod lifecycle_regression_tests {
                 press_release_at: Default::default(),
                 itemmenu_tried: Default::default(),
                 acct_tried: Default::default(),
+                acct_rest: Default::default(),
+                shots: Default::default(),
                 auto_tried: Default::default(),
                 replay_left: Default::default(),
                 grid_tried: Default::default(),
@@ -3007,6 +2983,9 @@ mod lifecycle_regression_tests {
                 pause_tried: Default::default(),
                 pause_script: Default::default(),
                 pause_resume_at: Default::default(),
+                push_bench: Default::default(),
+                modal_bench: Default::default(),
+                deep_bench: Default::default(),
                 dev: crate::dev::scenarios::DevFlags {
                     detail_osc: Default::default(),
                     home_osc: Default::default(),
@@ -3025,7 +3004,6 @@ mod lifecycle_regression_tests {
                     onboard_osc: Default::default(),
                     nav_osc: Default::default(),
                     nav_osc_rk: Default::default(),
-                    glass_hz_armed: Default::default(),
                     nobudget: Default::default(),
                 },
             },
@@ -3064,6 +3042,258 @@ mod lifecycle_regression_tests {
     }
 
     #[test]
+    fn controlled_content_boot_waits_for_the_queued_home_root() {
+        use crate::ui::machine::{Fx, MachineId, NavOp};
+        let _serial = crate::testlock::serial();
+        let mut app = app();
+        let encoded = super::super::synthetic_home_initial(1, 32517, Some("flow12".into())).unwrap();
+        app.boot_initial = Some(serde_json::from_str(&encoded).unwrap());
+        app.pages.emit(MachineId::Nav, Fx::Nav(NavOp::Root(AppArg::Home)));
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        fr.now = 1500; // Cold startup already exceeded the scenario's 500 ms delay.
+        crate::dev::scenarios::controlled_each_frame(&mut app, &mut fr);
+        assert!(!app.scenarios.detail_tried, "Root(Home) has not mounted yet");
+        frame(&mut app, fr.now);
+        assert!(app.pages.top_screen().is_some());
+        crate::dev::scenarios::controlled_each_frame(&mut app, &mut fr);
+        assert!(app.scenarios.detail_tried);
+        assert!(app.scenarios.content_boot.is_some());
+        frame(&mut app, fr.now + 16);
+        assert!(matches!(app.pages.top_arg(), Some(AppArg::Content(
+            crate::screens::registry::ContentArg::Detail { rk, .. })) if rk == "1001"));
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn a_recorded_raw_hang_probe_replays_without_missing_input() {
+        use super::super::{bootstrap::{Initial, Preflight}, recorder::{Recplay, ReplayMode, state_fp}};
+        use crate::ui::{dispatch::Tap, rec::{Header, MemSink, Recording}};
+        let _serial = crate::testlock::serial();
+        let mut app = app();
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        let initial = Initial::synthetic_home(1, 32517, None).unwrap();
+        let sink = MemSink::default();
+        let segments = sink.segments.clone();
+        let manifest = Header::new(state_fp(), &initial).to_json().to_string();
+        app.rec = Recplay::recording_with_sink(&initial, Box::new(sink)).unwrap();
+        app.rec.tick(initial.clock_start, 0.0);
+        {
+            let _frame = crate::task::FrameScope::enter();
+            assert!(unsafe { ingress_token(&mut app, &mut fr, "hang-raw:1") });
+        }
+        app.rec.end_frame(&|| 7);
+        std::mem::replace(&mut app.rec, Recplay::Off).finish(crate::ui::landgate::fixture_gate());
+        let recording = Recording::parse(&manifest,
+            &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(), state_fp()).unwrap();
+        assert_eq!(recording.frames[0].inputs[0]["tok"], "hang-raw:1");
+        for controlled in [false, true] {
+            let recording = Recording { header: recording.header.clone(), frames: recording.frames.clone(),
+                metrics: recording.metrics.clone(), stopped_at: recording.stopped_at };
+            app.boot_initial = controlled.then(|| initial.clone());
+            app.rec = Recplay::controlled(Preflight::Replay {
+                initial: initial.clone(), recording, mode: ReplayMode::Resolve }, &initial).unwrap();
+            for value in app.rec.replay_inputs() {
+                let _frame = crate::task::FrameScope::enter();
+                unsafe { replay_inject(&mut app, &mut fr, &value); }
+            }
+            Tap::focus(&mut app.rec, 0, None);
+            assert!(app.rec.end_frame(&|| 7));
+            assert!(!app.rec.outcome_failed(), "the injected probe must consume its recorded input, controlled={controlled}");
+        }
+    }
+
+    #[test]
+    fn controlled_foreground_replays_once_without_platform_authority() {
+        use super::super::{bootstrap::{Initial, Preflight}, recorder::{Recplay, ReplayMode, state_fp}};
+        use crate::ui::{dispatch::Tap, machine::Tick, rec::{Header, Recording}};
+        let _serial = crate::testlock::serial();
+        for mode in [ReplayMode::Targets, ReplayMode::Resolve] {
+            let mut app = app();
+            let initial = Initial::synthetic_home(1, 32517, None).unwrap();
+            let recording = Recording {
+                header: Header::new(state_fp(), &initial),
+                frames: vec![
+                    crate::ui::rec::Frame { f: 0, tick: Some(Tick { ms: 0, dt_us: 0 }),
+                        st: Some(7), focus: Some(None), ..Default::default() },
+                    crate::ui::rec::Frame { f: 1, tick: Some(Tick { ms: 16, dt_us: 16_000 }),
+                        present: Some(true), st: Some(7), focus: Some(None),
+                        inputs: vec![serde_json::json!({"f":1,"t":"in","kind":"lifecycle","code":0x105}),
+                            serde_json::json!({"f":1,"t":"in","kind":"lifecycle","code":0x106})],
+                        ..Default::default() },
+                ], metrics: Default::default(), stopped_at: None,
+            };
+            app.boot_initial = Some(initial.clone());
+            app.rec = Recplay::controlled(Preflight::Replay { initial: initial.clone(), recording, mode },
+                &initial).unwrap();
+            Tap::focus(&mut app.rec, 0, None);
+            assert!(!app.rec.end_frame(&|| 7));
+
+            app.pages.suspend();
+            app.window_activity.event(0x104);
+            let revision = crate::plex::grant::revision();
+            let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+            for value in app.rec.replay_inputs() {
+                unsafe { replay_inject(&mut app, &mut fr, &value); }
+            }
+            assert!(!app.pages.nav.suspended, "recorded foreground reaches the navigation owner");
+            assert!(!app.window_activity.allow_present(true),
+                "a recording cannot authorize EGL presentation while the real window is backgrounded");
+            assert_eq!(crate::plex::grant::revision(), revision,
+                "recorded foreground has no network-grant authority");
+
+            // The actual compositor's startup pair may arrive at another frame. It
+            // restores physical window safety without consuming extra tape inputs.
+            let mut restored_windows = 0;
+            for code in [0x105u32, 0x106, SDL_KEYDOWN] {
+                app.ev[..4].copy_from_slice(&code.to_ne_bytes());
+                unsafe { ingest_sdl_event_with_window(&mut app, &mut fr, |_| restored_windows += 1); }
+            }
+            assert_eq!(restored_windows, 1, "only the real DID foreground restores native handles");
+            assert!(app.window_activity.allow_present(true));
+            assert!(app.inputs.is_empty(), "ambient keys cannot enter the recorded scenario");
+            assert_eq!(crate::plex::grant::revision(), revision);
+            app.rec.present(true);
+            Tap::focus(&mut app.rec, 1, None);
+            assert!(app.rec.end_frame(&|| 7));
+            assert!(!app.rec.outcome_failed(), "each recorded foreground input is graded exactly once");
+
+            app.running = true;
+            event(&mut app, &mut fr, 0x104);
+            assert!(!app.running);
+            assert!(!app.window_activity.allow_present(true));
+            assert_eq!(app.rec.failure(), Some("live window exit interrupted controlled replay"));
+        }
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    #[should_panic(expected = "main-thread block: dev hang probe")]
+    fn hang_probe_dispatch_uses_frame_guard() {
+        let _serial = crate::testlock::serial();
+        let mut app = app();
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        let _scope = crate::task::FrameScope::enter();
+        unsafe { ingress_token(&mut app, &mut fr, "hang:1"); }
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn hang_probe_dispatch_raw_bypasses_frame_guard() {
+        let _serial = crate::testlock::serial();
+        let mut app = app();
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        let _scope = crate::task::FrameScope::enter();
+        assert!(unsafe { ingress_token(&mut app, &mut fr, "hang-raw:1") });
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn hang_probe_dispatch_preserves_key_order() {
+        let _serial = crate::testlock::serial();
+        // Only SDL's event subsystem: no window, renderer, boot or device.
+        assert_eq!(unsafe { SDL_Init(0x4000) }, 0);
+        struct Events;
+        impl Drop for Events {
+            fn drop(&mut self) { unsafe { SDL_Quit(); } }
+        }
+        let _events = Events;
+        for fifo in [true, false] {
+            let mut app = app();
+            super::super::bridge::show_page(&mut app.pages,
+                AppArg::Settings(crate::screens::family::SettingsPage::Root));
+            frame(&mut app, 0);
+            let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+            if fifo {
+                app.remote = Some(crate::remote::Remote::buffered_for_test("down\nhang:1\nup\n"));
+            }
+            // The labelled probe's guard panic is the observation boundary BEFORE sleeping.
+            // No final drain can make an incorrectly ordered dispatch pass this assertion.
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _scope = crate::task::FrameScope::enter();
+                unsafe {
+                    if fifo {
+                        ingest(&mut app, &mut fr);
+                    } else {
+                        // LAB delivers commands to precisely this same entry point.
+                        assert!(ingress_token(&mut app, &mut fr, "down"));
+                        assert!(app.inputs.is_empty(), "key should still be pending in SDL");
+                        ingress_token(&mut app, &mut fr, "hang:1");
+                        ingress_token(&mut app, &mut fr, "up");
+                    }
+                }
+            }));
+            let panic = result.expect_err("labelled probe must reach its frame guard");
+            let message = panic.downcast_ref::<String>().map(String::as_str)
+                .or_else(|| panic.downcast_ref::<&str>().copied()).unwrap_or("");
+            assert!(message.contains("main-thread block: dev hang probe"), "{message}");
+            assert_eq!(app.inputs.len(), 2,
+                "both earlier key edges must be handled before the probe (fifo={fifo})");
+        }
+    }
+
+    #[test]
+    fn remote_fifo_exposes_independent_pointer_edges() {
+        use crate::ui::machine::{Edge, InputKind, Key};
+        let _serial = crate::testlock::serial();
+        // SDL's event subsystem only: no window, renderer, native playback or device.
+        assert_eq!(unsafe { SDL_Init(0x4000) }, 0);
+        struct Events;
+        impl Drop for Events {
+            fn drop(&mut self) { unsafe { SDL_Quit(); } }
+        }
+        let _events = Events;
+        let mut app = app();
+        super::super::bridge::show_page(&mut app.pages, AppArg::Player);
+        frame(&mut app, 0);
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        for (token, held) in [("pd:900,870", true), ("pm:1200,870", true),
+            ("pm:1400,870", true), ("pu:1400,870", false)] {
+            assert!(unsafe { ingress_token(&mut app, &mut fr, token) },
+                "the FIFO must express each edge of a held pointer: {token}");
+            unsafe { drain_sdl(&mut app, &mut fr); }
+            assert_eq!(app.ptr.button_down, held, "{token}");
+        }
+        assert_eq!(app.inputs.len(), 4, "no hidden motions, clicks or releases");
+        assert!(matches!(app.inputs[0].kind, InputKind::Click { x: 900.0, y: 870.0, .. }));
+        assert!(matches!(app.inputs[1].kind, InputKind::Drag { x: 1200.0, y: 870.0, .. }));
+        assert!(matches!(app.inputs[2].kind, InputKind::Drag { x: 1400.0, y: 870.0, .. }));
+        assert!(matches!(app.inputs[3].kind, InputKind::Key { key: Key::Ok, edge: Edge::Up, .. }));
+
+        // Deliver the same collected edges through the dispatcher and the real player, one
+        // frame per edge. Screen tests separately grade these coordinates against record_stops;
+        // this map isolates the FIFO -> SDL -> app -> dispatcher -> scrub ownership boundary.
+        use crate::ui::{machine::{FocusKey, Tick}, screen::{Activate, Hover, Stop}, Rect};
+        use crate::screens::registry::PlayerReq;
+        let key = FocusKey { elem: crate::ui::player_hud::ELEM_SCRUB,
+            ..app.pages.focus().expect("the player has a scrub seat") };
+        let rect = crate::ui::player_hud::scrub_hit_rect();
+        app.pages.input.hit.fill(vec![Stop { key, rect, rest_rect: rect, clip: Rect::FULL,
+            hover: Hover::Ignore, activate: Activate::Direct }]);
+        app.pages.input.hit.swap();
+        crate::player::SHARED.duration_ns.store(100_000_000_000, Ordering::Relaxed);
+        for (index, input) in std::mem::take(&mut app.inputs).into_iter().enumerate() {
+            super::super::bridge::frame(&mut app.pages, &mut app.bridge,
+                Tick { ms: 1_000 + index as u32 * 500, dt_us: 16_000 }, vec![input]);
+            let reqs = app.bridge.take_player_reqs();
+            if index < 3 {
+                assert!(reqs.is_empty(), "a held drag previews without any transport request");
+                let page = super::super::bridge::player(&app.pages).unwrap();
+                assert!(page.scrub.drag);
+                assert!(page.scrub.ns > 0);
+            } else {
+                let expected = (crate::ui::player_hud::scrub_frac_x(1400.0) as f64 * 100_000_000_000.0) as i64;
+                assert_eq!(reqs, vec![PlayerReq::CommitSeek(expected)], "release commits once at the final motion");
+            }
+        }
+        // Neither the key's tap debounce nor a repeated pointer-up can replay this seek.
+        assert!(unsafe { ingress_token(&mut app, &mut fr, "pu:1400,870") });
+        unsafe { drain_sdl(&mut app, &mut fr); }
+        super::super::bridge::frame(&mut app.pages, &mut app.bridge,
+            Tick { ms: 4_000, dt_us: 16_000 }, std::mem::take(&mut app.inputs));
+        assert!(app.bridge.take_player_reqs().is_empty());
+    }
+
+    #[test]
     fn controlled_sdl_pointer_gestures_match_ordinary_ingress() {
         let _serial=crate::testlock::serial();
         let mut observed=Vec::new();
@@ -3075,7 +3305,7 @@ mod lifecycle_regression_tests {
             if controlled {
                 app.boot_initial=Some(super::super::bootstrap::Initial::synthetic_home(1,32517,Some("root".into())).unwrap());
             }
-            let mut fr=Frame::begin(&app.player.session);
+            let mut fr=Frame::begin(&app.player.session, app.bridge.metadata_view());
             let mut steps=Vec::new();
             for (et,x,y) in [(SDL_MOUSEBUTTONDOWN,200i32,300i32),
                 (SDL_MOUSEMOTION,400,300),(SDL_MOUSEBUTTONUP,400,300)] {
@@ -3124,11 +3354,12 @@ mod lifecycle_regression_tests {
         let segments=sink.segments.clone();
         let manifest=Header::new(super::super::recorder::state_fp(),&initial).to_json().to_string();
         app.rec=super::super::recorder::Recplay::recording_with_sink(&initial,Box::new(sink)).unwrap();
+        app.rec.arm_landgate(app.bridge.landgate());
         app.boot_initial=Some(initial);
         app.rec.prepare_resources(&mut app.bridge);
         app.rec.tick(100,0.016);
         clock::set_replay(100);
-        let mut fr=Frame::begin(&app.player.session);
+        let mut fr=Frame::begin(&app.player.session, app.bridge.metadata_view());
         for et in [SDL_MOUSEBUTTONDOWN,SDL_MOUSEMOTION,SDL_MOUSEBUTTONUP] {
             app.ev[20..24].copy_from_slice(&400i32.to_ne_bytes());
             app.ev[24..28].copy_from_slice(&300i32.to_ne_bytes());
@@ -3139,7 +3370,7 @@ mod lifecycle_regression_tests {
             std::mem::take(&mut app.inputs),Vec::new(),&mut app.rec,false);
         app.rec.measurements(&app.bridge);
         app.rec.end_frame(&||0);
-        app.rec.finish();
+        app.rec.finish(app.bridge.landgate());
         let recording=Recording::parse(&manifest,
             &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(),super::super::recorder::state_fp()).unwrap();
         let inputs=&recording.frames[0].inputs;
@@ -3163,7 +3394,33 @@ mod lifecycle_regression_tests {
     }
 
     impl Rig {
-        fn new() -> Self {
+        /// `None` means `crate::task::spawn_small_keeping` was refused by the OS (Finding 4: the
+        /// rig must honour `task.rs`'s "a refused spawn is a return value, not a panic" contract
+        /// instead of `.expect`-ing it into a panic that reads as a product regression). Nothing
+        /// past the spawn point has been armed yet at that moment — `register_for_test` and
+        /// `app()` both run AFTER a successful spawn — so the only cleanup owed on the refused
+        /// path is re-running `reset_servers_for_test()` to leave the registry exactly as clean
+        /// as it was on entry; the listener, channels and `Arc`s all drop normally when this
+        /// function returns `None`.
+        ///
+        /// **RED observed for this contract, SIMULATED (not a real OS refusal):** temporarily
+        /// change the `match crate::task::spawn_small_keeping(...)` below to unconditionally
+        /// evaluate to `None` (discarding the real handle), leaving the closure and everything
+        /// else untouched, then run the five tests in this module. Before this fix that
+        /// substitution panicked every one of them — at the old `.expect("spawn lifecycle
+        /// fixture")` here, and, once that alone was removed, at `self.worker.take().unwrap()` in
+        /// `Drop for Rig` — each reading exactly like a product regression in code the failing
+        /// test never touches. After this fix the same substitution makes all five tests print a
+        /// `SKIPPED …` line naming the reason and return cleanly, with no panic anywhere. The
+        /// substitution was reverted before committing; the host's real thread budget was never
+        /// actually exhausted, so this is a SIMULATED red, not an observed historical one.
+        fn new() -> Option<Rig> {
+            Self::serving(true)
+        }
+
+        /// `successor: false` serves a one-row queue — a film, with no Up Next to hand off to — so
+        /// an end of stream leaves the player instead of starting the next item.
+        fn serving(successor: bool) -> Option<Rig> {
             crate::plex::reset_servers_for_test();
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.set_nonblocking(true).unwrap();
@@ -3174,10 +3431,10 @@ mod lifecycle_regression_tests {
             let log = requests.clone();
             let stop = Arc::new(AtomicBool::new(false));
             let stopping = stop.clone();
-            let worker = crate::task::spawn_small_keeping("lifecycle-fixture", move || {
+            let worker = match crate::task::spawn_small_keeping("lifecycle-fixture", move || {
                 let mut first = true;
                 while !stopping.load(Ordering::Acquire) {
-                    let (mut socket, _) = match listener.accept() {
+                    let (mut socket, _) = match crate::testnet::accept(&listener) {
                         Ok(v) => v,
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                             std::thread::sleep(Duration::from_millis(1));
@@ -3185,6 +3442,9 @@ mod lifecycle_regression_tests {
                         }
                         Err(e) => panic!("fixture accept: {e}"),
                     };
+                    // Darwin accept inherits the nonblocking listener flag. Reads must wait
+                    // for request bytes rather than racing the loopback client's first write.
+                    socket.set_nonblocking(false).unwrap();
                     socket
                         .set_read_timeout(Some(Duration::from_secs(3)))
                         .unwrap();
@@ -3211,6 +3471,16 @@ mod lifecycle_regression_tests {
                     }
                     let body = if request.contains("/decision?") {
                         r#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"directplay"}]}]}]}}"#
+                    } else if !successor {
+                        r#"{"MediaContainer":{"machineIdentifier":"lifecycle-fixture","size":1,
+                        "playQueueID":1,"playQueueSelectedItemID":11,"playQueueTotalCount":1,
+                        "Metadata":[
+                        {"ratingKey":"1","playQueueItemID":11,"type":"movie","title":"First",
+                         "duration":60000,
+                         "Media":[{"videoCodec":"h264","audioCodec":"aac","width":1280,"height":720,
+                         "Part":[{"id":1,"key":"/library/parts/1/file.mkv","Stream":[
+                         {"id":1,"streamType":1,"codec":"h264"},
+                         {"id":2,"streamType":2,"codec":"aac","selected":true}]}]}]}]}}"#
                     } else {
                         r#"{"MediaContainer":{"machineIdentifier":"lifecycle-fixture","size":2,
                         "playQueueID":1,"playQueueSelectedItemID":11,"playQueueTotalCount":2,
@@ -3228,8 +3498,15 @@ mod lifecycle_regression_tests {
                     };
                     let _ = write!(socket, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                 }
-            })
-            .expect("spawn lifecycle fixture");
+            }) {
+                Some(h) => h,
+                None => {
+                    // See the doc comment above: nothing past this point has run yet, so undoing
+                    // the initial reset is the whole cleanup owed.
+                    crate::plex::reset_servers_for_test();
+                    return None;
+                }
+            };
             let sid = crate::plex::register_for_test(
                 "lifecycle-fixture",
                 "127.0.0.1",
@@ -3240,7 +3517,7 @@ mod lifecycle_regression_tests {
             let mut app = app();
             super::super::bridge::nav_root(&mut app.pages, AppArg::Home);
             frame(&mut app, 0);
-            Self {
+            Some(Self {
                 app,
                 sid,
                 release,
@@ -3248,12 +3525,13 @@ mod lifecycle_regression_tests {
                 requests,
                 stop,
                 worker: Some(worker),
-            }
+            })
         }
 
         fn request(&mut self) {
             assert!(crate::route::request_play(
                 &mut self.app.player.session,
+                self.app.bridge.metadata_mut(),
                 self.sid,
                 "1",
                 "/library/parts/1/file.mkv",
@@ -3281,7 +3559,7 @@ mod lifecycle_regression_tests {
         fn resolve(&mut self) {
             self.release.send(()).unwrap();
             poll_until("fixture plan did not land", || {
-                crate::route::pump_play(&mut self.app.player.session).is_some()
+                crate::route::pump_play(&mut self.app.player.session, self.app.bridge.metadata_mut()).is_some()
             });
             assert_eq!(
                 crate::route::up_next(&self.app.player.session).unwrap().rk,
@@ -3306,7 +3584,7 @@ mod lifecycle_regression_tests {
                 }),
                 20,
             );
-            let mut fr = Frame::begin(&self.app.player.session);
+            let mut fr = Frame::begin(&self.app.player.session, self.app.bridge.metadata_view());
             fr.now = 20 + crate::ui::up_next::COUNTDOWN_MS;
             assert!(player.up_next.expired(fr.now));
             fr
@@ -3323,7 +3601,18 @@ mod lifecycle_regression_tests {
             );
             crate::route::drain_scrobble();
             self.stop.store(true, Ordering::Release);
-            self.worker.take().unwrap().join().unwrap();
+            // Finding `lifecycle-rig-drop-still-unwraps-join`: a panicking fixture worker must
+            // not re-panic here. `.join().unwrap()` used to propagate the worker's `Err` into
+            // this destructor, and a panic inside a destructor while another panic is already
+            // unwinding is a Rust abort (SIGABRT) that takes down the whole test binary — every
+            // other module's result in that `make check` run along with it. `crate::task::join`
+            // (task.rs's own documented contract: a bare `.join()` outside that module is a
+            // stall nobody can see) logs a panicked worker instead of re-panicking, and the
+            // `if let` tolerates an absent handle on the refused-spawn path this rig can no
+            // longer actually reach (`Rig` is only ever constructed with `worker: Some(..)`).
+            if let Some(h) = self.worker.take() {
+                crate::task::join("lifecycle-fixture", h);
+            }
             crate::player::SHARED.reset_session();
             crate::route::reset_player_control_for_test(&self.app.player.session);
             crate::plex::reset_servers_for_test();
@@ -3333,12 +3622,18 @@ mod lifecycle_regression_tests {
     #[test]
     fn did_background_cancels_accepted_resolve_before_player_mount() {
         let _serial = crate::testlock::serial();
-        let mut rig = Rig::new();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!(
+                "SKIPPED did_background_cancels_accepted_resolve_before_player_mount: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
         rig.request();
         rig.accept_start();
         assert!(super::super::bridge::player(&rig.app.pages).is_none());
         assert!(crate::route::play_pending());
-        let mut fr = Frame::begin(&rig.app.player.session);
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
         fr.now = 16;
         event(&mut rig.app, &mut fr, 0x104);
         assert!(
@@ -3396,7 +3691,13 @@ mod lifecycle_regression_tests {
     #[test]
     fn did_background_suspends_created_engine_before_player_mount() {
         let _serial = crate::testlock::serial();
-        let mut rig = Rig::new();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!(
+                "SKIPPED did_background_suspends_created_engine_before_player_mount: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
         rig.request();
         rig.resolve();
         rig.accept_start();
@@ -3405,7 +3706,7 @@ mod lifecycle_regression_tests {
             "fixture must create the actual Engine"
         );
         assert!(super::super::bridge::player(&rig.app.pages).is_none());
-        let mut fr = Frame::begin(&rig.app.player.session);
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
         event(&mut rig.app, &mut fr, 0x104);
         assert!(
             !rig.app.adapters.player.is_live(),
@@ -3427,7 +3728,13 @@ mod lifecycle_regression_tests {
     #[test]
     fn did_background_prevents_due_up_next_from_launching_while_suspended() {
         let _serial = crate::testlock::serial();
-        let mut rig = Rig::new();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!(
+                "SKIPPED did_background_prevents_due_up_next_from_launching_while_suspended: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
         let mut fr = rig.due_up_next();
         let entry = rig.app.pages.nav.top_page().unwrap().id;
         let instance = rig.app.pages.nav.instance_of(entry);
@@ -3468,7 +3775,13 @@ mod lifecycle_regression_tests {
     #[test]
     fn foreground_due_up_next_still_requests_its_successor() {
         let _serial = crate::testlock::serial();
-        let mut rig = Rig::new();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!(
+                "SKIPPED foreground_due_up_next_still_requests_its_successor: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
         let mut fr = rig.due_up_next();
         unsafe {
             playback_tick(&mut rig.app, &mut fr);
@@ -3483,14 +3796,20 @@ mod lifecycle_regression_tests {
     #[test]
     fn replacement_play_retires_failed_foreground_owner_and_lands() {
         let _serial = crate::testlock::serial();
-        let mut rig = Rig::new();
+        let Some(mut rig) = Rig::new() else {
+            eprintln!(
+                "SKIPPED replacement_play_retires_failed_foreground_owner_and_lands: \
+                 lifecycle fixture worker thread could not be spawned"
+            );
+            return;
+        };
         rig.request();
         rig.resolve();
         rig.accept_start();
         frame(&mut rig.app, 16);
         assert!(super::super::bridge::player(&rig.app.pages).is_some());
 
-        let mut fr = Frame::begin(&rig.app.player.session);
+        let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
         fr.now = 32;
         event(&mut rig.app, &mut fr, 0x104);
         assert!(rig.app.player.lifecycle.awaiting_load());
@@ -3529,6 +3848,7 @@ mod lifecycle_regression_tests {
         assert!(!rig.app.adapters.player.is_live());
 
         player_requests(
+            &mut rig.app.player.repair,
             &mut rig.app.player.session,
             &mut rig.app.adapters.player,
             vec![crate::screens::registry::PlayerReq::Exit],
@@ -3549,6 +3869,7 @@ mod lifecycle_regression_tests {
 
         assert!(crate::route::request_play(
             &mut rig.app.player.session,
+            rig.app.bridge.metadata_mut(),
             rig.sid,
             "replacement",
             "/library/parts/2/file.mkv",
@@ -3573,5 +3894,160 @@ mod lifecycle_regression_tests {
         assert!(!crate::route::play_pending());
         assert_eq!(rig.app.player.lifecycle.state, ForegroundState::Idle);
         assert!(crate::route::has_url(&rig.app.player.session));
+    }
+
+    /// One loop iteration's navigation-bearing phases, in `run`'s order: the playback tick (EOS),
+    /// the container's frame, the post-player restore, the drained requests and `update` (where a
+    /// resolved plan lands).
+    use crate::ui::screen::ScreenArg;
+
+    fn step(app: &mut App, t: &mut u32, inputs: Vec<crate::ui::machine::InputEvent<u32>>) {
+        *t += 16;
+        app.inputs.extend(inputs);
+        let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
+        fr.now = *t;
+        fr.dt = 0.016;
+        let was_player = super::super::bridge::player(&app.pages).is_some();
+        unsafe { playback_tick(app, &mut fr); }
+        super::super::bridge::frame(&mut app.pages, &mut app.bridge,
+            crate::ui::machine::Tick { ms: *t, dt_us: 16_000 }, std::mem::take(&mut app.inputs));
+        if was_player && super::super::bridge::player(&app.pages).is_none() {
+            restore_played_entry(app);
+        }
+        content_requests(app, &fr);
+        loop_requests(app);
+        unsafe { update(app, &mut fr); }
+    }
+
+    /// The page stack on the transition `boot.rs` builds it with. `app()`'s dispatcher commits
+    /// immediately, and an immediate commit never has a dip-out to prepare a destination in —
+    /// which is the whole window the tests below are about. Returns the frame clock's start.
+    fn product_transition(app: &mut App) -> u32 {
+        app.pages.nav.tabs.stack.transition =
+            Box::new(crate::ui::containers::transition::PageDip::new());
+        0
+    }
+
+    fn settle(app: &mut App, t: &mut u32) {
+        for _ in 0..24 {
+            step(app, t, vec![]);
+        }
+    }
+
+    /// **Press Play, and let the plan land INSIDE the player push's dip-out** — the order the
+    /// television produces whenever the resolve is quicker than the 140 ms fade. `start_playback`
+    /// pushes the player while the plan is still resolving; the next frame's dip-out PREPARES the
+    /// destination (`NavStack::stage_pending_target`), which mounts the player and so consumes its
+    /// origin seed; and when the plan then lands, the committed route still names the page under
+    /// the dip, so `update`'s landing arm asks for the player a second time (`pump_play: engine
+    /// started off-route`). Returns the entry the session was launched from.
+    fn play_with_a_landing_inside_the_dip(rig: &mut Rig, t: &mut u32) -> crate::ui::machine::EntryId {
+        let origin = rig.app.pages.nav.top_page().expect("a page is on top").id;
+        rig.request();
+        rig.accept_start();
+        assert!(crate::route::play_pending(), "the plan is still resolving");
+        step(&mut rig.app, t, vec![]);
+        assert!(super::super::bridge::player(&rig.app.pages).is_none(), "the push has not committed");
+        assert!(
+            rig.app.pages.nav.tabs.stack.pending_target_mut().is_some_and(|e| e.inst.is_some()),
+            "premise: the dip-out has already prepared the player it is pushing",
+        );
+        rig.release.send(()).unwrap();
+        poll_until("the plan did not land through update", || {
+            let mut fr = Frame::begin(&rig.app.player.session, rig.app.bridge.metadata_view());
+            fr.now = *t;
+            unsafe { update(&mut rig.app, &mut fr); }
+            rig.app.adapters.player.is_live()
+        });
+        settle(&mut rig.app, t);
+        assert!(super::super::bridge::player(&rig.app.pages).is_some(), "the player is on top");
+        origin
+    }
+
+    /// BACK as the remote spells it (ESC — the dev remote's own spelling of BACK in the field
+    /// report): the player classifies `sym`/`wcode`, not the fixture's `Key`.
+    fn back_key(ms: u32) -> crate::ui::machine::InputEvent<u32> {
+        let mut event = crate::ui::fixture::key(crate::ui::machine::Key::Back, crate::ui::fixture::tick(ms));
+        if let crate::ui::machine::InputKind::Key { sym, .. } = &mut event.kind {
+            *sym = crate::ui::consts::SDLK_ESCAPE;
+        }
+        event
+    }
+
+    fn detail_arg(sid: crate::plex::ServerId) -> AppArg {
+        AppArg::Content(crate::screens::registry::ContentArg::Detail { sid, rk: "1".into() })
+    }
+
+    /// Field report: Home → a detail page → Play → BACK landed on HOME. BACK must land on the
+    /// detail page the film was started from — the same entry, not a fresh copy of it.
+    #[test]
+    fn back_from_the_player_returns_to_the_detail_page_it_was_started_from() {
+        let _serial = crate::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else {
+            eprintln!("SKIPPED back_from_the_player_returns_to_the_detail_page_it_was_started_from: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        super::super::bridge::open_detail(&mut rig.app.pages, &mut rig.app.bridge, rig.sid, "1", None, None);
+        settle(&mut rig.app, &mut t);
+        let origin = play_with_a_landing_inside_the_dip(&mut rig, &mut t);
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        settle(&mut rig.app, &mut t);
+        assert!(
+            rig.app.route().same_instance(&detail_arg(rig.sid)),
+            "BACK from the player landed on {:?}, not the detail page",
+            rig.app.route().id(),
+        );
+        assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin));
+    }
+
+    /// The same session drained to its end with nothing queued after it: `finish_playback` leaves
+    /// through `exit_player`, so an end of stream lands where BACK and Stop do — the page the
+    /// session was launched from (§5.1), not Home.
+    #[test]
+    fn an_end_of_stream_without_up_next_returns_to_the_detail_page() {
+        let _serial = crate::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else {
+            eprintln!("SKIPPED an_end_of_stream_without_up_next_returns_to_the_detail_page: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        super::super::bridge::open_detail(&mut rig.app.pages, &mut rig.app.bridge, rig.sid, "1", None, None);
+        settle(&mut rig.app, &mut t);
+        let origin = play_with_a_landing_inside_the_dip(&mut rig, &mut t);
+        assert!(crate::route::up_next(&rig.app.player.session).is_none(), "a film: nothing queued");
+        crate::player::SHARED.ended.store(true, std::sync::atomic::Ordering::Relaxed);
+        settle(&mut rig.app, &mut t);
+        assert!(
+            rig.app.route().same_instance(&detail_arg(rig.sid)),
+            "end of stream landed on {:?}, not the detail page",
+            rig.app.route().id(),
+        );
+        assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin));
+    }
+
+    /// A Continue Watching tile plays straight from Home with no detail page in between, so the
+    /// page the session returns to is Home itself — the same entry, with its memory.
+    #[test]
+    fn back_from_a_session_started_on_home_returns_to_home() {
+        let _serial = crate::testlock::serial();
+        let Some(mut rig) = Rig::serving(false) else {
+            eprintln!("SKIPPED back_from_a_session_started_on_home_returns_to_home: \
+                lifecycle fixture worker thread could not be spawned");
+            return;
+        };
+        let mut t = product_transition(&mut rig.app);
+        settle(&mut rig.app, &mut t);
+        let origin = play_with_a_landing_inside_the_dip(&mut rig, &mut t);
+        let back = back_key(t + 16);
+        step(&mut rig.app, &mut t, vec![back]);
+        settle(&mut rig.app, &mut t);
+        assert!(matches!(rig.app.route(), AppArg::Home));
+        assert_eq!(rig.app.pages.nav.top_page().map(|e| e.id), Some(origin));
     }
 }

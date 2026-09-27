@@ -5,6 +5,151 @@ use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
 
+/// PLX-NATIVE-12: authorization has already succeeded, so a transient failure listing plex.tv
+/// resources must be retried in place instead of becoming the terminal silent verdict.
+#[test]
+fn authorized_discovery_retries_a_dns_blip_before_settling() {
+    use std::sync::Mutex;
+    struct Live(Mutex<Vec<AuthProgress>>);
+    impl owner::ObservationSink for Live {
+        fn live(&self) -> bool { true }
+        fn progress(&self, progress: AuthProgress) -> bool {
+            self.0.lock().unwrap().push(progress);
+            true
+        }
+        fn terminal(&self, _: AuthProgress) -> bool { true }
+    }
+    let dns = crate::net::RequestFailure {
+        cause: crate::net::RequestError::Transport,
+        status: None,
+        body_limit: None,
+        curl_rc: Some(6),
+    };
+    let account = AccountClient::new("client", Some("authorized-token"));
+    let mut servers = Some(vec![resource(r#"{"name":"ours","clientIdentifier":"machine","provides":"server",
+        "owned":true,"accessToken":"profile-token","connections":[]}"#)]);
+    struct Clock(Duration);
+    impl RetryClock for Clock {
+        fn elapsed(&self) -> Duration { self.0 }
+        fn wait(&mut self, duration: Duration) -> bool { self.0 += duration; true }
+    }
+    let mut clock = Clock(Duration::ZERO);
+    let mut calls = 0;
+    let output = Live(Mutex::new(Vec::new()));
+    let outcome = discover_and_store_with_resources_and_clock(
+        &account,
+        "client",
+        1,
+        DiscoveryTrigger::Login,
+        &PlaintextAsk::undecided(),
+        &output,
+        &mut clock,
+        |_, _| {
+            calls += 1;
+            if calls == 1 { Err(Err(dns)) } else { Ok(servers.take().unwrap()) }
+        },
+    );
+    let progress = output.0.lock().unwrap();
+    assert!(matches!(progress.first(),
+        Some(AuthProgress::Login(LoginProgress::DiscoveryTrouble { progress:
+            DiscoveryRetryProgress { run: DiscoveryRetryRun::Resources, misses: 1, .. }, .. }))));
+    assert!(matches!(progress.get(1),
+        Some(AuthProgress::Login(LoginProgress::DiscoveryRetrySettled {
+            run: DiscoveryRetryRun::Resources, .. }))),
+        "a recovered resources retry is cleared before probing continues");
+    assert!(
+        !matches!(outcome, Discovery::PlexTvFailed(_)),
+        "an authorized discovery must retry a transient plex.tv resources failure"
+    );
+    assert_eq!(calls, 2);
+}
+
+#[test]
+fn login_home_users_retries_then_falls_back_to_an_empty_roster() {
+    struct Live;
+    impl owner::ObservationSink for Live {
+        fn live(&self) -> bool { true }
+        fn progress(&self, _: AuthProgress) -> bool { true }
+        fn terminal(&self, _: AuthProgress) -> bool { true }
+    }
+    struct Clock(Duration);
+    impl RetryClock for Clock {
+        fn elapsed(&self) -> Duration { self.0 }
+        fn wait(&mut self, duration: Duration) -> bool { self.0 += duration; true }
+    }
+    let account = AccountClient::new("client", Some("authorized-token"));
+    let dns = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+        status: None, body_limit: None, curl_rc: Some(6) });
+    let mut calls = 0;
+    let users = sign_in_home_users_with_clock(&account, 7, &Live,
+        &mut Clock(Duration::ZERO), |_, _| {
+            calls += 1;
+            Err(dns)
+        }).expect("the live login continues after roster fallback");
+    assert_eq!(calls, INTERACTIVE_ACCOUNT.max_attempts as usize);
+    assert!(users.is_empty(), "roster failure keeps the existing single-user fallback");
+}
+
+#[test]
+fn login_home_users_publishes_the_first_miss_before_the_second_request_returns() {
+    use std::sync::Mutex;
+    struct Capture(Mutex<Vec<AuthProgress>>);
+    impl owner::ObservationSink for Capture {
+        fn live(&self) -> bool { true }
+        fn progress(&self, progress: AuthProgress) -> bool {
+            self.0.lock().unwrap().push(progress);
+            true
+        }
+        fn terminal(&self, _: AuthProgress) -> bool { true }
+    }
+    struct Clock(Duration);
+    impl RetryClock for Clock {
+        fn elapsed(&self) -> Duration { self.0 }
+        fn wait(&mut self, duration: Duration) -> bool { self.0 += duration; true }
+    }
+    let output = Capture(Mutex::new(Vec::new()));
+    let account = AccountClient::new("client", Some("authorized-token"));
+    let dns = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+        status: None, body_limit: None, curl_rc: Some(6) });
+    let mut calls = 0;
+    let users = sign_in_home_users_with_clock(&account, 9, &output,
+        &mut Clock(Duration::ZERO), |_, _| {
+            calls += 1;
+            if calls == 1 { return Err(dns) }
+            assert!(matches!(output.0.lock().unwrap().as_slice(),
+                [AuthProgress::Login(LoginProgress::DiscoveryTrouble { epoch: 9,
+                    progress: DiscoveryRetryProgress {
+                        run: DiscoveryRetryRun::HomeUsers, misses: 1, ..
+                    } })]),
+                "the screen must know about the first miss while attempt two is outstanding");
+            Ok(Vec::new())
+        }).unwrap();
+    assert!(users.is_empty());
+    assert!(matches!(output.0.lock().unwrap().last(),
+        Some(AuthProgress::Login(LoginProgress::DiscoveryRetrySettled {
+            epoch: 9, run: DiscoveryRetryRun::HomeUsers,
+        }))));
+}
+
+#[test]
+fn background_home_roster_refresh_retries_before_preserving_the_cache() {
+    struct Clock(Duration);
+    impl RetryClock for Clock {
+        fn elapsed(&self) -> Duration { self.0 }
+        fn wait(&mut self, duration: Duration) -> bool { self.0 += duration; true }
+    }
+    let account = AccountClient::new("client", Some("token"));
+    let dns = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+        status: None, body_limit: None, curl_rc: Some(6) });
+    let mut calls = 0;
+    let graded = home_roster_with_io_and_clock(&account, &mut Clock(Duration::ZERO), |_, _| {
+        calls += 1;
+        Err(dns)
+    }).expect("the worker remains live");
+    assert_eq!(calls, BACKGROUND_ACCOUNT.max_attempts as usize);
+    assert!(graded.is_none(), "an unanswered refresh preserves the cached roster");
+}
+
 #[test]
 fn retry_reuses_an_authorized_account_only_for_discovery_errors() {
     let mut old = owner::SessionInit::captured(Session {
@@ -51,7 +196,7 @@ fn a_stalled_discovery_retries_discovery_rather_than_minting_a_new_qr() {
 #[test]
 fn a_worse_candidate_finishing_last_never_downgrades_the_winner() {
     let plan = race_plan();
-    let dial: ProbeDial = Arc::new(|origin, _, _| {
+    let dial: ProbeDial = status_dial(|origin, _, _| {
         if origin.host().starts_with("203-") {
             std::thread::sleep(Duration::from_millis(30));
         }
@@ -82,7 +227,7 @@ fn a_worse_candidate_finishing_last_never_downgrades_the_winner() {
 fn a_better_candidate_finishing_last_causes_exactly_one_final_repoint() {
     let mut plan = race_plan();
     plan.candidates.swap(0, 1); // remote launches first; local remains the better score
-    let dial: ProbeDial = Arc::new(|origin, _, _| {
+    let dial: ProbeDial = status_dial(|origin, _, _| {
         if origin.host().starts_with("192-") {
             std::thread::sleep(Duration::from_millis(30));
         }
@@ -109,7 +254,7 @@ fn a_better_candidate_finishing_last_causes_exactly_one_final_repoint() {
 #[test]
 fn one_refused_spawn_still_settles_on_the_worker_that_exists() {
     let plan = race_plan();
-    let dial: ProbeDial = Arc::new(|_, _, _| (200, identity_json("race-machine")));
+    let dial: ProbeDial = status_dial(|_, _, _| (200, identity_json("race-machine")));
     let spawn = |index: usize, job: ProbeJob| {
         if index == 0 {
             false
@@ -129,7 +274,7 @@ fn one_refused_spawn_still_settles_on_the_worker_that_exists() {
 #[test]
 fn all_refused_spawns_terminate_as_failure() {
     let plan = race_plan();
-    let dial: ProbeDial = Arc::new(|_, _, _| panic!("a refused job must never run"));
+    let dial: ProbeDial = status_dial(|_, _, _| panic!("a refused job must never run"));
     let mut activations = 0;
     let reach =
         probe_server_racing(&plan, dial, &|_, _| false, test_policy(), &mut |_, _, _| {
@@ -156,7 +301,7 @@ fn relay_is_dialled_only_after_every_nonrelay_candidate_settles() {
     });
     let seen = Arc::new(Mutex::new(Vec::new()));
     let seen_by_dial = Arc::clone(&seen);
-    let dial: ProbeDial = Arc::new(move |origin, _, _| {
+    let dial: ProbeDial = status_dial(move |origin, _, _| {
         seen_by_dial.lock().unwrap().push(origin.host().to_string());
         if origin.host() == "relay.example.test" {
             (200, identity_json("race-machine"))
@@ -179,6 +324,57 @@ fn relay_is_dialled_only_after_every_nonrelay_candidate_settles() {
 }
 
 #[test]
+fn relay_only_server_gets_a_fresh_probe_budget_after_direct_timeouts_and_is_admitted() {
+    let mut resource = resource(
+        r#"{"name":"ours","clientIdentifier":"race-machine","provides":"server","owned":true,
+            "accessToken":"profile-token","connections":[
+              {"protocol":"https","address":"192.0.2.10","port":32400,
+               "uri":"https://192-0-2-10.h.plex.direct:32400","local":true,"relay":false},
+              {"protocol":"https","address":"relay.example.test","port":443,
+               "uri":"https://relay.example.test:443","local":false,"relay":true}]}"#,
+    );
+    resource.public_address_matches = true;
+    let policy = ProbeDeadlines {
+        local: Duration::from_millis(10),
+        remote: Duration::from_millis(50),
+    };
+    let relay_budgets = Arc::new(Mutex::new(Vec::new()));
+    let relay_budgets_at_dial = Arc::clone(&relay_budgets);
+    let dial: ProbeDial = status_dial(move |origin, _, budget| {
+        if origin.host() == "relay.example.test" {
+            relay_budgets_at_dial.lock().unwrap().push(budget);
+            if budget == policy.remote {
+                return (200, identity_json("race-machine"));
+            }
+            return (0, Vec::new());
+        }
+        std::thread::sleep(policy.local + Duration::from_millis(5));
+        (0, Vec::new())
+    });
+    let plan = probe::plan(&resource, CredentialPolicy::HttpsOnly);
+    let mut probe_one = move |_: &ProbePlan, _: &[String]| {
+        probe_server_racing(&plan, Arc::clone(&dial), &threaded_spawn, policy,
+            &mut |_, _, _| {})
+    };
+    let mut admissions = 0;
+    let resolved = resolve_roster_using_admission(
+        &[resource], &[], CredentialPolicy::HttpsOnly, &PlaintextAsk::undecided(), &mut probe_one,
+        &mut |_| {
+            admissions += 1;
+            crate::plex::EndpointAdmission::Usable
+        },
+        &mut |_, _, _| {}, &mut || {}, &mut |_, _, _, _| {},
+    );
+
+    assert!(matches!(resolved.outcome, Resolved::Reached(ref found)
+        if found.len() == 1 && found[0].tier == Some(probe::Location::Relay)));
+    assert_eq!(resolved.admitted_machine_id.as_deref(), Some("race-machine"));
+    assert_eq!(admissions, 1, "the relay winner must reach authenticated admission");
+    assert_eq!(relay_budgets.lock().unwrap().as_slice(), [policy.remote],
+        "the relay identity phase owns a fresh remote probe budget");
+}
+
+#[test]
 fn a_reachable_relay_beats_a_direct_proxy_401() {
     let mut plan = race_plan();
     plan.candidates.truncate(1);
@@ -191,7 +387,7 @@ fn a_reachable_relay_beats_a_direct_proxy_401() {
         ipv6: false,
         credential_eligible: true,
     });
-    let dial: ProbeDial = Arc::new(|origin, _, _| {
+    let dial: ProbeDial = status_dial(|origin, _, _| {
         if origin.host() == "relay.example.test" {
             (200, identity_json("race-machine"))
         } else {
@@ -209,6 +405,41 @@ fn a_reachable_relay_beats_a_direct_proxy_401() {
 }
 
 #[test]
+fn discovery_retries_the_same_server_via_relay_after_direct_admission_times_out() {
+    let resource = resource(
+        r#"{"name":"ours","clientIdentifier":"machine","provides":"server","owned":true,
+            "accessToken":"profile-token","connections":[
+              {"protocol":"https","address":"192.0.2.10","port":32400,
+               "uri":"https://192-0-2-10.h.plex.direct:32400","local":true,"relay":false},
+              {"protocol":"https","address":"relay.example.test","port":443,
+               "uri":"https://relay.example.test:443","local":false,"relay":true}]}"#,
+    );
+    let plan = probe::plan(&resource, CredentialPolicy::HttpsOnly);
+    let direct = plan.candidates.iter().find(|c| c.location != probe::Location::Relay).unwrap().clone();
+    let relay = plan.candidates.iter().find(|c| c.location == probe::Location::Relay).unwrap().clone();
+    let mut probes = 0;
+    let mut probe_one = |_: &ProbePlan, rejected: &[String]| {
+        probes += 1;
+        if probes == 2 {
+            assert_eq!(rejected, ["https://192-0-2-10.h.plex.direct:32400"]);
+        }
+        let candidate = if probes == 1 { direct.clone() } else { relay.clone() };
+        Reach::At(candidate.clone(), candidate.origin().unwrap())
+    };
+    let mut admissions = vec![crate::plex::EndpointAdmission::Timeout,
+        crate::plex::EndpointAdmission::Usable].into_iter();
+    let resolved = resolve_roster_using_admission(
+        &[resource], &[], CredentialPolicy::HttpsOnly, &PlaintextAsk::undecided(), &mut probe_one,
+        &mut |_| admissions.next().unwrap(), &mut |_, _, _| {},
+        &mut || {}, &mut |_, _, _, _| {},
+    );
+    assert_eq!(resolved.admitted_machine_id.as_deref(), Some("machine"));
+    let Resolved::Reached(found) = resolved.outcome else { panic!("relay admission must retain the server") };
+    assert_eq!(probes, 2);
+    assert_eq!(found[0].origin_url, "https://relay.example.test:443");
+}
+
+#[test]
 fn a_direct_401_remains_the_reason_when_relay_is_silent() {
     let mut plan = race_plan();
     plan.candidates.truncate(1);
@@ -221,7 +452,7 @@ fn a_direct_401_remains_the_reason_when_relay_is_silent() {
         ipv6: false,
         credential_eligible: true,
     });
-    let dial: ProbeDial = Arc::new(|origin, _, _| {
+    let dial: ProbeDial = status_dial(|origin, _, _| {
         if origin.host() == "relay.example.test" {
             (0, Vec::new())
         } else {
@@ -244,7 +475,7 @@ fn a_direct_401_remains_the_reason_when_relay_is_silent() {
 fn an_on_time_result_queued_before_the_deadline_survives_coordinator_delay() {
     let mut plan = race_plan();
     plan.candidates.truncate(1);
-    let dial: ProbeDial = Arc::new(|_, _, _| (200, identity_json("race-machine")));
+    let dial: ProbeDial = status_dial(|_, _, _| (200, identity_json("race-machine")));
     let spawn = |_: usize, job: ProbeJob| {
         job();
         std::thread::sleep(Duration::from_millis(20));
@@ -261,7 +492,7 @@ fn an_on_time_result_queued_before_the_deadline_survives_coordinator_delay() {
 #[test]
 fn a_late_local_result_is_ignored_while_a_remote_deadline_remains_live() {
     let plan = race_plan();
-    let dial: ProbeDial = Arc::new(|origin, _, _| {
+    let dial: ProbeDial = status_dial(|origin, _, _| {
         if origin.host().starts_with("192-") {
             std::thread::sleep(Duration::from_millis(25));
         } else {
@@ -286,7 +517,7 @@ fn a_late_local_result_is_ignored_while_a_remote_deadline_remains_live() {
 #[test]
 fn a_verified_reachable_candidate_wins_over_a_parallel_401() {
     let plan = race_plan();
-    let dial: ProbeDial = Arc::new(|origin, _, _| {
+    let dial: ProbeDial = status_dial(|origin, _, _| {
         if origin.host().starts_with("192-") {
             (401, Vec::new())
         } else {
@@ -331,7 +562,7 @@ fn under_allow_plaintext_the_lan_twin_wins_and_relay_is_never_dialled() {
     });
     let seen = Arc::new(Mutex::new(Vec::new()));
     let seen_by_dial = Arc::clone(&seen);
-    let dial: ProbeDial = Arc::new(move |origin, _, _| {
+    let dial: ProbeDial = status_dial(move |origin, _, _| {
         seen_by_dial.lock().unwrap().push(origin.host().to_string());
         if origin.host() == "192.0.2.10" {
             (200, identity_json("race-machine"))
@@ -372,7 +603,7 @@ fn insecure_only_outranks_a_refusal() {
         ipv6: false,
         credential_eligible: false,
     };
-    let dial: ProbeDial = Arc::new(|origin, _, _| {
+    let dial: ProbeDial = status_dial(|origin, _, _| {
         if origin.host() == "192.0.2.10" {
             (200, identity_json("race-machine")) // verified, but ineligible
         } else {
@@ -387,7 +618,7 @@ fn insecure_only_outranks_a_refusal() {
         &mut |_, _, _| {},
     );
     assert!(
-        matches!(reach, Reach::InsecureOnly(_)),
+        matches!(reach, Reach::InsecureOnly(..)),
         "a verified plaintext answer must outrank a parallel 401"
     );
 }
@@ -408,7 +639,7 @@ fn a_late_eligible_answer_after_an_early_plaintext_one_becomes_first_and_activat
         ipv6: false,
         credential_eligible: false,
     };
-    let dial: ProbeDial = Arc::new(|origin, _, _| {
+    let dial: ProbeDial = status_dial(|origin, _, _| {
         if origin.host() == "192.0.2.10" {
             (200, identity_json("race-machine")) // instant, but ineligible
         } else {
@@ -468,7 +699,7 @@ fn under_https_only_every_activation_and_every_reach_at_origin_is_tls() {
 
     assert_case(
         &race_plan(),
-        Arc::new(|origin, _, _| {
+        status_dial(|origin, _, _| {
             if origin.host().starts_with("192-") {
                 (200, identity_json("race-machine"))
             } else {
@@ -478,7 +709,7 @@ fn under_https_only_every_activation_and_every_reach_at_origin_is_tls() {
     );
     assert_case(
         &probe::plan(&issue_95_account(true), CredentialPolicy::HttpsOnly),
-        Arc::new(issue_95_dial),
+        status_dial(issue_95_dial),
     );
     assert!(
         activated_total > 0,
@@ -575,7 +806,7 @@ fn issue_95_a_plaintext_only_winner_must_not_be_reach_at_and_must_not_starve_the
     let plan = probe::plan(&issue_95_account(true), CredentialPolicy::HttpsOnly);
     let seen = Arc::new(Mutex::new(Vec::new()));
     let seen_by_dial = Arc::clone(&seen);
-    let dial: ProbeDial = Arc::new(move |origin, pin, budget| {
+    let dial: ProbeDial = status_dial(move |origin, pin, budget| {
         seen_by_dial.lock().unwrap().push(origin.log_form());
         issue_95_dial(origin, pin, budget)
     });
@@ -625,7 +856,7 @@ fn issue_95_a_plaintext_only_winner_must_not_be_reach_at_and_must_not_starve_the
 #[test]
 fn issue_95_resolve_roster_only_ever_records_an_https_origin() {
     let resources = vec![issue_95_account(true)];
-    let dial: ProbeDial = Arc::new(issue_95_dial);
+    let dial: ProbeDial = status_dial(issue_95_dial);
     let mut probe_one = |plan: &ProbePlan| {
         probe_server_racing(
             plan,
@@ -662,7 +893,7 @@ fn issue_95_resolve_roster_only_ever_records_an_https_origin() {
 #[test]
 fn issue_95_without_a_relay_a_plaintext_only_answer_is_not_reached() {
     let resources = vec![issue_95_account(false)];
-    let dial: ProbeDial = Arc::new(issue_95_dial);
+    let dial: ProbeDial = status_dial(issue_95_dial);
     let mut probe_one = |plan: &ProbePlan| {
         probe_server_racing(
             plan,
@@ -695,29 +926,29 @@ fn issue_95_without_a_relay_a_plaintext_only_answer_is_not_reached() {
 #[test]
 fn resolved_none_insecure_outranks_refused_and_every_other_shape_is_unchanged() {
     assert!(matches!(
-        resolved_without_roster(Resolved::NoServers),
-        Err(Discovery::NoServers)
+        resolved_without_roster(Resolved::NoServers { resources: 0 }, DiscoveryTrigger::Login),
+        Err(Discovery::NoServers(_))
     ));
     assert!(matches!(
-        resolved_without_roster(Resolved::None { refused: true, insecure: false }),
+        resolved_without_roster(Resolved::None { refused: true, insecure: false, evidence: None }, DiscoveryTrigger::Login),
         Err(Discovery::Refused)
     ));
     assert!(matches!(
-        resolved_without_roster(Resolved::None { refused: false, insecure: false }),
-        Err(Discovery::Silent)
+        resolved_without_roster(Resolved::None { refused: false, insecure: false, evidence: None }, DiscoveryTrigger::Login),
+        Err(Discovery::ServersUnreachable { trigger: DiscoveryTrigger::Login })
     ));
     assert!(
         matches!(
-            resolved_without_roster(Resolved::None { refused: true, insecure: true }),
-            Err(Discovery::InsecureOnly)
+            resolved_without_roster(Resolved::None { refused: true, insecure: true, evidence: None }, DiscoveryTrigger::Login),
+            Err(Discovery::InsecureOnly(_))
         ),
         "a verified plaintext answer outranks a parallel/proxy 401"
     );
     assert!(matches!(
-        resolved_without_roster(Resolved::None { refused: false, insecure: true }),
-        Err(Discovery::InsecureOnly)
+        resolved_without_roster(Resolved::None { refused: false, insecure: true, evidence: None }, DiscoveryTrigger::Login),
+        Err(Discovery::InsecureOnly(_))
     ));
-    assert!(matches!(resolved_without_roster(Resolved::Reached(vec![])), Ok(v) if v.is_empty()));
+    assert!(matches!(resolved_without_roster(Resolved::Reached(vec![]), DiscoveryTrigger::Login), Ok(v) if v.is_empty()));
 }
 
 /// Sign-in and rediscovery must say the SAME sentence for the SAME verdict — the whole point
@@ -772,7 +1003,7 @@ fn a_pinned_lan_https_candidate_wins_and_the_relay_is_never_dialled() {
     let plan = probe::plan(&issue_95_account(true), CredentialPolicy::HttpsOnly);
     let seen = Arc::new(Mutex::new(Vec::new()));
     let seen_by_dial = Arc::clone(&seen);
-    let dial: ProbeDial = Arc::new(move |origin, pin, budget| {
+    let dial: ProbeDial = status_dial(move |origin, pin, budget| {
         seen_by_dial.lock().unwrap().push(origin.log_form());
         issue_95_dial_pinned(origin, pin, budget)
     });
@@ -811,7 +1042,7 @@ fn a_pinned_lan_https_candidate_wins_and_the_relay_is_never_dialled() {
 #[test]
 fn a_pinned_winner_is_recorded_as_the_plex_direct_origin_not_the_dialled_address() {
     let resources = vec![issue_95_account(true)];
-    let dial: ProbeDial = Arc::new(issue_95_dial_pinned);
+    let dial: ProbeDial = status_dial(issue_95_dial_pinned);
     let mut probe_one = |plan: &ProbePlan| {
         probe_server_racing(
             plan,
@@ -894,7 +1125,7 @@ fn e2e95_resource(lan_port: u16, dead_port: u16, relay_port: Option<u16>) -> Res
 
 /// **The real curl/TLS stack reaches the pinned HTTPS LAN candidate and never activates its
 /// plaintext twin.** Issue #95's shape, driven through the PRODUCTION dial
-/// (`get_identity` → `crate::http::request_probe` → `crate::net::request_result`) rather
+/// (`get_identity` → `crate::http::request_probe` → `crate::net::request_result_evidence`) rather
 /// than a fake [`ProbeDial`] closure: a loopback double
 /// ([`crate::net::spawn_dual_protocol`]) answers the SAME `/identity` body over
 /// both a real TLS handshake (against a minted self-signed cert curl is told to trust via
@@ -1058,11 +1289,11 @@ fn e2e_real_curl_tls_failure_with_a_verified_plaintext_answer_yields_insecure_on
             assert!(*insecure, "the plaintext twin verified this machine and must be recorded insecure");
         }
         Resolved::Reached(_) => panic!("expected Resolved::None{{insecure:true}}, got a Reached roster"),
-        Resolved::NoServers => panic!("expected Resolved::None{{insecure:true}}, got NoServers"),
+        Resolved::NoServers { .. } => panic!("expected Resolved::None{{insecure:true}}, got NoServers"),
     }
     assert!(matches!(
-        resolved_without_roster(resolved),
-        Err(Discovery::InsecureOnly)
+        resolved_without_roster(resolved, DiscoveryTrigger::Login),
+        Err(Discovery::InsecureOnly(Some(_)))
     ));
 }
 
@@ -1093,7 +1324,7 @@ fn a_candidate_whose_label_does_not_encode_its_own_address_gets_no_pin() {
     };
     let seen_pin: Arc<Mutex<Option<Option<crate::plex::ResolvePin>>>> = Arc::new(Mutex::new(None));
     let seen_pin_by_dial = Arc::clone(&seen_pin);
-    let dial: ProbeDial = Arc::new(move |_origin, pin, _budget| {
+    let dial: ProbeDial = status_dial(move |_origin, pin, _budget| {
         *seen_pin_by_dial.lock().unwrap() = Some(pin.cloned());
         (200, identity_json("mismatch-machine"))
     });
@@ -1634,12 +1865,6 @@ fn a_sign_in_to_a_two_server_account_settles_on_one_address_each_ours_first() {
     };
 
     assert_eq!(roster.len(), 2, "a player resource is not a server");
-    assert_eq!(
-        primary_index(&roster),
-        0,
-        "ours is the primary and becomes `current`"
-    );
-
     let own = &roster[0];
     assert!(own.owned && own.machine_id == "aaaa1111");
     assert_eq!(
@@ -1799,7 +2024,7 @@ fn the_three_empty_outcomes_are_distinguished() {
     .unwrap();
     assert!(matches!(
         resolve_roster(&players, &[], CredentialPolicy::HttpsOnly, &|_| (0, Vec::new())),
-        Resolved::NoServers
+        Resolved::NoServers { .. }
     ));
 
     // servers that simply do not answer
@@ -1830,9 +2055,660 @@ fn the_three_empty_outcomes_are_distinguished() {
         panic!("the share answered")
     };
     assert_eq!(roster.len(), 1);
-    assert_eq!(primary_index(&roster), 0);
     assert!(
         !roster[0].owned,
         "the primary is a share here, and that is the point"
     );
+}
+
+// ---- the discovery failure's incident (review round 2026-09-19) ----
+
+/// **The discovery-only retry reports the SAME failure the sign-in did.** On this branch the
+/// rediscovery worker is reached only through *Try again* after an authorized discovery failed
+/// (`retry_kind`), so the failure it ends on is that one again. It used to be minted as a kind of
+/// its own, which the per-launch dedup key reads as a new question — the person who answered
+/// Not now was asked again by their own retry. Both workers take the whole incident from
+/// [`discovery_failure`], the one table, and name no kind themselves.
+#[test]
+fn the_discovery_retry_reports_the_failure_it_retried() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/auth.rs"),
+    )
+    .expect("auth.rs must be readable from its own test");
+    for name in ["rediscovery_worker_with_output", "login_worker_with_output"] {
+        let body = extract_fn_body(&src, name);
+        assert!(body.contains("discovery_failure(&discovery)"), "`{name}` no longer uses the shared table");
+        assert!(
+            !body.contains("IncidentKind::Rediscovery") && !body.contains("IncidentKind::Discovery"),
+            "`{name}` names its own discovery incident kind instead of taking the shared table's:\n{body}"
+        );
+    }
+    let (_, silent) = discovery_failure(&Discovery::ServersUnreachable {
+        trigger: DiscoveryTrigger::Login,
+    }).expect("a failure");
+    assert_eq!(silent.kind, IncidentKind::Discovery(DiscoveryClass::Silent));
+}
+
+/// **A token plex.tv refused is an authorization failure, not a network one.** `/resources`
+/// answering 401 or 403 means plex.tv heard us and said no — "check the connection" sends the
+/// person to a router that is fine, and the report must not be grouped with real silence.
+#[test]
+fn a_refused_token_is_reported_as_authorization_not_as_silence() {
+    for status in [401u16, 403] {
+        let refused = [
+            Ok(status),
+            // A refusal whose body broke is still that refusal (`net::response_status`).
+            Err(crate::net::RequestFailure {
+                cause: crate::net::RequestError::Transport,
+                status: Some(status),
+                body_limit: None,
+                curl_rc: Some(18),
+            }),
+        ];
+        for last in refused {
+            let (message, incident) =
+                discovery_failure(&Discovery::PlexTvFailed(PlexTvFailure {
+                    last, attempts: 1, elapsed: Duration::ZERO, trigger: DiscoveryTrigger::Login,
+                })).expect("a failure");
+            assert_eq!(incident.kind, IncidentKind::Authorization, "{status}");
+            assert_eq!(incident.http_status, Some(status));
+            assert!(!message.contains("connection"), "{status}: {message:?} blames the network");
+        }
+    }
+    // Real silence, and other answers, stay what they were.
+    for last in [Ok(503), Ok(429)] {
+        let (message, incident) = discovery_failure(&Discovery::PlexTvFailed(PlexTvFailure {
+            last, attempts: 3, elapsed: Duration::from_secs(6), trigger: DiscoveryTrigger::Login,
+        })).expect("a failure");
+        assert_eq!(incident.kind, IncidentKind::Discovery(DiscoveryClass::Silent), "{last:?}");
+        assert!(message.contains("plex.tv"));
+    }
+}
+
+#[test]
+fn terminal_discovery_copy_names_the_target_cause_retry_and_action() {
+    let failure = |rc, cause| Err(crate::net::RequestFailure { cause, status: None,
+        body_limit: None, curl_rc: rc });
+    let message = |last| discovery_failure(&Discovery::PlexTvFailed(PlexTvFailure {
+        last, attempts: 3, elapsed: Duration::from_secs(6), trigger: DiscoveryTrigger::Login,
+    })).unwrap().0.into_owned();
+    assert_eq!(message(failure(Some(6), crate::net::RequestError::Transport)),
+        "This TV couldn't find plex.tv, so your servers weren't checked. We tried 3 times. Check the TV's internet connection, then try again.");
+    assert_eq!(message(failure(Some(28), crate::net::RequestError::TimedOut)),
+        "This TV couldn't reach plex.tv, so your servers weren't checked. We tried 3 times. Check the TV's internet connection, then try again.");
+    assert_eq!(message(failure(Some(60), crate::net::RequestError::Transport)),
+        "This TV couldn't make a secure connection to plex.tv. Check the TV's date and time, then try again.");
+    for evidence in [Ok(200), Ok(408), Ok(429), Ok(503)] {
+        assert_eq!(message(evidence),
+            "plex.tv is having trouble right now, so your servers weren't checked. Try again in a few minutes.");
+    }
+    let servers = discovery_failure(&Discovery::ServersUnreachable {
+        trigger: DiscoveryTrigger::Rediscover,
+    }).unwrap().0;
+    assert_eq!(servers,
+        "plex.tv listed your servers, but none of them answered. Make sure your Plex Media Server is on and online, then try again.");
+}
+
+#[test]
+fn a_single_discovery_attempt_uses_grammatical_retry_copy() {
+    let last = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+        status: None, body_limit: None, curl_rc: Some(6) });
+    let (message, _) = discovery_failure(&Discovery::PlexTvFailed(PlexTvFailure {
+        last, attempts: 1, elapsed: Duration::ZERO, trigger: DiscoveryTrigger::Login,
+    })).unwrap();
+    assert!(message.contains("We tried once."), "{message}");
+    assert!(!message.contains("1 times"), "{message}");
+}
+
+#[test]
+fn background_resource_call_sites_clamp_each_request_to_the_runner_budget() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/auth.rs"),
+    ).unwrap();
+    let roster = extract_fn_body(&src, "server_roster_worker_with_output");
+    assert!(roster.contains("resources_with(account_timeouts(remaining))"), "{roster}");
+    let endpoint = extract_fn_body(&src, "probe_endpoint_work");
+    assert!(endpoint.contains("resources(&ac, remaining)"),
+        "the endpoint runner must pass its remaining budget through the injected seam:\n{endpoint}");
+    let production = extract_fn_body(&src, "run_session_work");
+    assert!(production.contains("resources_with(account_timeouts(remaining))"),
+        "the production endpoint seam must clamp the account request:\n{production}");
+}
+
+#[test]
+fn dns_copy_never_claims_that_a_plex_server_was_contacted() {
+    let last = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+        status: None, body_limit: None, curl_rc: Some(6) });
+    let (caption, _) = discovery_failure(&Discovery::PlexTvFailed(PlexTvFailure {
+        last, attempts: 3, elapsed: Duration::from_secs(6), trigger: DiscoveryTrigger::Login,
+    })).unwrap();
+    assert!(caption.contains("plex.tv"));
+    assert!(caption.contains("TV's internet connection"));
+    assert!(!caption.contains("Plex server"), "{caption}");
+}
+
+/// **Discovery writes the grant evidence down beside the credit.** The sign-in ingest is one of
+/// three that produce a `SourceRef` (`resolve_roster_using`, `source_from_reach`,
+/// `refreshed_sources`), and a session whose roster carried only `owned` could not answer "is
+/// this our household's server" on any later boot — the credit is an empty string for the
+/// household's own server and for a share plex.tv never named alike.
+///
+/// The verdict here is the ordinary single-account one (we own ours, the share is outside), which
+/// is the point: the evidence is plex.tv's, carried verbatim, and it is a later roster that
+/// re-grades it rather than this ingest.
+#[test]
+fn a_sign_in_roster_carries_plex_tvs_household_evidence_verbatim() {
+    let d = Dialled::new(vec![
+        ("192.168.0.10", 200, identity_json("aaaa1111")),
+        ("203.0.113.9", 200, identity_json("bbbb2222")),
+    ]);
+    let Resolved::Reached(roster) =
+        resolve_roster(&a_two_server_account(), &[], CredentialPolicy::AllowPlaintext, &|o| d.dial(o))
+    else {
+        panic!("both servers answer");
+    };
+
+    assert_eq!(
+        roster.iter().map(|s| (s.machine_id.as_str(), s.owned, s.home, s.owner_id)).collect::<Vec<_>>(),
+        [("aaaa1111", true, false, 0), ("bbbb2222", false, false, 987_654)],
+        "`ownerId:null` is 0 and never matches a household member; the share names its owner",
+    );
+}
+
+// ---- PLX-NATIVE-10: an insecure-only verdict carries the evidence that explains it ----
+
+/// Race `resource` through the production coordinator with `dial`, then fold the one-server
+/// roster exactly as sign-in does — the path whose `Discovery` the incident is built from.
+fn insecure_verdict(resource: Resource, dial: ProbeDial) -> Discovery {
+    let resources = vec![resource];
+    let mut probe_one = |plan: &ProbePlan| {
+        probe_server_racing(plan, Arc::clone(&dial), &threaded_spawn, test_policy(),
+            &mut |_, _, _| {})
+    };
+    let resolved = resolve_roster_using(&resources, &[], CredentialPolicy::HttpsOnly,
+        &mut probe_one, &mut || {}, &mut |_, _, _, _| {});
+    resolved_without_roster(resolved, DiscoveryTrigger::Login)
+        .err()
+        .expect("nothing credential-eligible verified, so discovery must fail")
+}
+
+fn insecure_evidence_of(d: &Discovery) -> probe::InsecureEvidence {
+    let Discovery::InsecureOnly(Some((evidence, _))) = d else {
+        panic!("expected an insecure-only verdict with probe evidence");
+    };
+    let (_, incident) = discovery_failure(d).expect("an insecure-only verdict is a failure");
+    assert_eq!(incident.insecure, Some(*evidence), "the incident carries the verdict's evidence");
+    *evidence
+}
+
+fn timed_out() -> crate::net::RequestFailure {
+    crate::net::RequestFailure {
+        cause: crate::net::RequestError::TimedOut, status: None, body_limit: None, curl_rc: Some(28),
+    }
+}
+
+fn transport_rc(rc: i32) -> crate::net::RequestFailure {
+    crate::net::RequestFailure {
+        cause: crate::net::RequestError::Transport, status: None, body_limit: None, curl_rc: Some(rc),
+    }
+}
+
+/// Our own server with every HTTPS route plex.tv can advertise — a LAN `plex.direct` name, a
+/// public `plex.direct` name, a custom access URL and a relay — plus the LAN plaintext twin the
+/// fixtures let answer. `relay` false drops the relay connection entirely.
+fn every_route_server(relay: bool) -> Resource {
+    let relay = if relay {
+        r#",{"protocol":"https","address":"198.51.100.4","port":8443,
+             "uri":"https://198-51-100-4.relayhash.plex.direct:8443","local":false,"relay":true,"IPv6":false}"#
+    } else {
+        ""
+    };
+    resource(&format!(
+        r#"{{"name":"ours","clientIdentifier":"routes01","provides":"server","owned":true,
+            "sourceTitle":null,"publicAddressMatches":true,"httpsRequired":false,
+            "accessToken":"tok-routes","connections":[
+              {{"protocol":"https","address":"192.168.0.10","port":32400,
+               "uri":"https://192-168-0-10.hash.plex.direct:32400","local":true,"relay":false,"IPv6":false}},
+              {{"protocol":"https","address":"203.0.113.9","port":32400,
+               "uri":"https://203-0-113-9.hash.plex.direct:32400","local":false,"relay":false,"IPv6":false}},
+              {{"protocol":"https","address":"media.example.test","port":443,
+               "uri":"https://media.example.test:443","local":false,"relay":false,"IPv6":false}}{relay}
+            ]}}"#
+    ))
+}
+
+/// **(a) A real failed TLS handshake is named as TLS, not folded into silence.** The same real
+/// curl fixture as the `Reach::At`-refusal test above: the LAN `plex.direct` name points at a
+/// plaintext-only double, so curl's ClientHello fails (a TLS `CURLcode`), while the plaintext
+/// twin on that port verifies the machine. The evidence must say which route failed and how,
+/// and carry the plaintext answer's closed facts — a loopback literal on a `local` connection.
+#[test]
+fn e2e_insecure_only_evidence_names_the_failed_tls_handshake() {
+    let _serial = crate::testlock::serial();
+    if !(crate::net::global_init() && crate::net::available()) {
+        eprintln!("curl unavailable on this host; skipping");
+        return;
+    }
+    let plain_port = crate::net::spawn_plain_only(identity_json("e2e95mid"));
+    let dead = crate::net::dead_port();
+    let d = insecure_verdict(e2e95_resource(plain_port, dead, None), Arc::new(get_identity));
+    let e = insecure_evidence_of(&d);
+    assert_eq!(e.https.lan_plex_direct, probe::RouteOutcome::Tls, "{e:?}");
+    assert_eq!(e.https.public_plex_direct, probe::RouteOutcome::Absent);
+    assert_eq!(e.https.custom_https, probe::RouteOutcome::Absent);
+    assert_eq!(e.https.relay, probe::RouteOutcome::Absent);
+    assert!(e.plaintext_local && e.owned && e.public_address_matches && !e.https_required, "{e:?}");
+    assert_eq!(e.plaintext_scope, probe::AddressScope::Loopback);
+    assert_eq!(e.plaintext_family, probe::AddressFamily::V4);
+}
+
+/// **(b) Every HTTPS route timing out is four timeouts, not one `unknown`.** The LAN plaintext
+/// twin verifies; each HTTPS route — LAN name, public name, custom URL and the relay raced after
+/// them — times out. The plaintext facts are the ones a same-network decision would need.
+#[test]
+fn insecure_only_evidence_records_a_timeout_on_every_https_route() {
+    let dial: ProbeDial = Arc::new(|origin, _, _| {
+        if origin.is_tls() {
+            ProbeReply::Failed(Some(timed_out()))
+        } else if origin.host() == "192.168.0.10" {
+            ProbeReply::from((200, identity_json("routes01")))
+        } else {
+            ProbeReply::Failed(None)
+        }
+    });
+    let e = insecure_evidence_of(&insecure_verdict(every_route_server(true), dial));
+    assert_eq!(
+        e.https,
+        probe::HttpsRoutes {
+            lan_plex_direct: probe::RouteOutcome::Timeout,
+            public_plex_direct: probe::RouteOutcome::Timeout,
+            custom_https: probe::RouteOutcome::Timeout,
+            relay: probe::RouteOutcome::Timeout,
+        }
+    );
+    assert!(e.plaintext_local && e.owned && e.public_address_matches && !e.https_required, "{e:?}");
+    assert_eq!(e.plaintext_scope, probe::AddressScope::Private);
+    assert_eq!(e.plaintext_family, probe::AddressFamily::V4);
+}
+
+/// **(c) A relay plex.tv never advertised is `absent`; one that failed says how.** Same server,
+/// same failures on the direct routes (a TLS refusal on the LAN name, a refused connect on the
+/// public one, DNS on the custom name); only the relay row differs.
+#[test]
+fn insecure_only_evidence_tells_an_absent_relay_from_a_failed_one() {
+    let dial: ProbeDial = Arc::new(|origin, _, _| {
+        let host = origin.host();
+        if !origin.is_tls() {
+            return if host == "192.168.0.10" {
+                ProbeReply::from((200, identity_json("routes01")))
+            } else {
+                ProbeReply::Failed(None)
+            };
+        }
+        ProbeReply::Failed(Some(if host.starts_with("192-") {
+            transport_rc(35)
+        } else if host.starts_with("203-") {
+            transport_rc(7)
+        } else {
+            transport_rc(6)
+        }))
+    });
+    let failed = insecure_evidence_of(&insecure_verdict(every_route_server(true), Arc::clone(&dial)));
+    let absent = insecure_evidence_of(&insecure_verdict(every_route_server(false), dial));
+    for e in [failed, absent] {
+        assert_eq!(e.https.lan_plex_direct, probe::RouteOutcome::Tls, "{e:?}");
+        assert_eq!(e.https.public_plex_direct, probe::RouteOutcome::Refused, "{e:?}");
+        assert_eq!(e.https.custom_https, probe::RouteOutcome::Dns, "{e:?}");
+    }
+    assert_eq!(failed.https.relay, probe::RouteOutcome::Dns, "the relay was raced and failed");
+    assert_eq!(absent.https.relay, probe::RouteOutcome::Absent, "plex.tv advertised no relay");
+}
+
+/// **(d) An account whose resources are all players says how many it had, and which flow asked.**
+/// `NoServers` is a statement about the account, so its evidence is a bucketed count of what
+/// `/resources` did return — never a name — and whether a fresh sign-in or a retry produced it.
+#[test]
+fn no_servers_evidence_counts_the_players_and_names_the_trigger() {
+    let player = |n: usize| {
+        format!(r#"{{"name":"p{n}","clientIdentifier":"cccc{n}","provides":"player","connections":[]}}"#)
+    };
+    let one = serde_json::from_str::<Vec<Resource>>(&format!("[{}]", player(1))).unwrap();
+    let seven = serde_json::from_str::<Vec<Resource>>(&format!(
+        "[{}]",
+        (0..7).map(player).collect::<Vec<_>>().join(",")
+    ))
+    .unwrap();
+    for (resources, trigger, bucket) in [
+        (one, DiscoveryTrigger::Rediscover, crate::telemetry::incident::CountBucket::One),
+        (seven, DiscoveryTrigger::Login, crate::telemetry::incident::CountBucket::SixPlus),
+    ] {
+        let resolved = resolve_roster(&resources, &[], CredentialPolicy::HttpsOnly, &|_| (0, Vec::new()));
+        let d = resolved_without_roster(resolved, trigger).err().expect("no server is a failure");
+        let Discovery::NoServers(evidence) = d else { panic!("expected NoServers") };
+        assert_eq!(
+            evidence,
+            crate::telemetry::incident::NoServersEvidence { resources: bucket, trigger }
+        );
+        let (_, incident) = discovery_failure(&d).expect("no servers is a failure");
+        assert_eq!(incident.no_servers, Some(evidence));
+        assert_eq!(incident.insecure, None);
+    }
+}
+
+// ---- PLX-NATIVE-10: consent-gated plaintext on the home network ----
+
+/// What answers the no-relay reporter's topology when the plaintext candidate is named by any
+/// host (the hostname variant below re-addresses it): every plaintext candidate but the remote
+/// custom one answers `/identity` for the machine, every HTTPS route is dead. `relay` switches
+/// the relay back on and lets it verify.
+fn plx10_dial(origin: &Origin, _pin: Option<&crate::plex::ResolvePin>, _budget: Duration) -> (i32, Vec<u8>) {
+    match (origin.host(), origin.is_tls()) {
+        ("custom.example.net", false) => (400, Vec::new()),
+        ("relay.example.net", true) => (200, identity_json("issue95mid")),
+        (host, false) if !host.starts_with("172.") => (200, identity_json("issue95mid")),
+        _ => (0, Vec::new()),
+    }
+}
+
+/// One store-policy discovery of `resource` under `ask`, recording every authenticated admission
+/// as `(origin_url, token)` — the only step of discovery that puts a credential on a request (the
+/// identity race is tokenless by construction: `ProbeDial` is handed no token at all).
+fn plx10_discover(resource: Resource, ask: &PlaintextAsk) -> (Resolution, Vec<(String, String)>) {
+    let (resolved, admitted, _) =
+        plx10_discover_with(resource, ask, plx10_dial, |_| crate::plex::EndpointAdmission::Usable);
+    (resolved, admitted)
+}
+
+/// [`plx10_discover`] with the dial and the admission answer chosen by the test. The probe honours
+/// the origins admission already rejected exactly as the live one does ([`ProbePlan::without`]),
+/// so a re-probe after a refusal sees the plan production would. The third value is each server's
+/// settled verdict, as the owner would publish it (`RegistryPlan::Probe`).
+fn plx10_discover_with(
+    resource: Resource,
+    ask: &PlaintextAsk,
+    dial: fn(&Origin, Option<&crate::plex::ResolvePin>, Duration) -> (i32, Vec<u8>),
+    answer: impl Fn(&SourceRef) -> crate::plex::EndpointAdmission,
+) -> (Resolution, Vec<(String, String)>, Vec<SettledProbe>) {
+    let dial: ProbeDial = status_dial(dial);
+    let mut probe_one = |plan: &ProbePlan, rejected: &[String]| {
+        probe_server_racing(&plan.without(rejected), Arc::clone(&dial), &threaded_spawn,
+            test_policy(), &mut |_, _, _| {})
+    };
+    let mut admitted = Vec::new();
+    let mut settled = Vec::new();
+    let resolved = resolve_roster_using_admission(
+        &[resource], &[], CredentialPolicy::HttpsOnly, ask, &mut probe_one,
+        &mut |source| {
+            admitted.push((source.origin_url.clone(), source.token.clone()));
+            answer(source)
+        },
+        &mut |_, _, _| {}, &mut || {},
+        &mut |plan, outcome, tier, address| settled.push(settled_probe(plan, outcome, tier, address)),
+    );
+    (resolved, admitted, settled)
+}
+
+fn plx10_offer(resolved: &Resolution) -> Option<&PlaintextVerdict> {
+    match &resolved.outcome {
+        Resolved::None { evidence: Some((_, verdict)), .. } => Some(verdict),
+        _ => None,
+    }
+}
+
+/// **Before consent, no credential travels over plaintext** — HTTPS fails everywhere and there is
+/// no relay; the server answers only at its LAN plaintext address. Discovery settles insecure-only
+/// with an eligible, undecided verdict (the question the sign-in read-out asks), no admission ever
+/// named an `http://` origin, and no grant exists.
+#[test]
+fn plx10_before_consent_an_eligible_lan_answer_is_offered_and_no_token_goes_over_plaintext() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    let (resolved, admitted) = plx10_discover(issue_95_account(false), &PlaintextAsk::undecided());
+    assert!(admitted.iter().all(|(url, _)| url.starts_with("https://")), "{admitted:?}");
+    let verdict = plx10_offer(&resolved).expect("an insecure-only verdict");
+    assert_eq!(verdict.eligibility, probe::PlaintextEligibility::Eligible);
+    assert_eq!(verdict.choice, PlaintextChoice::Undecided);
+    assert!(verdict.offers());
+    assert!(crate::plex::grant::granted_machines().is_empty());
+    assert!(!crate::plex::grant::allowed_under(
+        CredentialPolicy::HttpsOnly, &Origin::http("192.168.1.50", 32400)));
+
+    // Declined is recorded, never offered as a question again, and still mints nothing.
+    let declined = PlaintextAsk::undecided().with("issue95mid", PlaintextChoice::Declined);
+    let (resolved, admitted) = plx10_discover(issue_95_account(false), &declined);
+    assert!(admitted.is_empty(), "{admitted:?}");
+    let verdict = plx10_offer(&resolved).expect("an insecure-only verdict");
+    assert_eq!(verdict.choice, PlaintextChoice::Declined);
+    assert!(crate::plex::grant::granted_machines().is_empty());
+    crate::plex::reset_servers_for_test();
+}
+
+/// **After consent, the plaintext origin is activated and the token goes to it alone**: exactly one
+/// admission, at `http://192.168.1.50:32400`, and the authority admits that exact origin — not the
+/// same host on another port, not another host.
+#[test]
+fn plx10_after_consent_the_token_goes_only_to_the_exact_verified_origin() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    let allowed = PlaintextAsk::undecided().with("issue95mid", PlaintextChoice::Allowed);
+    let (resolved, admitted) = plx10_discover(issue_95_account(false), &allowed);
+    assert_eq!(admitted, vec![("http://192.168.1.50:32400".to_owned(), "tok-95".to_owned())]);
+    let Resolved::Reached(found) = resolved.outcome else { panic!("consent must reach the server") };
+    assert_eq!(found[0].origin_url, "http://192.168.1.50:32400");
+    let store = CredentialPolicy::HttpsOnly;
+    assert!(crate::plex::grant::allowed_under(store, &Origin::http("192.168.1.50", 32400)));
+    assert!(!crate::plex::grant::allowed_under(store, &Origin::http("192.168.1.50", 32401)));
+    assert!(!crate::plex::grant::allowed_under(store, &Origin::http("192.168.1.51", 32400)));
+    assert!(!crate::plex::grant::allowed_under(store, &Origin::http("custom.example.net", 443)));
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}
+
+/// **Never offered, never granted — even with consent recorded**: a relay that verifies, a server
+/// that requires secure connections, a network plex.tv does not call the server's, a plaintext
+/// address that is a name, and a server plex.tv calls remote. Each keeps today's refusal (or the
+/// relay), and no admission ever names an `http://` origin.
+#[test]
+fn plx10_consent_never_downgrades_an_ineligible_topology() {
+    let _g = crate::testlock::serial();
+    let allowed = PlaintextAsk::undecided().with("issue95mid", PlaintextChoice::Allowed);
+    let variants: Vec<(&str, Resource)> = vec![
+        ("relay verifies", issue_95_account(true)),
+        ("httpsRequired", {
+            let mut r = issue_95_account(false); r.https_required = true; r
+        }),
+        ("publicAddressMatches=false", {
+            let mut r = issue_95_account(false); r.public_address_matches = false; r
+        }),
+        ("hostname address", {
+            let mut r = issue_95_account(false);
+            r.connections[0].address = "nas.home.arpa".into();
+            r
+        }),
+        ("remote", {
+            let mut r = issue_95_account(false);
+            for c in &mut r.connections { c.local = false; }
+            r
+        }),
+    ];
+    for (label, resource) in variants {
+        crate::plex::reset_servers_for_test();
+        crate::plex::grant::reset_for_test();
+        let (resolved, admitted) = plx10_discover(resource, &allowed);
+        assert!(admitted.iter().all(|(url, _)| url.starts_with("https://")), "{label}: {admitted:?}");
+        assert!(crate::plex::grant::granted_machines().is_empty(), "{label}: a grant was minted");
+        assert!(plx10_offer(&resolved).is_none_or(|v| !v.offers()), "{label}: offered");
+    }
+    crate::plex::reset_servers_for_test();
+}
+
+/// **An HTTPS origin refused at ADMISSION is an HTTPS answer, not an absent route.** The server's
+/// LAN `plex.direct` origin verifies `/identity` and then refuses the grant (401); admission drops
+/// it and the probe runs again without it. That re-probe must not read the refused route as never
+/// having existed and call the plaintext twin eligible — HTTPS reached the server; the token
+/// problem is not the network's, and consent recorded earlier must not turn it into a plaintext
+/// sign-in.
+#[test]
+fn plx10_an_https_origin_refused_at_admission_is_not_a_reason_to_go_plaintext() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    fn dial(origin: &Origin, _pin: Option<&crate::plex::ResolvePin>, _budget: Duration) -> (i32, Vec<u8>) {
+        match (origin.host(), origin.is_tls()) {
+            ("192-168-1-50.h.plex.direct", true) => (200, identity_json("issue95mid")),
+            ("192.168.1.50", false) => (200, identity_json("issue95mid")),
+            _ => (0, Vec::new()),
+        }
+    }
+    let allowed = PlaintextAsk::undecided().with("issue95mid", PlaintextChoice::Allowed);
+    let (resolved, admitted, _) = plx10_discover_with(issue_95_account(false), &allowed, dial,
+        |source| if source.origin_url.starts_with("https://") {
+            crate::plex::EndpointAdmission::Refused(401)
+        } else {
+            crate::plex::EndpointAdmission::Usable
+        });
+    assert!(admitted.iter().all(|(url, _)| url.starts_with("https://")), "{admitted:?}");
+    assert!(crate::plex::grant::granted_machines().is_empty(), "a grant was minted");
+    assert!(plx10_offer(&resolved).is_none_or(|v| !v.offers()), "offered");
+    crate::plex::reset_servers_for_test();
+}
+
+/// **A grant does not outlive the verdict that justified it.** A server connected under consent,
+/// then re-discovered on a network where it is no longer eligible (plex.tv now says the client is
+/// outside the server's NAT) or no longer answers at all: the published verdict for that machine
+/// is not a reach at the granted origin, so the grant is withdrawn — the next request would
+/// otherwise carry the token to an origin nothing re-proved.
+#[test]
+fn plx10_a_fresh_verdict_that_does_not_reach_the_granted_origin_revokes_the_grant() {
+    let _g = crate::testlock::serial();
+    let allowed = PlaintextAsk::undecided().with("issue95mid", PlaintextChoice::Allowed);
+    let silent = |_: &Origin, _: Option<&crate::plex::ResolvePin>, _: Duration| (0, Vec::new());
+    for (label, resource, dial) in [
+        ("no longer eligible", {
+            let mut r = issue_95_account(false); r.public_address_matches = false; r
+        }, plx10_dial as fn(&Origin, Option<&crate::plex::ResolvePin>, Duration) -> (i32, Vec<u8>)),
+        ("no longer answers", issue_95_account(false), silent),
+    ] {
+        crate::plex::reset_servers_for_test();
+        crate::plex::grant::reset_for_test();
+        let _ = plx10_discover(issue_95_account(false), &allowed);
+        assert_eq!(crate::plex::grant::granted_machines(), vec!["issue95mid".to_owned()], "{label}");
+        let (_, admitted, settled) = plx10_discover_with(resource, &allowed, dial,
+            |_| crate::plex::EndpointAdmission::Usable);
+        assert!(admitted.is_empty(), "{label}: {admitted:?}");
+        publish_settled_probes(&settled);
+        assert!(crate::plex::grant::granted_machines().is_empty(), "{label}: the grant survived");
+    }
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}
+
+/// **Every insecure-only reason fits the read-out's two-line slot, and names its action.** The
+/// failed read-out's reason is drawn at `StatusOverlay::REASON_W` and never grows past two lines
+/// (`StatusOverlay::reason_view`); a longer one is cut, and the part cut is the tail — which is
+/// where every one of these says what to do. The host has no LG font, so the check is twofold: the
+/// fixture measurer's wrap at the real width and size, and a character budget
+/// ([`READOUT_REASON_BUDGET`]) that holds with room for the real face's wider glyphs. The shared
+/// forms are measured with a long owner name. The owner-approved
+/// `discovery_insecure_only_message()` predates the budget and is kept byte-identical; it is held to
+/// the measured wrap only.
+#[test]
+fn every_insecure_only_reason_fits_two_lines_and_names_its_action() {
+    use crate::ui::text_view::TextView;
+    use crate::ui::widgets::StatusOverlay;
+    const READOUT_REASON_BUDGET: usize = 125;
+    let fits = |text: &str| !TextView::new(text, crate::ui::theme::size::BODY, crate::ui::theme::TEXT_SECONDARY)
+        .max_lines(2)
+        .with_measure(&crate::ui::fixture::FixtureMeasure)
+        .truncates(StatusOverlay::REASON_W);
+    assert!(fits(discovery_insecure_only_message()));
+    let mut seen = 0;
+    for owner in ["", "a-longish-owner18"] {
+        for eligibility in [probe::PlaintextEligibility::Eligible, probe::PlaintextEligibility::NotLocal,
+            probe::PlaintextEligibility::NotPrivateAddress, probe::PlaintextEligibility::HttpsAnswered] {
+            for choice in [PlaintextChoice::Undecided, PlaintextChoice::Allowed, PlaintextChoice::Declined,
+                PlaintextChoice::Revoked] {
+                for surface in [ReadoutSurface::SignIn, ReadoutSurface::SignedIn] {
+                    let v = PlaintextVerdict {
+                        machine_id: "m".into(), name: "nas".into(), shared_by: owner.into(),
+                        eligibility, choice,
+                    };
+                    let copy = plaintext_copy(Some(&v), surface);
+                    if copy == discovery_insecure_only_message() { continue; }
+                    seen += 1;
+                    assert!(copy.chars().count() <= READOUT_REASON_BUDGET, "{} chars: {copy}", copy.chars().count());
+                    assert!(fits(&copy), "wraps past two lines: {copy}");
+                    if v.offers() {
+                        assert!(copy.contains("without encryption") && copy.contains("this network")
+                            || copy.contains("Settings \u{2192} Unencrypted connections")
+                            || copy.contains("Try again"), "{copy}");
+                        let action = match (choice, surface) {
+                            (PlaintextChoice::Undecided, _) => "Select Connect",
+                            (PlaintextChoice::Allowed, _) | (_, ReadoutSurface::SignIn) => "Select Try again",
+                            (_, ReadoutSurface::SignedIn) => "Settings \u{2192} Unencrypted connections",
+                        };
+                        assert!(copy.contains(action), "{choice:?}/{surface:?}: {copy}");
+                    }
+                }
+            }
+        }
+    }
+    assert!(seen > 20);
+}
+
+#[test]
+fn localized_plaintext_copy_preserves_owner_names_and_the_complete_named_action() {
+    use crate::i18n::{LocaleContext, Preference};
+    use crate::ui::text_view::TextView;
+    use crate::ui::widgets::StatusOverlay;
+    for (preference, connect, retry, settings_path) in [
+        (Preference::En, "Connect", "Try again", "Settings → Unencrypted connections"),
+        (Preference::Es, "Conectar", "Reintentar", "Ajustes → Conexiones sin cifrar"),
+        (Preference::Be, "Злучыцца", "Паспрабаваць зноў", "Налады → Злучэнні без шыфравання"),
+    ] {
+        let locale = LocaleContext::resolve(preference, None, None, None, None);
+        for owner in ["", "a-longish-owner18"] {
+            for choice in [PlaintextChoice::Undecided, PlaintextChoice::Allowed,
+                PlaintextChoice::Declined, PlaintextChoice::Revoked] {
+                for surface in [ReadoutSurface::SignIn, ReadoutSurface::SignedIn] {
+                    let verdict = PlaintextVerdict { machine_id: "fixture".into(), name: "fixture".into(),
+                        shared_by: owner.into(), eligibility: probe::PlaintextEligibility::Eligible, choice };
+                    let text = plaintext_copy_in(Some(&verdict), surface, &locale);
+                    let action = match (choice, surface) {
+                        (PlaintextChoice::Undecided, _) => connect,
+                        (PlaintextChoice::Allowed, _) | (_, ReadoutSurface::SignIn) => retry,
+                        (_, ReadoutSurface::SignedIn) => settings_path,
+                    };
+                    assert!(text.contains(action), "{preference:?}/{choice:?}/{surface:?}: {text}");
+                    if !owner.is_empty() {
+                        assert_eq!(text.matches(owner).count(), 1, "the owner remains literal metadata");
+                        if preference != Preference::En {
+                            assert!(!text.contains("’s"), "English possessive grammar must not leak: {text}");
+                        }
+                    }
+                    assert!(text.chars().count() <= 125, "reason budget: {preference:?}: {text}");
+                    assert!(!TextView::new(&text, crate::ui::theme::size::BODY, crate::ui::theme::TEXT_SECONDARY)
+                        .max_lines(2).with_measure(&crate::ui::fixture::FixtureMeasure)
+                        .truncates(StatusOverlay::REASON_W), "complete action must fit: {text}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn localized_discovery_retries_use_the_whole_sentence_and_belarusian_count_rules() {
+    use crate::i18n::{LocaleContext, Preference};
+    let be = LocaleContext::resolve(Preference::Be, None, None, None, None);
+    for (count, phrase) in [(1, "1 раз."), (2, "2 разы."), (5, "5 разоў."),
+        (11, "11 разоў."), (21, "21 раз.")] {
+        for text in [crate::i18n::msg::browse_auth_plex_dns_retry_in(&be, count),
+            crate::i18n::msg::browse_auth_plex_connect_retry_in(&be, count)] {
+            assert!(text.contains(phrase), "{text}");
+            assert!(text.contains("plex.tv") && text.contains("Праверце злучэнне"), "{text}");
+            assert!(!text.contains("We tried"), "an English sentence fragment must never survive");
+        }
+    }
 }

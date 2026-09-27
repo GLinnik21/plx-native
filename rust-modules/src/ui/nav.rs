@@ -16,12 +16,12 @@
 //! else writes it — so it cannot disagree with the container, and a reader that runs before the
 //! first frame sees the rest values (1.0, 1.0, no pending pill), which is exactly right.
 //!
-//! **The DIP itself is unchanged and is documented at [`PageDip`](crate::ui::containers::transition::PageDip).**
-//! Every screen's draw opens with `gfx::frame_clear`, so two pages can never be on the panel at
-//! once; the outgoing page fades to the app ground, the op applies at the floor, the incoming page
-//! fades up off it. `theme::CLEAR_RGB` IS `theme::SURFACE_APP`, so the trough colour and the clear
-//! are the same pixel and the swap has no seam. It costs no second pass: the alpha is a value in a
-//! cascade every primitive already multiplies through (`Painter::c`).
+//! The dip schedule is documented at [`PageDip`](crate::ui::containers::transition::PageDip).
+//! Its normal page pass captures once at full alpha, then fades the held texture against
+//! `theme::CLEAR_RGB` (the app ground). At the floor the incoming page reuses that same texture.
+//! Shared chrome draws separately. After In, live content resumes beneath a short held-image
+//! dissolve, so content that arrived during the freeze does not jump into view. The live fallback
+//! still cascades navigation alpha through `DrawFrame` when capture is unavailable.
 //!
 //! Two alphas, and the split is the whole design. [`page_alpha`] is for content the swap replaces;
 //! [`chrome_alpha`] is for the **shared top tab bar**, the SAME control on Home, the Library and

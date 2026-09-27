@@ -66,8 +66,9 @@ fn the_ordering_holds_at_the_empty_and_single_page_ends() {
 #[test]
 fn the_hero_pool_opens_on_our_own_item_and_never_dedups_across_servers() {
     let _g = crate::testlock::serial();
-    reset();
-    seed(vec![
+    let mut o = Owner::default();
+    reset(&mut o.state, &o.adapter);
+    seed(&mut o.state, vec![
         src(
             0,
             "",
@@ -82,20 +83,20 @@ fn the_hero_pool_opens_on_our_own_item_and_never_dedups_across_servers() {
         ),
     ]);
     assert_eq!(
-        rks(0),
+        rks(&o.state, 0),
         ["1", "1"],
         "the deck orders them by recency: theirs first"
     );
-    assert_eq!(hero_pool_len(), 2, "one ratingKey, two servers, two films");
-    assert_eq!(hero_pool_source(0), "", "the door opens on our own library");
+    assert_eq!(hero_pool_len(&o.state), 2, "one ratingKey, two servers, two films");
+    assert_eq!(hero_pool_source(&o.state, 0), "", "the door opens on our own library");
     assert_eq!(
-        hero_pool_source(1),
+        hero_pool_source(&o.state, 1),
         "friend",
         "…and the borrowed film rotates in behind it, attributed"
     );
     assert!(
-        std::ptr::eq(hero_pool_item(0).unwrap(), movie(1).unwrap()),
+        std::ptr::eq(hero_pool_item(&o.state, 0).unwrap(), movie(&o.state, 1).unwrap()),
         "catalog row 1 is ours (row 0 is theirs, watched later)"
     );
-    reset();
+    reset(&mut o.state, &o.adapter);
 }

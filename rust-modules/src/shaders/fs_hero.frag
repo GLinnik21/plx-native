@@ -1,7 +1,8 @@
 // THE HERO GROUND IN ONE PASS: the backdrop photograph with both scrim fields applied to it
 // analytically, instead of the photograph plus four blended quads drawn over it.
 //
-// The measured reason (dev television, Mali-T820, Home's hero with `plxnative-overdraw` armed):
+// The measured reason (dev television, Mali-T820, Home's hero with the per-draw-class overdraw
+// ledger armed):
 // the hero submits 5.39M authored pixels a frame against a 2.07M-pixel panel — 2.60x — and 90% of
 // that is three stacked full-panel layers. The art is 2,073,600 px; the frame-wide atmospheric ramp
 // is two quads totalling 1,368,576; the corner wedge is two more totalling 1,410,048. The ramp and

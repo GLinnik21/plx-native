@@ -61,9 +61,31 @@ mod tests {
         fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
             SwitchOutcome::Refused(403)
         }
-        fn resources(&mut self, _: &AccountClient) -> Option<Vec<Resource>> { panic!("refusal cannot discover") }
+        fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> { panic!("refusal cannot discover") }
         fn probe(&mut self, _: &Resource, _: &[i64]) -> (Option<crate::plex::session::SourceRef>, crate::auth::SettledProbe) { panic!("refusal cannot probe") }
         fn gap(&mut self) { panic!("refusal cannot wait") }
+    }
+
+    /// **A profile switch that never commits changes no identity.** The grant a person's consent
+    /// minted stays live while a switch is attempted and refused: the identity moves at the switch's
+    /// COMMIT (`RegistryPlan::Install { replace: true }`), never at its launch.
+    #[test]
+    fn a_refused_profile_switch_leaves_the_live_plaintext_grant_alone() {
+        let _g = crate::testlock::serial();
+        crate::plex::reset_servers_for_test();
+        crate::plex::grant::reset_for_test();
+        let origin = crate::plex::Origin::http("192.168.0.10", 32400);
+        crate::plex::grant::mint(crate::plex::grant::scope(), "lan-http", &origin,
+            &crate::plex::grant::eligible_evidence_for_test()).unwrap();
+        let mut rig = profile_rig(false);
+        let mut d = Dispatcher::<AppHost>::new();
+        inject(&mut rig, RefusedIo);
+        command(&mut rig, &mut d, SessionCmd::SelectProfile { index: 0, pin: None });
+        let records = rig.session_adapter.take_results();
+        frame(&mut rig, &mut d, records);
+        assert_eq!(crate::plex::grant::granted_origin("lan-http"), Some(origin));
+        crate::plex::grant::reset_for_test();
+        crate::plex::reset_servers_for_test();
     }
 
     #[test]
@@ -183,8 +205,8 @@ mod tests {
                 ..Default::default()
             })
         }
-        fn resources(&mut self, _: &AccountClient) -> Option<Vec<Resource>> {
-            Some(vec![
+        fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
+            Ok(vec![
                 serde_json::from_str(r#"{"clientIdentifier":"synthetic-server","name":"Synthetic server","provides":"server","owned":true,"accessToken":"synthetic-kid-token"}"#).unwrap(),
                 serde_json::from_str(r#"{"clientIdentifier":"synthetic-share","name":"Synthetic share","provides":"server","owned":false,"accessToken":"synthetic-share-token"}"#).unwrap(),
             ])
@@ -266,6 +288,7 @@ mod tests {
                 assert_eq!(disk.user.uuid, "synthetic-kid");
                 disk.recent_searches.push(crate::plex::session::RecentSearches {
                     user: "synthetic-kid".into(), terms: vec!["newer preference".into()],
+                    extensions: Default::default(),
                 });
                 disk.playback_quality = Some(crate::plex::session::PlaybackQuality::Original);
                 assert!(!disk.sources.iter().any(|source| source.machine_id == "synthetic-share" && source.dialable()));
@@ -318,7 +341,7 @@ mod tests {
         fn switch(&mut self, _: &AccountClient, _: &str, _: Option<&str>) -> SwitchOutcome {
             SwitchOutcome::Unreachable
         }
-        fn resources(&mut self, _: &AccountClient) -> Option<Vec<Resource>> {
+        fn resources(&mut self, _: &AccountClient) -> Result<Vec<Resource>, crate::plex::account::CallEvidence> {
             panic!("offline seating must not fetch resources")
         }
         fn probe(&mut self, _: &Resource, _: &[i64]) -> (Option<crate::plex::session::SourceRef>, crate::auth::SettledProbe) {
@@ -343,7 +366,7 @@ mod tests {
             server: ServerRef { token: "synthetic-admin-token".into(), ..server.clone() },
             sources: vec![SourceRef { token: "synthetic-admin-token".into(), ..source.clone() }],
             profiles: vec![ProfileCreds { uuid: kid.uuid.clone(), user: kid, server,
-                sources: vec![source], pin: None }], ..Default::default() }
+                sources: vec![source], pin: None, extensions: Default::default() }], ..Default::default() }
     }
 
     #[test]

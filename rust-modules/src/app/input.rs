@@ -144,7 +144,7 @@ pub(crate) unsafe fn activate_card(
                 };
                 // a show/season row's parent lives on the SAME server as the row itself
                 let sid = mm.sid;
-                crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: expect.clone() });
+                bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::RequestDetail { sid, rk: expect.clone() });
                 *menu_play_await = Some(MenuPlayAwait {
                     sid,
                     expect,
@@ -196,7 +196,7 @@ pub(crate) unsafe fn menu_play_tick(
         *menu_play_await = None;
         return;
     }
-    let landed = crate::metadata::current()
+    let landed = bridge.metadata_view().current()
         .map(|d| crate::plex::same_item((d.sid, &d.rk), (sid, &expect)))
         .unwrap_or(false);
     if !landed {
@@ -205,7 +205,7 @@ pub(crate) unsafe fn menu_play_tick(
         // `Some(false)`), or past the ceiling — the same two ways `dev::scenarios::play_arm`'s own
         // wait ends without a play, both logged rather than silent there for the same reason: a
         // wait that neither played nor said why would read as a hang.
-        let settled = crate::metadata::detail_request_status(sid, &expect) == Some(false);
+        let settled = bridge.metadata_view().detail_request_status(sid, &expect) == Some(false);
         let expired = now.wrapping_sub(deadline) < u32::MAX / 2;
         if !settled && !expired {
             return; // still waiting — try again next frame
@@ -224,11 +224,11 @@ pub(crate) unsafe fn menu_play_tick(
     // against a stale, unrelated show that happened to still be loaded; gating it on `landed`
     // here is strictly narrower, not a new capability.
     if let Some(i) = season_index {
-        if let Some(idx) = crate::metadata::current().and_then(|d| d.seasons.iter().position(|s| s.index == i)) {
-            crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::LoadSeasonNow(idx));
+        if let Some(idx) = bridge.metadata_view().current().and_then(|d| d.seasons.iter().position(|s| s.index == i)) {
+            bridge.metadata_mut().run(crate::stores::metadata::MetadataCmd::LoadSeasonNow(idx));
         }
     }
-    if let Some(resume_ns) = request_loaded_hero(ps) {
+    if let Some(resume_ns) = super::playback::request_loaded_hero(ps, bridge.metadata_mut()) {
         start_playback(ps, pa, resume_ns, Origin::Here, hud_ms, None, pages, bridge);
     } else {
         super::bridge::open_detail(pages, bridge, sid, &expect, None, None);
@@ -278,18 +278,6 @@ mod activate_card_tests {
     #[test]
     fn a_show_or_season_play_no_longer_decides_on_the_press_frame() {
         let _guard = crate::testlock::serial();
-        struct Cleanup;
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
-                crate::plex::reset_servers_for_test();
-            }
-        }
-        let _cleanup = Cleanup;
-        crate::plex::reset_servers_for_test();
-        let sid = crate::plex::register_for_test("press-frame", "127.0.0.1", 1, "t", "c-press-frame");
-        let mm = crate::pms::PmsMovie { sid, rk: "show-1".into(), kind: 1, ..Default::default() };
-
         let mut ps = crate::route::PlaybackSession::default();
         let mt = unsafe { crate::task::MainThread::assume() };
         let mut pa = crate::player::adapter::PlayerAdapter::new(mt);
@@ -297,13 +285,27 @@ mod activate_card_tests {
         let mut bridge = super::bridge::Bridge::for_test(|| 0);
         let mut menu_play_await = None;
 
+        struct Cleanup(*mut super::bridge::Bridge);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                // SAFETY: captured from `bridge` just above, which outlives this guard for the
+                // whole test body.
+                unsafe { &mut *self.0 }.metadata_mut().run(crate::stores::metadata::MetadataCmd::Clear);
+                crate::plex::reset_servers_for_test();
+            }
+        }
+        let _cleanup = Cleanup(&mut bridge as *mut _);
+        crate::plex::reset_servers_for_test();
+        let sid = crate::plex::register_for_test("press-frame", "127.0.0.1", 1, "t", "c-press-frame");
+        let mm = crate::pms::PmsMovie { sid, rk: "show-1".into(), kind: 1, ..Default::default() };
+
         unsafe {
             activate_card(&mut ps, &mut pa, &mm, true, 1000, None,
                 &mut pages, &mut bridge, &mut menu_play_await, 0);
         }
 
         assert!(
-            crate::metadata::detail_loading(),
+            crate::metadata::detail_loading(bridge.metadata_mut().adapter_ref()),
             "the parent detail must still be IN FLIGHT right after the press — the play/open \
              decision must wait for menu_play_tick, not run on this call"
         );
@@ -344,7 +346,7 @@ impl<R: super::playback::PlaybackResources> LiveItemPlayback<'_, R> {
         pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
         bridge: &mut super::bridge::Bridge,
     ) {
-        if self.0.request_episode(ps, rk) {
+        if self.0.request_episode(ps, bridge.metadata_mut(), rk) {
             super::playback::start_playback_with(ps, pa, 0, Origin::Here, HUD_LINGER_MS,
                 None, pages, bridge, self.0);
         }
@@ -540,12 +542,11 @@ pub(super) unsafe fn apply_item_action<R: super::playback::PlaybackResources>(
             // silently refuses instead of playing, exactly the ordinary Play path's own race
             // (`ContentReq::Play` in `app::content`), so this takes the same hold-until-released
             // path rather than calling `request_play`/`start_playback_with` directly.
-            super::content::halt_preview_now(ps, pa);
-            if crate::player::preview::occupies() {
+            if !super::content::clear_engine_for_play(ps, pa, super::bridge::player(pages).is_some()) {
                 super::content::hold_feature(intent, 0, None);
                 return;
             }
-            if !super::content::request_play_intent(ps, &intent) {
+            if !super::content::request_play_intent(ps, bridge.metadata_mut(), &intent) {
                 return;
             }
             super::playback::start_playback_with(
@@ -862,7 +863,7 @@ pub(crate) fn after_cancel(backed_out: bool) -> AfterCancel {
 pub(crate) fn enter_profiles_from_onboard(pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>) {
     super::bridge::execute_session_command(pages,
         crate::auth::SessionCmd::StartSwitch(crate::auth::Picker::ChangeProfile));
-    super::bridge::nav_root(pages, AppArg::Profiles);
+    super::bridge::nav_root_if_unsettled(pages, AppArg::Profiles);
 }
 
 /// Put the telemetry question on screen, if this boot is one that should see it.
@@ -933,9 +934,9 @@ pub(crate) fn enter_home_from_onboard(pages: &mut crate::ui::dispatch::Dispatche
     // write) has already bumped. Nothing to kick here; Home builds from the answer on its first
     // frame.
     //
-    // `Root(Home)` IS the reset: it unwinds every entry above the root and, the root being the
-    // onboarding gate rather than Home, covers it with the Home this lands on.
-    super::bridge::nav_root(pages, AppArg::Home);
+    // `Root(Home)` IS the reset: it retires every entry, the onboarding gate included, and mints
+    // Home as the sole survivor.
+    super::bridge::nav_root_if_unsettled(pages, AppArg::Home);
 }
 
 /// What a confirmed **Delete all local data** does next, given how many files could not be
@@ -971,50 +972,174 @@ pub(crate) fn delete_outcome(leftovers: usize) -> DeleteOutcome {
 ///
 /// Extra local-file sweep after the Session adapter closes telemetry and clears credentials.
 /// Returns paths it could NOT unlink, never a decision to keep the erased account active.
-pub(crate) fn delete_all_local_data() -> Vec<String> {
-    let remove = |path: &std::path::Path| match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("{}: {e}", path.display())),
-    };
-    let mut failures = crate::ui::rec::erase_owned_artifacts(&crate::paths::runtime_dir());
-    for path in crate::paths::obsolete_last_place_candidates()
-        .into_iter()
-        .chain(crate::paths::telemetry_candidates())
-        .chain(crate::paths::telemetry_spool_candidates())
-        .chain(crate::paths::telemetry_crashmark_candidates())
-    {
-        if let Err(e) = remove(&path) {
+///
+/// A leftover is a file that is still THERE. The candidate lists name `/media/internal`, which
+/// some jails mount read-only, and Linux answers EROFS from the parent's mount before it looks the
+/// child up — so an unlink refusal alone does not say a file remains. The shared rule
+/// ([`crate::storage::remove_file_or_prove_absent`]) counts a refusal whose no-follow lookup finds
+/// no entry as removed; a file that exists, or cannot be looked at, stays a leftover.
+fn remove_local_file(path: &std::path::Path) -> Result<(), String> {
+    remove_or_prove_absent(path).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The erase sweeps' removal rule as a plain `fn`, for the sweeps `ui/` owns
+/// ([`crate::ui::rec::erase_owned_artifacts`]), which may not name the storage layer themselves.
+pub(crate) fn remove_or_prove_absent(path: &std::path::Path) -> std::io::Result<()> {
+    crate::storage::remove_file_or_prove_absent(path).map(|_| ())
+}
+
+fn erase_runtime_logs(root: &std::path::Path) -> Vec<String> {
+    let mut failures = Vec::new();
+    for name in crate::paths::runtime_file::LOGS {
+        if name == crate::storage::diagnostics::NAME {
+            continue;
+        }
+        if let Err(error) = remove_local_file(&root.join(name)) {
+            failures.push(error);
+        }
+    }
+    failures
+}
+
+/// The file half of [`delete_all_local_data`]: the recording artifacts and logs under
+/// `runtime_root`, then every persistent candidate in `persistent`. Returns what could not be
+/// removed.
+fn sweep_local_files(persistent: impl IntoIterator<Item = std::path::PathBuf>,
+    runtime_root: &std::path::Path) -> Vec<String> {
+    let mut failures = crate::ui::rec::erase_owned_artifacts(runtime_root, remove_or_prove_absent);
+    for path in persistent {
+        if let Err(e) = remove_local_file(&path) {
             failures.push(e);
         }
     }
-    for name in [
-        "plxnative-events.log",
-        "plxnative-crash.log",
-        "plxnative-stderr.log",
-        "plxnative-anim.log",
-        "plxnative-gst.log",
-        "plxnative-gputime.jsonl",
-        "plxnative-hwcnt.jsonl",
-    ] {
-        if let Err(e) = remove(&crate::paths::in_runtime_dir(name)) {
-            failures.push(e);
-        }
-    }
-    crate::stores::metadata::apply(crate::stores::metadata::MetadataCmd::Clear);
+    failures.extend(erase_runtime_logs(runtime_root));
+    failures
+}
+
+pub(crate) fn delete_all_local_data(meta: &mut crate::stores::metadata::MetadataStore,
+    mut failures: Vec<String>) -> Vec<String> {
+    failures.extend(sweep_local_files(
+        crate::paths::obsolete_last_place_candidates()
+            .into_iter()
+            .chain(crate::paths::telemetry_candidates())
+            .chain(crate::paths::telemetry_spool_candidates())
+            .chain(crate::paths::telemetry_crashmark_candidates()),
+        crate::paths::runtime_dir(),
+    ));
+    meta.run(crate::stores::metadata::MetadataCmd::Clear);
     // No explicit `ClearRecents` here (phase 7 Search cutover retired the legacy screen's own
     // thin `recents::clear()` wrapper this used to call): recent Search terms
     // live INSIDE the session file (`crate::search::recents`'s doc — "profile-scoped … the
     // session's atomic worker door"), and the adapter already deleted that file
-    // SYNCHRONOUSLY. An explicit clear here would spawn its own async save
-    // (`recents::clear`'s `task::spawn_small("recents-save", …)`) racing the synchronous
-    // deletion — the worse of the two orders resurrects a stub session file
+    // before this completion sweep. An explicit clear here would queue its own save
+    // racing the ordered credential deletion — the worse of the two orders resurrects a stub session file
     // AFTER "delete everything" already removed it. Letting the file deletion alone answer
     // for recents removes that race rather than leaving it to chance ordering.
     //
     // Telemetry was closed by the preceding owner effect, before the credential clear and
     // this sweep. Returning survivors cannot reopen its producer gate or restore an identifier.
     failures
+}
+
+#[cfg(test)]
+mod delete_all_tests {
+    use super::{erase_runtime_logs, sweep_local_files};
+
+    /// A scratch tree standing in for the television: `persistent/` for the `/media/internal`
+    /// candidates (the obsolete last place and the three telemetry files, by their device names)
+    /// and `runtime/` for the runtime root. Removed on drop.
+    struct Tv(std::path::PathBuf);
+
+    impl Tv {
+        fn new(tag: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(".plx-delete-{tag}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&root);
+            std::fs::create_dir_all(root.join("persistent")).unwrap();
+            std::fs::create_dir_all(root.join("runtime")).unwrap();
+            Self(root)
+        }
+        fn persistent(&self) -> Vec<std::path::PathBuf> {
+            ["lastplace.json", "telemetry.json", "telemetry-spool.bin", "telemetry-crashmark.json"]
+                .iter()
+                .map(|name| self.0.join("persistent").join(format!(".com.beb.plxnative.debug-{name}")))
+                .collect()
+        }
+        fn runtime(&self) -> std::path::PathBuf {
+            self.0.join("runtime")
+        }
+    }
+
+    impl Drop for Tv {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The webOS 4.10.2 report: none of the four `/media/internal` files exists, but the jail
+    /// mounts that directory read-only and Linux answers `unlink` with EROFS from the parent's
+    /// mount before it looks the child up. Nothing was left behind, so nothing is a leftover.
+    #[test]
+    fn absent_files_behind_a_read_only_mount_are_not_leftovers() {
+        let _serial = crate::testlock::serial();
+        let tv = Tv::new("absent-erofs");
+        let _erofs = crate::storage::UnlinkFaultForTest::install(&tv.0, libc::EROFS);
+        let leftovers = sweep_local_files(tv.persistent(), &tv.runtime());
+        assert!(leftovers.is_empty(), "absent files reported as leftovers: {leftovers:?}");
+    }
+
+    /// The counter-case: a file that EXISTS behind the same refusal really survived, and must
+    /// still be reported so the user is told data may remain.
+    #[test]
+    fn present_files_behind_a_read_only_mount_are_still_leftovers() {
+        let _serial = crate::testlock::serial();
+        let tv = Tv::new("present-erofs");
+        let persistent = tv.persistent();
+        for path in &persistent {
+            std::fs::write(path, b"x").unwrap();
+        }
+        let log = tv.runtime().join(crate::paths::runtime_file::EVENTS);
+        let rec = tv.runtime().join("plxnative-rec");
+        std::fs::write(&log, b"x").unwrap();
+        std::fs::write(&rec, b"x").unwrap();
+        let _erofs = crate::storage::UnlinkFaultForTest::install(&tv.0, libc::EROFS);
+        let leftovers = sweep_local_files(persistent.clone(), &tv.runtime());
+        assert_eq!(leftovers.len(), persistent.len() + 2, "{leftovers:?}");
+        assert!(persistent.iter().chain([&log, &rec]).all(|p| p.exists()));
+    }
+
+    #[test]
+    fn runtime_log_sweep_includes_the_storage_diagnostics_snapshot() {
+        let _serial = crate::testlock::serial();
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                crate::storage::diagnostics::reset_for_test();
+            }
+        }
+        let _restore = Restore;
+        let root = std::env::temp_dir().join(format!(
+            ".plx-delete-runtime-logs-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir(&root).unwrap();
+        for name in crate::paths::runtime_file::LOGS {
+            std::fs::write(root.join(name), name.as_bytes()).unwrap();
+        }
+        let event = root.join(crate::paths::runtime_file::EVENTS);
+        let diagnostics = root.join(crate::storage::diagnostics::NAME);
+
+        crate::storage::diagnostics::disable();
+        crate::storage::diagnostics::finish_disable(&root).unwrap();
+        assert!(erase_runtime_logs(&root).is_empty());
+        assert!(crate::paths::runtime_file::LOGS
+            .iter()
+            .all(|name| !root.join(name).exists()));
+        assert!(!event.exists());
+        assert!(!diagnostics.exists());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 }
 
 // (`key_item_menu` stood here — the item menu's own arm of the loop's key ladder: OK committed
@@ -1098,6 +1223,7 @@ pub(crate) unsafe fn key_ok(
     ok_armed: &mut bool,
     press: &mut crate::ui::press::Press,
     pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
+    bridge: &mut super::bridge::Bridge,
 ) {
     // The shared top bar's PROFILE CHIP used to be answered here, ahead of the per-route ladder
     // below, off `top_focus` — retired with that function (Home/Library/Search are all owned
@@ -1126,9 +1252,9 @@ pub(crate) unsafe fn key_ok(
             *ok_armed = true;
         } else if vis && focus == 2 {
             if tab == 0 {
-                super::bridge::open_player_overlay(ps, pages, crate::screens::player::overlay::OverlayKind::Info);
+                super::bridge::open_player_overlay(ps, bridge.metadata_view(), pages, crate::screens::player::overlay::OverlayKind::Info);
             } else if tab == 1 {
-                super::bridge::open_player_overlay(ps, pages, crate::screens::player::overlay::OverlayKind::Chapters);
+                super::bridge::open_player_overlay(ps, bridge.metadata_view(), pages, crate::screens::player::overlay::OverlayKind::Chapters);
             }
         } else {
             let np = !paused();

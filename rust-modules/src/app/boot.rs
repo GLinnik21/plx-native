@@ -87,7 +87,7 @@ pub(crate) fn install_panic_logger() {
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&crate::paths::in_runtime_dir("plxnative-crash.log"))
+            .open(&crate::paths::in_runtime_dir(crate::paths::runtime_file::CRASH))
         {
             let _ = writeln!(f, "{line}");
         }
@@ -277,13 +277,11 @@ pub(super) fn activate_server_owned(
     bridge.browse_run(crate::stores::browse::BrowseCmd::Reset);
     bridge.refresh_browse_directory();
     bridge.search_run(crate::stores::search::SearchCmd::Reset);
-    let directory = bridge.browse_directory();
-    let _ = crate::stores::hubs::apply_with_directory(
-        crate::stores::hubs::HubsCmd::Reset, directory).changed;
-    crate::stores::person::apply(crate::stores::person::PersonCmd::Reset);
+    let _ = bridge.hubs_run(crate::stores::hubs::HubsCmd::Reset).changed;
+    bridge.person_run(crate::stores::person::PersonCmd::Reset);
     bridge.viewstate_run(crate::stores::viewstate::ViewStateCmd::Reset);
-    let mut endpoints = crate::stores::hubs::apply_with_directory(
-        crate::stores::hubs::HubsCmd::RefetchHubs, directory).endpoints;
+    bridge.metadata_run(crate::stores::metadata::MetadataCmd::Reset);
+    let mut endpoints = bridge.hubs_run(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints;
     endpoints.merge(bridge.browse_discover_pump().endpoints);
     log("pms: catalog activation queued");
     endpoints
@@ -344,9 +342,10 @@ pub(crate) unsafe fn boot(
 }
 
 pub(super) fn apply_deferred_capture(rec: &mut super::recorder::Recplay,
+    gate: &crate::ui::landgate::Gate,
     deferred: crate::plex::session::DeferredLoad) -> Result<(), &'static str> {
     if let Err(reason) = deferred.apply() {
-        rec.abort_startup()?;
+        rec.abort_startup(gate)?;
         return Err(reason);
     }
     Ok(())
@@ -360,7 +359,7 @@ pub(crate) unsafe fn construct(
     let controlled = preflight.controlled();
     if let Some(initial) = &initial {
         super::bootstrap::stores::init(initial, preflight.replay());
-        initial.home.restore_boot(&mt).map_err(|_| 1)?;
+        initial.home.restore(&mt).map_err(|_| 1)?;
         crate::plex::Client::restore_generation_seed(initial.primary_client).map_err(|_| 1)?;
     }
     SDL_SetMainReady();
@@ -464,13 +463,13 @@ pub(crate) unsafe fn construct(
     {
         let r = glGetString(GL_RENDERER);
         let v = glGetString(GL_VERSION);
-        if !r.is_null() && !v.is_null() {
-            log(&format!(
-                "GL: {} / {}",
-                std::ffi::CStr::from_ptr(r).to_string_lossy(),
-                std::ffi::CStr::from_ptr(v).to_string_lossy()
-            ));
+        let renderer = (!r.is_null()).then(|| std::ffi::CStr::from_ptr(r).to_string_lossy());
+        if let (Some(renderer), false) = (&renderer, v.is_null()) {
+            log(&format!("GL: {} / {}", renderer, std::ffi::CStr::from_ptr(v).to_string_lossy()));
         }
+        // A CPU rasterizer's frame time is not a main-thread hang (`task::runtime_check`).
+        #[cfg(feature = "threadcheck")]
+        crate::task::runtime_check::note_renderer(renderer.as_deref());
     }
     // The system on-screen keyboard, PROBED — see `crate::textinput`'s module doc. Both facts
     // on this line are preconditions that fail in complete silence, and nothing in this tree
@@ -489,11 +488,9 @@ pub(crate) unsafe fn construct(
     // read, logged and used for nothing: `docs/egl-partial-update-and-damage.md` is what it
     // was for. Deliberately NOT a new link dependency; see `egl.rs`'s module doc for why
     // `-lEGL` would kill the process at exec() on the very firmwares this app runs on.
-    if cfg!(all(feature = "hostsim", target_os = "linux")) {
-        log("egl: skipped — Linux host simulator does not require EGL diagnostics");
-    } else {
-        crate::egl::probe();
-    }
+    // No platform carve-out: the probe asks EGL nothing unless an EGL context is current on this
+    // thread (`egl::current_with`), which is what makes it safe on a GLX-backed Linux simulator.
+    crate::egl::probe();
     crate::textinput::bind(win);
     // …and the same handshake for the ROOT press: `webos::go_home`'s fallback leg minimizes
     // this window, and the window is created here, a long way from where BACK is decided.
@@ -554,8 +551,8 @@ pub(crate) unsafe fn construct(
     // why no two-source state could be graded headlessly before this.
     //
     // ADDITIVE and nothing more. The primary is still `plxnative-token` (or the stored session)
-    // against the compiled-in host/port, byte for byte, so a run that names one server behaves
-    // exactly as it always did. `dev::servers()` is the accessor — memoized, so the harness's
+    // against the configured host/port (or the explicit dev-only pms-origin fixture override),
+    // so an ordinary run that names one server behaves as before. `dev::servers()` is the accessor — memoized, so the harness's
     // /tmp wipe cannot change what this boot was handed — and `dev::DevServer` is the shape.
     //
     // It is NOT on the DIAG exemption list (`dev.rs`), deliberately: unlike a log or the anim
@@ -567,9 +564,11 @@ pub(crate) unsafe fn construct(
     // except the token.
     let dev_servers = if controlled { Ok(Vec::new()) } else { crate::dev::servers() };
     match &dev_servers {
-        Err(e) => log(&format!(
-            "servers: /tmp/plxnative-servers IGNORED — not valid JSON: {e}"
-        )),
+        // `_e`: the only reader is the gated log line (see `dev.rs` on why literals are gated).
+        Err(_e) => {
+            #[cfg(feature = "devtriggers")]
+            log(&format!("servers: /tmp/plxnative-servers IGNORED — not valid JSON: {_e}"));
+        }
         Ok(v) if !v.is_empty() => {
             let usable = v.iter().filter(|s| s.usable()).count();
             for (i, s) in v.iter().enumerate() {
@@ -642,10 +641,14 @@ pub(crate) unsafe fn construct(
     #[cfg(not(test))]
     crate::i18n::initialize(session.language, controlled);
     let forced_login = !controlled && crate::dev::scenarios::login_forced();
-    let dev_primary = (!forced_login && !dev_token.is_empty()).then(|| crate::plex::session::ServerRef {
-        address: host_s.clone(), port: i64::from(pms_port),
-        origin_url: crate::plex::Origin::http(&host_s, pms_port).base(), token: dev_token.clone(),
-        tier: Some(crate::plex::probe::configured_tier(&host_s)), ..Default::default()
+    let dev_primary = (!forced_login && !dev_token.is_empty()).then(|| {
+        let origin = crate::dev::scenarios::pms_origin()
+            .unwrap_or_else(|| crate::plex::Origin::http(&host_s, pms_port));
+        crate::plex::session::ServerRef {
+            address: origin.host().to_owned(), port: i64::from(origin.port()),
+            origin_url: origin.base(), token: dev_token.clone(),
+            tier: Some(crate::plex::probe::configured_tier(origin.host())), ..Default::default()
+        }
     });
     let session_init = match &initial {
         Some(initial) => initial.session.clone(),
@@ -670,6 +673,9 @@ pub(crate) unsafe fn construct(
         if controlled { session.playback_quality() }
         else { crate::dev::playback_quality_override().unwrap_or_else(|| session.playback_quality()) },
     );
+    crate::route::restore_direct_play_mode(session.direct_play_mode());
+    // The subtitle tone rides the same file and the same moment: a preference, restored once.
+    crate::player::restore_subtitle_tone(session.subtitle_tone());
     let primary_binding = initial.as_ref().map(|initial| initial.primary_client);
     let activate_session = |bridge: &mut super::bridge::Bridge,
         pages: &mut crate::ui::dispatch::Dispatcher<super::bridge::AppHost>,
@@ -678,6 +684,7 @@ pub(crate) unsafe fn construct(
         super::bridge::execute_session_command(pages, crate::auth::SessionCmd::StartLogin);
         pages.frame_with(bridge, crate::ui::machine::Tick::default(), Vec::new(), Vec::new(),
             rec, false);
+        #[cfg(feature = "devtriggers")]
         log("boot: /tmp/plxnative-login — starting QR login");
         BootTo::Login
     } else if !dev_token.is_empty() {
@@ -788,6 +795,9 @@ pub(crate) unsafe fn construct(
     // dev: the animation-diagnostic overlay is OFF by default; /tmp/plxnative-anim enables it (its
     // trace goes to /tmp/plxnative-anim.log, a separate stream from the main event log)
     if !controlled { crate::dev::scenarios::arm_anim(); }
+    // dev: /tmp/plxnative-stillclock=<ms> holds every free-running animation clock (spinners)
+    // still, so a screenshot of a waiting screen settles on one deterministic frame.
+    if !controlled { crate::dev::scenarios::arm_stillclock(); }
     // dev: profile is asynchronous EXT_disjoint_timer_query timing; hwcnt is the serialized
     // direct Mali counter-attribution run. Their content names ONE phase (empty = frame.ui).
     // Combining them would perturb the timer result, so fail closed when both are present.
@@ -819,16 +829,6 @@ pub(crate) unsafe fn construct(
     // in one pass instead of the art plus four blended gradient quads over it. Absent, the
     // shipped four-quad path draws, which is what makes this an A/B on one binary.
     if !controlled { crate::dev::scenarios::arm_heroground(); }
-    // dev: /tmp/plxnative-glasshz=<presents-per-refresh> moves the shared dynamic-backdrop
-    // cadence for the cost curve in `docs/backdrop-blur-profiling.md` — 1 is a refresh on every
-    // present (60 Hz while the UI presents at 60), 3 is ~20 Hz, 4 is 15 Hz.
-    // ABSENT, nothing here runs and the cadence is exactly the shipped one. It is a profiling
-    // knob, so it also turns on the heartbeat's `snap=` field (refreshes per second), which
-    // is the only way to check the cadence that RAN against the one that was asked for — and
-    // The production Account menu no longer arms or consumes this path: its host is frozen and
-    // its glass snapshot is cached for the whole open lifetime.  The knob remains for explicit
-    // material profiling, not as part of an Account FPS scene.
-    let glass_hz_armed = !controlled && crate::dev::scenarios::arm_glasshz();
     // dev: /tmp/plxnative-nobudget — the frame budget's A/B CONTROL leg (spec §8.1). Read here
     // with the other boot triggers; applied to the one `Budget` below, once the tree exists.
     let nobudget = !controlled && crate::dev::scenarios::nobudget_armed();
@@ -847,7 +847,7 @@ pub(crate) unsafe fn construct(
         crate::player::seed_dev_track_names();
     }
     if let Some(initial) = &initial {
-        crate::ui::idle::set_enabled(!initial.triggers.iter().any(|t| t == "plxnative-noidle"));
+        crate::ui::idle::set_enabled(!crate::dev::listed(&initial.triggers, "noidle"));
     } else { crate::dev::scenarios::arm_noidle(); }
     // dev: /tmp/plxnative-detailosc (read once at boot, like the other triggers) makes the detail scroll
     // perpetually swing hero<->bottom so the FPS heartbeat samples the transition, not the ends.
@@ -954,6 +954,42 @@ pub(crate) unsafe fn construct(
     let nav_osc_rk = nav_osc_rk.unwrap_or_default();
     let nav_osc_last = 0u32;
 
+    // dev: /tmp/plxnative-pushbench[=<n>[,<ratingKey>]] — the counted, deterministic stress
+    // benchmark twin of `navosc` (spec: `docs/agent-reference.md`'s fps-scene section). Its
+    // Detail leg reuses `navosc`'s own ratingKey when the bench's own trigger carries none, so
+    // `plxnative-navosc=<rk>` alone is enough to point both oscillators at the same item.
+    let push_bench = (!controlled)
+        .then(crate::dev::scenarios::pushbench_value)
+        .flatten()
+        .map(|(n, rk)| {
+            let rk = if rk.is_empty() { nav_osc_rk.clone() } else { rk };
+            crate::dev::scenarios::bench::PushBench::new(n, rk)
+        });
+    // dev: /tmp/plxnative-modalbench[=<n>[,<ratingKey>]] — the modal-ramp twin of the above, same
+    // n,rk shape. Its item-menu leg reuses `navosc`'s ratingKey ONLY when the bench's own trigger
+    // carries none, exactly like the push leg above — see `modalbench_value`'s doc for why a
+    // scene that wants the item menu but not navosc's own competing bounce sets its own rk here
+    // instead. See `ModalBench::new`'s doc for the two modal Styles it deliberately leaves out of
+    // the rotation.
+    let modal_bench = (!controlled)
+        .then(crate::dev::scenarios::modalbench_value)
+        .flatten()
+        .map(|(n, rk)| {
+            let rk = if rk.is_empty() { nav_osc_rk.clone() } else { rk };
+            crate::dev::scenarios::bench::ModalBench::new(n, rk)
+        });
+    // dev: /tmp/plxnative-deepbench[=<depth>[,<ratingKey>]] — the DEEP-stack twin of the two
+    // above: pushes `depth` pages with no pop in between (rotating Detail/Person — never Library,
+    // see `bench::DeepBench::targets`'s doc), then pops all the way back to the root one page at a
+    // time. Same empty-ratingKey resolution against `navosc`'s own value as the two legs above.
+    let deep_bench = (!controlled)
+        .then(crate::dev::scenarios::deepbench_value)
+        .flatten()
+        .map(|(depth, rk)| {
+            let rk = if rk.is_empty() { nav_osc_rk.clone() } else { rk };
+            crate::dev::scenarios::bench::DeepBench::new(depth, rk)
+        });
+
     // dev: /tmp/plxnative-framedrop — the FRAME-DROP DETECTOR. When present, each frame is timed with
     // the high-res perf counter (pump / draw / swap, NO glFinish so it doesn't perturb the pipeline),
     // and any frame whose total exceeds a threshold (ms; file content overrides the 22ms default) is
@@ -966,6 +1002,9 @@ pub(crate) unsafe fn construct(
         .filter(|v: &f64| *v > 0.0)
         .unwrap_or(22.0);
     let instr = crate::diag::heartbeat::Instruments::new(framedrop_on, framedrop_thresh);
+    if framedrop_on {
+        crate::diag::spans::arm();
+    }
 
     let last_input = initial.as_ref().map_or_else(clock::now, |initial| initial.clock_start);
     let t0 = last_input;
@@ -1130,7 +1169,7 @@ pub(crate) unsafe fn construct(
     // `/tmp/plxnative-autopause`: an authored Pause edge, plus the optional Resume edge which
     // owns the same script. External effects retry until the synchronized player state machine
     // accepts them; a busy native transition cannot silently consume the test operation.
-    let pause_script: Option<(u32, Option<u32>)> = None;
+    let pause_script: Option<(u32, Option<u32>, Option<u32>)> = None;
     let pause_resume_at: Option<u32> = None;
     let prev = 0u32;
     // Home data refresh, armed on every player exit (Stop/BACK/EOS): the hubs are refetched a
@@ -1171,6 +1210,7 @@ pub(crate) unsafe fn construct(
         menu_play_await: None,
         prev,
         refresh_hubs_at,
+        plaintext_upgrade: Default::default(),
         ev,
         remote,
         win,
@@ -1193,6 +1233,8 @@ pub(crate) unsafe fn construct(
         bridge,
         // Every dev-trigger arm's own state (spec: `dev/scenarios.rs`'s module doc).
         scenarios: crate::dev::scenarios::Scenarios {
+            #[cfg(feature = "devtriggers")]
+            poster_gate: Default::default(),
             pick_user,
             home_osc_last,
             hero_osc_last,
@@ -1215,11 +1257,16 @@ pub(crate) unsafe fn construct(
             onboard_osc_last,
             onboard_osc_right,
             nav_osc_last,
+            push_bench,
+            modal_bench,
+            deep_bench,
             marker_tried,
             press_tried,
             press_release_at,
             itemmenu_tried,
             acct_tried,
+            acct_rest: None,
+            shots: Default::default(),
             auto_tried,
             replay_left,
             grid_tried,
@@ -1262,7 +1309,6 @@ pub(crate) unsafe fn construct(
                 onboard_osc,
                 nav_osc,
                 nav_osc_rk,
-                glass_hz_armed,
                 nobudget,
             },
         },
@@ -1270,8 +1316,13 @@ pub(crate) unsafe fn construct(
     // dev: /tmp/plxnative-nobudget — put the ONE frame budget (the tree's, spec §2.2) into its
     // pre-phase-11 shape for the A/B's control leg. The tree exists now, which is why this is
     // here rather than beside the trigger read.
+    //
+    // The log line is gated on its own: the flag reaches here through a struct field, and the
+    // optimizer does not always prove that field `false` in a release build, so the literal
+    // shipped (`ci/check-package.py` failed on it). See `dev.rs`'s module doc.
     if app.scenarios.dev.nobudget {
         app.pages.budget = crate::ui::frame::Budget::pre_phase_11();
+        #[cfg(feature = "devtriggers")]
         crate::log("budget: pre-phase-11 admission (quota only) by /tmp/plxnative-nobudget");
     }
     if controlled {
@@ -1280,9 +1331,10 @@ pub(crate) unsafe fn construct(
         let replay = preflight.replay();
         app.rec = super::recorder::Recplay::controlled(preflight, &initial)
             .map_err(|reason| { log(&format!("rec: REFUSED — {reason}")); 1 })?;
+        app.rec.arm_landgate(app.bridge.landgate());
         log("bootstrap: captured pre-effect initial state");
         if let Some(deferred) = deferred {
-            apply_deferred_capture(&mut app.rec, deferred)
+            apply_deferred_capture(&mut app.rec, app.bridge.landgate(), deferred)
                 .map_err(|reason| { log(&format!("rec: REFUSED — {reason}")); 1 })?;
             log("bootstrap: captured session persistence applied");
         }

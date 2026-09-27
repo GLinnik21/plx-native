@@ -1,0 +1,10 @@
+{
+  "asked_version": 6,
+  "errors": true,
+  "usage": false,
+  "errors_id": "0123456789abcdef0123456789abcdef",
+  "errors_scope": 4,
+  "usage_scope": 0,
+  "errors_declined_scope": 6,
+  "usage_declined_scope": 0
+}

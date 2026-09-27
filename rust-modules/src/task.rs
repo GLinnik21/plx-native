@@ -52,6 +52,14 @@ use std::io;
 use std::marker::PhantomData;
 use std::thread::{Builder, JoinHandle};
 
+mod blocking;
+pub(crate) mod watchdog;
+#[cfg(feature = "threadcheck")]
+pub(crate) mod runtime_check;
+#[allow(unused_imports)] // Explicit exception API; no production storage path currently needs it.
+pub(crate) use blocking::allow_blocking;
+pub(crate) use blocking::{assert_may_block, BlockingGuard, BlockingLabel, FrameScope};
+
 /// Proof that the holder runs on the SDL main thread.
 ///
 /// A ZST whose only content is a `!Send + !Sync` marker, so neither it nor a `&` to it can be

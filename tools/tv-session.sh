@@ -9,6 +9,8 @@
 #   tv-session.sh shot [out.png] grab the panel (video plane included) via the capture service
 #   tv-session.sh log [pattern]  fetch the on-device event log, optionally grepped
 #   tv-session.sh screen off|on  blank the PANEL while the app keeps running (see below)
+#   tv-session.sh sound off|on|status
+#                                mute/unmute the TELEVISION, independent of the panel (see below)
 #   tv-session.sh wan off [TTL]|on|status
 #                                cut the TELEVISION's route to the internet, LAN intact (see below)
 #   tv-session.sh down           hand the TV back: strip automation, relaunch interactive
@@ -36,6 +38,8 @@
 #   --owner           boot as the household account (the config.local.h owner token). This is
 #                     also what a bare `up` does with neither flag — spelling it out is for a
 #                     script that wants the choice to be visible in its own command line.
+#   --mock            with --guest, use only tests/mock_pms.py at the configured PMS endpoint.
+#                     Verifies its synthetic identity; never uses an account token or contacts plex.tv.
 #   --dry-run         resolve and print the identity `up` would use (including a real --guest
 #                     token lookup, which touches plex.tv but never the TV) and the shape of the
 #                     commands it would run, then exit 0 without contacting the television at all.
@@ -64,6 +68,27 @@
 # where it saves the panel over long runs and costs nothing. DO NOT use it for the fps scenes,
 # `shot`, or the capture stream: `ui::idle` gates presents and the panel is the thing those
 # measure, so a dark screen makes them either meaningless or silently wrong.
+#
+# SOUND is the television's own mute, separate from the panel above and from playback: it silences
+# whatever the set would otherwise put out, panel on or off, app running or not.
+# `luna://com.webos.service.audio/setMuted` flips the flag and `com.webos.service.audio/getVolume`
+# reads it back. Both calls were exercised by hand on the set on 2026-09-19 — `setMuted` returned
+# success and an independent `getVolume` then reported `muted:true` — but the SUBCOMMAND around
+# them is host-tested only and has never run against a television. Whoever uses it first: watch
+# what the set actually does and record it. `off`/`on` call `setMuted` and then RE-READ `getVolume` to
+# confirm, rather than trusting `setMuted`'s own `returnValue` — the same discipline `ensure_binary`
+# already uses for a deploy. `status` only reads `getVolume`. Like `screen`, this drives the set and
+# takes the TV lock.
+#
+# THIS IS THE SANCTIONED PATH for muting the television. Before it existed, the only ways to
+# silence a run were the physical remote or a raw `luna-send` reached through
+# `PLX_TV_LOCK_BYPASS=1` around the lock guard — neither belongs in an automated lane, and the
+# bypass in particular is meant for a human who knows the set is theirs, not for routine muting. No
+# lane needs it for this: `tv-session.sh sound off` is the tool.
+#
+# It does NOT restore sound at teardown — `down` does not call it — because a lane that muted for
+# its own reasons is the only one that knows when unmuting is correct; restoring automatically
+# would fight a human who muted the set on purpose before handing it to a lane.
 #
 # THE TV LOCK: every subcommand that DRIVES the set (up, key, click, shot, down) requires the
 # television's lock and refuses when another lane holds it; `status` and `log` are read-only and
@@ -385,7 +410,11 @@ resolve_guest_token() {
   GUEST_TOKEN=""; GUEST_ERROR=""
   local errfile tok rc
   errfile=$(mktemp 2>/dev/null) || errfile=/dev/null
+  if [ "${mock:-0}" = 1 ]; then
+    tok=$(python3 "$REPO/tools/mock-guest.py" "$REPO/src/config.local.h" 2>"$errfile")
+  else
   tok=$(cd "$REPO/tests" && python3 run.py --print-test-token 2>"$errfile")
+  fi
   rc=$?
   if [ $rc -ne 0 ] || [ -z "$tok" ]; then
     GUEST_ERROR=$(cat "$errfile" 2>/dev/null)
@@ -420,7 +449,11 @@ resolve_identity() {
   if [ "$guest" = 1 ]; then
     if resolve_guest_token; then
       push_guest=1
+      if [ "${mock:-0}" = 1 ]; then
+        identity_desc="guest — synthetic mock PMS (no Plex account or account token)"
+      else
       identity_desc="guest — the manifest's managed test user (token via tests/run.py, value not printed)"
+      fi
       return 0
     fi
     bad "cannot resolve a guest identity: $GUEST_ERROR"
@@ -623,7 +656,7 @@ await_direct_screen() {
 
 # ------------------------------------------------------------ commands -------
 cmd_up() {
-  local screen=home guest=0 owner=0 dry_run=0 stream="" no_token=0 keep=0 remote="" server_slot="" server_set=0
+  local screen=home guest=0 mock=0 owner=0 dry_run=0 stream="" no_token=0 keep=0 remote="" server_slot="" server_set=0
   local direct_kind="" direct_rk="" direct_marker=""
   local identity_desc="" push_guest=0 push_owner=0
   while [ $# -gt 0 ]; do
@@ -634,6 +667,7 @@ cmd_up() {
                 server_slot="$2"; server_set=1; shift 2 ;;
       --server=*) server_slot="${1#*=}"; server_set=1; shift ;;
       --guest) guest=1; shift ;;
+      --mock) mock=1; shift ;;
       --owner) owner=1; shift ;;
       --dry-run) dry_run=1; shift ;;
       --stream) stream=8909; shift ;;
@@ -645,6 +679,12 @@ cmd_up() {
       *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
   done
+  if [ "$mock" = 1 ] && [ "$guest" != 1 ]; then
+    bad "--mock requires --guest (synthetic identity only)"; exit 2
+  fi
+  if [ "$mock" = 1 ] && [ "$FLAVOR" != debug ]; then
+    bad "--mock requires the debug install"; exit 2
+  fi
   if [ "$guest" = 1 ] && [ "$owner" = 1 ]; then
     echo "--guest and --owner are mutually exclusive" >&2; exit 2
   fi
@@ -985,6 +1025,22 @@ cmd_selftest() {
     }
   fi
 
+  if [ "$_identity_rc" = 0 ]; then
+    _guest_stub_ok=1
+    local mock_dry
+    mock_dry=$(cmd_up --guest --mock --dry-run 2>&1) || _identity_rc=1
+    case "$mock_dry" in
+      *"identity: guest — synthetic mock PMS"*) ;;
+      *) bad "mock guest dry run did not select a synthetic identity"; _identity_rc=1 ;;
+    esac
+    if (cmd_up --mock --dry-run) >/dev/null 2>&1; then
+      bad "mock without guest must refuse"; _identity_rc=1
+    fi
+    if (FLAVOR=stable; cmd_up --guest --mock --dry-run) >/dev/null 2>&1; then
+      bad "mock on stable must refuse"; _identity_rc=1
+    fi
+  fi
+
   # Restore the REAL resolve_guest_token unconditionally, whichever branch above set _identity_rc.
   eval "$_real_resolve_guest_token"
   [ "$_identity_rc" = 0 ] || return 1
@@ -1096,6 +1152,69 @@ cmd_screen() {
   fi
 }
 
+# Mute/unmute the TELEVISION's own audio (see SOUND in the header), or just read the flag back.
+# `off`/`on` call setMuted and then RE-READ getVolume to confirm rather than trusting setMuted's
+# own returnValue -- the same discipline ensure_binary already uses for a deploy; `status` only
+# reads getVolume. This never restores sound on its own -- see the header for why.
+cmd_sound() {
+  local want="${1:-}" muted=""
+  case "$want" in
+    off) muted=true ;;
+    on)  muted=false ;;
+    status) ;;
+    *) echo "usage: tv-session.sh sound off|on|status" >&2; exit 2 ;;
+  esac
+  # Driving the set (off/on) takes the lock like `screen`; `status` still reaches the television
+  # over ssh, so it goes through the same advisory-only check `status`/`log` use elsewhere in this
+  # file rather than either refusing outright or pretending it never touched the set.
+  if [ "$want" = status ]; then advise_lock "tv-session sound status"
+  else require_lock "tv-session sound $want"; fi
+  ensure_awake || exit 1
+
+  if [ "$want" != status ]; then
+    # `luna-send` silently no-ops without a controlling TTY -- the house `script -qc` wrapper,
+    # same as every other luna call against this television.
+    local reply flat
+    reply=$(tv "script -qc \"luna-send -n 1 -f luna://com.webos.service.audio/setMuted '{\\\"muted\\\":$muted}'\" /dev/null" 2>/dev/null)
+    flat=$(printf '%s' "$reply" | tr -d '\r\n' | tr -s ' ')
+    if ! printf '%s' "$flat" | grep -q '"returnValue": *true'; then
+      bad "sound $want refused: $flat"; return 1
+    fi
+  fi
+
+  # The reply is pretty-printed multi-line JSON whose exact spacing is not ours to rely on, so
+  # match it with grep/sed on the collapsed text rather than a shell glob over embedded newlines --
+  # see cmd_screen's own note on the same trap.
+  local vreply vflat seen_muted vol
+  vreply=$(tv "script -qc \"luna-send -n 1 -f luna://com.webos.service.audio/getVolume '{}'\" /dev/null" 2>/dev/null)
+  vflat=$(printf '%s' "$vreply" | tr -d '\r\n' | tr -s ' ')
+  if ! printf '%s' "$vflat" | grep -q '"returnValue": *true'; then
+    bad "sound $want: getVolume refused: $vflat"; return 1
+  fi
+  # `-E` (extended regex) rather than a BRE `\(true\|false\)`: BSD sed (the macOS host this is
+  # developed on) does not support `\|` alternation inside a BRE group, so that spelling silently
+  # matched nothing at all -- caught by this file's own host test, never on the set.
+  seen_muted=$(printf '%s' "$vflat" | sed -En 's/.*"muted": *(true|false).*/\1/p')
+  vol=$(printf '%s' "$vflat" | sed -n 's/.*"volume": *\([0-9]*\).*/\1/p')
+  case "$want" in
+    off)
+      [ "$seen_muted" = true ] || {
+        bad "setMuted true did not stick -- getVolume reports muted=${seen_muted:-unknown}"; return 1
+      }
+      ok "sound off (muted, volume ${vol:-?})"
+      ;;
+    on)
+      [ "$seen_muted" = false ] || {
+        bad "setMuted false did not stick -- getVolume reports muted=${seen_muted:-unknown}"; return 1
+      }
+      ok "sound on (unmuted, volume ${vol:-?})"
+      ;;
+    status)
+      info "sound: muted=${seen_muted:-unknown} volume=${vol:-?}"
+      ;;
+  esac
+}
+
 # ------------------------------------------------------------ the WAN cut ----
 # "Offline mode" is a household whose LAN is up and whose uplink is down. Nothing on a desk can
 # take the router's uplink away for ONE device deterministically, so this does it on the set
@@ -1201,11 +1320,12 @@ case "${1:-}" in
   wan)    shift; cmd_wan "$@" ;;
   up)     shift; cmd_up "$@" ;;
   screen) shift; cmd_screen "$@" ;;
+  sound)  shift; cmd_sound "$@" ;;
   status) shift; cmd_status ;;
   key)    shift; cmd_key "$@" ;;
   click)  shift; cmd_click "$@" ;;
   shot)   shift; cmd_shot "$@" ;;
   log)    shift; cmd_log "$@" ;;
   down)   shift; cmd_down ;;
-  *) sed -n '3,53p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '3,55p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

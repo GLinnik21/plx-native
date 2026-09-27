@@ -427,7 +427,7 @@ impl ConsentPage {
             RowId::ErrorsId => self.open_preview(PreviewKind::ErrorsId, fx),
             RowId::AnalyticsId => self.open_preview(PreviewKind::AnalyticsId, fx),
             RowId::Delete => {
-                self.alert.open_with_body(crate::i18n::msg::settings_consent_delete_scope());
+                self.alert.open_with_body(crate::i18n::msg::settings_consent_delete_question_c(), crate::i18n::msg::settings_consent_delete_scope());
                 self.state.alert_scroll = 0;
                 self.state.alert = true;
                 // the alert traps focus: seat the engine on its answers
@@ -715,7 +715,7 @@ impl Machine<InnerHost> for ConsentPage {
                 kind: InputKind::Key { key: key @ (Key::Up | Key::Down), edge, .. }, ..
             }) if *edge != crate::ui::machine::Edge::Up && self.alert.is_open() => {
                 self.state.alert_scroll = self.alert.scroll_by(
-                    crate::i18n::msg::settings_consent_delete_question(), cx.measure,
+                    cx.measure,
                     if *key == Key::Up { -1 } else { 1 });
                 Handled::Yes
             }
@@ -871,8 +871,8 @@ impl Screen<InnerHost> for ConsentPage {
         // engine seats on while it is open
         if self.alert.visible() {
             self.alert.draw_scrim();
-            self.alert.draw(crate::i18n::msg::settings_consent_delete_question_c(), crate::i18n::msg::settings_cancel_c(), crate::i18n::msg::settings_delete_c(), f.measure);
-            let frames = self.alert.frames(crate::i18n::msg::settings_consent_delete_question_c(), f.measure);
+            self.alert.draw(crate::i18n::msg::settings_cancel_c(), crate::i18n::msg::settings_delete_c(), f.measure);
+            let frames = self.alert.frames(f.measure);
             self.alert_frames.set(Some(frames));
             // **Register the two hit stops only once the entrance spring has actually arrived.**
             // `frames()` is the FINAL layout — the panel `settled()` documents itself as reaching
@@ -1133,6 +1133,16 @@ pub(crate) fn preview_crash() -> String {
         .and_then(|v| serde_json::to_string_pretty(&v).ok())
         .unwrap_or_else(|| String::from_utf8_lossy(&handled).into_owned());
     out.push_str(&handled_text);
+    out.push_str(
+        "\n\nSign-in problem report (automatically only when error reporting is on; otherwise \
+         only when you press Send report, and then without the crash report identifier):\n",
+    );
+    let incident = crate::telemetry::incident::preview_event();
+    let incident_text = serde_json::from_slice::<serde_json::Value>(&incident)
+        .ok()
+        .and_then(|v| serde_json::to_string_pretty(&v).ok())
+        .unwrap_or_else(|| String::from_utf8_lossy(&incident).into_owned());
+    out.push_str(&incident_text);
     out.push_str("\n\n");
     out.push_str(&crate::telemetry::playback::preview_domains());
     out

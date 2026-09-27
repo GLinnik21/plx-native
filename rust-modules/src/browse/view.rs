@@ -22,6 +22,7 @@ pub(crate) struct ListingSnapshot {
 #[derive(Clone)]
 struct ListingData {
     id: ListingId,
+    library_type: super::LibraryType,
     total: i64,
     fetch: SecFetch,
     items: SecItems,
@@ -79,6 +80,14 @@ impl ListingSnapshot {
     }
 
     #[cfg(test)]
+    pub(crate) fn with_library_type(mut self, library_type: super::LibraryType) -> Self {
+        if let Some(data) = &mut self.data {
+            data.library_type = library_type;
+        }
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn with_page(mut self, start: usize, items: Vec<crate::pms::PmsMovie>) -> Self {
         if let Some(data) = &mut self.data {
             for (offset, item) in items.into_iter().enumerate() {
@@ -111,10 +120,12 @@ impl ListingSnapshot {
                     sid,
                     section: 1,
                 },
+                library_type: super::LibraryType::default(),
                 total: items.len() as i64,
                 fetch: SecFetch::Ready,
                 items: SecItems::from_vec(items),
                 sorts: Arc::new(vec![SortEntry {
+                    desc_key: String::new(),
                     key: "titleSort".into(),
                     title: crate::i18n::msg::browse_library_title().into(),
                     default_desc: false,
@@ -206,6 +217,9 @@ impl<'a> ListingView<'a> {
     pub(crate) fn unwatched(self) -> bool {
         self.0.data.as_ref().is_some_and(|s| s.unwatched)
     }
+    pub(crate) fn library_type(self) -> super::LibraryType {
+        self.0.data.as_ref().map_or(super::LibraryType::default(), |s| s.library_type)
+    }
     pub(crate) fn rail_available(self) -> bool {
         self.id().is_some()
             && self
@@ -274,6 +288,7 @@ impl super::BrowseState {
                 .zip(self.states().get(sec))
                 .map(|(id, state)| ListingData {
                     id,
+                    library_type: state.library_type,
                     total: state.total,
                     fetch: state.fetch,
                     items: state.items.clone(),
@@ -294,7 +309,6 @@ impl super::BrowseState {
 /// inside `epoch`; stable identities always include the server and its own section key.
 #[derive(Clone)]
 pub(crate) struct SectionView {
-    pub(crate) borrowed: bool,
     pub(crate) sid: Option<ServerId>,
     pub(crate) key: i64,
     pub(crate) kind: super::SecKind,
@@ -354,7 +368,6 @@ impl DirectorySnapshot {
                     .zip(state.source_groups()).collect(),
                 sections: state.sections().iter().zip(state.all_source_rows())
                     .map(|(section, row)| SectionView {
-                        borrowed: state.section_sid_is_borrowed(row.section),
                         sid: state.sources().get(section.src).map(|source| source.sid),
                         key: section.key, kind: section.kind, row,
                     }).collect(),
@@ -407,19 +420,31 @@ impl DirectorySnapshot {
             && self.preferred == other.preferred
             && self.kind_fetch == other.kind_fetch
     }
+    /// The single builder behind both `fixture` and the selector matrix suite: a section table
+    /// AND the source table `library_label` reads a handle from. `fixture` used to hardcode
+    /// `sources: Vec::new()`, which made a source's handle/tier/state permanently unreachable
+    /// from a host fixture — the pill label's owner-handle branch and every tier/state cell of
+    /// `selector_matrix_tests.rs` need a real source table to vary, so this is that one source of
+    /// truth rather than a second parallel builder.
     #[cfg(test)]
-    pub(crate) fn fixture(epoch: u32, current: usize, sections: Vec<SectionView>) -> Self {
+    pub(crate) fn fixture_with_sources(
+        epoch: u32,
+        current: usize,
+        sources: Vec<(ServerId, super::SrcGroup)>,
+        sections: Vec<SectionView>,
+    ) -> Self {
         let preferred = [super::SecKind::Movie, super::SecKind::Show]
             .map(|kind| sections.iter().position(|s| s.kind == kind && s.row.pinned));
         let favorites = sections.iter().filter_map(|section| {
             section.sid.map(|sid| (sid, section.key, section.row.pinned))
         }).collect();
+        let source_count = sources.len();
         Self {
             preferred,
             kind_fetch: [SecFetch::Ready; 2],
-            stamp: Some((epoch, 0, current, 0)),
+            stamp: Some((epoch, 0, current, source_count)),
             data: Arc::new(DirectoryData {
-                sources: Vec::new(),
+                sources,
                 sections,
                 favorites,
             }),
@@ -429,6 +454,11 @@ impl DirectorySnapshot {
             sections_gen: 0,
             tabs_gen: 0,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture(epoch: u32, current: usize, sections: Vec<SectionView>) -> Self {
+        Self::fixture_with_sources(epoch, current, Vec::new(), sections)
     }
 
     pub(crate) fn view(&self) -> DirectoryView<'_> {
@@ -640,6 +670,7 @@ mod tests {
         let (sorts, genres, letters) = {
             let section = owner.state_mut(0).unwrap();
             section.sorts = Arc::new(vec![SortEntry {
+                desc_key: String::new(),
                 key: "titleSort".into(),
                 title: crate::i18n::msg::browse_library_title().into(),
                 default_desc: false,

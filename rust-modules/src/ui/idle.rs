@@ -132,14 +132,6 @@ thread_local! {
     /// press frame, so its motion may not be masked by the fade's own. Same thread-local
     /// rationale as `MOVING`.
     static PAGE_MOVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// The UNDERLAY's motion verdict for this frame — `app.rs`'s `underlay_moving` (the OR of every
-    /// SCOPED page update: Home, the Library, Search, the press dip) OR [`PAGE_MOVING`] (the
-    /// UNSCOPED page springs: Detail updates outside `scoped_motion`), and nothing a popover
-    /// stepped — published by `popover::host::begin_frame` before anything draws. It is what
-    /// `gfx::page_wash_dither` reads: the merged [`MOVING`] would also count a popover's own appear
-    /// spring, and a frozen-host snapshot captured on that frame would then keep an undithered
-    /// page under the panel for as long as it stayed open (Codex review, 2026-09-04).
-    static UNDERLAY_MOVING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// How many [`MotionScope`]s are open right now — zero means a spring reporting now belongs
     /// to the page.
     static SCOPE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
@@ -189,6 +181,11 @@ static DAMAGE_GEN: AtomicU32 = AtomicU32::new(0);
 static LAST_PRESENT: AtomicU32 = AtomicU32::new(0);
 /// Presents since the last [`take_presents`] — the heartbeat's `fps=` field.
 static PRESENTS: AtomicU32 = AtomicU32::new(0);
+/// `now` of the last [`should_present`] that found a CHANGE (motion, damage, a wake, the settle
+/// frame) — the keepalive and the bound video plane do not count. The simulator's settled-shot
+/// clock (`shot::tick`) reads it; nothing on the television does.
+#[cfg(feature = "hostsim")]
+static LAST_CHANGE: AtomicU32 = AtomicU32::new(0);
 /// Kill switch (`/tmp/plxnative-noidle`), so a device A/B is one file apart and a bad frame on the
 /// panel is one `rm` from being ruled out as this feature's fault.
 static ENABLED: AtomicBool = AtomicBool::new(true);
@@ -222,9 +219,9 @@ pub(crate) fn enabled() -> bool {
 ///   ledger to record it on (`Present::why` is the machine's, and the recorder reads that one).
 /// * `Motion` — [`invalidate`] as well, deliberately NOT the `MOVING` thread-local. `MOVING` is
 ///   the *rest test*'s answer, judged from a spring's own post-step state by [`note_spring`], and
-///   it feeds `page_moving`, which decides whether a frozen host is re-snapshotted and whether the
-///   page wash is dithered. A caller who only knows "something moved" cannot answer those, so it
-///   gets one frame — never a claim about which springs were in flight.
+///   it feeds `page_moving`, which decides whether a frozen host is re-snapshotted. A caller who
+///   only knows "something moved" cannot answer that, so it gets one frame — never a claim about
+///   which springs were in flight.
 pub(crate) fn note(ev: crate::ui::present::PresentEvent) {
     use crate::ui::present::PresentEvent;
     match ev {
@@ -431,22 +428,9 @@ pub(crate) fn wake() {
 pub(crate) fn frame_begin(dt: f32) {
     MOVING.with(|m| m.set(false));
     PAGE_MOVING.with(|m| m.set(false));
-    UNDERLAY_MOVING.with(|m| m.set(false));
     DT.with(|d| d.set(dt));
     let dt_us = (dt * 1_000_000.0).round().max(0.0) as u64;
     MS_CLOCK_US.with(|c| c.set(c.get() + dt_us));
-}
-/// Publish this frame's page-under-everything motion verdict (`app.rs`'s `underlay_moving`) for
-/// [`underlay_moving`]. Once per drawn frame, by `popover::host::begin_frame`.
-#[inline]
-pub(crate) fn note_underlay_motion(moving: bool) {
-    UNDERLAY_MOVING.with(|m| m.set(moving));
-}
-/// Did the PAGE under any popover move this frame, by its own scoped verdict — never a popover's
-/// spring? See [`UNDERLAY_MOVING`].
-#[inline]
-pub(crate) fn underlay_moving() -> bool {
-    UNDERLAY_MOVING.with(|m| m.get())
 }
 
 /// A monotonic millisecond reading, for a clock-driven animator that has no `Tick` of its own to
@@ -543,15 +527,16 @@ impl Drop for MotionScope {
 /// **The first still frame after motion is presented too — the SETTLE frame.** A spring in flight
 /// is judged by the rest test at the top of this file, so the last frame it forces is one whose
 /// residual is under a quarter pixel; the frame after it, where the spring reports nothing, is the
-/// picture that stays on the panel until the next key. The one at-rest term in the renderer —
-/// `gfx::page_wash_dither`, which is what puts the ±1 LSB dither on Home's and Detail's page wash
-/// — reads THIS frame's page-motion verdict, so without one more present the resting picture
-/// would be the undithered in-flight one, and the banding the dither exists for would reappear at
-/// exactly the moment the eye rests on it. One frame, once per settle, and the idle gate then
-/// closes as before. (This repairs the LIVE page only. A frozen-host snapshot is drawn again on
-/// page damage or, under a fading panel, on page motion — `popover::host::begin_frame`'s rule —
-/// and never by this frame, which is why the wash reads the page's own verdict and not a
-/// popover's appear spring.)
+/// picture that stays on the panel until the next key. It was added for an at-rest term in the
+/// renderer — `gfx::page_wash_dither`, which dropped the ±1 LSB dither from Home's and Detail's
+/// page wash while their artwork moved and restored it on the frame the artwork's springs came to
+/// rest, a frame that forced no present of its own. That gate is gone (2026-09-19: every wash
+/// dithers on every frame, `gfx::draw_ambient`), so no renderer term differs between the last
+/// moving frame and the first still one any more; the settle present is kept as the one extra
+/// frame that guarantees the resting picture is the fully-settled one. One frame, once per
+/// settle, and the idle gate then closes as before. (This repairs the LIVE page only. A frozen-host snapshot is
+/// drawn again on page damage or, under a fading panel, on page motion —
+/// `popover::host::begin_frame`'s rule — and never by this frame.)
 pub(crate) fn should_present(now: u32) -> bool {
     let damage_gen = DAMAGE_GEN.load(Relaxed);
     let new_damage = PRESENT_DAMAGE_GEN.with(|seen| {
@@ -569,6 +554,10 @@ pub(crate) fn should_present(now: u32) -> bool {
     let dirty = DIRTY.swap(false, Relaxed);
     let dirty = dirty || new_damage;
     let changed = moving || dirty || wake || settling;
+    #[cfg(feature = "hostsim")]
+    if changed {
+        LAST_CHANGE.store(now, Relaxed);
+    }
     PRESENT_DIRTY.with(|c| c.set(dirty));
     // The video-plane term is HERE, below every take-and-clear above it, and not `|| fr.player` at
     // the call site as it was through phase 8. Two reasons, and the second is the bug: a term on
@@ -612,6 +601,12 @@ pub(crate) fn page_moving() -> bool {
     PAGE_MOVING.with(|m| m.get())
 }
 
+/// `now` of the last frame that had something to change — see [`LAST_CHANGE`]. Simulator only.
+#[cfg(feature = "hostsim")]
+pub(crate) fn last_change_ms() -> u32 {
+    LAST_CHANGE.load(Relaxed)
+}
+
 /// Record that a frame was presented. Deliberately does NOT clear the discrete flag — a report
 /// raised by the draw this call follows belongs to the NEXT frame, and [`should_present`] already
 /// consumed the one that justified this one.
@@ -619,6 +614,8 @@ pub(crate) fn page_moving() -> bool {
 pub(crate) fn note_present(now: u32) {
     LAST_PRESENT.store(now, Relaxed);
     PRESENTS.fetch_add(1, Relaxed);
+    #[cfg(feature = "devtriggers")]
+    super::card_motion_metrics::presented(now);
 }
 
 /// Presents since the last call — drained once a second into the heartbeat as `fps=`, which is the

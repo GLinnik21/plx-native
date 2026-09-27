@@ -125,6 +125,7 @@ mod recorder;
 pub(crate) mod events;
 pub(crate) mod lifecycle;
 pub(crate) mod playback;
+mod preferences;
 pub(crate) mod input;
 pub(crate) mod bridge;
 pub(crate) mod chrome;
@@ -291,6 +292,9 @@ pub(crate) struct App {
     pub(crate) menu_play_await: Option<MenuPlayAwait>,
     pub(crate) prev: u32,
     pub(crate) refresh_hubs_at: u32,
+    /// The HTTPS retry for servers on a plaintext grant (`plex::grant::UpgradeRetry`), stepped
+    /// every frame beside the view-state pump (`app/run.rs`).
+    pub(crate) plaintext_upgrade: crate::plex::grant::UpgradeRetry,
     ev: [u8; 128],
     remote: Option<crate::remote::Remote>,
     /// The SDL window (`SDL_CreateWindow`), for the swap.
@@ -321,10 +325,8 @@ pub(crate) struct App {
     /// The present gate as a machine (spec §4.4). `ui::idle` is still the product's verdict on
     /// this loop; this one receives the render cache's notes and is what `dispatch` takes over.
     present: crate::ui::present::Present,
-    /// The frame plan's GLASS half (spec §8.3): the one shared backdrop-refresh cadence, the tile
-    /// bands' visible lifetime, and the dev load dial's whole live state. Eight `static mut`s in
-    /// `ui/glassload.rs` and two in `ui/widgets.rs` until phase 11; fields of this since. (The
-    /// budget half lives on the `Dispatcher` — the frame scheduler owns admission, §2.2.)
+    /// The frame plan's GLASS half (spec §8.3): the layer/region source registry, shared chrome
+    /// material and dev load dial. The budget half lives on the `Dispatcher` (§2.2).
     pub(crate) glass: crate::ui::frame::glass::GlassPlan,
     /// **The container tree, and since phase 12 (D1) it is the ONE navigation authority.** It was
     /// a shadow through 3b and a half-real tree through 5b, kept in step with an `App.route` field
@@ -351,6 +353,14 @@ impl App {
         let mut initial = self.boot_initial.clone()?;
         initial.session = self.bridge.snapshot_session_init();
         Some(initial)
+    }
+    /// `instr`'s own narrow read — see [`crate::diag::heartbeat::Instruments::last_frame_ms`]. A
+    /// method rather than `pub(crate) instr` because the field otherwise stays module-private on
+    /// purpose (`app::run` is `instr`'s only other reader, and it reaches the field directly as a
+    /// descendant module); `dev::scenarios`'s stress-bench oscillators (`bench_frame_tick`) are
+    /// the one reader outside `app` that needs a single number off it, not the whole instrument.
+    pub(crate) fn frame_last_ms(&self) -> f64 {
+        self.instr.last_frame_ms()
     }
     /// Controlled construction receives decoded/captured inputs before bootstrap effects.
     pub(crate) unsafe fn from_init(initial: bootstrap::Initial, mode: bootstrap::Preflight,
@@ -465,6 +475,9 @@ fn pre_boot_diagnostics() -> crate::telemetry::native::Guard {
     // ABR/pipeline evidence visible for every automated playback, rather than depending on the
     // previous manual toggle surviving into a new session.
     crate::dev::scenarios::pre_boot();
+    // Last: the worker must observe every boot-time environment/trigger mutation above, while a
+    // controlled replay which deliberately skips this preflight keeps the conservative Unknown.
+    crate::webos::caps::start_probe();
     telemetry_guard
 }
 
@@ -473,13 +486,15 @@ fn pre_boot_diagnostics() -> crate::telemetry::native::Guard {
 /// real phases (pre-boot diagnostics, `boot`, this), never the steps inside any one of them.
 unsafe fn run_and_shutdown(app: &mut App) -> c_int {
     run::run(app);
-    let failed = finish_recording(&mut app.rec) || app.bridge.controlled_failure().is_some();
+    let failed = finish_recording(&mut app.rec, app.bridge.landgate())
+        || app.bridge.controlled_failure().is_some();
+    app.glass.sources.borrow_mut().clear();
     run::shutdown(&mut app.player.session, &mut app.adapters.player);
     i32::from(failed)
 }
 
-fn finish_recording(rec: &mut recorder::Recplay) -> bool {
-    std::mem::replace(rec, recorder::Recplay::Off).finish()
+fn finish_recording(rec: &mut recorder::Recplay, gate: &crate::ui::landgate::Gate) -> bool {
+    std::mem::replace(rec, recorder::Recplay::Off).finish(gate)
 }
 
 /// Simulator tooling emits the entire typed contract, never a patched household auth file.
@@ -506,6 +521,13 @@ fn enter_application(pms_host: *const c_char, pms_port: c_int) -> Result<App,c_i
     };
     // Replay preflight and typed decoding precede identity mint, telemetry and bootstrap work.
     let telemetry_guard = (!preflight.controlled()).then(pre_boot_diagnostics);
+    // Unlike the capability worker, these existing diagnostic latches are needed by controlled
+    // replay too. Resolve their filesystem state outside `FrameScope` on every boot so a preview
+    // or synthetic payload cannot perform its first `stat` from a render frame.
+    crate::metadata::prewarm_dv_latches();
+    // A live boot's `install:`/`appdir:` preamble above owns the first two event-log lines.
+    // Diagnostics probes `app_dir()` on its worker, so starting it earlier races that preamble.
+    crate::storage::diagnostics::start();
     let main_thread = unsafe { crate::task::MainThread::assume() };
     let mut app = unsafe { boot(pms_host,pms_port,main_thread,preflight) }?;
     if telemetry_guard.is_some() { app.telemetry_guard = telemetry_guard; }

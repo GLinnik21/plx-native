@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- lastmod is intentionally omitted: a hard-coded date here would go stale the moment any of
+     these pages change without this file being touched, which is worse than no date at all. -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://plxnative.com/</loc>
+  </url>
+  <url>
+    <loc>https://plxnative.com/install/</loc>
+  </url>
+  <url>
+    <loc>https://plxnative.com/troubleshooting/</loc>
+  </url>
+  <url>
+    <loc>https://plxnative.com/credits.html</loc>
+  </url>
+</urlset>

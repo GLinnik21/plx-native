@@ -18,8 +18,8 @@
 # Phase 4 rule (D3 rewrite, phase 12):
 #   mutators — a screen (ui/, screens/) or the loop (app/) never calls a data module's MUTATOR directly
 #              (`crate::browse::set_cur(`, `crate::search::set_query(`, …): every mutation is a
-#              `stores::StoreCmd` applied through `stores::<store>::apply` (spec §14, the
-#              (caller, mutator) allowlist — `docs/stores-as-machines.md`). PRODUCTION lines only:
+#              `StoreCmd` applied through the owner's run/step method (e.g. `Bridge::<store>_run`)
+#              (spec §14, the (caller, mutator) allowlist — `docs/stores-as-machines.md`). PRODUCTION lines only:
 #              a `#[cfg(test)] mod` seeds a store however it likes. The player side joins in phase
 #              9: `route/` (both halves of the split — `plan.rs`, the pure selection half, and
 #              `decision.rs`, the network/adapter half) and `player/` are scanned the same as
@@ -34,8 +34,9 @@
 #              is one accidental `use` away from a violation the gate would then have to catch by
 #              name a second time. `mutators-visibility` (below) is the fix: it reads the
 #              DECLARATION line of every real mutator in its owning legacy module and fails if it
-#              is anything looser than private/`pub(super)`, so `stores::<store>::apply` (or, for
-#              `browse::section_hubs`, a `pub(super)` reached only from its parent `browse`) is
+#              is anything looser than private/`pub(super)`, so the owner's run/step method (e.g.
+#              `Bridge::<store>_run`) (or, for `browse::section_hubs`, a `pub(super)` reached only
+#              from its parent `browse`) is
 #              the only door BY CONSTRUCTION, not by nobody having tried the other one yet. The
 #              two gates are independent and both must be green: a name absent from
 #              `mutators-visibility`'s per-file list (a PUMP/landing door like `pump`/`tick`/
@@ -135,9 +136,39 @@ strip_strings_and_comments() {
 }
 
 # allowed <rule> <path>: is `path` an entry of ci/allow/<rule>.txt?
+# The allowlists are read ONCE, by one `awk`, into a newline-delimited index of `<rule>|<path>`
+# keys, and `allowed` is then a `case` — a shell BUILTIN, which forks nothing. The old spelling
+# forked a `grep` per candidate LINE and the gates below feed it thousands of them; that, together
+# with the per-FILE `awk`+`grep` loops several gates ran over all 420 source files, is what made a
+# green run of this script cost 17 s — and `tests/test_harness.py`, which runs it 32 more times to
+# prove each gate still catches a planted violation, cost 16 MINUTES of a 20-minute `make check`.
+#
+# An allowlist entry is `path<TAB>reason`, so the old `^${path}(<TAB>|$)` regex matched exactly the
+# first tab-delimited field. That is what the index stores and what the `case` compares, so the
+# answer is unchanged — and it is now an exact string comparison rather than a regex, which for a
+# path containing `.` is strictly the stricter of the two. The skip pattern is the same one the
+# allowlist count rule at the foot of this file uses, so the two cannot disagree about what an
+# entry is.
+#
+# The index is built by `awk` rather than a `while read` + `case` loop because **bash 3.2 — what
+# macOS ships, and what `#!/usr/bin/env bash` resolves to here — cannot parse a `case` inside a
+# `$( … )` at all**: it scans for the closing paren without parsing, so the `)` ending a case
+# pattern terminates the substitution and the `;;` after it is a syntax error. One process reads
+# every list, which is what we wanted anyway.
+ALLOW_INDEX="
+$(awk -F'\t' '
+  FNR==1 { rule=FILENAME; sub(/.*\//, "", rule); sub(/\.txt$/, "", rule) }
+  /^[[:space:]]*(#|$)/ { next }
+  { print rule "|" $1 }
+' ci/allow/*.txt)
+"
 allowed() {
-  local rule="$1" path="$2"
-  grep -qE "^${path}(	|$)" "ci/allow/${rule}.txt" 2>/dev/null
+  case "$ALLOW_INDEX" in
+    *"
+$1|$2
+"*) return 0 ;;
+  esac
+  return 1
 }
 
 # Resolve external test modules (including #[path], visibility and intervening attributes)
@@ -145,6 +176,24 @@ allowed() {
 # production reference keeps a shared file in the scan. No filename suffix grants an exemption.
 wholly_test_files() {
   python3 ci/rust_test_modules.py "$SRC"
+}
+
+# is_wholly_test <path>: the `wholly_test` list as a builtin lookup. Three gates below asked this
+# question once per candidate file or line with `echo "$wholly_test" | grep -qxF`, which is two
+# processes an answer.
+WHOLLY_TEST_INDEX=""
+wholly_test_index_init() {
+  WHOLLY_TEST_INDEX="
+$1
+"
+}
+is_wholly_test() {
+  case "$WHOLLY_TEST_INDEX" in
+    *"
+$1
+"*) return 0;;
+  esac
+  return 1
 }
 
 # gate <rule> <pattern> <paths...>: every match must be in an allowlisted file.
@@ -160,7 +209,8 @@ gate() {
 }
 
 echo "== check-deps =="
-mut_wholly_test="$(wholly_test_files)" || { fail "Rust test-module classification failed"; exit 1; }
+wholly_test="$(wholly_test_files)" || { fail "Rust test-module classification failed"; exit 1; }
+wholly_test_index_init "$wholly_test"
 
 # browse-owner: Browse has one physical owner per `Stores`; the migration allowlist ended at zero
 # and is deliberately gone. Reject both the old storage/selector machinery and every free
@@ -368,15 +418,113 @@ else
   fail "viewstate-owner: retired ViewState compatibility surface returned"
 fi
 
+# person-owner: Person's model/generation/retry/dev seed live in PersonState, its indexed fetch
+# claims/mailboxes live in the rotated Arc<PersonAdapter>, and both belong to one PersonStore per
+# Bridge. Zero tolerance, no allowlist: any free state facade or storage selector reconnects those
+# owners and lets an unaddressed reset, pump or optimistic edit cross the Bridge boundary.
+person_facades='current|loading|run|pump|apply|install_for_test|install_source_for_test|install_credits_for_test'
+person_selectors='ACTIVE|OWNER|CURRENT|GEN|RETRY_CD|FETCH|MAIL|PERSON|PERSON_STATE|LEGACY_ADAPTER|HELD'
+person_owner_matches=$({
+  owner_declarations "$person_facades" "$person_selectors" \
+    'PersonState|PersonAdapter|PersonStore|Person|Fetch|Mail|Landing' \
+    "$SRC/person.rs" "$SRC/stores/person.rs"
+  grep_code "(crate::person|crate::stores::person|stores::person)::($person_facades)\(" "$SRC"
+} | sort -u)
+if [ -z "$person_owner_matches" ]; then
+  ok "person-owner: zero global storage, transport, selectors, and free facades"
+else
+  echo "$person_owner_matches" | sed 's/^/    /'
+  fail "person-owner: retired Person compatibility surface returned"
+fi
+
+# search-owner: Search's query/generation/shelf model lives in SearchState, its per-source fetch
+# claims/mailboxes live in the rotated Arc<SearchAdapter>, and both belong to one SearchStore per
+# Bridge (`app/bridge.rs`'s `search_run`/`search_pump`/`search_snapshot`). Zero tolerance, no
+# allowlist: any free state facade or storage selector reconnects those owners and lets an
+# unaddressed reset, query edit or landing cross the Bridge boundary — exactly the pre-port shape
+# `crate::stores::search::apply`/`snapshot`/`snapshot_with_directory`/`run_with_directory`/
+# `pump_with_directory` and `crate::search::query`/`state`/`query_gen`/
+# `publish_shelves_for_test`/`settling`/`debounce_elapsed_for_test` had. `reset` is deliberately
+# NOT listed: `search.rs` keeps a legitimate module-level `fn reset(state, adapter)` as the
+# current explicit-parameter architecture, and `SearchStore::run`'s Reset arm calls it plus
+# rotates the adapter — only a bare, parameterless global `reset()` would be the retired shape.
+search_facades='apply|snapshot|snapshot_with_directory|run_with_directory|pump_with_directory|query|state|query_gen|publish_shelves_for_test|settling|debounce_elapsed_for_test'
+search_selectors='ACTIVE|OWNER|QUERY|GEN|STATE|SHELVES|SRC|ARMED|FAV_GEN|IN_FLIGHT|MAIL|SLOT|SEARCH|SEARCH_STATE|LEGACY_ADAPTER'
+search_owner_matches=$({
+  owner_declarations "$search_facades" "$search_selectors" \
+    'SearchState|SearchAdapter|SearchStore|Fetch|Projection|Shelf' \
+    "$SRC/search.rs" "$SRC/stores/search.rs"
+  grep_code "(crate::search|crate::stores::search|stores::search)::($search_facades)\(" "$SRC"
+} | sort -u)
+if [ -z "$search_owner_matches" ]; then
+  ok "search-owner: zero global storage, transport, selectors, and free facades"
+else
+  echo "$search_owner_matches" | sed 's/^/    /'
+  fail "search-owner: retired Search compatibility surface returned"
+fi
+
+# hubs-owner: Home's hub catalog model (`PmsState`) and its rotated worker mailbox/minter
+# (`Arc<PmsAdapter>`) belong to one `HubsStore` per Bridge (`app/bridge.rs`'s `hubs_run`/
+# `hubs_snapshot`, `app/bootstrap.rs`'s `HomeIo::hubs_with_directory`). Zero tolerance, no
+# allowlist: any free process-wide selector or module-level dispatcher reconnects those owners and
+# lets an unaddressed reset or landing cross the Bridge boundary — exactly the pre-port shape
+# `crate::stores::hubs::apply`/`apply_with_directory`/`controlled`/`controlled_with_directory` had,
+# each a free function reading/writing process-wide `pms.rs` statics instead of one owner's
+# `PmsState`/`Arc<PmsAdapter>` pair. `hubs_snapshot`/`run`/`run_with_directory`/
+# `land_with_directory`/`tick_with_directory`/`controlled_work`/`controlled_work_with_directory`
+# are deliberately NOT listed: `pms.rs` keeps the current explicit-parameter architecture, taking
+# `state`/`adapter` in, exactly like search's own `reset(state, adapter)`.
+hubs_facades='apply|apply_with_directory|controlled|controlled_with_directory'
+hubs_selectors='RESULTS|NEXT_REQUEST|HUB_GEN|CATALOG_GEN|LAST_SECTIONS_GEN|ACTIVE|OWNER|LEGACY_ADAPTER'
+hubs_owner_matches=$({
+  owner_declarations "$hubs_facades" "$hubs_selectors" \
+    'PmsState|PmsAdapter|HubsStore|Landing|Src|SourceBuild' \
+    "$SRC/pms.rs" "$SRC/pms/initial.rs" "$SRC/stores/hubs.rs"
+  grep_code "(crate::pms|crate::stores::hubs|stores::hubs)::($hubs_facades)\(" "$SRC"
+} | sort -u)
+if [ -z "$hubs_owner_matches" ]; then
+  ok "hubs-owner: zero global storage, transport, selectors, and free facades"
+else
+  echo "$hubs_owner_matches" | sed 's/^/    /'
+  fail "hubs-owner: retired Hubs compatibility surface returned"
+fi
+
+# metadata-owner: Detail's item/season/playing model (`MetadataState`) and its worker adapter
+# (`Arc<MetadataAdapter>`, D3's `record::Tracker` included) belong to one `MetadataStore` per
+# Bridge (`stores/mod.rs`'s `Stores::metadata`, `metadata_run`/`metadata_pump`/`metadata_view`).
+# Zero tolerance, no allowlist: any free process-wide selector or module-level dispatcher
+# reconnects that owner and lets an unaddressed Clear or landing cross the Bridge boundary —
+# exactly the pre-port shape `crate::stores::metadata::apply` had, a free function reading/writing
+# process-wide `metadata.rs` statics instead of one owner's `MetadataState`/`Arc<MetadataAdapter>`
+# pair. `metadata::run`/`pump`/`pump_detail`/`pump_season`/`pump_alt_sources` are deliberately NOT
+# listed: they keep the explicit-parameter architecture, taking `state`/`adapter` in, exactly like
+# hubs' and search's own owned stores.
+metadata_facades='apply'
+metadata_selectors='DETAIL_LANDING|SEASON_LANDING|ALT_LANDING|NOW|CURRENT|TRACKER|NOTICES'
+metadata_owner_matches=$({
+  owner_declarations "$metadata_facades" "$metadata_selectors" \
+    'MetadataState|MetadataAdapter|MetadataStore|Tracker' \
+    "$SRC/metadata.rs" "$SRC/stores/metadata.rs"
+  grep_code "(crate::metadata|crate::stores::metadata|stores::metadata)::($metadata_facades)\(" "$SRC"
+} | sort -u)
+if [ -z "$metadata_owner_matches" ]; then
+  ok "metadata-owner: zero global storage, transport, selectors, and free facades"
+else
+  echo "$metadata_owner_matches" | sed 's/^/    /'
+  fail "metadata-owner: retired Metadata compatibility surface returned"
+fi
+
 # libm: the method-call spelling, OUTSIDE ui/motion.rs (which owns the integrators and their
 # table test); `.log(&…`/`.log("…` is a logger, not a logarithm.
+# Wholly-test files (see `wholly_test_files`) are skipped like inline `#[cfg(test)]` blocks: a
+# test's reference colour maths is not logical state.
 libm_lines=$(grep_code '\.(exp|ln|log|powf|powi|cbrt|sin|cos|tan|atan2|hypot|mul_add|sin_cos)\(' "$SRC" \
   | grep -vE '\.log\((&|")' | grep -v "^$SRC/ui/motion.rs:")
 libm_bad=0
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   p="${line%%:*}"
-  if echo "$mut_wholly_test" | grep -qxF "$p"; then continue; fi
+  if is_wholly_test "$p"; then continue; fi
   if ! allowed libm "$p"; then echo "    $line"; libm_bad=$((libm_bad+1)); fi
 done <<< "$libm_lines"
 if [ "$libm_bad" -eq 0 ]; then ok "libm"; else fail "libm: $libm_bad line(s) outside ci/allow/libm.txt"; fi
@@ -430,7 +578,7 @@ MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library
 # call and is masked before the match.
 mut_bad=0
 while IFS= read -r f; do
-  if echo "$mut_wholly_test" | grep -qxF "$f"; then continue; fi
+  if is_wholly_test "$f"; then continue; fi
   while IFS= read -r line; do
     [ -z "$line" ] && continue
     if ! allowed mutators "$f"; then echo "    $f:$line"; mut_bad=$((mut_bad+1)); fi
@@ -438,8 +586,11 @@ while IFS= read -r f; do
     skip>0 { n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m; if (depth<=0) skip=0; prev=$0; next }
     prev=="#[cfg(test)]" && /^mod / { skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}"); if (depth<=0) skip=0; prev=$0; next }
     { print NR":"$0; prev=$0 }' "$f" | sed -E 's/crate::ui::[a-z_]+::[a-z_]+\(/UI_CALL(/g' | grep -E "$MUTATORS" | grep -vE '^[0-9]+:[[:space:]]*//' | grep -v 'stores::' || true)
-done < <(find "$SRC/ui" "$SRC/screens" "$SRC/app" "$SRC/route" "$SRC/player" "$SRC/dev" -name '*.rs' | sort)
-if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(s) call a store mutator directly (use stores::<store>::apply)"; fi
+# ...over the files that name a mutator at all. The per-file pass only subtracts (a `#[cfg(test)] mod`
+# block, a masked `crate::ui::…::…(`, a `stores::` line), so this prefilter is a superset of the files
+# that can produce a hit.
+done < <(grep -rlE --include='*.rs' "$MUTATORS" "$SRC/ui" "$SRC/screens" "$SRC/app" "$SRC/route" "$SRC/player" "$SRC/dev" 2>/dev/null | sort)
+if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(s) call a store mutator directly (use the owner's run/step method, e.g. Bridge::<store>_run)"; fi
 
 # mutators-visibility (D3): the call-site rule above can only ever prove "nobody currently calls
 # this directly" — it says nothing about whether they COULD. This reads the DECLARATION line of
@@ -459,7 +610,7 @@ if [ "$mut_bad" -eq 0 ]; then ok "mutators"; else fail "mutators: $mut_bad line(
 #     `screens/alt_sources_tests.rs` calls directly to grade its own shape.
 # No other exceptions: `pms::reset` (once tracked as an open item — `app/bridge.rs` and
 # `app/recorder.rs` still called it directly from their own `#[cfg(test)] mod`s) is closed, routed
-# through `stores::hubs::apply(HubsCmd::Reset)` (the variant and `pms::run`'s arm both already
+# through `HubsStore::run`/`run_with_directory` (the variant and `pms::run`'s arm both already
 # existed) and narrowed to private like every other `pms.rs` mutator.
 # One "<file>|<space-separated fn list>" entry per store — a plain array, not `declare -A`: the
 # script's own shebang is `env bash` and the dev Mac's `/bin/bash` is 3.2 (Apple ships nothing
@@ -488,7 +639,7 @@ for entry in "${MUT_FNS_TABLE[@]}"; do
   for fn in $fns; do
     hit=$(grep -nE "^[[:space:]]*pub(\(crate\))?[[:space:]]+fn[[:space:]]+${fn}\b" "$f" 2>/dev/null || true)
     if [ -n "$hit" ] && ! store_seamed "$relf" "$fn"; then
-      echo "    $relf: fn $fn is still pub(crate)/pub — narrow to private (stores::<store>::apply must be the only door)"
+      echo "    $relf: fn $fn is still pub(crate)/pub — narrow to private (the owner's run/step method, e.g. Bridge::<store>_run, must be the only door)"
       vis_bad=$((vis_bad+1))
     fi
   done
@@ -511,6 +662,11 @@ if [ -n "$(grep_code '(crate|super)::app::' "$SRC/screens")" ]; then
   fail "layer: a screen names the application (§2.1) — ask for it as an AppFx/LoopReq instead"
 else ok "layer"; fi
 gate sessionwrite 'session::load\(' "$SRC/screens" "$SRC/ui"
+# uistorage: the LIBRARY (`ui/`) never names the storage layer (§2.1: `ui/` may name only
+# `crate::{gfx,text,paths,task}`). A ui-owned sweep that needs the app's removal rule takes it as an
+# injected `fn` (`ui::rec::erase_owned_artifacts`). Zero, no allowlist. The wider table is not a
+# grep yet: ui/ still names other application modules, mostly from tests and dev instruments.
+gate uistorage '(crate|super)::storage::' "$SRC/ui"
 
 # legacypage: the word itself, anywhere under src — a doc that still describes the type is as much
 # a hit as a declaration, which is the point (nothing compiles the prose either).
@@ -541,7 +697,8 @@ while IFS= read -r f; do
     echo "    $f: $(echo "$hits" | tr '\n' ' ')"
     sib_bad=$((sib_bad+1))
   fi
-done < <(find "$SRC/screens" -name '*.rs' | sort)
+# ...over the files that name a sibling screen at all; the rest ran four processes to find nothing.
+done < <(grep -rlE --include='*.rs' 'crate::screens::[a-z_]+' "$SRC/screens" 2>/dev/null | sort)
 if [ "$sib_bad" -eq 0 ]; then ok "sibling"
 else fail "sibling: $sib_bad file(s) name a sibling screen (use crate::screens::registry)"; fi
 
@@ -586,7 +743,9 @@ while IFS= read -r f; do
     skip>0 { n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m; if (depth<=0) skip=0; next }
     /impl[ \t].*Measure.*[ \t]for[ \t]/ { skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}"); if (depth<=0) skip=0; next }
     { print NR":"$0 }' "$f" | grep -E 'crate::text::(text_width|elide|cap_h)\(' | grep -vE '^[0-9]+:[[:space:]]*//' || true)
-done < <(find "$SRC" -name '*.rs' | sort)
+# ...over the files that spell a raw measurement call at all: the `awk` below only DROPS the body of
+# an `impl … Measure for …` block, so a file with no raw call has nothing for it to find.
+done < <(grep -rlE --include='*.rs' 'crate::text::(text_width|elide|cap_h)\(' "$SRC" 2>/dev/null | sort)
 if [ "$tm_bad" -eq 0 ]; then ok "textmeasure"; else fail "textmeasure: $tm_bad line(s) outside the Measure seam"; fi
 
 # dt (phase 12, D4 — ZERO now, was an allowlist): idle::dt() (deleted from ui/idle.rs entirely —
@@ -649,7 +808,11 @@ while IFS= read -r f; do
     echo "    $f:$ln:$orig"
     frame_bad=$((frame_bad+1))
   done <<< "$hits"
-done < <(find "$SRC" -name '*.rs' | sort)
+# ...over the files that name one of the three calls at all. `strip_strings_and_comments` only ever
+# REMOVES matches, so a file with no raw hit cannot fail this gate — and running its `awk` plus a
+# `grep` over all 420 files, to reach the two that mention the shape, was the single most expensive
+# rule in this script (4.8 s of its 17 s).
+done < <(grep -rlE --include='*.rs' "$frame_pat" "$SRC" 2>/dev/null | sort)
 if [ "$frame_bad" -eq 0 ]; then ok "frame"
 else fail "frame: $frame_bad line(s) of a privileged OS-primitive call outside app/run.rs"; fi
 
@@ -712,7 +875,9 @@ else fail "testmod: $testmod_n \`#[cfg(test)] mod\` block(s) in app/mod.rs — a
 #     `thread::spawn(` spelling used to.
 threads_bad=0
 while IFS= read -r f; do
-  if echo "$mut_wholly_test" | grep -qxF "$f"; then continue; fi
+  # a wholly-test file is test code exactly like an inline `#[cfg(test)] mod` block, which the
+  # awk below skips — without this, splitting a test module into its own file fails the gate
+  if is_wholly_test "$f"; then continue; fi
   pat='\bthread::spawn\('
   if grep -qE '^\s*use\s+std::thread::(spawn\s*;|\{[^}]*\bspawn\b[^}]*\}\s*;)' "$f"; then
     pat='\bthread::spawn\(|\bspawn\('
@@ -724,7 +889,9 @@ while IFS= read -r f; do
     skip>0 { n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m; if (depth<=0) skip=0; prev=$0; next }
     prev ~ /^[[:space:]]*#\[cfg\(test\)\][[:space:]]*$/ && /^[[:space:]]*mod / { skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}"); if (depth<=0) skip=0; prev=$0; next }
     { print NR":"$0; prev=$0 }' "$f" | grep -E "$pat" | grep -vE '^[0-9]+:\s*//' || true)
-done < <(find "$SRC" -name '*.rs' ! -path "$SRC/task.rs" | sort)
+# ...over the files that spell `spawn(` at all — a superset of both matched spellings, and the `awk`
+# below only drops `#[cfg(test)] mod` blocks, so the count is unchanged.
+done < <(grep -rlE --include='*.rs' '\bspawn\(' "$SRC" 2>/dev/null | grep -v "^$SRC/task.rs\$" | sort)
 threads_declared=$(sed -n 's/^# count: *//p' ci/allow/threads.txt | head -1)
 if [ "$threads_bad" -eq "${threads_declared:-0}" ]; then ok "threads"
 else fail "threads: $threads_bad line(s) outside ci/allow/threads.txt (declared count is exactly ${threads_declared:-0}, not a ceiling)"; fi

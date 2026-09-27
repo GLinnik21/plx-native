@@ -16,7 +16,12 @@
 //! The sort/filter MENUS are server-driven: the first page of a section is requested with
 //! `includeMeta=1` and the response's `Meta.Type[]` supplies the Sort entries; the genre
 //! value list is fetched lazily (`kick_genres`) when the filter menu first opens. Nothing
-//! menu-shaped is hardcoded — a music section would bring its own sorts.
+//! menu-shaped is hardcoded, with one measured exception: PMS 1.43.4 never advertises a
+//! play-count sort in `Meta.Type[].Sort` on any section type, yet it DOES honour
+//! `sort=viewCount:desc`/`:asc` on movie and show sections (an unrecognised key 500s the whole
+//! listing, so this is not something to guess at for a section type that hasn't been proven).
+//! [`with_plays_sort`] appends that one client-side entry where [`SecKind`] proves it works,
+//! and only once, in case a future server starts advertising the key itself (issue #146).
 //!
 //! [`BrowseState`] is main-thread-only; worker threads touch only their owning store adapter's
 //! mailboxes + atomics and the `&'static` Plex client.
@@ -108,9 +113,45 @@ pub(crate) struct BrowseSource {
     /// registry has learned it, which is a source whose pins live for this run only.
     pub(crate) machine_id: String,
     /// This account owns the server. Not derivable from an empty [`BrowseSource::handle`] — a
-    /// share whose `sourceTitle` plex.tv did not send is still a share — and it is the whole input
-    /// to the first-run default (yours On, a friend's Off).
+    /// share whose `sourceTitle` plex.tv did not send is still a share.
+    ///
+    /// It stays the RAW wire flag, and it is **no longer what the first-run default or the tab
+    /// destination read**: both ask [`BrowseSource::household`], because a Plex Home managed
+    /// profile is told `owned:false` about its own family server. This remains the answer to
+    /// "does this ACCOUNT own it", which is a real question several other readers still have, and
+    /// the two are kept apart on purpose.
     pub(crate) owned: bool,
+    /// plex.tv's `home` on the grant, carried verbatim from the registry's [`ServerFacts`].
+    /// Evidence for [`household`](Self::household); never read on its own.
+    pub(crate) home: bool,
+    /// plex.tv's `ownerId` on the grant, carried verbatim. Evidence for
+    /// [`household`](Self::household); `0` means plex.tv named nobody and never matches a
+    /// household member.
+    pub(crate) owner_id: i64,
+    /// **Is this OUR HOUSEHOLD'S server?** — [`crate::plex::is_household`]'s verdict on the three
+    /// carried evidence fields above plus the Plex Home roster
+    /// ([`crate::plex::session::Session::household_ids`]).
+    ///
+    /// A cached DERIVATION, not a fact from the wire, and it lives here rather than on
+    /// `SourceRef`/`ServerFacts` for one reason: those carry evidence, which is durable, while
+    /// this depends on a roster that arrives separately and can change under it. Keeping the
+    /// verdict where the roster is already re-read is what lets `BrowseState`'s own readers stay
+    /// self-contained instead of each re-deriving it from a session they would have to fetch.
+    ///
+    /// **Recomputed by the source-fact sync** ([`BrowseState::sync_roster_owned`]), beside the
+    /// `owned` it sits next to — so it follows a roster ingest, a re-describe and a newly
+    /// appearing source, which is every path that changes the evidence.
+    ///
+    /// It also follows a **Home-roster arrival that changes no source fact**, which needed its own
+    /// trigger: [`BrowseState::discovery_needs_pump`] read the registry and never the session, so
+    /// `/api/v2/home/users` landing alone — the one event that can reclassify every source at once
+    /// while every `ServerFacts` stays byte-identical — never reached the sync at all. That gate
+    /// now compares this cached verdict against a freshly graded one, and the sync answers a
+    /// change by re-resolving the WHOLE pin table.
+    ///
+    /// **Who reads it**: the first-run/Settings pin default (`BrowseState::lib_refs` →
+    /// `plex::pins`) and the tab destination's tiebreak ([`BrowseState::section_of_kind`]).
+    pub(crate) household: bool,
     /// The MACHINE name ("nas-home") — the Sources list's group header, and the only place in the
     /// app a machine is named. Learned from the roster, else from the server naming itself
     /// (`Client::friendly_name`); `""` until one of those lands.
@@ -200,6 +241,23 @@ fn source_snapshot(sid: ServerId) -> Option<(SourceState, Option<crate::plex::pr
         .map(|_| (state, tier))
 }
 
+/// [`BrowseSource::household`]'s one derivation: the carried grant evidence, graded against the
+/// Plex Home roster by the rule that owns the question.
+///
+/// It is a free function rather than a method so that it reads the evidence and NOTHING else —
+/// in particular not the cached verdict it is about to overwrite.
+fn household_verdict(source: &BrowseSource, household: &[i64]) -> bool {
+    crate::plex::is_household(
+        crate::plex::GrantEvidence {
+            owned: source.owned,
+            home: source.home,
+            owner_id: source.owner_id,
+        }
+        .grant(),
+        household,
+    )
+}
+
 // ---- section table (discovered per source) ---------------------------------------------------
 
 /// One browsable library section (movie or show), from one source's `GET /library/sections`.
@@ -232,18 +290,69 @@ pub(crate) struct BrowseSection {
     /// library you have already chosen — and Search, which stays grant-wide and only RANKS
     /// favourite-library hits first.
     ///
-    /// Your own libraries start favourite and a friend's start favourite only where you own no
-    /// library of that type ([`crate::plex::pins::default_on`]); the last favourite cannot be
-    /// turned off, or the app has nothing.
+    /// Your HOUSEHOLD's libraries start favourite and a friend's start favourite only where the
+    /// household has no library of that type ([`crate::plex::pins::default_on`]); the last
+    /// favourite cannot be turned off, or the app has nothing. The household and not the account
+    /// — see [`BrowseSource::household`] and [`BrowseState::lib_refs`] for why plex.tv's raw
+    /// `owned` cannot answer this for a Plex Home managed profile.
     pub(crate) pinned: bool,
+}
+
+/// The flat listings offered by a TV library. Separate from the section's kind: selecting
+/// episodes changes the query, while the section remains a TV library in the tab strip.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum LibraryType {
+    #[default]
+    Shows,
+    Seasons,
+    Episodes,
+}
+
+impl LibraryType {
+    pub(crate) fn title(self) -> &'static str {
+        self.title_in(crate::i18n::current())
+    }
+
+    fn title_in(self, locale: &crate::i18n::LocaleContext) -> &'static str {
+        match self {
+            Self::Shows => crate::i18n::msg::browse_kind_tv_shows_in(locale),
+            Self::Seasons => crate::i18n::msg::browse_kind_seasons_in(locale),
+            Self::Episodes => crate::i18n::msg::browse_kind_episodes_in(locale),
+        }
+    }
+
+    pub(crate) fn plex_type(self) -> i64 {
+        match self {
+            Self::Shows => 2,
+            Self::Seasons => 3,
+            Self::Episodes => 4,
+        }
+    }
 }
 
 /// One sort-menu entry (from `Meta.Type[].Sort` — server-driven).
 #[derive(Clone)]
 pub(crate) struct SortEntry {
     pub(crate) key: String,   // "titleSort"
+    pub(crate) desc_key: String,
     pub(crate) title: String, // "Title"
     pub(crate) default_desc: bool,
+}
+
+impl SortEntry {
+    fn query(&self, desc: bool) -> String {
+        if !desc {
+            if self.key.contains(',') { self.key.clone() } else { format!("{}:asc", self.key) }
+        } else if !self.desc_key.is_empty() {
+            self.desc_key.clone()
+        } else if let Some((first, rest)) = self.key.split_once(',') {
+            // Show ordering reverses the show name while its seasons and episodes keep
+            // their natural order. Older menus may omit the explicit descending key.
+            format!("{first}:desc,{rest}")
+        } else {
+            format!("{}:desc", self.key)
+        }
+    }
 }
 
 /// One genre value (tag id + display title), from the section's `/genre` value list.
@@ -313,6 +422,7 @@ pub(crate) enum CursorAt {
 #[derive(Clone)]
 struct SecState {
     // query
+    library_type: LibraryType,
     sort_idx: usize,
     sort_desc: bool,
     unwatched: bool,
@@ -450,6 +560,7 @@ impl SecItems {
 impl Default for SecState {
     fn default() -> Self {
         SecState {
+            library_type: LibraryType::default(),
             sort_idx: 0,
             sort_desc: false,
             unwatched: false,
@@ -468,10 +579,31 @@ impl Default for SecState {
     }
 }
 
+impl SecState {
+    fn query_filters(&self, section_kind: SecKind) -> Vec<(String, String)> {
+        let mut filters = Vec::new();
+        if section_kind == SecKind::Show {
+            filters.push(("type".into(), self.library_type.plex_type().to_string()));
+        }
+        if self.unwatched {
+            let key = match (section_kind, self.library_type) {
+                (SecKind::Show, LibraryType::Shows | LibraryType::Seasons) => "unwatchedLeaves",
+                _ => "unwatched",
+            };
+            filters.push((key.into(), "1".into()));
+        }
+        if let Some(genre) = &self.genre {
+            filters.push(("genre".into(), genre.id.clone()));
+        }
+        filters
+    }
+}
+
 /// The main-thread state of Browse. Worker mailboxes and their single-flight atomics live in the
 /// sibling [`BrowseAdapter`]; everything whose identity belongs to a Browse instance lives here.
 #[derive(Clone)]
 pub(crate) struct BrowseState {
+    session_generation: u64,
     sources: Vec<BrowseSource>,
     sections: Vec<BrowseSection>,
     states: Vec<SecState>,
@@ -488,6 +620,26 @@ pub(crate) struct BrowseState {
     retry_cd: u32,
     remembered: Vec<(SecKind, String, i64)>,
     recorded: Option<crate::plex::session::HomePins>,
+    pending_pins: Option<(String, std::sync::Arc<std::sync::Mutex<PinWrite>>)>,
+}
+
+/// Shared by a cloned Browse snapshot, so consuming a receipt never makes another clone
+/// mistake a successful write for a disconnected worker. Failed writes keep the local choice.
+struct PinWrite {
+    ticket: crate::storage_worker::TypedTicket<bool>,
+    saved: Option<bool>,
+}
+impl PinWrite {
+    fn saved(&mut self) -> bool {
+        if self.saved.is_none() {
+            self.saved = match self.ticket.try_recv() {
+                Ok(saved) => Some(saved),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(false),
+            };
+        }
+        self.saved == Some(true)
+    }
 }
 
 /// Worker-facing half of one Browse store. Every spawned job captures this adapter, so a result
@@ -556,12 +708,15 @@ impl Default for BrowseState {
             retry_cd: 0,
             remembered: Vec::new(),
             recorded: None,
+            pending_pins: None,
+            session_generation: crate::plex::session::visible_generation(),
         }
     }
 }
 
 impl BrowseState {
     pub(crate) fn discovery_needs_pump(&self, adapter: &BrowseAdapter) -> bool {
+        if self.session_generation != crate::plex::session::visible_generation() { return true; }
         if adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
             return true;
         }
@@ -570,7 +725,19 @@ impl BrowseState {
             || self.sources.iter().zip(&live).any(|(source, sid)| source.sid != *sid) {
             return true;
         }
+        // **The Plex Home roster is the one input to this gate that is not in the registry.**
+        // `/api/v2/home/users` lands on its own schedule and changes no `ServerFacts` at all, so
+        // every other test below is blind to it — and it is the answer that decides whether a
+        // managed profile's family server is the household's or a stranger's. Without this the
+        // sync it guards was simply never reached on a roster arrival, and the source stayed
+        // misgraded until something else happened to move a fact. `peek()` is a lock and an `Arc`
+        // clone over a live cache (`plex/CLAUDE.md`), not a file read, which is what makes it
+        // affordable on a per-frame gate.
+        let household = crate::plex::session::peek().household_ids();
         for source in &self.sources {
+            if source.household != household_verdict(source, &household) {
+                return true;
+            }
             let now = crate::plex::client_for(source.sid);
             if source.client_addr != now.map_or(0, |client| client as *const _ as usize)
                 || source.token_gen != now.map_or(0, |client| client.token_gen()) {
@@ -583,7 +750,8 @@ impl BrowseState {
             }
             if let Some(facts) = crate::plex::server_facts(source.sid) {
                 if (source.name.is_empty() && !facts.name.is_empty())
-                    || source.handle != facts.handle || source.owned != facts.owned {
+                    || source.handle != facts.handle || source.owned != facts.owned
+                    || source.home != facts.home || source.owner_id != facts.owner_id {
                     return true;
                 }
             }
@@ -761,6 +929,29 @@ impl BrowseState {
         self.requery();
         true
     }
+    fn set_library_type(&mut self, library_type: LibraryType) -> bool {
+        let current = self.cur();
+        if self.section_kind(current) != Some(SecKind::Show) {
+            return false;
+        }
+        let Some(state) = self.states.get_mut(current) else { return false };
+        if state.library_type == library_type {
+            return true;
+        }
+        state.library_type = library_type;
+        // Menus and letter counts describe a metadata type. Never reuse the show's menus
+        // or offsets for episodes, and never send a sort key the new type hasn't advertised.
+        state.sorts = Arc::default();
+        state.sort_idx = 0;
+        state.sort_desc = false;
+        state.genre = None;
+        state.genres = Arc::default();
+        state.genres_done = false;
+        state.letters = Arc::default();
+        state.letters_done = false;
+        self.requery();
+        true
+    }
     fn set_genre(&mut self, index: Option<usize>) {
         let current = self.cur();
         let Some(state) = self.states.get_mut(current) else {
@@ -772,6 +963,11 @@ impl BrowseState {
         self.requery();
     }
     fn set_genre_by_id(&mut self, id: Option<&str>) -> bool {
+        if id.is_some() && self.cur_state().is_some_and(|state| {
+            state.library_type != LibraryType::Shows
+        }) {
+            return false;
+        }
         match id {
             None => {
                 self.set_genre(None);
@@ -812,7 +1008,7 @@ impl BrowseState {
         }
         let user = crate::plex::session::current_profile_key();
         let wire = kind.wire();
-        crate::plex::session::update(|current| {
+        crate::plex::session::queue_update(move |current| {
             let mut next = current.clone();
             let slot = match next
                 .last_library
@@ -824,6 +1020,7 @@ impl BrowseState {
                     next.last_library.push(crate::plex::session::LastLibrary {
                         user: user.clone(),
                         libs: Vec::new(),
+                        extensions: Default::default(),
                     });
                     next.last_library.last_mut()?
                 }
@@ -915,12 +1112,15 @@ impl BrowseState {
             return;
         }
         let key = self.sections[current].key;
+        let library_type = self.states[current].library_type;
+        let metadata_type = (self.sections[current].kind == SecKind::Show)
+            .then(|| library_type.plex_type());
         let epoch = self.table_epoch();
         let worker_adapter = Arc::clone(&adapter);
         let spawned = crate::task::spawn_small("directory", move || {
             let list = catch_unwind(|| {
                 let mut values = Vec::new();
-                if let Some(container) = client.section_directory(key, dir) {
+                if let Some(container) = client.section_directory(key, dir, metadata_type) {
                     values.extend(container.directory.iter().filter_map(project));
                 }
                 values
@@ -931,6 +1131,7 @@ impl BrowseState {
                 sec: current,
                 client,
                 token_gen,
+                library_type,
                 list,
             });
         });
@@ -1005,6 +1206,7 @@ impl BrowseState {
                     Some(QueryEdit::Sort { key, desc }) => self.set_sort_by_key(&key, desc),
                     Some(QueryEdit::Unwatched(on)) => self.set_unwatched(on),
                     Some(QueryEdit::Genre(id)) => self.set_genre_by_id(id.as_deref()),
+                    Some(QueryEdit::LibraryType(library_type)) => self.set_library_type(library_type),
                     None => true,
                 }
             }
@@ -1045,7 +1247,9 @@ impl BrowseState {
             return false;
         };
         section.pinned = !section.pinned;
-        self.record_pins(true);
+        let mut touched = vec![false; self.sections.len()];
+        touched[index] = true;
+        self.record_pins(true, &touched);
         self.bump_sections_gen();
         crate::ui::idle::invalidate();
         true
@@ -1123,6 +1327,21 @@ impl BrowseState {
                     == Some(want.1.as_str())
         })
     }
+    /// **Where a tab press lands for a content type**, when the profile has not already chosen.
+    ///
+    /// [`remembered_section`](Self::remembered_section) wins first and unconditionally — a person
+    /// who picked a library from the Sources panel gets that library back, and no rule here may
+    /// second-guess it. What follows is only the tiebreak among the *pinned* libraries of the
+    /// type, and it prefers the HOUSEHOLD's over an outsider's.
+    ///
+    /// The tiebreak is issue #68's mechanism, one household wider. 0.6.x's `tab_section` sorted on
+    /// raw `!owned` with no `pinned` filter at all, so two equally-graded libraries tied and the
+    /// section table's arrival order decided permanently — *"I have two TV Shows libraries … only
+    /// my Animes are being displayed"*. 0.7's `pinned` filter and the remembered choice closed that
+    /// for an owner. They did not close it for a Plex Home managed profile, because plex.tv grades
+    /// that profile's own family server `owned:false` exactly like a friend's share: NOTHING was
+    /// owned, so everything tied again and the tab could land on a stranger's shelf. Grading on
+    /// the household is what makes the tiebreak able to separate them.
     fn section_of_kind(&self, kind: SecKind) -> Option<usize> {
         if let Some(section) = self.remembered_section(kind) {
             return Some(section);
@@ -1130,7 +1349,7 @@ impl BrowseState {
         self.sections.iter().enumerate()
             .filter(|(_, section)| section.kind == kind && section.pinned)
             .min_by_key(|(_, section)| {
-                !self.sources.get(section.src).map(|source| source.owned).unwrap_or(false)
+                !self.sources.get(section.src).map(|source| source.household).unwrap_or(false)
             })
             .map(|(index, _)| index)
     }
@@ -1149,10 +1368,6 @@ impl BrowseState {
         } else {
             SecFetch::Ready
         }
-    }
-    fn section_sid_is_borrowed(&self, index: usize) -> bool {
-        self.sections.get(index).and_then(|section| self.sources.get(section.src))
-            .map(|source| !source.owned).unwrap_or(false)
     }
     fn source_groups(&self) -> Vec<SrcGroup> {
         self.sources.iter().map(|source| SrcGroup {
@@ -1220,16 +1435,26 @@ impl BrowseState {
                     .map(|kind| (kind, target.machine_id.clone(), target.key))
             }).collect()).unwrap_or_default();
     }
+    /// The pin rules' view of the section table.
+    ///
+    /// **Both bits are the HOUSEHOLD's, not this account's.** `plex::pins` is a pure leaf that
+    /// takes bools, so the whole of `is_household` — the grant, plex.tv's `home` flag and the Plex
+    /// Home roster — is resolved on this side and handed down already decided
+    /// ([`BrowseSource::household`]). Reading `owned` here is what gave a managed profile's own
+    /// family server a stranger's defaults: plex.tv answers such a profile `owned:false` on it,
+    /// and `owns_type` then found nothing of the household's either, so EVERY library defaulted On
+    /// — a genuine friend's share included.
     fn lib_refs(&self) -> Vec<crate::plex::pins::LibRef<'_>> {
-        let owns_type = |kind: SecKind| self.sections.iter().any(|section| {
+        let household_type = |kind: SecKind| self.sections.iter().any(|section| {
             section.kind == kind
-                && self.sources.get(section.src).map(|source| source.owned).unwrap_or(true)
+                && self.sources.get(section.src).map(|source| source.household).unwrap_or(true)
         });
         self.sections.iter().map(|section| {
-            let (machine_id, owned) = self.sources.get(section.src)
-                .map(|source| (source.machine_id.as_str(), source.owned)).unwrap_or(("", true));
+            let (machine_id, household) = self.sources.get(section.src)
+                .map(|source| (source.machine_id.as_str(), source.household)).unwrap_or(("", true));
             crate::plex::pins::LibRef {
-                machine_id, key: section.key, owned, own_type: owns_type(section.kind),
+                machine_id, key: section.key, household,
+                household_type: household_type(section.kind),
             }
         }).collect()
     }
@@ -1244,9 +1469,29 @@ impl BrowseState {
             self.set_cur(index);
         }
     }
-    fn resolve_pins_from(&mut self, session: &crate::plex::session::Session, user: &str) {
+    /// A directory refresh must not replace the pending (or failed) local choice with the
+    /// older persisted snapshot. Successful receipts recapture the cache after the worker fill.
+    fn pin_record_for(&mut self, session: &crate::plex::session::Session, user: &str)
+        -> Option<crate::plex::session::HomePins> {
+        if let Some((pending_user, write)) = &self.pending_pins {
+            if pending_user == user && !write.lock().unwrap_or_else(|e| e.into_inner()).saved() {
+                return self.recorded.clone();
+            }
+            self.pending_pins = None;
+            return crate::plex::session::peek().pins_for(user).cloned();
+        }
+        session.pins_for(user).cloned()
+    }
+
+    fn resolve_pins_from(&mut self, session: &crate::plex::session::Session, user: &str) -> bool {
         self.load_remembered(session, user);
-        let record = session.pins_for(user).cloned();
+        let record = self.pin_record_for(session, user);
+        self.resolve_pins_with(record)
+    }
+    /// Re-derive every row from `record` and the never-empty floor, and report whether the table
+    /// actually MOVED — `pins::resolve` is a whole-table function (its own doc says why the floor
+    /// cannot be decided per row), so this is the only shape a re-resolve comes in.
+    fn resolve_pins_with(&mut self, record: Option<crate::plex::session::HomePins>) -> bool {
         let want = {
             let libraries = self.lib_refs();
             crate::plex::pins::resolve(&libraries, record.as_ref())
@@ -1262,6 +1507,35 @@ impl BrowseState {
         if moved {
             self.repoint_cur();
         }
+        moved
+    }
+    /// **The whole-table reconcile, plus the publication a moved row owes** — the one path for
+    /// "something happened that can invalidate an already-resolved table".
+    ///
+    /// Two callers reach it, and they are the two ways that can happen: a Plex Home roster landing
+    /// or session-cache recovery refreshes a SOURCE/record (`sync_roster_owned`), and the Home editor's commit replaces this
+    /// profile's RECORD (`apply_pins`). Both end in the same question — what does
+    /// `pins::resolve` say about every row now — so they ask it the same way rather than each
+    /// keeping a version of the answer. A row that moves without `bump_sections_gen` +
+    /// `ui::idle::invalidate` is a table nothing republishes, which is a pill strip and a set of
+    /// shelves still drawing the previous resolve.
+    fn reconcile_pins(&mut self, record: Option<crate::plex::session::HomePins>) -> bool {
+        let moved = self.resolve_pins_with(record);
+        if moved {
+            self.bump_sections_gen();
+            crate::ui::idle::invalidate();
+        }
+        moved
+    }
+    /// [`reconcile_pins`](Self::reconcile_pins) against the record a session holds.
+    fn reconcile_pins_from(
+        &mut self,
+        session: &crate::plex::session::Session,
+        user: &str,
+    ) -> bool {
+        self.load_remembered(session, user);
+        let record = self.pin_record_for(session, user);
+        self.reconcile_pins(record)
     }
     fn resolve_pins(&mut self) {
         let session = crate::plex::session::peek();
@@ -1290,39 +1564,104 @@ impl BrowseState {
         self.bump_sections_gen();
         crate::ui::idle::invalidate();
     }
-    fn record_pins(&mut self, asked: bool) {
+    /// Write this profile's answer down. `touched` is indexed like the section table and marks
+    /// the rows the VIEWER answered — as the editor reported them, never as a comparison against
+    /// the live pins; everything else keeps whatever it had already answered and is otherwise
+    /// left unrecorded, to go on re-deriving (`plex::pins::answers`).
+    ///
+    /// The returned record is the local pending selection. The worker recomputes the merge
+    /// against the current authority under IO, so unrelated edits made while it was queued
+    /// survive. A missing session or a refused queue returns `None`; the visible selection
+    /// still stands for this run, without claiming it was saved.
+    fn record_pins(&mut self, asked: bool, touched: &[bool])
+        -> Option<crate::plex::session::HomePins> {
         let libraries = self.lib_refs();
         let on: Vec<bool> = self.sections.iter().map(|section| section.pinned).collect();
         let user = crate::plex::session::current_profile_key();
-        let fresh = crate::plex::pins::record(&user, asked, &libraries, &on);
-        let mut written = None;
-        crate::plex::session::update(|session| {
-            let record = crate::plex::pins::carry_forward(
-                fresh.clone(), session.pins_for(&user), &libraries);
+        let snapshot = crate::plex::session::peek();
+        if snapshot.client_id.is_empty() { return None; }
+        let previous = self.recorded.as_ref().or_else(|| snapshot.pins_for(&user));
+        let answers = crate::plex::pins::answers(&libraries, &on, touched, previous);
+        let fresh = crate::plex::pins::record(&user, asked, &libraries, &answers);
+        let record = crate::plex::pins::carry_forward(fresh, previous, &libraries);
+        let owned: Vec<_> = libraries.iter().map(|lib|
+            (lib.machine_id.to_owned(), lib.key, lib.household, lib.household_type)).collect();
+        let touched = touched.to_vec();
+        let pending_user = user.clone();
+        let ticket = crate::plex::session::queue_update_ticket(move |session| {
+            let libraries: Vec<_> = owned.iter().map(|(machine_id, key, household, household_type)|
+                crate::plex::pins::LibRef { machine_id, key: *key, household: *household, household_type: *household_type }).collect();
+            let previous = session.pins_for(&user);
+            let answers = crate::plex::pins::answers(&libraries, &on, &touched, previous);
+            let fresh = crate::plex::pins::record(&user, asked, &libraries, &answers);
+            let merged = crate::plex::pins::carry_forward(fresh, previous, &libraries);
             let mut next = session.clone();
-            next.set_pins_for(&user, record.clone());
-            written = Some(record);
+            next.set_pins_for(&user, merged);
             Some(next)
-        });
-        if let Some(record) = written {
-            self.recorded = Some(record);
-        }
+        }).ok()?;
+        self.pending_pins = Some((pending_user, std::sync::Arc::new(std::sync::Mutex::new(PinWrite { ticket, saved: None }))));
+        self.recorded = Some(record.clone());
+        Some(record)
     }
-    fn apply_pins(&mut self, edits: &[(usize, bool)]) {
+    /// The editor's one commit: apply the rows it ANSWERED, and record exactly those.
+    ///
+    /// Recording the rest would freeze defaults nobody chose; `plex::pins::answers` has the
+    /// argument.
+    ///
+    /// **The provenance arrives with the command; it is not reconstructed here.** This used to
+    /// take the whole visible draft and infer "the viewer moved this row" from "it disagrees with
+    /// the live pin" — which cannot see the one case that matters: a row the viewer toggled to a
+    /// value a roster correction then moved the LIVE pin to as well, before the commit, arrives
+    /// agreeing with the table and reads as untouched. Left unrecorded it goes on re-deriving, so
+    /// the day the default moves again (the household loses its last library of that type) an
+    /// explicit Off comes back On with nothing to appeal to. `screens::onboard` holds the draft,
+    /// so it is the one place that can record which rows a press moved (its `touched`), and it
+    /// sends that.
+    ///
+    /// An answer that agrees with the live pin therefore still moves nothing on screen and is
+    /// still written down; an empty batch is still a commit (`asked`, no answers).
+    ///
+    /// **And the table is reconciled with the record THIS COMMIT PRODUCED**, through the same
+    /// [`reconcile_pins`](Self::reconcile_pins) a reclassification uses. Recording only the
+    /// answered rows means the unanswered ones keep re-deriving — including one the never-empty
+    /// floor had RAISED, which would otherwise keep its raised value on screen while the record
+    /// says otherwise, and go back down at the next resolve with no user action behind it.
+    ///
+    /// **A commit that produced no record is not reconciled**, and the difference is the whole of
+    /// it: [`record_pins`](Self::record_pins) answers `None` when `session::update` refused the
+    /// cycle, and the record still standing then is the one this commit meant to replace.
+    fn apply_pins(&mut self, answers: &[(usize, bool)]) {
+        let mut touched = vec![false; self.sections.len()];
         let mut changed = false;
-        for &(index, on) in edits {
-            if let Some(section) = self.sections.get_mut(index) {
-                if section.pinned != on {
-                    section.pinned = on;
-                    changed = true;
-                }
+        for &(index, on) in answers {
+            let Some(section) = self.sections.get_mut(index) else {
+                continue;
+            };
+            if section.pinned != on {
+                section.pinned = on;
+                changed = true;
+            }
+            if let Some(slot) = touched.get_mut(index) {
+                *slot = true;
             }
         }
-        self.record_pins(true);
+        let produced = self.record_pins(true, &touched);
         if changed {
             self.repoint_cur();
             self.bump_sections_gen();
             crate::ui::idle::invalidate();
+        }
+        // Reconcile the pending selection immediately. Until its receipt lands, a captured
+        // older session must not undo the viewer's edits. This is not a durability claim.
+        match produced {
+            Some(record) => {
+                self.reconcile_pins(Some(record));
+            }
+            // A missing identity or full queue cannot justify undoing the visible selection.
+            None => crate::log(
+                "browse: the session refused this commit — the selection stands for this run, \
+                 and nothing was recorded",
+            ),
         }
     }
     fn retry_discovery(&mut self) {
@@ -1451,9 +1790,20 @@ impl BrowseState {
         self.reset_with(|| adapter.clear());
     }
     pub(crate) fn sync_roster_owned(&mut self) -> RosterSync {
+        let generation = crate::plex::session::visible_generation();
+        let session_changed = self.session_generation != generation;
+        self.session_generation = generation;
         let live: Vec<ServerId> = crate::plex::server_ids().collect();
+        // The Plex Home roster, read ONCE for the whole sync: `peek()` is a write-through cache
+        // over the persisted session (`plex/CLAUDE.md`), so this is a lock and an `Arc` clone
+        // rather than a file read — but it is still per sync and not per source.
+        let session = crate::plex::session::peek();
+        let household = session.household_ids();
         let retire_adapter = self.sources.iter().any(|source| !live.contains(&source.sid));
         let mut changed = retire_adapter;
+        // Did any source change SIDE of the household line in this pass? That, and not a changed
+        // `ServerFacts`, is what the pin defaults and the tab destination are derived from.
+        let mut reclassified = false;
         if retire_adapter {
             self.reset_with(|| {});
         }
@@ -1486,11 +1836,23 @@ impl BrowseState {
                             source.name = facts.name.clone();
                             changes += 1;
                         }
-                        if source.handle != facts.handle || source.owned != facts.owned {
+                        if source.handle != facts.handle || source.owned != facts.owned
+                            || source.home != facts.home || source.owner_id != facts.owner_id {
                             source.handle = facts.handle.clone();
                             source.owned = facts.owned;
+                            source.home = facts.home;
+                            source.owner_id = facts.owner_id;
                             changes += 1;
                         }
+                    }
+                    // Derived AFTER the evidence above lands, and unconditionally: the roster this
+                    // is graded against arrives on its own schedule, so an unchanged `ServerFacts`
+                    // does not mean an unchanged verdict.
+                    let household_now = household_verdict(source, &household);
+                    if source.household != household_now {
+                        source.household = household_now;
+                        reclassified = true;
+                        changes += 1;
                     }
                     let machine_id = machine_of(sid);
                     if source.machine_id != machine_id {
@@ -1506,6 +1868,10 @@ impl BrowseState {
                 None => {
                     let facts = crate::plex::server_facts(sid);
                     let owned = facts.map(|facts| facts.owned).unwrap_or(true);
+                    // An undescribed slot is the session's own server (`servers::describe_name`
+                    // says why that is not a guess), so it carries no third-party evidence.
+                    let home = facts.is_some_and(|facts| facts.home);
+                    let owner_id = facts.map_or(0, |facts| facts.owner_id);
                     let (name, handle) = facts.map(|facts| {
                         (facts.name.clone(), facts.handle.clone())
                     }).unwrap_or_default();
@@ -1517,7 +1883,12 @@ impl BrowseState {
                         token_gen: crate::plex::client_for(sid)
                             .map_or(0, |client| client.token_gen()),
                         machine_id: machine_of(sid),
-                        owned, name, handle, state, tier,
+                        owned, home, owner_id,
+                        household: crate::plex::is_household(
+                            crate::plex::GrantEvidence { owned, home, owner_id }.grant(),
+                            &household,
+                        ),
+                        name, handle, state, tier,
                         sections_done: false, counts_done: false, retry_cd: 0,
                     });
                     self.bump_source_facts_gen();
@@ -1527,6 +1898,26 @@ impl BrowseState {
         }
         if self.sources.len() != known {
             crate::log(&format!("browse: roster now {} source(s)", self.sources.len()));
+        }
+        if reclassified || session_changed {
+            // **A source changed sides, so the WHOLE pin table is re-resolved** — `pins::resolve`
+            // is a whole-table function on purpose (its own doc: the never-empty floor is a
+            // question about the table, not about a row), and one source's reclassification moves
+            // `household_type` for every library of its kind on every other source too.
+            //
+            // Only the rows nobody has answered about actually move: a recorded answer beats the
+            // default in both directions, which is exactly what makes a late roster able to
+            // correct a default it arrived too late to inform and unable to overrule a decision.
+            // `reconcile_pins_from`'s `bump_sections_gen` republishes through the same generation
+            // a pin toggle does, and carries the tab strip's pill mask with it; the tab
+            // DESTINATION is derived live by `section_of_kind`, so it follows the same bump
+            // without a cache of its own. It bumps only when a row actually MOVED — a
+            // reclassification that moves none publishes nothing new to the section table, and
+            // the source facts it did move have their own generation, bumped above.
+            if crate::plex::session::peek_settled().is_some() {
+                self.reconcile_pins_from(&session, &crate::plex::session::current_profile_key());
+            }
+            changed = true;
         }
         RosterSync { changed, retire_adapter }
     }
@@ -1635,23 +2026,25 @@ impl BrowseState {
             source.retry_cd = SRC_RETRY_CD;
         }
     }
-    fn land_discovery_owned(
+    fn land_discovery_owned_with_gate(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
+        gate: &crate::ui::landgate::Gate,
     ) -> crate::stores::StoreOutcome {
-        let taken = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
+        let taken = crate::stores::take_landing(gate, crate::stores::StoreId::Browse, || {
             adapter.src_result.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         let Some((epoch, source, landing)) = taken else { return Default::default() };
         self.apply_discovery(epoch, source, landing, None, adapter)
     }
-    fn land_directory_owned<T>(
+    fn land_directory_owned_with_gate<T>(
         &mut self,
+        gate: &crate::ui::landgate::Gate,
         flag: &AtomicBool,
         mail: &Mutex<Option<DirectoryResult<T>>>,
         apply: impl FnOnce(&mut SecState, Vec<T>),
     ) -> bool {
-        let taken = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
+        let taken = crate::stores::take_landing(gate, crate::stores::StoreId::Browse, || {
             mail.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         let Some(result) = taken else { return false };
@@ -1660,16 +2053,29 @@ impl BrowseState {
         if result.epoch != self.table_epoch() {
             return false;
         }
-        let DirectoryResult { sec, client, token_gen, list, .. } = result;
+        let DirectoryResult { sec, client, token_gen, library_type, list, .. } = result;
         crate::plex::commit_if_current(client.id(), client, token_gen, || {
             if self.section_sid(sec) == Some(client.id()) {
                 if let Some(state) = self.state_mut(sec) {
+                    if state.library_type != library_type {
+                        return false;
+                    }
                     apply(state, list);
                     return true;
                 }
             }
             false
         }).unwrap_or(false)
+    }
+    #[cfg(test)]
+    fn land_discovery_owned(&mut self, adapter: &Arc<BrowseAdapter>)
+        -> crate::stores::StoreOutcome {
+        self.land_discovery_owned_with_gate(adapter, crate::ui::landgate::fixture_gate())
+    }
+    #[cfg(test)]
+    fn land_directory_owned<T>(&mut self, flag: &AtomicBool,
+        mail: &Mutex<Option<DirectoryResult<T>>>, apply: impl FnOnce(&mut SecState, Vec<T>)) -> bool {
+        self.land_directory_owned_with_gate(crate::ui::landgate::fixture_gate(), flag, mail, apply)
     }
     fn maybe_spawn_owned(&mut self, adapter: &Arc<BrowseAdapter>) {
         if adapter.fetching.load(Ordering::SeqCst) || self.retry_cd > 0 {
@@ -1697,19 +2103,10 @@ impl BrowseState {
         };
         let include_meta = state.sorts.is_empty();
         let sort = state.sorts.get(state.sort_idx)
-            .map(|sort| format!("{}:{}", sort.key,
-                if state.sort_desc { "desc" } else { "asc" }))
+            .map(|sort| sort.query(state.sort_desc))
             .unwrap_or_default();
-        let mut filters = Vec::new();
-        if state.unwatched {
-            filters.push((match section.kind {
-                SecKind::Show => "unwatchedLeaves",
-                SecKind::Movie => "unwatched",
-            }.to_string(), "1".to_string()));
-        }
-        if let Some(genre) = &state.genre {
-            filters.push(("genre".to_string(), genre.id.clone()));
-        }
+        let filters = state.query_filters(section.kind);
+        let confirm_sort = section.kind == SecKind::Show && state.library_type != LibraryType::Shows;
         let gen = self.query_gen();
         let key = section.key;
         let Some(sid) = self.section_sid(current) else { return };
@@ -1723,29 +2120,7 @@ impl BrowseState {
                     section_key: key, sort: &sort, filters: &filters,
                     start: start as i64, size: PAGE as i64, include_meta,
                 };
-                let Some(container) = client.section_items_query(&query) else {
-                    return (Vec::new(), -1, None);
-                };
-                let items = container.metadata.iter().map(|item| parse_item(item, sid)).collect();
-                let total = if container.total_size > 0 {
-                    container.total_size
-                } else {
-                    start as i64 + container.metadata.len() as i64
-                };
-                let sorts = container.meta.as_ref().and_then(|meta| {
-                    meta.types.iter().find(|kind| kind.active != 0)
-                        .or_else(|| meta.types.first()).map(|kind| kind.sort.iter()
-                            .filter(|sort| !sort.key.is_empty()).map(|sort| SortEntry {
-                                key: sort.key.clone(),
-                                title: if sort.title.is_empty() {
-                                    sort.key.clone()
-                                } else {
-                                    sort.title.clone()
-                                },
-                                default_desc: sort.default_direction == "desc",
-                            }).collect())
-                });
-                (items, total, sorts)
+                fetch_listing_page(client, sid, &query, confirm_sort)
             }).unwrap_or((Vec::new(), -1, None));
             *worker_adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) =
                 Some(PageResult {
@@ -1763,41 +2138,50 @@ impl BrowseState {
     ) {
         self.maybe_discover_owned(adapter, launch);
     }
-    pub(crate) fn discover_pump_owned(
+    pub(crate) fn discover_pump_owned_with_gate(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
+        gate: &crate::ui::landgate::Gate,
     ) -> crate::stores::StoreOutcome {
-        let outcome = self.land_discovery_owned(adapter);
+        let outcome = self.land_discovery_owned_with_gate(adapter, gate);
         self.maybe_discover_owned(adapter, &mut execute_discovery);
         outcome
     }
-    pub(crate) fn pump_owned(
+    #[cfg(test)]
+    pub(crate) fn discover_pump_owned(&mut self, adapter: &Arc<BrowseAdapter>)
+        -> crate::stores::StoreOutcome {
+        self.discover_pump_owned_with_gate(adapter, crate::ui::landgate::fixture_gate())
+    }
+    pub(crate) fn pump_owned_with_gate(
         &mut self,
         adapter: &Arc<BrowseAdapter>,
+        gate: &crate::ui::landgate::Gate,
     ) -> crate::stores::StoreOutcome {
         let mut changed = false;
         self.retry_cd = self.retry_cd.saturating_sub(1);
-        let discovery = self.land_discovery_owned(adapter);
+        let discovery = self.land_discovery_owned_with_gate(adapter, gate);
         changed |= discovery.changed;
         let endpoints = discovery.endpoints;
         self.maybe_discover_owned(adapter, &mut execute_discovery);
-        changed |= self.hubs_land(adapter);
+        changed |= self.hubs_land(adapter, gate);
         changed |= self.hubs_tick_all(adapter);
-        changed |= self.land_directory_owned(
+        changed |= self.land_directory_owned_with_gate(
+            gate,
             &adapter.genre_fetching, &adapter.genre_result, |state, list| {
             state.genres_done = true;
             if state.genres.is_empty() {
                 state.genres = Arc::new(list);
             }
         });
-        changed |= self.land_directory_owned(
+        changed |= self.land_directory_owned_with_gate(
+            gate,
             &adapter.letters_fetching, &adapter.letter_result, |state, list| {
                 state.letters_done = true;
                 if state.letters.is_empty() {
                     state.letters = Arc::new(list);
                 }
             });
-        let page = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
+        let page = crate::stores::take_landing(gate, crate::stores::StoreId::Browse, || {
             adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         if let Some(result) = page {
@@ -1822,10 +2206,20 @@ impl BrowseState {
                                 }
                             }
                         } else if result.gen == self.query_gen() {
+                            let kind = self.section_kind(result.sec);
                             if let Some(state) = self.state_mut(result.sec) {
                                 state.fetch = SecFetch::Ready;
                                 if let Some(sorts) = result.sorts {
                                     if state.sorts.is_empty() {
+                                        let sorts = if state.library_type == LibraryType::Shows {
+                                            match kind {
+                                                Some(kind) => with_plays_sort(sorts, kind),
+                                                None => sorts,
+                                            }
+                                        } else {
+                                            state.sort_desc = sorts.first().is_some_and(|sort| sort.default_desc);
+                                            sorts
+                                        };
                                         state.sorts = Arc::new(sorts);
                                     }
                                 }
@@ -1846,9 +2240,52 @@ impl BrowseState {
         self.maybe_spawn_owned(adapter);
         crate::stores::StoreOutcome { changed, endpoints }
     }
+    #[cfg(test)]
+    pub(crate) fn pump_owned(&mut self, adapter: &Arc<BrowseAdapter>)
+        -> crate::stores::StoreOutcome {
+        self.pump_owned_with_gate(adapter, crate::ui::landgate::fixture_gate())
+    }
 }
 
 // ---- fetch plumbing (generation + single-flight + mailboxes) --------------------------------
+
+fn fetch_listing_page(
+    client: &crate::plex::Client,
+    sid: ServerId,
+    query: &SectionQuery<'_>,
+    confirm_sort: bool,
+) -> (Vec<PmsMovie>, i64, Option<Vec<SortEntry>>) {
+    let Some(mut container) = client.section_items_query(query) else {
+        return (Vec::new(), -1, None);
+    };
+    let sorts: Option<Vec<SortEntry>> = container.meta.as_ref().and_then(|meta| {
+        meta.types.iter().find(|kind| kind.active != 0)
+            .or_else(|| meta.types.first()).map(|kind| kind.sort.iter()
+                .filter(|sort| !sort.key.is_empty()).map(|sort| SortEntry {
+                    key: sort.key.clone(),
+                    desc_key: sort.desc_key.clone(),
+                    title: if sort.title.is_empty() { sort.key.clone() } else { sort.title.clone() },
+                    default_desc: sort.default_direction == "desc",
+                }).collect())
+    });
+    // Seasons and episodes advertise Show ordering first, while an unsorted /all answer
+    // arrives in title order. Publish only after ordering by the menu we just discovered;
+    // later pages use that same key, so no page boundary can duplicate or skip an episode.
+    if confirm_sort && query.include_meta && query.sort.is_empty() {
+        if let Some(first) = sorts.as_ref().and_then(|sorts| sorts.first()) {
+            let sort = first.query(first.default_desc);
+            let sorted = SectionQuery { sort: &sort, include_meta: false, ..*query };
+            let Some(sorted_container) = client.section_items_query(&sorted) else {
+                return (Vec::new(), -1, None);
+            };
+            container = sorted_container;
+        }
+    }
+    let total = if container.total_size > 0 { container.total_size }
+        else { query.start + container.metadata.len() as i64 };
+    let items = container.metadata.iter().map(|item| parse_item(item, sid)).collect();
+    (items, total, sorts)
+}
 
 /// Bumped whenever the section table's SHAPE changes — a source's sections appended, or the whole
 /// table wiped by [`reset`]. Label/measurement caches keyed on the table (the tab strip's pill
@@ -1884,6 +2321,7 @@ struct DirectoryResult<T> {
     sec: usize,
     client: &'static crate::plex::Client,
     token_gen: u32,
+    library_type: LibraryType,
     list: Vec<T>,
 }
 
@@ -2037,6 +2475,40 @@ impl SecKind {
     }
 }
 
+/// PMS's own sort key for play count — never advertised by `includeMeta=1` (measured against
+/// PMS 1.43.4, on movie and show sections alike) but honoured by the server on both when sent
+/// directly, sorting movies by their view count and shows by their own. An unrecognised key
+/// 500s the whole listing, which is why [`with_plays_sort`] never sends this for a kind that
+/// hasn't been proven to accept it.
+const PLAYS_SORT_KEY: &str = "viewCount";
+
+/// Whether the server is proven to honour [`PLAYS_SORT_KEY`] for this section kind. An
+/// exhaustive match rather than a wildcard default: [`SecKind`]'s own doc says a third variant
+/// (`Artist`/`Photo`) belongs in "the commit that builds its level", and when that lands this
+/// match must fail to compile until someone decides whether the new kind belongs here too,
+/// rather than silently inheriting `true`.
+fn kind_offers_plays_sort(kind: SecKind) -> bool {
+    match kind {
+        SecKind::Movie | SecKind::Show => true,
+    }
+}
+
+/// Append the client-side "Plays" sort where the server is proven to honour it, unless it is
+/// already in the advertised list (a future PMS that starts advertising `viewCount` itself
+/// must not produce two rows). Descending by default — most-played first, the direction the
+/// feature exists for.
+fn with_plays_sort(mut sorts: Vec<SortEntry>, kind: SecKind) -> Vec<SortEntry> {
+    if kind_offers_plays_sort(kind) && !sorts.iter().any(|sort| sort.key == PLAYS_SORT_KEY) {
+        sorts.push(SortEntry {
+            key: PLAYS_SORT_KEY.into(),
+            desc_key: String::new(),
+            title: crate::i18n::msg::browse_library_plays().into(),
+            default_desc: true,
+        });
+    }
+    sorts
+}
+
 /// Point the app's CURRENT server at the source of section `i`, and drop the per-server state that
 /// belonged to the old one.
 ///
@@ -2079,7 +2551,7 @@ fn activate_source_of(_i: usize) {
 //
 // The consequence is the property B was written for: the strip is a constant width at one friend
 // or at ten. Put source in the strip instead and three friends measure 2133px against a 1540 track.
-// Source lives in the Library chip instead, so adding people never reshapes this strip.
+// Source rides inside the library pill's own label instead, so adding people never reshapes this strip.
 //
 // **What DOES reshape it is the favourite switch, and that is the change of 2026-09-05.** Movies
 // and TV Shows were permanent destinations — `tab_count` was a constant 2 and `tabs_gen` a
@@ -2418,6 +2890,9 @@ pub(crate) fn seed_sources_for_owner_test(
             token_gen: 0,
             machine_id: format!("mach-{index}"),
             owned: index == 0,
+            home: false,
+            owner_id: 0,
+            household: index == 0,
             name: if index == 0 {
                 "nas-home".into()
             } else {
@@ -2451,6 +2926,9 @@ pub(crate) fn seed_pins_for_owner_test(state: &mut BrowseState, pinned: &[bool])
         token_gen: 0,
         machine_id: "mach-test".into(),
         owned: true,
+        home: false,
+        owner_id: 0,
+        household: true,
         name: "nas-home".into(),
         handle: String::new(),
         state: SourceState::Reachable,
@@ -2537,9 +3015,13 @@ pub(crate) fn seed_registered_table_for_owner_test(
         let client = crate::plex::client_for(sid).expect("registered fixture source");
         let source = state.source_mut(index).unwrap();
         source.sid = sid;
+        source.machine_id = client.machine_id().to_owned();
         source.client_addr = client as *const _ as usize;
         source.token_gen = client.token_gen();
-        crate::plex::describe_server(sid, &source.name, &source.handle, source.owned);
+        crate::plex::describe_server(sid, &source.name, &source.handle,
+            crate::plex::GrantEvidence {
+                owned: source.owned, home: source.home, owner_id: source.owner_id,
+            });
     }
     for section in &mut state.states {
         section.letters_done = true;
@@ -2621,6 +3103,7 @@ pub(crate) fn queue_genre_for_owner_test(
     *adapter.genre_result.lock().unwrap_or_else(|e| e.into_inner()) =
         Some(DirectoryResult {
             epoch: state.table_epoch(), sec, client, token_gen: client.token_gen(),
+            library_type: state.states[sec].library_type,
             list: vec![GenreEntry { id: "new".into(), title: "New Genre".into() }],
         });
 }
@@ -2718,3 +3201,29 @@ mod home_and_tabs_tests;
 #[cfg(test)]
 #[path = "browse_reachability_tests.rs"]
 mod reachability_tests;
+
+#[cfg(test)]
+mod library_type_tests;
+
+#[cfg(test)]
+mod localized_type_tests {
+    use super::LibraryType;
+
+    #[test]
+    fn library_type_titles_translate_without_changing_the_pms_query_type() {
+        use crate::i18n::{LocaleContext, Preference};
+        for (preference, expected) in [
+            (Preference::En, ["TV Shows", "Seasons", "Episodes"]),
+            (Preference::Es, ["Series", "Temporadas", "Episodios"]),
+            (Preference::Be, ["Серыялы", "Сезоны", "Серыі"]),
+        ] {
+            let locale = LocaleContext::resolve(preference, None, None, None, None);
+            for ((kind, wire_type), title) in [
+                (LibraryType::Shows, 2), (LibraryType::Seasons, 3), (LibraryType::Episodes, 4),
+            ].into_iter().zip(expected) {
+                assert_eq!(kind.title_in(&locale), title);
+                assert_eq!(kind.plex_type(), wire_type);
+            }
+        }
+    }
+}

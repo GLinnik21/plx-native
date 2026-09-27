@@ -410,9 +410,11 @@ about a specific contract, NOT about "it's only a throwaway" — that is never t
    at an alpha below 1, which is what lets a whole page — `Backdrop` included — dip for the
    route-level page transition. The pixels it writes are still opaque; only the corner rgb moves.
 2. ~~**detail absolute section layout**: keep the hard-coded Y table; no reflow engine.~~
-   **SUPERSEDED** — detail is now a single computed vertical flow: `section_y()` stacks the present
-   blocks' `block_h()` heights from `CONTENT_TOP` with one `SECTION_GAP` (tabs→episodes hug via
-   `TAB_EP_GAP`), and both the draws and `scroll_target` read it. Block heights are content-derived
+   **SUPERSEDED** — detail is now a single computed vertical flow: `DetailScreen::section_top`
+   stacks the present blocks' `block_h()` heights from `CONTENT_TOP`, each separated by whichever of
+   `section_gap`'s three answers applies — `SECTION_GAP` between ordinary sections, `TAB_EP_GAP`
+   where tabs hug their episodes, and `consts::UNDER_LABEL_AIR` after a shelf section that is
+   already reserving its own label band — and both the draws and `scroll_target` read it. Block heights are content-derived
    (Related tracks `REL_H`=`CARD_H`), so resizing a block reflows everything below with no magic
    constants. The original carve-out was wrong — the manual `CAST_Y`/`ABOUT_Y` bump needed when
    Related grew was exactly the drift a flow removes.

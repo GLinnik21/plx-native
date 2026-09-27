@@ -18,7 +18,9 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 - Before playback work, read `rust-modules/src/player/CLAUDE.md`.
 - Before Plex data-layer work, read `rust-modules/src/plex/CLAUDE.md` and `docs/pms-api.md`.
 - Before UI work, read `rust-modules/src/ui/CLAUDE.md` and use the shared theme, layout, and widget
-  systems instead of adding screen-local visual primitives.
+  systems instead of adding screen-local visual primitives. Before touching a screen, also read
+  `rust-modules/src/screens/CLAUDE.md`; the restructure's design record is
+  `docs/ui-restructure-spec-v4.md`, which `ui/mod.rs` cites by section number.
 - Repository skills live in `.agents/skills/`. Use the matching skill whenever its description
   fits the task; the TV, simulator, FFI, release, and verification workflows have non-obvious
   constraints that generic commands miss.
@@ -33,6 +35,18 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   reaches `main` is the squash of the whole. The reason is the history itself: `main` is read by
   `git log`, by the release audit and by `git bisect`, and a trunk of "fix typo" / "wip" / merge
   commits pollutes all three. Push `main` only when the user asked for it.
+- **A squash onto a MOVING `main` silently reverts it.** `git reset --soft origin/main` keeps the
+  index, so any commit that landed on `origin/main` after your picks shows up inside your squash as
+  a line-for-line reversal — and the reversal compiles, so every gate stays green. PR #156 undid
+  #153 exactly this way. Before pushing any squash, run `git diff --stat HEAD^ HEAD` and confirm
+  every path is one the branch meant to touch; anything else is `git checkout origin/main --
+  <path>`, amend, re-gate. Prefer squashing onto the same base the picks were made on and rebasing.
+  `git fetch -q` can fail silently, so check `git log HEAD..origin/main` after fetching.
+- **A diff stat is not a measure of change.** `dec32f2e` ran rustfmt over all of `ui/`, so
+  `detail.rs` read +2416 lines for +113 characters of content. `git diff -w` does not rescue it —
+  that ignores whitespace *within* a line, not one line split into three. Size a change by content
+  (`git show <rev>:<path> | tr -d '[:space:]' | wc -c`, before and after); a near-zero delta means
+  reflow. Then diff the symbol sets to find what actually moved.
 - Preserve unrelated user changes and generated artifacts. Never clean or reset a dirty tree to
   make a task easier.
 - This repository is public. Never publish values from gitignored private files such as `.tv-host`,
@@ -48,35 +62,57 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
 
 ## Build and verification
 
+- **A gate result is evidence about the exact tree it ran on, and that is not automatically the
+  tree you hand over.** Gates run on the COMMITTED tree: commit, confirm `git status --short` is
+  empty, run the gates, confirm it is empty again (restoring `make check`'s own self-test debris),
+  then push. A lane once reported `make check` 3686/0, a clean `--no-default-features` and a real
+  ARM link for fixes that were sitting on disk and never committed; CI failed to compile it in 89
+  seconds. Report the `test result:` line itself rather than a summary — `| tail -n 25` eats it
+  when several stages run.
 - `make check` runs the fast host unit suite and lint gate. Use it for ordinary Rust changes.
 - `make` performs the ARM cross-build. Do not assume a host-only green result proves the target
   still builds.
 - After editing `rust-modules/src/**/*.rs`, also check the shipping feature set with
   `CARGO_INCREMENTAL=0 cargo +nightly check --manifest-path rust-modules/Cargo.toml --lib
-  --no-default-features` when the Claude-only release hook did not run. The prefix is not
-  decoration: this command is the one cargo invocation here that does NOT go through `make`, so it
-  is the one place the Makefile's linked-worktree `CARGO_INCREMENTAL=0` cannot reach — and a
-  one-shot gate has nothing to reuse a multi-gigabyte cache for.
-- **`make disk` before and after a fleet.** Build trees are per-checkout and were never collected;
-  twelve lanes reached 45 GB with 3.2 GiB free on 2026-09-03. `tools/build-gc.sh
-  --incremental|--lanes|--all` reclaims them and deletes nothing `make` cannot rebuild. Note what
-  the measurement says rather than what everyone assumes: the cargo **incremental cache** was 24 GB
-  of that, FFmpeg 2.6 GB. **Run `tools/build-gc.sh --orphans` after tearing a fleet down** — lane
-  target dirs live outside the repo (`$PLX_FLEET_DIR`) and outlive their worktree; 36 GB of them
-  had accumulated unseen.
+  --no-default-features` when the Claude-only release hook did not run. Keep the
+  `CARGO_INCREMENTAL=0` prefix on this and on every other direct `cargo` call: they bypass `make`,
+  so the Makefile's linked-worktree setting cannot reach them, and a one-shot gate has no use for
+  a multi-gigabyte incremental cache. `tools/build-gc.sh` also installs
+  `.claude/worktrees/.cargo/config.toml` (`plx-build-gc-policy`) with `incremental = false`,
+  `[profile.dev] debug = "line-tables-only"` and `debug = false` for third-party packages as a
+  backstop; the env var outranks that file and states the intent where a reader can see it.
+- **`make disk` before and after a fleet.** Build trees are per-checkout and nothing collects
+  them for you; the cargo **incremental cache**, not FFmpeg, is most of the bulk.
+  `tools/build-gc.sh --incremental|--lanes|--all` deletes only rebuildable output. After tearing
+  a fleet down, run `--worktrees` (removes finished lanes — clean, unlocked, already on `main` —
+  which `git branch --merged` cannot see once they are squash-merged) and then `--orphans` (lane
+  target dirs live outside the repo under `$PLX_FLEET_DIR` and outlive their worktree).
+  `docs/agent-reference.md` keeps the measurements behind this.
 - Use the `which-tier` skill to choose between host checks, `ui-sim`, and real-device verification.
   Pixel output, LG text rasterization, video-plane composition, performance, and native playback
   generally need the TV before being called verified.
 - FFI, linkage, `dynlib!`, Starfish, ACB, curl, or bundled-FFmpeg changes require the
-  `fw_compat_reviewer` custom agent (or the equivalent manual review) before push.
-- After behavior changes, use the `doc_claim_auditor` custom agent (or perform the same audit) to
-  find prose that the change made false. It reports contradictions, not missing documentation.
+  `fw-compat-reviewer` custom agent (`fw_compat_reviewer` in Codex), or the equivalent manual
+  review, before push.
+- After behavior changes, use the `doc-claim-auditor` custom agent (`doc_claim_auditor` in
+  Codex), or perform the same audit, to find prose that the change made false. It reports
+  contradictions, not missing documentation.
 
 ## Television and release safety
 
 - There is one physical television. Before any command that deploys, runs, drives, captures, or
   tests it, use the `tv-lock` skill and acquire the repository TV lock. Prefer `ui-sim` when the
   device is unnecessary or busy. Read-only status/log collection is the documented exception.
+- **Never write to a real person's Plex account.** Boot with `--guest` and verify the identity
+  line in the log before sending any key; never press `ok` on a card whose `ratingKey` you have not
+  read from the log; reopen a screen by relaunching with `--screen` rather than walking Home. A
+  Continue Watching tile RESUMES PLAYBACK on OK, which is how two separate sessions started real
+  playback on the owner's account. Seeding, scrobbling, unscrobbling, marking watched and "Remove
+  from Deck" are all writes to a household's actual viewing record — the managed and Guest profiles
+  are real users too. When screenshot or demo work needs particular content, mock the server.
+- Hold the TV lock around the device commands themselves and release as soon as the device work
+  pauses. Do not hold a lease while building, reading screenshots or writing Markdown; other lanes
+  queue behind it.
 - The tracked default is `FLAVOR=debug`. Any stable install, package, deploy, or release action
   must name `FLAVOR=stable` explicitly and follow the `cut-release` skill. Do not bypass the stable
   guard or the TV lock unless the user explicitly directs the exceptional action.

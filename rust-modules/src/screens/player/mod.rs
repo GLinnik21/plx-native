@@ -22,6 +22,7 @@
 //! [`PlayerScreen::publish`] mirrors both into the atomics the draw path and the engine read, and
 //! is the only writer of either.
 
+mod ass_subtitles;
 pub(crate) mod input;
 pub(crate) mod overlay;
 /// The Skip Intro / Skip Credits pill — a `ControlSlot` occupant of this screen's HUD, not a
@@ -64,7 +65,7 @@ pub(crate) const WORD: &str = "player";
 pub(crate) const SHAPE: &str =
     "PlayerScreen{hud:{focus:i32,btn:i32,tab:i32,until:u32,dismissed:bool,visible_at_press:bool,\
      offer:Option<(u32,i64)>,was_standin:bool},scrub:{dir:i32,hold:bool,reveal:bool,drag:bool,\
-     ns:i64,commit_at:u32},origin:Option<u32>}";
+     ns:i64,commit_at:u32},origin:Option<u32>,repair_alert:{open:bool,confirm:bool,scroll:u32}}";
 
 /// **The page this playback was launched from**, as the container's own identity.
 ///
@@ -85,6 +86,7 @@ pub(crate) struct Origin {
 pub(crate) struct PlayerRender {
     /// The decoded image-subtitle display set and its cache key (`player_hud`'s `SET`/`KEY`/`SEL`).
     pub(crate) subs: SubtitleBitmaps,
+    pub(crate) ass: ass_subtitles::AssSubtitles,
 }
 
 impl Default for SubtitleBitmaps {
@@ -130,6 +132,8 @@ pub(crate) struct PlayerScreen {
     /// Where this playback returns to — see [`Origin`].
     pub(crate) origin: Option<Origin>,
     render: PlayerRender,
+    repair_alert: crate::ui::decision_alert::DecisionAlert,
+    repair_scroll: u32,
 }
 
 impl PlayerScreen {
@@ -146,6 +150,12 @@ impl PlayerScreen {
             lifted: false,
             origin: None,
             render: PlayerRender::default(),
+            repair_alert: {
+                let mut alert = crate::ui::decision_alert::DecisionAlert::new();
+                alert.set_tone(crate::ui::decision_alert::Tone::Neutral);
+                alert
+            },
+            repair_scroll: 0,
         }
     }
 
@@ -192,17 +202,15 @@ impl PlayerScreen {
         crate::ui::player_hud::draw_subtitle_bitmap(&mut self.render.subs, hud_up);
     }
 
-    /// The transport, with this instance's own springs, memo and countdown. Returns the hit-testable
-    /// regions it drew this frame (scrubber, control row, bottom tabs) — see [`Self::draw`], which
-    /// registers each through [`DrawFrame::stop`] rather than leaving a caller to re-derive them
-    /// from raw pointer coordinates (restructure phase 12, D2 Part B).
+    /// The transport, with this instance's own springs, memo and countdown. Paint only: what a
+    /// pointer can hit is registered by [`Self::record_stops`], from this screen's `Focusable`.
     pub(crate) fn draw_hud(
         &mut self,
         ps: &crate::route::PlaybackSession,
         now: u32,
         measure: &dyn crate::ui::machine::Measure,
-    ) -> Vec<(u32, Rect)> {
-        let mut stops = Vec::new();
+        meta: crate::metadata::MetadataView<'_>,
+    ) {
         crate::ui::player_hud::draw_hud(
             ps,
             &mut self.row,
@@ -214,10 +222,84 @@ impl PlayerScreen {
             self.hud.nav.tab,
             now,
             self.transport,
-            &mut stops,
             measure,
+            meta,
         );
-        stops
+    }
+
+    /// **Every element this screen's `Focusable` declares and the frame DRAWS, registered as a
+    /// pointer stop at the rect `place` gives it** — the rect D-pad focus uses, so "reachable by
+    /// the D-pad" and "clickable with the pointer" are one statement (issue #162).
+    ///
+    /// Until #162 the stops were a by-product of painting: `player_hud::draw_hud` pushed each rect
+    /// as it drew, in PAINT order, and the hit map resolves the LAST stop under the pointer. The
+    /// scrubber's grab band (160 px tall) was pushed after the control row it overlaps, so a click
+    /// on the middle of any disc resolved to the scrubber and seeked instead; and a stand-in
+    /// (Skip / Up Next) got one floor-width region, so *Watch Credits* had no stop at all and a
+    /// click on *Next Episode* activated item 0. Here the ORDER of [`Focusable::groups`] is the
+    /// z-order — the scrubber's band first, underneath every control it overlaps — and every item
+    /// of every group is registered, so neither can recur without the census test in this module
+    /// failing.
+    ///
+    /// `hud_drawn` is the draw's own gate (the transport or a panel lifting it is on screen); the
+    /// per-group half is [`Self::group_drawn`].
+    fn record_stops<H: PlayerLike + crate::screens::registry::MetadataLike>(
+        &self,
+        f: &mut DrawFrame<'_, '_, H>,
+        hud_drawn: bool,
+    ) {
+        let ps = H::session(f.cx);
+        let mut groups = Vec::new();
+        Focusable::<H>::groups(self, f.cx, &mut groups);
+        for g in groups.iter().filter(|g| self.group_drawn(g.id, ps, hud_drawn)) {
+            // The repair alert's buttons are ordinary pressable controls (hover parks focus, the
+            // press dips and commits on release); the transport's are `Direct` — see `draw`.
+            let (hover, activate) = if g.id == GROUP_REPAIR {
+                (Hover::Focus, Activate::Press)
+            } else {
+                (Hover::Ignore, Activate::Direct)
+            };
+            for i in 0..g.len as u32 {
+                let elem = Self::elem_of(g.id, i);
+                let Some(p) = Focusable::<H>::place(self, &elem, f.cx, At::Drawn) else { continue };
+                f.stop(
+                    crate::ui::Painter::root(),
+                    Stop {
+                        key: FocusKey { entry: self.entry, elem },
+                        rect: p.rect,
+                        rest_rect: p.rest_rect,
+                        clip: p.clip,
+                        hover,
+                        activate,
+                    },
+                );
+            }
+        }
+    }
+
+    /// Is group `g` on screen this frame — the same gates `player_hud::draw_hud`/`draw_readout`
+    /// paint behind. A failure owns the frame outright; the scrubber and control row are the
+    /// transport's MIDDLE, which an open Info card or Chapters strip hides.
+    fn group_drawn(&self, g: GroupId, ps: &crate::route::PlaybackSession, hud_drawn: bool) -> bool {
+        let failed = player_hud::readout_owns_frame(self.busy);
+        match g {
+            GROUP_REPAIR => self.repair_alert.is_open() && self.repair_alert.settled(),
+            GROUP_FAILURE => !self.repair_alert.visible() && player_hud::failure_ok_drawn(ps, self.busy),
+            GROUP_SCRUB | GROUP_ROW => hud_drawn && !failed && self.transport,
+            GROUP_TABS => hud_drawn && !failed,
+            _ => false,
+        }
+    }
+
+    /// Element `i` of group `g` — the inverse of `group_of`.
+    fn elem_of(g: GroupId, i: u32) -> u32 {
+        match g {
+            GROUP_SCRUB => player_hud::ELEM_SCRUB,
+            GROUP_ROW => player_hud::ELEM_ROW_BASE + i,
+            GROUP_TABS => player_hud::ELEM_TAB_BASE + i,
+            GROUP_FAILURE => player_hud::ELEM_FAILURE_OK,
+            _ => REPAIR_CANCEL + i,
+        }
     }
 
     /// **Everything this page draws from a CLOCK, folded into ONE value** (spec §8.3, §9).
@@ -272,6 +354,7 @@ impl PlayerScreen {
         mix(u64::from(crate::player::TX.paused.load(Relaxed)));
         // …subtitles are NOT conditional: they are drawn on every frame of the route, HUD or no
         // HUD, which is exactly why a cue appearing had to become a report.
+        mix(self.render.ass.fingerprint());
         mix(crate::player::subtitle_cue_id(pos) as u64);
         mix(crate::player::active_bitmap_key(pos).unwrap_or(0) as u64);
         mix(u64::from(hud_up));
@@ -311,13 +394,17 @@ const GROUP_SCRUB: GroupId = GroupId(0);
 const GROUP_ROW: GroupId = GroupId(1);
 const GROUP_TABS: GroupId = GroupId(2);
 const GROUP_FAILURE: GroupId = GroupId(3);
+const GROUP_REPAIR: GroupId = GroupId(4);
+const REPAIR_CANCEL: u32 = 40_000;
+const REPAIR_CONFIRM: u32 = REPAIR_CANCEL + 1;
 
-impl<H: PlayerLike> Machine<H> for PlayerScreen {
+
+impl<H: PlayerLike + crate::screens::registry::MetadataLike> Machine<H> for PlayerScreen {
     type Ev = ScreenEvent<H>;
     /// **The transport's key/click ladder, as the receiving end of the phase-12 contract freeze.**
     ///
     /// `Tick`/`Unmount` are unchanged from before this phase; `Input` is this package's addition.
-    /// A raw key is classified with [`consts::classify`] into the full [`consts::Key`] alphabet —
+    /// An owned key is classified with [`consts::classify_input`] into the full [`consts::Key`] alphabet —
     /// never a type under `crate::app::`, which `ci/check-deps.sh`'s `layer` gate forbids `screens/`
     /// from naming — and dispatched to one of the private `key_*` helpers below, each a direct port
     /// of the `app/run.rs` arm it replaces (`key_ok`/`key_player_updown`/`key_scrub`'s Route::Player
@@ -354,8 +441,48 @@ impl<H: PlayerLike> Machine<H> for PlayerScreen {
     /// this the stop landed on `key_ok`'s final `else` and toggled play/pause, and the drag flag
     /// was a field of the loop's pointer machine whose producer had become unreachable.
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        if self.repair_alert.visible() {
+            match ev {
+                ScreenEvent::FocusMoved { to, .. } => {
+                    self.repair_alert.set_choice(if to.elem == REPAIR_CONFIRM { crate::ui::decision_alert::Choice::Destructive } else { crate::ui::decision_alert::Choice::Cancel });
+                    return Handled::Yes;
+                }
+                ScreenEvent::PressCommit(_) => {
+                    if let Some(key) = cx.focus.current {
+                        if matches!(key.elem, REPAIR_CANCEL | REPAIR_CONFIRM) {
+                            self.repair_answer(key.elem == REPAIR_CONFIRM, fx);
+                        }
+                    }
+                    return Handled::Yes;
+                }
+                ScreenEvent::Activate(_) => return Handled::Yes,
+                ScreenEvent::Input(input) => {
+                    if !self.repair_alert.is_open() { return Handled::Yes; }
+                    return match input.kind {
+                        InputKind::Key { key, sym, wcode, edge, .. } => match consts::classify_input(key, sym, wcode) {
+                            consts::Key::Back | consts::Key::Stop if edge == Edge::Down => {
+                                self.repair_answer(false, fx); Handled::Yes
+                            }
+                            direction @ (consts::Key::Up | consts::Key::Down) if edge != Edge::Up => {
+                                self.repair_scroll = self.repair_alert.scroll_by(cx.measure,
+                                    if matches!(direction, consts::Key::Up) { -1 } else { 1 });
+                                Handled::Yes
+                            }
+                            consts::Key::Left { .. } | consts::Key::Right { .. } | consts::Key::Ok | consts::Key::Exit => Handled::No,
+                            _ => Handled::Yes,
+                        },
+                        InputKind::Pointer { .. } | InputKind::Click { .. } => Handled::No,
+                        _ => Handled::Yes,
+                    };
+                }
+                _ => {}
+            }
+        }
         match ev {
             ScreenEvent::Tick(tick) => {
+                self.render.ass.update(H::session(cx), tick.ms);
+                if self.repair_alert.visible() && !H::session(cx).jail_load_blocked { self.repair_alert.close(); }
+                self.repair_alert.update(tick.dt());
                 // The control row's springs and the resume clock are stepped once per FRAME and
                 // never from `draw_hud` — this row is not drawn on every frame of the route, so a
                 // spring advanced in the draw would run at a rate that depended on which overlay
@@ -380,13 +507,14 @@ impl<H: PlayerLike> Machine<H> for PlayerScreen {
                 // The GL names in the subtitle set are OWNED. A static could never be told that a
                 // playback had ended; an instance is told exactly once.
                 self.render.subs.release();
+                self.render.ass.release();
                 Handled::Yes
             }
             ScreenEvent::Input(input) => {
                 let ps = H::session(cx);
                 match &input.kind {
-                    InputKind::Key { sym, wcode, edge, .. } => {
-                        self.handle_key(ps, consts::classify(*sym, *wcode), *edge, input.at.ms, fx)
+                    InputKind::Key { key, sym, wcode, edge, .. } => {
+                        self.handle_key(ps, consts::classify_input(*key, *sym, *wcode), *edge, input.at.ms, fx, H::metadata(cx))
                     }
                     InputKind::Click { hit, x, .. } => {
                         self.handle_click(ps, *hit, *x, input.at.ms, fx)
@@ -416,6 +544,36 @@ impl<H: PlayerLike> Machine<H> for PlayerScreen {
 impl PlayerScreen {
     fn ask<H: AppLike>(fx: &mut Effects<'_, H>, req: PlayerReq) {
         fx.push(Fx::App(AppFx::Player(req)));
+    }
+
+    fn repair_focus<H: AppLike>(fx: &mut Effects<'_, H>, group: GroupId) {
+        fx.push(Fx::Deliver(
+            fx.from(),
+            crate::ui::machine::Delivery::Screen(ScreenEvent::Enter(crate::ui::screen::Enter::Fresh {
+                focus: crate::ui::screen::FocusTarget::ContainerGroup(group),
+            })),
+        ));
+    }
+    fn failure_action<H: AppLike>(&mut self, ps: &crate::route::PlaybackSession, fx: &mut Effects<'_, H>) {
+        if crate::player::error_now(ps).kind == crate::player::FailureKind::JailMissingRtkmem {
+            if ps.repair_status == crate::webos::jail_repair::State::Idle && !self.repair_alert.visible() {
+                self.repair_scroll = 0;
+                self.repair_alert.open_with_body(crate::i18n::msg::widgets_repair_question_c(), crate::i18n::msg::widgets_repair_body());
+                Self::repair_focus(fx, GROUP_REPAIR);
+            }
+        } else {
+            Self::ask(fx, PlayerReq::OpenOverlay(overlay::OverlayKind::More { quality: true }));
+        }
+    }
+    fn repair_answer<H: AppLike>(&mut self, confirm: bool, fx: &mut Effects<'_, H>) {
+        if !self.repair_alert.is_open() { return; }
+        self.repair_alert.dismiss();
+        if confirm { Self::ask(fx, PlayerReq::RepairSandbox); }
+        Self::repair_focus(fx, GROUP_FAILURE);
+    }
+    fn repair_rect(&self, confirm: bool, measure: &dyn crate::ui::machine::Measure) -> Rect {
+        let (cancel, repair) = self.repair_alert.frames(measure);
+        if confirm { repair } else { cancel }
     }
 
     /// One registered click's element resolves to an action — the pointer twin of `handle_key`'s
@@ -457,12 +615,15 @@ impl PlayerScreen {
             Self::ask(fx, PlayerReq::Transport(None));
             return Handled::Yes;
         };
+        // A click on a control is a fresh interaction with the transport, exactly as a key is: it
+        // re-arms the linger. Without it a pointer that had rested still for most of the 4.5 s
+        // could click a disc whose deferred press (~210 ms) then committed AFTER the auto-hide had
+        // reset `hud.nav` to HOME — opening Subtitles for a click on Audio.
+        self.hud.extend(now, input::HUD_LINGER_MS);
+        self.publish();
         match elem {
             e if e == ELEM_FAILURE_OK => {
-                Self::ask(
-                    fx,
-                    PlayerReq::OpenOverlay(overlay::OverlayKind::More { quality: true }),
-                );
+                self.failure_action(ps, fx);
                 Handled::Yes
             }
             e if e == ELEM_SCRUB => {
@@ -537,6 +698,7 @@ impl PlayerScreen {
         }
         self.scrub.drag = false;
         if self.scrub.ns >= 0 {
+            crate::log(&format!("scrub: pointer commit ns={}", self.scrub.ns));
             Self::ask(fx, PlayerReq::CommitSeek(self.scrub.ns));
             self.scrub.ns = -1;
         }
@@ -553,6 +715,7 @@ impl PlayerScreen {
         edge: Edge,
         now: u32,
         fx: &mut Effects<'_, H>,
+        meta: crate::metadata::MetadataView<'_>,
     ) -> Handled {
         use consts::Key;
         // **A terminal failure owns the whole frame, so almost nothing may be driven on it.**
@@ -572,10 +735,7 @@ impl PlayerScreen {
                     matches!(key, Key::Ok),
                     matches!(key, Key::Back | Key::Stop),
                 ) {
-                    input::FailedKeyAction::ChooseQuality => Self::ask(
-                        fx,
-                        PlayerReq::OpenOverlay(overlay::OverlayKind::More { quality: true }),
-                    ),
+                    input::FailedKeyAction::ChooseQuality => self.failure_action(ps, fx),
                     input::FailedKeyAction::Return => Self::ask(fx, PlayerReq::Exit),
                     input::FailedKeyAction::Ignore => {}
                 }
@@ -613,7 +773,7 @@ impl PlayerScreen {
             }
             Key::Left { .. } | Key::Right { .. } => {
                 match edge {
-                    Edge::Down => self.key_scrub_fresh(ps, key, now),
+                    Edge::Down => self.key_scrub_fresh(ps, key, now, meta),
                     Edge::Repeat => self.key_scrub_repeat(now),
                     Edge::Up => self.key_scrub_release(now, fx),
                 }
@@ -699,6 +859,7 @@ impl PlayerScreen {
         ps: &crate::route::PlaybackSession,
         key: consts::Key,
         now: u32,
+        meta: crate::metadata::MetadataView<'_>,
     ) {
         let fwd = matches!(key, consts::Key::Right { .. });
         let dur = crate::player::duration_ns();
@@ -726,7 +887,7 @@ impl PlayerScreen {
                     (self.hud.nav.btn + if fwd { 1 } else { -1 }).clamp(0, self.slot.items() - 1);
             }
             input::ScrubPress::Tabs => {
-                let max_tab = if crate::ui::chapters_panel::has_chapters() { 1 } else { 0 };
+                let max_tab = if crate::ui::chapters_panel::has_chapters(meta) { 1 } else { 0 };
                 self.hud.nav.tab =
                     (self.hud.nav.tab + if fwd { 1 } else { -1 }).clamp(0, max_tab);
             }
@@ -895,8 +1056,17 @@ impl PlayerScreen {
 /// screen answers `Handled::Yes` for), so `HudNav` stays the single source of truth for WHICH of
 /// these is highlighted — these groups exist so the engine's hit map and stop bookkeeping have real
 /// geometry to test a click or a simulator mouse against, not so the engine drives the ring itself.
-impl<H: PlayerLike> Focusable<H> for PlayerScreen {
+///
+/// **The order `groups` pushes in is the pointer's z-order**, lowest first: `record_stops`
+/// registers in it, and the hit map resolves the last stop under the pointer. The scrubber's tall
+/// grab band therefore comes FIRST, under the control row and tabs it overlaps (issue #162).
+impl<H: PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for PlayerScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        if self.repair_alert.visible() {
+            out.push(GroupSpec { id: GROUP_REPAIR, kind: GroupKind::Row { wrap: false }, seat: Seat::First,
+                reachable: AxisMask::BOTH, edge: [EdgeRule::Stop; 4], extent: self.repair_rect(false, cx.measure).union(self.repair_rect(true, cx.measure)), len: 2, elem: crate::ui::screen::ElemKind::Control });
+            return;
+        }
         out.push(GroupSpec {
             id: GROUP_SCRUB,
             kind: GroupKind::Free,
@@ -907,7 +1077,9 @@ impl<H: PlayerLike> Focusable<H> for PlayerScreen {
             len: 1,
             elem: crate::ui::screen::ElemKind::Control,
         });
-        let row_len = if self.slot.is_discs() { self.slot.items().max(1) as usize } else { 1 };
+        // Every item of whatever occupies the row — the Up Next PAIR included, which is two
+        // controls the D-pad walks and so two stops (`ControlSlot::item_rect`).
+        let row_len = self.slot.items().max(1) as usize;
         out.push(GroupSpec {
             id: GROUP_ROW,
             kind: GroupKind::Row { wrap: false },
@@ -918,7 +1090,7 @@ impl<H: PlayerLike> Focusable<H> for PlayerScreen {
             len: row_len,
             elem: crate::ui::screen::ElemKind::Control,
         });
-        let has_ch = crate::ui::chapters_panel::has_chapters();
+        let has_ch = crate::ui::chapters_panel::has_chapters(H::metadata(cx));
         out.push(GroupSpec {
             id: GROUP_TABS,
             kind: GroupKind::Row { wrap: false },
@@ -947,6 +1119,9 @@ impl<H: PlayerLike> Focusable<H> for PlayerScreen {
     }
     fn group_of(&self, key: &u32, _cx: &Cx<'_, H>) -> Option<GroupId> {
         use player_hud::{ELEM_FAILURE_OK, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
+        if self.repair_alert.visible() {
+            return matches!(*key, REPAIR_CANCEL | REPAIR_CONFIRM).then_some(GROUP_REPAIR);
+        }
         match *key {
             e if e == ELEM_SCRUB => Some(GROUP_SCRUB),
             e if (ELEM_ROW_BASE..ELEM_TAB_BASE).contains(&e) => Some(GROUP_ROW),
@@ -955,23 +1130,32 @@ impl<H: PlayerLike> Focusable<H> for PlayerScreen {
             _ => None,
         }
     }
-    fn neighbour(&self, _key: FocusKey<u32>, _dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {
+    fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {
+        if self.repair_alert.is_open() {
+            let elem = match (key.elem, dir) {
+                (REPAIR_CANCEL, Dir::Right) => REPAIR_CONFIRM,
+                (REPAIR_CONFIRM, Dir::Left) => REPAIR_CANCEL,
+                _ => return Step::Edge,
+            };
+            return Step::Move(FocusKey { entry: self.entry, elem });
+        }
         Step::Edge
     }
     fn place(&self, key: &u32, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
         use player_hud::{ELEM_FAILURE_OK, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
+        if self.repair_alert.visible() {
+            if !matches!(*key, REPAIR_CANCEL | REPAIR_CONFIRM) { return None; }
+            let rect = self.repair_rect(*key == REPAIR_CONFIRM, cx.measure);
+            return Some(Placed { rect, rest_rect: rect, clip: Rect::FULL, index: None });
+        }
         let rect = match *key {
             e if e == ELEM_SCRUB => player_hud::scrub_hit_rect(),
             e if (ELEM_ROW_BASE..ELEM_TAB_BASE).contains(&e) => {
-                if self.slot.is_discs() {
-                    player_hud::disc_hit_rect((e - ELEM_ROW_BASE) as i32)
-                } else {
-                    player_hud::ctrl_row_hit_rect()
-                }
+                self.slot.item_rect(&self.row, (e - ELEM_ROW_BASE) as i32, cx.measure)?
             }
             e if (ELEM_TAB_BASE..ELEM_FAILURE_OK).contains(&e) => player_hud::tab_hit_rect(
                 (e - ELEM_TAB_BASE) as i32,
-                crate::ui::chapters_panel::has_chapters(),
+                crate::ui::chapters_panel::has_chapters(H::metadata(cx)),
                 cx.measure,
             )?,
             e if e == ELEM_FAILURE_OK => player_hud::failure_ok_hit_rect(),
@@ -988,6 +1172,7 @@ impl<H: PlayerLike> Focusable<H> for PlayerScreen {
             GROUP_ROW => player_hud::ELEM_ROW_BASE,
             GROUP_TABS => player_hud::ELEM_TAB_BASE,
             GROUP_FAILURE => player_hud::ELEM_FAILURE_OK,
+            GROUP_REPAIR => REPAIR_CANCEL,
             _ => player_hud::ELEM_SCRUB,
         };
         FocusKey { entry: self.entry, elem }
@@ -1015,13 +1200,14 @@ impl LogicalState for PlayerScreen {
         c.option(self.origin.as_ref(), |c, o| {
             c.u32(o.entry.0);
         });
+        c.bool(self.repair_alert.is_open()).bool(self.repair_alert.choice() == crate::ui::decision_alert::Choice::Destructive).u32(self.repair_scroll);
     }
     fn probe(&self, out: &mut String) {
         out.push_str(WORD);
     }
 }
 
-impl<H: PlayerLike> Screen<H> for PlayerScreen {
+impl<H: PlayerLike + crate::screens::registry::MetadataLike> Screen<H> for PlayerScreen {
     fn name(&self) -> &'static str {
         WORD
     }
@@ -1042,57 +1228,40 @@ impl<H: PlayerLike> Screen<H> for PlayerScreen {
         // bottom of the screen. `transport` is false while the Info card or Chapters strip owns
         // the middle, and the lift follows the panel rather than the transport there.
         let subs_lift = hud_up || self.lifted;
+        self.render.ass.draw();
+        if let Some(message) = self.render.ass.error() {
+            crate::ui::player_hud::draw_subtitle_message(message, subs_lift);
+        }
         self.draw_subtitle_bitmap(subs_lift); // PGS/VobSub image subs
-        crate::ui::player_hud::draw_subtitles(subs_lift);
-        // Every hit-testable region drawn this frame is REGISTERED through `DrawFrame::stop`
-        // (restructure phase 12, D2 Part B) rather than left for a caller to re-derive from raw
-        // pointer coordinates via `icon_hit`/`scrub_hit`/`failure_quality_hit` — that geometry is
-        // unchanged, only how it reaches the engine's hit map. `Hover::Ignore` on every stop: the
-        // old pointer path never followed the mouse into a HOVER-driven focus change on this
-        // route, and a DRAG is `§7.5`'s own case (no hover, no click) which the hit map answers
-        // whatever this says — so this keeps the shipped behaviour rather than introducing one.
+        crate::ui::player_hud::draw_subtitles(subs_lift, crate::route::is_transcoding(ps));
+        // What a pointer can hit is registered AFTER the paint, by `record_stops`, from this
+        // screen's own `Focusable` — the rects D-pad focus uses, in the z-order `groups` states.
+        // `Hover::Ignore` on the transport's stops: the old pointer path never followed the mouse
+        // into a HOVER-driven focus change on this route, and a DRAG is `§7.5`'s own case (no
+        // hover, no click) which the hit map answers whatever this says.
         //
-        // `Activate::Direct` on all of them, and it is not the same statement `ElemKind` makes
+        // `Activate::Direct` on them, and it is not the same statement `ElemKind` makes
         // elsewhere: the transport's control row DOES dip, but its press is the LOOP's
         // (`PlayerReq::ArmControlRow` → `press.begin_ctl` → `activate_player_row` on the
         // spring-back), so letting the dispatcher's own press machine arm it instead would leave
         // that commit-frame dispatch with nothing to fire. Direct delivery, and the screen decides
         // what the element means — including the scrubber, whose meaning needs the click's `x`
         // and so cannot be carried by a bare `ScreenEvent::Activate` at all.
-        if hud_up || self.lifted {
-            for (elem, rect) in self.draw_hud(ps, now, f.measure) {
-                f.stop(
-                    crate::ui::Painter::root(),
-                    Stop {
-                        key: FocusKey { entry: self.entry, elem },
-                        rect,
-                        rest_rect: rect,
-                        clip: Rect::FULL,
-                        hover: Hover::Ignore,
-                        activate: Activate::Direct,
-                    },
-                );
-            }
+        let hud_drawn = (hud_up || self.lifted) && !self.repair_alert.visible();
+        if hud_drawn {
+            self.draw_hud(ps, now, f.measure, H::metadata(f.cx));
         }
         // The read-out is NOT transport chrome — it is drawn whether or not the HUD is up, so a
         // terminal `Error` (which is not `is_busy()`, so it does not pin the HUD) keeps its message
         // instead of vanishing with the 4.5 s linger. AFTER the transport, so it is never dimmed by
         // the scrim; BEFORE the overlay panels, which the container draws above this page.
-        let mut readout_stops = Vec::new();
-        crate::ui::player_hud::draw_readout(ps, self.busy, now, &mut readout_stops, f.measure);
-        for (elem, rect) in readout_stops {
-            f.stop(
-                crate::ui::Painter::root(),
-                Stop {
-                    key: FocusKey { entry: self.entry, elem },
-                    rect,
-                    rest_rect: rect,
-                    clip: Rect::FULL,
-                    hover: Hover::Ignore,
-                    activate: Activate::Direct,
-                },
-            );
+        crate::ui::player_hud::draw_readout(ps, self.busy, now, f.measure);
+        if self.repair_alert.visible() {
+            self.repair_alert.draw_scrim();
+            self.repair_alert.draw(crate::i18n::msg::settings_cancel_c(), crate::i18n::msg::widgets_repair_action_c(), f.measure);
+            let frames = self.repair_alert.frames(f.measure);
         }
+        self.record_stops(f, hud_drawn);
     }
     fn render(&self) -> RenderStrategy {
         RenderStrategy::VideoPlane
@@ -1103,7 +1272,9 @@ impl<H: PlayerLike> Screen<H> for PlayerScreen {
     /// deletes them itself, so it is the one thing on this screen whose bytes belong to this
     /// instance rather than to a pool.
     fn render_report(&self) -> crate::ui::frame::RenderReport {
-        self.render.subs.render_report()
+        let bitmap = self.render.subs.render_report();
+        let ass = self.render.ass.render_report();
+        crate::ui::frame::RenderReport { textures: bitmap.textures + ass.textures, bytes: bitmap.bytes + ass.bytes }
     }
     fn focus_source(&self) -> FocusSource {
         FocusSource::Engine
@@ -1414,6 +1585,105 @@ mod step_ladder_tests {
 
     fn fresh(page: &mut PlayerScreen) {
         page.hud.visible_at_press = true;
+    }
+
+    /// The census's other half: a control the frame does NOT draw registers no stop, so a click
+    /// there reaches the picture (play/pause) rather than a blind action. A hidden HUD registers
+    /// nothing; with an Info card or Chapters strip over the middle (`transport == false`) only
+    /// the tabs remain.
+    #[test]
+    fn a_control_the_frame_does_not_draw_registers_no_stop() {
+        use crate::ui::player_hud::ELEM_TAB_BASE;
+        use crate::ui::screen::DrawFrame;
+        let _g = crate::testlock::serial();
+        for (transport, hud_drawn, want) in [
+            (true, false, vec![]),
+            (false, false, vec![]),
+            (false, true, vec![ELEM_TAB_BASE]),
+        ] {
+            let mut page = PlayerScreen::new(ENTRY);
+            page.transport = transport;
+            let cx = cx();
+            let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+            page.record_stops(&mut f, hud_drawn);
+            let got: Vec<u32> = f.into_stops().iter().map(|s| s.key.elem).collect();
+            assert_eq!(got, want, "transport={transport} hud_drawn={hud_drawn}");
+        }
+    }
+
+    /// **Issue #162's census: every control the D-pad can activate is clickable with the Magic
+    /// Remote pointer, all over its drawn rect, and the click acts.**
+    ///
+    /// The element lists below are written out per state rather than read back from `groups`, so
+    /// a control the D-pad reaches but the registration forgets is a failure here, not a shorter
+    /// list. Each is clicked on a grid (`ui::hit::pointer_gaps`) against the map the real
+    /// `record_stops` filled — which is what caught the scrubber's grab band registered ABOVE the
+    /// control row (every disc's middle seeked) and the stand-ins' single floor-width region
+    /// (*Watch Credits* unclickable, *Next Episode* activating item 0). The scrubber itself is
+    /// judged at a point no control covers, since controls sit on top of its band by design.
+    #[test]
+    fn every_control_the_dpad_reaches_is_clickable_with_the_pointer_and_acts() {
+        use crate::metadata::{Marker, MarkerKind};
+        use crate::screens::registry::PlayerLike;
+        use crate::ui::hit::{pointer_gaps, HitMap, PointerKind};
+        use crate::ui::machine::FocusKey;
+        use crate::ui::player_hud::{Busy, ControlSlot, ELEM_FAILURE_OK, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
+        use crate::ui::screen::{At, DrawFrame};
+        let _g = crate::testlock::serial();
+        let marker = |kind| Marker { kind, start_ms: 1_000, end_ms: 2_000, final_seg: false };
+        let skip = player_hud::slot_for(Some(marker(MarkerKind::Intro)), false);
+        let up_next = player_hud::slot_for(Some(marker(MarkerKind::Credits)), true);
+        assert!(matches!(skip, ControlSlot::Skip(_)) && matches!(up_next, ControlSlot::UpNext(_)));
+        let failed = Busy::Readout(crate::ui::widgets::StatusKind::Failed, c"Playback failed");
+        let row = |n: u32| (0..n).map(|i| ELEM_ROW_BASE + i).collect::<Vec<_>>();
+        let cases: [(&str, ControlSlot, Busy, Vec<u32>); 4] = [
+            ("discs", ControlSlot::Discs, Busy::None, [row(3), vec![ELEM_TAB_BASE]].concat()),
+            ("skip", skip, Busy::None, [row(1), vec![ELEM_TAB_BASE]].concat()),
+            ("up next", up_next, Busy::None, [row(2), vec![ELEM_TAB_BASE]].concat()),
+            ("failed", ControlSlot::Discs, failed, vec![ELEM_FAILURE_OK]),
+        ];
+        for (name, slot, busy, controls) in cases {
+            let mut page = PlayerScreen::new(ENTRY);
+            page.slot = slot;
+            page.busy = busy;
+            page.transport = true;
+            let cx = cx();
+            let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+            page.record_stops(&mut f, true);
+            let mut map = HitMap::new();
+            map.fill(f.into_stops());
+            map.swap();
+            let placed: Vec<_> = controls
+                .iter()
+                .map(|&elem| {
+                    let p = Focusable::<TestHost>::place(&page, &elem, &cx, At::Drawn)
+                        .unwrap_or_else(|| panic!("{name}: {elem} is a control the D-pad reaches"));
+                    (FocusKey { entry: ENTRY, elem }, p.rect)
+                })
+                .collect();
+            let gaps = pointer_gaps(&mut map, ENTRY, &placed);
+            assert!(gaps.is_empty(), "{name}: controls the pointer cannot click:\n{}", gaps.join("\n"));
+            if !player_hud::failure_ok_drawn(TestHost::session(&cx), busy) {
+                let band = player_hud::scrub_hit_rect();
+                let hit = map.resolve(Some(ENTRY), PointerKind::Click, band.cx(), band.cy(), None);
+                assert_eq!(hit.activate.map(|(k, _)| k.elem), Some(ELEM_SCRUB), "{name}: the scrubber");
+            }
+            // …and a click on each one ACTS, never falling through to the picture's play/pause.
+            for &elem in &controls {
+                let (handled, reqs) = click(&mut page, elem);
+                assert_eq!(handled, Handled::Yes, "{name}: {elem}");
+                assert!(!reqs.is_empty(), "{name}: a click on {elem} asked for nothing");
+                assert!(!reqs.iter().any(|r| matches!(r, PlayerReq::Transport(_))), "{name}: {elem} -> {reqs:?}");
+                assert!(page.hud.until >= 1_000 + input::HUD_LINGER_MS, "{name}: a click re-arms the linger");
+                if (ELEM_ROW_BASE..ELEM_TAB_BASE).contains(&elem) {
+                    assert_eq!(page.hud.nav.btn, (elem - ELEM_ROW_BASE) as i32, "{name}: the CLICKED item arms");
+                    assert_eq!(reqs, vec![PlayerReq::ArmControlRow]);
+                }
+                if elem == ELEM_TAB_BASE {
+                    assert_eq!(reqs, vec![PlayerReq::OpenOverlay(overlay::OverlayKind::Info)], "{name}: Info");
+                }
+            }
+        }
     }
 
     /// PAUSE/PLAY/PLAYPAUSE all reach the shared `Transport` request unchanged — the port of
@@ -1943,6 +2213,56 @@ mod scrub_ownership_tests {
     /// `key_ok`'s final `else` and TOGGLED PLAY/PAUSE, and `app.ptr.drag` had no producer left at
     /// all, so pointer scrubbing was gone.
     #[test]
+    fn session_eight_click_coordinates_need_a_presented_hud_not_a_pointer_gate_override() {
+        use crate::ui::hit::{HitMap, PointerKind};
+        use crate::ui::screen::DrawFrame;
+        let _g = crate::testlock::serial();
+        let _f = Fixture::new(false);
+        let was = crate::player::swap_state_for_test(crate::player::PlaybackState::Playing);
+        for y in [870.0, 890.0] {
+            let mut page = page_on_the_bar();
+            page.hud.dismissed = true;
+            let mut map = HitMap::new();
+            let cx = cx();
+            let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+            page.record_stops(&mut f, false);
+            map.fill(f.into_stops());
+            map.swap();
+            map.note_dpad();
+
+            // All four ck events enter before another frame can paint. Motion reveals the HUD
+            // state, but click still resolves against the LAST presented frame's empty hit map.
+            pointer(&mut page, InputKind::Pointer { x: 1400.0, y, hit: None }, 1_000);
+            assert!(!page.hud.dismissed && page.hud_up(TestHost::session(&cx), 1_000));
+            let hit = map.resolve(Some(ENTRY), PointerKind::Click, 1400.0, y, None);
+            assert!(hit.hit.is_none());
+            let (_, reqs) = pointer(&mut page, InputKind::Click { x: 1400.0, y, hit: None }, 1_000);
+            assert_eq!(reqs, vec![PlayerReq::Transport(None)], "a hidden scrubber is the picture's click");
+            assert!(!page.scrub.drag);
+
+            // A separate pm token lets a frame present the HUD before pd/ck. Register precisely
+            // the stops the production draw uses, then keep D-pad hover suppression armed at the
+            // SAME point: even with zero pointer travel, a click on a drawn control must work.
+            let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+            page.record_stops(&mut f, true);
+            map.fill(f.into_stops());
+            map.swap();
+            map.note_dpad();
+            let hit = map.resolve(Some(ENTRY), PointerKind::Click, 1400.0, y, None);
+            assert!(map.dpad_mode, "the hover gate remains armed");
+            assert_eq!(hit.hit.map(|key| key.elem), Some(player_hud::ELEM_SCRUB));
+            let (_, reqs) = pointer(&mut page,
+                InputKind::Click { x: 1400.0, y, hit: hit.hit.map(|key| key.elem) }, 1_040);
+            assert!(reqs.is_empty());
+            assert!(page.scrub.drag);
+            let previewed = page.scrub.ns;
+            assert_eq!(seeks(key(&mut page, SDLK_RETURN, Edge::Up, 1_080).1),
+                vec![PlayerReq::CommitSeek(previewed)]);
+        }
+        crate::player::restore_state_for_test(was);
+    }
+
+    #[test]
     fn a_click_on_the_scrubber_seeks_and_a_drag_previews_before_it() {
         let _g = crate::testlock::serial();
         let _f = Fixture::new(false);
@@ -1986,5 +2306,141 @@ mod scrub_ownership_tests {
             vec![PlayerReq::CommitSeek(previewed)],
             "the button coming up commits exactly what the drag was showing",
         );
+    }
+}
+#[cfg(test)]
+mod repair_confirmation_tests {
+    use super::*;
+    use crate::ui::machine::{Host, InputEvent, InputOwner, MachineId, PressId, Source, Tick};
+    struct TestHost;
+    impl Host for TestHost {
+        type Arg = crate::ui::fixture::FixtureArg;
+        type Fx = AppFx;
+        type Msg = crate::screens::registry::AppMsg;
+        type Elem = u32;
+        type Views<'a> = &'a crate::route::PlaybackSession;
+        type Init = crate::ui::fixture::FixtureArg;
+        type Memory = crate::screens::registry::PageMemory;
+    }
+    impl PlayerLike for TestHost {
+        fn session<'a>(cx: &Cx<'a, Self>) -> &'a crate::route::PlaybackSession { cx.views }
+    }
+    thread_local! {
+        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    }
+    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+        TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+    }
+    impl crate::screens::registry::MetadataLike for TestHost {
+        fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+            test_store().view()
+        }
+    }
+    fn context(ps: &crate::route::PlaybackSession, elem: Option<u32>) -> Cx<'_, TestHost> {
+        let mut cx = Cx { views: ps, tick: Tick::default(), measure: &crate::ui::fixture::FixtureMeasure,
+            focus: Default::default(), press: Default::default(), owner: InputOwner::Entry(EntryId(1)) };
+        cx.focus.current = elem.map(|elem| FocusKey { entry: EntryId(1), elem });
+        cx
+    }
+    fn deliver(page: &mut PlayerScreen, ps: &crate::route::PlaybackSession, elem: Option<u32>, ev: ScreenEvent<TestHost>) -> Vec<PlayerReq> {
+        let mut out = Vec::new();
+        let mut present = crate::ui::present::Present::new();
+        page.step(&ev, &context(ps, elem), &mut Effects::new(&mut out, MachineId::Instance(InstanceId(1)), &mut present));
+        for effect in &out {
+            if let Fx::Deliver(MachineId::Instance(id), _) = &effect.fx {
+                assert_eq!(*id, InstanceId(1), "focus requests must address this screen instance");
+            }
+        }
+        out.into_iter().filter_map(|e| match e.fx { Fx::App(AppFx::Player(req)) => Some(req), _ => None }).collect()
+    }
+    fn key_event(sym: u32, wcode: u32) -> ScreenEvent<TestHost> {
+        ScreenEvent::Input(InputEvent { kind: InputKind::Key { key: crate::ui::machine::Key::Other, sym, wcode, edge: Edge::Down, at_edge: false }, at: Tick::default(), source: Source::Sdl })
+    }
+    fn blocked() -> crate::route::PlaybackSession {
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        ps.jail_load_blocked = true;
+        ps
+    }
+    #[test]
+    #[cfg(feature = "devtriggers")]
+    fn jail_fixture_keeps_repair_open_through_the_screen_tick() {
+        let _g = crate::testlock::serial();
+        struct Trigger(std::path::PathBuf, Option<Vec<u8>>);
+        impl Drop for Trigger {
+            fn drop(&mut self) {
+                if let Some(bytes) = &self.1 { std::fs::write(&self.0, bytes).unwrap(); }
+                else { std::fs::remove_file(&self.0).unwrap(); }
+            }
+        }
+        let path = crate::paths::in_runtime_dir("plxnative-failtest");
+        let previous = match std::fs::read(&path) {
+            Ok(bytes) => Some(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => panic!("cannot read the prior fixture: {e}"),
+        };
+        let _trigger = Trigger(path.clone(), previous);
+        std::fs::write(&path, "jail").unwrap();
+        let mut ps = crate::route::PlaybackSession::IDLE;
+        crate::route::reset_player_control_for_test(&ps);
+        let hardware_verdict = crate::webos::jail_blocks_native_video();
+        crate::dev::scenarios::failure_fixture(&mut ps);
+        let mut page = PlayerScreen::new(EntryId(1));
+        assert!(deliver(&mut page, &ps, None, key_event(consts::SDLK_RETURN, 0)).is_empty());
+        assert!(page.repair_alert.is_open(), "fixture must offer the real confirmation");
+        assert!(deliver(&mut page, &ps, Some(REPAIR_CANCEL), ScreenEvent::Tick(Tick { ms: 16, dt_us: 16_000 })).is_empty());
+        assert!(page.repair_alert.is_open(), "Tick must not retire the jail fixture confirmation");
+        assert!(ps.jail_load_blocked);
+        assert_eq!(crate::webos::jail_blocks_native_video(), hardware_verdict, "the fixture must not alter the cached hardware verdict");
+        ps.jail_load_blocked = false;
+        deliver(&mut page, &ps, None, ScreenEvent::Tick(Tick { ms: 32, dt_us: 16_000 }));
+        assert!(!page.repair_alert.is_open(), "retiring the session still closes its confirmation");
+        std::fs::write(&path, "tv").unwrap();
+        crate::dev::scenarios::failure_fixture(&mut ps);
+        assert!(!ps.jail_load_blocked, "other failure fixtures must not claim a jail refusal");
+    }
+
+    #[test]
+    fn repair_requires_second_explicit_answer_and_cancel_is_the_default() {
+        let _g = crate::testlock::serial();
+        let ps = blocked();
+        crate::route::reset_player_control_for_test(&ps);
+        let mut page = PlayerScreen::new(EntryId(1));
+        assert!(deliver(&mut page, &ps, None, key_event(consts::SDLK_RETURN, 0)).is_empty());
+        assert!(page.repair_alert.is_open());
+        assert_eq!(page.repair_alert.choice(), crate::ui::decision_alert::Choice::Cancel);
+        let cx = context(&ps, Some(REPAIR_CANCEL));
+        let from = Placed { rect: Rect::FULL, rest_rect: Rect::FULL, clip: Rect::FULL, index: None };
+        assert_eq!(Focusable::<TestHost>::seat(&page, GROUP_REPAIR, from, &cx).elem, REPAIR_CANCEL);
+        assert!(matches!(Focusable::<TestHost>::neighbour(&page, FocusKey { entry: EntryId(1), elem: REPAIR_CANCEL }, Dir::Right, &cx), Step::Move(FocusKey { elem: REPAIR_CONFIRM, .. })));
+        let req = deliver(&mut page, &ps, Some(REPAIR_CONFIRM), ScreenEvent::PressCommit(PressId(1)));
+        assert_eq!(req, vec![PlayerReq::RepairSandbox]);
+        assert!(deliver(&mut page, &ps, Some(REPAIR_CONFIRM), ScreenEvent::PressCommit(PressId(1))).is_empty());
+        page.repair_alert.close();
+    }
+    #[test]
+    fn back_then_stale_commit_and_underlying_click_cannot_repair_or_reopen() {
+        let _g = crate::testlock::serial();
+        let ps = blocked();
+        crate::route::reset_player_control_for_test(&ps);
+        let mut page = PlayerScreen::new(EntryId(1));
+        deliver(&mut page, &ps, None, key_event(consts::SDLK_RETURN, 0));
+        assert!(deliver(&mut page, &ps, Some(REPAIR_CONFIRM), key_event(0, consts::WCODE_BACK)).is_empty());
+        assert!(!page.repair_alert.is_open());
+        assert!(deliver(&mut page, &ps, Some(REPAIR_CONFIRM), ScreenEvent::PressCommit(PressId(1))).is_empty());
+        assert!(deliver(&mut page, &ps, None, ScreenEvent::Activate(player_hud::ELEM_FAILURE_OK)).is_empty());
+        assert!(!page.repair_alert.is_open());
+        page.repair_alert.close();
+    }
+    #[test]
+    fn accepted_attempt_hides_forward_action_after_screen_recreation() {
+        let _g = crate::testlock::serial();
+        for state in [crate::webos::jail_repair::State::Running, crate::webos::jail_repair::State::Repaired, crate::webos::jail_repair::State::Failed(crate::webos::jail_repair::Failure::Timeout)] {
+            let mut ps = blocked(); ps.repair_status = state;
+            crate::route::reset_player_control_for_test(&ps);
+            let mut page = PlayerScreen::new(EntryId(1));
+            assert!(deliver(&mut page, &ps, None, key_event(consts::SDLK_RETURN, 0)).is_empty());
+            assert!(!page.repair_alert.is_open());
+        }
     }
 }

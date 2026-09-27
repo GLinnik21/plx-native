@@ -7,7 +7,7 @@ use super::*;
 mod carry_matrix {
     use super::*;
     use crate::auth::{AuthProgress, LoginProgress, RegistryProgress, SessionCmd};
-    use crate::auth::owner::{AdmissionId, AdmissionState, CommitReply, Identity, Pending, Receipt,
+    use crate::auth::owner::{AdmissionId, AdmissionState, CommitAdmission, CommitReply, Identity, Pending, Receipt,
         RegistryPlan, SessionEnvelope, SessionEvent, SessionFx, SessionOp, SessionWorkKey, StreamPhase};
     use crate::plex::session::{Session, SourceRef, UserRef, ServerRef};
     use crate::ui::machine::{RequestId, Stamped};
@@ -87,7 +87,7 @@ mod carry_matrix {
                     epoch: key.epoch, expected: None, sources: Vec::new(), primary: None,
                 })).unwrap();
             }
-            output.complete(LoginProgress::Failed { epoch: key.epoch, message: "old flow".into() }.into()).unwrap();
+            output.complete(LoginProgress::Failed { epoch: key.epoch, message: "old flow".into(), incident: crate::auth::synthetic_incident(), plaintext: None }.into()).unwrap();
         }).unwrap();
         let records = rig.session_adapter.take_results();
         assert_eq!(records.len(), 3);
@@ -118,7 +118,7 @@ mod carry_matrix {
         assert!(records.iter().all(|r| rig.session_adapter.admitted(r)));
         let next_key = SessionWorkKey { epoch: EPOCH + 1, op: SessionOp::Login };
         rig.session_adapter.launch(RequestId(2), next_key, true, |job| { job(); true }, move |output| {
-            output.complete(LoginProgress::Failed { epoch: next_key.epoch, message: "next batch".into() }.into()).unwrap();
+            output.complete(LoginProgress::Failed { epoch: next_key.epoch, message: "next batch".into(), incident: crate::auth::synthetic_incident(), plaintext: None }.into()).unwrap();
         }).unwrap();
         assert!(rig.session_adapter.take_results().is_empty());
         assert!(frame(&mut rig, &mut d, Vec::new(), &mut trace).carried > 0);
@@ -133,7 +133,8 @@ mod carry_matrix {
         let next = rig.session_adapter.take_results();
         assert_eq!(next.len(), 1);
         let before = rig.session_subhash();
-        queue(&mut d, SessionEvent::Commit(CommitReply { req: 1, epoch: EPOCH, arrival: a.arrival, accepted: true }));
+        queue(&mut d, SessionEvent::Commit(CommitReply { req: 1, epoch: EPOCH, arrival: a.arrival,
+            admission: CommitAdmission::StaleAuthority }));
         for r in &records { queue(&mut d, SessionEvent::Result(r.clone())); }
         d.emit(MachineId::Session, Fx::App(AppFx::SessionEffect(SessionFx::Acknowledge(vec![Receipt::of(&a), Receipt::of(&a)]))));
         frame(&mut rig, &mut d, Vec::new(), &mut trace);
@@ -175,7 +176,8 @@ mod carry_matrix {
             assert_eq!(trace.order.iter().filter(|x| x.0 == "pump-app").count(), usize::from(event_form));
             assert!(!trace.order.iter().any(|x| x.0 == "pump-event"));
             queue(&mut d, SessionEvent::Commit(CommitReply {
-                req: 1, epoch: EPOCH, arrival: records[0].arrival, accepted: true,
+                req: 1, epoch: EPOCH, arrival: records[0].arrival,
+                admission: CommitAdmission::StaleAuthority,
             }));
             assert!(second.carried < BUDGET);
             pad(&mut d, BUDGET - second.carried - 1);
@@ -355,10 +357,12 @@ fn home_roster_failure_history(cached: bool, failure: u8) {
     assert_eq!(records.len(), if failure == 4 { 0 } else { 2 });
     let results = records.into_iter().map(|r| (r.addr, AppMsg::Session(SessionEvent::Result(r)))).collect();
     d.frame_with(&mut rig, Tick::default(), Vec::new(), results, &mut NoTap, false);
-    assert_eq!(rig.auth_read().0.phase, if cached { Phase::Profiles } else { Phase::Error },
+    // The picker's own read-out (#132), never a sign-in `Phase::Error`: that routed a signed-in
+    // person to "Couldn't sign in", whose Try again starts a new QR sign-in.
+    assert_eq!(rig.auth_read().0.phase, Phase::Profiles,
         "failure kind {failure}, cached={cached}: completed work cannot leave an empty picker loading");
     assert_eq!(rig.auth_read().0.users.len(), usize::from(cached));
-    assert_eq!(&*rig.auth_read().0.error, if cached { "" } else { "Couldn't load profiles — check the connection." });
+    assert_eq!(&*rig.auth_read().0.error, if cached { "" } else { crate::auth::owner::ROSTER_UNREACHABLE });
     assert!(rig.session.snapshot_init().pending.is_empty());
     assert!(rig.take_session_ready().is_none());
     rig.session_adapter.cancel_all();

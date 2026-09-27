@@ -81,8 +81,8 @@ mod sys {
 /// the main thread would stall the frame loop for the whole load. What keeps that safe is NOT
 /// `sf_ready()` — that reads true the moment the object is constructed, before the real Load call
 /// returns (issue #74) — but the C seam's own `g_load_returned` gate inside `sf_ready_object()`,
-/// which refuses every other verb until this call has returned; the pump's `NATIVE_LOAD_BUDGET`
-/// is the only Rust-side view of that in-flight state.
+/// which refuses the other Starfish verbs until this call has returned. Rust tracks the same
+/// epoch boundary in Shared and the pump bounds both waits with `NATIVE_LOAD_BUDGET`.
 #[inline]
 pub(crate) unsafe fn sf_load(payload: *const c_char, epoch: u32) -> c_int {
     sys::sf_load(payload, epoch)
@@ -118,6 +118,13 @@ pub(crate) fn force_callback_intercepts_for_test(value: u32) {
     sys::force_callback_intercepts_for_test(value);
 }
 
+/// Stop the simulator's clock sink exactly at a movie position, or lift the stop. See
+/// `ffi_host.rs::stop_clock_at`; the television's pipeline has no such control.
+#[cfg(feature = "hostsim")]
+pub(crate) fn stop_sim_clock_at(media_ns: Option<i64>) -> bool {
+    sys::stop_clock_at(media_ns)
+}
+
 #[cfg(all(test, feature = "hostsim"))]
 pub(crate) fn reset_native_lifecycle_for_test() {
     sys::reset_native_lifecycle_for_test();
@@ -129,6 +136,12 @@ pub(crate) fn reset_native_lifecycle_for_test() {
 #[cfg(all(test, feature = "hostsim"))]
 pub(crate) fn force_object_ready_for_test(on: bool) {
     sys::force_object_ready_for_test(on);
+}
+
+/// Whether the host seam has quarantined its object. See `ffi_host.rs::lifecycle_blocked_for_test`.
+#[cfg(all(test, feature = "hostsim"))]
+pub(crate) fn lifecycle_blocked_for_test() -> bool {
+    sys::lifecycle_blocked_for_test()
 }
 
 #[cfg(all(test, feature = "hostsim"))]

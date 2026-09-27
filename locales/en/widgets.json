@@ -230,8 +230,8 @@
     }
   },
   "widgets.failure.jail": {
-    "value": "Playback failed — this TV's jail is missing a device file",
-    "description": "Player error caption or supporting subscription fact."
+    "value": "Playback failed — this TV's sandbox blocks native video",
+    "description": "failure jail"
   },
   "widgets.failure.refused": {
     "value": "Playback failed — the server cannot play or convert this file",
@@ -258,8 +258,8 @@
     "description": "Player error caption or supporting subscription fact."
   },
   "widgets.reason.jail": {
-    "value": "This set's jail configuration is missing /dev/rtkmem",
-    "description": "Explanation beneath the playback-failed heading. Device paths and project identifiers stay unchanged."
+    "value": "This set's sandbox does not give the app /dev/rtkmem",
+    "description": "reason jail"
   },
   "widgets.reason.refused": {
     "value": "The server cannot play or convert this file",
@@ -453,8 +453,8 @@
     }
   },
   "widgets.reason.jail_help": {
-    "value": "Found, on this chassis, to crash native video apps (community report: webosbrew/webos-homebrew-channel PR #202). Reinstalling through the Homebrew Channel should carry the jailer fix that adds the missing device file.",
-    "description": "Explanation beneath the playback-failed heading. Device paths and project identifiers stay unchanged."
+    "value": "Repair requires a rooted TV and Homebrew Channel access. See github.com/GLinnik21/plx-native/issues/74 for help.",
+    "description": "reason jail_help"
   },
   "widgets.tracks.empty": {
     "value": "No tracks",
@@ -492,8 +492,8 @@
     }
   },
   "widgets.panel.jail": {
-    "value": "this install's jail is missing /dev/rtkmem, found on this chassis to crash native video (community-tier finding)",
-    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+    "value": "this install's sandbox blocks access to /dev/rtkmem; PlxNative can offer a confirmed repair through rooted Homebrew Channel access",
+    "description": "panel jail"
   },
   "widgets.panel.refused": {
     "value": "the server refused the item at /decision — it can neither direct play nor convert it",
@@ -526,5 +526,168 @@
   "widgets.panel.unknown": {
     "value": "the player stopped without a reported cause",
     "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+  },
+  "widgets.failure.load_timeout": {
+    "value": "Playback failed — the TV did not finish starting the stream",
+    "description": "failure load_timeout"
+  },
+  "widgets.panel.load_timeout": {
+    "value": "the television media pipeline did not finish starting the stream in time",
+    "description": "panel load_timeout"
+  },
+  "widgets.reason.load_timeout": {
+    "value": "This TV did not finish starting the video stream in time",
+    "description": "reason load_timeout"
+  },
+  "widgets.failure.forced_playback": {
+    "value": "Playback failed — Force Direct Play could not play this stream",
+    "description": "failure forced_playback"
+  },
+  "widgets.panel.forced_playback": {
+    "value": "Force Direct Play could not use the original stream; automatic fallback is disabled",
+    "description": "panel forced_playback"
+  },
+  "widgets.reason.forced_playback": {
+    "value": "Force Direct Play could not play this stream",
+    "description": "reason forced_playback"
+  },
+  "widgets.reason.forced_playback_help": {
+    "value": "Force Direct Play is enabled. Automatic fallback is off. Return Direct Play to Auto in Settings. Restart the app if it stops responding.",
+    "description": "reason forced_playback_help"
+  },
+  "widgets.menu.forced_quality": {
+    "value": "Saved preference; Force Direct Play uses Original.",
+    "description": "menu forced_quality"
+  },
+  "widgets.repair.question": {
+    "value": "Repair PlxNative’s sandbox?",
+    "description": "repair question"
+  },
+  "widgets.repair.body": {
+    "value": "Use Homebrew Channel’s root access to update PlxNative’s sandbox with LG’s native profile. This requires a rooted TV. Close and reopen PlxNative afterward.",
+    "description": "repair body"
+  },
+  "widgets.repair.action": {
+    "value": "Repair",
+    "description": "repair action"
+  },
+  "widgets.repair.running": {
+    "value": "Repairing this app’s sandbox…",
+    "description": "repair running"
+  },
+  "widgets.repair.wait": {
+    "value": "Wait for the result before closing the app.",
+    "description": "repair wait"
+  },
+  "widgets.repair.completed": {
+    "value": "Sandbox repair completed",
+    "description": "repair completed"
+  },
+  "widgets.repair.reopen": {
+    "value": "Close and reopen PlxNative before playing video.",
+    "description": "repair reopen"
+  },
+  "widgets.repair.failed": {
+    "value": "Sandbox repair could not be confirmed",
+    "description": "repair failed"
+  },
+  "widgets.repair.start_failed": {
+    "value": "Could not start the repair. Close and reopen PlxNative to try again.",
+    "description": "repair start_failed"
+  },
+  "widgets.repair.hbc_unavailable": {
+    "value": "Homebrew Channel service is unavailable.",
+    "description": "repair hbc_unavailable"
+  },
+  "widgets.repair.not_root": {
+    "value": "Homebrew Channel service is not running as root.",
+    "description": "repair not_root"
+  },
+  "widgets.repair.command_failed": {
+    "value": "The sandbox repair command failed.",
+    "description": "repair command_failed"
+  },
+  "widgets.repair.timeout": {
+    "value": "Repair outcome is unknown. Close and reopen the app to check again.",
+    "description": "repair timeout"
+  },
+  "widgets.repair.unreadable": {
+    "value": "Repair completed, but this app cannot see /dev/rtkmem yet. Close and reopen the app.",
+    "description": "repair unreadable"
+  },
+  "widgets.repair.unsupported": {
+    "value": "Sandbox repair is not available on this device.",
+    "description": "repair unsupported"
+  },
+  "widgets.tracks.color": {
+    "value": "Color",
+    "description": "tracks color"
+  },
+  "widgets.tracks.timing": {
+    "value": "Timing",
+    "description": "tracks timing"
+  },
+  "widgets.tracks.earlier": {
+    "value": "Earlier",
+    "description": "tracks earlier"
+  },
+  "widgets.tracks.later": {
+    "value": "Later",
+    "description": "tracks later"
+  },
+  "widgets.tracks.reset": {
+    "value": "Reset",
+    "description": "tracks reset"
+  },
+  "widgets.tracks.external_badge": {
+    "value": "EXTERNAL",
+    "description": "tracks external_badge"
+  },
+  "widgets.tracks.tone_white": {
+    "value": "White",
+    "description": "tracks tone_white"
+  },
+  "widgets.tracks.tone_silver": {
+    "value": "Silver",
+    "description": "tracks tone_silver"
+  },
+  "widgets.tracks.tone_light_grey": {
+    "value": "Light gray",
+    "description": "tracks tone_light_grey"
+  },
+  "widgets.tracks.tone_grey": {
+    "value": "Gray",
+    "description": "tracks tone_grey"
+  },
+  "widgets.tracks.tone_dark_grey": {
+    "value": "Dark gray",
+    "description": "tracks tone_dark_grey"
+  },
+  "widgets.tracks.tone_charcoal": {
+    "value": "Charcoal",
+    "description": "tracks tone_charcoal"
+  },
+  "widgets.hint.repair": {
+    "value": "Press {key} to review sandbox repair",
+    "description": "Whole sentence around physical OK keycap before explicit repair confirmation",
+    "args": {
+      "key": "str"
+    }
+  },
+  "widgets.hint.retry_options": {
+    "value": "Press {key} to open retry options",
+    "description": "Whole sentence around physical OK keycap under Force Direct Play failure",
+    "args": {
+      "key": "str"
+    }
+  },
+  "widgets.runtime.main_thread": {
+    "value": "MAIN THREAD {kind} {milliseconds}ms · {label}",
+    "description": "Developer warning; kind and label are technical diagnostic identifiers",
+    "args": {
+      "kind": "str",
+      "label": "str",
+      "milliseconds": "i64"
+    }
   }
 }

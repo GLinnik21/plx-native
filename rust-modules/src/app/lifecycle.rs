@@ -13,6 +13,22 @@ pub(crate) fn paused() -> bool {
 pub(crate) fn set_paused(v: bool) {
     crate::player::TX.commit_paused(v)
 }
+/// PURE: the paused value a transport request settles on. `Some(true)` is the remote's PLAY key,
+/// `Some(false)` its PAUSE, and `None` the single PLAYPAUSE toggle — which is the only one of the
+/// three that needs the current state at all.
+///
+/// One function rather than a `match` per caller: the player's `PlayerReq::Transport` and the
+/// detail page's full-trailer transport (`player::preview::transport`) answer the same key ladder,
+/// and two hand-spelled copies of a three-arm match is exactly how a PLAY key ends up toggling on
+/// one surface and resuming on the other.
+pub(crate) fn transport_target(play: Option<bool>, paused: bool) -> bool {
+    match play {
+        Some(true) => false,
+        Some(false) => true,
+        None => !paused,
+    }
+}
+
 /// Ask the synchronized player clock to commit a user Pause/Resume. The player publishes the feed
 /// gate at the same accepted native boundary; keeping a second commit here used to leave a window
 /// in which deadline accounting still treated an already-accepted Pause as active playback.
@@ -723,6 +739,23 @@ impl ForegroundActuator for PlayerForegroundActuator<'_> {
         // start_bufferfeed has installed the Initial native-clock hold from TX.paused. Publish
         // Play through the synchronized reducer so that hold and the feed gate reopen together.
         !paused() || set_transport_paused(self.pa, false)
+    }
+}
+
+#[cfg(test)]
+mod transport_target_tests {
+    /// The three keys, both ways round. A PLAY key on an already-playing transport is a no-op
+    /// rather than a pause, and a PAUSE key on an already-paused one likewise — the property a
+    /// per-caller `match` kept getting wrong, and the reason the player's transport and the detail
+    /// page's trailer transport share this one function.
+    #[test]
+    fn only_the_toggle_depends_on_the_current_state() {
+        for paused in [false, true] {
+            assert!(!super::transport_target(Some(true), paused), "PLAY plays");
+            assert!(super::transport_target(Some(false), paused), "PAUSE pauses");
+        }
+        assert!(super::transport_target(None, false), "PLAYPAUSE pauses a playing transport");
+        assert!(!super::transport_target(None, true), "…and resumes a paused one");
     }
 }
 

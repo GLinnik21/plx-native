@@ -8,9 +8,8 @@ description: >
   TOUCHED — pure logic, a screen, text rasterization, an animation, frame rate, the player
   pipeline, selection/resume/markers, FFI, the release feature set, packaging — to the cheapest
   tier that can actually see it, names the tiers that cannot, and hands off to `ui-sim`,
-  `tv-session`, `tv-lock` or a plain `make check`. There are three tiers here with non-obvious
-  blind spots, and both recorded mistakes were the same shape: a green result from a tier that was
-  never able to see the thing being changed.
+  `tv-session`, `tv-lock` or a plain `make check`. Each tier has non-obvious blind spots, and a
+  tier that cannot see a change passes it green.
 ---
 
 # which-tier — what actually verifies this change
@@ -54,10 +53,9 @@ is not a subset failure, it is a whole bypassed layer:
   and a regression there passes it green;
 - it reaches **no resume, no markers, no Up Next, no `/:/timeline` reporter, no track SELECTION,
   and no transcode path** whatsoever;
-- `engine`'s `_ =>` arm maps an unrecognised audio codec to `"AC3"` and a non-`hevc` video codec to
-  the H264 payload — so a trigger that was **never read** still produces exactly the right payload
-  for the AC-3 baseline case. That is the tier's own false-PASS shape, and it is why the matrix
-  carries cases expecting `"AC3 PLUS"` and `"AAC"`.
+- Unsupported audio declarations fail before Load. The matrix's codec assertions still verify
+  that each fixture supplies the intended declaration; an omitted trigger cannot be inferred
+  from a generic liveness assertion.
 
 **Never ship on the default alone.** `tests/README.md` has the full tier table.
 
@@ -93,9 +91,12 @@ whole of what that tool exposes to the public internet, and the only gate it has
 cargo can see a python file).
 
 **It is not sub-second, and the figure that circulates is one of its five parts.** The ~0.3 s
-everybody quotes is `cargo test --lib` alone; end to end it is now well over ten seconds warm, most
-of the growth being suite size and **~7 s of the lab selftest, which is mostly two DELIBERATE
-rate-limit waits** — so a ten-second-plus pause there is the target working, not a hang. (That step
+everybody quotes is `cargo test --lib` alone, and that part is itself ~28 s now; end to end the
+gate runs in MINUTES warm. The bulk of it is `python3 tests/test_harness.py`, which shells out to
+`ci/check-deps.sh` about thirty times to prove each structure gate still catches a planted
+violation — 386 s of a 616 s run, measured 2026-09-17, and that is AFTER the 2.5× speed-up of
+`check-deps.sh` itself. The lab selftest's **~7 s is mostly two DELIBERATE rate-limit waits** — so
+a ten-second-plus pause there is the target working, not a hang. (That step
 also SSDP-probes the LAN to report whether a UPnP gateway is present; still no television, still no
 lock.) Do not write a new number here: measure it if you need one — this file has already carried a
 `3.8 s` that four separate additions made wrong.
@@ -156,6 +157,9 @@ It provably cannot answer:
 - **Anything about video.** The 29-symbol Starfish/ACB seam does not exist off-device; Play lands
   on the app's real failure read-out, which is correct behaviour and a convenient way to look at
   that screen.
+- **The cached modal ground.** The simulator runs with the frame cache OFF (`frame cache:
+  CopyTexSubImage error=0x500 — cache off`), so `popover::host`'s cached stages never run and a sim
+  capture cannot show a fault in them; only the TV can.
 
 **Two host-only traps that read as your change being broken.** The recipes are `ui-sim`'s; they are
 named here only so you can tell them from a regression in your own edit.

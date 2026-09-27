@@ -11,7 +11,7 @@ import time
 import unittest
 
 ROOT = Path(__file__).resolve().parent.parent
-MODES = ("--incremental", "--orphans", "--lanes", "--cache", "--all")
+MODES = ("--incremental", "--orphans", "--lanes", "--cache", "--worktrees", "--all")
 
 
 class BuildGcTests(unittest.TestCase):
@@ -21,7 +21,7 @@ class BuildGcTests(unittest.TestCase):
         self.root = Path(temp.name).resolve()
         self.counter = 0
 
-    def fixture(self, pid, pgid):
+    def fixture(self, pid, pgid, pgrep_body=None):
         self.counter += 1
         root = self.root / str(self.counter)
         repo, fleet, cache, tools = [root / n for n in ("repo", "fleet", "cache", "bin")]
@@ -41,7 +41,8 @@ class BuildGcTests(unittest.TestCase):
         # Suppress unrelated compiler-named processes only. PGID checks use real pgrep;
         # PID checks remain the script's actual shell kill -0 builtin.
         pgrep = tools / "pgrep"
-        pgrep.write_text("#!/bin/sh\n[ \"$1\" = -x ] && exit 1\nexec "
+        body = pgrep_body or '[ "$1" = -x ] && exit 1\n'
+        pgrep.write_text("#!/bin/sh\n" + body + "exec "
                          + shlex.quote(shutil.which("pgrep")) + ' "$@"\n')
         pgrep.chmod(0o755)
         env["PATH"] = str(tools) + os.pathsep + env.get("PATH", "")
@@ -139,6 +140,174 @@ class BuildGcTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("cannot enumerate", result.stderr)
                 self.assertTrue(all(p.exists() for p in fixture[2]))
+
+    # Regression for a `set -e` + pipeline-subshell bug: every derived-tree helper
+    # (`vendor_trees`, `lane_trees`, `incremental_trees`, `external_trees`, ...) used to end its
+    # `for` loop body in `[ -d "$d" ] && echo "$d"`. When the LAST glob candidate did not exist —
+    # true of every repo here, since none of these fixtures create a `vendor/` dir — that line's
+    # exit status was non-zero, which became the function's own return status. A bare call to a
+    # function shaped like that (`lane_trees "$w"` as the final statement of a
+    # `worktrees | while read w; do ...; done` loop body) is NOT exempt from `set -e`, so the
+    # `while` loop's own subshell exited the moment it hit the first worktree — silently
+    # truncating `--lanes`/`--incremental`/`--worktrees` to their first entry, with exit code 0
+    # and no error printed. Real repo measured 2026-09-18: `--lanes -n` listed nothing while a
+    # linked worktree's `rust-modules/target` alone was 3.1 GB.
+    def _add_worktrees(self, fixture, n, prefix="lane", add_target=True):
+        repo, env, _, _ = fixture
+        (repo / "README").write_text("seed\n")
+        subprocess.run(["git", "-C", str(repo), "add", "README"], env=env, check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-q", "-m", "seed"], env=env, check=True)
+        # `worktree_reason()` (the `--worktrees` mode) tests ancestry against the literal ref
+        # `main`; `git init` here has no global `init.defaultBranch` to read (the fixture strips
+        # GIT_CONFIG_GLOBAL) and falls back to `master`. Rename so both modes see a real `main`.
+        subprocess.run(["git", "-C", str(repo), "branch", "-m", "main"], env=env, check=True)
+        worktree_roots = []
+        for i in range(n):
+            wt = repo.parent / f"{prefix}{i}"
+            subprocess.run(["git", "-C", str(repo), "worktree", "add", "-q", "-b",
+                            f"{prefix}{i}", str(wt)], env=env, check=True)
+            if add_target:
+                tgt = wt / "rust-modules/target"
+                tgt.mkdir(parents=True)
+                (tgt / "sentinel").write_text("synthetic build output\n")
+            worktree_roots.append(wt)
+        return worktree_roots
+
+    def test_lanes_enumerates_every_worktree_not_just_the_first(self):
+        fixture = self.fixture(0, 0)
+        roots = self._add_worktrees(fixture, 3)
+        result = self.run_gc(fixture, "--lanes", "-n")
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        for wt in roots:
+            tgt = wt / "rust-modules/target"
+            self.assertIn(str(tgt), diagnostic,
+                          "worktree target missing from --lanes output: " + diagnostic)
+
+    def test_worktrees_mode_enumerates_past_the_first_record(self):
+        # No target dir here: an untracked build tree would make every worktree read `dirty`,
+        # which is a real (and correctly refused) state but not what this test is checking. This
+        # test asks whether `--worktrees` enumerates past the first CLEAN, already-on-`main`
+        # worktree — so every worktree here is left exactly at the seed commit.
+        fixture = self.fixture(0, 0)
+        roots = self._add_worktrees(fixture, 3, prefix="finished", add_target=False)
+        result = self.run_gc(fixture, "--worktrees", "-n")
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        for wt in roots:
+            self.assertIn(f"would remove  {wt}", diagnostic,
+                          "worktree missing from --worktrees output: " + diagnostic)
+
+    def test_worktrees_removal_guards_empty_fleet_dir(self):
+        # Copilot review point: `FLEET_DIR=${PLX_FLEET_DIR-$HOME/plx-fleet}` only substitutes the
+        # default when PLX_FLEET_DIR is UNSET. A caller that exports it as the EMPTY STRING
+        # leaves FLEET_DIR empty, and the old code built `ext="$FLEET_DIR/$(basename "$w")"`
+        # unconditionally — a ROOT-level path such as `/lane0`. Proving this safely, without ever
+        # creating or testing a real root-level directory, means watching CONTROL FLOW rather
+        # than a filesystem effect: `sh -x` traces every command it executes, including an
+        # assignment and a `[ -d ... ]` test on a path that does not exist. Before the fix, the
+        # trace shows `ext=/<name>` being built; after the fix, the guard
+        # (`[ -n "$FLEET_DIR" ] && [ -d "$FLEET_DIR" ]`) is false and the whole block — including
+        # the `ext=` assignment — never runs.
+        fixture = self.fixture(0, 0)
+        roots = self._add_worktrees(fixture, 1, prefix="lane", add_target=False)
+        repo, env, _, _ = fixture
+        env = dict(env, PLX_FLEET_DIR="")
+        result = subprocess.run(["sh", "-x", "tools/build-gc.sh", "--worktrees"], cwd=repo,
+                                env=env, text=True, capture_output=True, timeout=20)
+        trace = result.stdout + result.stderr
+        name = roots[0].name
+        self.assertEqual(result.returncode, 0, trace)
+        self.assertNotIn(f"ext=/{name}", trace,
+                         "built a root-anchored external path from an empty PLX_FLEET_DIR: "
+                         + trace)
+        self.assertFalse(roots[0].exists(), "worktree was not actually removed: " + trace)
+
+    # A build in ONE checkout must not veto reclaiming every OTHER tree on the volume. The guard
+    # used to be all-or-nothing: any `cargo`/`make` anywhere and the script deleted nothing. On a
+    # machine running several sessions at once that condition is essentially always true, so the
+    # tool could not run on the day the volume filled — measured 2026-09-17 at 5.0 GiB free with
+    # 34.8 GiB of collectable trees sitting in idle lanes.
+    # Report a synthetic `cargo` whose cwd names the checkout to protect. `lsof` is real, so the
+    # mapping from a pid back to a checkout is the production one, not a stub.
+    def pid_file_stub(self, path):
+        return ('if [ "$1" = -x ]; then\n'
+                '  [ "$2" = cargo ] || exit 1\n'
+                '  cat ' + shlex.quote(str(path)) + '\n'
+                '  exit 0\n'
+                'fi\n')
+
+    def test_live_checkout_is_spared_while_every_other_tree_is_reclaimed(self):
+        pidfile = self.root / "live.pid"
+        pidfile.write_text("0\n")
+        fixture = self.fixture(0, 0, pgrep_body=self.pid_file_stub(pidfile))
+        repo, _, sentinels, _ = fixture
+        live = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"],
+                                cwd=repo, stdin=subprocess.PIPE)
+        try:
+            pidfile.write_text(str(live.pid) + "\n")
+            result = self.run_gc(fixture, "--all")
+            diagnostic = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 0, diagnostic)
+            self.assertIn("in use, skipped", diagnostic)
+            self.assertTrue(sentinels[0].exists(), "reclaimed a tree being built: " + diagnostic)
+            for stranded in sentinels[1:]:
+                self.assertFalse(stranded.exists(), "idle tree left behind: " + diagnostic)
+        finally:
+            live.stdin.close()
+            live.wait(timeout=5)
+
+    def test_live_external_lane_tree_survives_even_with_its_worktree_gone(self):
+        # `fleet-plan` points a worker's CARGO_TARGET_DIR at $PLX_FLEET_DIR/<lane>, and the
+        # documented teardown order is: remove the worktrees, then `--orphans`. A lane whose last
+        # build is still running is then an external tree with no worktree — which is exactly what
+        # `--orphans` is built to delete. Its cwd cannot name a checkout git still lists, so the
+        # lane name has to carry the answer.
+        fixture = self.fixture(0, 0, pgrep_body=self.pid_file_stub(self.root / "live.pid"))
+        repo, _, sentinels, _ = fixture
+        pidfile = self.root / "live.pid"
+        pidfile.write_text("0\n")
+        lane = Path(str(sentinels[1])).parents[3]   # <fleet>/absent-lane
+        live = subprocess.Popen([sys.executable, "-c", "import sys; sys.stdin.read()"],
+                                cwd=lane, stdin=subprocess.PIPE)
+        try:
+            pidfile.write_text(str(live.pid) + "\n")
+            result = self.run_gc(fixture, "--all")
+            diagnostic = result.stdout + result.stderr
+            self.assertEqual(result.returncode, 0, diagnostic)
+            self.assertTrue(sentinels[1].exists(),
+                            "deleted an external lane tree being built: " + diagnostic)
+            self.assertFalse(sentinels[0].exists(), "idle tree left behind: " + diagnostic)
+        finally:
+            live.stdin.close()
+            live.wait(timeout=5)
+
+    def test_own_ancestors_never_protect_the_checkout_being_cleaned(self):
+        # `make disk` runs this script from a `make` whose cwd IS the checkout to clean. That make
+        # is blocked waiting on us, not compiling; counting it protects the very tree the user
+        # asked to reclaim. The stub reports the whole ancestor chain as live `cargo` processes.
+        stub = ('if [ "$1" = -x ]; then\n'
+                '  [ "$2" = cargo ] || exit 1\n'
+                '  p=$PPID; n=0\n'
+                '  while [ "$p" -gt 1 ] && [ "$n" -lt 32 ]; do\n'
+                '    echo "$p"\n'
+                '    p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d " ")\n'
+                '    case "$p" in ""|*[!0-9]*) p=0 ;; esac\n'
+                '    n=$((n + 1))\n'
+                '  done\n'
+                '  exit 0\n'
+                'fi\n')
+        fixture = self.fixture(0, 0, pgrep_body=stub)
+        repo, env, sentinels, _ = fixture
+        # An intermediate shell, so an ancestor really does have the repository as its cwd.
+        result = subprocess.run(["sh", "-c", "sh tools/build-gc.sh --all"], cwd=repo, env=env,
+                                text=True, capture_output=True, timeout=20)
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertNotIn("in use, skipped", diagnostic)
+        for stranded in sentinels:
+            self.assertFalse(stranded.exists(), "ancestor mistaken for a builder: " + diagnostic)
 
 
 class MakeCheckContractTests(unittest.TestCase):

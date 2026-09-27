@@ -84,10 +84,30 @@ pub enum Enter<K> {
 }
 
 /// "Mount with focus on the strip" is expressible.
+///
+/// `ContainerGroup` and `FirstInGroup` name the SAME group and can resolve through the SAME
+/// `Seat::Remembered` policy, yet they must not be interchangeable: only the container mounting a
+/// page knows whether that page has been seen before. A table's `Seat` is a property of the
+/// GROUP — it says how to seat a cursor that lands there by direction, by a `Link`, or by a plain
+/// re-entry within the still-live screen — and rightly stays `Remembered` for all of those. But
+/// `Enter::Fresh` means the screen is being shown for the first time in this visit, and a
+/// remembered cursor cannot belong to a page nobody has looked at yet: every nested Settings page
+/// shares one `EntryId` with its siblings (the surface's own, `RouteSurface::run_inner`) and every
+/// one of their tables shares `GroupId(0)`, so `Seat::Remembered`'s `(EntryId, GroupId)` key is
+/// literally the SAME key across a push from Root into Legal — pushing OK on Settings' second row
+/// then had Legal open already seated on ITS second row, because `seat_in`'s remembered arm read
+/// the outgoing page's cursor back for the incoming one. `FirstInGroup` is the container's way to
+/// say "ignore whatever is remembered here, this is new" without weakening `Seat::Remembered` for
+/// every ordinary re-entry that still needs it (`ui/focus.rs`'s `enter`, the `FirstInGroup` arm).
 #[derive(Clone, Copy, Debug)]
 pub enum FocusTarget<K> {
     Elem(FocusKey<K>),
+    /// Seat by the group's own `Seat` policy (`Seat::Remembered` included) — a plain re-entry.
     ContainerGroup(GroupId),
+    /// Seat at the group's first selectable element, ignoring any remembered cursor for it — a
+    /// page being shown for the first time in this visit, where a remembered cursor cannot be
+    /// ITS memory however the `(EntryId, GroupId)` key happens to compare.
+    FirstInGroup(GroupId),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -126,11 +146,18 @@ fn no_lift(_: ScrimLiftRead<'_>) {}
 ///
 /// It is a REQUEST rather than a drawing, and that is the whole of why this type exists. The dim
 /// sits between the page and the surface's own glass, so it is part of what that glass looks
-/// through — which means it has to be on the framebuffer *before* the host snapshot is taken, i.e.
-/// inside the page pass, several call frames away from the surface that owns it. The surface
-/// therefore states its weight here and the container
+/// through — which means it has to be on the framebuffer *before* the surface's glass grabs its
+/// backdrop, i.e. inside the page pass, several call frames away from the surface that owns it.
+/// The surface therefore states its weight here and the container
 /// ([`ModalStack::draw_scrims`](crate::ui::containers::modal::ModalStack::draw_scrims)) draws it,
 /// in one place, for every surface, in phase order.
+///
+/// **The weight is a ROLE, and the ink is the page's own light.** `alpha` is one of the
+/// `theme::underlay::DIM_*` rows — no surface states a number of its own — and the container paints
+/// it through the stack's one `UnderlayField` (`containers::modal::ModalUnderlay`) as
+/// `Role::Dim { weight: theme::underlay::TINT }`, latched from the undimmed host page (or, over the
+/// video plane, from [`UnderlaySource::Corners`]). So the dim keeps the page's colour where the
+/// page has it; at `TINT == 0` it is the flat `theme::scrim_black` rect to the bit.
 ///
 /// A surface that wants no dim overrides nothing: [`Screen::scrim`] defaults to [`Scrim::NONE`].
 #[derive(Clone, Copy)]
@@ -154,6 +181,26 @@ pub struct Scrim {
     ///
     /// [`ModalStack::draw_scrims`]: crate::ui::containers::modal::ModalStack::draw_scrims
     pub(crate) lift: ScrimLift,
+    /// Where the dim's inherited light comes from — see [`UnderlaySource`]. Every constructor
+    /// but [`Scrim::over_video`] answers [`UnderlaySource::Page`].
+    pub(crate) source: UnderlaySource,
+}
+
+/// **What a surface's dim inherits.** A dim here is not a black sheet: the container paints it
+/// through ONE `ui::underlay::UnderlayField` per stack (`containers::modal::ModalUnderlay`), and
+/// this says where that field is latched from.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum UnderlaySource {
+    /// The host page itself, read off the framebuffer before any dim is on it — every surface
+    /// presented over a page.
+    Page,
+    /// A four-corner envelope (tl, tr, br, bl — `plex::UltraBlurColors::corners`' ring): a surface
+    /// over the hardware video plane, which GL cannot read back, inherits the playing item's own
+    /// UltraBlur colours instead.
+    Corners([[f32; 3]; 4]),
+    /// Nothing honest to inherit (a video-plane surface whose item carries no envelope): the flat
+    /// `theme::scrim_black` ink.
+    Flat,
 }
 
 impl Scrim {
@@ -161,19 +208,39 @@ impl Scrim {
     pub const NONE: Scrim = Scrim {
         alpha: 0.0,
         lift: no_lift,
+        source: UnderlaySource::Page,
     };
 
-    /// A dim of `alpha` with nothing lifted out of it.
+    /// A dim of `alpha` with nothing lifted out of it. `alpha` is a `theme::underlay::DIM_*`
+    /// role, never a literal (`containers::tests::no_surface_states_its_own_dim_weight`).
     pub const fn dim(alpha: f32) -> Scrim {
         Scrim {
             alpha,
             lift: no_lift,
+            source: UnderlaySource::Page,
         }
     }
 
     /// A dim of `alpha` with `lift` re-drawn above it.
     pub(crate) const fn lifting(alpha: f32, lift: ScrimLift) -> Scrim {
-        Scrim { alpha, lift }
+        Scrim {
+            alpha,
+            lift,
+            source: UnderlaySource::Page,
+        }
+    }
+
+    /// A dim of `alpha` over the VIDEO PLANE, inheriting the playing item's `corners` (or the flat
+    /// ink when it has none) — the player's panels, whose page is a hole GL cannot sample.
+    pub(crate) const fn over_video(alpha: f32, corners: Option<[[f32; 3]; 4]>) -> Scrim {
+        Scrim {
+            alpha,
+            lift: no_lift,
+            source: match corners {
+                Some(c) => UnderlaySource::Corners(c),
+                None => UnderlaySource::Flat,
+            },
+        }
     }
 }
 
@@ -185,37 +252,6 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn crumb(&self, cx: &Cx<'_, H>) -> Option<Cow<'_, str>>;
     /// RENDER resources only.
     fn prepare(&mut self, b: &mut Budget, cx: &Cx<'_, H>);
-    /// **A REFRESHING backdrop's cadence, resolved before the host page draws** — the second
-    /// prepare, and the only one that cannot happen in [`Screen::prepare`].
-    ///
-    /// A surface whose glass re-sources its backdrop (`Glass::DYNAMIC_BACKDROP`) has to decide
-    /// whether to do so at a slot with a boundary on each side: after the host-user latch that
-    /// tells "the page changed" from "I changed", and before the frame's blur SOURCE pass is
-    /// sampled, so an invalidation raised here reaches this frame's own source rather than the
-    /// next one's. `prepare` runs at the dispatcher's step 9, inside the frame, which is neither.
-    ///
-    /// Two facts, because neither is the screen's to know. `underlay_changed` is what the CALLER
-    /// believes about the page (`app/run.rs` hands the dispatcher
-    /// `underlay_moving || idle::present_dirty()`), and `appear_settled` is the CONTAINER's answer
-    /// about this surface's own appear spring, which it owns — a page, having no such spring, is
-    /// asked with `true`. The decision itself is one shared function, `popover::glass_refresh`,
-    /// which subtracts the own-damage ledger from the caller's belief: it cannot tell "the page
-    /// under me changed" from "the key I just swallowed raised an invalidate", and both set the
-    /// same process-wide flag.
-    ///
-    /// A screen with a CACHED ground, or none at all, wants nothing here and inherits this no-op.
-    ///
-    /// `glass` is the frame plan's ONE shared refresh cadence (spec §8.3, phase 11): a refreshing
-    /// backdrop prepares against it rather than against a process-wide clock, which is what makes
-    /// two owners opened on different presents share one schedule instead of compounding into a
-    /// refresh every frame.
-    fn prepare_present(
-        &mut self,
-        _glass: &mut crate::ui::frame::glass::GlassPlan,
-        _underlay_changed: bool,
-        _appear_settled: bool,
-    ) {
-    }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>);
     fn render(&self) -> RenderStrategy;
     /// Whether remounting an evicted child surface can read this page's identity-matched data.
@@ -372,6 +408,10 @@ pub enum GroupKind {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Seat {
     Nearest,
+    /// The group's remembered element — except an UP/DOWN press into a card lattice
+    /// (`ElemKind::Card` `Row` or `Grid`), which lands through `seat` on the card above or below
+    /// the cursor, so "down, right, up" closes a square (`focus::projects_across`). Sideways
+    /// doors, entries and restores, selector rows and columns keep the remembered element.
     Remembered,
     RememberedNear { rows: u8 },
     First,
@@ -763,6 +803,12 @@ pub struct DrawFrame<'a, 'views, H: Host> {
     /// construction — the one write is `with_navigation`.
     pub nav_page_alpha: f32,
     pub press: PressRead,
+    /// **The page under this surface, as the container latched it** — the `ModalStack`'s one
+    /// underlay field (`containers::modal::ModalUnderlay`), which a popover panel's ground is drawn
+    /// from (`widgets::panel_ground`). `None` on a page's own frame and on any frame whose
+    /// container owns no field; a panel reads `None`, or a field not latched yet, as "draw the flat
+    /// sheet". Set by the dispatcher's surface pass, never by a screen.
+    pub underlay: Option<&'a crate::ui::underlay::UnderlayField>,
     stops: Vec<Stop<H::Elem>>,
 }
 
@@ -781,6 +827,7 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
             blur_amount: nav.blur_amount,
             nav_page_alpha: nav.page_alpha,
             press: cx.press,
+            underlay: None,
             stops: Vec::new(),
         }
     }
@@ -807,6 +854,9 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
     /// folded in here (`Painter::to_screen`) and the stop is clipped to the cascade's clip
     /// intersected with `s.clip` (also in painter space).
     pub fn stop(&mut self, p: Painter, mut s: Stop<H::Elem>) {
+        if p.is_recording() {
+            return;
+        }
         let (rect, _, cascade_clip) = p.to_screen(s.rect);
         let (_, rest, _) = p.to_screen(s.rest_rect);
         let own = Rect::new(s.clip.x + p.dx(), s.clip.y + p.dy(), s.clip.w, s.clip.h);
@@ -821,6 +871,9 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
     /// replacement for the bare `Painter::clip`/`clip_clear` pair (spec §7.6). Draw the clipped
     /// content through the painter the scope hands back.
     pub fn clip(&mut self, p: Painter, r: Rect) -> ClipScope {
+        if p.is_recording() {
+            return ClipScope::inert();
+        }
         let inner = p.clipped(r);
         ClipScope::open(inner.clip_rect())
     }
@@ -838,6 +891,7 @@ impl<'a, 'views, H: Host> DrawFrame<'a, 'views, H> {
 /// bookkeeping on the host test binary (no GL is linked): what is graded is the stack.
 pub struct ClipScope {
     prev: Option<Rect>,
+    active: bool,
 }
 
 thread_local! {
@@ -849,7 +903,11 @@ impl ClipScope {
     fn open(screen: Rect) -> Self {
         let prev = CLIP_STACK.with(|c| c.replace(Some(screen)));
         apply_scissor(Some(screen));
-        Self { prev }
+        Self { prev, active: true }
+    }
+
+    fn inert() -> Self {
+        Self { prev: None, active: false }
     }
 
     /// The scissor in force (the innermost open scope), for tests and instruments.
@@ -860,6 +918,9 @@ impl ClipScope {
 
 impl Drop for ClipScope {
     fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
         CLIP_STACK.with(|c| c.set(self.prev));
         apply_scissor(self.prev);
     }

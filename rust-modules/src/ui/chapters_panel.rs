@@ -46,9 +46,9 @@ pub(crate) struct ChaptersState {
 
 impl ChaptersState {
     /// focus the chapter that contains the current playhead
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(meta: metadata::MetadataView<'_>) -> Self {
         let pos_ms = crate::player::playpos_ns() / 1_000_000;
-        let sel = chapters()
+        let sel = chapters(meta)
             .iter()
             .rposition(|c| c.start_ms <= pos_ms)
             .unwrap_or(0) as c_int;
@@ -79,20 +79,20 @@ impl ChaptersState {
     }
 
     /// seek target (nanoseconds) for the focused chapter, or -1 if none.
-    pub(crate) fn on_ok(&self) -> i64 {
+    pub(crate) fn on_ok(&self, meta: metadata::MetadataView<'_>) -> i64 {
         let s = self.sel;
-        chapters()
+        chapters(meta)
             .get(s.max(0) as usize)
             .map(|c| c.start_ms * 1_000_000)
             .unwrap_or(-1)
     }
 
-    pub(crate) fn update(&mut self, dt: f32) {
+    pub(crate) fn update(&mut self, dt: f32, meta: metadata::MetadataView<'_>) {
         // The store this indexes belongs to the PLAYING item and a new play retires it, so re-clamp
         // rather than spring the scroll toward a slot that no longer exists (which culls every card
         // and leaves an empty panel). `on_ok`/`draw` are `.get()`-based, so this is about the strip
         // staying coherent, not about safety.
-        let sel = self.sel.min((n() - 1).max(0));
+        let sel = self.sel.min((n(meta) - 1).max(0));
         self.sel = sel;
         let sctgt = scroll_target(sel);
         self.scroll.step(sctgt, 220.0, dt);
@@ -112,8 +112,9 @@ impl ChaptersState {
         ps: &crate::route::PlaybackSession,
         appear: f32,
         measure: &dyn crate::ui::machine::Measure,
+        meta: metadata::MetadataView<'_>,
     ) {
-        let chs = chapters();
+        let chs = chapters(meta);
         if chs.is_empty() {
             return;
         }
@@ -186,15 +187,15 @@ impl ChaptersState {
 /// the playing leaf's chapters — the ONE read, so within a frame the count, the open, the seek and
 /// the draw cannot end up describing different items. ACROSS frames the store can still be replaced
 /// (a new play retires it, `route::request_play`), which is why `update` re-clamps the selection.
-fn chapters() -> &'static [metadata::Chapter] {
-    metadata::playing_chapters()
+fn chapters<'a>(meta: metadata::MetadataView<'a>) -> &'a [metadata::Chapter] {
+    meta.playing_chapters()
 }
-fn n() -> c_int {
-    chapters().len() as c_int
+fn n(meta: metadata::MetadataView<'_>) -> c_int {
+    chapters(meta).len() as c_int
 }
 /// whether the PLAYING item has chapters — drives showing/hiding the Chapters tab
-pub(crate) fn has_chapters() -> bool {
-    n() > 0
+pub(crate) fn has_chapters(meta: metadata::MetadataView<'_>) -> bool {
+    n(meta) > 0
 }
 
 fn scroll_target(sel: c_int) -> f32 {
@@ -256,12 +257,12 @@ pub(crate) struct ChaptersPart<'a> {
     pub(crate) group: GroupId,
 }
 
-impl<H: Host> Focusable<H> for ChaptersPart<'_>
+impl<H: Host + crate::screens::registry::MetadataLike> Focusable<H> for ChaptersPart<'_>
 where
     H::Elem: IndexElem,
 {
-    fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
-        let nn = n() as usize;
+    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        let nn = n(H::metadata(cx)) as usize;
         if nn == 0 {
             return;
         }
@@ -279,15 +280,15 @@ where
             elem: ElemKind::Card,
         });
     }
-    fn group_of(&self, key: &H::Elem, _cx: &Cx<'_, H>) -> Option<GroupId> {
-        ((key.index()? as usize) < n() as usize).then_some(self.group)
+    fn group_of(&self, key: &H::Elem, cx: &Cx<'_, H>) -> Option<GroupId> {
+        ((key.index()? as usize) < n(H::metadata(cx)) as usize).then_some(self.group)
     }
-    fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, _cx: &Cx<'_, H>) -> Step<H::Elem> {
-        step_index(self.entry, key, dir, n() as usize)
+    fn neighbour(&self, key: FocusKey<H::Elem>, dir: Dir, cx: &Cx<'_, H>) -> Step<H::Elem> {
+        step_index(self.entry, key, dir, n(H::metadata(cx)) as usize)
     }
-    fn place(&self, key: &H::Elem, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+    fn place(&self, key: &H::Elem, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
         let i = key.index()? as usize;
-        if i >= n() as usize {
+        if i >= n(H::metadata(cx)) as usize {
             return None;
         }
         let rect = card_rect(i, self.state.scroll.pos);
@@ -298,8 +299,8 @@ where
             index: Some(i as u32),
         })
     }
-    fn reconcile(&self, want: FocusKey<H::Elem>, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
-        clamp_index(self.entry, want, n() as usize)
+    fn reconcile(&self, want: FocusKey<H::Elem>, cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
+        clamp_index(self.entry, want, n(H::metadata(cx)) as usize)
     }
     fn seat(&self, _g: GroupId, _from: Placed, _cx: &Cx<'_, H>) -> FocusKey<H::Elem> {
         FocusKey {
@@ -309,7 +310,7 @@ where
     }
 }
 
-impl<H: Host> Part<H> for ChaptersPart<'_>
+impl<H: Host + crate::screens::registry::MetadataLike> Part<H> for ChaptersPart<'_>
 where
     H::Elem: IndexElem,
 {
@@ -321,7 +322,7 @@ where
         // space because `card_rect` already resolves the strip's own scroll offset, exactly as
         // `TablePart::draw` registers a table's already-absolute row rects.
         let p = Painter::root();
-        let nn = n() as usize;
+        let nn = n(H::metadata(f.cx)) as usize;
         for i in 0..nn {
             f.stop(
                 p,
@@ -356,6 +357,19 @@ mod focus_tests {
         type Views<'a> = ();
         type Init = crate::ui::fixture::FixtureInit;
         type Memory = PageMemory;
+    }
+
+    thread_local! {
+        static TEST_METADATA: std::cell::UnsafeCell<crate::stores::metadata::MetadataStore> =
+            std::cell::UnsafeCell::new(crate::stores::metadata::MetadataStore::default());
+    }
+    fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
+        TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+    }
+    impl crate::screens::registry::MetadataLike for HostFixture {
+        fn metadata<'a>(_cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> {
+            test_store().view()
+        }
     }
 
     fn with_cx<R>(entry: EntryId, test: impl FnOnce(&Cx<'_, HostFixture>) -> R) -> R {
@@ -431,7 +445,7 @@ mod focus_tests {
             }
             assert_eq!(
                 <ChaptersPart as Focusable<HostFixture>>::group_of(&part, &0u32, cx),
-                (n() > 0).then_some(GroupId(0))
+                (n(test_store().view()) > 0).then_some(GroupId(0))
             );
         });
     }

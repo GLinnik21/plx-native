@@ -426,8 +426,9 @@ impl super::BrowseState {
         }
     }
 
-    pub(crate) fn hubs_land(&mut self, adapter: &Arc<super::BrowseAdapter>) -> bool {
-        let taken = crate::stores::take_landing(crate::stores::StoreId::Browse, || {
+    pub(crate) fn hubs_land(&mut self, adapter: &Arc<super::BrowseAdapter>,
+        gate: &crate::ui::landgate::Gate) -> bool {
+        let taken = crate::stores::take_landing(gate, crate::stores::StoreId::Browse, || {
             adapter.hubs.result.lock().unwrap_or_else(|e| e.into_inner()).take()
         });
         let Some(result) = taken else {
@@ -654,6 +655,14 @@ pub(crate) fn seed_shelves_for_owner_test(
     st.hubs.commit_staged(true);
 }
 
+/// A worker success held behind the Library's publication gate, without starting a worker.
+#[cfg(test)]
+pub(crate) fn stage_shelves_for_owner_test(state: &mut super::BrowseState, sec: usize) {
+    if let Some(st) = state.state_mut(sec) {
+        st.hubs.land_ok(vec![Shelf { title: "staged".into(), ..Default::default() }]);
+    }
+}
+
 /// Turn a seeded section's shelves into EPISODE shelves — landscape rows of `kind == 3` items with
 /// a show behind them. The half [`seed_shelves_for_test`] deliberately does not do, because a
 /// geometry test wants the poster shape it can name; a test about the episode TILE wants this.
@@ -829,6 +838,7 @@ mod tests {
             asked: true,
             on: Vec::new(),
             off: Vec::new(),
+            extensions: Default::default(),
         });
         first.retry_cd = 120;
         first.states[1].hubs.armed = true;

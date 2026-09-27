@@ -18,7 +18,17 @@
 //!   PLXNATIVE_SHOT=<path>          where to write (default: `shot.png` in the instance root)
 //!   PLXNATIVE_SHOT_FRAME=<n>       ALSO capture automatically at presented frame n (default: no
 //!                                  automatic capture — only the `shot` token fires one)
-//!   PLXNATIVE_SHOT_EXIT=1          exit(0) after an automatic capture — the headless one-shot mode
+//!   PLXNATIVE_SHOT_SETTLE=<ms>     ALSO capture automatically once the screen has been at REST for
+//!                                  <ms>: no motion, no damage, no queued upload, no pending page
+//!                                  capture (`ui::idle`'s own change signal, which ignores the
+//!                                  keepalive and the bound video plane). The screenshot pipeline's
+//!                                  trigger: it waits on the app's state, never on a wall clock.
+//!   PLXNATIVE_SHOT_AFTER=<ms>      …and not before <ms> since the first frame (default 0), so a
+//!                                  scene whose trigger fires late cannot be captured before it
+//!   PLXNATIVE_SHOT_EXIT=1          end the run after an automatic capture — the headless one-shot
+//!                                  mode (an orderly stop through the app's own shutdown, never an
+//!                                  `exit()` from inside the frame: see [`maybe_capture`])
+//!   PLXNATIVE_SHOT_ALPHA=1         write RGBA (premultiplied, as the framebuffer holds it)
 //!
 //! The `shot` token on the remote FIFO captures on demand instead, which is what an interactive
 //! agent session uses: drive the UI, then ask for the frame. Those are NUMBERED (`shot-1.png`,
@@ -52,7 +62,12 @@ struct Cfg {
     /// numbered ones an agent was told to read — which is exactly what a default of 150 did to the
     /// `ui-sim` skill's own interactive recipe.
     frame: Option<u32>,
+    /// `Some(quiet_ms)` arms the settled capture — see the module doc.
+    settle: Option<u32>,
+    /// Earliest settled capture, in ms after the first frame.
+    after: u32,
     exit: bool,
+    alpha: bool,
 }
 
 fn cfg() -> &'static Cfg {
@@ -66,7 +81,15 @@ fn cfg() -> &'static Cfg {
         frame: std::env::var("PLXNATIVE_SHOT_FRAME")
             .ok()
             .and_then(|s| s.parse().ok()),
+        settle: std::env::var("PLXNATIVE_SHOT_SETTLE")
+            .ok()
+            .and_then(|s| s.parse().ok()),
+        after: std::env::var("PLXNATIVE_SHOT_AFTER")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0),
         exit: std::env::var_os("PLXNATIVE_SHOT_EXIT").is_some(),
+        alpha: std::env::var("PLXNATIVE_SHOT_ALPHA").as_deref() == Ok("1"),
     })
 }
 
@@ -76,6 +99,41 @@ static FRAMES: AtomicU32 = AtomicU32::new(0);
 
 /// Set by the `shot` remote token; captures the next presented frame regardless of the count.
 static ON_DEMAND: AtomicBool = AtomicBool::new(false);
+
+/// Set by [`tick`] when the settled capture is due; taken by the next [`maybe_capture`].
+static SETTLED: AtomicBool = AtomicBool::new(false);
+/// The settled capture has been asked for once; it never repeats in one process.
+static SETTLE_FIRED: AtomicBool = AtomicBool::new(false);
+/// `now` of the first [`tick`], the origin of `PLXNATIVE_SHOT_AFTER`.
+static FIRST_TICK: OnceLock<u32> = OnceLock::new();
+
+/// Is the settled capture due? `quiet` is how long nothing has changed, `age` how long since the
+/// first frame, `busy` whether work is queued that will change the picture.
+fn settled_due(settle: u32, after: u32, age: u32, quiet: u32, busy: bool) -> bool {
+    !busy && age >= after && quiet >= settle
+}
+
+/// Once per loop iteration, BEFORE the present decision (`app::run`): arm the settled capture when
+/// the screen has been at rest long enough. A settled screen does not present, so this invalidates
+/// to make the next frame present — and that frame, drawn from unchanged state, is the capture.
+pub(crate) fn tick(now: u32, busy: bool) {
+    let cfg = cfg();
+    let Some(settle) = cfg.settle else { return };
+    if SETTLE_FIRED.load(Ordering::Relaxed) {
+        return;
+    }
+    let first = *FIRST_TICK.get_or_init(|| now);
+    let quiet = now.wrapping_sub(crate::ui::idle::last_change_ms());
+    if settled_due(settle, cfg.after, now.wrapping_sub(first), quiet, busy) {
+        SETTLE_FIRED.store(true, Ordering::Relaxed);
+        SETTLED.store(true, Ordering::Relaxed);
+        crate::log(&format!(
+            "shot: settled ({quiet} ms at rest, {} ms after the first frame)",
+            now.wrapping_sub(first)
+        ));
+        crate::ui::idle::invalidate();
+    }
+}
 
 /// Ask for a capture of the next frame. The remote-FIFO entry point (`app.rs`'s token dispatch).
 ///
@@ -112,16 +170,28 @@ fn numbered(base: &std::path::Path) -> std::path::PathBuf {
 /// **Must be called before `SDL_GL_SwapWindow`.** After the swap the back buffer's contents are
 /// undefined by specification, and on a real driver they are whatever the compositor left there —
 /// a screenshot taken after would be intermittently blank, which is worse than never working.
-pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) {
+///
+/// Returns `true` when this was the headless one-shot (`PLXNATIVE_SHOT_EXIT`) and the caller must
+/// now stop the run loop. It used to call `std::process::exit(0)` right here, and that crashed the
+/// Linux simulator in CI on some runners most launches: libc's `exit` runs the process's `atexit`
+/// handlers, among them OpenSSL 3's `OPENSSL_cleanup`, which frees libcrypto's global tables while
+/// the sign-in worker (`auth::mint_pin` -> libcurl) is still mid-handshake on another thread,
+/// loading the CA bundle — SIGSEGV inside libcrypto, captured by `tools/sim-smoke.py --core-dir`.
+/// Ending the run here lets the app's own shutdown run, and the simulator's `main` then leaves
+/// without `atexit` teardown (`src/bin/sim.rs`).
+#[must_use = "a headless one-shot capture asks the caller to end the run"]
+pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) -> bool {
     let n = FRAMES.fetch_add(1, Ordering::Relaxed);
     let on_demand = ON_DEMAND.swap(false, Ordering::Relaxed);
+    let settled = SETTLED.swap(false, Ordering::Relaxed);
     let cfg = cfg();
-    if !on_demand && cfg.frame != Some(n) {
-        return;
+    if !on_demand && !settled && cfg.frame != Some(n) {
+        return false;
     }
+    let ends_run = ends_run(cfg.exit, on_demand);
     if vw <= 0 || vh <= 0 {
         crate::log("shot: viewport is empty — nothing to capture");
-        return;
+        return ends_run;
     }
 
     // The viewport rect, not the whole window: `surface::probe` letterboxes the logical canvas
@@ -129,17 +199,22 @@ pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) {
     // image harder to compare against a device capture.
     let (w, h) = (vw as usize, vh as usize);
     let mut buf = vec![0u8; w * h * 4];
-    unsafe {
-        glReadPixels(
-            vx,
-            vy,
-            vw,
-            vh,
-            GL_RGBA,
-            GL_UNSIGNED_BYTE,
-            buf.as_mut_ptr() as *mut c_void,
-        )
-    };
+    {
+        // The readback drains the pipeline: GL work, labelled so for the hang watchdog.
+        #[cfg(feature = "threadcheck")]
+        let _readback = crate::task::watchdog::readback_scope();
+        unsafe {
+            glReadPixels(
+                vx,
+                vy,
+                vw,
+                vh,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                buf.as_mut_ptr() as *mut c_void,
+            )
+        };
+    }
 
     // Flip and drop alpha in one pass.
     //
@@ -157,31 +232,65 @@ pub(crate) fn maybe_capture(vx: c_int, vy: c_int, vw: c_int, vh: c_int) {
     // its own clear colour — which is exactly what the panel shows when no video is playing. So an
     // opaque RGB image is the FAITHFUL screenshot, and the one that compares to a device capture,
     // where the TV's compositor has likewise already flattened the two planes.
+    //
+    // `PLXNATIVE_SHOT_ALPHA=1` keeps it anyway, for compositing a shot over a picture of your own:
+    // the channels are then exactly what the framebuffer holds, i.e. PREMULTIPLIED, so the
+    // composite is `out = shot.rgb + picture * (1 - shot.a)` — not the straight-alpha "over" a
+    // viewer applies to a PNG, which is why this file will look wrong opened on its own.
+    let ch = if cfg.alpha { 4 } else { 3 };
     let src_stride = w * 4;
-    let dst_stride = w * 3;
+    let dst_stride = w * ch;
     let mut rgb = vec![0u8; dst_stride * h];
     for y in 0..h {
         let src = (h - 1 - y) * src_stride;
         for x in 0..w {
             let s = src + x * 4;
-            let d = y * dst_stride + x * 3;
-            rgb[d..d + 3].copy_from_slice(&buf[s..s + 3]);
+            let d = y * dst_stride + x * ch;
+            rgb[d..d + ch].copy_from_slice(&buf[s..s + ch]);
         }
     }
+    let color = if cfg.alpha {
+        image::ColorType::Rgba8
+    } else {
+        image::ColorType::Rgb8
+    };
 
     let out = if on_demand {
         numbered(&cfg.path)
     } else {
         cfg.path.clone()
     };
-    match image::save_buffer(&out, &rgb, w as u32, h as u32, image::ColorType::Rgb8) {
+    match image::save_buffer(&out, &rgb, w as u32, h as u32, color) {
         Ok(()) => crate::log(&format!("shot: wrote {}x{} to {}", w, h, out.display())),
         Err(e) => crate::log(&format!("shot: could not write {}: {e}", out.display())),
     }
 
-    if cfg.exit && !on_demand {
-        // Flush by leaving `log` alone (it appends unbuffered) and go. A clean exit here is the
-        // whole point of the headless mode: the caller wants a file, not a window.
-        std::process::exit(0);
+    ends_run
+}
+
+/// Whether a capture ends the run: only the automatic one, and only in the headless mode. An
+/// on-demand `shot` token never does — the agent that sent it is still driving.
+fn ends_run(exit: bool, on_demand: bool) -> bool {
+    exit && !on_demand
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ends_run, settled_due};
+
+    #[test]
+    fn the_settled_capture_waits_for_quiet_age_and_idle_work() {
+        assert!(settled_due(800, 3_000, 3_000, 800, false));
+        assert!(!settled_due(800, 3_000, 2_999, 5_000, false), "not before AFTER");
+        assert!(!settled_due(800, 0, 9_000, 799, false), "not before the quiet has elapsed");
+        assert!(!settled_due(800, 0, 9_000, 5_000, true), "not while work is queued");
+    }
+
+    #[test]
+    fn only_the_automatic_headless_capture_ends_the_run() {
+        assert!(ends_run(true, false));
+        assert!(!ends_run(true, true), "an on-demand shot never ends a driven session");
+        assert!(!ends_run(false, false));
+        assert!(!ends_run(false, true));
     }
 }

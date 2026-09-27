@@ -2,8 +2,8 @@
 //!
 //! Deliverable E of the Shared Sources design (`docs/shared-servers.md` §6): when a second pinned
 //! source also holds the item on screen, the detail page's actions row grows an *Also available*
-//! pill with a trailing chevron, and it opens this panel — a `TableView` on a glass ground, the
-//! same object the Library's Sort and Filter chips open one page over.
+//! pill with a trailing chevron, and it opens this panel — a `TableView` on the panel ground
+//! (`widgets::panel_ground`), the same object the Library's Sort and Filter chips open one page over.
 //!
 //! **A `Style::Compact` surface on the container tree** since restructure phase 10 (§6.2): the
 //! anchored menu the Library's chips already are. The container owns its PHASE and its appear
@@ -97,7 +97,6 @@ use crate::ui::screen::{
     Stop,
 };
 use crate::ui::table::{Badge, Row, Section, TableView};
-use crate::ui::widgets::{Glass, GlassState};
 use crate::ui::{theme, Rect};
 
 /// The fields [`AltSourcesScreen::write`] canonicalises, for the recorder's shape pin (§5.4). The
@@ -152,10 +151,6 @@ const BTN_GAP: f32 = theme::space::MD;
 /// `MARGIN_X` horizontally by 32px.
 const EDGE: f32 = theme::space::XL;
 const EDGE_X: f32 = crate::ui::consts::MARGIN_X;
-/// Scrim peak alpha — the Library toolbar chip menu's design, deliberately, because this
-/// is the same object one page over: a chip-shaped control on a live page opening a list over it.
-/// The page recedes; it is not blanked, and the hero behind stays readable.
-const SCRIM_A: f32 = 0.45;
 /// How far the panel rises into place, matching those same chip menus. The container's appear
 /// spring drives it now (`DrawFrame::page_alpha` IS `Surface::motion.appear`), so the translate is
 /// applied here rather than by `Popover::painter`; at rest it contributes nothing, which is what
@@ -326,19 +321,17 @@ pub(crate) struct AltSourcesScreen {
     /// The rows the `TableView` and `dests` were built from — the rebuild stamp (module doc).
     rows: Vec<AltRow>,
     pub(crate) table: TableView,
-    glass: GlassState,
 }
 
 impl AltSourcesScreen {
-    pub(crate) fn new(entry: EntryId, arg: AltSourcesArg) -> Self {
+    pub(crate) fn new(entry: EntryId, arg: AltSourcesArg, meta: crate::metadata::MetadataView<'_>) -> Self {
         let mut screen = Self {
             entry,
             arg,
             rows: Vec::new(),
             table: TableView::new(),
-            glass: GlassState::new(),
         };
-        screen.rebuild(Sel::OnTheCopyYouAreOn);
+        screen.rebuild(Sel::OnTheCopyYouAreOn, meta);
         screen
     }
 
@@ -350,28 +343,28 @@ impl AltSourcesScreen {
     /// film left `current` on our own server, no copy matched the pair, and the panel drew **no
     /// tick at all** — owner-reported. The tick answers "which of these am I looking at", and only
     /// the page knows; since phase 10 it says so on the argument.
-    fn live_rows(&self) -> Vec<AltRow> {
+    fn live_rows(&self, meta: crate::metadata::MetadataView<'_>) -> Vec<AltRow> {
         rows(
-            crate::metadata::alt_copies(self.arg.sid, &self.arg.rk),
+            meta.alt_copies(self.arg.sid, &self.arg.rk),
             self.arg.sid,
             &self.arg.rk,
         )
     }
 
     /// Materialise the store into the table, when and only when the drawn content would differ.
-    fn refresh(&mut self) -> bool {
-        let next = self.live_rows();
+    fn refresh(&mut self, meta: crate::metadata::MetadataView<'_>) -> bool {
+        let next = self.live_rows(meta);
         if next == self.rows {
             return false;
         }
         self.rows = next;
-        self.rebuild(Sel::Keep);
+        self.rebuild(Sel::Keep, meta);
         true
     }
 
-    fn rebuild(&mut self, sel_mode: Sel) {
+    fn rebuild(&mut self, sel_mode: Sel, meta: crate::metadata::MetadataView<'_>) {
         if matches!(sel_mode, Sel::OnTheCopyYouAreOn) {
-            self.rows = self.live_rows();
+            self.rows = self.live_rows(meta);
         }
         let mut sec = Section::new("");
         let mut sel = match sel_mode {
@@ -437,16 +430,16 @@ impl AltSourcesScreen {
     }
 }
 
-impl<H: AppLike<Memory = PageMemory>> Machine<H> for AltSourcesScreen {
+impl<H: AppLike<Memory = PageMemory> + crate::screens::registry::MetadataLike> Machine<H> for AltSourcesScreen {
     type Ev = ScreenEvent<H>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
         match ev {
             ScreenEvent::Mount | ScreenEvent::Enter(_) => {
-                self.refresh();
+                self.refresh(H::metadata(cx));
                 Handled::Yes
             }
             ScreenEvent::StoreChanged(ord, _) => {
-                if *ord == crate::stores::StoreId::Metadata.ord() && self.refresh() {
+                if *ord == crate::stores::StoreId::Metadata.ord() && self.refresh(H::metadata(cx)) {
                     fx.invalidate(crate::ui::present::Provenance::Landing(fx.from()));
                 }
                 Handled::Yes
@@ -594,7 +587,7 @@ impl LogicalState for AltSourcesScreen {
     }
 }
 
-impl<H: AppLike<Memory = PageMemory>> Screen<H> for AltSourcesScreen {
+impl<H: AppLike<Memory = PageMemory> + crate::screens::registry::MetadataLike> Screen<H> for AltSourcesScreen {
     fn name(&self) -> &'static str {
         "alt"
     }
@@ -604,24 +597,24 @@ impl<H: AppLike<Memory = PageMemory>> Screen<H> for AltSourcesScreen {
     fn crumb(&self, _cx: &Cx<'_, H>) -> Option<Cow<'_, str>> {
         None
     }
-    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {
-        Glass::CACHED.prepare(&mut self.glass, false);
-    }
+    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
     /// The modal dim, asked for rather than drawn. Nothing is lifted back out of it: this picker
     /// hangs under the detail page's Source chip, and the chip is a control that says which copy
     /// is playing rather than the subject of the panel — unlike the card menu's tile or the
     /// profile menu's chip, there is nothing here whose dimming contradicts what the panel is
     /// about.
     ///
-    /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): a
-    /// `Glass::CACHED` ground samples the default framebuffer as it stands, so the dim has to be
-    /// down before the panel's backdrop is taken or the frosted ground reads brighter than the
-    /// dimmed screen around it. `ModalStack::draw_scrims` draws it at the end of the PAGE pass,
+    /// **The ordering this replaces was load-bearing and is now the container's** (§16.3): the
+    /// panel's ground once sampled the framebuffer (`Glass::CACHED`), so the dim had to be down
+    /// before the backdrop was taken; the ground is the latched underlay field now, latched at the
+    /// head of the dims from the undimmed page. `ModalStack::draw_scrims` draws it at the end of the PAGE pass,
     /// which is strictly earlier than the surface pass this `draw` runs in, and multiplies by the
     /// appear spring and by `nav::page_alpha` — the second of which the in-`draw` version could
     /// not reach, `DrawFrame::page_alpha` being the surface's own spring alone.
     fn scrim(&self) -> Scrim {
-        Scrim::dim(SCRIM_A)
+        // The PANEL role (`theme::underlay::DIM_PANEL`): a picker in the middle of the frame. The
+        // page recedes; it is not blanked, and the hero behind stays readable.
+        Scrim::dim(theme::underlay::DIM_PANEL)
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let appear = f.page_alpha;
@@ -630,8 +623,9 @@ impl<H: AppLike<Memory = PageMemory>> Screen<H> for AltSourcesScreen {
         let measure = f.measure;
         // Named for `/tmp/plxnative-cpuprof` beside the page's own phases, so a slow frame while
         // this panel is up can be read as the PANEL or as the host under it.
+        let field = f.underlay;
         crate::ui::profile::phase("dt.alt", || {
-            Glass::CACHED.panel(p, r, RISE * (1.0 - appear), PANEL_RAD);
+            crate::ui::widgets::panel_ground(p, r, PANEL_RAD, field);
             self.table.draw(p, r, measure);
         });
         // The hit map's stops are registered against the SETTLED geometry (`self.frame()`, what

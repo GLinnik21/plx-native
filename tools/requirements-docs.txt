@@ -1,0 +1,6 @@
+# Pinned dependencies for the site build: tools/render-doc-page.py and tools/subset-site-fonts.py.
+# Bump deliberately, not with a floor — a floated version can change table/heading rendering, or
+# WOFF2 output bytes, under the site with no diff to review.
+markdown-it-py==3.0.0
+fonttools==4.66.0
+brotli==1.2.0

@@ -1,7 +1,6 @@
 //! Complete owned detail terminals at the consumer boundary.
 use super::*;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::sync::Mutex;
 pub(super) mod float_bits {
     use serde::{Deserialize, Serializer, Deserializer};
     pub fn serialize<S: Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> { s.serialize_u64(v.to_bits()) }
@@ -38,7 +37,7 @@ pub(crate) struct Reply {
 #[derive(serde::Serialize, serde::Deserialize)]
 enum ReplyLane { Data((u16, String), Option<Detail>), Dropped(u32), Refused(u32) }
 
-struct Tracker {
+pub(crate) struct Tracker {
     enabled: bool,
     seq: u64,
     active: BTreeMap<u32, bool>,
@@ -47,27 +46,39 @@ struct Tracker {
     boundary: u64,
 }
 
-static TRACKER: Mutex<Tracker> = Mutex::new(Tracker {
-    enabled: false,
-    seq: 0,
-    active: BTreeMap::new(),
-    pending: VecDeque::new(),
-    failure: None,
-    boundary: 0,
-});
-
-fn tracker() -> std::sync::MutexGuard<'static, Tracker> {
-    TRACKER.lock().unwrap_or_else(|e| e.into_inner())
+impl Tracker {
+    pub(crate) const fn new(enabled: bool) -> Self {
+        Self { enabled, seq: 0, active: BTreeMap::new(), pending: VecDeque::new(), failure: None, boundary: 0 }
+    }
 }
 
-pub(crate) fn reset(enabled: bool) {
-    *tracker() = Tracker { enabled, seq:0, active:BTreeMap::new(), pending:VecDeque::new(), failure:None, boundary:0 };
+fn tracker(adapter: &super::MetadataAdapter) -> std::sync::MutexGuard<'_, Tracker> {
+    adapter.tracker_mutex().lock().unwrap_or_else(|e| e.into_inner())
 }
 
-pub(super) fn admit(addr: crate::ui::machine::Addr)
+/// Arms (or disarms) this adapter's own `Tracker`. Call exactly once, right after the owning
+/// `MetadataStore`/`MetadataAdapter` is constructed and before anything else can have touched it
+/// — a mid-life rearm would race admissions already queued against the tracker it replaces, so
+/// this is deliberately not a general-purpose setter.
+///
+/// The one production caller is `crate::app::bridge::Bridge::controlled_home`, deciding `enabled`
+/// from `initial.content.is_some()` — exactly what the retired crate-global `record::reset` did
+/// (`bootstrap::stores::init`'s trailing call, deleted at `d067a796` with the `static` Stage B
+/// (`0d466527`) replaced; nothing took its place until this function, so controlled-content
+/// recording of detail terminals was dead on the device between those two commits and this one).
+pub(crate) fn arm(adapter: &super::MetadataAdapter, enabled: bool) {
+    *tracker(adapter) = Tracker::new(enabled);
+}
+
+#[cfg(test)]
+pub(super) fn reset_tracker_for_test(adapter: &super::MetadataAdapter, enabled: bool) {
+    arm(adapter, enabled);
+}
+
+pub(super) fn admit(adapter: &super::MetadataAdapter, addr: crate::ui::machine::Addr)
     -> Result<(), crate::ui::landing::AdmissionError> {
-    let mut tracker = tracker();
-    let result = DETAIL_LANDING.admit(addr);
+    let mut tracker = tracker(adapter);
+    let result = adapter.detail_landing_ref().admit(addr);
     if result.is_ok() && tracker.enabled && tracker.active.insert(addr.req.0, false).is_some() {
         tracker.failure = Some("duplicate tracked detail admission");
     }
@@ -77,9 +88,9 @@ pub(super) fn admit(addr: crate::ui::machine::Addr)
 /// The worker and cancellation serialize on TRACKER before taking the Landing lock. Completions
 /// visible here retire NOW, before another admission, while running workers retain their slots.
 /// Record that boundary in the synchronous effect stream, not in the next pump's result batch.
-pub(super) fn cancel_all() {
+pub(super) fn cancel_all(adapter: &super::MetadataAdapter) {
     let replay = crate::app::bootstrap::stores::replaying();
-    let mut tracker = tracker();
+    let mut tracker = tracker(adapter);
     if tracker.enabled {
         tracker.boundary += 1;
         for cancelled in tracker.active.values_mut() { *cancelled = true; }
@@ -91,7 +102,7 @@ pub(super) fn cancel_all() {
             let value = crate::app::bootstrap::stores::detail_cancellation(tracker.boundary, observed)?;
             let retired: Vec<Reply> = serde_json::from_value(value).map_err(|_| "invalid detail cancellation replies")?;
             if replay {
-                publish_replies(&mut tracker, &retired)?;
+                publish_replies(adapter, &mut tracker, &retired)?;
                 if !tracker.pending.is_empty() { return Err("unrecorded local detail cancellation"); }
             } else { tracker.pending.clear(); }
             for reply in retired { tracker.active.remove(&reply.req); }
@@ -102,7 +113,7 @@ pub(super) fn cancel_all() {
             crate::app::bootstrap::stores::fail(reason);
         }
     }
-    DETAIL_LANDING.clear();
+    adapter.detail_landing_ref().clear();
 }
 
 fn push_terminal(tracker: &mut Tracker, req: u32, lane: ReplyLane) {
@@ -119,12 +130,12 @@ fn push_terminal(tracker: &mut Tracker, req: u32, lane: ReplyLane) {
     tracker.pending.push_back(Reply { seq:tracker.seq, req, terminal:true, lane });
 }
 
-pub(super) fn put(addr: crate::ui::machine::Addr, key: DetailKey, data: Option<Detail>) {
-    let mut tracker = tracker();
+pub(super) fn put(adapter: &super::MetadataAdapter, addr: crate::ui::machine::Addr, key: DetailKey, data: Option<Detail>) {
+    let mut tracker = tracker(adapter);
     let shadow = if tracker.enabled {
         serde_json::to_value(&data).ok().and_then(|value| serde_json::from_value(value).ok())
     } else { None };
-    let result = DETAIL_LANDING.put(addr, key.clone(), data);
+    let result = adapter.detail_landing_ref().put(addr, key.clone(), data);
     let lane = if tracker.active.get(&addr.req.0).copied().unwrap_or(false)
         || result == Err(crate::ui::landing::PublishError::Full) {
         Some(ReplyLane::Dropped(addr.req.0))
@@ -137,10 +148,10 @@ pub(super) fn put(addr: crate::ui::machine::Addr, key: DetailKey, data: Option<D
     }
 }
 
-pub(super) fn refused(addr: crate::ui::machine::Addr) {
+pub(super) fn refused(adapter: &super::MetadataAdapter, addr: crate::ui::machine::Addr) {
     let replay = crate::app::bootstrap::stores::replaying();
-    let mut tracker = tracker();
-    let result = DETAIL_LANDING.refused(addr);
+    let mut tracker = tracker(adapter);
+    let result = adapter.detail_landing_ref().refused(addr);
     let lane = if tracker.active.get(&addr.req.0).copied().unwrap_or(false) {
         ReplyLane::Dropped(addr.req.0)
     } else { ReplyLane::Refused(addr.req.0) };
@@ -206,10 +217,10 @@ pub(super) struct Drain {
     pub(super) landed: Vec<crate::ui::landing::Landed<DetailKey, Option<Detail>>>,
 }
 
-pub(super) fn drain_live(want: &Option<DetailKey>) -> Option<(Vec<Reply>, Drain)> {
-    let mut tracker = tracker();
+pub(super) fn drain_live(adapter: &super::MetadataAdapter, want: &Option<DetailKey>) -> Option<(Vec<Reply>, Drain)> {
+    let mut tracker = tracker(adapter);
     let mut out = Vec::new();
-    DETAIL_LANDING.take_for(&|_| true, &|key| want.as_ref().is_none_or(|wanted| key == wanted), &mut out);
+    adapter.detail_landing_ref().take_for(&|_| true, &|key| want.as_ref().is_none_or(|wanted| key == wanted), &mut out);
     let replies: Vec<_> = tracker.pending.drain(..).collect();
     if out.iter().any(|landed| !replies.iter().any(|reply| matches_landed(reply, landed))) {
         tracker.failure = Some("detail drain did not match recorded completion");
@@ -221,14 +232,14 @@ pub(super) fn drain_live(want: &Option<DetailKey>) -> Option<(Vec<Reply>, Drain)
 
 /// Replay denied every worker launch. Each supplied terminal must retire a reservation that the
 /// real request path admitted; publication errors are replay failures, never normalized away.
-pub(super) fn supply(replies: Vec<Reply>, want: &Option<DetailKey>)
+pub(super) fn supply(adapter: &super::MetadataAdapter, replies: Vec<Reply>, want: &Option<DetailKey>)
     -> Result<(Vec<Reply>, Drain), &'static str> {
     validate(&serde_json::to_value(&replies).map_err(|_| "invalid detail replies")?)?;
-    let mut tracker = tracker();
-    publish_replies(&mut tracker, &replies)?;
+    let mut tracker = tracker(adapter);
+    publish_replies(adapter, &mut tracker, &replies)?;
     if !tracker.pending.is_empty() { return Err("unconsumed local detail terminal"); }
     let mut out = Vec::new();
-    DETAIL_LANDING.take_for(&|_| true, &|key| want.as_ref().is_none_or(|wanted| key == wanted), &mut out);
+    adapter.detail_landing_ref().take_for(&|_| true, &|key| want.as_ref().is_none_or(|wanted| key == wanted), &mut out);
     if out.iter().any(|landed| !replies.iter().any(|reply| matches_landed(reply, landed))) {
         return Err("detail drain did not match supplied completion");
     }
@@ -236,7 +247,7 @@ pub(super) fn supply(replies: Vec<Reply>, want: &Option<DetailKey>)
     Ok((replies, Drain { landed:out }))
 }
 
-fn publish_replies(tracker: &mut Tracker, replies: &[Reply]) -> Result<(), &'static str> {
+fn publish_replies(adapter: &super::MetadataAdapter, tracker: &mut Tracker, replies: &[Reply]) -> Result<(), &'static str> {
     for reply in replies {
         if reply.seq != tracker.seq.wrapping_add(1) { return Err("incoherent detail reply sequence"); }
         let cancelled = tracker.active.get(&reply.req).copied().ok_or("unknown detail publication")?;
@@ -258,10 +269,10 @@ fn publish_replies(tracker: &mut Tracker, replies: &[Reply]) -> Result<(), &'sta
             ReplyLane::Data((sid, rk), data) => {
                 let data = serde_json::to_value(data).ok().and_then(|value| serde_json::from_value(value).ok())
                     .ok_or("invalid detail result encoding")?;
-                DETAIL_LANDING.put(addr, (crate::plex::ServerId::from_raw(*sid), rk.clone()), data)
+                adapter.detail_landing_ref().put(addr, (crate::plex::ServerId::from_raw(*sid), rk.clone()), data)
             }
-            ReplyLane::Dropped(_) => DETAIL_LANDING.dropped(addr),
-            ReplyLane::Refused(_) => DETAIL_LANDING.refused(addr),
+            ReplyLane::Dropped(_) => adapter.detail_landing_ref().dropped(addr),
+            ReplyLane::Refused(_) => adapter.detail_landing_ref().refused(addr),
         };
         result.map_err(|_| "failed detail publication")?;
         tracker.seq = reply.seq;
@@ -348,12 +359,19 @@ impl Validator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `test_state`/`test_adapter` are `pub(super)` in `crate::metadata::test_support`, i.e.
+    // visible to `crate::metadata` and every descendant — this module included.
+    use super::super::test_support::{test_state, test_adapter};
+
+    fn reset(enabled: bool) {
+        reset_tracker_for_test(test_adapter(), enabled);
+    }
 
     fn controlled(replay: bool) {
         crate::app::bootstrap::stores::reset_for_test();
-        super::super::clear();
-        DETAIL_GEN.store(0, std::sync::atomic::Ordering::SeqCst);
-        DETAIL_DONE.store(0, std::sync::atomic::Ordering::SeqCst);
+        super::super::clear(test_state(), test_adapter());
+        test_adapter().detail_gen.store(0, std::sync::atomic::Ordering::SeqCst);
+        test_adapter().detail_done.store(0, std::sync::atomic::Ordering::SeqCst);
         let initial = crate::app::bootstrap::Initial::synthetic_home(1, 32498, None).unwrap();
         crate::app::bootstrap::stores::init(&initial, replay);
         reset(true);
@@ -361,7 +379,7 @@ mod tests {
 
     fn request(rk: &str, launched: bool, replay: bool) -> u32 {
         let mut req = 0;
-        request_detail_with_spawn(crate::plex::ServerId::from_raw(0), rk, |gen| {
+        request_detail_with_spawn(test_adapter(), crate::plex::ServerId::from_raw(0), rk, |gen| {
             req = gen;
             crate::app::bootstrap::stores::admit(serde_json::json!({"store":"metadata",
                 "sid":0,"rk":rk,"gen":gen,"client":1}), || {
@@ -378,8 +396,8 @@ mod tests {
         use crate::app::bootstrap::stores;
         controlled(false);
         request("refused", false, false);
-        assert!(!pump_detail());
-        assert!(!detail_loading());
+        assert!(!pump_detail(test_state(), test_adapter()));
+        assert!(!detail_loading(test_adapter()));
         let results = stores::take_results();
         let (admissions, failure) = stores::finish();
         assert_eq!(failure, None);
@@ -388,21 +406,21 @@ mod tests {
         controlled(true);
         stores::begin(admissions.clone().into(), results.clone().into());
         let req = request("refused", false, true);
-        let changed = pump_detail();
-        let loading = detail_loading();
+        let changed = pump_detail(test_state(), test_adapter());
+        let loading = detail_loading(test_adapter());
         let observed = stores::take_results();
         let outcome = stores::finish();
-        let pending = tracker().pending.len();
-        let seq = tracker().seq;
+        let pending = tracker(test_adapter()).pending.len();
+        let seq = tracker(test_adapter()).seq;
         // Always retire a failed replay's locally queued refusal before asserting (shared globals).
-        super::super::clear();
+        super::super::clear(test_state(), test_adapter());
         stores::reset_for_test();
         assert_eq!(outcome, (admissions, None));
         assert!(!changed);
         assert!(!loading);
         assert_eq!(observed, results);
         assert_eq!((pending, seq), (0, 1));
-        assert_eq!(DETAIL_LANDING.inflight(detail_addr(req).to), 0);
+        assert_eq!(test_adapter().detail_landing.inflight(detail_addr(req).to), 0);
     }
 
     #[test]
@@ -414,9 +432,9 @@ mod tests {
             let old = request("old", true, false);
             let refused = request("refused", false, false);
             // The old worker finishes after the synchronous refusal but before the observation.
-            land_detail(crate::plex::ServerId::from_raw(0), "old", old, None);
-            if cancelled { super::super::clear(); }
-            pump_detail();
+            land_detail(test_adapter(), crate::plex::ServerId::from_raw(0), "old", old, None);
+            if cancelled { super::super::clear(test_state(), test_adapter()); }
+            pump_detail(test_state(), test_adapter());
             let results = stores::take_results();
             let (admissions, failure) = stores::finish();
             assert_eq!(failure, None);
@@ -427,14 +445,14 @@ mod tests {
             stores::begin(admissions.clone().into(), results.clone().into());
             request("old", true, true);
             request("refused", false, true);
-            if cancelled { super::super::clear(); }
-            pump_detail();
+            if cancelled { super::super::clear(test_state(), test_adapter()); }
+            pump_detail(test_state(), test_adapter());
             let outcome = stores::finish();
             assert_eq!(outcome, (admissions, None));
             assert_eq!(stores::take_results(), results);
-            assert_eq!(tracker().seq, 2);
-            assert!(tracker().pending.is_empty());
-            assert_eq!(DETAIL_LANDING.inflight(detail_addr(refused).to), 0);
+            assert_eq!(tracker(test_adapter()).seq, 2);
+            assert!(tracker(test_adapter()).pending.is_empty());
+            assert_eq!(test_adapter().detail_landing.inflight(detail_addr(refused).to), 0);
             stores::reset_for_test();
         }
     }
@@ -445,11 +463,11 @@ mod tests {
         use crate::app::bootstrap::stores;
         controlled(false);
         let first = request("first", true, false);
-        land_detail(crate::plex::ServerId::from_raw(0), "first", first, None);
-        pump_detail();
+        land_detail(test_adapter(), crate::plex::ServerId::from_raw(0), "first", first, None);
+        pump_detail(test_state(), test_adapter());
         let second = request("second", true, false);
-        land_detail(crate::plex::ServerId::from_raw(0), "second", second, None);
-        super::super::clear();
+        land_detail(test_adapter(), crate::plex::ServerId::from_raw(0), "second", second, None);
+        super::super::clear(test_state(), test_adapter());
         let (admissions, failure) = stores::finish();
         let results = stores::take_results();
         stores::reset_for_test();
@@ -469,27 +487,27 @@ mod tests {
         let mut workers = Vec::new();
         for n in 0..4 { workers.push(request(&format!("item-{n}"), true, false)); }
         // Exactly three cancelled workers still running; the fourth has completed before clear.
-        land_detail(crate::plex::ServerId::from_raw(0), "item-3", workers[3], None);
+        land_detail(test_adapter(), crate::plex::ServerId::from_raw(0), "item-3", workers[3], None);
         let fifth = request("fifth", true, false);
         assert_ne!(fifth, 0, "recording admits the fifth without a pump");
         let (admissions, failure) = stores::finish();
         assert_eq!(failure, None);
-        let recording_drops = DETAIL_LANDING.dropped_count();
+        let recording_drops = test_adapter().detail_landing.dropped_count();
         // Finish all actual reservations before resetting the test environment.
         for &req in workers.iter().take(3).chain(std::iter::once(&fifth)) {
-            land_detail(crate::plex::ServerId::from_raw(0), "unused", req, None);
+            land_detail(test_adapter(), crate::plex::ServerId::from_raw(0), "unused", req, None);
         }
-        pump_detail();
+        pump_detail(test_state(), test_adapter());
         controlled(true);
-        let before = DETAIL_LANDING.dropped_count();
+        let before = test_adapter().detail_landing.dropped_count();
         stores::begin(admissions.clone().into(), Default::default());
         for n in 0..4 { request(&format!("item-{n}"), true, true); }
         let replay_fifth = request("fifth", true, true);
         let outcome = stores::finish();
-        let replay_drops = DETAIL_LANDING.dropped_count() - before;
+        let replay_drops = test_adapter().detail_landing.dropped_count() - before;
         // Cleanup works on RED too, when the fifth was capacity-rejected.
-        for req in 1..=5 { let _ = DETAIL_LANDING.dropped(detail_addr(req)); }
-        DETAIL_LANDING.clear();
+        for req in 1..=5 { let _ = test_adapter().detail_landing.dropped(detail_addr(req)); }
+        test_adapter().detail_landing.clear();
         stores::reset_for_test();
         assert_eq!(replay_fifth, fifth, "cancellation must retire at the boundary before admission");
         assert_eq!(outcome, (admissions, None));
@@ -525,24 +543,24 @@ mod tests {
             Err("incoherent detail reply sequence"));
 
         reset(true);
-        cancel_all();
-        assert_eq!(supply(vec![dropped(1, 77)], &None).err(), Some("unknown detail publication"));
+        cancel_all(test_adapter());
+        assert_eq!(supply(test_adapter(), vec![dropped(1, 77)], &None).err(), Some("unknown detail publication"));
 
         let addr = detail_addr(7);
-        admit(addr).unwrap();
-        supply(vec![dropped(1, 7)], &None).unwrap();
-        assert_eq!(supply(vec![dropped(2, 7)], &None).err(), Some("unknown detail publication"),
+        admit(test_adapter(), addr).unwrap();
+        supply(test_adapter(), vec![dropped(1, 7)], &None).unwrap();
+        assert_eq!(supply(test_adapter(), vec![dropped(2, 7)], &None).err(), Some("unknown detail publication"),
             "a second terminal cannot publish into an already consumed reservation");
 
         let addr = detail_addr(8);
-        admit(addr).unwrap();
-        cancel_all();
+        admit(test_adapter(), addr).unwrap();
+        cancel_all(test_adapter());
         let data = Reply { seq:2, req:8, terminal:true,
             lane:ReplyLane::Data((0,"8".into()), Some(Detail {
                 sid:crate::plex::ServerId::from_raw(0), rk:"8".into(), ..Default::default()
             })) };
-        assert_eq!(supply(vec![data], &None).err(), Some("mismatched cancelled detail terminal"));
-        supply(vec![dropped(2, 8)], &None).unwrap();
+        assert_eq!(supply(test_adapter(), vec![data], &None).err(), Some("mismatched cancelled detail terminal"));
+        supply(test_adapter(), vec![dropped(2, 8)], &None).unwrap();
         reset(false);
 
         let admission = |req, launched| serde_json::json!({"content_resource":true,
@@ -575,7 +593,7 @@ mod tests {
         reset(true);
         let sid = crate::plex::ServerId::from_raw(0);
         for seq in 1..=8 {
-            let gen = crate::metadata::begin_detail_for_test(sid, "1001");
+            let gen = crate::metadata::begin_detail_for_test(test_adapter(), sid, "1001");
             let detail = Detail { sid, rk:"1001".into(), video_fps:-0.0,
                 aspect_ratio:f64::from_bits(0x7ff8000000000013),
                 blur:[[f32::from_bits(0x7fc00013), -0.0, f32::INFINITY];4], ..Default::default() };
@@ -585,9 +603,9 @@ mod tests {
             let value = serde_json::from_str(&bytes).unwrap();
             validate(&value).unwrap();
             let decoded: Vec<Reply> = serde_json::from_value(value).unwrap();
-            let landed = supply(decoded, &None).unwrap().1.landed;
+            let landed = supply(test_adapter(), decoded, &None).unwrap().1.landed;
             assert_eq!(landed.len(), 1);
-            assert_eq!(DETAIL_LANDING.inflight(detail_addr(gen).to), 0);
+            assert_eq!(test_adapter().detail_landing.inflight(detail_addr(gen).to), 0);
             let crate::ui::landing::Lane::Data(_, Some(detail)) = &landed[0].lane else { panic!("detail") };
             assert_eq!(detail.video_fps.to_bits(), (-0.0f64).to_bits());
             assert_eq!(detail.aspect_ratio.to_bits(), 0x7ff8000000000013);

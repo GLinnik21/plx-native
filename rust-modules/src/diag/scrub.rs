@@ -86,6 +86,7 @@ pub(crate) fn scrub_local_with(line: &str, ids: &[String]) -> String {
     let s = scrub_headers(&s);
     let s = scrub_params(&s);
     let s = scrub_authority(&s);
+    let s = scrub_host_kv(&s);
     let s = scrub_ipv6(&s);
     let s = scrub_addresses(&s);
     let s = scrub_viewing(&s);
@@ -100,6 +101,7 @@ pub(crate) fn scrub_with(line: &str, ids: &[String]) -> Scrubbed {
     let s = scrub_headers(&s);
     let s = scrub_params(&s);
     let s = scrub_authority(&s);
+    let s = scrub_host_kv(&s);
     let s = scrub_ipv6(&s);
     let s = scrub_addresses(&s);
     let s = scrub_viewing(&s);
@@ -179,9 +181,10 @@ fn scrub_addresses(s: &str) -> String {
 
 /// **A BARE IPv6 ADDRESS, outside any URL.** Handles compressed and expanded literals, brackets,
 /// IPv4-mapped tails, and both standard `[address]:port` and the probe's bare `address:port`
-/// spelling. The latter is parsed by accepting the final decimal group as a port when removing it
-/// leaves a valid IPv6 address; the whole token is redacted either way, so an inherently ambiguous
-/// final group cannot leak an address.
+/// spelling. A complete IPv6 literal is parsed first, because a decimal final group is also valid
+/// hexadecimal: ambiguous forms such as `::1:80` are addresses and receive ordinary redaction.
+/// Only a token that is not itself valid IPv6 may have its final decimal group interpreted as a
+/// port, preserving unambiguous probe spellings such as `::1:32400`.
 ///
 /// The standard library parser supplies the address grammar. Word boundaries keep Rust paths such
 /// as `Route::Player` out, while exact parsing rejects timestamps, MAC addresses, and ordinary
@@ -243,6 +246,9 @@ fn parse_ipv6(token: &str) -> Option<std::net::Ipv6Addr> {
 
 /// Parse a bare address, optionally followed by the non-standard `:port` spelling used in logs.
 fn parse_bare_ipv6(token: &str) -> Option<std::net::Ipv6Addr> {
+    if let Some(addr) = parse_ipv6(token) {
+        return Some(addr);
+    }
     if let Some((host, port)) = token.rsplit_once(':') {
         if !port.is_empty()
             && port.bytes().all(|c| c.is_ascii_digit())
@@ -253,7 +259,7 @@ fn parse_bare_ipv6(token: &str) -> Option<std::net::Ipv6Addr> {
             }
         }
     }
-    parse_ipv6(token)
+    None
 }
 
 /// Consume a bracketed address's optional decimal port.
@@ -519,6 +525,51 @@ fn scrub_authority(s: &str) -> String {
     out.push_str(rest);
     out
 }
+
+/// **`host=<value>` → `host=<host>`** — the shape [`scrub_authority`] cannot see, because there is
+/// no `scheme://` here for it to anchor on.
+///
+/// This is the gap the device found: `stream.rs`'s DNS-failure line spells the unresolved name as
+/// bare `host=<fqdn>`, several `plex::servers`/`player::engine` re-point lines do the same for an
+/// address, and none of those go through a URL. Rather than teach every such call site its own
+/// redaction, this is keyed the same way [`scrub_params`] is keyed on its credential parameters —
+/// the literal `host=` is the signal, not a guess at what a hostname looks like, so it cannot
+/// mistake a soname (`libavformat-plx.so.63`), a version (`1.43.4.10903`) or a GL extension name
+/// for one, the way a generic "any dotted token" scan would.
+///
+/// **One value is deliberately spared: a `0x…` hex dump.** `dev.rs`'s softfloat probe reuses this
+/// exact key for a diagnostic hash (`host={hash:#018x}`), which is not a hostname or an address at
+/// all — blanking it would destroy the one thing that line exists to compare. Everything else after
+/// `host=` — a bare IPv4/IPv6 literal or an alphabetic name, with or without a trailing `:port` — is
+/// replaced whole; a numeric address here would already have been caught by [`scrub_addresses`] or
+/// [`scrub_ipv6`] on its own, this pass runs first only so an alphabetic FQDN (which neither of
+/// those recognises) does not fall through to them and survive.
+fn scrub_host_kv(s: &str) -> String {
+    const KEY: &str = "host=";
+    if !s.contains(KEY) {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(at) = rest.find(KEY) {
+        out.push_str(&rest[..at + KEY.len()]);
+        let after = &rest[at + KEY.len()..];
+        let vlen = after
+            .find(|c: char| c.is_whitespace())
+            .unwrap_or(after.len());
+        let val = &after[..vlen];
+        let lower = val.to_ascii_lowercase();
+        if val.is_empty() || val.starts_with('<') || lower.starts_with("0x") {
+            // nothing to redact, already a placeholder, or a hex diagnostic dump — not a host
+            out.push_str(val);
+        } else {
+            out.push_str("<host>");
+        }
+        rest = &after[vlen..];
+    }
+    out.push_str(rest);
+    out
+}
 #[cfg(test)]
 mod tests {
     // NB the `Refuse` half is gated to its only present caller (the lab bridge); Phase G widens
@@ -568,6 +619,40 @@ mod tests {
         let out = kept("a?token=AAA b?apikey=BBB");
         assert!(!out.contains("AAA") && !out.contains("BBB"), "{out}");
         assert_eq!(out.matches("<redacted>").count(), 2);
+    }
+
+    /// **The device leak** (found on a real TV, `stream.rs:947`): a DNS resolution failure logs
+    /// `host=<fqdn>` with no `scheme://` in front of it, so [`scrub_authority`] — the pass that
+    /// catches every OTHER host in this file — never sees it. A real multi-label private hostname
+    /// reached `plxnative-events.log` unredacted this way. Reproduces the exact shape.
+    #[test]
+    fn a_dns_failure_does_not_leak_the_bare_hostname() {
+        let out = kept("stream: GET /identity DNS FAILED host=plex.main.example.net");
+        assert!(
+            !out.contains("plex.main.example.net")
+                && !out.contains("example.net")
+                && !out.contains("plex.main"),
+            "the hostname survived: {out}"
+        );
+        assert!(
+            out.contains("stream: GET /identity DNS FAILED"),
+            "the diagnostic half survives: {out}"
+        );
+    }
+
+    /// The other call site this same shape leaked from (`net.rs`'s nowan refusal), plus the
+    /// counter-case: a hex diagnostic dump that reuses the `host=` key for something that is not a
+    /// hostname at all (`dev.rs`'s softfloat probe) must survive untouched.
+    #[test]
+    fn a_bare_host_kv_is_redacted_but_a_hex_dump_reusing_the_key_is_not() {
+        assert_eq!(
+            kept("net: nowan — refused name host=plex.main.example.net"),
+            "net: nowan — refused name host=<host>"
+        );
+        assert_eq!(
+            kept("softfloat: n=4096 hash=0x65a8e905a259246d host=0x65a8e905a259246d MATCH"),
+            "softfloat: n=4096 hash=0x65a8e905a259246d host=0x65a8e905a259246d MATCH",
+        );
     }
 
     /// The address clause: a `plex.direct` name encodes a LAN address in its leftmost label, and a
@@ -671,11 +756,43 @@ mod tests {
         }
     }
 
+    /// A syntactically complete IPv6 literal wins over the probe's non-standard `address:port`
+    /// interpretation. `::1:80` and `::0:80` are public-address-shaped literals, not loopback or
+    /// unspecified plus an inferred port, and must not inherit either privacy exception.
+    #[test]
+    fn ambiguous_decimal_final_groups_are_redacted_as_complete_ipv6_addresses() {
+        for (line, address) in [
+            ("peer ::1:80 connected", "::1:80"),
+            ("préfixe ☃ peer ::0:80 connected après", "::0:80"),
+            ("peer ::1:8910 connected", "::1:8910"),
+        ] {
+            let out = scrub_local_with(line, &[]);
+            assert!(!out.contains(address), "leaked: {out}");
+            assert!(out.contains("<addr>"), "address was not replaced: {out}");
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "lab-diagnostics")]
+    fn ambiguous_decimal_final_groups_are_redacted_on_the_remote_exit_too() {
+        for (line, address) in [
+            ("peer ::1:80 connected", "::1:80"),
+            ("utf8 — ::0:80 — tail", "::0:80"),
+        ] {
+            match scrub_with(line, &[]) {
+                Scrubbed::Keep(out) => {
+                    assert!(!out.contains(address), "leaked: {out}");
+                    assert!(out.contains("<addr>"), "address was not replaced: {out}");
+                }
+                Scrubbed::Refuse => panic!("address-only line should be safely rewritable"),
+            }
+        }
+    }
+
     #[test]
     fn ipv6_loopback_unspecified_and_lookalikes_survive() {
         for line in [
             "bound to ::1",
-            "bound to ::1:8910",
             "bound to [::1]:8910",
             "bound to ::",
             "bound to [::]:8910",
@@ -688,6 +805,11 @@ mod tests {
         ] {
             assert_eq!(scrub_local_with(line, &[]), line, "mangled: {line}");
         }
+        assert_eq!(
+            scrub_local_with("bound to ::1:32400", &[]),
+            "bound to ::1:32400",
+            "an invalid full literal keeps the unambiguous loopback:port meaning"
+        );
     }
 
     /// Things that LOOK like addresses and are not: a version, a frame rate, a timestamp, a

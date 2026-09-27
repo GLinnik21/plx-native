@@ -144,12 +144,23 @@ pub(super) fn registered_source(
 }
 pub(super) fn registered_page_source(
 ) -> (RegisteredCleanup, TestBrowse, ServerId, &'static crate::plex::Client) {
+    registered_page_source_of_kind(SecKind::Movie)
+}
+/// Same as [`registered_page_source`], but for a chosen section kind — used to prove the
+/// "Plays" sort gate (issue #146) behaves the same for `Show` as it does for `Movie`.
+pub(super) fn registered_page_source_of_kind(
+    kind: SecKind,
+) -> (RegisteredCleanup, TestBrowse, ServerId, &'static crate::plex::Client) {
     let (cleanup, mut browse, sid, client) = registered_source();
     if let Some(source) = browse.state.source_mut(0) {
         source.sections_done = true;
         source.counts_done = true;
     }
-    browse.append_sections(0, vec![(1, "Movies".into(), SecKind::Movie)]);
+    let title = match kind {
+        SecKind::Movie => "Movies",
+        SecKind::Show => "TV Shows",
+    };
+    browse.append_sections(0, vec![(1, title.into(), kind)]);
     (cleanup, browse, sid, client)
 }
 pub(super) fn registered_resident_page_source(
@@ -215,6 +226,7 @@ pub(super) fn queue_directories_from(
 ) {
     let epoch = browse.state.table_epoch();
     *browse.adapter.genre_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(DirectoryResult {
+        library_type: browse.state.states[0].library_type,
         epoch,
         sec: 0,
         client,
@@ -225,6 +237,7 @@ pub(super) fn queue_directories_from(
         }],
     });
     *browse.adapter.letter_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(DirectoryResult {
+        library_type: browse.state.states[0].library_type,
         epoch,
         sec: 0,
         client,
@@ -283,6 +296,24 @@ pub(super) fn land_page(browse: &mut TestBrowse, total: i64, items: usize) {
     *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
     let _outcome = browse.pump();
 }
+/// Same as [`land_page`], but carrying a server-advertised sort list (as `includeMeta=1` would)
+/// for the CURRENT section — used to exercise the client-side "Plays" sort augmentation
+/// (issue #146) that runs where this landing is applied.
+pub(super) fn land_page_with_sorts(browse: &mut TestBrowse, sorts: Vec<SortEntry>) {
+    let client = crate::plex::client();
+    let r = PageResult {
+        client,
+        token_gen: client.token_gen(),
+        gen: browse.state.query_gen(),
+        sec: browse.state.cur(),
+        start: 0,
+        items: Vec::new(),
+        total: 0,
+        sorts: Some(sorts),
+    };
+    *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+    let _outcome = browse.pump();
+}
 // ---- the SOURCE's own state, one layer up ---------------------------------------------------
 //
 // Same three states, one layer up, and graded through the per-source flags rather than through
@@ -309,6 +340,9 @@ pub(super) fn seed_one_source(
         token_gen: 0,
         machine_id: "mach-0".into(),
         owned: true,
+        home: false,
+        owner_id: 0,
+        household: true,
         name: "nas-home".into(),
         handle: "friend".into(),
         state: if reachable {
@@ -339,6 +373,12 @@ pub(super) fn a_source(name: &str, handle: &str, reachable: bool) -> BrowseSourc
         // because a share whose `sourceTitle` plex.tv did not send is still a share)
         machine_id: name.to_string(),
         owned: handle.is_empty(),
+        home: false,
+        owner_id: 0,
+        // The fixture's household verdict follows its ownership for the same reason: a fixture
+        // that volunteers no `ownerId` says nothing plex.tv did not say, and `is_household` on
+        // that evidence is exactly raw `owned`. A managed-profile fixture sets all three.
+        household: handle.is_empty(),
         name: name.into(),
         handle: handle.into(),
         state: if reachable {
@@ -363,12 +403,47 @@ pub(super) fn a_source(name: &str, handle: &str, reachable: bool) -> BrowseSourc
 /// copies that had grown here, in `ui::onboard` and in `auth`; the local alias is kept only so
 /// the dozens of call sites below still read as pinning THIS module's per-profile answer.
 pub(super) use crate::plex::session::TempSession as TempPins;
+/// The Plex Home ADMIN's plex.tv account id, as `/api/v2/resources` reports it in `ownerId` on
+/// the family server. Synthetic: a real account id never belongs in a public repository.
+pub(super) const ADMIN_ID: i64 = 4_242;
+
+/// **The household's own server as a MANAGED or Guest profile is granted it** — the shape
+/// [`a_source`] cannot express, because it derives everything it knows from the handle.
+///
+/// `owned:false`, because that is what plex.tv answers such a profile about the family machine;
+/// the admin's `ownerId`, which is the signal `is_household` actually decides on; `home:true`
+/// beside it; and no credit, because a household server is credited to nobody (`owner_credit`).
+/// All three evidence fields are stated, because a fixture that sets only one of them is
+/// describing a grant that cannot occur.
+pub(super) fn a_household_source(name: &str) -> BrowseSource {
+    BrowseSource {
+        owned: false,
+        home: true,
+        owner_id: ADMIN_ID,
+        household: true,
+        ..a_source(name, "", true)
+    }
+}
+
 /// One account, two servers — seeded and discovered exactly as a boot does it.
+///
+/// **Owner-shaped**: `mac-mini` is `owned:true`, which is the ADMIN's view of the house. The
+/// managed profile's view of the very same pair is [`seed_two_servers_managed`], and the two
+/// differ in nothing a user could see — which is the property the household fix exists to give
+/// back.
 pub(super) fn seed_two_servers(browse: &mut TestBrowse) {
-    browse.seed_sources(vec![
-        a_source("mac-mini", "", true),
-        a_source("nas-home", "friend", true),
-    ]);
+    seed_pair(browse, a_source("mac-mini", "", true));
+}
+
+/// The same two servers, granted to a Plex Home MANAGED profile: the family server arrives
+/// `owned:false` with the admin's id on it, exactly as a friend's share does, and only the
+/// household verdict tells them apart.
+pub(super) fn seed_two_servers_managed(browse: &mut TestBrowse) {
+    seed_pair(browse, a_household_source("mac-mini"));
+}
+
+fn seed_pair(browse: &mut TestBrowse, house: BrowseSource) {
+    browse.seed_sources(vec![house, a_source("nas-home", "friend", true)]);
     browse.append_sections(
         0,
         vec![

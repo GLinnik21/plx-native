@@ -20,7 +20,7 @@
 //! than a second client — which is why [`AccountClient::get`] is `pub(super)`.
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 // The lenient wire adapters live once, in `models.rs`, next to the note that explains why every
@@ -28,7 +28,173 @@ use std::time::{Duration, Instant};
 // while the PMS DTOs keep theirs as `i64`.
 use super::models::{de_bool, de_i64, de_str, de_vec};
 
+mod preferences;
+#[allow(unused_imports)]
+pub(crate) use preferences::{PreferenceError, PreferenceRequest, PreferenceSnapshot, PreferenceUpdate};
+
 const PLEX_TV: &str = "https://plex.tv";
+
+/// plex.tv's base URL: [`PLEX_TV`], or — in a dev build only — a LOOPBACK stand-in named by
+/// `/tmp/plxnative-plextv=http://127.0.0.1:<port>`. The screenshot pipeline's mock
+/// (`tests/mock_pms.py --catalog`) answers the sign-in pin and serves its QR there, so no
+/// documentation figure ever shows a live code minted by the real service. Anything that is not
+/// plain `http://` to `127.0.0.1`/`localhost` is refused and logged: this trigger must never be
+/// able to point the account API, and the token it carries, at another host. Read once.
+pub(crate) fn plex_tv() -> &'static str {
+    static BASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BASE.get_or_init(|| match crate::dev::read("plextv") {
+        Some(v) if loopback_http(&v) => {
+            #[cfg(feature = "devtriggers")]
+            crate::log("account: plex.tv replaced by a loopback stand-in (/tmp/plxnative-plextv)");
+            v.trim_end_matches('/').to_string()
+        }
+        Some(_) => {
+            #[cfg(feature = "devtriggers")]
+            crate::log("BADTRIGGER plextv: only http://127.0.0.1:<port> or http://localhost:<port> is accepted");
+            PLEX_TV.to_string()
+        }
+        None => PLEX_TV.to_string(),
+    })
+}
+
+/// `http://127.0.0.1:<port>` or `http://localhost:<port>`, optionally with a trailing `/`.
+fn loopback_http(v: &str) -> bool {
+    let port = v
+        .strip_prefix("http://127.0.0.1:")
+        .or_else(|| v.strip_prefix("http://localhost:"))
+        .map(|rest| rest.strip_suffix('/').unwrap_or(rest));
+    port.is_some_and(|p| !p.is_empty() && p.len() <= 5 && p.bytes().all(|b| b.is_ascii_digit()))
+}
+const AUDIO_PREFERENCES_SUCCESS_TTL: Duration = Duration::from_secs(5 * 60);
+const AUDIO_PREFERENCES_FAILURE_TTL: Duration = Duration::from_secs(45);
+const AUDIO_PREFERENCES_FAILURE_TTL_MAX: Duration = Duration::from_secs(10 * 60);
+
+/// The account-language input consumed by the playback route. `None` is a successful, explicit
+/// "do not auto-select audio" / unset answer, distinct inside the cache from a failed request.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AudioPreferences {
+    pub language: Option<String>,
+    /// What plex.tv actually answered, kept only so an unset `language` can say WHY on the route
+    /// log: auto-select off and no language set otherwise read identically.
+    pub auto_select_audio: Option<bool>,
+    pub stated_language: Option<String>,
+    pub subtitle_language: Option<String>,
+    /// Plex autoSelectSubtitle: 0 manually selected, 1 foreign audio, 2 always.
+    pub subtitle_mode: i64,
+    /// Plex defaultSubtitleForced: 0 prefer non-forced, 1 prefer forced,
+    /// 2 only forced, 3 only non-forced.
+    pub subtitle_forced: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AudioPreferencesKey { id: i64, uuid: String, generation: u32 }
+
+impl AudioPreferencesKey {
+    fn new(user: &super::session::UserRef, generation: u32) -> Self {
+        Self { id: user.id, uuid: user.uuid.clone(), generation }
+    }
+    fn is_current(&self) -> bool {
+        let current = super::session::current_snapshot();
+        current.generation == self.generation && current.user.as_ref().is_some_and(|user|
+            user.id == self.id && user.uuid == self.uuid)
+    }
+}
+
+#[derive(Clone)]
+struct AudioPreferencesEntry {
+    outcome: AudioPreferencesOutcome,
+    consecutive_failures: u32,
+    expires_at: Instant,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AudioPreferencesOutcome {
+    Available(AudioPreferences),
+    TimedOut,
+    Failed,
+}
+
+#[derive(Clone)]
+struct AudioPreferencesFlight { key: AudioPreferencesKey, id: u64 }
+
+struct AudioPreferencesState {
+    key: Option<AudioPreferencesKey>, entry: Option<AudioPreferencesEntry>,
+    flight: Option<u64>, next_flight: u64, revision: u64,
+}
+struct AudioPreferencesCache { state: Mutex<AudioPreferencesState>, changed: Condvar }
+#[derive(Clone, Copy)]
+enum FetchPath { Play, Warm }
+
+impl AudioPreferencesCache {
+    const fn new() -> Self { Self { state: Mutex::new(AudioPreferencesState {
+        key: None, entry: None, flight: None, next_flight: 0, revision: 0,
+    }), changed: Condvar::new() } }
+
+    fn publish(&self, key: AudioPreferencesKey) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.key.as_ref() != Some(&key) {
+            state.key = Some(key); state.entry = None; state.flight = None;
+            self.changed.notify_all();
+        }
+    }
+    fn clear_profile(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.key.is_some() || state.entry.is_some() || state.flight.is_some() {
+            state.key = None; state.entry = None; state.flight = None;
+            self.changed.notify_all();
+        }
+    }
+    fn reserve(&self, key: AudioPreferencesKey, now: Instant) -> Option<AudioPreferencesFlight> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.key.as_ref() != Some(&key) {
+            state.key = Some(key.clone()); state.entry = None; state.flight = None;
+            self.changed.notify_all();
+        }
+        if state.entry.as_ref().is_some_and(|entry| now < entry.expires_at)
+            || state.flight.is_some() { return None; }
+        state.next_flight = state.next_flight.wrapping_add(1);
+        let id = state.next_flight;
+        state.flight = Some(id);
+        Some(AudioPreferencesFlight { key, id })
+    }
+    fn cancel(&self, flight: &AudioPreferencesFlight) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.key.as_ref() == Some(&flight.key) && state.flight == Some(flight.id) {
+            state.flight = None; self.changed.notify_all();
+        }
+    }
+    fn complete<C>(&self, flight: AudioPreferencesFlight, outcome: AudioPreferencesOutcome,
+        path: FetchPath, completed_at: Instant, still_current: C) -> bool
+    where C: FnOnce() -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.key.as_ref() != Some(&flight.key) || state.flight != Some(flight.id)
+            || !still_current() { return false; }
+        state.flight = None;
+        if matches!(outcome, AudioPreferencesOutcome::Available(_)) {
+            state.revision = state.revision.wrapping_add(1);
+        }
+        match (&outcome, path) {
+            (AudioPreferencesOutcome::TimedOut, FetchPath::Play) => {}
+            (AudioPreferencesOutcome::Available(_), _) => state.entry = Some(AudioPreferencesEntry {
+                outcome: outcome.clone(), consecutive_failures: 0,
+                expires_at: completed_at + AUDIO_PREFERENCES_SUCCESS_TTL,
+            }),
+            (AudioPreferencesOutcome::Failed | AudioPreferencesOutcome::TimedOut, _) => {
+                let failures = state.entry.as_ref()
+                    .filter(|entry| matches!(&entry.outcome, AudioPreferencesOutcome::Failed))
+                    .map_or(1, |entry| entry.consecutive_failures.saturating_add(1));
+                let shift = failures.saturating_sub(1).min(31);
+                let ttl = AUDIO_PREFERENCES_FAILURE_TTL.saturating_mul(1_u32 << shift)
+                    .min(AUDIO_PREFERENCES_FAILURE_TTL_MAX);
+                state.entry = Some(AudioPreferencesEntry { outcome: AudioPreferencesOutcome::Failed,
+                    consecutive_failures: failures, expires_at: completed_at + ttl });
+            }
+        }
+        self.changed.notify_all();
+        true
+    }
+}
+static AUDIO_PREFERENCES_CACHE: AudioPreferencesCache = AudioPreferencesCache::new();
 
 /// Identity + optional account token for plex.tv calls. `client_id` is the stable per-device
 /// `X-Plex-Client-Identifier` (persisted across launches — plex.tv keys the authorized-device list
@@ -107,6 +273,19 @@ impl AccountClient {
         decode("GET", url, self.get_raw(url).ok()?)
     }
 
+    /// [`Self::get`], keeping what the call observed when it yields nothing — see [`CallEvidence`].
+    fn get_evidence<T: DeserializeOwned>(&self, url: &str) -> Result<T, CallEvidence> {
+        decode_evidence("GET", url, self.get_raw(url))
+    }
+
+    fn get_evidence_with<T: DeserializeOwned>(&self, url: &str, timeouts: crate::net::Timeouts)
+        -> Result<T, CallEvidence> {
+        let response = crate::net::request_evidence(url, &self.headers(), "GET", None,
+            timeouts, false, None, None);
+        note_response_contact(url, &response);
+        decode_evidence("GET", url, response)
+    }
+
     fn get_raw(&self, url: &str) -> Result<crate::net::Resp, crate::net::RequestFailure> {
         let resp = crate::net::request_evidence(url, &self.headers(), "GET", None,
             crate::net::API, false, None, None);
@@ -114,9 +293,41 @@ impl AccountClient {
         resp
     }
 
-    fn post<T: DeserializeOwned>(&self, url: &str) -> Option<T> {
-        let resp = self.post_raw(url).ok()?;
-        decode("POST", url, resp)
+    /// GET /api/v2/user — the active Plex Home profile's account-level audio preference.
+    ///
+    /// The caller supplies the explicit plex.tv credential beside the SAME captured
+    /// [`UserRef`](super::session::UserRef). Constructing the narrow client here prevents an
+    /// arbitrary account client (including one holding a PMS token) from selecting the authority.
+    /// Optional or malformed preference fields merely disable this rung; transport, parse and
+    /// identity failures use the shorter retry cache.
+    pub fn audio_preferences(client_id: &str, credential: &str,
+        expected: &super::session::UserRef, generation: u32)
+        -> AudioPreferencesOutcome
+    {
+        if client_id.is_empty() || credential.is_empty() { return AudioPreferencesOutcome::Failed; }
+        let client = Self::new(client_id, Some(credential));
+        let key = AudioPreferencesKey::new(expected, generation);
+        audio_preferences_cached_at(&AUDIO_PREFERENCES_CACHE, key.clone(),
+            Duration::from_millis(1500), Instant::now,
+            |remaining| client.fetch_audio_preferences(expected, play_timeouts(remaining)),
+            || key.is_current())
+    }
+
+    fn fetch_audio_preferences(&self, expected: &super::session::UserRef,
+        timeouts: crate::net::Timeouts) -> AudioPreferencesOutcome
+    {
+        let url = format!("{}/api/v2/user", plex_tv());
+        let response = crate::net::request_evidence(&url, &self.headers(), "GET", None,
+            timeouts, false, None, None);
+        note_response_contact(&url, &response);
+        match response {
+            Err(failure) if failure.cause == crate::net::RequestError::TimedOut =>
+                AudioPreferencesOutcome::TimedOut,
+            Err(_) => AudioPreferencesOutcome::Failed,
+            Ok(response) => decode::<AccountUser>("GET", &url, response)
+                .and_then(|dto| dto.audio_preferences_for(expected))
+                .map_or(AudioPreferencesOutcome::Failed, AudioPreferencesOutcome::Available),
+        }
     }
 
     /// Complete responses or safe incomplete-response evidence. No body ceiling is enabled here.
@@ -132,8 +343,22 @@ impl AccountClient {
     /// POST /api/v2/pins — create a link PIN. `strong=false` yields a short human-typeable `code`
     /// (for the `plex.tv/link` fallback) alongside the QR; the returned `auth_token` is null until
     /// the user authorizes it on another device.
-    pub fn create_pin(&self) -> Option<Pin> {
-        self.post(&format!("{PLEX_TV}/api/v2/pins?strong=false"))
+    ///
+    /// When it fails, what the request observed — the sign-in flow's onboarding report classifies
+    /// it (`telemetry::incident::classify`). **No account call here answers `Option` any more**:
+    /// an `Option` folded "plex.tv refused this identity" into "plex.tv never answered", which is
+    /// how a managed profile's 401 read as nothing at all (#132). See [`CallEvidence`].
+    pub fn create_pin(&self) -> Result<Pin, CallEvidence> {
+        let url = format!("{}/api/v2/pins?strong=false", plex_tv());
+        decode_evidence("POST", &url, self.post_raw(&url))
+    }
+
+    pub(crate) fn create_pin_with(&self, timeouts: crate::net::Timeouts) -> Result<Pin, CallEvidence> {
+        let url = format!("{}/api/v2/pins?strong=false", plex_tv());
+        let response = crate::net::request_evidence(&url, &self.headers(), "POST", Some(b""),
+            timeouts, false, None, None);
+        note_response_contact(&url, &response);
+        decode_evidence("POST", &url, response)
     }
 
     /// GET /api/v2/pins/{id} — poll a pending PIN, GRADED. `Pin.auth_token` becomes `Some` once
@@ -143,7 +368,7 @@ impl AccountClient {
     /// **It returns [`PinPoll`] rather than `Option<Pin>` because the caller has to tell a dead
     /// pin from a bad moment**, and an `Option` cannot. See [`PinPoll::Gone`].
     pub fn poll_pin(&self, id: i64) -> PinPoll {
-        let url = format!("{PLEX_TV}/api/v2/pins/{id}");
+        let url = format!("{}/api/v2/pins/{id}", plex_tv());
         // Polling did not update the reachability memo; preserve that policy.
         let response = crate::net::request_evidence(&url, &self.headers(), "GET", None,
             crate::net::API, false, None, None);
@@ -158,19 +383,41 @@ impl AccountClient {
     /// the LAN + relay connections so we can pick a local one for offline play; `includeIPv6` adds
     /// the v6 connections, which are *ranked last* rather than used first (`probe.rs`) — we ask for
     /// them so the ranking is choosing between a known set instead of a set plex.tv edited for us.
-    pub fn resources(&self) -> Option<Vec<Resource>> {
-        self.get(&format!(
-            "{PLEX_TV}/api/v2/resources?includeHttps=1&includeRelay=1&includeIPv6=1"
+    ///
+    /// A failure keeps its evidence: the onboarding report classifies it, and a refusal
+    /// ([`refused_identity`]) is a statement about the token rather than the network.
+    pub fn resources(&self) -> Result<Vec<Resource>, CallEvidence> {
+        self.get_evidence(&format!(
+            "{}/api/v2/resources?includeHttps=1&includeRelay=1&includeIPv6=1", plex_tv()
         ))
+    }
+
+    pub(crate) fn resources_with(&self, timeouts: crate::net::Timeouts)
+        -> Result<Vec<Resource>, CallEvidence> {
+        self.get_evidence_with(&format!(
+            "{}/api/v2/resources?includeHttps=1&includeRelay=1&includeIPv6=1", plex_tv()
+        ), timeouts)
     }
 
     // ---- Plex Home managed users ----
 
     /// GET /api/v2/home/users — the Home (managed) users for the account: the "who's watching"
     /// roster. Requires the (admin) account token.
-    pub fn home_users(&self) -> Option<Vec<HomeUser>> {
-        let hu: HomeUsers = self.get(&format!("{PLEX_TV}/api/v2/home/users"))?;
-        Some(hu.users)
+    ///
+    /// **Graded, because "refused" and "unreachable" are different answers to the person holding
+    /// the remote.** A managed profile's token gets 401 here (TV session 8, #132): that is plex.tv
+    /// saying this identity cannot list the household, and no retry or connection check changes
+    /// it. `Err` keeps the status ([`refused_identity`]) so the roster worker can say so.
+    pub fn home_users(&self) -> Result<Vec<HomeUser>, CallEvidence> {
+        let hu: HomeUsers = self.get_evidence(&format!("{}/api/v2/home/users", plex_tv()))?;
+        Ok(hu.users)
+    }
+
+    pub(crate) fn home_users_with(&self, timeouts: crate::net::Timeouts)
+        -> Result<Vec<HomeUser>, CallEvidence> {
+        let hu: HomeUsers = self.get_evidence_with(
+            &format!("{}/api/v2/home/users", plex_tv()), timeouts)?;
+        Ok(hu.users)
     }
 
     /// POST /api/v2/home/users/{uuid}/switch[?pin=NNNN] — exchange the admin token for the chosen
@@ -189,7 +436,7 @@ impl AccountClient {
             Some(p) if !p.is_empty() => format!("?pin={p}"),
             _ => String::new(),
         };
-        let url = format!("{PLEX_TV}/api/v2/home/users/{uuid}/switch{q}");
+        let url = format!("{}/api/v2/home/users/{uuid}/switch{q}", plex_tv());
         switch_response(&url, self.post_raw(&url))
             .expect("uncapped account request cannot report a local body limit")
     }
@@ -216,7 +463,10 @@ fn poll_response(url: &str, response: Result<crate::net::Resp, crate::net::Reque
             log_status_failure("GET", url, status);
             return Ok(PinPoll::Gone);
         }
-        let Some(resp) = complete_response(response)? else { return Ok(PinPoll::Unreachable); };
+        let failure = response.as_ref().err().copied();
+        let Some(resp) = complete_response(response)? else {
+            return Ok(PinPoll::Unreachable(Err(failure.expect("an incomplete response is a failure"))));
+        };
         // Gone statuses are handled before body decoding, including incomplete responses;
         // decode logs complete HTTP/body failures using the same safe status logger.
         //
@@ -229,12 +479,13 @@ fn poll_response(url: &str, response: Result<crate::net::Resp, crate::net::Reque
         // whole deserialization and hide a token that was sitting right there. Creation still
         // takes the wide DTO, because it genuinely needs those fields and its failure is immediate
         // and visible.
+        let status = resp.status;
         Ok(match decode::<PinToken>("GET", url, resp) {
             Some(p) => match p.auth_token {
                 Some(t) if !t.is_empty() => PinPoll::Authorized(t),
                 _ => PinPoll::Pending,
             },
-            None => PinPoll::Unreachable,
+            None => PinPoll::Unreachable(Ok(status)),
         })
 }
 
@@ -287,8 +538,44 @@ mod evidence_tests {
 
     const SWITCH: &str = "https://plex.tv/api/v2/home/users/synthetic/switch";
 
+    /// #132: a managed profile's 401 on `/api/v2/home/users` is a verdict about the identity, and
+    /// must stay one through the evidence — an incomplete transfer included — while a timeout or
+    /// an unreadable 200 is not. The log phrase carries the status and never a URL.
+    #[test]
+    fn a_refused_identity_is_told_apart_from_no_answer() {
+        let timed_out = RequestFailure { cause: RequestError::TimedOut, status: None, body_limit: None, curl_rc: Some(28) };
+        let cut_401 = RequestFailure { cause: RequestError::Transport, status: Some(401), body_limit: None, curl_rc: Some(56) };
+        assert_eq!(refused_identity(&Ok(401)), Some(401));
+        assert_eq!(refused_identity(&Ok(403)), Some(403));
+        assert_eq!(refused_identity(&Err(cut_401)), Some(401));
+        assert_eq!(refused_identity(&Ok(200)), None, "an unreadable 200 is not a refusal");
+        assert_eq!(refused_identity(&Ok(503)), None);
+        assert_eq!(refused_identity(&Err(timed_out)), None);
+        assert_eq!(describe_evidence(&Ok(401)), "HTTP 401, identity refused");
+        assert_eq!(describe_evidence(&Ok(200)), "HTTP 200, body unreadable");
+        assert_eq!(describe_evidence(&Ok(503)), "HTTP 503");
+        assert_eq!(describe_evidence(&Err(cut_401)), "HTTP 401, transfer incomplete");
+        assert_eq!(describe_evidence(&Err(timed_out)), "no answer (timed out)");
+        let dns = RequestFailure { cause: RequestError::Transport, status: None, body_limit: None, curl_rc: Some(6) };
+        assert_eq!(describe_evidence(&Err(dns)), "no answer (curl rc=6)");
+    }
+
+    #[test]
+    fn account_retryability_is_closed_over_status_and_curl_evidence() {
+        let failure = |rc| Err(RequestFailure { cause: RequestError::Transport, status: None,
+            body_limit: None, curl_rc: rc });
+        for evidence in [failure(Some(6)), failure(Some(7)), failure(Some(28)), failure(Some(35)),
+            Ok(408), Ok(429), Ok(500), Ok(502), Ok(503), Ok(504)] {
+            assert!(transient(&evidence), "{evidence:?}");
+        }
+        for evidence in [failure(Some(60)), failure(Some(77)), failure(Some(90)), failure(None),
+            Ok(200), Ok(400), Ok(401), Ok(403), Ok(404)] {
+            assert!(!transient(&evidence), "{evidence:?}");
+        }
+    }
+
     fn failure(status: Option<u16>, body_limit: Option<usize>) -> Result<Resp, RequestFailure> {
-        Err(RequestFailure { cause: RequestError::Transport, status, body_limit })
+        Err(RequestFailure { cause: RequestError::Transport, status, body_limit, curl_rc: Some(56) })
     }
 
     fn http2_reset_policy(status: u16) {
@@ -447,7 +734,7 @@ const UNREACHABLE_MEMO: Duration = Duration::from_secs(45);
 const REACHABLE_MEMO: Duration = Duration::from_secs(300);
 
 fn note_contact(url: &str, answered: bool) {
-    if !url.starts_with(PLEX_TV) {
+    if !url.starts_with(plex_tv()) {
         return;
     }
     let now = Instant::now();
@@ -488,6 +775,26 @@ pub(crate) fn set_unreachable_for_test(unreachable: bool) {
 mod reachability_tests {
     use super::*;
 
+    /// The `plextv` stand-in is loopback-only: a trigger file must never be able to aim the
+    /// account API (and the token it carries) at any other host.
+    #[test]
+    fn only_a_loopback_http_origin_may_stand_in_for_plex_tv() {
+        assert!(loopback_http("http://127.0.0.1:32612"));
+        assert!(loopback_http("http://localhost:8080/"));
+        for refused in [
+            "https://127.0.0.1:32612",
+            "http://127.0.0.1",
+            "http://127.0.0.1:",
+            "http://127.0.0.1:80@evil.example",
+            "http://127.0.0.1:123456",
+            "http://127.0.0.2:80",
+            "http://localhost.evil.example:80",
+            "https://plex.tv",
+        ] {
+            assert!(!loopback_http(refused), "{refused} must be refused");
+        }
+    }
+
     /// Process globals — serialized on the crate-wide lock.
     #[test]
     fn the_memos_say_unreachable_beats_reachable_and_nothing_is_known_at_boot() {
@@ -526,8 +833,83 @@ pub enum PinPoll {
     /// This pin no longer exists. Nothing will ever come back for it; mint another.
     Gone,
     /// Nothing usable came back and the pin may well still be alive: a transport failure, a 5xx,
-    /// or a 2xx body that did not parse. Retryable.
-    Unreachable,
+    /// or a 2xx body that did not parse. Retryable. Carries what the request observed, which the
+    /// stalled-wait report classifies.
+    Unreachable(CallEvidence),
+}
+
+/// What an account request observed when it produced nothing usable: `Ok(status)` for a complete
+/// response that was refused or would not decode, `Err` for `net`'s own failure. Closed evidence
+/// only — the onboarding report reduces it to a link class plus one number
+/// (`telemetry::incident::classify`); no body, URL or header is kept.
+pub type CallEvidence = Result<u16, crate::net::RequestFailure>;
+
+/// Is this a status by which plex.tv refused the IDENTITY a request carried (the token
+/// `headers()` attached), as opposed to failing to serve it? One definition, read by the log line
+/// below and by every caller that must tell "this account may not do this" from "no answer" — a
+/// managed Plex Home profile's token gets 401 from `/api/v2/home/users` (#132), and reporting that
+/// as a connection problem sends the person looking for a network fault that does not exist.
+pub fn refuses_identity(status: u16) -> bool {
+    matches!(status, 401 | 403)
+}
+
+/// [`refuses_identity`] over a failed call's evidence: the refusing status, when there is one.
+/// An incomplete transfer still carries the status it received (`RequestFailure::status`).
+pub fn refused_identity(evidence: &CallEvidence) -> Option<u16> {
+    let status = match evidence {
+        Ok(status) => Some(*status),
+        Err(failure) => failure.status,
+    };
+    status.filter(|status| refuses_identity(*status))
+}
+
+/// Whether repeating an account call may turn this observation into a usable answer.
+/// Certificate/CA verification failures are stable until the TV is fixed; TLS connect failure
+/// (curl 35) is a transient handshake/transport observation and remains retryable.
+pub(crate) fn transient(evidence: &CallEvidence) -> bool {
+    let status = match evidence { Ok(status) => Some(*status), Err(failure) => failure.status };
+    if let Some(status) = status {
+        return matches!(status, 408 | 429 | 500 | 502 | 503 | 504);
+    }
+    match evidence {
+        Err(failure) => matches!(failure.curl_rc, Some(rc) if !matches!(rc, 60 | 77 | 90)),
+        Ok(_) => false,
+    }
+}
+
+/// Shared capped geometric delay. `misses == 0` is the base cadence; callers which count the
+/// first failure as one pass `misses - 1` to preserve their established schedule.
+pub(crate) fn backoff(misses: u32, base: Duration, ceiling: Duration) -> Duration {
+    let factor = 1u32.checked_shl(misses.min(30)).unwrap_or(u32::MAX);
+    base.checked_mul(factor).unwrap_or(ceiling).min(ceiling)
+}
+
+/// One event-log phrase for a failed account call's evidence: the HTTP status when a response
+/// arrived, the cause and curl code when none did. Closed evidence only — no URL, body or header.
+pub fn describe_evidence(evidence: &CallEvidence) -> String {
+    match evidence {
+        Ok(status) if (200..300).contains(status) => format!("HTTP {status}, body unreadable"),
+        Ok(status) if refuses_identity(*status) => format!("HTTP {status}, identity refused"),
+        Ok(status) => format!("HTTP {status}"),
+        Err(failure) => match (failure.status, failure.curl_rc) {
+            (Some(status), _) => format!("HTTP {status}, transfer incomplete"),
+            (None, _) if failure.cause == crate::net::RequestError::TimedOut => "no answer (timed out)".into(),
+            (None, Some(rc)) => format!("no answer (curl rc={rc})"),
+            (None, None) => "no answer".into(),
+        },
+    }
+}
+
+/// [`decode`], keeping the evidence of a call that yields nothing.
+fn decode_evidence<T: DeserializeOwned>(verb: &str, url: &str,
+    response: Result<crate::net::Resp, crate::net::RequestFailure>) -> Result<T, CallEvidence> {
+    match response {
+        Err(failure) => Err(Err(failure)),
+        Ok(resp) => {
+            let status = resp.status;
+            decode(verb, url, resp).ok_or(Ok(status))
+        }
+    }
 }
 
 /// Does this status mean the pin itself is finished, as opposed to the request having been?
@@ -553,11 +935,11 @@ fn pin_is_gone(status: u16) -> bool {
 /// request that *completed*, whatever the server said in it. So the two failures that reach here
 /// arrive carrying no description of themselves: a status this client declines, and a 2xx body
 /// that will not deserialize. Both still leave by the same `None` — the callers' contract does not
-/// change — and the callers cannot tell them apart afterwards: `auth::discover_and_store` logs the
-/// pair as one line, `auth: resources request FAILED (no response/deser)`, and ends the sign-in at
-/// "Couldn't reach any Plex server — check the connection.", which is advice about a network for
-/// something that may be an identity. The status is what separates those two, and this function is
-/// where it exists.
+/// change — but the evidence-preserving account methods keep the status after this function
+/// returns: auth can therefore distinguish an identity refusal, a service answer and transport
+/// silence, retry only the transient classes, and describe the failed plex.tv edge without
+/// pretending it contacted a Plex Media Server. The status is what separates those outcomes, and
+/// this function is where it exists.
 ///
 /// QR uses `net::https_get_public` and grades `r.ok()` itself. Switch refusal and poll Gone
 /// classify received status before decoding, including incomplete responses. Every typed body
@@ -596,9 +978,10 @@ fn log_status_failure(verb: &str, url: &str, status: u16) {
     // attached. Downstream that becomes a verdict about a server or a network (see this
     // function's doc for the exact copy), so the distinction has to be drawn in the line that
     // still knows it.
-    let hint = match status {
-        401 | 403 => " — plex.tv refused this identity (token no longer valid?)",
-        _ => "",
+    let hint = if refuses_identity(status) {
+        " — plex.tv refused this identity (token no longer valid?)"
+    } else {
+        ""
     };
     // Tagged for the CLIENT (`account:`) and not for the host, because the host is already in
     // the shape and the two services share this door — `discover.provider.plex.tv` lines would
@@ -657,6 +1040,181 @@ fn id_shaped(seg: &str) -> bool {
     }
     seg.bytes().all(|b| b.is_ascii_digit())
         || (seg.len() >= 8 && seg.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'))
+}
+
+fn play_timeouts(remaining: Duration) -> crate::net::Timeouts {
+    let millis = remaining.as_millis().max(1).min(i32::MAX as u128) as _;
+    crate::net::Timeouts { total_ms: millis, ..crate::net::API }
+}
+
+fn audio_preferences_cached_at<F, N, C>(cache: &AudioPreferencesCache,
+    key: AudioPreferencesKey, budget: Duration, now: N, fetch: F,
+    still_current: C) -> AudioPreferencesOutcome
+where F: FnOnce(Duration) -> AudioPreferencesOutcome, N: Fn() -> Instant, C: Fn() -> bool {
+    let deadline = now() + budget;
+    let flight = {
+        let mut state = cache.state.lock().unwrap_or_else(|e| e.into_inner());
+        // An old playback worker must not evict the active profile's saved preferences or
+        // settings request merely by entering after the profile publication changed.
+        if !still_current() { return AudioPreferencesOutcome::Failed; }
+        if state.key.as_ref() != Some(&key) {
+            state.key = Some(key.clone()); state.entry = None; state.flight = None;
+            cache.changed.notify_all();
+        }
+        loop {
+            if state.key.as_ref() != Some(&key) || !still_current() {
+                return AudioPreferencesOutcome::Failed;
+            }
+            let at = now();
+            if let Some(entry) = &state.entry {
+                if at < entry.expires_at { return entry.outcome.clone(); }
+            }
+            if state.flight.is_some() {
+                if at >= deadline { return AudioPreferencesOutcome::TimedOut; }
+                let (next, _) = cache.changed.wait_timeout(state, deadline - at)
+                    .unwrap_or_else(|e| e.into_inner());
+                state = next;
+                continue;
+            }
+            state.next_flight = state.next_flight.wrapping_add(1);
+            let id = state.next_flight;
+            state.flight = Some(id);
+            break AudioPreferencesFlight { key: key.clone(), id };
+        }
+    };
+    let at = now();
+    let outcome = if at >= deadline { AudioPreferencesOutcome::TimedOut }
+        else { fetch(deadline - at) };
+    let completed_at = now();
+    let outcome = if completed_at >= deadline { AudioPreferencesOutcome::TimedOut } else { outcome };
+    let installed = cache.complete(flight, outcome.clone(), FetchPath::Play, completed_at, still_current);
+    if installed { outcome } else { AudioPreferencesOutcome::Failed }
+}
+
+fn warm_audio_preferences_with<S, F, C>(cache: &'static AudioPreferencesCache,
+    key: AudioPreferencesKey, spawn: S, fetch: F, still_current: C)
+where S: FnOnce(Box<dyn FnOnce() + Send>) -> bool,
+    F: FnOnce() -> AudioPreferencesOutcome + Send + 'static,
+    C: FnOnce() -> bool + Send + 'static {
+    let Some(flight) = cache.reserve(key, Instant::now()) else { return; };
+    let cancel = flight.clone();
+    let spawned = spawn(Box::new(move || {
+        let outcome = fetch();
+        cache.complete(flight, outcome, FetchPath::Warm, Instant::now(), still_current);
+    }));
+    if !spawned { cache.cancel(&cancel); }
+}
+
+pub(crate) fn warm_audio_preferences(client_id: String, credential: String,
+    user: super::session::UserRef, generation: u32) {
+    if client_id.is_empty() || credential.is_empty() { return; }
+    let key = AudioPreferencesKey::new(&user, generation);
+    let current = key.clone();
+    warm_audio_preferences_with(&AUDIO_PREFERENCES_CACHE, key,
+        |job| crate::task::spawn_small("account-audio", job),
+        move || AccountClient::new(&client_id, Some(&credential))
+            .fetch_audio_preferences(&user, crate::net::API),
+        move || current.is_current());
+}
+
+pub(crate) fn publish_audio_preferences_profile(user: Option<&super::session::UserRef>,
+    generation: u32) {
+    match user {
+        Some(user) => AUDIO_PREFERENCES_CACHE.publish(AudioPreferencesKey::new(user, generation)),
+        None => AUDIO_PREFERENCES_CACHE.clear_profile(),
+    }
+}
+
+fn de_soft_i64<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(match value {
+        serde_json::Value::Number(n) => n.as_i64(),
+        serde_json::Value::String(s) => s.parse().ok(),
+        _ => None,
+    })
+}
+fn de_soft_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<bool>, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(match value {
+        serde_json::Value::Bool(v) => Some(v),
+        serde_json::Value::Number(n) => n.as_i64().map(|v| v != 0),
+        serde_json::Value::String(s) => match s.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" => Some(true), "false" | "0" => Some(false), _ => None,
+        },
+        _ => None,
+    })
+}
+fn de_soft_string<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(value.as_str().map(str::to_owned))
+}
+fn de_soft_profile<'de, D: serde::Deserializer<'de>>(d: D)
+    -> Result<Option<AccountAudioProfile>, D::Error>
+{
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).ok())
+}
+
+/// Narrow `/api/v2/user` DTO. Every field is soft because this optional fetch must never break
+/// playback when plex.tv adds, removes or malforms a preference field.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct AccountUser {
+    #[serde(deserialize_with = "de_soft_i64")]
+    id: Option<i64>,
+    #[serde(deserialize_with = "de_soft_string")]
+    uuid: Option<String>,
+    #[serde(deserialize_with = "de_soft_profile")]
+    profile: Option<AccountAudioProfile>,
+}
+#[derive(Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+struct AccountAudioProfile {
+    #[serde(deserialize_with = "de_soft_bool")]
+    auto_select_audio: Option<bool>,
+    #[serde(deserialize_with = "de_soft_string")]
+    default_audio_language: Option<String>,
+    #[serde(deserialize_with = "de_soft_string")]
+    default_subtitle_language: Option<String>,
+    #[serde(deserialize_with = "de_soft_i64", alias = "subtitleMode")]
+    auto_select_subtitle: Option<i64>,
+    #[serde(deserialize_with = "de_soft_i64", alias = "subtitleForced")]
+    default_subtitle_forced: Option<i64>,
+}
+impl AccountAudioProfile {
+    fn preferences(self) -> AudioPreferences {
+        let clean_language = |value: Option<String>| value.map(|language| language.trim().to_owned())
+            .filter(|language| !language.is_empty() && language != "-1");
+        let stated_language = clean_language(self.default_audio_language);
+        let language = (self.auto_select_audio == Some(true))
+            .then(|| stated_language.clone()).flatten();
+        AudioPreferences {
+            language, auto_select_audio: self.auto_select_audio, stated_language,
+            subtitle_language: clean_language(self.default_subtitle_language),
+            subtitle_mode: self.auto_select_subtitle.unwrap_or(0),
+            subtitle_forced: self.default_subtitle_forced.unwrap_or(0),
+        }
+    }
+}
+impl AccountUser {
+    fn audio_preferences_for(self, expected: &super::session::UserRef)
+        -> Option<AudioPreferences>
+    {
+        let expected_knows_id = expected.id != 0;
+        let expected_knows_uuid = !expected.uuid.is_empty();
+        let id_matches = expected_knows_id && self.id == Some(expected.id);
+        let uuid_matches = expected_knows_uuid
+            && self.uuid.as_deref() == Some(expected.uuid.as_str());
+        let id_disagrees = expected_knows_id && self.id.is_some_and(|id| id != expected.id);
+        let uuid_disagrees = expected_knows_uuid
+            && self.uuid.as_deref().is_some_and(|uuid| !uuid.is_empty() && uuid != expected.uuid);
+        if id_disagrees || uuid_disagrees
+            || ((expected_knows_id || expected_knows_uuid) && !id_matches && !uuid_matches)
+        {
+            return None;
+        }
+        Some(self.profile.unwrap_or_default().preferences())
+    }
 }
 
 // ---- serde DTOs (only the fields the app consumes; all optional to tolerate shape drift) ----
@@ -836,6 +1394,217 @@ pub struct HomeUser {
 #[cfg(test)]
 mod tests {
     use super::{endpoint_shape, pin_is_gone, AccountClient, Pin, Resource};
+    use std::time::Duration;
+
+    fn audio_user(id: i64, uuid: &str) -> super::super::session::UserRef {
+        super::super::session::UserRef { id, uuid: uuid.into(), token: "profile-token".into(),
+            ..Default::default() }
+    }
+    fn parsed_audio(body: &str, expected: &super::super::session::UserRef)
+        -> Option<super::AudioPreferences>
+    {
+        serde_json::from_str::<super::AccountUser>(body).ok()?.audio_preferences_for(expected)
+    }
+
+    #[test]
+    fn account_audio_preferences_parse_the_measured_user_shape() {
+        let user = audio_user(7, "profile-uuid");
+        let body = r#"{"id":7,"uuid":"profile-uuid","home":true,"homeAdmin":false,
+            "restricted":true,"profile":{"autoSelectAudio":true,
+            "defaultAudioLanguage":"fr","defaultAudioLanguages":null}}"#;
+        assert_eq!(parsed_audio(body, &user), Some(french_prefs()));
+    }
+
+    #[test]
+    fn account_subtitle_preferences_reach_the_playback_cache() {
+        let user = audio_user(7, "profile-uuid");
+        let body = r#"{"id":7,"profile":{"autoSelectAudio":true,
+            "defaultAudioLanguage":"en-GB","defaultSubtitleLanguage":"fr-CA",
+            "autoSelectSubtitle":"2","defaultSubtitleForced":3}}"#;
+        let prefs = parsed_audio(body, &user).unwrap();
+        assert_eq!(prefs.subtitle_language.as_deref(), Some("fr-CA"));
+        assert_eq!(prefs.subtitle_mode, 2);
+        assert_eq!(prefs.subtitle_forced, 3);
+    }
+
+    #[test]
+    fn account_audio_preferences_require_auto_select_audio() {
+        let user = audio_user(7, "profile-uuid");
+        for (body, auto_select_audio) in [
+            (r#"{"id":7,"profile":{"autoSelectAudio":false,"defaultAudioLanguage":"fr"}}"#,
+                Some(false)),
+            (r#"{"id":7,"profile":{"defaultAudioLanguage":"fr"}}"#, None),
+        ] {
+            assert_eq!(parsed_audio(body, &user), Some(super::AudioPreferences {
+                language: None, auto_select_audio, stated_language: Some("fr".into()),
+                ..Default::default()
+            }));
+        }
+    }
+
+    #[test]
+    fn account_audio_preferences_treat_null_or_empty_language_as_unset() {
+        let user = audio_user(7, "profile-uuid");
+        for language in ["null", "\"\"", "\"   \""] {
+            let body = format!(r#"{{"uuid":"profile-uuid","profile":{{"autoSelectAudio":true,"defaultAudioLanguage":{language}}}}}"#);
+            assert_eq!(parsed_audio(&body, &user), Some(super::AudioPreferences {
+                auto_select_audio: Some(true), ..Default::default()
+            }));
+        }
+    }
+
+    #[test]
+    fn account_audio_preferences_accept_a_response_when_the_expected_owner_has_no_identity_fields() {
+        let owner = audio_user(0, "");
+        let body = r#"{"id":7,"uuid":"owner-uuid","profile":{"autoSelectAudio":true,
+            "defaultAudioLanguage":"fr"}}"#;
+        assert_eq!(parsed_audio(body, &owner), Some(french_prefs()));
+    }
+
+    #[test]
+    fn account_audio_preferences_reject_a_mismatching_known_id() {
+        let user = audio_user(7, "");
+        let body = r#"{"id":8,"profile":{"autoSelectAudio":true,"defaultAudioLanguage":"fr"}}"#;
+        assert_eq!(parsed_audio(body, &user), None);
+    }
+
+    #[test]
+    fn account_audio_preferences_reject_a_mismatching_known_uuid() {
+        let user = audio_user(0, "profile-uuid");
+        let body = r#"{"uuid":"other","profile":{"autoSelectAudio":true,"defaultAudioLanguage":"fr"}}"#;
+        assert_eq!(parsed_audio(body, &user), None);
+    }
+
+    fn audio_key(id: i64, generation: u32) -> super::AudioPreferencesKey {
+        super::AudioPreferencesKey { id, uuid: format!("user-{id}"), generation }
+    }
+    fn french_prefs() -> super::AudioPreferences {
+        super::AudioPreferences {
+            language: Some("fr".into()), auto_select_audio: Some(true),
+            stated_language: Some("fr".into()), ..Default::default()
+        }
+    }
+    fn french() -> super::AudioPreferencesOutcome {
+        super::AudioPreferencesOutcome::Available(french_prefs())
+    }
+
+    #[test]
+    fn play_timeout_does_not_install_backoff() {
+        let cache = super::AudioPreferencesCache::new();
+        let calls = std::cell::Cell::new(0);
+        let fetch = |_| { calls.set(calls.get() + 1); if calls.get() == 1 {
+            super::AudioPreferencesOutcome::TimedOut } else { french() } };
+        let key = audio_key(1, 1);
+        assert_eq!(super::audio_preferences_cached_at(&cache, key.clone(), Duration::from_secs(1),
+            std::time::Instant::now, fetch, || true), super::AudioPreferencesOutcome::TimedOut);
+        assert_eq!(super::audio_preferences_cached_at(&cache, key, Duration::from_secs(1),
+            std::time::Instant::now, fetch, || true), french());
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn completed_failure_still_backs_off() {
+        let cache = super::AudioPreferencesCache::new();
+        let now = std::cell::Cell::new(std::time::Instant::now());
+        let calls = std::cell::Cell::new(0);
+        let fetch = |_| { calls.set(calls.get() + 1); super::AudioPreferencesOutcome::Failed };
+        let key = audio_key(1, 1);
+        assert_eq!(super::audio_preferences_cached_at(&cache, key.clone(), Duration::from_secs(1),
+            || now.get(), fetch, || true), super::AudioPreferencesOutcome::Failed);
+        now.set(now.get() + Duration::from_secs(44));
+        assert_eq!(super::audio_preferences_cached_at(&cache, key, Duration::from_secs(1),
+            || now.get(), fetch, || true), super::AudioPreferencesOutcome::Failed);
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn waiter_joins_an_inflight_fetch_without_starting_another() {
+        let cache = Box::leak(Box::new(super::AudioPreferencesCache::new()));
+        let key = audio_key(1, 1);
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let worker_calls = calls.clone();
+        let handle = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let worker_handle = handle.clone();
+        super::warm_audio_preferences_with(cache, key.clone(), move |job| {
+            *worker_handle.lock().unwrap() = Some(std::thread::spawn(job)); true
+        }, move || { worker_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            release_rx.recv().unwrap(); french() }, || true);
+        let waiter_calls = calls.clone();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(5)); release_tx.send(()).unwrap();
+        });
+        assert_eq!(super::audio_preferences_cached_at(cache, key, Duration::from_millis(100),
+            std::time::Instant::now, move |_| {
+                waiter_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst); french()
+            }, || true), french());
+        releaser.join().unwrap();
+        handle.lock().unwrap().take().unwrap().join().unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn waiter_expiry_leaves_the_flight_running_and_it_later_populates_cache() {
+        let cache = Box::leak(Box::new(super::AudioPreferencesCache::new()));
+        let key = audio_key(1, 1);
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let handle = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let worker_handle = handle.clone();
+        super::warm_audio_preferences_with(cache, key.clone(), move |job| {
+            *worker_handle.lock().unwrap() = Some(std::thread::spawn(job)); true
+        }, move || { release_rx.recv().unwrap(); french() }, || true);
+        assert_eq!(super::audio_preferences_cached_at(cache, key.clone(), Duration::from_millis(3),
+            std::time::Instant::now, |_| panic!("waiter started a second fetch"), || true),
+            super::AudioPreferencesOutcome::TimedOut);
+        release_tx.send(()).unwrap();
+        handle.lock().unwrap().take().unwrap().join().unwrap();
+        assert_eq!(super::audio_preferences_cached_at(cache, key, Duration::from_millis(3),
+            std::time::Instant::now, |_| panic!("warm result was not cached"), || true), french());
+    }
+
+    #[test]
+    fn stale_key_or_flight_completion_cannot_overwrite_a_newer_key() {
+        let cache = super::AudioPreferencesCache::new();
+        let old = audio_key(1, 1); let new = audio_key(2, 2);
+        let old_flight = cache.reserve(old, std::time::Instant::now()).unwrap();
+        cache.publish(new.clone());
+        let new_flight = cache.reserve(new.clone(), std::time::Instant::now()).unwrap();
+        assert!(!cache.complete(old_flight, french(), super::FetchPath::Warm,
+            std::time::Instant::now(), || false));
+        let german = super::AudioPreferencesOutcome::Available(super::AudioPreferences {
+            language: Some("de".into()), ..Default::default() });
+        assert!(cache.complete(new_flight, german.clone(), super::FetchPath::Warm,
+            std::time::Instant::now(), || true));
+        assert_eq!(super::audio_preferences_cached_at(&cache, new, Duration::from_millis(3),
+            std::time::Instant::now, |_| panic!("new result was not cached"), || true), german);
+    }
+
+    #[test]
+    fn account_regression_stale_fetch_start_cannot_evict_current_profile() {
+        let cache = super::AudioPreferencesCache::new();
+        let old = audio_key(1, 1); let current = audio_key(2, 2);
+        let flight = cache.reserve(current.clone(), std::time::Instant::now()).unwrap();
+        let result = super::audio_preferences_cached_at(&cache, old, Duration::from_millis(10),
+            std::time::Instant::now, |_| panic!("stale identity reached the network"), || false);
+        assert_eq!(result, super::AudioPreferencesOutcome::Failed);
+        {
+            let state = cache.state.lock().unwrap();
+            assert_eq!(state.key.as_ref(), Some(&current));
+            assert_eq!(state.flight, Some(flight.id));
+        }
+        assert!(cache.complete(flight, french(), super::FetchPath::Warm,
+            std::time::Instant::now(), || true));
+    }
+
+    #[test]
+    fn spawn_failure_clears_the_flight() {
+        let cache = Box::leak(Box::new(super::AudioPreferencesCache::new()));
+        let key = audio_key(1, 1);
+        super::warm_audio_preferences_with(cache, key.clone(), |_| false,
+            || panic!("refused spawn ran a worker"), || true);
+        assert_eq!(super::audio_preferences_cached_at(cache, key, Duration::from_millis(20),
+            std::time::Instant::now, |_| french(), || true), french());
+    }
 
     #[test]
     fn account_headers_use_the_same_honest_language_source_as_pms() {

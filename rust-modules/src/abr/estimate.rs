@@ -350,8 +350,11 @@ pub(crate) fn weighted_mean(old: u32, new: u32, weight: u32, denominator: u64) -
         .min(u64::from(u32::MAX)) as u32
 }
 
-/// Validated timing for one completed segment. Invalid/zero timing is absence of evidence, never
-/// infinite bandwidth or perfect production.
+/// Validated timing for one segment acquisition. A COMPLETED one ([`Self::new_with_obligation`])
+/// must carry real bytes and body time: invalid/zero timing is absence of evidence, never infinite
+/// bandwidth or perfect production. An ABANDONED one ([`Self::abandoned_acquisition`]) may carry
+/// none — a stall abort can fire before the first body byte — because it is never a rate
+/// observation; it reports the censored event to the controller's recovery path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct SegmentSample {
     pub(super) bytes: u64,
@@ -412,6 +415,33 @@ impl SegmentSample {
             })
     }
 
+    /// **An acquisition the stall guard ABANDONED**, with whatever it really acquired — possibly
+    /// nothing: an abort during the open or the `NotReady` wait has no body byte and no body time.
+    /// Unlike the completed constructor it therefore admits `bytes == 0` and `active_fetch_us ==
+    /// 0`; it still demands a media quantum and an ordered acquisition clock. Always
+    /// `completed == false`, so no completed-only estimator (capacity, acquisition bag) reads it.
+    pub(crate) fn abandoned_acquisition(
+        bytes: u64,
+        active_fetch_us: u64,
+        total_fetch_us: u64,
+        media_duration_ms: u32,
+        media_obligation_ms: u32,
+        buffer: BufferSnapshot,
+    ) -> Option<Self> {
+        (total_fetch_us >= active_fetch_us
+            && media_duration_ms > 0
+            && media_obligation_ms >= media_duration_ms)
+            .then_some(Self {
+                bytes,
+                active_fetch_us,
+                total_fetch_us,
+                media_duration_ms,
+                media_obligation_ms,
+                buffer,
+                completed: false,
+            })
+    }
+
     /// **Mark this sample as an ABANDONED transfer** — bytes that really crossed the wire, from a
     /// fetch that was cut off rather than finished.
     ///
@@ -431,6 +461,10 @@ impl SegmentSample {
     /// acquisition bag. The terminal/deadline event still reaches the controller as a censored
     /// transaction result, but its bytes cannot identify path capacity in either direction: PMS
     /// production, response pacing and network service are mixed until the response completes.
+    ///
+    /// Production now builds abandoned samples with [`Self::abandoned_acquisition`] directly (it
+    /// must also admit an abort with no body at all); this conversion remains for the host suite.
+    #[cfg(test)]
     pub(crate) fn abandoned(mut self) -> Self {
         self.completed = false;
         self

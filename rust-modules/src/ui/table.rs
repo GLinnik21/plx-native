@@ -66,6 +66,11 @@ pub struct Row {
     /// a line that does nothing. (A second `Section` cannot do this job: a headerless section adds
     /// vertical air but draws no rule, because the hairline rides the section HEADER.)
     pub sep: bool,
+    /// The row's action is **destructive** — it ends or removes something (Sign out, Remove from
+    /// Deck). Semantics only, never drawn: it exists so a menu never OPENS with its focus on one
+    /// ([`TableView::opening_row`]). A stray OK on a freshly opened menu must be harmless; the row
+    /// stays one press away, it is simply never where focus starts.
+    pub destructive: bool,
 }
 impl Row {
     pub fn new(label: impl Into<String>) -> Self {
@@ -82,6 +87,7 @@ impl Row {
             licon: None,
             dim: false,
             sep: false,
+            destructive: false,
         }
     }
     /// The grouping hairline — a row that draws a rule and cannot be focused.
@@ -155,6 +161,11 @@ impl Row {
     }
     pub fn dim(mut self, v: bool) -> Self {
         self.dim = v;
+        self
+    }
+    /// Mark the row's action destructive — see [`Row::destructive`].
+    pub fn destructive(mut self, v: bool) -> Self {
+        self.destructive = v;
         self
     }
     /// `tall` is the TABLE's two-line measure — see [`TableView::tall_rows`]. A row cannot answer
@@ -468,6 +479,28 @@ impl TableView {
                 .jump(top + self.row_height(self.sel) - PILL_INSET);
             self.scroll.jump(0.0);
         }
+    }
+
+    /// **Open** a menu on `sections`: [`Self::set_sections`] with the selection on
+    /// [`Self::opening_row`] and the pill snapped there. Every menu that has no prior selection to
+    /// restore opens through this, so none can open with its focus on a destructive action.
+    pub fn open_sections(&mut self, sections: Vec<Section>) {
+        self.sections = sections;
+        let sel = self.opening_row();
+        let sections = std::mem::take(&mut self.sections);
+        self.set_sections(sections, sel, false);
+    }
+
+    /// Where a menu's focus STARTS: the first selectable row that is not [`Row::destructive`]; the
+    /// first selectable row when every row is destructive (the menu still has to focus something,
+    /// and then the one action on offer is the one asked for); `0` for an empty table.
+    pub fn opening_row(&self) -> i32 {
+        let n = self.n_rows();
+        let selectable = || (0..n).filter(|&i| !self.rows_at(i).sep);
+        selectable()
+            .find(|&i| !self.rows_at(i).destructive)
+            .or_else(|| selectable().next())
+            .unwrap_or(0)
     }
 
     pub fn n_rows(&self) -> i32 {
@@ -918,12 +951,7 @@ impl TableView {
             // step is the ink's ALONE — the run itself is bold (see [`VALUE_BOLD`], which all three
             // calls below take so the measure and the paint can never be two different faces).
             if let Some(v) = row.readout() {
-                let ink = match (focused, row.value_dim) {
-                    (true, false) => theme::ROW_VALUE_INK_ON,
-                    (true, true) => theme::ROW_VALUE_INK_ON_DIM,
-                    (false, false) => theme::TEXT_SECONDARY,
-                    (false, true) => theme::TEXT_TERTIARY,
-                };
+                let ink = row_value_ink(row, focused);
                 if let Ok(vc) = std::ffi::CString::new(v) {
                     let vsz = theme::size::LABEL;
                     let vy = crate::text::text_vcenter_y(vsz, VALUE_BOLD, cyc);
@@ -1052,8 +1080,51 @@ impl TableView {
     }
 }
 
+/// The ink of a row's trailing read-out ([`Row::readout`]): one step behind the row's label, so it
+/// follows the row's [`Row::dim`] as well as its own [`Row::value_dim`]. A dim row's label is
+/// already [`theme::TEXT_TERTIARY`], so its read-out takes [`theme::ROW_VALUE_INK_DIM`] below
+/// that; drawn at the live row's ink, a step that cannot be taken (the Timing section's Earlier at
+/// its floor) still announced itself at the trailing edge. Over the focused pill a dim row's
+/// read-out takes the quiet rung.
+fn row_value_ink(row: &Row, focused: bool) -> [f32; 4] {
+    match (focused, row.dim, row.value_dim) {
+        (true, false, false) => theme::ROW_VALUE_INK_ON,
+        (true, _, _) => theme::ROW_VALUE_INK_ON_DIM,
+        (false, true, _) => theme::ROW_VALUE_INK_DIM,
+        (false, false, false) => theme::TEXT_SECONDARY,
+        (false, false, true) => theme::TEXT_TERTIARY,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// **A dimmed row's read-out dims with it.** The Timing section's Earlier row at the
+    /// selected kind's floor is `dim`, and its "−0.1 s" read-out was drawn at the SAME ink as the
+    /// live Later row's — so the step that could not be taken still announced itself at the
+    /// trailing edge. The read-out stays one step behind its label: a dim label is
+    /// [`theme::TEXT_TERTIARY`], so a dim row's value sits below that.
+    #[test]
+    fn a_dim_rows_readout_follows_the_row_dim() {
+        let live = Row::new("Later").value("+0.1 s").value_dim(true);
+        let dimmed = Row::new("Earlier").value("\u{2212}0.1 s").value_dim(true).dim(true);
+        assert_ne!(
+            row_value_ink(&dimmed, false),
+            row_value_ink(&live, false),
+            "a dim row's read-out must not keep the live row's ink",
+        );
+        assert!(
+            row_value_ink(&dimmed, false)[3] < theme::TEXT_TERTIARY[3],
+            "a dim row's read-out sits a step behind its dim label",
+        );
+        // an undimmed, unquietened read-out is unchanged
+        let plain = Row::new("Audio").value("English");
+        assert_eq!(row_value_ink(&plain, false), theme::TEXT_SECONDARY);
+        assert_eq!(row_value_ink(&plain, true), theme::ROW_VALUE_INK_ON);
+        // over the focused pill a dim row's read-out takes the quiet rung
+        let dim_plain = Row::new("Audio").value("English").dim(true);
+        assert_eq!(row_value_ink(&dim_plain, true), theme::ROW_VALUE_INK_ON_DIM);
+    }
+
     #[test]
     fn table_motion_canonical_state_covers_hidden_spring_velocity_and_layout_flags() {
         fn hash(table: &super::TableView) -> u64 {
@@ -1139,6 +1210,30 @@ mod tests {
         let empty = TableView::new();
         assert_eq!(empty.last_row(), None);
         assert!(!empty.at_last_row());
+    }
+
+    /// **A menu never opens with its focus on a destructive action.** The opening row steps over
+    /// destructive rows and separators; when every row is destructive it is the first anyway.
+    #[test]
+    fn a_menu_opens_on_its_first_non_destructive_row() {
+        let mut t = TableView::new();
+        t.open_sections(vec![Section::new("S")
+            .row(Row::new("Sign out").destructive(true))
+            .row(Row::separator())
+            .row(Row::new("Settings"))]);
+        assert_eq!(t.sel, 2);
+        assert_eq!(t.opening_row(), 2);
+
+        t.open_sections(vec![Section::new("S")
+            .row(Row::separator())
+            .row(Row::new("Remove").destructive(true))]);
+        assert_eq!(t.sel, 1, "all destructive: the first selectable row anyway");
+
+        t.open_sections(vec![Section::new("S").row(Row::new("a")).row(Row::new("b"))]);
+        assert_eq!(t.sel, 0, "an ordinary menu still opens on its first row");
+
+        t.open_sections(Vec::new());
+        assert_eq!(t.sel, 0);
     }
 
     /// **A row OPENS something exactly when it wears the drill-in chevron.** `route_screen`'s

@@ -4,7 +4,15 @@ A directory here is one RECORDING (restructure spec §5.3): `manifest.json` (the
 `rec-NNNN.jsonl` segments, taken on the simulator against `tests/mock_pms.py` by arming
 `plxnative-rec`. They are regression assertions pinned to the build lineage that recorded them
 (§5.5): `tools/plxnative-rec diff` compares two, `tools/plxnative-rec check` verifies one against
-`ALPHABET.json`, and `tests/test_harness.py` verifies every committed one on every `make check`.
+`ALPHABET.json`, and `tests/test_harness.py` checks their schema and closed vocabulary on every
+`make check`. **`make check-replay` builds the macOS simulator and executes every committed
+recording in both Targets and Resolve modes.** The same driver (`tests/replay_fixtures.py`) gates
+the macOS Simulator CI job, with outbound networking denied, and retains each run's logs.
+It requires a successful process exit, exactly one clean summary, every difference counter zero,
+and frame/grade counts matching the complete committed ledger. Missing manifests or segments,
+refused fixtures, timeouts, and incomplete replay all fail; no fixture is quarantined or skipped.
+The renderer-backed replay gate is separate from the pure host suite: `make check` tests its
+strict result parser, but does not launch the simulator.
 
 Controlled bootstrap accepts **Home**, **Settings**, and the typed synthetic
 **12-filmography-detail-return** content domain. `tests/focusfp.sh --rec --only 12` asks the
@@ -31,6 +39,23 @@ explicitly and denies resource execution and data transport. Account, playback, 
 unlisted domain remain unsupported and fail closed before IO. Product replay has two explicit
 modes: Targets substitutes each recorded Focus/Hit resolution before dependent effects, while
 Resolve runs the current engine/map and grades every resolution pointwise before continuing.
+
+Person's provider requests use the captured authority throughout controlled recording and replay.
+Ambient session-cache recovery cannot retire those requests or introduce unrecorded retries.
+
+The TV's startup WILL/DID foreground notifications are recorded and replayed through the
+navigation owner. Recorded notifications cannot restore native playback, change network grants,
+or authorize drawing into a physically backgrounded window. During replay the real compositor
+still owns window activation, while live keys and FIFO commands cannot join the recorded input
+stream. A real background/quit event interrupts replay; recorded background lifecycle remains
+unsupported.
+
+Page-capture GPU readiness is also a recorded input, sampled before dispatch. Replay supplies
+that observation to the ordinary motion and presentation gates, then computes and grades the
+final present decision. Faster GPU completion cannot introduce extra presents or advance a held
+transition early. Missing, duplicate, late or unconsumed readiness fails closed; the independent
+physical window gate still blocks drawing while backgrounded. Recordings predating this input
+are refused at the product shape boundary and must be recorded afresh.
 
 The admission contract also records each synchronous worker-spawn answer with its full request
 identity and frame ordering. A refused attempt stays refused during replay, including its normal
@@ -70,8 +95,21 @@ gained the seven page names flat — `state_fp` moved from `0x2ee80fef41949b4b` 
 NO recorded frame hash changed. The committed artifacts could not be loaded at all
 (`replay: REFUSED — state shape 0x2ee80fef41949b4b recorded, 0x489bbd488180e355 here`, all three),
 which is the machine-checkable condition `rerecord` verifies for itself; nothing was accepted,
-because nothing could be compared. The current three anchor manifests carry `state_fp`
-`10352703632114781766` (`0x8fac311a39190e46`). Clean replay summaries require
+because nothing could be compared. All three anchors were subsequently re-recorded against the current state shape
+`10372147871357755035` (`0x8ff14588f61a5e9b`). The plaintext-consent initial
+fields moved the declared census to `ControlledHomeInitV5` / `SessionInitV4`; all three
+anchors were freshly recorded after the old inputs were observed being refused. The library-type
+and compact-row change in #258 subsequently moved the screen census; all three anchors were
+recorded again on that combined shape and replayed in both modes with every difference counter
+at zero. The `CaptureReadinessV1` input subsequently moved the product wire shape; all three
+anchors were freshly recorded again, and both modes graded every frame with every difference
+counter at zero. The controlled effect encoder now covers preview
+start/stop/transport/seek, item-menu requests, and every content-panel payload with exhaustive
+matches. Replay regenerates those typed requests and compares their complete JSON payloads;
+it does not decode recorded effects into executable requests. Full playback remains outside
+this controlled domain. Flow 12 also waits for the initial Home root to mount before opening
+Detail, so a cold renderer taking longer than the 500 ms scenario delay cannot discard the
+Detail request. Fixture 12's quarantine is removed. Clean replay summaries require
 `input_diffs=0 effect_diffs=0 focus_diffs=0 hit_diffs=0` as well as zero state, presentation,
 result, and landing diffs.
 
@@ -98,3 +136,9 @@ against a REAL server lives in `plxnative-recordings/` (gitignored, refused by t
 never comes here. A fixture whose `manifest.json` carries `"anchor": true` refuses `--rebaseline`
 (a behaviour-change replacement, evidenced by a divergence record); `rerecord`, above, is the
 shape-bump escape an anchor does not refuse.
+
+The playback-settings change (#217) adds the two Settings page arguments and their logical
+state to the screen census. The prior anchors were observed being refused, then all three were
+freshly recorded against shape `13142456728797643905` and passed Targets and Resolve with zero
+difference counters. Account/preference I/O remains outside the controlled replay domain: typed
+preference effects are rejected by the bridge before capture, worker admission, or persistence.

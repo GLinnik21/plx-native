@@ -102,6 +102,11 @@ pub(crate) struct AppViews<'a> {
     pub(crate) directory: crate::stores::browse::DirectoryView<'a>,
     pub(crate) section_hubs: crate::stores::browse::HubsView<'a>,
     pub(crate) search: crate::search::view::SearchView<'a>,
+    pub(crate) person: crate::person::PersonView<'a>,
+    /// Stage A of the store-ownership migration (`docs/stores-as-machines.md`): the owner's
+    /// borrowed read handle, shaped like [`crate::person::PersonView`]. It still reads the
+    /// process-wide `metadata` statics underneath — see `crate::metadata::MetadataView`'s doc.
+    pub(crate) metadata: crate::metadata::MetadataView<'a>,
     /// **The playback session, as this frame's publication** (spec §2.3, phase 9). The Player
     /// machine (`App.player`) owns the value; `Split` can only lend what the RIG owns, so the loop
     /// copies the decisions in once per frame ([`crate::route::PlaybackSession::publication`]) and
@@ -140,6 +145,11 @@ impl Host for AppHost {
     // of Detail, Person and Filmography across eviction. The opaque payload belongs to the
     // screen bundle; current focus and group cursors remain the input engine's state.
     type Memory = PageMemory;
+
+    fn app_fx_needs_return(fx: &AppFx) -> bool {
+        !matches!(fx, AppFx::Store(..) | AppFx::StoreWork(_)
+            | AppFx::Library(LibraryReq::PublishShelves { .. }))
+    }
 }
 
 impl HomeLike for AppHost {
@@ -193,6 +203,14 @@ impl crate::screens::registry::LibraryLike for AppHost {
     fn listing<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::ListingView<'a> { cx.views.listing }
     fn directory<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::DirectoryView<'a> { cx.views.directory }
     fn section_hubs<'a>(cx: &Cx<'a, Self>) -> crate::stores::browse::HubsView<'a> { cx.views.section_hubs }
+}
+
+impl crate::screens::registry::PersonLike for AppHost {
+    fn person<'a>(cx: &Cx<'a, Self>) -> crate::person::PersonView<'a> { cx.views.person }
+}
+
+impl crate::screens::registry::MetadataLike for AppHost {
+    fn metadata<'a>(cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a> { cx.views.metadata }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -253,6 +271,7 @@ impl ConsentMachine {
 
 /// What the bridge lends the dispatcher, and what it collects for the loop.
 pub(crate) struct Bridge {
+    session_cache_generation: u64,
     home_io: Option<super::bootstrap::HomeIo>,
     recorded_clients: std::collections::BTreeMap<u32, &'static crate::plex::Client>,
     initial_subhash: u64,
@@ -291,7 +310,7 @@ pub(crate) struct Bridge {
     /// The shared top bar's render state — the strip's scroll/capsules/chip unfurl and the tab
     /// track's glass band (restructure phase 12, PX-WIDGETS, review finding 10). `Bridge` is this
     /// bar's one reachable owner: the only `Rig::draw_chrome` implementation, and the only place
-    /// `update_home_chrome`/`prepare_home_chrome` are called from.
+    /// `update_home_chrome` is called from.
     strip: crate::ui::widgets::StripRender,
     home_commands: std::collections::VecDeque<HomeCmd>,
     library_commands: std::collections::VecDeque<crate::screens::registry::LibraryCmd>,
@@ -358,14 +377,24 @@ impl Bridge {
         mt: &crate::task::MainThread, replay: bool) -> Self {
         static TTF: crate::text::TtfMeasure = crate::text::TtfMeasure;
         let preferences = initial.session.persisted.clone();
-        let mut bridge = Self::with_publications(&TTF, now_us, initial.session.clone(),
+        let (state, adapter) = initial.home.restore(mt).expect("validated Home initial state");
+        let mut stores = crate::stores::Stores::default();
+        stores.hubs = crate::stores::hubs::HubsStore::from_parts(state, adapter);
+        let hubs = stores.hubs.snapshot();
+        // Arms controlled-content recording/replay's admission ledger over detail terminals —
+        // exactly the decision the retired crate-global `record::reset(initial.content.is_some())`
+        // made at `bootstrap::stores::init` before Stage B moved the Tracker onto this per-owner
+        // adapter (`crate::metadata::record::arm`'s own doc has the history). Must run before this
+        // `Bridge` can admit any detail request.
+        stores.metadata.arm_detail_tracker(initial.content.is_some());
+        let mut bridge = Self::with_publications_and_stores(&TTF, now_us, initial.session.clone(),
             super::adapters::session::SessionAdapter::controlled_home(mt, replay),
             initial.consent.clone(), super::adapters::consent::ConsentAdapter::live(),
             StorePublications {
-                hubs:initial.home.snapshot(), listing:crate::stores::browse::ListingSnapshot::empty(),
+                hubs, listing:crate::stores::browse::ListingSnapshot::empty(),
                 directory:Default::default(), section_hubs:crate::stores::browse::HubsSnapshot::empty(),
                 search:Default::default(),
-            });
+            }, stores);
         bridge.initial_subhash = initial.hash();
         bridge.measure = if replay {
             crate::ui::rec::Measurements::Pending(Default::default())
@@ -404,11 +433,11 @@ impl Bridge {
         let stores = crate::stores::Stores::default();
         let mut directory = crate::stores::browse::DirectorySnapshot::default();
         let browse = stores.capture_browse(&mut directory);
-        let search = crate::stores::search::snapshot_with_directory(browse.directory.view());
+        let search = stores.search_snapshot(browse.directory.view());
         Self::with_publications_and_stores(measure, now_us, init, session_adapter, consent,
             consent_adapter,
             StorePublications {
-            hubs: crate::pms::hubs_snapshot(), listing: browse.listing,
+            hubs: stores.hubs.snapshot(), listing: browse.listing,
             directory: browse.directory, section_hubs: browse.section_hubs,
             search,
         }, stores)
@@ -455,6 +484,7 @@ impl Bridge {
             })
     }
 
+    #[cfg(test)]
     fn with_publications(measure: &'static dyn Measure, now_us: fn() -> u64,
         init: crate::auth::SessionInit, session_adapter: super::adapters::session::SessionAdapter,
         consent: crate::telemetry::consent::Consent,
@@ -470,6 +500,7 @@ impl Bridge {
         consent_adapter: super::adapters::consent::ConsentAdapter,
         reads: StorePublications, stores: crate::stores::Stores) -> Self {
         Self {
+            session_cache_generation: crate::plex::session::visible_generation(),
             home_io: None,
             recorded_clients: std::collections::BTreeMap::new(),
             initial_subhash: 0,
@@ -508,6 +539,15 @@ impl Bridge {
             effect_return: ReturnState::default(),
             held: Vec::new(),
             now_us,
+        }
+    }
+
+    /// Observe storage landings on the frame thread, alongside store/adapter publications.
+    pub(crate) fn land_session_cache(&mut self) {
+        let generation = crate::plex::session::visible_generation();
+        if self.session_cache_generation != generation {
+            self.session_cache_generation = generation;
+            crate::ui::idle::invalidate();
         }
     }
 
@@ -565,7 +605,7 @@ impl Bridge {
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
-            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback }, &self.measure);
+            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback }, &self.measure);
         let item = page.selected_item(focus, &cx)?.clone();
         let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
         Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
@@ -585,7 +625,7 @@ impl Bridge {
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
         let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
-            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback }, &self.measure);
+            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback }, &self.measure);
         let item = page.focused_item(focus, &cx)?.clone();
         let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
         Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
@@ -608,6 +648,22 @@ impl Bridge {
         let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) else { return };
         d.emit(MachineId::Nav, Fx::Deliver(MachineId::Instance(instance),
             Delivery::Screen(ScreenEvent::App(AppMsg::Library(command)))));
+    }
+
+    /// The Library page's focused grid cell, `(row, col)`, if focus is on its grid.
+    pub(crate) fn library_grid_position(d: &Dispatcher<AppHost>) -> Option<(usize, usize)> {
+        let entry = d.nav.top_page()?;
+        let page = entry.inst.as_ref().and_then(|instance| instance.screen.as_any())
+            .and_then(|page| page.downcast_ref::<crate::screens::library::LibraryScreen>())?;
+        page.grid_position(d.input.engine.current(InputOwner::Entry(entry.id)))
+    }
+
+    /// The Library page's focused hub-shelf card, `(shelf, col)`, if focus is on a shelf.
+    pub(crate) fn library_shelf_position(d: &Dispatcher<AppHost>) -> Option<(usize, usize)> {
+        let entry = d.nav.top_page()?;
+        let page = entry.inst.as_ref().and_then(|instance| instance.screen.as_any())
+            .and_then(|page| page.downcast_ref::<crate::screens::library::LibraryScreen>())?;
+        page.shelf_position(d.input.engine.current(InputOwner::Entry(entry.id)))
     }
 
     pub(crate) fn library_card_focused(d: &Dispatcher<AppHost>) -> bool {
@@ -638,7 +694,7 @@ impl Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback,
             }, &self.measure);
             screen.as_any()?.downcast_ref::<crate::screens::home::HomeScreen>()?
                 .focused_rect::<AppHost>(Some(key), &cx, At::Drawn)
@@ -679,13 +735,23 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         Some(f(home, &cx, focus))
     }
 
     pub(crate) fn home_grid_focused(&self, d: &Dispatcher<AppHost>) -> bool {
         self.with_home(d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx).is_some()).unwrap_or(false)
+    }
+
+    #[cfg(feature = "devtriggers")]
+    pub(crate) fn home_grid_position(&self, d: &Dispatcher<AppHost>) -> Option<(usize, usize)> {
+        self.with_home(d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx)).flatten()
+    }
+
+    #[cfg(feature = "devtriggers")]
+    pub(crate) fn home_motion_witness(&self, d: &Dispatcher<AppHost>) -> Option<[f32; 3]> {
+        self.with_home(d, |home, _, _| home.motion_witness(0)).flatten()
     }
 
     pub(crate) fn home_snap_target(&self, d: &Dispatcher<AppHost>) -> f32 {
@@ -715,8 +781,8 @@ impl Bridge {
         }
     }
 
-    /// Return Browse/Search publication changes so the frame can coalesce them with notices.
-    fn capture_views(&mut self, d: &mut Dispatcher<AppHost>) -> (bool, bool) {
+    /// Return publication changes so the frame can coalesce them with store notices.
+    fn capture_views(&mut self, _d: &mut Dispatcher<AppHost>) -> (bool, bool, bool) {
         let directory_before = self.directory.clone();
         let hubs_before = (self.section_hubs.view().id(), self.section_hubs.view().revision());
         // One owner borrow, in the load-bearing order: directory capture resolves profile pins
@@ -730,22 +796,17 @@ impl Bridge {
         let browse_changed = listing_changed || !self.directory.same_publication(&directory_before)
             || hubs_before != (self.section_hubs.view().id(), self.section_hubs.view().revision());
         let search = if self.home_io.is_some() { self.search.clone() } else {
-            crate::stores::search::snapshot_with_directory(self.directory.view())
+            self.stores.search_snapshot(self.directory.view())
         };
         let search_changed = !self.search.same_publication(&search);
         if search_changed {
             self.search = search;
         }
         let before = (self.hubs.view().generation, self.hubs.view().state);
-        self.hubs = crate::pms::hubs_snapshot();
+        self.hubs = self.stores.hubs.snapshot();
         let after = (self.hubs.view().generation, self.hubs.view().state);
-        if before != after {
-            // This is queued before input deliveries. Key projections catch up to the newly
-            // captured publication before any action or draw can read it, including status-only
-            // landings which the legacy pump's catalog-generation notice cannot see.
-            d.store_changed(StoreId::Hubs.ord(), after.0);
-        }
-        (browse_changed, search_changed)
+        let hubs_changed = before != after;
+        (browse_changed, hubs_changed, search_changed)
     }
 
     pub(crate) fn update_home_chrome(&mut self, d: &mut Dispatcher<AppHost>,
@@ -757,11 +818,6 @@ impl Bridge {
         self.strip.update(labels, selected, chrome_focus, dt);
         glass.step_tab_band(dt);
         self.chrome.members(selected, focus, self.strip.scroll_pos(), &mut d.nav.tabs.strip);
-    }
-
-    pub(crate) fn prepare_home_chrome(&self, glass: &mut crate::ui::frame::glass::GlassPlan) {
-        let labels = self.chrome.labels();
-        glass.prepare_tab_band(labels);
     }
 
     #[cfg(test)]
@@ -781,12 +837,12 @@ impl Bridge {
         if !matches!(entry.arg, AppArg::Home)
             || d.nav.input_owner() != Some(InputOwner::Entry(entry.id)) { return; }
         let Some(instance) = entry.inst.as_ref().map(|instance| instance.id) else { return };
-        let snapshot = crate::pms::hubs_snapshot();
+        let snapshot = self.stores.hubs.snapshot();
         let ready = snapshot.view().hub_count() > 0;
         // Retain data-dependent boot intentions until the first catalog arrives. A command
         // is addressed only after the Home body exists; no UI state is mutated by this queue.
         while let Some(command) = self.home_commands.front().copied() {
-            if !ready && matches!(command, HomeCmd::FocusGrid { .. } | HomeCmd::SelectHero(_) | HomeCmd::Flip(_) | HomeCmd::ItemMenu) {
+            if !ready && matches!(command, HomeCmd::FocusGrid { .. } | HomeCmd::SelectHero(_) | HomeCmd::PinHero(_) | HomeCmd::Flip(_) | HomeCmd::ItemMenu) {
                 break;
             }
             self.home_commands.pop_front();
@@ -805,7 +861,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         if home.grid_position::<AppHost>(parts.focus.current, &cx).is_none() { return false; }
         self.home_command(HomeCmd::ItemMenu)
@@ -830,24 +886,25 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
             let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None };
             let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
-            if let Some((rk, mark)) = page.focused_season(ret.focus) {
+            let meta = <AppHost as crate::screens::registry::MetadataLike>::metadata(&cx);
+            if let Some((rk, mark)) = page.focused_season(ret.focus, meta) {
                 Some(strip_menu_arg(sid, &rk, ItemMenuKind::Season { mark }, entry, ret.focus, rect))
-            } else if let Some((rk, mark)) = page.focused_episode(ret.focus) {
+            } else if let Some((rk, mark)) = page.focused_episode(ret.focus, meta) {
                 // the ONE entry point whose item is a leaf of the season this page has loaded
                 Some(strip_menu_arg(sid, &rk, ItemMenuKind::Episode { mark }, entry, ret.focus, rect))
             } else {
                 // …a RELATED tile is a DIFFERENT item standing on the same page: an ordinary card
                 // row, which is exactly what `MenuHost::Related` existed to say.
-                let item = page.focused_related(ret.focus).filter(|m| crate::screens::item_menu::has_actions(m))?;
+                let item = page.focused_related(ret.focus, meta).filter(|m| crate::screens::item_menu::has_actions(m))?;
                 Some(card_menu_arg(item, false, false, entry, ret.focus, rect))
             }
         } else if let Some(page) = screen.downcast_ref::<crate::screens::person::PersonScreen>() {
-            let item = page.focused_item(ret.focus).filter(|m| crate::screens::item_menu::has_actions(m))?;
+            let item = page.focused_item(ret.focus, &cx).filter(|m| crate::screens::item_menu::has_actions(m))?;
             let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
             Some(card_menu_arg(item, false, false, entry, ret.focus, rect))
         } else { None }
@@ -880,7 +937,7 @@ impl Bridge {
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         let mut frame = DrawFrame::with_navigation(&cx, crate::ui::Painter::root(), self.navigation_presentation());
         if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
@@ -978,11 +1035,46 @@ impl Bridge {
         self.stores.browse_discover_pump()
     }
 
-    pub(crate) fn viewstate_run(&self, cmd: crate::stores::viewstate::ViewStateCmd) -> bool {
+    pub(crate) fn person_run(&mut self, cmd: crate::stores::person::PersonCmd) -> bool {
+        self.stores.person_run(cmd)
+    }
+
+    pub(crate) fn person_pump(&mut self) -> bool {
+        self.stores.person_pump()
+    }
+
+    pub(crate) fn person_view(&self) -> crate::person::PersonView<'_> {
+        self.stores.person_view()
+    }
+
+    pub(crate) fn metadata_mut(&mut self) -> &mut crate::stores::metadata::MetadataStore {
+        &mut self.stores.metadata
+    }
+
+    /// Metadata's same-turn boundary — the sibling of `browse_run`/`person_run`/`viewstate_run`
+    /// that Stage A/B left out. A caller uses it when the answer is consumed in the SAME
+    /// synchronous step, which for Metadata means one thing: a reconciliation whose `Requested`
+    /// phase becomes observable the moment the command returns (trap T2). Screen-issued Metadata
+    /// commands that are not same-turn boundaries still cross `AppFx::Store` like every other
+    /// store's; see `app/content.rs`'s `refresh_content`.
+    pub(crate) fn metadata_run(&mut self, cmd: crate::stores::metadata::MetadataCmd) -> bool {
+        self.stores.metadata_run(cmd)
+    }
+
+    pub(crate) fn metadata_view(&self) -> crate::metadata::MetadataView<'_> {
+        self.stores.metadata_view()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn metadata_pump(&mut self) -> bool {
+        self.stores.metadata_pump()
+    }
+
+    pub(crate) fn viewstate_run(&mut self, cmd: crate::stores::viewstate::ViewStateCmd) -> bool {
         self.stores.viewstate_run(cmd, self.directory.view())
     }
 
-    pub(crate) fn viewstate_pump(&self) -> crate::stores::EndpointRefreshSet {
+    pub(crate) fn viewstate_pump(&mut self) -> crate::stores::EndpointRefreshSet {
         self.stores.viewstate_pump(self.directory.view())
     }
 
@@ -992,12 +1084,51 @@ impl Bridge {
 
     /// Search commands snapshot their initial favourite-library ranking from the same retained
     /// directory the screen read when it emitted the command.
-    pub(crate) fn search_run(&self, cmd: crate::stores::search::SearchCmd) -> bool {
-        crate::stores::search::run_with_directory(cmd, self.directory.view())
+    pub(crate) fn search_run(&mut self, cmd: crate::stores::search::SearchCmd) -> bool {
+        self.stores.search_run(cmd, self.directory.view())
     }
 
     pub(crate) fn browse_directory(&self) -> crate::stores::browse::DirectoryView<'_> {
         self.directory.view()
+    }
+
+    /// A fresh Hubs publication captured from this owner's store, for a caller that must not read
+    /// the frame's retained `self.hubs` publication (e.g. a same-turn action after a command).
+    pub(crate) fn hubs_snapshot(&self) -> crate::pms::HubsSnapshot {
+        self.stores.hubs.snapshot()
+    }
+
+    /// Synchronous addressed Hubs command against this owner's retained Browse directory. Used by
+    /// callers outside the per-frame dispatch (server activation, boot).
+    pub(crate) fn hubs_run(&mut self, cmd: crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome {
+        let directory = self.directory.view();
+        self.stores.hubs.run_with_directory(cmd, directory)
+    }
+
+    /// One store's generation, for the recorder's per-frame landing scan
+    /// (`recorder::Recplay::end_frame_with`) — every store lives on this owner's `Stores`
+    /// aggregate now, so this is the one door onto all six.
+    pub(crate) fn store_gen(&self, id: crate::stores::StoreId) -> u32 {
+        self.stores.gen(id)
+    }
+
+    pub(crate) fn landgate(&self) -> &crate::ui::landgate::Gate { &self.stores.landgate }
+
+    /// The `MetadataStore`'s own async detail landing — `app/run.rs`'s route-unconditional pump.
+    pub(crate) fn metadata_pump_detail(&mut self) -> bool {
+        self.stores.metadata.pump_detail_with_gate(&self.stores.landgate)
+    }
+
+    /// The `MetadataStore`'s own async season landing — `app/run.rs`'s route-unconditional pump.
+    pub(crate) fn metadata_pump_season(&mut self) -> bool {
+        self.stores.metadata.pump_season_with_gate(&self.stores.landgate)
+    }
+
+    /// The `MetadataStore`'s cross-source alt-sources resolve, scoped by this owner's retained
+    /// Browse directory — `app/run.rs`'s route-unconditional pump.
+    pub(crate) fn metadata_pump_alt_sources(&mut self) -> bool {
+        let directory = self.directory.view();
+        self.stores.metadata.pump_alt_sources_with_directory(directory, &self.stores.landgate)
     }
 
     /// Refresh only the retained directory at synchronous application boundaries that must make
@@ -1013,6 +1144,46 @@ impl Bridge {
     ) {
         self.stores.browse.borrow_mut().seed_registered_table_for_test(sids);
         self.refresh_browse_directory();
+    }
+
+    /// Test hook: seed this owner's Hubs store directly — `stores` is private outside this file's
+    /// own descendant modules, so a fixture built outside `app::bridge` (`app::recorder`'s own
+    /// `mod tests`) reaches its owned `(state, adapter)` pair through here rather than the deleted
+    /// process-wide catalog.
+    #[cfg(test)]
+    pub(crate) fn seed_hubs_for_test(&mut self, items: usize, hub_state: crate::pms::HubState) {
+        self.stores.hubs.seed_for_test(items, hub_state);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_hubs_for_directory_test(
+        &mut self,
+        sid: crate::plex::ServerId,
+        items: usize,
+        hub_state: crate::pms::HubState,
+    ) {
+        let directory = self.directory.view();
+        self.stores.hubs.seed_for_directory_test(sid, items, hub_state, directory);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn queue_hubs_landing_for_test(&self, items: Option<usize>) -> u32 {
+        self.stores.hubs.queue_test_landing(items)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hub_len_for_test(&self, i: usize) -> usize {
+        self.stores.hubs.hub_len_for_test(i)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn hubs_catalog_gen_for_test(&self) -> u32 {
+        self.stores.hubs.state().catalog_gen
+    }
+
+    #[cfg(test)]
+    pub(crate) fn take_hubs_results_for_test(&self) -> AppResults {
+        self.take_hubs_results()
     }
 
     pub(crate) fn bind_primary(&mut self, recorded: u32) -> Result<(), &'static str> {
@@ -1084,11 +1255,9 @@ impl Rig<AppHost> for Bridge {
         let p = crate::ui::Painter::root().alpha(nav.chrome_alpha);
         let chrome = self.chrome.read(self.strip.chip_expand_pos());
         self.strip.draw(chrome.labels, p, glass.tab_band_mut());
-        let glass_wanted = crate::ui::widgets::bar_glass_wanted_with(chrome.labels);
         crate::ui::widgets::profile_chip_with(
             p,
             chrome.profile,
-            glass_wanted,
             chrome.chip_expand,
             glass.tab_face(),
         );
@@ -1118,7 +1287,7 @@ impl Rig<AppHost> for Bridge {
                 hubs: self.hubs.view(),
                 listing: self.listing.view(),
                 directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback,
             },
             measure: &self.measure,
         }
@@ -1149,9 +1318,15 @@ impl Rig<AppHost> for Bridge {
             let publication = self.session.publication();
             let cx = parts.cx::<AppHost>(AppViews { auth: publication.read(),
                 hubs: self.hubs.view(), listing: self.listing.view(), directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback,
             }, &self.measure);
-            return self.session.step(event, &cx, fx);
+            let handled = self.session.step(event, &cx, fx);
+            // #132: the owner logs nothing, and the Profiles screen cannot see a read-out that
+            // existed before it mounted — so the one step that ENTERED it is announced here.
+            if let Some(line) = crate::auth::owner::roster_readout_entered(&publication, &self.session.publication()) {
+                crate::log(&line);
+            }
+            return handled;
         }
         let store = match msg {
             AppMsg::Store(cmd) => cmd.store(),
@@ -1173,7 +1348,9 @@ impl Rig<AppHost> for Bridge {
         if let Some(io) = &mut self.home_io {
             match msg {
                 AppMsg::Store(StoreCmd::Hubs(cmd)) => {
-                    io.hubs_with_directory(Some(cmd.clone()), 0.0, self.directory.view()).endpoints.emit(fx);
+                    let directory = self.directory.view();
+                    io.hubs_with_directory(&mut self.stores.hubs, Some(cmd.clone()), 0.0, directory)
+                        .endpoints.emit(fx);
                     return Handled::Yes;
                 }
                 AppMsg::Store(StoreCmd::Browse(crate::stores::browse::BrowseCmd::Discovery(result))) => {
@@ -1191,7 +1368,9 @@ impl Rig<AppHost> for Bridge {
                     return Handled::Yes;
                 }
                 AppMsg::StoreWork(crate::stores::StoreWork::Hubs) => {
-                    io.hubs_with_directory(None, parts.tick.dt(), self.directory.view()).endpoints.emit(fx);
+                    let directory = self.directory.view();
+                    io.hubs_with_directory(&mut self.stores.hubs, None, parts.tick.dt(), directory)
+                        .endpoints.emit(fx);
                     return Handled::Yes;
                 }
                 AppMsg::StoreWork(crate::stores::StoreWork::BrowseDiscovery) => {
@@ -1201,11 +1380,26 @@ impl Rig<AppHost> for Bridge {
                 _ => {}
             }
         }
+        match msg {
+            AppMsg::Store(StoreCmd::Person(command)) => {
+                self.person_run(command.clone());
+                return Handled::Yes;
+            }
+            AppMsg::Store(StoreCmd::ViewState(command)) => {
+                self.viewstate_run(command.clone());
+                return Handled::Yes;
+            }
+            AppMsg::Store(StoreCmd::Metadata(command)) => {
+                self.stores.metadata_run(command.clone());
+                return Handled::Yes;
+            }
+            _ => {}
+        }
         let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(),
             hubs: self.hubs.view(),
             listing: self.listing.view(),
             directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), session: &self.playback,
+            section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), session: &self.playback,
         }, &self.measure);
         match msg {
             AppMsg::Store(StoreCmd::Browse(c)) => {
@@ -1216,36 +1410,34 @@ impl Rig<AppHost> for Bridge {
                 Handled::Yes
             }
             AppMsg::Store(StoreCmd::Hubs(c)) => {
-                crate::stores::hubs::apply_with_directory(c.clone(), self.directory.view())
+                let directory = self.directory.view();
+                self.stores.hubs.run_with_directory(c.clone(), directory)
                     .endpoints.emit(fx);
-                Handled::Yes
-            }
-            AppMsg::Store(StoreCmd::ViewState(c)) => {
-                self.viewstate_run(c.clone());
                 Handled::Yes
             }
             AppMsg::Store(cmd) => step_store(cmd, &cx, fx),
             AppMsg::HubsResult(result) => {
-                crate::stores::hubs::land_with_directory(result, self.directory.view())
+                let directory = self.directory.view();
+                self.stores.hubs.land_with_directory(result, directory)
                     .endpoints.emit(fx);
                 Handled::Yes
             }
             AppMsg::StoreWork(crate::stores::StoreWork::Hubs) => {
-                crate::stores::hubs::tick_with_directory(parts.tick.dt(), self.directory.view())
+                let directory = self.directory.view();
+                self.stores.hubs.tick_with_directory(parts.tick.dt(), directory)
                     .endpoints.emit(fx);
                 Handled::Yes
             }
             AppMsg::StoreWork(crate::stores::StoreWork::BrowseDiscovery) => {
-                self.stores.browse.borrow_mut().discover_pump().endpoints.emit(fx);
+                self.stores.browse.borrow_mut().discover_pump_with_gate(&self.stores.landgate).endpoints.emit(fx);
                 Handled::Yes
             }
             AppMsg::StoreWork(crate::stores::StoreWork::Browse) => {
-                self.stores.browse.borrow_mut()
-                    .step(&crate::stores::StoreEv::Pump { dt: parts.tick.dt() }, &cx, fx)
+                self.stores.browse.borrow_mut().pump_with_gate(&self.stores.landgate).endpoints.emit(fx);
+                Handled::Yes
             }
             AppMsg::StoreWork(crate::stores::StoreWork::Search { dt_us }) => {
-                crate::stores::search::pump_with_directory(
-                    *dt_us as f32 / 1_000_000.0, self.directory.view());
+                self.stores.search_pump(*dt_us as f32 / 1_000_000.0, self.directory.view());
                 Handled::Yes
             }
             _ => Handled::No,
@@ -1322,6 +1514,7 @@ impl Bridge {
             AppFx::Session(command) => out.push(Fx::Deliver(MachineId::Session,
                 Delivery::Machine(AppMsg::Session(crate::auth::owner::SessionEvent::Command(command))))),
             AppFx::SessionEffect(effect) => self.session_effect(effect, out),
+            AppFx::Preferences(command) => super::preferences::execute(command),
             AppFx::Store(id, cmd) => out.push(Fx::Deliver(MachineId::Store(id.ord()), Delivery::Machine(AppMsg::Store(cmd)))),
             AppFx::StoreWork(work) => out.push(Fx::Deliver(
                 MachineId::Store(work.store().ord()), Delivery::Machine(AppMsg::StoreWork(work)))),
@@ -1344,7 +1537,7 @@ impl Bridge {
         use crate::ui::machine::{Addr, RequestId};
         if let Some(io) = &mut self.home_io {
             if matches!(effect, SessionFx::Capture { .. } | SessionFx::Work { .. }
-                | SessionFx::Coordinator(_) | SessionFx::Erase { .. }) {
+                | SessionFx::Coordinator(_) | SessionFx::Erase { .. } | SessionFx::Incident { .. }) {
                 io.failure = Some("unsupported controlled Home Session operation");
                 return;
             }
@@ -1354,8 +1547,16 @@ impl Bridge {
         match effect {
             SessionFx::Commit { req, epoch, arrival, plan } => {
                 if let Some(permit) = self.session.commit_permit(req, epoch, arrival) {
-                    let reply = self.session_adapter.commit(permit, &plan);
-                    deliver(SessionEvent::Commit(reply));
+                    if let Some(reply) = self.session_adapter.begin_commit(permit, &plan) {
+                        deliver(SessionEvent::Commit(reply));
+                    }
+                    // Fixture/immediate resources can finish here. Live writes land through
+                    // take_live_results after the worker completes; in either case the
+                    // owner fences it before it may stand as saved-login evidence. A verdict that
+                    // the owner has already superseded is dropped by that fence, not here.
+                    if let Some(completion) = self.session_adapter.take_live_completion() {
+                        deliver(SessionEvent::Persistence(completion));
+                    }
                 }
             }
             SessionFx::Pump => deliver(SessionEvent::Pump),
@@ -1368,7 +1569,9 @@ impl Bridge {
             }
             SessionFx::Capture { req, epoch, request } => {
                 if self.session.read_is_current(req, epoch, request) {
-                    deliver(SessionEvent::Read(self.session_adapter.capture(req, epoch, request)));
+                    if let Some(reply) = self.session_adapter.begin_capture(req, epoch, request) {
+                        deliver(SessionEvent::Read(reply));
+                    }
                 }
             }
             SessionFx::Work { req, key, admission, input } => {
@@ -1396,8 +1599,13 @@ impl Bridge {
             // may already have advanced the epoch, but cannot skip deleting old credentials.
             SessionFx::Erase { epoch, all_local, .. } => {
                 self.session_ready = None;
-                let leftovers = self.session_adapter.erase(all_local);
-                deliver(SessionEvent::Erased { epoch, leftovers });
+                if let Some(leftovers) = self.session_adapter.begin_erase(epoch, all_local, &mut self.stores.metadata) {
+                    deliver(SessionEvent::Erased { epoch, leftovers });
+                }
+            }
+            SessionFx::Incident { id, lane, report } => {
+                let delivery = self.session_adapter.report_incident(id, lane, report);
+                deliver(SessionEvent::IncidentReported { id, delivery });
             }
             SessionFx::Coordinator(action) => {
                 if matches!(action, crate::auth::owner::CoordinatorAction::LocalDataErased) {
@@ -1414,6 +1622,9 @@ impl Bridge {
             SessionFx::SelectionReply { to, accepted, flow_epoch } => out.push(Fx::Deliver(
                 MachineId::Instance(InstanceId(to.instance)), Delivery::Screen(ScreenEvent::Async(
                     RequestId(to.correlation), AppMsg::SelectionReply { correlation: to.correlation, accepted, flow_epoch })))),
+            SessionFx::PlaintextAnswer { machine_id, choice, account } => {
+                crate::app::adapters::session::record_plaintext_answer(&account, &machine_id, choice);
+            }
             SessionFx::BackReply { to, resumed } => {
                 self.session_adapter.finish_back(resumed);
                 out.push(Fx::Deliver(MachineId::Instance(InstanceId(to.instance)),
@@ -1424,14 +1635,13 @@ impl Bridge {
     }
 }
 
-fn step_store(cmd: &StoreCmd, cx: &Cx<'_, AppHost>, fx: &mut Effects<'_, AppHost>) -> Handled {
-    use crate::stores::{metadata, person};
+fn step_store(cmd: &StoreCmd, _cx: &Cx<'_, AppHost>, _fx: &mut Effects<'_, AppHost>) -> Handled {
     match cmd {
         StoreCmd::Browse(_) => unreachable!("Browse is stepped by Bridge's owned store"),
         StoreCmd::Hubs(_) => unreachable!("Hubs is stepped by Bridge with its Browse directory"),
-        StoreCmd::Metadata(c) => metadata::MetadataStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
+        StoreCmd::Metadata(_) => unreachable!("Metadata is stepped by Bridge's owned store"),
         StoreCmd::Search(_) => unreachable!("Search is stepped by Bridge with its Browse directory"),
-        StoreCmd::Person(c) => person::PersonStore.step(&StoreEv::Cmd(c.clone()), cx, fx),
+        StoreCmd::Person(_) => unreachable!("Person is stepped by Bridge's owned store"),
         StoreCmd::ViewState(_) => unreachable!("ViewState is stepped by Bridge with its Browse owner"),
     }
 }
@@ -1463,6 +1673,7 @@ pub(crate) fn frame_with_tap(
     inputs: Vec<InputEvent<u32>>,
     tap: &mut dyn crate::ui::dispatch::Tap<AppHost>,
 ) -> (&'static str, FrameReport) {
+    let _frame_scope = crate::task::FrameScope::enter();
     if matches!(d.top_arg(), Some(AppArg::Login | AppArg::Profiles)) && rig.session.needs_ready_commit() {
         execute_session_command(d, crate::auth::SessionCmd::TakeReady);
     }
@@ -1475,29 +1686,74 @@ pub(crate) type AppResults = Vec<(crate::ui::machine::Addr, AppMsg)>;
 /// the legacy pumps' mailboxes, so it goes through `ui::landgate`: under a replay the arrival
 /// waits for the frame the recording delivered it on (§3.3 step 3). Off a replay, one relaxed
 /// atomic load and the same call.
-pub(crate) fn take_hubs_results() -> AppResults {
-    let mut results =
-        crate::ui::landgate::take_all(StoreId::Hubs.ord(), crate::stores::hubs::take_results);
-    results.sort_by_key(|result| result.request_id());
-    results.into_iter().map(|result| (
-        crate::ui::machine::Addr {
-            to: MachineId::Store(StoreId::Hubs.ord()),
-            req: crate::ui::machine::RequestId(result.request_id()),
-        },
-        AppMsg::HubsResult(result),
-    )).collect()
-}
-
 impl Bridge {
+    /// Home's hubs — the one adapter result the dispatcher delivers, and a LANDING SITE exactly
+    /// like the legacy pumps' mailboxes, so it goes through `ui::landgate`: under a replay the
+    /// arrival waits for the frame the recording delivered it on (§3.3 step 3). Off a replay, one
+    /// relaxed atomic load and the same call.
+    fn take_hubs_results(&self) -> AppResults {
+        let mut results =
+            self.stores.landgate.take_all(StoreId::Hubs.ord(), || self.stores.hubs.take_results());
+        results.sort_by_key(|result| result.request_id());
+        results.into_iter().map(|result| (
+            crate::ui::machine::Addr {
+                to: MachineId::Store(StoreId::Hubs.ord()),
+                req: crate::ui::machine::RequestId(result.request_id()),
+            },
+            AppMsg::HubsResult(result),
+        )).collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn settle_session_io_for_test(&mut self, d: &mut Dispatcher<AppHost>) {
+        for _ in 0..32 {
+            if !self.session_adapter.persistence_pending() { return; }
+            crate::storage_worker::drain_for_test();
+            frame_with_tap(d, self, Tick::default(), Vec::new(), &mut NoTap);
+        }
+        panic!("session persistence did not settle");
+    }
+
     fn take_live_results(&mut self) -> AppResults {
         // Landing sequence within auth is authoritative. Do not sort it by request ID:
         // profile Ready and its late roster can be separated by other requests' progress.
         let mut results: AppResults = self.session_adapter.take_results().into_iter()
             .map(|envelope| (envelope.addr, AppMsg::Session(crate::auth::owner::SessionEvent::Result(envelope))))
             .collect();
-        results.extend(take_hubs_results());
+        if let Some(reply) = self.session_adapter.take_capture() {
+            results.push((reply.addr, AppMsg::Session(crate::auth::owner::SessionEvent::Read(reply))));
+        }
+        self.session_adapter.cancel_superseded_commits(|req, epoch, arrival|
+            self.session.commit_is_current(req, epoch, arrival));
+        if let Some(completed) = self.session_adapter.take_committed() {
+            let disk_event = completed.disk_event();
+            let disk_addr = crate::ui::machine::Addr { to: MachineId::Session,
+                req: crate::ui::machine::RequestId(completed.req) };
+            if let Some(permit) = self.session.commit_permit(completed.req, completed.epoch, completed.arrival) {
+                let reply = self.session_adapter.finish_commit(permit, completed);
+                let addr = crate::ui::machine::Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(reply.req) };
+                results.push((addr, AppMsg::Session(crate::auth::owner::SessionEvent::Commit(reply))));
+                if let Some(completion) = self.session_adapter.take_live_completion() {
+                    results.push((addr, AppMsg::Session(crate::auth::owner::SessionEvent::Persistence(completion))));
+                }
+            }
+            // Losing the permit forbids registry/profile publication, not accounting for a
+            // durable write that already happened. Never strand the owner's next disk fence.
+            if let Some(event) = disk_event { results.push((disk_addr, AppMsg::Session(event))); }
+        }
+        if let Some(event) = self.session_adapter.take_erased(&mut self.stores.metadata) {
+            results.push((crate::ui::machine::Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(0) },
+                AppMsg::Session(event)));
+        }
+        // What became of the report whose Report ID the sign-in screen shows: held, delivered or
+        // dropped.
+        if let Some((id, delivery)) = self.session_adapter.take_incident_delivery() {
+            results.push((crate::ui::machine::Addr { to: MachineId::Session, req: crate::ui::machine::RequestId(0) },
+                AppMsg::Session(crate::auth::owner::SessionEvent::IncidentReported { id, delivery })));
+        }
+        results.extend(self.take_hubs_results());
         if self.home_io.is_some() {
-            if let Some(result) = crate::ui::landgate::take(StoreId::Browse.ord(),
+            if let Some(result) = self.stores.landgate.take(StoreId::Browse.ord(),
                 || self.stores.browse.borrow_mut().take_discovery()) {
                 results.push((crate::ui::machine::Addr {
                     to: MachineId::Store(StoreId::Browse.ord()),
@@ -1516,8 +1772,8 @@ impl Bridge {
 /// **The trunk every app frame passes through, so it is where the test-only lock rule is
 /// ENFORCED** — the rule stated in prose below
 /// `route_flips_preserve_content_and_player_origin_entries` and broken from another module
-/// anyway. A frame is not a walk of a nav tree: it drains the aggregate's Browse notice plus the
-/// remaining stores' compatibility notices, and it pumps every store — and `browse`'s pump ends in
+/// anyway. A frame is not a walk of a nav tree: it drains each of the six owners' own notice, and it
+/// pumps every store — and `browse`'s pump ends in
 /// `sync_roster`, which calls `browse::reset()` the moment the section table holds a source the
 /// live registry does not. Every `browse` fixture in the suite leaves it holding exactly that
 /// (`ServerId::UNSET` sources), so an unguarded frame ANYWHERE empties another module's seeded
@@ -1543,6 +1799,7 @@ fn frame_ingest(
     take: impl FnOnce(&mut Bridge) -> AppResults,
     tap: &mut dyn crate::ui::dispatch::Tap<AppHost>,
 ) -> (&'static str, FrameReport) {
+    let _frame_scope = crate::task::FrameScope::enter();
     #[cfg(test)]
     crate::testlock::assert_held("the store pump behind an app::bridge frame");
     // Library used to be the only route that pumped Browse. Onboard schedules the roster-only
@@ -1550,40 +1807,44 @@ fn frame_ingest(
     // a discovery result and the directory publication are observed in one frame. Controlled
     // execution instead recaptures at its addressed result delivery above, preserving recording.
     if rig.home_io.is_none() {
+        crate::storage_worker::pump_retained();
+        rig.land_session_cache();
         let outcome = rig.stores.browse_discover_pump();
         execute_endpoint_outcomes(d, outcome.endpoints);
     }
-    let (browse_changed, search_changed) = rig.capture_views(d);
+    let (browse_changed, hubs_changed, search_changed) = rig.capture_views(d);
     rig.capture_chrome(d);
     rig.deliver_home_commands(d);
     rig.deliver_library_commands(d);
     let mut search_notified = false;
     let mut browse_notified = false;
+    let mut hubs_notified = false;
     for (id, gen) in rig.stores.take_notices() {
         search_notified |= id == StoreId::Search;
         browse_notified |= id == StoreId::Browse;
+        hubs_notified |= id == StoreId::Hubs;
         d.store_changed(id.ord(), gen);
     }
     if browse_changed && !browse_notified {
         d.store_changed(StoreId::Browse.ord(), rig.stores.gen(StoreId::Browse));
     }
+    // Hubs publications include status-only landings that the catalog generation may not see.
+    // Announce that captured change, but do not double-deliver its ordinary queued notice.
+    if hubs_changed && !hubs_notified {
+        d.store_changed(StoreId::Hubs.ord(), rig.stores.gen(StoreId::Hubs));
+    }
     // Search can still change through a producer outside the dispatcher queue. Announce that
     // captured change, but do not double-deliver an ordinary queued Search notice.
     if search_changed && !search_notified {
-        d.store_changed(StoreId::Search.ord(), crate::stores::gen(StoreId::Search));
+        d.store_changed(StoreId::Search.ord(), rig.stores.gen(StoreId::Search));
     }
     let surface = d.surface_up();
-    // A surface's INPUTS are the panel's own damage — the glass cadence's ledger, which asks
-    // "did the panel change" rather than "did the page". The MOTION half is no longer stated
-    // here: this used to wrap the WHOLE dispatcher frame in `popover::own_motion`, so a PAGE's
-    // springs stepped inside it were attributed to the panel and `idle::page_moving` read false
-    // for as long as any surface was up — including a DISMISSED one, where `host_refresh`'s
+    // A surface's MOTION is not attributed here: this used to wrap the WHOLE dispatcher frame in
+    // `popover::own_motion`, so a PAGE's springs stepped inside it were attributed to the panel and
+    // `idle::page_moving` read false for as long as any surface was up — including a DISMISSED one, where `host_refresh`'s
     // `fading_only` term is the only thing that re-takes the snapshot for a page the user is
     // driving again. `ModalStack::tick` and `Dispatcher`'s per-surface step and draw open one
     // scope each (§4.4) now; the page's tick runs in none.
-    if surface && !inputs.is_empty() {
-        crate::ui::popover::note_own_damage();
-    }
     let results = take(rig);
     let session_records: Vec<_> = results.iter().filter_map(|(addr, message)| match message {
         AppMsg::Session(crate::auth::owner::SessionEvent::Result(envelope)) => Some((*addr, envelope.clone())),
@@ -1594,7 +1855,12 @@ fn frame_ingest(
     let report = d.frame_with(rig, tick, inputs, results, tap, false);
     d.prune(&report.unmounted);
     rig.sync_host(d);
-    if report.presented {
+    // On the simulator, a frame the video plane alone presented is not reported as damage: the
+    // loop's gate presents it on its own video-plane term anyway, and the report would keep the
+    // settled-capture clock (`ui::idle::last_change_ms`) from ever seeing a paused player at rest
+    // (`FrameReport::video_only`). The television keeps the unconditional report it always had.
+    let video_only = cfg!(feature = "hostsim") && report.video_only;
+    if report.presented && !video_only {
         // The dispatcher's gate wants a frame: the loop's gate presents it. While a surface is up
         // this bump is the PANEL's — `take_page_damage` subtracts the panel's claims BY COUNT, and
         // a page's own landings reach `ui::idle` from the pumps outside this frame (the poster
@@ -1719,7 +1985,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             hubs: rig.hubs.view(),
             listing: rig.listing.view(),
             directory: rig.directory.view(),
-            section_hubs: rig.section_hubs.view(), search: rig.search.view(), session: &rig.playback,
+            section_hubs: rig.section_hubs.view(), search: rig.search.view(), metadata: rig.stores.metadata_view(), person: rig.stores.person_view(), session: &rig.playback,
         }, &rig.measure);
         let position = home.grid_position::<AppHost>(focus, &cx);
         let (row, col) = position.map(|(r, c)| (r as i64, c as i64)).unwrap_or((-1, -1));
@@ -1741,7 +2007,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
         let cx = parts.cx::<AppHost>(AppViews { auth: rig.session.read(), hubs: rig.hubs.view(), listing: rig.listing.view(),
-            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), session: &rig.playback }, &rig.measure);
+            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), metadata: rig.stores.metadata_view(), person: rig.stores.person_view(), session: &rig.playback }, &rig.measure);
         let menu = d.top_surface_name() == Some("library_menu");
         let pill = if menu { -1 } else { match rig.chrome.focus(focus) {
             crate::ui::widgets::TopFocus::Pill(index) => index as i32, _ => -1,
@@ -1783,7 +2049,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         hubs: rig.hubs.view(),
         listing: rig.listing.view(),
         directory: rig.directory.view(),
-        section_hubs: rig.section_hubs.view(), search: rig.search.view(), session: &rig.playback,
+        section_hubs: rig.section_hubs.view(), search: rig.search.view(), metadata: rig.stores.metadata_view(), person: rig.stores.person_view(), session: &rig.playback,
     }, &rig.measure);
     let mut groups = Vec::new();
     instance.screen.groups(&cx, &mut groups);
@@ -1809,7 +2075,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
                 if i > 0 { out.push(','); }
                 let _ = write!(out, "{col}");
             }
-            let show = crate::metadata::current().is_some_and(|m| m.sid == *sid && m.rk == *rk && m.kind == "show");
+            let show = cx.views.metadata.current().is_some_and(|m| m.sid == *sid && m.rk == *rk && m.kind == "show");
             // `alt=` is now a question about the TREE — the *Also available* picker is a surface,
             // so "is it up" is the container's answer and not a module flag's.
             let alt = surface_up(d, |arg| matches!(arg, AppArg::AltSources(_)));
@@ -1827,7 +2093,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             out.push_str(" ep=");
             let episode = instance.screen.as_any()
                 .and_then(|s| s.downcast_ref::<crate::screens::detail::DetailScreen>())
-                .and_then(|s| s.focused_episode(focus));
+                .and_then(|s| s.focused_episode(focus, <AppHost as crate::screens::registry::MetadataLike>::metadata(&cx)));
             if let Some((rk, mark)) = episode {
                 crate::focusprobe::push_rk(&mut out, &rk);
                 out.push_str(match mark {
@@ -1843,7 +2109,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
             let _ = write!(out, " card={} filmography={}", card as u8, filmography as u8);
             let item = instance.screen.as_any()
                 .and_then(|s| s.downcast_ref::<crate::screens::person::PersonScreen>())
-                .and_then(|s| s.focused_item(focus));
+                .and_then(|s| s.focused_item(focus, &cx));
             if let Some(item) = item {
                 let _ = write!(out, " sid={} rk=", item.sid.raw());
                 crate::focusprobe::push_rk(&mut out, &item.rk);
@@ -1869,6 +2135,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
 /// player route). `survives_failure` is the `…` popover's alone — see `OverlayKind`.
 pub(crate) fn open_player_overlay(
     ps: &crate::route::PlaybackSession,
+    meta: crate::metadata::MetadataView<'_>,
     d: &mut Dispatcher<AppHost>,
     kind: crate::screens::player::overlay::OverlayKind,
 ) {
@@ -1876,7 +2143,7 @@ pub(crate) fn open_player_overlay(
     // pressed while the Subtitles tab is showing — and never a second surface of the same kind.
     if player_overlay_kind(d).is_some_and(|up| up.slot() == kind.slot()) {
         if let Some(surface) = player_overlay_mut(d) {
-            surface.retarget(ps, kind);
+            surface.retarget(ps, meta, kind);
         }
         return;
     }
@@ -1903,20 +2170,37 @@ pub(crate) fn player_overlay_kind(
 /// Is ANY player panel up (including one still fading out)? The successor of
 /// `matches!(route, Route::Player { overlay }) if overlay != Overlay::None`.
 ///
-/// **Test-only since restructure phase 12** (PX-PLAYER), and the reason is the point rather than
-/// a tidy-up: its last production caller was `key_player_failed`'s BACK arm, which asked this in
-/// order to close a panel before leaving a failed playback. A panel is a SURFACE and answers its
-/// own BACK before the page under it is offered the key at all, so the question no longer has a
-/// caller that can act on the answer — but it is still exactly what a test asserting the
-/// container's own bookkeeping wants to ask. `dismiss_player_overlays` below is the ritual half
-/// and is very much alive.
-#[cfg(test)]
+/// **Test-only from restructure phase 12 until issue #163** (PX-PLAYER): its last production
+/// caller through that stretch was `key_player_failed`'s BACK arm, which asked this in order to
+/// close a panel before leaving a failed playback. A panel is a SURFACE and answers its own BACK
+/// before the page under it is offered the key at all, so that caller stopped needing the
+/// answer — but a second one has since arrived, [`player_diagnostics_visible`] below, because a
+/// fading-out panel still paints its own opaque ground and must count exactly the way a fully
+/// open one does. `dismiss_player_overlays` below is the ritual half and has been alive the
+/// whole time.
 pub(crate) fn player_overlay_up(d: &Dispatcher<AppHost>) -> bool {
     d.nav
         .modals
         .surfaces
         .iter()
         .any(|s| matches!(s.entry.arg, AppArg::PlayerOverlay(_)))
+}
+
+/// Should the player's diagnostics ("Stats for nerds") panel draw this frame?
+///
+/// No, while any of the player's own four overlay panels (`OverlayKind::Tracks`/`Info`/
+/// `Chapters`/`More`) is up. `app/diagnostics.rs`'s panel is sized to its content rather than to
+/// the screen, but during playback that content routinely spans ~90% of the screen's width from
+/// the left safe margin — wide enough to reach every one of those panels' bottom-right-anchored
+/// rects — and on the player route it has always painted genuinely last, i.e. on TOP of them.
+/// `More` is the sharpest case: it carries the very "Stats for nerds" toggle this panel answers
+/// to, so drawing over it hid the control that turns the panel off (issue #163). The non-player
+/// routes never had this problem because `app/run.rs`'s other `diagnostics.draw()` call already
+/// sits UNDER that route's own popovers (the account/item menu carries the same toggle there) —
+/// this is the player route catching up to a rule the rest of the app already keeps, now that one
+/// of its own panels carries a control too.
+pub(crate) fn player_diagnostics_visible(d: &Dispatcher<AppHost>) -> bool {
+    !player_overlay_up(d)
 }
 
 /// Dismiss every player panel — the exit ritual's half of `close_player_overlays`.
@@ -2052,6 +2336,11 @@ pub(crate) fn open_item_menu(d: &mut Dispatcher<AppHost>, arg: crate::screens::r
     d.request(MachineId::Nav, NavOp::Present(AppArg::ItemMenu(arg)));
 }
 
+/// Is a Library Sort/Filter/Sources menu up (any phase)?
+pub(crate) fn library_menu_up(d: &Dispatcher<AppHost>) -> bool {
+    surface_up(d, |a| matches!(a, AppArg::LibraryMenu(_)))
+}
+
 /// Is the item menu up (any phase)?
 pub(crate) fn item_menu_up(d: &Dispatcher<AppHost>) -> bool {
     surface_up(d, |a| matches!(a, AppArg::ItemMenu(_)))
@@ -2118,18 +2407,169 @@ pub(crate) fn account_menu(
 // the loop's navigations, as container ops
 // ---------------------------------------------------------------------------------------------
 
-/// **Go to a PEER — Home, the Library or Search** (spec §3.4 `NavOp::Root`).
+/// **Replace the WHOLE stack with `arg`** (spec §3.4 `NavOp::Root`).
+///
+/// Every entry, including the current root, leaves for good and `arg` is minted as the sole
+/// survivor — unless the stack is already exactly `[arg]`, which is a `PopTo(root)` no-op instead
+/// of empty churn. This is the sign-in/sign-out/profile-switch/onboarding-gate reset: there is no
+/// page underneath worth returning to, so none is kept. **It is NOT the shared strip's pill
+/// press** — that is [`nav_select_tab`], which covers-and-mints over the existing root rather than
+/// discarding it, so BACK off a pressed pill still lands somewhere. The two used to be one
+/// `NavOp::Root` arm, and sharing it was the bug: a per-frame `Root(Profiles)` follower asking
+/// this while Login was the un-retired root minted a fresh `Profiles` OVER Login every single
+/// frame forever, each mint orphaning whatever surface (first-run consent) had been presented in
+/// between (TV 2026-09-17).
+pub(crate) fn nav_root(d: &mut Dispatcher<AppHost>, arg: AppArg) {
+    d.request(MachineId::Nav, NavOp::Root(arg));
+}
+
+/// **Is `arg` already the settled `Root`** — the stack exactly `[arg]`, that entry MOUNTED, and
+/// nothing pending? Exactly [`NavStack::root_settled`](crate::ui::containers::stack::NavStack::root_settled),
+/// which is also `is_inert`'s own `Root` rule (§stack.rs) — shared rather than restated so the two
+/// answers to "has this landing settled" can never drift apart.
+///
+/// The per-frame Login/Profiles follower (`follow_auth_landing`, below) asks for its landing
+/// every frame of a phase, and `NavStack::request`'s own dedup already makes an
+/// exactly-redundant `Root` inert — but a caller downstream of THAT request
+/// (`maybe_ask_consent`, presenting a surface over the page this call lands on) needs to know
+/// whether the landing has actually happened yet, which the dedup alone does not expose to it.
+/// **It requires DEPTH ONE**, not merely "on top": `arg` sitting on top of a taller stack is not
+/// the reset landing this exists to detect, and answering `true` for it would let
+/// `nav_root_if_unsettled` skip a replace that was still owed.
+pub(crate) fn top_settled_on(d: &Dispatcher<AppHost>, arg: &AppArg) -> bool {
+    d.nav.tabs.stack.root_settled(arg)
+}
+
+/// **`nav_root`, made edge-triggered** — a no-op while `arg` is already the settled top.
+///
+/// `NavStack::request`'s dedup already drops the redundant request before it touches `pending` or
+/// the transition, so this adds nothing to the STACK's own correctness; what it buys the per-frame
+/// callers in `run.rs`'s Login/Profiles follower is not re-asking at all, which is what lets
+/// [`top_settled_on`] answer "has this landing happened" for them.
+pub(crate) fn nav_root_if_unsettled(d: &mut Dispatcher<AppHost>, arg: AppArg) {
+    if !top_settled_on(d, &arg) {
+        nav_root(d, arg);
+    }
+}
+
+/// **The per-frame Login/Profiles landing follower** — where the stack should stand this frame,
+/// asked every frame while the top is `Login` or `Profiles` so a slow worker's eventual answer
+/// (a credentials handoff, a persistence warning, a phase change) is caught the moment it lands.
+///
+/// This is the ONE production routing decision — `app/run.rs::land_results` calls it from the
+/// live loop, and the two tests that used to keep their own inline copy of this exact `match`
+/// (`session_picker_regression_tests.rs`'s `first_run_consent_over_the_picker_does_not_flip_
+/// mounts_every_frame` and `login_phase_follower_settles_and_does_not_recycle_the_qr_screen`) now
+/// call this function too, so a test can no longer pass by agreeing with its own copy of the bug
+/// instead of with production. (Mutation-tested 2026-09-17: reverting this function to the OLD
+/// shape — a bare `nav_root` every frame, `maybe_ask_consent` with no `top_settled_on` gate — fails
+/// the repro test; separately, making `NavStack::is_inert` always return `false` while routing
+/// `Root` through the OLD combined `Root`/`SelectTab` apply arm fails the container's own dedup
+/// tests. See the commit that added this doc for the exact runs.)
+///
+/// Guarded on the CALLER's route read (`app.route()`/`pages.top_arg()`) rather than inside: the
+/// guard is one `matches!` either way, and keeping it at the call site is what let the two tests
+/// below read `d.top_arg()` themselves before deciding whether to call this at all — asserting
+/// "outside the phase this asks nothing" needs no help from the function it is testing.
+pub(crate) fn follow_auth_landing(pages: &mut Dispatcher<AppHost>, bridge: &mut Bridge) {
+    if let Some(c) = bridge.take_session_ready() {
+        // A sign-out followed by a fresh sign-in can replace the session without restarting the
+        // process. Re-read only at this one credentials handoff so the old account's in-memory
+        // preference cannot leak into the new session.
+        let saved = crate::plex::session::peek();
+        crate::route::restore_quality(
+            crate::dev::playback_quality_override().unwrap_or_else(|| saved.playback_quality()),
+        );
+        crate::route::restore_direct_play_mode(saved.direct_play_mode());
+        crate::player::restore_subtitle_tone(saved.subtitle_tone());
+        let endpoints = super::boot::install_pms_owned(bridge, &c.origin,
+            &c.address, &c.token, c.tier, c.pin.as_ref(), &c.install);
+        execute_endpoint_outcomes(pages, endpoints);
+        // **A new user must never be able to walk BACK into the previous one's pages**, which is
+        // the fourth store an identity change must not survive beside the `browse`/`pms`/`person`
+        // resets `install_pms` performs. It was `trail.reset()`, which emptied the loop's mirror
+        // and left the CONTAINER's entries — bodies, `ReturnState`s and all — exactly where they
+        // were, because `sync_page` only ever moved the top. `reset_for_profile` is the whole tree.
+        pages.reset_for_profile();
+        // …and only NOW can the first-run question be asked: `install_pms` registers the granted
+        // roster, which is the stable input to this decision even before asynchronous section
+        // discovery lands. It is asked per PROFILE, which is why it sits after the switch rather
+        // than after the sign-in. The sign-in's question first, before any per-profile step. On a
+        // Plex Home account it was already asked at the picker below and this is a no-op; on a
+        // single-user account this is the earliest authorized moment there is.
+        super::input::maybe_ask_consent(pages);
+        bridge.refresh_browse_directory();
+        if crate::stores::browse::onboard::asks(bridge.browse_directory()) {
+            crate::log("login: server installed — asking which sources feed Home");
+            // no `enter()`: rooting the stack at the page is what mounts the owned screen
+            // (`boot.rs`), and a ROOT is right because the sweep above has just emptied the tree.
+            nav_root_if_unsettled(pages, AppArg::Onboard);
+        } else {
+            crate::log("login: server installed — entering Home");
+            nav_root_if_unsettled(pages, AppArg::Home);
+        }
+    } else if bridge.auth_read().0.persistence_warning.is_some() {
+        // A fresh save could not be confirmed durable: keep the report reachable before
+        // consent/profile routing, exactly as 0.6.6 did — the warning is answered on the login
+        // screen itself (AUTH-03), not by moving on as if it were acknowledged.
+        nav_root_if_unsettled(pages, AppArg::Login);
+    } else {
+        match bridge.auth_read().0.phase {
+            // A Ready decision can still await its queued disk/registry ACK. Keep the current
+            // flow page until the exact owner handoff is available.
+            crate::auth::Phase::Ready => {}
+            crate::auth::Phase::Profiles | crate::auth::Phase::Switching => {
+                // No `enter()`-on-change guard any more (phase 6): the picker is an owned screen,
+                // so a route that is ALREADY `Profiles` mints nothing (`bridge::frame`'s
+                // `Some(_) => {}` arm) and the existing instance's state — the roster cursor, an
+                // open PIN pad — rides across this assignment untouched, exactly as it did behind
+                // the old guard; a route that is NOT yet `Profiles` gets a fresh `ProfilesScreen`
+                // the moment the tree follows it, which is the whole of what `ui::profiles::
+                // enter()` used to reset by hand.
+                //
+                // **`nav_root_if_unsettled` is a genuine no-op once the picker is the settled
+                // root — not merely "cheap".** The old comment here claimed calling a bare
+                // `Root(Profiles)` every frame was free because `Root`'s own `PopTo(root)` arm
+                // "did nothing" when the root already matched; it still restarted the `PageDip`
+                // transition from wherever its alpha was, every single frame, so the dip never
+                // reached `Idle`. Worse, `Root` and the strip's pill press shared one arm back
+                // then, so once Login (never retired) sat under the mint, this same call retired
+                // and re-minted `Profiles` every frame too. `Root` now truly replaces (§stack.rs)
+                // and `NavStack::request` drops an exactly-redundant request before it touches the
+                // transition at all, so the guard here is what lets the NEXT line ask "has the
+                // picker actually landed" honestly.
+                nav_root_if_unsettled(pages, AppArg::Profiles);
+                // BEFORE the picker: the account is authorized, so the consent question is
+                // answerable, and the person holding the remote at this moment is the one who
+                // signed the television in. It draws over the picker's route on its own opaque
+                // ground — which means it must not be asked until Profiles is the SETTLED top:
+                // presenting it while Login is still fading out underneath would host it on the
+                // entry the `Root` above is about to retire, and the very next commit would
+                // orphan it (TV 2026-09-17's mount/unmount loop).
+                if top_settled_on(pages, &AppArg::Profiles) {
+                    super::input::maybe_ask_consent(pages);
+                }
+            }
+            _ => {
+                nav_root_if_unsettled(pages, AppArg::Login);
+            }
+        }
+    }
+}
+
+/// **Select a shared-strip PILL — Home, the Library or Search** (spec §3.4 `NavOp::SelectTab`).
 ///
 /// The three strip pills are peers of one another and all stand on Home, so arriving at one
-/// unwinds whatever was above the root: `Root` is a `PopTo(root)` when the root is already this
-/// page and a cover-and-mint otherwise. That is exactly what `Trail::reset()` + `Trail::push()`
+/// unwinds whatever was above the root: `SelectTab` is a `PopTo(root)` when the root is already
+/// this page and a cover-and-mint otherwise. That is exactly what `Trail::reset()` + `Trail::push()`
 /// spelled by hand, and what the container did NOT do before D1 — `sync_page` pushed for anything
 /// that was not a boot gate, so `Library → Search` left the container three deep while the trail
 /// said two, and BACK's destination came off the container. The trail's own doc named that
 /// divergence as the bug ("BACK off a result eventually lands on the browse grid for one user and
-/// Home for another"); one authority is what settles it.
-pub(crate) fn nav_root(d: &mut Dispatcher<AppHost>, arg: AppArg) {
-    d.request(MachineId::Nav, NavOp::Root(arg));
+/// Home for another"); one authority is what settles it. See [`nav_root`] for the other half of
+/// the split — the true replace a pill press must never do.
+pub(crate) fn nav_select_tab(d: &mut Dispatcher<AppHost>, arg: AppArg) {
+    d.request(MachineId::Nav, NavOp::SelectTab(arg));
 }
 
 /// **Put `want` on top, reusing an entry that already holds it.**
@@ -2228,13 +2668,13 @@ pub(crate) fn nav_tab(
     nav_peer(d, arg, ret);
 }
 
-/// A peer of Home: root there unless it is already the page on top.
+/// A peer of Home: select that pill unless it is already the page on top.
 fn nav_peer(d: &mut Dispatcher<AppHost>, arg: AppArg, ret: Option<ReturnState<u32, PageMemory>>) {
     use crate::ui::screen::ScreenArg;
     if d.nav.top_page().map(|e| e.arg.same_instance(&arg)).unwrap_or(false) { return; }
     match ret {
-        Some(ret) => d.request_with_return(MachineId::Nav, NavOp::Root(arg), ret),
-        None => nav_root(d, arg),
+        Some(ret) => d.request_with_return(MachineId::Nav, NavOp::SelectTab(arg), ret),
+        None => nav_select_tab(d, arg),
     }
 }
 
@@ -2249,12 +2689,20 @@ pub(crate) fn open_detail(
     sid: crate::plex::ServerId, rk: &str, season: Option<std::os::raw::c_int>,
     ret: Option<ReturnState<u32, PageMemory>>,
 ) {
+    use crate::ui::screen::ScreenArg;
+    let arg = AppArg::Content(ContentArg::Detail { sid, rk: rk.to_string() });
+    // The page is already on its way (a second press inside the push's dip-out): the pending push
+    // is inert against its twin (`NavStack::is_inert`) and its prepared body has spent its seed,
+    // so a seed written now would only linger for some later, unseeded mount of this item. The
+    // player's `enter_player` answers the same question the same way.
+    if d.nav.tabs.stack.pending_dest().is_some_and(|pending| pending.same_instance(&arg)) {
+        return;
+    }
     let spot = crate::metadata::Spot {
         season: season.map(|s| s as i64),
         ..Default::default()
     };
     rig.seed_detail(sid, rk, spot);
-    let arg = AppArg::Content(ContentArg::Detail { sid, rk: rk.to_string() });
     match ret {
         Some(ret) => nav_push_with_return(d, arg, ret),
         None => nav_push(d, arg),
@@ -2275,12 +2723,20 @@ pub(crate) fn nav_pop_with_return(d: &mut Dispatcher<AppHost>, ret: ReturnState<
 /// `PopTo` is a no-op for an entry that is no longer on the stack, and a player whose origin has
 /// gone would then have no way off the screen at all — so an absent origin falls back to Home,
 /// the one page that is always there. That fallback is `return_page`'s `unwrap_or(Node::Home)`
-/// in its new home.
+/// in its new home. The fallback itself is `nav_select_tab`, not `nav_root`: Home is usually
+/// already sitting at the floor of the stack, and `Root` would retire and re-mint it (losing its
+/// focus/scroll memory) where `SelectTab` just `PopTo`s the root that is already there.
 pub(crate) fn nav_pop_to(d: &mut Dispatcher<AppHost>, entry: EntryId) {
     if d.nav.tabs.stack.entries.iter().any(|e| e.id == entry) {
         d.request(MachineId::Nav, NavOp::PopTo(entry));
     } else {
-        nav_root(d, AppArg::Home);
+        // The stale entry is gone (evicted past `CAP`, or its whole branch was torn down), but
+        // the intent behind this fallback has always been "go back to the existing Home root",
+        // not "mint a brand new one" — `NavOp::Root` now truly replaces the whole stack, retiring
+        // even a Home root that is already sitting there, which loses its focus/scroll memory for
+        // no reason: `NavOp::SelectTab` is the pill-press semantic that PopTo's an already-current
+        // root instead, exactly what this fallback wants.
+        nav_select_tab(d, AppArg::Home);
     }
 }
 
@@ -2853,3 +3309,51 @@ mod surface_navigation_tests;
 #[cfg(test)]
 #[path = "viewstate_directory_policy_tests.rs"]
 mod viewstate_directory_policy_tests;
+
+#[cfg(test)]
+#[path = "person_lifecycle_tests.rs"]
+mod person_lifecycle_tests;
+
+#[cfg(test)]
+mod preference_effect_tests {
+    use super::*;
+    use crate::screens::registry::PreferenceCmd;
+    use std::sync::mpsc::{self, TryRecvError};
+
+    #[test]
+    fn controlled_preferences_are_rejected_before_capture_or_persistence() {
+        let _serial = crate::testlock::serial();
+        let mt = unsafe { crate::task::MainThread::assume() };
+        let temp = crate::plex::session::TempSession::new("controlled-preference-effects");
+        let before = std::fs::read(temp.path()).unwrap();
+        let quality = crate::route::quality();
+        let mode = crate::route::direct_play_mode();
+        for replay in [false, true] {
+            let initial = super::super::bootstrap::Initial::synthetic_home(17, 32517, None).unwrap();
+            let mut bridge = Bridge::controlled_home(|| 0, &initial, &mt, replay);
+            let mut emitted = Vec::new(); let mut present = Present::new();
+            let mut out = Effects::new(&mut emitted, MachineId::Instance(InstanceId(1)), &mut present);
+            let (reply, receipt) = mpsc::channel();
+            bridge.app_effect(MachineId::Instance(InstanceId(1)),
+                AppFx::Preferences(PreferenceCmd::Load { reply }), &mut out);
+            assert!(matches!(receipt.try_recv(), Err(TryRecvError::Disconnected)),
+                "controlled account load must drop the reply without capturing a live profile");
+            for save_quality in [false, true] {
+                let (reply, receipt) = mpsc::channel();
+                let command = if save_quality {
+                    PreferenceCmd::Quality { quality: crate::route::Quality::P480, reply }
+                } else {
+                    PreferenceCmd::DirectPlay { mode: crate::route::DirectPlayMode::Forced, reply }
+                };
+                bridge.app_effect(MachineId::Instance(InstanceId(1)), AppFx::Preferences(command), &mut out);
+                assert!(matches!(receipt.try_recv(), Err(TryRecvError::Disconnected)),
+                    "controlled local preference must not enqueue persistence");
+            }
+            assert_eq!(bridge.controlled_failure(), Some("unsupported controlled preferences effect"));
+            assert!(emitted.is_empty());
+        }
+        assert_eq!(crate::route::quality(), quality);
+        assert_eq!(crate::route::direct_play_mode(), mode);
+        assert_eq!(std::fs::read(temp.path()).unwrap(), before);
+    }
+}

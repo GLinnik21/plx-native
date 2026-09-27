@@ -6,8 +6,9 @@
 
 **What:** Add a row to `widgets::hero_scrim_a`'s anchor table for "synopsis-weight (`LABEL` 26px)
 text over a bound video plane at `field=1.35`" and grade it against a real device capture, real
-trailer content — then tune `landing_hero::PROMOTED_FIELD` (the full-trailer-mode scrim residual)
-the same way.
+trailer content. *(The `landing_hero::PROMOTED_FIELD` half of this item is GONE as of 2026-09-17:
+full-trailer mode draws no page chrome at all, so the wedge eases to 0.0 and the constant was
+deleted.)*
 
 **Why:** `docs/trailer-ux-plan.md` §2.3 keeps the detail hero's synopsis visible during background
 trailer autoplay for the first time — previously no prose was ever drawn over playing video, only
@@ -17,8 +18,8 @@ trailer-UX PR (a scope decision, not an oversight) because it needs a TV and rea
 anything — a host test can only check the arithmetic is internally consistent, not that it's
 actually legible.
 
-**Context:** Full detail, the exact anchor-table row to add, and the `PROMOTED_FIELD` tuning
-process are already written out in `docs/trailer-ux-plan.md` §2.3 and §2.4(c). Land this as its own
+**Context:** Full detail and the exact anchor-table row to add are already written out in
+`docs/trailer-ux-plan.md` §2.3. Land this as its own
 device pass immediately after the trailer-UX PR ships, using `tools/capture-screen.sh` on real
 trailer content per §5's "Fast-follow" list.
 
@@ -97,7 +98,7 @@ further — the two compound.
 ### Move natural-trailer-completion detection into `player::preview::Machine`
 
 **What:** Add a one-shot `just_finished`/rk flag to `player::preview::Machine`/`View`, set at the
-`note_eos()` call site (`preview.rs`, `after_pump`'s EOS branch) before `note_stopped()` wipes the
+`Machine::eos` transition (`preview.rs`, `after_pump`'s `Settle::Ended` arm) before `Machine::stopped` wipes the
 session's `key`, consumed and cleared by `DetailScreen` each tick.
 
 **Why:** `docs/trailer-ux-plan.md` §8.2's play-once suppression (shipped) reconstructs "did the
@@ -109,7 +110,7 @@ of `preview_tick`, so a naive check near the top of the function read last-tick'
 EOS-during-full-trailer-mode entirely. The shipped fix patches the heuristic correctly (and adds a
 `preview_started_for` capture to avoid attributing "played" to the wrong item if one swaps
 underneath a live full-trailer session), but the underlying fragility is structural: `Machine`
-already knows unambiguously which rk just finished, at the one place (`note_eos()`) that has that
+already knows unambiguously which rk just finished, at the one place (`Machine::eos`) that has that
 fact before anything else can race it. A `Machine`-owned one-shot flag would make this class of bug
 structurally impossible rather than merely fixed, and would give any FUTURE consumer (not just
 `DetailScreen`) the same unambiguous signal for free.

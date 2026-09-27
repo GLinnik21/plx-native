@@ -28,16 +28,7 @@ pub(super) fn band_region(w: f32) -> f32 {
     u[2] * u[3]
 }
 
-/// A cadence of THREE, which is no longer the shipped default and is the point.
-///
-/// These tests were written against `DEFAULT_DYNAMIC_PERIOD` and broke the day it moved from
-/// three to one — which is the wrong thing for them to be sensitive to. What they exist to
-/// prove is the MECHANISM: every Nth qualifying present, damage pending across the gap, one
-/// capture shared by every owner in a present, and a counter that wraps. None of that is a
-/// property of N, so N is pinned here and the shipped value is asserted separately by
-/// [`the_shipped_cadence_is_every_changed_present`]. A period of one would also make three of
-/// the four assertions below unreachable, since nothing would ever `Wait`.
-pub(super) const P: u32 = 3;
+
 
 // ── The poster's state mark: one vocabulary, one mark at a time ───────────────────────────
 //
@@ -71,14 +62,23 @@ pub(super) struct StatusMetrics;
 
 impl crate::ui::machine::Measure for StatusMetrics {
     fn width(&self, _: &core::ffi::CStr, size: i32, bold: bool) -> f32 {
+        // the status note wraps in the reason rung's regular face; everything else measured is
+        // the action pill
+        if size == STATUS_REASON_SZ && !bold {
+            return 96.0;
+        }
         assert_eq!(size, STATUS_CAP_SZ);
         assert!(bold, "the action uses the Button's bold face");
         96.0
     }
     fn cap_h(&self, _: i32) -> f32 { panic!("status layout uses line boxes") }
     fn line_h(&self, size: i32) -> f32 {
-        if size == STATUS_CAP_SZ { 40.0 }
-        else { assert_eq!(size, STATUS_REASON_SZ); 28.0 }
+        match size {
+            STATUS_FAILED_VERDICT_SZ => 52.0,
+            STATUS_CAP_SZ => 40.0,
+            STATUS_REASON_SZ => 28.0,
+            _ => panic!("no status rung is {size}"),
+        }
     }
 }
 

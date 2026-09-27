@@ -5,6 +5,158 @@ use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
 
+fn install_stored_source(source: &SourceRef, policy: CredentialPolicy) -> ServerId {
+    let origin = source.origin().expect("stored source has a well-formed origin");
+    let id = crate::plex::register_pinned_with_client_id_and_policy(
+        &source.machine_id,
+        &origin,
+        &source.token,
+        source.resolve_pin().as_ref(),
+        "stored-install-test",
+        crate::plex::ConnectionFacts::new(
+            source.tier,
+            crate::plex::IpVersion::of_host(&source.address),
+        ),
+        policy,
+    );
+    crate::plex::describe_server(id, &source.name, &source.shared_by, grant_of(source));
+    id
+}
+
+/// Shipping policy must be exercised through the same registry effects the boot owner emits,
+/// not through the explicit-policy fixture above. One legacy plaintext source remains visible as
+/// recovery metadata, but neither the primary activation nor roster install may make it current.
+#[cfg(not(feature = "devtriggers"))]
+#[test]
+fn shipping_cold_boot_degrades_gracefully_with_only_a_plaintext_stored_source() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let mut stored = source("cold-http", true, "stored-token");
+    stored.origin_url = "http://192.0.2.10:32400".into();
+
+    assert!(execute_session_registry(&owner::RegistryPlan::Primary {
+        server: server_ref(&stored),
+        token: stored.token.clone(),
+    }, "registry-test-client"));
+    assert!(execute_session_registry(&owner::RegistryPlan::Install {
+        sources: vec![stored],
+        primary: Some(0),
+        replace: false,
+    }, "registry-test-client"));
+
+    let ids = crate::plex::server_ids().collect::<Vec<_>>();
+    assert_eq!(ids.len(), 1, "boot retains one recovery record, not duplicate clients");
+    assert!(!crate::plex::current_server().is_set());
+    assert!(crate::plex::client_opt().is_none(), "ordinary callers degrade without panicking");
+    let recovery = crate::plex::client_for(ids[0]).expect("recovery metadata stays addressable");
+    assert!(
+        recovery.image_transcode_path("/thumb", 2, 2, false).ends_with("X-Plex-Token="),
+        "the retained plaintext origin carries no credential"
+    );
+    assert_eq!(crate::plex::server_probe_result(ids[0]), Some(Outcome::InsecureOnly));
+    crate::plex::reset_servers_for_test();
+}
+
+/// Endpoint recovery reuses the retained slot. Re-pointing it to verified HTTPS makes the build
+/// policy admit its credential, restores CURRENT, and lets the ordinary endpoint effect publish
+/// the successful refresh verdict.
+#[cfg(not(feature = "devtriggers"))]
+#[test]
+fn shipping_recovery_repoints_plaintext_metadata_to_https_and_refreshes_normally() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let mut stored = source("recover-http", true, "profile-token");
+    stored.origin_url = "http://192.0.2.10:32400".into();
+    assert!(execute_session_registry(&owner::RegistryPlan::Install {
+        sources: vec![stored.clone()],
+        primary: Some(0),
+        replace: false,
+    }, "registry-test-client"));
+    let id = crate::plex::server_ids().next().expect("recovery slot");
+    let expected = ClientLifecycle::capture(crate::plex::client_for(id).unwrap()).logical(id.raw());
+
+    let mut repaired = stored;
+    repaired.origin_url = "https://192-0-2-10.example.test:32400".into();
+    repaired.tier = Some(probe::Location::Local);
+    assert!(execute_session_registry(&owner::RegistryPlan::Endpoint { expected, source: repaired }, "registry-test-client"));
+
+    assert_eq!(crate::plex::server_ids().collect::<Vec<_>>(), vec![id]);
+    assert_eq!(crate::plex::current_server(), id);
+    let active = crate::plex::client_opt().expect("the HTTPS re-point is credential-eligible");
+    assert!(active.origin().is_tls());
+    assert!(
+        active
+            .image_transcode_path("/thumb", 2, 2, false)
+            .ends_with("X-Plex-Token=profile-token")
+    );
+    assert_eq!(crate::plex::server_probe_result(id), Some(Outcome::Reachable));
+    crate::plex::reset_servers_for_test();
+}
+
+#[test]
+fn stored_credential_policy_https_only_does_not_activate_plaintext_with_its_credential() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let mut previously_live = source("stored-http", true, "previous-token");
+    previously_live.origin_url = "https://stored.example.test:32400".into();
+    install_stored_source(&previously_live, CredentialPolicy::HttpsOnly);
+    assert!(crate::plex::client_opt().is_some());
+
+    let mut stored = source("stored-http", true, "stored-token");
+    stored.origin_url = "http://192.0.2.10:32400".into();
+
+    let id = install_stored_source(&stored, CredentialPolicy::HttpsOnly);
+
+    assert!(crate::plex::client_opt().is_none(), "plaintext must not become the current credentialed client");
+    assert_eq!(crate::plex::server_probe_result(id), Some(Outcome::InsecureOnly));
+    crate::plex::reset_servers_for_test();
+}
+
+#[test]
+fn stored_credential_policy_covers_legacy_address_and_port_that_synthesizes_http() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let legacy = source("legacy-http", true, "legacy-token");
+    assert!(legacy.origin_url.is_empty());
+    assert!(!legacy.origin().expect("legacy fallback").is_tls());
+
+    let id = install_stored_source(&legacy, CredentialPolicy::HttpsOnly);
+
+    assert!(crate::plex::client_opt().is_none(), "the synthesized HTTP origin is governed by the same gate");
+    assert_eq!(crate::plex::server_probe_result(id), Some(Outcome::InsecureOnly));
+    crate::plex::reset_servers_for_test();
+}
+
+#[test]
+fn stored_credential_policy_allow_plaintext_keeps_dev_installation_usable() {
+    let _g = crate::testlock::serial();
+    let stored = source("dev-http", true, "developer-token");
+
+    crate::plex::reset_servers_for_test();
+    install_stored_source(&stored, CredentialPolicy::HttpsOnly);
+    assert!(crate::plex::client_opt().is_none(), "the store policy rejects the same source");
+
+    crate::plex::reset_servers_for_test();
+    let id = install_stored_source(&stored, CredentialPolicy::AllowPlaintext);
+    assert_eq!(crate::plex::current_server(), id);
+    assert!(crate::plex::client_opt().is_some(), "developer builds keep plaintext support");
+    crate::plex::reset_servers_for_test();
+}
+
+#[test]
+fn stored_credential_policy_rejection_retains_insecure_recovery_metadata() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    let stored = source("recover-http", false, "stored-token");
+
+    let id = install_stored_source(&stored, CredentialPolicy::HttpsOnly);
+
+    assert_eq!(crate::plex::server_ids().collect::<Vec<_>>(), vec![id]);
+    assert_eq!(crate::plex::server_facts(id).map(|f| f.name.as_str()), Some("recover-http"));
+    assert_eq!(crate::plex::server_probe_result(id), Some(Outcome::InsecureOnly));
+    crate::plex::reset_servers_for_test();
+}
+
 /// #95 step 8 / A2: the boot primary install (`install_captured_registry`, what
 /// `RegistryPlan::DevInstall` and the boot gate's `install_pms_owned` both call) derives the
 /// IP family from the ADVERTISED ADDRESS, not `origin.host()` — a `plex.direct` origin's host
@@ -45,8 +197,6 @@ fn our_own_server_leads_the_roster_however_plex_tv_ordered_it() {
         vec![1, 0, 2],
         "ours first, then plex.tv's own order"
     );
-    assert_eq!(primary_index(&roster), 1);
-
     // an entry with no credential (or no address) cannot be dialled, so it is not registered —
     // registering it would put a `Client` in the table that 401s everything asked of it
     let mut half = roster.clone();
@@ -60,7 +210,6 @@ fn our_own_server_leads_the_roster_however_plex_tv_ordered_it() {
         source("share-1", false, "t1"),
         source("share-2", false, "t3"),
     ];
-    assert_eq!(primary_index(&shares), 0);
     assert_eq!(registration_order(&shares), vec![0, 1]);
 }
 
@@ -239,7 +388,7 @@ fn endpoint_recovery_cannot_introduce_a_server_outside_the_profile_roster() {
 }
 
 #[test]
-fn profile_activation_promotes_a_surviving_share_when_primary_is_revoked() {
+fn profile_activation_keeps_a_cached_surviving_share_credential_live() {
     let stored = vec![
         source("revoked-primary", true, "old-owner"),
         source("surviving-share", false, "old-share"),
@@ -253,8 +402,10 @@ fn profile_activation_promotes_a_surviving_share_when_primary_is_revoked() {
 
     assert_eq!(next.len(), 1);
     assert_eq!(next[0].machine_id, "surviving-share");
-    assert_eq!(next[0].token, "profile-share");
-    assert_eq!(primary_index(&next), 0);
+    assert_eq!(next[0].token, "profile-share",
+        "the profile's own resource grant remains cached for offline seating");
+    assert!(next[0].dialable(),
+        "authenticated admission selects the primary without disabling secondary grants");
 }
 
 /// **A Plex Home managed user's own household server must not be credited to the admin.**
@@ -470,16 +621,16 @@ fn a_primary_with_a_plaintext_origin_is_followed_to_https_by_reconcile_primary()
 }
 
 #[test]
-fn a_removed_primary_promotes_the_preferred_surviving_grant_but_an_empty_answer_erases_nothing()
+fn a_refresh_selects_the_admitted_surviving_grant_but_an_empty_answer_erases_nothing()
 {
     let mut old = primary("gone", "10.0.0.1", 32400, "old");
     let share = source("share", false, "share-token");
-    assert!(reconcile_refresh_primary(&mut old, &[share.clone()]));
+    assert!(reconcile_refresh_primary(&mut old, &[share.clone()], "share"));
     assert_eq!(old.machine_id, "share");
     assert_eq!(old.token, "share-token");
 
     let before = old.clone();
-    assert!(!reconcile_refresh_primary(&mut old, &[]));
+    assert!(!reconcile_refresh_primary(&mut old, &[], "share"));
     assert_eq!(old.machine_id, before.machine_id);
     assert_eq!(old.address, before.address);
     assert_eq!(old.token, before.token);
@@ -498,7 +649,7 @@ fn a_refresh_moves_the_active_home_users_token_with_same_or_replaced_primary() {
     };
 
     let fresh_ours = source("ours", true, "fresh-own");
-    assert!(reconcile_refresh_session(&mut sess, &[fresh_ours]));
+    assert!(reconcile_refresh_session(&mut sess, &[fresh_ours], "ours"));
     assert_eq!(sess.server.token, "fresh-own");
     assert_eq!(
         sess.pms_token(),
@@ -507,7 +658,7 @@ fn a_refresh_moves_the_active_home_users_token_with_same_or_replaced_primary() {
     );
 
     let survivor = source("share", false, "fresh-share");
-    assert!(reconcile_refresh_session(&mut sess, &[survivor]));
+    assert!(reconcile_refresh_session(&mut sess, &[survivor], "share"));
     assert_eq!(sess.server.machine_id, "share");
     assert_eq!(
         sess.pms_token(),
@@ -530,7 +681,7 @@ fn probe_endpoint_work_reports_nothing_when_plex_tv_is_unreachable() {
         ServerId::from_raw(0),
         "some-machine",
         &sess,
-        |_ac: &AccountClient| -> Option<Vec<Resource>> { None }, // plex.tv unreachable
+        |_ac: &AccountClient, _| -> Result<Vec<Resource>, crate::plex::account::CallEvidence> { Err(Ok(503)) }, // plex.tv unreachable
         |_resource, _household| -> (Option<SourceRef>, SettledProbe) {
             panic!("the probe closure must never run when plex.tv could not be reached")
         },
@@ -559,7 +710,7 @@ fn endpoint_refresh_early_exit_does_not_widen_an_existing_insecure_only_verdict(
         sid,
         "insecure-mach",
         &sess,
-        |_ac: &AccountClient| -> Option<Vec<Resource>> { None }, // plex.tv unreachable
+        |_ac: &AccountClient, _| -> Result<Vec<Resource>, crate::plex::account::CallEvidence> { Err(Ok(503)) }, // plex.tv unreachable
         |_resource, _household| -> (Option<SourceRef>, SettledProbe) {
             panic!("nothing should be dialled once plex.tv itself never answered")
         },
@@ -576,4 +727,356 @@ fn endpoint_refresh_early_exit_does_not_widen_an_existing_insecure_only_verdict(
         Some(Outcome::InsecureOnly),
         "an early exit with nothing dialled must not overwrite a real verdict"
     );
+}
+
+/// **The evidence a credit cannot carry.** Same mixed roster as
+/// [`a_home_admins_server_seen_by_a_managed_profile_credits_nobody`], asking the other half of
+/// the question: after the refresh, can anything downstream still tell the two apart?
+///
+/// It could not. Both grants are `owned:false` and both are credited `""` — the household's own
+/// server because nobody outside the house owns it, a share plex.tv never named for the opposite
+/// reason — so an empty credit means *owned*, *household* and *unnamed outside share* alike, and
+/// `owned` alone reads a managed profile's own household library as a stranger's. Carrying
+/// plex.tv's `home`/`ownerId` beside raw `owned` is what makes the verdict recoverable, and the
+/// serde round trip is here because the record is PERSISTED: evidence that survives the refresh
+/// and not the file is evidence the next boot does not have.
+#[test]
+fn a_managed_profiles_household_server_and_a_friends_share_stay_distinguishable() {
+    const ADMIN_ID: i64 = 111_111;
+    const MANAGED_ID: i64 = 222_222;
+    const FRIEND_ID: i64 = 987_654;
+    let household = [ADMIN_ID, MANAGED_ID];
+
+    let stored = vec![
+        source("aaaa1111", true, "own-tok"),
+        source("bbbb2222", false, "share-tok"),
+    ];
+    let resources = vec![
+        resource(
+            r#"{"name":"Mac mini","clientIdentifier":"aaaa1111","provides":"server",
+                "owned":false,"home":true,"sourceTitle":"admin","ownerId":111111,
+                "accessToken":"kid-own"}"#,
+        ),
+        resource(
+            r#"{"name":"nas-home","clientIdentifier":"bbbb2222","provides":"server",
+                "owned":false,"home":false,"sourceTitle":"friend","ownerId":987654,
+                "accessToken":"kid-share"}"#,
+        ),
+    ];
+
+    let next = refreshed_sources(&stored, &[], &resources, &household);
+
+    // the premise: raw `owned` cannot separate them, and it is left alone
+    assert!(!next[0].owned && !next[1].owned, "plex.tv owns neither, to this profile");
+
+    for (index, expected) in [(0usize, true), (1, false)] {
+        // the round trip the boot path actually takes: the file, and back
+        let json = serde_json::to_string(&next[index]).expect("a source serializes");
+        let back: SourceRef = serde_json::from_str(&json).expect("and comes back");
+        assert_eq!((back.home, back.owner_id), (next[index].home, next[index].owner_id));
+        assert_eq!(
+            crate::plex::is_household(
+                crate::plex::GrantEvidence {
+                    owned: back.owned, home: back.home, owner_id: back.owner_id,
+                }
+                .grant(),
+                &household,
+            ),
+            expected,
+            "source {index} ({}) after the round trip", back.machine_id,
+        );
+    }
+    assert_eq!(next[0].owner_id, ADMIN_ID, "the household server names the admin");
+    assert_eq!(next[1].owner_id, FRIEND_ID, "the share names its own owner");
+    assert!(next[0].home && !next[1].home, "plex.tv's own flag is carried verbatim");
+}
+
+/// A roster refresh whose ONLY change is the household evidence must be judged CHANGED, or it is
+/// graded equal to the stale one and never republished — the correction would land in
+/// `refreshed_sources` and stop there, invisible for the life of the process.
+#[test]
+fn a_roster_that_only_learned_whose_household_it_is_counts_as_changed() {
+    let before = vec![source("aaaa1111", false, "kid-own")];
+    let mut after = before.clone();
+    assert!(same_sources(&before, &after), "the fixture starts identical");
+
+    after[0].owner_id = 111_111;
+    assert!(!same_sources(&before, &after), "a newly named owner is a change");
+
+    let mut home_only = before.clone();
+    home_only[0].home = true;
+    assert!(!same_sources(&before, &home_only), "so is plex.tv's own home flag");
+}
+
+/// Endpoint recovery may use the INSTALL OWNER's account token merely to relearn a connection
+/// list, so it must not copy that response's grant facts over the watching profile's. The
+/// household evidence is a grant fact and is preserved exactly as `owned`/`shared_by` are — a
+/// recovery that adopted the owner's `ownerId` would tell a managed profile its own household
+/// server had changed hands.
+#[test]
+fn endpoint_recovery_keeps_the_watching_profiles_household_evidence() {
+    let mut s = Session {
+        sources: vec![SourceRef {
+            home: true,
+            owner_id: 111_111,
+            ..source("aaaa1111", false, "kid-own")
+        }],
+        ..Default::default()
+    };
+    let fresh = SourceRef {
+        address: "10.0.0.42".into(),
+        port: 32401,
+        home: false,
+        owner_id: 999_999,
+        token: "owner-tok".into(),
+        ..source("aaaa1111", false, "owner-tok")
+    };
+
+    let (next, changed) = apply_refreshed_endpoint(&mut s, "aaaa1111", &fresh)
+        .expect("the machine is in the profile");
+
+    assert!(changed, "the route facts really did move");
+    assert_eq!(next.address, "10.0.0.42");
+    assert_eq!((next.home, next.owner_id), (true, 111_111), "grant facts stay the profile's");
+    assert_eq!(next.token, "kid-own", "…for the same reason the token does");
+}
+
+#[test]
+fn post_sign_out_registration_keeps_captured_login_client_id() {
+    let _g = crate::testlock::serial();
+    let _session = crate::plex::session::TempSession::new("registration-after-sign-out");
+    crate::plex::reset_servers_for_test();
+    crate::plex::session::revoke_cached_session();
+    let captured = crate::plex::session::load_login_client_id();
+    assert!(!captured.is_empty());
+    assert!(crate::plex::session::peek().client_id.is_empty());
+    let mut fresh = source("new-login-server", true, "synthetic-token");
+    fresh.origin_url = "https://server.example.test:32400".into();
+    fresh.tier = Some(probe::Location::Local);
+    assert!(execute_session_registry(&owner::RegistryPlan::Activate {
+        source: fresh.clone(), ipv6: false,
+    }, &captured));
+    let client = crate::plex::client_opt().unwrap();
+    assert_eq!(client.client_id_for_test(), captured,
+        "early activation must use the login capture even while CACHE is revoked");
+    assert!(execute_session_registry(&owner::RegistryPlan::Install {
+        sources: vec![fresh], primary: Some(0), replace: false,
+    }, &captured));
+    assert!(std::ptr::eq(client, crate::plex::client_opt().unwrap()));
+    crate::plex::reset_servers_for_test();
+}
+
+// ---- PLX-NATIVE-10: plaintext grants through the registry ----
+
+fn lan_source(token: &str) -> SourceRef {
+    let mut stored = source("lan-http", true, token);
+    stored.origin_url = "http://192.168.0.10:32400".into();
+    stored
+}
+
+/// **A session file never reactivates a plaintext origin by itself.** A stored source naming the
+/// LAN plaintext address the person once allowed registers tokenless and insecure-only until a
+/// fresh discovery mints a grant — the consent is remembered, the transport is not.
+#[test]
+fn a_stored_plaintext_source_stays_tokenless_without_a_fresh_grant() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    let id = install_stored_source(&lan_source("stored-token"), CredentialPolicy::HttpsOnly);
+    assert!(crate::plex::client_opt().is_none());
+    assert!(crate::plex::client_for(id).unwrap()
+        .image_transcode_path("/thumb", 2, 2, false).ends_with("X-Plex-Token="));
+    assert_eq!(crate::plex::server_probe_result(id), Some(Outcome::InsecureOnly));
+    crate::plex::reset_servers_for_test();
+}
+
+/// **A grant is the server's, not the address's.** Another machine registered at the granted
+/// plaintext origin — a remembered source whose address the granted server now holds, a share
+/// advertising the same private address — gets no token there, so nothing (its server-info
+/// refresh first) sends its credential to the granted server.
+#[test]
+fn another_server_at_a_granted_origin_registers_tokenless() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    crate::plex::grant::mint(crate::plex::grant::scope(), "lan-http", &Origin::http("192.168.0.10", 32400),
+        &crate::plex::grant::eligible_evidence_for_test()).unwrap();
+    let mut other = lan_source("other-token");
+    other.machine_id = "other-http".into();
+    let id = install_stored_source(&other, CredentialPolicy::HttpsOnly);
+    assert!(crate::plex::client_for(id).unwrap()
+        .image_transcode_path("/thumb", 2, 2, false).ends_with("X-Plex-Token="),
+        "another machine was credentialed on the granted origin");
+    assert_eq!(crate::plex::server_probe_result(id), Some(Outcome::InsecureOnly));
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}
+
+/// **A roster commit moves no generation.** A profile switch's (or a roster refresh's) install
+/// keeps what the new roster installs and drops the rest, but the identity is the ACCOUNT's
+/// sign-in: the switch's own late probes of its secondary servers, captured before the commit,
+/// still mint under it, and an offer for a server the commit did not touch stays askable.
+#[test]
+fn a_roster_commit_leaves_in_flight_asks_and_other_offers_live() {
+    use crate::plex::session::PlaintextChoice;
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    let evidence = crate::plex::grant::eligible_evidence_for_test();
+    let other = Origin::http("192.168.0.20", 32400);
+    let ask = crate::plex::grant::PlaintextAsk::undecided().with("other-http", PlaintextChoice::Allowed);
+    crate::plex::grant::offered(crate::plex::grant::scope(), crate::plex::grant::PlaintextVerdict {
+        machine_id: "offered-http".into(), name: "Den".into(), shared_by: String::new(),
+        eligibility: crate::plex::probe::PlaintextEligibility::Eligible, choice: PlaintextChoice::Undecided,
+    });
+    let mut installed = lan_source("kid-token");
+    installed.tier = Some(probe::Location::Local);
+    assert!(execute_session_registry(&owner::RegistryPlan::Install {
+        sources: vec![installed], primary: Some(0), replace: true,
+    }, "registry-test-client"));
+    assert!(crate::plex::grant::offer("offered-http").is_some(), "the commit cleared another server's offer");
+    assert_eq!(ask.settle("other-http", &other, &evidence), Ok(()),
+        "the switch's own late probe could not mint");
+    assert_eq!(crate::plex::grant::granted_origin("other-http"), Some(other));
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}
+
+/// **Revocation takes the credential off every published client at once.** Under a live grant the
+/// slot is credentialed and current; revoking the grant (Settings), a network change or a sign-in
+/// blanks the token in place — every reference already handed out follows — marks the slot
+/// insecure-only and moves `current` off it.
+#[test]
+fn revoking_a_grant_blanks_the_published_client_in_place() {
+    let _g = crate::testlock::serial();
+    let origin = Origin::http("192.168.0.10", 32400);
+    let evidence = crate::plex::grant::eligible_evidence_for_test();
+    for end in ["revoke", "network", "identity"] {
+        crate::plex::reset_servers_for_test();
+        crate::plex::grant::reset_for_test();
+        crate::plex::grant::mint(crate::plex::grant::scope(), "lan-http", &origin, &evidence).unwrap();
+        let id = install_stored_source(&lan_source("granted-token"), CredentialPolicy::HttpsOnly);
+        let held = crate::plex::client_opt().expect("the grant makes the slot current");
+        assert!(held.image_transcode_path("/thumb", 2, 2, false).ends_with("X-Plex-Token=granted-token"));
+        match end {
+            "revoke" => assert!(crate::plex::grant::revoke("lan-http")),
+            "network" => crate::plex::grant::network_changed(),
+            _ => crate::plex::grant::identity_changed(),
+        }
+        assert!(held.image_transcode_path("/thumb", 2, 2, false).ends_with("X-Plex-Token="), "{end}");
+        assert!(crate::plex::client_opt().is_none(), "{end}");
+        assert_eq!(crate::plex::server_probe_result(id), Some(Outcome::InsecureOnly), "{end}");
+    }
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}
+
+/// **A network change owes the servers it stranded a fresh discovery.** The foreground return
+/// withdraws every grant and the re-grade blanks the slot, which empties the upgrade retry's
+/// watch list — so nothing re-ran eligibility and a consented plaintext-only server stayed
+/// tokenless until a manual refresh. The same frame step that drives the upgrade retry must ask
+/// for that server's endpoint at once, so the discovery re-proves the network and mints again
+/// from the persisted consent. A sign-in owes nothing: the new identity discovers everything.
+#[test]
+fn a_network_change_requests_rediscovery_of_the_servers_it_stranded() {
+    let _g = crate::testlock::serial();
+    let origin = Origin::http("192.168.0.10", 32400);
+    let evidence = crate::plex::grant::eligible_evidence_for_test();
+    for end in ["network", "identity"] {
+        crate::plex::reset_servers_for_test();
+        crate::plex::grant::reset_for_test();
+        crate::plex::grant::mint(crate::plex::grant::scope(), "lan-http", &origin, &evidence).unwrap();
+        let id = install_stored_source(&lan_source("granted-token"), CredentialPolicy::HttpsOnly);
+        let mut clock = crate::plex::grant::UpgradeRetry::default();
+        assert_eq!(clock.due(0).iter().count(), 0, "armed on the first step, not due");
+        match end {
+            "network" => crate::plex::grant::network_changed(),
+            _ => crate::plex::grant::identity_changed(),
+        }
+        let due: Vec<_> = clock.due(16).iter().map(|r| r.sid).collect();
+        if end == "network" {
+            assert_eq!(due, vec![id], "the stranded server was not re-discovered");
+            assert_eq!(clock.due(32).iter().count(), 0, "one request per withdrawal");
+        } else {
+            assert!(due.is_empty(), "{end}");
+        }
+    }
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
+}
+
+/// **HTTPS verifying later is the upgrade.** The endpoint commit that re-points a granted server
+/// at a TLS origin retires its grant, so nothing can put the credential back on the plaintext one.
+#[test]
+fn an_https_endpoint_commit_retires_the_plaintext_grant() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    let origin = Origin::http("192.168.0.10", 32400);
+    crate::plex::grant::mint(crate::plex::grant::scope(), "lan-http", &origin,
+        &crate::plex::grant::eligible_evidence_for_test()).unwrap();
+    let stored = lan_source("profile-token");
+    let id = install_stored_source(&stored, CredentialPolicy::HttpsOnly);
+    let expected = ClientLifecycle::capture(crate::plex::client_for(id).unwrap()).logical(id.raw());
+    let mut upgraded = stored;
+    upgraded.origin_url = "https://192-168-0-10.example.test:32400".into();
+    upgraded.tier = Some(probe::Location::Local);
+    assert!(execute_session_registry(&owner::RegistryPlan::Endpoint { expected, source: upgraded },
+        "registry-test-client"));
+
+    assert_eq!(crate::plex::grant::granted_origin("lan-http"), None);
+    assert!(!crate::plex::grant::allowed_under(CredentialPolicy::HttpsOnly, &origin));
+    let active = crate::plex::client_opt().expect("the HTTPS origin is current");
+    assert!(active.origin().is_tls());
+    assert!(active.image_transcode_path("/thumb", 2, 2, false).ends_with("X-Plex-Token=profile-token"));
+    crate::plex::reset_servers_for_test();
+}
+
+/// **An HTTPS roster install is the upgrade too.** A whole-roster commit (discovery, a roster
+/// refresh) that registers a granted server at a TLS origin retires its grant exactly as the
+/// endpoint commit does.
+#[test]
+fn an_https_install_commit_retires_the_plaintext_grant() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    let origin = Origin::http("192.168.0.10", 32400);
+    crate::plex::grant::mint(crate::plex::grant::scope(), "lan-http", &origin,
+        &crate::plex::grant::eligible_evidence_for_test()).unwrap();
+    let mut upgraded = lan_source("profile-token");
+    upgraded.origin_url = "https://192-168-0-10.example.test:32400".into();
+    upgraded.tier = Some(probe::Location::Local);
+    assert!(execute_session_registry(&owner::RegistryPlan::Install {
+        sources: vec![upgraded], primary: Some(0), replace: false,
+    }, "registry-test-client"));
+    assert_eq!(crate::plex::grant::granted_origin("lan-http"), None);
+    assert!(!crate::plex::grant::allowed_under(CredentialPolicy::HttpsOnly, &origin));
+    crate::plex::reset_servers_for_test();
+}
+
+/// **A profile switch's COMMIT keeps only what it installs.** The commit keeps a grant only for the
+/// exact (server, plaintext origin) the new profile's roster installs, re-tokened with the new
+/// profile's credential, and every other grant dies with the old roster.
+#[test]
+fn a_profile_switch_commit_keeps_only_the_grants_it_installs() {
+    let _g = crate::testlock::serial();
+    crate::plex::reset_servers_for_test();
+    crate::plex::grant::reset_for_test();
+    let evidence = crate::plex::grant::eligible_evidence_for_test();
+    let lan = Origin::http("192.168.0.10", 32400);
+    let other = Origin::http("192.168.0.20", 32400);
+    let before = crate::plex::grant::scope();
+    crate::plex::grant::mint(before, "lan-http", &lan, &evidence).unwrap();
+    crate::plex::grant::mint(before, "other-http", &other, &evidence).unwrap();
+    let mut installed = lan_source("kid-token");
+    installed.tier = Some(probe::Location::Local);
+    assert!(execute_session_registry(&owner::RegistryPlan::Install {
+        sources: vec![installed], primary: Some(0), replace: true,
+    }, "registry-test-client"));
+    assert_eq!(crate::plex::grant::granted_origin("lan-http"), Some(lan.clone()));
+    assert_eq!(crate::plex::grant::granted_origin("other-http"), None);
+    let active = crate::plex::client_opt().expect("the kept grant keeps the slot current");
+    assert!(active.image_transcode_path("/thumb", 2, 2, false).ends_with("X-Plex-Token=kid-token"));
+    crate::plex::grant::reset_for_test();
+    crate::plex::reset_servers_for_test();
 }

@@ -7,9 +7,9 @@
 # with the remaining named files (aq.rs, stream.rs, imgcache.rs, http.rs, plex/client.rs,
 # plex/transcoder.rs, ui/present.rs, ui/landgate.rs) driven from a caller thread that itself
 # already went through task::spawn. The ONLY `thread::spawn` call sites outside task.rs left in
-# the tree are inside `#[cfg(test)] mod` blocks — mock TCP/HTTP servers a unit test spins up to
-# stand in for a peer — which this gate does not scan, the same convention the `mutators` gate
-# above already uses for test code. So the allowlist this rule was expected to need is empty: the
-# invariant already holds in production code. Any NEW non-test `thread::spawn` outside task.rs
+# the tree are test code — mock TCP/HTTP servers and concurrency probes. The scanner skips
+# inline `#[cfg(test)] mod` blocks and derives separate test files from their parents cfg(test)
+# declarations, including explicit path attributes. The count remains ZERO production exceptions.
+# Any NEW non-test `thread::spawn` outside task.rs
 # fails this gate; add a reasoned line here only if task::spawn genuinely cannot fit that caller
 # (documented why), never as a first resort.

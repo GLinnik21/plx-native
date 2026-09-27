@@ -8,8 +8,21 @@
 //!
 //! A slot's lifecycle: EMPTY → WANT (claimed by a draw's miss or a prefetch) → LOADING (a worker
 //! fetches + decodes off the lock) → DECODED (pixels waiting on the main thread) → READY (the
-//! pixels were handed to the cache by [`drain_decoded`]; the cache uploads them in PREPARE) or
-//! FAILED. A READY slot recycled by [`victim`] frees its cache entry on the way out.
+//! pixels were handed to the cache by [`drain_decoded`]; the cache uploads them in PREPARE),
+//! EVICTED (the render cache could not keep that key resident, through rejection or pressure), or
+//! FAILED / RETRY (a transient fetch parked under bounded backoff). EVICTED does NOT re-arm on
+//! a prefetch: [`lookup`]'s `P_EVICTED` branch answers a `Touch::Warm` probe with dormancy before
+//! the cooldown gate is even reached, so a background prefetch walking past an evicted key never
+//! revives it. Only a `Touch::Draw` probe re-arms the slot — so a poster or backdrop that lost
+//! residency off-screen does not quietly reappear before something asks to show it again; the pop
+//! that eviction caused stays on screen until the draw that wants the key re-requests it. The
+//! source cannot offer another upload from retained pixels because ownership moved to the render
+//! cache and retaining a second CPU copy of the entire 44 MiB GL pool would defeat the memory
+//! ceiling. A later demand follows the shared disk-first path for all reusable artwork: a usable
+//! disk hit supplies compressed bytes, which still need decoding and uploading. A disk miss
+//! needs a network fetch. Re-arming therefore still has a cost, bounded by the residency
+//! thrash guard, the 250 ms–8 s cooldown backoff and the Draw-only gate above. A READY slot
+//! recycled by [`victim`] frees its cache entry on the way out.
 //!
 //! Rust port of the old src/posters.c; rewritten on std::sync (a `Mutex<Store>` + `Condvar` +
 //! two `task::spawn` workers). The decoded-pixel pointer is stored as an address (usize) so the
@@ -29,6 +42,8 @@
 //! ~140 bytes (an ordinary relative thumb) to ~177 (an absolute headshot — see [`built_key`])
 //! into a fixed [`PT_KEYLEN`]-byte array (see [`Pslot::key`]), and a `u16` compare is also the
 //! cheaper half of the per-frame identity scan, so it goes first.
+mod refresh;
+
 use crate::img;
 use crate::plex::ServerId;
 use crate::ui::machine::PosterKey;
@@ -53,6 +68,27 @@ pub(crate) fn take_upload_stats() -> (u32, u64) {
 }
 
 const PT_CAP: usize = 64;
+/// Decoded pixels waiting for upload, independent of the persistent and GPU cache budgets.
+/// Existing active decodes can exceed this threshold; no further demand work starts until
+/// the upload queue drains. This prevents a fast disk from queuing 64 large backdrops.
+const DECODE_BACKLOG_MAX: usize = 8 * 1024 * 1024;
+static BACKLOG_PEAK: AtomicU64 = AtomicU64::new(0);
+
+fn decoded_slot_bytes(slots: &[Pslot; PT_CAP]) -> usize {
+    slots.iter().filter(|s| s.state == P_DECODED)
+        .map(|s| s.pw.max(0) as usize * s.ph.max(0) as usize * 4).sum()
+}
+
+fn decode_admitted(slots: &[Pslot; PT_CAP], pending_bytes: usize) -> bool {
+    decoded_slot_bytes(slots).saturating_add(pending_bytes) < DECODE_BACKLOG_MAX
+}
+
+fn note_backlog(slots: &[Pslot; PT_CAP]) -> usize {
+    let bytes = decoded_slot_bytes(slots).saturating_add(tex::pending_bytes());
+    BACKLOG_PEAK.fetch_max(bytes as u64, Ordering::Relaxed);
+    bytes
+}
+
 /// Bytes a slot's key array holds, NUL included — see [`Pslot::key`] for the cliff at the end of
 /// it, and [`KEY_MAX`] for the gate that keeps requests off it.
 const PT_KEYLEN: usize = 256;
@@ -87,6 +123,19 @@ const P_DECODED: c_int = 3;
 /// The pixels were handed to the render cache; whether they are UPLOADED yet is the cache's.
 const P_READY: c_int = 5;
 const P_FAILED: c_int = 6;
+/// The render cache could not keep this key resident, through rejection or pressure. No pixels
+/// are retained here and no fetch starts until the key is demanded again; see the module
+/// lifecycle note for why.
+const P_EVICTED: c_int = 8;
+/// A fetch that failed for a reason that can change — the address race's plaintext window, a
+/// refused or timed-out connect, a 5xx — parked until [`Pslot::retry_at`]. Settled for the LRU
+/// like `P_FAILED`, but a DRAW that finds it due puts it back to `P_WANT`. `P_FAILED` is kept for
+/// an HTTP answer that is not transient, or bytes the decoder could not read.
+const P_RETRY: c_int = 7;
+
+/// Speculation may occupy one worker, never both. That leaves capacity for a visible miss that
+/// arrives after the prefetch began; workers cannot interrupt a fetch already off-lock.
+const PREFETCH_OUTSTANDING_MAX: usize = 1;
 
 /// How a store lookup treats the slot it lands on. The difference IS the prefetch's safety story.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -120,9 +169,45 @@ struct Pslot {
     ph: c_int,
     px: usize, // decoded RGBA ptr as address (0 = none) — keeps Pslot Send
     state: c_int,
+    /// A draw has asked for this key. Workers serve visible work before speculative warms.
+    visible: bool,
     use_: c_uint,  // LRU clock
     gen: c_uint,   // bumped on eviction; stale-decode guard
+    cache_gen: u64, // account epoch captured when queued, before any worker can race sign-out
+    token_gen: u32, // the grant that built this request (profile switches need not erase disk)
     frame: c_uint, // last frame poster_get touched it (evict-protect)
+    /// `P_RETRY` only: the app-clock tick (`app::clock::now`, ms) the next attempt may go at.
+    /// `None` = parked by the worker and not yet scheduled — the next DRAW on the main thread
+    /// sets it, because the clock is the loop's and a worker may not read it.
+    retry_at: Option<u32>,
+    /// The due deadline already requested its one present. Without this latch an off-screen retry
+    /// would invalidate every loop iteration forever because no draw visits it to re-queue it.
+    retry_wake_sent: bool,
+    /// Transient failures in a row for THIS key — the backoff's exponent; cleared on a claim.
+    attempts: u8,
+    /// The app-clock tick of this slot's most recent READY→EVICTED transition (residency
+    /// pressure, [`PosterSource::unresident`] — never a fresh claim). `None` until the first
+    /// eviction. Compared against [`EVICT_THRASH_WINDOW_MS`] on the NEXT eviction to tell an
+    /// isolated, ordinary LRU turnover from a continuation of an ongoing thrash episode; see
+    /// [`evict_was_rapid`].
+    evicted_at: Option<u32>,
+    /// Consecutive RAPID re-evictions (see [`evict_was_rapid`]) — the residency thrash guard's
+    /// exponent, mirroring `attempts` above but for byte-pressure churn rather than a transient
+    /// fetch failure. Reset to 0 the instant an eviction is NOT rapid, so an ordinary, occasional
+    /// LRU turnover never accumulates backoff it does not deserve.
+    evict_attempts: u8,
+    /// The app-clock tick before which [`lookup`] refuses to re-arm this EVICTED slot — `None`
+    /// means no cooldown is owed. Set only once `evict_attempts` shows an ongoing thrash episode:
+    /// the FIRST eviction of a key always re-arms on its very next Draw probe, which is the
+    /// recovery [`lookup`]'s P_EVICTED branch exists for and the case
+    /// `a_ready_source_hit_recovers_after_its_texture_is_evicted` pins. See [`evict_backoff`].
+    evict_cooldown_until: Option<u32>,
+    /// Mirrors `retry_wake_sent`, for the same reason: latches that THIS `evict_cooldown_until`
+    /// deadline has already requested its one present, so [`invalidate_due_evictions`] does not
+    /// invalidate every frame for an off-screen slot nothing draws. Reset whenever a fresh
+    /// cooldown is armed ([`PosterSource::unresident`]) or the slot's eviction history is
+    /// otherwise cleared (recovery, recycle) — a new deadline is something to wake for again.
+    evict_wake_sent: bool,
 }
 impl Pslot {
     const ZERO: Pslot = Pslot {
@@ -132,10 +217,159 @@ impl Pslot {
         ph: 0,
         px: 0,
         state: P_EMPTY,
+        visible: false,
         use_: 0,
         gen: 0,
+        cache_gen: 0,
+        token_gen: 0,
         frame: 0,
+        retry_at: None,
+        retry_wake_sent: false,
+        attempts: 0,
+        evicted_at: None,
+        evict_attempts: 0,
+        evict_cooldown_until: None,
+        evict_wake_sent: false,
     };
+}
+
+/// How long a slot waits after its `n`th transient failure: 1 s, 2 s, 4 s, 8 s, 16 s, then 30 s
+/// for good. The first step is short on purpose — the failure this exists for is the boot's
+/// plaintext window, which is over within a second — and the cap keeps a server that is really
+/// down from being asked more than twice a minute per tile.
+fn retry_backoff(attempts: u8) -> Duration {
+    let secs = 1u64 << attempts.saturating_sub(1).min(5);
+    Duration::from_secs(secs.min(30))
+}
+
+/// Is a `P_RETRY` slot's wait over? An unscheduled one is not (it has no wait yet); the tick
+/// comparison wraps, like every `app::clock` comparison.
+fn retry_due(s: &Pslot, now: u32) -> bool {
+    s.state == P_RETRY && s.retry_at.is_some_and(|t| now.wrapping_sub(t) < u32::MAX / 2)
+}
+
+/// **The residency thrash guard (Codex P1 review on PR #182, `lookup`'s P_EVICTED branch).**
+/// A `Touch::Warm` probe never reaches this guard at all — it is turned away before the branch
+/// even looks at the cooldown (see the branch itself) — so what is left for this guard to bound is
+/// narrower than the original review reads: a working set that genuinely cannot fit under
+/// [`tex::TEX_RESIDENT_BYTES_MAX`] still has the render cache evict key A to make room, a DRAW of A
+/// re-arm it, A's eventual upload evict key B, a DRAW of B re-arm IT, and so on with no bound —
+/// continuous fetch/decode/upload every frame instead of settling, driven entirely by on-screen
+/// demand rather than off-screen prefetch.
+///
+/// The guard is two pure decisions, both keyed off wall-clock ticks so they cost nothing under the
+/// store lock and are host-testable without a real elapsed second (mirrors [`retry_due`] and the
+/// residency log's own throttle):
+///
+/// - [`evict_was_rapid`]: was the PREVIOUS eviction of this key recent enough that this new one is
+///   a continuation of an ongoing churn episode, rather than an isolated, ordinary LRU turnover?
+///   Ten seconds comfortably exceeds one fetch+decode+upload round trip (the window this guard has
+///   to see through), so a slot that settles for that long always gets treated as fresh again —
+///   the window is sized against the round trip, not against how a person actually browses, so a
+///   user who leaves a screen and comes back inside ten seconds can still land inside an ongoing
+///   episode and pay whatever cooldown was already running, with no sustained overload involved.
+/// - [`evict_backoff`]: given consecutive rapid re-evictions, how long does the NEXT re-arm wait?
+///   Deliberately its own schedule rather than a reuse of [`retry_backoff`] — that one paces
+///   retries against a server that may be down, capped at 30 s; this one paces retries against a
+///   cache that is merely full, and a screen whose working set has genuinely settled should feel
+///   that within a few seconds, not thirty.
+///
+/// **What the bound actually guarantees.** A key's FIRST eviction always has `evicted_at == None`
+/// beforehand, so [`evict_was_rapid`] answers `false`, `evict_attempts` stays 0, and no cooldown is
+/// set at all — the ordinary one-eviction-then-recovery case this PR exists to fix re-arms on the
+/// very next Draw probe, exactly as before. Only a key that is evicted AGAIN inside the thrash
+/// window — proof that something is still churning it — pays a cooldown, and that cooldown is
+/// bounded ([`evict_backoff`] caps at 8 s): a Draw probe of the key is guaranteed another turn to
+/// ATTEMPT recovery within that bound. That is narrower than it may sound — it is eligibility for
+/// another attempt, not a promise the attempt loads successfully, and not durable residency: under
+/// sustained pressure the texture can be evicted again the instant it lands.
+const EVICT_THRASH_WINDOW_MS: u32 = 10_000;
+
+/// Pure half of the guard: given the tick of a key's previous eviction (`None` before its first),
+/// does a new eviction at `now` land inside the thrash window?
+fn evict_was_rapid(prev: Option<u32>, now: u32) -> bool {
+    prev.is_some_and(|t| now.wrapping_sub(t) < EVICT_THRASH_WINDOW_MS)
+}
+
+/// How long the NEXT re-arm of a key waits after its `n`th consecutive RAPID re-eviction (see
+/// [`evict_was_rapid`]): 250 ms, 500 ms, 1 s, 2 s, 4 s, then 8 s for good. `n == 0` never reaches
+/// this — see the guard's module doc for why a key's first eviction sets no cooldown at all.
+fn evict_backoff(evict_attempts: u8) -> Duration {
+    let millis = 250u64 << evict_attempts.saturating_sub(1).min(5);
+    Duration::from_millis(millis.min(8_000))
+}
+
+/// Has a P_EVICTED slot's cooldown cleared? Wrap-safe like [`retry_due`]; `None` (no cooldown was
+/// ever set) is always due.
+fn evict_cooldown_due(cooldown_until: Option<u32>, now: u32) -> bool {
+    match cooldown_until {
+        None => true,
+        Some(t) => now.wrapping_sub(t) < u32::MAX / 2,
+    }
+}
+
+/// Is an EVICTED slot's cooldown deadline due for its one wake — as opposed to [`evict_cooldown_due`],
+/// which also answers `true` for a slot that never had a cooldown at all? A slot with no deadline has
+/// nothing to expire and needs no proactive wake — its very next Draw probe already re-arms it, same
+/// as today. Only a slot an [`evict_backoff`] deadline is ticking against needs [`invalidate_due_evictions`]
+/// to ask for the frame that lets it recover on a quiet screen; mirrors [`retry_due`]'s wrap-safe shape.
+fn evict_wake_due(s: &Pslot, now: u32) -> bool {
+    s.state == P_EVICTED && s.evict_cooldown_until.is_some_and(|t| now.wrapping_sub(t) < u32::MAX / 2)
+}
+
+/// Wake the present gate once a scheduled retry's main-thread deadline arrives. The loop calls this
+/// even while a settled screen skips draws; the draw it requests is what probes the slot again and
+/// moves it back to `P_WANT`.
+fn invalidate_due_retries(slots: &mut [Pslot; PT_CAP], now: u32) {
+    let mut due = false;
+    for s in slots.iter_mut().filter(|s| !s.retry_wake_sent && retry_due(s, now)) {
+        s.retry_wake_sent = true; // latch the whole batch; one frame probes every visible slot
+        due = true;
+    }
+    if due {
+        crate::ui::idle::invalidate();
+    }
+}
+
+/// The eviction-cooldown twin of [`invalidate_due_retries`], and the fix for the gap the
+/// adjudication on PR #182 flagged: nothing previously asked the screen to draw again when a
+/// cooldown deadline passed, so on a quiet screen a slot recovered only when something ELSE
+/// happened to trigger a frame — later than its own deadline, sometimes much later. Same shape,
+/// same reason for the `evict_wake_sent` latch: without it, an expired cooldown on a slot nothing
+/// draws would invalidate every loop iteration forever, undoing the idle behaviour the app depends
+/// on. The wake only ever asks for one present; it does not itself re-arm anything — re-arming
+/// stays Draw-only, through `lookup`'s P_EVICTED branch, exactly as before.
+fn invalidate_due_evictions(slots: &mut [Pslot; PT_CAP], now: u32) {
+    let mut due = false;
+    for s in slots.iter_mut().filter(|s| !s.evict_wake_sent && evict_wake_due(s, now)) {
+        s.evict_wake_sent = true;
+        due = true;
+    }
+    if due {
+        crate::ui::idle::invalidate();
+    }
+}
+
+/// Park one transient result and request the draw that assigns its main-thread deadline.
+fn park_retry(s: &mut Pslot) {
+    s.attempts = s.attempts.saturating_add(1);
+    s.retry_at = None;
+    s.retry_wake_sent = false;
+    s.state = P_RETRY;
+    crate::ui::idle::invalidate();
+}
+
+/// Does a failed fetch's outcome deserve another try? Transport failure and the statuses whose
+/// conditions can clear (401/403 after a re-point or token refresh, 408, 429 and 5xx) are
+/// transient. Other completed HTTP answers are final: retrying a redirect we deliberately do not
+/// follow, an unsupported method/media type, or a missing item can never change this request.
+/// Bytes that arrived but did not decode are the decoder's verdict and final too.
+fn is_transient(outcome: &crate::plex::ArtFetch) -> bool {
+    match outcome {
+        crate::plex::ArtFetch::Bytes(_) => false,
+        crate::plex::ArtFetch::Status(s) => matches!(s, 401 | 403 | 408 | 429 | 500..=599),
+        crate::plex::ArtFetch::NoResponse => true,
+    }
 }
 
 /// Does this slot hold the art `srv` was asked for under `key`?
@@ -182,7 +416,7 @@ fn set_key(s: &mut Pslot, key: &str) {
     crate::cbuf::set_bytes(&mut s.key, key);
 }
 
-// (server, path, w, h, png) → built transcode path, memoised. resolve_tex re-derives the key for
+// (server, path, w, h, png) → built transcode path, memoised. resolve_tex_wh_on re-derives the key for
 // every visible art tile every frame (~25-40 tiles × 60fps); the QueryBuilder + token clone behind
 // image_transcode_path was ~15k heap allocs/sec of steady-state waste for keys that never change.
 // MAIN-thread only (all poster_key callers are draw paths).
@@ -274,7 +508,10 @@ fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option
         })
     };
     let s = memo.get_or_build(srv.raw(), path, w, h, png, c.token_gen(), || {
-        c.image_transcode_path(path, w as i64, h as i64, png)
+        // Supersampled simulator renders (`surface::render_scale`, 1 on a television) ask the
+        // server for the pixels they will draw; the store key stays the logical box.
+        let n = crate::surface::render_scale() as i64;
+        c.image_transcode_path(path, w as i64 * n, h as i64 * n, png)
     });
     if s.len() > KEY_MAX {
         warn_key_refused(s.len());
@@ -297,6 +534,135 @@ fn warn_key_refused(len: usize) {
             "posters: REFUSED art key of {len} bytes (slot holds {KEY_MAX}) - tile stays a skeleton"
         ));
     }
+}
+
+/// Process-wide counts of the two halves of issue #107's fix: a `P_READY` slot the render cache
+/// could no longer keep resident (`PosterSource::unresident` demoting it to `P_EVICTED`), and a
+/// later demand re-arming that dormant slot back to `P_WANT` (the `P_EVICTED` branch of
+/// [`lookup`]). Both increment on every real transition, never on a call that finds the slot
+/// already past it, so the two numbers are an exact tally, not a sample.
+static RESIDENCY_LOST: AtomicU64 = AtomicU64::new(0);
+static RESIDENCY_REARMED: AtomicU64 = AtomicU64::new(0);
+
+/// The interval throttle's clock, and the `(lost, rearmed)` pair the LAST emitted line actually
+/// reported — the second half is what lets [`log_residency_settled`] tell "nothing changed since
+/// we last said so" from "the totals moved and the throttle window swallowed it".
+struct ResidencyLog {
+    at: Option<std::time::Instant>,
+    lost: u64,
+    rearmed: u64,
+}
+static RESIDENCY_LOG: Mutex<ResidencyLog> = Mutex::new(ResidencyLog { at: None, lost: 0, rearmed: 0 });
+
+/// Pure half of the interval throttle in [`log_residency`] — is a transition-triggered line due,
+/// given the instant of the last one actually written (`None` before the first) and now? Split
+/// out so the throttle's edges (first call always due, the instant it reopens) are host-testable
+/// without a real Mutex or a real elapsed second.
+fn interval_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
+    match last {
+        None => true,
+        Some(t) => now.duration_since(t) >= Duration::from_secs(1),
+    }
+}
+
+/// The only place these two counts reach the event log, for the same reason issue #107 itself was
+/// invisible: the route heartbeat's `evicted_hot=` counts HOT evictions only (a key wanted again in
+/// the same frame), so on-device verification of the fix could report "I did not see a skeleton"
+/// and nothing more — never whether eviction fired at all, or whether a fired eviction was
+/// followed by a working re-arm. Those are two different failures a screenshot cannot tell apart,
+/// and this line is what lets a future field report on #107 tell them apart after the fact.
+///
+/// Throttled for the reason [`warn_key_refused`] gives for its own latch: `unresident` and the
+/// re-arm branch are both per-tile, per-frame paths, and a fast scroll evicts dozens of keys a
+/// second, so a line per transition would bury `/tmp/plxnative-events.log`. Unlike that latch this
+/// does not go silent after one line — a long session should keep producing fresh readings — so it
+/// is a minimum-interval throttle (about one second, monotonic so a skewed wall clock never lies
+/// about it) rather than a one-shot. The first call in a process is let through unthrottled, so a
+/// short session still leaves evidence.
+///
+/// **The throttle bounds the LINE, not the truth**: the two atomics above are incremented on
+/// every real transition regardless of whether a call here emits, so the TOTALS are always exact
+/// — but a lone eviction whose re-arm lands inside the same one-second window used to leave the
+/// re-arm permanently unwritten, because nothing ever asked again. A device session that captured
+/// exactly `lost=1 rearmed=0` because the fix's own recovery path completed in under a second is
+/// indistinguishable, on that reading alone, from a re-arm that never fires at all — which is the
+/// one distinction this instrument exists to make. [`log_residency_settled`] is the other half:
+/// called once a frame, it bypasses this interval outright and emits whenever the totals have
+/// moved since the last line, which is what guarantees the final state always lands even when
+/// every individual transition inside a burst was throttled away.
+fn log_residency() {
+    let lost = RESIDENCY_LOST.load(Ordering::Relaxed);
+    let rearmed = RESIDENCY_REARMED.load(Ordering::Relaxed);
+    let now = std::time::Instant::now();
+    let mut st = RESIDENCY_LOG.lock().unwrap_or_else(|e| e.into_inner());
+    if !interval_due(st.at, now) {
+        return;
+    }
+    st.at = Some(now);
+    st.lost = lost;
+    st.rearmed = rearmed;
+    drop(st);
+    crate::log(&format!("posters: residency lost={lost} rearmed={rearmed}"));
+}
+
+/// The settle half of the instrument (see [`log_residency`]'s doc for the gap it closes): called
+/// once a frame from [`begin_frame`], unconditionally, for every screen — not from
+/// `PosterSource::idle`, which reaches this module only through `screens/home/mod.rs`'s prefetch
+/// gate (`prefetch_armed(..) && source_idle()`) and would therefore never fire for an eviction
+/// burst on Detail or a library grid, nor for a Home frame where prefetch happens to be disarmed.
+/// `begin_frame` already runs first, every frame, on the main thread, regardless of screen — the
+/// same unconditional seam `invalidate_due_retries` uses for its own end-of-frame housekeeping.
+///
+/// Emits only when the store this frame found QUIET (nothing `P_WANT`/`P_LOADING`/`P_DECODED`)
+/// AND the totals moved since the last line actually written: a settle event with nothing new to
+/// say costs nothing, and re-checking every frame is cheap because the caller already pays for
+/// the same slot scan. Bypasses [`interval_due`] outright — a settle event is by definition rare
+/// enough (bounded by bursts, not by transitions) that it does not need the throttle bursts do.
+fn log_residency_settled(store_idle_this_frame: bool) {
+    if !store_idle_this_frame {
+        return;
+    }
+    let lost = RESIDENCY_LOST.load(Ordering::Relaxed);
+    let rearmed = RESIDENCY_REARMED.load(Ordering::Relaxed);
+    let mut st = RESIDENCY_LOG.lock().unwrap_or_else(|e| e.into_inner());
+    if st.lost == lost && st.rearmed == rearmed {
+        return;
+    }
+    st.at = Some(std::time::Instant::now());
+    st.lost = lost;
+    st.rearmed = rearmed;
+    drop(st);
+    crate::log(&format!("posters: residency lost={lost} rearmed={rearmed}"));
+}
+
+/// Test-visible read of the two totals above, so a test grades the counters through the same
+/// atomics [`log_residency`] reads rather than a reimplementation of them.
+#[cfg(test)]
+fn residency_counts_for_test() -> (u64, u64) {
+    (
+        RESIDENCY_LOST.load(Ordering::Relaxed),
+        RESIDENCY_REARMED.load(Ordering::Relaxed),
+    )
+}
+
+/// Test-visible read of the `(lost, rearmed)` pair the last emitted line actually reported, so a
+/// test can grade [`log_residency_settled`]'s "did the log line's content change" decision
+/// directly, the same way [`residency_counts_for_test`] grades the underlying totals.
+#[cfg(test)]
+fn residency_last_emitted_for_test() -> (u64, u64) {
+    let st = RESIDENCY_LOG.lock().unwrap_or_else(|e| e.into_inner());
+    (st.lost, st.rearmed)
+}
+
+/// Force the interval throttle's clock back to "no line written yet", so a test's first call
+/// through [`log_residency`] is deterministically unthrottled regardless of what an earlier test
+/// (serialized the same way, through [`crate::testlock::serial`]) wrote a moment before. Leaves
+/// the process-wide totals alone — those are graded by delta, exactly as [`reset_key_memo`]
+/// leaves `plex::reset_servers_for_test` to the registry it resets.
+#[cfg(test)]
+fn reset_residency_log_for_test() {
+    let mut st = RESIDENCY_LOG.lock().unwrap_or_else(|e| e.into_inner());
+    st.at = None;
 }
 
 /// The clearLogo transcode request box (was two bare literals inside the old `logo_tex`).
@@ -343,8 +709,9 @@ fn logo_probe(srv: ServerId, rk: &str) -> Option<PosterKey> {
 }
 
 /// The slot a miss claims, as a PURE function of what the store looks like: the first EMPTY, else
-/// the least-recently-used SETTLED (`P_READY`/`P_FAILED`) slot the current frame has not touched,
-/// else `None` — "everything is either in flight or on screen; skip this request".
+/// the least-recently-used SETTLED (`P_READY`/`P_EVICTED`/`P_FAILED`/`P_RETRY`) slot the current
+/// frame has not touched, else `None` — "everything is either in flight or on screen; skip this
+/// request".
 ///
 /// Extracted from [`lookup`] because the PREFETCH's entire safety argument is a claim about this
 /// function — that a warmed slot (LRU age 0, no frame stamp) is always a more attractive victim than
@@ -363,7 +730,10 @@ fn victim(slots: &[Pslot; PT_CAP], frame: c_uint) -> Option<usize> {
     let mut pick = None;
     for i in 0..PT_CAP {
         let s = &slots[i];
-        if (s.state == P_READY || s.state == P_FAILED) && s.frame != frame && s.use_ < oldest {
+        if (s.state == P_READY || s.state == P_FAILED || s.state == P_RETRY || s.state == P_EVICTED)
+            && s.frame != frame
+            && s.use_ < oldest
+        {
             oldest = s.use_;
             pick = Some(i);
         }
@@ -377,8 +747,13 @@ fn victim(slots: &[Pslot; PT_CAP], frame: c_uint) -> Option<usize> {
 type Hit = Option<PosterKey>;
 
 /// MAIN thread. The one store lookup behind [`poster_get`], [`poster_get_wh`] and [`poster_warm`]:
-/// hit → the READY texture + its size, miss → claim a slot and enqueue the fetch. `touch` is the ONLY
-/// difference between the paths, and it is entirely about the LRU bookkeeping.
+/// hit → the READY texture + its size; miss → claim a slot and enqueue the fetch, IF the request is
+/// admitted. Three things decide, and `touch` is only the first: `touch` itself (LRU bookkeeping on
+/// every hit, and whether a P_EVICTED slot is eligible to recover at all), the speculation bound
+/// [`warm_admissible`] for a Warm, and the drawn card's placement scope
+/// ([`crate::ui::card_motion::declines_request`]) for a Draw. Unknown or moving card
+/// placement declines new work; featured images outside that scope remain eligible.
+/// A refusal claims no source slot; a follow-up present samples placement again.
 fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     // The array's own precondition, checked before a slot can be claimed for a key that could
     // never match its probe again. `Warm::Known` (not `Full`) so a prefetch loop walks on to the
@@ -386,19 +761,142 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     if !is_fetchable(key_s) {
         return (None, Warm::Known);
     }
+    // A scoped card DRAW may not START work with unknown or fast placement, at
+    // EVERY point work begins — the fresh miss far below, but equally the two re-arm transitions
+    // inside the matching-slot loop. Those matter more than the miss rather than less: a fast
+    // scroll is exactly what evicts textures, so scrolling back across the same rows finds
+    // P_EVICTED slots, and re-arming each one is a full fetch, decode and upload that the gate
+    // would never see if it only guarded the miss. A HIT is deliberately untouched: art that is
+    // already resident still draws and still takes its LRU touch, so declining never blanks a
+    // tile that had its picture.
+    let decline = touch == Touch::Draw && crate::ui::card_motion::declines_request();
     let mut g = store();
+    let cache_gen = crate::imgcache::generation();
+    let token_gen = crate::plex::client_for(srv).map_or(0, |c| c.token_gen());
     // hit?
     for i in 0..PT_CAP {
-        if slot_matches(&g.slots[i], srv, key_s.as_bytes()) {
+        if g.slots[i].cache_gen == cache_gen && g.slots[i].token_gen == token_gen && slot_matches(&g.slots[i], srv, key_s.as_bytes()) {
             if touch == Touch::Draw {
                 g.clock = g.clock.wrapping_add(1);
                 let (c, f) = (g.clock, g.frame);
                 g.slots[i].use_ = c;
                 g.slots[i].frame = f;
+                // Promotion is monotone: a warm never demotes a key a draw is waiting on. If it
+                // is still queued, the next worker rescan will now choose it before speculation.
+                g.slots[i].visible = true;
+                if g.slots[i].state == P_WANT { CV.notify_one(); }
+            }
+            // a parked transient failure is SCHEDULED by the first draw that finds it, and goes
+            // back in the queue by the first draw after its wait — on a DRAW only, so a tile
+            // nobody is looking at does not keep dialling a server that is down
+            if touch == Touch::Draw && g.slots[i].state == P_RETRY {
+                let now = crate::app::clock::now();
+                if g.slots[i].retry_at.is_none() {
+                    let wait = retry_backoff(g.slots[i].attempts).as_millis() as u32;
+                    g.slots[i].retry_at = Some(now.wrapping_add(wait));
+                    g.slots[i].retry_wake_sent = false;
+                } else if retry_due(&g.slots[i], now) {
+                    if decline {
+                        crate::ui::card_motion::deferred();
+                        #[cfg(feature = "devtriggers")]
+                        crate::ui::card_motion_metrics::refused(crate::ui::card_motion_metrics::Refused::Retry);
+                        return (None, Warm::Known);
+                    }
+                    #[cfg(feature = "devtriggers")]
+                    crate::ui::card_motion_metrics::request();
+                    g.slots[i].state = P_WANT;
+                    g.slots[i].retry_at = None;
+                    g.slots[i].retry_wake_sent = false;
+                    drop(g);
+                    CV.notify_one();
+                    return (None, Warm::Known);
+                }
+            }
+            // Render-cache pressure is not source demand: its callback parks the slot in EVICTED,
+            // and mere retention in the source LRU schedules no work. Only a Draw probe may even
+            // consider re-arming an existing EVICTED slot; Warm leaves it dormant unconditionally,
+            // below, before either of the DRAW-only mechanisms that follow ever run. This prevents
+            // speculative resurrection of that slot, but does not prevent cycling when the drawn
+            // working set exceeds the residency budget — that remaining DRAW-vs-DRAW case is what
+            // the cooldown gate right after this one bounds (see `evict_was_rapid`'s doc): a key's
+            // first eviction always re-arms on its very next draw (no cooldown was set for it),
+            // but a key that is being re-evicted rapidly — genuine byte pressure the store cannot
+            // resolve by itself — waits out a bounded backoff instead of re-arming on every single
+            // draw, which is what let two over-budget on-screen keys evict each other forever.
+            if g.slots[i].state == P_EVICTED {
+                if touch == Touch::Warm {
+                    return (None, Warm::Known);
+                }
+                let now = crate::app::clock::now();
+                if !evict_cooldown_due(g.slots[i].evict_cooldown_until, now) {
+                    // Still cooling down from a rapid re-eviction. The demand is real and is not
+                    // lost — the next probe after the cooldown clears re-arms exactly as usual —
+                    // but honoring THIS one would undo the rate limit the cooldown exists to
+                    // enforce. It does not stop the cycle: under sustained pressure the key can be
+                    // evicted and cooled down again the moment it lands, indefinitely — it only
+                    // paces how often that cycle is allowed to turn.
+                    return (None, Warm::Known);
+                }
+                if decline {
+                    crate::ui::card_motion::deferred();
+                    #[cfg(feature = "devtriggers")]
+                    crate::ui::card_motion_metrics::refused(crate::ui::card_motion_metrics::Refused::Evicted);
+                    // The same deferral the cooldown just made, for the same reason: the slot
+                    // stays EVICTED and the first draw at a settled speed re-arms it as usual.
+                    return (None, Warm::Known);
+                }
+                #[cfg(feature = "devtriggers")]
+                {
+                    crate::ui::card_motion_metrics::request();
+                    crate::ui::card_motion_metrics::rearmed();
+                }
+                g.slots[i].state = P_WANT;
+                g.slots[i].evict_wake_sent = false;
+                drop(g);
+                RESIDENCY_REARMED.fetch_add(1, Ordering::Relaxed);
+                log_residency();
+                CV.notify_one();
+                return (None, Warm::Known);
             }
             let hit = (g.slots[i].state == P_READY).then_some(PosterKey(i as u32));
             return (hit, Warm::Known);
         }
+    }
+    // Admit speculation only into a quiet visible queue, and never enough of it to occupy both
+    // workers. `Full` tells the caller this frame's one prefetch attempt is spent without claiming
+    // a slot.
+    if touch == Touch::Warm && !warm_admissible(&g.slots) {
+        return (None, Warm::Full);
+    }
+    // A card MISS with unknown placement or fast on-screen motion claims no slot and starts
+    // no acquisition. That tile draws its placeholder and asks again next frame. Other cards,
+    // featured images, and previously admitted work remain eligible; this gate defers only
+    // the drawn card's new demand until its placement is known and sufficiently still.
+    //
+    // **Why the request is declined outright rather than merely paced.** Every weaker bound was
+    // measured on the dev set against a 1000-movie mock library (`fps:library-scroll`, panel
+    // off, two runs each, dropped frames after warmup):
+    //
+    // |                                                     | drops      | median fps |
+    // |-----------------------------------------------------|------------|------------|
+    // | a9d4e8a2, no gate                                    | 90, 97     | 55         |
+    // | slot + cache caps 64 -> 160                          | 226, 231   | 50         |
+    // | rate-limit the uploads after decode                  | 172, 156   | 53, 55     |
+    // | allow ONE visible request in flight while scrolling  | 204, 196   | 55, 54     |
+    // | **decline the request outright**                     | **21, 23** | **60**     |
+    //
+    // One in flight is the informative row: it paced the pipeline perfectly — `budget=` read
+    // 15-18 admitted and ZERO refused, against the ungated 15-18 admitted and 11-15 refused —
+    // and still cost twice the baseline's dropped frames. Pacing the work does not make it
+    // affordable. The two downstream bounds were worse than doing nothing at all, because by
+    // then the fetch and the decode are already paid for and the refused pixels only accumulate
+    // in `TexCache::pending` at 375 KB each. The request is the last point at which this work
+    // can still be declined for free.
+    if decline {
+        crate::ui::card_motion::deferred();
+        #[cfg(feature = "devtriggers")]
+        crate::ui::card_motion_metrics::refused(crate::ui::card_motion_metrics::Refused::New);
+        return (None, Warm::Full);
     }
     // miss: prefer EMPTY, else LRU-evict a settled slot not used this frame
     let idx = match victim(&g.slots, g.frame) {
@@ -421,13 +919,25 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
         let s = &mut g.slots[idx];
         s.px = 0;
         s.gen = s.gen.wrapping_add(1);
+        s.cache_gen = cache_gen;
+        s.token_gen = token_gen;
         set_key(s, key_s);
         s.srv = srv; // captured HERE, on the main thread — the worker asks no one which server
         s.state = P_WANT;
+        s.visible = touch == Touch::Draw;
         s.use_ = use_;
         s.frame = frame;
         s.pw = 0;
         s.ph = 0;
+        s.retry_at = None;
+        s.retry_wake_sent = false;
+        s.attempts = 0;
+        // A recycled slot is a DIFFERENT key's identity now — the eviction-thrash history above
+        // belongs to whatever image used to live here, not to this one.
+        s.evicted_at = None;
+        s.evict_attempts = 0;
+        s.evict_cooldown_until = None;
+        s.evict_wake_sent = false;
     }
     drop(g);
     // free the evicted resources off-lock (this is the GL/main thread): the cache's texture for
@@ -438,6 +948,8 @@ fn lookup(srv: ServerId, key_s: &str, touch: Touch) -> (Hit, Warm) {
     if old_px != 0 {
         img::img_free(old_px as *mut c_uchar);
     }
+    #[cfg(feature = "devtriggers")]
+    crate::ui::card_motion_metrics::request();
     CV.notify_one();
     (None, Warm::Claimed)
 }
@@ -470,6 +982,43 @@ impl tex::Source for PosterSource {
     fn logo_warm(&self, srv: u16, rk: &str) -> Warm {
         logo_warm(ServerId::from_raw(srv), rk)
     }
+    fn unresident(&self, key: PosterKey) {
+        let mut g = store();
+        let mut lost = false;
+        if let Some(s) = g.slots.get_mut(key.0 as usize) {
+            // A delivered decode or READY entry depends on render-cache residency. The cache
+            // calls this synchronously for both a rejected decoded result and pressure eviction,
+            // before application code can probe or recycle the key. Thus the source never answers
+            // READY for a key the cache could not make resident.
+            if matches!(s.state, P_READY | P_DECODED) {
+                s.state = P_EVICTED;
+                lost = true;
+                // The thrash guard's bookkeeping (see `evict_was_rapid`'s doc): a rapid re-eviction
+                // (this key was evicted before, inside the thrash window) escalates the backoff
+                // `lookup`'s P_EVICTED branch will honor on the next probe; an isolated one leaves
+                // no cooldown at all, so the very next Draw probe re-arms it as before.
+                let now = crate::app::clock::now();
+                s.evict_attempts = if evict_was_rapid(s.evicted_at, now) {
+                    s.evict_attempts.saturating_add(1)
+                } else {
+                    0
+                };
+                s.evicted_at = Some(now);
+                s.evict_cooldown_until = (s.evict_attempts > 0)
+                    .then(|| now.wrapping_add(evict_backoff(s.evict_attempts).as_millis() as u32));
+                // A fresh eviction is a fresh deadline (or none at all) to wake for — whatever an
+                // earlier cooldown's expiry already latched no longer applies.
+                s.evict_wake_sent = false;
+            }
+        }
+        drop(g);
+        if lost {
+            RESIDENCY_LOST.fetch_add(1, Ordering::Relaxed);
+        #[cfg(feature = "devtriggers")]
+        crate::ui::card_motion_metrics::evicted();
+            log_residency();
+        }
+    }
     fn idle(&self) -> bool {
         store_idle()
     }
@@ -483,14 +1032,34 @@ fn idle_of(slots: &[Pslot; PT_CAP]) -> bool {
         .any(|s| matches!(s.state, P_WANT | P_LOADING | P_DECODED))
 }
 
-/// MAIN thread. Is the store QUIET — nothing wanted, fetching, or waiting to upload? The prefetch
-/// gate, and the honest answer to "never compete with a texture the user is waiting on".
-///
-/// It has to be a GATE rather than a priority because [`poster_worker`] claims the first `P_WANT`
-/// slot **by slot index**, and indices come from "first EMPTY, else LRU victim" ([`victim`]) — i.e.
-/// arbitrarily. With two workers a prefetch in a low index is picked ahead of a visible poster in a
-/// high one. The way to stay off the critical path is not to rank requests, it is to only ISSUE one
-/// on a frame where nothing else is outstanding.
+/// The next queued slot a worker claims. Kept pure so queue ordering is host-testable.
+fn next_wanted(slots: &[Pslot; PT_CAP]) -> Option<usize> {
+    #[cfg(test)]
+    if std::env::var_os("PLX_TEST_FIFO_POSTER_QUEUE").is_some() {
+        return (0..PT_CAP).find(|&i| slots[i].state == P_WANT);
+    }
+    (0..PT_CAP)
+        .find(|&i| slots[i].state == P_WANT && slots[i].visible)
+        .or_else(|| (0..PT_CAP).find(|&i| slots[i].state == P_WANT))
+}
+
+#[inline]
+fn outstanding(s: &Pslot) -> bool {
+    matches!(s.state, P_WANT | P_LOADING | P_DECODED)
+}
+
+/// Whether one speculative claim can enter without starving the visible set.
+fn warm_admissible(slots: &[Pslot; PT_CAP]) -> bool {
+    if slots.iter().any(|s| outstanding(s) && s.visible) {
+        return false;
+    }
+    slots.iter().filter(|s| outstanding(s) && !s.visible).count() < PREFETCH_OUTSTANDING_MAX
+}
+
+/// MAIN thread. Is the store QUIET — nothing wanted, fetching, or waiting to upload? Hero warming
+/// uses this conservative whole-pipeline gate. Other speculative warms (an up-next episode
+/// thumbnail, a hero logo) are bounded separately by [`warm_admissible`] and ordered by
+/// [`next_wanted`].
 ///
 /// Cost: one 64-slot scan per frame under the mutex — the draw already does dozens.
 fn store_idle() -> bool {
@@ -503,10 +1072,19 @@ fn store_idle() -> bool {
 // `ui::widgets::resolve_tex_wh`, go through `poster_get_wh`.)
 
 /// MAIN thread, once per frame, first: a new frame — nothing is "touched" yet (evict-protection
-/// is per frame, see [`victim`]).
+/// is per frame, see [`victim`]). Also where the residency instrument's settle snapshot is
+/// checked (see [`log_residency_settled`]'s doc for why THIS seam and not `PosterSource::idle`):
+/// the slot scan below is the same one [`idle_of`] would run, so this is the store's one
+/// once-a-frame, screen-agnostic read of whether it is quiet.
 pub(crate) fn begin_frame() {
+    let now = crate::app::clock::now();
     let mut g = store();
     g.frame = g.frame.wrapping_add(1);
+    invalidate_due_retries(&mut g.slots, now);
+    invalidate_due_evictions(&mut g.slots, now);
+    let settled = idle_of(&g.slots);
+    drop(g);
+    log_residency_settled(settled);
 }
 
 /// MAIN thread, once per frame (§3.3 step 3, the adapter's results): every slot a worker has
@@ -516,7 +1094,7 @@ pub(crate) fn begin_frame() {
 /// microseconds) so the library owns what it uploads.
 pub(crate) fn drain_decoded() {
     loop {
-        let (idx, px, w, h) = {
+        let (idx, px, w, h, current) = {
             let mut g = store();
             let Some(i) = (0..PT_CAP).find(|&i| g.slots[i].state == P_DECODED) else {
                 break;
@@ -524,9 +1102,16 @@ pub(crate) fn drain_decoded() {
             let s = &mut g.slots[i];
             let (px, w, h) = (s.px, s.pw, s.ph);
             s.px = 0;
-            s.state = P_READY;
-            (i, px, w, h)
+            let current = s.cache_gen == crate::imgcache::generation();
+            // Retain the decoded-byte charge until tex::accept publishes its pending bytes.
+            // A brief double charge is safe; a gap would let both workers over-admit decodes.
+            if !current { s.state = P_FAILED; }
+            (i, px, w, h, current)
         };
+        if !current {
+            if px != 0 { img::img_free(px as *mut c_uchar); }
+            continue;
+        }
         let key = PosterKey(idx as u32);
         let result = if px != 0 && w > 0 && h > 0 && w <= u16::MAX as c_int && h <= u16::MAX as c_int {
             let n = (w as usize) * (h as usize) * 4;
@@ -545,6 +1130,9 @@ pub(crate) fn drain_decoded() {
             img::img_free(px as *mut c_uchar);
         }
         tex::accept(PosterReady { key, result });
+        let mut g = store();
+        // Rejection may synchronously notify unresident during accept. Preserve that verdict.
+        if g.slots[idx].state == P_DECODED { g.slots[idx].state = P_READY; }
     }
 }
 
@@ -558,6 +1146,8 @@ impl Uploader for GfxUploader {
     fn upload(&mut self, d: &Decoded) -> Tex {
         let id = img::img_upload_rgba(d.rgba.as_ptr(), d.w as c_int, d.h as c_int);
         UP_CT.fetch_add(1, Ordering::Relaxed);
+        #[cfg(feature = "devtriggers")]
+        crate::ui::card_motion_metrics::upload();
         UP_PX.fetch_add((d.w as u64) * (d.h as u64), Ordering::Relaxed);
         Tex {
             id,
@@ -595,6 +1185,7 @@ pub(crate) fn prepare(
 ) -> usize {
     let n = tex::prepare(b, &mut GfxUploader, present, now_us);
     if n > 0 {
+        CV.notify_all();
         crate::ui::idle::invalidate();
     }
     n
@@ -645,13 +1236,12 @@ impl ArtFail {
 ///
 /// **Why it is logged at all.** `img::img_decode_rgba` reports a decode that failed (`img:
 /// decode-none …`), but that runs only once bytes have ARRIVED; the ways of arriving with NONE are
-/// this module's to speak for. And what it does about them is otherwise invisible: the slot goes
-/// `P_FAILED`, [`lookup`] keeps MATCHING that key and answering `(0, 0, 0)` for it, so the tile is
-/// a skeleton until the LRU walks back to the slot ([`victim`] counts `P_FAILED` as settled). A
-/// transport layer can only ever speak for one request; that the STORE gave up on this art is the
-/// store's to say — and a screen of skeletons with nothing in the event log naming them is the
-/// silence `paths.rs` was fixed for, where a font fell through to DroidSans while `init_text` still
-/// logged `ok=1`.
+/// this module's to speak for. And what it does about them is otherwise invisible: a permanent
+/// answer parks at `P_FAILED`, while a transient one parks at `P_RETRY` until a visible draw's
+/// bounded backoff expires. A transport layer can only speak for one request; the STORE's final-or-
+/// retry decision is this layer's to say — and a screen of skeletons with nothing in the event log
+/// naming them is the silence `paths.rs` was fixed for, where a font fell through to DroidSans
+/// while `init_text` still logged `ok=1`.
 ///
 /// **Why it is latched**, exactly as [`warn_key_refused`] is: this is a per-SLOT path and a grid
 /// claims dozens of them at once, so one line per failure would be dozens per screen, and a log
@@ -685,155 +1275,134 @@ fn warn_fetch_failed(srv: ServerId, cause: ArtFail) {
     // the one that flipped the bit may write the line.
     if word.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
         crate::log(&format!(
-            "posters: art fetch FAILED on server {} - {} (tiles stay skeletons; further ones like this are silent)",
+            "posters: art fetch FAILED on server {} - {} (permanent responses are final; transient failures retry with backoff while the tile is on screen; further ones like this are silent)",
             srv.raw(),
             cause.why()
         ));
     }
 }
 
-/// BACKGROUND worker: claim a P_WANT slot, fetch+decode off-lock, publish P_DECODED.
+/// Cumulative network attempts, including stale refreshes. No URL or credential is logged.
+static FETCHES: AtomicU64 = AtomicU64::new(0);
+
+fn fetch_image(client: &crate::plex::Client, path: &str) -> Option<Vec<u8>> {
+    FETCHES.fetch_add(1, Ordering::Relaxed);
+    client.fetch_built(path)
+}
+
+/// Use the persistent PMS identity, never its registration-order slot. An origin is the
+/// conservative fallback for injected/older sessions that have not learned a machine id yet.
+fn disk_namespace(client: &crate::plex::Client) -> String {
+    if client.machine_id().is_empty() {
+        format!("origin:{}", client.origin().base())
+    } else {
+        format!("machine:{}", client.machine_id())
+    }
+}
+
+/// Diagnostic snapshot only: reading counters must never initialize or scan the disk cache
+/// on the frame thread. The two demand workers are the only callers that open it.
+pub(crate) fn log_cache_stats() {
+    let s = crate::imgcache::stats();
+    let queued = note_backlog(&store().slots);
+    crate::log(&format!(
+        "imgcache: hits={} misses={} writes={} evictions={} entries={} bytes={} fetches={} queued_bytes={} peak_queued_bytes={} gpu_bytes={}",
+        s.hit, s.miss, s.write, s.eviction, s.entries, s.bytes,
+        FETCHES.load(Ordering::Relaxed), queued, BACKLOG_PEAK.load(Ordering::Relaxed), tex::resident_bytes(),
+    ));
+}
+
+/// BACKGROUND worker: claim a request, read disk or fetch and decode off-lock, publish pixels.
+/// RAM/GPU residency stays bounded independently of the number of persistent images.
 fn poster_worker() {
     loop {
-        let (idx, key_s, srv, gen) = {
+        let (idx, key_s, srv, gen, cache_gen, token_gen) = {
             let mut g = store();
             let idx = loop {
-                if g.quit {
-                    return;
+                if g.quit { return; }
+                note_backlog(&g.slots);
+                if decode_admitted(&g.slots, tex::pending_bytes()) {
+                    if let Some(i) = next_wanted(&g.slots) { break i; }
                 }
-                let mut found = None;
-                for i in 0..PT_CAP {
-                    if g.slots[i].state == P_WANT {
-                        found = Some(i);
-                        break;
-                    }
-                }
-                if let Some(i) = found {
-                    break i;
-                }
-                let res = CV.wait_timeout(g, Duration::from_millis(50));
-                g = res
-                    .map(|(guard, _)| guard)
-                    .unwrap_or_else(|e| e.into_inner().0);
+                g = CV.wait_timeout(g, Duration::from_millis(50))
+                    .map(|(guard, _)| guard).unwrap_or_else(|e| e.into_inner().0);
             };
-            let key_s = String::from_utf8_lossy(key_bytes(&g.slots[idx])).into_owned();
-            let (srv, sgen) = (g.slots[idx].srv, g.slots[idx].gen);
-            g.slots[idx].state = P_LOADING;
-            (idx, key_s, srv, sgen)
+            let s = &mut g.slots[idx];
+            s.state = P_LOADING;
+            (idx, String::from_utf8_lossy(key_bytes(s)).into_owned(), s.srv, s.gen, s.cache_gen, s.token_gen)
         };
-
-        // Fetch + decode off the lock — no GL here.
-        //
-        // The address is THIS SLOT's server, resolved from the id the main thread wrote when it
-        // claimed the slot; the worker never asks what the current server is, because with two
-        // registered it is the wrong host for half the tiles on screen. And the fetch goes
-        // through `fetch_built`, not `get_bytes`: `key_s` IS the store key and already ends in
-        // that server's token, so the ordinary path would append a second one. (Going through
-        // the client at all is the point — `crate::stream` used to be called from here, behind
-        // the back of the layer whose module doc claims to be the only code that touches it.)
-        //
-        // The three ways to reach the decode with NOTHING are split apart only to be REPORTED —
-        // `warn_fetch_failed` carries the argument for why this module owes the log a line. Nothing
-        // about the outcome moves: each of them yields the same null pointer the folded `_ =>` arm
-        // did, and the state transition below is untouched.
-        let mut w = 0i32;
-        let mut h = 0i32;
-        // A DURABLE class of art (today: profile avatars, which the server proxies from plex.tv)
-        // also lives in `crate::imgcache`, and the FILE WINS whenever there is one: the key
-        // carries plex.tv's own cache-buster, so a cached file is current for its key by
-        // construction and there is nothing a fetch could refresh. Going to the network first
-        // was the 2026-09-06 picker with no faces: offline, the proxy's request to plex.tv
-        // hangs for the whole transfer budget, both workers sat on avatars, and the tiles
-        // stayed skeletons until long after the pick. On a miss the fetch runs as before, and
-        // the bytes are written only AFTER they decode — a proxy answering 2xx with something
-        // that is not the picture must never overwrite a good file.
-        let disk = crate::imgcache::classify(&key_s);
-        let cache_gen = crate::imgcache::generation();
-        let mut fetched: Option<Vec<u8>> = None;
+        let mut w = 0;
+        let mut h = 0;
         let mut px = std::ptr::null_mut();
-        // A stale cached file is refreshed AFTER the picture is published (below), and only
-        // into the file — never on this worker's critical path, and never as a texture swap.
-        let mut refresh_after: Option<crate::imgcache::DiskKey> = None;
-        if let Some(k) = &disk {
-            if let Some(b) = crate::imgcache::read(k) {
-                px = img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut w, &mut h);
-                if px.is_null() {
-                    // a file that no longer decodes is retired, and the fetch below replaces it
-                    crate::imgcache::remove(k);
-                } else if crate::imgcache::age(k).is_some_and(|a| a > crate::imgcache::REFRESH_AFTER)
-                    && crate::plex::account::plex_tv_recently_reachable()
-                {
-                    refresh_after = Some(k.clone());
-                }
-            }
-        }
-        let px = if !px.is_null() {
-            px
-        } else {
-            match crate::plex::client_for(srv) {
-            Some(c) => match c.fetch_built(&key_s) {
-                // bytes arrived: from here on a failure is the decoder's, and `img.rs` logs it
-                Some(b) if !b.is_empty() => {
-                    let px = img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut w, &mut h);
-                    if !px.is_null() && disk.is_some() {
-                        fetched = Some(b);
-                    }
-                    px
-                }
-                Some(_) => {
-                    warn_fetch_failed(srv, ArtFail::Empty);
-                    std::ptr::null_mut()
-                }
-                None => {
-                    warn_fetch_failed(srv, ArtFail::NoResponse);
-                    std::ptr::null_mut()
-                }
-            },
-            None => {
-                warn_fetch_failed(srv, ArtFail::NoServer);
-                std::ptr::null_mut()
-            }
-            }
-        };
-
-        if let (Some(k), Some(b)) = (&disk, &fetched) {
-            // gated on the generation read before the fetch: a sign-out in between means these
-            // bytes belong to an account that has left, and they are dropped
-            crate::imgcache::write_at(cache_gen, k, b);
-        }
-
-        let mut g = store();
-        let s = &mut g.slots[idx];
-        if s.gen == gen && s.state == P_LOADING {
-            if !px.is_null() {
-                s.px = px as usize;
-                s.pw = w;
-                s.ph = h;
-                s.state = P_DECODED;
+        let mut stale = None;
+        let mut transient = false;
+        // Revoked servers cannot use disk as a route around sign-out. Keep this client snapshot
+        // for both identity and transport; a later registry repoint must not mix the two.
+        if let Some(client) = crate::plex::client_for(srv)
+            .filter(|c| cache_gen == crate::imgcache::generation() && c.token_gen() == token_gen)
+        {
+            let disk = if crate::dev::scenarios::imagecache_bypass_armed() {
+                None
             } else {
-                s.state = P_FAILED;
-            }
-        } else if !px.is_null() {
-            drop(g);
-            img::img_free(px); // recycled while we worked: discard
-        }
-
-        // The cached picture is on its way to the screen; now, and only now, look again at a
-        // file old enough to deserve it, on a link plex.tv has answered on recently. A refresh
-        // must never cost a face: the fetch feeds the FILE (next boot shows it), the texture
-        // already published stands, and a fetch that brings nothing changes nothing. This worker
-        // is busy for the round trip, which is the price of not holding a third thread for it.
-        if let Some(k) = refresh_after {
-            if let Some(b) = crate::plex::client_for(srv).and_then(|c| c.fetch_built(&key_s)) {
-                if !b.is_empty() {
-                    let mut fw = 0i32;
-                    let mut fh = 0i32;
-                    let fresh = img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut fw, &mut fh);
-                    if !fresh.is_null() {
-                        img::img_free(fresh);
-                        crate::imgcache::write_at(cache_gen, &k, &b);
+                crate::imgcache::classify(&disk_namespace(client), &key_s)
+            };
+            if let Some(k) = &disk {
+                if let Some(cached) = crate::imgcache::read_at(cache_gen, k) {
+                    px = img::img_decode_rgba(cached.bytes.as_ptr(), cached.bytes.len() as c_int, &mut w, &mut h);
+                    if px.is_null() {
+                        crate::imgcache::remove_at(cache_gen, k);
+                    } else if cached.stale {
+                        stale = Some((client, k.clone()));
                     }
                 }
+            }
+            if px.is_null() && cache_gen == crate::imgcache::generation() {
+                FETCHES.fetch_add(1, Ordering::Relaxed);
+                match client.fetch_built_outcome(&key_s) {
+                    crate::plex::ArtFetch::Bytes(b) if !b.is_empty() => {
+                        px = img::img_decode_rgba(b.as_ptr(), b.len() as c_int, &mut w, &mut h);
+                        // Only a successfully decoded response may replace an existing image.
+                        if !px.is_null() {
+                            if let Some(k) = &disk { crate::imgcache::write_at(cache_gen, k, &b); }
+                        }
+                    }
+                    crate::plex::ArtFetch::Bytes(_) => {
+                        transient = true;
+                        warn_fetch_failed(srv, ArtFail::Empty);
+                    }
+                    outcome => {
+                        transient = is_transient(&outcome);
+                        warn_fetch_failed(srv, ArtFail::NoResponse);
+                    }
+                }
+            }
+        } else {
+            transient = cache_gen == crate::imgcache::generation();
+            warn_fetch_failed(srv, ArtFail::NoServer);
+        }
+        // End this scope BEFORE any further disk/network work. The former avatar refresh held
+        // Store throughout its network timeout and froze every main-thread artwork lookup.
+        let accepted = {
+            let mut g = store();
+            let s = &mut g.slots[idx];
+            if s.gen == gen && s.state == P_LOADING {
+                if cache_gen == crate::imgcache::generation() && !px.is_null() {
+                    s.px = px as usize;
+                    s.pw = w;
+                    s.ph = h;
+                    s.state = P_DECODED;
+                    true
+                } else {
+                    if transient && cache_gen == crate::imgcache::generation() { park_retry(s); }
+                    else { s.state = P_FAILED; }
+                    false
+                }
+            } else { false }
+        };
+        if !accepted && !px.is_null() { img::img_free(px); }
+        if accepted {
+            if let Some((client, key)) = stale {
+                refresh::enqueue(client, key_s, key, cache_gen, token_gen);
             }
         }
     }
@@ -856,6 +1425,7 @@ pub(crate) fn init() {
         .filter_map(|_| crate::task::spawn("poster", poster_worker))
         .collect();
     store().workers = handles;
+    refresh::init();
 }
 
 pub(crate) fn shutdown() {
@@ -864,6 +1434,7 @@ pub(crate) fn shutdown() {
         g.quit = true;
     }
     CV.notify_all();
+    refresh::shutdown();
     let handles = std::mem::take(&mut store().workers);
     for h in handles {
         // these park in `stream::http_get`, whose socket nothing outside the call can reach —
@@ -901,6 +1472,22 @@ mod tests {
     //! server in the registry, which is a crate global. They still touch no socket and no GL —
     //! `poster_key` only formats a string.
     use super::*;
+
+    #[test]
+    fn demand_waits_for_decoded_bytes_in_both_queues_to_drain() {
+        let mut slots = [Pslot::ZERO; PT_CAP];
+        assert!(decode_admitted(&slots, 0));
+        slots[0].state = P_DECODED;
+        slots[0].pw = 1024;
+        slots[0].ph = 1024;
+        assert!(decode_admitted(&slots, 0));
+        assert!(!decode_admitted(&slots, 4 * 1024 * 1024));
+        slots[1] = slots[0];
+        assert!(!decode_admitted(&slots, 0));
+        slots[0].state = P_READY;
+        assert!(decode_admitted(&slots, 0));
+        assert!(!decode_admitted(&slots, DECODE_BACKLOG_MAX));
+    }
 
     /// A synthetic headshot URL of the SHAPE the server really returns for a `/hubs/search`
     /// `actor` row: absolute, on Plex's metadata CDN, with a 32-hex digest. A made-up digest
@@ -1126,6 +1713,953 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_repoint_with_the_same_url_and_token_retires_the_old_request_generation() {
+        let (_fresh, sid, tok) = one_server();
+        crate::ui::card_motion::begin_frame(crate::app::clock::now());
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        let old_generation = crate::plex::client_for(sid).unwrap().token_gen();
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            g.frame = 1;
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = old_generation;
+            set_key(slot, &path);
+            slot.state = P_EVICTED;
+        }
+        let repointed = crate::plex::register_for_test("poster-test", "127.0.0.2", 32400, tok, "cid-poster-test");
+        assert_eq!(repointed, sid);
+        let current_generation = crate::plex::client_for(sid).unwrap().token_gen();
+        assert_ne!(current_generation, old_generation);
+        assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Claimed);
+        assert!(store().slots.iter().any(|s| s.state == P_WANT
+            && s.srv == sid && s.token_gen == current_generation));
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// A rejected decode used to leave the source in READY while the cache remembered the key as
+    /// failed. No later probe could re-arm either half, so the tile drew its skeleton forever.
+    #[test]
+    fn a_rejected_decode_cannot_leave_the_real_source_claiming_ready() {
+        let (_fresh, sid, _) = one_server();
+        tex::install(&SOURCE);
+        tex::reset_for_test(16);
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            set_key(slot, &path);
+            slot.state = P_DECODED;
+            slot.px = 0;
+            slot.pw = 0;
+            slot.ph = 0;
+        }
+
+        drain_decoded();
+
+        assert_eq!(
+            store().slots[0].state,
+            P_EVICTED,
+            "a cache rejection must synchronously revoke the source's READY claim"
+        );
+    }
+
+    /// The whole product loop, using the installed [`PosterSource`], the thread-local product
+    /// cache and the global poster store: resident → byte-pressure release → dormant EVICTED → a
+    /// real DRAW probe → WANT + condition-variable wake → worker publication → resident again. A
+    /// warm probe would leave the slot dormant (see
+    /// [`a_warm_probe_of_an_evicted_slot_leaves_it_dormant`]) — this exercises the recovery path
+    /// that still works, a real draw.
+    #[test]
+    fn a_ready_source_hit_recovers_after_its_texture_is_evicted() {
+        struct StubUp {
+            next: u32,
+        }
+        impl Uploader for StubUp {
+            fn upload(&mut self, d: &Decoded) -> Tex {
+                self.next += 1;
+                Tex {
+                    id: self.next,
+                    w: d.w,
+                    h: d.h,
+                }
+            }
+            fn warm(&mut self, _: Tex) {}
+            fn free(&mut self, _: Tex) {}
+        }
+
+        const BYTES: usize = 16;
+        const SRC: &str = "/library/metadata/42/thumb";
+        let (_fresh, srv, _) = one_server();
+        tex::install(&SOURCE);
+        tex::reset_for_test(BYTES);
+        let path = key_for(srv, SRC, 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            g.quit = false;
+            let slot = &mut g.slots[0];
+            slot.state = P_READY;
+            slot.srv = srv;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(srv).unwrap().token_gen();
+            set_key(slot, &path);
+        }
+
+        let decoded = |key| PosterReady {
+            key,
+            result: Ok(Decoded {
+                w: 2,
+                h: 2,
+                rgba: vec![0; BYTES].into_boxed_slice(),
+            }),
+        };
+        tex::accept(decoded(PosterKey(0)));
+        let mut budget = crate::ui::frame::Budget::new();
+        budget.begin_frame(0);
+        let mut present = crate::ui::present::Present::new();
+        let mut present_handle = crate::ui::machine::PresentHandle::of(&mut present);
+        let mut uploader = StubUp { next: 0 };
+        assert_eq!(
+            tex::prepare(&mut budget, &mut uploader, &mut present_handle, || 0),
+            1
+        );
+        assert_ne!(tex::resolve_on(srv.raw(), SRC, 2, 2, false), 0);
+
+        tex::accept(decoded(PosterKey(1)));
+        budget.begin_frame(20_000);
+        let mut present_handle = crate::ui::machine::PresentHandle::of(&mut present);
+        assert_eq!(
+            tex::prepare(&mut budget, &mut uploader, &mut present_handle, || 20_000),
+            1,
+            "the second upload must evict the first by bytes through the product wrapper"
+        );
+        assert_eq!(store().slots[0].state, P_EVICTED);
+
+        let (armed_tx, armed_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let g = store();
+            armed_tx.send(()).unwrap();
+            let (mut g, timeout) = CV
+                .wait_timeout_while(g, Duration::from_secs(1), |s| s.slots[0].state != P_WANT)
+                .unwrap_or_else(|e| e.into_inner());
+            assert!(!timeout.timed_out(), "the draw probe must wake a waiting poster worker");
+            let slot = &mut g.slots[0];
+            slot.state = P_LOADING;
+            drop(g);
+
+            unsafe extern "C" {
+                fn malloc(size: usize) -> *mut std::ffi::c_void;
+            }
+            let px = unsafe { malloc(BYTES) as *mut c_uchar };
+            assert!(!px.is_null());
+            unsafe { std::ptr::write_bytes(px, 0, BYTES) };
+            let mut g = store();
+            let slot = &mut g.slots[0];
+            slot.px = px as usize;
+            slot.pw = 2;
+            slot.ph = 2;
+            slot.state = P_DECODED;
+        });
+        armed_rx.recv().unwrap();
+        assert_eq!(
+            tex::resolve_on(srv.raw(), SRC, 2, 2, false),
+            0,
+            "the re-armed slot has no texture yet - a draw re-arms the dormant source slot"
+        );
+        worker.join().unwrap();
+        assert_eq!(store().slots[0].state, P_DECODED, "the woken worker published pixels");
+
+        drain_decoded();
+        budget.begin_frame(40_000);
+        let mut present_handle = crate::ui::machine::PresentHandle::of(&mut present);
+        assert_eq!(
+            tex::prepare(&mut budget, &mut uploader, &mut present_handle, || 40_000),
+            1
+        );
+        assert_ne!(
+            tex::resolve_on(srv.raw(), SRC, 2, 2, false),
+            0,
+            "the same source key becomes resident again"
+        );
+
+        tex::shutdown(&mut uploader);
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// A DRAW in a fast-moving card scope claims no slot for a miss. The same draw claims one
+    /// when that scope permits admission. Demand is deferred, never dropped: the next frame
+    /// asks again without leaving a queued request behind.
+    #[test]
+    fn a_fast_scroll_declines_a_visible_miss_and_a_settle_takes_it() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/4242/thumb", 2, 2, 0);
+        store().slots = [Pslot::ZERO; PT_CAP];
+
+        let motion = crate::ui::card_motion::Scope::moving_for_test();
+        assert!(crate::ui::card_motion::declines_request(), "the fixture is a fast scroll");
+        let (hit, warm) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None, "a fast-scrolling miss resolves to no poster");
+        assert_eq!(warm, Warm::Full, "and reports the attempt spent");
+        assert!(store().slots.iter().all(|s| s.state == P_EMPTY),
+            "no slot is claimed, so no worker, fetch, decode or upload follows");
+
+        // The settle is the whole difference — same key, same store, same call.
+        drop(motion);
+        assert!(!crate::ui::card_motion::declines_request());
+        let (_, warm) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(warm, Warm::Claimed, "a settled document claims the slot");
+        assert_eq!(store().slots[0].state, P_WANT, "and queues it for a worker");
+        assert!(store().slots[0].visible, "as visible demand, not speculation");
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// Exercise the source-facing half of the product card primitive, not a
+    /// hand-entered admission scope. GPU composition is the real-TV obligation.
+    /// A future position term in any screen reaches this same transformed centre.
+    #[test]
+    fn the_card_renderer_scopes_every_art_variant_and_unknown_misses_converge() {
+        let (_fresh, sid, _) = one_server();
+        tex::install(&SOURCE);
+        tex::reset_for_test(16 * 1024 * 1024);
+        store().slots = [Pslot::ZERO; PT_CAP];
+        let rect = crate::ui::Rect::new(0.0, 0.0, 250.0, 375.0);
+        let mut item = crate::pms::PmsMovie::default();
+        item.sid = sid;
+        item.thumb = "/library/metadata/42/thumb".into();
+        item.still = "/library/metadata/42/still".into();
+        crate::ui::widgets::resolve_card_art(crate::ui::Painter::recording(), rect,
+            &crate::ui::widgets::Art::Poster(Some(&item)));
+        assert!(store().slots.iter().all(|s| s.state == P_EMPTY), "text prewarming must not start poster work");
+        for frame in 0..3 {
+            crate::ui::card_motion::begin_frame(frame * 16);
+            crate::ui::idle::frame_begin(0.016);
+            crate::ui::idle::take_local_damage();
+            let painter = crate::ui::Painter::root().translate(if frame == 0 { 0.0 } else { 80.0 }, 0.0);
+            for art in [crate::ui::widgets::Art::Poster(Some(&item)), crate::ui::widgets::Art::Still(Some(&item)),
+                crate::ui::widgets::Art::Thumb { sid, key: "/test-thumb", res: (250, 375) },
+                crate::ui::widgets::Art::Person { sid, key: "/test-person", res: (250, 250) }] {
+                crate::ui::widgets::resolve_card_art(painter, rect, &art);
+            }
+            if frame < 2 {
+                assert!(store().slots.iter().all(|s| s.state == P_EMPTY), "unknown/moving cards must claim no slots");
+                assert!(crate::ui::idle::take_local_damage() > 0, "a refused unknown needs a follow-up present");
+            } else {
+                assert_eq!(store().slots.iter().filter(|s| s.state == P_WANT).count(), 4, "all four settled variants must queue art");
+            }
+        }
+        assert!(!crate::ui::card_motion::declines_request(), "hero work after a card is outside its scope");
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    #[test]
+    fn a_motion_declined_retry_wakes_only_when_due() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/4242/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            set_key(slot, &path);
+            slot.state = P_RETRY;
+            slot.retry_at = Some(crate::app::clock::now().wrapping_add(30_000));
+        }
+        let motion = crate::ui::card_motion::Scope::moving_for_test();
+        crate::ui::idle::take_local_damage();
+        assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Known,
+            "the future retry must match its existing slot, not take the fresh-miss gate");
+        assert_eq!(crate::ui::idle::take_local_damage(), 0, "a future retry must let the present gate rest");
+        store().slots[0].retry_at = Some(0);
+        assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Known,
+            "motion must defer the known due retry");
+        assert!(crate::ui::idle::take_local_damage() > 0, "an actually refused rearm needs a follow-up draw");
+        assert_eq!(store().slots[0].state, P_RETRY);
+        drop(motion);
+        assert_eq!(lookup(sid, &path, Touch::Draw).1, Warm::Known,
+            "settling must re-queue the existing retry rather than claim a fresh slot");
+        assert_eq!(store().slots[0].state, P_WANT);
+        assert_eq!(store().slots[0].retry_at, None, "re-queuing clears the elapsed wait");
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// **P2 (Codex review on PR #187).** The fresh-miss gate above is the LEAST important of the
+    /// three places a draw starts poster work, because a fast scroll is the very thing that
+    /// evicts textures: scroll down hard, and the rows behind you lose residency; scroll back,
+    /// and every tile you pass finds its own slot parked at `P_EVICTED` with no cooldown set
+    /// (a first eviction never cools). Re-arming each one is a full fetch, decode and upload —
+    /// the work the gate exists to refuse — reached through a branch that returns long before
+    /// the miss path. The deferral is the cooldown's, not a drop: the slot stays `P_EVICTED`
+    /// and the first settled draw re-arms it exactly as it always did.
+    #[test]
+    fn a_fast_scroll_declines_to_re_arm_an_evicted_slot() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/4243/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            set_key(slot, &path);
+            slot.state = P_EVICTED;
+            // No eviction history, so the cooldown gate would admit this re-arm. That isolates
+            // the scroll gate: nothing else in this branch is refusing.
+            slot.evict_cooldown_until = None;
+        }
+        let (_, rearmed0) = residency_counts_for_test();
+
+        let motion = crate::ui::card_motion::Scope::moving_for_test();
+        let (hit, warm) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None, "an evicted slot has no pixels to hand back");
+        assert_eq!(warm, Warm::Known, "the slot is known, merely left dormant");
+        assert_eq!(
+            store().slots[0].state,
+            P_EVICTED,
+            "a fast scroll must not re-arm an evicted slot: that is a whole fetch and upload"
+        );
+        let (_, rearmed1) = residency_counts_for_test();
+        assert_eq!(rearmed1, rearmed0, "and must not count as a re-arm");
+
+        drop(motion);
+        let (_, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(store().slots[0].state, P_WANT, "a settled draw re-arms it exactly as before");
+        let (_, rearmed2) = residency_counts_for_test();
+        assert_eq!(rearmed2, rearmed0 + 1, "and the settle is what the counter records");
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// The same narrowing for the other existing-slot re-arm: a `P_RETRY` slot whose backoff has
+    /// expired goes back in the queue on the next DRAW, and that draw is subject to the same
+    /// admission as any other. The wait is not restarted and the attempt count is untouched — the
+    /// slot simply stays parked and due, so the first settled draw takes it.
+    #[test]
+    fn a_fast_scroll_declines_to_re_queue_a_due_retry() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/4244/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            set_key(slot, &path);
+            slot.state = P_RETRY;
+            slot.attempts = 1;
+            // Scheduled at tick 0, so it is due for any plausible reading of the app clock.
+            slot.retry_at = Some(0);
+        }
+
+        let motion = crate::ui::card_motion::Scope::moving_for_test();
+        let (hit, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None, "a parked retry has no pixels");
+        assert_eq!(
+            store().slots[0].state,
+            P_RETRY,
+            "a fast scroll must not re-queue a due retry"
+        );
+        assert_eq!(
+            store().slots[0].retry_at,
+            Some(0),
+            "and must not reschedule it: the wait already elapsed, it is the draw that was refused"
+        );
+        assert_eq!(store().slots[0].attempts, 1, "a refusal is not an attempt");
+
+        drop(motion);
+        let (_, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(store().slots[0].state, P_WANT, "a settled draw re-queues it");
+        assert_eq!(store().slots[0].retry_at, None, "clearing the elapsed wait");
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// The two counters behind `posters: residency lost=… rearmed=…` (issue #107): the route
+    /// heartbeat's `evicted_hot=` cannot distinguish "eviction never fired" from "eviction fired
+    /// and the re-arm worked", so these are graded directly rather than through the log line's
+    /// throttle. `one_server` takes [`crate::testlock::serial`], which is what keeps this test's
+    /// deltas exact against the other tests in this file that drive real eviction through the
+    /// installed cache (`a_rejected_decode_cannot_leave_the_real_source_claiming_ready`,
+    /// `a_ready_source_hit_recovers_after_its_texture_is_evicted`).
+    #[test]
+    fn residency_transitions_are_counted_exactly_once_each() {
+        use crate::ui::tex::Source as _;
+
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            set_key(slot, &path);
+            slot.state = P_READY;
+        }
+        let (lost0, rearmed0) = residency_counts_for_test();
+
+        SOURCE.unresident(PosterKey(0));
+        assert_eq!(store().slots[0].state, P_EVICTED, "unresident demotes a READY slot");
+        let (lost1, rearmed1) = residency_counts_for_test();
+        assert_eq!(lost1, lost0 + 1, "a real READY->EVICTED transition must count exactly once");
+        assert_eq!(rearmed1, rearmed0, "unresident never touches the re-arm counter");
+
+        // A slot already EVICTED has no READY truth left to revoke - must not count again.
+        SOURCE.unresident(PosterKey(0));
+        let (lost2, _) = residency_counts_for_test();
+        assert_eq!(lost2, lost1, "a slot that was already EVICTED must not be counted twice");
+
+        let (hit, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None, "a freshly re-armed slot has no pixels yet");
+        assert_eq!(store().slots[0].state, P_WANT, "lookup re-arms the dormant slot");
+        let (_, rearmed2) = residency_counts_for_test();
+        assert_eq!(rearmed2, rearmed1 + 1, "the EVICTED->WANT re-arm must count exactly once");
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// **P1 (Codex review on PR #182, `lookup`'s P_EVICTED branch, poster.rs:564).** Without the
+    /// thrash guard, every draw that finds a key EVICTED moves it straight back to `P_WANT`
+    /// unconditionally, with no memory of how recently it was evicted before. A working set that
+    /// genuinely cannot fit under the render cache's byte budget then has this key evicted,
+    /// re-armed, evicted again, re-armed again — forever, once frames keep drawing it — instead of
+    /// settling. This drives exactly that: a slot evicted and (synthetically, via the same
+    /// `SOURCE.unresident` callback the render cache calls under real byte pressure) re-evicted in
+    /// rapid succession, every cycle immediately followed by a draw. Pre-fix, EVERY cycle rearms —
+    /// no bound at all. Post-fix, only the first (uncooled) eviction rearms; the rest are refused
+    /// until their cooldown clears, which real time never does inside a tight loop.
+    #[test]
+    fn a_key_evicted_and_reevicted_in_rapid_succession_does_not_rearm_without_bound() {
+        use crate::ui::tex::Source as _;
+
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            set_key(slot, &path);
+            slot.state = P_READY;
+        }
+        let (_, rearmed0) = residency_counts_for_test();
+
+        const CYCLES: u32 = 20;
+        let mut rearms = 0u32;
+        for _ in 0..CYCLES {
+            // Stand-in for the render cache's own byte-pressure eviction (real pressure needs a
+            // live GL cache no host test links; this callback IS the seam it calls through).
+            SOURCE.unresident(PosterKey(0));
+            let (hit, _) = lookup(sid, &path, Touch::Draw);
+            assert_eq!(hit, None, "an evicted slot never has pixels the same probe that finds it");
+            if store().slots[0].state == P_WANT {
+                rearms += 1;
+                // Simulate the fetch/decode/upload this rearm triggers completing immediately —
+                // the fast round trip a thrash needs, not the slow one a network stall would add.
+                store().slots[0].state = P_READY;
+            }
+        }
+        let (_, rearmed_final) = residency_counts_for_test();
+        assert_eq!(
+            rearmed_final - rearmed0,
+            rearms as u64,
+            "the rearm counter must track exactly the transitions this loop drove"
+        );
+
+        assert!(
+            rearms < CYCLES,
+            "a key evicted and re-evicted in rapid succession must eventually back off instead \
+             of rearming every single cycle (got {rearms} rearms out of {CYCLES} cycles - with \
+             no bound this is the P1 thrash: continuous fetch/decode/upload instead of settling)"
+        );
+        assert_eq!(
+            rearms, 1,
+            "the FIRST eviction must still rearm instantly (the bug PR #182 itself fixes); every \
+             eviction after it lands inside the thrash window and must be cooled down"
+        );
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// The pure decisions behind the residency thrash guard (see `evict_was_rapid`'s module doc):
+    /// a key's first-ever eviction is never rapid (nothing to compare against), one that lands
+    /// inside the thrash window is, and one that lands outside it is treated as fresh again - the
+    /// guard must not let a key that settles for a while accumulate backoff it no longer deserves.
+    #[test]
+    fn evict_was_rapid_only_flags_a_reeviction_inside_the_thrash_window() {
+        assert!(!evict_was_rapid(None, 0), "a key's first-ever eviction has nothing to compare");
+        assert!(
+            evict_was_rapid(Some(0), EVICT_THRASH_WINDOW_MS - 1),
+            "one millisecond inside the window is still rapid"
+        );
+        assert!(
+            !evict_was_rapid(Some(0), EVICT_THRASH_WINDOW_MS),
+            "the window's own edge is no longer rapid"
+        );
+    }
+
+    /// The pure decision behind the thrash guard's cooldown gate: no cooldown ever set is always
+    /// due (the ordinary, non-thrashing case), and a set cooldown is due only once its deadline has
+    /// actually passed - mirrors [`retry_due`]'s own wrap-safe "has this deadline passed" shape.
+    #[test]
+    fn evict_cooldown_due_only_after_its_own_deadline() {
+        assert!(evict_cooldown_due(None, 0), "no cooldown was ever set - never gated");
+        assert!(!evict_cooldown_due(Some(1_000), 999), "one millisecond short is still cooling");
+        assert!(evict_cooldown_due(Some(1_000), 1_000), "the deadline itself has cleared");
+    }
+
+    /// A second half of the same PR #182 P1: [`evict_cooldown_due_only_after_its_own_deadline`]
+    /// and [`a_key_evicted_and_reevicted_in_rapid_succession_does_not_rearm_without_bound`] bound
+    /// how OFTEN a DRAW may re-arm an evicted key; this proves a `Touch::Warm` probe of the same
+    /// key may never re-arm it AT ALL, regardless of cooldown state — resurrecting an evicted key
+    /// speculatively is exactly what let an off-screen prefetch alternate evict/refetch/evict
+    /// against on-screen demand (Home's recurring backdrop prefetch, named in the review). The
+    /// slot here has no eviction history (`evict_cooldown_until` is `None`, i.e. never cooling), so
+    /// this isolates the touch-type gate from the cooldown gate: a warm probe is refused even when
+    /// nothing else would have refused it. The second half proves the fix is a narrowing, not a
+    /// removal: a real draw of the same slot still re-arms.
+    #[test]
+    fn a_warm_probe_of_an_evicted_slot_leaves_it_dormant() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            set_key(slot, &path);
+            slot.state = P_EVICTED;
+        }
+        let (_, rearmed0) = residency_counts_for_test();
+
+        let (hit, warm) = lookup(sid, &path, Touch::Warm);
+        assert_eq!(hit, None, "an evicted slot has no pixels to hand back");
+        assert_eq!(warm, Warm::Known, "a warm probe must not claim a slot it leaves dormant");
+        assert_eq!(
+            store().slots[0].state,
+            P_EVICTED,
+            "a warm probe must not re-arm an evicted slot"
+        );
+        let (_, rearmed1) = residency_counts_for_test();
+        assert_eq!(rearmed1, rearmed0, "a warm probe must not increment the re-arm counter");
+
+        // The same slot, probed by a real draw, still re-arms - the fix narrows WHICH touch
+        // re-arms an evicted slot, it does not remove re-arming itself.
+        let (hit, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None, "a freshly re-armed slot has no pixels yet");
+        assert_eq!(store().slots[0].state, P_WANT, "a draw probe still re-arms the dormant slot");
+        let (_, rearmed2) = residency_counts_for_test();
+        assert_eq!(
+            rearmed2,
+            rearmed0 + 1,
+            "the draw's EVICTED->WANT re-arm must count exactly once"
+        );
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// **Deterministic deadline progression (adjudication on PR #182, item 2).** The tight-loop
+    /// test above ([`a_key_evicted_and_reevicted_in_rapid_succession_does_not_rearm_without_bound`])
+    /// never lets real time move — the host clock stub is frozen — so it proves the FIRST cooldown
+    /// blocks a rearm but nothing about what happens once that cooldown's own deadline arrives,
+    /// which is the schedule's whole point. This drives the app clock explicitly instead
+    /// (`crate::app::clock::set_replay`, the same seam the recorded-replay driver uses), so a
+    /// `Touch::Warm` probe can be checked on both sides of the deadline: still dormant a tick
+    /// before it, and — because Warm is refused unconditionally, before the cooldown gate is even
+    /// reached — still dormant a tick after it too.
+    #[test]
+    fn a_touch_warm_probe_of_a_cooling_slot_stays_dormant_before_and_after_expiry() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            set_key(slot, &path);
+            slot.state = P_EVICTED;
+            slot.evict_attempts = 1;
+            slot.evicted_at = Some(0);
+            slot.evict_cooldown_until = Some(250); // evict_backoff(1)
+        }
+
+        crate::app::clock::set_replay(100); // before the deadline
+        let (hit, warm) = lookup(sid, &path, Touch::Warm);
+        assert_eq!(hit, None);
+        assert_eq!(warm, Warm::Known);
+        assert_eq!(store().slots[0].state, P_EVICTED, "a warm probe stays dormant before expiry");
+
+        crate::app::clock::set_replay(250); // exactly at the deadline
+        let (hit, warm) = lookup(sid, &path, Touch::Warm);
+        assert_eq!(hit, None);
+        assert_eq!(warm, Warm::Known);
+        assert_eq!(
+            store().slots[0].state,
+            P_EVICTED,
+            "a warm probe stays dormant even once the cooldown has cleared - only a Draw probe \
+             may recover an EVICTED slot"
+        );
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// The Draw-probe half of the same deadline: refused one tick short, honored at the deadline
+    /// itself - mirrors [`evict_cooldown_due_only_after_its_own_deadline`]'s edges, but through
+    /// `lookup` end to end (the re-arm counter, the state transition) rather than the pure
+    /// predicate alone.
+    #[test]
+    fn a_touch_draw_probe_only_rearms_once_the_cooldown_deadline_arrives() {
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            set_key(slot, &path);
+            slot.state = P_EVICTED;
+            slot.evict_attempts = 1;
+            slot.evicted_at = Some(0);
+            slot.evict_cooldown_until = Some(250);
+        }
+        let (_, rearmed0) = residency_counts_for_test();
+
+        crate::app::clock::set_replay(249);
+        let (hit, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None);
+        assert_eq!(
+            store().slots[0].state,
+            P_EVICTED,
+            "one millisecond short of the deadline must still refuse to rearm"
+        );
+        let (_, rearmed1) = residency_counts_for_test();
+        assert_eq!(rearmed1, rearmed0, "a refused rearm must not count");
+
+        crate::app::clock::set_replay(250);
+        let (hit, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None, "a freshly rearmed slot has no pixels yet");
+        assert_eq!(store().slots[0].state, P_WANT, "the deadline itself rearms it");
+        let (_, rearmed2) = residency_counts_for_test();
+        assert_eq!(rearmed2, rearmed0 + 1, "the rearm must count exactly once");
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// The escalation the tight-loop test cannot see: driving the app clock forward by exactly
+    /// each deadline (never one tick less, per [`a_touch_draw_probe_only_rearms_once_the_cooldown_deadline_arrives`])
+    /// and completing the recovery immediately each time - the fast round trip a thrash needs -
+    /// must walk [`evict_backoff`]'s own schedule (250ms, 500ms, 1s, 2s, 4s, 8s) and then hold at
+    /// its 8s cap, exactly like [`the_retry_backoff_doubles_from_one_second_and_caps`] proves for
+    /// the unrelated transient-fetch schedule.
+    #[test]
+    fn repeated_completed_recoveries_escalate_the_cooldown_to_its_cap() {
+        use crate::ui::tex::Source as _;
+
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        let mut now: u32 = 0;
+        crate::app::clock::set_replay(now);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            set_key(slot, &path);
+            slot.state = P_READY;
+        }
+
+        // A fresh key's FIRST eviction never cools (`evicted_at` was `None`) - it rearms on the
+        // very next Draw probe, the ordinary one-eviction-then-recovery case. This primes
+        // `evicted_at` so the NEXT eviction (immediately after, same tick) is the first the
+        // thrash guard can see as a continuation.
+        SOURCE.unresident(PosterKey(0));
+        assert_eq!(
+            store().slots[0].evict_cooldown_until,
+            None,
+            "a key's first-ever eviction never cools"
+        );
+        let (hit, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None);
+        assert_eq!(store().slots[0].state, P_WANT);
+        store().slots[0].state = P_READY;
+
+        let schedule_ms: [u32; 8] = [250, 500, 1_000, 2_000, 4_000, 8_000, 8_000, 8_000];
+        for &wait in schedule_ms.iter() {
+            SOURCE.unresident(PosterKey(0)); // rapid: inside the thrash window every time
+            let cooldown = store().slots[0]
+                .evict_cooldown_until
+                .expect("a rapid re-eviction always sets a cooldown");
+            assert_eq!(
+                cooldown,
+                now.wrapping_add(wait),
+                "the escalation schedule must reach {wait}ms and cap there"
+            );
+
+            crate::app::clock::set_replay(now.wrapping_add(wait) - 1);
+            let (hit, _) = lookup(sid, &path, Touch::Draw);
+            assert_eq!(hit, None);
+            assert_eq!(
+                store().slots[0].state,
+                P_EVICTED,
+                "one tick short of {wait}ms must still refuse to rearm"
+            );
+
+            now = now.wrapping_add(wait);
+            crate::app::clock::set_replay(now);
+            let (hit, _) = lookup(sid, &path, Touch::Draw);
+            assert_eq!(hit, None);
+            assert_eq!(store().slots[0].state, P_WANT, "the deadline itself rearms it");
+            store().slots[0].state = P_READY; // the fast recovery a thrash needs
+        }
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// The other side of [`evict_was_rapid_only_flags_a_reeviction_inside_the_thrash_window`]:
+    /// mid-escalation, a gap past [`EVICT_THRASH_WINDOW_MS`] before the NEXT eviction must reset
+    /// `evict_attempts` to 0 and set no cooldown at all - the key is treated exactly like one
+    /// evicted for the first time, because as far as the guard can tell, it was: nothing has
+    /// churned it in ten whole seconds.
+    #[test]
+    fn an_eviction_gap_past_the_thrash_window_resets_the_escalation() {
+        use crate::ui::tex::Source as _;
+
+        let (_fresh, sid, _) = one_server();
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        crate::app::clock::set_replay(0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            set_key(slot, &path);
+            slot.state = P_READY;
+            slot.evicted_at = Some(0);
+            slot.evict_attempts = 5; // mid-escalation from an earlier thrash episode
+        }
+
+        // The window's own edge - not one millisecond less - counts as settled.
+        crate::app::clock::set_replay(EVICT_THRASH_WINDOW_MS);
+        SOURCE.unresident(PosterKey(0));
+        {
+            let g = store();
+            assert_eq!(g.slots[0].evict_attempts, 0, "a settled gap must clear the escalation");
+            assert_eq!(
+                g.slots[0].evict_cooldown_until, None,
+                "a reset episode's first eviction never cools"
+            );
+        }
+
+        let (hit, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None);
+        assert_eq!(
+            store().slots[0].state,
+            P_WANT,
+            "the reset key rearms on its very next Draw probe, exactly like a fresh key"
+        );
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// The pure decision behind [`invalidate_due_evictions`]: only a slot an active cooldown
+    /// deadline is ticking against is ever due for a wake - a slot with no cooldown (`None`) has
+    /// nothing to expire and needs none, since its very next Draw probe already re-arms it: a
+    /// proactive wake for it would just be [`invalidate_due_retries`]'s own P_RETRY continuous-
+    /// invalidation bug, reintroduced for P_EVICTED. Mirrors [`a_retry_slot_is_due_when_its_wait_is_over`]'s
+    /// shape, including the wrap.
+    #[test]
+    fn an_evicted_slot_is_due_for_a_wake_only_once_its_cooldown_deadline_arrives() {
+        let mut s = Pslot {
+            state: P_EVICTED,
+            ..Pslot::ZERO
+        };
+        assert!(!evict_wake_due(&s, 1_000), "no cooldown at all = nothing to wake for");
+        s.evict_cooldown_until = Some(6_000);
+        assert!(!evict_wake_due(&s, 1_000));
+        assert!(evict_wake_due(&s, 6_000));
+        assert!(evict_wake_due(&s, 9_000));
+        s.evict_cooldown_until = Some(u32::MAX - 100);
+        assert!(evict_wake_due(&s, 50), "the tick wraps like every app::clock comparison");
+        s.state = P_READY;
+        assert!(!evict_wake_due(&s, 60_000), "only an EVICTED slot can be due for this wake");
+    }
+
+    /// **Requirement 1's wiring, end to end: exactly one redraw request per expiry, not one per
+    /// frame.** Mirrors [`a_due_parked_retry_invalidates_the_frame_gate`] exactly, because
+    /// [`invalidate_due_evictions`] is the identical mechanism applied to `P_EVICTED` instead of
+    /// `P_RETRY`, for the identical reason: without the `evict_wake_sent` latch, an expired,
+    /// off-screen EVICTED slot would invalidate every loop iteration forever, since nothing draws
+    /// it to consume the wake — undoing the idle behaviour the app depends on.
+    #[test]
+    fn a_due_evicted_slot_invalidates_the_frame_gate_exactly_once() {
+        let _g = crate::testlock::serial();
+        crate::ui::idle::reset_for_test();
+        let mut slots = [Pslot::ZERO; PT_CAP];
+        slots[3] = Pslot {
+            state: P_EVICTED,
+            evict_cooldown_until: Some(2_000),
+            ..Pslot::ZERO
+        };
+        slots[4] = Pslot {
+            state: P_EVICTED,
+            evict_cooldown_until: Some(2_000),
+            ..Pslot::ZERO
+        };
+
+        invalidate_due_evictions(&mut slots, 1_999);
+        assert_eq!(
+            crate::ui::idle::take_local_damage(),
+            0,
+            "a cooling slot must leave the screen settled before its deadline"
+        );
+
+        invalidate_due_evictions(&mut slots, 2_000);
+        assert_eq!(
+            crate::ui::idle::take_local_damage(),
+            1,
+            "the deadline must wake exactly one draw that can probe the slot again"
+        );
+
+        invalidate_due_evictions(&mut slots, 2_001);
+        assert_eq!(
+            crate::ui::idle::take_local_damage(),
+            0,
+            "an off-screen expired slot must not hold the present gate awake - the latch makes \
+             this ONE redraw request, not a request every frame"
+        );
+    }
+
+    /// The pure decision behind [`log_residency`]'s interval throttle: due before any line has
+    /// ever been written, not due an instant after one was, due again once a full second has
+    /// passed. Split out and tested the same way [`idle_of`] is, so the edges do not depend on a
+    /// real elapsed second or a real Mutex.
+    #[test]
+    fn the_interval_throttle_only_waits_out_its_own_window() {
+        let t0 = std::time::Instant::now();
+        assert!(interval_due(None, t0), "the first line in a process is never throttled");
+        assert!(
+            !interval_due(Some(t0), t0),
+            "immediately after a line, the same instant must not be due again"
+        );
+        assert!(
+            !interval_due(Some(t0), t0 + Duration::from_millis(999)),
+            "one millisecond short of the window must still be throttled"
+        );
+        assert!(
+            interval_due(Some(t0), t0 + Duration::from_secs(1)),
+            "a full second later the window has reopened"
+        );
+    }
+
+    /// Reproduces the exact field defect this fix closes (Codex review on PR #182): a device
+    /// session that read `lost=1 rearmed=0`, `lost=5 rearmed=0`, `lost=13 rearmed=0` and nothing
+    /// else was reported as "the re-arm branch never fires" — but every one of those lines was
+    /// written by an EVICTION, and [`log_residency`]'s interval throttle can swallow a re-arm
+    /// that lands inside the same one-second window as the eviction that preceded it, which is
+    /// exactly the ordinary one-eviction-then-recovery case. This drives that sequence directly:
+    /// an eviction (unthrottled, since it is the first line) immediately followed by its re-arm
+    /// (throttled, since under a second has passed) must leave `rearmed` stale in the last
+    /// emitted line — proving the gap is real — and then a settled frame
+    /// ([`log_residency_settled`], as [`begin_frame`] calls it every frame regardless of screen)
+    /// must catch the totals up, because that path does not consult the interval at all.
+    #[test]
+    fn a_rearm_inside_the_throttle_window_still_reaches_the_log_once_the_store_settles() {
+        use crate::ui::tex::Source as _;
+
+        let (_fresh, sid, _) = one_server();
+        reset_residency_log_for_test();
+        let path = key_for(sid, "/library/metadata/42/thumb", 2, 2, 0);
+        {
+            let mut g = store();
+            g.slots = [Pslot::ZERO; PT_CAP];
+            let slot = &mut g.slots[0];
+            slot.srv = sid;
+            slot.cache_gen = crate::imgcache::generation();
+            slot.token_gen = crate::plex::client_for(sid).unwrap().token_gen();
+            set_key(slot, &path);
+            slot.state = P_READY;
+        }
+
+        // The eviction: the first line in the (just reset) throttle window, so it writes.
+        SOURCE.unresident(PosterKey(0));
+        let (lost1, rearmed1) = residency_counts_for_test();
+        assert_eq!(
+            residency_last_emitted_for_test(),
+            (lost1, rearmed1),
+            "the unthrottled first line must report the eviction it just recorded"
+        );
+
+        // The re-arm, immediately after: real time between these two calls is microseconds, so
+        // the interval throttle finds the window still open and suppresses the line.
+        let (hit, _) = lookup(sid, &path, Touch::Draw);
+        assert_eq!(hit, None, "a freshly re-armed slot has no pixels yet");
+        let (lost2, rearmed2) = residency_counts_for_test();
+        assert_eq!(rearmed2, rearmed1 + 1, "the re-arm itself is never missed - only the LINE is");
+        assert_eq!(
+            residency_last_emitted_for_test(),
+            (lost1, rearmed1),
+            "the throttled re-arm must leave the last WRITTEN line stale - this is the bug"
+        );
+
+        // The store is quiet (P_WANT, not fetching or decoding) - a settled frame must catch the
+        // line up regardless of the interval, because the totals moved since the last line.
+        log_residency_settled(true);
+        assert_eq!(
+            residency_last_emitted_for_test(),
+            (lost2, rearmed2),
+            "a settle snapshot must report the re-arm even though the interval throttle just \
+             suppressed it"
+        );
+
+        store().slots = [Pslot::ZERO; PT_CAP];
+    }
+
+    /// A settle snapshot must never write a line when nothing changed - `log_residency_settled`
+    /// runs every frame the store is quiet, and most quiet frames follow another quiet frame.
+    #[test]
+    fn a_settled_frame_with_nothing_new_writes_no_second_line() {
+        let _g = crate::testlock::serial();
+        reset_residency_log_for_test();
+        let (lost, rearmed) = residency_counts_for_test();
+        {
+            let mut st = RESIDENCY_LOG.lock().unwrap_or_else(|e| e.into_inner());
+            st.at = Some(std::time::Instant::now());
+            st.lost = lost;
+            st.rearmed = rearmed;
+        }
+        // Nothing transitioned since - the recorded pair already matches the live totals, so this
+        // must be a no-op (observable only through the pair staying put; a real double-write
+        // would be indistinguishable here, but `log_residency_settled`'s own equality check is
+        // what `residency_last_emitted_for_test` is pinning).
+        log_residency_settled(true);
+        assert_eq!(residency_last_emitted_for_test(), (lost, rearmed));
+    }
+
     /// The LRU's two clauses, in order: an EMPTY slot is always preferred (a fresh store must fill
     /// before it evicts anything), and only once there is none does the oldest SETTLED slot go.
     #[test]
@@ -1163,6 +2697,117 @@ mod tests {
             ..Pslot::ZERO
         };
         assert_eq!(victim(&failed, 7), Some(8));
+        // …and so is a parked RETRY: a tile that scrolled away must not hold its slot
+        failed[8].state = P_RETRY;
+        assert_eq!(victim(&failed, 7), Some(8));
+    }
+
+    /// **A transient failure is parked, not burnt** (#107): the boot's plaintext window, a refused
+    /// connect or a 5xx used to mark a poster `P_FAILED`, and `lookup` then answered "no art"
+    /// for that key for as long as the slot lived — so a cover that missed once stayed a skeleton
+    /// for the session while the debug build (which allows plaintext tokens) showed it. Only a
+    /// status that will not change is final.
+    #[test]
+    fn only_a_final_status_is_final() {
+        use crate::plex::ArtFetch;
+        for s in [301, 400, 404, 405, 410, 414, 415, 422] {
+            assert!(!is_transient(&ArtFetch::Status(s)), "{s} will not change");
+        }
+        for s in [401, 403, 408, 429, 500, 502, 503, 504] {
+            assert!(is_transient(&ArtFetch::Status(s)), "{s} can change");
+        }
+        assert!(is_transient(&ArtFetch::NoResponse), "no response is the boot window's shape");
+        assert!(!is_transient(&ArtFetch::Bytes(vec![1])), "bytes are the decoder's to judge");
+    }
+
+    /// The wait doubles from one second and caps at thirty: quick enough that the plaintext
+    /// window costs one second, bounded enough that a dead server is not hammered.
+    #[test]
+    fn the_retry_backoff_doubles_from_one_second_and_caps() {
+        let secs: Vec<u64> = (1..=8).map(|n| retry_backoff(n).as_secs()).collect();
+        assert_eq!(secs, [1, 2, 4, 8, 16, 30, 30, 30]);
+        assert_eq!(retry_backoff(0).as_secs(), 1);
+    }
+
+    /// Only a RETRY slot whose scheduled wait is over is due: an unscheduled one is not (the
+    /// next draw schedules it), the tick comparison wraps, and FAILED is never due.
+    #[test]
+    fn a_retry_slot_is_due_when_its_wait_is_over() {
+        let mut s = Pslot {
+            state: P_RETRY,
+            ..Pslot::ZERO
+        };
+        assert!(!retry_due(&s, 1_000), "unscheduled = not yet");
+        s.retry_at = Some(6_000);
+        assert!(!retry_due(&s, 1_000));
+        assert!(retry_due(&s, 6_000));
+        assert!(retry_due(&s, 9_000));
+        s.retry_at = Some(u32::MAX - 100);
+        assert!(retry_due(&s, 50), "the tick wraps like every app::clock comparison");
+        s.state = P_FAILED;
+        assert!(!retry_due(&s, 60_000), "FAILED is never due");
+    }
+
+    /// A parked retry is clock-driven state on a settled screen. The loop still runs while the
+    /// present gate rests, so the adapter must invalidate that gate when the deadline arrives;
+    /// otherwise no draw probes the slot again and it remains parked until an unrelated frame.
+    #[test]
+    fn a_due_parked_retry_invalidates_the_frame_gate() {
+        let _g = crate::testlock::serial();
+        crate::ui::idle::reset_for_test();
+        let mut slots = [Pslot::ZERO; PT_CAP];
+        slots[3] = Pslot {
+            state: P_RETRY,
+            retry_at: Some(2_000),
+            ..Pslot::ZERO
+        };
+        slots[4] = Pslot {
+            state: P_RETRY,
+            retry_at: Some(2_000),
+            ..Pslot::ZERO
+        };
+
+        invalidate_due_retries(&mut slots, 1_999);
+        assert_eq!(
+            crate::ui::idle::take_local_damage(),
+            0,
+            "a parked retry must leave the screen settled before its deadline"
+        );
+
+        invalidate_due_retries(&mut slots, 2_000);
+        assert_eq!(
+            crate::ui::idle::take_local_damage(),
+            1,
+            "the deadline must wake a draw that can re-queue the retry"
+        );
+
+        invalidate_due_retries(&mut slots, 2_001);
+        assert_eq!(
+            crate::ui::idle::take_local_damage(),
+            0,
+            "an off-screen due slot must not hold the present gate awake"
+        );
+    }
+
+    /// The worker cannot schedule against the loop clock, but its transition to `P_RETRY` must
+    /// wake one draw to do so. Otherwise a settled screen waits for the keepalive before the
+    /// advertised one-second backoff even begins.
+    #[test]
+    fn a_newly_parked_retry_wakes_the_draw_that_schedules_it() {
+        let _g = crate::testlock::serial();
+        crate::ui::idle::reset_for_test();
+        let mut s = Pslot {
+            state: P_LOADING,
+            attempts: 2,
+            ..Pslot::ZERO
+        };
+
+        park_retry(&mut s);
+
+        assert_eq!(s.state, P_RETRY);
+        assert_eq!(s.attempts, 3);
+        assert_eq!(s.retry_at, None, "only a draw may read the loop clock and schedule");
+        assert_eq!(crate::ui::idle::take_local_damage(), 1);
     }
 
     /// **The test the whole prefetch rests on.** `Touch::Warm` writes `use_ = 0` and a frame stamp
@@ -1323,7 +2968,7 @@ mod tests {
             idle_of(&[Pslot::ZERO; PT_CAP]),
             "an untouched store is idle"
         );
-        for st in [P_READY, P_FAILED] {
+        for st in [P_READY, P_EVICTED, P_FAILED] {
             let slots = [Pslot {
                 state: st,
                 ..Pslot::ZERO
@@ -1347,5 +2992,36 @@ mod tests {
                 "one slot in state {st} is enough to hold the gate shut"
             );
         }
+    }
+
+    #[test]
+    fn a_visible_claim_preempts_an_older_prefetch_backlog() {
+        let mut slots = [Pslot::ZERO; PT_CAP];
+        for slot in slots.iter_mut().take(12) {
+            slot.state = P_WANT;
+            slot.visible = false;
+        }
+        slots[47].state = P_WANT;
+        slots[47].visible = true;
+
+        assert_eq!(next_wanted(&slots), Some(47),
+            "a tile being drawn must outrank every queued lookahead claim");
+    }
+
+    #[test]
+    fn prefetch_admission_leaves_one_worker_for_visible_work() {
+        let mut slots = [Pslot::ZERO; PT_CAP];
+        assert!(warm_admissible(&slots), "an idle queue may look ahead");
+
+        slots[9].state = P_LOADING;
+        slots[9].visible = false;
+        assert!(!warm_admissible(&slots),
+            "one speculative fetch spends the entire prefetch allowance");
+
+        slots[9] = Pslot::ZERO;
+        slots[41].state = P_WANT;
+        slots[41].visible = true;
+        assert!(!warm_admissible(&slots),
+            "visible work closes prefetch admission regardless of slot index");
     }
 }

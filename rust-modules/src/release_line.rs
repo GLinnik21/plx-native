@@ -36,6 +36,17 @@ pub(crate) fn dev_patch(patch: u64, pkg: &str) -> u64 {
         .unwrap_or_else(|| panic!("Cargo.toml version {pkg:?} has no next patch"))
 }
 
+/// Whether `date` is the shape `PLX_NIGHTLY_DATE` must be — exactly 8 ASCII digits (`YYYYMMDD`) —
+/// the nightly half of `build.rs::emit_version`'s arithmetic, split out for the same reason
+/// `dev_patch` is: `cargo test --lib` runs this, a build script's own `#[cfg(test)]` module never
+/// does. Not parsed into a real calendar date on purpose — `build.rs` only ever EMBEDS this string
+/// verbatim into `PLX_VERSION`, it never computes with it, so validating the shape is the whole
+/// contract and a bad shape (`"2026-09-19"`, `"1"`, empty) is exactly what must fail the build
+/// rather than ship a malformed reported version silently.
+pub(crate) fn is_nightly_date(date: &str) -> bool {
+    date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,5 +69,16 @@ mod tests {
     fn dev_patch_increments() {
         assert_eq!(dev_patch(0, "0.6.0"), 1);
         assert_eq!(dev_patch(9, "0.6.9"), 10);
+    }
+
+    #[test]
+    fn nightly_date_is_exactly_eight_digits() {
+        assert!(is_nightly_date("20260919"));
+        assert!(is_nightly_date("00000000"));
+        assert!(!is_nightly_date(""));
+        assert!(!is_nightly_date("2026919"));  // 7 digits
+        assert!(!is_nightly_date("202609190"));  // 9 digits
+        assert!(!is_nightly_date("2026-09-19"));  // not digits-only
+        assert!(!is_nightly_date("2026091x"));
     }
 }

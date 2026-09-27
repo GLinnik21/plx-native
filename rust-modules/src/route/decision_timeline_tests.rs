@@ -26,12 +26,12 @@ fn the_machine_id_cache_is_scoped_to_the_server_that_taught_it() {
         "rk-a",
     );
     assert_eq!(
-        ResolveEnv::snapshot(&ps, a, "rk-a").machine_id,
+        ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), a, "rk-a").machine_id,
         "MACHINE-A",
         "its own server reuses it"
     );
     assert_eq!(
-        ResolveEnv::snapshot(&ps, b, "rk-b").machine_id,
+        ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), b, "rk-b").machine_id,
         "",
         "another server must re-ask rather than inherit A's fingerprint"
     );
@@ -44,8 +44,8 @@ fn the_machine_id_cache_is_scoped_to_the_server_that_taught_it() {
         },
         "rk-b",
     );
-    assert_eq!(ResolveEnv::snapshot(&ps, a, "rk-a").machine_id, "MACHINE-A");
-    assert_eq!(ResolveEnv::snapshot(&ps, b, "rk-b").machine_id, "");
+    assert_eq!(ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), a, "rk-a").machine_id, "MACHINE-A");
+    assert_eq!(ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), b, "rk-b").machine_id, "");
 }
 
 /// **The one that had to ship in the same commit as `cur_sid`.** The `/:/timeline` report runs
@@ -342,6 +342,51 @@ fn timeline_lease_cannot_cross_engine_teardown() {
     assert!(
         timeline_snapshot(&old, crate::plex::TimelineState::Playing, 1_500, 2_000).is_none(),
         "an old reporter must not sample any field after its Engine is retired"
+    );
+    reset_player_control_for_test(&ps);
+    reset_session(&mut ps);
+}
+
+/// Field report, 0.7.0 prep: an autoplayed trailer whose Original open failed was re-opened as an
+/// HLS transcode, and that engine posted `timeline playing t=…/178s` every ten seconds — watch
+/// state written to the viewer's account by a trailer they never chose to play. The failure path
+/// had cleared the session's preview flag while the abandoned Load still held the engine, so the
+/// reload that followed started a reporter. What a session may write is a property of the REQUEST
+/// that produced it, and no teardown bookkeeping may turn a preview into a playback.
+#[test]
+fn a_session_resolved_for_a_preview_never_reports_a_timeline() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = crate::testlock::serial();
+    reset_player_control_for_test(&ps);
+    reset_session(&mut ps);
+    ps.request = Some(PlaybackRequest {
+        sid: ServerId::from_raw(0),
+        rk: "trailer".into(),
+        part: "/library/parts/1/file.mp4".into(),
+        vcodec: "h264".into(),
+        acodec: "aac".into(),
+        title: "Trailer".into(),
+        ctx: crate::metadata::TRAILER_CONTEXT.into(),
+        preview: true,
+    });
+    apply_plan(
+        &mut ps,
+        Plan {
+            sid: ServerId::from_raw(0),
+            url: "https://example.invalid/trailer.mp4".into(),
+            sess: "logical-trailer".into(),
+            ..Default::default()
+        },
+        "trailer",
+    );
+    assert!(is_preview(&ps));
+    assert!(preview_request(&ps));
+    assert!(begin_timeline_reporting(&ps).is_none(), "a preview has no timeline");
+    clear_preview(&mut ps);
+    assert!(preview_request(&ps), "clearing the preview flag must not make it a playback");
+    assert!(
+        begin_timeline_reporting(&ps).is_none(),
+        "a session resolved for a preview must never report a timeline"
     );
     reset_player_control_for_test(&ps);
     reset_session(&mut ps);

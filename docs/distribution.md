@@ -428,7 +428,11 @@ The media stack is permitted by an **LS2 role file the Dev Mode installer writes
 nothing we declare. On the device, `/var/palm/ls2-dev/roles/pub/com.beb.plxnative.json` grants
 `com.webos.media.client.*`, `com.webos.rm.client.*`, `com.webos.pipeline.*` with in/outbound to
 `com.webos.media`. That is exactly the surface StarfishMediaAPIs needs, and it is why **no
-`requiredPermissions` field is needed in `appinfo.json`** (neither Kodi nor Moonlight sets one).
+`requiredPermissions` entry is needed for playback itself** (neither Kodi nor Moonlight declares
+one for it). Since the storage helper landed, `appinfo.json` DOES carry `requiredPermissions` —
+`database.operation` and `securitykey.operation`, both the storage service's, for the local DB8
+keystore and the platform key manager it wraps — so the field is no longer absent; it is just
+declared for a surface neither Kodi nor Moonlight has an equivalent of.
 
 Corroboration: Kodi's `MediaPipelineWebOS.cpp` drives `mediaTransportType: "BUFFERSTREAM"` and
 `AcbAPI_initialize(…, PLAYER_TYPE_MSE, getenv("APPID"), …)`, and its own docs say *"you do not need
@@ -1196,7 +1200,13 @@ build you did not make.
 
 ## 8. Release CI (built 2026-08-01)
 
-`.github/workflows/{ci,release}.yml` + `.github/actions/webos-ndk` + `ci/`.
+`.github/workflows/{ci,release,nightly,build-package}.yml` + `.github/actions/webos-ndk` + `ci/`.
+The ARM build+verify pipeline itself lives once, in `build-package.yml`, as a reusable
+(`workflow_call`) workflow — `release.yml`'s `build` job and `nightly.yml`'s `build` job are both
+thin callers into it, selecting a flavour, a telemetry pair, and which optional steps (the
+Homebrew manifest, the LGPL source asset, caches, the firmware-database gate) apply. (A third
+caller, `canary.yml`, existed the same way before nightly replaced it; its public prereleases
+remain on GitHub as history.)
 
 **The runner is forced.** `webosbrew/native-toolchain` publishes exactly three host builds for
 `webos-d7ed7ee.6` — `darwin-arm64`, `darwin-x86_64`, `linux-aarch64` — and **no linux-x86_64**.
@@ -1242,6 +1252,7 @@ seven-segment counter** (`app.rs`). The fps scenes are unaffected — they grade
 heartbeat in the *event log*, never the pixels. Anything added to this feature must be draw-only:
 the device is the only test this project has, so a release build must not differ from the tested
 one in any way that could change behaviour, only in what it paints.
+`RELEASE=1` also drops `threadcheck`, the default-on main-thread violation checker.
 
 Three traps this cost, all found by measurement rather than reasoning, all silent:
 
@@ -1257,9 +1268,10 @@ Three traps this cost, all found by measurement rather than reasoning, all silen
    comparison and cannot be defeated by either.
 3. **`make RELEASE=1 && make deploy` deploys a DEV binary** — the second invocation has no
    `RELEASE`, so it rebuilds and ships that. The flag must be on *every* invocation that produces
-   or ships the binary (`make RELEASE=1 deploy`). `deploy` and `ipk` now echo which configuration
-   they are shipping, and `release.yml` asserts `pkg/.build-config` really says
-   `--no-default-features` rather than trusting that the flag took.
+   or ships the binary (`make RELEASE=1 deploy`). `deploy` and `ipk` now echo which
+   configuration they are shipping, and `build-package.yml` (called from `release.yml`'s
+   `build` job) asserts `pkg/.build-config` really says `--no-default-features` rather than
+   trusting that the flag took.
 
 Verified on the device, not just by binary size: the release build deployed to the TV
 (md5-matched) renders the who's-watching screen with no counter; the dev build renders `62`.

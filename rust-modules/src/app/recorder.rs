@@ -8,6 +8,14 @@
 //! also denies/counts transport attempts. Detail and Person replies are supplied at their
 //! original store consumers; admissions retain the request identity and spawn answer.
 //! Account and playback remain outside this contract.
+//! Startup WILL/DID foreground is a bounded logical input. Replay resumes navigation without
+//! native playback or network-grant authority; actual SDL still owns physical window safety.
+//! Background lifecycle remains outside the accepted recording domain.
+//! Page-capture GPU readiness is recorded before dispatch and supplied on replay. It drives the
+//! ordinary motion/presentation gates; the final present decision is still computed and graded.
+//! Physical window authority remains live and cannot be supplied by the recording.
+//! Controlled Person requests keep captured authority; asynchronous ambient session-cache
+//! recovery cannot retire or reissue them at an unrecorded frame.
 //!
 //! Supported effects carry complete private payloads, including screen-input time/source/edge
 //! and focus identity. Missing/extra/changed effects or results prevent SAME. A codec error
@@ -123,8 +131,8 @@ impl crate::pms::initial::Sink for Canon {
 }
 
 #[cfg(test)]
-fn initial_header(app: &AppInit) -> Header {
-    let hubs = crate::pms::initial::Initial::capture();
+fn initial_header(app: &AppInit, state: &crate::pms::PmsState, adapter: &crate::pms::PmsAdapter) -> Header {
+    let hubs = crate::pms::initial::Initial::capture(state, adapter);
     let mut header = Header::new(state_fp(), &RecordedInit { app, hubs: &hubs });
     header.init_data = json!({"app": app, "hubs": hubs});
     header
@@ -192,10 +200,20 @@ const RESOLUTION_SHAPE: &str = "ProductResolutionV1{fo:Option<(entry:u32,elem:u3
 /// and closing and nothing between. Every committed fixture is invalidated by each bump, which is
 /// the cost this pin exists to make visible rather than silent — `tools/plxnative-rec rerecord` is
 /// the verb (`tests/fixtures/replay/README.md`).
+///
+/// **The household-evidence bump** is `super::bootstrap::SHAPE`'s, `ControlledHomeInitV2` →
+/// `ControlledHomeInitV3` with `session:SessionInit` → `session:SessionInitV2`. `SourceRef` now
+/// carries plex.tv's `home` and `ownerId` beside raw `owned`, and `owner::write_sources` folds
+/// both into the session digest — so a session that has learned whose household a server belongs
+/// to is no longer byte-identical to one that has not. The term for `SessionInit` had to move as
+/// well as the term around it: the init shape names that type rather than spelling its fields, so
+/// a census that only said `ControlledHomeInitV3` would be claiming the change was in the
+/// envelope when it is in the session.
 pub(crate) fn state_fp() -> u64 {
     let mut shapes: Vec<&str> = APP_SHAPES.to_vec();
     shapes.push(super::bootstrap::CONTENT_SHAPE);
     shapes.push(RESOLUTION_SHAPE);
+    shapes.push("CaptureReadinessV1{before_dispatch:pending:bool}");
     shapes.push("MeasurementV1{query:Width(text:bytes,sz:i32,bold:bool)|Cap(sz:i32)|Line(sz:i32),answer:f32bits:u32}");
     shapes.extend_from_slice(crate::screens::registry::SCREEN_SHAPES);
     crate::ui::rec::state_fp(&shapes)
@@ -393,6 +411,7 @@ pub(crate) fn validate_controlled(recording: &Recording, initial: &super::bootst
             return Err("missing controlled state grade");
         }
         if index != 0 && frame.present.is_none() { return Err("missing controlled presentation grade"); }
+        if index != 0 && frame.snapshot_pending.is_none() { return Err("missing controlled capture readiness"); }
         if frame.f != index as u64 || frame.tick.is_none_or(|tick| tick.dt_us > 50_000) {
             return Err("invalid controlled frame sequence");
         }
@@ -401,7 +420,9 @@ pub(crate) fn validate_controlled(recording: &Recording, initial: &super::bootst
             return Err("invalid bootstrap frame");
         }
         for input in &frame.inputs {
-            decode_input(input)?;
+            if direct_token(input).is_none() && controlled_foreground(input)?.is_none() {
+                decode_input(input)?;
+            }
         }
         // Admissions and terminals share a frame when the local spawn is refused. Arrays retain
         // their own order, so establish every synchronous answer before validating that frame's
@@ -552,26 +573,7 @@ impl crate::ui::dispatch::Tap<super::bridge::AppHost> for Recplay {
     fn input(&mut self, _frame: u64, input: &crate::ui::machine::InputEvent<u32>) {
         if matches!(self,Self::Off) { return; }
         match super::bootstrap::effects::input(input) {
-            Ok(encoded) => {
-                if let Self::Replaying(replay) = self {
-                    {
-                        let frame = replay.rec.frames.get(replay.at);
-                        let expected = frame.and_then(|frame|frame.inputs.get(replay.input_at));
-                        let expected_body = expected
-                            .and_then(|value| decode_input(value).ok())
-                            .and_then(|event| super::bootstrap::effects::input(&event).ok());
-                        if expected_body.as_ref() != Some(&encoded) {
-                            replay.input_diffs += 1;
-                            crate::log(&format!("replay: input diverge f={} input_index={} reason={}",
-                                frame.map_or(replay.at as u64, |frame| frame.f), replay.input_at,
-                                if expected.is_some() { "changed" } else { "extra" }));
-                        }
-                        replay.input_at += 1;
-                    }
-                } else {
-                    self.input(encoded);
-                }
-            }
+            Ok(encoded) => self.input(encoded),
             Err(reason) => self.refuse(reason),
         }
     }
@@ -715,8 +717,9 @@ impl Recplay {
         for request in requests { self.observe_effect("Cache", "App", request); }
         if let Some(reason) = failure { self.refuse(reason); }
     }
-    pub(crate) fn abort_startup(&mut self) -> Result<(), &'static str> {
-        crate::ui::landgate::disarm();
+    pub(crate) fn abort_startup(&mut self, gate: &crate::ui::landgate::Gate)
+        -> Result<(), &'static str> {
+        gate.disarm();
         match std::mem::replace(self,Self::Off) {
             Self::Recording(record) => record.w.abort().map_err(|_| "recording startup rollback incomplete"),
             Self::Off => Ok(()),
@@ -796,7 +799,6 @@ impl Recplay {
             }
             super::bootstrap::Preflight::Replay { recording, mode, .. } => {
                 validate_resolution_recording(&recording)?;
-                crate::ui::landgate::arm_sparse_replay(recording.land_schedule());
                 Ok(Self::Replaying(Replay { resolution:ResolutionReplay { mode, ..Default::default() }, rec: recording, at: 0, graded: 0, diverged: 0,
                     present_diffs: 0, result_diffs: 0, land_diffs: 0, result_at: 0, effect_at: 0,
                     input_at: 0, input_diffs: 0, effect_diffs: 0, started: false, failure: None }))
@@ -827,7 +829,6 @@ impl Recplay {
         header.features = features();
         header.triggers = initial.triggers.clone();
         let w = Writer::open(sink, &header, 0).map_err(|_| "cannot open recording")?;
-        crate::ui::landgate::arm_recording();
         Ok(Self::Recording(Rec { w, f:0, focus:None, events:false, spent_ns:0, failure:None }))
     }
 
@@ -843,12 +844,20 @@ impl Recplay {
 
     /// The loop's frame index, published to `ui::landgate` before any landing site runs. One
     /// relaxed atomic load when neither trigger is armed.
-    pub(crate) fn begin_frame(&self) {
+    pub(crate) fn begin_frame(&self, gate: &crate::ui::landgate::Gate) {
         match self {
-            Recplay::Recording(r) => crate::ui::landgate::begin_frame(r.f),
-            Recplay::Replaying(r) => crate::ui::landgate::begin_frame(
+            Recplay::Recording(r) => gate.begin_frame(r.f),
+            Recplay::Replaying(r) => gate.begin_frame(
                 r.rec.frames.get(r.at).map_or(r.at as u64, |f| f.f),
             ),
+            Recplay::Off => {}
+        }
+    }
+
+    pub(crate) fn arm_landgate(&self, gate: &crate::ui::landgate::Gate) {
+        match self {
+            Recplay::Recording(_) => gate.arm_recording(),
+            Recplay::Replaying(r) => gate.arm_sparse_replay(r.rec.land_schedule()),
             Recplay::Off => {}
         }
     }
@@ -914,12 +923,62 @@ impl Recplay {
         }
     }
 
+    /// One ordered ledger for dispatcher inputs and direct ingress alike. The writer adds
+    /// frame/type metadata; only the payload is compared when that input is replayed.
     pub(crate) fn input(&mut self, encoded: Value) {
-        if let Recplay::Recording(r) = self {
-            let t0 = std::time::Instant::now();
-            r.w.input(r.f, encoded);
-            r.events = true;
-            r.spent_ns += t0.elapsed().as_nanos() as u64;
+        match self {
+            Self::Recording(r) => {
+                let t0 = std::time::Instant::now();
+                r.w.input(r.f, encoded);
+                r.events = true;
+                r.spent_ns += t0.elapsed().as_nanos() as u64;
+            }
+            Self::Replaying(replay) => {
+                let frame = replay.rec.frames.get(replay.at);
+                let expected = frame.and_then(|frame| frame.inputs.get(replay.input_at));
+                let expected_body = expected.and_then(|value| {
+                    if value["kind"] == "owned" {
+                        decode_input(value).ok().and_then(|event| super::bootstrap::effects::input(&event).ok())
+                    } else {
+                        Some(input_payload(value))
+                    }
+                });
+                if expected_body.as_ref() != Some(&encoded) {
+                    replay.input_diffs += 1;
+                    crate::log(&format!("replay: input diverge f={} input_index={} reason={}",
+                        frame.map_or(replay.at as u64, |frame| frame.f), replay.input_at,
+                        if expected.is_some() { "changed" } else { "extra" }));
+                }
+                replay.input_at += 1;
+            }
+            Self::Off => {},
+        }
+    }
+
+    /// One environmental observation before logical dispatch. GPU completion varies with
+    /// live texture work even when clocks and inputs are identical. Supply that observation,
+    /// never the final present bit: a changed present policy must still fail its grade.
+    pub(crate) fn snapshot_pending(&mut self, live: bool) -> bool {
+        match self {
+            Self::Off => live,
+            Self::Recording(r) => {
+                let t0 = std::time::Instant::now();
+                r.w.capture_readiness(r.f, live);
+                r.events = true;
+                r.spent_ns += t0.elapsed().as_nanos() as u64;
+                live
+            }
+            Self::Replaying(r) => {
+                // Taking the fact enforces exactly one consumption. A missing, duplicated
+                // or unconsumed observation cannot earn SAME, even outside boot preflight.
+                match r.rec.frames.get_mut(r.at).and_then(|f| f.snapshot_pending.take()) {
+                    Some(pending) => pending,
+                    None => {
+                        r.failure = Some("missing or repeated capture readiness");
+                        true
+                    }
+                }
+            }
         }
     }
 
@@ -946,7 +1005,33 @@ impl Recplay {
 
     /// The frame's tail. `hash` is computed only when a state record is due (an event frame while
     /// recording; a graded frame while replaying). Returns `true` when a replay has just ended.
+    ///
+    /// `store_gen` is Stage B's seam: every store's generation now lives on the owning `Bridge`'s
+    /// `Stores` aggregate rather than a crate-global compatibility array, so the per-frame land
+    /// scan below reaches it through the caller's closure instead of naming `crate::stores::gen`
+    /// (deleted — there is no free store left for it to answer for).
+    #[cfg(test)]
     pub(crate) fn end_frame(&mut self, hash: &dyn Fn() -> u64) -> bool {
+        self.end_frame_with(hash, &|_| 0)
+    }
+
+    /// [`Self::end_frame`], but with an explicit per-store generation lookup — the production
+    /// path (`app::run::recorder_end_frame`) supplies `Bridge::store_gen`.
+    #[cfg(test)]
+    pub(crate) fn end_frame_with(
+        &mut self,
+        hash: &dyn Fn() -> u64,
+        store_gen: &dyn Fn(crate::stores::StoreId) -> u32,
+    ) -> bool {
+        self.end_frame_with_gate(hash, store_gen, crate::ui::landgate::fixture_gate())
+    }
+
+    pub(crate) fn end_frame_with_gate(
+        &mut self,
+        hash: &dyn Fn() -> u64,
+        store_gen: &dyn Fn(crate::stores::StoreId) -> u32,
+        gate: &crate::ui::landgate::Gate,
+    ) -> bool {
         match self {
             Recplay::Off => false,
             Recplay::Recording(r) => {
@@ -956,8 +1041,8 @@ impl Recplay {
                 // The frame's LANDING SCHEDULE (§3.3 step 3): one record per store that consumed
                 // a mailbox this frame, whichever of its sites did it. Written before `st`, so a
                 // reader sees the arrival above the state it produced.
-                for (ord, n) in crate::ui::landgate::take_frame_lands() {
-                    let gen = crate::stores::StoreId::from_ord(ord).map_or(0, crate::stores::gen);
+                for (ord, n) in gate.take_frame_lands() {
+                    let gen = crate::stores::StoreId::from_ord(ord).map_or(0, store_gen);
                     r.w.land(r.f, ord.0, gen, n);
                     r.events = true;
                 }
@@ -992,11 +1077,14 @@ impl Recplay {
                 // Landings the gate could not place on their recorded frame. `late` means the
                 // worker was slower here than it was when recorded (holding cannot conjure a
                 // result); `extra` means the recording had none left for that store.
-                for (frame, ord, why) in crate::ui::landgate::take_diffs() {
+                for (frame, ord, why) in gate.take_diffs() {
                     r.land_diffs += 1;
                     crate::log(&format!("replay: land diverge f={frame} store={ord} reason={}", why.name()));
                 }
                 if let Some(fr) = r.rec.frames.get(r.at) {
+                    if fr.snapshot_pending.is_some() {
+                        r.failure = Some("unconsumed capture readiness");
+                    }
                     let scripts = fr.inputs.len();
                     if r.input_at < scripts {
                         let missing = scripts - r.input_at;
@@ -1032,7 +1120,7 @@ impl Recplay {
                 if r.at >= r.rec.frames.len() {
                     // Recorded landings this run never produced. They can only be known at the
                     // end: until the recording is exhausted, "not yet" and "never" look alike.
-                    for (ord, frame, count) in crate::ui::landgate::unmatched_counts() {
+                    for (ord, frame, count) in gate.unmatched_counts() {
                         r.land_diffs += u64::from(count);
                         crate::log(&format!(
                             "replay: land diverge f={frame} store={ord} reason={}",
@@ -1072,9 +1160,9 @@ impl Recplay {
         }
     }
 
-    pub(crate) fn finish(self) -> bool {
+    pub(crate) fn finish(self, gate: &crate::ui::landgate::Gate) -> bool {
         let mut failed = self.outcome_failed();
-        crate::ui::landgate::disarm();
+        gate.disarm();
         if let Recplay::Recording(r) = self {
             if r.w.finish().is_err() {
                 failed = true;
@@ -1163,6 +1251,19 @@ pub(crate) fn enc_key(sym: u32, wcode: u32, down: bool, repeat: bool) -> Value {
     json!({"kind": "key", "sym": sym, "wcode": wcode, "down": down, "repeat": repeat})
 }
 
+fn input_payload(value: &Value) -> Value {
+    let mut payload = value.clone();
+    if let Some(object) = payload.as_object_mut() { object.remove("f"); object.remove("t"); }
+    payload
+}
+
+/// Direct ingress is replayed through the same token classifier as recording, including during
+/// controlled boots. Keep malformed or SDL-synthesizing tokens out of this envelope.
+pub(crate) fn direct_token(value: &Value) -> Option<&str> {
+    let token = value["tok"].as_str()?;
+    (super::events::token_is_direct(token) && input_payload(value) == enc_token(token)).then_some(token)
+}
+
 pub(crate) fn enc_token(tok: &str) -> Value {
     json!({"kind": "token", "tok": tok})
 }
@@ -1190,9 +1291,63 @@ pub(crate) fn enc_lifecycle(code: u32) -> Value {
     json!({"kind": "lifecycle", "code": code})
 }
 
+/// Startup activation is part of the bounded Home/Settings/content domain. Backgrounding
+/// and playback restoration are not: accepting these two notifications grants no native,
+/// credential or network authority to a recording. Keep the complete envelope canonical.
+pub(crate) fn controlled_foreground(value: &Value) -> Result<Option<u32>, &'static str> {
+    if value["kind"] != "lifecycle" { return Ok(None); }
+    let code = value["code"].as_u64().and_then(|n| u32::try_from(n).ok())
+        .filter(|code| matches!(code, 0x105 | 0x106))
+        .ok_or("unsupported controlled lifecycle")?;
+    if input_payload(value) != enc_lifecycle(code) {
+        return Err("noncanonical controlled lifecycle");
+    }
+    Ok(Some(code))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_bridge_recorders_own_their_landing_lifecycle() {
+        let _serial = crate::testlock::serial();
+        crate::ui::landgate::disarm();
+        let initial = super::super::bootstrap::Initial::synthetic_home(
+            1, 32517, Some("root".into())).unwrap();
+        let first_bridge = super::super::bridge::Bridge::for_test(|| 0);
+        let second_bridge = super::super::bridge::Bridge::for_test(|| 0);
+        let mut first = Recplay::recording_with_sink(
+            &initial, Box::new(crate::ui::rec::MemSink::default())).unwrap();
+        let mut second = Recplay::recording_with_sink(
+            &initial, Box::new(crate::ui::rec::MemSink::default())).unwrap();
+        first.arm_landgate(first_bridge.landgate());
+        second.arm_landgate(second_bridge.landgate());
+        first.begin_frame(first_bridge.landgate());
+        second.begin_frame(second_bridge.landgate());
+        let browse = crate::stores::StoreId::Browse.ord();
+        first_bridge.landgate().landed(browse);
+        second_bridge.landgate().landed(browse);
+
+        assert!(!first.end_frame_with_gate(&|| 0, &|_| 0, first_bridge.landgate()));
+        assert_eq!(second_bridge.landgate().take_frame_lands(), vec![(browse, 1)],
+            "ending one Bridge must not drain the other owner's StoreId cursor");
+        assert!(crate::ui::landgate::take_frame_lands().is_empty(),
+            "constructing or running an owned recorder must not arm the fixture gate");
+
+        assert!(!first.finish(first_bridge.landgate()));
+        first_bridge.landgate().landed(browse);
+        assert!(first_bridge.landgate().take_frame_lands().is_empty(),
+            "finishing must disarm the same owner gate that begin/end used");
+        second.begin_frame(second_bridge.landgate());
+        second_bridge.landgate().landed(browse);
+        assert_eq!(second_bridge.landgate().take_frame_lands(), vec![(browse, 1)],
+            "finishing the first recorder must leave the second owner armed");
+        second.abort_startup(second_bridge.landgate()).unwrap();
+        second_bridge.landgate().landed(browse);
+        assert!(second_bridge.landgate().take_frame_lands().is_empty(),
+            "startup abort must disarm its own owner gate too");
+    }
 
     #[test]
     fn product_pre_resolution_wire_shape_is_refused_before_boot() {
@@ -1210,6 +1365,104 @@ mod tests {
         Recplay::Replaying(Replay { resolution:ResolutionReplay {mode,..Default::default()}, rec,
             at:0,graded:0,diverged:0,present_diffs:0,result_diffs:0,land_diffs:0,result_at:0,
             effect_at:0,input_at:0,input_diffs:0,effect_diffs:0,started:false,failure:None })
+    }
+
+    #[test]
+    fn controlled_replay_retains_capture_readiness_when_the_gpu_finishes_earlier() {
+        use crate::ui::dispatch::Tap;
+        let _serial = crate::testlock::serial();
+        let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
+        let sink = crate::ui::rec::MemSink::default();
+        let segments = sink.segments.clone();
+        let manifest = Header::new(state_fp(), &initial).to_json().to_string();
+        let mut rec = Recplay::recording_with_sink(&initial, Box::new(sink)).unwrap();
+        // The ARM recording deferred these frames behind page-capture fences.
+        // Replay has no live poster downloads and its GPU can finish sooner.
+        for (f, pending) in [false, true, false, true, false].into_iter().enumerate() {
+            rec.tick(f as u32 * 16, 0.016);
+            let pending = rec.snapshot_pending(pending);
+            rec.present(!pending);
+            Tap::<Product>::focus(&mut rec, 1, None);
+            rec.end_frame(&|| 7);
+        }
+        rec.finish(crate::ui::landgate::fixture_gate());
+        let recording = Recording::parse(&manifest,
+            &segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(), state_fp()).unwrap();
+        for (mode, live, changed_present) in [
+            (ReplayMode::Targets, false, false), (ReplayMode::Resolve, false, false),
+            (ReplayMode::Targets, true, false), (ReplayMode::Resolve, true, false),
+            (ReplayMode::Targets, false, true), (ReplayMode::Resolve, false, true),
+        ] {
+            let mut replay = replay_for_test(copy_recording(&recording), mode);
+            for f in 0..5 {
+                replay.tick(f * 16, 0.016);
+                let pending = replay.snapshot_pending(live);
+                replay.present(!pending ^ (changed_present && f == 3));
+                Tap::<Product>::focus(&mut replay, 1, None);
+                replay.end_frame(&|| 7);
+            }
+            let Recplay::Replaying(r) = replay else { unreachable!() };
+            assert_eq!(r.diverged, 0);
+            assert_eq!(r.present_diffs, u64::from(changed_present),
+                "GPU completion is an input; replay must not sample a new readiness schedule");
+            assert_eq!(r.same(), !changed_present,
+                "supplying readiness must not hide a changed final present decision");
+        }
+    }
+
+    #[test]
+    fn capture_readiness_must_be_consumed_exactly_once() {
+        let _serial = crate::testlock::serial();
+        let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
+        for calls in 0..=2 {
+            let recording = Recording { header: Header::new(state_fp(), &initial),
+                frames: vec![crate::ui::rec::Frame { f: 0, snapshot_pending: Some(false),
+                    st: Some(7), ..Default::default() }], metrics: Default::default(), stopped_at: None };
+            let mut replay = replay_for_test(recording, ReplayMode::Targets);
+            for _ in 0..calls { replay.snapshot_pending(true); }
+            replay.end_frame(&|| 7);
+            let Recplay::Replaying(r) = replay else { unreachable!() };
+            assert_eq!(r.same(), calls == 1, "capture readiness consumed {calls} times");
+        }
+        for live in [false, true] {
+            assert_eq!(Recplay::Off.snapshot_pending(live), live, "ordinary GPU policy is unchanged");
+        }
+    }
+
+    #[test]
+    fn controlled_recording_accepts_the_tvs_startup_foreground_pair() {
+        let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
+        let mut header = Header::new(state_fp(), &initial);
+        header.features = features();
+        header.triggers = initial.triggers.clone();
+        // Minimized from the ARM recording: its first native inputs were the
+        // compositor's WILL/DID foreground pair, before any navigation key.
+        let mut recording = Recording {
+            header,
+            frames: vec![
+                crate::ui::rec::Frame { f: 0, tick: Some(Tick { ms: 0, dt_us: 0 }),
+                    st: Some(7), focus: Some(None), ..Default::default() },
+                crate::ui::rec::Frame { f: 1, tick: Some(Tick { ms: 16, dt_us: 16_000 }),
+                    snapshot_pending: Some(false), present: Some(true), st: Some(7), focus: Some(None),
+                    inputs: vec![json!({"f":1,"t":"in","kind":"lifecycle","code":0x105}),
+                        json!({"f":1,"t":"in","kind":"lifecycle","code":0x106})],
+                    ..Default::default() },
+            ],
+            metrics: Default::default(), stopped_at: None,
+        };
+        assert_eq!(validate_controlled(&recording, &initial), Ok(()));
+        recording.frames[1].snapshot_pending = None;
+        assert_eq!(validate_controlled(&recording, &initial), Err("missing controlled capture readiness"));
+        recording.frames[1].snapshot_pending = Some(false);
+        for code in [0x103, 0x104, 0, u32::MAX] {
+            recording.frames[1].inputs = vec![json!({"f":1,"t":"in","kind":"lifecycle","code":code})];
+            assert!(validate_controlled(&recording, &initial).is_err(),
+                "background and unknown lifecycle remain outside the controlled domain");
+        }
+        for value in [json!({"kind":"lifecycle","code":0x106,"extra":true}),
+            json!({"kind":"lifecycle","code":"262"}), json!({"kind":"lifecycle"})] {
+            assert!(controlled_foreground(&value).is_err());
+        }
     }
 
     #[test]
@@ -1364,7 +1617,7 @@ mod tests {
         let mut rec=Recplay::recording_with_sink(&initial,Box::new(sink)).unwrap();
         let expected=product_settings_run(&mut rec,false,false);
         assert_eq!(rec.failure(),None);
-        rec.finish();
+        rec.finish(crate::ui::landgate::fixture_gate());
         let recording=Recording::parse(&manifest,&segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(),state_fp()).unwrap();
         (recording,expected)
     }
@@ -1404,7 +1657,7 @@ mod tests {
         let mut rec=Recplay::recording_with_sink(&initial,Box::new(sink)).unwrap();
         let mut queries=Vec::new();
         let expected=product_settings_run_with_queries(&mut rec,false,false,&mut queries);
-        rec.finish();
+        rec.finish(crate::ui::landgate::fixture_gate());
         let recording=Recording::parse(&manifest,&segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(),state_fp()).unwrap();
         let mut replay=replay_for_test(recording,ReplayMode::Resolve);
         let mut replay_queries=Vec::new();
@@ -1479,7 +1732,7 @@ mod tests {
         assert_eq!(focuses[1],focuses[3],"return must remember the trailing answer");
         assert_eq!(focuses[3],focuses[5],"second round trip");
         assert!(!queries.is_empty(),"real consent geometry queries the capability");
-        rec.finish();
+        rec.finish(crate::ui::landgate::fixture_gate());
         let recording=Recording::parse(&manifest,&segments.borrow().iter().map(Vec::as_slice).collect::<Vec<_>>(),state_fp()).unwrap();
         for mode in [ReplayMode::Targets,ReplayMode::Resolve] {
             for changed in [false,true] {
@@ -1584,7 +1837,7 @@ mod tests {
         rec.tick(16, 0.016);
         Tap::focus(&mut rec, 2, Some((1, 2, Some(3))));
         rec.end_frame(&|| 8);
-        rec.finish();
+        rec.finish(crate::ui::landgate::fixture_gate());
         let rows: Vec<Value> = segments.borrow().iter().flat_map(|s| s.split(|b| *b == b'\n'))
             .filter(|s| !s.is_empty()).map(|s| serde_json::from_slice(s).unwrap()).collect();
         let focus: Vec<_> = rows.iter().filter(|v| v["t"] == "fo").collect();
@@ -1610,7 +1863,7 @@ mod tests {
         pages.frame_with(&mut bridge, Tick::default(), Vec::new(), Vec::new(), &mut rec, false);
         rec.tick(1, 0.016);
         rec.end_frame(&||0);
-        rec.finish();
+        rec.finish(crate::ui::landgate::fixture_gate());
         assert_eq!(*segments.borrow(), bytes, "later frames/shutdown cannot recreate recording bytes");
         assert_eq!(bridge.auth_read().0.phase, crate::auth::Phase::Deleted);
     }
@@ -1636,7 +1889,9 @@ mod tests {
             rec.tick(0, 0.0);
             rec.end_frame(&||0);
             assert_eq!(rec.failure().is_some(), midwrite, "midwrite failure reaches the production frame tail");
-            assert!(super::super::finish_recording(&mut rec), "storage error must fail application outcome");
+            assert!(super::super::finish_recording(
+                &mut rec, crate::ui::landgate::fixture_gate()),
+                "storage error must fail application outcome");
             assert!(matches!(rec, Recplay::Off), "failed writer is still retired");
             let mut rec = Recplay::recording_with_sink(&initial, Box::new(Disk(midwrite))).unwrap();
             rec.tick(0, 0.0);
@@ -1675,6 +1930,56 @@ mod tests {
             }
         }
         assert!(super::super::events::text_inputs("", true, Tick { ms: 0, dt_us: 0 }, Source::Sdl).is_empty());
+    }
+
+    #[test]
+    fn direct_and_owned_inputs_share_one_ordered_replay_ledger() {
+        use crate::ui::dispatch::Tap;
+        let _serial = crate::testlock::serial();
+        let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
+        let event = super::super::bridge::script_key(crate::ui::machine::Key::Down,
+            Tick { ms: 16, dt_us: 0 }).remove(0);
+        let payloads = [enc_token("diag"), super::super::bootstrap::effects::input(&event).unwrap(), enc_token("pat:0")];
+        let expected: Vec<_> = payloads.iter().map(|payload| {
+            let mut row = payload.clone(); row["f"] = json!(0); row["t"] = json!("in"); row
+        }).collect();
+        for order in [vec![0, 1, 2], vec![0, 1], vec![0, 0, 1, 2], vec![2, 1, 0], vec![0, 1, 2, 2]] {
+            let mut replay = replay_for_test(Recording { header: Header::new(state_fp(), &initial),
+                frames: vec![crate::ui::rec::Frame { f: 0, inputs: expected.clone(), st: Some(7), ..Default::default() }],
+                metrics: Default::default(), stopped_at: None }, ReplayMode::Resolve);
+            for &index in &order {
+                if index == 1 { Tap::input(&mut replay, 0, &event); }
+                else { replay.input(payloads[index].clone()); }
+            }
+            replay.end_frame(&|| 7);
+            let Recplay::Replaying(replay) = replay else { unreachable!() };
+            assert_eq!(replay.same(), order == [0, 1, 2], "missing/duplicate/reordered/extra direct input must diverge: {order:?}");
+        }
+    }
+
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn controlled_recordings_accept_only_canonical_direct_token_envelopes() {
+        let initial = super::super::bootstrap::Initial::synthetic_home(1, 32517, None).unwrap();
+        let mut header = Header::new(state_fp(), &initial);
+        header.clock_start_ms = initial.clock_start;
+        header.features = features();
+        header.triggers = initial.triggers.clone();
+        let mut recording = Recording { header, frames: vec![
+            crate::ui::rec::Frame { f: 0, tick: Some(Tick { ms: initial.clock_start, dt_us: 0 }),
+                st: Some(7), ..Default::default() },
+            crate::ui::rec::Frame { f: 1, tick: Some(Tick { ms: initial.clock_start + 16, dt_us: 16000 }),
+                st: Some(7), present: Some(false), snapshot_pending: Some(false), ..Default::default() },
+        ], metrics: Default::default(), stopped_at: None };
+        for token in ["hang-raw:1", "diag", "pat:0"] {
+            let mut value = enc_token(token); value["f"] = json!(1); value["t"] = json!("in");
+            recording.frames[1].inputs = vec![value];
+            assert_eq!(validate_controlled(&recording, &initial), Ok(()));
+        }
+        for value in [enc_token("down"), enc_token("hang-raw:bad"), json!({"kind":"token","tok":"diag","extra":true})] {
+            recording.frames[1].inputs = vec![value];
+            assert!(validate_controlled(&recording, &initial).is_err());
+        }
     }
 
     #[test]
@@ -1724,10 +2029,12 @@ mod tests {
     #[test]
     fn recording_header_contains_home_boot_contents_and_hashes_hidden_state() {
         let _guard = crate::testlock::serial();
-        crate::pms::seed_for_test(2, crate::pms::HubState::Ready);
+        let mut state = crate::pms::PmsState::default();
+        let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+        crate::pms::seed_for_test(&mut state, &adapter, 2, crate::pms::HubState::Ready);
         let app = AppInit { route: "home", session: false, servers: 1, consent_asked: 0,
             consent_errors: false, consent_usage: false, seed: 0 };
-        let header = initial_header(&app);
+        let header = initial_header(&app, &state, &adapter);
         assert_eq!(header.init_data["hubs"]["catalog"]["items"].as_array().unwrap().len(), 2);
         let mut data = header.init_data["hubs"].clone();
         let original: crate::pms::initial::Initial = serde_json::from_value(data.clone()).unwrap();
@@ -1735,7 +2042,6 @@ mod tests {
         data["sources"][0]["retry_n"] = json!(123);
         let changed: crate::pms::initial::Initial = serde_json::from_value(data).unwrap();
         assert_ne!(RecordedInit { app: &app, hubs: &changed }.hash(), header.init_hash);
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]
@@ -1744,10 +2050,12 @@ mod tests {
         use crate::ui::machine::{Addr, MachineId, RequestId};
         use crate::screens::registry::AppMsg;
         let _guard = crate::testlock::serial();
-        crate::pms::seed_for_test(1, crate::pms::HubState::Ready);
-        crate::pms::queue_test_landing(Some(2));
-        crate::pms::queue_test_landing(Some(3));
-        let results = crate::stores::hubs::take_results();
+        let mut state = crate::pms::PmsState::default();
+        let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+        crate::pms::seed_for_test(&mut state, &adapter, 1, crate::pms::HubState::Ready);
+        crate::pms::queue_test_landing(&state, &adapter, Some(2));
+        crate::pms::queue_test_landing(&state, &adapter, Some(3));
+        let results = crate::pms::take_landings(&adapter);
         let addr = Addr { to: MachineId::Store(crate::stores::StoreId::Hubs.ord()), req: RequestId(results[0].request_id()) };
         let expected: Vec<_> = results.iter().map(|r| json!({ "f": 0, "t": "async",
             "to": machine_name(addr.to), "req": addr.req.0, "payload": crate::pms::record::encode(r) })).collect();
@@ -1817,7 +2125,6 @@ mod tests {
         assert_eq!(r.graded, 2);
         assert_eq!(r.result_diffs, 1, "the next frame starts at result ordinal zero");
         assert!(!r.same());
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]
@@ -1826,7 +2133,6 @@ mod tests {
         struct Cleanup;
         impl Drop for Cleanup {
             fn drop(&mut self) {
-                crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
                 crate::plex::reset_servers_for_test();
             }
         }
@@ -1841,8 +2147,7 @@ mod tests {
         rig.seed_registered_browse_for_test([own, shared]);
         assert!(!rig.browse_directory().sections().is_empty(),
             "a Bridge Hubs landing fixture requires its retained Browse bootstrap");
-        crate::pms::seed_for_directory_test(
-            own, 1, crate::pms::HubState::Ready, rig.browse_directory());
+        rig.seed_hubs_for_directory_test(own, 1, crate::pms::HubState::Ready);
         let init = AppInit { route: "home", session: false, servers: 1, consent_asked: 0,
             consent_errors: false, consent_usage: false, seed: 0 };
         let sink = crate::ui::rec::MemSink::default();
@@ -1851,7 +2156,7 @@ mod tests {
         let mut rec = Recplay::Recording(Rec { w: writer, f: 0, focus: None, events: false, spent_ns: 0, failure: None });
         let mut d = crate::ui::dispatch::Dispatcher::<super::super::bridge::AppHost>::new();
         rec.tick(0, 0.016);
-        let request = crate::pms::queue_test_landing(Some(3));
+        let request = rig.queue_hubs_landing_for_test(Some(3));
         super::super::bridge::show_page(&mut d, super::super::AppArg::Home);
         super::super::bridge::frame_with_tap(&mut d, &mut rig,
             Tick { ms: 0, dt_us: 16000 }, vec![], &mut rec);
@@ -1885,13 +2190,13 @@ mod tests {
             effect_diffs: 0, started: false, failure: None,
         });
         let supplied = replay.replay_results(|_| None).unwrap().unwrap();
-        crate::pms::queue_test_landing(Some(9));
-        let before = crate::pms::catalog_gen();
+        rig.queue_hubs_landing_for_test(Some(9));
+        let before = rig.hubs_catalog_gen_for_test();
         super::super::bridge::frame_with_results(&mut d, &mut rig,
             Tick { ms: 16, dt_us: 16000 }, vec![], || supplied, &mut replay);
-        assert!(crate::pms::catalog_gen() > before, "the supplied result was applied");
-        assert_eq!(crate::pms::hub_len(0), 3);
-        assert_eq!(crate::stores::hubs::take_results().len(), 1, "live arrivals were not consumed");
+        assert!(rig.hubs_catalog_gen_for_test() > before, "the supplied result was applied");
+        assert_eq!(rig.hub_len_for_test(0), 3);
+        assert_eq!(rig.take_hubs_results_for_test().len(), 1, "live arrivals were not consumed");
         let Recplay::Replaying(r) = replay else { unreachable!() };
         assert_eq!(r.result_at, 1);
         assert_eq!(r.result_diffs, 0);
@@ -1984,8 +2289,27 @@ mod tests {
         // AppFrameV2 adds Session's cached digest. AppFrameV4 adds the physical Consent owner;
         // both predecessor censuses remain pinned separately below, and recordings on either
         // combined shape are explicitly refused.
-        // Locale is now an explicit controlled-session input, never a live environment read.
-        assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0x9c73d876362ff277);
+        //
+        // **Household evidence moves it to 0x6c07_e505_2de6_63b8.** `ControlledHomeInitV2{…
+        // session:SessionInit …}` became `ControlledHomeInitV3{… session:SessionInitV2 …}`:
+        // `SourceRef` now carries plex.tv's `home`/`ownerId` beside raw `owned` and
+        // `owner::write_sources` folds them into the session digest, so a session that knows whose
+        // household a server belongs to is no longer byte-identical to one that does not. The
+        // predecessor 0x7609_c82f_0914_2f33 is kept in this comment for the same reason every
+        // value above it is: it is what the recordings made before the change were graded under.
+        //
+        // **The unsaved-login answer moves it to 0xb2a6_c39d_095e_c1b6.** `ControlledHomeInitV3{…
+        // session:SessionInitV2 …}` became `ControlledHomeInitV4{… session:SessionInitV3 …}`:
+        // `SessionInit` gained `persistence_warning_answered:bool`, folded into the digest by
+        // `w.bool(self.persistence_warning_answered)`, so an authorization that has already
+        // answered its one unsaved-login (AUTH-03) warning is no longer byte-identical to one that
+        // has not. The predecessor 0x6c07_e505_2de6_63b8 is kept in this comment for the same
+        // reason every value above it is: it is what the recordings made before the change were
+        // graded under.
+        // Plaintext consent adds the captured offer and persisted answers: ControlledHomeInitV5
+        // carries SessionInitV4. The previous app census was 0xb2a6_c39d_095e_c1b6.
+        // Localization adds the captured preference in ControlledHomeInitV6 / SessionInitV5.
+        assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0x5232_f81a_719f_4c3c);
     }
 
     /// The gate at the REAL hubs landing site, through the recording the driver loads: a result
@@ -1996,28 +2320,27 @@ mod tests {
     #[test]
     fn a_hubs_landing_is_delivered_on_its_recorded_frame_during_replay() {
         let _guard = crate::testlock::serial();
-        crate::pms::seed_for_test(1, crate::pms::HubState::Ready);
-        let _ = crate::stores::hubs::take_results();
+        let mut rig = super::super::bridge::Bridge::for_test(|| 0);
+        rig.seed_hubs_for_test(1, crate::pms::HubState::Ready);
+        let _ = rig.take_hubs_results_for_test();
         // a recording in which Hubs landed on FRAME 2 and nowhere else
         let manifest = format!(r#"{{"schema": {}, "state_fp": {}}}"#, crate::ui::rec::SCHEMA, state_fp());
         let seg = b"{\"f\":0,\"t\":\"tick\",\"ms\":0,\"dt_us\":16000}\n                    {\"f\":1,\"t\":\"tick\",\"ms\":16,\"dt_us\":16000}\n                    {\"f\":2,\"t\":\"tick\",\"ms\":32,\"dt_us\":16000}\n                    {\"f\":2,\"t\":\"land\",\"ord\":1,\"gen\":3,\"n\":1}\n";
         let rec = Recording::parse(&manifest, &[seg.as_slice()], state_fp()).unwrap();
         assert_eq!(rec.land_schedule(), std::collections::BTreeMap::from([(1,vec![(2,1)])]));
-        let _armed = crate::ui::landgate::Armed;
-        crate::ui::landgate::arm_sparse_replay(rec.land_schedule());
+        rig.landgate().arm_sparse_replay(rec.land_schedule());
         // the worker's answer is in the mailbox from frame 0
-        crate::pms::queue_test_landing(Some(4));
+        rig.queue_hubs_landing_for_test(Some(4));
         let mut seen = Vec::new();
         for f in 0..4u64 {
-            crate::ui::landgate::begin_frame(f);
-            if !super::super::bridge::take_hubs_results().is_empty() {
+            rig.landgate().begin_frame(f);
+            if !rig.take_hubs_results_for_test().is_empty() {
                 seen.push(f);
             }
         }
         assert_eq!(seen, vec![2], "the live arrival waited for its recorded frame");
-        assert!(crate::ui::landgate::take_diffs().is_empty());
-        assert!(crate::ui::landgate::unmatched().is_empty());
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
+        assert!(rig.landgate().take_diffs().is_empty());
+        assert!(rig.landgate().unmatched().is_empty());
     }
 
     /// …and a landing the recording never saw is delivered at once and counted, so the gate can
@@ -2025,18 +2348,17 @@ mod tests {
     #[test]
     fn a_hubs_landing_the_recording_never_saw_is_delivered_at_once_and_counted() {
         let _guard = crate::testlock::serial();
-        crate::pms::seed_for_test(1, crate::pms::HubState::Ready);
-        let _ = crate::stores::hubs::take_results();
-        let _armed = crate::ui::landgate::Armed;
-        crate::ui::landgate::arm_replay(vec![]);
-        crate::pms::queue_test_landing(Some(4));
-        crate::ui::landgate::begin_frame(5);
-        assert_eq!(super::super::bridge::take_hubs_results().len(), 1);
+        let mut rig = super::super::bridge::Bridge::for_test(|| 0);
+        rig.seed_hubs_for_test(1, crate::pms::HubState::Ready);
+        let _ = rig.take_hubs_results_for_test();
+        rig.landgate().arm_replay(vec![]);
+        rig.queue_hubs_landing_for_test(Some(4));
+        rig.landgate().begin_frame(5);
+        assert_eq!(rig.take_hubs_results_for_test().len(), 1);
         assert_eq!(
-            crate::ui::landgate::take_diffs(),
+            rig.landgate().take_diffs(),
             vec![(5, crate::stores::StoreId::Hubs.ord().0, crate::ui::landgate::Diff::Extra)]
         );
-        crate::stores::hubs::apply(crate::stores::hubs::HubsCmd::Reset).changed;
     }
 
     #[test]
@@ -2182,6 +2504,16 @@ mod tests {
             assert_eq!(result.diverged, u64::from(changed));
             assert_eq!(result.same(), !changed);
         }
+    }
+
+    #[test]
+    fn pre_plaintext_initial_shape_is_refused_before_boot() {
+        // The pre-consent anchors have no SessionInit::plaintext or persisted plaintext_consent.
+        // Their state census must differ before bootstrap tries to decode those initial fields.
+        let old = 0x4224_5ccc_f16a_aba4;
+        let manifest = format!(r#"{{"schema": {}, "state_fp": {old}}}"#, crate::ui::rec::SCHEMA);
+        assert_eq!(Recording::parse(&manifest, &[], state_fp()).err(),
+            Some(RecError::StateShape { theirs: old, ours: state_fp() }));
     }
 
     #[test]

@@ -214,6 +214,36 @@ pub(crate) fn normalize(s: &str) -> Option<String> {
     (l.id.language.as_str() != "und").then(|| l.to_string())
 }
 static CURRENT: OnceLock<LocaleContext> = OnceLock::new();
+static SAVED_PREFERENCE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// The confirmed next-launch setting. Reading it never touches credential storage.
+pub(crate) fn saved_preference() -> Preference {
+    match SAVED_PREFERENCE.load(std::sync::atomic::Ordering::Acquire) {
+        1 => Preference::En,
+        2 => Preference::Es,
+        3 => Preference::Be,
+        _ => Preference::System,
+    }
+}
+
+pub(crate) fn set_saved_preference(value: Preference) {
+    let value = match value {
+        Preference::System => 0,
+        Preference::En => 1,
+        Preference::Es => 2,
+        Preference::Be => 3,
+    };
+    SAVED_PREFERENCE.store(value, std::sync::atomic::Ordering::Release);
+}
+
+#[cfg(test)]
+pub(crate) fn saved_preference_for_test(value: Preference) -> Preference {
+    crate::testlock::assert_held("saved language preference");
+    let previous = saved_preference();
+    set_saved_preference(value);
+    previous
+}
+
 pub(crate) fn current() -> &'static LocaleContext {
     #[cfg(test)]
     {
@@ -228,6 +258,7 @@ pub(crate) fn current() -> &'static LocaleContext {
 }
 #[cfg(not(test))]
 pub(crate) fn initialize(preference: Preference, controlled: bool) {
+    set_saved_preference(preference);
     // Record/replay must not depend on the TV or process environment. The preference is part
     // of the captured session; System resolves to English and formatting is fixed in both modes.
     if controlled {

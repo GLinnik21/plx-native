@@ -307,7 +307,7 @@ pub struct AVSubtitleRect {
     pub data: [*mut u8; 4], // +20  data[0]=PAL8 indices, data[1]=palette (256×BGRA)
     pub linesize: [c_int; 4], // +36
     // **`flags` comes BEFORE `type`, and this model had them the other way round until
-    // 2026-08-28.** The consequence was latent rather than live — `rect_to_rgba` reads only
+    // 2026-08-28.** The consequence was latent rather than live — `rect_to_indexed` reads only
     // x/y/w/h/linesize[0]/data[0..2], all of which are ahead of the swap — but it was wrong in
     // the way this whole apparatus exists to prevent: `type_` read `flags`, `text` read `type`,
     // and on the 64-bit host `flags` landed at offset 96 of a 96-byte struct, i.e. one word past
@@ -495,6 +495,8 @@ crate::dynlib! {
 pub const AVMEDIA_TYPE_VIDEO: c_int = 0;
 pub const AVMEDIA_TYPE_AUDIO: c_int = 1;
 pub const AVMEDIA_TYPE_SUBTITLE: c_int = 3;
+// Proven against the bundled headers by ci/ffabi-assert.c.
+const AVMEDIA_TYPE_ATTACHMENT: c_int = 4;
 // The only codec id the app compares against. The others (H264, AC3, E-AC3) and AV_PKT_FLAG_KEY
 // were declared and never read; their values shift between FFmpeg majors, so each one was a
 // constant to re-derive and assert in order to prove nothing.
@@ -1169,6 +1171,61 @@ unsafe fn sub_kind(codec_id: c_int) -> SubKind {
     }
 }
 
+/// Copy the embedded ASS sources before FFmpeg can release them. The codec parameter and
+/// dictionary layouts are already compile-asserted against our bundled FFmpeg headers; the
+/// attachment media-type constant is asserted beside them. No firmware layout is inferred.
+unsafe fn begin_ass_sources(
+    media_key: &str,
+    fmt: *mut AVFormatContext,
+    streams: *mut *mut AVStream,
+    subs: &[(c_int, SubKind, *mut AVCodecContext)],
+) -> u64 {
+    use crate::player::{ass::Font, ass_source};
+    let mut headers = Vec::new();
+    let mut header_bytes = 0;
+    for (track, (si, kind, _)) in subs.iter().enumerate() {
+        if *kind != SubKind::Ass { continue; }
+        let cp = stream_codecpar(*streams.add(*si as usize));
+        let len = (*cp).extradata_size.max(0) as usize;
+        if len > 0 && len <= ass_source::MAX_HEADER_BYTES
+            && headers.len() < ass_source::MAX_TRACKS
+            && header_bytes + len <= ass_source::MAX_HEADERS_BYTES
+            && !(*cp).extradata.is_null() {
+            header_bytes += len;
+            headers.push((track as i32, std::slice::from_raw_parts((*cp).extradata, len).to_vec()));
+        }
+    }
+    let mut fonts = Vec::new();
+    let mut font_bytes = 0;
+    {
+        // External ASS may refer to these attachments even when the container carries no
+        // embedded ASS stream. Keep the per-media fonts independently of subtitle selection.
+        for i in 0..(*fmt).nb_streams {
+            let st = *streams.add(i as usize);
+            let cp = stream_codecpar(st);
+            let len = (*cp).extradata_size.max(0) as usize;
+            if fonts.len() >= ass_source::MAX_FONTS { break; }
+            if (*cp).codec_type != AVMEDIA_TYPE_ATTACHMENT || len < 4
+                || len > ass_source::MAX_FONT_BYTES - font_bytes || (*cp).extradata.is_null() { continue; }
+            let data = std::slice::from_raw_parts((*cp).extradata, len);
+            // Accept sfnt/OpenType/TrueType collection signatures, not arbitrary attachments.
+            if !matches!(&data[..4], b"\x00\x01\x00\x00" | b"OTTO" | b"ttcf" | b"true") { continue; }
+            let dict = *((st as *const u8).add(OFF_STREAM_METADATA) as *const *const AVDictionary);
+            let entry = if dict.is_null() { std::ptr::null_mut() }
+                else { av_dict_get(dict, c"filename".as_ptr(), std::ptr::null(), 0) };
+            let name = if !entry.is_null() && !(*entry).value.is_null() {
+                std::ffi::CStr::from_ptr((*entry).value).to_string_lossy().into_owned()
+            } else { format!("attachment-{i}.ttf") };
+            font_bytes += len;
+            fonts.push(Font { name, data: data.into() });
+        }
+        if !headers.is_empty() || !fonts.is_empty() {
+            crate::player::log(&format!("ass: embedded tracks={} fonts={} font_bytes={font_bytes}", headers.len(), fonts.len()));
+        }
+    }
+    ass_source::begin(media_key, headers, fonts)
+}
+
 /// Open a software decoder for an image-subtitle stream (PGS/VobSub/DVB). Returns a
 /// lib-allocated AVCodecContext (free with avcodec_free_context) or null if the build
 /// lacks the decoder / open fails. parameters_to_context carries extradata — dvdsub needs
@@ -1241,15 +1298,20 @@ unsafe fn sub_canvas(dec: *mut AVCodecContext) -> (i32, i32) {
     }
 }
 
-/// Convert one decoded PAL8 subtitle rect to a straight-alpha RGBA bitmap (palette entries are
-/// 0xAARRGGBB), or None if the decoder left it unusable. Coords are passed through in the
-/// stream's own authoring canvas — the renderer scales, not us.
+/// Copy one decoded PAL8 subtitle rect into the store's indexed form — its `w*h` palette indices
+/// (the decoder's rows, stride dropped) and its 256-entry palette as straight-alpha RGBA (palette
+/// entries are 0xAARRGGBB) — or None if the decoder left it unusable. Indexed rather than
+/// expanded: a quarter of the bytes, which is what `player::SUB_BITMAP_BUDGET` is sized on; the
+/// renderer expands a set once, when it uploads it (`SubRect::to_rgba`). Coords are passed
+/// through in the stream's own authoring canvas — the renderer scales, not us.
 ///
 /// Every field here is unvalidated data from a decoder fed by the network, and `usize` is 32
-/// bits on this target, so the size is bounded BEFORE it is multiplied: `w*h*4` for a rect the
-/// decoder claimed was 40000×40000 wraps to a small allocation, and the write loop would then
-/// run off the end of it (a panic on the demux thread, which is outside `ui::guard`).
-unsafe fn rect_to_rgba(r: *const AVSubtitleRect) -> Option<crate::player::SubRect> {
+/// bits on this target, so the size is bounded BEFORE it is multiplied: `w*h` for a rect the
+/// decoder claimed was 40000×40000 is refused before any allocation, and the copy loop can never
+/// run off the end of what was allocated (a panic on the demux thread, which is outside
+/// `ui::guard`). The palette is the decoders' fixed `AVPALETTE_SIZE` (256 entries, which pgssub
+/// and dvdsub allocate whole), so any index byte stays inside it.
+unsafe fn rect_to_indexed(r: *const AVSubtitleRect) -> Option<crate::player::SubRect> {
     if r.is_null() {
         return None;
     }
@@ -1270,28 +1332,24 @@ unsafe fn rect_to_rgba(r: *const AVSubtitleRect) -> Option<crate::player::SubRec
         return None;
     }
     let (wu, hu, su) = (w as usize, h as usize, stride as usize);
-    let bytes = match wu.checked_mul(hu).and_then(|n| n.checked_mul(4)) {
-        Some(n) => n,
-        None => return None,
-    };
-    let mut rgba = vec![0u8; bytes];
+    // the 4x headroom keeps `to_rgba`'s expansion of this rect inside `usize` too
+    let pixels = wu.checked_mul(hu).filter(|n| n.checked_mul(4).is_some())?;
+    let mut index = Vec::with_capacity(pixels);
     for row in 0..hu {
-        let src = idx.add(row * su);
-        for col in 0..wu {
-            let p = *pal.add(*src.add(col) as usize); // 0xAARRGGBB (native u32)
-            let o = (row * wu + col) * 4;
-            rgba[o] = (p >> 16) as u8; // R
-            rgba[o + 1] = (p >> 8) as u8; // G
-            rgba[o + 2] = p as u8; // B
-            rgba[o + 3] = (p >> 24) as u8; // A
-        }
+        index.extend_from_slice(std::slice::from_raw_parts(idx.add(row * su), wu));
     }
-    Some(crate::player::SubRect { x, y, w, h, rgba })
+    let mut palette = Box::new([[0u8; 4]; 256]);
+    for (i, entry) in palette.iter_mut().enumerate() {
+        let p = *pal.add(i); // 0xAARRGGBB (native u32)
+        *entry = [(p >> 16) as u8, (p >> 8) as u8, p as u8, (p >> 24) as u8];
+    }
+    Some(crate::player::SubRect { x, y, w, h, index, palette })
 }
 
-/// Decode one image-subtitle packet for the SELECTED track and push it to the render store.
+/// Decode one image-subtitle packet (the demux loop calls this for EVERY image track while
+/// subtitles are on) and push it to the render store.
 /// A CLEAR (num_rects==0) closes the open cue; otherwise EVERY rect of the display set is
-/// converted to straight-alpha RGBA and pushed as one cue with start = packet pts (the end is
+/// copied in indexed form (`rect_to_indexed`) and pushed as one cue with start = packet pts (the end is
 /// set later by the next CLEAR or superseding set). Two-line dialogue and sign-plus-dialogue are
 /// authored as separate rects of the SAME display set, so dropping all but rect 0 (what this did
 /// before) silently lost half the line. The set's canvas comes from `sub_canvas`.
@@ -1312,13 +1370,13 @@ unsafe fn decode_bitmap_cue(
         avsubtitle_free(&mut sub);
         return;
     }
-    // A pathological display set cannot be allowed to bloat the 24 MB store or the renderer's
+    // A pathological display set cannot be allowed to bloat the 24 MiB store or the renderer's
     // texture set; DVB regions are the realistic source of many rects, PGS allows at most 2.
     const MAX_RECTS: usize = 8;
     let n = (sub.num_rects as usize).min(MAX_RECTS);
     let mut rects = Vec::with_capacity(n);
     for i in 0..n {
-        if let Some(r) = rect_to_rgba(*sub.rects.add(i)) {
+        if let Some(r) = rect_to_indexed(*sub.rects.add(i)) {
             rects.push(r);
         }
     }
@@ -1572,7 +1630,9 @@ const SEEK_END: c_int = 2;
 const AVSEEK_SIZE: c_int = 0x10000;
 
 /// **Which transport is under the AVIO.** The two are not interchangeable and the choice is made
-/// once, in `demux`, from the part URL's SCHEME — never guessed per call.
+/// from the SCHEME of the URL actually served — the part URL's, unless a plaintext open was
+/// redirected to https (`stream::redirect`), in which case the socket open hands over to curl.
+/// Never guessed per call.
 ///
 /// * [`Src::Socket`] is the original and the default: `stream.rs`'s raw TCP socket wrapping the
 ///   ENGINE-owned `HttpStream` — cleartext, numeric address, seeking by closing and re-opening
@@ -1601,6 +1661,20 @@ enum Src {
 }
 
 impl Src {
+    /// What the transport has RECEIVED of the current body beyond what FFmpeg has read — the
+    /// one completion question both sources answer (`stream::BodyReceipt`).
+    fn body_receipt(&mut self) -> crate::stream::BodyReceipt {
+        match self {
+            Src::Socket { hs, .. } => crate::stream::http_body_receipt(*hs),
+            Src::Curl(cs) => cs.body_receipt(),
+            Src::Idle => crate::stream::BodyReceipt {
+                ahead: 0,
+                finished: false,
+                stepped: false,
+            },
+        }
+    }
+
     fn take_curl(&mut self) -> Option<Box<crate::curlio::CurlSource>> {
         match std::mem::replace(self, Src::Idle) {
             Src::Curl(cs) => Some(cs),
@@ -1628,10 +1702,12 @@ struct HlsNet {
 ///
 /// There is one coefficient-free fact available before completion: the playable reserve has
 /// actually reached zero.  The main thread observes that physical boundary and holds Starfish's
-/// clock; this guard observes the same hold (or the equivalent playhead spend) at the next AVIO
-/// callback.  Above the ladder floor it abandons the still-incomplete object so the controller can
-/// fetch a smaller one.  At the floor it leaves the only useful response alive.  No prefix becomes
-/// a capacity sample in either direction.
+/// clock; this guard observes the same hold (or the equivalent playhead spend) on every blocking
+/// leg of the fetch — the open, the `NotReady` wait, the probe and body reads — through the
+/// acquisition runtime's checkpoint (`ff_acquisition.rs`), within one `CHECK_SLICE` of a wait
+/// already blocked.  Above the ladder floor it abandons the still-incomplete object so the
+/// controller can fetch a smaller one, even before any body byte exists.  At the floor it leaves
+/// the only useful response alive.  No prefix becomes a capacity sample in either direction.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct StallGuard {
     /// The playable reserve when this fetch began, in ms of media. `None` is never stored — an
@@ -1641,6 +1717,9 @@ struct StallGuard {
     /// Playhead at the fetch boundary.  Wall time is deliberately absent: queued media is spent
     /// by presentation, not by a blocked request, pause, seek or server wait.
     playhead_at_start_ns: i64,
+    /// `SHARED.hls_internal_hold_epoch` when armed. A hold the main thread accepted AND already
+    /// released between two checks still moved it, so a short hold cannot slip between samples.
+    hold_epoch_at_arm: u64,
     action: StallAction,
 }
 
@@ -1674,6 +1753,7 @@ impl StallGuard {
         (reserve_ms_at_start > 0).then(|| Self {
             reserve_ms_at_start,
             playhead_at_start_ns: crate::player::playpos_ns(),
+            hold_epoch_at_arm: SHARED.hls_internal_hold_epoch.load(Ordering::Acquire),
             action: StallAction::AbortFetch,
         })
     }
@@ -1691,9 +1771,12 @@ impl StallGuard {
         self.action == StallAction::AbortFetch
     }
 
-    /// Has the fetch crossed an OBSERVED terminal boundary while bytes are known to remain?
-    /// `terminal_hold_started` is the main thread's terminal observation — an exact arithmetic
-    /// `B=0`, or a presentation clock that has physically stopped (`pump::native_clock_stopped`).
+    /// Has an incomplete fetch crossed an OBSERVED terminal boundary? `body_complete` exempts a
+    /// response whose declared bytes all arrived (or whose unsized body reached a confirmed end);
+    /// before the body exists nothing is complete. `terminal_hold_started` is the main thread's
+    /// terminal observation — an exact arithmetic `B=0`, or a presentation clock that has
+    /// physically stopped (`pump::native_clock_stopped`) — and a hold epoch that moved since
+    /// arming is the same observation, already released.
     /// The playhead form is the same arithmetic sampled by this worker, and on this pipeline it is
     /// a bound rather than a trigger: `reserve_ms_at_start` is measured to the demuxed tail, and
     /// the television parks the clock a few hundred ms short of that tail (the last fed access
@@ -1701,16 +1784,44 @@ impl StallGuard {
     /// below the reserve and the hold has to come from the main thread. Device-measured
     /// 2026-09-02 (`pipe_abr_down_collapse`): reserve 5668 ms, playhead spent 5410 ms, then 77 s
     /// of `vtick=0` with neither branch firing. Neither branch predicts an unseen byte.
-    fn should_abort(&self, bytes_remaining: i64, terminal_hold_started: bool) -> bool {
-        if bytes_remaining <= 0 {
+    fn should_abort(&self, body_complete: bool, terminal_hold_started: bool) -> bool {
+        if body_complete {
             return false;
         }
-        let spent_ms = crate::player::playpos_ns()
+        terminal_hold_started
+            || SHARED.hls_internal_hold_epoch.load(Ordering::Acquire) != self.hold_epoch_at_arm
+            || self.spent_ms() >= self.reserve_ms_at_start
+    }
+
+    fn spent_ms(&self) -> i64 {
+        crate::player::playpos_ns()
             .saturating_sub(self.playhead_at_start_ns)
             .max(0)
-            / 1_000_000;
-        terminal_hold_started || spent_ms >= self.reserve_ms_at_start
+            / 1_000_000
     }
+
+    /// The wall instant at which the playhead, at one speed, would spend what remains. A wake-up
+    /// only: a paused or stopped playhead makes it stale, and the next check simply re-projects.
+    fn projected_boundary(&self) -> std::time::Instant {
+        let left_ms = self
+            .reserve_ms_at_start
+            .saturating_sub(self.spent_ms())
+            .max(0);
+        let now = std::time::Instant::now();
+        now.checked_add(std::time::Duration::from_millis(left_ms as u64))
+            .unwrap_or(now)
+    }
+}
+
+/// **The one way a guard asks the main thread to hold Starfish's A/V clock** — from whichever
+/// blocking leg saw the boundary. The main thread may already have held it on its own exact B=0
+/// sample; asking again is harmless.
+fn request_terminal_hold() {
+    SHARED.hls_rebuffer_request_tail_ns.store(
+        SHARED.hls_video_tail_ns.load(Ordering::Acquire),
+        Ordering::Release,
+    );
+    SHARED.hls_rebuffer_requested.store(true, Ordering::Release);
 }
 
 /// An already-held clock is a recovery state: the active response is rebuilding reserve and may
@@ -1732,6 +1843,13 @@ fn arm_active_stall_guard(
         }
     })
 }
+
+// `SegmentAcquisition` lives in its own module so its payload is not nameable from `ff` — see
+// `ff_acquisition.rs` for why (the bypass a review round found: everything in `ff` could build
+// `Active { stall: None, .. }` by hand even with the role-typed enum in place).
+#[path = "ff_acquisition.rs"]
+mod acquisition;
+use acquisition::{AcquisitionRuntime, Phase, SegmentAcquisition};
 
 /// A rollback-reserve deadline is monotone in one direction: a floor downshift that reaches an
 /// actual internal rebuffer may stop protecting the old cursor, but a later user Resume cannot
@@ -2132,12 +2250,53 @@ struct AvioState {
     /// ordinary candidate owns a playhead-funded clock projected onto each blocking wait, while a
     /// terminal-floor recovery may omit that reserve clock. A partial PMS response remains
     /// right-censored and cannot prove an earlier completion time from its prefix rate.
-    stall: Option<StallGuard>,
-    stall_aborted: bool,
+    ///
+    /// This is the SAME runtime the segment's open and `NotReady` wait consulted, moved here
+    /// unchanged; progressive playback has none. It also latches the abort (`stall_aborted`).
+    acquisition: Option<AcquisitionRuntime>,
     /// Bounded socket/curl overflow while Original is parked in `aq_push`. HLS does not use it:
     /// a segment body is already complete before feed.
     bounce: Vec<u8>,
     bounce_pos: usize,
+}
+
+// TEST ONLY: a deterministic stand-in for the two `Instant::elapsed()` calls that measure
+// `body_active_us` — `AvioState::note_received`'s receipt timer and `read_cb`'s read timer. A
+// real scheduler can preempt either interval independently, so a test that compares
+// `body_active_us` to a wall-clock read can flake on a loaded runner even though the accounting
+// is correct (see `ff_stall_guard_tests::transfer_work_a_receipt_takes_is_counted_in_body_time`,
+// pre-seam). Tests push exact durations here and assert exact sums instead. Empty queue (every
+// non-test build, and every test that never pushes) falls straight through to the real clock, so
+// this changes no production behaviour.
+#[cfg(test)]
+thread_local! {
+    static TEST_ELAPSED: std::cell::RefCell<std::collections::VecDeque<std::time::Duration>> =
+        std::cell::RefCell::new(std::collections::VecDeque::new());
+}
+
+#[cfg(test)]
+pub(crate) fn push_test_elapsed(duration: std::time::Duration) {
+    TEST_ELAPSED.with(|queue| queue.borrow_mut().push_back(duration));
+}
+
+/// Drain and return whatever a test left queued, so one test's leftover injection can never leak
+/// into the next one sharing this OS thread.
+#[cfg(test)]
+pub(crate) fn drain_test_elapsed() -> Vec<std::time::Duration> {
+    TEST_ELAPSED.with(|queue| queue.borrow_mut().drain(..).collect())
+}
+
+/// Elapsed time since `started`: the real `Instant::elapsed()`, except under test when a duration
+/// is queued — then that queued value, once, so a test can assert `body_active_us` exactly rather
+/// than by a wall-clock ratio.
+fn elapsed_since(started: std::time::Instant) -> std::time::Duration {
+    #[cfg(test)]
+    {
+        if let Some(queued) = TEST_ELAPSED.with(|queue| queue.borrow_mut().pop_front()) {
+            return queued;
+        }
+    }
+    started.elapsed()
 }
 
 impl AvioState {
@@ -2180,6 +2339,36 @@ impl AvioState {
 
     fn bounce_remaining(&self) -> bool {
         self.bounce_pos < self.bounce.len()
+    }
+
+    /// **Credit the acquisition with every body byte already RECEIVED**, not merely read: what
+    /// FFmpeg consumed (`off`), plus the park drain's bounce, plus what the transport holds ahead
+    /// (`Src::body_receipt`). PMS pauses a sized response and then bursts the remainder; once
+    /// that burst is in hand, a hold must not abandon it. An unsized body completes only on the
+    /// transport's proven end. Called before every guard decision `read_cb` makes.
+    ///
+    /// A receipt that took a transfer step received body bytes the later read only copies out, so
+    /// the step's time is counted here, once, as body time — the same accounting those bytes
+    /// would have had had the read itself received them. Nothing else in the query is body work.
+    fn note_received(&mut self) {
+        if self.acquisition.is_none() {
+            return;
+        }
+        let asked = std::time::Instant::now();
+        let receipt = self.src.body_receipt();
+        if receipt.stepped {
+            self.body_active_us = self
+                .body_active_us
+                .saturating_add(elapsed_since(asked).as_micros().max(1) as u64);
+        }
+        let bounced = self.bounce.len().saturating_sub(self.bounce_pos) as i64;
+        let received = self
+            .off
+            .saturating_add(bounced)
+            .saturating_add(receipt.ahead);
+        if let Some(acquisition) = &mut self.acquisition {
+            acquisition.note_body(self.size, received, receipt.finished);
+        }
     }
 
     fn transfer_finished(&self) -> bool {
@@ -2278,7 +2467,11 @@ fn classify_hls_avio_operation(
     request_started: std::time::Instant,
     audio_expected: bool,
 ) -> Option<HlsExit> {
-    let stall = state.stall_aborted.then(|| SegmentTransfer {
+    let stall_aborted = state
+        .acquisition
+        .as_ref()
+        .is_some_and(AcquisitionRuntime::stall_aborted);
+    let stall = stall_aborted.then(|| SegmentTransfer {
         bytes: state.body_bytes,
         active_us: state.body_active_us,
         total_us: request_started.elapsed().as_micros().max(1) as u64,
@@ -2321,6 +2514,26 @@ struct AVIOCtxHead {
     buffer: *mut u8,
 }
 
+/// `read_cb`'s answer once its acquisition runtime has stopped. Teardown ends the operation as it
+/// always has; a latched stall abort is `AVERROR_EOF` with `stall_aborted` for
+/// `classify_hls_avio_operation` to report. A stop with no latched reason cannot come from the
+/// runtime; it is reported as the transport failure it would otherwise be mistaken for.
+fn avio_stopped(s: &mut AvioState) -> c_int {
+    if unsafe { crate::aq::aq_is_aborted(s.aq) } {
+        s.latch_abort();
+        s.clear_bounce();
+        return AVERROR_EOF;
+    }
+    if s.acquisition
+        .as_ref()
+        .is_some_and(AcquisitionRuntime::stall_aborted)
+    {
+        return AVERROR_EOF;
+    }
+    s.io_failed = true;
+    AVERROR_IO
+}
+
 extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
     unsafe {
         let s = &mut *(op as *mut AvioState);
@@ -2342,6 +2555,16 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
             if park_read_fails_closed(s.bounce_remaining(), s.io_failed) {
                 return AVERROR_IO;
             }
+            // The abort rule, evaluated where the numbers are — through the same runtime check
+            // the open and the transport waits consult. See `StallGuard`.
+            s.note_received();
+            if let Some(acquisition) = &mut s.acquisition {
+                if crate::checkpoint::Checkpoint::check(acquisition)
+                    == crate::checkpoint::Flow::Stop
+                {
+                    return avio_stopped(s);
+                }
+            }
             let rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
             if s.reserve_deadline.expire_if_due(rebuffering) {
                 return AVERROR_EOF;
@@ -2357,38 +2580,28 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                     })
                 });
             let live_deadline = blocking_deadline.map(|deadline| deadline.at);
-            // The abort rule, evaluated where the numbers are. See `StallGuard`.
-            if let Some(guard) = s.stall {
-                if guard.should_abort(s.size - s.off, rebuffering) {
-                    // The playable reserve has actually reached its terminal boundary. Always ask
-                    // the main thread to hold Starfish's A/V clock (it may already have done so on
-                    // its exact B=0 sample). Above the ladder floor, abandon this still-incomplete
-                    // object so the controller can fetch a smaller one; at the floor leave the
-                    // only useful response alive and disarm only the one-shot notification.
-                    SHARED.hls_rebuffer_request_tail_ns.store(
-                        SHARED.hls_video_tail_ns.load(Ordering::Acquire),
-                        Ordering::Release,
-                    );
-                    SHARED.hls_rebuffer_requested.store(true, Ordering::Release);
-                    if guard.aborts_fetch() {
-                        s.stall_aborted = true;
-                        return AVERROR_EOF;
-                    }
-                    s.stall = None;
-                }
-            }
             // Both sources use the same three-way return — >0 bytes, 0 clean end, <0 error — so
             // the EOF decision below stays one branch rather than one per transport.
             let read_started = std::time::Instant::now();
+            let mut unarmed = crate::checkpoint::NoCheckpoint;
+            let checkpoint: &mut dyn crate::checkpoint::Checkpoint = match &mut s.acquisition {
+                Some(acquisition) => acquisition,
+                None => &mut unarmed,
+            };
             let r = match &mut s.src {
-                Src::Socket { hs, .. } => {
-                    crate::stream::http_read_until(*hs, dst as *mut c_uchar, n, live_deadline)
-                }
+                Src::Socket { hs, .. } => crate::stream::http_read_until(
+                    *hs,
+                    dst as *mut c_uchar,
+                    n,
+                    live_deadline,
+                    checkpoint,
+                ),
                 // The null/length guard `stream::http_read` does for itself.
                 Src::Curl(_) if dst.is_null() || n <= 0 => 0,
                 Src::Curl(cs) => cs.read_until(
                     std::slice::from_raw_parts_mut(dst, n as usize),
                     live_deadline,
+                    checkpoint,
                 ),
                 Src::Idle => return AVERROR_EOF,
             };
@@ -2421,6 +2634,21 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 s.latch_abort();
                 return AVERROR_EOF;
             }
+            // Every unsuccessful read is SETTLED by a fresh check before it is classified: a
+            // deadline shorter than the checkpoint slice ends the wait without asking again, and a
+            // stopped wait has already latched why. What the transport received during the wait
+            // is credited first, so the fresh check sees the same completion the read would have.
+            if r < 0 {
+                s.note_received();
+                if let Some(acquisition) = &mut s.acquisition {
+                    if acquisition.settle_stopped() {
+                        return avio_stopped(s);
+                    }
+                }
+            }
+            if r == crate::stream::HTTP_READ_STOPPED || r == crate::curlio::READ_STOPPED {
+                return avio_stopped(s);
+            }
             if let Some(wake) = wake {
                 match classify_hls_deadline(wake) {
                     Some(HlsExit::PrimeExpired) => return AVERROR_EOF,
@@ -2441,6 +2669,9 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
                 return AVERROR_IO;
             }
             if r == 0 {
+                if let Some(acquisition) = &mut s.acquisition {
+                    acquisition.note_body(s.size, s.off, true);
+                }
                 return AVERROR_EOF;
             }
             if let Some(watchdog) = &mut s.transport_watchdog {
@@ -2448,7 +2679,7 @@ extern "C" fn read_cb(op: *mut c_void, dst: *mut u8, n: c_int) -> c_int {
             }
             s.body_active_us = s
                 .body_active_us
-                .saturating_add(read_started.elapsed().as_micros().max(1) as u64);
+                .saturating_add(elapsed_since(read_started).as_micros().max(1) as u64);
             if s.first_byte_at.is_none() {
                 s.first_byte_at = Some(std::time::Instant::now());
             }
@@ -2494,7 +2725,12 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
         if target < 0 {
             return -1;
         }
+        let aq = s.aq;
+        let mut hopped_to_tls = None;
         let ok = match &mut s.src {
+            // Redirects are followed here too (`stream::redirect`), and the effective target is
+            // written back so the NEXT seek starts from it rather than replaying the chain. A hop
+            // to https cannot stay on this socket; it becomes the curl source below.
             Src::Socket {
                 hs,
                 host,
@@ -2502,16 +2738,45 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
                 path,
             } => {
                 crate::stream::http_close(*hs);
-                let range =
-                    CString::new(format!("Range: bytes={}-\r\n", target)).unwrap_or_default();
-                crate::stream::http_open(
+                let origin = crate::plex::Origin::http(&host.to_string_lossy(), *port);
+                let from = path.to_string_lossy().into_owned();
+                let req = crate::stream::redirect::Request {
+                    origin: &origin,
+                    path: &from,
+                    credentials: None,
+                    range_from: Some(target),
+                    deadline: None,
+                    same_origin_only: false,
+                };
+                match crate::stream::redirect::open_following(
                     *hs,
-                    host.as_ptr(),
-                    *port,
-                    path.as_ptr(),
-                    range.as_ptr(),
-                    "GET",
-                ) == 0
+                    &req,
+                    &mut crate::checkpoint::NoCheckpoint,
+                ) {
+                    Ok(crate::stream::redirect::Opened::Socket(t)) => {
+                        if let (Ok(h), Ok(p)) =
+                            (CString::new(t.origin.host()), CString::new(t.path))
+                        {
+                            *host = h;
+                            *port = t.origin.port() as c_int;
+                            *path = p;
+                        }
+                        true
+                    }
+                    Ok(crate::stream::redirect::Opened::Tls(t)) => {
+                        match open_curl_hop(&t.url(), target, aq) {
+                            Ok(cs) => {
+                                hopped_to_tls = Some(cs);
+                                true
+                            }
+                            Err(e) => {
+                                crate::player::log(&format!("ff: seek https hop FAILED: {e:?}"));
+                                false
+                            }
+                        }
+                    }
+                    Err(_) => false,
+                }
             }
             // `curlio` REFUSES a Range the server answered with a 200, where `stream.rs` accepts
             // any 2xx. That is the one behavioural difference between these two arms, and it is
@@ -2520,6 +2785,9 @@ extern "C" fn seek_cb(op: *mut c_void, offset: i64, whence: c_int) -> i64 {
             Src::Curl(cs) => cs.seek(target),
             Src::Idle => false,
         };
+        if let Some(cs) = hopped_to_tls {
+            s.src = Src::Curl(cs);
+        }
         if !ok {
             return -1;
         }
@@ -2801,6 +3069,115 @@ unsafe fn packet_to_annexb(
 
 static DIAG_FIRST: AtomicBool = AtomicBool::new(true);
 
+/// Extract one DTS core access unit, dropping the DTS-HD extension substream. Matroska and
+/// MOV demux return the complete packet; our bundled FFmpeg 9.0 has neither the dca parser nor
+/// dca_core BSF enabled. The core size is the 14-bit FSIZE + 1 from its normalized header
+/// (ETSI TS 102 114; FFmpeg 9.0 libavcodec/bsf/dca_core.c). No new FFmpeg ABI is needed.
+/// Normalize the four core sync formats to 16-bit big endian before measuring. Extension-only,
+/// truncated and malformed packets are rejected instead of sending HD data to the core decoder.
+fn dts_core_packet(packet: &[u8]) -> Option<std::borrow::Cow<'_, [u8]>> {
+    use std::borrow::Cow;
+    let sync: [u8; 4] = packet.get(..4)?.try_into().ok()?;
+    let normalized = match sync {
+        [0x7f, 0xfe, 0x80, 0x01] => Cow::Borrowed(packet),
+        [0xfe, 0x7f, 0x01, 0x80] => {
+            let mut bytes = packet.to_vec();
+            for word in bytes.chunks_exact_mut(2) { word.swap(0, 1); }
+            Cow::Owned(bytes)
+        }
+        [0x1f, 0xff, 0xe8, 0x00] | [0xff, 0x1f, 0x00, 0xe8] => {
+            let little = sync[0] == 0xff;
+            let mut bytes = Vec::with_capacity(packet.len() * 7 / 8);
+            let (mut bits, mut count) = (0u32, 0u32);
+            for word in packet.chunks_exact(2) {
+                let word = if little { u16::from_le_bytes([word[0], word[1]]) }
+                    else { u16::from_be_bytes([word[0], word[1]]) };
+                bits = (bits << 14) | u32::from(word & 0x3fff);
+                count += 14;
+                while count >= 8 {
+                    count -= 8;
+                    bytes.push((bits >> count) as u8);
+                }
+            }
+            Cow::Owned(bytes)
+        }
+        _ => return None,
+    };
+    let header = normalized.get(..10)?;
+    let size = (((usize::from(header[5]) & 3) << 12)
+        | (usize::from(header[6]) << 4) | (usize::from(header[7]) >> 4)) + 1;
+    // The standard's minimum core frame length is 96 bytes. Never accept a size that points
+    // back into the header or beyond the packet, including a truncated 14-bit word.
+    if size < 96 || size > normalized.len() { return None; }
+    Some(match normalized {
+        Cow::Borrowed(bytes) => Cow::Borrowed(&bytes[..size]),
+        Cow::Owned(mut bytes) => { bytes.truncate(size); Cow::Owned(bytes) }
+    })
+}
+
+#[cfg(test)]
+mod dts_core_tests {
+    use super::dts_core_packet;
+
+    fn core() -> Vec<u8> {
+        let mut frame = vec![0x55; 128];
+        frame[..10].copy_from_slice(&[0x7f, 0xfe, 0x80, 0x01, 0xfc, 0x00, 0x07, 0xf0, 0, 0]);
+        frame
+    }
+
+    #[test]
+    fn preserves_the_generated_dts_5_1_access_unit() {
+        let frame = include_bytes!("../../tests/fixtures/dts-core-frame.dts");
+        assert_eq!(dts_core_packet(frame).unwrap().as_ref(), frame);
+        let mut with_extension = frame.to_vec();
+        with_extension.extend_from_slice(&[0x64, 0x58, 0x20, 0x25, 0, 0, 0, 0]);
+        assert_eq!(dts_core_packet(&with_extension).unwrap().as_ref(), frame);
+    }
+
+    #[test]
+    fn preserves_core_and_strips_hd_extensions() {
+        let core = core();
+        assert_eq!(dts_core_packet(&core).unwrap().as_ref(), core);
+        let mut hd = core.clone();
+        hd.extend_from_slice(&[0x64, 0x58, 0x20, 0x25, 0x01, 0x02, 0x03, 0x04]);
+        assert_eq!(dts_core_packet(&hd).unwrap().as_ref(), core);
+    }
+
+    #[test]
+    fn refuses_extension_only_truncated_and_invalid_sizes() {
+        assert!(dts_core_packet(&[0x64, 0x58, 0x20, 0x25]).is_none());
+        let core = core();
+        for n in 0..core.len() { assert!(dts_core_packet(&core[..n]).is_none()); }
+        let mut invalid = core;
+        invalid[6] = 0;
+        invalid[7] = 0;
+        assert!(dts_core_packet(&invalid).is_none());
+    }
+
+    #[test]
+    fn normalizes_word_swapped_and_packed_core_formats() {
+        let core = core();
+        let mut swapped = core.clone();
+        for word in swapped.chunks_exact_mut(2) { word.swap(0, 1); }
+        assert_eq!(dts_core_packet(&swapped).unwrap().as_ref(), core);
+        let mut packed = Vec::new();
+        let (mut bits, mut count) = (0u32, 0u32);
+        for &byte in core.iter().chain([0u8; 2].iter()) {
+            bits = (bits << 8) | u32::from(byte);
+            count += 8;
+            if count >= 14 {
+                count -= 14;
+                let mut word = ((bits >> count) & 0x3fff) as u16;
+                if packed.len() == 2 { word |= 0xc000; }
+                packed.extend_from_slice(&word.to_be_bytes());
+            }
+        }
+        assert_eq!(dts_core_packet(&packed).unwrap().as_ref(), core);
+        for word in packed.chunks_exact_mut(2) { word.swap(0, 1); }
+        assert_eq!(dts_core_packet(&packed).unwrap().as_ref(), core);
+    }
+}
+
 /// ADTS sampling_frequency_index (4 bits) for a sample rate; None if not a standard AAC rate.
 fn adts_freq_index(rate: c_int) -> Option<u8> {
     Some(match rate {
@@ -2984,17 +3361,29 @@ enum HlsExit {
     NotReady,
     PrimeExpired,
     /// The terminal rule fired on the ACTIVE stream: the playable reserve reached zero while this
-    /// sized response still had bytes outstanding and a cheaper rung remained. Not a failure —
+    /// fetch was still incomplete — waiting on its open, on a `NotReady` retry, or with body bytes
+    /// outstanding — and a cheaper rung remained. Not a failure —
     /// the segment is abandoned on purpose after the reserve actually reaches its terminal
     /// boundary, so the controller gets a recovery decision it would otherwise never be asked
     /// for. See [`StallGuard`].
     ///
-    /// It carries the transfer for diagnostics and censored-event accounting. Its prefix is not a
-    /// capacity or acquisition observation: PMS production, response pacing and network service
-    /// are not identifiable separately before the response completes.
+    /// It carries the transfer for diagnostics and censored-event accounting — before any body
+    /// byte, zero bytes and zero body time over the request's elapsed time (see
+    /// `AcquisitionRuntime::stopped_exit`). Its prefix is not a capacity or acquisition
+    /// observation: PMS production, response pacing and network service are not identifiable
+    /// separately before the response completes.
     StallAbort(SegmentTransfer),
     Failed(&'static str),
 }
+
+/// **What a controlled stop means when its checkpoint latched no reason.** A leg ends in a stop
+/// only because its checkpoint answered `Flow::Stop`, and the only checkpoint that ever does, the
+/// acquisition runtime, latches why first — and its caller settles every failed leg through it
+/// (`settle`) before this value can matter. So this is the bug path, and it takes the one
+/// classification that asserts nothing: not `Aborted` (would end the session on no teardown), not
+/// `PrimeExpired`/`StallAbort` (censored reserve evidence nobody observed), not `NotReady` (would
+/// retry). A plain failure ends the segment the way any unexplained transport failure does.
+const UNLATCHED_STOP: HlsExit = HlsExit::Failed("HLS acquisition stopped without a latched reason");
 
 /// Lookahead of N+1 must not tear down a session that already fed N. Only teardown is fatal.
 fn hls_prefetch_is_fatal(err: &HlsExit) -> bool {
@@ -3006,6 +3395,7 @@ fn classify_plaintext_open_failure(error: crate::stream::HttpOpenError) -> HlsEx
         crate::stream::HttpOpenError::Deadline => HlsExit::PrimeExpired,
         crate::stream::HttpOpenError::Status(404) => HlsExit::NotReady,
         crate::stream::HttpOpenError::Aborted => HlsExit::Aborted,
+        crate::stream::HttpOpenError::Stopped => UNLATCHED_STOP,
         crate::stream::HttpOpenError::Status(_) | crate::stream::HttpOpenError::Transport => {
             HlsExit::Failed("HTTP request failed")
         }
@@ -3024,6 +3414,8 @@ fn classify_curl_open_err(e: crate::curlio::OpenErr) -> HlsExit {
     }
     if e == crate::curlio::OpenErr::Aborted {
         HlsExit::Aborted
+    } else if e == crate::curlio::OpenErr::Stopped {
+        UNLATCHED_STOP
     } else {
         HlsExit::Failed("HTTPS request failed")
     }
@@ -3041,128 +3433,256 @@ fn hls_open_source(
     aq: *mut AuQueue,
     net: &mut HlsNet,
     deadline: Option<std::time::Instant>,
-) -> Result<(Src, i64), HlsExit> {
+    // Consulted by every blocking wait of the open with a deadline. Playlist fetches pass
+    // `NoCheckpoint`; a segment fetch passes its acquisition runtime.
+    checkpoint: &mut dyn crate::checkpoint::Checkpoint,
+) -> Result<(Src, i64, crate::hls::Resource), HlsExit> {
     if unsafe { crate::aq::aq_is_aborted(aq) } {
         return Err(HlsExit::Aborted);
     }
     let origin = &resource.origin;
     if origin.is_tls() {
         let url = format!("{}{}", origin.base(), request_path);
-        if let Some(mut cs) = net.curl.take() {
-            let reopened = cs.reopen_until(&url, deadline);
-            if unsafe { crate::aq::aq_is_aborted(aq) } {
-                return Err(HlsExit::Aborted);
-            }
-            match reopened {
-                Ok(()) => {
-                    let (status, size) = (cs.status(), cs.size());
-                    SHARED.dg_http_status.store(status, Ordering::Relaxed);
-                    SHARED.file_size.store(size, Ordering::Release);
-                    return Ok((Src::Curl(cs), size));
-                }
-                Err(crate::curlio::OpenErr::Aborted) => return Err(HlsExit::Aborted),
-                Err(crate::curlio::OpenErr::Deadline) => {
-                    net.curl = Some(cs);
-                    return Err(HlsExit::PrimeExpired);
-                }
-                Err(crate::curlio::OpenErr::Status(status)) => {
-                    SHARED.dg_http_status.store(status, Ordering::Relaxed);
-                    net.curl = Some(cs);
-                    return Err(if status == 404 {
-                        HlsExit::NotReady
-                    } else {
-                        HlsExit::Failed("HTTPS request failed")
-                    });
-                }
-                Err(_) => {
-                    // Idle TLS session or a broken multi: drop it and dial as a first open.
-                }
-            }
-        }
-        let reservation = crate::curlio::CurlSource::reserve_open().map_err(|e| {
-            if e == crate::curlio::OpenErr::Aborted {
-                HlsExit::Aborted
-            } else {
-                HlsExit::Failed("HTTPS reservation failed")
-            }
-        })?;
-        if unsafe { crate::aq::aq_is_aborted(aq) } {
-            return Err(HlsExit::Aborted);
-        }
-        let opened = match deadline {
-            Some(at) => crate::curlio::CurlSource::open_reserved_until(&url, 0, reservation, at),
-            None => crate::curlio::CurlSource::open_reserved(&url, 0, reservation),
-        };
-        if unsafe { crate::aq::aq_is_aborted(aq) } {
-            drop(opened);
-            return Err(HlsExit::Aborted);
-        }
-        let cs = opened.map_err(classify_curl_open_err)?;
-        let (status, size) = (cs.status(), cs.size());
-        SHARED.dg_http_status.store(status, Ordering::Relaxed);
-        SHARED.file_size.store(size, Ordering::Release);
-        Ok((Src::Curl(cs), size))
+        // libcurl follows any redirect itself (`curlio`), and does not report where it landed;
+        // the requested resource is the only base this path knows.
+        let (src, size) = hls_open_curl(&url, aq, net, deadline, checkpoint)?;
+        Ok((src, size, resource.clone()))
     } else {
-        let host = CString::new(origin.host()).map_err(|_| HlsExit::Failed("invalid PMS host"))?;
-        let path =
-            CString::new(request_path).map_err(|_| HlsExit::Failed("invalid HLS request path"))?;
-        let hs = net.hs;
-        // Keep-alive: `http_open` reuses the live fd when the previous body was drained.
-        let opened = if let Some(at) = deadline {
-            if std::time::Instant::now() >= at {
+        hls_open_plain(origin, request_path, aq, net, deadline, checkpoint)
+    }
+}
+
+/// The https half of [`hls_open_source`]: reuse the session's curl multi when it has one, else
+/// dial a fresh reserved source. Also where a plaintext open lands after a redirect to https.
+fn hls_open_curl(
+    url: &str,
+    aq: *mut AuQueue,
+    net: &mut HlsNet,
+    deadline: Option<std::time::Instant>,
+    checkpoint: &mut dyn crate::checkpoint::Checkpoint,
+) -> Result<(Src, i64), HlsExit> {
+    if let Some(mut cs) = net.curl.take() {
+        let reopened = cs.reopen_until(url, deadline, &mut *checkpoint);
+        if unsafe { crate::aq::aq_is_aborted(aq) } {
+            return Err(HlsExit::Aborted);
+        }
+        match reopened {
+            Ok(()) => {
+                let (status, size) = (cs.status(), cs.size());
+                SHARED.dg_http_status.store(status, Ordering::Relaxed);
+                SHARED.file_size.store(size, Ordering::Release);
+                return Ok((Src::Curl(cs), size));
+            }
+            Err(crate::curlio::OpenErr::Aborted) => return Err(HlsExit::Aborted),
+            Err(crate::curlio::OpenErr::Deadline) => {
+                net.curl = Some(cs);
                 return Err(HlsExit::PrimeExpired);
             }
-            crate::stream::http_open_until_result(
-                hs,
-                host.as_ptr(),
-                origin.port() as c_int,
-                path.as_ptr(),
-                std::ptr::null(),
-                "GET",
-                at,
-            )
-        } else {
-            let result = crate::stream::http_open(
-                hs,
-                host.as_ptr(),
-                origin.port() as c_int,
-                path.as_ptr(),
-                std::ptr::null(),
-                "GET",
-            );
-            if result == 0 {
-                Ok(())
-            } else {
-                let status = crate::stream::hs_status(hs);
-                Err(if status > 0 {
-                    crate::stream::HttpOpenError::Status(status)
-                } else {
-                    crate::stream::HttpOpenError::Transport
-                })
+            // A controlled stop keeps the session and never falls through to a fresh dial.
+            Err(e @ crate::curlio::OpenErr::Stopped) => {
+                net.curl = Some(cs);
+                return Err(classify_curl_open_err(e));
             }
-        };
-        if unsafe { crate::aq::aq_is_aborted(aq) } {
-            return Err(HlsExit::Aborted);
+            Err(crate::curlio::OpenErr::Status(status)) => {
+                SHARED.dg_http_status.store(status, Ordering::Relaxed);
+                net.curl = Some(cs);
+                return Err(if status == 404 {
+                    HlsExit::NotReady
+                } else {
+                    HlsExit::Failed("HTTPS request failed")
+                });
+            }
+            Err(_) => {
+                // Idle TLS session or a broken multi: drop it and dial as a first open.
+            }
         }
-        if let Err(error) = opened {
+    }
+    let reservation = crate::curlio::CurlSource::reserve_open().map_err(|e| {
+        if e == crate::curlio::OpenErr::Aborted {
+            HlsExit::Aborted
+        } else {
+            HlsExit::Failed("HTTPS reservation failed")
+        }
+    })?;
+    if unsafe { crate::aq::aq_is_aborted(aq) } {
+        return Err(HlsExit::Aborted);
+    }
+    let opened = crate::curlio::CurlSource::open_reserved_checked(
+        url,
+        0,
+        reservation,
+        deadline,
+        &mut *checkpoint,
+    );
+    if unsafe { crate::aq::aq_is_aborted(aq) } {
+        drop(opened);
+        return Err(HlsExit::Aborted);
+    }
+    let cs = opened.map_err(classify_curl_open_err)?;
+    let (status, size) = (cs.status(), cs.size());
+    SHARED.dg_http_status.store(status, Ordering::Relaxed);
+    SHARED.file_size.store(size, Ordering::Release);
+    Ok((Src::Curl(cs), size))
+}
+
+/// The plaintext half of [`hls_open_source`], redirects followed (`stream::redirect`) while they
+/// stay on the PMS origin. Also returns the resource the open landed on: a playlist's children
+/// resolve against it, not against the path that was requested.
+fn hls_open_plain(
+    origin: &crate::plex::Origin,
+    request_path: &str,
+    aq: *mut AuQueue,
+    net: &mut HlsNet,
+    deadline: Option<std::time::Instant>,
+    checkpoint: &mut dyn crate::checkpoint::Checkpoint,
+) -> Result<(Src, i64, crate::hls::Resource), HlsExit> {
+    use crate::stream::redirect::{FollowError, Opened};
+    let hs = net.hs;
+    if deadline.is_some_and(|at| std::time::Instant::now() >= at) {
+        return Err(HlsExit::PrimeExpired);
+    }
+    // Keep-alive: `http_open` reuses the live fd when the previous body was drained.
+    let req = crate::stream::redirect::Request {
+        origin,
+        path: request_path,
+        credentials: None,
+        range_from: None,
+        deadline,
+        // The HLS contract (`crate::hls`): every request stays on the PMS origin.
+        same_origin_only: true,
+    };
+    let opened = crate::stream::redirect::open_following(hs, &req, &mut *checkpoint);
+    if unsafe { crate::aq::aq_is_aborted(aq) } {
+        return Err(HlsExit::Aborted);
+    }
+    let target = match opened {
+        Ok(Opened::Socket(t)) => t,
+        // Unreachable from a plaintext origin with `same_origin_only`: https is another origin.
+        Ok(Opened::Tls(_)) => return Err(HlsExit::Failed("HTTP redirect refused")),
+        Err(error) => {
             SHARED
                 .dg_http_status
                 .store(crate::stream::hs_status(hs), Ordering::Relaxed);
-            return Err(classify_plaintext_open_failure(error));
+            return Err(match error {
+                FollowError::Open(error) => classify_plaintext_open_failure(error),
+                FollowError::TooManyHops
+                | FollowError::BadLocation(_)
+                | FollowError::LeftOrigin => HlsExit::Failed("HTTP redirect refused"),
+                FollowError::Refused => HlsExit::Failed("insecure credential transport refused"),
+            });
         }
-        let status = crate::stream::hs_status(hs);
-        let size = crate::stream::hs_content_length(hs);
-        SHARED.dg_http_status.store(status, Ordering::Relaxed);
-        SHARED.file_size.store(size, Ordering::Release);
-        Ok((
-            Src::Socket {
-                hs,
-                host,
-                port: origin.port() as c_int,
-                path,
-            },
-            size,
-        ))
+    };
+    let landed = crate::hls::Resource::from_request_path(target.origin.clone(), &target.path)
+        .map_err(|_| HlsExit::Failed("HTTP redirect refused"))?;
+    let host =
+        CString::new(target.origin.host()).map_err(|_| HlsExit::Failed("invalid PMS host"))?;
+    let port = target.origin.port() as c_int;
+    let path =
+        CString::new(target.path).map_err(|_| HlsExit::Failed("invalid HLS request path"))?;
+    let status = crate::stream::hs_status(hs);
+    let size = crate::stream::hs_content_length(hs);
+    SHARED.dg_http_status.store(status, Ordering::Relaxed);
+    SHARED.file_size.store(size, Ordering::Release);
+    Ok((
+        Src::Socket {
+            hs,
+            host,
+            port,
+            path,
+        },
+        size,
+        landed,
+    ))
+}
+
+/// Why a progressive media open produced no source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MediaOpenFail {
+    /// Teardown won; not a playback failure.
+    Aborted,
+    Failed,
+}
+
+/// Open an https redirect target on the curl source at byte `at`. The reservation publishes
+/// teardown's wake target BEFORE the abort check — the order `demux`'s own TLS open keeps.
+fn open_curl_hop(
+    url: &str,
+    at: i64,
+    aq: *mut AuQueue,
+) -> Result<Box<crate::curlio::CurlSource>, crate::curlio::OpenErr> {
+    let reservation = crate::curlio::CurlSource::reserve_open()?;
+    if unsafe { crate::aq::aq_is_aborted(aq) } {
+        return Err(crate::curlio::OpenErr::Aborted);
+    }
+    crate::curlio::CurlSource::open_reserved(url, at, reservation)
+}
+
+/// The progressive (direct-play) open of a PLAINTEXT part URL, redirects followed. A PMS-hosted
+/// trailer answers its Part URL with a `302` to a presigned CDN URL — usually https, which lands
+/// on the curl source. Publishes the same two diagnostics the TLS arm of `demux` does.
+fn open_plain_progressive(
+    hs_p: *mut HttpStream,
+    origin: &crate::plex::Origin,
+    path: &str,
+    aq_p: *mut AuQueue,
+) -> Result<(Src, i64), MediaOpenFail> {
+    use crate::stream::redirect::Opened;
+    crate::stream::http_close(hs_p);
+    let req = crate::stream::redirect::Request {
+        origin,
+        path,
+        credentials: None,
+        range_from: None,
+        deadline: None,
+        same_origin_only: false,
+    };
+    match crate::stream::redirect::open_following(hs_p, &req, &mut crate::checkpoint::NoCheckpoint)
+    {
+        Ok(Opened::Socket(t)) => {
+            let size = crate::stream::hs_content_length(hs_p);
+            SHARED.file_size.store(size, Ordering::Release);
+            let st = crate::stream::hs_status(hs_p);
+            SHARED.dg_http_status.store(st, Ordering::Relaxed);
+            crate::player::log(&format!("ff: open status={st} clen={size}"));
+            let (Ok(host), Ok(path)) = (CString::new(t.origin.host()), CString::new(t.path)) else {
+                return Err(MediaOpenFail::Failed);
+            };
+            Ok((
+                Src::Socket {
+                    hs: hs_p,
+                    host,
+                    port: t.origin.port() as c_int,
+                    path,
+                },
+                size,
+            ))
+        }
+        Ok(Opened::Tls(t)) => match open_curl_hop(&t.url(), 0, aq_p) {
+            Ok(cs) => {
+                let (st, size) = (cs.status(), cs.size());
+                SHARED.file_size.store(size, Ordering::Release);
+                SHARED.dg_http_status.store(st, Ordering::Relaxed);
+                crate::player::log(&format!("ff: open https status={st} clen={size}"));
+                Ok((Src::Curl(cs), size))
+            }
+            Err(crate::curlio::OpenErr::Aborted) => Err(MediaOpenFail::Aborted),
+            Err(e) => {
+                if let crate::curlio::OpenErr::Status(st) = e {
+                    SHARED.dg_http_status.store(st, Ordering::Relaxed);
+                }
+                crate::player::log(&format!("ff: https open FAILED: {e:?}"));
+                Err(MediaOpenFail::Failed)
+            }
+        },
+        Err(e) => {
+            if unsafe { crate::aq::aq_is_aborted(aq_p) } {
+                return Err(MediaOpenFail::Aborted);
+            }
+            let st = crate::stream::hs_status(hs_p);
+            SHARED.dg_http_status.store(st, Ordering::Relaxed);
+            crate::player::log(&format!("ff: http_open FAILED status={st} ({e:?})"));
+            Err(MediaOpenFail::Failed)
+        }
     }
 }
 
@@ -3179,10 +3699,14 @@ fn hls_source_read(
         return Err(HlsExit::Aborted);
     }
     let read = match src {
-        Src::Socket { hs, .. } => {
-            crate::stream::http_read_until(*hs, dst.as_mut_ptr(), dst.len() as c_int, deadline)
-        }
-        Src::Curl(cs) => cs.read_until(dst, deadline),
+        Src::Socket { hs, .. } => crate::stream::http_read_until(
+            *hs,
+            dst.as_mut_ptr(),
+            dst.len() as c_int,
+            deadline,
+            &mut crate::checkpoint::NoCheckpoint,
+        ),
+        Src::Curl(cs) => cs.read_until(dst, deadline, &mut crate::checkpoint::NoCheckpoint),
         Src::Idle => return Err(HlsExit::Failed("HLS source idle")),
     };
     // The wake used to interrupt a blocked body read is deliberately transport-shaped (EOF for
@@ -3216,14 +3740,14 @@ fn hls_fetch_text(
     aq: *mut AuQueue,
     net: &mut HlsNet,
     mut reserve: Option<&mut ReserveDeadlineState>,
-) -> Result<(String, u128), HlsExit> {
+) -> Result<(String, u128, crate::hls::Resource), HlsExit> {
     const MAX_PLAYLIST_BYTES: usize = 1024 * 1024;
     let request_path = auth
         .request_path(resource)
         .map_err(|_| HlsExit::Failed("playlist credential rejected"))?;
     let started = std::time::Instant::now();
     let mut watchdog = TransportWatchdog::for_origin(&resource.origin);
-    let (mut src, size) = loop {
+    let (mut src, size, landed) = loop {
         if unsafe { crate::aq::aq_is_aborted(aq) } {
             return Err(HlsExit::Aborted);
         }
@@ -3237,7 +3761,17 @@ fn hls_fetch_text(
             .as_deref_mut()
             .and_then(|reserve| reserve.active(false));
         let effective = watchdog.effective(reserve_snapshot);
-        match hls_open_source(resource, &request_path, aq, net, Some(effective.at)) {
+        // A playlist is not a segment acquisition: it has no reserve-funded guard to consult, and
+        // its own reserve deadline and watchdog already bound every wait. `NoCheckpoint` keeps it
+        // exactly as it was.
+        match hls_open_source(
+            resource,
+            &request_path,
+            aq,
+            net,
+            Some(effective.at),
+            &mut crate::checkpoint::NoCheckpoint,
+        ) {
             Ok(opened) => {
                 // A complete response head is transport progress and begins a fresh inactivity
                 // epoch for the body. Neither a stale reserve wake nor a reconnect attempt does.
@@ -3304,23 +3838,40 @@ fn hls_fetch_text(
     hls_recycle_src(src, net);
     let elapsed = started.elapsed().as_millis();
     String::from_utf8(body)
-        .map(|text| (text, elapsed))
+        .map(|text| (text, elapsed, landed))
         .map_err(|_| HlsExit::Failed("playlist is not UTF-8"))
 }
 
+/// Sleep `duration` (never past `absolute_deadline`) in 50 ms slices, consulting `checkpoint` as
+/// its `next_check` falls due. A recheck never moves the wait's end; a stop returns
+/// [`UNLATCHED_STOP`], which a caller with a runtime replaces with the reason it latched.
 fn hls_wait(
     aq: *mut AuQueue,
     duration: std::time::Duration,
     absolute_deadline: Option<std::time::Instant>,
+    checkpoint: &mut dyn crate::checkpoint::Checkpoint,
 ) -> Result<(), HlsExit> {
     let nominal_end = std::time::Instant::now() + duration;
     let wait_until = absolute_deadline.map_or(nominal_end, |at| at.min(nominal_end));
+    let mut pacer = crate::checkpoint::Pacer::new(checkpoint);
     while std::time::Instant::now() < wait_until {
         if unsafe { crate::aq::aq_is_aborted(aq) } {
             return Err(HlsExit::Aborted);
         }
-        let left = wait_until.saturating_duration_since(std::time::Instant::now());
-        std::thread::sleep(left.min(std::time::Duration::from_millis(50)));
+        let Ok(recheck) = pacer.before_wait() else {
+            return Err(UNLATCHED_STOP);
+        };
+        let now = std::time::Instant::now();
+        let mut slice = wait_until
+            .saturating_duration_since(now)
+            .min(std::time::Duration::from_millis(50));
+        if let Some(at) = recheck {
+            slice = slice.min(
+                at.saturating_duration_since(now)
+                    .max(std::time::Duration::from_millis(1)),
+            );
+        }
+        std::thread::sleep(slice);
     }
     if unsafe { crate::aq::aq_is_aborted(aq) } {
         Err(HlsExit::Aborted)
@@ -3406,9 +3957,10 @@ unsafe fn hls_input(
     aq: *mut AuQueue,
     reserve_deadline: ReserveDeadlineState,
     transport_watchdog: TransportWatchdog,
-    stall: Option<StallGuard>,
-    request_started: std::time::Instant,
+    mut acquisition: AcquisitionRuntime,
 ) -> Result<HlsInput, HlsExit> {
+    let request_started = acquisition.request_started();
+    acquisition.enter(Phase::Body);
     let mut input = HlsInput {
         state: Box::new(AvioState {
             src,
@@ -3421,8 +3973,7 @@ unsafe fn hls_input(
             first_byte_at: None,
             reserve_deadline,
             transport_watchdog: Some(transport_watchdog),
-            stall,
-            stall_aborted: false,
+            acquisition: Some(acquisition),
             bounce: Vec::new(),
             bounce_pos: 0,
         }),
@@ -3600,16 +4151,20 @@ unsafe fn hls_demux_segment(
     aq: *mut AuQueue,
     net: &mut HlsNet,
     acodec: &str,
-    mut reserve_deadline: ReserveDeadlineState,
-    stall: Option<StallGuard>,
+    acquisition: SegmentAcquisition,
 ) -> Result<HlsSegmentOutput, HlsExit> {
+    // The ONE runtime for this fetch: the open and the `NotReady` wait below consult it as their
+    // checkpoint, then it moves into the AVIO for the probe and body reads — never re-armed.
+    let (mut reserve_deadline, mut runtime) = acquisition.begin(aq);
     if crate::aq::aq_is_aborted(aq) {
         return Err(HlsExit::Aborted);
     }
     let path = auth
         .request_path(&segment.resource)
         .map_err(|_| HlsExit::Failed("segment credential rejected"))?;
-    let request_started = std::time::Instant::now();
+    let request_started = runtime.request_started();
+    let audio_expected =
+        || SHARED.hls_audio_expected.load(Ordering::Acquire) && FEED_AUDIO.load(Ordering::Relaxed);
     let retry_budget = segment
         .duration
         .saturating_mul(3)
@@ -3629,17 +4184,30 @@ unsafe fn hls_demux_segment(
             return Err(HlsExit::Aborted);
         }
         if reserve_deadline.expire_if_due(SHARED.hls_rebuffering.load(Ordering::Acquire)) {
-            return Err(HlsExit::PrimeExpired);
+            return Err(runtime.settle(HlsExit::PrimeExpired, audio_expected()));
         }
         let attempt = std::time::Instant::now();
         let rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
         let reserve_snapshot = reserve_deadline.active(rebuffering);
         let effective = transport_watchdog.effective(reserve_snapshot);
-        match hls_open_source(&segment.resource, &path, aq, net, Some(effective.at)) {
-            Ok(opened) => {
+        runtime.enter(Phase::Opening);
+        let opened = hls_open_source(
+            &segment.resource,
+            &path,
+            aq,
+            net,
+            Some(effective.at),
+            &mut runtime,
+        );
+        // Every unsuccessful open is SETTLED by a fresh check before it is classified: a transport
+        // deadline shorter than the checkpoint slice ends the wait without asking again.
+        let opened = opened.map_err(|error| runtime.settle(error, audio_expected()));
+        match opened {
+            // A segment has no children, so where a redirect landed is of no further use.
+            Ok((src, size, _landed)) => {
                 transport_watchdog.reset();
                 open_us = attempt.elapsed().as_micros() as u64;
-                break opened;
+                break (src, size);
             }
             // The blocking open may have returned on the old reserve deadline in the same pump
             // tick that established the internal hold. Re-open under the promoted policy; the
@@ -3671,7 +4239,7 @@ unsafe fn hls_demux_segment(
                     return Err(HlsExit::Aborted);
                 }
                 if reserve_deadline.expire_if_due(SHARED.hls_rebuffering.load(Ordering::Acquire)) {
-                    return Err(HlsExit::PrimeExpired);
+                    return Err(runtime.settle(HlsExit::PrimeExpired, audio_expected()));
                 }
                 // Never sleep past the deadline. A fixed 250 ms wait against a deadline 40 ms away
                 // overshoots by 210 ms of reserve, every time, for no information — the poll after
@@ -3685,7 +4253,10 @@ unsafe fn hls_demux_segment(
                         .at
                         .saturating_duration_since(std::time::Instant::now()),
                 );
-                match hls_wait(aq, wait, Some(effective.at)) {
+                runtime.enter(Phase::RetryWaiting);
+                let waited = hls_wait(aq, wait, Some(effective.at), &mut runtime)
+                    .map_err(|error| runtime.settle(error, audio_expected()));
+                match waited {
                     Err(HlsExit::PrimeExpired) => {
                         let current_rebuffering = SHARED.hls_rebuffering.load(Ordering::Acquire);
                         let wake = observe_hls_deadline(
@@ -3708,15 +4279,7 @@ unsafe fn hls_demux_segment(
         }
     };
     let body_started = std::time::Instant::now();
-    let mut input = hls_input(
-        src,
-        size,
-        aq,
-        reserve_deadline,
-        transport_watchdog,
-        stall,
-        request_started,
-    )?;
+    let mut input = hls_input(src, size, aq, reserve_deadline, transport_watchdog, runtime)?;
     let probe_done = std::time::Instant::now();
     let streams = (*input.fmt).streams;
     let vi = av_find_best_stream(
@@ -4075,8 +4638,10 @@ fn hls_cursor_open(
         .map_err(|_| HlsExit::Failed("invalid HLS master URL"))?;
     let auth = crate::hls::InheritedAuth::capture(&master_resource)
         .map_err(|_| HlsExit::Failed("HLS master has no unique credential"))?;
-    let (master_text, master_ms) = hls_fetch_text(&master_resource, &auth, aq, net, reserve)?;
-    let master = crate::hls::parse_master(&master_resource, &master_text).map_err(|e| {
+    // Parsed against where the fetch LANDED: a redirected master's children are relative to it.
+    let (master_text, master_ms, master_landed) =
+        hls_fetch_text(&master_resource, &auth, aq, net, reserve)?;
+    let master = crate::hls::parse_master(&master_landed, &master_text).map_err(|e| {
         crate::player::log(&format!("hls: master rejected: {e}"));
         HlsExit::Failed("HLS master rejected")
     })?;
@@ -4110,9 +4675,10 @@ fn hls_cursor_next(
         if cursor.ended {
             return Ok(None);
         }
-        let (media_text, media_ms) =
+        // Refreshed from the variant's own URL; its segments resolve against where it landed.
+        let (media_text, media_ms, media_landed) =
             hls_fetch_text(&cursor.media, &cursor.auth, aq, net, reserve.as_deref_mut())?;
-        let media = crate::hls::parse_media(&cursor.media, &media_text).map_err(|e| {
+        let media = crate::hls::parse_media(&media_landed, &media_text).map_err(|e| {
             crate::player::log(&format!("hls: media rejected: {e}"));
             HlsExit::Failed("HLS media playlist rejected")
         })?;
@@ -4171,7 +4737,12 @@ fn hls_cursor_next(
             let reserve_snapshot = reserve
                 .as_deref_mut()
                 .and_then(|reserve| reserve.active(false));
-            match hls_wait(aq, poll, reserve_snapshot) {
+            match hls_wait(
+                aq,
+                poll,
+                reserve_snapshot,
+                &mut crate::checkpoint::NoCheckpoint,
+            ) {
                 Err(HlsExit::PrimeExpired) => {
                     if reserve.as_deref_mut().map_or(true, |reserve| {
                         reserve.note_transport_deadline(reserve_snapshot, false)
@@ -4298,6 +4869,29 @@ fn hls_segment_sample(
         output.transfer.total_us,
         duration_ms,
         duration_obligation_ms,
+        hls_buffer_snapshot(Some(output)),
+    )
+}
+
+/// The active cursor's sample for one round of the demux loop. The constructor is chosen BEFORE
+/// validation: an abandoned round goes through `SegmentSample::abandoned_acquisition`, which
+/// admits the zero bytes and zero body time of an abort before the first body byte, so the
+/// censored event still reaches the controller's recovery path instead of being dropped as
+/// invalid timing. A completed round keeps the strict constructor.
+fn hls_round_sample(
+    output: &HlsSegmentOutput,
+    duration: std::time::Duration,
+    fetch_abandoned: bool,
+) -> Option<crate::abr::SegmentSample> {
+    if !fetch_abandoned {
+        return hls_segment_sample(output, duration);
+    }
+    crate::abr::SegmentSample::abandoned_acquisition(
+        output.transfer.bytes,
+        output.transfer.active_us,
+        output.transfer.total_us,
+        u32::try_from(duration.as_millis()).ok()?,
+        hls_duration_obligation_ms(duration)?,
         hls_buffer_snapshot(Some(output)),
     )
 }
@@ -5285,27 +5879,86 @@ fn original_probe_observation(
     }
 }
 
-unsafe fn hls_prefetch_same_encoder(
+/// **One shared reducer for a `StallAbort` returned against the ACTIVE cursor.** The ordinary
+/// fetch and the same-encoder lookahead observe the identical terminal boundary and must handle
+/// it identically: log it, requeue the segment (exactly once — it is put back here, and nowhere
+/// else, whichever path called this), and hand back a zero-AU output carrying the transfer so
+/// the caller's ordinary controller/transact path can treat it as an abandoned sample. Never call
+/// this against a `Candidate` acquisition's result: a candidate never carries a `StallGuard`, so
+/// it cannot produce `StallAbort`.
+fn hls_stall_abort_outcome(
+    segment: crate::hls::Segment,
+    clock: crate::hls::SegmentClock,
+    transfer: SegmentTransfer,
+    reserve_ms_at_start: i64,
     cursor: &mut HlsCursor,
-    aq: *mut AuQueue,
-    net: &mut HlsNet,
-    acodec: &str,
+) -> (
+    crate::hls::Segment,
+    HlsSegmentOutput,
+    crate::hls::SegmentClock,
+    bool,
+) {
+    crate::player::log(&format!(
+        "abr: stall abort seq={} bytes={} active={}ms reserve={}ms censored=1 \
+         cause=terminal_reserve — abandoning the incomplete fetch so a cheaper rung \
+         can be decided",
+        segment.sequence,
+        transfer.bytes,
+        transfer.active_us / 1_000,
+        reserve_ms_at_start,
+    ));
+    cursor.pending.push_front(segment.clone());
+    (
+        segment,
+        HlsSegmentOutput {
+            aus: Vec::new(),
+            transfer,
+            video_width: 0,
+            video_height: 0,
+            video_tail_ns: -1,
+            audio_tail_ns: None,
+        },
+        clock,
+        true,
+    )
+}
+
+/// The same-encoder lookahead's control flow, generic over the demux call itself so a test can
+/// inject a fake one and prove this flow's WIRING — not a hand-built `AvioState` a regression
+/// could bypass entirely. Production's only caller is [`hls_prefetch_same_encoder`] below, which
+/// closes over the real [`hls_demux_segment`]; a test closes over a fake that records what
+/// [`SegmentAcquisition`] it was handed and can return [`HlsExit::StallAbort`] on demand.
+///
+/// Takes `n1` (the already-dequeued next segment) and `cursor` separately rather than dequeuing
+/// itself, so a test can drive this exact flow without also standing up an `HlsNet`/`AuQueue`
+/// just to satisfy [`hls_cursor_next`].
+fn hls_prefetch_same_encoder_with<F>(
+    cursor: &mut HlsCursor,
+    n1: crate::hls::Segment,
     timeline: crate::hls::SegmentTimeline,
     n_clock: crate::hls::SegmentClock,
+    // The session's adaptive context, exactly as `hls_demux` holds it: `Some(&Controller)` for an
+    // ABR playback, `None` for non-adaptive. Handed straight to `SegmentAcquisition::for_cursor` —
+    // never turned into a bool here — because the lookahead is reading ahead of the SAME active
+    // cursor the ordinary branch is on and must be classified exactly the way that cursor is.
+    controller: Option<&crate::abr::Controller>,
+    demux: F,
 ) -> Result<
     Option<(
         crate::hls::Segment,
         HlsSegmentOutput,
         crate::hls::SegmentClock,
+        bool,
     )>,
     HlsExit,
-> {
-    let n1 = match hls_cursor_next(cursor, aq, net, None) {
-        Ok(Some(segment)) => segment,
-        Ok(None) => return Ok(None),
-        Err(error) if hls_prefetch_is_fatal(&error) => return Err(error),
-        Err(_) => return Ok(None),
-    };
+>
+where
+    F: FnOnce(
+        &crate::hls::Segment,
+        &mut crate::hls::SegmentClock,
+        SegmentAcquisition,
+    ) -> Result<HlsSegmentOutput, HlsExit>,
+{
     let mut peek = timeline;
     peek.commit(n_clock);
     let mut clock = match peek.begin(n1.duration) {
@@ -5315,23 +5968,71 @@ unsafe fn hls_prefetch_same_encoder(
             return Ok(None);
         }
     };
-    match hls_demux_segment(
-        &n1,
-        &cursor.auth,
-        &mut clock,
-        aq,
-        net,
-        acodec,
-        ReserveDeadlineState::new(None, false),
-        None,
-    ) {
-        Ok(output) => Ok(Some((n1, output, clock))),
+    // **The lookahead is still an ACTIVE-cursor fetch and must arm the same guard the ordinary
+    // branch would.** `SegmentAcquisition::for_cursor` is the one constructor that evaluates
+    // `arm_active_stall_guard` from the live buffer/floor/hold state; there is no path through it
+    // that skips the evaluation. (This is precisely what was missing before: the lookahead used
+    // to build `ReserveDeadlineState::new(None, false), None` here unconditionally, which is how
+    // `pipe_abr_down_collapse` never aborted a fetch that had already exhausted the reserve.)
+    let acquisition = SegmentAcquisition::for_cursor(controller);
+    let stall_reserve_ms = acquisition
+        .stall()
+        .map(|guard| guard.reserve_ms_at_start)
+        .unwrap_or(-1);
+    match demux(&n1, &mut clock, acquisition) {
+        Ok(output) => Ok(Some((n1, output, clock, false))),
+        // Do NOT let this escape via `?` (that would exit `hls_demux` entirely) and do NOT
+        // silently requeue-and-`Ok(None)` (that is exactly how the old code swallowed the abort).
+        // Route it through the same reducer the ordinary branch uses, so the caller's main loop
+        // sees an abandoned round — not a completed prefetch, not nothing.
+        Err(HlsExit::StallAbort(transfer)) => Ok(Some(hls_stall_abort_outcome(
+            n1,
+            clock,
+            transfer,
+            stall_reserve_ms,
+            cursor,
+        ))),
         Err(error) if hls_prefetch_is_fatal(&error) => Err(error),
         Err(_) => {
             cursor.pending.push_front(n1);
             Ok(None)
         }
     }
+}
+
+/// Thin production wrapper over [`hls_prefetch_same_encoder_with`]: dequeues the next segment and
+/// closes over the real [`hls_demux_segment`]. All of the actual prefetch decision-making lives
+/// in the function above, which is what the regression test drives.
+unsafe fn hls_prefetch_same_encoder(
+    cursor: &mut HlsCursor,
+    aq: *mut AuQueue,
+    net: &mut HlsNet,
+    acodec: &str,
+    timeline: crate::hls::SegmentTimeline,
+    n_clock: crate::hls::SegmentClock,
+    controller: Option<&crate::abr::Controller>,
+) -> Result<
+    Option<(
+        crate::hls::Segment,
+        HlsSegmentOutput,
+        crate::hls::SegmentClock,
+        bool,
+    )>,
+    HlsExit,
+> {
+    let n1 = match hls_cursor_next(cursor, aq, net, None) {
+        Ok(Some(segment)) => segment,
+        Ok(None) => return Ok(None),
+        Err(error) if hls_prefetch_is_fatal(&error) => return Err(error),
+        Err(_) => return Ok(None),
+    };
+    let auth = cursor.auth.clone();
+    hls_prefetch_same_encoder_with(cursor, n1, timeline, n_clock, controller, |segment, clock, acquisition| {
+        // SAFETY: this closure is only ever invoked (synchronously, within this call) by
+        // `hls_prefetch_same_encoder_with` above, under the same `unsafe` obligations the caller
+        // of this whole function already carries (a live `aq`/`net` for the duration of the call).
+        unsafe { hls_demux_segment(segment, &auth, clock, aq, net, acodec, acquisition) }
+    })
 }
 
 fn hls_demux(
@@ -5488,13 +6189,14 @@ fn hls_demux(
         crate::hls::Segment,
         HlsSegmentOutput,
         crate::hls::SegmentClock,
+        bool,
     )> = None;
 
     'segments: loop {
-        let (segment, output, clock, fetch_abandoned) = if let Some((segment, output, clock)) =
+        let (segment, output, clock, fetch_abandoned) = if let Some(prefetched_round) =
             prefetched.take()
         {
-            (segment, output, clock, false)
+            prefetched_round
         } else {
             let Some(segment) = hls_cursor_next(&mut cursor, aq, &mut net, None)? else {
                 break;
@@ -5507,13 +6209,13 @@ fn hls_demux(
             // would make the depleted state absorbing. An unreadable reserve has no boundary to arm.
             // Above the floor, a later physical B=0 hold abandons the oversized object; at the floor
             // the same event keeps reading because no cheaper response exists.
-            let stall_guard = adaptive.as_ref().and_then(|state| {
-                arm_active_stall_guard(
-                    hls_buffer_snapshot(None).buffered_ms(),
-                    state.2.current().at_floor(),
-                    SHARED.hls_rebuffering.load(Ordering::Acquire),
-                )
-            });
+            // `SegmentAcquisition::for_cursor` decides `Active` vs `Fixed` from the session's own
+            // adaptive context, never per call, and samples the live reserve/hold itself.
+            let acquisition = SegmentAcquisition::for_cursor(adaptive.as_ref().map(|state| &state.2));
+            let stall_reserve_ms = acquisition
+                .stall()
+                .map(|guard| guard.reserve_ms_at_start)
+                .unwrap_or(-1);
             // **An abort is not a failure and not a delivery — it is the observed terminal boundary
             // arriving instead of a segment.** The segment goes back on the cursor unconsumed,
             // nothing is fed and the content timeline does not advance (we delivered no media); what
@@ -5535,35 +6237,12 @@ fn hls_demux(
                     aq,
                     &mut net,
                     acodec,
-                    ReserveDeadlineState::new(None, false),
-                    stall_guard,
+                    acquisition,
                 )
             } {
                 Ok(output) => (segment, output, clock, false),
                 Err(HlsExit::StallAbort(transfer)) => {
-                    crate::player::log(&format!(
-                        "abr: stall abort seq={} bytes={} active={}ms reserve={}ms censored=1 \
-                         cause=terminal_reserve — abandoning the incomplete fetch so a cheaper rung \
-                         can be decided",
-                        segment.sequence,
-                        transfer.bytes,
-                        transfer.active_us / 1_000,
-                        stall_guard.map(|g| g.reserve_ms_at_start).unwrap_or(-1),
-                    ));
-                    cursor.pending.push_front(segment.clone());
-                    (
-                        segment,
-                        HlsSegmentOutput {
-                            aus: Vec::new(),
-                            transfer,
-                            video_width: 0,
-                            video_height: 0,
-                            video_tail_ns: -1,
-                            audio_tail_ns: None,
-                        },
-                        clock,
-                        true,
-                    )
+                    hls_stall_abort_outcome(segment, clock, transfer, stall_reserve_ms, &mut cursor)
                 }
                 Err(other) => return Err(other),
             }
@@ -5585,7 +6264,15 @@ fn hls_demux(
         else {
             if hls_should_prefetch_after_abr(delivered, fetch_abandoned, true) {
                 prefetched = unsafe {
-                    hls_prefetch_same_encoder(&mut cursor, aq, &mut net, acodec, timeline, clock)?
+                    hls_prefetch_same_encoder(
+                        &mut cursor,
+                        aq,
+                        &mut net,
+                        acodec,
+                        timeline,
+                        clock,
+                        None,
+                    )?
                 };
             }
             continue;
@@ -5594,9 +6281,7 @@ fn hls_demux(
         if let Some(gate) = recovery.as_mut() {
             gate.advance_to(now_ms());
         }
-        let Some(mut sample) = hls_segment_sample(&output, segment.duration)
-            .map(|s| if fetch_abandoned { s.abandoned() } else { s })
-        else {
+        let Some(mut sample) = hls_round_sample(&output, segment.duration, fetch_abandoned) else {
             crate::player::log("abr: ignoring invalid segment timing sample");
             continue;
         };
@@ -5705,7 +6390,15 @@ fn hls_demux(
             matches!(decision, crate::abr::Decision::Stay),
         ) {
             prefetched = unsafe {
-                hls_prefetch_same_encoder(&mut cursor, aq, &mut net, acodec, timeline, clock)?
+                hls_prefetch_same_encoder(
+                    &mut cursor,
+                    aq,
+                    &mut net,
+                    acodec,
+                    timeline,
+                    clock,
+                    Some(&*controller),
+                )?
             };
         }
         // An upward candidate commit invalidates the HLS half of a terminal Original comparison,
@@ -6504,15 +7197,15 @@ fn hls_demux(
                 aq,
                 &mut net,
                 acodec,
-                candidate_deadline,
-                // Candidate responses never carry a prefix `StallGuard`. PMS may pause a sized
-                // response while its JIT encoder catches up, so a prefix-rate extrapolation is
-                // not proof that the unseen remainder will miss `candidate_deadline` above. When
-                // that reserve clock exists, each `read_until` gets its current wall projection and
-                // the callback classifies the wake against the owning playhead clock. Terminal-floor
-                // recovery has no reserve deadline because the robust rollback guarantee is already
-                // absent (even if a positive remnant remains) and no cheaper response exists.
-                None,
+                // `SegmentAcquisition::Candidate` never carries a prefix `StallGuard`. PMS may
+                // pause a sized response while its JIT encoder catches up, so a prefix-rate
+                // extrapolation is not proof that the unseen remainder will miss
+                // `candidate_deadline` below. When that reserve clock exists, each `read_until`
+                // gets its current wall projection and the callback classifies the wake against
+                // the owning playhead clock. Terminal-floor recovery has no reserve deadline
+                // because the robust rollback guarantee is already absent (even if a positive
+                // remnant remains) and no cheaper response exists.
+                SegmentAcquisition::candidate(candidate_deadline),
             )
         } {
             Ok(output) => output,
@@ -6679,8 +7372,7 @@ fn hls_demux(
                     aq,
                     &mut net,
                     acodec,
-                    repeatable_deadline,
-                    None,
+                    SegmentAcquisition::candidate(repeatable_deadline),
                 )
             } {
                 Ok(output) => output,
@@ -7066,13 +7758,9 @@ pub(crate) fn demux(
     // spans unbounded wall clock, so "six windows" was not a duration at all. One `Instant` for the
     // whole progressive session, read absolutely, for the reason `advance_to` documents.
     let mut original_since = std::time::Instant::now();
-    let port = origin.port() as c_int;
-    // `host()` is the origin's BARE host — a v6 literal arrives unbracketed, which is what
-    // `stream.rs` wants; `base()` re-brackets it, which is what a URL needs. Both spellings come
-    // from the one `Origin` rather than being reconstructed, which is the whole point of the type.
-    let host_c = CString::new(origin.host().to_owned()).unwrap_or_default();
-    let url = format!("{}{}", origin.base(), path); // https only — carries the token, never logged
-    let path_c = CString::new(path).unwrap_or_default();
+    // `base()` re-brackets a v6 host, which is what a URL needs; the plaintext arm hands the
+    // `Origin` itself to `open_plain_progressive`, which dials its BARE `host()`.
+    let url = format!("{}{}", origin.base(), path); // delivery identity; may carry a token, never logged
 
     // PANIC BARRIER around the whole producer body. Not about the unwind itself — this thread is
     // started by `task::spawn`, so std already catches a panic at the thread boundary and turns it
@@ -7128,8 +7816,8 @@ pub(crate) fn demux(
                     crate::player::log("ff: aborted before reopen");
                     break;
                 }
-                // ONE decision, here, from the scheme — and the only place in the media path that
-                // makes it. Both arms publish the same two diagnostics (`dg_http_status`, `file_size`)
+                // ONE decision, here, from the scheme; the only later switch is a plaintext open
+                // redirected to https, which `open_plain_progressive` hands to curl. Both arms publish the same two diagnostics (`dg_http_status`, `file_size`)
                 // before anything else can fail, because the read-out panel is the first thing anybody
                 // looks at when a part will not play and it must mean the same thing either way.
                 let (src, size) = if origin.is_tls() {
@@ -7156,36 +7844,18 @@ pub(crate) fn demux(
                         }
                     }
                 } else {
-                    crate::stream::http_close(hs_p);
-                    if crate::stream::http_open(
-                        hs_p,
-                        host_c.as_ptr(),
-                        port,
-                        path_c.as_ptr(),
-                        std::ptr::null(),
-                        "GET",
-                    ) != 0
-                    {
-                        let st = crate::stream::hs_status(hs_p);
-                        SHARED.dg_http_status.store(st, Ordering::Relaxed);
-                        crate::player::log(&format!("ff: http_open FAILED status={st}"));
-                        SHARED.demux_failed.store(true, Ordering::Release);
-                        break;
+                    // Redirects followed; an https hop comes back as the curl source.
+                    match open_plain_progressive(hs_p, &origin, &path, aq_p) {
+                        Ok(opened) => opened,
+                        Err(MediaOpenFail::Aborted) => {
+                            crate::player::log("ff: aborted during open");
+                            break;
+                        }
+                        Err(MediaOpenFail::Failed) => {
+                            SHARED.demux_failed.store(true, Ordering::Release);
+                            break;
+                        }
                     }
-                    let size = crate::stream::hs_content_length(hs_p);
-                    SHARED.file_size.store(size, Ordering::Release);
-                    let st = crate::stream::hs_status(hs_p);
-                    SHARED.dg_http_status.store(st, Ordering::Relaxed);
-                    crate::player::log(&format!("ff: open status={st} clen={size}"));
-                    (
-                        Src::Socket {
-                            hs: hs_p,
-                            host: host_c.clone(),
-                            port,
-                            path: path_c.clone(),
-                        },
-                        size,
-                    )
                 };
 
                 let mut state = Box::new(AvioState {
@@ -7201,8 +7871,7 @@ pub(crate) fn demux(
                     transport_watchdog: None,
                     // A progressive part is not on a ladder, so there is no cheaper rung to run to
                     // and the abort rule's escape does not exist. R12's terminal case, structurally.
-                    stall: None,
-                    stall_aborted: false,
+                    acquisition: None,
                     bounce: Vec::new(),
                     bounce_pos: 0,
                 });
@@ -7332,6 +8001,12 @@ pub(crate) fn demux(
                 } else {
                     None
                 };
+                let dts_audio = ai >= 0 && std::ffi::CStr::from_ptr(avcodec_get_name(
+                    (*stream_codecpar(*streams.add(ai as usize))).codec_id
+                )).to_bytes() == b"dts";
+                if dts_audio {
+                    crate::player::log("ff: DTS core extraction on (DTS-HD extensions discarded)");
+                }
                 if let Some((fi, ch)) = aac_adts {
                     crate::player::log(&format!(
                         "ff: AAC → ADTS reframing on (freq_idx={fi} ch={ch})"
@@ -7417,6 +8092,7 @@ pub(crate) fn demux(
                         sub_streams.push((i as c_int, k, dec));
                     }
                 }
+                let ass_generation = begin_ass_sources(&url, fmt, streams, &sub_streams);
                 if !sub_streams.is_empty() {
                     let desc: Vec<String> = sub_streams
                         .iter()
@@ -7510,6 +8186,8 @@ pub(crate) fn demux(
                             original_watch = None;
                         }
                         let ts = av_rescale_q(seek_ns, NS_TB, stream_time_base(vst));
+                        // Fence completed renders from the old position before new packets arrive.
+                        crate::player::ass_source::seek(ass_generation);
                         let sr = av_seek_frame(fmt, vi, ts, AVSEEK_FLAG_BACKWARD);
                         crate::player::log(&format!(
                             "ff: seek {}s rv={sr}",
@@ -7581,6 +8259,19 @@ pub(crate) fn demux(
                                 2,
                                 || state.drain_wire(),
                             )
+                        } else if dts_audio {
+                            let raw = std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize);
+                            let Some(core) = dts_core_packet(raw) else {
+                                crate::player::log("ff: DTS packet has no complete supported core; refusing audio feed");
+                                SHARED.demux_failed.store(true, Ordering::Release);
+                                SHARED.demux_io_failed.store(true, Ordering::Release);
+                                av_packet_unref(pkt);
+                                break;
+                            };
+                            crate::aq::aq_push_with_drain(
+                                aqa_p, core.as_ptr(), core.len() as c_int, pts, 1, 2,
+                                || state.drain_wire(),
+                            )
                         } else {
                             crate::aq::aq_push_with_drain(
                                 aqa_p,
@@ -7618,7 +8309,7 @@ pub(crate) fn demux(
                             // renderer filters by selection. RAM is bounded by the store's byte budget.
                             //
                             // GATED on subs being ON at all: with subtitles Off (the common case) the
-                            // continuous per-display-set RLE decode + the up-to-24MB RGBA store were
+                            // continuous per-display-set RLE decode + the up-to-24MB indexed store were
                             // pure waste on the demux core during 4K playback. Turning subs on starts
                             // decoding from the current read position — a switch between two IMAGE
                             // tracks stays instant; only the off→on moment can wait for the next cue.
@@ -7652,13 +8343,15 @@ pub(crate) fn demux(
                                 } else {
                                     raw
                                 };
-                                crate::player::push_subtitle_cue(
-                                    sub_pos as i32,
-                                    start,
-                                    end,
-                                    payload,
-                                    kind == SubKind::Ass,
-                                );
+                                if kind == SubKind::Ass {
+                                    crate::player::ass_source::push(
+                                        ass_generation, sub_pos as i32, start, end, payload,
+                                    );
+                                } else {
+                                    crate::player::push_subtitle_cue(
+                                        sub_pos as i32, start, end, payload,
+                                    );
+                                }
                             }
                         }
                         av_packet_unref(pkt);
@@ -7863,3 +8556,11 @@ mod hls_reserve_tests;
 #[cfg(test)]
 #[path = "ff_stall_guard_tests.rs"]
 mod stall_guard_tests;
+
+#[cfg(test)]
+#[path = "ff_image_subtitle_tests.rs"]
+mod image_subtitle_tests;
+
+#[cfg(test)]
+#[path = "ff_redirect_tests.rs"]
+mod redirect_tests;

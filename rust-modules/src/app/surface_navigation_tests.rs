@@ -67,7 +67,7 @@ fn a_store_command_through_the_dispatcher_steps_the_store_and_notifies_the_page(
     let _g = crate::testlock::serial();
     let mut d = Dispatcher::<AppHost>::new();
     let mut rig = Bridge::for_test(|| 0);
-    let _ = crate::stores::take_notices();
+    let _ = rig.stores.take_notices();
     // **This used to also assert the retired route-word page's generic notice COUNTER, and
     // cannot any more.** Search left that population with the phase 7 cutover
     // and `Player` with phase 9, and `Account`/`ItemMenu` never had a page of their own —
@@ -79,16 +79,16 @@ fn a_store_command_through_the_dispatcher_steps_the_store_and_notifies_the_page(
     let route = AppArg::Player;
     frame(&mut d, &mut rig, route.clone(), tick(0), vec![]);
     assert_eq!(d.top_screen().map(|s| s.name()), Some("player"));
-    let before = crate::stores::gen(StoreId::Search);
+    let before = rig.stores.gen(StoreId::Search);
     d.emit(
         MachineId::Nav,
         Fx::App(AppFx::Store(StoreId::Search, StoreCmd::Search(crate::stores::search::SearchCmd::Reset))),
     );
     frame(&mut d, &mut rig, route.clone(), tick(1), vec![]);
-    assert_eq!(crate::stores::gen(StoreId::Search), before + 1, "the store was stepped in the drain");
+    assert_eq!(rig.stores.gen(StoreId::Search), before + 1, "the store was stepped in the drain");
     frame(&mut d, &mut rig, route.clone(), tick(2), vec![]);
-    assert_eq!(crate::stores::gen(StoreId::Search), before + 1, "and exactly once");
-    let g = crate::stores::gen(StoreId::Search);
+    assert_eq!(rig.stores.gen(StoreId::Search), before + 1, "and exactly once");
+    let g = rig.stores.gen(StoreId::Search);
     d.emit(
         MachineId::Nav,
         Fx::Deliver(
@@ -97,34 +97,59 @@ fn a_store_command_through_the_dispatcher_steps_the_store_and_notifies_the_page(
         ),
     );
     frame(&mut d, &mut rig, route.clone(), tick(4), vec![]);
-    assert_eq!(crate::stores::gen(StoreId::Search), g);
+    assert_eq!(rig.stores.gen(StoreId::Search), g);
 }
 
-/// **A profile switch must leave the container holding nothing of the profile before it.**
+/// **A profile switch must leave the container holding nothing of the profile before it —
+/// including whatever the STACK itself was mid-transition on, which a bare `Root` request cannot
+/// reach until its own floor.**
 ///
-/// RED FIRST (D1). Until this landed, `Dispatcher::reset_for_profile` had NO production caller
-/// anywhere in the tree: the switch worked only because the loop wrote `route = Profiles` and
-/// `sync_page` turned that into a `NavOp::Root(Profiles)` — and `NavStack::apply`'s `Root` arm
-/// unwinds everything ABOVE the root while leaving the previous root COVERED and alive, memory
-/// and all. So the outgoing profile's Home entry survived the switch, still holding its
-/// `ReturnState` and (until eviction) its body. That is a privacy-shaped defect rather than a
-/// cosmetic one, and deleting `sync_page` without wiring the reset explicitly would have
-/// preserved it silently.
+/// RED FIRST (D1), historically: `Dispatcher::reset_for_profile` had NO production caller
+/// anywhere in the tree, and the switch worked only because the loop wrote `route = Profiles`
+/// and `sync_page` turned that into a `NavOp::Root(Profiles)` over the OLD, shared `Root` arm —
+/// which unwound everything ABOVE the root while leaving the previous root COVERED and alive.
 ///
-/// Observed RED against `switch_profile` without its `reset_for_profile` call: depth 2 with
-/// `home` still at the bottom of the stack.
+/// **That depth-survives-the-switch shape is no longer what this test can grade under an
+/// `Immediate` transition.** `Root` now truly replaces the whole stack (`NavStack::apply`'s
+/// current `Root` arm, §stack.rs), and `Navigation::commit`'s own orphaned-covered-modal sweep
+/// (mod.rs: "a removed page cannot leave an orphaned modal in the live index") already retires a
+/// surface standing over a page `Root` just retired — so under `Dispatcher::new()`'s `Immediate`
+/// stack, the depth/entry/surface state converges to the same place with `reset_for_profile()`
+/// deleted from `switch_profile`, because "now" and "at the op's own commit point" are the same
+/// instant. **What `reset_for_profile` still uniquely buys is `NavStack::clear_pending`** (its
+/// first line) — the one thing that matters under the product's REAL transition, `PageDip`, where
+/// an op does not apply until its floor: a page mid fade-out when the switch fires has already
+/// reached the stack's OWN `pending`, not merely the dispatcher's incoming queue, and without the
+/// clear it would still apply — some frames later, over the tree the reset just emptied — minting
+/// an entry nobody asked for post-switch (`ui/containers/tests.rs`'s
+/// `reset_for_profile_clears_a_pending_op_so_it_cannot_apply_over_the_emptied_tree` pins the same
+/// mechanism against the bare container). This test now drives a `PageDip` stack rather than the
+/// file's usual `Immediate` one for exactly that reason — an `Immediate` stack has no window in
+/// which an op is parked but not yet applied for `reset_for_profile` to catch.
 #[test]
 fn switching_profile_leaves_the_container_holding_nothing_of_the_previous_profile() {
     let _g = crate::testlock::serial();
-    let mut d = Dispatcher::<AppHost>::new();
+    let mut d = Dispatcher::<AppHost>::with_transition(
+        Box::new(crate::ui::containers::transition::PageDip::new()));
     let mut rig = Bridge::for_test(|| 0);
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
-    frame(&mut d, &mut rig, detail_arg("1001"), tick(1), vec![]);
+    for i in 1..20u32 { super::frame(&mut d, &mut rig, tick(i * 16), vec![]); }
+    frame(&mut d, &mut rig, detail_arg("1001"), tick(320), vec![]);
+    for i in 1..20u32 { super::frame(&mut d, &mut rig, tick(320 + i * 16), vec![]); }
     assert_eq!(d.nav.tabs.stack.depth(), 2, "the outgoing profile browsed two pages deep");
     let before: Vec<_> = d.nav.tabs.stack.entries.iter().map(|e| e.id).collect();
 
+    // Park a THIRD page on the STACK's own pending, mid fade-out — the window `reset_for_profile`
+    // exists to close (see the doc above): the switch fires while this is still in flight.
+    nav_push(&mut d, detail_arg("2002"));
+    super::frame(&mut d, &mut rig, tick(1000), vec![]);
+    assert!(d.nav.tabs.stack.is_pending(), "the push reached the stack's own pending, mid fade-out");
+
     switch_profile(&mut d);
-    frame(&mut d, &mut rig, AppArg::Profiles, tick(2), vec![]);
+    assert!(!d.nav.tabs.stack.is_pending(), "the reset drops it rather than letting it apply later");
+    assert!(d.nav.tabs.stack.entries.is_empty(), "the reset itself emptied the tree");
+
+    for i in 0..20u32 { super::frame(&mut d, &mut rig, tick(2000 + i * 16), vec![]); }
 
     assert_eq!(
         d.nav.tabs.stack.depth(), 1,
@@ -138,7 +163,10 @@ fn switching_profile_leaves_the_container_holding_nothing_of_the_previous_profil
             "an entry of the previous profile is still on the stack",
         );
     }
-    assert!(d.nav.modals.surfaces.is_empty(), "…and no surface of it either");
+    assert!(
+        !d.nav.tabs.stack.entries.iter().any(|e| e.arg.same_instance(&detail_arg("2002"))),
+        "the parked push did not mint itself in behind the reset",
+    );
 }
 
 /// **An app switch parks the tree; it does not tear the session's page history down.**
@@ -229,6 +257,55 @@ fn route_flips_preserve_content_and_player_origin_entries() {
     assert_eq!(d.top_page(), body, "player return uncovers the same Detail instance");
 }
 
+/// **A player exit whose origin entry is GONE must still land on the EXISTING Home entry, not a
+/// freshly minted one.**
+///
+/// `playback::return_from_player`'s no-origin/identityless fallback and `bridge::nav_pop_to`'s
+/// own stale-entry fallback both used to read `nav_root(Home)` — which was correct back when
+/// `Root` meant "unwind to the root, covering rather than retiring it" (§`nav.rs`'s old row), but
+/// `NavOp::Root` is now a TRUE replace (`stack.rs`'s Root arm): it retires every entry, Home's own
+/// root included, and mints a fresh one — losing whatever focus/scroll memory that Home entry
+/// carried, for a fallback whose whole point is "there is nowhere better to go, so stay put on
+/// Home". `nav_select_tab` is the fix: it `PopTo`s the root that is already there instead of
+/// replacing it. Origin going missing is not exotic — an entry evicted past `NavStack::CAP` or a
+/// whole branch torn down (a profile switch, a signed-out reset) both leave a player screen
+/// holding an `EntryId` nothing on the stack answers to any more; simulated here directly rather
+/// than by actually pushing 16 pages, since the fallback does not care HOW the entry went away.
+#[test]
+fn player_exit_with_a_gone_origin_returns_to_the_existing_home_entry() {
+    let _g = crate::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
+    let home = d.nav.top_page().map(|e| e.id).expect("Home mounted");
+    frame(&mut d, &mut rig, detail_arg("1001"), tick(1), vec![]);
+    let x = d.nav.top_page().map(|e| e.id).expect("X (Detail) mounted");
+    assert_eq!(d.nav.tabs.stack.depth(), 2, "[Home, X]");
+
+    super::super::playback::enter_player(&mut d, &mut rig, super::super::playback::Origin::Here, None);
+    super::frame(&mut d, &mut rig, tick(2), vec![]);
+    assert_eq!(d.nav.tabs.stack.depth(), 3, "[Home, X, Player]");
+    assert_eq!(
+        player(&d).and_then(|p| p.origin).map(|o| o.entry),
+        Some(x),
+        "the player recorded X as where it returns to"
+    );
+
+    // X's entry is gone — evicted past CAP, or its branch torn down — while Player is still up.
+    d.nav.tabs.stack.entries.retain(|e| e.id != x);
+    assert_eq!(d.nav.tabs.stack.depth(), 2, "[Home, Player] — X is gone");
+
+    super::super::playback::return_from_player(&mut d);
+    super::frame(&mut d, &mut rig, tick(3), vec![]);
+
+    assert_eq!(
+        d.nav.top_page().map(|e| e.id),
+        Some(home),
+        "the fallback lands on the EXISTING Home entry, not a re-minted one"
+    );
+    assert_eq!(d.nav.tabs.stack.depth(), 1, "Player left with nothing standing in for the gone X");
+}
+
 /// **Leaving the player while one of its panels is still up** — EOS, the Stop key, or an Info
 /// press that navigates — and the page has to follow the route in the SAME frame.
 ///
@@ -251,7 +328,7 @@ fn leaving_the_player_with_a_panel_up_returns_the_page_in_the_route_s_own_frame(
     frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
     let home = d.nav.top_page().map(|e| e.id);
     assert_eq!(frame(&mut d, &mut rig, AppArg::Player, tick(1), vec![]).0, "player");
-    open_player_overlay(crate::route::idle_session_for_test(), &mut d, OverlayKind::Info);
+    open_player_overlay(crate::route::idle_session_for_test(), crate::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Info);
     frame(&mut d, &mut rig, AppArg::Player, tick(2), vec![]);
     assert!(player_overlay_up(&d), "the panel is on the player page's own ModalStack");
     // …`exit_player`'s own order: the panels are dismissed, then the route is the origin's.
@@ -259,6 +336,64 @@ fn leaving_the_player_with_a_panel_up_returns_the_page_in_the_route_s_own_frame(
     assert_eq!(frame(&mut d, &mut rig, AppArg::Home, tick(3), vec![]).0, "home");
     assert_eq!(d.nav.top_page().map(|e| e.id), home, "…and it is the origin page, not a new one");
     assert!(!player_overlay_up(&d), "the panel left with the page that hosted it");
+}
+
+/// **Issue #163**: the diagnostics ("Stats for nerds") panel painted over the player's own
+/// overlay panels — sharpest with `More`, since that popover carries the very toggle the panel
+/// answers to, so a viewer who turned Stats on from `More` had no way back to the control that
+/// turns it off. `bridge::player_diagnostics_visible` is the decision `app/run.rs`'s player
+/// branch gates `app.diagnostics.draw()` on; this exercises it directly against the real
+/// `ModalStack`, across all four overlay kinds — the bug generalizes to `Tracks`/`Info`/
+/// `Chapters` too, since each is anchored well inside the panel's near-full-width rect.
+#[test]
+fn player_diagnostics_hide_behind_any_open_player_overlay() {
+    use crate::screens::player::overlay::OverlayKind;
+    let _g = crate::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    let mut t = 0u32;
+    let mut next = |d: &mut Dispatcher<AppHost>| {
+        t += 1;
+        frame(d, &mut rig, AppArg::Player, tick(t), vec![])
+    };
+    next(&mut d);
+    assert!(
+        player_diagnostics_visible(&d),
+        "nothing is open yet — the panel draws as it always did"
+    );
+    for kind in [
+        OverlayKind::Tracks { tab: 0 },
+        OverlayKind::Info,
+        OverlayKind::Chapters,
+        OverlayKind::More { quality: false },
+    ] {
+        open_player_overlay(
+            crate::route::idle_session_for_test(),
+            crate::stores::metadata::MetadataStore::default().view(),
+            &mut d,
+            kind,
+        );
+        next(&mut d);
+        assert!(
+            !player_diagnostics_visible(&d),
+            "{kind:?} is open — the panel that carries its own controls must stay reachable"
+        );
+        dismiss_player_overlays(&mut d);
+        // The dismissed surface fades rather than vanishing (`ModalStack::dismiss` — `Phase::
+        // Closing` until its own spring `settled()`), so `player_overlay_up` — and therefore
+        // this predicate — keeps answering "up" for a run of frames after the request. Drive
+        // enough of them that the fade actually finishes before asking again.
+        for _ in 0..200 {
+            next(&mut d);
+            if player_diagnostics_visible(&d) {
+                break;
+            }
+        }
+        assert!(
+            player_diagnostics_visible(&d),
+            "{kind:?} closed — the panel draws again once the dismiss fade settles"
+        );
+    }
 }
 
 /// Phase 5b: the Settings surface is PRESENTED on the tree, owns input from its first frame,
@@ -538,7 +673,7 @@ fn account_to_settings_never_unfreezes_the_host() {
     press(&mut d, &mut rig, Key::Down);
     assert_eq!(
         d.focus().map(|k| (k.entry, k.elem)),
-        Some((menu_entry, 1)),
+        Some((menu_entry, crate::screens::account_menu::Action::Settings as u32)),
         "the engine walked the menu's own rows"
     );
     press(&mut d, &mut rig, Key::Ok);
@@ -598,7 +733,7 @@ fn a_player_panel_is_a_surface_on_the_players_own_page_and_leaves_the_instance_a
         crate::screens::player::overlay::OverlayKind::Chapters,
         crate::screens::player::overlay::OverlayKind::More { quality: false },
     ] {
-        open_player_overlay(&ps, &mut d, kind);
+        open_player_overlay(&ps, crate::stores::metadata::MetadataStore::default().view(), &mut d, kind);
         frame(&mut d, &mut rig, AppArg::Player, tick(1), vec![]);
         assert_eq!(player_overlay_kind(&d), Some(kind), "{kind:?} is up");
         assert_eq!(
@@ -764,6 +899,9 @@ fn dismiss_surfaces_now_settles_the_surface_in_the_same_call_unlike_the_ordinary
     // not yet "mid-open", and asserting `appear > 0.0` there fails on the frame ORDER rather
     // than on anything this test is about.
     frame(&mut d, &mut rig, AppArg::Home, tick(2), vec![]);
+    // …and a THIRD: the first tick after `present` holds the spring at 0 for the frame that
+    // renders the host into its snapshot (`PopoverMotion::hold`), so the ramp starts one later.
+    frame(&mut d, &mut rig, AppArg::Home, tick(3), vec![]);
     // Now one tick HAS run over it: the appear spring is climbing toward its open target and
     // the phase has not yet been promoted past `Opening` (`ModalStack::tick` only promotes it
     // to `Open` once `motion.settled()`) — i.e. deliberately mid-open, nowhere near the
@@ -848,4 +986,31 @@ fn search_route_steps_the_shared_strip_so_its_published_rects_do_not_go_stale() 
         "the strip's published rect must travel to its target once Search steps it each frame \
          (stale={stale_gap}, settled after 1s={settled_gap}) — losing the Search chrome arm \
          again silently reproduces the frozen capsule / stale pointer targets this pins");
+}
+
+/// **A second open of the detail page already on its way is not a new navigation** — the detail
+/// half of `enter_player`'s pending-push rule. The dip-out prepares the pushed page, which spends
+/// the `DetailSeed` at its mount, and a repeated `Push` of the same page is inert
+/// (`NavStack::is_inert`); a re-seed written for it would never be spent by that page and would
+/// linger for the next detail mount of the same item that nobody seeded.
+#[test]
+fn a_second_open_of_the_pending_detail_page_leaves_no_seed_behind() {
+    let _g = crate::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::with_transition(
+        Box::new(crate::ui::containers::transition::PageDip::new()));
+    let mut rig = Bridge::for_test(|| 0);
+    frame(&mut d, &mut rig, AppArg::Home, tick(0), vec![]);
+    for i in 1..20u32 { super::frame(&mut d, &mut rig, tick(i * 16), vec![]); }
+    let sid = crate::plex::ServerId::UNSET;
+    open_detail(&mut d, &mut rig, sid, "1001", Some(1), None);
+    super::frame(&mut d, &mut rig, tick(400), vec![]);
+    assert!(
+        d.nav.tabs.stack.pending_target_mut().is_some_and(|e| e.inst.is_some()),
+        "premise: the dip-out has prepared the detail page",
+    );
+    assert!(rig.mounter.seed.is_none(), "the prepared mount spent the first seed");
+    open_detail(&mut d, &mut rig, sid, "1001", Some(2), None);
+    for i in 1..30u32 { super::frame(&mut d, &mut rig, tick(400 + i * 16), vec![]); }
+    assert_eq!(d.nav.tabs.stack.depth(), 2, "one detail page, not two");
+    assert!(rig.mounter.seed.is_none(), "no unspent seed is left for a later mount");
 }

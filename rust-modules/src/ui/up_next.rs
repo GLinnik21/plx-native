@@ -139,10 +139,18 @@ pub(crate) fn armed(&self) -> bool {
 /// `SDL_GetTicks` wraps every ~49 days, so the comparison is the codebase's wrapping idiom
 /// (`wrapping_sub` against the 0x8000_0000 half-range), not `now < deadline` — the same guard
 /// `app.rs` uses for its deferred-refresh deadline.
+///
+/// While the screenshot pipeline holds the free-running clocks (`stillclock`,
+/// [`crate::ui::motion::held_clock_ms`]) the countdown holds with them, at that much elapsed: its
+/// fill then draws one fixed picture and it never runs out. Never in a build without
+/// `devtriggers`.
 fn remaining_ms(&self, now: u32) -> u32 {
     let d = self.deadline;
     if d == 0 {
         return 0;
+    }
+    if let Some(held) = crate::ui::motion::held_clock_ms() {
+        return COUNTDOWN_MS.saturating_sub(held).max(1);
     }
     let left = d.wrapping_sub(now);
     if left == 0 || left >= 0x8000_0000 {
@@ -247,19 +255,15 @@ pub(crate) fn layout(row: &mut crate::ui::player_hud::TransportRow, measure: &dy
     )
 }
 
-/// Pointer hit-test: which of the row's two buttons is under (cx, cy) — [`BTN_CREDITS`],
-/// [`BTN_NEXT`], or None. The still and its caption are NOT targets: with two actions in the row a
-/// click on the artwork has no single obvious meaning, and guessing one is how a stray click starts
-/// an episode the user did not ask for. The caller has already established that this owns the row.
-pub(crate) fn hit(row: &mut crate::ui::player_hud::TransportRow, cx: f32, cy: f32, measure: &dyn crate::ui::machine::Measure) -> Option<c_int> {
-    let l = layout(row, measure);
-    if l.credits.contains(cx, cy) {
-        Some(BTN_CREDITS)
-    } else if l.next.contains(cx, cy) {
-        Some(BTN_NEXT)
-    } else {
-        None
-    }
+/// [`layout`] without writing the row's width memo — what `ControlSlot::item_rect` places the two
+/// buttons at. Only the two BUTTONS are pointer targets: the still and its caption are not, since
+/// with two actions in the row a click on the artwork has no single obvious meaning, and guessing
+/// one is how a stray click starts an episode the user did not ask for.
+pub(crate) fn layout_peek(row: &crate::ui::player_hud::TransportRow, measure: &dyn crate::ui::machine::Measure) -> Layout {
+    layout_of(
+        crate::ui::player_hud::ctrl_slot_w(row, NEXT_LABEL, measure),
+        crate::ui::widgets::Button::pill_w_measured(CREDITS_LABEL, theme::size::BODY, false, false, measure),
+    )
 }
 
 /// The caption — `"Up Next · S2, E4 · Laura"`. PRIMARY and bold, not secondary: it sits at y≈760
@@ -343,7 +347,11 @@ pub(crate) fn draw(
         // It animates from a CLOCK, so `ui::idle`'s spring instrumentation cannot see it — the trap
         // `Xfade::tick` and `Spinner::draw` both shipped frozen in. The player route bypasses the
         // frame gate outright today, so this changes nothing now; it is what keeps that reversible.
-        crate::ui::idle::invalidate();
+        // A HELD clock (`remaining_ms`) draws one fixed fill, so there is nothing to redraw — the
+        // same exception `widgets::Spinner` makes.
+        if !crate::ui::motion::phase_clocks_held() {
+            crate::ui::idle::invalidate();
+        }
         b = b.progress(1.0 - (up.remaining_ms(now) as f32 / COUNTDOWN_MS as f32).clamp(0.0, 1.0));
     }
     b.draw(&e, p);

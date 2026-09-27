@@ -16,16 +16,16 @@ spec). The stream side: `PMS HTTP GET` → demux → per-lane access-unit
 queues with byte-cap backpressure (`aq.rs`) → the pump `Feed()`s each AU to the Starfish pipeline.
 The demuxer is **`ff.rs` — the libavformat the app BUNDLES (not the TV's), over a custom AVIO on
 one of TWO transports** (design record: `docs/ffmpeg-demuxer-plan.md`; the hand-rolled `mkv.rs`
-fallback is retired/deleted). **Which transport is decided once, in `ff::demux`, from the part
-URL's scheme** — `AvioState` holds a source enum and `read_cb`/`seek_cb` dispatch: `http` →
-`stream.rs`'s raw socket, `https` → `crate::curlio`. That matters *here* because teardown is a
+fallback is retired/deleted). **Which transport is decided in `ff::demux` from the part URL's
+scheme, or by a plaintext open's redirect to https (`stream::redirect` hands that hop to curl)** —
+`AvioState` holds a source enum and `read_cb`/`seek_cb` dispatch: `http` → `stream.rs`'s raw socket, `https` → `crate::curlio`. That matters *here* because teardown is a
 different mechanism per arm: `engine::teardown` fires `stream::http_shutdown` at the socket **and**
 `curlio::abort_active()` at the curl source's wake pipe, since a thread parked in `curl_multi_wait`
 is not one any `shutdown(2)` of ours can reach. Exactly one of the two ever has anything to do. Ours ships beside the binary as `libav*-plx.so.*`, is `dlopen`'d by absolute path
 and pinned to majors 63/63/61, and is built `--disable-network` with `file` as its only protocol —
 so the AVIO is not merely how bytes reach it today, it is the only way they *can*. See the root
 `docs/agent-reference.md` linking section for why. It
-emits Annex-B video AUs (param sets prepended at each keyframe) and raw AC3/EAC3/AAC audio frames,
+emits Annex-B video AUs (param sets prepended at each keyframe) and AC3/EAC3, ADTS-framed AAC, or DTS core audio frames,
 and seeks by time via `av_seek_frame` (libavformat's own Cues index).
 
 ## Threading model (this is the whole ballgame)
@@ -69,10 +69,12 @@ something.
   gated teardown path and **never** hand the object to C++ `new`/`delete` (its real size is unknown).
   Methods returning a `std::string` use a hidden sret first-arg; read the `char*` at offset 0 (SSO)
   for short replies like `"Ok"`/`"BufferFull"`.
-- **Dolby Vision and Dolby Atmos have their own document: `docs/dolby-vision.md`.** The two
-  payload nodes, the ACB audio forward, the Profile 5 one-tick fix and the instrument traps live
-  there rather than here, because half of that record is about LG's binaries and the Dolby
-  specifications rather than about our engine.
+- **Dolby Vision and Dolby Atmos have their own document: `docs/dolby-vision.md`.** A DV node is
+  emitted only after the boot-time configd probe definitely confirms hardware support. The route
+  freezes that capability + presentation decision, and every Load/reload/recovery consumes the
+  stored presentation rather than re-reading the later cache; `dvnonode` is the logged diagnostic
+  exception. Atmos routing and ACB forwarding are independent and unchanged. The payload evidence,
+  Profile 5 one-tick fix and instrument traps live in that document.
 - **The Load's `adaptiveStreaming` ceiling is derived per session (`engine::sink_envelope`), and
   it was a 4K60 constant for EVERY codec until 2026-09-03 — which on webOS 10 refused every H.264
   stream: `docs/webos10-resource-allocation.md`.** Lab-measured 2026-08-27 on release 10.3.1: the
@@ -109,6 +111,24 @@ something.
   synthetic case prints. Codec-agnostic — it is the instrument `dualsequencer:6` was only for
   Dolby Vision. Type 46 is emitted only when non-zero, and a stream shown at 13 fps reported 0
   drops: the sink does not count a frame it never presented as dropped.
+- **A constructed Starfish object is not dispatchable until synchronous `Load` returns.**
+  `sf_ready()` still answers whether the object exists; `sf_ready_object()` also requires the
+  C `LOAD_RETURNED` gate. Rust records the return on the exact native epoch before publishing
+  the route result. The pump waits before even polling `sf_is_load_completed`, with separate
+  20-second issued→return and return→loadCompleted budgets. Timeout has code `load_timeout`;
+  firmware refusal remains `tv_pipeline`. Teardown after that timeout does NOT join a media
+  thread still inside `sf_load` (that froze the SDL thread on BACK): the thread, payload and
+  epoch are parked as `engine::AbandonedLoad` (Rust phase `Abandoned`), native starts are
+  refused, and `reap_abandoned_load` runs the ordinary Unload → gate → retire → D1 release on the
+  main thread once Load returns; a Load that never returns leaks its object. A Load that has not
+  timed out is still joined. The host concurrent tests model this boundary, not
+  the firmware's native initialization. ACB dispatch is additionally constrained by stage/bind
+  ordering; the C Starfish gate does not wrap ACB calls.
+- **The k5lp/k3lp sandbox preflight refuses native playback when `/dev/rtkmem` is unreadable.**
+  The device fact is cached at boot, while the refusal belongs to `PlaybackSession` and clears
+  on exit. Explicit Repair confirmation spends `Player.repair` once for the whole app lifetime;
+  `PlayerAdapter` owns the worker receipt. Success still requires a full app relaunch. See
+  `docs/native-video-sandbox.md` for limits.
 - **Starfish `Load` must be constructed with `uid = NULL`** (`SMP_ctor(slot->object, NULL)`), and in
   buffer-feed mode the app must **not** `LSRegister` its own `com.webos.media` client — either
   collides with the pipeline's uMS connection (CONN_FIND_ERR). See the comment in `load_thread`.
@@ -134,13 +154,19 @@ something.
   transcode decision. For ADTS/HE-AAC, use the **CORE** sample rate from the AudioSpecificConfig (SBR
   doubles it). See `[[audio-payload-codecs]]`.
 - **Subtitles are client-rendered here — the TV's HW subtitle engine is URI-mode only** and
-  unreachable in buffer-feed. Both text (SRT/ASS) and image (PGS/VobSub) subs are decoded and drawn by
-  us; don't expect the pipeline to burn or overlay them. See `[[tv-subtitle-engine]]` and the `plex/`
+  unreachable in buffer-feed. Plain text and image (PGS/VobSub) subs are decoded and drawn by
+  us; styled ASS/SSA uses the bundled libass worker (`ass.rs`, `ass_source.rs`) with original
+  headers, events and attached fonts. Sidecar ASS keeps the complete script rather than requesting
+  a SubRip conversion. Don't expect the pipeline to burn or overlay them. See `[[tv-subtitle-engine]]` and the `plex/`
   soft-subs note. An image sub's rect coords are in **the subtitle stream's own authoring canvas** —
   1920×1080 for Blu-ray PGS but 720×480/576 for a DVD VobSub rip — so `ff::sub_canvas` reads that
   canvas off the decoder (via `avcodec_parameters_from_context`, no raw struct offset; the ABI proof
   is in its doc comment) and `player_hud::sub_screen_rect` scales the whole display set into the
   video rect. Assuming 1080p unconditionally is what made VobSub render as a corner postage stamp.
+  **An EXTERNAL text subtitle (the `.srt` beside the film) is a third producer, `sidecar.rs`:** the
+  demuxer never sees it, so it is fetched whole from PMS, parsed, and looked up by time from its OWN
+  store — not `SHARED.sub_cues`, which is a window the demuxer refills and a backward seek would
+  empty. It is silent while transcoding (the server burns the selection instead).
 - **A seek NEVER interrupts the demuxer.** The pump publishes the target in `seek_to_ns` and the
   demux thread — the only thread that touches the `AVFormatContext` — `av_seek_frame`s on it
   between two reads. Do not reintroduce an interrupt: the pump used to `shutdown(2)` the socket to
@@ -173,7 +199,8 @@ something.
 
 ## Verifying playback changes
 
-**Start with `make check`** — the host unit suite (`cargo test --lib`, ~0.3s) covers a real
+**Start with `make check`** — the host unit suite (`cargo test --lib`, ~28 s for 3,639 tests,
+measured 2026-09-17; do not re-quote that number, `time` it) covers a real
 slice of this pipeline's pure logic: `ff.rs`'s `nal_end` bounds guard and AVCC→Annex-B conversion,
 the AVIO abort guards (a seek after teardown must not open a second connection — graded on an accept
 count), `stream.rs`'s socket lifecycle, `route/plan.rs`'s direct-play-vs-transcode selection, and

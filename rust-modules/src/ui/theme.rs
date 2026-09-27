@@ -55,6 +55,19 @@ const NEUTRAL_1000: [f32; 4] = rgb8(0x05, 0x05, 0x08);
 const WHITE: [f32; 4] = rgb8(0xff, 0xff, 0xff);
 const BLACK: [f32; 4] = rgb8(0x00, 0x00, 0x00);
 
+// Caption — the achromatic ladder under `WHITE`, and it has exactly one job: the subtitle tones.
+// Not more Neutral stops, because Neutral is the app's own dark SURFACES and these are light
+// INKS that happen to have no hue. Stops are named by their sRGB level, in percent of `WHITE`.
+// The panel's response is a power curve, so the light they emit falls much faster than the
+// names do: 85 / 70 / 55 / 40 / 28 percent of the code is roughly 70 / 46 / 27 / 13 / 6 percent
+// of the light, which is the range the ladder exists to cover (white over an HDR picture is the
+// complaint; see `SUBTITLE_INKS`).
+const CAPTION_85: [f32; 4] = rgb8(0xd9, 0xd9, 0xd9);
+const CAPTION_70: [f32; 4] = rgb8(0xb3, 0xb3, 0xb3);
+const CAPTION_55: [f32; 4] = rgb8(0x8c, 0x8c, 0x8c);
+const CAPTION_40: [f32; 4] = rgb8(0x66, 0x66, 0x66);
+const CAPTION_28: [f32; 4] = rgb8(0x47, 0x47, 0x47);
+
 // Sand — one warm off-white, and it has exactly one job: the ambient wash's resting cast.
 const SAND_100: [f32; 4] = rgb8(0xe9, 0xe6, 0xe0);
 
@@ -70,8 +83,9 @@ const SAND_100: [f32; 4] = rgb8(0xe9, 0xe6, 0xe0);
 // real keyed hero ground (`AmbientWash::keyed`, capped at `GROUND_LUMA` 0.42 and mixed toward the
 // surface at `GROUND_W` 0.26) can and does land in a similarly narrow band when the source artwork
 // itself is flat — the difference is that a `RouteGround` fallback bypasses that mix entirely
-// (`RouteGround::latch_target` `jump`s the literal quad, unmixed) and has no artwork to fall back
-// on if it reads as flat, so it has to carry its OWN contrast rather than borrow the keying
+// (`underlay::Grade::Dim` is the identity grade `RouteGround` latches this quad through — unmixed,
+// unlike the `Grade::Ground` a real seed or live frame is capped and leaned through) and has no
+// artwork to fall back on if it reads as flat, so it has to carry its OWN contrast rather than borrow the keying
 // pipeline's. These four now spread across a ~3x luminance range (see
 // `route_screen::tests::the_pre_home_fallback_reads_as_a_directional_wash`) on the same diagonal
 // an authored key light would use — bright near one corner, dark at its opposite — while every
@@ -122,6 +136,18 @@ pub const TEXT_TERTIARY: [f32; 4] = COOL_400;
 /// (`"a   ·   b"`) is one run at one colour by construction; those are unchanged, and converting
 /// them is a per-site decision about whether the extra draw call is worth it.
 pub const TEXT_SEPARATOR: [f32; 4] = with_a(TEXT_TERTIARY, 0.45);
+
+/// **The inks a client-rendered subtitle may be drawn in**, lightest first — one per rung of
+/// `plex::session::SubtitleTone::LADDER`, indexed by `SubtitleTone::index` (a host test pins the
+/// two lengths together). The caption is media chrome over the video plane rather than app text,
+/// which is why it is `WHITE` and not [`TEXT_PRIMARY`] at the top; the greys under it exist
+/// because an HDR picture maps graphics white far brighter than an SDR one does, and the only
+/// cure for a searing caption is less light. Text subtitles are inked with the rung; image
+/// subtitles (PGS/VobSub) are TINTED by it, which scales their authored colours by the same
+/// amount. The dark outline is untouched — it is what keeps the darkest rung legible over a
+/// bright scene.
+pub const SUBTITLE_INKS: [[f32; 4]; 6] =
+    [WHITE, CAPTION_85, CAPTION_70, CAPTION_55, CAPTION_40, CAPTION_28];
 
 // ── Type scale ───────────────────────────────────────────────────────────────
 /// The one legibility-tuned ladder of text sizes for the whole UI — the *size* axis of the design
@@ -434,18 +460,6 @@ pub const SURFACE_PANEL: [f32; 4] = NEUTRAL_650;
 pub const PANEL_TOP: [f32; 4] = with_a(NEUTRAL_650, 0.985);
 /// Near-opaque sheet gradient — bottom stop (kept distinct; the gradient is deliberate).
 pub const PANEL_BOT: [f32; 4] = with_a(NEUTRAL_750, 0.985);
-/// The FROSTED sheet's gradient — top stop: the same two greys as [`PANEL_TOP`]/[`PANEL_BOT`] at
-/// the alpha a real backdrop blur allows, and the same material as far as the palette is concerned.
-///
-/// It is a separate pair rather than a lower alpha passed at the call site because the two are not
-/// interchangeable: `.985` over an unknown background is the panel *being* its own ground, and this
-/// one is only legal ON TOP of [`Painter::backdrop_blur`](crate::ui::Painter::backdrop_blur) — a
-/// panel that draws it without one is a translucent hole onto whatever the page had there.
-/// [`Popover::panel`](crate::ui::popover::Popover::panel) is what keeps the two paired.
-///
-/// The value is the legibility floor, not a taste knob: at .72 a `TEXT_TERTIARY` sub-line still
-/// clears 4.5:1 over the brightest ground a blurred poster shelf produces (the blur removes detail,
-/// it does not cap luminance), and every rung below that was measured against a white poster.
 /// **The material scale, named rather than numbered — SwiftUI's `Material` is the vocabulary.**
 ///
 /// Every glass surface in this app used to be described by two unrelated numbers written at its own
@@ -532,22 +546,18 @@ impl Material {
 /// through under "Remove from Deck"; at `UltraThick` the rows are clean while the artwork's shapes
 /// are still there, so it reads as glass rather than as paint. The reference agrees — iOS's own
 /// context menu passes almost nothing of the page behind it.
+///
+/// **A panel spends only the `frost()` half now.** Its ground is the latched underlay field
+/// (`widgets::panel_ground`), not a backdrop blur, so `deep()` has nothing to re-sample under it;
+/// the density over the field is this material's frost, and it is what keeps the words clean.
 pub const PANEL_MATERIAL: Material = Material::UltraThick;
-/// Full-screen Settings-family modal ground. A full-HD surface cannot afford the four extra
-/// per-fragment taps used by the thicker compact materials on the target TV, so it samples the
-/// already-blurred cached snapshot once. Density is a separate token: it is what keeps poster
-/// titles and faces from competing with route copy without turning every Settings frame into a
-/// two-million-pixel multi-tap pass.
-pub const MODAL_SAMPLE_MATERIAL: Material = Material::UltraThin;
-pub const MODAL_FROST_ALPHA: f32 = 0.92;
-/// The one-time Kawase kernel used only while freezing the Settings host. Compact glass keeps its
-/// lighter 0.35/0.75 kernel; this wider pair deliberately destroys letter-scale structure so the
-/// host reads as a wallpaper rather than as a second interface behind the modal.
-pub const MODAL_BLUR_TAPS: [f32; 4] = [1.0, 2.0, 3.5, 5.5];
-/// Multiplicative grade for the cached full-screen blur. Keeping the density in the same texture
-/// pass avoids a second two-million-fragment frost quad on the target TV.
-pub const MODAL_BLUR_TINT: [f32; 4] = [0.46, 0.48, 0.54, 1.0];
-pub const MODAL_BLUR_SATURATION: f32 = 1.32;
+// The five `MODAL_*` tokens that stood here — `MODAL_SAMPLE_MATERIAL`, `MODAL_FROST_ALPHA`,
+// `MODAL_BLUR_TAPS`, `MODAL_BLUR_TINT`, `MODAL_BLUR_SATURATION` — were the material of a
+// full-screen BLURRED modal ground (`Glass::modal_ground` → `Painter::backdrop_blur_flat` →
+// `gfx::draw_blur_snapshot_flat` → `shaders/fs_modal_ground.frag`). That chain had no live caller
+// left and was deleted whole; a route ground is an `AmbientWash` (see `ui::route_screen`) and,
+// from PR2, an `ui::underlay::UnderlayField`, neither of which is a blur. Do not re-add the tokens
+// without the surface that reads them.
 
 #[cfg(test)]
 mod material_tests {
@@ -609,16 +619,22 @@ mod material_tests {
         );
     }
 
-    #[test]
-    fn fullscreen_modal_uses_one_cached_sample_and_its_own_dense_frost() {
-        assert_eq!(MODAL_SAMPLE_MATERIAL, UltraThin);
-        assert!(MODAL_FROST_ALPHA > UltraThick.frost());
-        assert!(MODAL_BLUR_TAPS
-            .windows(2)
-            .all(|w| w[0] > 0.0 && w[1] > w[0]));
-        assert!((1.0..=1.5).contains(&MODAL_BLUR_SATURATION));
-    }
 }
+/// The FROSTED sheet's gradient — top stop: the same two greys as [`PANEL_TOP`]/[`PANEL_BOT`] at
+/// a lower alpha, and the same material as far as the palette is concerned. The alpha actually
+/// drawn is [`PANEL_MATERIAL`]'s `frost()` (`widgets::panel_frost`); this pair supplies the hue.
+///
+/// It is a separate pair rather than a lower alpha passed at the call site because the two are not
+/// interchangeable: `.985` over an unknown background is the panel *being* its own ground, and this
+/// one is only legal over an OPAQUE ground of its own — the latched underlay field
+/// (`underlay::UnderlayField::draw_panel`), or on the chrome a live backdrop blur. A panel that
+/// draws it over neither is a translucent hole onto whatever the page had there;
+/// [`widgets::panel_ground`](crate::ui::widgets::panel_ground) is what keeps the two paired, and
+/// falls back to [`PANEL_TOP`]/[`PANEL_BOT`] when the field is not latched.
+///
+/// The floor is legibility, not taste: the fine print's contrast over the composite at a white and
+/// a black underlay is graded in `underlay_tests.rs`
+/// (`text_contrast_floors_hold_over_a_bright_and_a_dark_underlay`).
 pub const PANEL_FROST_TOP: [f32; 4] = with_a(NEUTRAL_650, 0.72);
 /// The frosted sheet's bottom stop — see [`PANEL_FROST_TOP`].
 pub const PANEL_FROST_BOT: [f32; 4] = with_a(NEUTRAL_750, 0.72);
@@ -684,6 +700,59 @@ pub const fn scrim_black(a: f32) -> [f32; 4] {
         SCRIM_BLACK_INK[2],
         a,
     ]
+}
+
+/// **The modal DIM — the one weight table every overlay's dim is read from.**
+///
+/// A dim is not a black sheet here: it is the page's own light, pushed down. Every surface that
+/// dims its host paints it through ONE field (`ui::underlay::UnderlayField`, owned by the
+/// container — `ModalStack`'s underlay), as `Role::Dim { weight: TINT }` at the alpha below times
+/// the surface's appear spring and the route dip. So green under a panel stays green, and stays
+/// where it was. What a surface chooses is only its ROLE's row in this table; there is no
+/// per-screen scrim number anywhere else (`containers::tests::no_surface_states_its_own_dim_weight` greps for one).
+///
+/// The rows are roles, not screens, and each alpha is the value the role already shipped at:
+/// moving them here changed which file states a number, not what any panel looks like at
+/// [`TINT`] `= 0`.
+pub mod underlay {
+    /// A compact menu beside the thing it is about (the card menu, the Library's Sort/Filter
+    /// menu): most of the page stays readable, so the dim only separates the panel from it.
+    pub const DIM_COMPACT: f32 = 0.34;
+    /// A read-only or picker panel in the middle of the frame (*Also available*, *About*,
+    /// *Track information*, Settings' own ground dim). Was `alert::SCRIM_A` — the design's
+    /// `scrimStill`.
+    pub const DIM_PANEL: f32 = 0.46;
+    /// A sheet that takes over a side of the screen (the profile menu, the player's `…` menu).
+    pub const DIM_SHEET: f32 = 0.50;
+    /// A decision alert: the page is not what is being asked about, so it recedes further than
+    /// behind a read-only panel.
+    pub const DIM_DECISION: f32 = 0.55;
+    /// The player's track menu over moving video: its rows sit on the busiest ground in the app.
+    pub const DIM_PLAYER: f32 = 0.58;
+    /// A panel of PROSE over artwork (the person bio): the text-legibility floor
+    /// [`super::SCRIM_TEXT_A`] derives, restated as this role's weight rather than borrowed.
+    pub const DIM_PROSE: f32 = 0.72;
+    /// **How much of the inherited field survives the dim's black ink** — the `weight` of
+    /// `Role::Dim`, `mix(SCRIM_BLACK_INK, field, TINT)`. `0.0` is the flat
+    /// [`super::scrim_black`] rect exactly, to the bit (`underlay::plan` owns that contract), so
+    /// this is the one knob that turns the whole family's inheritance down or off.
+    pub const TINT: f32 = 0.35;
+    /// **How much of the inherited field a popover PANEL carries under its frost** — the
+    /// multiply `widgets::panel_ground` draws the field's window with before
+    /// [`super::PANEL_MATERIAL`]'s frost goes over it. It stands in for what the backdrop blur it
+    /// replaced used to see: the page with the panel's own dim already on it, i.e.
+    /// `1 - DIM_PANEL * (1 - TINT)` = 0.70 for the middle-of-the-frame role. One number for every
+    /// role, because the frost on top (`PANEL_MATERIAL`, .85) is what makes the panel read as the
+    /// panel material; this only decides how much of the page's hue shows through it, and where.
+    /// `/tmp/plxnative-paneltint=<w>` sweeps it on a devtriggers build.
+    pub const PANEL_TINT: f32 = 0.70;
+    /// **The brightest the field may be under a panel**, Rec.709 over display codes — the same
+    /// measure and the same number as the page ground's ceiling (`widgets::GROUND_LUMA`), and for
+    /// the same reason: a white poster under a menu must not turn the menu grey. Spent as a SCALAR
+    /// over the panel's whole window (`underlay::UnderlayField::panel_plan`), so hue and the
+    /// field's shape survive and only brightness is given up. The fine print's contrast floors
+    /// over a white and a black underlay are graded in `underlay_tests.rs`.
+    pub const PANEL_LUMA_MAX: f32 = 0.42;
 }
 /// Splat a token's rgb with an overridden alpha (e.g. the `env.sp`-baked hub title). Also how a role
 /// spells a stop on the white/black **alpha ramps**: `with_a(WHITE, 0.20)`.
@@ -789,12 +858,18 @@ pub const INK_ON_RESUME: [f32; 4] = NEUTRAL_850;
 /// FOCUSED row's near-white pill. One step behind the label so the label is what you read and the
 /// value is what you check — and an ALPHA of the pill's own ink rather than a grey, because a grey
 /// over near-white goes muddy where black at a weight stays clean. Unfocused rows use
-/// [`TEXT_SECONDARY`] (and [`TEXT_TERTIARY`] when quietened), which need no token of their own.
+/// [`TEXT_SECONDARY`] (and [`TEXT_TERTIARY`] when quietened), which need no token of their own,
+/// and [`ROW_VALUE_INK_DIM`] on a dim row.
 pub const ROW_VALUE_INK_ON: [f32; 4] = with_a(BLACK, 0.60);
 /// The same read-out a further step back — see [`ROW_VALUE_INK_ON`]. Derived from [`ACCENT_INK`]
 /// rather than black: at .38 the ink is thin enough that its HUE starts to show, and the pill's own
 /// near-black is the one this must not look tinted against.
 pub const ROW_VALUE_INK_ON_DIM: [f32; 4] = with_a(ACCENT_INK, 0.38);
+/// An unfocused **dim** row's read-out (`table::Row::dim` — an unavailable step, a limit reached).
+/// The dim row's label is already [`TEXT_TERTIARY`], and the value keeps its one step behind the
+/// label; a read-out at the live row's ink made the row look half-available. That same ink
+/// quietened, as [`TEXT_SEPARATOR`] is, rather than a grey of its own.
+pub const ROW_VALUE_INK_DIM: [f32; 4] = with_a(TEXT_TERTIARY, 0.45);
 
 // ── The watched TICK on artwork (the tile's one state mark) ──────────────────
 /// The tick's ink: `COOL_0`, the same near-white a title is set in. **No disc, no plate** — the
@@ -978,8 +1053,7 @@ pub const TAB_TRACK_TOP: [f32; 4] = scrim_black(TAB_TRACK_A_TOP);
 pub const TAB_TRACK_BOT: [f32; 4] = scrim_black(TAB_TRACK_A_BOT);
 /// The tab track's stops when it is drawn as GLASS — the same near-black ink at roughly half the
 /// weight, since a real backdrop behind it is doing the work the flat material had to do alone.
-/// Paired with `Painter::backdrop_blur` exactly as [`PANEL_FROST_TOP`] is: without one they are a
-/// translucent hole onto the page.
+/// Paired with `Painter::backdrop_blur`: without one they are a translucent hole onto the page.
 ///
 /// **The track DARKENS where a panel frosts, and that is the difference between a container you
 /// read THROUGH and one you read ON.** A sheet is a neutral frost because it holds a page's worth
@@ -1219,12 +1293,6 @@ pub mod alert {
     /// is four private constants in four files. It was exactly that, and `widgets::KeyHint` had to
     /// reason about "the PAD 48 all three read-only alerts drew" with no name to say it with.
     pub const PAD: f32 = 48.0;
-    /// The still-scrim behind a modal alert — the design's `scrimStill`. Promoted for the reason
-    /// [`super::super::popover::Popover::RISE`] was: the family arrived with four files each
-    /// claiming to carry the shared value, and no two of them agreeing. This is the weight the
-    /// READ-ONLY alerts share; a panel with a different job (a destructive decision, a picker over
-    /// prose) still states its own, which is a design choice rather than a stray literal.
-    pub const SCRIM_A: f32 = 0.46;
     /// The scrolled-viewport edge dissolve (`ui::text_view::TextView::edge_fade`, since
     /// 2026-09-02 — was `widgets::edge_feather`'s opaque gradient) — how far the crossing text
     /// fades at the top and bottom of a scissor-clipped body.
@@ -1321,3 +1389,10 @@ pub const TEXT_BLOCK_SHADOW_DY: f32 = 12.0;
 /// ground — edgeless, and also back to having no altitude. The BLUR is what removes the edge; the
 /// alpha is what keeps the lift visible from a sofa.
 pub const TEXT_BLOCK_SHADOW_A: f32 = 0.45;
+
+// Purple — developer runtime issues, distinct from product failure states.
+#[cfg(feature = "threadcheck")]
+const PURPLE_700: [f32; 4] = rgb8(0x70, 0x30, 0xa0);
+/// Opaque main-thread checker warning surface (developer builds only).
+#[cfg(feature = "threadcheck")]
+pub(crate) const RUNTIME_WARNING: [f32; 4] = PURPLE_700;

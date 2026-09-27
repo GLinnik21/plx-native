@@ -70,6 +70,7 @@ fn an_abort_at_the_exact_wait_boundary_wins_over_reserve_expiry() {
         &mut *aq,
         std::time::Duration::ZERO,
         Some(std::time::Instant::now()),
+        &mut crate::checkpoint::NoCheckpoint,
     );
     assert!(matches!(result, Err(HlsExit::Aborted)));
     crate::aq::aq_destroy(&mut *aq);

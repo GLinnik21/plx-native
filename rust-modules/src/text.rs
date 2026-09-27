@@ -68,12 +68,14 @@
 //! ship. `fontcov`'s `rtl_is_out_of_scope_and_stays_that_way` asserts the absence so this stays a
 //! decision rather than an oversight.
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::ffi::{CStr, CString};
 use std::hash::{Hash, Hasher};
 use std::os::raw::{c_char, c_int, c_uint, c_void};
 use std::ptr::{addr_of, addr_of_mut};
+use std::rc::Rc;
 
 use crate::surface::{LOGICAL_H as SCR_H, LOGICAL_W as SCR_W};
 use crate::ui::overdraw::{gate, Class};
@@ -212,8 +214,11 @@ static mut TLF_FADE: c_int = 0;
 /// than the text dissolving.
 static mut TLF_VTOP: c_int = 0;
 static mut TLF_VBOT: c_int = 0;
-static mut FONTS: [*mut TtfFont; 80] = [std::ptr::null_mut(); 80];
-static mut FONTS_B: [*mut TtfFont; 80] = [std::ptr::null_mut(); 80];
+/// One opened face per pixel size, per array. 80 covers the whole `theme::size` ladder; the
+/// simulator's supersampled rendering (`surface::render_scale`, up to 4x) rasterises at up to 4x it.
+const FONT_SLOTS: usize = if cfg!(feature = "hostsim") { 320 } else { 80 };
+static mut FONTS: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
+static mut FONTS_B: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
 static mut TEXT_OK: c_int = 0;
 
 #[derive(Clone, Copy)]
@@ -277,7 +282,9 @@ fn key_hash(s: &[u8], sz: c_int, bold: c_int) -> u64 {
 // an LRU thrashes — each frame re-renders dozens of lines via TTF (+ a full-surface ink scan) and
 // re-uploads them, which showed up as ~22ms About / ~12ms Cast (sub-30fps scrolling into them). With
 // headroom past the ~80 simultaneous worst case, stable text is a pure cache hit after first paint.
-const TCACHE: usize = 160;
+// The simulator's supersampled rendering keeps a second, `n`x texture per visible string beside
+// the logical one layout measures, so it gets the room for both.
+const TCACHE: usize = if cfg!(feature = "hostsim") { 480 } else { 160 };
 static mut TCACHE_A: [TCacheEntry; TCACHE] = [TCacheEntry::ZERO; TCACHE];
 static mut TCLOCK: c_uint = 0;
 
@@ -299,6 +306,132 @@ static mut TFRAME: c_uint = 0;
 static mut TFRAME_ARMED: bool = false;
 static mut TLIVE: u32 = 0;
 static mut TEVICTED_HOT: u32 = 0;
+
+/// Leave this many slots outside a page prewarm. They are the moving window for chrome, a modal,
+/// and strings which arrive after the recording pass (spec §8.1's occupancy bound).
+const PREWARM_HEADROOM: usize = 32;
+
+/// One cache key copied out of a recording painter. The C string passed to a painter is usually a
+/// frame-local `CString`; owning the bytes here is what makes a request safe to drain on a later
+/// dip frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct WarmKey {
+    bytes: Vec<u8>,
+    sz: c_int,
+    bold: c_int,
+}
+
+thread_local! {
+    /// Main-render-thread only, like the glyph cache itself. A queue instead of eager work is the
+    /// boundary that lets `PageDip` spend a fixed slice of each outgoing frame.
+    static PREWARM: RefCell<VecDeque<WarmKey>> = const { RefCell::new(VecDeque::new()) };
+    #[cfg(test)]
+    static PREWARMED_FOR_TEST: RefCell<Vec<WarmKey>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Does the resident cache already hold this exact key? Unlike `text_tex`, this does not touch the
+/// LRU or the frame occupancy: merely observing a destination must not make it hot.
+fn cache_has(s: &[u8], sz: c_int, bold: c_int) -> bool {
+    let hash = key_hash(s, sz, bold);
+    unsafe {
+        (&*addr_of!(TCACHE_A)).iter().any(|e| {
+            e.hash == hash
+                && e.tex != 0
+                && e.sz == sz
+                && e.bold == bold
+                && e.klen as usize == s.len()
+                && s.starts_with(entry_key(e))
+        })
+    }
+}
+
+/// Record a text-cache miss from an off-screen painter. Duplicate draws of the same label collapse
+/// to one job, and the queue is refused before it can consume the cache's 32-slot safety margin.
+pub(crate) fn queue_prewarm(s: *const c_char, sz: c_int, bold: c_int) {
+    if s.is_null() {
+        return;
+    }
+    let bytes = unsafe { CStr::from_ptr(s).to_bytes() };
+    if bytes.is_empty() || cache_has(bytes, sz, bold) {
+        return;
+    }
+    PREWARM.with(|q| {
+        let mut q = q.borrow_mut();
+        if q.iter().any(|k| k.sz == sz && k.bold == bold && k.bytes == bytes) {
+            return;
+        }
+        let ceiling = TCACHE.saturating_sub(PREWARM_HEADROOM);
+        if live_this_frame() as usize + q.len() >= ceiling {
+            return;
+        }
+        q.push_back(WarmKey { bytes: bytes.to_vec(), sz, bold });
+    });
+}
+
+/// Drain jobs until the deadline reached by `now`. The clock is read before starting each next
+/// item, so an indivisible TTF render may finish just beyond the deadline but no further render is
+/// begun there. On the measured pages one item is ~1 ms; the six-millisecond caller budget keeps
+/// that bounded while guaranteeing forward progress.
+fn drain_budgeted<T>(
+    jobs: &mut VecDeque<T>,
+    budget_us: u64,
+    mut now: impl FnMut() -> u64,
+    mut run: impl FnMut(&T),
+) -> usize {
+    let start = now();
+    let mut done = 0;
+    while !jobs.is_empty() && (done == 0 || now().saturating_sub(start) < budget_us) {
+        let job = jobs.pop_front().expect("checked non-empty");
+        run(&job);
+        done += 1;
+    }
+    done
+}
+
+/// Rasterise and upload recorded misses for one dip frame. Host tests deliberately substitute a
+/// residency ledger: there is no GL context there, while the queue and deadline remain identical.
+pub(crate) fn drain_prewarm(budget_us: u64, now: impl FnMut() -> u64) -> usize {
+    PREWARM.with(|slot| {
+        let mut jobs = std::mem::take(&mut *slot.borrow_mut());
+        let done = drain_budgeted(&mut jobs, budget_us, now, |job| {
+            #[cfg(not(test))]
+            unsafe {
+                if *addr_of!(TEXT_OK) != 0 {
+                    if let Ok(s) = CString::new(job.bytes.clone()) {
+                        let _ = text_tex(&job.bytes, s.as_ptr(), job.sz, job.bold);
+                    }
+                }
+            }
+            #[cfg(test)]
+            PREWARMED_FOR_TEST.with(|w| {
+                let mut w = w.borrow_mut();
+                if !w.contains(job) {
+                    w.push(job.clone());
+                }
+            });
+        });
+        *slot.borrow_mut() = jobs;
+        done
+    })
+}
+
+/// A transition ended or was replaced. Never carry its destination's work into an unrelated dip.
+pub(crate) fn clear_prewarm() {
+    PREWARM.with(|q| q.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(crate) fn reset_prewarm_for_test() {
+    clear_prewarm();
+    PREWARMED_FOR_TEST.with(|w| w.borrow_mut().clear());
+}
+
+#[cfg(test)]
+pub(crate) fn prewarm_resident_for_test(bytes: &[u8], sz: c_int, bold: c_int) -> bool {
+    PREWARMED_FOR_TEST.with(|w| {
+        w.borrow().iter().any(|k| k.bytes == bytes && k.sz == sz && k.bold == bold)
+    })
+}
 
 /// An entry drawn within this many frames is HOT and is not evicted while any colder slot exists.
 ///
@@ -325,18 +458,15 @@ pub(crate) fn begin_frame() {
 
 /// **How many distinct cache entries this frame has touched** — its occupancy.
 ///
-/// The number a prewarm would have to be refused against: §8.1's bound is
-/// `live_this_frame + prewarmed > TCACHE - 32`. **There is no prewarm path in this tree** — the
-/// only `warm` in the image caches is `ui::tex`'s, for posters and clearLogos, and nothing renders
-/// text ahead of a draw — so that comparison has no caller and none is invented here. This is the
-/// half of it that can be true today: the measurement, for the heartbeat and for the moment a
-/// prewarm does exist.
+/// The number the page-dip prewarm is refused against: §8.1's bound is
+/// `live_this_frame + queued > TCACHE - 32`. The outgoing page touches its live text first, then the
+/// recording painter admits destination misses only while that safety margin remains. A warmed
+/// entry is touched by `text_tex` during the budgeted drain and therefore joins this count exactly
+/// like an ordinary draw.
 ///
 /// It counts an entry the first time it is touched in a frame, whether that touch was a HIT or a
 /// fresh store: the question is how much of the cache this frame is standing on, and a string
 /// rendered this frame occupies its slot exactly as one that was already there does.
-#[allow(dead_code)] // no caller yet: see this function's doc — there is no prewarm path to bound,
-// and the heartbeat's occupancy field is another lane's wiring
 pub(crate) fn live_this_frame() -> u32 {
     unsafe { *addr_of!(TLIVE) }
 }
@@ -388,7 +518,7 @@ fn log_font_fallback_once() {
 }
 
 unsafe fn font_at(sz: c_int, bold: c_int) -> *mut TtfFont {
-    let sz = sz.clamp(8, 79) as usize;
+    let sz = sz.clamp(8, FONT_SLOTS as c_int - 1) as usize;
     let arr = if bold != 0 {
         &mut *addr_of_mut!(FONTS_B)
     } else {
@@ -458,8 +588,8 @@ const CJK_FONT: &str = "appfont-cjk.ttf";
 /// defect path: reaching this one is normal and expected on a Korean library.
 const DROIDSANS_FALLBACK: &str = "/usr/share/fonts/DroidSansFallback.ttf";
 
-static mut FONTS_CJK: [*mut TtfFont; 80] = [std::ptr::null_mut(); 80];
-static mut FONTS_SYS: [*mut TtfFont; 80] = [std::ptr::null_mut(); 80];
+static mut FONTS_CJK: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
+static mut FONTS_SYS: [*mut TtfFont; FONT_SLOTS] = [std::ptr::null_mut(); FONT_SLOTS];
 /// Per-link coverage, read from the file's cmap on FIRST NEED and never again. `None` after
 /// `COV_TRIED` means the file is absent or unreadable, i.e. the link is empty.
 static mut COV: [Option<crate::fontcov::Coverage>; 3] = [None, None, None];
@@ -532,7 +662,7 @@ unsafe fn link_font(link: Link, sz: c_int, bold: c_int) -> *mut TtfFont {
     if link == Link::Base {
         return font_at(sz, bold);
     }
-    let sz = sz.clamp(8, 79) as usize;
+    let sz = sz.clamp(8, FONT_SLOTS as c_int - 1) as usize;
     let arr = match link {
         Link::Cjk => &mut *addr_of_mut!(FONTS_CJK),
         _ => &mut *addr_of_mut!(FONTS_SYS),
@@ -725,6 +855,8 @@ unsafe fn render_runs(
 }
 
 pub(crate) fn init_text() {
+    FITTED_LINES.with(|cache| cache.borrow_mut().entries.clear());
+    MEASURED_BOUNDS.with(|cache| cache.borrow_mut().entries.clear());
     unsafe {
         if TTF_Init() != 0 {
             log("TTF_Init failed");
@@ -962,6 +1094,7 @@ unsafe fn cache_store(
     let cache = &mut *addr_of_mut!(TCACHE_A);
     let slot = take_slot(cache);
     if cache[slot].tex != 0 {
+        crate::gfx::tex_ledger::deleted(cache[slot].tex);
         glDeleteTextures(1, &cache[slot].tex);
     }
     set_entry_key(&mut cache[slot], s_bytes);
@@ -1018,12 +1151,21 @@ unsafe fn cache_store(
 ///
 /// The cost model changes for those strings only, and both callers that hammer this absorb it:
 /// `elide`'s binary search is memoised on its RESULT, and `TextView`'s wrap sweep goes through
-/// `elide`. A pure-ASCII string still costs exactly one `TTF_SizeUTF8`, decided before any
-/// coverage is loaded.
+/// `elide`. Native widths are cached by the exact bytes, size and weight, so different fitting
+/// budgets and repeated toolbar draws reuse the same metrics. A pure-ASCII cache miss costs one
+/// `TTF_SizeUTF8`, decided before any coverage is loaded. Failed or partial measurements and the
+/// uninitialized-font estimate are never cached.
 pub(crate) fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
+    text_bounds(s,sz,bold).0
+}
+
+/// CPU-only layout bounds, using the same baseline/descent composition as `render_runs`.
+/// A declaration pass needs the height too: an assumed em multiple can miss a linked face.
+/// This does not render or upload a glyph and does not spend the text-prewarm budget.
+pub(crate) fn text_bounds(s: *const c_char, sz: c_int, bold: c_int) -> (f32,f32) {
     unsafe {
         if s.is_null() || *s == 0 {
-            return 0.0;
+            return (0.0, 0.0);
         }
         if TEXT_OK == 0 {
             // NEVER a silent 0.0 (restructure spec §4.3): a layout built on zero widths reads as
@@ -1031,38 +1173,55 @@ pub(crate) fn text_width(s: *const c_char, sz: c_int, bold: c_int) -> f32 {
             // had was invisible for exactly that reason. Without a font the answer is the
             // average-advance estimate, and the fault is recorded once for the frame tail to log.
             MEASURE_FAULT.store(true, Ordering::Relaxed);
-            return unmeasured_width(CStr::from_ptr(s).to_bytes().len(), sz);
+            return (unmeasured_width(CStr::from_ptr(s).to_bytes().len(), sz), sz as f32);
         }
-        let bytes = CStr::from_ptr(s).to_bytes();
+        let text = CStr::from_ptr(s);
+        MEASURED_BOUNDS.with(|cache| cache.borrow_mut().bounds(text, sz, bold,
+            || measure_native_bounds(text, sz, bold)))
+    }
+}
+
+/// The second result says every run was measured successfully, including mixed-script labels.
+fn measure_native_bounds(s: &CStr, sz: c_int, bold: c_int) -> ((f32, f32), bool) {
+    unsafe {
+        let bytes = s.to_bytes();
         if let Some((st, runs)) = std::str::from_utf8(bytes)
             .ok()
             .and_then(|st| Some((st, split_runs(st)?)))
         {
             let mut total = 0.0f32;
+            let base=font_at(sz,bold);
+            let ascent=if base.is_null() {0} else {TTF_FontAscent(base)};
+            let mut below=if base.is_null() {0} else {TTF_FontHeight(base)-ascent};
+            let mut complete = !base.is_null();
             for &(link, from, to) in &runs.at[..runs.n] {
                 let f = link_font(link, sz, bold);
                 let f = if f.is_null() { font_at(sz, bold) } else { f };
                 let Ok(c) = CString::new(&st[from..to]) else {
+                    complete = false;
                     continue;
                 };
                 let (mut w, mut h): (c_int, c_int) = (0, 0);
                 if !f.is_null() && TTF_SizeUTF8(f, c.as_ptr(), &mut w, &mut h) == 0 {
                     total += w as f32;
+                    below = below.max(h - TTF_FontAscent(f));
+                } else {
+                    complete = false;
                 }
             }
-            return total;
+            return ((total, if base.is_null() { 0.0 } else { (ascent + below) as f32 }), complete);
         }
         let f = font_at(sz, bold);
         if f.is_null() {
-            return 0.0;
+            return ((0.0, 0.0), false);
         }
-        // both out-params are real locals: SDL_ttf guards NULLs, but a height we throw away costs
-        // nothing and keeps this independent of that guard surviving in the TV's 2.0.14 fork.
+        // Both outputs are real locals. The painter needs height as well as width, with no
+        // rasterization or texture upload during declaration.
         let (mut w, mut h): (c_int, c_int) = (0, 0);
-        if TTF_SizeUTF8(f, s, &mut w, &mut h) != 0 {
-            return 0.0; // same "unmeasurable → 0" contract the null-surface path had
+        if TTF_SizeUTF8(f, s.as_ptr(), &mut w, &mut h) != 0 {
+            return ((0.0, 0.0), false); // same "unmeasurable → 0" contract the null-surface path had
         }
-        w as f32
+        ((w as f32, h as f32), true)
     }
 }
 
@@ -1088,6 +1247,12 @@ pub(crate) fn take_measure_fault() -> bool {
 pub(crate) struct TtfMeasure;
 
 impl crate::ui::machine::Measure for TtfMeasure {
+    fn fit_line(&self, s: &str, budget: f32, sz: i32, bold: bool) -> Rc<CStr> {
+        if unsafe { addr_of!(TEXT_OK).read() } == 0 {
+            return fit_line_by(self, s, budget, sz, bold);
+        }
+        FITTED_LINES.with(|cache| cache.borrow_mut().fit(self, s, budget, sz, bold))
+    }
     fn width(&self, s: &CStr, sz: c_int, bold: bool) -> f32 {
         // `text_width` reads TEXT_OK, a main-thread static the C-era init writes once at boot.
         let ok = unsafe { std::ptr::addr_of!(TEXT_OK).read() } != 0;
@@ -1100,9 +1265,298 @@ impl crate::ui::machine::Measure for TtfMeasure {
     fn line_h(&self, sz: c_int) -> f32 {
         text_height(sz, 0)
     }
+    fn live_font(&self) -> bool {
+        true
+    }
 }
 
 static mut ELIDE_CACHE: Option<HashMap<u64, String>> = None;
+
+#[derive(Default)]
+struct MeasuredBounds {
+    entries: HashMap<u64, MeasuredBound>,
+}
+
+struct MeasuredBound {
+    text: Box<[u8]>,
+    spec: (c_int, c_int),
+    bounds: (f32, f32),
+}
+
+thread_local! {
+    static MEASURED_BOUNDS: std::cell::RefCell<MeasuredBounds> = Default::default();
+    static NATIVE_WIDTH_FAILURES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+impl MeasuredBounds {
+    fn bounds(&mut self, text: &CStr, sz: c_int, bold: c_int,
+        compute: impl FnOnce() -> ((f32, f32), bool)) -> (f32, f32) {
+        let bytes = text.to_bytes();
+        let spec = (sz, bold);
+        let mut hash = DefaultHasher::new();
+        (bytes, spec).hash(&mut hash);
+        let key = hash.finish();
+        if let Some(entry) = self.entries.get(&key) {
+            if entry.spec == spec && entry.text.as_ref() == bytes { return entry.bounds; }
+        }
+        let (bounds, complete) = compute();
+        if complete {
+            if self.entries.len() >= 512 { self.entries.clear(); }
+            self.entries.insert(key, MeasuredBound { text: bytes.into(), spec, bounds });
+        } else {
+            NATIVE_WIDTH_FAILURES.with(|generation| generation.set(generation.get().wrapping_add(1)));
+        }
+        bounds
+    }
+
+    #[cfg(test)]
+    fn width(&mut self, text: &CStr, sz: c_int, bold: c_int,
+        compute: impl FnOnce() -> (f32, bool)) -> f32 {
+        self.bounds(text, sz, bold, || {
+            let (width, complete) = compute();
+            ((width, 0.0), complete)
+        }).0
+    }
+}
+
+#[cfg(test)]
+mod measured_width_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn native_bounds_cache_keeps_mixed_font_height_and_retries_partial_runs() {
+        let mut cache = MeasuredBounds::default();
+        assert_eq!(cache.bounds(c"A linked face", 26, 0, || ((120.0, 35.0), false)), (120.0, 35.0));
+        assert!(cache.entries.is_empty(), "a missing linked run cannot become a permanent bound");
+        assert_eq!(cache.bounds(c"A linked face", 26, 0, || ((180.0, 41.0), true)), (180.0, 41.0));
+        assert_eq!(cache.bounds(c"A linked face", 26, 0, || panic!("cached bounds")), (180.0, 41.0));
+        assert_eq!(cache.bounds(c"A linked face", 26, 1, || ((183.0, 43.0), true)), (183.0, 43.0));
+    }
+
+    #[test]
+    fn repeated_native_widths_avoid_metric_calls() {
+        let mut cache = MeasuredBounds::default();
+        let calls = Cell::new(0);
+        for _ in 0..60 {
+            let width = cache.width(c"A show with a long title", 26, 1, || {
+                calls.set(calls.get() + 1);
+                (321.5, true)
+            });
+            assert_eq!(width, 321.5);
+            assert_eq!(calls.get(), 1, "repeated fits and toolbar draws must reuse font metrics");
+        }
+    }
+
+    #[test]
+    fn native_width_keys_are_exact_and_storage_is_bounded() {
+        let mut cache = MeasuredBounds::default();
+        let calls = Cell::new(0);
+        for (text, sz, bold) in [(c"Episode", 24, 0), (c"Episode", 26, 0),
+            (c"Episode", 26, 1), (c"Épisode", 26, 1)] {
+            let width = cache.width(text, sz, bold, || {
+                calls.set(calls.get() + 1);
+                (calls.get() as f32, true)
+            });
+            assert_eq!(cache.width(text, sz, bold, || panic!("already measured")), width);
+        }
+        assert_eq!(calls.get(), 4);
+        for index in 0..1024 {
+            let text = CString::new(index.to_string()).unwrap();
+            cache.width(&text, 24, 0, || (1.0, true));
+            assert!(cache.entries.len() <= 512);
+        }
+    }
+
+    #[test]
+    fn failed_or_partial_native_metrics_are_retried() {
+        let mut cache = MeasuredBounds::default();
+        let calls = Cell::new(0);
+        for width in [0.0, 25.0] {
+            assert_eq!(cache.width(c"episode", 24, 0, || {
+                calls.set(calls.get() + 1);
+                (width, false)
+            }), width);
+            assert!(cache.entries.is_empty());
+        }
+        assert_eq!(calls.get(), 2);
+        assert_eq!(cache.width(c"episode", 24, 0, || (42.0, true)), 42.0);
+        assert_eq!(cache.width(c"episode", 24, 0, || panic!("success is cached")), 42.0);
+    }
+}
+
+pub(crate) fn fit_line_by<M: crate::ui::machine::Measure + ?Sized>(
+    measure: &M, s: &str, budget: f32, sz: i32, bold: bool,
+) -> Rc<CStr> {
+    CString::new(elide_by(s, budget, false, |text| measure.width_str(text, sz, bold)))
+        .unwrap_or_default().into_boxed_c_str().into()
+}
+
+#[derive(Default)]
+struct FittedLines {
+    entries: HashMap<u64, FittedLine>,
+}
+
+struct FittedLine {
+    text: Box<str>,
+    spec: (u32, i32, bool),
+    run: Rc<CStr>,
+}
+
+// Only the native capability owns this memo. A recording/replay capability must issue its own
+// metric queries even when an identical string was already fitted against a live font.
+thread_local! {
+    static FITTED_LINES: std::cell::RefCell<FittedLines> = Default::default();
+}
+
+impl FittedLines {
+    fn fit(&mut self, measure: &impl crate::ui::machine::Measure, s: &str,
+        budget: f32, sz: i32, bold: bool) -> Rc<CStr> {
+        let spec = (budget.to_bits(), sz, bold);
+        let mut hash = DefaultHasher::new();
+        (s, spec).hash(&mut hash);
+        let key = hash.finish();
+        if let Some(entry) = self.entries.get(&key) {
+            // Retain the full input as well: a hash collision must never show another item's label.
+            if entry.spec == spec && entry.text.as_ref() == s { return Rc::clone(&entry.run); }
+        }
+        let before = NATIVE_WIDTH_FAILURES.with(std::cell::Cell::get);
+        let run = fit_line_by(measure, s, budget, sz, bold);
+        // Preserve this frame's fallback, but retry a fit that relied on failed/partial metrics.
+        // Cache hits return above, so a successful hot run pays no generation checks.
+        if NATIVE_WIDTH_FAILURES.with(std::cell::Cell::get) != before { return run; }
+        if self.entries.len() >= 512 { self.entries.clear(); }
+        self.entries.insert(key, FittedLine { text: s.into(), spec, run: Rc::clone(&run) });
+        run
+    }
+}
+
+#[cfg(test)]
+mod fitted_line_tests {
+    use super::*;
+    use crate::ui::machine::Measure;
+    use std::cell::Cell;
+
+    #[derive(Default)]
+    struct CountMeasure(Cell<usize>);
+    impl Measure for CountMeasure {
+        fn width(&self, s: &CStr, sz: i32, _: bool) -> f32 {
+            self.0.set(self.0.get() + 1);
+            s.to_string_lossy().chars().count() as f32 * sz as f32
+        }
+        fn cap_h(&self, _: i32) -> f32 { 1.0 }
+        fn line_h(&self, _: i32) -> f32 { 1.0 }
+    }
+
+    #[test]
+    fn repeated_still_lines_reuse_measurement_and_drawable_storage() {
+        let measure = CountMeasure::default();
+        let mut cache = FittedLines::default();
+        let show = cache.fit(&measure, "A show with a long title", 10.0, 1, true);
+        let address = cache.fit(&measure, "S1 · E2", 10.0, 1, false);
+        let calls = measure.0.get();
+        assert!(calls > 0);
+        for _ in 0..60 {
+            let next_show = cache.fit(&measure, "A show with a long title", 10.0, 1, true);
+            let next_address = cache.fit(&measure, "S1 · E2", 10.0, 1, false);
+            assert_eq!(measure.0.get(), calls, "stable overlays must not remeasure each frame");
+            assert!(Rc::ptr_eq(&show, &next_show));
+            assert!(Rc::ptr_eq(&address, &next_address));
+        }
+    }
+
+    #[test]
+    fn a_failed_metric_does_not_cache_a_stale_fitted_line() {
+        struct RetryMeasure {
+            fail: Cell<bool>,
+            widths: std::cell::RefCell<MeasuredBounds>,
+            calls: Cell<usize>,
+        }
+        impl Measure for RetryMeasure {
+            fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
+                self.widths.borrow_mut().width(s, sz, bold as c_int, || {
+                    self.calls.set(self.calls.get() + 1);
+                    let failed = self.fail.replace(false);
+                    (if failed { 0.0 } else { s.to_string_lossy().chars().count() as f32 }, !failed)
+                })
+            }
+            fn cap_h(&self, _: i32) -> f32 { 1.0 }
+            fn line_h(&self, _: i32) -> f32 { 1.0 }
+        }
+        let measure = RetryMeasure { fail: Cell::new(true), widths: Default::default(), calls: Cell::new(0) };
+        let mut cache = FittedLines::default();
+        let failed = cache.fit(&measure, "episode", 4.0, 1, false);
+        assert_eq!(failed.to_bytes(), b"episode"); // the failed zero width preserves this frame's fallback
+        let recovered = cache.fit(&measure, "episode", 4.0, 1, false);
+        assert_eq!(recovered.to_bytes(), "epi…".as_bytes(), "retry must use the recovered font metrics");
+        let calls = measure.calls.get();
+        assert!(Rc::ptr_eq(&recovered, &cache.fit(&measure, "episode", 4.0, 1, false)));
+        assert_eq!(measure.calls.get(), calls, "a successful retry restores the cache fast path");
+    }
+
+    #[test]
+    fn fitted_lines_keep_exact_width_text_size_and_weight_in_the_key() {
+        let measure = CountMeasure::default();
+        let mut cache = FittedLines::default();
+        let run = cache.fit(&measure, "абвг", 3.25, 1, false);
+        assert_eq!(run.to_bytes(), "аб…".as_bytes());
+        for (text, budget, sz, bold) in [
+            ("абвг", 3.75, 1, false), ("абвг", 3.75, 2, false),
+            ("абвг", 3.75, 2, true), ("different", 3.75, 2, true),
+        ] {
+            let calls = measure.0.get();
+            cache.fit(&measure, text, budget, sz, bold);
+            assert!(measure.0.get() > calls);
+        }
+    }
+
+    #[test]
+    fn recording_and_replay_cannot_reuse_a_live_fitted_line() {
+        use crate::ui::rec::Measurements;
+        struct NativeMemo(CountMeasure, std::cell::RefCell<FittedLines>,
+            std::cell::RefCell<MeasuredBounds>);
+        impl Measure for NativeMemo {
+            fn width(&self, s: &CStr, sz: i32, bold: bool) -> f32 {
+                self.2.borrow_mut().width(s, sz, bold as c_int, || (self.0.width(s, sz, bold), true))
+            }
+            fn cap_h(&self, sz: i32) -> f32 { self.0.cap_h(sz) }
+            fn line_h(&self, sz: i32) -> f32 { self.0.line_h(sz) }
+            fn fit_line(&self, s: &str, budget: f32, sz: i32, bold: bool) -> Rc<CStr> {
+                self.1.borrow_mut().fit(self, s, budget, sz, bold)
+            }
+        }
+        let source = Box::leak(Box::new(NativeMemo(CountMeasure::default(), Default::default(), Default::default())));
+        let live = Measurements::Live(source);
+        let warm = live.fit_line("episode", 20.0, 1, false);
+        assert!(Rc::ptr_eq(&warm, &live.fit_line("episode", 20.0, 1, false)));
+        let record = Measurements::record(source);
+        let native_calls = source.0.0.get();
+        assert_eq!(warm, record.fit_line("episode", 20.0, 1, false));
+        assert_eq!(source.0.0.get(), native_calls, "recording queries must still use native cached metrics");
+        let metrics = record.drain().unwrap().into_iter().collect::<HashMap<_, _>>();
+        assert!(!metrics.is_empty(), "warm native memo must not hide recorded measurements");
+        let mut replay = Measurements::Pending(Cell::new(false));
+        replay.prepare(Some(&metrics));
+        assert_eq!(warm, replay.fit_line("episode", 20.0, 1, false));
+        assert!(replay.drain().is_ok());
+        let mut missing = Measurements::Pending(Cell::new(false));
+        missing.prepare(Some(&HashMap::new()));
+        missing.fit_line("episode", 20.0, 1, false);
+        assert!(missing.drain().is_err(), "warm native memo must not mask a replay miss");
+    }
+
+    #[test]
+    fn fitted_line_memo_stays_bounded_and_old_runs_remain_drawable() {
+        let measure = CountMeasure::default();
+        let mut cache = FittedLines::default();
+        let old = cache.fit(&measure, "episode", 20.0, 1, false);
+        for width in 0..1024 {
+            cache.fit(&measure, "episode", width as f32, 1, false);
+            assert!(cache.entries.len() <= 512);
+        }
+        assert_eq!(old.to_bytes(), b"episode");
+    }
+}
 
 /// Truncate `s` to fit `budget` px at `sz`/`bold`, ellipsised — and **memoised**. The per-frame
 /// binary search over candidate widths (each candidate a `text_width` call) is the text-measure
@@ -1264,6 +1718,33 @@ pub(crate) fn baseline_y(sz: c_int, bold: c_int, on_sz: c_int, on_bold: c_int, o
     on_y + (text_cap_band(on_sz, on_bold).1 - text_cap_band(sz, bold).1)
 }
 
+/// The texture a string is DRAWN with and its size in logical px. The logical texture itself, except
+/// under the simulator's supersampled rendering (`surface::render_scale`), where it is the same
+/// string rasterised at `n`x and drawn at `1/n` — so glyphs stay 1:1 with physical pixels while
+/// every width and metric the layout reads is still the logical one.
+#[inline]
+unsafe fn drawn_tex(
+    s_bytes: &[u8],
+    s: *const c_char,
+    sz: c_int,
+    bold: c_int,
+    logical: (c_uint, c_int, c_int),
+) -> (c_uint, f32, f32) {
+    #[cfg(feature = "hostsim")]
+    {
+        let n = crate::surface::render_scale();
+        if n > 1 {
+            let (t, w, h, _, _) = text_tex(s_bytes, s, sz * n, bold);
+            if t != 0 {
+                return (t, w as f32 / n as f32, h as f32 / n as f32);
+            }
+        }
+    }
+    #[cfg(not(feature = "hostsim"))]
+    let _ = (s_bytes, s, sz, bold);
+    (logical.0, logical.1 as f32, logical.2 as f32)
+}
+
 /// align: 0 left, 1 center, 2 right (x is the anchor edge). returns text width.
 pub(crate) fn draw_text(
     s: *const c_char,
@@ -1287,11 +1768,19 @@ pub(crate) fn draw_text(
         if tex == 0 {
             return 0.0;
         }
+        let (tex, dw, dh) = drawn_tex(s_bytes, s, sz, bold, (tex, w, h));
         let dx = match align {
-            1 => x - w as f32 * 0.5,
-            2 => x - w as f32,
+            1 => x - dw * 0.5,
+            2 => x - dw,
             _ => x,
         };
+        // Keep the texture warm and return its layout width, but skip driver state changes for
+        // runs outside the blur-source crop as well as the draw itself.
+        if crate::gfx::culled(dx, y, dw, dh)
+            || gate(Class::Text, dx, y, dw, dh)
+        {
+            return w as f32;
+        }
         crate::gfx::use_prog(TPROG); // TL_SCREEN / TL_TEX / texture unit 0 set once at init
         glUniform4fv(TL_COL, 1, col);
         glBindTexture(GL_TEXTURE_2D, tex);
@@ -1300,16 +1789,10 @@ pub(crate) fn draw_text(
             TL_RECT,
             crate::gfx::snap(dx),
             crate::gfx::snap(y),
-            w as f32,
-            h as f32,
+            dw,
+            dh,
         );
-        // The width is still returned — callers lay out from it — but a run outside a blur source
-        // pass's region contributes no fragment to the backdrop, so the quad is not submitted.
-        if !crate::gfx::culled(dx, y, w as f32, h as f32)
-            && !gate(Class::Text, dx, y, w as f32, h as f32)
-        {
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        }
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         w as f32
     }
 }
@@ -1353,17 +1836,23 @@ pub(crate) fn draw_text_fade(
         if tex == 0 {
             return 0.0;
         }
+        let (tex, dw, dh) = drawn_tex(s_bytes, s, sz, bold, (tex, w, h));
         let dx = match align {
-            1 => x - w as f32 * 0.5,
-            2 => x - w as f32,
+            1 => x - dw * 0.5,
+            2 => x - dw,
             _ => x,
         };
+        if crate::gfx::culled(dx, y, dw, dh)
+            || gate(Class::Text, dx, y, dw, dh)
+        {
+            return w as f32;
+        }
         crate::gfx::use_prog(TPROGF); // TLF_SCREEN / TLF_TEX / texture unit 0 set once at init
         glUniform4fv(TLF_COL, 1, col);
         // px → string-texture uv (the varying spans the one-quad string). `(0.0, 0.0)` is "off" —
         // the shader gates on `to > from`, so a caller with no horizontal fade need not sentinel
         // against the string's own width.
-        let wf = w as f32;
+        let wf = dw;
         let (hf0, hf1) = hfade.unwrap_or((0.0, 0.0));
         glUniform2f(TLF_FADE, hf0 / wf, hf1 / wf);
         let (vt0, vt1) = vfade_top.unwrap_or((0.0, 0.0));
@@ -1375,14 +1864,10 @@ pub(crate) fn draw_text_fade(
             TLF_RECT,
             crate::gfx::snap(dx),
             crate::gfx::snap(y),
-            w as f32,
-            h as f32,
+            dw,
+            dh,
         );
-        if !crate::gfx::culled(dx, y, w as f32, h as f32)
-            && !gate(Class::Text, dx, y, w as f32, h as f32)
-        {
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-        }
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
         w as f32
     }
 }
@@ -1575,6 +2060,25 @@ mod cache_policy_tests {
     //! what these cannot see is the rasterization on the other side of it, which is a device
     //! question exactly as the run splitter's is.
     use super::*;
+
+    #[test]
+    fn warming_respects_the_per_frame_budget_and_never_blocks_the_dip() {
+        use std::cell::Cell;
+        use std::collections::VecDeque;
+
+        let clock = Cell::new(0u64);
+        let mut jobs = VecDeque::from([1u8, 2, 3, 4, 5]);
+        let warmed = drain_budgeted(
+            &mut jobs,
+            6_000,
+            || clock.get(),
+            |_| clock.set(clock.get() + 2_000),
+        );
+
+        assert_eq!(warmed, 3, "only work fitting this dip frame was started");
+        assert_eq!(clock.get(), 6_000, "the warmer yielded at its named deadline");
+        assert_eq!(jobs.into_iter().collect::<Vec<_>>(), vec![4, 5]);
+    }
 
     /// A cache of `n` occupied slots whose `use_` serials are the given ones (in slot order), the
     /// rest empty.

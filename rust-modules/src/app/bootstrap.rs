@@ -42,27 +42,33 @@ impl HomeIo {
         admitted
     }
     #[cfg(test)]
-    pub fn hubs(&mut self, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32)
-        -> crate::stores::StoreOutcome {
-        self.hubs_with(cmd, dt, &mut crate::pms::spawn_fetch)
+    pub fn hubs(&mut self, hubs: &mut crate::stores::hubs::HubsStore,
+        cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32) -> crate::stores::StoreOutcome {
+        let adapter = hubs.adapter();
+        self.hubs_with(hubs, cmd, dt, &mut |request| crate::pms::spawn_fetch(&adapter, request))
     }
     #[cfg(test)]
-    fn hubs_with(&mut self, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
+    fn hubs_with(&mut self, hubs: &mut crate::stores::hubs::HubsStore,
+        cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
         launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> crate::stores::StoreOutcome {
-        crate::stores::hubs::controlled(cmd, dt, &mut |request| {
+        hubs.controlled(cmd, dt, &mut |request| {
             let (epoch, req, sid, client, token_gen) = request.descriptor();
             self.admit(serde_json::json!({"kind":"hubs", "epoch":epoch,
                 "req":req, "sid":sid, "client":client, "token_gen":token_gen}), || launch(request))
         })
     }
-    pub(crate) fn hubs_with_directory(&mut self, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
+    pub(crate) fn hubs_with_directory(&mut self, hubs: &mut crate::stores::hubs::HubsStore,
+        cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
         directory: crate::stores::browse::DirectoryView<'_>) -> crate::stores::StoreOutcome {
-        self.hubs_with_directory_and_launch(cmd, dt, directory, &mut crate::pms::spawn_fetch)
+        let adapter = hubs.adapter();
+        self.hubs_with_directory_and_launch(hubs, cmd, dt, directory,
+            &mut |request| crate::pms::spawn_fetch(&adapter, request))
     }
-    fn hubs_with_directory_and_launch(&mut self, cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
+    fn hubs_with_directory_and_launch(&mut self, hubs: &mut crate::stores::hubs::HubsStore,
+        cmd: Option<crate::stores::hubs::HubsCmd>, dt: f32,
         directory: crate::stores::browse::DirectoryView<'_>,
         launch: &mut dyn FnMut(crate::pms::HubRequest) -> bool) -> crate::stores::StoreOutcome {
-        crate::stores::hubs::controlled_with_directory(cmd, dt, directory, &mut |request| {
+        hubs.controlled_with_directory(cmd, dt, directory, &mut |request| {
             let (epoch, req, sid, client, token_gen) = request.descriptor();
             self.admit(serde_json::json!({"kind":"hubs", "epoch":epoch,
                 "req":req, "sid":sid, "client":client, "token_gen":token_gen}), || launch(request))
@@ -107,7 +113,32 @@ pub(crate) fn validate_admission(value: &serde_json::Value, client: u32) -> Resu
     Ok(())
 }
 
-pub(crate) const SHAPE: &str = "ControlledHomeInitV3{locale:capturedSessionPreference_systemEnUS24,version:u32,session:SessionInit,consent:Consent,home:HubsInitialV1,clock_start:u32,entropy:Captured(Option<[u8;16]>)|Seeded(u32),primary_client:u32,automated:bool,settings:Option<root|privacy|legal>,triggers:[str]};HomeEffectsV1{from:MachineId,kind:Fx,payload:complete_supported_payload};OwnedInputV1{ms:u32,dt_us:u32,source:Source,body:InputKind};DiscoveryResultV1{epoch:u32,source:u32,sid:u16,client:u32,token_gen:u32,name:str,what:Sections|Counts}";
+/// The controlled-boot init census.
+///
+/// **V3 / `SessionInitV2` (household evidence).** `SourceRef` gained `home:bool` and
+/// `ownerId:i64` — plex.tv's raw grant evidence, carried beside `owned` rather than instead of it
+/// — and `write_sources` folds both into the canonical digest. `SessionInit` is spelled here as a
+/// NAME, so the field census moving inside it is invisible unless the term itself moves: hence
+/// `SessionInitV2`, and hence the `ControlledHomeInitV3` that carries it. Without the bump a
+/// recording made before the change would replay against a session that now distinguishes a Plex
+/// Home managed profile's own household server from a stranger's share, and grade it `SAME`.
+///
+/// **V4 / `SessionInitV3` (the unsaved-login answer).** `SessionInit` gained
+/// `persistence_warning_answered:bool`, folded into the digest right after `held_handoff` by
+/// `w.bool(self.persistence_warning_answered)` — whether THIS authorization has already had its
+/// one unsaved-login (AUTH-03) warning answered, so a later storage failure releases its held
+/// handoff instead of asking again. Same reasoning as V3: the field census moved inside a type
+/// that is spelled here as a NAME, so the term itself has to move too, hence `SessionInitV3` and
+/// the `ControlledHomeInitV4` that carries it. Without the bump a recording made before the
+/// change would replay against a session that now answers the warning once instead of every time,
+/// and grade it `SAME`.
+///
+/// **V5 / `SessionInitV4` (plaintext consent).** The session now captures an optional plaintext
+/// offer and the persisted per-server answers. Even the no-offer boot serializes these fields,
+/// so pre-consent recordings cannot provide canonical initial input. Name the new census here
+/// to refuse those artifacts at the shape boundary and permit a genuine fresh recording.
+/// V6 / SessionInitV5 adds the captured language preference; controlled System resolves to en-US/24-hour.
+pub(crate) const SHAPE: &str = "ControlledHomeInitV6{locale:capturedSessionPreference_systemEnUS24,version:u32,session:SessionInitV5,consent:Consent,home:HubsInitialV1,clock_start:u32,entropy:Captured(Option<[u8;16]>)|Seeded(u32),primary_client:u32,automated:bool,settings:Option<root|privacy|legal>,triggers:[str]};HomeEffectsV1{from:MachineId,kind:Fx,payload:complete_supported_payload};OwnedInputV1{ms:u32,dt_us:u32,source:Source,body:InputKind};DiscoveryResultV1{epoch:u32,source:u32,sid:u16,client:u32,token_gen:u32,name:str,what:Sections|Counts}";
 #[cfg(test)]
 pub(crate) const PRE_SETTINGS_SHAPE: &str = "ControlledHomeInitV1{version:u32,session:SessionInit,consent:Consent,home:HubsInitialV1,clock_start:u32,entropy:Captured(Option<[u8;16]>)|Seeded(u32),primary_client:u32,automated:bool,triggers:[str]};HomeEffectsV1{from:MachineId,kind:Fx,payload:complete_supported_payload};OwnedInputV1{ms:u32,dt_us:u32,source:Source,body:InputKind};DiscoveryResultV1{epoch:u32,source:u32,sid:u16,client:u32,token_gen:u32,name:str,what:Sections|Counts}";
 
@@ -169,10 +200,8 @@ impl Initial {
         Ok(initial)
     }
     pub(crate) fn capture_home(host: &str, port: i32) -> Result<(Self, Option<crate::plex::session::DeferredLoad>), &'static str> {
-        if crate::dev::flag("app-init") {
-            let value = crate::ui::rec::initial_value(&crate::paths::in_runtime_dir("plxnative-app-init"))
-                .map_err(|_| "invalid explicit initial input")?;
-            return Self::from_value(value).map(|initial| (initial, None));
+        if let Some(value) = crate::dev::scenarios::app_init_value() {
+            return Self::from_value(value?).map(|initial| (initial, None));
         }
         let token = crate::dev::scenarios::dev_token();
         let (saved, entropy, deferred) = crate::plex::session::load_capturing_entropy();
@@ -188,7 +217,7 @@ impl Initial {
             automated: crate::dev::any_trigger_present(),
             settings: crate::dev::scenarios::settings_boot_value(),
             content: None,
-            home: crate::pms::initial::Initial::capture(),
+            home: crate::pms::initial::Initial::fresh(),
             triggers: crate::dev::armed_triggers(),
         };
         initial.validate()?;
@@ -226,7 +255,7 @@ impl Initial {
             return Err("unsupported initial Settings input");
         }
         if self.settings.is_some()
-            != self.triggers.iter().any(|trigger| trigger == "plxnative-settings") {
+            != crate::dev::listed(&self.triggers, "settings") {
             return Err("incoherent initial Settings input");
         }
         let content_triggers = ["detail", "detailsec", "detailok", "filmography", "personcredits", "nowan"];
@@ -238,7 +267,7 @@ impl Initial {
             }
         }
         for name in content_triggers {
-            if self.content.is_some() != self.triggers.iter().any(|t| t == &format!("plxnative-{name}")) {
+            if self.content.is_some() != crate::dev::listed(&self.triggers, name) {
                 return Err("incoherent initial content input");
             }
         }
@@ -249,14 +278,8 @@ impl Initial {
                 return Err("initial seed mismatch"),
             _ => {}
         }
-        for trigger in &self.triggers {
-            if !matches!(trigger.as_str(), "plxnative-rec" | "plxnative-recplay" |
-                "plxnative-focus" | "plxnative-noidle" | "plxnative-token" |
-                "plxnative-app-init" | "plxnative-settings" | "plxnative-detail" |
-                "plxnative-detailsec" | "plxnative-detailok" | "plxnative-filmography" |
-                "plxnative-personcredits" | "plxnative-nowan") {
-                return Err("unsupported initial developer input");
-            }
+        if !self.triggers.iter().all(|trigger| crate::dev::controlled_trigger(trigger)) {
+            return Err("unsupported initial developer input");
         }
         Ok(())
     }

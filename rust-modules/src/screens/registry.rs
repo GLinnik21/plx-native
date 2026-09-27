@@ -25,6 +25,7 @@
 //! on the dispatcher yet. The bridge drains them after every dispatcher frame.
 
 use crate::screens::family::SettingsPage;
+use std::sync::Arc;
 use crate::screens::settings::{Family, RouteSurface};
 use crate::stores::{StoreCmd, StoreId, StoreWork};
 use crate::ui::machine::{
@@ -36,6 +37,8 @@ use crate::ui::screen::{Mounter, ReturnState, Screen};
 pub(crate) enum AppFx {
     Session(crate::auth::SessionCmd),
     SessionEffect(crate::auth::owner::SessionFx),
+    /// Account and install preference IO, admitted by the application before work starts.
+    Preferences(PreferenceCmd),
     /// A store command, executed as a `Deliver` to the store machine in the same drain.
     Store(StoreId, StoreCmd),
     /// Poll only the store work this visible route owns, after its read-only step returns.
@@ -57,6 +60,27 @@ pub(crate) enum AppFx {
     Player(PlayerReq),
     /// The item context menu's committed row (phase 10) — see [`ItemMenuReq`].
     ItemMenu(ItemMenuReq),
+}
+
+/// A private live receipt. Requests contain account credentials and are intentionally unsupported
+/// by the controlled recorder/replay codec; the bridge must reject them before execution.
+pub(crate) struct AccountPreferenceReply {
+    pub request: Option<crate::plex::account::PreferenceRequest>,
+    pub outcome: Result<crate::plex::account::PreferenceSnapshot, crate::plex::account::PreferenceError>,
+}
+
+pub(crate) enum PreferenceCmd {
+    /// Capture the live profile only after admission: even session::peek can schedule storage IO.
+    Load { reply: std::sync::mpsc::Sender<AccountPreferenceReply> },
+    Save {
+        request: crate::plex::account::PreferenceRequest,
+        base: crate::plex::account::PreferenceSnapshot,
+        update: crate::plex::account::PreferenceUpdate,
+        reply: std::sync::mpsc::Sender<AccountPreferenceReply>,
+    },
+    Quality { quality: crate::plex::session::PlaybackQuality, reply: std::sync::mpsc::Sender<bool> },
+    DirectPlay { mode: crate::plex::session::DirectPlayMode, reply: std::sync::mpsc::Sender<bool> },
+    Language { language: crate::i18n::Preference, reply: std::sync::mpsc::Sender<bool> },
 }
 
 /// **What the item context menu asks of the loop**, once its own `step` has resolved the pressed
@@ -105,6 +129,8 @@ pub(crate) struct ItemMenuReq {
 /// So the panel decides and the loop performs, exactly as `LibraryReq` does for the Library.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum PlayerReq {
+    /// Accepted only after the owned player confirmation. Never emitted by boot or Play.
+    RepairSandbox,
     /// A transport key FELL THROUGH the panel (§ `overlay_transport_key_tests`): a viewer holding
     /// the track menu, the Info card or the Chapters strip open still expects PAUSE/PLAY to work,
     /// and the panel stays up. `true` = the key was PLAY, `false` = PAUSE; a PLAYPAUSE toggle is
@@ -199,6 +225,10 @@ pub(crate) enum HomeCmd {
     FocusStrip(HomeTab),
     Flip(i32),
     SelectHero(i32),
+    /// [`SelectHero`](Self::SelectHero), then HOLD that slot: the auto-advance stops for the
+    /// life of the page. The screenshot pipeline's pin (`/tmp/plxnative-heropin=<n>`), so a
+    /// capture taken whenever the page settles shows the billboard the scene manifest named.
+    PinHero(i32),
     ItemMenu,
 }
 
@@ -217,7 +247,7 @@ pub(crate) enum LibraryReq {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LibraryMenuKind { Sort, Filter, Genre, Sources }
+pub(crate) enum LibraryMenuKind { Sort, Filter, Genre, Sources, Type }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LibraryMenuArg {
@@ -233,7 +263,7 @@ impl crate::ui::machine::LogicalState for LibraryMenuArg {
         c.u32(self.host.0).u32(self.target.epoch).u32(u32::from(self.target.sid.raw()))
             .u64(self.target.section as u64).u32(match self.kind {
                 LibraryMenuKind::Sort => 0, LibraryMenuKind::Filter => 1,
-                LibraryMenuKind::Genre => 2, LibraryMenuKind::Sources => 3,
+                LibraryMenuKind::Genre => 2, LibraryMenuKind::Sources => 3, LibraryMenuKind::Type => 4,
             });
         for value in self.anchor { c.u32(value); }
     }
@@ -344,8 +374,14 @@ impl crate::ui::machine::LogicalState for ItemMenuArg {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LibraryCmd {
     Enter(crate::stores::browse::SecKind),
-    #[cfg(test)]
+    /// Seat focus on one grid card (tests, and the screenshot pipeline's `plxnative-libgrid`).
     FocusGrid { row: usize, col: usize },
+    /// Seat focus on one card of a hub shelf above the grid, `shelf` counted from the top (the
+    /// screenshot pipeline's `plxnative-libshelf`).
+    FocusShelf { shelf: usize, col: usize },
+    /// Open the Sort or Filter menu exactly as OK on its toolbar chip does (the screenshot
+    /// pipeline's `plxnative-libmenu`).
+    OpenMenu(LibraryMenuKind),
     Page(i32),
     Sweep,
     SwitchStep(u32),
@@ -405,7 +441,9 @@ pub(crate) struct LibraryMemory {
     pub(crate) query: Option<u32>,
     pub(crate) grid_reset_pending: bool,
     pub(crate) viewports: Vec<LibraryViewport>,
-    pub(crate) keys: Vec<LibraryKey>,
+    /// Return snapshots share unchanged catalog keys. The live registry detaches on mutation;
+    /// the canonical state remains the ordered key values, never this allocation's identity.
+    pub(crate) keys: Arc<Vec<LibraryKey>>,
     pub(crate) next_elem: u32,
     pub(crate) section: Option<LibrarySectionIdentity>,
     pub(crate) scroll: f32,
@@ -520,14 +558,16 @@ pub(crate) struct FilmographyMemory {
     pub(crate) preview: Option<(String, String)>,
 }
 
-/// Owned provider identity used by Home's stable group and element registries.
+/// Owned provider identity used by Home's stable group and element registries. Provider
+/// identifiers include their listing key because one server can reuse an identifier for distinct
+/// rows while a mixed-library row must not derive identity from whichever item happens to lead it.
 ///
 /// A provider which publishes no identity receives an explicitly ephemeral identity scoped to
 /// that publication generation. Neither its title nor its position is claimed as stable.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum HomeHubIdentity {
     ContinueWatching,
-    Identifier { sid: crate::plex::ServerId, id: String },
+    Identifier { sid: crate::plex::ServerId, id: String, key: String },
     Key { sid: crate::plex::ServerId, key: String },
     Ephemeral { generation: u32, ordinal: u32 },
 }
@@ -649,7 +689,7 @@ impl crate::ui::machine::LogicalState for PageMemory {
                     c.u32(u32::from(section.sid.raw())).u64(section.key as u64);
                 });
                 c.seq(memory.keys.len());
-                for key in &memory.keys {
+                for key in memory.keys.iter() {
                     write_library_identity(&key.identity, c);
                     c.u32(key.elem).u32(key.last_group).u32(key.last_index);
                 }
@@ -698,13 +738,15 @@ fn write_library_identity(identity: &LibraryIdentity, c: &mut crate::ui::machine
 fn write_home_hub(hub: &HomeHubIdentity, c: &mut crate::ui::machine::Canon) {
     match hub {
         HomeHubIdentity::ContinueWatching => { c.u32(0); }
-        HomeHubIdentity::Identifier { sid, id } => { c.u32(1).u32(u32::from(sid.raw())).str(id); }
+        HomeHubIdentity::Identifier { sid, id, key } => {
+            c.u32(1).u32(u32::from(sid.raw())).str(id).str(key);
+        }
         HomeHubIdentity::Key { sid, key } => { c.u32(2).u32(u32::from(sid.raw())).str(key); }
         HomeHubIdentity::Ephemeral { generation, ordinal } => { c.u32(3).u32(*generation).u32(*ordinal); }
     }
 }
 
-pub(crate) const PAGE_MEMORY_SHAPE: &str = "PageMemory{None,Detail:{spot:Spot{section:i32,col:i32,ep_text:bool,saved_col:[i32;7],season:Option<i64>},next_elem:u32,keys:[{identity:DetailIdentity{Season(sid:u32,show:str,rk:str),Episode(sid:u32,rk:str,text:bool),Related(sid:u32,rk:str),Cast(sid:u32,key:str,guid:str,name:str,role:str),Extra(sid:u32,rk:str),Slot(u32)},elem:u32}]},Person:{next_card_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Filmography:{next_elem:u32,department:String,keys:[{department:String,catalog_id:Option<String>,elem:u32}],preview:Option<(String,String)>},Home:{next_group:u32,next_elem:u32,groups:[{identity:HomeHubIdentity{ContinueWatching,Identifier{sid:ServerId,id:String},Key{sid:ServerId,key:String},Ephemeral{generation:u32,ordinal:u32}},group:u32}],items:[{identity:HomeItemIdentity{Item{hub:HomeHubIdentity,sid:ServerId,rk:String},Slot{hub:HomeHubIdentity,generation:u32,ordinal:u32}},elem:u32,last_row:u32,last_col:u32}],carousel:Option<(ServerId,String)>,strip_chosen:bool,scroll_y:f32,row_scroll:[(group:u32,scroll:f32)]},Library:{next_elem:u32,section:Option<{sid:ServerId,key:i64}>,scroll:f32,keys:[{identity:LibraryIdentity,elem:u32,last_group:u32,last_index:u32}],shelf_scroll:[(hub:String,scroll:f32)],epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,viewports:[LibraryViewport{epoch:u32,section:{sid:u32,key:u64},scroll:f32,shelves:[(id:str,x:f32)]}]}}";
+pub(crate) const PAGE_MEMORY_SHAPE: &str = "PageMemory{None,Detail:{spot:Spot{section:i32,col:i32,ep_text:bool,saved_col:[i32;7],season:Option<i64>},next_elem:u32,keys:[{identity:DetailIdentity{Season(sid:u32,show:str,rk:str),Episode(sid:u32,rk:str,text:bool),Related(sid:u32,rk:str),Cast(sid:u32,key:str,guid:str,name:str,role:str),Extra(sid:u32,rk:str),Slot(u32)},elem:u32}]},Person:{next_card_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Filmography:{next_elem:u32,department:String,keys:[{department:String,catalog_id:Option<String>,elem:u32}],preview:Option<(String,String)>},Home:{next_group:u32,next_elem:u32,groups:[{identity:HomeHubIdentity{ContinueWatching,Identifier{sid:ServerId,id:String,key:String},Key{sid:ServerId,key:String},Ephemeral{generation:u32,ordinal:u32}},group:u32}],items:[{identity:HomeItemIdentity{Item{hub:HomeHubIdentity,sid:ServerId,rk:String},Slot{hub:HomeHubIdentity,generation:u32,ordinal:u32}},elem:u32,last_row:u32,last_col:u32}],carousel:Option<(ServerId,String)>,strip_chosen:bool,scroll_y:f32,row_scroll:[(group:u32,scroll:f32)]},Library:{next_elem:u32,section:Option<{sid:ServerId,key:i64}>,scroll:f32,keys:[{identity:LibraryIdentity,elem:u32,last_group:u32,last_index:u32}],shelf_scroll:[(hub:String,scroll:f32)],epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,viewports:[LibraryViewport{epoch:u32,section:{sid:u32,key:u64},scroll:f32,shelves:[(id:str,x:f32)]}]}}";
 
 /// Effects cross the screen/loop boundary; screens do not poll one another's pending latches.
 pub(crate) enum ContentReq {
@@ -723,6 +765,26 @@ pub(crate) enum ContentReq {
     },
     /// Stop a hero preview and stay on the page.
     PreviewStop,
+    /// **Pause or resume the live hero preview** — full-trailer mode's OK/PLAY/PAUSE. `Some(true)`
+    /// is the remote's PLAY key, `Some(false)` its PAUSE, `None` the PLAYPAUSE toggle, exactly as
+    /// [`PlayerReq::Transport`] carries them.
+    ///
+    /// A request rather than something the page performs, for [`PlayerReq::Transport`]'s reason:
+    /// pausing needs the `MainThread` token and the playback session's `&mut`, neither of which a
+    /// screen may name (§2.1). It carries no position: this is the toggle only, and its `SeekTo`
+    /// twin is [`ContentReq::PreviewSeek`], below.
+    PreviewTransport(Option<bool>),
+    /// **A user-driven LEFT/RIGHT seek inside a playing trailer** — the target position, in ns.
+    ///
+    /// Deliberately NOT `PlayerReq::SeekTo`/`CommitSeek`: those reach `player::request_seek`,
+    /// which writes `route::note_user_seek_intent` and
+    /// `report::note_seek_for(playback_trace_generation())` — a preview has no trace generation,
+    /// and `player::preview`'s watch-state promise (no PlayQueue, no timeline, no scrobble) covers
+    /// a seek exactly like every other write. This reaches `player::preview::seek` instead, which
+    /// carries its own budget/breaker accounting (`player::preview`'s module doc) — the same
+    /// `MainThread`/`&mut PlaybackSession` reason [`ContentReq::PreviewTransport`] is a request at
+    /// all.
+    PreviewSeek(i64),
     ItemMenu,
     /// **Present one of the Detail page's own panels** on the container tree (spec §6.2's
     /// "page-owned panels"). The page names WHICH and supplies whatever the panel needs to place
@@ -818,12 +880,27 @@ pub(crate) enum PlayIntent {
         title: String,
         context: String,
     },
-    /// The alternative source the page had selected (`route::request_play_movie`).
-    Movie(&'static crate::pms::PmsMovie),
+    /// The alternative source the page had selected (`route::request_play_movie`). Owned rather
+    /// than a `&'static` catalog borrow: it is held inside `PageAction`/`AppFx` across a frame
+    /// boundary, and once Detail's `selected` becomes an owned per-page snapshot (rather than a
+    /// process-wide catalog read) there is no `'static` row left to borrow.
+    Movie(crate::pms::PmsMovie),
 }
 
 pub(crate) trait ContentLike: AppLike<Memory = PageMemory> {}
 impl<H: AppLike<Memory = PageMemory>> ContentLike for H {}
+
+/// A host publishing the Person model borrowed from its concrete store owner for this frame.
+pub(crate) trait PersonLike: AppLike + Sized {
+    fn person<'a>(cx: &Cx<'a, Self>) -> crate::person::PersonView<'a>;
+}
+
+/// A host publishing the Metadata layer's read surface borrowed from its concrete store owner
+/// for this frame — the same shape [`PersonLike`] gives Person, for a screen generic over `H`
+/// that needs `crate::metadata::MetadataView` rather than the app-concrete `Bridge`.
+pub(crate) trait MetadataLike: AppLike + Sized {
+    fn metadata<'a>(cx: &Cx<'a, Self>) -> crate::metadata::MetadataView<'a>;
+}
 
 /// A host that publishes Home's retained catalog view. The view is borrowed from the rig-owned
 /// snapshot and is therefore valid for the complete step/draw query without per-frame cloning.
@@ -1319,7 +1396,7 @@ pub(crate) enum AppArg {
     FirstRunConsent(u8),
 }
 
-pub(crate) const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,Search,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str}},Settings:SettingsPage{Root,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
+pub(crate) const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,Search,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
      PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(quality:bool)},\
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      TracksPanel{page:i32},AboutPanel,PersonBio,AccountMenu,\
@@ -1507,7 +1584,7 @@ pub(crate) struct AppMounter {
 /// it for its own host exactly as the dispatcher instantiates everything else.
 impl<H> Mounter<H> for AppMounter
 where
-    H: crate::ui::machine::Host<Arg = AppArg> + HomeLike + LibraryLike + SearchLike + PlayerLike + AuthLike,
+    H: crate::ui::machine::Host<Arg = AppArg> + HomeLike + LibraryLike + SearchLike + PlayerLike + AuthLike + PersonLike + MetadataLike,
 {
     fn mount(
         &mut self,
@@ -1526,10 +1603,10 @@ where
             AppArg::AccountMenu => Box::new(crate::screens::account_menu::AccountMenuScreen::new(entry)),
             AppArg::ItemMenu(arg) => Box::new(crate::screens::item_menu::ItemMenuScreen::new(entry, arg.clone())),
             AppArg::PlayerOverlay(arg) => Box::new(
-                crate::screens::player::overlay::PlayerOverlayScreen::new(H::session(cx), entry, arg.kind),
+                crate::screens::player::overlay::PlayerOverlayScreen::new(H::session(cx), H::metadata(cx), entry, arg.kind),
             ),
             AppArg::AltSources(arg) => Box::new(
-                crate::screens::alt_sources::AltSourcesScreen::new(entry, arg.clone()),
+                crate::screens::alt_sources::AltSourcesScreen::new(entry, arg.clone(), H::metadata(cx)),
             ),
             AppArg::TracksPanel(arg) => Box::new(
                 crate::screens::tracks_panel::TracksPanelScreen::new(entry, *arg),
@@ -1541,11 +1618,19 @@ where
                 crate::screens::person_bio::PersonBioScreen::new(entry),
             ),
             AppArg::Content(ContentArg::Detail { sid, rk }) => {
-                let mut page = crate::screens::detail::DetailScreen::new(entry, *sid, rk.clone());
+                let mut page = crate::screens::detail::DetailScreen::new(entry, *sid, rk.clone(), H::hubs(cx));
+                // No `RequestDetail` push here: `DetailScreen`'s own `Enter(Fresh)` handler (fired
+                // this same frame, right after mount) already decides whether the freshly mounted
+                // page needs a fetch (`refresh == None && request_status != Some(true)` — a fresh
+                // open always refetches unless one is already in flight) — a mount-time push here
+                // raced that decision every time, because the admission it queued had not yet been
+                // drained when Enter read `detail_request_status`, so Enter always saw no fetch in
+                // flight and queued a second one. Mount and Enter now have exactly one owner of the
+                // request decision.
                 if let PageMemory::Detail(spot) = &ret.memory {
-                    page.restore_memory(spot);
+                    page.restore_memory(spot, H::metadata(cx));
                 } else if let Some(seed) = self.seed.take() {
-                    if seed.sid == *sid && seed.rk == *rk { page.restore(&seed.spot); }
+                    if seed.sid == *sid && seed.rk == *rk { page.restore(&seed.spot, H::metadata(cx)); }
                 }
                 Box::new(page)
             }
@@ -1555,14 +1640,15 @@ where
                 Box::new(page)
             }
             AppArg::Content(ContentArg::Filmography { sid, key }) => {
-                let mut page = crate::screens::filmography::FilmographyScreen::new(entry, *sid, key.clone());
-                if let PageMemory::Filmography(memory) = &ret.memory { page.restore(memory); }
+                let mut page = crate::screens::filmography::FilmographyScreen::new(
+                    entry, *sid, key.clone(), H::person(cx));
+                if let PageMemory::Filmography(memory) = &ret.memory { page.restore(memory, cx); }
                 Box::new(page)
             }
             // the first-run Favourites screen is OWNED (§14: "retirement 5b Onboard"); the route
             // word stays the loop's while the loop still names the page
             AppArg::Onboard => Box::new(crate::screens::onboard::OnboardScreen::first_run(
-                entry, H::directory(cx))),
+                entry, H::directory(cx), H::hubs(cx))),
             // Phase 6: the QR sign-in and the who's-watching picker are OWNED screens too, mounted
             // exactly the same way — the route word is still the loop's (`route_word`), and
             // naming the route is the whole of (re)mounting either: a fresh instance is built
@@ -1617,12 +1703,15 @@ where
             // `AppArg::Content`. Phase 12's fold deleted the two values with the enum, so the
             // match is exhaustive over pages that can really mount and there is no unreachable
             // arm left to keep honest.
-            AppArg::Settings(root) => Box::new(RouteSurface::new(entry, id, Family::Settings, *root)),
+            AppArg::Settings(root) => {
+                Box::new(RouteSurface::new(entry, id, Family::Settings, *root, H::hubs(cx)))
+            }
             AppArg::FirstRunConsent(stage) => Box::new(RouteSurface::new(
                 entry,
                 id,
                 Family::FirstRunConsent,
                 SettingsPage::ConsentStage(*stage),
+                H::hubs(cx),
             )),
         }
     }
@@ -1761,7 +1850,8 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
     crate::screens::tracks_panel::SHAPE,
     crate::screens::about_panel::SHAPE,
     crate::screens::person_bio::SHAPE,
-    "LocalizationSettingsV3{Root:{language:system|en|es|be},Language:{selected:system|en|es|be,focus:u32,failed:bool},Contribute:QrLink,ConsentDisclosure:{scroll_target_bits:u32,scroll_owner:answer_band},ConsentDeleteDisclosure:{scroll_target_bits:u32},BandPart:MeasuredRowOrColumn}",
+    "LocalizationSettingsV4{Root:{language:system|en|es|be},Language:{selected:system|en|es|be,focus:u32,busy:bool,failed:bool},Contribute:QrLink,LoginReportAlert:{send:bool,scroll_target_bits:u32},ConsentDisclosure:{scroll_target_bits:u32,scroll_owner:answer_band},ConsentDeleteDisclosure:{scroll_target_bits:u32},BandPart:MeasuredRowOrColumn}",
+    crate::screens::preferences::SHAPE,
 ];
 
 /// The pin over [`SCREEN_SHAPES`] — bump it in the same edit that adds an entry, and say why.
@@ -1818,9 +1908,26 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 /// identity-keyed slot for the extras section, and `DetailIdentity` grows `Extra`. The shape
 /// string moved, so recorded fixtures need `tools/plxnative-rec rerecord` before a scenario
 /// replay is trusted. Host unit tests do not replay them.
+///
+/// **0.7 forward-port merge** (0xb462_145d_9477_05de → 0x0e66_311c_e4f1_0769): this bump is not one
+/// feature's doing — it is the union of independently-landed changes each side made to state this
+/// array reaches, recombined by `git merge origin/main` into the integration branch. Nothing here
+/// was rebaselined by hand; the value is whatever `state_fp(SCREEN_SHAPES)` actually produces over
+/// the merged tree, taken from a failing run of `the_screen_shape_inventory_is_pinned` and copied in
+/// verbatim. Re-record fixtures the same way any other bump requires.
+///
+/// **Home modal cover state** (0x0e66_311c_e4f1_0769 → this): `screens::home::SHAPE` gains
+/// `covered:bool`. Compact surfaces keep their host page ticking, so the recorder must distinguish
+/// a Home whose hero timer is paused beneath a surface from the same visible state while active.
+///
+/// **Home hub identity keyed by listing key** (0x285a_3a99_d1e2_f068 → this): `HomeHubIdentity::Identifier`
+/// gains the provider-published listing key, keeping mixed-section hubs stable when their leading
+/// item changes libraries while still distinguishing section-specific rows. Recorded fixtures need
+/// `tools/plxnative-rec rerecord` like any other shape-pin bump before replay is trusted.
 #[cfg(test)]
-// Localization includes language routes and paint-independent delete-disclosure scrolling.
-const SCREEN_SHAPES_PIN: u64 = 0x62ec63160517c59c;
+// Localization and current-main inventories are integrated; pin updated from the computed test result.
+// Playback/account preference pages add their arguments and logical state to the inventory.
+const SCREEN_SHAPES_PIN: u64 = 0x54b17d5fd41a2606;
 
 #[cfg(test)]
 mod arg_tests {

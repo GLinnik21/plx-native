@@ -34,6 +34,11 @@ pub(crate) struct PlayerAdapter {
     mt: MainThread,
     /// The live native session, or `None` between playbacks.
     engine: Option<Engine>,
+    repair: Option<(u64, std::sync::mpsc::Receiver<Result<(), crate::webos::jail_repair::Failure>>)>,
+    /// A timed-out native `Load` whose media thread had not returned when its Engine was torn
+    /// down. Owned here, not by a static, for the same reason the Engine is: releasing it calls
+    /// the Starfish seam, which only the main thread may do. See `engine::AbandonedLoad`.
+    abandoned_load: Option<super::engine::AbandonedLoad>,
 }
 
 impl PlayerAdapter {
@@ -42,7 +47,35 @@ impl PlayerAdapter {
         Self {
             mt,
             engine: None,
+            repair: None,
+            abandoned_load: None,
         }
+    }
+
+    /// UI-thread resource effect. The owner spends the attempt before the worker can run.
+    pub(crate) fn repair_sandbox(&mut self, owner: &mut super::machine::RepairAttempt, supported: bool) {
+        let Some(token) = owner.begin(supported) else { return; };
+        let (tx, rx) = std::sync::mpsc::channel();
+        if crate::task::spawn_small("jail repair", move || {
+            let _ = tx.send(crate::webos::jail_repair::execute());
+        }) {
+            self.repair = Some((token, rx));
+        } else {
+            owner.complete(token, Err(crate::webos::jail_repair::Failure::StartFailed));
+        }
+    }
+
+    /// Poll on every app frame, including while the player page is absent.
+    pub(crate) fn poll_repair(&mut self, owner: &mut super::machine::RepairAttempt) -> bool {
+        let Some((token, rx)) = self.repair.as_ref() else { return false; };
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(crate::webos::jail_repair::Failure::StartFailed),
+        };
+        let changed = owner.complete(*token, result);
+        self.repair = None;
+        changed
     }
 
     /// The live session, borrowed mutably.
@@ -72,6 +105,27 @@ impl PlayerAdapter {
         self.engine.take()
     }
 
+    /// Park a still-in-flight Load for a later main-thread release. At most one can exist: the
+    /// C seam owns one object at a time and every start is refused while this slot is full.
+    pub(crate) fn park_abandoned_load(&mut self, load: super::engine::AbandonedLoad) {
+        debug_assert!(self.abandoned_load.is_none(), "a second abandoned Load cannot exist");
+        self.abandoned_load = Some(load);
+    }
+
+    /// Is a native object still parked behind a Load that has not been released?
+    pub(crate) fn has_abandoned_load(&self) -> bool {
+        self.abandoned_load.is_some()
+    }
+
+    /// The parked Load, borrowed mutably (its once-only log latch), or taken once it returned.
+    pub(crate) fn abandoned_load_mut(&mut self) -> Option<&mut super::engine::AbandonedLoad> {
+        self.abandoned_load.as_mut()
+    }
+
+    pub(crate) fn take_abandoned_load(&mut self) -> Option<super::engine::AbandonedLoad> {
+        self.abandoned_load.take()
+    }
+
     /// The token, for the ACB/Starfish seam. `player::ffi`'s wrappers still take one — see the
     /// module doc for why that surface keeps its own argument.
     #[inline]
@@ -90,5 +144,25 @@ impl PlayerAdapter {
     #[inline]
     pub(crate) fn split(&mut self) -> (Option<&mut Engine>, &MainThread) {
         (self.engine.as_mut(), &self.mt)
+    }
+}
+
+#[cfg(test)]
+mod repair_receipt_tests {
+    use super::*;
+    use crate::webos::jail_repair::{Failure, State};
+    #[test]
+    fn a_receipt_lands_without_a_player_screen_and_cannot_rearm_the_attempt() {
+        let mut owner = super::super::machine::RepairAttempt::new();
+        let token = owner.begin(true).unwrap();
+        let mut adapter = PlayerAdapter::new(unsafe { MainThread::assume() });
+        let (tx, rx) = std::sync::mpsc::channel();
+        adapter.repair = Some((token, rx));
+        assert!(!adapter.poll_repair(&mut owner));
+        tx.send(Err(Failure::Timeout)).unwrap();
+        assert!(adapter.poll_repair(&mut owner));
+        assert_eq!(owner.state(), State::Failed(Failure::Timeout));
+        assert!(!adapter.poll_repair(&mut owner));
+        assert_eq!(owner.begin(true), None);
     }
 }

@@ -1,0 +1,140 @@
+{
+  "comment": "The documentation screenshots and the website's close-up stills (outputs with `dest: site`, written to site/media/) as named target STATES. A scene may render supersampled (`render_scale` 1..4, the simulator's PLXNATIVE_RENDER_SCALE) and an output may `crop` ([x, y, w, h] in CANVAS pixels, whatever the scale), resample to `size` (never changing the crop's shape) and set a JPEG `quality`. tools/screenshots.py boots the simulator once per scene against tests/mock_pms.py --catalog, arms the scene's triggers (each one a file in a fresh instance root), waits for the settled capture (PLXNATIVE_SHOT_SETTLE) and then checks that every `expect` line is in the event log before it writes a single output. Triggers are the app's own dev triggers (docs/agent-reference.md lists them); nothing here sends a key. `token` and `plextv` are armed on every scene by the driver, so no run ever reaches a real server or plex.tv. --check-determinism captures each scene twice: every channel of every pixel may differ by at most `max_delta` (default 1: the GPU's run-to-run rounding in the blur and glass passes; scenes without them come back byte-identical), except inside a scene's `free_regions` ([x, y, w, h] in canvas pixels), which must say why in `tolerance_reason`.",
+  "canvas": "1920x1080",
+  "defaults": {
+    "settle_ms": 1500,
+    "after_ms": 2000,
+    "timeout_s": 90,
+    "stillclock_ms": 4000,
+    "max_delta": 1
+  },
+  "scenes": [
+    {
+      "name": "home",
+      "state": "Home at rest: the catalog's hero film pinned in hero slot 0 (the head of Continue Watching, so its button reads Continue), the deck's first shelf peeking below.",
+      "triggers": {"heropin": "0"},
+      "expect": ["home: hero pinned at slot 0", "hubs: landed"],
+      "hero_variants": true,
+      "outputs": [
+        {"file": "home.jpg", "size": "1600x900"},
+        {"file": "ux-home-hero.jpg", "size": "1920x1080"},
+        {"file": "og-card.jpg", "dest": "site", "card": "home.jpg"}
+      ]
+    },
+    {
+      "name": "home-shelves",
+      "state": "Home with focus on the first Continue Watching card: the card grown, its title and time-left line beneath it.",
+      "triggers": {"heropin": "0", "grid": ""},
+      "expect": ["hubs: landed"],
+      "outputs": [{"file": "ux-home-shelves.jpg", "size": "1920x1080"}]
+    },
+    {
+      "name": "item-menu",
+      "state": "The press-and-hold card menu open on the first Continue Watching card.",
+      "triggers": {"heropin": "0", "itemmenu": ""},
+      "expect": ["coldopen screen=itemmenu"],
+      "outputs": [{"file": "ux-item-menu.jpg", "size": "1920x1080"}]
+    },
+    {
+      "name": "account-menu",
+      "state": "The account menu open over a LANDED Home (the menu waits for 800 ms of rest, so the hero backdrop is in).",
+      "triggers": {"heropin": "0", "acct": "800"},
+      "expect": ["home: hero pinned at slot 0", "coldopen screen=account"],
+      "outputs": [{"file": "ux-account-menu.jpg", "size": "1920x1080"}]
+    },
+    {
+      "name": "library",
+      "state": "The Movies library at the top of its page, as it opens: the Continue Watching shelf with focus on its first card (the catalog's hero, captioned with its time left), Recently Added Movies below.",
+      "triggers": {"library": "0"},
+      "expect": ["coldopen screen=library", "libhubs: section 0 landed 4 shelves"],
+      "outputs": [{"file": "library.jpg", "size": "1600x900"}]
+    },
+    {
+      "name": "library-grid",
+      "state": "The Movies library scrolled to its All grid, focus on the third card of the first row, toolbar visible.",
+      "triggers": {"library": "0", "libgrid": "0,2"},
+      "expect": ["libgrid: focus seated at row 0 col 2"],
+      "outputs": [{"file": "ux-library-grid.jpg", "size": "1920x1080"}]
+    },
+    {
+      "name": "library-sort",
+      "state": "The Movies grid with its Sort menu open (opened after 800 ms of rest, so the grid under it has finished scrolling).",
+      "triggers": {"library": "0", "libgrid": "0,3", "libmenu": "sort,800"},
+      "expect": ["libgrid: focus seated at row 0 col 3", "libmenu: sort menu up"],
+      "outputs": [{"file": "ux-library-sort.jpg", "size": "1920x1080"}]
+    },
+    {
+      "name": "search",
+      "state": "Search for \"an\" (the app's two-character minimum): the query, the scope line, and the two result shelves the mock gives — Movies, the films of the Animation genre the query matches (related results, as the spec documents: Spring, Sintel, Sprite Fright, Charge, …), then Episodes whose titles have a word beginning \"an\" (Hubblecast: 26th anniversary; Hubble, exoplanets and the hunt for life; Light: Mars and Saturn; …).",
+      "triggers": {"search": "an"},
+      "expect": ["state=ready"],
+      "outputs": [
+        {"file": "search.jpg", "size": "1600x900"},
+        {"file": "ux-search.jpg", "size": "1920x1080"}
+      ]
+    },
+    {
+      "name": "detail",
+      "state": "The detail page of Tears of Steel (ratingKey 105), part-watched, so its primary action reads Resume.",
+      "triggers": {"detail": "105"},
+      "expect": ["detail: sid=0 rk=105"],
+      "outputs": [{"file": "ux-detail.jpg", "size": "1920x1080"}]
+    },
+    {
+      "name": "signin",
+      "state": "The QR sign-in screen with the mock's pin: code DEMO and a QR that the mock generated (it encodes https://plex.tv/link). No token is armed on this scene.",
+      "triggers": {"login": ""},
+      "no_token": true,
+      "expect": ["auth: qr png", "coldopen screen=login"],
+      "outputs": [{"file": "ux-signin.jpg", "size": "1920x1080"}]
+    },
+    {
+      "name": "failure",
+      "state": "The playback failure read-out, forced by the failtest trigger over a real start of Sintel (ratingKey 102). No clock sink, so nothing plays under it and the screen comes to rest.",
+      "triggers": {"play": "102", "failtest": ""},
+      "expect": ["coldopen screen=player"],
+      "outputs": [{"file": "ux-failure.jpg", "size": "1920x1080"}]
+    },
+    {
+      "name": "player",
+      "state": "The player HUD, paused at 7:26 of Sintel (ratingKey 102, the complete 14:48 film) on a close-up of Sintel, its Chapters tab beside Info: the clock sink plays the file the mock serves from the resume point (7:15), simvideo decodes it under the UI, and autopause pauses once the published playhead reaches 7:26.02 — mid-frame, where the clock sink is told to stop, so the pause freezes the same frame, clock and knob every run.",
+      "triggers": {"play": "102", "clocksink": "", "simvideo": "", "autopause": "at=446020"},
+      "expect": ["simvideo: first picture decoded", "autopause: Pause accepted"],
+      "outputs": [{"file": "player.jpg", "size": "1600x900"}]
+    },
+    {
+      "name": "site-glass",
+      "state": "The website's glass close-up, supersampled 3x. The Movies library lists its collections after Recently Added, as a real server does; focus is seated on the third card of the last one (Silent Classics), so the Blender Open Movies shelf above it has scrolled up under the tab bar and fills it edge to edge in the collection's pinned custom order (catalog.json `collection_order`): Wing It! behind Home and Movies, Spring behind TV Shows, Sprite Fright past the search button. Measured as the area under the bar, mean HSV saturation 0.49 and mean chroma 0.16, against 0.16 and 0.04 for Continue Watching under it. Crop in canvas pixels: centred on the bar, which the app centres on the canvas (canvas x 688 to 1233, centre 960): 880 wide, so 168 px of shelf shows either side, at the page's 5.5:1 desktop shape. The phone crop (site-glass-narrow) stays cut from the bar's left end.",
+      "triggers": {"library": "0", "libshelf": "3,2"},
+      "render_scale": 3,
+      "expect": ["libshelf: focus seated on shelf 3 col 2", "libhubs: section 0 landed 4 shelves"],
+      "outputs": [{"file": "closeup-glass.jpg", "dest": "site", "crop": [520, 0, 880, 160]}]
+    },
+    {
+      "name": "site-tiles",
+      "state": "The website's tiles close-up, supersampled 3x. The Movies library with focus on the third card of Recently Added Movies (Sprite Fright, captioned with its year, between Charge and Spring). Crop in canvas pixels: the three shelf cards with the caption under the focused one (matched on the hand cut's card edges to 0-1 px). Resampled to 0.75x: the page shows it at most 698 CSS px wide through the phone crop, which needs 1866 px at DPR 2, not 2540.",
+      "triggers": {"library": "0", "libshelf": "1,2"},
+      "render_scale": 3,
+      "expect": ["libshelf: focus seated on shelf 1 col 2", "libhubs: section 0 landed 4 shelves"],
+      "outputs": [{"file": "closeup-tiles.jpg", "dest": "site", "crop": [353.333, 220, 846.667, 513.333], "size": "1905x1155"}]
+    },
+    {
+      "name": "site-glass-narrow",
+      "state": "The website's phone crop of the glass close-up: the same state as site-glass, supersampled 4x, cut from 13 canvas px left of the bar's left end (where the hand cut began). 4x because the phone layout shows it up to 698 CSS px wide, 1396 px at DPR 2, which the 3x cut (1120 px) could not fill.",
+      "triggers": {"library": "0", "libshelf": "3,2"},
+      "render_scale": 4,
+      "expect": ["libshelf: focus seated on shelf 3 col 2", "libhubs: section 0 landed 4 shelves"],
+      "outputs": [{"file": "closeup-glass-narrow.jpg", "dest": "site", "crop": [675, 0, 373.333, 176.667]}]
+    },
+    {
+      "name": "site-up-next",
+      "state": "The website's Up Next close-up, supersampled 3x: Caminandes S1 E2 (Gran Dillama) playing on the clock sink, with no video decoded (a black ground, as the hand cut had) from the demo library's black stand-in file of the episode's length, stopped by clockstop at 2:55.75 while still PLAYING (a pause would take the tile down), inside the last 30 s where the app offers the next episode because the continuous PlayQueue has S1 E3 (Llamigos) after it. stillclock holds the countdown at 4 s of 10. The crop puts the two buttons where the hand cut had them (matched on their labels to 0 px) and the playhead knob under the same pixel column (1 px). Resampled to 0.75x: the page shows it at most 698 CSS px wide, 1396 px at DPR 2.",
+      "triggers": {"play": "2011002", "clocksink": "", "autoseek": "173", "clockstop": "175750"},
+      "render_scale": 3,
+      "max_delta": 2,
+      "tolerance_reason": "Measured over four capture pairs: about one run in three, the rim of the Next Episode button (its glass edge, sampled at 3x) comes back 2 levels apart on some 1400 pixels; every other pixel stays within 1.",
+      "expect": ["next=S1E3 2011003", "clockstop: clock held at 175750 ms"],
+      "outputs": [{"file": "closeup-player.jpg", "dest": "site", "crop": [1250, 570, 640, 388], "size": "1440x873"}]
+    }
+  ]
+}

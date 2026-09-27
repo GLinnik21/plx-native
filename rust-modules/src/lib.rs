@@ -15,6 +15,7 @@ mod aq;
 mod auth; // plex.tv login/boot flow controller (PIN/QR → discovery → who's-watching → install)
 mod browse; // Library browse: per-section paged catalog (sparse store + off-thread page fetches)
 mod capture; // dev live UI capture stream: own-GLES-frame grab → MPEG1/TS or JPEG → TCP (UI plane only)
+mod checkpoint; // the transport-neutral "may I keep waiting?" seam every blocking media wait consults
 mod cbuf; // fixed NUL-terminated C-string buffer read/write (shared by pms/route/posters)
 mod coldstart; // retires old last-page bookmarks; authenticated cold boots now stay on Home
 mod curlio; // the HTTPS media plane: a remote file pulled by byte range over libcurl-multi (stream.rs is the plaintext-socket twin)
@@ -36,7 +37,7 @@ mod http; // the ONE door out of the control plane: dispatch a Plex REST request
 mod hwcnt; // direct userspace Mali r12p0 vinstr reader for the phase profiler
 mod img;
 mod i18n;
-mod imgcache; // a small on-disk image cache — today for profile avatars only, so the picker has faces offline
+mod imgcache; // bounded persistent artwork cache shared by every image source
 mod keymanager; // public LS2 key stores: keymanager3, legacy Palm service, or unavailable
 mod lab; // Cloud Lab bridge: pinned diagnostic uploads + optional outbound command long-poll
 mod metadata; // item detail data layer (detail page): full metadata + seasons/episodes + cast + related
@@ -71,10 +72,31 @@ mod telemetry; // the opt-in crash + usage channels: consent, the spool, the wor
 mod viewstate; // watched / unwatched / remove-from-deck: the PMS view-state WRITES, off the SDL thread
 
 #[cfg(test)]
+pub(crate) mod testnet {
+    //! The one accept for a loopback test server whose listener is nonblocking.
+    //!
+    //! A fixture makes its listener nonblocking so the acceptor can poll a stop flag or a
+    //! deadline. Darwin hands the accepted socket the listener's O_NONBLOCK; Linux does not. A
+    //! reader that assumed blocking I/O then sees `WouldBlock` whenever a parallel suite accepts
+    //! before the request line is buffered, and a writer can drop a body on a full send buffer —
+    //! flakes that exist on the Mac only. Every such acceptor accepts through here, so the
+    //! connection behaves as on Linux and read/write timeouts mean what they say.
+
+    /// `listener.accept()`, with the accepted socket put back in blocking mode.
+    pub(crate) fn accept(
+        listener: &std::net::TcpListener,
+    ) -> std::io::Result<(std::net::TcpStream, std::net::SocketAddr)> {
+        let (socket, peer) = listener.accept()?;
+        socket.set_nonblocking(false)?;
+        Ok((socket, peer))
+    }
+}
+
+#[cfg(test)]
 pub(crate) mod testlock {
     //! One lock for every test that touches a process-global.
     //!
-    //! The app's async seams are process-wide by construction — `static mut CURRENT`, route's play
+    //! Some remaining async seams are process-wide by construction — metadata's `static mut CURRENT`, route's play
     //! mailbox, the player's SHARED block — so tests in DIFFERENT modules contend on the same
     //! state and `cargo test` threads them. A per-module mutex cannot see that: the season and
     //! detail mailboxes are two test functions in one file, but the season generation also moves
@@ -102,9 +124,9 @@ pub(crate) mod testlock {
     //! That DoD criterion scopes a bare `static mut` OUT of `screens`/`ui` engine code — it asks
     //! "does a SCREEN still own process-wide state a second instance would corrupt", and an
     //! allowlisted exception there is a debt with a name and a phase number. A store's data module
-    //! (`pms`, `metadata`, `search`, `person`) is a different question entirely: those remaining
+    //! (`pms`, `metadata`, `search`) is a different question entirely: those remaining
     //! compatibility stores keep process-wide statics **by design** — `docs/stores-as-machines.md`
-    //! §1 is explicit about that temporary shape. Browse and ViewState have since moved to
+    //! §1 is explicit about that temporary shape. Browse, Person and ViewState have since moved to
     //! per-`Bridge` physical owners, and their owner gates reject a restored process global. For
     //! each remaining compatibility store, an allowlist entry would therefore be a permanent
     //! fixture wearing a temporary label. What such a store genuinely owes is not "stop being
@@ -117,16 +139,15 @@ pub(crate) mod testlock {
     //!
     //! **Phase 12 / D5 closed the coverage this claim depends on** (2026-09-10): each remaining
     //! process-global store's `apply`/`run` funnel asserts (`stores::hubs::run`,
-    //! `stores::metadata::run`, `stores::person::run`, and `stores::search::run`), as does every
-    //! `_for_test` installer that touches shared state. Browse and ViewState fixtures instead own
+    //! `stores::metadata::run` and `stores::search::run`), as does every
+    //! `_for_test` installer that touches shared state. Browse, Person and ViewState fixtures instead own
     //! explicit stores; Browse's helpers cover source, pin,
     //! table, item, letter and query seeds without selecting process Browse state. Helpers that
     //! also touch the shared session or server registry assert the same lock. The remaining global
     //! installers include `metadata.rs`
     //! (`install_for_test`, `set_current_for_test`, `begin_detail_for_test`,
     //! `land_detail_for_test`), `search.rs` (`publish_shelves_for_test`,
-    //! `debounce_elapsed_for_test`), `person.rs` (`install_credits_for_test`, `install_for_test`,
-    //! `install_source_for_test`) and `pms.rs`'s own eleven sites — and so does every entry point of
+    //! `debounce_elapsed_for_test`) and `pms.rs`'s own eleven sites — and so does every entry point of
     //! the server registry a test can reach: `plex::servers::register_with_client_id` (and the
     //! `register_lazy` seam it and its sibling test constructors share), `revoke_all`,
     //! `set_current` and `reset_for_test`. A three-run `make check` plus a ten-run
@@ -159,11 +180,27 @@ pub(crate) mod testlock {
 
     impl Drop for Serial {
         fn drop(&mut self) {
+            crate::storage_worker::drain_for_test();
             OWNER.store(NOBODY, Ordering::SeqCst);
         }
     }
 
+    /// Take the lock, or PANIC if this thread already holds it.
+    ///
+    /// The re-entrancy check is not a nicety. [`GLOBALS`] is a plain mutex, so a test that takes
+    /// the guard and then calls a helper which takes it again — `screens::detail`'s `install()` is
+    /// exactly such a helper, and two trailer-scrub tests did this on 2026-09-18 — does not fail.
+    /// It *hangs*, holding the one lock the whole suite queues on, so every other serial test in
+    /// the run wedges behind it at 0% CPU with no output and no failure to read. That cost an hour
+    /// of wall clock and was indistinguishable from a slow build from the outside. A deadlock and
+    /// a panic are the same bug; only one of them names itself.
     pub(crate) fn serial() -> Serial {
+        assert!(
+            !held(),
+            "testlock::serial() taken twice on one thread — the second take would deadlock the \
+             whole suite. Hold the guard a helper (e.g. detail's `install`) already returned \
+             instead of taking a second one."
+        );
         let guard = GLOBALS.lock().unwrap_or_else(|e| e.into_inner());
         OWNER.store(ticket(), Ordering::SeqCst);
         Serial(guard)
@@ -236,6 +273,24 @@ pub(crate) mod testlock {
             drop(guard);
             assert!(!super::held(), "the claim ends with the guard, not after it");
         }
+
+        /// A second take on one thread must PANIC, not block.
+        ///
+        /// Graded on a spawned thread so the failure mode under test cannot take the suite's own
+        /// lock down with it, and because that is the shape the bug has: a test takes the guard,
+        /// then calls a helper that takes it again. Without this assertion the inner take blocks
+        /// forever holding the lock every other serial test queues on — a silent, output-free
+        /// hang. `join` returning an `Err` is the panic; a `join` that never returns would itself
+        /// be the regression, which is why nothing here has a timeout to get wrong.
+        #[test]
+        fn taking_the_guard_twice_on_one_thread_panics_instead_of_hanging() {
+            let attempt = std::thread::spawn(|| {
+                let _guard = super::serial();
+                let _second = super::serial(); // the deadlock this assertion replaces
+            })
+            .join();
+            assert!(attempt.is_err(), "the re-entrant take must panic");
+        }
     }
 }
 mod text;
@@ -287,7 +342,7 @@ pub(crate) fn redact_tokens(m: &str) -> std::borrow::Cow<'_, str> {
 /// the simulator binary (which truncates it at startup), and `src/main.c` on the television — and
 /// the last of those cannot see this module, which is what [`paths::ENV_STEERABLE`] guarantees.
 fn events_log() -> std::path::PathBuf {
-    paths::in_runtime_dir("plxnative-events.log")
+    paths::in_runtime_dir(paths::runtime_file::EVENTS)
 }
 
 fn open_private_log_append(path: &std::path::Path) -> std::io::Result<std::fs::File> {
@@ -311,8 +366,23 @@ fn open_private_log_append(path: &std::path::Path) -> std::io::Result<std::fs::F
     Ok(file)
 }
 
+/// Append one complete record with one [`std::io::Write::write`] call. The event log has several
+/// independently opened `O_APPEND` descriptors; formatting the line and newline separately lets
+/// another thread append between them, gluing two otherwise valid records together.
+fn write_log_line(writer: &mut impl std::io::Write, line: &str) -> std::io::Result<()> {
+    let mut record = Vec::with_capacity(line.len() + 1);
+    record.extend_from_slice(line.as_bytes());
+    record.push(b'\n');
+    match writer.write(&record)? {
+        written if written == record.len() => Ok(()),
+        _ => Err(std::io::Error::new(
+            std::io::ErrorKind::WriteZero,
+            "partial event-log record",
+        )),
+    }
+}
+
 pub(crate) fn log(m: &str) {
-    use std::io::Write;
     // Through the instance root, not a literal: several host simulators run at once, and one
     // shared event log would interleave their lines into something no run can be graded from.
     // On the television the root is `/tmp`, so this is byte-for-byte the path it always was —
@@ -327,7 +397,7 @@ pub(crate) fn log(m: &str) {
     // A compile-time no-op without the `lab-diagnostics` feature — see `crate::lab`.
     lab::record(&line);
     if let Ok(mut f) = open_private_log_append(&p) {
-        let _ = writeln!(f, "{line}");
+        let _ = write_log_line(&mut f, &line);
     }
 }
 
@@ -425,7 +495,7 @@ mod redact_tests {
 
 #[cfg(test)]
 mod private_log_tests {
-    use super::open_private_log_append;
+    use super::{open_private_log_append, write_log_line};
     use std::io::Write;
     use std::os::unix::fs::{symlink, PermissionsExt};
 
@@ -456,4 +526,34 @@ mod private_log_tests {
         let _ = std::fs::remove_file(victim);
         let _ = std::fs::remove_dir(dir);
     }
+
+    #[test]
+    fn each_log_line_is_one_newline_terminated_write() {
+        #[derive(Default)]
+        struct Sink {
+            calls: usize,
+            bytes: Vec<u8>,
+        }
+        impl std::io::Write for Sink {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.calls += 1;
+                self.bytes.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut sink = Sink::default();
+        write_log_line(&mut sink, "install: id=com.beb.plxnative.debug").unwrap();
+        assert_eq!(sink.calls, 1);
+        assert_eq!(sink.bytes, b"install: id=com.beb.plxnative.debug\n");
+    }
 }
+
+// Stage A foundation: owner adapters connect these APIs in the next integration stage.
+#[allow(dead_code)]
+mod storage;
+#[allow(dead_code)]
+mod storage_worker;

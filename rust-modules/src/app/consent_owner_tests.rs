@@ -17,6 +17,7 @@ fn decision(id: &str) -> Consent {
         usage: false,
         errors_id: Some(id.into()),
         install_id: None,
+        ..Default::default()
     }
 }
 
@@ -162,9 +163,14 @@ fn signing_out_through_consent_owner_leaves_nothing_for_the_next_account() {
         usage: true,
         install_id: Some("a".repeat(32)),
         errors_id: Some("b".repeat(32)),
+        ..Default::default()
     };
     crate::telemetry::record(enabled.clone());
-    assert!(consent_file.exists());
+    assert_eq!(
+        crate::telemetry::persistence::load(std::slice::from_ref(&consent_file)),
+        consent::migrate_loaded(enabled.clone()),
+        "the decision is durably persisted before sign-out"
+    );
     let mut rig = Bridge::for_consent_resource_test(enabled);
 
     drive(
@@ -179,6 +185,9 @@ fn signing_out_through_consent_owner_leaves_nothing_for_the_next_account() {
     assert!(!published.answered() && !published.any());
     assert!(published.install_id.is_none() && published.errors_id.is_none());
     assert!(!consent::allows_usage() && !consent::allows_errors());
+    let reopened = crate::telemetry::persistence::load(std::slice::from_ref(&consent_file));
+    assert!(!reopened.answered() && !reopened.any(), "the next launch is asked afresh");
+    assert!(reopened.install_id.is_none() && reopened.errors_id.is_none());
     assert!(!consent_file.exists());
 }
 

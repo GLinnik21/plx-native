@@ -94,6 +94,19 @@ pub(crate) fn remove(backend: &Backend, key: &str) {
     SELECTED.store(UNKNOWN, Ordering::Relaxed);
 }
 
+#[cfg(test)]
+pub(crate) fn reset_for_test() {
+    SELECTED.store(UNKNOWN, Ordering::Relaxed);
+    crate::log("session protection: host tests use the 0600 plaintext fixture");
+}
+
+// Synthetic LS2 transport for host persistence tests; never compiled into a device build.
+#[cfg(test)]
+std::thread_local! {
+    pub(crate) static RPC_FOR_TEST: std::cell::Cell<Option<fn(&str, &str) -> Result<String, ()>>> =
+        const { std::cell::Cell::new(None) };
+}
+
 fn succeeded(v: &Value) -> bool {
     v.get("returnValue").and_then(Value::as_bool) == Some(true)
 }
@@ -183,11 +196,13 @@ fn abort_modern(client: &mut platform::Client, handle: &str) {
 }
 
 fn call(uri: &str, payload: &Value) -> Option<Value> {
+    let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("keymanager round trip") });
     let mut client = platform::Client::new().ok()?;
     call_with(&mut client, uri, payload)
 }
 
 fn call_with(client: &mut platform::Client, uri: &str, payload: &Value) -> Option<Value> {
+    let _block = crate::task::assert_may_block(const { &crate::task::BlockingLabel::new("keymanager round trip") });
     client
         .call(uri, &payload.to_string())
         .ok()
@@ -200,10 +215,14 @@ mod platform {
 
     impl Client {
         pub(super) fn new() -> Result<Self, ()> {
+            #[cfg(test)]
+            if super::RPC_FOR_TEST.with(|hook| hook.get().is_some()) { return Ok(Self); }
             Err(())
         }
 
         pub(super) fn call(&mut self, _uri: &str, _payload: &str) -> Result<String, ()> {
+            #[cfg(test)]
+            if let Some(rpc) = super::RPC_FOR_TEST.with(|hook| hook.get()) { return rpc(_uri, _payload); }
             Err(())
         }
     }
@@ -259,7 +278,7 @@ mod platform {
                     ));
                     Err(())
                 }
-                Err(crate::webos::ls2::Fail::Setup { stage, detail }) => {
+                Err(crate::webos::ls2::Fail::Setup { stage, detail, .. }) => {
                     crate::log(&format!("keymanager: call failed stage={stage} ({detail})"));
                     Err(())
                 }

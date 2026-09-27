@@ -1,20 +1,7 @@
-# SEQUENCING REQUIREMENT: this repo's Pages source is currently "Deploy from a
-# branch" (legacy, building docs/ with Jekyll), not "GitHub Actions". This
-# workflow only takes effect once an owner with admin access switches the
-# Pages source to GitHub Actions in Settings > Pages.
-#
-# The commit that adds this workflow also deletes docs/index.html and
-# docs/.nojekyll (the landing page moved to site/). If that commit is pushed
-# to main BEFORE the Pages source is switched, the legacy Jekyll build will
-# run over docs/ with no index page and the live site will 404 or render the
-# docs/ tree until the switch happens. Switch the Pages source to Actions
-# FIRST, then push this commit (or push and switch in the same sitting) —
-# never push it against a still-legacy source and leave it there.
-#
-# Verify the current source with:
+# This repo's Pages source is "GitHub Actions" (switched from the legacy
+# "Deploy from a branch" Jekyll build that used to serve docs/). Verify with:
 #   gh api repos/<owner>/<repo>/pages --jq .build_type
-# It should read "workflow" once the switch is done; "legacy" means the
-# ordering above still needs to happen.
+# It should read "workflow"; "legacy" would mean the source reverted.
 name: Deploy landing page
 
 on:
@@ -23,11 +10,20 @@ on:
     paths:
       - "site/**"
       - "docs/screenshots/**"
-      - "assets/logo-master.png"
+      - "docs/install-and-verify.md"
+      - "docs/troubleshooting.md"
+      - "tools/render-doc-page.py"
+      - "tools/requirements-docs.txt"
       - "pkg/appfont.ttf"
       - "pkg/appfont-bold.ttf"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
+  # nightly.yml calls this after every published nightly, so the site's "latest nightly" pointer
+  # (staged below, `_site/nightly/latest.json`) moves the same day a nightly does rather than
+  # waiting for the next unrelated site/docs push. The caller grants pages: write, id-token: write
+  # and contents: read on the calling job; this workflow's own top-level `permissions:` still
+  # governs the push/workflow_dispatch triggers above.
+  workflow_call:
 
 permissions:
   contents: read
@@ -46,34 +42,95 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Install doc-render dependencies
+        run: python3 -m pip install --quiet -r tools/requirements-docs.txt
+
       - name: Stage _site
         run: |
           set -euo pipefail
 
           mkdir -p _site/media
-          mkdir -p _site/assets
+          mkdir -p _site/icons
           mkdir -p _site/docs/screenshots
           mkdir -p _site/fonts
+          mkdir -p _site/nightly
+          mkdir -p _site/install
+          mkdir -p _site/troubleshooting
 
           cp site/index.html _site/index.html
+          cp site/credits.html _site/credits.html
           cp site/styles.css _site/styles.css
           cp site/site.js _site/site.js
           cp site/CNAME _site/CNAME
+          cp site/robots.txt _site/robots.txt
+          cp site/sitemap.xml _site/sitemap.xml
+          cp site/404.html _site/404.html
 
           cp site/media/feel-1080p60.av1.mp4 _site/media/feel-1080p60.av1.mp4
           cp site/media/feel-1080p60.h264.mp4 _site/media/feel-1080p60.h264.mp4
+          cp site/media/feel-720p60.av1.mp4 _site/media/feel-720p60.av1.mp4
+          cp site/media/feel-720p60.h264.mp4 _site/media/feel-720p60.h264.mp4
           cp site/media/feel-poster.jpg _site/media/feel-poster.jpg
+          cp site/media/feel-poster-narrow.jpg _site/media/feel-poster-narrow.jpg
+          cp site/media/feel-glow.png _site/media/feel-glow.png
+          cp site/media/feel-glow-narrow.png _site/media/feel-glow-narrow.png
           cp site/media/closeup-glass.jpg _site/media/closeup-glass.jpg
+          cp site/media/closeup-glass.webp _site/media/closeup-glass.webp
           cp site/media/closeup-glass-narrow.jpg _site/media/closeup-glass-narrow.jpg
+          cp site/media/closeup-glass-narrow.webp _site/media/closeup-glass-narrow.webp
           cp site/media/closeup-tiles.jpg _site/media/closeup-tiles.jpg
+          cp site/media/closeup-tiles.webp _site/media/closeup-tiles.webp
+          cp site/media/closeup-tiles-narrow.jpg _site/media/closeup-tiles-narrow.jpg
+          cp site/media/closeup-tiles-narrow.webp _site/media/closeup-tiles-narrow.webp
           cp site/media/closeup-player.jpg _site/media/closeup-player.jpg
+          cp site/media/closeup-player.webp _site/media/closeup-player.webp
+          cp site/media/closeup-player-narrow.jpg _site/media/closeup-player-narrow.jpg
+          cp site/media/closeup-player-narrow.webp _site/media/closeup-player-narrow.webp
+          cp site/media/closeup-glass-glow.png _site/media/closeup-glass-glow.png
+          cp site/media/closeup-glass-narrow-glow.png _site/media/closeup-glass-narrow-glow.png
+          cp site/media/closeup-tiles-glow.png _site/media/closeup-tiles-glow.png
+          cp site/media/closeup-player-glow.png _site/media/closeup-player-glow.png
+          cp site/media/og-card.jpg _site/media/og-card.jpg
 
-          cp assets/logo-master.png _site/assets/logo-master.png
+          cp site/icons/favicon-32.png _site/icons/favicon-32.png
+          cp site/icons/favicon-48.png _site/icons/favicon-48.png
+          cp site/icons/apple-touch-icon.png _site/icons/apple-touch-icon.png
+          cp site/icons/brand-mark.png _site/icons/brand-mark.png
 
           cp docs/screenshots/home.jpg _site/docs/screenshots/home.jpg
 
-          cp pkg/appfont.ttf _site/fonts/appfont.ttf
-          cp pkg/appfont-bold.ttf _site/fonts/appfont-bold.ttf
+          # Subsets pkg/appfont.ttf / pkg/appfont-bold.ttf (the APP's fonts, untouched) down to
+          # the characters the site actually renders and writes WOFF2 into _site/fonts/ — see
+          # tools/subset-site-fonts.py for the character set and why. Two ~400 KB TTFs become two
+          # ~20 KB WOFF2s.
+          python3 tools/subset-site-fonts.py subset --out-dir _site/fonts
+
+          python3 tools/render-doc-page.py docs/install-and-verify.md > _site/install/index.html
+          python3 tools/render-doc-page.py docs/troubleshooting.md > _site/troubleshooting/index.html
+
+          # Pages serves everything with a 10-minute browser cache, so a visitor right after a
+          # deploy could get the new HTML with the old stylesheet/script, or the other way round.
+          # Stamping the references with the commit makes each page fetch its own matching
+          # styles.css and site.js. (The asset check below ignores the query string.)
+          v="${GITHUB_SHA::8}"
+          sed -i -E "s#(styles\.css|site\.js)\"#\1?v=${v}\"#g" \
+            _site/index.html _site/credits.html _site/install/index.html _site/troubleshooting/index.html _site/404.html
+          grep -c "?v=${v}" _site/index.html _site/credits.html _site/install/index.html _site/troubleshooting/index.html _site/404.html
+
+      - name: Stage nightly/latest.json
+        # `{"available": false}` when no nightly has ever published — the site has to build before
+        # the first nightly exists, so a `gh api` miss here must not fail the whole Pages build.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 ci/nightly.py latest-json --repo "${{ github.repository }}" > _site/nightly/latest.json
+          cat _site/nightly/latest.json
+
+      - name: Check PlxAppFont subset covers the staged site
+        # _site/nightly/latest.json is JSON data, not rendered text (site.js pulls only ASCII
+        # version/date fields from it today), so it is deliberately outside this check's scan.
+        run: python3 tools/subset-site-fonts.py check --site-dir _site
 
       - name: Check for missing assets
         run: |
@@ -106,7 +163,15 @@ jobs:
                   return False
               return True
 
-          sources = [site / "index.html", site / "styles.css", site / "site.js"]
+          sources = [
+              site / "index.html",
+              site / "credits.html",
+              site / "install" / "index.html",
+              site / "troubleshooting" / "index.html",
+              site / "404.html",
+              site / "styles.css",
+              site / "site.js",
+          ]
           all_refs = set()
           for src in sources:
               if src.exists():
@@ -122,7 +187,12 @@ jobs:
               if not clean:
                   continue
               local_ref_count += 1
-              resolved = (site / clean).resolve()
+              # The doc pages (install/, troubleshooting/) are one path segment deep, so
+              # tools/render-doc-page.py emits root-absolute refs ("/styles.css", "/install/")
+              # rather than "../styles.css". Path.__truediv__ treats an absolute right-hand
+              # side as a full replacement, not a join, so strip the leading "/" first —
+              # these are root-of-site paths, not filesystem-absolute ones.
+              resolved = (site / clean.lstrip("/")).resolve()
               try:
                   resolved.relative_to(site.resolve())
               except ValueError:

@@ -69,20 +69,19 @@ harness refuses to grade it.
 
 ### What the synthetic cases actually cover
 
-The player direct-plays exactly `{h264, hevc}` × `{aac, ac3, eac3}` in `mkv`/`mp4`/`m4v` —
-`route/plan.rs`'s codec gate and `plex::DP_AUDIO_CODECS`. That is **2 of the 19 video codecs and 3
-of the 19 audio codecs this television's own capability table
-(`/etc/umediaserver/device_codec_capability_config.json`) claims to decode**; everything else the
-panel can decode — VP9, MPEG-2, WMV, DivX, DTS, FLAC, Opus, PCM… — reaches it as a server transcode
-by design, because the Starfish `Load` payload has only the strings `H264`/`H265` and
-`AC3`/`AC3 PLUS`/`AAC`. The synthetic tier covers **all six** of those payload combinations:
+The player can feed `{h264, hevc}` × `{aac, ac3, eac3, dts}` in `mkv`/`mp4`/`m4v`.
+Automatic direct play intersects those formats with the TV's codec table and channel limits;
+DTS requires an explicit capability row with a channel ceiling. The implemented Load strings
+are `H264`/`H265` and `AAC`/`AC3`/`AC3 PLUS`/`DTS`. DTS-HD packets feed only their core;
+TrueHD and other unsupported feed formats still require server conversion. This is the
+implemented format set, not the complete vocabulary accepted by LG's firmware.
 
-| | AC3 | AC3 PLUS | AAC |
-|---|---|---|---|
-| **H264** | `pipe_h264_ac3_1080p` | `pipe_audio_lane_eac3` | `pipe_audio_lane_aac`, `pipe_h264_aac_mp4` |
-| **H265** | `pipe_hevc_ac3_lane` | `pipe_hevc_eac3_4k_hdr10`, `pipe_hevc_4k_60fps` | `pipe_hevc_aac_mp4` |
+| | AC3 | AC3 PLUS | AAC | DTS |
+|---|---|---|---|---|
+| **H264** | `pipe_h264_ac3_1080p` | `pipe_audio_lane_eac3` | `pipe_audio_lane_aac`, `pipe_h264_aac_mp4` | `pipe_h264_dts_1080p` |
+| **H265** | `pipe_hevc_ac3_lane` | `pipe_hevc_eac3_4k_hdr10`, `pipe_hevc_4k_60fps` | `pipe_hevc_aac_mp4` | Not yet covered |
 
-plus Dolby Vision 8.1 (`pipe_hevc_eac3_4k_dovi_p8`), both containers, in-place seek in each of
+The tier also covers Dolby Vision 8.1 (`pipe_hevc_eac3_4k_dovi_p8`), both containers, in-place seek in each of
 them, the **frame-rate axis** — `pipe_h264_1080p5994` is the only fixture in the repo that reaches
 `engine::fps_rational`'s 1001-denominator branch (`esInfo: videoFps 60000/1001`), and
 `pipe_hevc_4k_60fps` is 4K60 HEVC, the most demanding thing the device table claims; every other
@@ -130,10 +129,10 @@ it makes a mis-set item a named setup error instead of a mystery failure.
 
 ## Which install it drives (`--flavor`)
 
-Two builds can sit on one television: **`com.beb.plxnative`**, the app users install, and
-**`com.beb.plxnative.debug`**, the developer build beside it — its own launcher tile, its own
-sign-in, its own runtime files. They are separate apps to SAM, and a run has to drive exactly one
-of them end to end.
+Three builds can sit on one television: **`com.beb.plxnative`**, the app users install,
+**`com.beb.plxnative.debug`**, the developer build beside it, and **`com.beb.plxnative.nightly`**,
+the nightly build — each with its own launcher tile, its own sign-in, its own runtime files. They
+are separate apps to SAM, and a run has to drive exactly one of them end to end.
 
 The flavour is resolved once, before anything is touched: **`--flavor`**, else the overlay's
 **`flavour`** key, else the Makefile's own default (`debug` — the dangerous id has to be typed).
@@ -433,6 +432,26 @@ cast+about / info-panel regressions.
 ./tests/run.py --list          # scenes print as `fps:<name>`
 ```
 
+The finite `poster-scroll-settle`, `poster-eviction-reversal` and `poster-hero-grid-dive`
+scenes additionally grade `poster-gate:` telemetry. Run them with `--fps --only poster-`.
+Their moving FPS counts actual swaps between the first and last moving-card frames using the
+unclamped frame clock; new requests admitted for fast-moving cards must be zero. Requests for
+other cards or featured images, previously admitted work, and stale-image refresh can continue. The final settled
+window must request and upload missing art and then draw every artwork-bearing card resident.
+A high FPS with no poster work cannot pass. The reversal also requires real texture losses,
+refusals of evicted slots during reversal, and rearming afterward. The dive records
+actual snap plus shelf offset/velocity throughout Hero, dive and settle, requiring
+its horizontal spring to stay stationary while the retained offset is transformed.
+The dive hands over at snap 0.9, while that horizontal product is still moving fast;
+the settle phase captures its natural deceleration and resulting art arrivals.
+
+These scenes send focus commands only. Use a mock catalog for repeatable coverage: at least
+152 library items and 12 items in Home shelf 0, all with working artwork. Eviction and dive
+explicitly lower the real texture byte-LRU ceiling to 12 MiB so cached textures are lost before
+the source's 64 identities recycle; other scenes retain the production 44 MiB ceiling. A
+missing target, missing art, incomplete phase sequence or unavailable telemetry fails the
+scene. The ordinary `library-scroll` scene remains the continuous-motion performance control.
+
 For a diagnosis rather than a regression gate, select exactly one reproducible scene and ask for
 the three-layer bundle:
 
@@ -456,7 +475,7 @@ marks pacing invalid if a render-profiler trigger is armed.
     and on a settled screen it grades nothing at all — `home-hero` carries an `_idle_gate_note`
     saying so. It is the only one left: this line said "three scenes" long after the other two
     (`home-grid`, `library-scroll`) were given oscillators and real `fps_floor`s, which is exactly
-    the fix that note asks for. The remaining `loop_floor`-only scenes are `info-panel`, `chapters-panel` and
+    the fix that note asks for. The remaining scenes graded only by `loop_floor` are `info-panel`, `chapters-panel` and
     `track-menu`, and they need no such note — the video plane stays **bound** throughout those
     scenes, and the gate treats a bound plane as always-present (`ui/idle.rs`'s `VIDEO_PLANE`),
     so their `loop_floor` still grades a fill rate the way it always did.
@@ -550,7 +569,7 @@ Base playback (decision + codec + not-stuck), one case each:
 | `dp_hevc_eac3_dovi_p8` | `movie_hevc_4k_dovi_p8` | HEVC 4K **Dolby Vision P8** + E-AC3 direct-play. Grades that the stream **transports** (route, demux, bind, timeline, no error) — **not** that the panel engages Dolby Vision, which no assertion here can see. See the case's `_dovi_note` in `manifest.json` |
 | `dp_mp4_container` | `movie_hevc_aac_mp4` | HEVC + AAC, **mp4 container** direct-play (mov demuxer over HTTP, AAC→ADTS), sidecar subs |
 | `dp_h264_aac_episode` | `episode_h264_aac` | H264 + AAC direct-play, TV episode, no subs |
-| `dp_h264_ac3_many_audio` | `movie_h264_ac3_many_audio` | H264 + AC3 direct-play, 8 audio tracks (DTS/vorbis present) |
+| `dp_h264_ac3_many_audio` | `movie_h264_ac3_many_audio` | H264 + AC3 direct-play, 8 audio tracks (TrueHD/vorbis present) |
 | `transcode_av1_no_dp_audio` | `movie_av1_no_dp_audio` | **must-transcode** (AV1 + no DP audio) → **HEVC 4K HDR10**/AC3 on this Plex-Pass server (the target chain ends in h264 since issue #22, so a server that cannot encode HEVC re-encodes to h264 instead of dropping video) |
 
 Operation cases (each also re-checks not-stuck / no-error afterward):
@@ -564,7 +583,7 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 | `resume_directplay` | `movie_h264_ac3_1080p` | viewOffset 600s honored — first `timeline` near 600s, not 0 |
 | `resume_transcode` | `movie_av1_no_dp_audio` | `resume(transcode): restart at offset 600s`, first timeline near 600s |
 | `audio_switch_native` | `episode_hevc_4k_hdr10_eac3` | native audio switch (eac3→eac3) — `route transition: native audio idx=` (older logs: `audio switch (native)`), codec **stays 174** |
-| `audio_switch_transcode` | `movie_h264_ac3_many_audio` | English (DTS) audio → transcode — `re-transcode` + `reload_transcode`, codec 174 (HEVC target; the video is re-encoded H264→HEVC — an audio-only/video-copy transcode is a future improvement) |
+| `audio_switch_transcode` | `movie_h264_ac3_many_audio` | English (TrueHD) audio → transcode — `re-transcode` + `reload_transcode`, codec 174 (HEVC target; the video is re-encoded H264→HEVC — an audio-only/video-copy transcode is a future improvement) |
 | `subtitle_text_srt` | `movie_h264_ac3_1080p` | embedded subtitle soft-render on the **default `ff.rs` demuxer** — `sub cue [..] len=<n>` lines |
 | `subtitle_image_pgs` | `movie_hevc_4k_pgs_subs` | **PGS image subtitle** client-render on HEVC 4K direct-play — `ff.rs` software-decodes the bitmap and logs `image cue [..] WxH at X,Y rects=N canvas=WxH` (op flagged `"image": true`) |
 
@@ -603,10 +622,12 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 
 ## Subtitle soft-render
 
-The **demuxer (`ff.rs`) demuxes embedded text subtitles** (SRT/subrip,
-ASS/SSA, mov_text) and emits `sub cue [..] len=<n>` lines. It pushes cues for **all** text tracks (tagged by
-index) and the renderer filters by the selected `desired_sub_idx`, so a mid-play track switch is
-instant (no ~10-20s buffer-gap wait). Image subs (PGS/VobSub/DVB) are now client-rendered too:
+The **demuxer (`ff.rs`) demuxes embedded plain-text subtitles** (SRT/subrip and mov_text)
+and emits `sub cue [..] len=<n>` lines. It pushes cues for **all** plain-text tracks (tagged by
+index), and the renderer filters by the selected `desired_sub_idx`, so a mid-play track switch is
+instant (no ~10-20s buffer-gap wait). ASS/SSA preserves headers, complete timed events and fonts
+for native libass rendering; plain-cue log assertions cannot verify that output. See
+[`ass-subtitles.md`](../docs/ass-subtitles.md) for its native pixel and device checks. Image subs (PGS/VobSub/DVB) are now client-rendered too:
 `ff.rs` software-decodes the selected bitmap track (`avcodec_decode_subtitle2`), converts each
 display-set to RGBA, and `player_hud::draw_subtitle_bitmap` composites it over the video as a GL
 texture (the webOS pipeline's own HW subtitle engine is only reachable in URI/demuxer mode, not
@@ -702,16 +723,15 @@ byte for byte; only the *choosing* is bypassed.
 `stream_dovi`/`stream_immersive` — five fields normally installed together by `route::apply_plan`
 from a PMS decision and replaced together by later route transitions. The older `plxnative-url`
 trigger hands over a URL and nothing else, so a URL-fed 4K HEVC file was declared to the television
-as whatever the route happened to hold: on a fresh boot, the empty string, which falls through the
-engine's `_ =>` arm to an H264 payload with `"AC3"` audio.
+as whatever the route happened to hold. An absent or unsupported audio declaration now fails
+before Load instead of silently declaring AC3.
 The declaration is precisely what governs HEVC-vs-H264 payload selection, LG's `"AC3 PLUS"`
 renaming of E-AC-3, and both Dolby nodes — so a tier that cannot set it cannot test any of them.
 `plxnative-playurl` sets all five in one write (`route::set_stream_declaration`).
 
-That fallthrough is also the tier's main false-PASS risk, and the manifest is shaped against it: an
-unread trigger produces exactly the right payload for the AC-3 baseline case. So the matrix carries
-cases whose expected `load_audio` is `"AC3 PLUS"` and `"AAC"` — values the fallthrough cannot
-produce by accident — and the `load_decl` assertion grades the app's new `load:` event-log line.
+The matrix carries codec-specific `load_audio` expectations, including `"AC3 PLUS"`, `"AAC"` and
+`"DTS"`. Together with the `load_decl` assertion, these prove that each fixture supplies its
+intended declaration rather than relying on generic playback liveness.
 
 **Assertions.** `stream_path` (the demuxer opened *this* case's fixture, not something a stale
 trigger pointed it at), `load_decl` (above), `codec` and `audio_stream_index` (what the demuxer
@@ -902,7 +922,7 @@ secondary to the real item shapes, and still to be labelled synthetic:
   fixture landed; the matrix widened the raster spread rather than closing the gap. Both caveats
   are the same one: these are generated clips, so what neither reaches is the half the entries were
   really about — a **PMS decision** on such an item. That still needs a real one.
-- **Audio:** FLAC, PCM/LPCM, MP3; a DTS-only file to force an audio-only transcode without
+- **Audio:** FLAC, PCM/LPCM, MP3; a TrueHD-only file to force an audio-only transcode without
   depending on the many-audio movie's track ordering.
 - **Subtitles:** ASS/SSA, VobSub/dvd_subtitle; mov_text/tx3g soft-render.
 - **HDR:** HLG, HDR10+. **Dolby Vision P5 and P7 are a different kind of gap — the items exist and

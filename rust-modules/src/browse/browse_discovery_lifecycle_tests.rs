@@ -71,7 +71,7 @@ fn filling_a_source_name_refreshes_the_retained_directory() {
     crate::plex::reset_servers_for_test();
     let mut browse = TestBrowse::default();
     let sid = crate::plex::register_for_test("browse-name-fill", "127.0.0.1", 1, "t", "cid");
-    crate::plex::describe_server(sid, "", "", true);
+    crate::plex::describe_server(sid, "", "", crate::plex::GrantEvidence::ours());
     browse.sync_roster();
     let mut directory = view::DirectorySnapshot::default();
     directory.capture_from(&mut browse.state);
@@ -111,7 +111,7 @@ fn a_source_follows_a_corrected_credit_but_not_a_renamed_machine() {
     let sid = crate::plex::register_for_test("browse-credit", "127.0.0.1", 1, "t", "cid");
 
     // what a build without the rule left in the registry at boot
-    crate::plex::describe_server(sid, "Mac mini", "admin", false);
+    crate::plex::describe_server(sid, "Mac mini", "admin", crate::plex::GrantEvidence::outside());
     browse.sync_roster();
     assert_eq!(
         browse.state.sources().first().map(|s| (s.handle.as_str(), s.owned)),
@@ -119,7 +119,7 @@ fn a_source_follows_a_corrected_credit_but_not_a_renamed_machine() {
     );
 
     // the roster refresh lands, re-graded: nobody is credited for the household's own server
-    crate::plex::describe_server(sid, "Mac mini", "", false);
+    crate::plex::describe_server(sid, "Mac mini", "", crate::plex::GrantEvidence::outside());
     browse.sync_roster();
     assert_eq!(
         browse.state.sources().first().map(|s| s.handle.as_str()),
@@ -128,7 +128,7 @@ fn a_source_follows_a_corrected_credit_but_not_a_renamed_machine() {
     );
 
     // …and a rename still does not travel
-    crate::plex::describe_server(sid, "nas-loft", "", false);
+    crate::plex::describe_server(sid, "nas-loft", "", crate::plex::GrantEvidence::outside());
     browse.sync_roster();
     assert_eq!(browse.state.sources().first().map(|s| s.name.as_str()), Some("Mac mini"));
 
@@ -704,4 +704,58 @@ fn reset_clears_the_retry_backoff() {
     browse.state.retry_cd = 120;
     browse.reset();
     assert_eq!(browse.state.retry_cd, 0);
+}
+
+/// **The household verdict reaches the source table, and raw `owned` stays raw.**
+///
+/// The two rows are the reported bug's own shape: to a Plex Home MANAGED profile, plex.tv reports
+/// its household's own server exactly as it reports a stranger's share — `owned:false`, a handle
+/// in `sourceTitle` — so `owned` alone cannot tell them apart and everything reasoning with it
+/// calls the user's own library somebody else's. `BrowseSource::household` is the derived answer,
+/// computed where the source facts are already synced; `owned` keeps saying what the wire said.
+///
+/// Nothing consumes `household` yet — that is a separate lane. This is the reader that proves it
+/// is carried and correct.
+#[test]
+fn the_source_table_tells_a_household_server_from_a_share_though_both_read_unowned() {
+    const ADMIN_ID: i64 = 111_111;
+    const FRIEND_ID: i64 = 987_654;
+    let _g = crate::testlock::serial();
+    let _cleanup = RegisteredCleanup;
+    let _session = TempPins::new("browse-household");
+    crate::plex::session::save(&crate::plex::session::Session {
+        client_id: "cid-test".into(),
+        home_users: vec![crate::plex::session::HomeUserRef {
+            id: ADMIN_ID,
+            uuid: "u-admin".into(),
+            admin: true,
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    crate::plex::reset_servers_for_test();
+    let mut browse = TestBrowse::default();
+    let house = crate::plex::register_for_test("browse-house", "127.0.0.1", 1, "t", "cid");
+    let share = crate::plex::register_for_test("browse-share", "127.0.0.1", 2, "t", "cid");
+    // what a managed profile's own `/api/v2/resources` says about each
+    crate::plex::describe_server(house, "Mac mini", "", crate::plex::GrantEvidence {
+        owned: false, home: true, owner_id: ADMIN_ID,
+    });
+    crate::plex::describe_server(share, "nas-home", "friend", crate::plex::GrantEvidence {
+        owned: false, home: false, owner_id: FRIEND_ID,
+    });
+
+    browse.sync_roster();
+
+    let rows: Vec<(bool, bool)> = browse
+        .state
+        .sources()
+        .iter()
+        .map(|source| (source.owned, source.household))
+        .collect();
+    assert_eq!(
+        rows,
+        [(false, true), (false, false)],
+        "plex.tv owns neither; only one of them is this house's",
+    );
 }

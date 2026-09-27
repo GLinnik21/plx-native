@@ -1,0 +1,1 @@
+{"format":"plxnative-record","version":1,"domain":"consent","key":"consent","revision":1,"state":{"Data":{"payload":"{\n  \"asked_version\": 6,\n  \"errors\": true,\n  \"usage\": false,\n  \"errors_id\": \"0123456789abcdef0123456789abcdef\",\n  \"errors_scope\": 4,\n  \"usage_scope\": 0,\n  \"errors_declined_scope\": 6,\n  \"usage_declined_scope\": 0\n}"}}}

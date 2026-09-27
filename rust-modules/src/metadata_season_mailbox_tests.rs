@@ -27,11 +27,11 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         "the tab flips optimistically while the fetch is in flight"
     );
     assert!(
-        season_loading(),
+        season_loading(test_adapter()),
         "a bumped generation with DONE behind it reads as in flight"
     );
-    land_season(gen, SRV_A, "show-1".to_string(), 1, prev, None);
-    assert!(!pump_season(), "a failed fetch is not a new episode list");
+    land_season(test_adapter(), gen, SRV_A, "show-1".to_string(), 1, prev, None);
+    assert!(!pump_season(test_state(), test_adapter()), "a failed fetch is not a new episode list");
     assert_eq!(
         listed_eps(),
         ["s1e1", "s1e2"],
@@ -43,7 +43,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         "the failed tab is released, so focusing it again refetches"
     );
     assert!(
-        !season_loading(),
+        !season_loading(test_adapter()),
         "the episode row must still come out of its loading state"
     );
 
@@ -52,9 +52,9 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
     // the new one is empty" fix passes the block above and leaves THIS one showing the
     // previous season's episodes under the new season's tab.
     let (gen, prev) = begin_switch(1);
-    land_season(gen, SRV_A, "show-1".to_string(), 1, prev, Some(Vec::new()));
+    land_season(test_adapter(), gen, SRV_A, "show-1".to_string(), 1, prev, Some(Vec::new()));
     assert!(
-        pump_season(),
+        pump_season(test_state(), test_adapter()),
         "an empty season is a successful fetch — the row did change"
     );
     assert!(
@@ -69,7 +69,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
 
     // the ordinary success path
     let (gen, prev) = begin_switch(0);
-    land_season(
+    land_season(test_adapter(), 
         gen,
         SRV_A,
         "show-1".to_string(),
@@ -77,15 +77,15 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         prev,
         Some(vec![episode("s1e1")]),
     );
-    assert!(pump_season());
+    assert!(pump_season(test_state(), test_adapter()));
     assert_eq!(listed_eps(), ["s1e1"]);
     assert_eq!(selected_tab(), 0);
 
     // SUPERSEDED: a blocking `load_season_now`, or a new item's `request_detail`, bumps the
     // generation — the fetch that was in flight for the old tab is dropped, not applied.
     let (old, prev) = begin_switch(1);
-    supersede_season();
-    land_season(
+    supersede_season(test_adapter());
+    land_season(test_adapter(), 
         old,
         SRV_A,
         "show-1".to_string(),
@@ -94,7 +94,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         Some(vec![episode("s2e1")]),
     );
     assert!(
-        !pump_season(),
+        !pump_season(test_state(), test_adapter()),
         "a landing from a superseded generation is discarded"
     );
     assert_eq!(
@@ -108,7 +108,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
     // SEASON_DONE catch-up, which wedged the loading spinner on.
     let (old, prev) = begin_switch(1);
     let (new, _) = begin_switch(1);
-    land_season(
+    land_season(test_adapter(), 
         new,
         SRV_A,
         "show-1".to_string(),
@@ -116,7 +116,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         prev,
         Some(vec![episode("fresh")]),
     );
-    land_season(
+    land_season(test_adapter(), 
         old,
         SRV_A,
         "show-1".to_string(),
@@ -124,7 +124,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         prev,
         Some(vec![episode("stale")]),
     );
-    assert!(pump_season(), "the newest season lands");
+    assert!(pump_season(test_state(), test_adapter()), "the newest season lands");
     assert_eq!(
         listed_eps(),
         ["fresh"],
@@ -136,7 +136,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
     // the spinner — nothing else is going to.
     let (gen, prev) = begin_switch(1);
     install_show("show-2", 0, &["other-e1"]);
-    land_season(
+    land_season(test_adapter(), 
         gen,
         SRV_A,
         "show-1".to_string(),
@@ -145,7 +145,7 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         Some(vec![episode("s2e1")]),
     );
     assert!(
-        !pump_season(),
+        !pump_season(test_state(), test_adapter()),
         "a landing for a different item reports no change"
     );
     assert_eq!(
@@ -153,9 +153,9 @@ fn a_season_landing_only_installs_while_it_is_still_the_one_being_awaited() {
         ["other-e1"],
         "and leaves the item now on screen alone"
     );
-    assert!(!season_loading(), "but it still settles the spinner");
+    assert!(!season_loading(test_adapter()), "but it still settles the spinner");
 
-    clear();
+    clear(test_state(), test_adapter());
 }
 
 /// The SAME landing, refused because the page moved to the OTHER SERVER's show with the same
@@ -172,7 +172,7 @@ fn a_season_landing_for_another_servers_show_with_the_same_key_is_refused() {
     let (gen, prev) = begin_switch(1);
     // …and while it is out, the user lands on the SHARE's show 42
     install_show_on(SRV_B, "42", 0, &["theirs-e1"]);
-    land_season(
+    land_season(test_adapter(), 
         gen,
         SRV_A,
         "42".to_string(),
@@ -182,7 +182,7 @@ fn a_season_landing_for_another_servers_show_with_the_same_key_is_refused() {
     );
 
     assert!(
-        !pump_season(),
+        !pump_season(test_state(), test_adapter()),
         "our episodes are not news about the share's show"
     );
     assert_eq!(
@@ -191,14 +191,14 @@ fn a_season_landing_for_another_servers_show_with_the_same_key_is_refused() {
         "the page on screen keeps its own list"
     );
     assert!(
-        !season_loading(),
+        !season_loading(test_adapter()),
         "…and the spinner still settles, as for any foreign landing"
     );
 
     // the control: the very same landing DOES install when the page is still ours
     install_show_on(SRV_A, "42", 0, &["ours-e1"]);
     let (gen, prev) = begin_switch(1);
-    land_season(
+    land_season(test_adapter(), 
         gen,
         SRV_A,
         "42".to_string(),
@@ -206,8 +206,8 @@ fn a_season_landing_for_another_servers_show_with_the_same_key_is_refused() {
         prev,
         Some(vec![episode("ours-s2e1")]),
     );
-    assert!(pump_season());
+    assert!(pump_season(test_state(), test_adapter()));
     assert_eq!(listed_eps(), ["ours-s2e1"]);
 
-    clear();
+    clear(test_state(), test_adapter());
 }
