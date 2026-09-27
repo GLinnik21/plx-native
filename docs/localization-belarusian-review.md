@@ -86,3 +86,12 @@ The edited JSON was parsed successfully. A comparison with the starting catalogs
 confirmed that retained entries preserve every placeholder and plural-category
 set. Core and widget catalogs were unchanged. Runtime, layout, and target-device
 verification are separate from this language review.
+
+## Follow-up corrections — 2026-09-28
+
+User review identified English `Plex Media Servers` inside Belarusian sentences,
+which the initial pass had missed. Five deletion/privacy entries now use the
+existing interface term **сервер Plex** with Belarusian case agreement, including
+**на вашы серверы Plex** and **з абранымі вамі серверамі Plex**. The exact product
+name **Plex Media Server** remains in the trademark notice. These are contextual
+localization corrections, not additional dictionary findings.
