@@ -69,20 +69,19 @@ harness refuses to grade it.
 
 ### What the synthetic cases actually cover
 
-The player direct-plays exactly `{h264, hevc}` × `{aac, ac3, eac3}` in `mkv`/`mp4`/`m4v` —
-`route/plan.rs`'s codec gate and `plex::DP_AUDIO_CODECS`. That is **2 of the 19 video codecs and 3
-of the 19 audio codecs this television's own capability table
-(`/etc/umediaserver/device_codec_capability_config.json`) claims to decode**; everything else the
-panel can decode — VP9, MPEG-2, WMV, DivX, DTS, FLAC, Opus, PCM… — reaches it as a server transcode
-by design, because the Starfish `Load` payload has only the strings `H264`/`H265` and
-`AC3`/`AC3 PLUS`/`AAC`. The synthetic tier covers **all six** of those payload combinations:
+The player can feed `{h264, hevc}` × `{aac, ac3, eac3, dts}` in `mkv`/`mp4`/`m4v`.
+Automatic direct play intersects those formats with the TV's codec table and channel limits;
+DTS requires an explicit capability row with a channel ceiling. The implemented Load strings
+are `H264`/`H265` and `AAC`/`AC3`/`AC3 PLUS`/`DTS`. DTS-HD packets feed only their core;
+TrueHD and other unsupported feed formats still require server conversion. This is the
+implemented format set, not the complete vocabulary accepted by LG's firmware.
 
-| | AC3 | AC3 PLUS | AAC |
-|---|---|---|---|
-| **H264** | `pipe_h264_ac3_1080p` | `pipe_audio_lane_eac3` | `pipe_audio_lane_aac`, `pipe_h264_aac_mp4` |
-| **H265** | `pipe_hevc_ac3_lane` | `pipe_hevc_eac3_4k_hdr10`, `pipe_hevc_4k_60fps` | `pipe_hevc_aac_mp4` |
+| | AC3 | AC3 PLUS | AAC | DTS |
+|---|---|---|---|---|
+| **H264** | `pipe_h264_ac3_1080p` | `pipe_audio_lane_eac3` | `pipe_audio_lane_aac`, `pipe_h264_aac_mp4` | `pipe_h264_dts_1080p` |
+| **H265** | `pipe_hevc_ac3_lane` | `pipe_hevc_eac3_4k_hdr10`, `pipe_hevc_4k_60fps` | `pipe_hevc_aac_mp4` | Not yet covered |
 
-plus Dolby Vision 8.1 (`pipe_hevc_eac3_4k_dovi_p8`), both containers, in-place seek in each of
+The tier also covers Dolby Vision 8.1 (`pipe_hevc_eac3_4k_dovi_p8`), both containers, in-place seek in each of
 them, the **frame-rate axis** — `pipe_h264_1080p5994` is the only fixture in the repo that reaches
 `engine::fps_rational`'s 1001-denominator branch (`esInfo: videoFps 60000/1001`), and
 `pipe_hevc_4k_60fps` is 4K60 HEVC, the most demanding thing the device table claims; every other
@@ -570,7 +569,7 @@ Base playback (decision + codec + not-stuck), one case each:
 | `dp_hevc_eac3_dovi_p8` | `movie_hevc_4k_dovi_p8` | HEVC 4K **Dolby Vision P8** + E-AC3 direct-play. Grades that the stream **transports** (route, demux, bind, timeline, no error) — **not** that the panel engages Dolby Vision, which no assertion here can see. See the case's `_dovi_note` in `manifest.json` |
 | `dp_mp4_container` | `movie_hevc_aac_mp4` | HEVC + AAC, **mp4 container** direct-play (mov demuxer over HTTP, AAC→ADTS), sidecar subs |
 | `dp_h264_aac_episode` | `episode_h264_aac` | H264 + AAC direct-play, TV episode, no subs |
-| `dp_h264_ac3_many_audio` | `movie_h264_ac3_many_audio` | H264 + AC3 direct-play, 8 audio tracks (DTS/vorbis present) |
+| `dp_h264_ac3_many_audio` | `movie_h264_ac3_many_audio` | H264 + AC3 direct-play, 8 audio tracks (TrueHD/vorbis present) |
 | `transcode_av1_no_dp_audio` | `movie_av1_no_dp_audio` | **must-transcode** (AV1 + no DP audio) → **HEVC 4K HDR10**/AC3 on this Plex-Pass server (the target chain ends in h264 since issue #22, so a server that cannot encode HEVC re-encodes to h264 instead of dropping video) |
 
 Operation cases (each also re-checks not-stuck / no-error afterward):
@@ -584,7 +583,7 @@ Operation cases (each also re-checks not-stuck / no-error afterward):
 | `resume_directplay` | `movie_h264_ac3_1080p` | viewOffset 600s honored — first `timeline` near 600s, not 0 |
 | `resume_transcode` | `movie_av1_no_dp_audio` | `resume(transcode): restart at offset 600s`, first timeline near 600s |
 | `audio_switch_native` | `episode_hevc_4k_hdr10_eac3` | native audio switch (eac3→eac3) — `route transition: native audio idx=` (older logs: `audio switch (native)`), codec **stays 174** |
-| `audio_switch_transcode` | `movie_h264_ac3_many_audio` | English (DTS) audio → transcode — `re-transcode` + `reload_transcode`, codec 174 (HEVC target; the video is re-encoded H264→HEVC — an audio-only/video-copy transcode is a future improvement) |
+| `audio_switch_transcode` | `movie_h264_ac3_many_audio` | English (TrueHD) audio → transcode — `re-transcode` + `reload_transcode`, codec 174 (HEVC target; the video is re-encoded H264→HEVC — an audio-only/video-copy transcode is a future improvement) |
 | `subtitle_text_srt` | `movie_h264_ac3_1080p` | embedded subtitle soft-render on the **default `ff.rs` demuxer** — `sub cue [..] len=<n>` lines |
 | `subtitle_image_pgs` | `movie_hevc_4k_pgs_subs` | **PGS image subtitle** client-render on HEVC 4K direct-play — `ff.rs` software-decodes the bitmap and logs `image cue [..] WxH at X,Y rects=N canvas=WxH` (op flagged `"image": true`) |
 
@@ -924,7 +923,7 @@ secondary to the real item shapes, and still to be labelled synthetic:
   fixture landed; the matrix widened the raster spread rather than closing the gap. Both caveats
   are the same one: these are generated clips, so what neither reaches is the half the entries were
   really about — a **PMS decision** on such an item. That still needs a real one.
-- **Audio:** FLAC, PCM/LPCM, MP3; a DTS-only file to force an audio-only transcode without
+- **Audio:** FLAC, PCM/LPCM, MP3; a TrueHD-only file to force an audio-only transcode without
   depending on the many-audio movie's track ordering.
 - **Subtitles:** ASS/SSA, VobSub/dvd_subtitle; mov_text/tx3g soft-render.
 - **HDR:** HLG, HDR10+. **Dolby Vision P5 and P7 are a different kind of gap — the items exist and

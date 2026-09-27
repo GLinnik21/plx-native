@@ -203,10 +203,12 @@ fn profile_for_delivery(caps: &crate::devcaps::Caps, delivery: TranscodeDelivery
         .filter(|c| caps.audio_has(c))
         .collect::<Vec<_>>()
         .join(",");
+    // PMS scopes audio carried by a video profile as videoAudioCodec (Plex-for-Kodi's
+    // plexplayer.py uses this scope for audio.channels too); audioCodec is not a valid scope.
     let audio_limits = caps.audio_channels.iter()
         .filter(|(codec, _)| caps.audio_has(codec))
         .map(|(codec, channels)| format!(
-            "+add-limitation(scope=audioCodec&scopeName={codec}&type=upperBound&name=audio.channels&value={channels}&replace=true)"
+            "+add-limitation(scope=videoAudioCodec&scopeName={codec}&type=upperBound&name=audio.channels&value={channels}&replace=true)"
         ))
         .collect::<String>();
     let target = match delivery {
@@ -1122,7 +1124,7 @@ mod tests {
         let profile = super::profile_for(&caps);
         assert!(list_of(&profile, "audioCodec=").contains(&"dts".into()));
         assert!(list_of(target_of(&profile), "audioCodec=").contains(&"dts".into()));
-        assert!(profile.contains("scope=audioCodec&scopeName=dts&type=upperBound&name=audio.channels&value=6&replace=true"));
+        assert!(profile.contains("scope=videoAudioCodec&scopeName=dts&type=upperBound&name=audio.channels&value=6&replace=true"));
         assert!(!profile.contains("truehd"));
     }
 

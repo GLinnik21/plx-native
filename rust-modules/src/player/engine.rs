@@ -494,7 +494,7 @@ fn bf_split(data: &[u8], aud5: u8) -> Vec<usize> {
 }
 
 /// Build the streamed BUFFERSTREAM Load payload from PAYLOAD_AV, substituting the item's real
-/// video/audio codecs + a sink envelope. video = "H264"|"H265", audio = "AC3"|"EAC3"|"AAC".
+/// video/audio codecs + a sink envelope. video = "H264"|"H265", audio = "AC3"|"AC3 PLUS"|"AAC"|"DTS".
 /// What the Load's `adaptiveStreaming` block declares: the sink the pipeline ALLOCATES for, on the
 /// firmwares that allocate against the declaration rather than the bitstream (webOS 10.3.1,
 /// measured — `docs/webos10-resource-allocation.md`).
@@ -647,6 +647,19 @@ fn parse_sinkmax(spec: &str) -> Option<SinkEnvelope> {
         fps: fps.trim().parse().ok()?,
     };
     (env.w > 0 && env.h > 0 && env.fps > 0).then_some(env)
+}
+
+/// LG's buffer-feed vocabulary. libpf CustomPipeline::parseOptionStringSpi accepts DTS;
+/// getAudioCaps selects audio/x-dts and setAdecSinkInfo_ES configures dts-seamless (issue #221).
+/// Unsupported formats must never be mislabeled as AC3: that can stall the audio master clock.
+fn audio_payload_codec(codec: &str) -> Option<(&'static str, u8)> {
+    match codec {
+        "ac3" => Some(("AC3", 1)),
+        "eac3" => Some(("AC3 PLUS", 2)),
+        "aac" => Some(("AAC", 3)),
+        "dts" => Some(("DTS", 4)),
+        _ => None,
+    }
 }
 
 /// The pipeline reads the true dimensions from the SPS (Phase 0 HEVC probe), so mw/mh are only
@@ -1100,7 +1113,7 @@ fn start_bufferfeed_inner(
     }
     let stream = sample.is_none();
     // For a streamed direct-play/transcode, pick the Load codecs from the item: video H264 vs
-    // H265 (native HEVC direct-play), audio AC3/EAC3/AAC. (The local sample paths keep their
+    // H265 (native HEVC direct-play), audio AC3/EAC3/AAC/DTS. (The local sample paths keep their
     // fixed payloads.)
     // dev A/B: /tmp/plxnative-noaudio feeds video only (needAudio:false + skip es=2) to isolate
     // whether the audio ES (E-AC3/Atmos) is what stalls the sink on 4K HEVC.
@@ -1138,19 +1151,13 @@ fn start_bufferfeed_inner(
             // LG's pipeline names E-AC3 "AC3 PLUS" (Dolby Digital Plus), NOT "EAC3" — the
             // wrong string leaves the audio ES unconfigured, and with audioSync the video
             // sink slaves to the dead audio clock and stalls (verified: video-only plays).
-            let ac = match crate::route::stream_acodec(ps).as_str() {
-                "eac3" => "AC3 PLUS",
-                "aac" => "AAC",
-                _ => "AC3",
+            let codec = crate::route::stream_acodec(ps);
+            let Some((ac, diagnostic)) = audio_payload_codec(&codec) else {
+                log(&format!("start_bufferfeed: unsupported audio codec {codec:?}; refusing incorrect Load declaration"));
+                SHARED.demux_failed.store(true, Ordering::Release);
+                return Err(crate::route::RouteStartResult::StartFailed);
             };
-            SHARED.dg_load_a.store(
-                match ac {
-                    "AC3 PLUS" => 2,
-                    "AAC" => 3,
-                    _ => 1,
-                },
-                Ordering::Relaxed,
-            );
+            SHARED.dg_load_a.store(diagnostic, Ordering::Relaxed);
             audio_declared = ac;
             // The sink envelope — `adaptiveStreaming`'s maxWidth/maxHeight/maxFrameRate — used
             // to be the panel max (4K60) for every codec and every source, on the reasoning that
@@ -4391,6 +4398,18 @@ mod sink_envelope_tests {
         c.hevc_row = hevc;
         c
     }
+    #[test]
+    fn audio_payload_names_dts_and_refuses_unsupported_formats() {
+        assert_eq!(audio_payload_codec("dts"), Some(("DTS", 4)));
+        assert_eq!(audio_payload_codec("eac3"), Some(("AC3 PLUS", 2)));
+        for codec in ["truehd", "flac", "", "unknown"] {
+            assert_eq!(audio_payload_codec(codec), None);
+        }
+        let ps = crate::route::PlaybackSession::IDLE;
+        let payload = build_av_payload(&ps, "H264", "DTS", ENVELOPE_FHD60);
+        assert!(payload.contains(r#""audio":"DTS""#));
+    }
+
     const DEV_SET: ((u32, u32, u32), (u32, u32, u32)) = ((4096, 2304, 60), (4096, 2176, 60));
     const FHD_SET: ((u32, u32, u32), (u32, u32, u32)) = ((1920, 1088, 60), (1920, 1088, 60));
 

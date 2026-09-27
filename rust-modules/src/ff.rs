@@ -3069,6 +3069,115 @@ unsafe fn packet_to_annexb(
 
 static DIAG_FIRST: AtomicBool = AtomicBool::new(true);
 
+/// Extract one DTS core access unit, dropping the DTS-HD extension substream. Matroska and
+/// MOV demux return the complete packet; our bundled FFmpeg 9.0 has neither the dca parser nor
+/// dca_core BSF enabled. The core size is the 14-bit FSIZE + 1 from its normalized header
+/// (ETSI TS 102 114; FFmpeg 9.0 libavcodec/bsf/dca_core.c). No new FFmpeg ABI is needed.
+/// Normalize the four core sync formats to 16-bit big endian before measuring. Extension-only,
+/// truncated and malformed packets are rejected instead of sending HD data to the core decoder.
+fn dts_core_packet(packet: &[u8]) -> Option<std::borrow::Cow<'_, [u8]>> {
+    use std::borrow::Cow;
+    let sync: [u8; 4] = packet.get(..4)?.try_into().ok()?;
+    let normalized = match sync {
+        [0x7f, 0xfe, 0x80, 0x01] => Cow::Borrowed(packet),
+        [0xfe, 0x7f, 0x01, 0x80] => {
+            let mut bytes = packet.to_vec();
+            for word in bytes.chunks_exact_mut(2) { word.swap(0, 1); }
+            Cow::Owned(bytes)
+        }
+        [0x1f, 0xff, 0xe8, 0x00] | [0xff, 0x1f, 0x00, 0xe8] => {
+            let little = sync[0] == 0xff;
+            let mut bytes = Vec::with_capacity(packet.len() * 7 / 8);
+            let (mut bits, mut count) = (0u32, 0u32);
+            for word in packet.chunks_exact(2) {
+                let word = if little { u16::from_le_bytes([word[0], word[1]]) }
+                    else { u16::from_be_bytes([word[0], word[1]]) };
+                bits = (bits << 14) | u32::from(word & 0x3fff);
+                count += 14;
+                while count >= 8 {
+                    count -= 8;
+                    bytes.push((bits >> count) as u8);
+                }
+            }
+            Cow::Owned(bytes)
+        }
+        _ => return None,
+    };
+    let header = normalized.get(..10)?;
+    let size = (((usize::from(header[5]) & 3) << 12)
+        | (usize::from(header[6]) << 4) | (usize::from(header[7]) >> 4)) + 1;
+    // The standard's minimum core frame length is 96 bytes. Never accept a size that points
+    // back into the header or beyond the packet, including a truncated 14-bit word.
+    if size < 96 || size > normalized.len() { return None; }
+    Some(match normalized {
+        Cow::Borrowed(bytes) => Cow::Borrowed(&bytes[..size]),
+        Cow::Owned(mut bytes) => { bytes.truncate(size); Cow::Owned(bytes) }
+    })
+}
+
+#[cfg(test)]
+mod dts_core_tests {
+    use super::dts_core_packet;
+
+    fn core() -> Vec<u8> {
+        let mut frame = vec![0x55; 128];
+        frame[..10].copy_from_slice(&[0x7f, 0xfe, 0x80, 0x01, 0xfc, 0x00, 0x07, 0xf0, 0, 0]);
+        frame
+    }
+
+    #[test]
+    fn preserves_the_generated_dts_5_1_access_unit() {
+        let frame = include_bytes!("../../tests/fixtures/dts-core-frame.dts");
+        assert_eq!(dts_core_packet(frame).unwrap().as_ref(), frame);
+        let mut with_extension = frame.to_vec();
+        with_extension.extend_from_slice(&[0x64, 0x58, 0x20, 0x25, 0, 0, 0, 0]);
+        assert_eq!(dts_core_packet(&with_extension).unwrap().as_ref(), frame);
+    }
+
+    #[test]
+    fn preserves_core_and_strips_hd_extensions() {
+        let core = core();
+        assert_eq!(dts_core_packet(&core).unwrap().as_ref(), core);
+        let mut hd = core.clone();
+        hd.extend_from_slice(&[0x64, 0x58, 0x20, 0x25, 0x01, 0x02, 0x03, 0x04]);
+        assert_eq!(dts_core_packet(&hd).unwrap().as_ref(), core);
+    }
+
+    #[test]
+    fn refuses_extension_only_truncated_and_invalid_sizes() {
+        assert!(dts_core_packet(&[0x64, 0x58, 0x20, 0x25]).is_none());
+        let core = core();
+        for n in 0..core.len() { assert!(dts_core_packet(&core[..n]).is_none()); }
+        let mut invalid = core;
+        invalid[6] = 0;
+        invalid[7] = 0;
+        assert!(dts_core_packet(&invalid).is_none());
+    }
+
+    #[test]
+    fn normalizes_word_swapped_and_packed_core_formats() {
+        let core = core();
+        let mut swapped = core.clone();
+        for word in swapped.chunks_exact_mut(2) { word.swap(0, 1); }
+        assert_eq!(dts_core_packet(&swapped).unwrap().as_ref(), core);
+        let mut packed = Vec::new();
+        let (mut bits, mut count) = (0u32, 0u32);
+        for &byte in core.iter().chain([0u8; 2].iter()) {
+            bits = (bits << 8) | u32::from(byte);
+            count += 8;
+            if count >= 14 {
+                count -= 14;
+                let mut word = ((bits >> count) & 0x3fff) as u16;
+                if packed.len() == 2 { word |= 0xc000; }
+                packed.extend_from_slice(&word.to_be_bytes());
+            }
+        }
+        assert_eq!(dts_core_packet(&packed).unwrap().as_ref(), core);
+        for word in packed.chunks_exact_mut(2) { word.swap(0, 1); }
+        assert_eq!(dts_core_packet(&packed).unwrap().as_ref(), core);
+    }
+}
+
 /// ADTS sampling_frequency_index (4 bits) for a sample rate; None if not a standard AAC rate.
 fn adts_freq_index(rate: c_int) -> Option<u8> {
     Some(match rate {
@@ -7892,6 +8001,12 @@ pub(crate) fn demux(
                 } else {
                     None
                 };
+                let dts_audio = ai >= 0 && std::ffi::CStr::from_ptr(avcodec_get_name(
+                    (*stream_codecpar(*streams.add(ai as usize))).codec_id
+                )).to_bytes() == b"dts";
+                if dts_audio {
+                    crate::player::log("ff: DTS core extraction on (DTS-HD extensions discarded)");
+                }
                 if let Some((fi, ch)) = aac_adts {
                     crate::player::log(&format!(
                         "ff: AAC → ADTS reframing on (freq_idx={fi} ch={ch})"
@@ -8142,6 +8257,19 @@ pub(crate) fn demux(
                                 pts,
                                 1,
                                 2,
+                                || state.drain_wire(),
+                            )
+                        } else if dts_audio {
+                            let raw = std::slice::from_raw_parts((*pkt).data, (*pkt).size.max(0) as usize);
+                            let Some(core) = dts_core_packet(raw) else {
+                                crate::player::log("ff: DTS packet has no complete supported core; refusing audio feed");
+                                SHARED.demux_failed.store(true, Ordering::Release);
+                                SHARED.demux_io_failed.store(true, Ordering::Release);
+                                av_packet_unref(pkt);
+                                break;
+                            };
+                            crate::aq::aq_push_with_drain(
+                                aqa_p, core.as_ptr(), core.len() as c_int, pts, 1, 2,
                                 || state.drain_wire(),
                             )
                         } else {

@@ -1313,11 +1313,11 @@ resume, the `/:/timeline` reporter — which is also why it needs somebody's lib
 It needs a TV address and nothing else — no token, no ratingKey, no `manifest.local.json`, no
 sharing — so it is the only tier a stranger can run, and it is what separates "the player is
 broken" from "the library layer is broken" when a server case fails. **What it covers, precisely:**
-the player direct-plays exactly `{h264,hevc}` × `{aac,ac3,eac3}` in mkv/mp4/m4v (`route/plan.rs`'s
-codec gate + `plex::DP_AUDIO_CODECS`) — 2 of the 19 video and 3 of the 19 audio codecs the television's
-own table (`/etc/umediaserver/device_codec_capability_config.json`, which `devcaps.rs` reads)
-claims to decode, everything else being a server transcode BY DESIGN since the Load payload has
-only `H264`/`H265` and `AC3`/`AC3 PLUS`/`AAC`. All six of those payload combinations are covered
+the player feeds `{h264,hevc}` × `{aac,ac3,eac3,dts}` in mkv/mp4/m4v. Auto intersects this
+software set with the device table and per-codec channel ceilings; DTS requires a measured
+DTS row and feeds only the DTS core when an HD extension is present. The implemented Load
+strings are `H264`/`H265` and `AC3`/`AC3 PLUS`/`AAC`/`DTS`; these are not the firmware's whole
+vocabulary. The six AC3/EAC3/AAC combinations and H264/DTS are covered
 here, plus DV 8.1, both containers, in-place seek in each, and the FRAME-RATE axis added the same
 day (`pipe_h264_1080p5994` is the only fixture that reaches `fps_rational`'s 1001-denominator
 branch — device-verified `esInfo: videoFps 60000/1001` — and `pipe_hevc_4k_60fps` is 4K60 HEVC;
