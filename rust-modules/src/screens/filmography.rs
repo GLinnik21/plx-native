@@ -56,8 +56,17 @@ enum Located {
     Row(usize),
 }
 
-fn table_frame() -> Rect {
-    let l = RouteLayout::screen_with_copy_w(COPY_W);
+fn route_layout(measure: &dyn Measure) -> RouteLayout {
+    RouteLayout::screen_for_title(
+        COPY_W,
+        RouteLayout::screen().content.w,
+        crate::i18n::msg::browse_person_filmography(),
+        measure,
+    )
+}
+
+fn table_frame(measure: &dyn Measure) -> Rect {
+    let l = route_layout(measure);
     let top = l.sectioned_table().y + STRIP_BAND - crate::ui::table::TOP_PAD;
     Rect::new(
         l.content.x,
@@ -65,6 +74,20 @@ fn table_frame() -> Rect {
         l.content.w,
         (l.content.y + l.content.h - top + crate::ui::table::BOT_PAD).max(0.0),
     )
+}
+
+/// The artwork follows the measured route narrative. A wrapped translated title must not
+/// collide with a fixed poster origin; artwork may scale to fit, while the text keeps its roles.
+fn preview_frame(layout: RouteLayout, title: &str, copy: &str, measure: &dyn Measure) -> Rect {
+    let text = layout.narrative_copy_frame(true, title, layout.action.y, measure);
+    let copy_h = crate::ui::text_view::TextView::new(copy, theme::size::LABEL, theme::TEXT_READING)
+        .with_measure(measure)
+        .leading(theme::size::LABEL as f32 + theme::space::XS)
+        .max_lines(12)
+        .measure_h(text.w);
+    let top = PV.y.max(text.y + copy_h + theme::space::LG);
+    let height = PV.h.min((layout.narrative.y + layout.narrative.h - top).max(0.0));
+    Rect::new(layout.narrative.x, top, PV.w * height / PV.h, height)
 }
 
 fn opaque_ground_ready(alpha: f32) -> bool {
@@ -402,7 +425,7 @@ impl FilmographyScreen {
     }
 
     fn pill_rects(&self, measure: &dyn Measure) -> Vec<Rect> {
-        let l = RouteLayout::screen_with_copy_w(COPY_W);
+        let l = route_layout(measure);
         let mut x = l.content.x + STRIP_INSET;
         self.tab_c
             .iter()
@@ -488,7 +511,7 @@ impl FilmographyScreen {
         let Some(i) = focused_tab else {
             return self.tab_hscroll.pos;
         };
-        let content = RouteLayout::screen_with_copy_w(COPY_W).content;
+        let content = route_layout(measure).content;
         let Some(rect) = self.pill_rects(measure).get(i).copied() else {
             return self.tab_hscroll.pos;
         };
@@ -566,7 +589,7 @@ impl FilmographyScreen {
         let before = (self.tab_hscroll.pos, self.tab_hscroll.vel);
         let target = self.tab_hscroll_target(cx.measure, tab);
         self.tab_hscroll.step(target, 240.0, dt);
-        self.table.update(dt, table_frame().h);
+        self.table.update(dt, table_frame(cx.measure).h);
         let preview_motion = self.step_preview(t, cx.focus.current, fx);
         if preview_motion || before != (self.tab_hscroll.pos, self.tab_hscroll.vel) {
             fx.note(PresentEvent::Motion);
@@ -599,13 +622,15 @@ impl FilmographyScreen {
             .alpha(f.page_alpha);
         self.ground.draw_host(p);
         self.ground_ready = opaque_ground_ready(f.page_alpha);
-        let layout = RouteLayout::screen_with_copy_w(COPY_W);
+        let layout = route_layout(f.measure);
         let total: usize = self.model.iter().map(|d| d.total).sum();
+        let title = crate::i18n::msg::browse_person_filmography();
+        let copy = crate::i18n::msg::browse_person_credits(total as i64);
         layout.draw_narrative(
             p,
             Some(&self.name),
-            crate::i18n::msg::browse_person_filmography(),
-            &crate::i18n::msg::browse_person_credits(total as i64),
+            title,
+            &copy,
             theme::size::LABEL,
             f.measure,
         );
@@ -658,7 +683,7 @@ impl FilmographyScreen {
             }
         }
 
-        let frame = table_frame();
+        let frame = table_frame(f.measure);
         self.table.draw(p, frame, f.measure);
         if let Some(thumb) = self
             .preview
@@ -667,9 +692,10 @@ impl FilmographyScreen {
             .map(|c| c.thumb.as_str())
             .filter(|s| !s.is_empty())
         {
+            let preview = preview_frame(layout, title, &copy, f.measure);
             widgets::card(
                 p.alpha(self.pv_fade.alpha()),
-                PV,
+                preview,
                 widgets::Art::Thumb {
                     sid: self.sid,
                     key: thumb,
@@ -728,8 +754,8 @@ impl FilmographyScreen {
 }
 
 impl<H: ContentLike> Focusable<H> for FilmographyScreen {
-    fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
-        let layout = RouteLayout::screen_with_copy_w(COPY_W);
+    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        let layout = route_layout(cx.measure);
         if !self.model.is_empty() {
             out.push(GroupSpec {
                 id: TAB_GROUP,
@@ -759,7 +785,7 @@ impl<H: ContentLike> Focusable<H> for FilmographyScreen {
                     EdgeRule::Stop,
                     EdgeRule::Stop,
                 ],
-                extent: table_frame(),
+                extent: table_frame(cx.measure),
                 len: self.rows().len(),
                 elem: ElemKind::Card,
             });
@@ -803,7 +829,7 @@ impl<H: ContentLike> Focusable<H> for FilmographyScreen {
         match self.locate(*elem)? {
             Located::Tab(i) => {
                 let rect = *self.pill_rects(cx.measure).get(i)?;
-                let layout = RouteLayout::screen_with_copy_w(COPY_W);
+                let layout = route_layout(cx.measure);
                 Some(Placed {
                     rect,
                     rest_rect: rect,
@@ -812,11 +838,11 @@ impl<H: ContentLike> Focusable<H> for FilmographyScreen {
                 })
             }
             Located::Row(i) => {
-                let rect = self.table.row_frame(table_frame(), i as i32)?;
+                let rect = self.table.row_frame(table_frame(cx.measure), i as i32)?;
                 Some(Placed {
                     rect,
                     rest_rect: rect,
-                    clip: table_frame(),
+                    clip: table_frame(cx.measure),
                     index: Some(i as u32),
                 })
             }
@@ -1162,12 +1188,29 @@ mod tests {
     }
 
     #[test]
+    fn a_wrapped_filmography_heading_keeps_the_preview_below_its_copy_and_inside_safe_bounds() {
+        let measure = FixtureMeasure;
+        let title = "ExpandedFilmographyTitle ExpandedFilmographyTitle";
+        let copy = "12 credits";
+        let layout = RouteLayout::screen_for_title(COPY_W, RouteLayout::screen().content.w, title, &measure);
+        let frame = preview_frame(layout, title, copy, &measure);
+        let text = layout.narrative_copy_frame(true, title, layout.action.y, &measure);
+        let copy_h = crate::ui::text_view::TextView::new(copy, theme::size::LABEL, theme::TEXT_READING)
+            .with_measure(&measure).leading(theme::size::LABEL as f32 + theme::space::XS).measure_h(text.w);
+        assert!(frame.y >= text.y + copy_h + theme::space::LG);
+        assert!(frame.y > PV.y, "the old fixed origin overlaps this expanded title");
+        assert!(crate::ui::consts::inside_safe(frame));
+        assert!((frame.w / frame.h - PV.w / PV.h).abs() < 0.001);
+    }
+
+    #[test]
     fn the_viewport_is_a_whole_number_of_rows() {
-        let l = RouteLayout::screen_with_copy_w(COPY_W);
+        let measure = &FixtureMeasure;
+        let l = route_layout(measure);
         assert_eq!(l.narrative.w, 480.0);
         assert_eq!(l.content.x, 760.0);
         assert_eq!(l.content.w, 1064.0);
-        let frame = table_frame();
+        let frame = table_frame(measure);
         let h = frame.h - crate::ui::table::TOP_PAD - crate::ui::table::BOT_PAD;
         assert_eq!(h, 784.0);
         assert_eq!(h / crate::ui::table::ROW_H_ART, 8.0);
@@ -1189,7 +1232,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             placed.clip.x,
-            RouteLayout::screen_with_copy_w(COPY_W).content.x
+            route_layout(&measure).content.x
         );
         assert!(placed.rect.x < placed.clip.x);
     }

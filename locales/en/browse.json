@@ -1420,5 +1420,17 @@
       "version": "str"
     },
     "description": "Diagnostics panel: no plex pass"
+  },
+  "browse.crew.director": {
+    "value": "Director",
+    "description": "App-owned crew job caption; preserve stable metadata role keys."
+  },
+  "browse.crew.writer": {
+    "value": "Writer",
+    "description": "App-owned crew job caption; preserve stable metadata role keys."
+  },
+  "browse.crew.director_writer": {
+    "value": "Director, Writer",
+    "description": "App-owned crew job caption; preserve stable metadata role keys."
   }
 }

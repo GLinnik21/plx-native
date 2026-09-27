@@ -152,9 +152,8 @@ impl Action {
     }
 }
 
-/// The panel's fixed width. Wide enough for "Mark as Unwatched" at the table's compact BODY size
-/// without eliding, narrow enough that it never covers the neighbouring card it is anchored off.
-const PANEL_W: f32 = 460.0;
+/// Baseline compact panel width; longer translated actions grow it at BODY size.
+const PANEL_MIN_W: f32 = 460.0;
 /// The pinned ~20px corner radius.
 const PANEL_RAD: f32 = 20.0;
 /// Air between the focused card's drawn edge and the panel — one `space` rung, like every other gap.
@@ -279,11 +278,8 @@ fn build_with(
     // Last, after the watched toggle, because it is the only row here that removes something from
     // view — the destructive-ish end of the group, where a mis-hit is least likely.
     if from_deck {
-        // "Remove from Deck", not "Remove from Continue Watching": the longer label elides inside
-        // `PANEL_W` at the table's compact BODY size, and widening the panel would push it across
-        // the neighbouring card it is anchored beside. It is also the more accurate of the two —
-        // the server action hides the item from the DECK and leaves its resume point intact, so
-        // "remove from continue watching" over-promises a reset it does not perform.
+        // This hides the item from the deck and leaves its resume point intact. Panel sizing
+        // follows the translated action, so the destination remains readable before confirming.
         sec = sec.row(Row::new(crate::i18n::msg::browse_menu_remove_deck()).licon(Icon::Close));
         acts.push(Some(Action::RemoveFromDeck(m.rk.clone())));
     }
@@ -388,17 +384,18 @@ fn build_season(rk: &str, mark: PosterMark) -> (Section, Vec<Option<Action>>) {
 /// past the screen's keep-out. Vertically it hangs off the card's top edge, pulled back inside the
 /// safe band so a bottom shelf still gets a whole panel. Pure (anchor + measured height in, rect
 /// out), which is what makes the placement rules host-testable.
-fn panel_at(a: Rect, content_h: f32) -> Rect {
+fn panel_at(a: Rect, content_w: f32, content_h: f32) -> Rect {
+    let width = content_w.clamp(PANEL_MIN_W, SCR_W - 2.0 * EDGE_X);
     let h = content_h.clamp(120.0, SCR_H - 2.0 * EDGE); // same floor the profile popover uses
     let right = a.x + a.w + CARD_GAP;
-    let x = if right + PANEL_W <= SCR_W - EDGE_X {
+    let x = if right + width <= SCR_W - EDGE_X {
         right
     } else {
-        a.x - CARD_GAP - PANEL_W
+        a.x - CARD_GAP - width
     };
-    let x = x.clamp(EDGE_X, (SCR_W - EDGE_X - PANEL_W).max(EDGE_X));
+    let x = x.clamp(EDGE_X, (SCR_W - EDGE_X - width).max(EDGE_X));
     let y = a.y.clamp(EDGE, (SCR_H - EDGE - h).max(EDGE));
-    Rect::new(x, y, PANEL_W, h)
+    Rect::new(x, y, width, h)
 }
 
 /// The anchor a menu with no rect to hang off falls back to — a centred card. The headless trigger
@@ -409,7 +406,7 @@ fn panel_at(a: Rect, content_h: f32) -> Rect {
 /// argument the legacy `present` made for resolving it before it stored `OPENER`.
 pub(crate) fn fallback_anchor() -> Rect {
     Rect::new(
-        (SCR_W - CARD_W) * 0.5 - PANEL_W * 0.5,
+        (SCR_W - CARD_W) * 0.5 - PANEL_MIN_W * 0.5,
         (SCR_H - CARD_H) * 0.5,
         CARD_W,
         CARD_H,
@@ -482,9 +479,9 @@ impl ItemMenuScreen {
         self.table.set_sections(vec![sec], 0, false);
     }
 
-    fn frame(&self) -> Rect {
+    fn frame(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
         let [x, y, w, h] = self.arg.anchor.map(f32::from_bits);
-        panel_at(Rect::new(x, y, w, h), self.table.measured_height())
+        panel_at(Rect::new(x, y, w, h), self.table.measured_width(measure), self.table.measured_height())
     }
 
     /// The rows a focus stop exists for — every index whose action is `Some`. The separator is
@@ -566,7 +563,7 @@ impl<H: AppLike> Machine<H> for ItemMenuScreen {
                     .filter(|key| key.entry == self.entry)
                     .map(|key| key.elem as i32)
                     .unwrap_or(self.table.sel);
-                self.table.update(tick.dt(), self.frame().h);
+                self.table.update(tick.dt(), self.frame(cx.measure).h);
             }
             ScreenEvent::FocusMoved { to, .. } => self.table.sel = to.elem as i32,
             ScreenEvent::Activate(elem) => self.activate(*elem, fx),
@@ -607,14 +604,14 @@ impl<H: AppLike> Machine<H> for ItemMenuScreen {
 }
 
 impl<H: AppLike> Focusable<H> for ItemMenuScreen {
-    fn groups(&self, _: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         out.push(GroupSpec {
             id: GroupId(0),
             kind: GroupKind::Column,
             seat: Seat::Remembered,
             reachable: AxisMask::BOTH,
             edge: [EdgeRule::Stop; 4],
-            extent: self.frame(),
+            extent: self.frame(cx.measure),
             len: self.focusable().count(),
             elem: ElemKind::Bare,
         });
@@ -641,11 +638,11 @@ impl<H: AppLike> Focusable<H> for ItemMenuScreen {
     }
     fn place(&self, elem: &u32, cx: &Cx<'_, H>, _: At) -> Option<Placed> {
         <Self as Focusable<H>>::group_of(self, elem, cx)?;
-        let rect = self.table.row_frame(self.frame(), *elem as i32)?;
+        let rect = self.table.row_frame(self.frame(cx.measure), *elem as i32)?;
         Some(Placed {
             rect,
             rest_rect: rect,
-            clip: self.frame(),
+            clip: self.frame(cx.measure),
             index: Some(*elem),
         })
     }
@@ -704,7 +701,7 @@ impl<H: AppLike> Screen<H> for ItemMenuScreen {
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
         let p = f.painter.alpha(f.page_alpha);
-        let r = self.frame();
+        let r = self.frame(f.measure);
         Glass::CACHED.panel(p, r, 0.0, PANEL_RAD);
         self.table.draw(p, r, f.measure);
         for elem in self.focusable().collect::<Vec<_>>() {
@@ -1306,10 +1303,51 @@ mod tests {
     }
 
     #[test]
+    fn translated_action_menus_measure_complete_verbs_and_keep_safe_anchors() {
+        use crate::i18n::{LocaleContext, Preference};
+        use crate::ui::machine::Measure;
+        struct MenuMeasure;
+        impl Measure for MenuMeasure {
+            fn width(&self, text: &std::ffi::CStr, size: i32, bold: bool) -> f32 {
+                assert!(!bold, "compact action labels keep BODY regular");
+                text.to_string_lossy().chars().count() as f32 * size as f32 * 0.6
+            }
+            fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
+            fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+        }
+        let measure = MenuMeasure;
+        for preference in [Preference::En, Preference::Es, Preference::Be] {
+            let locale = LocaleContext::resolve(preference, None, None, None, None);
+            let mut table = TableView::new();
+            table.compact = true;
+            table.set_sections(vec![Section::new("")
+                .row(Row::new(crate::i18n::msg::widgets_action_mark_watched_in(&locale)).licon(Icon::CheckCircleFill))
+                .row(Row::new(crate::i18n::msg::widgets_action_mark_unwatched_in(&locale)).licon(Icon::MinusCircleFill))
+                .row(Row::new(crate::i18n::msg::browse_menu_remove_deck_in(&locale)).licon(Icon::Close))], 0, false);
+            let width = table.measured_width(&measure);
+            if preference == Preference::Be {
+                assert!(width > PANEL_MIN_W, "the failing Belarusian menu must exercise growth");
+            }
+            for x in [MARGIN_X, (SCR_W - CARD_W) * 0.5, SCR_W - MARGIN_X - CARD_W] {
+                let anchor = Rect::new(x, SCR_H - 120.0, CARD_W, CARD_H);
+                let frame = panel_at(anchor, width, table.measured_height());
+                assert!(crate::ui::consts::inside_safe(frame));
+                assert!(frame.x >= anchor.x + anchor.w || frame.x + frame.w <= anchor.x,
+                    "the measured menu must remain beside a visible card");
+                for row in &table.sections[0].rows {
+                    let label_width = measure.width_str(&row.label, crate::ui::theme::size::BODY, false);
+                    assert!(label_width <= table.label_width(row, frame.w, &measure),
+                        "{preference:?} action was elided: {}", row.label);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn the_panel_sits_beside_the_card_and_never_leaves_the_screen() {
         let h = 5.0 * 60.0; // a five-row menu, roughly
                             // a card on the left of the shelf: the panel sits to its RIGHT, clear of the card
-        let r = panel_at(Rect::new(MARGIN_X, 300.0, CARD_W, CARD_H), h);
+        let r = panel_at(Rect::new(MARGIN_X, 300.0, CARD_W, CARD_H), PANEL_MIN_W, h);
         assert!(
             r.x >= MARGIN_X + CARD_W,
             "expected the panel right of the card, got x={}",
@@ -1318,7 +1356,7 @@ mod tests {
         // a card at the right edge: it flips LEFT rather than running off screen — and lands clear
         // of the card it belongs to, which is the whole point of anchoring beside it
         let a = Rect::new(SCR_W - 300.0, 300.0, CARD_W, CARD_H);
-        let r = panel_at(a, h);
+        let r = panel_at(a, PANEL_MIN_W, h);
         assert!(
             r.x + r.w <= SCR_W - EDGE + 0.5,
             "panel ran off the right edge: x={} w={}",
@@ -1334,7 +1372,7 @@ mod tests {
         );
         assert!(r.x >= EDGE - 0.5);
         // a card near the bottom keeps the whole panel on screen
-        let low = panel_at(Rect::new(MARGIN_X, SCR_H - 120.0, CARD_W, CARD_H), h);
+        let low = panel_at(Rect::new(MARGIN_X, SCR_H - 120.0, CARD_W, CARD_H), PANEL_MIN_W, h);
         assert!(
             low.y + low.h <= SCR_H - EDGE + 0.5,
             "panel ran off the bottom: y={} h={}",
@@ -1346,7 +1384,7 @@ mod tests {
         // …and "on screen" means inside the OVERSCAN frame, which is why the keep-out is per axis:
         // `space::XL` 64 clears `MARGIN_Y` and misses `MARGIN_X` by 32. A panel placed against an
         // anchor has no fixed rect a table could carry, so the frame is graded on its extremes here.
-        let tall = panel_at(Rect::new(MARGIN_X, 300.0, CARD_W, CARD_H), 4000.0);
+        let tall = panel_at(Rect::new(MARGIN_X, 300.0, CARD_W, CARD_H), PANEL_MIN_W, 4000.0);
         for (what, p) in [("flipped", r), ("low", low), ("tall", tall)] {
             assert!(
                 crate::ui::consts::inside_safe(p),

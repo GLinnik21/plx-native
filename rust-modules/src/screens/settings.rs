@@ -1249,7 +1249,8 @@ impl LogicalState for LanguageState {
 impl LanguagePage {
     fn new(entry: EntryId) -> Self {
         let selected = crate::plex::session::peek().language;
-        let mut page = Self { entry, table: TableView::new(), state: LanguageState { selected, sel: 0, failed: false } };
+        let sel = LANGUAGES.iter().position(|language| *language == selected).unwrap_or(0) as i32;
+        let mut page = Self { entry, table: TableView::new(), state: LanguageState { selected, sel, failed: false } };
         page.rebuild();
         page
     }
@@ -1304,6 +1305,22 @@ impl Machine<InnerHost> for LanguagePage {
     type Ev = ScreenEvent<InnerHost>;
     fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, InnerHost>, fx: &mut Effects<'_, InnerHost>) -> Handled {
         match ev {
+            ScreenEvent::Mount => {
+                // The generic modal Enter runs before queued mount effects. Remembering a
+                // row afterward cannot move its already-seated cursor, so request an explicit
+                // Enter just as first-run consent does. A child return does not remount this
+                // page and still restores the surface's remembered contribution row.
+                fx.push(Fx::Deliver(
+                    MachineId::Instance(InstanceId(0)),
+                    Delivery::Screen(ScreenEvent::Enter(Enter::Fresh {
+                        focus: FocusTarget::Elem(FocusKey {
+                            entry: self.entry,
+                            elem: self.state.sel as u32,
+                        }),
+                    })),
+                ));
+                Handled::Yes
+            }
             ScreenEvent::Tick(t) => { self.table.update(t.dt(), RouteLayout::screen().sectioned_table().h); Handled::Yes }
             ScreenEvent::FocusMoved { to, .. } => {
                 table_focus(&mut self.table, to.elem); self.state.sel = self.table.sel; Handled::Yes

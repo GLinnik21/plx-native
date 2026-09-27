@@ -1553,7 +1553,8 @@ const KEYCAP_W: f32 = 1.5;
 /// A cap's label is BOLD [`theme::size::MICRO`]: it is a one-line de-emphasised LABEL in the rung's
 /// own terms, and it must hold its own inside a ring at a size below the reading floor.
 const KEYCAP_BOLD: c_int = 1;
-/// The gap between the cap and the prose either side of it — the design's `gap:12`, which every
+/// Legacy-fragment spacing around a cap. Complete translated sentences retain their own spaces
+/// and use no added gap. The design's `gap:12`, which every
 /// alert footer in `Alert Views.dc.html` sets (§1A's and both of §1B's runs). It shipped at a
 /// hand-tuned 14 in all three lanes that built one of these panels, none of which could read the
 /// spec; two pixels either side of one cap is not a thing anyone would have found by looking.
@@ -1609,6 +1610,15 @@ pub(crate) struct KeyHint<'a> {
     pre: std::borrow::Cow<'a, std::ffi::CStr>,
     key: &'a std::ffi::CStr,
     post: std::borrow::Cow<'a, std::ffi::CStr>,
+    /// Legacy fragment callers supply no whitespace; complete translated sentences supply it.
+    fragment_gap: f32,
+}
+
+#[derive(Debug, PartialEq)]
+struct KeyHintLayout {
+    key_x: f32,
+    post_x: f32,
+    width: f32,
 }
 
 impl<'a> KeyHint<'a> {
@@ -1617,7 +1627,7 @@ impl<'a> KeyHint<'a> {
         key: &'a std::ffi::CStr,
         post: &'a std::ffi::CStr,
     ) -> Self {
-        Self { pre: pre.into(), key, post: post.into() }
+        Self { pre: pre.into(), key, post: post.into(), fragment_gap: KEYCAP_GAP }
     }
 
     /// A complete translated sentence containing one object-replacement character for the key.
@@ -1625,17 +1635,22 @@ impl<'a> KeyHint<'a> {
     /// layout code. The owned runs keep their UTF-8 C strings alive for the entire draw.
     pub(crate) fn translated(message: String, key: &'a std::ffi::CStr) -> Self {
         let (pre, post) = key_hint_parts(&message);
-        Self { pre: pre.into(), key, post: post.into() }
+        Self { pre: pre.into(), key, post: post.into(), fragment_gap: 0.0 }
     }
 
     /// Total width of the assembled line.
     pub(crate) fn width(&self, measure: &dyn crate::ui::machine::Measure) -> f32 {
+        self.layout(measure).width
+    }
+
+    /// One set of advances for measuring and painting, including the catalog's own spaces.
+    fn layout(&self, measure: &dyn crate::ui::machine::Measure) -> KeyHintLayout {
         let sz = theme::size::CAPTION;
-        measure.width(&self.pre, sz, false)
-            + if self.pre.is_empty() { 0.0 } else { KEYCAP_GAP }
-            + key_cap_w(self.key, measure)
-            + if self.post.is_empty() { 0.0 } else { KEYCAP_GAP }
-            + measure.width(&self.post, sz, false)
+        let key_x = measure.width(&self.pre, sz, false)
+            + if self.pre.is_empty() { 0.0 } else { self.fragment_gap };
+        let post_x = key_x + key_cap_w(self.key, measure)
+            + if self.post.is_empty() { 0.0 } else { self.fragment_gap };
+        KeyHintLayout { key_x, post_x, width: post_x + measure.width(&self.post, sz, false) }
     }
 
     /// The band the line occupies — the cap is taller than the prose's cap band, so a caller
@@ -1675,13 +1690,12 @@ impl<'a> KeyHint<'a> {
     ) {
         let sz = theme::size::CAPTION;
         let ty = crate::text::text_vcenter_y(sz, 0, cy);
-        let pw = measure.width(&self.pre, sz, false);
+        let layout = self.layout(measure);
         p.text(self.pre.as_ptr(), x, ty, sz, theme::TEXT_TERTIARY, 0, 0);
-        let kx = x + pw + if self.pre.is_empty() { 0.0 } else { KEYCAP_GAP };
-        let kw = key_cap(p, kx, cy, self.key, theme::TEXT_SECONDARY, measure);
+        key_cap(p, x + layout.key_x, cy, self.key, theme::TEXT_SECONDARY, measure);
         p.text(
             self.post.as_ptr(),
-            kx + kw + if self.post.is_empty() { 0.0 } else { KEYCAP_GAP },
+            x + layout.post_x,
             ty,
             sz,
             theme::TEXT_TERTIARY,
@@ -1694,7 +1708,7 @@ impl<'a> KeyHint<'a> {
 /// Split the marked key from a localized sentence, keeping text order and UTF-8 intact.
 pub(crate) fn key_hint_parts(message: &str) -> (std::ffi::CString, std::ffi::CString) {
     let (pre, post) = message.split_once('\u{fffc}').unwrap_or((message, ""));
-    let run = |s: &str| std::ffi::CString::new(s.trim()).unwrap_or_default();
+    let run = |s: &str| std::ffi::CString::new(s).unwrap_or_default();
     (run(pre), run(post))
 }
 
@@ -3959,7 +3973,16 @@ impl<'a> FieldList<'a> {
 /// entirely, over the transport. Both halves of that were visible on screen and neither was visible
 /// to a test, because the two rules were never compared.
 pub fn value_lines(value: &str, width: f32) -> Vec<String> {
-    let value_w = (width - FIELD_KEY_W - theme::space::SM).max(1.0);
+    diagnostic_lines(value, width - FIELD_KEY_W - theme::space::SM, false)
+}
+
+/// Full-width diagnostic prose, using the same no-elision wrapping as field values. The owner
+/// caches these lines with its sampled data and uses their count to position every later block.
+/// `width` is the actual text width, with no field-key gutter; `bold` matches the painted face.
+pub(crate) fn diagnostic_lines(value: &str, width: f32, bold: bool) -> Vec<String> {
+    let value_w = width.max(1.0);
+    #[cfg(test)]
+    let _ = bold;
     // Once SDL_ttf is live, use the exact same glyph metrics the draw path advances by.  Host
     // tests have no text runtime (`text_width` returns 0), so they fall back to a deliberately
     // conservative character budget.  Both paths preserve every character; neither elides.
@@ -3972,7 +3995,7 @@ pub fn value_lines(value: &str, width: f32) -> Vec<String> {
         use crate::ui::machine::Measure;
         CString::new(s)
             .ok()
-            .map(|c| crate::text::TtfMeasure.width(&c, FIELD_VAL_SZ, false))
+            .map(|c| crate::text::TtfMeasure.width(&c, FIELD_VAL_SZ, bold))
             .filter(|w| *w > 0.0)
     };
     // The library unit-test target deliberately does not link SDL_ttf.  Its conservative fallback
@@ -4107,7 +4130,8 @@ impl View for FieldList<'_> {
 /// one, whose content shows) and a **highlighted** one (where the remote focus is).
 #[derive(Clone, Copy)]
 enum TabStyle {
-    /// always a pill — focused → ACCENT, idle → solid dark disc (player Info/Chapters).
+    /// Always a pill — focused → ACCENT, selected → quiet tint, idle → the ground's dark face
+    /// (player Info/Chapters).
     Button,
     /// segmented control (detail season tabs): the focused segment is a bright ACCENT pill; the
     /// selected segment gets a subtle pill while focus is elsewhere; the rest are plain dim text.
@@ -4151,6 +4175,8 @@ pub struct TabPill {
     pub label: *const c_char,
     pub sz: c_int,
     pub focused: bool,
+    /// A standalone tab can name the open panel while that panel owns actionable focus.
+    selected: bool,
     style: TabStyle,
     note: TabNote,
     /// see [`TabPill::plated`]
@@ -4171,6 +4197,7 @@ impl TabPill {
             label,
             sz,
             focused: false,
+            selected: false,
             style: TabStyle::Button,
             note: TabNote::None,
             plated: false,
@@ -4180,6 +4207,11 @@ impl TabPill {
     }
     pub fn focused(mut self, f: bool) -> Self {
         self.focused = f;
+        self
+    }
+    /// Keep the active standalone tab visible without borrowing its input-focus treatment.
+    pub(crate) fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
         self
     }
     /// Stand a STANDALONE pill ([`TabStyle::Button`]) on a named [`ControlGround`] — the player
@@ -4300,6 +4332,11 @@ impl TabPill {
             None => match self.style {
                 TabStyle::Button if self.focused => {
                     (Some(crate::ui::ACCENT), crate::ui::ACCENT_INK, 1.0)
+                }
+                TabStyle::Button if self.selected => {
+                    // Both standalone neighbours already have a resting plate. Use the shared
+                    // plated-selection tint so the active mode stays visible beside that ground.
+                    (Some(theme::TAB_PLATE_SELECTED), theme::TEXT_PRIMARY, 1.0)
                 }
                 // The standalone pill is a CONTROL FACE, so its idle fill is the one the GROUND
                 // supplies — the light film over video, the dark plate on a page. See

@@ -116,3 +116,34 @@ fn the_credit_index_space_runs_every_actor_then_every_crew_member() {
         "and its first tile is the crew"
     );
 }
+
+#[test]
+fn crew_display_translates_owned_roles_without_changing_identity_or_character_names() {
+    use crate::i18n::{LocaleContext, Preference};
+    let person = |name: &str, role: &str| Cast {
+        tag: name.into(), role: role.into(), thumb: String::new(), id: 1, tag_key: String::new(),
+    };
+    let detail = Detail {
+        cast: vec![person("Actor", "Director")],
+        crew: vec![person("Director", CrewRole::Director.key()),
+            person("Writer", CrewRole::Writer.key()),
+            person("Both", CrewRole::DirectorWriter.key())],
+        ..Default::default()
+    };
+    for (preference, expected) in [
+        (Preference::En, ["Director", "Writer", "Director, Writer"]),
+        (Preference::Es, ["Director", "Guionista", "Director y guionista"]),
+        (Preference::Be, ["Рэжысёр", "Сцэнарыст", "Рэжысёр, сцэнарыст"]),
+    ] {
+        let locale = LocaleContext::resolve(preference, None, None, None, None);
+        assert_eq!(detail.credit_role_in(0, &locale), Some("Director"), "server character is not a job identity");
+        for (i, caption) in expected.iter().enumerate() {
+            assert_eq!(detail.credit_role_in(i + 1, &locale), Some(*caption));
+        }
+        assert_eq!(detail.credit_role_in(4, &locale), None);
+        assert_eq!(detail.credit_role_in(usize::MAX, &locale), None);
+        assert_eq!(detail.crew[0].role, "Director");
+        assert_eq!(detail.crew[1].role, "Writer");
+        assert_eq!(detail.crew[2].role, "Director, Writer");
+    }
+}

@@ -91,6 +91,41 @@ pub(crate) struct Cast {
     pub(crate) tag_key: String,
 }
 
+/// Stable identities for the app-owned jobs derived from PMS crew arrays. The keys stay in
+/// recorded metadata and semantic comparisons; only a display accessor translates them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CrewRole {
+    Director,
+    Writer,
+    DirectorWriter,
+}
+impl CrewRole {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Director => "Director",
+            Self::Writer => "Writer",
+            Self::DirectorWriter => "Director, Writer",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "Director" => Some(Self::Director),
+            "Writer" => Some(Self::Writer),
+            "Director, Writer" => Some(Self::DirectorWriter),
+            _ => None,
+        }
+    }
+
+    fn display(self, locale: &crate::i18n::LocaleContext) -> &'static str {
+        match self {
+            Self::Director => crate::i18n::msg::browse_crew_director_in(locale),
+            Self::Writer => crate::i18n::msg::browse_crew_writer_in(locale),
+            Self::DirectorWriter => crate::i18n::msg::browse_crew_director_writer_in(locale),
+        }
+    }
+}
+
 impl Cast {
     /// The `personId` for `/library/people/{personId}/media` — the numeric id when the server
     /// sent one, else the global guid (PMS accepts EITHER; both verified live 2026-07-29).
@@ -1249,6 +1284,20 @@ impl Detail {
             self.crew.get(i - self.cast.len())
         }
     }
+
+    /// Only the crew array owns job identities. An actor whose server-provided character is
+    /// named "Director" must retain that exact character name in every locale.
+    pub(crate) fn credit_role(&self, i: usize) -> Option<&str> {
+        self.credit_role_in(i, crate::i18n::current())
+    }
+
+    fn credit_role_in(&self, i: usize, locale: &crate::i18n::LocaleContext) -> Option<&str> {
+        let credit = self.credit(i)?;
+        if i < self.cast.len() {
+            return Some(&credit.role);
+        }
+        Some(CrewRole::from_key(&credit.role).map(|role| role.display(locale)).unwrap_or(&credit.role))
+    }
 }
 
 // The one loaded detail item (the detail page shows a single item at a time).
@@ -1609,7 +1658,7 @@ fn fetch_detail(sid: crate::plex::ServerId, rk: &str) -> Option<(Detail, String)
 /// The crew jobs we surface, in the order they appear on the shelf. PMS names the job by the
 /// ARRAY the person arrived in (`Director[]`/`Writer[]`) — the rows themselves carry no job
 /// attribute, and (verified live) no `role` either, so this is where the sub-caption comes from.
-const CREW_JOBS: [&str; 2] = ["Director", "Writer"];
+const CREW_JOBS: [CrewRole; 2] = [CrewRole::Director, CrewRole::Writer];
 
 /// The named tags of one crew array, in server order, without the blanks or the repeats.
 fn dedup_tags(tags: &[crate::plex::Tag]) -> Vec<String> {
@@ -1632,12 +1681,12 @@ fn dedup_tags(tags: &[crate::plex::Tag]) -> Vec<String> {
 /// focus can still land on.
 fn crew_credits(it: &crate::plex::Metadata) -> Vec<Cast> {
     let mut out: Vec<Cast> = Vec::new();
-    for (job, list) in CREW_JOBS.iter().zip([&it.director, &it.writer]) {
+    for (role, list) in CREW_JOBS.iter().zip([&it.director, &it.writer]) {
+        let job = role.key();
         for t in list.iter().filter(|t| !t.tag.is_empty()) {
             match out.iter_mut().find(|c| c.tag == t.tag) {
                 Some(c) if !c.role.ends_with(job) => {
-                    c.role.push_str(", ");
-                    c.role.push_str(job);
+                    c.role = CrewRole::DirectorWriter.key().to_string();
                 }
                 Some(_) => {}
                 // the id/guid ride along exactly as they do for an actor: a director is a person

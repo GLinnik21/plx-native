@@ -1761,7 +1761,7 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
     crate::screens::tracks_panel::SHAPE,
     crate::screens::about_panel::SHAPE,
     crate::screens::person_bio::SHAPE,
-    "LocalizationSettingsV1{Root:{language:system|en|es|be},Language:{selected:system|en|es|be,focus:u32,failed:bool},Contribute:Document,ConsentDisclosure:{scroll_steps:u32,overflow_focus:0x20000000,group:3},BandPart:MeasuredRowOrColumn}",
+    "LocalizationSettingsV2{Root:{language:system|en|es|be},Language:{selected:system|en|es|be,focus:u32,failed:bool},Contribute:QrLink,ConsentDisclosure:{scroll_steps:u32,overflow_focus:0x20000000,group:3},ConsentDeleteDisclosure:{scroll_target_bits:u32},BandPart:MeasuredRowOrColumn}",
 ];
 
 /// The pin over [`SCREEN_SHAPES`] — bump it in the same edit that adds an entry, and say why.
@@ -1819,8 +1819,8 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 /// string moved, so recorded fixtures need `tools/plxnative-rec rerecord` before a scenario
 /// replay is trusted. Host unit tests do not replay them.
 #[cfg(test)]
-// Localization adds Language/Contribute routes and recorded language selection.
-const SCREEN_SHAPES_PIN: u64 = 0x31d815b3d9c25238;
+// Localization includes language routes and paint-independent delete-disclosure scrolling.
+const SCREEN_SHAPES_PIN: u64 = 0x1d8fe1bf5107479b;
 
 #[cfg(test)]
 mod arg_tests {

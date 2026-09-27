@@ -645,6 +645,8 @@ fn overflowing_disclosure_is_readable_without_committing_a_consent_choice() {
     let (mut out, mut present) = sink();
     let mut page = ConsentPage::first_run(EntryId(1), 0, &cx, &mut mk_fx(&mut out, &mut present));
     out.clear();
+    assert!(page.view().disclosure_cue_frame(cx.measure).is_none(),
+        "a disclosure that fits needs neither an extra focus stop nor a reading hint");
     // Simulate the measured content overflowing the available narrative area. The simulator
     // separately measures the actual Belarusian paragraph with the shipped font.
     page.disclosure.set_extent_for_test(500.0);
@@ -658,6 +660,10 @@ fn overflowing_disclosure_is_readable_without_committing_a_consent_choice() {
     let frame = page.view().disclosure_frame(cx.measure);
     let band_top = page.view().screen().band.as_ref().unwrap().extent(cx.measure).y;
     assert!(frame.y + frame.h + theme::space::XL <= band_top + 0.01);
+    let cue = page.view().disclosure_cue_frame(cx.measure).expect("overflow must explain how to read more");
+    assert!(cue.y > frame.y + frame.h);
+    assert!(cue.y + cue.h < band_top, "the entry hint must not cover either choice");
+    assert_eq!(cue.h, crate::ui::widgets::KeyHint::height());
     cx.focus.current = Some(reading);
     let before = page.state.hash();
     for _ in 0..3 { page.step(&key_down(Key::Down), &cx, &mut mk_fx(&mut out, &mut present)); }

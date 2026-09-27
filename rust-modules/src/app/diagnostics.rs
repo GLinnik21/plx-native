@@ -145,6 +145,8 @@ pub(crate) struct Diagnostics {
     /// schema and drawing the other on the transition frame.
     rows: Vec<Field>,
     head: [String; 2],
+    /// Wrapped with the 2 Hz snapshot, using the same font/width that the header paints.
+    head_lines: [Vec<String>; 2],
     /// Which list [`rows`](Self::rows) currently holds: the device block ([`device_rows`]) rather
     /// than the pipeline one. Sampled WITH the rows so the layout cannot disagree with the content
     /// — both [`panel_rect`](Self::panel_rect) and [`draw`](Self::draw) read it, and the card is
@@ -164,6 +166,7 @@ impl Default for Diagnostics {
             columns: [Vec::new(), Vec::new()],
             rows: Vec::new(),
             head: [String::new(), String::new()],
+            head_lines: [Vec::new(), Vec::new()],
             idle: false,
         }
     }
@@ -410,6 +413,7 @@ impl Diagnostics {
         // would let the panel measure one list and paint another on the frame the first Load lands.
         let idle = never_played(&d, crate::player::state(ps));
         self.idle = idle;
+        self.head_lines = wrap_header(&self.head, self.panel_width() - 2.0 * PAD);
         self.rows = if idle { device_rows() } else { Vec::new() };
         self.columns = if idle {
             [Vec::new(), Vec::new()]
@@ -429,13 +433,13 @@ impl Diagnostics {
     }
 }
 
-/// The two head lines: **who this build is** and **what the pipeline thinks it is doing**.
+/// The two header facts: **who this build is** and **what the pipeline thinks it is doing**.
 ///
 /// It was THREE — build, firmware, verdict — and the draw only ever emits two, which is how the
 /// verdict came to be missing from the panel entirely on 2026-08-26: the firmware line took the
 /// verdict's slot and drew in its bold face, so a photograph of a FAILED playback showed the
-/// firmware where the failure reason should have been. Two lines produced and two drawn, so the
-/// array's length is the contract rather than a comment.
+/// firmware where the failure reason should have been. Both facts are now wrapped independently
+/// and drawn in full, so the array's length remains the semantic contract.
 fn header(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32) -> [String; 2] {
     let w = crate::webos::info();
     let os = if w.major == 0 {
@@ -463,7 +467,7 @@ fn header(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32)
     ]
 }
 
-/// The one-line verdict, in the largest type on the panel: what the pipeline thinks it is doing.
+/// The verdict text: what the pipeline thinks it is doing, wrapped in the diagnostic header.
 fn playback_line(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32) -> String {
     use crate::player::PlaybackState as S;
     let s = match crate::player::state(ps) {
@@ -1475,9 +1479,38 @@ fn mb(b: i64) -> String {
 const MARGIN: f32 = 60.0;
 const PAD: f32 = 24.0;
 const COL_GAP: f32 = 32.0;
-/// Title, build/firmware, playback verdict and the two column headings — each on its own cap band.
+/// Minimum header height: title, single-line identity/verdict, and column headings.
 const HEAD_H: f32 = 118.0;
+const HEAD_LINE_H: f32 = 24.0;
+const HEAD_IDENTITY_Y: f32 = 38.0;
 const PANEL_W: f32 = 2.0 * FIELD_COL_W + COL_GAP + 2.0 * PAD;
+
+/// Identity and verdict remain complete; even opaque build identifiers wrap at a character
+/// boundary. Called only at the sampling boundary, exactly like Field's cached value lines.
+fn wrap_header(head: &[String; 2], width: f32) -> [Vec<String>; 2] {
+    [
+        crate::ui::widgets::diagnostic_lines(&head[0], width, false),
+        crate::ui::widgets::diagnostic_lines(&head[1], width, true),
+    ]
+}
+
+#[derive(Clone, Copy, Debug)]
+struct HeaderLayout {
+    verdict_y: f32,
+    sections_y: f32,
+    fields_y: f32,
+}
+
+impl HeaderLayout {
+    fn new(lines: &[Vec<String>; 2]) -> Self {
+        let identity_h = lines[0].len().max(1) as f32 * HEAD_LINE_H;
+        let verdict_h = lines[1].len().max(1) as f32 * HEAD_LINE_H;
+        let verdict_y = HEAD_IDENTITY_Y + identity_h;
+        let sections_y = verdict_y + verdict_h + 4.0;
+        let fields_y = HEAD_H + identity_h + verdict_h - 2.0 * HEAD_LINE_H;
+        Self { verdict_y, sections_y, fields_y }
+    }
+}
 
 /// The panel's box, SIZED TO ITS CONTENT rather than to the screen.
 ///
@@ -1488,28 +1521,33 @@ const PANEL_W: f32 = 2.0 * FIELD_COL_W + COL_GAP + 2.0 * PAD;
 /// land on the scrubber's rects THROUGH an opaque card — which was the only reason the click path
 /// needed a close-on-click arm at all.
 impl Diagnostics {
+fn panel_width(&self) -> f32 {
+    if self.idle { FIELD_COL_W + 2.0 * PAD } else { PANEL_W }
+}
+
+fn header_layout(&self) -> HeaderLayout {
+    HeaderLayout::new(&self.head_lines)
+}
+
 pub(crate) fn panel_rect(&self) -> Rect {
-    let idle = self.idle;
-    let (w, h) = if idle {
+    let head_h = self.header_layout().fields_y;
+    let h = if self.idle {
         // Before playback there is no delivery history to chart. Keep the support card compact and
         // price exactly the device rows sampled for this frame.
         let lines = FieldList::wrapped_line_count(&self.rows);
-        (
-            FIELD_COL_W + 2.0 * PAD,
-            HEAD_H + FieldList::height(lines) + PAD,
-        )
+        head_h + FieldList::height(lines) + PAD
     } else {
         // Playback keeps fixed comparable columns. The chart is four row pitches under the
         // shorter model column, so both sides share one measured height without clipping.
         let cols = &self.columns;
         let left = FieldList::wrapped_line_count(&cols[0]).max(LEFT_ROWS);
         let right = FieldList::wrapped_line_count(&cols[1]).max(RIGHT_ROWS) + CHART_ROWS;
-        (PANEL_W, HEAD_H + FieldList::height(left.max(right)) + PAD)
+        head_h + FieldList::height(left.max(right)) + PAD
     };
     // x on the app's own side margin, not [`MARGIN`]: the panel's whole output format is a
     // PHOTOGRAPH of a television, so it is the one overlay that must sit inside the overscan frame
     // even though nothing on it is pressable. 60 cleared it vertically and missed it by 36 across.
-    Rect::new(crate::ui::consts::MARGIN_X, MARGIN, w, h)
+    Rect::new(crate::ui::consts::MARGIN_X, MARGIN, self.panel_width(), h)
 }
 
 /// The panel's frame WHEN IT IS ON SCREEN — the only question another module asks of this one
@@ -1531,7 +1569,7 @@ pub(crate) fn draw(&self) {
     // this has to survive.
     p.rect(frame, 24.0, theme::PANEL_TOP, theme::PANEL_BOT, 0.0);
 
-    let head = &self.head;
+    let layout = self.header_layout();
     let inner = frame.x + PAD;
     let iw = frame.w - 2.0 * PAD;
     if let Ok(cs) = CString::new(crate::i18n::msg::browse_diagnostics_title()) {
@@ -1539,33 +1577,35 @@ pub(crate) fn draw(&self) {
             .bold()
             .draw(p, Rect::new(inner, frame.y + 10.0, iw, 30.0));
     }
-    // Build + firmware as ONE identity line. Two lines was one more than the fact needs.
-    if let Ok(cs) = CString::new(head[0].as_str()) {
-        Label::new(cs.as_ptr(), theme::size::DIAGNOSTIC, theme::TEXT_TERTIARY)
-            .draw(p, Rect::new(inner, frame.y + 38.0, iw, 24.0));
-    }
-    // the verdict — the one line that says what the pipeline thinks it is doing
-    if let Ok(cs) = CString::new(head[1].as_str()) {
-        let ink = if head[1].starts_with(crate::i18n::msg::browse_diagnostics_error()) {
-            theme::DANGER
-        } else {
-            theme::TEXT_PRIMARY
-        };
-        Label::new(cs.as_ptr(), theme::size::DIAGNOSTIC, ink)
-            .bold()
-            .draw(p, Rect::new(inner, frame.y + 62.0, iw, 24.0));
+    // Paint the cached lines whose height sizes the opaque panel and flows the fields below it.
+    let verdict_ink = if self.head[1].starts_with(crate::i18n::msg::browse_diagnostics_error()) {
+        theme::DANGER
+    } else {
+        theme::TEXT_PRIMARY
+    };
+    for (lines, y, ink, bold) in [
+        (&self.head_lines[0], HEAD_IDENTITY_Y, theme::TEXT_TERTIARY, false),
+        (&self.head_lines[1], layout.verdict_y, verdict_ink, true),
+    ] {
+        for (i, line) in lines.iter().enumerate() {
+            if let Ok(cs) = CString::new(line.as_str()) {
+                let label = Label::new(cs.as_ptr(), theme::size::DIAGNOSTIC, ink);
+                let label = if bold { label.bold() } else { label };
+                label.draw(p, Rect::new(inner, frame.y + y + i as f32 * HEAD_LINE_H, iw, HEAD_LINE_H));
+            }
+        }
     }
 
-    let top = frame.y + HEAD_H;
+    let top = frame.y + layout.fields_y;
     if self.idle {
         if let Ok(cs) = CString::new("DEVICE / SERVER") {
             Label::new(cs.as_ptr(), theme::size::DIAGNOSTIC, theme::TEXT_SECONDARY)
                 .bold()
-                .draw(p, Rect::new(inner, frame.y + 90.0, FIELD_COL_W, 24.0));
+                .draw(p, Rect::new(inner, frame.y + layout.sections_y, FIELD_COL_W, 24.0));
         }
         FieldList::new(
             &self.rows,
-            Rect::new(inner, top, FIELD_COL_W, frame.h - HEAD_H - PAD),
+            Rect::new(inner, top, FIELD_COL_W, frame.h - layout.fields_y - PAD),
         )
         .draw(&e, p);
         return;
@@ -1576,19 +1616,19 @@ pub(crate) fn draw(&self) {
         if let Ok(cs) = CString::new(title) {
             Label::new(cs.as_ptr(), theme::size::DIAGNOSTIC, theme::TEXT_SECONDARY)
                 .bold()
-                .draw(p, Rect::new(x, frame.y + 90.0, FIELD_COL_W, 24.0));
+                .draw(p, Rect::new(x, frame.y + layout.sections_y, FIELD_COL_W, 24.0));
         }
     }
 
     let cols = &self.columns;
     FieldList::new(
         &cols[0],
-        Rect::new(inner, top, FIELD_COL_W, frame.h - HEAD_H - PAD),
+        Rect::new(inner, top, FIELD_COL_W, frame.h - layout.fields_y - PAD),
     )
     .draw(&e, p);
     FieldList::new(
         &cols[1],
-        Rect::new(right_x, top, FIELD_COL_W, frame.h - HEAD_H - PAD),
+        Rect::new(right_x, top, FIELD_COL_W, frame.h - layout.fields_y - PAD),
     )
     .draw(&e, p);
 
@@ -1754,10 +1794,9 @@ fn draw_chart(&self, p: Painter, r: Rect) {
 }
 }
 
-/// The read-out's frame, for the overscan audit ([`crate::ui::consts::SAFE`]). Fixed at the row
-/// budget by [`Diagnostics::panel_rect`], so a default instance is the whole state space: the
-/// playback branch is the row FLOOR (`LEFT_ROWS`/`RIGHT_ROWS` + `CHART_ROWS`), which no sample can
-/// shrink, and the device branch is strictly shorter (`the_device_card_drops_the_row_floor_and_the_chart`).
+/// The reserved playback footprint for the overscan audit ([`crate::ui::consts::SAFE`]). The
+/// default instance covers the row floor and single-line header. Multiline header growth and
+/// compact device-card layout have separate content-driven tests below.
 #[cfg(test)]
 pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
     out.push((
@@ -1770,6 +1809,68 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
 mod tests {
     use super::*;
     use crate::ui::consts::{SCR_H, SCR_W};
+
+    fn header_fixture(idle: bool, head: [String; 2]) -> Diagnostics {
+        let mut panel = Diagnostics { idle, head, ..Diagnostics::default() };
+        panel.head_lines = wrap_header(&panel.head, panel.panel_width() - 2.0 * PAD);
+        panel
+    }
+
+    #[test]
+    fn localized_diagnostic_header_wraps_without_escaping_its_panel() {
+        // Includes the long unavailable-OS identity from the Belarusian review capture.
+        for os in [
+            "webOS unknown — os_info.json unreadable",
+            "webOS desconocido — no se pudo leer os_info.json",
+            "webOS невядомая — не ўдалося прачытаць os_info.json",
+            "[ŵéƀÖŠ üñķñöŵñ — öš_ïñƒö.ĵšöñ üñŕéàðàƀļé··············]",
+        ] {
+            for idle in [true, false] {
+                let identity = format!("PlxNative 0.7.0-dev · dev · {os} · surface 1920×1080");
+                let verdict = "Playback failed — the server could not open the requested stream".to_string();
+                let panel = header_fixture(idle, [identity.clone(), verdict]);
+                let frame = panel.panel_rect();
+                let layout = panel.header_layout();
+                let text_width = frame.w - 2.0 * PAD;
+                let budget = (text_width / 11.0).floor() as usize;
+                for (source, lines) in panel.head.iter().zip(&panel.head_lines) {
+                    let source_chars: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+                    let drawn_chars: String = lines.concat().chars().filter(|c| !c.is_whitespace()).collect();
+                    assert_eq!(source_chars, drawn_chars, "all diagnostic information survives wrapping");
+                    assert!(lines.iter().all(|line| line.chars().count() <= budget));
+                }
+                if idle {
+                    assert!(panel.head_lines[0].len() > 1, "fixture must reproduce the single-line overflow");
+                    assert!(layout.verdict_y > 62.0, "verdict must move below the wrapped identity");
+                    assert!(layout.sections_y > 90.0, "section heading must follow the verdict");
+                    assert!(layout.fields_y > HEAD_H, "field list must follow the complete header");
+                }
+                assert!(layout.sections_y >= layout.verdict_y
+                    + panel.head_lines[1].len().max(1) as f32 * HEAD_LINE_H);
+                assert!(layout.fields_y >= layout.sections_y + HEAD_LINE_H);
+                assert!(crate::ui::consts::inside_safe(frame));
+                assert!(frame.y + frame.h < crate::ui::player_hud::CTRL_Y);
+            }
+        }
+    }
+
+    #[test]
+    fn diagnostic_header_growth_preserves_fields_and_chart_space() {
+        let short = header_fixture(false, ["build".into(), "playing".into()]);
+        let long = header_fixture(false, ["build-".repeat(72), "failure reason ".repeat(24)]);
+        assert!(long.head_lines[0].len() > 1 && long.head_lines[1].len() > 1);
+        let short_layout = short.header_layout();
+        let long_layout = long.header_layout();
+        let growth = long_layout.fields_y - short_layout.fields_y;
+        assert!(growth > 0.0);
+        assert_eq!(long.panel_rect().h - short.panel_rect().h, growth);
+        for panel in [&short, &long] {
+            let chart_top = panel.header_layout().fields_y + FieldList::height(RIGHT_ROWS);
+            assert_eq!(panel.panel_rect().h - PAD - chart_top, FieldList::height(CHART_ROWS));
+            assert!(panel.panel_rect().y + panel.panel_rect().h < crate::ui::player_hud::CTRL_Y);
+        }
+        assert_eq!(long.head_lines[0].concat(), long.head[0], "opaque build IDs must never lose a suffix");
+    }
 
     /// The YouTube-style plot is a sweep, not a scrolling queue: advancing time overwrites the
     /// next physical cell and moves the cursor, while every other cell stays at the same x. A

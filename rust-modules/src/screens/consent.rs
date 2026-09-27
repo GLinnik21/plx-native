@@ -118,14 +118,15 @@ struct ConsentState {
     draft: (bool, bool),
     alert: bool,
     disclosure_pos: u32,
+    alert_scroll: u32,
 }
 
 impl LogicalState for ConsentState {
     fn write(&self, w: &mut Canon) {
-        w.u32(self.mode as u32).bool(self.draft.0).bool(self.draft.1).bool(self.alert).u32(self.disclosure_pos);
+        w.u32(self.mode as u32).bool(self.draft.0).bool(self.draft.1).bool(self.alert).u32(self.disclosure_pos).u32(self.alert_scroll);
     }
     fn probe(&self, out: &mut String) {
-        out.push_str(&format!("consent mode={} draft={:?} alert={} disclosure_pos={}", self.mode, self.draft, self.alert, self.disclosure_pos));
+        out.push_str(&format!("consent mode={} draft={:?} alert={} disclosure_pos={} alert_scroll={}", self.mode, self.draft, self.alert, self.disclosure_pos, self.alert_scroll));
     }
 }
 
@@ -199,6 +200,7 @@ impl ConsentPage {
                 draft: base,
                 alert: false,
                 disclosure_pos: 0,
+                alert_scroll: 0,
             },
         }
     }
@@ -409,6 +411,7 @@ impl ConsentPage {
             RowId::AnalyticsId => self.open_preview(PreviewKind::AnalyticsId, fx),
             RowId::Delete => {
                 self.alert.open_with_body(crate::i18n::msg::settings_consent_delete_scope());
+                self.state.alert_scroll = 0;
                 self.state.alert = true;
                 // the alert traps focus: seat the engine on its answers
                 fx.push(Fx::Deliver(
@@ -488,6 +491,12 @@ impl<'a> ConsentView<'a> {
     fn disclosure_frame(&self, measure: &dyn crate::ui::machine::Measure) -> Rect {
         let top = self.screen().band.as_ref().map(|b| b.extent(measure).y).unwrap_or(self.layout.action.y);
         self.layout.narrative_copy_frame(self.has_crumb, self.title, top, measure)
+    }
+    fn disclosure_cue_frame(&self, measure: &dyn crate::ui::machine::Measure) -> Option<Rect> {
+        if !self.disclosure_visible() { return None; }
+        let body = self.disclosure_frame(measure);
+        let h = crate::ui::widgets::KeyHint::height();
+        Some(Rect::new(body.x, body.y + body.h + (theme::space::XL - h) * 0.5, body.w, h))
     }
     fn alert_key(&self, i: usize) -> FocusKey<u32> {
         FocusKey {
@@ -719,6 +728,14 @@ impl Machine<InnerHost> for ConsentPage {
             }
             ScreenEvent::Input(InputEvent {
                 kind: InputKind::Key { key: key @ (Key::Up | Key::Down), edge, .. }, ..
+            }) if *edge != crate::ui::machine::Edge::Up && self.alert.is_open() => {
+                self.state.alert_scroll = self.alert.scroll_by(
+                    crate::i18n::msg::settings_consent_delete_question(), cx.measure,
+                    if *key == Key::Up { -1 } else { 1 });
+                Handled::Yes
+            }
+            ScreenEvent::Input(InputEvent {
+                kind: InputKind::Key { key: key @ (Key::Up | Key::Down), edge, .. }, ..
             }) if *edge != crate::ui::machine::Edge::Up
                 && !self.alert.visible()
                 && cx.focus.current.is_some_and(|key| key.elem == DISCLOSURE)
@@ -739,9 +756,6 @@ impl Machine<InnerHost> for ConsentPage {
                     // the alert answers its own keys: BACK dismisses, OK is the press
                     if *key == Key::Back {
                         self.alert_answer(false, fx);
-                        return Handled::Yes;
-                    }
-                    if matches!(key, Key::Up | Key::Down) {
                         return Handled::Yes;
                     }
                     return Handled::No;
@@ -833,7 +847,17 @@ impl Screen<InnerHost> for ConsentPage {
             Header::new(layout, self.crumb(), self.title(), "").paint(p, f.measure);
             let frame = self.view().disclosure_frame(f.measure);
             let body = self.body();
-            self.disclosure.draw(p, frame, None, body);
+            let focused = f.focus.current.is_some_and(|key| key.elem == DISCLOSURE);
+            self.disclosure.draw_focusable(p, frame, None, body, focused);
+            if let Some(cue_frame) = self.view().disclosure_cue_frame(f.measure) {
+                let (message, key) = if focused {
+                    (crate::i18n::msg::settings_scroll_details("\u{fffc}"), c"↑↓")
+                } else {
+                    (crate::i18n::msg::settings_read_details("\u{fffc}"), c"↑")
+                };
+                let hint = crate::ui::widgets::KeyHint::translated(message, key);
+                hint.draw(p, cue_frame.x, cue_frame.cy(), f.measure);
+            }
             if self.disclosure.overflows() {
                 f.stop(p, Stop { key: FocusKey { entry: self.entry, elem: DISCLOSURE },
                     rect: frame, rest_rect: frame, clip: frame, hover: Hover::Focus,
@@ -876,8 +900,8 @@ impl Screen<InnerHost> for ConsentPage {
         // engine seats on while it is open
         if self.alert.visible() {
             self.alert.draw_scrim();
-            self.alert.draw(crate::i18n::msg::settings_consent_delete_question_c(), crate::i18n::msg::settings_cancel_c(), crate::i18n::msg::settings_delete_c());
-            let frames = self.alert.frames();
+            self.alert.draw(crate::i18n::msg::settings_consent_delete_question_c(), crate::i18n::msg::settings_cancel_c(), crate::i18n::msg::settings_delete_c(), f.measure);
+            let frames = self.alert.frames(crate::i18n::msg::settings_consent_delete_question_c(), f.measure);
             self.alert_frames.set(Some(frames));
             // **Register the two hit stops only once the entrance spring has actually arrived.**
             // `frames()` is the FINAL layout — the panel `settled()` documents itself as reaching

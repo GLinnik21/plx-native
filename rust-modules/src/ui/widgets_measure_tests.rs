@@ -84,11 +84,11 @@ fn measured_button_preserves_both_accessory_slots() {
 #[test]
 fn localized_key_hints_allow_reordered_keys_and_preserve_belarusian() {
     let (before, after) = key_hint_parts("Каб вярнуцца, націсніце \u{fffc}");
-    assert_eq!(before.to_str().unwrap(), "Каб вярнуцца, націсніце");
+    assert_eq!(before.to_str().unwrap(), "Каб вярнуцца, націсніце ");
     assert!(after.is_empty());
     let (before, after) = key_hint_parts("\u{fffc} — вярнуцца ў бібліятэку");
     assert!(before.is_empty());
-    assert_eq!(after.to_str().unwrap(), "— вярнуцца ў бібліятэку");
+    assert_eq!(after.to_str().unwrap(), " — вярнуцца ў бібліятэку");
 }
 
 #[test]
@@ -100,7 +100,7 @@ fn localized_key_hint_omits_spacing_for_an_empty_sentence_run() {
     let after = KeyHint::translated("\u{fffc} Return".into(), c"BACK");
     assert_eq!(before.width(&measure), after.width(&measure));
     assert_eq!(before.width(&measure), key_only.width(&measure)
-        + measure.width_str("Return", theme::size::CAPTION, false) + KEYCAP_GAP);
+        + measure.width_str("Return ", theme::size::CAPTION, false));
 }
 
 #[test]
@@ -117,4 +117,44 @@ fn translated_tab_width_uses_glyph_advance_instead_of_character_count() {
     let cyrillic = TabPill::width_measured("Інфа", theme::size::BODY, &GlyphMetrics);
     assert!(cyrillic > latin, "equal character counts need different glyph widths");
     assert_eq!(cyrillic, 4.0 * 23.0 + 44.0);
+}
+
+#[test]
+fn translated_key_hint_preserves_catalog_whitespace_and_punctuation() {
+    for message in [
+        "Press \u{fffc} to return",
+        "Pulsa \u{fffc} para volver",
+        "Націсніце \u{fffc}, каб вярнуцца",
+        "\u{fffc}, каб вярнуцца",
+        "Націсніце \u{fffc}",
+        "Да\u{a0}\u{fffc}\u{a0}пасля",
+    ] {
+        let (pre, post) = key_hint_parts(message);
+        let joined = format!("{}{}", pre.to_str().unwrap(), post.to_str().unwrap());
+        assert_eq!(joined, message.replace('\u{fffc}', ""));
+    }
+}
+
+#[test]
+fn translated_key_hint_layout_attaches_punctuation_and_measures_word_spaces() {
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let hint = KeyHint::translated("Націсніце \u{fffc}, каб вярнуцца".into(), c"BACK");
+    let layout = hint.layout(&measure);
+    let cap = key_cap_w(c"BACK", &measure);
+    assert_eq!(hint.key, c"BACK");
+    assert_eq!(hint.pre.to_str().unwrap(), "Націсніце ");
+    assert_eq!(hint.post.to_str().unwrap(), ", каб вярнуцца");
+    assert_eq!(layout.key_x, measure.width_str("Націсніце ", theme::size::CAPTION, false));
+    assert_eq!(layout.post_x, layout.key_x + cap, "comma must attach to the cap");
+    assert_eq!(hint.width(&measure), layout.width, "draw and alignment use one layout");
+    assert_eq!(layout.width, layout.post_x + measure.width_str(", каб вярнуцца", theme::size::CAPTION, false));
+}
+
+#[test]
+fn legacy_key_hint_retains_explicit_fragment_gaps() {
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let hint = KeyHint::new(c"Press", c"BACK", c"to return");
+    let layout = hint.layout(&measure);
+    assert_eq!(layout.key_x, measure.width(c"Press", theme::size::CAPTION, false) + KEYCAP_GAP);
+    assert_eq!(layout.post_x - layout.key_x, key_cap_w(c"BACK", &measure) + KEYCAP_GAP);
 }

@@ -329,5 +329,8 @@
   "browse.diagnostics.http_failed": "PMS falló al servir el origen Original · HTTP {status}",
   "browse.diagnostics.http_rejected": "PMS denegó el origen Original · HTTP {status}",
   "browse.diagnostics.open_http_failed": "La transmisión Original falló tras HTTP {status}",
-  "browse.diagnostics.no_plex_pass": "{version} · sin Plex Pass"
+  "browse.diagnostics.no_plex_pass": "{version} · sin Plex Pass",
+  "browse.crew.director": "Director",
+  "browse.crew.writer": "Guionista",
+  "browse.crew.director_writer": "Director y guionista"
 }

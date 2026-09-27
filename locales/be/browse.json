@@ -341,5 +341,8 @@
   "browse.diagnostics.http_failed": "PMS не змог выдаць арыгінальную крыніцу · HTTP {status}",
   "browse.diagnostics.http_rejected": "PMS адмовіў у арыгінальнай крыніцы · HTTP {status}",
   "browse.diagnostics.open_http_failed": "Арыгінальны паток перарваўся пасля HTTP {status}",
-  "browse.diagnostics.no_plex_pass": "{version} · без Plex Pass"
+  "browse.diagnostics.no_plex_pass": "{version} · без Plex Pass",
+  "browse.crew.director": "Рэжысёр",
+  "browse.crew.writer": "Сцэнарыст",
+  "browse.crew.director_writer": "Рэжысёр, сцэнарыст"
 }

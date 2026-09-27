@@ -1,6 +1,93 @@
 //! Offline QR links with a four-module quiet zone and integer-sized modules.
 //! Encode on mount, upload once in `prepare`, then paint one texture per frame.
 use super::{theme, Painter, Rect};
+use super::machine::Measure;
+use super::text_view::TextView;
+
+/// Caption-sized link text with a 32 px cap-top pitch. At the shared 24 px face this leaves
+/// roughly 10–14 px of visible air between address lines, without a paragraph-sized gap.
+const LINK_LINE_H: f32 = theme::size::CAPTION as f32 + theme::space::XS;
+
+/// The QR allocation is unchanged; text rectangles describe their actual cap-band extents.
+/// `height` is the complete composition measured down from the supplied frame's top.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct QrLinkLayout {
+    pub(crate) code: Rect,
+    pub(crate) caption: Rect,
+    pub(crate) address: Rect,
+    pub(crate) height: f32,
+}
+
+fn link_text<'a>(text: &'a str, measure: &'a dyn Measure) -> TextView<'a> {
+    TextView::new(text, theme::size::CAPTION, theme::TEXT_READING)
+        .with_measure(measure)
+        .leading(LINK_LINE_H)
+        .break_long_words()
+}
+
+/// Explicit newlines belong to the address's presentation. TextView wraps each requested line
+/// as necessary, while this block preserves those breaks without inserting paragraph spacing.
+fn text_block_height(text: &str, width: f32, measure: &dyn Measure) -> f32 {
+    if text.is_empty() { return 0.0; }
+    let pitches: f32 = text.lines()
+        .map(|line| link_text(line, measure).measure_h(width.max(1.0)))
+        .sum();
+    // TextView reserves a full pitch after its final line; inter-block gaps start at the ink.
+    (pitches - LINK_LINE_H + measure.cap_h(theme::size::CAPTION)).max(0.0)
+}
+
+impl QrLinkLayout {
+    pub(crate) fn new(frame: Rect, caption: &str, address: &str, measure: &dyn Measure) -> Self {
+        let side = frame.w.min(frame.h * 0.60).max(0.0);
+        let code = Rect::new(frame.cx() - side / 2.0, frame.y, side, side);
+        let caption_h = text_block_height(caption, frame.w, measure);
+        let caption = Rect::new(frame.x, code.y + code.h + theme::space::MD, frame.w, caption_h);
+        let gap = if caption_h > 0.0 { theme::space::MD } else { 0.0 };
+        let address = Rect::new(
+            frame.x, caption.y + caption.h + gap, frame.w,
+            text_block_height(address, frame.w, measure),
+        );
+        let bottom = if address.h > 0.0 { address.y + address.h }
+            else if caption.h > 0.0 { caption.y + caption.h }
+            else { code.y + code.h };
+        Self { code, caption, address, height: bottom - frame.y }
+    }
+}
+
+/// Passive caption/address composition for a QR link. The owner keeps its encoded QrCode and
+/// passes `layout.code` to prepare/draw; this component owns the shared text rhythm and styling.
+pub(crate) struct QrLink<'a> {
+    caption: &'a str,
+    address: &'a str,
+}
+
+impl<'a> QrLink<'a> {
+    pub(crate) fn new(caption: &'a str, address: &'a str) -> Self {
+        Self { caption, address }
+    }
+
+    pub(crate) fn layout(&self, frame: Rect, measure: &dyn Measure) -> QrLinkLayout {
+        QrLinkLayout::new(frame, self.caption, self.address, measure)
+    }
+
+    /// Both runs stay aligned to the content column, independently of the centred QR square.
+    /// Measuring and painting share the same text view, explicit line breaks, and line pitch.
+    pub(crate) fn draw(&self, painter: Painter, frame: Rect, measure: &dyn Measure) -> QrLinkLayout {
+        let layout = self.layout(frame, measure);
+        if layout.height <= 0.0 { return layout; }
+        for (text, block) in [(self.caption, layout.caption), (self.address, layout.address)] {
+            let mut y = block.y;
+            for line in text.lines() {
+                let view = link_text(line, measure);
+                let width = block.w.max(1.0);
+                let height = view.measure_h(width);
+                view.draw(painter, Rect::new(block.x, y, width, height));
+                y += height;
+            }
+        }
+        layout
+    }
+}
 
 pub(crate) struct QrCode {
     code: qrcodegen::QrCode,
@@ -45,4 +132,72 @@ impl QrCode {
 
 impl Drop for QrCode {
     fn drop(&mut self) { crate::gfx::delete_tex(self.texture); }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CStr;
+
+    struct CaptionMetrics;
+    impl Measure for CaptionMetrics {
+        fn width(&self, text: &CStr, size: i32, bold: bool) -> f32 {
+            assert_eq!(size, theme::size::CAPTION);
+            assert!(!bold, "caption and address use the same regular face");
+            text.to_str().unwrap().chars().count() as f32 * 12.0
+        }
+        fn cap_h(&self, size: i32) -> f32 {
+            assert_eq!(size, theme::size::CAPTION);
+            18.0
+        }
+        fn line_h(&self, _: i32) -> f32 { LINK_LINE_H }
+    }
+
+    const ADDRESS: &str = "github.com/GLinnik21/plx-native\n/blob/main/docs/localization.md";
+
+    #[test]
+    fn qr_link_preserves_code_size_and_aligns_text_to_the_column() {
+        let frame = Rect::new(960.0, 180.0, 864.0, 720.0);
+        let link = QrLink::new("Scan the QR code", ADDRESS);
+        let layout = link.layout(frame, &CaptionMetrics);
+        assert!((layout.code.w - 432.0).abs() < 0.001);
+        assert_eq!(layout.code.w, layout.code.h);
+        assert_eq!(layout.code.cx(), frame.cx());
+        assert_eq!(layout.code.y, frame.y);
+        assert_eq!(layout.caption.x, frame.x);
+        assert_eq!(layout.address.x, frame.x);
+        assert!(layout.code.x > layout.caption.x, "text is aligned to its column, not to the QR");
+        assert_eq!(link.address, ADDRESS, "display address must remain literal, including /blob/main/");
+    }
+
+    #[test]
+    fn qr_link_spaces_caption_and_two_address_lines_from_their_ink() {
+        let frame = Rect::new(960.0, 180.0, 864.0, 720.0);
+        let layout = QrLinkLayout::new(frame, "Скануйце QR-код", ADDRESS, &CaptionMetrics);
+        assert_eq!(theme::size::CAPTION, 24);
+        assert_eq!(layout.caption.y - (layout.code.y + layout.code.h), 24.0);
+        assert_eq!(layout.address.y - (layout.caption.y + layout.caption.h), 24.0);
+        assert_eq!(layout.caption.h, 18.0);
+        assert_eq!(layout.address.h, 50.0, "two lines form one block with one 32 px pitch");
+        assert_eq!(LINK_LINE_H - CaptionMetrics.cap_h(theme::size::CAPTION), 14.0);
+        assert_eq!(layout.height, layout.address.y + layout.address.h - frame.y);
+        assert!(layout.height <= frame.h);
+        let old_caption_top = layout.code.y + layout.code.h + theme::space::LG;
+        assert_eq!(old_caption_top - layout.caption.y, 16.0, "the text starts 16 px above the old reader");
+    }
+
+    #[test]
+    fn qr_link_flows_wrapped_captions_without_adding_address_paragraph_gaps() {
+        let frame = Rect::new(972.0, 180.0, 520.0, 800.0);
+        let short = QrLinkLayout::new(frame, "Скануйце QR-код", ADDRESS, &CaptionMetrics);
+        let long = QrLinkLayout::new(frame,
+            "Скануйце QR-код на тэлефоне, каб адкрыць інструкцыю для перакладчыкаў.",
+            ADDRESS, &CaptionMetrics);
+        assert!(long.caption.h > short.caption.h);
+        assert_eq!(long.address.y - short.address.y, long.caption.h - short.caption.h);
+        assert_eq!(long.address.h, short.address.h);
+        assert_eq!(long.address.h, 50.0);
+        assert_eq!(long.code.y, short.code.y);
+        assert_eq!(long.code.w, short.code.w);
+    }
 }

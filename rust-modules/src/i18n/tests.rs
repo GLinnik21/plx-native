@@ -54,6 +54,20 @@ fn plural_rules_follow_the_message_language() {
     assert_eq!(es.plural(2), PluralCategory::Other);
     assert_eq!(es.plural(1_000_000), PluralCategory::Many);
 }
+
+#[test]
+fn belarusian_library_count_messages_render_the_reviewed_forms() {
+    let locale = LocaleContext::resolve(Preference::Be, None, Some("en-GB"), None, None);
+    for (count, expected) in [
+        (1, "1 фільм"),
+        (2, "2 фільмы"),
+        (5, "5 фільмаў"),
+        (11, "11 фільмаў"),
+        (21, "21 фільм"),
+    ] {
+        assert_eq!(msg::browse_person_films_in(&locale, count), expected);
+    }
+}
 #[test]
 fn preferences_soft_parse_without_losing_the_session() {
     for raw in [
@@ -110,6 +124,8 @@ fn pseudo_locale_exercises_expansion_without_changing_arguments() {
     assert!(text.starts_with("[!! "));
     assert!(text.contains("name {literal}"));
     assert!(msg::core_system_default_in(&cx).len() > "System default".len());
+    assert!(!msg::settings_language_contribute_body_in(&cx).contains("github.com"),
+        "only the guide caption belongs to the translated catalog, never its address");
 }
 #[test]
 fn captured_language_changes_the_recorded_session_hash() {

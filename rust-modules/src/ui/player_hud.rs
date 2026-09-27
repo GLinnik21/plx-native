@@ -1055,11 +1055,8 @@ fn draw_failed_readout(
         let (words, after) = crate::ui::widgets::key_hint_parts(&sentence);
         let ww = measure.width(&words, theme::size::BODY, false);
         let cw = crate::ui::widgets::pass_capsule_w(measure);
-        const GAP: f32 = 16.0;
         let after_w = measure.width(&after, theme::size::BODY, false);
-        let before_gap = if words.is_empty() { 0.0 } else { GAP };
-        let after_gap = if after.is_empty() { 0.0 } else { GAP };
-        let x = (SCR_W - (ww + before_gap + cw + after_gap + after_w)) * 0.5;
+        let x = (SCR_W - (ww + cw + after_w)) * 0.5;
         let line_top = FR_SLOT_LINE2; // the slot's second line — shared with the quoted verdict
         let (cap_top, baseline) = crate::text::text_cap_band(theme::size::BODY, 0);
         p.text(
@@ -1072,8 +1069,8 @@ fn draw_failed_readout(
             0,
         );
         let cy = line_top + (baseline - cap_top) * 0.5;
-        crate::ui::widgets::pass_capsule(p, x + ww + before_gap, cy, true, measure);
-        p.text(after.as_ptr(), x + ww + before_gap + cw + after_gap,
+        crate::ui::widgets::pass_capsule(p, x + ww, cy, true, measure);
+        p.text(after.as_ptr(), x + ww + cw,
             line_top - cap_top, theme::size::BODY, theme::TEXT_SECONDARY, 0, 0);
     }
     // Both exits stay visible.  OK enters the shared quality ladder (selecting the current rung is
@@ -1119,21 +1116,19 @@ fn draw_hint_with_keycap(
     const CAP_H: f32 = 36.0;
     const CAP_MIN_W: f32 = 74.0;
     const CAP_PAD: f32 = 12.0;
-    const GAP: f32 = 14.0;
     let (pre, post) = crate::ui::widgets::key_hint_parts(&message);
     let sz = theme::size::CAPTION;
     let pw = measure.width(&pre, sz, false);
     let ow = measure.width(&post, sz, false);
     let kw = (measure.width(key, theme::size::MICRO, true) + 2.0 * CAP_PAD).max(CAP_MIN_W);
-    let before_gap = if pre.is_empty() { 0.0 } else { GAP };
-    let after_gap = if post.is_empty() { 0.0 } else { GAP };
-    let total = pw + before_gap + kw + after_gap + ow;
+    // Catalog runs retain their spaces and punctuation; a keycap replaces only the marker.
+    let total = pw + kw + ow;
     let x = (SCR_W - total) * 0.5;
     let (cap_top, baseline) = crate::text::text_cap_band(sz, 0);
     let ty = top - cap_top;
     let cy = top + (baseline - cap_top) * 0.5;
     p.text(pre.as_ptr(), x, ty, sz, theme::TEXT_TERTIARY, 0, 0);
-    let kx = x + pw + before_gap;
+    let kx = x + pw;
     let kr = Rect::new(kx, cy - CAP_H * 0.5, kw, CAP_H);
     const STROKE: f32 = 1.5;
     p.rrect(kr, 8.0, 8.0, [1.0, 1.0, 1.0, 0.34]);
@@ -1161,7 +1156,7 @@ fn draw_hint_with_keycap(
     );
     p.text(
         post.as_ptr(),
-        kx + kw + after_gap,
+        kx + kw,
         ty,
         sz,
         theme::TEXT_TERTIARY,
@@ -1255,6 +1250,13 @@ fn draw_clock(
         p.text(cs.as_ptr(), cx, y, sz, col, 1, 1);
     }
     (cx - half, cx + half)
+}
+
+/// An open Info/Chapters panel owns input; its retained HUD tab indicates mode only.
+/// Returning to the transport restores its actionable tab focus without losing that cursor.
+fn hud_tab_state(transport: bool, focus: i32, tab: i32, index: i32) -> (bool, bool) {
+    let current = tab == index;
+    (transport && focus == 2 && current, !transport && current)
 }
 
 /// The transport HUD, composed from retui widgets through a root `Painter`.
@@ -1593,11 +1595,12 @@ pub(crate) fn draw_hud(
     let py = (SB_Y + SCR_H) * 0.5 - ph * 0.5;
     let mut px = SB_X;
     for (i, label) in tabs.iter().enumerate() {
-        let on = focus == 2 && tab == i as i32;
+        let (focused, selected) = hud_tab_state(transport, focus, tab, i as i32);
         let pw = TabPill::width_measured(label, theme::size::BODY, measure);
         if let Ok(cs) = CString::new(*label) {
             TabPill::new(cs.as_ptr(), theme::size::BODY, Rect::new(px, py, pw, ph))
-                .focused(on)
+                .focused(focused)
+                .selected(selected)
                 // Same row band, same ramp, same ground as the transport discs — everything the
                 // HUD draws stands on the video plane (`ControlGround`).
                 .ground(ControlGround::Unkeyed)
@@ -1634,6 +1637,16 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn chapter_panel_retains_selection_without_borrowing_hud_focus() {
+        assert_eq!(super::hud_tab_state(false, 2, 1, 1), (false, true));
+        assert_eq!(super::hud_tab_state(false, 2, 1, 0), (false, false));
+        assert_eq!(super::hud_tab_state(true, 2, 1, 1), (true, false));
+        assert_eq!(super::hud_tab_state(true, 0, 1, 1), (false, false));
+        // The same ownership rule covers Info, without conflating it with Chapters.
+        assert_eq!(super::hud_tab_state(false, 2, 0, 0), (false, true));
+    }
+
     use super::*;
     use crate::metadata::{Marker, MarkerKind};
     use crate::screens::player::skip_pill::SkipAction;

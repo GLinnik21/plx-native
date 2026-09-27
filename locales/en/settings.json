@@ -196,8 +196,8 @@
     "description": "Settings, account, onboarding or privacy UI: settings.language.contribute_copy"
   },
   "settings.language.contribute_body": {
-    "value": "Translation guide\n\ngithub.com/GLinnik21/plx-native\n\ndocs/localization.md",
-    "description": "Settings, account, onboarding or privacy UI: settings.language.contribute_body"
+    "value": "Translation guide",
+    "description": "Caption above the translation guide address; the canonical URL is drawn separately and must never be translated."
   },
   "settings.consent.crash.title": {
     "value": "Share crash reports?",
@@ -591,5 +591,19 @@
   "settings.consent.preview.usage_heading": {
     "value": "Usage events (only when usage reporting is on):\n",
     "description": "Settings, account, onboarding or privacy UI: settings.consent.preview.usage"
+  },
+  "settings.read_details": {
+    "value": "{key} Read details",
+    "args": {
+      "key": "str"
+    },
+    "description": "Remote key hint shown only when a disclosure has more text than fits. The key argument is a drawn keycap."
+  },
+  "settings.scroll_details": {
+    "value": "{key} Scroll details",
+    "args": {
+      "key": "str"
+    },
+    "description": "Remote key hint while reading a scrollable disclosure. The key argument is a drawn keycap."
   }
 }

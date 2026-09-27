@@ -45,8 +45,8 @@ pub(crate) struct RowStyle {
     /// straight through the rail's letters and out to the panel edge. Photographed on the
     /// television 2026-09-05.
     ///
-    /// A RESERVE rather than a right edge, so the default is 0 and every existing style is
-    /// unchanged to the pixel; [`RowStyle::with_right_reserve`] is how a screen declares one.
+    /// A reserve from the physical edge, intersected with the shared safe area;
+    /// [`RowStyle::with_right_reserve`] is how a screen declares one.
     pub right_reserve: f32,
 }
 impl RowStyle {
@@ -1221,7 +1221,13 @@ fn title_marquee(
 /// breaks mid-pop. The block's y anchor is already unscaled two lines up, for the same reason.
 #[inline]
 fn under_budget(sty: &RowStyle) -> f32 {
-    2.0 * sty.w + 2.0 * sty.gap
+    (2.0 * sty.w + 2.0 * sty.gap).min((label_safe_right(sty) - MARGIN_X).max(0.0))
+}
+
+fn label_safe_right(sty: &RowStyle) -> f32 {
+    // A reserved region is measured from the physical edge and may already include overscan.
+    // Intersect the two bounds instead of subtracting the safe inset a second time.
+    (SCR_W - MARGIN_X).min(SCR_W - sty.right_reserve)
 }
 
 /// **Where a focused tile's label block actually lands on the panel** — its left edge and its
@@ -1235,10 +1241,15 @@ pub(crate) fn label_band(p: Painter, rect: Rect, sty: &RowStyle) -> (f32, f32) {
     let full = under_budget(sty);
     (edge_clamp(p, rect.cx() - full * 0.5, full, sty), full)
 }
-/// Air kept between an edge tile's label block and the panel edge.
-const EDGE_PAD: f32 = 16.0;
+/// Focused identifying text stays inside the shared TV safe frame; decorative tiles may overflow.
+const EDGE_PAD: f32 = MARGIN_X;
 
-/// Keep a `w`-wide block whose left edge is `x` inside the PANEL, and answer in `p`'s own space.
+/// Shared safe text limits in the painter's coordinates, including any index-rail reservation.
+pub(crate) fn label_safe_bounds(p: Painter, sty: &RowStyle) -> (f32, f32) {
+    (EDGE_PAD - p.dx(), label_safe_right(sty) - p.dx())
+}
+
+/// Keep a `w`-wide text block inside the safe frame, and answer in `p`'s own space.
 ///
 /// **The clamp is a screen fact and `x` usually is not.** [`strip`] draws a shelf through
 /// `translate(-scroll_x, 0)`, so every rect below it is a CONTENT coordinate; comparing one against
@@ -1251,18 +1262,17 @@ const EDGE_PAD: f32 = 16.0;
 ///
 /// `p.dx()` converts, so the comparison happens in screen space and the result comes back in the
 /// painter's. An untranslated caller (`home`, `library`, `profiles` draw their focused tile
-/// directly) has `dx == 0` and is unchanged to the pixel.
+/// directly) has `dx == 0` and uses the same safe text bounds.
 fn edge_clamp(p: Painter, x: f32, w: f32, sty: &RowStyle) -> f32 {
-    let lo = EDGE_PAD - p.dx();
+    let (lo, right) = label_safe_bounds(p, sty);
     // The right bound is the panel's edge less whatever the SCREEN has reserved there
     // (`RowStyle::right_reserve` — the Library's A–Z rail, and nothing else today). The left has no
     // twin: no screen reserves a left band, and inventing a symmetric knob nobody sets would be a
     // second way to be wrong about a rule that has exactly one exception.
     //
-    // A block WIDER than the band has no position that satisfies both edges; `lo` wins, which
-    // pins its left edge and lets the overflow run off the right — the same end `elide` and the
-    // wrap budget are already cutting.
-    let hi = SCR_W - sty.right_reserve - w - EDGE_PAD - p.dx();
+    // `under_budget` caps every title/caption at the available safe width before placement.
+    // Keep a degenerate reserve deterministic even when it leaves no text space.
+    let hi = right - w;
     (x).clamp(lo, hi.max(lo))
 }
 
@@ -1356,6 +1366,34 @@ mod tests {
         assert_eq!(row.scroll_x(), 0.0);
         row.restore_scroll(-50.0, 24, &RowStyle::HOME);
         assert_eq!(row.scroll_x(), 0.0);
+    }
+
+    #[test]
+    fn focused_label_bands_stay_inside_safe_bounds_through_scroll_and_rail_reservations() {
+        for dx in [0.0, -290.0, -2900.0, 240.0] {
+            let p = Painter::root().translate(dx, 0.0);
+            for reserve in [0.0, 112.0] {
+                let sty = RowStyle::HOME.with_right_reserve(reserve);
+                for screen_x in [-120.0, MARGIN_X, SCR_W - CARD_W, SCR_W + 120.0] {
+                    let rect = Rect::new(screen_x - dx, 300.0, sty.w, sty.h);
+                    let (x, width) = label_band(p, rect, &sty);
+                    assert!(x + dx >= MARGIN_X, "left edge escaped: {}", x + dx);
+                    assert!(x + dx + width <= (SCR_W - MARGIN_X).min(SCR_W - reserve));
+                    // Short captions use the same clamp as the full marquee window.
+                    let caption = edge_clamp(p, rect.cx() - 140.0, 280.0, &sty);
+                    assert!(caption + dx >= MARGIN_X);
+                    assert!(caption + dx + 280.0 <= (SCR_W - MARGIN_X).min(SCR_W - reserve));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_oversized_label_budget_is_capped_before_safe_placement() {
+        let sty = RowStyle { w: SCR_W, ..RowStyle::HOME.with_right_reserve(112.0) };
+        let (x, width) = label_band(Painter::root(), Rect::new(0.0, 0.0, sty.w, sty.h), &sty);
+        assert_eq!(x, MARGIN_X);
+        assert_eq!(width, SCR_W - sty.right_reserve - MARGIN_X);
     }
 
     const DT: f32 = 1.0 / 60.0;

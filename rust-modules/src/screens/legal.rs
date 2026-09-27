@@ -250,8 +250,9 @@ pub(crate) struct DocumentPage {
     crumb: &'static str,
     title: &'static str,
     subtitle: &'static str,
-    body: &'static str,
+    body: Cow<'static, str>,
     qr: Option<crate::ui::qr::QrCode>,
+    guide_caption: Option<&'static str>,
     word: &'static str,
     state: DocState,
 }
@@ -305,8 +306,9 @@ impl DocumentPage {
             crumb: crate::i18n::msg::settings_legal_title(),
             title: page.title(),
             subtitle: page.subtitle(),
-            body: page.body(),
+            body: Cow::Borrowed(page.body()),
             qr: None,
+            guide_caption: None,
             word: word::LEGAL,
             state: DocState { which: i, pos: 0 },
         }
@@ -319,8 +321,9 @@ impl DocumentPage {
             crumb: crate::i18n::msg::settings_title(),
             title: crate::i18n::msg::settings_about_title(),
             subtitle: crate::i18n::msg::settings_about_subtitle(),
-            body: &ABOUT,
+            body: Cow::Borrowed(&ABOUT),
             qr: None,
+            guide_caption: None,
             word: word::LEGAL,
             state: DocState { which: 0xff, pos: 0 },
         }
@@ -333,21 +336,20 @@ impl DocumentPage {
             crumb: crate::i18n::msg::settings_language_title(),
             title: crate::i18n::msg::settings_language_contribute(),
             subtitle: crate::i18n::msg::settings_language_contribute_copy(),
-            body: crate::i18n::msg::settings_language_contribute_body(),
+            body: Cow::Owned(contribution_address()),
             qr: crate::ui::qr::QrCode::new(crate::i18n::CONTRIBUTE_URL).ok(),
+            guide_caption: Some(crate::i18n::msg::settings_language_contribute_body()),
             word: "contribute",
             state: DocState { which: 0xfe, pos: 0 },
         }
     }
 
     fn document_frame(&self) -> Rect {
-        let mut frame = RouteLayout::screen().document(true);
-        if self.qr.is_some() {
-            let used = frame.w.min(frame.h * 0.60) + theme::space::LG;
-            frame.y += used;
-            frame.h -= used;
-        }
-        frame
+        RouteLayout::screen().document(true)
+    }
+
+    fn guide(&self) -> Option<crate::ui::qr::QrLink<'_>> {
+        self.guide_caption.map(|caption| crate::ui::qr::QrLink::new(caption, self.body.as_ref()))
     }
 
     fn view(&self) -> DocumentFocus<'_> {
@@ -415,25 +417,26 @@ impl Screen<InnerHost> for DocumentPage {
     fn crumb(&self, _cx: &Cx<'_, InnerHost>) -> Option<Cow<'_, str>> {
         Some(Cow::Borrowed(self.crumb))
     }
-    fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, InnerHost>) {
-        if let Some(qr) = &mut self.qr {
-            let frame = RouteLayout::screen().document(true);
-            let side = frame.w.min(frame.h * 0.60);
-            qr.prepare(Rect::new(frame.cx() - side / 2.0, frame.y, side, side));
+    fn prepare(&mut self, _b: &mut Budget, cx: &Cx<'_, InnerHost>) {
+        let code = self.guide().map(|guide| guide.layout(self.document_frame(), cx.measure).code);
+        if let (Some(qr), Some(code)) = (&mut self.qr, code) {
+            qr.prepare(code);
         }
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, InnerHost>) {
         let document_frame = self.document_frame();
-        if let Some(qr) = &self.qr {
-            let frame = RouteLayout::screen().document(true);
-            let side = frame.w.min(frame.h * 0.60);
-            qr.draw(f.painter, Rect::new(frame.cx() - side / 2.0, frame.y, side, side));
+        if let Some(guide) = self.guide() {
+            let layout = guide.draw(f.painter, document_frame, f.measure);
+            if let Some(qr) = &self.qr { qr.draw(f.painter, layout.code); }
+            Header::new(RouteLayout::screen(), Some(self.crumb), self.title, self.subtitle)
+                .paint(f.painter, f.measure);
+            return;
         }
         let Self { reader, crumb, title, subtitle, body, entry, .. } = self;
         let mut v = DocumentScreen::new(
             Header::new(RouteLayout::screen(), Some(crumb), title, subtitle),
             reader,
-            body,
+            body.as_ref(),
             GroupId(0),
             *entry,
         );
@@ -451,6 +454,12 @@ impl Screen<InnerHost> for DocumentPage {
     }
 }
 
+/// A visual line break, not a different address. The path keeps its leading slash and all
+/// GitHub route segments so typing the two lines reaches the QR's exact destination.
+fn contribution_address() -> String {
+    crate::i18n::CONTRIBUTE_URL.trim_start_matches("https://").replace("/blob/", "\n/blob/")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,6 +472,27 @@ mod tests {
     };
     use crate::ui::present::Present;
     use crate::ui::screen::{Activate, By, EdgeRule, Focusable, Hover, Stop};
+
+    #[test]
+    fn contribution_manual_address_is_the_complete_qr_destination() {
+        let _guard = crate::testlock::serial();
+        let page = DocumentPage::contribute(EntryId(0));
+        assert_eq!(format!("https://{}", page.body.replace('\n', "")), crate::i18n::CONTRIBUTE_URL,
+            "a viewer who cannot scan the QR needs the same complete address in text");
+        assert!(page.body.lines().nth(1).unwrap().starts_with('/'));
+    }
+
+    #[test]
+    fn every_contribution_locale_preserves_the_canonical_address() {
+        use crate::i18n::{LocaleContext, Preference};
+        for preference in [Preference::En, Preference::Es, Preference::Be] {
+            let locale = LocaleContext::resolve(preference, None, None, None, None);
+            let caption = crate::i18n::msg::settings_language_contribute_body_in(&locale);
+            assert!(!caption.contains("github.com"), "only the caption is translated");
+            assert_eq!(format!("https://{}", contribution_address().replace('\n', "")),
+                crate::i18n::CONTRIBUTE_URL);
+        }
+    }
 
     /// **No document may print an address other than [`CONTACT_EMAIL`].** Written against the
     /// personal address these pages used to carry: a support address that reaches only some of

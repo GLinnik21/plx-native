@@ -689,10 +689,9 @@ impl RouteLayout {
     ///
     /// The default is the Home hero's editorial measure (660), which is right for a screen whose
     /// COPY is the screen: Settings' narrative column carries the sentence that explains the list
-    /// beside it. It is wrong for a screen whose LIST is the screen. The Filmography route states
-    /// 480 and takes the 180 back for its content column (`Person Screen.dc.html`, 2026-09-06:
-    /// "titles were truncating while half the frame held a static heading") — a caption does not
-    /// need a hero's measure.
+    /// beside it. A route whose LIST is the screen can prefer a narrower measure: Filmography
+    /// starts at 480, then `screen_for_title` accommodates its translated title, reclaiming space (`Person Screen.dc.html`, 2026-09-06:
+    /// "titles were truncating while half the frame held a static heading").
     ///
     /// **The REGION GAP does not move with it.** `COLUMN_GAP` is what makes the two columns read as
     /// related rather than as two screens side by side, and it is the one number here that belongs
@@ -710,6 +709,26 @@ impl RouteLayout {
             content,
             action,
         }
+    }
+
+    /// Allocate enough narrative width for an unbreakable title word at HERO size, while
+    /// preserving the caller's minimum content width. Short titles keep the preferred measure.
+    /// This is shared layout: tabs, rows, focus and paint must all consume the returned columns.
+    pub(crate) fn screen_for_title(
+        preferred_copy_w: f32,
+        min_content_w: f32,
+        title: &str,
+        measure: &dyn Measure,
+    ) -> Self {
+        let longest_word = title
+            .split(|c: char| c.is_whitespace() && c != '\u{a0}')
+            .map(|word| measure.width_str(word, theme::size::HERO, true))
+            .fold(0.0f32, f32::max);
+        let max_copy_w = (SAFE.w - COLUMN_GAP - min_content_w).max(0.0);
+        // Keep a short feature name on one line when possible, including expansion markers.
+        // Longer multiword titles use the bounded column and the shared title's wrapping policy.
+        let title_width = measure.width_str(title, theme::size::HERO, true);
+        Self::screen_with_copy_w(preferred_copy_w.max(longest_word).max(title_width).ceil().min(max_copy_w))
     }
 
     /// Frame for a table whose first section has a label.
@@ -850,6 +869,7 @@ impl RouteLayout {
     pub(crate) fn narrative_title(title: &str) -> TextView<'_> {
         TextView::new(title, theme::size::HERO, theme::TEXT_HEADING)
             .bold()
+            .break_long_words()
             .leading(TITLE_LEADING)
             .max_lines(3)
     }
@@ -949,6 +969,40 @@ mod tests {
     /// `title_h + space::MD`, so the family's stated 24px gap was drawing as ~43. This is the whole
     /// of that correction as arithmetic, and it is here rather than in `filmography.rs` because the
     /// route that noticed it is not the only one that drew it.
+    #[test]
+    fn translated_route_titles_grow_without_taking_the_content_minimum() {
+        struct TitleMeasure;
+        impl Measure for TitleMeasure {
+            fn width(&self, text: &std::ffi::CStr, size: i32, _bold: bool) -> f32 {
+                text.to_string_lossy().chars().count() as f32 * size as f32 * 0.6
+            }
+            fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
+            fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+        }
+        let measure = TitleMeasure;
+        let min_content = RouteLayout::screen().content.w;
+        for preference in [crate::i18n::Preference::En, crate::i18n::Preference::Es, crate::i18n::Preference::Be] {
+            let locale = crate::i18n::LocaleContext::resolve(preference, None, None, None, None);
+            let title = crate::i18n::msg::browse_person_filmography_in(&locale);
+            let layout = RouteLayout::screen_for_title(480.0, min_content, title, &measure);
+            let full_width = measure.width_str(title, theme::size::HERO, true);
+            assert!(layout.narrative.w >= full_width, "route label must fit in full: {title}");
+            assert!(layout.content.w >= min_content);
+            assert!(inside_safe(layout.content));
+            assert!(inside_safe(layout.narrative));
+            if preference == crate::i18n::Preference::Be {
+                assert!(layout.narrative.w > 480.0, "exercise the clipped screenshot's narrow column");
+            }
+        }
+        // Expansion beyond available width must wrap, never steal the content column.
+        let title = "ФільмаграфіяФільмаграфія";
+        let layout = RouteLayout::screen_for_title(480.0, min_content, title, &measure);
+        assert_eq!(layout.content.w, min_content);
+        let view = RouteLayout::narrative_title(title).with_measure(&measure);
+        assert!(view.measure_h(layout.narrative.w) > TITLE_LEADING);
+        assert!(!view.truncates(layout.narrative.w));
+    }
+
     #[test]
     fn the_narrative_title_sets_at_the_design_systems_own_line_height() {
         assert!(

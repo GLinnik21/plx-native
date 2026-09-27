@@ -5,7 +5,9 @@ use std::ffi::CString;
 use crate::metadata::Detail;
 use crate::plex::ServerId;
 use crate::ui::card_row::{self, CardRow, RowStyle};
-use crate::ui::machine::GroupId;
+use crate::ui::label::{HAlign, Label, VAlign};
+use crate::ui::machine::{GroupId, Measure};
+use crate::ui::text_view::TextView;
 use crate::ui::widgets::Art;
 use crate::ui::{theme, Painter, Rect};
 
@@ -14,7 +16,12 @@ pub(crate) const CAST_ELEM_RANGE_END: u32 = 1664;
 pub(crate) const CAST_GROUP: GroupId = GroupId(4);
 pub(crate) const LABEL_H: f32 = 60.0;
 const SLOT: f32 = 230.0;
-const UNDER_H: f32 = 92.0 + 190.0 * (RowStyle::CAST.focus_scale - 1.0) * 0.5;
+const NAME_GAP: f32 = theme::space::MD + theme::space::XS;
+const ROLE_LEADING: f32 = theme::size::CAPTION as f32 + theme::space::XS;
+const ROLE_LINES: usize = 2;
+// Both caption lines and the largest focus drop are reserved by the shelf's layout owner.
+const UNDER_H: f32 = NAME_GAP + theme::size::LABEL as f32 + theme::space::XS
+    + ROLE_LEADING * ROLE_LINES as f32 + RowStyle::CAST.h * (RowStyle::CAST.focus_scale - 1.0) * 0.5;
 
 pub(crate) fn elem(index: usize) -> Option<u32> {
     (index < (CAST_ELEM_RANGE_END - CAST_ELEM_RANGE_START) as usize)
@@ -124,7 +131,7 @@ pub(crate) fn draw(
             label(
                 p,
                 &c.tag,
-                &c.role,
+                d.credit_role(i).unwrap_or_default(),
                 x + RowStyle::CAST.w * 0.5,
                 row_y,
                 is_focused,
@@ -144,6 +151,30 @@ fn pop_drop(scale: f32) -> f32 {
     (RowStyle::CAST.h * (scale - 1.0) * 0.5).max(0.0)
 }
 
+/// Intersect each person's own text slot with the shared safe bounds. Narrow an edge slot
+/// rather than shifting it into its neighbour; offscreen artwork may still extend past the frame.
+fn label_frames(p: Painter, cx: f32, row_y: f32, drop: f32, measure: &dyn Measure) -> (Rect, Rect) {
+    let budget = SLOT - theme::space::SM;
+    let (safe_left, safe_right) = card_row::label_safe_bounds(p, &RowStyle::CAST);
+    let left = (cx - budget * 0.5).clamp(safe_left, safe_right);
+    let right = (cx + budget * 0.5).clamp(left, safe_right);
+    let top = row_y + RowStyle::CAST.h + NAME_GAP + drop;
+    let name = Rect::new(left, top, right - left, theme::size::LABEL as f32 + theme::space::XS);
+    let role = Rect::new(left, top + measure.cap_h(theme::size::LABEL) + theme::space::XS,
+        right - left, ROLE_LEADING * ROLE_LINES as f32);
+    (name, role)
+}
+
+fn name_caption(name: &str, width: f32, focused: bool, measure: &dyn Measure) -> String {
+    crate::text::elide_by(name, width, false, |text| measure.width_str(text, theme::size::LABEL, focused))
+}
+
+fn role_view<'a>(role: &'a str, measure: &'a dyn Measure) -> TextView<'a> {
+    TextView::new(role, theme::size::CAPTION, theme::TEXT_TERTIARY)
+        .with_measure(measure).h(HAlign::Center).leading(ROLE_LEADING)
+        .max_lines(ROLE_LINES).break_long_words()
+}
+
 fn label(
     p: Painter,
     name: &str,
@@ -152,49 +183,84 @@ fn label(
     row_y: f32,
     focused: bool,
     drop: f32,
-    measure: &dyn crate::ui::machine::Measure,
+    measure: &dyn Measure,
 ) {
-    let budget = SLOT - 12.0;
-    let name_elided = crate::text::elide_by(name, budget, false, |t| {
-        measure.width_str(t, theme::size::LABEL, true)
-    });
-    if let Ok(name) = CString::new(name_elided) {
-        p.text(
-            name.as_ptr(),
-            cx,
-            row_y + RowStyle::CAST.h + 26.0 + drop,
-            theme::size::LABEL,
-            if focused {
-                theme::TEXT_PRIMARY
-            } else {
-                theme::TEXT_SECONDARY
-            },
-            1,
-            i32::from(focused),
-        );
+    let (name_frame, role_frame) = label_frames(p, cx, row_y, drop, measure);
+    if name_frame.w <= 0.0 { return; }
+    if let Ok(name) = CString::new(name_caption(name, name_frame.w, focused, measure)) {
+        let mut label = Label::new(name.as_ptr(), theme::size::LABEL,
+            if focused { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY })
+            .h(HAlign::Center).v(VAlign::CapTop);
+        if focused { label = label.bold(); }
+        label.draw(p, name_frame);
     }
-    if role.is_empty() {
-        return;
-    }
-    let role_elided = crate::text::elide_by(role, budget, false, |t| {
-        measure.width_str(t, theme::size::CAPTION, false)
-    });
-    if let Ok(role) = CString::new(role_elided) {
-        p.text(
-            role.as_ptr(),
-            cx,
-            row_y + RowStyle::CAST.h + 58.0 + drop,
-            theme::size::CAPTION,
-            theme::TEXT_TERTIARY,
-            1,
-            0,
-        );
+    if !role.is_empty() {
+        role_view(role, measure).draw(p, role_frame);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct LabelMeasure;
+    impl Measure for LabelMeasure {
+        fn width(&self, text: &std::ffi::CStr, size: i32, _: bool) -> f32 {
+            text.to_string_lossy().chars().count() as f32 * size as f32 * 0.62
+        }
+        fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.75 }
+        fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+    }
+
+    #[test]
+    fn cast_name_elision_uses_the_remaining_width_for_a_partial_surname() {
+        let measure = LabelMeasure;
+        let center = crate::ui::consts::MARGIN_X + RowStyle::CAST.w * 0.5;
+        let (frame, _) = label_frames(Painter::root(), center, 100.0, 0.0, &measure);
+        let text = name_caption("Алена Сяргеева 6", frame.w, true, &measure);
+        assert!(text.starts_with("Алена С"), "single-line elision must not discard the whole surname: {text}");
+        assert!(text.ends_with('…'));
+        assert!(measure.width_str(&text, theme::size::LABEL, true) <= frame.w);
+    }
+
+    #[test]
+    fn first_and_last_cast_labels_share_safe_bounds_even_when_the_shelf_is_scrolled() {
+        let safe = crate::ui::consts::SAFE;
+        let measure = LabelMeasure;
+        for dx in [0.0, -2300.0] {
+            let p = Painter::root().translate(dx, 0.0);
+            for center in [safe.x + RowStyle::CAST.w * 0.5,
+                safe.x + safe.w - RowStyle::CAST.w * 0.5] {
+                let (name, role) = label_frames(p, center - dx, 100.0,
+                    pop_drop(RowStyle::CAST.focus_scale), &measure);
+                for frame in [name, role] {
+                    assert!(frame.x + dx >= safe.x);
+                    assert!(frame.x + dx + frame.w <= safe.x + safe.w);
+                    assert!(frame.w > 0.0);
+                }
+                assert!(role.y + role.h <= 100.0 + RowStyle::CAST.h + UNDER_H,
+                    "both caption lines fit in the space the next shelf reserves");
+            }
+        }
+    }
+
+    #[test]
+    fn combined_crew_captions_fit_two_caption_lines_at_both_safe_edges() {
+        let measure = LabelMeasure;
+        let safe = crate::ui::consts::SAFE;
+        for preference in [crate::i18n::Preference::En, crate::i18n::Preference::Es, crate::i18n::Preference::Be] {
+            let locale = crate::i18n::LocaleContext::resolve(preference, None, None, None, None);
+            let caption = crate::i18n::msg::browse_crew_director_writer_in(&locale);
+            for center in [safe.x + RowStyle::CAST.w * 0.5,
+                safe.x + safe.w - RowStyle::CAST.w * 0.5] {
+                let (_, frame) = label_frames(Painter::root(), center, 100.0, 0.0, &measure);
+                let view = role_view(caption, &measure);
+                assert!(!view.truncates(frame.w), "combined {preference:?} job must remain complete");
+                assert!(view.measure_h(frame.w) <= frame.h);
+                assert!(view.measure_h(frame.w) > ROLE_LEADING, "exercise the old one-line truncation");
+            }
+        }
+    }
 
     #[test]
     fn cast_pop_never_crosses_the_next_slot() {

@@ -1,9 +1,11 @@
-//! Reusable two-choice decision alert.  It owns focus, hit geometry and destructive styling; a
-//! caller supplies the question, the two verbs and — for a question whose consequences its verb
-//! does not state — an optional body, which this module measures and which grows the panel.
+//! Reusable two-choice decision alert. It owns measured geometry and destructive styling; the
+//! caller owns focus and supplies the question, two verbs and optional disclosure. Question and
+//! body wrap completely at their existing text sizes. The panel grows within the safe area;
+//! exceptionally long text scrolls with UP/DOWN while both answers remain directly available.
 //!
 //! [`layout`] is the pure half, `layout(question_h, body_h)`, and `body_h == 0.0` is byte-identical
-//! to the geometry that existed before bodies did (`no_body_leaves_the_geometry_untouched`), which
+//! to the geometry that existed before bodies did when the question fits inside the safe area
+//! (`no_body_leaves_the_geometry_untouched`), which
 //! is the shape an alert takes when it asks its question and nothing more. No shipping alert does
 //! that today — the last bare one was `ui::exit_alert`, retired 2026-09-03 when BACK at a root
 //! stopped asking anything and started handing the screen back to the television, and the one that
@@ -12,7 +14,7 @@
 //! will almost certainly be a bare one. The body is held on the ALERT
 //! rather than passed to [`DecisionAlert::draw`] because it moves the controls, and
 //! [`DecisionAlert::frames`] — the geometry an owning Engine screen registers its own hit stops
-//! from — has to report the same panel the last draw did.
+//! from — uses the same question and measurement capability as drawing.
 //!
 //! **Focus and hit-testing are the owning screen's, not this type's** (restructure phase 12):
 //! `DecisionAlert` used to carry its own `move_focus`/`press_at` ladder, driven by a caller that
@@ -39,11 +41,13 @@
 //! runs over whatever the app shows next, exactly like a dismissed profile / card menu
 //! fading over the host it returned to.
 
-use crate::ui::label::{HAlign, Label};
+use crate::ui::consts::{K_SCROLL, SAFE};
+use crate::ui::label::HAlign;
+use crate::ui::machine::Measure;
 use crate::ui::popover::Popover;
 use crate::ui::text_view::TextView;
-use crate::ui::widgets::{Button, ControlStyle, CtlPop, StatusOverlay};
-use crate::ui::{theme, Env, Rect, View};
+use crate::ui::widgets::{Button, ControlStyle, CtlPop, KeyHint, StatusOverlay};
+use crate::ui::{theme, Env, Rect, Spring, View};
 
 const PANEL_W: f32 = 660.0;
 const PAD_TOP: f32 = theme::alert::PAD;
@@ -74,14 +78,23 @@ pub(crate) struct Layout {
     pub(crate) body: Rect,
     pub(crate) cancel: Rect,
     pub(crate) destructive: Rect,
+    /// The complete text keeps its natural height; only this viewport is bounded.
+    pub(crate) text_viewport: Rect,
+    pub(crate) scroll_max: f32,
+    hint: Option<Rect>,
 }
 
 /// The panel, **pure**, from the two measured text heights. `body_h` is 0.0 for an alert that asks
-/// its question and nothing more, and the arithmetic is written so that case stays byte-identical
-/// to the layout that existed before a body was possible.
+/// its question and nothing more. Fitting text retains the established panel spacing; overflowing
+/// text keeps its natural dimensions but is read through a bounded viewport above the buttons.
 pub(crate) fn layout(question_h: f32, body_h: f32) -> Layout {
     let body_block = if body_h > 0.0 { BODY_GAP + body_h } else { 0.0 };
-    let h = PAD_TOP + question_h + body_block + QUESTION_GAP + StatusOverlay::CTRL_H + PAD_BOTTOM;
+    let text_h = question_h + body_block;
+    let fixed_h = PAD_TOP + QUESTION_GAP + StatusOverlay::CTRL_H + PAD_BOTTOM;
+    let overflow = text_h + fixed_h > SAFE.h;
+    let hint_h = if overflow { KeyHint::height() + theme::space::MD } else { 0.0 };
+    let viewport_h = text_h.min(SAFE.h - fixed_h - hint_h);
+    let h = fixed_h + viewport_h + hint_h;
     let panel = Rect::new(
         (Rect::FULL.w - PANEL_W) * 0.5,
         (Rect::FULL.h - h) * 0.5,
@@ -90,7 +103,7 @@ pub(crate) fn layout(question_h: f32, body_h: f32) -> Layout {
     );
     let row_w = BUTTON_W * 2.0 + BUTTON_GAP;
     let x = panel.cx() - row_w * 0.5;
-    let by = panel.y + PAD_TOP + question_h + body_block + QUESTION_GAP;
+    let by = panel.y + PAD_TOP + viewport_h + hint_h + QUESTION_GAP;
     Layout {
         panel,
         question: Rect::new(
@@ -112,6 +125,11 @@ pub(crate) fn layout(question_h: f32, body_h: f32) -> Layout {
             BUTTON_W,
             StatusOverlay::CTRL_H,
         ),
+        text_viewport: Rect::new(panel.x + PAD_X, panel.y + PAD_TOP, BODY_W, viewport_h),
+        // Leave air after the final line when the text is clipped into a scrolling viewport.
+        scroll_max: if overflow { text_h + theme::space::XS - viewport_h } else { 0.0 },
+        hint: overflow.then(|| Rect::new(panel.x + PAD_X,
+            panel.y + PAD_TOP + viewport_h + theme::space::MD, BODY_W, KeyHint::height())),
     }
 }
 
@@ -120,11 +138,11 @@ pub(crate) struct DecisionAlert {
     choice: Choice,
     controls: CtlPop<2>,
     /// The optional paragraph under the question, held on the ALERT rather than passed to
-    /// [`draw`](Self::draw). It has to be here because the body changes where the buttons are, and
-    /// [`frames`](Self::frames) must report the same panel as the last draw did. A body passed
-    /// per-frame would be correct for drawing and wrong for the first hit test after an open, which
-    /// is precisely the frame a fast click lands on.
+    /// [`draw`](Self::draw). Both drawing and pre-draw [`frames`](Self::frames) queries must
+    /// measure the same complete disclosure before deciding where the answers go.
     body: Option<&'static str>,
+    scroll: Spring,
+    scroll_target: f32,
 }
 
 impl DecisionAlert {
@@ -140,6 +158,8 @@ impl DecisionAlert {
             choice: Choice::Cancel,
             controls: CtlPop::new(),
             body: None,
+            scroll: Spring::at(0.0),
+            scroll_target: 0.0,
         }
     }
     pub(crate) fn is_open(&self) -> bool {
@@ -167,28 +187,45 @@ impl DecisionAlert {
     }
     fn open_inner(&mut self) {
         self.choice = Choice::Cancel;
+        self.scroll_target = 0.0;
+        self.scroll.jump(0.0);
         self.pop.open();
         crate::ui::idle::invalidate();
     }
-    /// The panel as last drawn. **Not callable from a host test** — `text_height` and `measure_h`
-    /// both reach SDL2_ttf; the pure half is [`layout`].
-    fn measured(&self) -> Layout {
-        let qh = crate::text::text_height(theme::size::TITLE, 1);
+    /// Measure the complete question and disclosure with the same capability used for painting.
+    fn measured(&self, question: &str, measure: &dyn Measure) -> Layout {
+        let qh = Self::question_view(question).with_measure(measure).measure_h(BODY_W);
         let bh = self
             .body
-            .map_or(0.0, |b| Self::body_view(b).measure_h(BODY_W));
+            .map_or(0.0, |b| Self::body_view(b).with_measure(measure).measure_h(BODY_W));
         layout(qh, bh)
     }
-    /// The two answers' frames as drawn (Cancel, Delete) — the hit stops an owned screen
-    /// registers for them (restructure phase 5b). Measures text, so draw-time only.
-    pub(crate) fn frames(&self) -> (Rect, Rect) {
-        let l = self.measured();
+    /// The two answers' frames (Cancel, Delete), using the exact same measurement as `draw`.
+    /// This also works before a first paint or with host fixture metrics; there is no hidden
+    /// dependency on a previous draw or on the live font backend.
+    pub(crate) fn frames(&self, question: &core::ffi::CStr, measure: &dyn Measure) -> (Rect, Rect) {
+        let l = self.measured(question.to_str().unwrap_or_default(), measure);
         (l.cancel, l.destructive)
+    }
+    fn question_view(text: &str) -> TextView<'_> {
+        TextView::new(text, theme::size::TITLE, theme::TEXT_PRIMARY).bold().h(HAlign::Center)
+            .break_long_words()
     }
     fn body_view(text: &str) -> TextView<'_> {
         TextView::new(text, theme::size::BODY, theme::TEXT_READING)
             .h(HAlign::Center)
-            .max_lines(4)
+            .break_long_words()
+    }
+    /// The remote's vertical axis reads the disclosure; horizontal focus still owns the answers.
+    /// Derive bounds from the event's measurement capability, including during headless replay.
+    /// Returns the logical target bits for the owning screen's state hash.
+    pub(crate) fn scroll_by(&mut self, question: &str, measure: &dyn Measure, delta: i32) -> u32 {
+        let max = self.measured(question, measure).scroll_max;
+        self.scroll_target = (self.scroll_target + delta as f32 * theme::size::BODY as f32 * 6.0)
+            .clamp(0.0, max);
+        crate::ui::popover::note_own_damage();
+        crate::ui::idle::invalidate();
+        self.scroll_target.to_bits()
     }
     /// Instant hide — see [`Popover::close`]. Interactive answers take [`dismiss`](Self::dismiss).
     pub(crate) fn close(&mut self) {
@@ -221,6 +258,7 @@ impl DecisionAlert {
         // page's — `popover::own_motion`.
         let _own = crate::ui::popover::own_motion();
         self.pop.update(dt);
+        self.scroll.step(self.scroll_target, K_SCROLL, dt);
         self.controls.step(
             Some(matches!(self.choice, Choice::Destructive) as usize),
             dt,
@@ -239,22 +277,35 @@ impl DecisionAlert {
         question: &core::ffi::CStr,
         cancel: &core::ffi::CStr,
         destructive: &core::ffi::CStr,
+        measure: &dyn Measure,
     ) {
         if !self.visible() {
             return;
         }
         // Everything below is LIVE over the frozen host page — see `popover::host::live`.
         let _live = crate::ui::popover::host::live();
-        let l = self.measured();
+        let question = question.to_str().unwrap_or_default();
+        let l = self.measured(question, measure);
         let p = self.pop.content_painter(Popover::RISE);
         crate::ui::profile::phase("da.panel", || self.pop.panel(p, l.panel, theme::ALERT_PANEL_RAD));
         crate::ui::profile::phase("da.text", || {
-            Label::new(question.as_ptr(), theme::size::TITLE, theme::TEXT_PRIMARY)
-                .bold()
-                .h(HAlign::Center)
-                .draw(p, l.question);
+            let scroll = self.scroll.pos.clamp(0.0, l.scroll_max);
+            if l.scroll_max > 0.0 { p.clip(l.text_viewport); }
+            let text_painter = p.translate(0.0, -scroll);
+            Self::question_view(question).with_measure(measure).draw(text_painter, l.question);
             if let Some(body) = self.body {
-                Self::body_view(body).draw(p, l.body);
+                Self::body_view(body).with_measure(measure).draw(text_painter, l.body);
+            }
+            if l.scroll_max > 0.0 {
+                p.clip_clear();
+                crate::ui::widgets::continuous_scroll_rail(p,
+                    Rect::new(l.text_viewport.x + l.text_viewport.w + theme::space::SM,
+                        l.text_viewport.y, crate::ui::widgets::RAIL_W, l.text_viewport.h),
+                    scroll, l.text_viewport.h + l.scroll_max, l.text_viewport.h);
+            }
+            if let Some(frame) = l.hint {
+                let hint = KeyHint::translated(crate::i18n::msg::settings_scroll_details("\u{fffc}"), c"↑↓");
+                hint.draw(p, frame.cx() - hint.width(measure) * 0.5, frame.cy(), measure);
             }
         });
         let env = Env::inert();
@@ -275,6 +326,69 @@ impl DecisionAlert {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Unicode scalar metrics avoid treating every Belarusian glyph as two UTF-8 bytes. Real
+    /// font/cap-band rendering is verified separately in the simulator and on the television.
+    struct DisclosureMeasure;
+    impl Measure for DisclosureMeasure {
+        fn width(&self, text: &core::ffi::CStr, size: i32, _bold: bool) -> f32 {
+            text.to_string_lossy().chars().count() as f32 * size as f32 * 0.58
+        }
+        fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.72 }
+        fn line_h(&self, size: i32) -> f32 { size as f32 * 1.32 }
+    }
+
+    #[test]
+    fn belarusian_delete_question_and_complete_scope_wrap_at_the_existing_text_sizes() {
+        let _guard = crate::testlock::serial();
+        let measure = DisclosureMeasure;
+        let locale = crate::i18n::LocaleContext::resolve(crate::i18n::Preference::Be, None, None, None, None);
+        let question = crate::i18n::msg::settings_consent_delete_question_in(&locale);
+        let body = crate::i18n::msg::settings_consent_delete_scope_in(&locale);
+        assert!(body.contains("Plex Media Servers") && body.contains("Sentry") && body.contains("PostHog"));
+        let question_view = DecisionAlert::question_view(question).with_measure(&measure);
+        let body_view = DecisionAlert::body_view(body).with_measure(&measure);
+        assert!(!question_view.truncates(BODY_W));
+        assert!(!body_view.truncates(BODY_W), "the old four-line limit hid the deletion exclusions");
+        assert!(question_view.measure_h(BODY_W) > measure.line_h(theme::size::TITLE));
+        assert!(body_view.measure_h(BODY_W) > 4.0 * measure.line_h(theme::size::BODY));
+        let mut alert = DecisionAlert::new();
+        alert.open_with_body(body);
+        let l = alert.measured(question, &measure);
+        assert_eq!(alert.choice(), Choice::Cancel);
+        assert_eq!(l.question.w, 564.0);
+        assert_eq!(l.question.x - l.panel.x, 48.0);
+        assert_eq!(l.body.h, body_view.measure_h(BODY_W));
+        assert_eq!(l.scroll_max, 0.0, "the real translation fits without hiding any scope");
+        let (cancel, destructive) = alert.frames(crate::i18n::msg::settings_consent_delete_question_c_in(&locale), &measure);
+        assert_eq!((cancel.x, cancel.y, cancel.w, cancel.h), (l.cancel.x, l.cancel.y, l.cancel.w, l.cancel.h));
+        assert_eq!(cancel.w, destructive.w);
+        assert!(l.body.y + l.body.h < cancel.y);
+        assert!(l.panel.y >= SAFE.y && l.panel.y + l.panel.h <= SAFE.y + SAFE.h);
+    }
+
+    #[test]
+    fn oversized_disclosure_scrolls_to_its_end_while_both_answers_stay_inside_the_safe_area() {
+        let _guard = crate::testlock::serial();
+        let measure = DisclosureMeasure;
+        let mut alert = DecisionAlert::new();
+        alert.open_with_body("All local data is removed. Data already sent to Plex, Sentry and PostHog is not removed.");
+        let question = "A future translated question with a long scope ".repeat(100);
+        let l = alert.measured(&question, &measure);
+        assert!(l.scroll_max > 0.0 && l.hint.is_some());
+        assert_eq!(l.panel.h, SAFE.h);
+        assert!(l.cancel.y >= l.text_viewport.y + l.text_viewport.h);
+        assert!(l.cancel.y + l.cancel.h <= SAFE.y + SAFE.h);
+        assert_eq!(l.cancel.w, l.destructive.w);
+        assert_ne!(alert.scroll_by(&question, &measure, 1), 0);
+        alert.scroll_by(&question, &measure, i32::MAX);
+        assert_eq!(alert.scroll_target, l.scroll_max);
+        assert!(l.body.y + l.body.h - alert.scroll_target < l.text_viewport.y + l.text_viewport.h,
+            "even the final scope sentence remains reachable");
+        assert_eq!(alert.choice(), Choice::Cancel, "reading never selects the destructive answer");
+        alert.scroll_by(&question, &measure, i32::MIN);
+        assert_eq!(alert.scroll_target, 0.0);
+    }
     /// **A body must not move an alert that has none.** The body arithmetic has to vanish
     /// completely at `body_h == 0.0` — not merely add a small gap. Written by computing the panel
     /// both ways and comparing.

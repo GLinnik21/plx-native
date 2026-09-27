@@ -127,8 +127,10 @@ forget to answer, and `None` means BACK leaves the app entirely.
 
 This replaced "Press [BACK] to return" across the family. The old hint spent a 60 px band restating
 a key the remote already has, and could not say where the key went, which on a three-deep push is
-the only part anybody needs. `KeyHint` survives only on the read-only ALERT panels that hold no
-control at all, where the line really is the whole affordance.
+the only part anybody needs. Keep the BACK-return `KeyHint` on read-only ALERT panels, where
+it supplies their dismissal affordance; do not repeat it beside a route's return crumb.
+Reading-axis hints may appear on interactive routes or decision alerts to explain how to enter
+or scroll a disclosure. They describe reading controls, not another BACK destination.
 
 ## Where to look when you are changing something
 

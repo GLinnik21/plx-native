@@ -18,6 +18,15 @@ use std::hash::{Hash, Hasher};
 const INDENT: f32 = theme::space::XS;
 const RAIL_GAP: f32 = theme::space::MD;
 
+/// Focusable readers keep an inset whether focused or not, so entering the document never
+/// changes its wrapping or scroll position. The ring stays inside the caller's focus/hit frame.
+fn reader_frames(frame: Rect, focused: Option<bool>) -> (Rect, Option<Rect>) {
+    match focused {
+        Some(focused) => (frame.inset(theme::space::XS), focused.then_some(frame)),
+        None => (frame, None),
+    }
+}
+
 /// One measured line: its top offset within the document, its height, its indentation, whether it
 /// draws bold (an all-caps "heading" line), and its own trimmed text.
 ///
@@ -175,6 +184,21 @@ impl DocumentReader {
     /// only the lines the clip rect can see; measures lines only when `(body, text_w)` changed
     /// since the last call.
     pub(crate) fn draw(&mut self, p: Painter, frame: Rect, title: Option<&str>, body: &str) {
+        self.draw_inner(p, frame, title, body, None);
+    }
+
+    /// A reader sharing a route with other controls must identify when it owns the D-pad.
+    /// Its focus frame is the same rectangle the owning screen registers for navigation.
+    pub(crate) fn draw_focusable(&mut self, p: Painter, frame: Rect, title: Option<&str>, body: &str, focused: bool) {
+        self.draw_inner(p, frame, title, body, Some(focused));
+    }
+
+    fn draw_inner(&mut self, p: Painter, frame: Rect, title: Option<&str>, body: &str, focused: Option<bool>) {
+        let (frame, focus_frame) = reader_frames(frame, focused);
+        if let Some(ring) = focus_frame {
+            p.rring(ring, theme::space::XS, theme::CONTROL_RIM_FOCUS_UNKEYED_W,
+                theme::CONTROL_RIM_FOCUS_UNKEYED);
+        }
         let mut body_frame = frame;
         if let Some(title) = title {
             let title = TextView::new(title, theme::size::HEADLINE, theme::TEXT_HEADING).bold();
@@ -237,6 +261,22 @@ impl DocumentReader {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn focus_is_visible_without_reflowing_or_leaving_the_registered_frame() {
+        let frame = Rect::new(96.0, 280.0, 700.0, 420.0);
+        let (idle_body, idle_ring) = reader_frames(frame, Some(false));
+        let (focused_body, focused_ring) = reader_frames(frame, Some(true));
+        assert!(idle_ring.is_none());
+        let ring = focused_ring.expect("D-pad ownership must have a visible focus treatment");
+        assert_eq!((ring.x, ring.y, ring.w, ring.h), (frame.x, frame.y, frame.w, frame.h));
+        assert_eq!((idle_body.x, idle_body.y, idle_body.w, idle_body.h),
+            (focused_body.x, focused_body.y, focused_body.w, focused_body.h),
+            "entering the text must preserve wrapping and scroll bounds");
+        assert!(focused_body.x > ring.x && focused_body.y > ring.y);
+        assert!(focused_body.x + focused_body.w < ring.x + ring.w);
+        assert!(focused_body.y + focused_body.h < ring.y + ring.h);
+    }
 
     #[test]
     fn document_scroll_moves_on_a_spring_and_reaches_rest() {
