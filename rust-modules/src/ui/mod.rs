@@ -22,6 +22,7 @@ use std::os::raw::{c_char, c_int};
 
 pub mod anim;
 pub mod card_row;
+pub(crate) mod card_motion;
 pub(crate) mod value_chip; // shared label/value/owner capsule used by menu-opening controls
 pub mod chapters_panel;
 pub(crate) mod containers; // RESTRUCTURE (spec §6.2): Navigation = TabContainer → NavStack → ModalStack, the transitions, the host fold
@@ -320,16 +321,6 @@ impl Spring {
     #[inline]
     pub fn step(&mut self, target: f32, k: f32, dt: f32) {
         crate::gfx::spring(&mut self.pos, &mut self.vel, target, k, dt);
-    }
-    /// Step a SCROLL: integrates exactly as [`step`](Self::step) and additionally publishes the
-    /// speed to the shared motion signal `ui::card_row` owns. Both the spring's own velocity and
-    /// the realised displacement are reported, because a spring clamped at a document end has a
-    /// velocity the document did not actually travel.
-    pub(crate) fn step_scroll(&mut self, target: f32, k: f32, dt: f32) {
-        let before = self.pos;
-        self.step(target, k, dt);
-        card_row::note_scroll(self.vel);
-        if dt > 0.0 { card_row::note_scroll((self.pos - before) / dt); }
     }
     /// Step with an UNDERdamped spring (`zeta < 1` → overshoots/rings). The critically-damped
     /// [`step`](Self::step) can't bounce; this drives the `ui::press` click spring-back. See

@@ -117,8 +117,6 @@ pub(crate) unsafe fn run(app: &mut App) {
         let mut fr = Frame::begin(&app.player.session, app.bridge.metadata_view());
         let first_controlled_frame = app.boot_initial.is_some() && app.prev == 0;
         let fr = &mut fr;
-        // One motion signal per iteration, reset before any spring steps into it.
-        crate::ui::card_row::begin_motion_frame();
         app.instr.mark(crate::diag::heartbeat::Phase::Top);
         // The frame index the LANDING SCHEDULE stamps against (§3.3 step 3, `ui::landgate`),
         // published at the TOP because a landing site is reachable from the dev scenarios below
@@ -141,6 +139,8 @@ pub(crate) unsafe fn run(app: &mut App) {
         app.instr.mark(crate::diag::heartbeat::Phase::Ingest); // ingest
 
         fr.now = clock::now();
+        // Share the actual/replay frame timestamp, before spring dt is clamped.
+        crate::ui::card_motion::begin_frame(fr.now);
         // **The Player machine's tick** (spec §4.1): set ONCE per iteration, from the same
         // `fr.now` every other phase of this frame reads. `PlaybackSession::auto_last_switch` — the
         // adaptive controller's "how long since the last visible rung change" — is stamped from
