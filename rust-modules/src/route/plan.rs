@@ -813,6 +813,11 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         .cached_item
         .clone()
         .or_else(|| crate::metadata::fetch_playing_item(env.sid, rk));
+    if let (Some(id), Some(item)) = (env.subtitle_override, plan.playing.as_mut()) {
+        // The retry's explicit selection owns both embedded and sidecar restoration; a stale
+        // server-side selection must not turn subtitles back on after the viewer chose Off.
+        for sub in &mut item.subs { sub.selected = id > 0 && sub.id == id; }
+    }
     // Server-adjudicated: the Media Decision Engine decides direct-play vs transcode from our
     // capability profile. An unusable / unreachable `/decision` must not Original (PMS 1.43
     // 503s a Part without a registered decision); remux/re-encode still registers via a
@@ -1087,7 +1092,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         if forced { forced_server_decision(client, rk, &session, audio_id, subtitle_id) }
         else { server_decision(client, rk, &session, audio_id, subtitle_id) }
     };
-    let mut directplay = mde.as_ref().is_some_and(|v| v.original);
+    let mut directplay = mde.as_ref().is_some_and(|v| v.original && (!forced || !v.video_forbids_copy));
     if forced {
         let failure = if part.is_empty() { Some("No original media is available.") }
             else if !streamable { Some("This original container is not supported by the playback engine.") }
@@ -1711,7 +1716,15 @@ fn pick_dp_audio_mode(
     tracks: &[crate::metadata::Stream], default_acodec: &str,
     prefs: AudioLangPrefs<'_>, mode: DirectPlayMode,
 ) -> Option<(i32, String, i64)> {
-    let dp = |codec: &str| audio_direct_plays(mode, codec, 0);
+    pick_dp_audio_eligible(tracks, default_acodec, prefs,
+        |codec, channels| audio_direct_plays(mode, codec, channels))
+}
+
+fn pick_dp_audio_eligible(
+    tracks: &[crate::metadata::Stream], default_acodec: &str, prefs: AudioLangPrefs<'_>,
+    eligible: impl Fn(&str, i64) -> bool,
+) -> Option<(i32, String, i64)> {
+    let dp = |codec: &str| eligible(codec, 0);
     if tracks.is_empty() {
         // no track info — fall back to the codec-default (or transcode if that isn't DP)
         return if dp(default_acodec) {
@@ -1721,7 +1734,7 @@ fn pick_dp_audio_mode(
         };
     }
     let pick = |i: usize| (i as i32, tracks[i].codec.to_lowercase(), tracks[i].id);
-    let dp_at = |s: &crate::metadata::Stream| audio_direct_plays(mode, &s.codec, s.channels);
+    let dp_at = |s: &crate::metadata::Stream| eligible(&s.codec, s.channels);
     let honoured = audio_intents(tracks, prefs).into_iter().find_map(|intent| match intent {
         AudioIntent::Selection(i) if dp_at(&tracks[i]) => Some(i),
         AudioIntent::Selection(i) => tracks
@@ -1736,9 +1749,12 @@ fn pick_dp_audio_mode(
     if let Some(i) = honoured {
         return Some(pick(i));
     }
-    if dp(default_acodec) && !tracks.iter().any(|s| s.default) {
-        // Media[0].audioCodec is DP but no stream carries the default flag — codec-match
-        return Some((-1, default_acodec.to_string(), 0));
+    if !tracks.iter().any(|s| s.default) {
+        // Once PMS supplied tracks, their concrete channel count outranks the codec-only
+        // Media default. Never erase a known 8-channel refusal by rechecking it as unknown/0.
+        if let Some(i) = tracks.iter().position(|s| s.codec.eq_ignore_ascii_case(default_acodec) && dp_at(s)) {
+            return Some(pick(i));
+        }
     }
     // any direct-playable track (smart direct-play over a non-DP default)
     tracks.iter().position(dp_at).map(pick)

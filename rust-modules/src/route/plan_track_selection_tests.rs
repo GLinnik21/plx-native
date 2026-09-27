@@ -747,3 +747,14 @@ fn account_subtitles_skip_unrenderable_tracks_without_enabling_a_burn() {
     tracks[1].selected = true;
     assert_eq!(pick_dp_subtitle_account(&tracks, &show, account, "eng"), None, "a PMS sidecar selection prevents automatic embedded selection");
 }
+
+#[test]
+fn known_audio_channels_cannot_fall_back_to_an_unknown_codec_default() {
+    let caps = crate::devcaps::Caps { audio_channels: [("aac".into(), 6)].into(), ..crate::devcaps::Caps::assumed() };
+    let mut track = trk(1, "aac", "eng", false);
+    track.channels = 8;
+    assert!(caps.audio_supports("aac", 0), "legacy unknown remains compatible");
+    assert_eq!(pick_dp_audio_eligible(&[track.clone()], "aac", AudioLangPrefs::default(), |c, n| caps.audio_supports(c, n)), None);
+    track.channels = 6;
+    assert_eq!(pick_dp_audio_eligible(&[track], "aac", AudioLangPrefs::default(), |c, n| caps.audio_supports(c, n)), Some((0, "aac".into(), 1)));
+}

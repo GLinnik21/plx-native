@@ -1,6 +1,8 @@
 //! Strict original-stream override and ordinary disabled-direct-play routing.
 use super::*;
 use super::test_support::*;
+#[cfg(feature = "devtriggers")]
+use std::time::Duration;
 
 #[test]
 fn direct_play_modes_compose_with_each_quality_ceiling() {
