@@ -178,3 +178,13 @@ with the binary and not only with this repository.
 This is an unofficial client, not affiliated with, endorsed by, or sponsored by Plex GmbH or LG
 Electronics. "Plex", "Rotten Tomatoes", "IMDb", "TMDB", "LG" and "webOS" are trademarks of their
 respective owners; where they appear in the app, they identify whose service or score is being shown.
+
+## Star history
+
+<a href="https://www.star-history.com/?repos=glinnik21%2Fplx-native&type=date&legend=bottom-right">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=glinnik21/plx-native&type=date&theme=dark&legend=bottom-right">
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=glinnik21/plx-native&type=date&legend=bottom-right">
+    <img alt="Star history chart" src="https://api.star-history.com/chart?repos=glinnik21/plx-native&type=date&legend=bottom-right">
+  </picture>
+</a>
