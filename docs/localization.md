@@ -60,13 +60,7 @@ layouts. These environment overrides do not operate in the shipping TV build.
 
 Open a pull request describing which language and screens changed, and how you checked the
 wording and layout. Translations ship with app releases; the app does not download language packs.
-Nacho ([@gnacho](https://github.com/gnacho)) contributed the original Spanish localization in
-[PR #181](https://github.com/GLinnik21/plx-native/pull/181) and reviewed the Spanish localization
-as a native speaker. He is credited as a co-author of this implementation.
-Zmicier Kachkou ([@ZmicierKachkou](https://github.com/ZmicierKachkou)) reviewed the Belarusian
-localization and contributed the language-setting and report-sending wording. He is credited
-as a co-author of those wording changes. These catalogs use freshly translated current copy
-with stable message keys. New translations and changes remain subject to language review.
+New translations and changes remain subject to language review.
 
 ## Adding a language
 
