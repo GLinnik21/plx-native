@@ -156,6 +156,46 @@ fn the_page_glyph_hangs_above_the_anchor_and_only_a_page_placed_failure_draws_on
     assert!(working.glyph_frame().is_none(), "Working carries no glyph");
 }
 
+/// **`glyph_ceiling`'s scale-down and omit thresholds** (`StatusOverlay::glyph_rect`, added for
+/// the Library's tab-strip collision): a ceiling that leaves room for the natural
+/// `GLYPH_GAP+GLYPH_SIZE` span is a no-op; a tighter one shrinks `gap` and `size` by the SAME
+/// factor so the box's top edge lands exactly `GLYPH_CEILING_MARGIN` below the ceiling and
+/// `FULL_ANCHOR_TOP` never moves; below `GLYPH_MIN_SIZE` the glyph is omitted rather than drawn
+/// as a shrunk thumbnail.
+#[test]
+fn glyph_ceiling_scales_the_glyph_down_and_omits_it_below_the_minimum_size() {
+    let icon = crate::ui::icons::Icon::ClockBadgeAlert;
+    let natural_top = StatusOverlay::FULL_ANCHOR_TOP - StatusOverlay::GLYPH_GAP - StatusOverlay::GLYPH_SIZE;
+
+    // A ceiling far above the natural glyph box has no effect at all.
+    let far = StatusOverlay::new(Rect::FULL, c"Failed", StatusKind::Failed).page(icon).glyph_ceiling(150.0);
+    let rect = far.glyph_frame().expect("a distant ceiling must not omit the glyph");
+    assert_eq!((rect.y, rect.h), (natural_top, StatusOverlay::GLYPH_SIZE), "no shrink when there is room");
+
+    // A tight-but-survivable ceiling (the Library's own measured tab-strip bottom, 254) shrinks
+    // the box just enough to clear it, keeping the gap/size proportion and never moving the
+    // verdict.
+    let ceiling = 254.0_f32;
+    let tight = StatusOverlay::new(Rect::FULL, c"Failed", StatusKind::Failed).page(icon).glyph_ceiling(ceiling);
+    let rect = tight.glyph_frame().expect("this ceiling leaves enough room for a shrunk glyph");
+    assert!(rect.h < StatusOverlay::GLYPH_SIZE, "a tight ceiling must actually shrink the box");
+    assert!(rect.h >= StatusOverlay::GLYPH_MIN_SIZE, "must not shrink below the omit floor and still draw");
+    assert!((rect.y - (ceiling + StatusOverlay::GLYPH_CEILING_MARGIN)).abs() < 0.01,
+        "the shrunk box's top edge must land exactly the margin below the ceiling, y={} ceiling+margin={}",
+        rect.y, ceiling + StatusOverlay::GLYPH_CEILING_MARGIN);
+    let natural_ratio = StatusOverlay::GLYPH_SIZE / StatusOverlay::GLYPH_GAP;
+    let shrunk_gap = StatusOverlay::FULL_ANCHOR_TOP - StatusOverlay::GLYPH_CEILING_MARGIN - ceiling - rect.h;
+    assert!((rect.h / shrunk_gap - natural_ratio).abs() < 0.01, "size and gap must shrink together, keeping proportion");
+    assert!(rect.y + rect.h <= StatusOverlay::FULL_ANCHOR_TOP - StatusOverlay::GLYPH_CEILING_MARGIN.min(StatusOverlay::GLYPH_GAP),
+        "the shrunk box must still sit above the verdict's anchor");
+    assert_eq!(StatusOverlay::FULL_ANCHOR_TOP, 372.0, "FULL_ANCHOR_TOP itself never moves for a ceiling caller");
+
+    // A ceiling tight enough that the scaled size would fall below `GLYPH_MIN_SIZE` omits the
+    // glyph entirely rather than draw a blurry thumbnail.
+    let tiny = StatusOverlay::new(Rect::FULL, c"Failed", StatusKind::Failed).page(icon).glyph_ceiling(310.0);
+    assert!(tiny.glyph_frame().is_none(), "a ceiling this tight must omit the glyph rather than shrink it further");
+}
+
 /// A read-out that offers two things to press lays them out as ONE centred run, `CONTROL_GAP`
 /// apart, on the lone action's own row — and the primary is still slot 0.
 #[test]

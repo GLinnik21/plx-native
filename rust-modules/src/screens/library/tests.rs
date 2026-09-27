@@ -1229,33 +1229,61 @@ fn shelf_publication_request_distinguishes_page_fade_from_grid_fade_and_head_foc
     assert_eq!(request(&mut page), (true, false), "only the full-page fade permits publication away from the head");
 }
 
-/// **Measured, not fixed: the Library's live tab strip and the page-glyph box overlap when a
-/// failed section shares a page with a populated library list.** `status.rs`'s own comment says
-/// "the Library keeps its chrome live ABOVE the read-out" — the tab strip (`draw_library_controls`,
-/// `CONTENT_TOP..CONTENT_TOP+CTRL_H` = library/layout's `CONTENT_TOP` = `ui::consts::GRID_TOP_Y` =
-/// 194, height `StatusOverlay::CTRL_H` = 60, so screen y 194..254) can be visible at the same time
-/// `readout()` reaches `Readout::Failed` for the CURRENT section (`SecFetch::Failed` with a
-/// negative total) while `self.libraries` — the tabs — still lists other sections, e.g. a second
-/// server the fetch never touched. The glyph box (`StatusOverlay::page`, spec "1A") is fixed at
-/// screen y `FULL_ANCHOR_TOP - GLYPH_GAP - GLYPH_SIZE`..`FULL_ANCHOR_TOP - GLYPH_GAP` = 216..328.
-/// The task that added the glyph was explicit: if this collides, report the measured overlap
-/// rather than moving the verdict — this test is that report, pinned so a future geometry change
-/// on either side is caught rather than silently re-measured. The overlap today is 254-216 = 38px.
+/// **The page glyph and the Library's own live tab strip never overlap.** They used to (measured
+/// 254-216 = 38px, `status.rs`'s own comment: "the Library keeps its chrome live ABOVE the
+/// read-out" while the glyph box sat fixed at 216..328) whenever a failed section's page still
+/// carried other, populated tabs. `status_overlay` now passes `glyph_ceiling` at the tab strip's
+/// bottom (`CONTENT_TOP..CONTENT_TOP+CTRL_H` = library/layout's `CONTENT_TOP` =
+/// `ui::consts::GRID_TOP_Y` = 194, height `StatusOverlay::CTRL_H` = 60, so screen y 194..254)
+/// whenever `self.libraries` — the tabs — is non-empty, and `StatusOverlay::glyph_rect` shrinks
+/// the glyph box to clear it rather than let the two overlap. Without a live strip the glyph
+/// still draws at its natural, unshrunk 216..328 box — the fix must be a no-op there.
 #[test]
-fn the_page_glyph_box_overlaps_the_librarys_own_live_tab_strip() {
+fn the_page_glyph_and_the_librarys_live_tab_strip_never_overlap() {
     use crate::ui::widgets::StatusOverlay;
-    let tab_strip_top = CONTENT_TOP;
+    let _guard = crate::testlock::serial();
     let tab_strip_bottom = CONTENT_TOP + StatusOverlay::CTRL_H;
-    assert_eq!((tab_strip_top, tab_strip_bottom), (194.0, 254.0), "the tab strip band moved — re-measure the overlap below");
-    let glyph_top = StatusOverlay::FULL_ANCHOR_TOP - StatusOverlay::GLYPH_GAP - StatusOverlay::GLYPH_SIZE;
-    let glyph_bottom = StatusOverlay::FULL_ANCHOR_TOP - StatusOverlay::GLYPH_GAP;
-    assert_eq!((glyph_top, glyph_bottom), (216.0, 328.0), "the glyph band moved — re-measure the overlap below");
-    let overlap = tab_strip_bottom - glyph_top;
-    assert_eq!(overlap, 38.0,
-        "KNOWN, REPORTED collision: the tab strip (194..254) and the page glyph (216..328) overlap \
-         by {overlap}px whenever a failed section's page still carries other, populated tabs. Per \
-         the read-out glyph task, this is reported rather than fixed by moving the verdict; if this \
-         assertion changes, the report needs updating, not silencing.");
+    assert_eq!(tab_strip_bottom, 254.0, "the tab strip band moved — re-measure the fix against it");
+
+    // A live strip: two pinned sections of the current kind. `favorite_sections_for` only
+    // populates `self.libraries` for 2+ candidates (see
+    // `favorite_library_row_uses_shared_strip_geometry_and_incoming_type` above; a single
+    // favourite clears it), so this is the minimal fixture that actually turns the strip on.
+    let sid = crate::plex::ServerId::from_raw(0);
+    let sections = vec![
+        crate::browse::view::SectionView { sid: Some(sid), key: 1, kind: SecKind::Movie,
+            row: crate::browse::SrcRow { section: 0, title: "Cinema".into(), pinned: true, current: true, ..Default::default() } },
+        crate::browse::view::SectionView { sid: Some(sid), key: 2, kind: SecKind::Movie,
+            row: crate::browse::SrcRow { section: 1, title: "Anime".into(), pinned: true, ..Default::default() } },
+    ];
+    let mut fixture = Fixture::new();
+    fixture.directory = crate::browse::view::DirectorySnapshot::fixture(1, 0, sections);
+    fixture.listing = fixture.listing.clone().with_fetch(SecFetch::Failed, -1);
+    let page = fixture.screen();
+    assert_eq!(page.readout, Readout::Failed);
+    assert!(!page.libraries.is_empty(), "fixture must actually produce a live tab strip, or this test proves nothing");
+    let cx = fixture.cx(Some(page.key(RETRY)));
+    let (caption, reason) = page.status_text(&cx);
+    let overlay = page.status_overlay(&cx, &caption, reason.as_deref());
+    let glyph = overlay.glyph_frame().expect("a live strip still leaves room for a shrunk glyph at this ceiling");
+    assert!(glyph.y >= tab_strip_bottom,
+        "the glyph box (top y={}) must not start above the tab strip's bottom (y={tab_strip_bottom})", glyph.y);
+    assert!(glyph.h < StatusOverlay::GLYPH_SIZE, "the live strip must actually shrink the glyph below its natural \
+        {}px, or this fixture is not exercising `glyph_ceiling`", StatusOverlay::GLYPH_SIZE);
+
+    // No live strip (`Fixture::new`'s single, un-favourited-enough section clears
+    // `self.libraries`): the glyph is unaffected, at its natural, unshrunk position.
+    let mut solo = Fixture::new();
+    solo.listing = solo.listing.clone().with_fetch(SecFetch::Failed, -1);
+    let page = solo.screen();
+    assert!(page.libraries.is_empty(), "fixture must NOT have a live strip, or this half proves nothing");
+    let cx = solo.cx(Some(page.key(RETRY)));
+    let (caption, reason) = page.status_text(&cx);
+    let overlay = page.status_overlay(&cx, &caption, reason.as_deref());
+    let glyph = overlay.glyph_frame().expect("no ceiling at all must never omit the glyph");
+    assert_eq!(glyph.y, StatusOverlay::FULL_ANCHOR_TOP - StatusOverlay::GLYPH_GAP - StatusOverlay::GLYPH_SIZE,
+        "without a live strip the glyph keeps its natural, unshrunk position");
+    assert_eq!(glyph.h, StatusOverlay::GLYPH_SIZE, "without a live strip the glyph keeps its natural, unshrunk size");
 }
 
 mod type_tests { include!("type_tests.rs"); }
