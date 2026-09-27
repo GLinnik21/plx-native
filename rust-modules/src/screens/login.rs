@@ -1911,7 +1911,7 @@ impl<H: AuthLike> Machine<H> for LoginScreen {
                     }
                     use crate::ui::consts;
                     return match input.kind {
-                        InputKind::Key { sym, wcode, edge, .. } => match consts::classify(sym, wcode) {
+                        InputKind::Key { key, sym, wcode, edge, .. } => match consts::classify_input(key, sym, wcode) {
                             consts::Key::Back | consts::Key::Stop if edge == Edge::Down => {
                                 self.alert_answer(false, fx);
                                 Handled::Yes

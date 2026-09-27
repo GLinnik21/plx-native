@@ -474,13 +474,13 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
         match ev {
             ScreenEvent::Input(input) => {
                 // The dispatcher's `machine::Key` is the four directions plus OK/BACK; the
-                // transport alphabet this ladder turns on lives in `consts::Key`, so the raw
-                // pair is classified here exactly as `app/input.rs` classifies it.
+                // transport alphabet this ladder turns on lives in `consts::Key`. Preserve the
+                // canonical navigation key and consult raw fields only for `Other`.
                 if let InputKind::Key {
-                    sym, wcode, edge, at_edge, ..
+                    key, sym, wcode, edge, at_edge,
                 } = input.kind
                 {
-                    return self.key(ps, cx, consts::classify(sym, wcode), edge, at_edge, input.at.ms, fx);
+                    return self.key(ps, cx, consts::classify_input(key, sym, wcode), edge, at_edge, input.at.ms, fx);
                 }
                 // **An open panel owns the click and closes on it.** Four `modal_of` arms of
                 // the loop's pointer path said this — "the transport is partly hidden while a

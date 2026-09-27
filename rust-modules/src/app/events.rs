@@ -248,6 +248,50 @@ pub(crate) fn remote_token_key(tok: &str) -> Option<(c_uint, c_uint)> {
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RemotePointer {
+    Click,
+    Move,
+    Down,
+    Up,
+}
+
+/// FIFO and Lab Control share one pointer alphabet. Coordinates are authored integer pixels;
+/// malformed/overflowing values are refused, and off-canvas values retain `ck:`'s edge clamp.
+fn remote_token_pointer(tok: &str) -> Option<(RemotePointer, i32, i32)> {
+    let (name, coords) = tok.split_once(':')?;
+    let kind = match name {
+        "ck" => RemotePointer::Click,
+        "pm" => RemotePointer::Move,
+        "pd" => RemotePointer::Down,
+        "pu" => RemotePointer::Up,
+        _ => return None,
+    };
+    let (x, y) = coords.split_once(',')?;
+    Some((kind,
+        x.parse::<i32>().ok()?.clamp(0, crate::surface::LOGICAL_W as i32 - 1),
+        y.parse::<i32>().ok()?.clamp(0, crate::surface::LOGICAL_H as i32 - 1)))
+}
+
+/// SDL pointer bytes shared by clicks, held-pointer FIFO edges and recorded-event replay.
+/// The inverse of `ptr_xy`: convert authored coordinates exactly once, including window scaling
+/// and letterboxing. Replay may carry a real off-canvas motion, so only the token parser clamps.
+/// ABI: `include/SDL2/SDL_events.h` and the NDK's matching mouse-event declarations put four
+/// Uint32 fields before button@16/state@17 and Sint32 x@20/y@24. ARM32 NDK syntax-only
+/// `offsetof` assertions verified these offsets; see `docs/testing-player-pointer.md`.
+fn encode_pointer(et: u32, x: i32, y: i32) -> [u8; 128] {
+    let mut ev = [0u8; 128];
+    let (px, py) = crate::surface::to_physical(x as f32, y as f32);
+    ev[0..4].copy_from_slice(&et.to_ne_bytes());
+    ev[20..24].copy_from_slice(&(px.round() as i32).to_ne_bytes());
+    ev[24..28].copy_from_slice(&(py.round() as i32).to_ne_bytes());
+    if matches!(et, SDL_MOUSEBUTTONDOWN | SDL_MOUSEBUTTONUP) {
+        ev[16] = 1; // SDL_BUTTON_LEFT
+        ev[17] = u8::from(et == SDL_MOUSEBUTTONDOWN);
+    }
+    ev
+}
+
 /// Synthesize a Magic-Remote pointer click at authored 1920x1080 coords (the browser
 /// remote's click-on-the-stream): two motion events, then button down+up. The first
 /// motion is a >=120px jitter so the accumulated pointer distance defeats the
@@ -255,40 +299,21 @@ pub(crate) fn remote_token_key(tok: &str) -> Option<(c_uint, c_uint)> {
 /// the second lands on the target. The LG SDL fork's mouse events carry x@20 / y@24
 /// (i32) — the only fields the handlers read.
 ///
-/// Click only, deliberately: forwarding hover moved app focus on every pass of the
-/// mouse over the streamed picture (parking it on a top-band tab pill, so the next
-/// ENTER opened the library). The host page draws its own local crosshair instead.
+/// The browser still sends clicks only: forwarding hover moved app focus on every pass of the
+/// mouse over the streamed picture. A driver can explicitly send `pm:`/`pd:`/`pu:` instead to
+/// separate HUD reveal from a press or to hold a drag across frames. Those edges add no jitter.
 pub(crate) fn remote_synth_ptr(x: i32, y: i32) {
-    let mut ev = [0u8; 128];
-    let mut push = |et: u32, px: i32, py: i32| {
-        // Authored coords go onto SDL's queue as WINDOW pixels, because that is what a real
-        // pointer event carries and `ptr_xy` converts every one of them back. Skipping this would
-        // transform the synthetic path twice on a scaled surface — and it is the path the whole
-        // headless test harness clicks through, so it would fail in a way that looked like the UI.
-        let (px, py) = crate::surface::to_physical(px as f32, py as f32);
-        let (px, py) = (px.round() as i32, py.round() as i32);
-        ev[0..4].copy_from_slice(&et.to_ne_bytes());
-        ev[20..24].copy_from_slice(&px.to_ne_bytes());
-        ev[24..28].copy_from_slice(&py.to_ne_bytes());
-        unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
-    };
     let jx = if x >= 200 { x - 200 } else { x + 200 };
-    push(SDL_MOUSEMOTION, jx, y);
-    push(SDL_MOUSEMOTION, x, y);
-    push(SDL_MOUSEBUTTONDOWN, x, y);
-    push(SDL_MOUSEBUTTONUP, x, y);
+    remote_synth_pointer(SDL_MOUSEMOTION, jx, y);
+    remote_synth_pointer(SDL_MOUSEMOTION, x, y);
+    remote_synth_pointer(SDL_MOUSEBUTTONDOWN, x, y);
+    remote_synth_pointer(SDL_MOUSEBUTTONUP, x, y);
 }
 
-/// ONE pointer event in authored coordinates — the replay driver's re-injection of a recorded
-/// motion (`SDL_MOUSEMOTION`), press or release, without `remote_synth_ptr`'s jitter prelude
-/// (the recording already holds whatever motion defeated the D-pad gate).
+/// ONE pointer event in authored coordinates, shared by the FIFO and replay. Unlike `ck:`,
+/// these primitives add no motion or release: `pd:` stays held until a separate `pu:` arrives.
 pub(crate) fn remote_synth_pointer(et: u32, x: i32, y: i32) {
-    let mut ev = [0u8; 128];
-    let (px, py) = crate::surface::to_physical(x as f32, y as f32);
-    let (px, py) = (px.round() as i32, py.round() as i32);
-    ev[0..4].copy_from_slice(&et.to_ne_bytes());
-    ev[20..24].copy_from_slice(&px.to_ne_bytes());
-    ev[24..28].copy_from_slice(&py.to_ne_bytes());
+    let ev = encode_pointer(et, x, y);
     unsafe { SDL_PushEvent(ev.as_ptr() as *const c_void) };
 }
 
@@ -380,6 +405,36 @@ pub(crate) fn is_input_event(et: u32) -> bool {
 mod input_event_tests {
     use super::*;
 
+    #[test]
+    fn pointer_tokens_validate_coordinates_and_keep_click_edge_clamping() {
+        for (prefix, kind) in [("ck", RemotePointer::Click), ("pm", RemotePointer::Move),
+            ("pd", RemotePointer::Down), ("pu", RemotePointer::Up)] {
+            assert_eq!(remote_token_pointer(&format!("{prefix}:1400,870")), Some((kind, 1400, 870)));
+            assert_eq!(remote_token_pointer(&format!("{prefix}:-2147483648,2147483647")),
+                Some((kind, 0, 1079)));
+            for invalid in ["", "1", "1,", ",1", "1,2,3", "NaN,1", "1.5,2", "2147483648,2"] {
+                assert_eq!(remote_token_pointer(&format!("{prefix}:{invalid}")), None);
+            }
+        }
+        assert_eq!(remote_token_pointer("pointer:1,2"), None);
+    }
+
+    #[test]
+    fn pointer_bytes_round_trip_through_the_common_coordinate_decoder() {
+        let _serial = crate::testlock::serial();
+        for et in [SDL_MOUSEMOTION, SDL_MOUSEBUTTONDOWN, SDL_MOUSEBUTTONUP] {
+            for (x, y) in [(0, 0), (1400, 870), (1919, 1079), (-200, 400)] {
+                let ev = encode_pointer(et, x, y);
+                assert_eq!(rd_u32(&ev, 0), et);
+                assert_eq!(ptr_xy(&ev), (x as f32, y as f32));
+                if et != SDL_MOUSEMOTION {
+                    assert_eq!(ev[16], 1, "the left button survives SDL's event queue");
+                    assert_eq!(ev[17], u8::from(et == SDL_MOUSEBUTTONDOWN));
+                }
+            }
+        }
+    }
+
     #[cfg(feature = "devtriggers")]
     #[test]
     fn hang_probes_are_direct_recorder_tokens() {
@@ -428,16 +483,20 @@ pub(crate) fn dispatch_remote_token(tok: &str, ps: &crate::route::PlaybackSessio
         crate::ui::popover::host::input_scope()
     };
     crate::ui::idle::invalidate(); // injected input is input like any other
-                                   // pointer click token "ck:X,Y" — authored 1920x1080 coords
-    if let Some(rest) = tok.strip_prefix("ck:") {
-        let Some((xs, ys)) = rest.split_once(',') else {
-            return false;
+    if let Some((kind, x, y)) = remote_token_pointer(tok) {
+        let name = match kind {
+            RemotePointer::Click => "click",
+            RemotePointer::Move => "pointer move",
+            RemotePointer::Down => "pointer down",
+            RemotePointer::Up => "pointer up",
         };
-        let (Ok(x), Ok(y)) = (xs.parse::<i32>(), ys.parse::<i32>()) else {
-            return false;
-        };
-        log(&format!("remote: click {},{}", x, y));
-        remote_synth_ptr(x.clamp(0, 1919), y.clamp(0, 1079));
+        log(&format!("remote: {name} {x},{y}"));
+        match kind {
+            RemotePointer::Click => remote_synth_ptr(x, y),
+            RemotePointer::Move => remote_synth_pointer(SDL_MOUSEMOTION, x, y),
+            RemotePointer::Down => remote_synth_pointer(SDL_MOUSEBUTTONDOWN, x, y),
+            RemotePointer::Up => remote_synth_pointer(SDL_MOUSEBUTTONUP, x, y),
+        }
         true
     } else if cfg!(feature = "hostsim") && tok == "shot" {
         // Simulator only. Screenshotting has to be a TOKEN rather than a launch option, because

@@ -349,6 +349,9 @@ pub(crate) fn finish_paused_seek(pa: &mut adapter::PlayerAdapter) -> bool {
         return false;
     }
     TX.finish_seek_preroll();
+    // One receipt after the accepted pause, never per frame: device scrub checks pair this
+    // boundary with stationary playhead samples rather than assuming CommitSeek held the pause.
+    log(&format!("seek: paused frame restored ns={}", SHARED.playpos_ns.load(Relaxed)));
     true
 }
 
