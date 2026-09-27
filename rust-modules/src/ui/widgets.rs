@@ -565,11 +565,14 @@ pub(crate) fn resolve_card_art(p: Painter, rect: Rect, art: &Art<'_>) -> (u32, f
     if p.is_recording() { return (0, 0.0, 0.0); }
     let _admission = art.motion_identity()
         .map(|id| crate::ui::card_motion::Scope::card(id, p.to_screen(rect).0));
-    match art {
+    let image = match art {
         Art::Poster(m) => m.map(|m| resolve_tex_wh_on(m.sid, &m.thumb, 250, 375, 0)).unwrap_or((0, 0.0, 0.0)),
         Art::Still(m) => m.map(|m| resolve_tex_wh_on(m.sid, still_key(m), STILL_RES.0, STILL_RES.1, 0)).unwrap_or((0, 0.0, 0.0)),
         Art::Thumb { sid, key, res } | Art::Person { sid, key, res } => resolve_tex_wh_on(*sid, key, res.0, res.1, 0),
-    }
+    };
+    #[cfg(feature = "devtriggers")]
+    crate::ui::card_motion_metrics::draw(image.0 != 0);
+    image
 }
 
 pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, scale: f32, f: f32) {

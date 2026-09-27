@@ -744,6 +744,16 @@ impl Bridge {
         self.with_home(d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx).is_some()).unwrap_or(false)
     }
 
+    #[cfg(feature = "devtriggers")]
+    pub(crate) fn home_grid_position(&self, d: &Dispatcher<AppHost>) -> Option<(usize, usize)> {
+        self.with_home(d, |home, cx, focus| home.grid_position::<AppHost>(focus, cx)).flatten()
+    }
+
+    #[cfg(feature = "devtriggers")]
+    pub(crate) fn home_motion_witness(&self, d: &Dispatcher<AppHost>) -> Option<[f32; 3]> {
+        self.with_home(d, |home, _, _| home.motion_witness(0)).flatten()
+    }
+
     pub(crate) fn home_snap_target(&self, d: &Dispatcher<AppHost>) -> f32 {
         self.with_home(d, |home, _, _| home.snap_target()).unwrap_or(0.0)
     }
