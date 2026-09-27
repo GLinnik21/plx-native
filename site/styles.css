@@ -797,12 +797,17 @@ video::-webkit-media-controls-start-playback-button {
    a desktop window; once the video has a frame it paints over this and
    nothing visible swaps. The two files are preloaded with fetchpriority
    "high" in index.html's head, since a background-image is invisible to the
-   preload scanner. */
+   preload scanner.
+   The video runs 1px past the screen on every side, clipped by the card: the
+   card's box is fractional (16:9 of a percentage width, then scaled), and the
+   browser snaps the video's own layer to whole pixels, so an exact fit left
+   a row along the bottom where the frame's edge and this poster showed
+   through under the moving picture. */
 .demo-card video {
   position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
+  inset: -1px;
+  width: calc(100% + 2px);
+  height: calc(100% + 2px);
   object-fit: cover;
   display: block;
   background: #08080a url("media/feel-poster.jpg") center / cover no-repeat;
