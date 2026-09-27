@@ -183,6 +183,45 @@ pub enum Icon {
     /// It negates by DRAINING to [`theme::RATING_MUTED`] rather than going hollow: a single fruit
     /// can carry an outline, but outlining every shape in a crowd is a tangle of strokes at 30px.
     Crowd,
+    // ---- read-out glyphs (the 112px mark `StatusOverlay::page` draws above a page-filling
+    // `Failed` verdict — spec "1A") ----
+    //
+    // Twelve marks, one family: a BASE says what is involved (a server, plex.tv, an account, a
+    // sign-in's stored key, a profile roster, a wait's clock), a BADGE knocked out of it says what
+    // went wrong (a plus/minus/x/question/alert), and `telemetry::incident::IncidentContext::
+    // readout_glyph` is the ONE place that reads an `IncidentKind` and picks which. `WifiSlash`
+    // stands alone — there is no server to blame when the TV itself has no link. Drawn by
+    // `tools/readout-glyphs.py` (`shapely` polygon booleans, not hand-authored paths) because the
+    // badge's knockout is `fill-rule="evenodd"` — see [`Icon::CheckCircleFill`]'s doc for why that
+    // is the one place this module's "every subpath winds the same way" rule does not hold — and a
+    // hand-drawn badge-on-base composite would recreate exactly the seam that doc warns about.
+    /// A clock, alert badge — a wait that ran out (`IncidentKind::PinExpired`/`LinkStalled`).
+    ClockBadgeAlert,
+    /// A cloud, alert badge — plex.tv answered but with an error, or the app's own machinery
+    /// failed (an `Internal` cause, the closest honest read among these twelve).
+    CloudBadgeAlert,
+    /// A globe, minus badge — plex.tv did not answer and the failure is not DNS or TLS.
+    GlobeBadgeMinus,
+    /// A globe, question badge — plex.tv could not be found (DNS).
+    GlobeBadgeQuestion,
+    /// A key, alert badge — the sign-in could not be saved or read back
+    /// (`IncidentKind::SaveFailed`/`StoredLocked`).
+    KeyBadgeAlert,
+    /// A lock, alert badge — plex.tv could not be reached securely (TLS).
+    LockBadgeAlert,
+    /// Two people, alert badge — a profile switch failed (`IncidentKind::ProfileSwitch`).
+    PeopleBadgeAlert,
+    /// One person, X badge — plex.tv refused the account token (`IncidentKind::Authorization`).
+    PersonBadgeXmark,
+    /// A server, minus badge — a known server did not answer (Home's and the Library's own
+    /// "can't reach" verdict, and `Discovery(Silent)` targeting `Servers`).
+    ServerBadgeMinus,
+    /// A server, plus badge — the account has no server at all (`DiscoveryClass::NoServers`).
+    ServerBadgePlus,
+    /// A server, X badge — a server answered and refused (`DiscoveryClass::Refused`).
+    ServerBadgeXmark,
+    /// A crossed-out wifi arc — no internet to even reach plex.tv (`IncidentKind::PinCreate`).
+    WifiSlash,
 }
 
 /// **Where a mark's INK sits inside its 24-unit viewBox**, as `(left, right)` fractions — and
@@ -256,6 +295,18 @@ fn src(id: Icon) -> &'static str {
         Icon::TomatoCalyx => include_str!("../../../assets/icons/tomato-calyx.svg"),
         Icon::TomatoHollow => include_str!("../../../assets/icons/tomato-hollow.svg"),
         Icon::Crowd => include_str!("../../../assets/icons/crowd.svg"),
+        Icon::ClockBadgeAlert => include_str!("../../../assets/icons/clock-badge-alert.svg"),
+        Icon::CloudBadgeAlert => include_str!("../../../assets/icons/cloud-badge-alert.svg"),
+        Icon::GlobeBadgeMinus => include_str!("../../../assets/icons/globe-badge-minus.svg"),
+        Icon::GlobeBadgeQuestion => include_str!("../../../assets/icons/globe-badge-question.svg"),
+        Icon::KeyBadgeAlert => include_str!("../../../assets/icons/key-badge-alert.svg"),
+        Icon::LockBadgeAlert => include_str!("../../../assets/icons/lock-badge-alert.svg"),
+        Icon::PeopleBadgeAlert => include_str!("../../../assets/icons/people-badge-alert.svg"),
+        Icon::PersonBadgeXmark => include_str!("../../../assets/icons/person-badge-xmark.svg"),
+        Icon::ServerBadgeMinus => include_str!("../../../assets/icons/server-badge-minus.svg"),
+        Icon::ServerBadgePlus => include_str!("../../../assets/icons/server-badge-plus.svg"),
+        Icon::ServerBadgeXmark => include_str!("../../../assets/icons/server-badge-xmark.svg"),
+        Icon::WifiSlash => include_str!("../../../assets/icons/wifi-slash.svg"),
     }
 }
 
@@ -403,6 +454,46 @@ mod ink_tests {
                 !svg.contains(unsupported),
                 "agreement asset uses unsupported {unsupported}"
             );
+        }
+    }
+
+    /// Every one of the twelve read-out marks (spec "1A") rasterizes at the size
+    /// `StatusOverlay::page`'s glyph actually draws them at (112px, this family's only draw
+    /// size) — `crate::svg::rasterize` returns `Some`, reaches full opacity somewhere inside the
+    /// mask (nanosvg did not silently fail to fill the shape), and leaves the outermost ring of
+    /// pixels untouched (no ink on the border), the same two checks the module doc's own
+    /// authoring contract asks a human to grade by eye.
+    #[test]
+    fn every_readout_glyph_rasterizes_clean_at_its_draw_size() {
+        const PX: i32 = 112;
+        for id in [
+            Icon::ClockBadgeAlert,
+            Icon::CloudBadgeAlert,
+            Icon::GlobeBadgeMinus,
+            Icon::GlobeBadgeQuestion,
+            Icon::KeyBadgeAlert,
+            Icon::LockBadgeAlert,
+            Icon::PeopleBadgeAlert,
+            Icon::PersonBadgeXmark,
+            Icon::ServerBadgeMinus,
+            Icon::ServerBadgePlus,
+            Icon::ServerBadgeXmark,
+            Icon::WifiSlash,
+        ] {
+            let rgba = crate::svg::rasterize(src(id), PX, PX)
+                .unwrap_or_else(|| panic!("{id:?} failed to rasterize at {PX}px"));
+            assert_eq!(rgba.len(), (PX * PX * 4) as usize, "{id:?} wrong buffer size");
+            let alpha = |x: i32, y: i32| rgba[((y * PX + x) * 4 + 3) as usize];
+            let max_alpha = (0..PX).flat_map(|y| (0..PX).map(move |x| alpha(x, y))).max().unwrap();
+            assert_eq!(max_alpha, 255, "{id:?} never reaches full opacity at {PX}px");
+            for x in 0..PX {
+                assert_eq!(alpha(x, 0), 0, "{id:?} has ink on the top border");
+                assert_eq!(alpha(x, PX - 1), 0, "{id:?} has ink on the bottom border");
+            }
+            for y in 0..PX {
+                assert_eq!(alpha(0, y), 0, "{id:?} has ink on the left border");
+                assert_eq!(alpha(PX - 1, y), 0, "{id:?} has ink on the right border");
+            }
         }
     }
 }
