@@ -47,7 +47,7 @@
   "settings.language.title": "Мова",
   "settings.language.detail": "Выберыце мову PlxNative.",
   "settings.language.system": "Мова сістэмы",
-  "settings.language.copy": "Выберыце мову праграмы для ўсіх на гэтым тэлевізары. Змены ўступяць у сілу пасля перазапуску PlxNative.",
+  "settings.language.copy": "Выберыце мову праграмы для ўсіх карыстальнікаў гэтага тэлевізара. Змены ўступяць у сілу пасля перазапуску PlxNative.",
   "settings.language.pending": "Перазапусціце PlxNative, каб ужыць гэту змену.",
   "settings.language.save_failed": "Не ўдалося захаваць мову. Паспрабуйце зноў.",
   "settings.language.help": "Дапамажыце перакласці праграму.",
