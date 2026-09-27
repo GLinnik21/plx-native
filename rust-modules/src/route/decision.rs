@@ -4728,12 +4728,7 @@ impl Quality {
     }
 }
 
-/// The user's current pick. An atomic rather than a field on [`Session`] because it OUTLIVES a
-/// playback — it is a preference, not session state — and because `ui::more_menu` reads it to draw
-/// the checkmark while [`ResolveEnv::snapshot`] reads it to hand the worker a copy.
-///
-/// Seeded to Original even before the boot gate restores the session: no call path may turn a
-/// missing preference into Auto simply because initialization order changed.
+/// Install-wide preference; each resolve captures its own immutable mode.
 static DIRECT_PLAY_MODE: AtomicU8 = AtomicU8::new(0);
 
 pub(crate) fn direct_play_mode() -> DirectPlayMode {
@@ -4785,6 +4780,12 @@ pub(crate) fn audio_track_direct_plays(ps: &PlaybackSession, codec: &str, channe
     audio_direct_plays(ps.direct_play_mode, codec, channels)
 }
 
+/// The user's current pick. An atomic rather than a field on [`Session`] because it OUTLIVES a
+/// playback — it is a preference, not session state — and because `ui::more_menu` reads it to draw
+/// the checkmark while [`ResolveEnv::snapshot`] reads it to hand the worker a copy.
+///
+/// Seeded to Original even before the boot gate restores the session: no call path may turn a
+/// missing preference into Auto simply because initialization order changed.
 static QUALITY: AtomicU8 = AtomicU8::new(1);
 
 /// The selected ceiling. Safe from any thread; the resolve worker gets a COPY through
@@ -5738,7 +5739,7 @@ fn request_play_inner(
         // catch_unwind OUTSIDE the mailbox write, like load_season: a panicking resolve must still
         // land (as !ok) or PLAY_BUSY latches and the screen wedges on a spinner forever.
         let plan = std::panic::catch_unwind(|| build_stream(&rk, &part, &vc, &ac, &env))
-            .unwrap_or_default();
+            .unwrap_or_else(|_| Plan { direct_play_mode: env.direct_play_mode, ..Default::default() });
         let landing = PlayLanding {
             gen,
             trace_generation,

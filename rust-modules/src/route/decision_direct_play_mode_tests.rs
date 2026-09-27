@@ -121,3 +121,14 @@ fn force_retains_feed_limits_and_session_snapshot_across_retry_and_track_edits()
     assert_eq!(cur_audio_sid(&ps), 0, "refusing an unsupported track leaves the current selection intact");
     restore_direct_play_mode(DirectPlayMode::Auto);
 }
+
+#[test]
+fn disabled_mode_refuses_an_original_only_url_without_a_pms_item() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let mut env = ResolveEnv::snapshot(&ps, crate::stores::metadata::MetadataStore::default().view(), unregistered_sid(), "");
+    env.direct_play_mode = DirectPlayMode::Disabled;
+    let plan = build_stream("", "/movie.mkv", "h264", "aac", &env);
+    assert!(plan.url.is_empty());
+    assert!(plan.verdict.as_deref().unwrap().contains("Direct Play is disabled"));
+}

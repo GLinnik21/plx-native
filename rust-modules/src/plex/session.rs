@@ -1627,15 +1627,16 @@ where
     Ok(serde_json::from_value::<Option<Location>>(v).unwrap_or(None))
 }
 
-/// Playback quality is a preference, not a credential gate. A value written by a newer build or
-/// damaged by a hand edit therefore degrades to the legacy-safe Original mode rather than making
-/// the enclosing [`Session`] disappear.
+/// Future or malformed direct-play policies retain the automatic compatibility checks.
 fn de_soft_direct_play_mode<'de, D>(d: D) -> Result<DirectPlayMode, D::Error>
 where D: Deserializer<'de> {
     let value = serde_json::Value::deserialize(d)?;
     Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
+/// Playback quality is a preference, not a credential gate. A value written by a newer build or
+/// damaged by a hand edit therefore degrades to the legacy-safe Original mode rather than making
+/// the enclosing [`Session`] disappear.
 fn de_soft_playback_quality<'de, D>(d: D) -> Result<Option<PlaybackQuality>, D::Error>
 where
     D: Deserializer<'de>,

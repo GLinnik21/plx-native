@@ -782,6 +782,10 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         source_decodable: true,
         ..Default::default()
     };
+    if env.direct_play_mode == DirectPlayMode::Disabled && rk.is_empty() {
+        plan.verdict = Some("Direct Play is disabled. This original-only stream requires Direct Play to be set to Auto.".into());
+        return plan;
+    }
     let forced = env.direct_play_mode == DirectPlayMode::Forced;
     let playback_quality = if forced { Quality::Original } else { env.quality };
     let client = match crate::plex::client_for(env.sid) {
