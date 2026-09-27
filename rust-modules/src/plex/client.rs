@@ -42,6 +42,17 @@ pub(crate) enum JsonDeadlineOutcome {
     Transport,
 }
 
+/// A JSON read that preserves whether PMS answered and, if it did, its HTTP status.
+/// Ordinary reads intentionally keep using `Option<MediaContainer>`; collection screens need to
+/// tell an unshared library (403) from a missing collection (404) and a dead server.
+pub(super) enum JsonStatusOutcome {
+    Response {
+        status: i32,
+        parsed: Option<MediaContainer>,
+    },
+    Transport,
+}
+
 /// The headers shared by EVERY PMS operation, over either transport. `X-Plex-Language` belongs
 /// here rather than in [`Client::playback_identity`]: it selects server-returned metadata for
 /// browse/search reads too, not only playback protocol calls. Owned strings keep the optional
@@ -485,20 +496,25 @@ impl Client {
         r.ok().then_some(r.body)
     }
 
-    /// The read twin of [`Client::body_2xx`] for a content-dependent PMS body. On HTTPS it keeps
-    /// the connect deadline but has no 25 s whole-transfer cutoff; on plaintext it is the same
-    /// socket policy `stream.rs` has always used.
-    fn body_2xx_bulk(&self, path_no_token: &str, headers: &[&str]) -> Option<Vec<u8>> {
+    /// The status-preserving read twin of [`Client::send`] for a content-dependent PMS body. On
+    /// HTTPS it keeps the connect deadline but has no 25 s whole-transfer cutoff; on plaintext it
+    /// is the same socket policy `stream.rs` has always used.
+    fn send_bulk(&self, path_no_token: &str, headers: &[&str]) -> Option<http::Reply> {
         if !self.may_send() { return None; }
         let owned = pms_headers(headers);
         let headers: Vec<&str> = owned.iter().map(String::as_str).collect();
-        let r = http::request_bulk(
+        http::request_bulk(
             &self.origin,
             &self.with_token(path_no_token),
             Method::Get,
             &headers,
             self.resolve_pin.as_ref(),
-        )?;
+        )
+    }
+
+    /// The 2xx-folding twin of [`Client::send_bulk`] used by ordinary content-dependent reads.
+    fn body_2xx_bulk(&self, path_no_token: &str, headers: &[&str]) -> Option<Vec<u8>> {
+        let r = self.send_bulk(path_no_token, headers)?;
         r.ok().then_some(r.body)
     }
 
@@ -540,6 +556,34 @@ impl Client {
                 ));
                 None
             }
+        }
+    }
+
+    /// Status-preserving GET for operations whose UI gives authorization and absence different
+    /// meanings. This deliberately sits beside, rather than changes, the long-standing `get_json`
+    /// collapse used by all other PMS reads.
+    pub(super) fn get_json_status(&self, path_no_token: &str) -> JsonStatusOutcome {
+        let Some(reply) = self.send_bulk(path_no_token, &[ACCEPT_JSON]) else {
+            return JsonStatusOutcome::Transport;
+        };
+        let parsed = if reply.ok() {
+            match serde_json::from_slice::<Envelope>(&reply.body) {
+                Ok(envelope) => Some(envelope.media_container),
+                Err(error) => {
+                    crate::log(&format!(
+                        "pms: GET {} answered {} bytes that will not parse — {error}",
+                        path_no_token.split('?').next().unwrap_or(path_no_token),
+                        reply.body.len()
+                    ));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        JsonStatusOutcome::Response {
+            status: reply.status,
+            parsed,
         }
     }
 
