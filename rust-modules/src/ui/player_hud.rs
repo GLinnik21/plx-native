@@ -955,7 +955,7 @@ pub(crate) const ELEM_SCRUB: u32 = 0;
 pub(crate) const ELEM_ROW_BASE: u32 = 10;
 /// `+ 0..=1` — Info, then Chapters when the item has any.
 pub(crate) const ELEM_TAB_BASE: u32 = 20;
-/// The failure read-out's "choose quality or retry" hint — the only focusable/clickable region a
+/// The failure read-out's retry-options hint — the only focusable/clickable region a
 /// FAILED playback draws (`OverlayKind::More { quality: true }`'s own opener).
 pub(crate) const ELEM_FAILURE_OK: u32 = 30;
 
@@ -1134,7 +1134,14 @@ fn draw_failed_readout(
     // Both exits stay visible.  OK enters the shared quality ladder (selecting the current rung is
     // a plain retry); BACK still leaves the player.  The key caps are what survive a phone photo.
     if !jail || ps.repair_status == crate::webos::jail_repair::State::Idle {
-        draw_hint_with_keycap(p, c"Press", c"OK", if jail { c"to review sandbox repair" } else { c"to choose quality or retry" }, FR_HINT_TOP, measure);
+        let action = if jail {
+            c"to review sandbox repair"
+        } else if crate::route::forced_direct_play(ps) {
+            c"to open retry options"
+        } else {
+            c"to choose quality or retry"
+        };
+        draw_hint_with_keycap(p, c"Press", c"OK", action, FR_HINT_TOP, measure);
     }
     draw_hint_with_keycap(
         p,

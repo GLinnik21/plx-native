@@ -412,8 +412,10 @@ server's own verdict beneath it where there is one, and BOTH ways out, each with
 survives a phone photograph — *"Press **OK** to choose quality or retry"* above *"Press **BACK** to
 return"*. The first is the recovery path: it opens the same quality ladder the `…` menu does, on the
 rung this playback is already using, so picking that rung is a plain retry and picking another
-starts the same item under a different policy. A failure is therefore terminal for the pipeline,
-not a trap for the viewer.
+starts the same item under a different policy. With Force Direct Play enabled, the hint instead
+says *"Press **OK** to open retry options"*: Force overrides the quality choice, so changing the
+saved quality still retries the original stream. Return Direct Play to Auto in Settings to allow
+conversion. A failure is therefore terminal for the pipeline, not a trap for the viewer.
 
 The verdict in the figure (*"Cannot convert this item. Implementation for video encoder 'hevc' not
 found."*) is the one a real server returned when it had no HEVC encoder; the figure replays it
