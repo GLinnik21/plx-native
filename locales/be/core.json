@@ -1,0 +1,18 @@
+{
+  "core.system_default": "Мова сістэмы",
+  "core.converts_on_server": "Пераўтвараецца на серверы",
+  "core.duration_short_hours": "{hours}г {minutes}хв",
+  "core.duration_short_minutes": "{minutes}хв",
+  "core.duration_long_hours": "{hours} г {minutes} хв",
+  "core.duration_long_minutes": "{minutes} хв",
+  "core.time_left_hours": "Засталося {hours} г {minutes} хв",
+  "core.time_left_minutes": "Засталося {minutes} хв",
+  "core.seconds": "{seconds} с",
+  "core.season": "С{season}",
+  "core.episode": "Э{episode}",
+  "core.episode_ordinal": "С{season}, Э{episode}",
+  "core.shared_by": "Агульны доступ ад {handle}",
+  "core.preview_fault": "Рэзервовая справаздача пра збой C",
+  "core.preview_panic": "Рэзервовая справаздача пра паніку Rust",
+  "core.preview_domains": "Магчымыя значэнні памылак прайгравання:"
+}

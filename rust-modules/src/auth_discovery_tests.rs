@@ -725,13 +725,13 @@ fn resolved_none_insecure_outranks_refused_and_every_other_shape_is_unchanged() 
 /// the three other Discovery failures never had a name collision to drift on. `discover_and_store`
 /// itself needs a live plex.tv edge no host test can reach, so this pins the SHARED CONST's
 /// content directly; the two call sites (`login_worker_with_output`, `rediscovery_worker_with_output`)
-/// are both spelled `output_failed(output, epoch, DISCOVERY_INSECURE_ONLY_MESSAGE)` — greppable,
+/// are both spelled `output_failed(output, epoch, discovery_insecure_only_message())` — greppable,
 /// and unable to drift apart without a compile error renaming one identifier but not the other.
 #[test]
 fn insecure_only_copy_is_one_shared_const_naming_the_fixable_cause() {
-    assert!(!DISCOVERY_INSECURE_ONLY_MESSAGE.is_empty());
-    assert!(DISCOVERY_INSECURE_ONLY_MESSAGE.contains("securely"));
-    assert!(DISCOVERY_INSECURE_ONLY_MESSAGE.contains("HTTPS"));
+    assert!(!discovery_insecure_only_message().is_empty());
+    assert!(discovery_insecure_only_message().contains("securely"));
+    assert!(discovery_insecure_only_message().contains("HTTPS"));
 }
 
 // ---- issue #95, step 4: probe pinning ----

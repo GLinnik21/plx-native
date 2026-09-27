@@ -190,6 +190,7 @@ stated; election does not alter your rights under the other arms.
 | byteorder-lite | 0.1.0 | Unlicense OR MIT | 2015 Andrew Gallant |
 | cfg-if | 1.0.4 | MIT OR Apache-2.0 | 2014 Alex Crichton |
 | crc32fast | 1.5.0 | MIT OR Apache-2.0 | 2018 Sam Rijs, Alex Crichton and contributors |
+| either | 1.18.0 | MIT OR Apache-2.0 | Copyright (c) 2015 (the upstream notice names no holder) |
 | fdeflate | 0.3.7 | MIT OR Apache-2.0 | The image-rs Developers |
 | flate2 | 1.1.9 | MIT OR Apache-2.0 | 2014-2026 Alex Crichton |
 | gimli | 0.32.3 | MIT OR Apache-2.0 | The `gimli` authors |
@@ -206,6 +207,8 @@ stated; election does not alter your rights under the other arms.
 | serde | 1.0.228 | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
 | serde_core | 1.0.228 | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
 | serde_json | 1.0.150 | MIT OR Apache-2.0 | Erick Tryzelaar, David Tolnay |
+| smallvec | 1.16.2 | MIT OR Apache-2.0 | Copyright (c) 2018 The Servo Project Developers |
+| stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 | Copyright (c) 2017 Robert Grosse |
 | zune-core | 0.5.1 | MIT OR Apache-2.0 OR Zlib | The zune-image developers |
 | zune-jpeg | 0.5.15 | MIT OR Apache-2.0 OR Zlib | The zune-image developers |
 
@@ -213,16 +216,75 @@ stated; election does not alter your rights under the other arms.
 
 | Package | Version | Copyright |
 |---|---|---|
+| core_maths | 0.1.1 | Copyright (c) 2024 Robert Bastian |
+| libm | 0.2.16 | Copyright (c) 2018 Jorge Aparicio and the third-party copyright notices preserved verbatim in `licenses/libm.txt` |
+| qrcodegen | 1.8.0 | Copyright (c) Project Nayuki. The complete upstream MIT notice is preserved in `licenses/qrcodegen.txt` |
 | simd-adler32 | 0.3.9 | (c) 2021 Marvin Countryman |
 | zmij | 1.0.21 | David Tolnay (a Rust port of Victor Zverovich's C++ `zmij`) |
 | rust-lang/libm — compiled *inside* `compiler_builtins` and exposed as intrinsics on this target | as vendored in rustc 1.98.0-nightly | (c) 2018 Jorge Aparicio; musl libc (c) 2005-2020 Rich Felker, et al.; CORE-MATH; and the fdlibm-derived notice: (c) 1993, 2004 Sun Microsystems; (c) 2003-2011 David Schultz; (c) 2003-2009 Steven G. Kargl; (c) 2003-2009 Bruce D. Evans; (c) 2008 Stephen L. Moshier; (c) 2017-2018 Arm Limited |
 
-**Elected Apache-2.0** (`licenses/Apache-2.0.txt`) — these two offer no MIT arm:
+**Apache-2.0** (`licenses/Apache-2.0.txt`) — elected for `moxcms` and `pxfm`; the sole declared licence of `calendrical_calculations`:
 
 | Package | Version | Declared licence | Copyright |
 |---|---|---|---|
+| calendrical_calculations | 0.2.4 | Apache-2.0 | Copyright 2023 The Unicode Consortium |
 | moxcms | 0.8.1 | BSD-3-Clause OR Apache-2.0 | (c) Radzivon Bartoshyk |
 | pxfm | 0.1.29 | BSD-3-Clause OR Apache-2.0 | (c) Radzivon Bartoshyk |
+
+**ICU4X code and compiled locale data — Unicode-3.0** (`licenses/ICU4X.txt`).
+These packages provide locale parsing, plural selection, regional number/date formatting and
+supporting data structures. Their upstream licence files are byte-identical and are reproduced
+verbatim in `licenses/ICU4X.txt`, including both notices:
+
+> Copyright © 2020-2024 Unicode, Inc.
+>
+> Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
+> ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
+
+| Package | Version |
+|---|---|
+| fixed_decimal | 0.7.2 |
+| icu_calendar | 2.1.1 |
+| icu_calendar_data | 2.1.1 |
+| icu_collections | 2.1.1 |
+| icu_datetime | 2.1.1 |
+| icu_datetime_data | 2.1.2 |
+| icu_decimal | 2.1.1 |
+| icu_decimal_data | 2.1.1 |
+| icu_locale | 2.1.1 |
+| icu_locale_core | 2.3.0 |
+| icu_locale_data | 2.1.2 |
+| icu_pattern | 0.4.2 |
+| icu_plurals | 2.1.1 |
+| icu_plurals_data | 2.1.1 |
+| icu_provider | 2.3.1 |
+| icu_time | 2.1.1 |
+| icu_time_data | 2.1.1 |
+| ixdtf | 0.6.6 |
+| litemap | 0.8.3 |
+| potential_utf | 0.1.6 |
+| tinystr | 0.8.4 |
+| writeable | 0.6.4 |
+| yoke | 0.8.3 |
+| zerofrom | 0.1.8 |
+| zerotrie | 0.2.5 |
+| zerovec | 0.11.8 |
+
+`calendrical_calculations` implements algorithms from *Calendrical Calculations* by Reingold &
+Dershowitz, Cambridge University Press, 4th edition (2018), released as Lisp code under
+Apache-2.0. Its package licence carries the Unicode Consortium copyright reproduced above;
+its source retains the upstream algorithm attribution. It ships no separate `NOTICE` file.
+`core_maths` also identifies Rust standard-library method signatures, implementations and
+documentation as its source; the Rust notices above apply to that material.
+
+The registry `libm` package is an ICU4X dependency in addition to the compiler's vendored math
+implementation. `licenses/libm.txt` preserves its complete upstream licence and musl/CORE-MATH
+attributions. `qrcodegen` supplies the QR code linking viewers to the translation contribution
+guide; its source-header licence notice is preserved verbatim in `licenses/qrcodegen.txt`.
+
+The versions above come from the locked ARM runtime dependency graph (`cargo tree
+--no-default-features --target arm-unknown-linux-gnueabi --edges normal,no-proc-macro`), excluding
+dev dependencies, build dependencies and host proc-macro implementations.
 
 **Conjunctive licence — no election possible:**
 
@@ -253,7 +315,8 @@ condition (2) for distribution of executable code:
 IJG code is copyright (C) 1991-2014, Thomas G. Lane, Guido Vollbeding.
 
 **Not in the binary, listed to prevent a false conclusion.** `serde_derive`, `proc-macro2`,
-`quote`, `syn`, `unicode-ident` and `autocfg` are host build-time machinery and contribute no
+`quote`, `syn`, `unicode-ident`, `autocfg`, `synstructure`, `yoke-derive`,
+`zerofrom-derive` and `zerovec-derive` are host build-time machinery and contribute no
 code to the shipped binary. `foldhash` appears in the Rust source tree but is **not** compiled
 here (the standard library takes `hashbrown` with default features disabled, which does not
 enable it) — verified absent from the binary. `rustc-literal-escaper`, `proc_macro`,
@@ -348,10 +411,13 @@ runtime notices listed below:
 |---|---|
 | `licenses/LGPL-2.1.txt` | FFmpeg, GLib, GNU C Library (§1) — GNU Lesser General Public License, version 2.1 |
 | `licenses/MIT.txt` | Feather Icons, Heroicons, the MIT-elected Rust packages, Sentry Native and libunwind (§2.2, §2.4, §2.6). One copy of the MIT text; the copyright holders it refers to are the ones named in this file |
-| `licenses/Apache-2.0.txt` | Google Material Design Icons; moxcms; pxfm; compiler_builtins (§2.2, §2.4) |
+| `licenses/Apache-2.0.txt` | Google Material Design Icons; calendrical_calculations; moxcms; pxfm; compiler_builtins (§2.2, §2.4) |
 | `licenses/LLVM-exception.txt` | compiler_builtins (§2.4) |
 | `licenses/Unicode-3.0.txt` | Unicode Character Database tables in Rust `core` (§2.4) — UNICODE LICENSE V3, "Copyright © 1991-2024 Unicode, Inc." |
 | `licenses/Zlib.txt` | nanosvg (§2.1) |
+| `licenses/ICU4X.txt` | ICU4X runtime code and compiled locale data, including its Unicode and IBM notices (§2.4) |
+| `licenses/libm.txt` | Registry libm and its upstream musl/CORE-MATH attributions (§2.4) |
+| `licenses/qrcodegen.txt` | Project Nayuki QR code generator, complete upstream MIT notice (§2.4) |
 
 `OFL.txt` (SIL Open Font License 1.1, for **Inter and Noto Sans CJK KR** — §2.3) already ships at
 the root of this package. Keep it there; do not add a second copy under `licenses/`, and do not

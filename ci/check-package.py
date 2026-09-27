@@ -1019,6 +1019,9 @@ NEEDED_LICENCES = {
     "LLVM-exception.txt": "compiler_builtins",
     "Unicode-3.0.txt": "the Unicode tables inside Rust core",
     "Zlib.txt": "nanosvg — vendored and compiled into the binary",
+    "ICU4X.txt": "ICU4X locale code/data — Unicode and IBM adaptation notices",
+    "libm.txt": "registry libm — complete upstream math attributions",
+    "qrcodegen.txt": "Project Nayuki QR code generator — upstream MIT notice",
 }
 for name, why in NEEDED_LICENCES.items():
     p = ROOT / "licenses" / name

@@ -15,8 +15,6 @@ use crate::ui::widgets;
 use crate::ui::{theme, Painter, Rect, Spring};
 use std::hash::{Hash, Hasher};
 
-const BODY_LEAD: f32 = theme::size::CAPTION as f32 + theme::space::XS;
-const STEP: f32 = BODY_LEAD * 6.0;
 const INDENT: f32 = theme::space::XS;
 const RAIL_GAP: f32 = theme::space::MD;
 
@@ -42,6 +40,7 @@ pub(crate) struct DocumentReader {
     scroll: Spring,
     target: f32,
     max_scroll: f32,
+    body_size: std::os::raw::c_int,
     /// The measured lines for the body/width `layout_key` was last built from.
     layout: Vec<LineLayout>,
     /// `(hash of the body text, wrap width in bits)` the current `layout` was built from —
@@ -62,6 +61,7 @@ impl DocumentReader {
             scroll: Spring::at(0.0),
             target: 0.0,
             max_scroll: 0.0,
+            body_size: theme::size::CAPTION,
             layout: Vec::new(),
             layout_key: None,
             layout_h: 0.0,
@@ -69,6 +69,17 @@ impl DocumentReader {
             layout_generation: 0,
         }
     }
+
+    /// Use an existing theme text rung. Consent disclosures retain their BODY typography.
+    pub(crate) fn with_size(mut self, size: std::os::raw::c_int) -> Self {
+        self.body_size = size;
+        self.layout_key = None;
+        self
+    }
+
+    pub(crate) fn overflows(&self) -> bool { self.max_scroll > 0.0 }
+
+    fn body_leading(&self) -> f32 { self.body_size as f32 + theme::space::XS }
 
     pub(crate) fn reset(&mut self) {
         self.target = 0.0;
@@ -95,7 +106,7 @@ impl DocumentReader {
     }
 
     pub(crate) fn move_by(&mut self, delta: i32) {
-        self.target = (self.target + delta as f32 * STEP).clamp(0.0, self.max_scroll);
+        self.target = (self.target + delta as f32 * self.body_leading() * 6.0).clamp(0.0, self.max_scroll);
         crate::ui::idle::invalidate();
     }
 
@@ -110,6 +121,7 @@ impl DocumentReader {
     fn key_changed(&mut self, body: &str, text_w: f32) -> bool {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         body.hash(&mut hasher);
+        self.body_size.hash(&mut hasher);
         let key = (hasher.finish(), text_w.to_bits());
         if self.layout_key == Some(key) {
             false
@@ -132,13 +144,13 @@ impl DocumentReader {
                 && trimmed
                     .chars()
                     .all(|c| !c.is_alphabetic() || c.is_uppercase());
-            let mut view = TextView::new(trimmed, theme::size::CAPTION, theme::TEXT_READING)
-                .leading(BODY_LEAD);
+            let mut view = TextView::new(trimmed, self.body_size, theme::TEXT_READING)
+                .leading(self.body_leading());
             if heading {
                 view = view.bold();
             }
             let h = if trimmed.is_empty() {
-                BODY_LEAD
+                self.body_leading()
             } else {
                 view.measure_h((text_w - indentation).max(1.0))
             };
@@ -190,8 +202,8 @@ impl DocumentReader {
             // struct literal over the owned `line.text`, and its own wrap step is memoized
             // separately by content hash (`text_view.rs`'s module doc) — the cost this cache
             // exists to remove is the MEASUREMENT above, done once per rebuild, not this.
-            let mut view = TextView::new(&line.text, theme::size::CAPTION, theme::TEXT_READING)
-                .leading(BODY_LEAD);
+            let mut view = TextView::new(&line.text, self.body_size, theme::TEXT_READING)
+                .leading(self.body_leading());
             if line.heading {
                 view = view.bold();
             }

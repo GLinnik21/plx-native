@@ -28,19 +28,6 @@ use crate::ui::{theme, Env, Painter, View};
 use super::family::{palette, table_focus, BAND_GROUP, TABLE_GROUP};
 use super::registry::{band_index, word, AppFx, DirectoryLike, LoopReq};
 
-pub(crate) const TITLE: &str = "Which libraries do you want?";
-const SETTINGS_TITLE: &str = "Favorite libraries";
-const ACTION: &CStr = c"Start watching";
-const DONE: &CStr = c"Done";
-const RETRY: &CStr = c"Try again";
-const CRUMB_SETTINGS: &str = "Settings";
-// Duplicated rather than `crate::screens::profiles::TITLE` — same pattern as `CRUMB_SETTINGS`
-// above and as `legal.rs`/`consent.rs`'s own `CRUMB_SETTINGS`: a breadcrumb label is vocabulary a
-// screen owns for itself, not a naming of the sibling that happens to share the same words, and
-// the sibling gate (ci/check-deps.sh, §2.1) treats `crate::screens::<sibling>` as exactly that
-// naming regardless of which item is read off it.
-const CRUMB_PROFILES: &str = "Who's watching?";
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ActionKind {
     Retry,
@@ -51,9 +38,9 @@ enum ActionKind {
 impl ActionKind {
     fn label(self) -> &'static CStr {
         match self {
-            ActionKind::Retry => RETRY,
-            ActionKind::Done => DONE,
-            ActionKind::Start => ACTION,
+            ActionKind::Retry => crate::i18n::msg::settings_retry_c(),
+            ActionKind::Done => crate::i18n::msg::settings_done_c(),
+            ActionKind::Start => crate::i18n::msg::settings_onboard_start_c(),
         }
     }
 }
@@ -354,16 +341,9 @@ impl OnboardScreen {
 }
 
 fn body_copy_for(who: &[String]) -> String {
-    let tail = " Pick your favorites \u{2014} they are what Home and the Library show, and you \
-                can change them in Settings whenever you like.";
     match join_names(who) {
-        None => "Choose the libraries this television shows. Your favorites fill Home's shelves \
-                 and the Library's own tabs; Settings lists every one you have."
-            .to_string(),
-        Some(names) => {
-            let verb = if who.len() == 1 { "has" } else { "have" };
-            format!("{names} {verb} shared libraries with you.{tail}")
-        }
+        None => crate::i18n::msg::settings_onboard_copy().to_string(),
+        Some(names) => crate::i18n::msg::settings_onboard_shared(who.len() as i64, &names),
     }
 }
 
@@ -371,7 +351,7 @@ fn join_names(who: &[String]) -> Option<String> {
     match who {
         [] => None,
         [a] => Some(a.clone()),
-        [rest @ .., last] => Some(format!("{} and {last}", rest.join(", "))),
+        [rest @ .., last] => Some(crate::i18n::msg::settings_onboard_names(last, &rest.join(", "))),
     }
 }
 
@@ -629,7 +609,7 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
         &self.state
     }
     fn crumb(&self, _cx: &Cx<'_, H>) -> Option<Cow<'_, str>> {
-        Some(Cow::Borrowed(if self.settings { CRUMB_SETTINGS } else { CRUMB_PROFILES }))
+        Some(Cow::Borrowed(if self.settings { crate::i18n::msg::settings_title() } else { crate::i18n::msg::settings_profiles_title() }))
     }
     fn prepare(&mut self, _b: &mut Budget, _cx: &Cx<'_, H>) {}
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
@@ -643,8 +623,8 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
         let body = self.body_copy(directory);
         Header::new(
             layout,
-            Some(if self.settings { CRUMB_SETTINGS } else { CRUMB_PROFILES }),
-            if self.settings { SETTINGS_TITLE } else { TITLE },
+            Some(if self.settings { crate::i18n::msg::settings_title() } else { crate::i18n::msg::settings_profiles_title() }),
+            if self.settings { crate::i18n::msg::settings_libraries_title() } else { crate::i18n::msg::settings_onboard_title() },
             &body,
         )
         .paint(p, f.measure);
@@ -665,8 +645,8 @@ impl<H: DirectoryLike> Screen<H> for OnboardScreen {
         if self.table.n_rows() == 0 {
             let env = Env::inert();
             if directory.discovery() == SecFetch::Failed {
-                StatusOverlay::new(lf, c"Couldn't load libraries", StatusKind::Failed)
-                    .reason(c"Check the connection, then try again.")
+                StatusOverlay::new(lf, crate::i18n::msg::settings_onboard_failed_c(), StatusKind::Failed)
+                    .reason(crate::i18n::msg::settings_onboard_failed_reason_c())
                     .draw(&env, p);
             } else {
                 Spinner::new(lf.x + lf.w * 0.5, lf.y + StatusOverlay::CTRL_H, 22.0)
@@ -1410,7 +1390,7 @@ mod tests {
         // The Settings-hosted twin asks the same question of `commit` alone: its BACK/Cancel is
         // already proven to touch neither the live pin nor the record
         // (`back_through_the_real_step_path_touches_neither_the_live_pin_nor_the_record`), which is
-        // a claim about LEAVING; this is the claim about the one ACTION a pristine, empty editor
+        // a claim about LEAVING; this is the claim about the one crate::i18n::msg::settings_onboard_start_c() a pristine, empty editor
         // still offers — Done must refuse to treat "nothing was ever discovered" as "the answer is
         // to keep nothing pinned".
         let mut s = OnboardScreen::settings(EntryId(0), browse.capture());

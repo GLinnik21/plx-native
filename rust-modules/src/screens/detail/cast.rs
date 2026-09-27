@@ -85,7 +85,7 @@ pub(crate) fn draw(
     measure: &dyn crate::ui::machine::Measure,
 ) {
     p.text(
-        c"Cast & Crew".as_ptr(),
+        crate::i18n::msg::browse_detail_cast_c().as_ptr(),
         crate::ui::consts::MARGIN_X,
         top - row.lift(),
         theme::size::HEADLINE,

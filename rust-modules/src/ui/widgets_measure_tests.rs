@@ -1,6 +1,7 @@
 //! Pure text-measurement paths that bypass SDL2_ttf: diagnostic field wrapping and `StatusOverlay`/`Button` measured layout.
 
 use super::*;
+use crate::ui::machine::Measure;
 #[allow(unused_imports)]
 use super::test_support::*;
 
@@ -78,4 +79,42 @@ fn measured_button_preserves_both_accessory_slots() {
         let width = Button::pill_w_measured(c"Try again", STATUS_CAP_SZ, leading, trailing, &StatusMetrics);
         assert!((width - plain - slot * (u8::from(leading) + u8::from(trailing)) as f32).abs() < 0.001);
     }
+}
+
+#[test]
+fn localized_key_hints_allow_reordered_keys_and_preserve_belarusian() {
+    let (before, after) = key_hint_parts("Каб вярнуцца, націсніце \u{fffc}");
+    assert_eq!(before.to_str().unwrap(), "Каб вярнуцца, націсніце");
+    assert!(after.is_empty());
+    let (before, after) = key_hint_parts("\u{fffc} — вярнуцца ў бібліятэку");
+    assert!(before.is_empty());
+    assert_eq!(after.to_str().unwrap(), "— вярнуцца ў бібліятэку");
+}
+
+#[test]
+fn localized_key_hint_omits_spacing_for_an_empty_sentence_run() {
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let key_only = KeyHint::translated("\u{fffc}".into(), c"BACK");
+    assert_eq!(key_only.width(&measure), key_cap_w(c"BACK", &measure));
+    let before = KeyHint::translated("Return \u{fffc}".into(), c"BACK");
+    let after = KeyHint::translated("\u{fffc} Return".into(), c"BACK");
+    assert_eq!(before.width(&measure), after.width(&measure));
+    assert_eq!(before.width(&measure), key_only.width(&measure)
+        + measure.width_str("Return", theme::size::CAPTION, false) + KEYCAP_GAP);
+}
+
+#[test]
+fn translated_tab_width_uses_glyph_advance_instead_of_character_count() {
+    struct GlyphMetrics;
+    impl crate::ui::machine::Measure for GlyphMetrics {
+        fn width(&self, text: &core::ffi::CStr, _: i32, _: bool) -> f32 {
+            text.to_str().unwrap().chars().map(|c| if c.is_ascii() { 7.0 } else { 23.0 }).sum()
+        }
+        fn cap_h(&self, _: i32) -> f32 { unreachable!() }
+        fn line_h(&self, _: i32) -> f32 { unreachable!() }
+    }
+    let latin = TabPill::width_measured("Info", theme::size::BODY, &GlyphMetrics);
+    let cyrillic = TabPill::width_measured("Інфа", theme::size::BODY, &GlyphMetrics);
+    assert!(cyrillic > latin, "equal character counts need different glyph widths");
+    assert_eq!(cyrillic, 4.0 * 23.0 + 44.0);
 }

@@ -87,7 +87,7 @@ const BIO_LINES: usize = 3;
 const BIO_LEAD: f32 = 40.0;
 const HL_PAD_X: f32 = 26.0;
 const HL_PAD_Y: f32 = 24.0;
-const MORE: &std::ffi::CStr = c"MORE";
+fn more() -> &'static std::ffi::CStr { crate::i18n::msg::browse_action_more_c() }
 const BIO_MORE_GAP: f32 = theme::space::LG;
 const BAND_GAP_TO_SHELF: f32 = theme::space::XL;
 const SHELF_GAP: f32 = UNDER_LABEL_AIR;
@@ -251,7 +251,7 @@ fn bio_view<'a>(bio: &'a str, a: f32, measure: &'a dyn Measure) -> TextView<'a> 
     .with_measure(measure)
     .leading(BIO_LEAD)
     .max_lines(BIO_LINES)
-    .fade_last(measure.width(MORE, theme::size::BODY, true) + BIO_MORE_GAP)
+    .fade_last(measure.width(more(), theme::size::BODY, true) + BIO_MORE_GAP)
 }
 
 fn text_w(d: f32) -> f32 {
@@ -783,25 +783,25 @@ impl PersonScreen {
         let born = crate::ui::fmt::pretty_date(&p.born, 0);
         if !born.is_empty() {
             life.push(match p.birthplace.is_empty() {
-                true => format!("Born {born}"),
-                false => format!("Born {born}, {}", p.birthplace),
+                true => crate::i18n::msg::browse_person_born(&born),
+                false => crate::i18n::msg::browse_person_born_place(&born, &p.birthplace),
             });
         }
         let died = crate::ui::fmt::pretty_date(&p.died, 0);
         if !died.is_empty() {
-            life.push(format!("Died {died}"));
+            life.push(crate::i18n::msg::browse_person_died(&died));
         }
         self.life_c = cstr_elide(&life.join(" \u{b7} "), w, theme::size::CAPTION, 0, measure);
 
         for k in 0..NSHELF {
             self.shelf_count_c[k] = match p.total(k) {
                 0 => CString::default(),
-                n => CString::new(n.to_string()).unwrap_or_default(),
+                n => CString::new(crate::i18n::current().number(n as i64)).unwrap_or_default(),
             };
         }
         self.entry_count_c = match crate::person::filmography_total(p) {
             0 => CString::default(),
-            n => CString::new(n.to_string()).unwrap_or_default(),
+            n => CString::new(crate::i18n::current().number(n as i64)).unwrap_or_default(),
         };
     }
 
@@ -1165,7 +1165,7 @@ impl PersonScreen {
             bio.draw(p, Rect::new(col_x_, by, BIO_W, 0.0));
             if truncated {
                 Label::new(
-                    MORE.as_ptr(),
+                    more().as_ptr(),
                     theme::size::BODY,
                     match mark.is_some() {
                         true => theme::TEXT_SECONDARY,
@@ -1192,7 +1192,7 @@ impl PersonScreen {
         let cur_col = if focused { row.focus() } else { -1 };
         let hy = -row.lift();
         Label::new(
-            SHELF_TITLE[kind].as_ptr(),
+            shelf_title()[kind].as_ptr(),
             theme::size::HEADLINE,
             theme::TEXT_HEADING,
         )
@@ -1200,7 +1200,7 @@ impl PersonScreen {
         .v(VAlign::CapTop)
         .draw(p, Rect::new(MARGIN_X, hy, SCR_W, 0.0));
         if !self.shelf_count_c[kind].as_bytes().is_empty() {
-            let tw = measure.width(SHELF_TITLE[kind], theme::size::HEADLINE, true);
+            let tw = measure.width(shelf_title()[kind], theme::size::HEADLINE, true);
             Label::new(
                 self.shelf_count_c[kind].as_ptr(),
                 theme::size::CAPTION,
@@ -1266,7 +1266,7 @@ impl PersonScreen {
         }
         StatusOverlay::new(
             band,
-            c"Nothing from this person is in your libraries",
+            crate::i18n::msg::browse_person_empty_c(),
             StatusKind::Empty,
         )
         .draw(env, p);
@@ -1299,7 +1299,7 @@ impl PersonScreen {
         };
         let cy = pill.y + pill.h * 0.5;
         let mut rx = x + entry_run_x(w, e);
-        rx += Label::new(c"Filmography".as_ptr(), theme::size::LABEL, ink)
+        rx += Label::new(crate::i18n::msg::browse_person_filmography_c().as_ptr(), theme::size::LABEL, ink)
             .bold()
             .v(VAlign::Middle)
             .draw(p, Rect::new(rx, cy, 0.0, 0.0));
@@ -1329,11 +1329,11 @@ impl PersonScreen {
 }
 
 /// Shelves, in flow order. Kind 0 = Movies, 1 = Shows.
-const SHELF_TITLE: [&std::ffi::CStr; NSHELF] = [c"Movies", c"Shows"];
+fn shelf_title() -> [&'static std::ffi::CStr; NSHELF] { [crate::i18n::msg::browse_kind_movies_c(), crate::i18n::msg::browse_kind_shows_c()] }
 
 /// The Filmography entry pill's width, sized to its own runs.
 fn entry_w(_p: &Person, entry_count_c: &std::ffi::CStr, m: &dyn Measure) -> f32 {
-    let label = m.width(c"Filmography", theme::size::LABEL, true);
+    let label = m.width(crate::i18n::msg::browse_person_filmography_c(), theme::size::LABEL, true);
     let count = if entry_count_c.to_bytes().is_empty() {
         0.0
     } else {

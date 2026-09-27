@@ -116,7 +116,7 @@ impl ListingSnapshot {
                 items: SecItems::from_vec(items),
                 sorts: Arc::new(vec![SortEntry {
                     key: "titleSort".into(),
-                    title: "Title".into(),
+                    title: crate::i18n::msg::browse_library_title().into(),
                     default_desc: false,
                 }]),
                 genres: Arc::new(Vec::new()),
@@ -641,7 +641,7 @@ mod tests {
             let section = owner.state_mut(0).unwrap();
             section.sorts = Arc::new(vec![SortEntry {
                 key: "titleSort".into(),
-                title: "Title".into(),
+                title: crate::i18n::msg::browse_library_title().into(),
                 default_desc: false,
             }]);
             section.genres = Arc::new(vec![GenreEntry {

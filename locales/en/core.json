@@ -1,0 +1,104 @@
+{
+  "core.system_default": {
+    "value": "System default",
+    "description": "Language option that follows the television"
+  },
+  "core.converts_on_server": {
+    "value": "Converts on server",
+    "args": {},
+    "description": "Shared display formatter: converts_on_server"
+  },
+  "core.duration_short_hours": {
+    "value": "{hours}h {minutes}m",
+    "args": {
+      "hours": "i64",
+      "minutes": "i64"
+    },
+    "description": "Shared display formatter: duration_short_hours"
+  },
+  "core.duration_short_minutes": {
+    "value": "{minutes}m",
+    "args": {
+      "minutes": "i64"
+    },
+    "description": "Shared display formatter: duration_short_minutes"
+  },
+  "core.duration_long_hours": {
+    "value": "{hours} hr {minutes} min",
+    "args": {
+      "hours": "i64",
+      "minutes": "i64"
+    },
+    "description": "Shared display formatter: duration_long_hours"
+  },
+  "core.duration_long_minutes": {
+    "value": "{minutes} min",
+    "args": {
+      "minutes": "i64"
+    },
+    "description": "Shared display formatter: duration_long_minutes"
+  },
+  "core.time_left_hours": {
+    "value": "{hours} hr {minutes} min left",
+    "args": {
+      "hours": "i64",
+      "minutes": "i64"
+    },
+    "description": "Shared display formatter: time_left_hours"
+  },
+  "core.time_left_minutes": {
+    "value": "{minutes} min left",
+    "args": {
+      "minutes": "i64"
+    },
+    "description": "Shared display formatter: time_left_minutes"
+  },
+  "core.seconds": {
+    "value": "{seconds} s",
+    "args": {
+      "seconds": "str"
+    },
+    "description": "Shared display formatter: seconds"
+  },
+  "core.season": {
+    "value": "S{season}",
+    "args": {
+      "season": "i64"
+    },
+    "description": "Shared display formatter: season"
+  },
+  "core.episode": {
+    "value": "E{episode}",
+    "args": {
+      "episode": "i64"
+    },
+    "description": "Shared display formatter: episode"
+  },
+  "core.episode_ordinal": {
+    "value": "S{season}, E{episode}",
+    "args": {
+      "season": "i64",
+      "episode": "i64"
+    },
+    "description": "Shared display formatter: episode_ordinal"
+  },
+  "core.shared_by": {
+    "value": "Shared by {handle}",
+    "args": {
+      "handle": "str"
+    },
+    "description": "Shared display formatter: shared_by"
+  },
+  "core.preview_fault": {
+    "value": "C fault fallback",
+    "description": "Heading in consent technical report preview"
+  },
+  "core.preview_panic": {
+    "value": "Rust panic fallback",
+    "description": "Heading in consent technical report preview"
+  },
+  "core.preview_domains": {
+    "value": "Closed handled-playback domains:",
+    "description": "Heading in consent technical report preview"
+  }
+}

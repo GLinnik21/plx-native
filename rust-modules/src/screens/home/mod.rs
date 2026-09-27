@@ -1045,7 +1045,7 @@ impl HomeScreen {
         press_scale: f32,
     ) {
         let resumes = crate::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
-        let label = if resumes { c"Continue" } else { c"Play" };
+        let label = if resumes { crate::i18n::msg::browse_home_continue_c() } else { crate::i18n::msg::browse_detail_play_c() };
         let pill = Rect::new(
             MARGIN_X,
             HERO_ROW_Y,
@@ -1688,7 +1688,7 @@ impl HomeScreen {
         }
         let hero = self.selected_hero(view)?.item;
         let resumes = crate::metadata::resume_ns(hero.resume_ms, hero.dur_ns / 1_000_000) > 0;
-        let label = if resumes { c"Continue" } else { c"Play" };
+        let label = if resumes { crate::i18n::msg::browse_home_continue_c() } else { crate::i18n::msg::browse_detail_play_c() };
         let pill = Rect::new(
             MARGIN_X,
             HERO_ROW_Y,
@@ -1991,17 +1991,17 @@ fn status_read(
     }
     Some(match view.state {
         crate::pms::HubState::Loading => {
-            (c"Loading your library\u{2026}", StatusKind::Working, None)
+            (crate::i18n::msg::browse_home_loading_c(), StatusKind::Working, None)
         }
         crate::pms::HubState::Failed => (
-            c"Can't reach your Plex server",
+            crate::i18n::msg::browse_home_failed_c(),
             StatusKind::Failed,
-            Some(c"Try Again"),
+            Some(crate::i18n::msg::browse_action_retry_home_c()),
         ),
         crate::pms::HubState::Ready => (
-            c"Nothing on this server yet",
+            crate::i18n::msg::browse_home_empty_c(),
             StatusKind::Empty,
-            Some(c"Refresh"),
+            Some(crate::i18n::msg::browse_home_refresh_c()),
         ),
     })
 }
@@ -2187,13 +2187,7 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32, measure: &dy
     };
     let title_h = hero_logo::band_h(LogoRung::Hero);
     let meta = if episode {
-        let mut text = String::new();
-        if hero.season_index > 0 {
-            text.push_str(&format!("S{} ", hero.season_index));
-        }
-        if hero.ep_index > 0 {
-            text.push_str(&format!("E{}", hero.ep_index));
-        }
+        let mut text = crate::ui::fmt::episode_address(i64::from(hero.season_index), i64::from(hero.ep_index));
         if !text.is_empty() && !hero.title.is_empty() {
             text.push_str(" \u{b7} ");
         }
@@ -2202,10 +2196,10 @@ fn hero_content(hero: &PmsMovie, source: &str, p: Painter, dx: f32, measure: &dy
     } else {
         format!(
             "{} \u{b7} {} \u{b7} {}",
-            if hero.kind == 1 { "Show" } else { "Movie" },
+            if hero.kind == 1 { crate::i18n::msg::browse_kind_show() } else { crate::i18n::msg::browse_kind_movie() },
             hero.year,
             if hero.rating.is_empty() {
-                "NR"
+                crate::i18n::msg::browse_detail_unrated()
             } else {
                 &hero.rating
             }

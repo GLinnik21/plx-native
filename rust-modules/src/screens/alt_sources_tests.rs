@@ -414,7 +414,7 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
     let after = rows(copies(), house, "4");
     assert_eq!(
         after.iter().map(|r| r.detail.clone()).collect::<Vec<_>>(),
-        [OWN_ACCOUNT, "friend"],
+        [own_account(), "friend"],
         "the row follows the registry off a credit without waiting for a re-resolve"
     );
     assert_eq!(
@@ -445,7 +445,7 @@ fn a_re_described_source_restamps_the_credit_on_an_open_page() {
     );
     assert_eq!(
         drawn(&p),
-        [OWN_ACCOUNT, "friend"],
+        [own_account(), "friend"],
         "an OPEN panel follows the correction; it is a snapshot, not a view of the store"
     );
     assert!(

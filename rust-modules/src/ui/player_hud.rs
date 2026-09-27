@@ -941,14 +941,14 @@ pub(crate) fn ctrl_row_hit_rect() -> Rect {
 }
 
 /// One bottom tab's rect, matching the left-to-right layout [`draw_hud`] lays the pills out with.
-pub(crate) fn tab_hit_rect(idx: i32, has_chapters: bool) -> Option<Rect> {
-    let tabs: &[&str] = if has_chapters { &["Info", "Chapters"] } else { &["Info"] };
+pub(crate) fn tab_hit_rect(idx: i32, has_chapters: bool, measure: &dyn crate::ui::machine::Measure) -> Option<Rect> {
+    let tabs: &[&str] = if has_chapters { &[crate::i18n::msg::widgets_player_info(), crate::i18n::msg::widgets_player_chapters()] } else { &[crate::i18n::msg::widgets_player_info()] };
     let label = *tabs.get(idx as usize)?;
     let ph = BTN_S;
     let py = (SB_Y + SCR_H) * 0.5 - ph * 0.5;
     let mut px = SB_X;
     for (i, l) in tabs.iter().enumerate() {
-        let pw = TabPill::width(l.chars().count(), theme::size::BODY);
+        let pw = TabPill::width_measured(l, theme::size::BODY, measure);
         if i as i32 == idx {
             return Some(Rect::new(px, py, pw, ph));
         }
@@ -1011,7 +1011,7 @@ fn draw_failed_readout(
     );
     fr_line(
         p,
-        c"Playback failed",
+        crate::i18n::msg::widgets_status_failed_c(),
         FR_VERDICT_TOP,
         theme::size::TITLE,
         1,
@@ -1051,11 +1051,15 @@ fn draw_failed_readout(
             );
     }
     if e.no_pass {
-        let words = c"This server has no";
-        let ww = measure.width(words, theme::size::BODY, false);
+        let sentence = crate::i18n::msg::widgets_failure_no_pass("\u{fffc}");
+        let (words, after) = crate::ui::widgets::key_hint_parts(&sentence);
+        let ww = measure.width(&words, theme::size::BODY, false);
         let cw = crate::ui::widgets::pass_capsule_w(measure);
         const GAP: f32 = 16.0;
-        let x = (SCR_W - (ww + GAP + cw)) * 0.5;
+        let after_w = measure.width(&after, theme::size::BODY, false);
+        let before_gap = if words.is_empty() { 0.0 } else { GAP };
+        let after_gap = if after.is_empty() { 0.0 } else { GAP };
+        let x = (SCR_W - (ww + before_gap + cw + after_gap + after_w)) * 0.5;
         let line_top = FR_SLOT_LINE2; // the slot's second line — shared with the quoted verdict
         let (cap_top, baseline) = crate::text::text_cap_band(theme::size::BODY, 0);
         p.text(
@@ -1068,23 +1072,23 @@ fn draw_failed_readout(
             0,
         );
         let cy = line_top + (baseline - cap_top) * 0.5;
-        crate::ui::widgets::pass_capsule(p, x + ww + GAP, cy, true, measure);
+        crate::ui::widgets::pass_capsule(p, x + ww + before_gap, cy, true, measure);
+        p.text(after.as_ptr(), x + ww + before_gap + cw + after_gap,
+            line_top - cap_top, theme::size::BODY, theme::TEXT_SECONDARY, 0, 0);
     }
     // Both exits stay visible.  OK enters the shared quality ladder (selecting the current rung is
     // a plain retry); BACK still leaves the player.  The key caps are what survive a phone photo.
     draw_hint_with_keycap(
         p,
-        c"Press",
+        crate::i18n::msg::widgets_hint_retry("\u{fffc}"),
         c"OK",
-        c"to choose quality or retry",
         FR_HINT_TOP,
         measure,
     );
     draw_hint_with_keycap(
         p,
-        c"Press",
+        crate::i18n::msg::widgets_hint_return("\u{fffc}"),
         c"BACK",
-        c"to return",
         FR_HINT_TOP + FR_HINT_GAP,
         measure,
     );
@@ -1107,9 +1111,8 @@ fn draw_failed_readout(
 /// ground, which is black here by construction.
 fn draw_hint_with_keycap(
     p: Painter,
-    pre: &std::ffi::CStr,
+    message: String,
     key: &std::ffi::CStr,
-    post: &std::ffi::CStr,
     top: f32,
     measure: &dyn crate::ui::machine::Measure,
 ) {
@@ -1117,17 +1120,20 @@ fn draw_hint_with_keycap(
     const CAP_MIN_W: f32 = 74.0;
     const CAP_PAD: f32 = 12.0;
     const GAP: f32 = 14.0;
+    let (pre, post) = crate::ui::widgets::key_hint_parts(&message);
     let sz = theme::size::CAPTION;
-    let pw = measure.width(pre, sz, false);
-    let ow = measure.width(post, sz, false);
+    let pw = measure.width(&pre, sz, false);
+    let ow = measure.width(&post, sz, false);
     let kw = (measure.width(key, theme::size::MICRO, true) + 2.0 * CAP_PAD).max(CAP_MIN_W);
-    let total = pw + GAP + kw + GAP + ow;
+    let before_gap = if pre.is_empty() { 0.0 } else { GAP };
+    let after_gap = if post.is_empty() { 0.0 } else { GAP };
+    let total = pw + before_gap + kw + after_gap + ow;
     let x = (SCR_W - total) * 0.5;
     let (cap_top, baseline) = crate::text::text_cap_band(sz, 0);
     let ty = top - cap_top;
     let cy = top + (baseline - cap_top) * 0.5;
     p.text(pre.as_ptr(), x, ty, sz, theme::TEXT_TERTIARY, 0, 0);
-    let kx = x + pw + GAP;
+    let kx = x + pw + before_gap;
     let kr = Rect::new(kx, cy - CAP_H * 0.5, kw, CAP_H);
     const STROKE: f32 = 1.5;
     p.rrect(kr, 8.0, 8.0, [1.0, 1.0, 1.0, 0.34]);
@@ -1155,7 +1161,7 @@ fn draw_hint_with_keycap(
     );
     p.text(
         post.as_ptr(),
-        kx + kw + GAP,
+        kx + kw + after_gap,
         ty,
         sz,
         theme::TEXT_TERTIARY,
@@ -1577,9 +1583,9 @@ pub(crate) fn draw_hud(
 
     // bottom tabs as pills — Chapters only appears when the item actually has chapters
     let tabs: &[&str] = if crate::ui::chapters_panel::has_chapters() {
-        &["Info", "Chapters"]
+        &[crate::i18n::msg::widgets_player_info(), crate::i18n::msg::widgets_player_chapters()]
     } else {
-        &["Info"]
+        &[crate::i18n::msg::widgets_player_info()]
     };
     // tabs match the transport control buttons' height (BTN_S), centred vertically between the
     // play bar (scrubber, at SB_Y) and the bottom edge of the screen
@@ -1588,7 +1594,7 @@ pub(crate) fn draw_hud(
     let mut px = SB_X;
     for (i, label) in tabs.iter().enumerate() {
         let on = focus == 2 && tab == i as i32;
-        let pw = TabPill::width(label.chars().count(), theme::size::BODY);
+        let pw = TabPill::width_measured(label, theme::size::BODY, measure);
         if let Ok(cs) = CString::new(*label) {
             TabPill::new(cs.as_ptr(), theme::size::BODY, Rect::new(px, py, pw, ph))
                 .focused(on)

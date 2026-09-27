@@ -571,11 +571,11 @@ pub(crate) fn preview_events() -> Vec<(&'static str, Vec<u8>)> {
 
     vec![
         (
-            "C fault fallback",
+            crate::i18n::msg::core_preview_fault(),
             serde_json::to_vec(&fault_json).unwrap_or_default(),
         ),
         (
-            "Rust panic fallback",
+            crate::i18n::msg::core_preview_panic(),
             serde_json::to_vec(&panic_json).unwrap_or_default(),
         ),
     ]

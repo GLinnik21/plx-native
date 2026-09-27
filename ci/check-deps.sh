@@ -140,47 +140,11 @@ allowed() {
   grep -qE "^${path}(	|$)" "ci/allow/${rule}.txt" 2>/dev/null
 }
 
-# wholly_test_files: paths (under $SRC) that carry NO #[cfg(test)] marker of their own but are
-# entirely test code anyway — the mutators call-site gate's per-file brace-depth skip only ever
-# looks INSIDE the file it is scanning, so a file like this reads as 100% production to it.
-# **Derived, never hand-listed** — a transcribed list rots the moment a new one is added and
-# nothing here compiles Bash comments (D3 census finding). Two shapes:
-#   (i)  a bare `#[cfg(test)]` immediately followed by `mod <name>;` — a DECLARATION with no body,
-#        naming a test module split into its own sibling file (`screens/detail/mod.rs:14`'s
-#        `mod tests;` names `screens/detail/tests.rs`).
-#   (ii) `include!("<name>.rs")` found while walking INSIDE a `#[cfg(test)] mod { … }` block
-#        (`app/bridge.rs`'s own test module `include!`s `detail_panel_tests.rs` and friends).
-# Plain POSIX awk (no gawk `match(...,arr)` — this runs under BSD/one-true-awk too).
+# Resolve external test modules (including #[path], visibility and intervening attributes)
+# and include! files from Rust tokens. Test ownership propagates through descendants; any
+# production reference keeps a shared file in the scan. No filename suffix grants an exemption.
 wholly_test_files() {
-  find "$SRC" -name '*.rs' | while IFS= read -r f; do
-    local dir; dir=$(dirname "$f")
-    awk -v dir="$dir" '
-      /^#\[cfg\(test\)\][ \t]*$/ { prevcfg=1; next }
-      prevcfg==1 && /^mod [a-z_]+;/ {
-        line=$0; sub(/^mod /,"",line); sub(/;.*/,"",line)
-        print dir "/" line ".rs"
-      }
-      { prevcfg=0 }
-    ' "$f" | while IFS= read -r cand; do
-      [ -f "$cand" ] && echo "$cand"
-    done
-    awk '
-      skip>0 {
-        n=gsub(/\{/,"{"); m=gsub(/\}/,"}"); depth+=n-m
-        print
-        if (depth<=0) skip=0
-        prev=$0; next
-      }
-      prev=="#[cfg(test)]" && /^mod / {
-        skip=1; depth=gsub(/\{/,"{")-gsub(/\}/,"}")
-        if (depth<=0) skip=0
-        prev=$0; next
-      }
-      { prev=$0 }
-    ' "$f" | grep -oE 'include!\("[^"]+"\)' | sed -E 's/include!\("([^"]+)"\)/\1/' | while IFS= read -r inc; do
-      [ -f "$dir/$inc" ] && echo "$dir/$inc"
-    done
-  done | sort -u
+  python3 ci/rust_test_modules.py "$SRC"
 }
 
 # gate <rule> <pattern> <paths...>: every match must be in an allowlisted file.
@@ -196,6 +160,7 @@ gate() {
 }
 
 echo "== check-deps =="
+mut_wholly_test="$(wholly_test_files)" || { fail "Rust test-module classification failed"; exit 1; }
 
 # browse-owner: Browse has one physical owner per `Stores`; the migration allowlist ended at zero
 # and is deliberately gone. Reject both the old storage/selector machinery and every free
@@ -411,6 +376,7 @@ libm_bad=0
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   p="${line%%:*}"
+  if echo "$mut_wholly_test" | grep -qxF "$p"; then continue; fi
   if ! allowed libm "$p"; then echo "    $line"; libm_bad=$((libm_bad+1)); fi
 done <<< "$libm_lines"
 if [ "$libm_bad" -eq 0 ]; then ok "libm"; else fail "libm: $libm_bad line(s) outside ci/allow/libm.txt"; fi
@@ -462,7 +428,6 @@ MUTATORS='\b(browse|pms|metadata|search|person|viewstate)::(set_cur|note_library
 # production lines of ui/detail.rs go unscanned. `stores::<store>::apply(` lines are the new
 # spelling and are excluded by name; a SCREEN's own `crate::ui::person::open(` is not a store
 # call and is masked before the match.
-mut_wholly_test="$(wholly_test_files)"
 mut_bad=0
 while IFS= read -r f; do
   if echo "$mut_wholly_test" | grep -qxF "$f"; then continue; fi
@@ -747,6 +712,7 @@ else fail "testmod: $testmod_n \`#[cfg(test)] mod\` block(s) in app/mod.rs — a
 #     `thread::spawn(` spelling used to.
 threads_bad=0
 while IFS= read -r f; do
+  if echo "$mut_wholly_test" | grep -qxF "$f"; then continue; fi
   pat='\bthread::spawn\('
   if grep -qE '^\s*use\s+std::thread::(spawn\s*;|\{[^}]*\bspawn\b[^}]*\}\s*;)' "$f"; then
     pat='\bthread::spawn\(|\bspawn\('

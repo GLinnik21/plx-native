@@ -634,3 +634,44 @@ mod composed {
         );
     }
 }
+
+#[test]
+fn overflowing_disclosure_is_readable_without_committing_a_consent_choice() {
+    use crate::ui::focus::{FocusEngine, Outcome};
+    use crate::ui::screen::By;
+    let _guard = crate::testlock::serial();
+    let measure = FixtureMeasure;
+    let mut cx = test_cx(&measure);
+    let (mut out, mut present) = sink();
+    let mut page = ConsentPage::first_run(EntryId(1), 0, &cx, &mut mk_fx(&mut out, &mut present));
+    out.clear();
+    // Simulate the measured content overflowing the available narrative area. The simulator
+    // separately measures the actual Belarusian paragraph with the shipped font.
+    page.disclosure.set_extent_for_test(500.0);
+    let owner = InputOwner::Entry(EntryId(1));
+    let mut engine: FocusEngine<u32> = FocusEngine::new();
+    engine.set(owner, FocusKey { entry: EntryId(1), elem: BAND }, Some(BAND_GROUP), By::Dir);
+    let result = engine.move_dir(owner, &page.view(), &[], Dir::Up, &cx);
+    assert!(matches!(result, Outcome::Moved { .. }));
+    let reading = FocusKey { entry: EntryId(1), elem: DISCLOSURE };
+    assert_eq!(engine.current(owner), Some(reading));
+    let frame = page.view().disclosure_frame(cx.measure);
+    let band_top = page.view().screen().band.as_ref().unwrap().extent(cx.measure).y;
+    assert!(frame.y + frame.h + theme::space::XL <= band_top + 0.01);
+    cx.focus.current = Some(reading);
+    let before = page.state.hash();
+    for _ in 0..3 { page.step(&key_down(Key::Down), &cx, &mut mk_fx(&mut out, &mut present)); }
+    assert!(page.disclosure.at_end());
+    assert_ne!(page.state.hash(), before, "reading position must be visible to replay");
+    assert_eq!(page.draft, (false, false));
+    assert!(out.is_empty(), "reading cannot submit a consent answer");
+    let result = engine.move_dir(owner, &page.view(), &[], Dir::Down, &cx);
+    assert!(matches!(result, Outcome::Moved { .. }));
+    assert!(engine.current(owner).is_some_and(|key| band_index(key.elem).is_some()));
+    engine.set(owner, reading, Some(DISCLOSURE_GROUP), By::Dir);
+    engine.move_dir(owner, &page.view(), &[], Dir::Right, &cx);
+    assert!(engine.current(owner).is_some_and(|key| key.elem < page.rows.len() as u32));
+    page.step(&key_down(Key::Back), &cx, &mut mk_fx(&mut out, &mut present));
+    assert!(out.iter().any(|event| matches!(event.fx, Fx::App(AppFx::Loop(LoopReq::BackAtRoot)))));
+    assert_eq!(page.draft, (false, false));
+}

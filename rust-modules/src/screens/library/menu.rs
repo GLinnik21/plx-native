@@ -188,7 +188,7 @@ fn source_draft(
 }
 
 fn sort_draft(sorts: &[SortEntry], sort_index: usize, sort_desc: bool) -> MenuDraft {
-    let mut section = Section::new("Sort by");
+    let mut section = Section::new(crate::i18n::msg::browse_library_sort_by());
     let mut rows = Vec::new();
     let mut stamp = Stamp::default();
     stamp.tag(7);
@@ -237,11 +237,11 @@ fn sort_draft(sorts: &[SortEntry], sort_index: usize, sort_desc: bool) -> MenuDr
 }
 
 fn filter_draft(unwatched: bool, genre: Option<&GenreEntry>) -> MenuDraft {
-    let section = Section::new("Filter")
-        .row(Row::new("Unwatched only").toggle(unwatched))
+    let section = Section::new(crate::i18n::msg::browse_library_filter())
+        .row(Row::new(crate::i18n::msg::browse_library_unwatched_only()).toggle(unwatched))
         .row(
-            Row::new("Genre")
-                .value(genre.map(|g| g.title.as_str()).unwrap_or("All"))
+            Row::new(crate::i18n::msg::browse_library_genre())
+                .value(genre.map(|g| g.title.as_str()).unwrap_or(crate::i18n::msg::browse_library_all()))
                 .chevron(true),
         );
     let mut stamp = Stamp::default();
@@ -268,7 +268,7 @@ fn filter_draft(unwatched: bool, genre: Option<&GenreEntry>) -> MenuDraft {
 }
 
 fn genre_draft(genres: &[GenreEntry], current: Option<&GenreEntry>) -> MenuDraft {
-    let mut section = Section::new("Genre").row(Row::new("All Genres").checked(current.is_none()));
+    let mut section = Section::new(crate::i18n::msg::browse_library_genre()).row(Row::new(crate::i18n::msg::browse_library_all_genres()).checked(current.is_none()));
     let mut rows = vec![("genre:all".into(), Action::Edit(QueryEdit::Genre(None)), 0)];
     let mut stamp = Stamp::default();
     stamp.tag(10);
@@ -395,10 +395,10 @@ impl LibraryMenu {
         let mut sections = Vec::new();
         let selected = 0i32;
         let title = match self.kind {
-            LibraryMenuKind::Sort => "Sort by",
-            LibraryMenuKind::Filter => "Filter",
-            LibraryMenuKind::Genre => "Genre",
-            LibraryMenuKind::Sources => "Libraries",
+            LibraryMenuKind::Sort => crate::i18n::msg::browse_library_sort_by(),
+            LibraryMenuKind::Filter => crate::i18n::msg::browse_library_filter(),
+            LibraryMenuKind::Genre => crate::i18n::msg::browse_library_genre(),
+            LibraryMenuKind::Sources => crate::i18n::msg::browse_library_libraries(),
         };
         let mut section = Section::new(title);
         match self.kind {
@@ -425,7 +425,7 @@ impl LibraryMenu {
                         directory.sections(),
                     );
                 }
-                section = section.row(Row::new("Check for new shares"));
+                section = section.row(Row::new(crate::i18n::msg::browse_library_check_shares()));
                 rows.push(("recheck".into(), Action::Recheck, 0));
             }
         }

@@ -896,7 +896,7 @@ impl PlayerScreen {
 /// these is highlighted — these groups exist so the engine's hit map and stop bookkeeping have real
 /// geometry to test a click or a simulator mouse against, not so the engine drives the ring itself.
 impl<H: PlayerLike> Focusable<H> for PlayerScreen {
-    fn groups(&self, _cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         out.push(GroupSpec {
             id: GROUP_SCRUB,
             kind: GroupKind::Free,
@@ -925,7 +925,7 @@ impl<H: PlayerLike> Focusable<H> for PlayerScreen {
             seat: Seat::First,
             reachable: AxisMask::BOTH,
             edge: [EdgeRule::Screen; 4],
-            extent: player_hud::tab_hit_rect(0, has_ch).unwrap_or(Rect::FULL),
+            extent: player_hud::tab_hit_rect(0, has_ch, cx.measure).unwrap_or(Rect::FULL),
             len: if has_ch { 2 } else { 1 },
             elem: crate::ui::screen::ElemKind::Control,
         });
@@ -958,7 +958,7 @@ impl<H: PlayerLike> Focusable<H> for PlayerScreen {
     fn neighbour(&self, _key: FocusKey<u32>, _dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {
         Step::Edge
     }
-    fn place(&self, key: &u32, _cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+    fn place(&self, key: &u32, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
         use player_hud::{ELEM_FAILURE_OK, ELEM_ROW_BASE, ELEM_SCRUB, ELEM_TAB_BASE};
         let rect = match *key {
             e if e == ELEM_SCRUB => player_hud::scrub_hit_rect(),
@@ -972,6 +972,7 @@ impl<H: PlayerLike> Focusable<H> for PlayerScreen {
             e if (ELEM_TAB_BASE..ELEM_FAILURE_OK).contains(&e) => player_hud::tab_hit_rect(
                 (e - ELEM_TAB_BASE) as i32,
                 crate::ui::chapters_panel::has_chapters(),
+                cx.measure,
             )?,
             e if e == ELEM_FAILURE_OK => player_hud::failure_ok_hit_rect(),
             _ => return None,

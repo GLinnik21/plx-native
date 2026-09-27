@@ -232,7 +232,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
         assert_eq!(title(&l), "Violet", "the EPISODE's NAME takes the title rung");
         assert_eq!(
             caption(&l),
-            "11 Sep 2026",
+            "9/11/2026",
             "…over its one trailing FACT, which on a discovery shelf is the release date",
         );
         assert!(
@@ -258,7 +258,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
         // rather than to an empty rung.
         let mut next_up = shelf(vec![dated(ep(3, 5, "Ice Chips", "The Bear"))]);
         next_up.is_continue = true;
-        assert_eq!(caption(&shelf_label(&next_up, 0)), "11 Sep 2026");
+        assert_eq!(caption(&shelf_label(&next_up, 0)), "9/11/2026");
 
         // …an episode the server dated to nothing at all draws ONE rung, not an empty second one
         let sh = shelf(vec![ep(3, 4, "Violet", "The Bear")]);

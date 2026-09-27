@@ -1,0 +1,20 @@
+[
+  {
+    "path": "rust-modules/src/screens/login.rs",
+    "boundary": "TextView::new",
+    "text": "plex.tv/link",
+    "reason": "Plex sign-in URL is an exact service destination; it must not be translated."
+  },
+  {
+    "path": "rust-modules/src/app/diagnostics.rs",
+    "boundary": "Field::new",
+    "text": "HEVC {}x{}",
+    "reason": "Technical codec identifier and pixel dimensions remain conventional diagnostic notation."
+  },
+  {
+    "path": "rust-modules/src/app/diagnostics.rs",
+    "boundary": "Field::new",
+    "text": "VP9",
+    "reason": "Technical codec identifier; no app-owned prose."
+  }
+]

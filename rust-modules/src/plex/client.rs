@@ -310,8 +310,8 @@ impl Client {
     ///   issue #22's lesson exactly: a claim true of the development environment asserted as
     ///   universal.
     ///
-    /// `X-Plex-Language` is conditional rather than absent, and broader than this PLAYBACK-only
-    /// query identity: [`pms_headers`] adds it to every PMS operation from the process locale.
+    /// `X-Plex-Language` is broader than this PLAYBACK-only query identity: [`pms_headers`]
+    /// adds the resolved UI language to every PMS operation.
     pub(super) fn playback_identity(&self, q: QueryBuilder) -> QueryBuilder {
         q.str("X-Plex-Client-Identifier", &self.client_id)
             .str("X-Plex-Product", &self.product)

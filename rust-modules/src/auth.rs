@@ -811,7 +811,7 @@ fn login_worker_with_output(epoch: u64, cid: String, output: &dyn owner::Observa
             }
             PollEnd::Expired => {
                 log("auth: out of automatic sign-in codes — asking the user to start again");
-                return output_failed(output, epoch, "Sign-in timed out — try again.");
+                return output_failed(output, epoch, crate::i18n::msg::browse_auth_timeout());
             }
         }
     };
@@ -837,21 +837,21 @@ fn login_worker_with_output(epoch: u64, cid: String, output: &dyn owner::Observa
     let (server, sources) = match discover_and_store(&ac, epoch, output) {
         Discovery::Ok { server, sources } => (server, sources),
         Discovery::Cancelled => return,
-        Discovery::NoServers => return output_failed(output, epoch, "This Plex account has no server yet."),
+        Discovery::NoServers => return output_failed(output, epoch, crate::i18n::msg::browse_auth_no_servers()),
         Discovery::Refused => {
             return output_failed(output,
                 epoch,
-                "Your Plex server refused the connection — check its network access settings.",
+                crate::i18n::msg::browse_auth_refused(),
             )
         }
         Discovery::Silent => {
             return output_failed(output,
                 epoch,
-                "Couldn't reach any Plex server — check the connection.",
+                crate::i18n::msg::browse_auth_unreachable(),
             )
         }
         Discovery::InsecureOnly => {
-            return output_failed(output, epoch, DISCOVERY_INSECURE_ONLY_MESSAGE)
+            return output_failed(output, epoch, discovery_insecure_only_message())
         }
     };
     finish_sign_in(&ac, epoch, server, sources, output);
@@ -907,7 +907,7 @@ fn mint_pin(ac: &AccountClient, epoch: u64, generation: u32,
             // in — and that person needs to know the app works offline once it has.
             output_failed(output,
                 epoch,
-                "Couldn't reach Plex — check the connection. Signing in needs the internet once.",
+                crate::i18n::msg::browse_auth_plex_unreachable(),
             );
             return None;
         }
@@ -1008,16 +1008,16 @@ fn rediscovery_worker_with_output(cid: String, token: String, epoch: u64,
     match discover_and_store(&ac, epoch, output) {
         Discovery::Ok { server, sources } => finish_sign_in(&ac, epoch, server, sources, output),
         Discovery::Cancelled => {}
-        Discovery::NoServers => output_failed(output, epoch, "This Plex account has no server yet."),
+        Discovery::NoServers => output_failed(output, epoch, crate::i18n::msg::browse_auth_no_servers()),
         Discovery::Refused => output_failed(output,
             epoch,
-            "Your Plex server refused the connection — check its network access settings.",
+            crate::i18n::msg::browse_auth_refused(),
         ),
         Discovery::Silent => output_failed(output,
             epoch,
-            "Couldn't reach any Plex server — check the connection.",
+            crate::i18n::msg::browse_auth_unreachable(),
         ),
-        Discovery::InsecureOnly => output_failed(output, epoch, DISCOVERY_INSECURE_ONLY_MESSAGE),
+        Discovery::InsecureOnly => output_failed(output, epoch, discovery_insecure_only_message()),
     }
 }
 
@@ -1257,10 +1257,8 @@ enum Discovery {
 /// Copy for [`Discovery::InsecureOnly`], shared by sign-in and rediscovery so the two paths
 /// cannot say two different things about the same verdict (plan §4).
 ///
-/// Owner-approved wording; keep byte-identical.
-const DISCOVERY_INSECURE_ONLY_MESSAGE: &str =
-    "Found your Plex server, but couldn't connect to it securely (HTTPS). Check that your server \
-     allows secure connections, then try again.";
+/// The English catalog preserves the approved wording; translations retain its remedy.
+fn discovery_insecure_only_message() -> &'static str { crate::i18n::msg::browse_auth_insecure() }
 
 /// The probe path. **Unauthenticated on purpose** — `/identity` answers 200 to anybody, which
 /// makes it useless as a token test and perfect as a reachability + identity one.
@@ -2840,7 +2838,7 @@ fn switch_failure(pin_submitted: bool) -> (String, bool) {
         (String::new(), true)
     } else {
         (
-            "Couldn't switch profile — check the connection.".into(),
+            crate::i18n::msg::browse_auth_switch_failed().into(),
             false,
         )
     }
@@ -2949,7 +2947,7 @@ fn offline_switch_outcome(
             // pick is needed first).
             ProfileSwitchOutcomeProgress::Failed {
                 error: String::from(
-                    "No internet connection. Pick this profile once while online, and it will work offline.",
+                    crate::i18n::msg::browse_auth_offline_profile(),
                 ),
                 pin_denied: false,
             }
@@ -3047,7 +3045,7 @@ pub(crate) fn profile_switch_worker_with_io(
             epoch,
             expected,
             outcome: ProfileSwitchOutcomeProgress::Failed {
-                error: "Couldn't switch profile — check the connection.".into(),
+                error: crate::i18n::msg::browse_auth_switch_failed().into(),
                 pin_denied: false,
             },
         }));
@@ -3059,7 +3057,7 @@ pub(crate) fn profile_switch_worker_with_io(
             epoch,
             expected,
             outcome: ProfileSwitchOutcomeProgress::Failed {
-                error: format!("{} has no server access", tile.title),
+                error: crate::i18n::msg::browse_auth_no_access(&tile.title),
                 pin_denied: false,
             },
         }));
@@ -3113,9 +3111,9 @@ pub(crate) fn profile_switch_worker_with_io(
             expected,
             outcome: ProfileSwitchOutcomeProgress::Failed {
                 error: if insecure_only {
-                    DISCOVERY_INSECURE_ONLY_MESSAGE.to_owned()
+                    discovery_insecure_only_message().to_owned()
                 } else {
-                    format!("{} has no access to this server", tile.title)
+                    crate::i18n::msg::browse_auth_no_source_access(&tile.title)
                 },
                 pin_denied: false,
             },

@@ -69,62 +69,9 @@ pub(crate) fn platform_version() -> &'static str {
     }
 }
 
-/// The UI language inherited by this native process, as a safe BCP-47-shaped tag.
-///
-/// webOS's authoritative setting is `localeInfo.locales.UI`, but this native app has no LS2
-/// settings client. The honest source it already inherits is the process locale environment; the
-/// host simulator inherits the same thing from its shell. POSIX precedence is `LC_ALL`, then
-/// `LC_MESSAGES`, then `LANG`. If the launcher supplies none (or explicitly supplies the neutral
-/// `C`/`POSIX` locale), the identity omits `X-Plex-Language` instead of inventing English.
+/// The resolved UI language for this launch, also requested from Plex metadata endpoints.
 pub(crate) fn language() -> Option<&'static str> {
-    static LANGUAGE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    LANGUAGE
-        .get_or_init(|| {
-            for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
-                let Some(raw) = std::env::var_os(key) else {
-                    continue;
-                };
-                if raw.is_empty() {
-                    continue;
-                }
-                // A present higher-precedence locale decides the answer, including `C` (None).
-                return raw.to_str().and_then(locale_language_tag);
-            }
-            None
-        })
-        .as_deref()
-}
-
-/// POSIX locale (`sr_RS.UTF-8@latin`) to the language tag PMS expects (`sr-RS`). Strict ASCII
-/// validation is also the header/query-injection boundary for an inherited environment value.
-fn locale_language_tag(raw: &str) -> Option<String> {
-    let base = raw.trim().split(['.', '@']).next()?;
-    if base.eq_ignore_ascii_case("C") || base.eq_ignore_ascii_case("POSIX") {
-        return None;
-    }
-    let parts: Vec<&str> = base.split(['-', '_']).collect();
-    let language = *parts.first()?;
-    if !(2..=8).contains(&language.len()) || !language.bytes().all(|b| b.is_ascii_alphabetic()) {
-        return None;
-    }
-
-    let mut out = language.to_ascii_lowercase();
-    for part in parts.into_iter().skip(1) {
-        if part.is_empty() || part.len() > 8 || !part.bytes().all(|b| b.is_ascii_alphanumeric()) {
-            return None;
-        }
-        out.push('-');
-        if part.len() == 4 && part.bytes().all(|b| b.is_ascii_alphabetic()) {
-            let mut chars = part.chars();
-            out.extend(chars.next()?.to_uppercase());
-            out.push_str(&chars.as_str().to_ascii_lowercase());
-        } else if part.len() == 2 && part.bytes().all(|b| b.is_ascii_alphabetic()) {
-            out.push_str(&part.to_ascii_uppercase());
-        } else {
-            out.push_str(&part.to_ascii_lowercase());
-        }
-    }
-    Some(out)
+    Some(crate::i18n::current().language().tag())
 }
 
 /// Device CLASS — what kind of thing this is. Generic on purpose: this app runs on any rooted
@@ -320,18 +267,18 @@ mod tests {
     #[test]
     fn a_process_locale_becomes_a_safe_plex_language_tag() {
         assert_eq!(
-            super::locale_language_tag("en_US.UTF-8"),
+            crate::i18n::normalize("en_US.UTF-8"),
             Some("en-US".into())
         );
         assert_eq!(
-            super::locale_language_tag("mn_Cyrl_MN.UTF-8"),
+            crate::i18n::normalize("mn_Cyrl_MN.UTF-8"),
             Some("mn-Cyrl-MN".into())
         );
-        assert_eq!(super::locale_language_tag("pt-BR"), Some("pt-BR".into()));
-        assert_eq!(super::locale_language_tag("C.UTF-8"), None);
-        assert_eq!(super::locale_language_tag("POSIX"), None);
+        assert_eq!(crate::i18n::normalize("pt-BR"), Some("pt-BR".into()));
+        assert_eq!(crate::i18n::normalize("C.UTF-8"), None);
+        assert_eq!(crate::i18n::normalize("POSIX"), None);
         assert_eq!(
-            super::locale_language_tag("en_US\r\nX-Plex-Token: stolen"),
+            crate::i18n::normalize("en_US\r\nX-Plex-Token: stolen"),
             None
         );
     }

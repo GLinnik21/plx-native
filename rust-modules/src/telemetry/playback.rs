@@ -290,7 +290,7 @@ pub(crate) fn preview_domains() -> String {
     };
     use FailureKind as F;
     format!(
-        "Closed handled-playback domains:\n\
+        "{}\n\
          failure kind (including retained historical codes): {}\n\
          delivery: {}\n\
          quality: {}\n\
@@ -304,6 +304,7 @@ pub(crate) fn preview_domains() -> String {
          delivery reason: {}\n\
          Original phase (including retained historical codes): {}\n\
          Original outcome: {}",
+        crate::i18n::msg::core_preview_domains(),
         codes(
             &[
                 F::DecisionRefused,

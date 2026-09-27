@@ -1984,7 +1984,8 @@ mod tests {
         // AppFrameV2 adds Session's cached digest. AppFrameV4 adds the physical Consent owner;
         // both predecessor censuses remain pinned separately below, and recordings on either
         // combined shape are explicitly refused.
-        assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0x7609_c82f_0914_2f33);
+        // Locale is now an explicit controlled-session input, never a live environment read.
+        assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0x9c73d876362ff277);
     }
 
     /// The gate at the REAL hubs landing site, through the recording the driver loads: a result

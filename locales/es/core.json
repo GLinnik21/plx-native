@@ -1,0 +1,18 @@
+{
+  "core.system_default": "Idioma del sistema",
+  "core.converts_on_server": "Se convierte en el servidor",
+  "core.duration_short_hours": "{hours}h {minutes}min",
+  "core.duration_short_minutes": "{minutes}min",
+  "core.duration_long_hours": "{hours} h {minutes} min",
+  "core.duration_long_minutes": "{minutes} min",
+  "core.time_left_hours": "Restante: {hours} h {minutes} min",
+  "core.time_left_minutes": "Restante: {minutes} min",
+  "core.seconds": "{seconds} s",
+  "core.season": "T{season}",
+  "core.episode": "E{episode}",
+  "core.episode_ordinal": "T{season}, E{episode}",
+  "core.shared_by": "Compartido por {handle}",
+  "core.preview_fault": "Informe alternativo de fallo de C",
+  "core.preview_panic": "Informe alternativo de pánico de Rust",
+  "core.preview_domains": "Valores posibles de errores de reproducción:"
+}

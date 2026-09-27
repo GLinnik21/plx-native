@@ -189,8 +189,8 @@ const BTN_GAP: f32 = theme::space::MD;
 const PILL_GAP: f32 = theme::space::SM;
 const CAPTION_H: f32 = 30.0;
 
-const NEXT_LABEL: &str = "Next Episode";
-const CREDITS_LABEL: &core::ffi::CStr = c"Watch Credits";
+
+
 
 /// The caption is RIGHT-ALIGNED text, so it may run wider than the still/button column without
 /// breaking it — the column's edges are the two solid rectangles, and a text run has no left edge
@@ -242,8 +242,8 @@ pub(crate) fn layout_of(next_w: f32, credits_w: f32) -> Layout {
 /// equivalent.
 pub(crate) fn layout(row: &mut crate::ui::player_hud::TransportRow, measure: &dyn crate::ui::machine::Measure) -> Layout {
     layout_of(
-        crate::ui::player_hud::ctrl_slot(row, NEXT_LABEL, measure).w,
-        crate::ui::widgets::Button::pill_w_measured(CREDITS_LABEL, theme::size::BODY, false, false, measure),
+        crate::ui::player_hud::ctrl_slot(row, crate::i18n::msg::widgets_next_episode(), measure).w,
+        crate::ui::widgets::Button::pill_w_measured(crate::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
     )
 }
 
@@ -267,14 +267,12 @@ pub(crate) fn hit(row: &mut crate::ui::player_hud::TransportRow, cx: f32, cy: f3
 /// invisible. It is also the only thing distinguishing this episode's ID from the now-playing one
 /// on the same band, hence the explicit "Up Next ·" kicker rather than a bare "S2, E4".
 fn caption(u: &UpNext) -> String {
-    if u.season > 0 || u.index > 0 {
-        format!(
-            "Up Next \u{b7} {}",
-            crate::ui::fmt::episode_kicker(u.season, u.index, &u.ep_title)
-        )
+    let episode = if u.season > 0 || u.index > 0 {
+        crate::ui::fmt::episode_kicker(u.season, u.index, &u.ep_title)
     } else {
-        format!("Up Next \u{b7} {}", u.ep_title)
-    }
+        u.ep_title.clone()
+    };
+    crate::i18n::msg::widgets_next_caption(&episode)
 }
 
 pub(crate) fn draw(
@@ -320,7 +318,7 @@ pub(crate) fn draw(
     let e = Env::inert();
     // The focus pop is the CONTROL ROW's, not this card's: these two stand in the transport's own
     // slot and share its cursor, so they share its springs (`TransportRow::scale`).
-    Button::new(CREDITS_LABEL.as_ptr(), theme::size::BODY, l.credits)
+    Button::new(crate::i18n::msg::widgets_next_credits_c().as_ptr(), theme::size::BODY, l.credits)
         .focused(focused && btn == BTN_CREDITS)
         // Both buttons on this card stand on LIVE CREDITS — the video plane, under this card's own
         // scrim — so both take the unkeyed ground (`ControlGround`). It is what the app's
@@ -334,7 +332,7 @@ pub(crate) fn draw(
     // starts. Driven straight off the remaining MILLISECONDS and redrawn every frame, so the sweep
     // is continuous; the label carries no seconds, because the pill's width is derived from its
     // label and a ticking numeral would resize the button and slide its centred text every second.
-    let Ok(label) = CString::new(NEXT_LABEL) else {
+    let Ok(label) = CString::new(crate::i18n::msg::widgets_next_episode()) else {
         return;
     };
     let mut b = Button::new(label.as_ptr(), theme::size::BODY, l.next)

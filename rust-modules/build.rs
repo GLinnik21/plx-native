@@ -28,8 +28,14 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "build_support/catalog.rs"]
+mod catalog;
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=build_support/catalog.rs");
+    println!("cargo:rerun-if-changed=../locales");
+    catalog::build(std::path::Path::new("../locales"), &std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap())).expect("valid, complete localization catalogs");
 
     emit_version();
     emit_build_sha();

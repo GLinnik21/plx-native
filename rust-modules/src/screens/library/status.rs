@@ -12,7 +12,7 @@ impl LibraryScreen {
         let mut overlay = StatusOverlay::new(self.status_frame(), caption, kind).phase(cx.tick.ms)
             .focused(cx.focus.current == Some(self.key(RETRY)));
         if let Some(reason) = reason { overlay = overlay.reason(reason); }
-        if self.readout == Readout::Failed { overlay = overlay.action(c"Try again"); }
+        if self.readout == Readout::Failed { overlay = overlay.action(crate::i18n::msg::browse_action_retry_c()); }
         overlay
     }
 
@@ -28,20 +28,23 @@ impl LibraryScreen {
         let (caption, reason) = match self.readout {
             Readout::Failed => {
                 let source = directory.source().map(|(_, source)| source);
-                let name = source.map(|source| source.name.as_str()).filter(|name| !name.is_empty()).unwrap_or("server");
+                let name = source.map(|source| source.name.as_str()).filter(|name| !name.is_empty()).unwrap_or(crate::i18n::msg::browse_library_server());
                 let owner = source.map(|source| source.handle.as_str()).filter(|owner| !owner.is_empty());
-                (format!("Can't reach {name}"), owner.map(|owner| format!("Shared by {owner} · your own server is fine.")))
+                (crate::i18n::msg::browse_library_unreachable(name), owner.map(|owner| crate::i18n::msg::browse_library_shared_unreachable(owner)))
             }
             Readout::Empty => {
-                let caption = if self.wanted_kind.is_some() { "Nothing here matches".into() }
-                    else if directory.sections().is_empty() { "No libraries on this server".into() }
-                    else if listing.unwatched() || listing.genre().is_some() { "Nothing here matches".into() }
+                let caption = if self.wanted_kind.is_some() { crate::i18n::msg::browse_library_no_matches().into() }
+                    else if directory.sections().is_empty() { crate::i18n::msg::browse_library_empty().into() }
+                    else if listing.unwatched() || listing.genre().is_some() { crate::i18n::msg::browse_library_no_matches().into() }
                     else if let Some(section) = directory.current().and_then(|i| directory.sections().get(i)) {
-                        format!("No {} in {}", section.kind.noun(), section.row.title)
-                    } else { "Nothing here matches".into() };
+                        match section.kind {
+                            SecKind::Movie => crate::i18n::msg::browse_library_no_movies(&section.row.title),
+                            SecKind::Show => crate::i18n::msg::browse_library_no_shows(&section.row.title),
+                        }
+                    } else { crate::i18n::msg::browse_library_no_matches().into() };
                 (caption, None)
             }
-            Readout::Loading => ("Loading…".into(), None),
+            Readout::Loading => (crate::i18n::msg::browse_library_loading().into(), None),
             Readout::Grid => (String::new(), None),
         };
         (CString::new(caption).unwrap_or_default(), reason.map(|reason| CString::new(reason).unwrap_or_default()))

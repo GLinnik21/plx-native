@@ -4808,6 +4808,38 @@ impl ViewStateOwnerGateFixture {
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("ok — viewstate-owner", r.stdout)
 
+    def test_test_module_discovery_lexer_and_graph_regressions(self):
+        result = subprocess.run([sys.executable, os.path.join(self.ROOT, "ci", "test_rust_test_modules.py")],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def _module_path_fixture(self, production_reference):
+        source = os.path.join(self.ROOT, "rust-modules", "src")
+        with tempfile.TemporaryDirectory(prefix="_check_deps_cfg_", dir=source) as directory:
+            declaration = '#[cfg(test)]\n#[allow(dead_code)]\n#[path = "support.rs"]\npub(crate) mod checks;\n'
+            if production_reference:
+                declaration += '#[path = "support.rs"] mod production;\n'
+            with open(os.path.join(directory, "entry.rs"), "w", encoding="utf-8") as output:
+                output.write(declaration)
+            target = os.path.join(directory, "support.rs")
+            with open(target, "w", encoding="utf-8") as output:
+                output.write('pub fn helper() { std::thread::spawn(|| {}); let _ = 0.5f32.powf(2.4); }\n')
+            result = subprocess.run([os.path.join(self.ROOT, "ci", "check-deps.sh")],
+                                    capture_output=True, text=True)
+            return result, os.path.relpath(target, self.ROOT)
+
+    def test_cfg_test_path_modules_are_excluded_from_production_gates(self):
+        result, target = self._module_path_fixture(False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn(target + ":", result.stdout)
+
+    def test_production_path_reference_prevents_test_file_exemption(self):
+        result, target = self._module_path_fixture(True)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("threads:", result.stdout)
+        self.assertIn("libm:", result.stdout)
+        self.assertIn(target + ":", result.stdout)
+
     def test_threads_gate_catches_a_bare_thread_spawn_after_use_std_thread(self):
         """The gate used to match only the fully-qualified `std::thread::spawn(` spelling, so a
         file that does `use std::thread;` and then calls the bare `thread::spawn(` — exactly the

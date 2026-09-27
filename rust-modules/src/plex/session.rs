@@ -280,6 +280,9 @@ impl Drop for TempSession {
 /// The full persisted session. Empty fields mean "not logged in yet" for that stage.
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct Session {
+    /// Install-wide UI language, applied on the next process launch.
+    #[serde(default)]
+    pub(crate) language: crate::i18n::Preference,
     /// Stable `X-Plex-Client-Identifier` — generated once, reused forever (plex.tv binds the pin
     /// and the authorized-device entry to it).
     #[serde(default)]
@@ -1679,10 +1682,7 @@ pub fn update(edit: impl FnOnce(&Session) -> Option<Session>) -> bool {
         return false;
     }
     match edit(&cur) {
-        Some(next) => {
-            save_locked(&next);
-            true
-        }
+        Some(next) => save_locked(&next),
         None => false,
     }
 }
@@ -1711,12 +1711,12 @@ pub fn save(s: &Session) {
 }
 
 /// [`save`] with the lock already held.
-fn save_locked(s: &Session) {
+fn save_locked(s: &Session) -> bool {
     // Before the write, not after: a failed persist still means these names are live in THIS run,
     // and the log wants them redacted either way.
     publish_identities(s);
     let Ok(json) = serde_json::to_vec_pretty(s) else {
-        return;
+        return false;
     };
     if let Some(sealed) = crate::keymanager::seal(&json) {
         let envelope = SecureEnvelope {
@@ -1725,7 +1725,7 @@ fn save_locked(s: &Session) {
             sealed,
         };
         let Ok(protected) = serde_json::to_vec_pretty(&envelope) else {
-            return;
+            return false;
         };
         for winner in auth_paths() {
             if write_atomic(&winner, &protected) {
@@ -1735,29 +1735,30 @@ fn save_locked(s: &Session) {
                     remove_temp_siblings(&stale);
                     let _ = std::fs::remove_file(stale);
                 }
-                return;
+                return true;
             }
         }
         crate::log("session: key manager succeeded but the protected file could not be written");
-        return;
+        return false;
     }
     // Never turn an already protected session back into plaintext because a service was
     // temporarily unavailable during a save. Preserve the previous ciphertext instead.
     if has_secure_locked() {
         crate::log("session: preserving the existing secure file; refusing a plaintext downgrade");
-        return;
+        return false;
     }
     // Try each candidate; the first that accepts the write wins. A total failure is still
     // non-fatal — but it is LOGGED, because the symptom (sign in again, every boot, forever) is
     // otherwise indistinguishable from a server-side auth problem and impossible to report.
     for path in auth_paths() {
         if write_atomic(&path, &json) {
-            return;
+            return true;
         }
     }
     crate::log(
         "session: could not persist to ANY candidate path — login will not survive a reboot",
     );
+    false
 }
 
 /// Write `json` to `path` so that whatever reads it sees the WHOLE previous file or the WHOLE new

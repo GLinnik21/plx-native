@@ -110,6 +110,32 @@ class ElfGateTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, "forbidden value was allowed: " + result.stdout)
                 self.assertIn(diagnostic, result.stdout)
 
+    def test_three_component_locale_or_version_data_is_not_an_ipv4_address(self):
+        spec = defaults()
+        spec["strings"]["output"] += "10.11.12\n172.16.12\n192.168.12\n"
+        self.assert_pass(spec)
+
+    def test_private_shaped_subsequence_inside_longer_dotted_data_is_not_an_address(self):
+        spec = defaults()
+        spec["strings"]["output"] += "1.2.3.4.5.6.7.8.9.10.11.12.13.14\n"
+        self.assert_pass(spec)
+
+    def test_complete_private_ipv4_ranges_remain_forbidden(self):
+        for address in ("10.11.12.13", "10.0.0.1", "10.255.255.255",
+                        "172.16.0.1", "172.31.255.255", "192.168.0.1", "192.168.255.255"):
+            with self.subTest(address=address):
+                spec = defaults()
+                spec["strings"]["output"] += "http://" + address + ":32400/library\n"
+                result = self.run_gate(spec)
+                self.assertNotEqual(result.returncode, 0, "private address was allowed")
+                self.assertIn("private IP address", result.stdout)
+                self.assertIn(address, result.stdout, "the gate must identify the full four-octet address")
+
+    def test_neighbouring_public_ipv4_ranges_are_allowed(self):
+        spec = defaults()
+        spec["strings"]["output"] += "9.11.12.13\n11.11.12.13\n172.15.255.255\n172.32.0.1\n192.167.0.1\n192.169.0.1\n"
+        self.assert_pass(spec)
+
     def test_early_forbidden_relocation_with_large_tail(self):
         spec = defaults()
         spec["readelf:-rW"]["output"] = LOAD + "\n" + FILLER

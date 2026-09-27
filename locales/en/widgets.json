@@ -1,0 +1,530 @@
+{
+  "widgets.diagnostics.uploading": {
+    "value": "Uploading diagnostics…",
+    "description": "Status toast after the viewer requests a diagnostic upload."
+  },
+  "widgets.diagnostics.uploaded": {
+    "value": "Diagnostics uploaded",
+    "description": "Status toast after the viewer requests a diagnostic upload."
+  },
+  "widgets.diagnostics.failed": {
+    "value": "Diagnostics upload failed",
+    "description": "Status toast after the viewer requests a diagnostic upload."
+  },
+  "widgets.menu.options": {
+    "value": "Options",
+    "description": "Option or section label in the player overflow menu."
+  },
+  "widgets.menu.quality": {
+    "value": "Quality",
+    "description": "Option or section label in the player overflow menu."
+  },
+  "widgets.menu.stats": {
+    "value": "Stats for nerds",
+    "description": "Option or section label in the player overflow menu."
+  },
+  "widgets.menu.diagnostics": {
+    "value": "Send diagnostics",
+    "description": "Option or section label in the player overflow menu."
+  },
+  "widgets.badge.forced": {
+    "value": "FORCED",
+    "description": "Compact media-track badge. This describes a subtitle or audio track."
+  },
+  "widgets.toggle.on": {
+    "value": "On",
+    "description": "Trailing value of an on/off settings switch."
+  },
+  "widgets.toggle.off": {
+    "value": "Off",
+    "description": "Trailing value of an on/off settings switch."
+  },
+  "widgets.tracks.audio": {
+    "value": "Audio",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.subtitles": {
+    "value": "Subtitles",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.unknown": {
+    "value": "Unknown",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.off": {
+    "value": "Off",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.mono": {
+    "value": "Mono",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.stereo": {
+    "value": "Stereo",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.original": {
+    "value": "Original: {language}",
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "language": "str"
+    }
+  },
+  "widgets.action.mark_watched": {
+    "value": "Mark as Watched",
+    "description": "Action verb shared by the media context menu and detail-page controls."
+  },
+  "widgets.action.mark_unwatched": {
+    "value": "Mark as Unwatched",
+    "description": "Action verb shared by the media context menu and detail-page controls."
+  },
+  "widgets.action.play_start": {
+    "value": "Play from Start",
+    "description": "Action verb shared by the media context menu and detail-page controls."
+  },
+  "widgets.action.play_trailer": {
+    "value": "Play Trailer",
+    "description": "Action verb shared by the media context menu and detail-page controls."
+  },
+  "widgets.source.remote": {
+    "value": "Remote",
+    "description": "Server/library availability, connection type, or library-picker action."
+  },
+  "widgets.source.relay": {
+    "value": "Relay",
+    "description": "Server/library availability, connection type, or library-picker action."
+  },
+  "widgets.source.needs_library": {
+    "value": "The app needs one library",
+    "description": "Server/library availability, connection type, or library-picker action."
+  },
+  "widgets.source.new_shares": {
+    "value": "Check for new shares",
+    "description": "Server/library availability, connection type, or library-picker action."
+  },
+  "widgets.source.unauthorized": {
+    "value": "Not authorized",
+    "description": "Server/library availability, connection type, or library-picker action."
+  },
+  "widgets.source.unreachable": {
+    "value": "Not reachable",
+    "description": "Server/library availability, connection type, or library-picker action."
+  },
+  "widgets.source.insecure": {
+    "value": "Not secure",
+    "description": "Server/library availability, connection type, or library-picker action."
+  },
+  "widgets.info.from_beginning": {
+    "value": "From Beginning",
+    "description": "Action button in the in-player information card."
+  },
+  "widgets.info.go_show": {
+    "value": "Go to Show",
+    "description": "Action button in the in-player information card."
+  },
+  "widgets.info.go_movie": {
+    "value": "Go to Movie",
+    "description": "Action button in the in-player information card."
+  },
+  "widgets.playback.direct_play": {
+    "value": "Direct Play",
+    "description": "Human-readable description of the active playback delivery mode."
+  },
+  "widgets.playback.direct_stream": {
+    "value": "Direct Stream",
+    "description": "Human-readable description of the active playback delivery mode."
+  },
+  "widgets.playback.converting": {
+    "value": "Converting",
+    "description": "Human-readable description of the active playback delivery mode."
+  },
+  "widgets.playback.converting_codec": {
+    "value": "Converting · {codec}",
+    "description": "Human-readable description of the active playback delivery mode.",
+    "args": {
+      "codec": "str"
+    }
+  },
+  "widgets.chapters.number": {
+    "value": "Chapter {number}",
+    "description": "Fallback chapter name when the server supplies no title.",
+    "args": {
+      "number": "i64"
+    }
+  },
+  "widgets.skip.intro": {
+    "value": "Skip Intro",
+    "description": "Player action that skips the currently offered introduction or credits marker."
+  },
+  "widgets.skip.credits": {
+    "value": "Skip Credits",
+    "description": "Player action that skips the currently offered introduction or credits marker."
+  },
+  "widgets.next.episode": {
+    "value": "Next Episode",
+    "description": "Up-next episode card over the player; keep the supplied episode title intact."
+  },
+  "widgets.next.credits": {
+    "value": "Watch Credits",
+    "description": "Up-next episode card over the player; keep the supplied episode title intact."
+  },
+  "widgets.next.caption": {
+    "value": "Up Next · {episode}",
+    "description": "Up-next episode card over the player; keep the supplied episode title intact.",
+    "args": {
+      "episode": "str"
+    }
+  },
+  "widgets.status.preparing": {
+    "value": "Preparing…",
+    "description": "Short player status beside a spinner or terminal playback error."
+  },
+  "widgets.status.connecting": {
+    "value": "Connecting…",
+    "description": "Short player status beside a spinner or terminal playback error."
+  },
+  "widgets.status.buffering": {
+    "value": "Buffering…",
+    "description": "Short player status beside a spinner or terminal playback error."
+  },
+  "widgets.status.seeking": {
+    "value": "Seeking…",
+    "description": "Short player status beside a spinner or terminal playback error."
+  },
+  "widgets.status.failed": {
+    "value": "Playback failed",
+    "description": "Short player status beside a spinner or terminal playback error."
+  },
+  "widgets.player.info": {
+    "value": "Info",
+    "description": "Bottom navigation tab in the player."
+  },
+  "widgets.player.chapters": {
+    "value": "Chapters",
+    "description": "Bottom navigation tab in the player."
+  },
+  "widgets.card.new_episode": {
+    "value": "New episode",
+    "description": "Secondary caption beneath a focused media card."
+  },
+  "widgets.card.show_new_episode": {
+    "value": "{show} · New episode",
+    "description": "Secondary caption beneath a focused media card.",
+    "args": {
+      "show": "str"
+    }
+  },
+  "widgets.card.season_episode": {
+    "value": "S{season} • E{episode}",
+    "description": "Secondary caption beneath a focused media card.",
+    "args": {
+      "episode": "i64",
+      "season": "i64"
+    }
+  },
+  "widgets.card.episode": {
+    "value": "E{episode}",
+    "description": "Secondary caption beneath a focused media card.",
+    "args": {
+      "episode": "i64"
+    }
+  },
+  "widgets.failure.jail": {
+    "value": "Playback failed — this TV's jail is missing a device file",
+    "description": "Player error caption or supporting subscription fact."
+  },
+  "widgets.failure.refused": {
+    "value": "Playback failed — the server cannot play or convert this file",
+    "description": "Player error caption or supporting subscription fact."
+  },
+  "widgets.failure.audio_only": {
+    "value": "Playback failed — server sent audio only",
+    "description": "Player error caption or supporting subscription fact."
+  },
+  "widgets.failure.no_video": {
+    "value": "Playback failed — no video in the file",
+    "description": "Player error caption or supporting subscription fact."
+  },
+  "widgets.failure.open": {
+    "value": "Playback failed — the media stream could not be opened",
+    "description": "Player error caption or supporting subscription fact."
+  },
+  "widgets.failure.stopped": {
+    "value": "Playback failed — playback stopped after starting",
+    "description": "Player error caption or supporting subscription fact."
+  },
+  "widgets.failure.tv_rejected": {
+    "value": "Playback failed — the TV rejected the stream",
+    "description": "Player error caption or supporting subscription fact."
+  },
+  "widgets.reason.jail": {
+    "value": "This set's jail configuration is missing /dev/rtkmem",
+    "description": "Explanation beneath the playback-failed heading. Device paths and project identifiers stay unchanged."
+  },
+  "widgets.reason.refused": {
+    "value": "The server cannot play or convert this file",
+    "description": "Explanation beneath the playback-failed heading. Device paths and project identifiers stay unchanged."
+  },
+  "widgets.reason.audio_only": {
+    "value": "The server sent audio only — it found no usable video transcode target",
+    "description": "Explanation beneath the playback-failed heading. Device paths and project identifiers stay unchanged."
+  },
+  "widgets.reason.no_video": {
+    "value": "This file has no video track",
+    "description": "Explanation beneath the playback-failed heading. Device paths and project identifiers stay unchanged."
+  },
+  "widgets.reason.open": {
+    "value": "The media stream could not be opened",
+    "description": "Explanation beneath the playback-failed heading. Device paths and project identifiers stay unchanged."
+  },
+  "widgets.reason.stopped": {
+    "value": "Playback stopped after it had started",
+    "description": "Explanation beneath the playback-failed heading. Device paths and project identifiers stay unchanged."
+  },
+  "widgets.reason.tv_rejected": {
+    "value": "This TV could not start the video stream",
+    "description": "Explanation beneath the playback-failed heading. Device paths and project identifiers stay unchanged."
+  },
+  "widgets.reason.unknown": {
+    "value": "The player stopped before it could identify the problem",
+    "description": "Explanation beneath the playback-failed heading. Device paths and project identifiers stay unchanged."
+  },
+  "widgets.hint.return": {
+    "value": "Press {key} to return",
+    "description": "Complete sentence. {key} is a remote button rendered as a keycap; keep exactly one occurrence.",
+    "args": {
+      "key": "str"
+    }
+  },
+  "widgets.hint.retry": {
+    "value": "Press {key} to choose quality or retry",
+    "description": "Complete sentence. {key} is a remote button rendered as a keycap; keep exactly one occurrence.",
+    "args": {
+      "key": "str"
+    }
+  },
+  "widgets.hint.scroll": {
+    "value": "Scroll",
+    "description": "widgets hint scroll"
+  },
+  "widgets.failure.no_pass": {
+    "value": "This server has no {subscription}",
+    "description": "Player error caption or supporting subscription fact.",
+    "args": {
+      "subscription": "str"
+    }
+  },
+  "widgets.tracks.playing": {
+    "value": "playing",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.forced": {
+    "value": "Forced",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.external": {
+    "value": "External",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.container": {
+    "value": "Container",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.size": {
+    "value": "Size",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.total_bitrate": {
+    "value": "Total bitrate",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.duration": {
+    "value": "Duration",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.aspect": {
+    "value": "Aspect ratio",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.codec": {
+    "value": "Codec",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.resolution": {
+    "value": "Resolution",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.frame_rate": {
+    "value": "Frame rate",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.bitrate": {
+    "value": "Bitrate",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.bit_depth": {
+    "value": "Bit depth",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.profile": {
+    "value": "Profile",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.level": {
+    "value": "Level",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.version": {
+    "value": "Version",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.base_layer": {
+    "value": "Base layer",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.present": {
+    "value": "Present",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.file_heading": {
+    "value": "FILE",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.video_heading": {
+    "value": "VIDEO",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.audio_heading": {
+    "value": "AUDIO",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.subtitles_heading": {
+    "value": "SUBTITLES",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.heading": {
+    "value": "TRACK INFORMATION",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.channels": {
+    "value": "{count} ch",
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "count": "i64"
+    }
+  },
+  "widgets.tracks.depth": {
+    "value": "{depth}-bit",
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "depth": "i64"
+    }
+  },
+  "widgets.tracks.count": {
+    "value": {
+      "one": "{count} track",
+      "other": "{count} tracks"
+    },
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "count": "i64"
+    }
+  },
+  "widgets.tracks.count_detail": {
+    "value": {
+      "one": "{description} · {count} track",
+      "other": "{description} · {count} tracks"
+    },
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "count": "i64",
+      "description": "str"
+    }
+  },
+  "widgets.tracks.count_heading": {
+    "value": {
+      "one": "{heading} · {count} TRACK",
+      "other": "{heading} · {count} TRACKS"
+    },
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "count": "i64",
+      "heading": "str"
+    }
+  },
+  "widgets.reason.jail_help": {
+    "value": "Found, on this chassis, to crash native video apps (community report: webosbrew/webos-homebrew-channel PR #202). Reinstalling through the Homebrew Channel should carry the jailer fix that adds the missing device file.",
+    "description": "Explanation beneath the playback-failed heading. Device paths and project identifiers stay unchanged."
+  },
+  "widgets.tracks.empty": {
+    "value": "No tracks",
+    "description": "Label or formatted fact in the media track information sheet or track selector."
+  },
+  "widgets.tracks.bytes": {
+    "value": {
+      "one": "{count} byte",
+      "other": "{count} bytes"
+    },
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "count": "i64"
+    }
+  },
+  "widgets.tracks.fps": {
+    "value": "{rate} fps",
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "rate": "str"
+    }
+  },
+  "widgets.tracks.mbps": {
+    "value": "{rate} Mbps",
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "rate": "str"
+    }
+  },
+  "widgets.tracks.kbps": {
+    "value": "{rate} kbps",
+    "description": "Label or formatted fact in the media track information sheet or track selector.",
+    "args": {
+      "rate": "str"
+    }
+  },
+  "widgets.panel.jail": {
+    "value": "this install's jail is missing /dev/rtkmem, found on this chassis to crash native video (community-tier finding)",
+    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+  },
+  "widgets.panel.refused": {
+    "value": "the server refused the item at /decision — it can neither direct play nor convert it",
+    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+  },
+  "widgets.panel.audio_only_no_pass": {
+    "value": "server sent audio only — it found no usable video transcode target (server has no Plex Pass)",
+    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+  },
+  "widgets.panel.audio_only": {
+    "value": "server sent audio only — it found no usable video transcode target",
+    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+  },
+  "widgets.panel.no_video": {
+    "value": "the stream carries no video track",
+    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+  },
+  "widgets.panel.open": {
+    "value": "the media stream could not be opened or read",
+    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+  },
+  "widgets.panel.stopped": {
+    "value": "the media producer stopped before playback completed",
+    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+  },
+  "widgets.panel.tv_rejected": {
+    "value": "the television media pipeline rejected the stream",
+    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+  },
+  "widgets.panel.unknown": {
+    "value": "the player stopped without a reported cause",
+    "description": "Player diagnostic reason; preserve technical device paths and protocol endpoints."
+  }
+}

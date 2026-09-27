@@ -19,6 +19,7 @@
 
 use std::os::raw::{c_char, c_int};
 
+pub(crate) mod qr;
 pub mod anim;
 pub mod card_row;
 pub(crate) mod value_chip; // shared label/value/owner capsule used by menu-opening controls

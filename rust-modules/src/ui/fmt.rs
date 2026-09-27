@@ -2,16 +2,16 @@
 //! can't render differently across screens (the "2 hr 15 min" vs "2h 15m" vs "0 hr 45 min"
 //! drift this replaces).
 
-pub(crate) const CONVERTS_ON_SERVER: &str = "Converts on server";
+pub(crate) fn converts_on_server() -> &'static str { crate::i18n::msg::core_converts_on_server() }
 
 /// Compact duration for meta lines — "2h 15m" / "45m" (Info card tags, player HUD context).
 pub(crate) fn dur_short(ms: i64) -> String {
     let mins = (ms / 60_000).max(0);
     let (h, m) = (mins / 60, mins % 60);
     if h > 0 {
-        format!("{h}h {m}m")
+        crate::i18n::msg::core_duration_short_hours(h, m)
     } else {
-        format!("{m}m")
+        crate::i18n::msg::core_duration_short_minutes(m)
     }
 }
 
@@ -25,9 +25,9 @@ pub(crate) fn dur_short(ms: i64) -> String {
 pub(crate) fn secs_short(ms: i64) -> String {
     let ms = ms.max(0);
     if ms < 10_000 {
-        format!("{}.{} s", ms / 1_000, (ms % 1_000) / 100)
+        crate::i18n::msg::core_seconds(&crate::i18n::current().decimal(ms / 100, 1))
     } else {
-        format!("{} s", ms / 1_000)
+        crate::i18n::msg::core_seconds(&crate::i18n::current().number(ms / 1_000))
     }
 }
 
@@ -47,9 +47,9 @@ pub(crate) fn dur_long(ms: i64) -> String {
     let mins = (ms / 60_000).max(0);
     let (h, m) = (mins / 60, mins % 60);
     if h > 0 {
-        format!("{h} hr {m} min")
+        crate::i18n::msg::core_duration_long_hours(h, m)
     } else {
-        format!("{m} min")
+        crate::i18n::msg::core_duration_long_minutes(m)
     }
 }
 
@@ -59,9 +59,9 @@ pub(crate) fn time_left(remaining_ms: i64) -> String {
     let mins = ((remaining_ms + 59_999) / 60_000).max(1);
     let (h, m) = (mins / 60, mins % 60);
     if h > 0 {
-        format!("{h} hr {m} min left")
+        crate::i18n::msg::core_time_left_hours(h, m)
     } else {
-        format!("{m} min left")
+        crate::i18n::msg::core_time_left_minutes(m)
     }
 }
 
@@ -99,16 +99,16 @@ pub(crate) fn clock(ms: i64) -> String {
 pub(crate) fn episode_address(season: i64, index: i64) -> String {
     let mut parts: Vec<String> = Vec::new();
     if season > 0 {
-        parts.push(format!("S{season}"));
+        parts.push(crate::i18n::msg::core_season(season));
     }
     if index > 0 {
-        parts.push(format!("E{index}"));
+        parts.push(crate::i18n::msg::core_episode(index));
     }
     parts.join(" \u{b7} ")
 }
 
 pub(crate) fn episode_ordinal(season: i64, index: i64) -> String {
-    format!("S{season}, E{index}")
+    crate::i18n::msg::core_episode_ordinal(index, season)
 }
 
 /// The source attribution — `"Shared by friend"` — or `None` when there is nobody to credit.
@@ -130,7 +130,7 @@ pub(crate) fn episode_ordinal(season: i64, index: i64) -> String {
 /// read-out. It was written twice with two different empty-handle behaviours and interpolated a
 /// third time inline — exactly the drift this module exists to prevent.
 pub(crate) fn shared_by(handle: &str) -> Option<String> {
-    (!handle.is_empty()).then(|| format!("Shared by {handle}"))
+    (!handle.is_empty()).then(|| crate::i18n::msg::core_shared_by(handle))
 }
 
 /// The episode kicker — `"S2, E3 · Laura"`, the [`episode_ordinal`] with the episode's title after
@@ -234,11 +234,8 @@ pub(crate) fn pretty_date(iso: &str, year: i64) -> String {
             parts[1].parse::<usize>(),
             parts[2].parse::<i64>(),
         ) {
-            const MON: [&str; 12] = [
-                "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-            ];
-            if (1..=12).contains(&mo) {
-                return format!("{da} {} {y}", MON[mo - 1]);
+            if let (Ok(y), Ok(m), Ok(d)) = (i32::try_from(y), u8::try_from(mo), u8::try_from(da)) {
+                if let Some(date) = crate::i18n::current().date(y, m, d) { return date; }
             }
         }
     }
@@ -255,8 +252,8 @@ pub(crate) fn pretty_date(iso: &str, year: i64) -> String {
 /// would read as a 9.1% score, so the badge's number is put back into the provider's own units here.
 pub(crate) fn rating_score(art: crate::metadata::RatingArt, value: f64) -> String {
     match art {
-        crate::metadata::RatingArt::Imdb => format!("{value:.1}"),
-        _ => format!("{}%", (value * 10.0).round().clamp(0.0, 100.0) as i64),
+        crate::metadata::RatingArt::Imdb => crate::i18n::current().decimal((value * 10.0).round() as i64, 1),
+        _ => format!("{}%", crate::i18n::current().number((value * 10.0).round().clamp(0.0, 100.0) as i64)),
     }
 }
 

@@ -763,6 +763,8 @@ fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
                 "home" => crate::screens::family::SettingsPage::Favourites,
                 "privacy" => crate::screens::family::SettingsPage::Privacy,
                 "legal" => crate::screens::family::SettingsPage::Legal,
+                "language" => crate::screens::family::SettingsPage::Language,
+                "contribute" => crate::screens::family::SettingsPage::Contribute,
                 other => {
                     crate::log(&format!("BADTRIGGER settings-boot target {other:?} unknown; opened root instead"));
                     crate::screens::family::SettingsPage::Root

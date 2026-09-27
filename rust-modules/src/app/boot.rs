@@ -639,6 +639,8 @@ pub(crate) unsafe fn construct(
         Some(initial) => initial.session.persisted.clone(),
         None => crate::plex::session::load(),
     };
+    #[cfg(not(test))]
+    crate::i18n::initialize(session.language, controlled);
     let forced_login = !controlled && crate::dev::scenarios::login_forced();
     let dev_primary = (!forced_login && !dev_token.is_empty()).then(|| crate::plex::session::ServerRef {
         address: host_s.clone(), port: i64::from(pms_port),

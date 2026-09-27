@@ -814,12 +814,11 @@ fn runtime_failure(
 fn jail_error_shape() -> ErrorShape {
     ErrorShape {
         kind: FailureKind::JailMissingRtkmem,
-        caption: c"Playback failed — this TV's jail is missing a device file",
-        panel: "this install's jail is missing /dev/rtkmem, found on this chassis to crash native video (community-tier finding)",
-        readout: "This set's jail configuration is missing /dev/rtkmem",
+        caption: crate::i18n::msg::widgets_failure_jail_c(),
+        panel: crate::i18n::msg::widgets_panel_jail(),
+        readout: crate::i18n::msg::widgets_reason_jail(),
         detail: std::borrow::Cow::Borrowed(
-            "Found, on this chassis, to crash native video apps (community report: webosbrew/webos-homebrew-channel PR #202). \
-             Reinstalling through the Homebrew Channel should carry the jailer fix that adds the missing device file.",
+            crate::i18n::msg::widgets_reason_jail_help(),
         ),
         no_pass: false,
     }
@@ -847,11 +846,11 @@ fn error_shape(
     if let Some(v) = verdict {
         return ErrorShape {
             kind: FailureKind::DecisionRefused,
-            caption: c"Playback failed — the server cannot play or convert this file",
+            caption: crate::i18n::msg::widgets_failure_refused_c(),
             // The panel's line is ours and static; the server's sentence rides on `detail`, whose
             // surface (the full-screen read-out) is the one that can hold a whole sentence.
-            panel: "the server refused the item at /decision — it can neither direct play nor convert it",
-            readout: "The server cannot play or convert this file",
+            panel: crate::i18n::msg::widgets_panel_refused(),
+            readout: crate::i18n::msg::widgets_reason_refused(),
             // OWNED since phase 9: the verdict is borrowed from the caller's session publication
             // rather than from a `static mut`, so it cannot be lent for `'static`. One allocation,
             // on the path where a playback has already failed.
@@ -862,13 +861,13 @@ fn error_shape(
     if no_video && transcoding {
         return ErrorShape {
             kind: FailureKind::NoVideoTranscodeTarget,
-            caption: c"Playback failed — server sent audio only",
+            caption: crate::i18n::msg::widgets_failure_audio_only_c(),
             panel: if no_pass {
-                "server sent audio only — it found no usable video transcode target (server has no Plex Pass)"
+                crate::i18n::msg::widgets_panel_audio_only_no_pass()
             } else {
-                "server sent audio only — it found no usable video transcode target"
+                crate::i18n::msg::widgets_panel_audio_only()
             },
-            readout: "The server sent audio only — it found no usable video transcode target",
+            readout: crate::i18n::msg::widgets_reason_audio_only(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass,
         };
@@ -876,9 +875,9 @@ fn error_shape(
     if no_video {
         return ErrorShape {
             kind: FailureKind::NoVideoTrack,
-            caption: c"Playback failed — no video in the file",
-            panel: "the stream carries no video track",
-            readout: "This file has no video track",
+            caption: crate::i18n::msg::widgets_failure_no_video_c(),
+            panel: crate::i18n::msg::widgets_panel_no_video(),
+            readout: crate::i18n::msg::widgets_reason_no_video(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         };
@@ -886,25 +885,25 @@ fn error_shape(
     match runtime {
         RuntimeFailure::MediaSource => ErrorShape {
             kind: FailureKind::MediaSource,
-            caption: c"Playback failed — the media stream could not be opened",
-            panel: "the media stream could not be opened or read",
-            readout: "The media stream could not be opened",
+            caption: crate::i18n::msg::widgets_failure_open_c(),
+            panel: crate::i18n::msg::widgets_panel_open(),
+            readout: crate::i18n::msg::widgets_reason_open(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
         RuntimeFailure::PlaybackInterrupted => ErrorShape {
             kind: FailureKind::PlaybackInterrupted,
-            caption: c"Playback failed — playback stopped after starting",
-            panel: "the media producer stopped before playback completed",
-            readout: "Playback stopped after it had started",
+            caption: crate::i18n::msg::widgets_failure_stopped_c(),
+            panel: crate::i18n::msg::widgets_panel_stopped(),
+            readout: crate::i18n::msg::widgets_reason_stopped(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
         RuntimeFailure::TvPipeline => ErrorShape {
             kind: FailureKind::TvPipeline,
-            caption: c"Playback failed — the TV rejected the stream",
-            panel: "the television media pipeline rejected the stream",
-            readout: "This TV could not start the video stream",
+            caption: crate::i18n::msg::widgets_failure_tv_rejected_c(),
+            panel: crate::i18n::msg::widgets_panel_tv_rejected(),
+            readout: crate::i18n::msg::widgets_reason_tv_rejected(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
@@ -913,17 +912,17 @@ fn error_shape(
         // is distinguishable from an ordinary firmware refusal on the telemetry wire.
         RuntimeFailure::LoadTimeout => ErrorShape {
             kind: FailureKind::LoadTimeout,
-            caption: c"Playback failed — the TV rejected the stream",
-            panel: "the television media pipeline rejected the stream",
-            readout: "This TV could not start the video stream",
+            caption: crate::i18n::msg::widgets_failure_tv_rejected_c(),
+            panel: crate::i18n::msg::widgets_panel_tv_rejected(),
+            readout: crate::i18n::msg::widgets_reason_tv_rejected(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },
         RuntimeFailure::Unknown => ErrorShape {
             kind: FailureKind::Unspecified,
-            caption: c"Playback failed",
-            panel: "the player stopped without a reported cause",
-            readout: "The player stopped before it could identify the problem",
+            caption: crate::i18n::msg::widgets_status_failed_c(),
+            panel: crate::i18n::msg::widgets_panel_unknown(),
+            readout: crate::i18n::msg::widgets_reason_unknown(),
             detail: std::borrow::Cow::Borrowed(""),
             no_pass: false,
         },

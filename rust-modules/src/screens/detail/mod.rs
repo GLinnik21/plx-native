@@ -1860,7 +1860,7 @@ impl DetailScreen {
         let title = d
             .map(|d| d.title.as_str())
             .or_else(|| self.selected().map(|m| m.title.as_str()))
-            .unwrap_or("Loading…");
+            .unwrap_or(crate::i18n::msg::browse_library_loading());
         let chrome = p.alpha(self.preview_chrome);
         let prose = p.alpha(self.preview_chrome * self.preview_prose);
         // NOT `self.preview_chrome * self.preview_synopsis`: synopsis_target already tracks
@@ -1925,7 +1925,7 @@ impl DetailScreen {
                 parts.push(&ordinal);
             }
         } else {
-            parts.push(if d.is_show { "TV Show" } else { "Movie" });
+            parts.push(if d.is_show { crate::i18n::msg::browse_kind_tv_show() } else { crate::i18n::msg::browse_kind_movie() });
             parts.extend(d.genres.iter().take(2).map(String::as_str));
         }
         if !d.rating.is_empty() {
@@ -2054,7 +2054,7 @@ impl DetailScreen {
                 .scale(scale)
                 .draw(&Env::inert(), p),
                 hero::HeroCtl::Alt => {
-                    Button::new(hero::ALT_LABEL.as_ptr(), theme::size::BODY, rect)
+                    Button::new(hero::alt_label().as_ptr(), theme::size::BODY, rect)
                         .trailing_icon(crate::ui::icons::Icon::ChevronDown)
                         .focused(focused)
                         .palette(palette)

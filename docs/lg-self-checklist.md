@@ -144,11 +144,11 @@ skips; a partial green count is not equivalent to 21/21.
 
 ## 6. Decisions and N/A items
 
-**#41 — language setting.** N/A on the item's own precondition because the app exposes no in-app
-language selector. The implemented halves are still useful: localized `appinfo.json` resources cover
-launcher/listing metadata, and a validated inherited POSIX locale becomes `X-Plex-Language` for PMS
-metadata. Their Korean television acceptance recipe remains open in §3; implementation is not being
-misreported as observation.
+**#41 — language setting.** Settings now offers System default, English, Spanish and Belarusian,
+with changes applied at the next app launch. Localized launcher metadata still follows webOS.
+The native Settings Service supplies UI and formatting locales, and the resolved app language
+becomes `X-Plex-Language` for PMS. Native device checks on 2026-09-27 verified detection, persistence across restarts, Cyrillic
+text, consent scrolling and the contribution QR. See `docs/localization.md` for the scope.
 
 **#45 — on-screen transport controls.** The product deliberately uses a remote-driven, state-only
 transport HUD rather than a focusable Play/Pause/Stop/FF/RW row. The compliance description belongs

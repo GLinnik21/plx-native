@@ -160,8 +160,13 @@ if [ -f src/config.local.h ] && [ "${CI:-}" != "true" ]; then
   echo "all ELF assertions passed (config-dependent assertions skipped)"
   exit 0
 fi
-if grep -qE '\b(10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]{1,3}\.[0-9]{1,3}\b' "$AUDIT_TMP/strings"; then
-  grep -oE '\b(10|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]{1,3}\.[0-9]{1,3}\b' "$AUDIT_TMP/strings" | sort -u | sed -n '1,10p'
+# All alternatives include the first TWO octets. A bare `10` alternative would match
+# three-component locale/version data such as `10.11.12`, not an IPv4 address.
+# Dots also belong to the token: do not extract four components out of a longer
+# dotted number sequence. URL separators and ports still delimit real IPv4 literals.
+PRIVATE_IPV4_RE='(^|[^[:alnum:]_.])(10\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01])|192\.168)\.[0-9]{1,3}\.[0-9]{1,3}($|[^[:alnum:]_.])'
+if grep -qE "$PRIVATE_IPV4_RE" "$AUDIT_TMP/strings"; then
+  grep -oE "$PRIVATE_IPV4_RE" "$AUDIT_TMP/strings" | sort -u | sed -n '1,10p'
   fail "private IP address baked into the binary — was this built with src/config.local.h present?"
 fi
 grep -q YOUR_PMS_HOST "$AUDIT_TMP/strings" \

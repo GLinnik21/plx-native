@@ -432,7 +432,7 @@ impl FilmographyScreen {
         self.tab_c = self
             .model
             .iter()
-            .map(|d| CString::new(format!("{} · {}", d.title, d.total)).unwrap_or_default())
+            .map(|d| CString::new(format!("{} · {}", d.title, crate::i18n::current().number(d.total as i64))).unwrap_or_default())
             .collect();
         let sel = self
             .current_row(focus)
@@ -604,8 +604,8 @@ impl FilmographyScreen {
         layout.draw_narrative(
             p,
             Some(&self.name),
-            "Filmography",
-            &format!("{total} credits · Newest first."),
+            crate::i18n::msg::browse_person_filmography(),
+            &crate::i18n::msg::browse_person_credits(total as i64),
             theme::size::LABEL,
             f.measure,
         );

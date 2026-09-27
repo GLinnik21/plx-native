@@ -527,6 +527,9 @@ pub(super) fn write_persisted(w: &mut Canon, s: &PersistedSession) {
     // Include their exact captured values in init/canonical state even though patches never write
     // them over a newer store-owned value.
     w.bool(s.auto_sign_in());
+    if s.language != crate::i18n::Preference::System {
+        w.str("language").str(s.language.tag());
+    }
     w.seq(s.recent_searches.len());
     for recent in &s.recent_searches {
         w.str(&recent.user).seq(recent.terms.len());

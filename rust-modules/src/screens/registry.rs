@@ -1319,7 +1319,7 @@ pub(crate) enum AppArg {
     FirstRunConsent(u8),
 }
 
-pub(crate) const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,Search,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str}},Settings:SettingsPage{Root,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8)},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
+pub(crate) const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,Search,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str}},Settings:SettingsPage{Root,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8),Language,Contribute},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
      PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(quality:bool)},\
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
      TracksPanel{page:i32},AboutPanel,PersonBio,AccountMenu,\
@@ -1761,6 +1761,7 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
     crate::screens::tracks_panel::SHAPE,
     crate::screens::about_panel::SHAPE,
     crate::screens::person_bio::SHAPE,
+    "LocalizationSettingsV1{Root:{language:system|en|es|be},Language:{selected:system|en|es|be,focus:u32,failed:bool},Contribute:Document,ConsentDisclosure:{scroll_steps:u32,overflow_focus:0x20000000,group:3},BandPart:MeasuredRowOrColumn}",
 ];
 
 /// The pin over [`SCREEN_SHAPES`] — bump it in the same edit that adds an entry, and say why.
@@ -1818,7 +1819,8 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 /// string moved, so recorded fixtures need `tools/plxnative-rec rerecord` before a scenario
 /// replay is trusted. Host unit tests do not replay them.
 #[cfg(test)]
-const SCREEN_SHAPES_PIN: u64 = 0xb462_145d_9477_05de;
+// Localization adds Language/Contribute routes and recorded language selection.
+const SCREEN_SHAPES_PIN: u64 = 0x31d815b3d9c25238;
 
 #[cfg(test)]
 mod arg_tests {

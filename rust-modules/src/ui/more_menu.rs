@@ -101,8 +101,8 @@ impl MoreMenuState {
         let initial = initial_selection(&rows, quality);
         // TWO sections, built in ROWS order — see `rows_for`: `TableView::sel` is one flat index over
         // both, so the split here is presentational and the ORDER is the contract.
-        let mut options = Section::new("Options");
-        let mut quality_sec = Section::new("Quality");
+        let mut options = Section::new(crate::i18n::msg::widgets_menu_options());
+        let mut quality_sec = Section::new(crate::i18n::msg::widgets_menu_quality());
         for a in &rows {
             match a {
                 Action::SetQuality(_) => quality_sec = quality_sec.row(row_for(ps, *a)),
@@ -337,11 +337,11 @@ fn rows_for() -> Vec<Action> {
 
 fn label(a: Action) -> &'static str {
     match a {
-        Action::ToggleStats => "Stats for nerds",
+        Action::ToggleStats => crate::i18n::msg::widgets_menu_stats(),
         // the rung names itself — rate and frame in one string, because the row already carries
         // the picker's leading mark (see this module's doc)
         Action::SetQuality(q) => q.label(),
-        Action::SendDiagnostics => "Send diagnostics",
+        Action::SendDiagnostics => crate::i18n::msg::widgets_menu_diagnostics(),
         Action::None => "",
     }
 }
@@ -383,7 +383,7 @@ fn is_on(a: Action) -> bool {
 /// global state.
 fn quality_detail(q: crate::route::Quality, source_decodable: bool) -> &'static str {
     if q == crate::route::Quality::Original && !source_decodable {
-        "Converts on server"
+        crate::ui::fmt::converts_on_server()
     } else {
         ""
     }
@@ -483,7 +483,7 @@ mod tests {
     fn the_conversion_notice_is_the_words_the_detail_page_already_uses() {
         assert_eq!(
             quality_detail(crate::route::Quality::Original, false),
-            crate::ui::fmt::CONVERTS_ON_SERVER,
+            crate::ui::fmt::converts_on_server(),
         );
     }
 

@@ -77,6 +77,12 @@
 //!    [`crate::ui::table::TableView::hit_row`]); a click activates whatever is parked; a click that
 //!    parks nothing does nothing.
 
+//! **Long translated action labels reflow as a column.** In that shape UP/DOWN move between
+//! the two answers, RIGHT reaches the content column, and UP above the first action leaves the
+//! band. First-run consent reserves this measured band extent from a BODY-sized document reader;
+//! when its disclosure overflows, UP from the answers reaches that reader and DOWN at its end
+//! returns to the answers. The paragraph is never shortened to make translated actions fit.
+
 use crate::ui::consts::SAFE;
 use crate::ui::icons::{self, Icon};
 use crate::ui::machine::Measure;
@@ -752,11 +758,12 @@ impl RouteLayout {
         )
     }
 
-    /// Place two controls on one action row, as ONE GROUP.
+    /// Place two peer controls in a row when they fit, otherwise in a bottom-anchored column.
     ///
     /// Their relationship belongs here: the leading one starts on the shared margin, the trailing
-    /// one follows by [`widgets::CONTROL_GAP`], and both inherit the action band's Y/height. A
-    /// screen supplies measured widths, never a second pair of coordinates.
+    /// one follows by [`widgets::CONTROL_GAP`]. When the pair needs a column, that same gap
+    /// separates them vertically and the trailing control retains the bottom anchor. Both retain
+    /// the normal control height. A screen supplies measured widths, never private coordinates.
     ///
     /// **Its one caller is first-run consent's two answers, and they are EQUALS** — no primary,
     /// no secondary, no danger face. This doc used to describe a primary beside a BACK
@@ -766,15 +773,18 @@ impl RouteLayout {
     /// a separate hint, and two peer answers at that distance read as two unrelated controls
     /// sharing a row rather than one question's two faces.
     pub(crate) fn action_pair(self, leading_w: f32, trailing_w: f32) -> (Rect, Rect) {
-        let leading = Rect::new(self.action.x, self.action.y, leading_w, self.action.h);
-        let trailing = Rect::new(
-            leading.x + leading.w + crate::ui::widgets::CONTROL_GAP,
-            self.action.y,
-            trailing_w,
-            self.action.h,
-        );
-        debug_assert!(trailing.x + trailing.w <= self.action.x + self.action.w);
-        (leading, trailing)
+        let gap = crate::ui::widgets::CONTROL_GAP;
+        if leading_w + gap + trailing_w <= self.action.w {
+            let leading = Rect::new(self.action.x, self.action.y, leading_w, self.action.h);
+            let trailing = Rect::new(leading.x + leading.w + gap, self.action.y, trailing_w, self.action.h);
+            (leading, trailing)
+        } else {
+            // Preserve label size and equal treatment. The final control retains the bottom
+            // anchor; the first moves up and the narrative reserves the resulting full extent.
+            let leading = Rect::new(self.action.x, self.action.y - self.action.h - gap, leading_w, self.action.h);
+            let trailing = Rect::new(self.action.x, self.action.y, trailing_w, self.action.h);
+            (leading, trailing)
+        }
     }
 
     /// Draw the return crumb — `‹ <where BACK goes>` — in the band whose top is at `top`.
@@ -795,6 +805,16 @@ impl RouteLayout {
         } else {
             self.narrative.y
         }
+    }
+
+    /// The available prose region after the complete title and before the actual action group.
+    /// A scrolling disclosure uses exactly the same title flow as an ordinary route header.
+    pub(crate) fn narrative_copy_frame(self, has_crumb: bool, title: &str,
+        actions_top: f32, measure: &dyn Measure) -> Rect {
+        let title_h = Self::narrative_title(title).with_measure(measure).measure_h(self.narrative.w);
+        let top = self.narrative_top(has_crumb) + title_h + theme::space::MD;
+        Rect::new(self.narrative.x, top, self.narrative.w,
+            (actions_top - theme::space::XL - top).max(0.0))
     }
 
     fn draw_crumb(self, p: Painter, top: f32, back_to: &str, measure: &dyn Measure) {
@@ -831,7 +851,7 @@ impl RouteLayout {
         TextView::new(title, theme::size::HERO, theme::TEXT_HEADING)
             .bold()
             .leading(TITLE_LEADING)
-            .max_lines(2)
+            .max_lines(3)
     }
 
     /// Draw a measured crumb→title→copy flow.  Each block begins after the previous one's actual
@@ -953,6 +973,34 @@ mod tests {
             TITLE_LEADING > theme::size::HERO as f32,
             "a pitch under the em box would clip a descender between two wrapped title lines"
         );
+    }
+
+    /// Real consent questions need a third HERO line in Spanish and Belarusian. The shared
+    /// title must keep the whole question and move the disclosure region by that same height.
+    #[test]
+    fn translated_consent_questions_keep_their_complete_titles() {
+        struct QuestionMeasure;
+        impl crate::ui::machine::Measure for QuestionMeasure {
+            fn width(&self, text: &std::ffi::CStr, size: i32, _bold: bool) -> f32 {
+                text.to_string_lossy().chars().count() as f32 * size as f32 * 0.6
+            }
+            fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
+            fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+        }
+        let measure = QuestionMeasure;
+        let layout = RouteLayout::screen();
+        for preference in [crate::i18n::Preference::En, crate::i18n::Preference::Es, crate::i18n::Preference::Be] {
+            let locale = crate::i18n::LocaleContext::resolve(preference, None, None, None, None);
+            for question in [crate::i18n::msg::settings_consent_crash_title_in(&locale),
+                crate::i18n::msg::settings_consent_product_title_in(&locale)] {
+                let title = RouteLayout::narrative_title(question).with_measure(&measure);
+                assert!(!title.truncates(layout.narrative.w), "question was elided: {question}");
+                let height = title.measure_h(layout.narrative.w);
+                let copy = layout.narrative_copy_frame(false, question, layout.action.y, &measure);
+                assert_eq!(copy.y, layout.narrative_top(false) + height + theme::space::MD);
+                assert!(copy.h > theme::size::BODY as f32 * 6.0, "disclosure keeps a readable viewport");
+            }
+        }
     }
 
     #[test]

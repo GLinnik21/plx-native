@@ -443,18 +443,18 @@ fn a_merged_shelf_is_capped_at_the_card_rows_spring_count() {
 #[test]
 fn a_person_shelf_counts_people_and_everything_else_counts_results() {
     assert_eq!(
-        (Kind::Person.title(), Kind::Person.count_word(1)),
-        ("Cast & Crew", "person")
+        (Kind::Person.title(), Kind::Person.count_label(1)),
+        ("Cast & Crew", "1 person".to_owned())
     );
-    assert_eq!(Kind::Person.count_word(2), "people");
-    assert_eq!(Kind::Movie.count_word(1), "result");
-    assert_eq!(Kind::Collection.count_word(0), "results");
+    assert_eq!(Kind::Person.count_label(2), "2 people");
+    assert_eq!(Kind::Movie.count_label(1), "1 result");
+    assert_eq!(Kind::Collection.count_label(0), "0 results");
 
     assert_eq!(
-        (Kind::Collection.count_word(3), items_word(12)),
-        ("results", "items")
+        (Kind::Collection.count_label(3), items_label(12)),
+        ("3 results".to_owned(), "12 items".to_owned())
     );
-    assert_eq!(items_word(1), "item");
-    // 0 is plural ("0 items"), and so is a nonsense negative the wire could still send
-    assert_eq!((items_word(0), items_word(-1)), ("items", "items"));
+    assert_eq!(items_label(1), "1 item");
+    // Cardinal rules apply to the absolute value, including negative wire counts.
+    assert_eq!((items_label(0), items_label(-1)), ("0 items".to_owned(), "-1 item".to_owned()));
 }

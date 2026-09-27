@@ -237,7 +237,7 @@ impl TrackMenuState {
     }
 
     fn build_audio(&self) -> Section {
-        let mut sec = Section::new("Audio");
+        let mut sec = Section::new(crate::i18n::msg::widgets_tracks_audio());
         let d = match tracks() {
             Some(t) => t,
             None => return sec,
@@ -245,12 +245,12 @@ impl TrackMenuState {
         let names = crate::player::SHARED.track_names.lock().unwrap();
         for (i, s) in d.audio.iter().enumerate() {
             let lang = if s.lang.is_empty() {
-                "Unknown"
+                crate::i18n::msg::widgets_tracks_unknown()
             } else {
                 s.lang.as_str()
             };
             let label = if s.default {
-                format!("Original: {lang}")
+                crate::i18n::msg::widgets_tracks_original(lang)
             } else {
                 lang.to_string()
             };
@@ -280,8 +280,8 @@ impl TrackMenuState {
     }
 
     fn build_subs(&self, ps: &crate::route::PlaybackSession) -> Section {
-        let mut sec = Section::new("Subtitles");
-        sec = sec.row(Row::new("Off").checked(self.active_sub() < 0));
+        let mut sec = Section::new(crate::i18n::msg::widgets_tracks_subtitles());
+        sec = sec.row(Row::new(crate::i18n::msg::widgets_tracks_off()).checked(self.active_sub() < 0));
         if let Some(t) = tracks() {
             let names = crate::player::SHARED.track_names.lock().unwrap();
             for i in visible_subs(ps) {
@@ -290,7 +290,7 @@ impl TrackMenuState {
                     None => continue,
                 };
                 let lang = if s.lang.is_empty() {
-                    "Unknown"
+                    crate::i18n::msg::widgets_tracks_unknown()
                 } else {
                     s.lang.as_str()
                 };
@@ -567,8 +567,8 @@ fn audio_descriptor(s: &metadata::Stream) -> String {
         channel_short(&s.layout)
     } else if s.channels > 0 {
         match s.channels {
-            1 => "Mono".to_string(),
-            2 => "Stereo".to_string(),
+            1 => crate::i18n::msg::widgets_tracks_mono().to_string(),
+            2 => crate::i18n::msg::widgets_tracks_stereo().to_string(),
             n => format!("{}.{}", n - 1, if n >= 6 { 1 } else { 0 }),
         }
     } else {
@@ -586,8 +586,8 @@ fn audio_descriptor(s: &metadata::Stream) -> String {
 fn channel_short(layout: &str) -> String {
     let base = layout.split('(').next().unwrap_or(layout).trim();
     match base {
-        "mono" => "Mono".to_string(),
-        "stereo" => "Stereo".to_string(),
+        "mono" => crate::i18n::msg::widgets_tracks_mono().to_string(),
+        "stereo" => crate::i18n::msg::widgets_tracks_stereo().to_string(),
         other => other.to_string(),
     }
 }

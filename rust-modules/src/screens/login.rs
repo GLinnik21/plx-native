@@ -82,8 +82,8 @@ fn working_phase(phase: Phase) -> bool {
 /// wedged request has its result discarded when it finally returns, and it re-runs only the leg
 /// that failed — discovery when the pin already yielded an account credential, a whole fresh pin
 /// when it did not.
-const ESCAPE: &CStr = c"Try again";
-const SIGN_IN: &CStr = c"Sign in";
+fn escape() -> &'static CStr { crate::i18n::msg::browse_action_retry_c() }
+fn sign_in() -> &'static CStr { crate::i18n::msg::browse_action_sign_in_c() }
 
 /// How long a QR code may go unscanned before the screen offers to replace it on request.
 ///
@@ -148,13 +148,13 @@ fn qr_cache_stale(cached: u64, live: u64, phase: Phase) -> bool {
 fn deleted_readout(leftovers: usize) -> (&'static CStr, &'static CStr) {
     if leftovers == 0 {
         (
-            c"Local data deleted",
-            c"Credentials, preferences, telemetry and local diagnostics have been removed.",
+            crate::i18n::msg::browse_login_deleted_c(),
+            crate::i18n::msg::browse_login_deleted_detail_c(),
         )
     } else {
         (
-            c"Signed out, and most local data deleted",
-            c"Some files could not be removed and may still be on this television.",
+            crate::i18n::msg::browse_login_partial_c(),
+            crate::i18n::msg::browse_login_partial_detail_c(),
         )
     }
 }
@@ -170,11 +170,11 @@ fn deleted_readout(leftovers: usize) -> (&'static CStr, &'static CStr) {
 /// worth less than the one that offers a way forward.
 fn waiting_status(code_replaced: bool, stalled: bool) -> &'static CStr {
     if stalled {
-        c"Still waiting — press OK for a new code"
+        crate::i18n::msg::browse_login_stalled_c()
     } else if code_replaced {
-        c"That code expired — scan this one"
+        crate::i18n::msg::browse_login_expired_c()
     } else {
-        c"Waiting for you to sign in…"
+        crate::i18n::msg::browse_login_waiting_c()
     }
 }
 
@@ -275,8 +275,8 @@ enum ControlKind {
 
 fn label_for(kind: ControlKind) -> &'static CStr {
     match kind {
-        ControlKind::RestartWait | ControlKind::Retry => ESCAPE,
-        ControlKind::StartLogin => SIGN_IN,
+        ControlKind::RestartWait | ControlKind::Retry => escape(),
+        ControlKind::StartLogin => sign_in(),
     }
 }
 
@@ -708,8 +708,8 @@ impl LoginScreen {
             StatusKind::Working,
             // The reason arrives WITH the control, and only then: it exists to explain why a
             // button just appeared under a spinner that was doing fine a moment ago.
-            stuck.then_some(c"This is taking longer than usual."),
-            stuck.then_some(ESCAPE),
+            stuck.then_some(crate::i18n::msg::browse_login_slow_c()),
+            stuck.then_some(escape()),
             focused,
         );
     }
@@ -726,10 +726,10 @@ impl LoginScreen {
             f,
             p,
             env,
-            c"Couldn\u{2019}t sign in",
+            crate::i18n::msg::browse_login_failed_c(),
             StatusKind::Failed,
             (!reason.is_empty()).then_some(reason.as_c_str()),
-            Some(ESCAPE),
+            Some(escape()),
             focused,
         );
     }
@@ -753,7 +753,7 @@ impl LoginScreen {
             verdict,
             StatusKind::Empty,
             Some(reason),
-            Some(SIGN_IN),
+            Some(sign_in()),
             focused,
         );
     }
@@ -775,8 +775,8 @@ impl LoginScreen {
         layout.draw_narrative(
             p,
             None,
-            "Sign in to Plex",
-            "Use your phone camera to scan the code, or link this television manually with the address and code shown here.",
+            crate::i18n::msg::browse_login_title(),
+            crate::i18n::msg::browse_login_instructions(),
             theme::size::LABEL,
             f.measure,
         );
@@ -1064,9 +1064,9 @@ impl<H: AuthLike> Screen<H> for LoginScreen {
             Phase::Error => self.draw_failed(f, p, &env, focused),
             Phase::Deleted => self.draw_deleted(f, p, &env, focused),
             Phase::Discovering => {
-                self.draw_working(f, p, &env, "Finding your server\u{2026}", focused)
+                self.draw_working(f, p, &env, crate::i18n::msg::browse_login_finding(), focused)
             }
-            _ => self.draw_working(f, p, &env, "Connecting to Plex\u{2026}", focused),
+            _ => self.draw_working(f, p, &env, crate::i18n::msg::browse_login_connecting(), focused),
         }
     }
     fn render(&self) -> RenderStrategy {
@@ -1469,8 +1469,8 @@ mod tests {
     #[test]
     fn a_stalled_working_readout_sits_its_action_pill_lower_than_a_settled_one() {
         let m = crate::ui::fixture::FixtureMeasure;
-        let working = status_action_rect(&m, ESCAPE, true, true);
-        let settled = status_action_rect(&m, ESCAPE, false, true);
+        let working = status_action_rect(&m, escape(), true, true);
+        let settled = status_action_rect(&m, escape(), false, true);
         assert!(
             working.y > settled.y,
             "Working straddles the centre with the spinner above it; a settled read-out centres \
@@ -1483,8 +1483,8 @@ mod tests {
     #[test]
     fn a_reason_line_pushes_the_action_pill_down_further() {
         let m = crate::ui::fixture::FixtureMeasure;
-        let with_reason = status_action_rect(&m, ESCAPE, false, true);
-        let without = status_action_rect(&m, ESCAPE, false, false);
+        let with_reason = status_action_rect(&m, escape(), false, true);
+        let without = status_action_rect(&m, escape(), false, false);
         assert!(with_reason.y > without.y);
     }
 
@@ -1532,12 +1532,12 @@ mod tests {
                 (false, None),
                 (true, Some(c"This is taking longer than usual.")),
             ] {
-                let mut o = StatusOverlay::new(Rect::FULL, c"caption", kind).action(ESCAPE);
+                let mut o = StatusOverlay::new(Rect::FULL, c"caption", kind).action(escape());
                 if let Some(r) = reason {
                     o = o.reason(r);
                 }
                 let want = o.action_frame().expect("an action was set above");
-                let got = status_action_rect(&RawTextMeasure, ESCAPE, working, has_reason);
+                let got = status_action_rect(&RawTextMeasure, escape(), working, has_reason);
                 assert_eq!(
                     (got.x, got.y, got.w, got.h),
                     (want.x, want.y, want.w, want.h),

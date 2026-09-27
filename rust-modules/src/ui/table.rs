@@ -24,7 +24,7 @@ impl Badge {
     fn text(&self) -> &str {
         match self {
             Badge::Ad => "AD",
-            Badge::Forced => "FORCED",
+            Badge::Forced => crate::i18n::msg::widgets_badge_forced(),
             Badge::Sdh => "SDH",
             Badge::Cc => "CC",
             Badge::Text(s) => s.as_str(),
@@ -115,7 +115,7 @@ impl Row {
     fn readout(&self) -> Option<&str> {
         match (&self.value, self.toggle) {
             (Some(v), _) => Some(v.as_str()),
-            (None, Some(on)) => Some(if on { "On" } else { "Off" }),
+            (None, Some(on)) => Some(if on { crate::i18n::msg::widgets_toggle_on() } else { crate::i18n::msg::widgets_toggle_off() }),
             (None, None) => None,
         }
     }
@@ -657,7 +657,7 @@ impl TableView {
     pub fn draw(&self, p: Painter, frame: Rect, measure: &dyn crate::ui::machine::Measure) {
         if self.n_rows() == 0 {
             Label::new(
-                c"No tracks".as_ptr(),
+                crate::i18n::msg::widgets_tracks_empty_c().as_ptr(),
                 theme::size::BODY,
                 theme::TEXT_TERTIARY,
             )

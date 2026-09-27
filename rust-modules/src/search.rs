@@ -120,21 +120,18 @@ impl Kind {
     /// The shelf heading.
     pub(crate) fn title(self) -> &'static str {
         match self {
-            Kind::Movie => "Movies",
-            Kind::Show => "TV Shows",
-            Kind::Episode => "Episodes",
-            Kind::Person => "Cast & Crew",
-            Kind::Collection => "Collections",
+            Kind::Movie => crate::i18n::msg::browse_kind_movies(),
+            Kind::Show => crate::i18n::msg::browse_kind_tv_shows(),
+            Kind::Episode => crate::i18n::msg::browse_kind_episodes(),
+            Kind::Person => crate::i18n::msg::browse_detail_cast(),
+            Kind::Collection => crate::i18n::msg::browse_kind_collections(),
         }
     }
-    /// The count read-out beside it — how many RESULTS are on this shelf. People are counted as
-    /// people; everything else as results. See [`items_word`] for the other count on this screen.
-    pub(crate) fn count_word(self, n: usize) -> &'static str {
-        match (self, n) {
-            (Kind::Person, 1) => "person",
-            (Kind::Person, _) => "people",
-            (_, 1) => "result",
-            (_, _) => "results",
+    /// Complete localized shelf count; people and result counts have different grammar.
+    pub(crate) fn count_label(self, n: usize) -> String {
+        match self {
+            Kind::Person => crate::i18n::msg::browse_search_people(n as i64),
+            _ => crate::i18n::msg::browse_search_count(n as i64),
         }
     }
     /// Which hub identifiers feed this shelf.
@@ -149,23 +146,9 @@ impl Kind {
     }
 }
 
-/// The MEMBERSHIP read-out: how many things are inside ONE result ("12 items", a collection's
-/// extent on the focused tile's second line). A sibling of [`Kind::count_word`] and deliberately
-/// not an arm of it — that one answers "how many results are on this shelf", so a Collections
-/// heading saying "3 results" and a collection tile saying "12 items" are both right and the two
-/// numbers are never the same number. It lives here because the count vocabulary for this feature
-/// is one thing: `ui/search/results.rs` spelled its own `if n == 1 {""} else {"s"}` beside a
-/// `count_word` call on the very next screen, which is how one feature ends up with two plural
-/// rules and then two ways to spell a zero.
-///
-/// Takes an `i64` because that is what the wire hands over ([`TagHit::count`]): a server that sends
-/// a nonsense negative gets the plural word, rather than a cast at the call site that could wrap it
-/// into "1 item".
-pub(crate) fn items_word(n: i64) -> &'static str {
-    match n {
-        1 => "item",
-        _ => "items",
-    }
+/// Complete localized collection-membership count, separate from a shelf's result count.
+pub(crate) fn items_label(n: i64) -> String {
+    crate::i18n::msg::browse_search_items(n)
 }
 
 /// A person or collection result: the `Directory[]` shape, which carries no `ratingKey` and — for
@@ -949,7 +932,7 @@ fn record(i: usize, what: Option<Projection>) {
             let counts: Vec<String> = KINDS
                 .iter()
                 .enumerate()
-                .map(|(k, kind)| format!("{}={}", kind.title(), items[k].len()))
+                .map(|(k, kind)| format!("{}={}", kind.hubs()[0], items[k].len()))
                 .collect();
             crate::log(&format!(
                 "search: q[{}ch] sid={i} hubs {}",

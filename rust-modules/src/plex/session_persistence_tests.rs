@@ -462,3 +462,24 @@ fn a_malformed_home_user_costs_that_tile_and_not_the_session() {
     assert_eq!(s.account(None).name.as_deref(), Some("B"));
 }
 
+
+#[test]
+fn a_language_update_reports_when_the_next_launch_cannot_be_persisted() {
+    let _g = crate::testlock::serial();
+    let t = TempSession::new("language-write-failure");
+    save(&signed_in());
+    let dir = t.file().parent().unwrap().to_path_buf();
+    let result = update(|cur| {
+        let mut next = cur.clone();
+        next.language = crate::i18n::Preference::Be;
+        // Remove the writable directory after the read, before the atomic replacement. A file
+        // at the parent path makes this fail on every host, including privileged test runners.
+        std::fs::remove_file(t.file()).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+        std::fs::write(&dir, b"not a directory").unwrap();
+        Some(next)
+    });
+    std::fs::remove_file(&dir).unwrap();
+    std::fs::create_dir(&dir).unwrap();
+    assert!(!result, "the language picker must not promise next-launch persistence after a failed write");
+}

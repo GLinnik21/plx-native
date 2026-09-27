@@ -321,7 +321,7 @@ impl AboutPanelScreen {
         };
 
         run(
-            "ABOUT",
+            crate::i18n::msg::browse_detail_about_heading(),
             s.eyebrow,
             theme::size::CAPTION,
             EYEBROW_LEAD,
@@ -343,7 +343,7 @@ impl AboutPanelScreen {
         }
         rule(p, r, s.rule);
 
-        let hint = KeyHint::new(c"Press", c"BACK", c"to return");
+        let hint = KeyHint::translated(crate::i18n::msg::widgets_hint_return("\u{fffc}"), c"BACK");
         // RIGHT-aligned on the padding edge, as §1B and §1C are and as the design draws all three
         // (§1A's footer row is `justify-content:flex-end`). It was centred for one revision, on the
         // theory that a lone hint with no left-hand partner should not sit at a margin; the owner's

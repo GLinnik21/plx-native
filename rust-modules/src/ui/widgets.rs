@@ -1050,8 +1050,8 @@ pub(crate) fn row_watch_state<T: crate::ui::tile::Tile + ?Sized>(m: &T) -> Poste
 ///
 /// Each names the OUTCOME its press produces, never the state the item is in — which is what lets
 /// a part-watched item show both at once without either being a lie.
-pub(crate) const MARK_WATCHED_VERB: &str = "Mark as Watched";
-pub(crate) const MARK_UNWATCHED_VERB: &str = "Mark as Unwatched";
+pub(crate) fn mark_watched_verb() -> &'static str { crate::i18n::msg::widgets_action_mark_watched() }
+pub(crate) fn mark_unwatched_verb() -> &'static str { crate::i18n::msg::widgets_action_mark_unwatched() }
 
 /// …and the third verb the same two surfaces share: **play this from 00:00, ignoring the resume
 /// point.** The detail hero's disc and the card menu's row are one action, so they carry one WORD —
@@ -1065,8 +1065,8 @@ pub(crate) const MARK_UNWATCHED_VERB: &str = "Mark as Unwatched";
 /// resembling a play mark. The two were reconciled onto one glyph for a day and it was wrong;
 /// `Icon::Restart`'s doc is the argument. One action, one word, and the mark chosen per surface for
 /// what that surface has to tell apart.
-pub(crate) const PLAY_FROM_START_VERB: &str = "Play from Start";
-pub(crate) const PLAY_TRAILER_VERB: &str = "Play Trailer";
+pub(crate) fn play_from_start_verb() -> &'static str { crate::i18n::msg::widgets_action_play_start() }
+pub(crate) fn play_trailer_verb() -> &'static str { crate::i18n::msg::widgets_action_play_trailer() }
 
 /// The **watched tick** on a poster, as fractions of the tile's DRAWN width: the tick's box, its
 /// corner inset, then the veil's box. Anchored on the design system's `ArtTile` — a 26px tick inset
@@ -1603,12 +1603,12 @@ pub(crate) fn key_cap(
 /// than centring itself precisely so that both are the caller's to choose — the alignment is the
 /// half that belongs to the screen, the assembled line is the half that does not.
 ///
-/// The three `&CStr`s are BORROWED for the widget's lifetime — the `Label` rule in `ui/CLAUDE.md`:
-/// keep the `CString` (or a `c"…"` literal) alive across the draw.
+/// `new` borrows the three C strings for the draw lifetime. `translated` owns its surrounding
+/// prose so a whole sentence can move the borrowed keycap without risking a dangling string.
 pub(crate) struct KeyHint<'a> {
-    pre: &'a std::ffi::CStr,
+    pre: std::borrow::Cow<'a, std::ffi::CStr>,
     key: &'a std::ffi::CStr,
-    post: &'a std::ffi::CStr,
+    post: std::borrow::Cow<'a, std::ffi::CStr>,
 }
 
 impl<'a> KeyHint<'a> {
@@ -1617,17 +1617,25 @@ impl<'a> KeyHint<'a> {
         key: &'a std::ffi::CStr,
         post: &'a std::ffi::CStr,
     ) -> Self {
-        Self { pre, key, post }
+        Self { pre: pre.into(), key, post: post.into() }
+    }
+
+    /// A complete translated sentence containing one object-replacement character for the key.
+    /// Translators may move that placeholder to either end of the sentence without changing the
+    /// layout code. The owned runs keep their UTF-8 C strings alive for the entire draw.
+    pub(crate) fn translated(message: String, key: &'a std::ffi::CStr) -> Self {
+        let (pre, post) = key_hint_parts(&message);
+        Self { pre: pre.into(), key, post: post.into() }
     }
 
     /// Total width of the assembled line.
     pub(crate) fn width(&self, measure: &dyn crate::ui::machine::Measure) -> f32 {
         let sz = theme::size::CAPTION;
-        measure.width(self.pre, sz, false)
-            + KEYCAP_GAP
+        measure.width(&self.pre, sz, false)
+            + if self.pre.is_empty() { 0.0 } else { KEYCAP_GAP }
             + key_cap_w(self.key, measure)
-            + KEYCAP_GAP
-            + measure.width(self.post, sz, false)
+            + if self.post.is_empty() { 0.0 } else { KEYCAP_GAP }
+            + measure.width(&self.post, sz, false)
     }
 
     /// The band the line occupies — the cap is taller than the prose's cap band, so a caller
@@ -1667,13 +1675,13 @@ impl<'a> KeyHint<'a> {
     ) {
         let sz = theme::size::CAPTION;
         let ty = crate::text::text_vcenter_y(sz, 0, cy);
-        let pw = measure.width(self.pre, sz, false);
+        let pw = measure.width(&self.pre, sz, false);
         p.text(self.pre.as_ptr(), x, ty, sz, theme::TEXT_TERTIARY, 0, 0);
-        let kx = x + pw + KEYCAP_GAP;
+        let kx = x + pw + if self.pre.is_empty() { 0.0 } else { KEYCAP_GAP };
         let kw = key_cap(p, kx, cy, self.key, theme::TEXT_SECONDARY, measure);
         p.text(
             self.post.as_ptr(),
-            kx + kw + KEYCAP_GAP,
+            kx + kw + if self.post.is_empty() { 0.0 } else { KEYCAP_GAP },
             ty,
             sz,
             theme::TEXT_TERTIARY,
@@ -1681,6 +1689,13 @@ impl<'a> KeyHint<'a> {
             0,
         );
     }
+}
+
+/// Split the marked key from a localized sentence, keeping text order and UTF-8 intact.
+pub(crate) fn key_hint_parts(message: &str) -> (std::ffi::CString, std::ffi::CString) {
+    let (pre, post) = message.split_once('\u{fffc}').unwrap_or((message, ""));
+    let run = |s: &str| std::ffi::CString::new(s.trim()).unwrap_or_default();
+    (run(pre), run(post))
 }
 
 // ---- Dotted run: fine-print facts separated by `·` ----------------------------------------------
@@ -4085,7 +4100,7 @@ impl View for FieldList<'_> {
 }
 
 // ---- TabPill: a rounded pill with a centered label. Focused = light pill + dark ink; idle =
-// faint fill + dim ink. `TabPill::width(chars, sz)` sizes it to fit — NOT `Button::pill_w`, which
+// faint fill + dim ink. `TabPill::width_measured` sizes it from glyph advances — NOT `Button::pill_w`, which
 // budgets a Button's icon box and air. ----
 /// How a `TabPill` reads. The player Info/Chapters tabs are always-filled buttons; the detail season
 /// tabs are a segmented control with two *independent* states — a **selected** segment (the active
@@ -4146,11 +4161,9 @@ pub struct TabPill {
     ground: ControlGround,
 }
 impl TabPill {
-    /// pill width for a `chars`-long label at `sz` (label advance + horizontal padding). Covers
-    /// the LABEL only — a pill that also carries a [`TabNote`] must add [`note_w`](Self::note_w),
-    /// or the note is drawn outside the fill.
-    pub fn width(chars: usize, sz: c_int) -> f32 {
-        chars as f32 * sz as f32 * 0.56 + 44.0
+    /// Width from the actual bold glyph advances, shared by paint and hit geometry.
+    pub(crate) fn width_measured(label: &str, sz: c_int, measure: &dyn crate::ui::machine::Measure) -> f32 {
+        measure.width_str(label, sz, true) + 44.0
     }
     pub fn new(label: *const c_char, sz: c_int, frame: Rect) -> Self {
         Self {

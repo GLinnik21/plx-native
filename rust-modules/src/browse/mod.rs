@@ -2028,19 +2028,11 @@ impl SecKind {
             SecKind::Show => "show",
         }
     }
-    /// The Sources row's count noun ("187 films") — plural, and the singular-less form the row
-    /// falls back to when no count has landed is [`SecKind::plural`].
-    pub(crate) fn noun(self) -> &'static str {
-        match self {
-            SecKind::Movie => "films",
-            SecKind::Show => "shows",
-        }
-    }
     /// The same thing as a standalone label ("Films"), for a row whose count has not landed yet.
     pub(crate) fn plural(self) -> &'static str {
         match self {
-            SecKind::Movie => "Films",
-            SecKind::Show => "TV shows",
+            SecKind::Movie => crate::i18n::msg::browse_kind_films(),
+            SecKind::Show => crate::i18n::msg::browse_kind_tv_shows_sentence(),
         }
     }
 }
@@ -2205,7 +2197,10 @@ pub(crate) struct SrcRow {
 
 fn count_line(count: i64, kind: SecKind) -> String {
     if count >= 0 {
-        format!("{count} {}", kind.noun())
+        match kind {
+            SecKind::Movie => crate::i18n::msg::browse_person_films(count),
+            SecKind::Show => crate::i18n::msg::browse_person_shows(count),
+        }
     } else {
         kind.plural().to_string()
     }
