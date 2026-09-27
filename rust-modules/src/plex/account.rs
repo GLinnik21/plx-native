@@ -989,6 +989,9 @@ where F: FnOnce(Duration) -> AudioPreferencesOutcome, N: Fn() -> Instant, C: Fn(
     let deadline = now() + budget;
     let flight = {
         let mut state = cache.state.lock().unwrap_or_else(|e| e.into_inner());
+        // An old playback worker must not evict the active profile's saved preferences or
+        // settings request merely by entering after the profile publication changed.
+        if !still_current() { return AudioPreferencesOutcome::Failed; }
         if state.key.as_ref() != Some(&key) {
             state.key = Some(key.clone()); state.entry = None; state.flight = None;
             cache.changed.notify_all();
@@ -1509,6 +1512,23 @@ mod tests {
             std::time::Instant::now(), || true));
         assert_eq!(super::audio_preferences_cached_at(&cache, new, Duration::from_millis(3),
             std::time::Instant::now, |_| panic!("new result was not cached"), || true), german);
+    }
+
+    #[test]
+    fn account_regression_stale_fetch_start_cannot_evict_current_profile() {
+        let cache = super::AudioPreferencesCache::new();
+        let old = audio_key(1, 1); let current = audio_key(2, 2);
+        let flight = cache.reserve(current.clone(), std::time::Instant::now()).unwrap();
+        let result = super::audio_preferences_cached_at(&cache, old, Duration::from_millis(10),
+            std::time::Instant::now, |_| panic!("stale identity reached the network"), || false);
+        assert_eq!(result, super::AudioPreferencesOutcome::Failed);
+        {
+            let state = cache.state.lock().unwrap();
+            assert_eq!(state.key.as_ref(), Some(&current));
+            assert_eq!(state.flight, Some(flight.id));
+        }
+        assert!(cache.complete(flight, french(), super::FetchPath::Warm,
+            std::time::Instant::now(), || true));
     }
 
     #[test]

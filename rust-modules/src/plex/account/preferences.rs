@@ -97,9 +97,7 @@ impl PreferenceRequest {
         let response = crate::net::request_evidence(&url, &client.headers(), method,
             (method == "PUT").then_some(b"".as_slice()), crate::net::API, false, None, None);
         super::note_response_contact(&url, &response);
-        response.map_err(|failure| if failure.cause == crate::net::RequestError::TimedOut {
-            PreferenceError::TimedOut
-        } else { PreferenceError::Unavailable }).and_then(accepted)
+        response.map_err(preference_failure).and_then(accepted)
     }
 
     fn load_with<F, C>(&self, cache: &AudioPreferencesCache, io: &Mutex<()>, current: C,
@@ -143,6 +141,15 @@ impl PreferenceRequest {
         };
         finish(cache, flight, result, current)
     }
+}
+
+fn preference_failure(failure: crate::net::RequestFailure) -> PreferenceError {
+    // A validated final refusal remains authoritative even if its body was truncated or reset.
+    if matches!(failure.status, Some(401 | 403)) {
+        PreferenceError::Refused
+    } else if failure.cause == crate::net::RequestError::TimedOut {
+        PreferenceError::TimedOut
+    } else { PreferenceError::Unavailable }
 }
 
 fn accepted(response: crate::net::Resp) -> Result<crate::net::Resp, PreferenceError> {
@@ -265,6 +272,17 @@ mod tests {
     }
     fn snapshot(cache: &AudioPreferencesCache) -> PreferenceSnapshot {
         request().load_with(cache, &Mutex::new(()), || true, fixture).unwrap()
+    }
+
+    #[test]
+    fn account_regression_incomplete_refusal_keeps_the_account_error() {
+        for status in [401, 403] {
+            for cause in [crate::net::RequestError::TimedOut, crate::net::RequestError::Transport] {
+                let failure = crate::net::RequestFailure { status: Some(status), cause,
+                    body_limit: None, curl_rc: Some(92) };
+                assert_eq!(preference_failure(failure), PreferenceError::Refused);
+            }
+        }
     }
 
     #[test]
