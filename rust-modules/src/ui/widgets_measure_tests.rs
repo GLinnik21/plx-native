@@ -103,7 +103,7 @@ fn a_full_frame_failed_readout_hangs_from_the_top_anchor() {
             if let Some(r) = reason {
                 full = full.reason(r);
             }
-            let full = full.page();
+            let full = full.page(crate::ui::icons::Icon::ClockBadgeAlert);
             let bands = full.bands_measured(&StatusMetrics);
             assert_eq!(bands.cap.y, StatusOverlay::FULL_ANCHOR_TOP);
             let copy_bottom = bands.reason.map_or(bands.cap.y + bands.cap.h, |r| r.y + r.h);
@@ -120,10 +120,40 @@ fn a_full_frame_failed_readout_hangs_from_the_top_anchor() {
     let bounded = Rect::new(100.0, 200.0, 600.0, 500.0);
     let b = StatusOverlay::new(bounded, c"Failed", StatusKind::Failed).bands_measured(&StatusMetrics);
     assert_eq!(b.cap.y, bounded.cy() - 26.0);
-    let w = StatusOverlay::new(Rect::FULL, c"Loading", StatusKind::Working).page().bands_measured(&StatusMetrics);
+    // `.page()`'s glyph only ever activates for `StatusKind::Failed`, so `Working`/`Empty` here
+    // measure identically for any `Icon` argument.
+    let w = StatusOverlay::new(Rect::FULL, c"Loading", StatusKind::Working)
+        .page(crate::ui::icons::Icon::ClockBadgeAlert).bands_measured(&StatusMetrics);
     assert_eq!(w.cap.y, Rect::FULL.cy() + theme::space::XS);
-    let e = StatusOverlay::new(bounded, c"Nothing", StatusKind::Empty).page();
+    let e = StatusOverlay::new(bounded, c"Nothing", StatusKind::Empty).page(crate::ui::icons::Icon::ClockBadgeAlert);
     assert_eq!((e.page, e.frame.y), (false, bounded.y), "an Empty answer keeps its frame");
+}
+
+/// The 112px glyph a page-placed `Failed` read-out draws above its verdict (spec "1A") sits
+/// exactly [`StatusOverlay::GLYPH_GAP`] above [`StatusOverlay::FULL_ANCHOR_TOP`], centred on the
+/// PANEL (`Rect::FULL`), never the caller's frame — same rule as the verdict/row centring above.
+/// On the shared 1920×1080 screen space that is `x=1920/2-56=904, y=372-44-112=216, w=h=112`.
+/// A non-`Failed` kind, and a `Failed` one that never called `.page()`, draw no glyph at all.
+#[test]
+fn the_page_glyph_hangs_above_the_anchor_and_only_a_page_placed_failure_draws_one() {
+    let want = Rect::new(904.0, 216.0, 112.0, 112.0);
+    let content = Rect::new(96.0, 232.0, 1728.0, 848.0);
+    for frame in [Rect::FULL, content] {
+        let o = StatusOverlay::new(frame, c"Couldn't sign in", StatusKind::Failed)
+            .page(crate::ui::icons::Icon::ClockBadgeAlert);
+        assert_eq!(
+            (o.glyph_frame().unwrap().x, o.glyph_frame().unwrap().y, o.glyph_frame().unwrap().w, o.glyph_frame().unwrap().h),
+            (want.x, want.y, want.w, want.h),
+            "frame={frame:?} — the glyph box ignores the caller's frame, like the verdict does"
+        );
+    }
+    // A bounded (non-page) Failed read-out never called `.page()`, so it draws no glyph.
+    let bounded = StatusOverlay::new(content, c"Failed", StatusKind::Failed);
+    assert!(bounded.glyph_frame().is_none(), "only .page() places a glyph");
+    // Working/Empty read-outs never draw a glyph even when page-placed.
+    let working = StatusOverlay::new(Rect::FULL, c"Loading", StatusKind::Working)
+        .page(crate::ui::icons::Icon::ClockBadgeAlert);
+    assert!(working.glyph_frame().is_none(), "Working carries no glyph");
 }
 
 /// A read-out that offers two things to press lays them out as ONE centred run, `CONTROL_GAP`

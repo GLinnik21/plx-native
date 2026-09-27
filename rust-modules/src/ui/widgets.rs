@@ -3347,6 +3347,11 @@ pub struct StatusOverlay<'a> {
     pub note_busy: bool,
     /// Placed on the PAGE rather than in its frame — see [`StatusOverlay::page`].
     pub page: bool,
+    /// The glyph a page-placed `Failed` read-out draws above its verdict — see
+    /// [`StatusOverlay::page`], the only way this is ever set. `None` for every read-out that is
+    /// not page-placed AND `Failed`, which is exactly the set the design says carries no glyph
+    /// (a container read-out, `Working`, `Empty`).
+    pub glyph: Option<crate::ui::icons::Icon>,
     pub kind: StatusKind,
     pub phase: u32,
     /// which pill of the row holds focus — 0 the primary, 1 the `secondary`; `None` when focus is
@@ -3380,6 +3385,12 @@ impl<'a> StatusOverlay<'a> {
     /// [page-filling](Self::page) `Failed` read-out. Anchored from the top so the verdict stays
     /// put whatever grows below it.
     pub const FULL_ANCHOR_TOP: f32 = 372.0;
+    /// A [page-placed](Self::page) `Failed` read-out's glyph — square, this side.
+    pub const GLYPH_SIZE: f32 = 112.0;
+    /// The air between the glyph's bottom edge and [`Self::FULL_ANCHOR_TOP`] — the verdict's cap
+    /// top, so the glyph box's own top sits at `FULL_ANCHOR_TOP - GLYPH_GAP - GLYPH_SIZE` (216 on
+    /// the 1920×1080 screen space every page-filling read-out shares).
+    pub const GLYPH_GAP: f32 = 44.0;
 
     pub fn new(frame: Rect, caption: &'a core::ffi::CStr, kind: StatusKind) -> Self {
         Self {
@@ -3391,6 +3402,7 @@ impl<'a> StatusOverlay<'a> {
             note: None,
             note_busy: false,
             page: false,
+            glyph: None,
             kind,
             phase: 0,
             focus: None,
@@ -3415,10 +3427,19 @@ impl<'a> StatusOverlay<'a> {
     /// onboarding list, Search's results, the person page's shelves) does not, and keeps its
     /// container's centred layout. `Working` and `Empty` are unaffected: a spinner and a quiet
     /// answer stay centred in the region they are about.
-    pub fn page(mut self) -> Self {
+    ///
+    /// **Takes the glyph, not an optional builder** — a page-placed `Failed` read-out cannot be
+    /// built without saying what failed (spec "1A"). Every caller reads it off the SAME typed
+    /// cause its copy came from (`telemetry::incident::IncidentContext::readout_glyph`, or the
+    /// fixed `Icon::ServerBadgeMinus` Home and the Library share for their own untyped "can't
+    /// reach" verdict), so the glyph and the caption can never disagree. `Working`/`Empty` callers
+    /// still pass one (the read-out is built once and shared across kinds in more than one
+    /// screen), but it is discarded here: only a `Failed` verdict ever draws it.
+    pub fn page(mut self, glyph: crate::ui::icons::Icon) -> Self {
         if self.kind == StatusKind::Failed {
             self.page = true;
             self.frame = Rect::FULL;
+            self.glyph = Some(glyph);
         }
         self
     }
@@ -3427,7 +3448,10 @@ impl<'a> StatusOverlay<'a> {
     /// `TEXT_SECONDARY` ("the app does not scold": a failure is never tinted a warning colour);
     /// `Working` is `size::BODY` secondary and `Empty` `size::BODY` tertiary, as they always were.
     /// The one read-out whose verdict is `TEXT_PRIMARY` is the player's full-screen failure, which
-    /// carries the 96px glyph and is drawn by `player_hud`, not here.
+    /// carries its own 96px glyph and is drawn by `player_hud`, not here. A page-placed `Failed`
+    /// read-out (`page`, spec "1A") carries a DIFFERENT glyph — 112px, `TEXT_SECONDARY`, drawn by
+    /// this widget itself — so "the one read-out … carries the glyph" is no longer true of glyphs
+    /// in general, only of this specific `TEXT_PRIMARY`-verdict, `player_hud`-drawn pairing.
     pub(crate) fn verdict_face(kind: StatusKind) -> (c_int, bool, [f32; 4]) {
         match kind {
             StatusKind::Working => (STATUS_CAP_SZ, false, theme::TEXT_SECONDARY),
@@ -3458,6 +3482,25 @@ impl<'a> StatusOverlay<'a> {
     /// The two-line slot's height from one measured line: one line pitch plus the last line's box.
     fn reason_slot_h(&self, line_h: f32) -> f32 {
         self.reason_view(c"").line_h() + line_h
+    }
+    /// **The ONE place a page-placed `Failed` read-out's glyph box is computed** — [`Self::GLYPH_SIZE`]
+    /// square, centred horizontally on `frame`, its bottom edge [`Self::GLYPH_GAP`] above
+    /// [`Self::FULL_ANCHOR_TOP`] (216 on the shared 1920×1080 screen space `frame` is `Rect::FULL`
+    /// for every page-placed read-out). A test asks this directly rather than re-deriving it, the
+    /// same reason [`StatusBands`] exists for the blocks below it.
+    fn glyph_rect(frame: Rect) -> Rect {
+        Rect::new(
+            frame.cx() - Self::GLYPH_SIZE * 0.5,
+            Self::FULL_ANCHOR_TOP - Self::GLYPH_GAP - Self::GLYPH_SIZE,
+            Self::GLYPH_SIZE,
+            Self::GLYPH_SIZE,
+        )
+    }
+    /// The glyph box a page-placed `Failed` read-out draws, or `None` — for a screen's own layout
+    /// test (the Library's chrome-collision check) without duplicating the geometry.
+    #[cfg(test)]
+    pub(crate) fn glyph_frame(&self) -> Option<Rect> {
+        self.glyph.filter(|_| self.page_placed()).map(|_| Self::glyph_rect(self.frame))
     }
     /// Whether this read-out hangs from [`Self::FULL_ANCHOR_TOP`] — a `Failed` one its caller
     /// declared page-filling with [`Self::page`].
@@ -3689,6 +3732,9 @@ impl<'a> StatusOverlay<'a> {
             .phase(self.phase)
             .tint(tint)
             .draw(e, p);
+        }
+        if let Some(icon) = self.glyph.filter(|_| self.page_placed()) {
+            crate::ui::icons::draw(p, icon, Self::glyph_rect(self.frame), theme::TEXT_SECONDARY);
         }
         let verdict = Label::new(self.caption.as_ptr(), cap_sz, tint).h(HAlign::Center);
         if cap_bold { verdict.bold() } else { verdict }.draw(p, b.cap);
