@@ -329,31 +329,41 @@ const SS: i32 = 1;
 
 /// The largest square any icon is ever rasterized at — the page read-out's 112px glyph
 /// (`ui::widgets::StatusOverlay::GLYPH_SIZE`), the largest consumer today. `icon_raster_px`
-/// clamps to this so a runaway caller cannot blow the texture cache open-ended (each distinct
-/// `(Icon, px)` pair keeps its own GL texture for the process lifetime — `CACHE` never evicts),
-/// while staying wide enough that every size this codebase actually draws — including the page
-/// glyph's shrink toward `StatusOverlay::GLYPH_MIN_SIZE` when `glyph_ceiling` is tight —
-/// rasterizes 1:1 rather than being upscaled from a smaller raster and going soft. Raise this,
-/// not the clamp's magic number, if a future icon needs to draw larger still.
+/// clamps to this so a runaway caller cannot blow the texture cache open-ended — `tex_for` keys
+/// `CACHE` on the CLAMPED size, not the caller's raw `px` (each distinct `(Icon, clamped px)`
+/// pair keeps its own GL texture for the process lifetime — `CACHE` never evicts), so every
+/// runaway `px` above this cap collapses onto the same one entry rather than minting a new
+/// texture per distinct oversized value — while staying wide enough that every size this
+/// codebase actually draws — including the page glyph's shrink toward
+/// `StatusOverlay::GLYPH_MIN_SIZE` when `glyph_ceiling` is tight — rasterizes 1:1 rather than
+/// being upscaled from a smaller raster and going soft. Raise this, not the clamp's magic number,
+/// if a future icon needs to draw larger still.
 const MAX_ICON_PX: i32 = 112;
 /// The pixel size `tex_for` actually rasterizes a draw of `px` at, before `render_scale`'s
 /// multiply. Split out so a host test can assert a real draw size survives the clamp instead of
 /// a bypassed `rasterize()` call at a hand-picked size — which is how the clamp sitting at 96
 /// silently downscaled the 112px page glyph (soft on a real panel) with every existing icon test
 /// still green, since none of them rasterized through this function at all.
-fn icon_raster_px(px: i32) -> i32 {
+pub(crate) fn icon_raster_px(px: i32) -> i32 {
     px.clamp(8, MAX_ICON_PX)
 }
 
 fn tex_for(id: Icon, px: i32) -> c_uint {
     unsafe {
         let cache = &mut *addr_of_mut!(CACHE);
-        if let Some(e) = cache.iter().find(|e| e.id == id && e.px == px) {
+        // Keyed on the CLAMPED size, not the caller's raw `px` — two different `px` values that
+        // land on the same `icon_raster_px` result rasterize identically, so they share one
+        // texture instead of minting a duplicate. This is also what makes `MAX_ICON_PX`'s own
+        // doc claim ("a runaway caller cannot blow the cache open-ended") actually true: keyed on
+        // the raw `px`, a caller sweeping through distinct oversized values still minted one
+        // entry per value, unbounded, the clamp having capped only the RASTER, not the cache.
+        let raster_px = icon_raster_px(px);
+        if let Some(e) = cache.iter().find(|e| e.id == id && e.px == raster_px) {
             return e.tex;
         }
         // `render_scale` is the simulator's supersampling (1 on a television): the mask is
         // rasterised at physical size and still drawn into the same logical rect.
-        let target = icon_raster_px(px) * crate::surface::render_scale();
+        let target = raster_px * crate::surface::render_scale();
         let hi = target * SS;
         let tex = match crate::svg::rasterize(src(id), hi, hi) {
             Some(rgba) => {
@@ -362,7 +372,7 @@ fn tex_for(id: Icon, px: i32) -> c_uint {
             }
             None => 0,
         };
-        cache.push(Entry { id, px, tex });
+        cache.push(Entry { id, px: raster_px, tex });
         tex
     }
 }

@@ -3533,7 +3533,16 @@ impl<'a> StatusOverlay<'a> {
                     (Self::GLYPH_GAP, Self::GLYPH_SIZE)
                 } else {
                     let factor = (available / natural_span).max(0.0);
-                    (Self::GLYPH_GAP * factor, Self::GLYPH_SIZE * factor)
+                    // `size` is quantized to a whole pixel — `icons.rs::icon_raster_px` rasterizes
+                    // at an integer size, so a fractional box here would draw the exact right
+                    // float rect over a texture rasterized at a ROUNDED size, forcing a rescale
+                    // and going soft exactly where this shrink exists to stay crisp (`draw`'s own
+                    // `r.w.max(r.h).round()` already floors/rounds `px` before `tex_for`, but the
+                    // draw RECT itself stayed fractional). `floor`, not `round`: shrinking `size`
+                    // alone, without also shrinking `gap`, only ever gives the ceiling MORE
+                    // clearance than the un-quantized box already had, never less — `gap` stays
+                    // at its exact proportional value.
+                    (Self::GLYPH_GAP * factor, (Self::GLYPH_SIZE * factor).floor())
                 }
             }
         };
