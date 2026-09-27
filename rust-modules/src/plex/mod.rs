@@ -219,5 +219,5 @@ pub use timeline::{queue_index_of, QueueRow};
 // both before it streams a file itself.
 #[allow(unused_imports)]
 pub use transcoder::{
-    DP_AUDIO_CODECS, DP_SUBTITLE_CODECS, LinkPolicy, is_dp_audio, is_dp_subtitle, link_policy,
+    DP_AUDIO_CODECS, DP_SUBTITLE_CODECS, LinkPolicy, is_dp_audio, is_dp_audio_track, is_dp_subtitle, link_policy,
 };
