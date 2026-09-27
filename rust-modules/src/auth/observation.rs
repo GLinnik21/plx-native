@@ -42,7 +42,9 @@ impl Observation {
                         for byte in qr_png { w.u8(*byte); }
                     }
                     LoginProgress::Authorized { epoch, token } => { w.u8(2).u64(*epoch).str(token); }
-                    LoginProgress::DiscoveryTrouble { epoch } => { w.u8(6).u64(*epoch); }
+                    LoginProgress::DiscoveryTrouble { epoch, misses } => {
+                        w.u8(6).u64(*epoch).u32(*misses);
+                    }
                     LoginProgress::Failed { epoch, message, incident, plaintext } => {
                         w.u8(3).u64(*epoch).str(message);
                         owner::write_incident_context(w, incident);
@@ -137,7 +139,7 @@ impl Observation {
                     LoginProgress::CodeReplacing { epoch } | LoginProgress::CodeReady { epoch, .. }
                     | LoginProgress::Authorized { epoch, .. } | LoginProgress::LinkTrouble { epoch, .. } =>
                         (*epoch, None, pending.key.op == SessionOp::Login && !terminal),
-                    LoginProgress::DiscoveryTrouble { epoch } => (*epoch, None, login && !terminal),
+                    LoginProgress::DiscoveryTrouble { epoch, .. } => (*epoch, None, login && !terminal),
                     LoginProgress::Failed { epoch, .. } | LoginProgress::SignedIn { epoch, .. } =>
                         (*epoch, None, login && terminal),
                 }

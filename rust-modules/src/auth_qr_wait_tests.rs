@@ -178,6 +178,34 @@ fn interactive_account_request_timeout_is_clamped_to_eight_seconds_and_the_remai
     assert_eq!(account_timeouts(Duration::ZERO).total_ms, 1);
 }
 
+#[test]
+fn account_retry_budget_charges_time_spent_inside_requests() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    struct SharedClock(Rc<Cell<Duration>>);
+    impl RetryClock for SharedClock {
+        fn elapsed(&self) -> Duration { self.0.get() }
+        fn wait(&mut self, duration: Duration) -> bool {
+            self.0.set(self.0.get() + duration);
+            true
+        }
+    }
+    let elapsed = Rc::new(Cell::new(Duration::ZERO));
+    let mut clock = SharedClock(Rc::clone(&elapsed));
+    let mut remaining = Vec::new();
+    let dns = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+        status: None, body_limit: None, curl_rc: Some(6) });
+    let run = retry_account_call::<()>(BACKGROUND_ACCOUNT, &mut clock, |_, _, _| {}, |left| {
+        remaining.push(left);
+        elapsed.set(elapsed.get() + Duration::from_secs(25).min(left));
+        Err(dns)
+    });
+    assert_eq!(remaining, [Duration::from_secs(30), Duration::from_secs(3)],
+        "the first 25-second request and 2-second pause leave only 3 seconds for attempt two");
+    assert_eq!(run.elapsed, Duration::from_secs(30),
+        "request time is charged and the request seam can clamp the last attempt to the budget");
+}
+
 /// **The wait ends with the pin, not some multiple of it.**
 ///
 /// plex.tv mints a code with `expiresIn: 900` and answers a poll of a dead one with

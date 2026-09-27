@@ -310,7 +310,7 @@ impl DiscoveryTrigger {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct NoServersEvidence {
     pub resources: CountBucket,
-    pub discovery: DiscoveryEvidence,
+    pub trigger: DiscoveryTrigger,
 }
 
 /// How long the current run of misses has lasted, bucketed — never the raw duration.
@@ -451,8 +451,12 @@ pub(crate) struct IncidentContext {
     /// What `/resources` returned when it named no server — only on [`DiscoveryClass::NoServers`].
     #[serde(default)]
     pub no_servers: Option<NoServersEvidence>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery: Option<DiscoveryEvidence>,
+    /// Exact request count for local presentation. Reports continue to emit only the closed
+    /// `unanswered` bucket; old persisted contexts deserialize with this absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_attempts: Option<u32>,
     /// Unix-epoch milliseconds when the context was BUILT — not when a report carrying it reaches
     /// the wire, which for a one-off is whenever the person presses Send and for a standing report
     /// can be a later launch's flush. `0` when the wall clock was at or before the epoch, and for
@@ -487,6 +491,7 @@ impl IncidentContext {
             plaintext_consent: None,
             no_servers: None,
             discovery: None,
+            discovery_attempts: None,
             occurred_at_ms: now_ms(),
         }
     }
@@ -510,6 +515,7 @@ impl IncidentContext {
             plaintext_consent: None,
             no_servers: None,
             discovery: None,
+            discovery_attempts: None,
             occurred_at_ms: 0,
         }
     }
@@ -543,7 +549,6 @@ impl IncidentContext {
 
     /// The evidence behind a no-servers discovery verdict.
     pub(crate) fn with_no_servers(mut self, evidence: NoServersEvidence) -> Self {
-        self.discovery = Some(evidence.discovery);
         self.no_servers = Some(evidence);
         self
     }
@@ -558,6 +563,7 @@ impl IncidentContext {
     pub(crate) fn with_retry_run(mut self, attempts: u32, elapsed: std::time::Duration) -> Self {
         self.unanswered = UnansweredBucket::from_count(attempts);
         self.failing_for = FailingForBucket::from_duration(Some(elapsed));
+        self.discovery_attempts = Some(attempts);
         self
     }
 
@@ -665,6 +671,7 @@ pub(crate) fn event_body(
     }
     if let Some(e) = ctx.no_servers {
         incident["resources"] = Value::from(e.resources.code());
+        incident["discovery_trigger"] = Value::from(e.trigger.code());
     }
     if let Some(e) = ctx.discovery {
         incident["discovery_trigger"] = Value::from(e.trigger.code());
@@ -1113,8 +1120,22 @@ mod tests {
         IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::NoServers), None)
             .with_no_servers(NoServersEvidence {
                 resources: CountBucket::TwoToFive,
-                discovery: DiscoveryEvidence { trigger: DiscoveryTrigger::Rediscover, target: None },
+                trigger: DiscoveryTrigger::Rediscover,
             })
+    }
+
+    #[test]
+    fn persisted_no_servers_contexts_from_e437f264_and_79ef8433_still_round_trip() {
+        const E437F264: &str = r#"{"kind":{"Discovery":"NoServers"},"link":"Unknown","http_status":null,"curl_rc":null,"unanswered":"Zero","failing_for":"None","code_generation":null,"persistence":null,"helper":null,"candidate_errnos":[null,null,null,null,null,null,null,null],"keymanager_stage":null,"service_error_code":null,"insecure":null,"plaintext_consent":null,"no_servers":{"resources":"TwoToFive","trigger":"Rediscover"},"occurred_at_ms":1}"#;
+        const N79EF8433: &str = r#"{"kind":{"Discovery":"NoServers"},"link":"Unknown","http_status":null,"curl_rc":null,"unanswered":"Zero","failing_for":"None","code_generation":null,"persistence":null,"helper":null,"candidate_errnos":[null,null,null,null,null,null,null,null],"keymanager_stage":null,"service_error_code":null,"insecure":null,"plaintext_consent":null,"no_servers":{"resources":"One","trigger":"Login"},"occurred_at_ms":2}"#;
+        for fixture in [E437F264, N79EF8433] {
+            let context: IncidentContext = serde_json::from_str(fixture)
+                .expect("a context persisted by the parent shape must deserialize");
+            assert_eq!(serde_json::to_string(&context).unwrap(), fixture,
+                "new optional discovery fields must not alter legacy NoServers JSON");
+            assert!(context.discovery.is_none());
+            assert!(context.discovery_attempts.is_none());
+        }
     }
 
     /// `PRIVACY.md` names every key a sign-in report's `incident` context can carry, so a key

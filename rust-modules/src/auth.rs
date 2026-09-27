@@ -55,7 +55,8 @@ pub(crate) fn run_session_work(key: owner::SessionWorkKey,
                 recently_unreachable, &ask, output, |ac, uuid, pin| ac.switch_user(uuid, pin)),
         owner::SessionWork::Endpoint { session, expected, lifecycle, machine_id } => {
             endpoint_worker_with_io(epoch, session, expected, lifecycle, machine_id, output,
-                |ac| ac.resources(), |resource, household| probe_profile_resource_live(resource, household, &ask));
+                |ac, remaining| ac.resources_with(account_timeouts(remaining)),
+                |resource, household| probe_profile_resource_live(resource, household, &ask));
         }
     }
 }
@@ -64,7 +65,7 @@ pub(crate) fn run_session_work(key: owner::SessionWorkKey,
 /// adapter metadata and only main can apply the terminal observation.
 pub(crate) fn endpoint_worker_with_io(epoch: u64, session: Session, expected: owner::Identity,
     lifecycle: owner::ServerLifecycle, machine_id: String, output: &dyn owner::ObservationSink,
-    resources: impl FnMut(&AccountClient) -> Result<Vec<Resource>, CallEvidence>,
+    resources: impl FnMut(&AccountClient, Duration) -> Result<Vec<Resource>, CallEvidence>,
     probe: impl FnOnce(&Resource, &[i64]) -> (Option<SourceRef>, SettledProbe)) {
     let (fresh, probe) = probe_endpoint_work(ServerId::from_raw(lifecycle.sid), &machine_id, &session,
         resources, probe, &|| output.live());
@@ -108,6 +109,9 @@ pub enum Phase {
     /// All local state was erased. No worker runs until the user explicitly starts sign-in.
     Deleted,
 }
+
+pub(crate) const DISCOVERY_FIRST_MISS: &str = "discovery:first_miss";
+pub(crate) const DISCOVERY_TROUBLE: &str = "Plex isn't responding. Still trying…";
 
 /// Does an error retry need a new account sign-in, or only another server-discovery pass?
 /// Keeping this decision pure makes the UI contract gradeable without spawning a network worker.
@@ -441,14 +445,35 @@ fn grade_roster(answer: Result<Vec<HomeUser>, CallEvidence>) -> Option<Vec<UserT
 
 fn home_roster_worker_with_output(epoch: u64, expected: SessionIdentity, cid: String,
     token: String, output: &dyn owner::ObservationSink) {
+    home_roster_worker_with_io(epoch, expected, cid, token, output,
+        |ac, remaining| ac.home_users_with(account_timeouts(remaining)));
+}
+
+fn home_roster_worker_with_io(epoch: u64, expected: SessionIdentity, cid: String,
+    token: String, output: &dyn owner::ObservationSink,
+    mut home_users: impl FnMut(&AccountClient, Duration) -> Result<Vec<HomeUser>, CallEvidence>) {
     if !output.live() { return; }
     let ac = AccountClient::new(&cid, Some(&token));
-    let users = grade_roster(ac.home_users());
+    let mut clock = LiveRetryClock { output, started: Instant::now() };
+    let Some(users) = home_roster_with_io_and_clock(&ac, &mut clock, &mut home_users) else { return };
     output.terminal(AuthProgress::HomeRoster(HomeRosterProgress {
         epoch,
         expected,
         users,
     }));
+}
+
+fn home_roster_with_io_and_clock(ac: &AccountClient, clock: &mut impl RetryClock,
+    mut home_users: impl FnMut(&AccountClient, Duration) -> Result<Vec<HomeUser>, CallEvidence>)
+    -> Option<Option<Vec<UserTile>>> {
+    let run = retry_account_call(BACKGROUND_ACCOUNT, clock, |_, _, _| {},
+        |remaining| home_users(ac, remaining));
+    let users = match run.result {
+        AccountCallEnd::Answer(users) => grade_roster(Ok(users)),
+        AccountCallEnd::Failed(evidence) => grade_roster(Err(evidence)),
+        AccountCallEnd::Cancelled => return None,
+    };
+    Some(users)
 }
 
 // QR, profile, roster and endpoint workers share the adapter's addressed observation stream.
@@ -780,7 +805,7 @@ pub(crate) enum LoginProgress {
     Authorized { epoch: u64, token: String },
     /// Resource discovery has missed twice (or has been failing for eight seconds). Non-terminal:
     /// the phase remains Discovering and no incident is raised while the retry runner continues.
-    DiscoveryTrouble { epoch: u64 },
+    DiscoveryTrouble { epoch: u64, misses: u32 },
     /// The whole attempt failed for the stated, already-user-facing reason — no server on the
     /// account, discovery unreachable/refused, the pin ran out of automatic replacements, or pin
     /// creation itself could not reach plex.tv. Only the current owner may publish that failure.
@@ -918,8 +943,8 @@ fn discovery_failure(d: &Discovery) -> Option<(std::borrow::Cow<'static, str>, I
         Discovery::PlexTvFailed(run) => {
             let (link, _, _) = crate::telemetry::incident::classify(Some(run.last));
             let message = match link {
-                crate::telemetry::incident::LinkClass::Dns => format!(
-                    "This TV couldn't find plex.tv, so your servers weren't checked. We tried {} times. Check the TV's internet connection, then try again.", run.attempts),
+                crate::telemetry::incident::LinkClass::Dns => retry_copy(
+                    "This TV couldn't find plex.tv, so your servers weren't checked.", run.attempts),
                 crate::telemetry::incident::LinkClass::Tls =>
                     "This TV couldn't make a secure connection to plex.tv. Check the TV's date and time, then try again.".into(),
                 crate::telemetry::incident::LinkClass::Answered2xx
@@ -927,8 +952,8 @@ fn discovery_failure(d: &Discovery) -> Option<(std::borrow::Cow<'static, str>, I
                 | crate::telemetry::incident::LinkClass::Answered5xx
                 | crate::telemetry::incident::LinkClass::AnsweredOther =>
                     "plex.tv is having trouble right now, so your servers weren't checked. Try again in a few minutes.".into(),
-                _ => format!(
-                    "This TV couldn't reach plex.tv, so your servers weren't checked. We tried {} times. Check the TV's internet connection, then try again.", run.attempts),
+                _ => retry_copy(
+                    "This TV couldn't reach plex.tv, so your servers weren't checked.", run.attempts),
             };
             let incident = IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::Silent), Some(run.last))
                 .with_retry_run(run.attempts, run.elapsed)
@@ -951,6 +976,14 @@ fn discovery_failure(d: &Discovery) -> Option<(std::borrow::Cow<'static, str>, I
         }
     };
     Some((message.into(), IncidentContext::new(IncidentKind::Discovery(class), last)))
+}
+
+fn retry_copy(prefix: &str, attempts: u32) -> String {
+    if attempts == 1 {
+        format!("{prefix} We tried once. Check the TV's internet connection, then try again.")
+    } else {
+        format!("{prefix} We tried {attempts} times. Check the TV's internet connection, then try again.")
+    }
 }
 
 /// The server a failed discovery may offer a plaintext connection to — the read-out's primary asks
@@ -1172,26 +1205,8 @@ fn finish_sign_in(ac: &AccountClient, epoch: u64, server: ServerRef, sources: Ve
     // session reads as "unknown" (`Session::account`) — but it now says WHY in the log, in the
     // same grading the Change-profile refresh uses, rather than a bare `n=0`.
     let mut clock = LiveRetryClock { output, started: Instant::now() };
-    let users_run = retry_account_call(INTERACTIVE_ACCOUNT, &mut clock,
-        |attempts, elapsed, _| {
-            if attempts >= 2 || elapsed >= Duration::from_secs(8) {
-                output.progress(LoginProgress::DiscoveryTrouble { epoch }.into());
-            }
-        }, |remaining| ac.home_users_with(account_timeouts(remaining)));
-    let users = match users_run.result {
-        AccountCallEnd::Answer(users) => Ok(users),
-        AccountCallEnd::Failed(evidence) => Err(evidence),
-        AccountCallEnd::Cancelled => return,
-    };
-    let users = match users {
-        Ok(users) => users.iter().map(UserTile::of).collect(),
-        Err(evidence) => {
-            log(&format!("auth: home users {} ({})",
-                if crate::plex::account::refused_identity(&evidence).is_some() { "refused" } else { "unavailable" },
-                crate::plex::account::describe_evidence(&evidence)));
-            Vec::<UserTile>::new()
-        }
-    };
+    let Some(users) = sign_in_home_users_with_clock(ac, epoch, output, &mut clock,
+        |ac, remaining| ac.home_users_with(account_timeouts(remaining))) else { return };
     log(&format!("auth: home users n={}", users.len()));
     // One observation carrying everything the owner needs to commit the session at once —
     // see [`LoginProgress::SignedIn`] for why this used to be three separate `with_ctl` writes and
@@ -1202,6 +1217,31 @@ fn finish_sign_in(ac: &AccountClient, epoch: u64, server: ServerRef, sources: Ve
         sources,
         users,
     }.into());
+}
+
+fn sign_in_home_users_with_clock(ac: &AccountClient, epoch: u64,
+    output: &dyn owner::ObservationSink, clock: &mut impl RetryClock,
+    mut home_users: impl FnMut(&AccountClient, Duration) -> Result<Vec<HomeUser>, CallEvidence>)
+    -> Option<Vec<UserTile>> {
+    let users_run = retry_account_call(INTERACTIVE_ACCOUNT, clock,
+        |attempts, _, _| {
+            output.progress(LoginProgress::DiscoveryTrouble { epoch, misses: attempts }.into());
+        }, |remaining| home_users(ac, remaining));
+    let users = match users_run.result {
+        AccountCallEnd::Answer(users) => Ok(users),
+        AccountCallEnd::Failed(evidence) => Err(evidence),
+        AccountCallEnd::Cancelled => return None,
+    };
+    let users = match users {
+        Ok(users) => users.iter().map(UserTile::of).collect(),
+        Err(evidence) => {
+            log(&format!("auth: home users {} ({})",
+                if crate::plex::account::refused_identity(&evidence).is_some() { "refused" } else { "unavailable" },
+                crate::plex::account::describe_evidence(&evidence)));
+            Vec::<UserTile>::new()
+        }
+    };
+    Some(users)
 }
 
 fn rediscovery_worker_with_output(cid: String, token: String, epoch: u64, ask: &PlaintextAsk,
@@ -3008,7 +3048,7 @@ fn resolved_without_roster(
             ));
             Err(Discovery::NoServers(NoServersEvidence {
                 resources: CountBucket::from_count(resources),
-                discovery: DiscoveryEvidence { trigger, target: None },
+                trigger,
             }))
         }
         // A verified-but-plaintext answer is worth more to the user than a parallel/proxy 401,
@@ -3061,10 +3101,8 @@ fn discover_and_store_with_resources_and_clock(ac: &AccountClient, client_id: &s
     mut resources_call: impl FnMut(&AccountClient, Duration) -> Result<Vec<Resource>, CallEvidence>) -> Discovery {
     if !output.live() { return Discovery::Cancelled; }
     let run = retry_account_call(INTERACTIVE_ACCOUNT, clock,
-        |attempts, elapsed, _| {
-            if attempts >= 2 || elapsed >= Duration::from_secs(8) {
-                output.progress(LoginProgress::DiscoveryTrouble { epoch }.into());
-            }
+        |attempts, _, _| {
+            output.progress(LoginProgress::DiscoveryTrouble { epoch, misses: attempts }.into());
         },
         |remaining| resources_call(ac, remaining));
     let resources = match run.result {
@@ -3330,7 +3368,7 @@ fn server_roster_worker_with_output(sess: Session, epoch: u64, expected: Session
     let ac = AccountClient::new(&sess.client_id, Some(&sess.account_token));
     let mut clock = LiveRetryClock { output, started: Instant::now() };
     let run = retry_account_call(BACKGROUND_ACCOUNT, &mut clock, |_, _, _| {},
-        |_| ac.resources());
+        |remaining| ac.resources_with(account_timeouts(remaining)));
     let resources = match run.result {
         AccountCallEnd::Answer(resources) => resources,
         AccountCallEnd::Cancelled => return,
@@ -3452,7 +3490,7 @@ fn probe_endpoint_work(
     id: ServerId,
     machine_id: &str,
     sess: &Session,
-    mut resources: impl FnMut(&AccountClient) -> Result<Vec<Resource>, CallEvidence>,
+    mut resources: impl FnMut(&AccountClient, Duration) -> Result<Vec<Resource>, CallEvidence>,
     probe: impl FnOnce(&Resource, &[i64]) -> (Option<SourceRef>, SettledProbe),
     live: &dyn Fn() -> bool,
 ) -> (Option<SourceRef>, Option<SettledProbe>) {
@@ -3464,7 +3502,7 @@ fn probe_endpoint_work(
     let ac = AccountClient::new(&sess.client_id, Some(&sess.account_token));
     let mut clock = LiveFnClock { live, started: Instant::now() };
     let run = retry_account_call(BACKGROUND_ACCOUNT, &mut clock, |_, _, _| {},
-        |_| resources(&ac));
+        |remaining| resources(&ac, remaining));
     let resources = match run.result {
         AccountCallEnd::Answer(resources) => resources,
         AccountCallEnd::Cancelled => return (None, None),

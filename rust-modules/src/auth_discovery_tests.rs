@@ -52,6 +52,85 @@ fn authorized_discovery_retries_a_dns_blip_before_settling() {
 }
 
 #[test]
+fn login_home_users_retries_then_falls_back_to_an_empty_roster() {
+    struct Live;
+    impl owner::ObservationSink for Live {
+        fn live(&self) -> bool { true }
+        fn progress(&self, _: AuthProgress) -> bool { true }
+        fn terminal(&self, _: AuthProgress) -> bool { true }
+    }
+    struct Clock(Duration);
+    impl RetryClock for Clock {
+        fn elapsed(&self) -> Duration { self.0 }
+        fn wait(&mut self, duration: Duration) -> bool { self.0 += duration; true }
+    }
+    let account = AccountClient::new("client", Some("authorized-token"));
+    let dns = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+        status: None, body_limit: None, curl_rc: Some(6) });
+    let mut calls = 0;
+    let users = sign_in_home_users_with_clock(&account, 7, &Live,
+        &mut Clock(Duration::ZERO), |_, _| {
+            calls += 1;
+            Err(dns)
+        }).expect("the live login continues after roster fallback");
+    assert_eq!(calls, INTERACTIVE_ACCOUNT.max_attempts as usize);
+    assert!(users.is_empty(), "roster failure keeps the existing single-user fallback");
+}
+
+#[test]
+fn login_home_users_publishes_the_first_miss_before_the_second_request_returns() {
+    use std::sync::Mutex;
+    struct Capture(Mutex<Vec<AuthProgress>>);
+    impl owner::ObservationSink for Capture {
+        fn live(&self) -> bool { true }
+        fn progress(&self, progress: AuthProgress) -> bool {
+            self.0.lock().unwrap().push(progress);
+            true
+        }
+        fn terminal(&self, _: AuthProgress) -> bool { true }
+    }
+    struct Clock(Duration);
+    impl RetryClock for Clock {
+        fn elapsed(&self) -> Duration { self.0 }
+        fn wait(&mut self, duration: Duration) -> bool { self.0 += duration; true }
+    }
+    let output = Capture(Mutex::new(Vec::new()));
+    let account = AccountClient::new("client", Some("authorized-token"));
+    let dns = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+        status: None, body_limit: None, curl_rc: Some(6) });
+    let mut calls = 0;
+    let users = sign_in_home_users_with_clock(&account, 9, &output,
+        &mut Clock(Duration::ZERO), |_, _| {
+            calls += 1;
+            if calls == 1 { return Err(dns) }
+            assert!(matches!(output.0.lock().unwrap().as_slice(),
+                [AuthProgress::Login(LoginProgress::DiscoveryTrouble { epoch: 9, misses: 1 })]),
+                "the screen must know about the first miss while attempt two is outstanding");
+            Ok(Vec::new())
+        }).unwrap();
+    assert!(users.is_empty());
+}
+
+#[test]
+fn background_home_roster_refresh_retries_before_preserving_the_cache() {
+    struct Clock(Duration);
+    impl RetryClock for Clock {
+        fn elapsed(&self) -> Duration { self.0 }
+        fn wait(&mut self, duration: Duration) -> bool { self.0 += duration; true }
+    }
+    let account = AccountClient::new("client", Some("token"));
+    let dns = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+        status: None, body_limit: None, curl_rc: Some(6) });
+    let mut calls = 0;
+    let graded = home_roster_with_io_and_clock(&account, &mut Clock(Duration::ZERO), |_, _| {
+        calls += 1;
+        Err(dns)
+    }).expect("the worker remains live");
+    assert_eq!(calls, BACKGROUND_ACCOUNT.max_attempts as usize);
+    assert!(graded.is_none(), "an unanswered refresh preserves the cached roster");
+}
+
+#[test]
 fn retry_reuses_an_authorized_account_only_for_discovery_errors() {
     let mut old = owner::SessionInit::captured(Session {
         account_token: "persisted-but-not-authorized-now".into(),
@@ -2051,6 +2130,32 @@ fn terminal_discovery_copy_names_the_target_cause_retry_and_action() {
 }
 
 #[test]
+fn a_single_discovery_attempt_uses_grammatical_retry_copy() {
+    let last = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+        status: None, body_limit: None, curl_rc: Some(6) });
+    let (message, _) = discovery_failure(&Discovery::PlexTvFailed(PlexTvFailure {
+        last, attempts: 1, elapsed: Duration::ZERO, trigger: DiscoveryTrigger::Login,
+    })).unwrap();
+    assert!(message.contains("We tried once."), "{message}");
+    assert!(!message.contains("1 times"), "{message}");
+}
+
+#[test]
+fn background_resource_call_sites_clamp_each_request_to_the_runner_budget() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/auth.rs"),
+    ).unwrap();
+    let roster = extract_fn_body(&src, "server_roster_worker_with_output");
+    assert!(roster.contains("resources_with(account_timeouts(remaining))"), "{roster}");
+    let endpoint = extract_fn_body(&src, "probe_endpoint_work");
+    assert!(endpoint.contains("resources(&ac, remaining)"),
+        "the endpoint runner must pass its remaining budget through the injected seam:\n{endpoint}");
+    let production = extract_fn_body(&src, "run_session_work");
+    assert!(production.contains("resources_with(account_timeouts(remaining))"),
+        "the production endpoint seam must clamp the account request:\n{production}");
+}
+
+#[test]
 fn dns_copy_never_claims_that_a_plex_server_was_contacted() {
     let last = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
         status: None, body_limit: None, curl_rc: Some(6) });
@@ -2262,8 +2367,7 @@ fn no_servers_evidence_counts_the_players_and_names_the_trigger() {
         let Discovery::NoServers(evidence) = d else { panic!("expected NoServers") };
         assert_eq!(
             evidence,
-            crate::telemetry::incident::NoServersEvidence { resources: bucket,
-                discovery: crate::telemetry::incident::DiscoveryEvidence { trigger, target: None } }
+            crate::telemetry::incident::NoServersEvidence { resources: bucket, trigger }
         );
         let (_, incident) = discovery_failure(&d).expect("no servers is a failure");
         assert_eq!(incident.no_servers, Some(evidence));

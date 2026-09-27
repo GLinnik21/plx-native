@@ -2489,7 +2489,7 @@ impl SessionMachine {
                     LoginProgress::CodeReplacing { epoch }
                     | LoginProgress::CodeReady { epoch, .. }
                     | LoginProgress::Authorized { epoch, .. }
-                    | LoginProgress::DiscoveryTrouble { epoch }
+                    | LoginProgress::DiscoveryTrouble { epoch, .. }
                     | LoginProgress::LinkTrouble { epoch, .. } => (*epoch, false),
                     LoginProgress::Failed { epoch, .. } => (*epoch, true),
                     LoginProgress::SignedIn { .. } => return false,
@@ -2531,11 +2531,15 @@ impl SessionMachine {
                         self.state.phase = Phase::Discovering;
                         self.state.pending.get_mut(&req).unwrap().expected = Identity::of(&self.state.persisted);
                     }
-                    LoginProgress::DiscoveryTrouble { .. } => {
+                    LoginProgress::DiscoveryTrouble { misses, .. } => {
                         if !matches!(envelope.key.op, SessionOp::Login | SessionOp::Rediscover) {
                             return false;
                         }
-                        self.state.error = "Plex isn't responding. Still trying…".into();
+                        self.state.error = if *misses >= 2 {
+                            super::DISCOVERY_TROUBLE
+                        } else {
+                            super::DISCOVERY_FIRST_MISS
+                        }.into();
                     }
                     LoginProgress::LinkTrouble { trouble, .. } => {
                         if envelope.key.op != SessionOp::Login { return false; }

@@ -131,8 +131,9 @@ fn working_phase(phase: Phase) -> bool {
     matches!(phase, Phase::Creating | Phase::Discovering)
 }
 
-fn discovery_trouble_visible(phase: Phase, reason: &str) -> bool {
-    phase == Phase::Discovering && !reason.is_empty()
+fn discovery_trouble_visible(phase: Phase, reason: &str, phase_ms: f32) -> bool {
+    phase == Phase::Discovering && (reason == auth::DISCOVERY_TROUBLE
+        || (reason == auth::DISCOVERY_FIRST_MISS && phase_ms >= 8_000.0))
 }
 
 /// The verb on both the failed and the stuck read-out, because it is the same call underneath.
@@ -661,13 +662,9 @@ fn support_line(offer: &auth::owner::IncidentOffer) -> String {
             crate::telemetry::incident::DiscoveryTarget::PlexTv => "plex.tv",
             crate::telemetry::incident::DiscoveryTarget::Servers => "your servers",
         });
-        let attempts = match ctx.unanswered {
-            crate::telemetry::incident::UnansweredBucket::Zero
-            | crate::telemetry::incident::UnansweredBucket::One => 1,
-            crate::telemetry::incident::UnansweredBucket::TwoToFive => 3,
-            crate::telemetry::incident::UnansweredBucket::SixPlus => 6,
-        };
-        format!("target:{target} class:{} attempts:{attempts}", ctx.link.code())
+        let attempts = ctx.discovery_attempts
+            .map_or(String::new(), |n| format!(" attempts:{n}"));
+        format!("target:{target} class:{}{attempts}", ctx.link.code())
     }));
     let discovery = discovery.map_or(String::new(), |line| format!(" \u{b7} {line}"));
     format!(
@@ -1460,8 +1457,8 @@ impl LoginScreen {
     ) {
         let caption = CString::new(msg).unwrap_or_default();
         let stuck = self.has_control();
-        let discovery_trouble = discovery_trouble_visible(self.phase, &self.error)
-            .then(|| CString::new(self.error.as_ref()).unwrap_or_default());
+        let discovery_trouble = discovery_trouble_visible(self.phase, &self.error, self.phase_ms)
+            .then(|| CString::new(auth::DISCOVERY_TROUBLE).unwrap_or_default());
         self.draw_readout(
             f,
             p,
@@ -2226,11 +2223,16 @@ mod tests {
 
     #[test]
     fn discovery_reason_is_absent_on_the_first_miss_and_present_after_progress() {
-        assert!(!discovery_trouble_visible(Phase::Discovering, ""));
+        assert!(!discovery_trouble_visible(Phase::Discovering, "", 9_000.0));
+        assert!(!discovery_trouble_visible(Phase::Discovering,
+            auth::DISCOVERY_FIRST_MISS, 7_999.0));
         assert!(discovery_trouble_visible(Phase::Discovering,
-            "Plex isn't responding. Still trying…"));
+            auth::DISCOVERY_FIRST_MISS, 8_001.0),
+            "the line appears while the second request is still in flight");
+        assert!(discovery_trouble_visible(Phase::Discovering,
+            auth::DISCOVERY_TROUBLE, 1.0));
         assert!(!discovery_trouble_visible(Phase::Waiting,
-            "Plex isn't responding. Still trying…"));
+            auth::DISCOVERY_TROUBLE, 9_000.0));
     }
 
     /// **The escape belongs ONLY to the two phases that wait on a network call.** Ported verbatim.
@@ -3549,6 +3551,28 @@ mod tests {
             support_line(&declined).ends_with("persistence:unknown keymgr:unknown svc:unknown"),
             "a declined offer keeps no context, and the line still reads unknown, not blank"
         );
+    }
+
+    #[test]
+    fn discovery_support_uses_exact_attempts_and_omits_an_uncollected_count() {
+        let mut offer = incident(auth::owner::IncidentState::NotNow,
+            crate::telemetry::incident::IncidentKind::Discovery(
+                crate::telemetry::incident::DiscoveryClass::Silent));
+        let discovery = crate::telemetry::incident::DiscoveryEvidence {
+            trigger: crate::telemetry::incident::DiscoveryTrigger::Login,
+            target: Some(crate::telemetry::incident::DiscoveryTarget::PlexTv),
+        };
+        offer.context = Some(crate::auth::synthetic_incident()
+            .with_discovery(discovery)
+            .with_retry_run(2, std::time::Duration::from_secs(3)));
+        assert!(support_line(&offer).contains("attempts:2"), "{}", support_line(&offer));
+
+        offer.context = Some(crate::auth::synthetic_incident().with_discovery(
+            crate::telemetry::incident::DiscoveryEvidence {
+                trigger: crate::telemetry::incident::DiscoveryTrigger::Rediscover,
+                target: Some(crate::telemetry::incident::DiscoveryTarget::Servers),
+            }));
+        assert!(!support_line(&offer).contains("attempts:"), "{}", support_line(&offer));
     }
 
     fn screen_with(phase: Phase, state: auth::owner::IncidentState,

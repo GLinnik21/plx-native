@@ -131,6 +131,34 @@ fn incident_effects(effects: &[SessionFx]) -> Vec<(IncidentLane, IncidentReport)
         .collect()
 }
 
+#[test]
+fn legacy_no_servers_context_keeps_the_parent_canonical_digest() {
+    const E437F264: &str = r#"{"kind":{"Discovery":"NoServers"},"link":"Unknown","http_status":null,"curl_rc":null,"unanswered":"Zero","failing_for":"None","code_generation":null,"persistence":null,"helper":null,"candidate_errnos":[null,null,null,null,null,null,null,null],"keymanager_stage":null,"service_error_code":null,"insecure":null,"plaintext_consent":null,"no_servers":{"resources":"TwoToFive","trigger":"Rediscover"},"occurred_at_ms":1}"#;
+    const N79EF8433: &str = r#"{"kind":{"Discovery":"NoServers"},"link":"Unknown","http_status":null,"curl_rc":null,"unanswered":"Zero","failing_for":"None","code_generation":null,"persistence":null,"helper":null,"candidate_errnos":[null,null,null,null,null,null,null,null],"keymanager_stage":null,"service_error_code":null,"insecure":null,"plaintext_consent":null,"no_servers":{"resources":"One","trigger":"Login"},"occurred_at_ms":2}"#;
+    for (fixture, resources, trigger, occurred_at_ms) in [
+        (E437F264, crate::telemetry::incident::CountBucket::TwoToFive,
+            crate::telemetry::incident::DiscoveryTrigger::Rediscover, 1),
+        (N79EF8433, crate::telemetry::incident::CountBucket::One,
+            crate::telemetry::incident::DiscoveryTrigger::Login, 2),
+    ] {
+        let restored: IncidentContext = serde_json::from_str(fixture).unwrap();
+        let expected = IncidentContext {
+            occurred_at_ms,
+            ..IncidentContext::new(
+                IncidentKind::Discovery(crate::telemetry::incident::DiscoveryClass::NoServers), None)
+                .with_no_servers(crate::telemetry::incident::NoServersEvidence {
+                    resources, trigger,
+                })
+        };
+        let mut old = crate::ui::machine::Canon::new();
+        write_context(&mut old, &restored);
+        let mut current = crate::ui::machine::Canon::new();
+        write_context(&mut current, &expected);
+        assert_eq!(old.finish(), current.finish(),
+            "NoServers must not acquire the new discovery canonical suffix");
+    }
+}
+
 // ---- (a) -----------------------------------------------------------------------------------------
 
 #[test]
@@ -232,11 +260,33 @@ fn discovery_trouble_is_non_terminal_and_never_an_incident() {
     let epoch = owner.state.epoch;
     observe(&mut owner, LoginProgress::Authorized { epoch, token: "token".into() }, false);
     assert_eq!(owner.read().0.phase, Phase::Discovering);
-    observe(&mut owner, LoginProgress::DiscoveryTrouble { epoch }, false);
+    observe(&mut owner, LoginProgress::DiscoveryTrouble { epoch, misses: 2 }, false);
     let read = owner.read();
     assert_eq!(read.0.phase, Phase::Discovering);
     assert_eq!(&*read.0.error, "Plex isn't responding. Still trying…");
     assert!(read.0.incident.is_none(), "an in-flight retry is not a terminal incident");
+}
+
+#[test]
+fn discovery_trouble_is_accepted_for_rediscover_and_stale_epochs_are_fenced() {
+    let mut owner = signing_in();
+    let first_epoch = owner.state.epoch;
+    observe(&mut owner, LoginProgress::Authorized {
+        epoch: first_epoch, token: "token".into(),
+    }, false);
+    fail(&mut owner, IncidentContext::new(
+        IncidentKind::Discovery(crate::telemetry::incident::DiscoveryClass::Silent), None));
+    command(&mut owner, Command::Retry);
+    let epoch = owner.state.epoch;
+    assert_eq!(owner.state.phase, Phase::Discovering);
+
+    observe(&mut owner, LoginProgress::DiscoveryTrouble { epoch, misses: 1 }, false);
+    assert_eq!(owner.state.error, crate::auth::DISCOVERY_FIRST_MISS,
+        "Rediscover accepts the same non-terminal progress as Login");
+
+    observe(&mut owner, LoginProgress::DiscoveryTrouble { epoch: first_epoch, misses: 2 }, false);
+    assert_eq!(owner.state.error, crate::auth::DISCOVERY_FIRST_MISS,
+        "a stale worker cannot publish trouble into the new retry epoch");
 }
 
 /// The QR code is still on screen during a stall, possibly mid-scan: no permission state may put
