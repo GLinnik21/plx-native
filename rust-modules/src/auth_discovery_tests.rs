@@ -9,10 +9,14 @@ use super::test_support::*;
 /// resources must be retried in place instead of becoming the terminal silent verdict.
 #[test]
 fn authorized_discovery_retries_a_dns_blip_before_settling() {
-    struct Live;
+    use std::sync::Mutex;
+    struct Live(Mutex<Vec<AuthProgress>>);
     impl owner::ObservationSink for Live {
         fn live(&self) -> bool { true }
-        fn progress(&self, _: AuthProgress) -> bool { true }
+        fn progress(&self, progress: AuthProgress) -> bool {
+            self.0.lock().unwrap().push(progress);
+            true
+        }
         fn terminal(&self, _: AuthProgress) -> bool { true }
     }
     let dns = crate::net::RequestFailure {
@@ -31,19 +35,28 @@ fn authorized_discovery_retries_a_dns_blip_before_settling() {
     }
     let mut clock = Clock(Duration::ZERO);
     let mut calls = 0;
+    let output = Live(Mutex::new(Vec::new()));
     let outcome = discover_and_store_with_resources_and_clock(
         &account,
         "client",
         1,
         DiscoveryTrigger::Login,
         &PlaintextAsk::undecided(),
-        &Live,
+        &output,
         &mut clock,
         |_, _| {
             calls += 1;
             if calls == 1 { Err(Err(dns)) } else { Ok(servers.take().unwrap()) }
         },
     );
+    let progress = output.0.lock().unwrap();
+    assert!(matches!(progress.first(),
+        Some(AuthProgress::Login(LoginProgress::DiscoveryTrouble { progress:
+            DiscoveryRetryProgress { run: DiscoveryRetryRun::Resources, misses: 1, .. }, .. }))));
+    assert!(matches!(progress.get(1),
+        Some(AuthProgress::Login(LoginProgress::DiscoveryRetrySettled {
+            run: DiscoveryRetryRun::Resources, .. }))),
+        "a recovered resources retry is cleared before probing continues");
     assert!(
         !matches!(outcome, Discovery::PlexTvFailed(_)),
         "an authorized discovery must retry a transient plex.tv resources failure"
@@ -104,11 +117,18 @@ fn login_home_users_publishes_the_first_miss_before_the_second_request_returns()
             calls += 1;
             if calls == 1 { return Err(dns) }
             assert!(matches!(output.0.lock().unwrap().as_slice(),
-                [AuthProgress::Login(LoginProgress::DiscoveryTrouble { epoch: 9, misses: 1 })]),
+                [AuthProgress::Login(LoginProgress::DiscoveryTrouble { epoch: 9,
+                    progress: DiscoveryRetryProgress {
+                        run: DiscoveryRetryRun::HomeUsers, misses: 1, ..
+                    } })]),
                 "the screen must know about the first miss while attempt two is outstanding");
             Ok(Vec::new())
         }).unwrap();
     assert!(users.is_empty());
+    assert!(matches!(output.0.lock().unwrap().last(),
+        Some(AuthProgress::Login(LoginProgress::DiscoveryRetrySettled {
+            epoch: 9, run: DiscoveryRetryRun::HomeUsers,
+        }))));
 }
 
 #[test]

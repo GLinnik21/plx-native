@@ -710,6 +710,10 @@ pub(crate) struct SessionInit {
     /// plex.tv has left at least two consecutive polls of the code on screen unanswered.
     #[serde(default)]
     pub link_trouble: bool,
+    /// The one account retry run currently outstanding during discovery. Its elapsed value is
+    /// sampled at the last miss; the screen advances from that anchor with its frame clock.
+    #[serde(default)]
+    pub discovery_retry: Option<super::DiscoveryRetryProgress>,
     /// The server the failure read-out may offer a consented plaintext connection to, with the
     /// person's answer so far (`auth::PlaintextVerdict`). Set only by an insecure-only discovery
     /// failure whose server is eligible; cleared by every other ending and by a new attempt.
@@ -776,7 +780,7 @@ impl SessionInit {
             unconfirmed_fresh_prior: None, pending_erase: None, inbox: VecDeque::new(), pump_pending: false,
             active_profile: None, profile_scope: ProfileScope(0),
             delete_leftovers: 0, incident: None, incidents_seen: Vec::new(), next_incident: 0,
-            link_trouble: false, plaintext: None, switch_refused_for: None }
+            link_trouble: false, discovery_retry: None, plaintext: None, switch_refused_for: None }
     }
 
     pub fn captured_boot(saved: PersistedSession, primary: Option<crate::plex::session::ServerRef>,
@@ -1006,6 +1010,12 @@ impl LogicalState for SessionInit {
         if let Some(verdict) = &self.plaintext {
             write_plaintext_verdict(w, verdict);
         }
+        if let Some(retry) = self.discovery_retry {
+            w.u8(match retry.run {
+                super::DiscoveryRetryRun::Resources => 0,
+                super::DiscoveryRetryRun::HomeUsers => 1,
+            }).u32(retry.misses).u32(retry.elapsed_ms);
+        }
     }
     fn probe(&self, out: &mut String) {
         use std::fmt::Write;
@@ -1039,6 +1049,7 @@ pub(crate) struct SessionSnapshot {
     pub incident: Option<IncidentOffer>,
     /// plex.tv is not answering the polls of the code on screen.
     pub link_trouble: bool,
+    pub discovery_retry: Option<super::DiscoveryRetryProgress>,
     /// The failure read-out's plaintext offer — see [`SessionInit::plaintext`]. The screen reads
     /// the server's name and owner from it; nothing here leaves the device.
     pub plaintext: Option<super::PlaintextVerdict>,
@@ -1104,6 +1115,7 @@ impl SessionSnapshot {
             && self.scope == state.profile_scope && self.delete_leftovers == state.delete_leftovers
             && self.persistence_warning == state.persistence_warning
             && self.incident == state.incident && self.link_trouble == state.link_trouble
+            && self.discovery_retry == state.discovery_retry
             && self.plaintext == state.plaintext
             && self.switch_refused == state.switch_refused()
             && self.readout_back_resumes == (state.roster_readout_up() && state.roster_dead_end()
@@ -1137,7 +1149,8 @@ impl SessionSnapshot {
                 uuid: p.uuid.clone(), title: p.title.clone(), thumb: p.thumb.clone(),
             }), scope: state.profile_scope, delete_leftovers: state.delete_leftovers,
             persistence_warning: state.persistence_warning, incident: state.incident.clone(),
-            link_trouble: state.link_trouble, plaintext: state.plaintext.clone(),
+            link_trouble: state.link_trouble, discovery_retry: state.discovery_retry,
+            plaintext: state.plaintext.clone(),
             switch_refused: state.switch_refused(),
             readout_back_resumes: state.roster_readout_up() && state.roster_dead_end()
                 && state.dead_end_resumes() }
@@ -1659,6 +1672,7 @@ impl SessionMachine {
         self.discard_owned_envelopes(emit);
         self.state.pending.clear();
         self.state.epoch = epoch;
+        self.state.discovery_retry = None;
         emit(SessionFx::Cancel { requests, epoch });
         Some(epoch)
     }
@@ -2323,6 +2337,7 @@ impl SessionMachine {
         self.discard_owned_envelopes(emit);
         self.state.pending.clear();
         self.state.epoch = epoch;
+        self.state.discovery_retry = None;
         emit(SessionFx::Cancel { requests, epoch });
         if discovery {
             self.state.phase = Phase::Discovering;
@@ -2448,6 +2463,7 @@ impl SessionMachine {
         self.state.held_handoff = None;
         self.state.persistence_warning_answered = false;
         self.state.link_trouble = false;
+        self.state.discovery_retry = None;
         // A token plex.tv refused is not an authorization in flight any more: without this, the
         // retry decision (`retry_kind`) kept offering a discovery-only pass that presents the same
         // refused token again, and Try again could never recover. Dropping it makes the retry a
@@ -2490,6 +2506,7 @@ impl SessionMachine {
                     | LoginProgress::CodeReady { epoch, .. }
                     | LoginProgress::Authorized { epoch, .. }
                     | LoginProgress::DiscoveryTrouble { epoch, .. }
+                    | LoginProgress::DiscoveryRetrySettled { epoch, .. }
                     | LoginProgress::LinkTrouble { epoch, .. } => (*epoch, false),
                     LoginProgress::Failed { epoch, .. } => (*epoch, true),
                     LoginProgress::SignedIn { .. } => return false,
@@ -2527,19 +2544,24 @@ impl SessionMachine {
                         self.state.persisted.account_token = token.clone();
                         self.state.authorized_in_flow = true;
                         self.state.link_trouble = false;
+                        self.state.discovery_retry = None;
                         self.state.error.clear();
                         self.state.phase = Phase::Discovering;
                         self.state.pending.get_mut(&req).unwrap().expected = Identity::of(&self.state.persisted);
                     }
-                    LoginProgress::DiscoveryTrouble { misses, .. } => {
+                    LoginProgress::DiscoveryTrouble { progress, .. } => {
                         if !matches!(envelope.key.op, SessionOp::Login | SessionOp::Rediscover) {
                             return false;
                         }
-                        self.state.error = if *misses >= 2 {
-                            super::DISCOVERY_TROUBLE
-                        } else {
-                            super::DISCOVERY_FIRST_MISS
-                        }.into();
+                        self.state.discovery_retry = Some(*progress);
+                    }
+                    LoginProgress::DiscoveryRetrySettled { run, .. } => {
+                        if !matches!(envelope.key.op, SessionOp::Login | SessionOp::Rediscover) {
+                            return false;
+                        }
+                        if self.state.discovery_retry.is_some_and(|retry| retry.run == *run) {
+                            self.state.discovery_retry = None;
+                        }
                     }
                     LoginProgress::LinkTrouble { trouble, .. } => {
                         if envelope.key.op != SessionOp::Login { return false; }

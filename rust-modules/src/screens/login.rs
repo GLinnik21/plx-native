@@ -131,9 +131,11 @@ fn working_phase(phase: Phase) -> bool {
     matches!(phase, Phase::Creating | Phase::Discovering)
 }
 
-fn discovery_trouble_visible(phase: Phase, reason: &str, phase_ms: f32) -> bool {
-    phase == Phase::Discovering && (reason == auth::DISCOVERY_TROUBLE
-        || (reason == auth::DISCOVERY_FIRST_MISS && phase_ms >= 8_000.0))
+fn discovery_trouble_visible(phase: Phase, retry: Option<auth::DiscoveryRetryProgress>,
+    phase_ms: f32, observed_phase_ms: f32) -> bool {
+    let Some(retry) = retry.filter(|_| phase == Phase::Discovering) else { return false };
+    retry.misses >= 2
+        || retry.elapsed_ms as f32 + (phase_ms - observed_phase_ms).max(0.0) >= 8_000.0
 }
 
 /// The verb on both the failed and the stuck read-out, because it is the same call underneath.
@@ -745,6 +747,8 @@ pub(crate) struct LoginScreen {
     qr_code: Arc<str>,
     qr_replaced: bool,
     error: Arc<str>,
+    discovery_retry: Option<auth::DiscoveryRetryProgress>,
+    discovery_retry_observed_phase_ms: f32,
     delete_leftovers: usize,
     next_correlation: Option<u32>,
     pending_restart: Option<PendingRestart>,
@@ -779,6 +783,8 @@ impl LoginScreen {
             qr_code: Arc::from(""),
             qr_replaced: false,
             error: Arc::from(""),
+            discovery_retry: None,
+            discovery_retry_observed_phase_ms: 0.0,
             delete_leftovers: 0,
             next_correlation: Some(1),
             pending_restart: None,
@@ -839,6 +845,10 @@ impl LoginScreen {
             self.error = Arc::clone(&snapshot.error);
         } else {
             self.error = Arc::from("");
+        }
+        if self.discovery_retry != snapshot.discovery_retry {
+            self.discovery_retry = snapshot.discovery_retry;
+            self.discovery_retry_observed_phase_ms = self.phase_ms;
         }
         if self.phase == Phase::Deleted {
             self.delete_leftovers = snapshot.delete_leftovers;
@@ -1457,7 +1467,8 @@ impl LoginScreen {
     ) {
         let caption = CString::new(msg).unwrap_or_default();
         let stuck = self.has_control();
-        let discovery_trouble = discovery_trouble_visible(self.phase, &self.error, self.phase_ms)
+        let discovery_trouble = discovery_trouble_visible(self.phase, self.discovery_retry,
+            self.phase_ms, self.discovery_retry_observed_phase_ms)
             .then(|| CString::new(auth::DISCOVERY_TROUBLE).unwrap_or_default());
         self.draw_readout(
             f,
@@ -2139,6 +2150,7 @@ mod tests {
             persistence_warning: None,
             incident: None,
             link_trouble: false,
+            discovery_retry: None,
             plaintext: None,
             switch_refused: false,
             readout_back_resumes: false,
@@ -2223,16 +2235,18 @@ mod tests {
 
     #[test]
     fn discovery_reason_is_absent_on_the_first_miss_and_present_after_progress() {
-        assert!(!discovery_trouble_visible(Phase::Discovering, "", 9_000.0));
-        assert!(!discovery_trouble_visible(Phase::Discovering,
-            auth::DISCOVERY_FIRST_MISS, 7_999.0));
+        let first = auth::DiscoveryRetryProgress { run: auth::DiscoveryRetryRun::HomeUsers,
+            misses: 1, elapsed_ms: 100 };
+        assert!(!discovery_trouble_visible(Phase::Discovering, None, 20_000.0, 0.0),
+            "a settled resources retry stays silent through slow probing");
+        assert!(!discovery_trouble_visible(Phase::Discovering, Some(first),
+            17_899.0, 10_000.0), "the Home-users run is only 7.999 seconds old");
+        assert!(discovery_trouble_visible(Phase::Discovering, Some(first),
+            17_900.0, 10_000.0), "eight seconds belongs to this retry run, not the phase");
         assert!(discovery_trouble_visible(Phase::Discovering,
-            auth::DISCOVERY_FIRST_MISS, 8_001.0),
-            "the line appears while the second request is still in flight");
-        assert!(discovery_trouble_visible(Phase::Discovering,
-            auth::DISCOVERY_TROUBLE, 1.0));
-        assert!(!discovery_trouble_visible(Phase::Waiting,
-            auth::DISCOVERY_TROUBLE, 9_000.0));
+            Some(auth::DiscoveryRetryProgress { misses: 2, ..first }), 10_001.0, 10_000.0),
+            "the second miss is visible immediately");
+        assert!(!discovery_trouble_visible(Phase::Waiting, Some(first), 20_000.0, 0.0));
     }
 
     /// **The escape belongs ONLY to the two phases that wait on a network call.** Ported verbatim.
@@ -2371,6 +2385,8 @@ mod tests {
             qr_code: Arc::from(""),
             qr_replaced: false,
             error: Arc::from(""),
+            discovery_retry: None,
+            discovery_retry_observed_phase_ms: 0.0,
             delete_leftovers: 0,
             next_correlation: Some(1),
             pending_restart: None,

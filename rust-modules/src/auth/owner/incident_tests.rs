@@ -92,6 +92,11 @@ fn stalled() -> IncidentContext {
     }
 }
 
+fn retry(run: crate::auth::DiscoveryRetryRun, misses: u32, elapsed_ms: u32)
+    -> crate::auth::DiscoveryRetryProgress {
+    crate::auth::DiscoveryRetryProgress { run, misses, elapsed_ms }
+}
+
 /// A sign-in on its way: the QR flow started, a login request in flight.
 fn signing_in() -> SessionMachine {
     let mut owner = SessionMachine::from_init(SessionInit::captured(PersistedSession {
@@ -260,10 +265,11 @@ fn discovery_trouble_is_non_terminal_and_never_an_incident() {
     let epoch = owner.state.epoch;
     observe(&mut owner, LoginProgress::Authorized { epoch, token: "token".into() }, false);
     assert_eq!(owner.read().0.phase, Phase::Discovering);
-    observe(&mut owner, LoginProgress::DiscoveryTrouble { epoch, misses: 2 }, false);
+    let progress = retry(crate::auth::DiscoveryRetryRun::Resources, 2, 2_000);
+    observe(&mut owner, LoginProgress::DiscoveryTrouble { epoch, progress }, false);
     let read = owner.read();
     assert_eq!(read.0.phase, Phase::Discovering);
-    assert_eq!(&*read.0.error, "Plex isn't responding. Still trying…");
+    assert_eq!(read.0.discovery_retry, Some(progress));
     assert!(read.0.incident.is_none(), "an in-flight retry is not a terminal incident");
 }
 
@@ -280,13 +286,29 @@ fn discovery_trouble_is_accepted_for_rediscover_and_stale_epochs_are_fenced() {
     let epoch = owner.state.epoch;
     assert_eq!(owner.state.phase, Phase::Discovering);
 
-    observe(&mut owner, LoginProgress::DiscoveryTrouble { epoch, misses: 1 }, false);
-    assert_eq!(owner.state.error, crate::auth::DISCOVERY_FIRST_MISS,
+    let progress = retry(crate::auth::DiscoveryRetryRun::Resources, 1, 50);
+    observe(&mut owner, LoginProgress::DiscoveryTrouble { epoch, progress }, false);
+    assert_eq!(owner.state.discovery_retry, Some(progress),
         "Rediscover accepts the same non-terminal progress as Login");
 
-    observe(&mut owner, LoginProgress::DiscoveryTrouble { epoch: first_epoch, misses: 2 }, false);
-    assert_eq!(owner.state.error, crate::auth::DISCOVERY_FIRST_MISS,
+    let stale = retry(crate::auth::DiscoveryRetryRun::HomeUsers, 2, 9_000);
+    observe(&mut owner, LoginProgress::DiscoveryTrouble {
+        epoch: first_epoch, progress: stale,
+    }, false);
+    assert_eq!(owner.state.discovery_retry, Some(progress),
         "a stale worker cannot publish trouble into the new retry epoch");
+
+    observe(&mut owner, LoginProgress::DiscoveryRetrySettled {
+        epoch: first_epoch, run: crate::auth::DiscoveryRetryRun::Resources,
+    }, false);
+    assert_eq!(owner.state.discovery_retry, Some(progress),
+        "a stale-epoch reset cannot clear the current run");
+
+    observe(&mut owner, LoginProgress::DiscoveryRetrySettled {
+        epoch, run: crate::auth::DiscoveryRetryRun::Resources,
+    }, false);
+    assert_eq!(owner.state.discovery_retry, None,
+        "the matching current run clears before slow probing continues");
 }
 
 /// The QR code is still on screen during a stall, possibly mid-scan: no permission state may put

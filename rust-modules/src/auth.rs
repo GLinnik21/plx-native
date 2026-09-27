@@ -110,8 +110,17 @@ pub enum Phase {
     Deleted,
 }
 
-pub(crate) const DISCOVERY_FIRST_MISS: &str = "discovery:first_miss";
 pub(crate) const DISCOVERY_TROUBLE: &str = "Plex isn't responding. Still trying…";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum DiscoveryRetryRun { Resources, HomeUsers }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DiscoveryRetryProgress {
+    pub run: DiscoveryRetryRun,
+    pub misses: u32,
+    pub elapsed_ms: u32,
+}
 
 /// Does an error retry need a new account sign-in, or only another server-discovery pass?
 /// Keeping this decision pure makes the UI contract gradeable without spawning a network worker.
@@ -803,9 +812,12 @@ pub(crate) enum LoginProgress {
     CodeReady { epoch: u64, code: String, qr_png: Vec<u8> },
     /// The user authorized on their phone; discovery is starting.
     Authorized { epoch: u64, token: String },
-    /// Resource discovery has missed twice (or has been failing for eight seconds). Non-terminal:
-    /// the phase remains Discovering and no incident is raised while the retry runner continues.
-    DiscoveryTrouble { epoch: u64, misses: u32 },
+    /// One account edge missed. Non-terminal: the phase remains Discovering and the screen uses
+    /// this run-relative elapsed anchor to reveal trouble after the second miss or eight seconds.
+    DiscoveryTrouble { epoch: u64, progress: DiscoveryRetryProgress },
+    /// The named account retry run is no longer outstanding. Matching by run prevents a delayed
+    /// completion from clearing a newer account edge within the same discovery epoch.
+    DiscoveryRetrySettled { epoch: u64, run: DiscoveryRetryRun },
     /// The whole attempt failed for the stated, already-user-facing reason — no server on the
     /// account, discovery unreachable/refused, the pin ran out of automatic replacements, or pin
     /// creation itself could not reach plex.tv. Only the current owner may publish that failure.
@@ -1224,9 +1236,14 @@ fn sign_in_home_users_with_clock(ac: &AccountClient, epoch: u64,
     mut home_users: impl FnMut(&AccountClient, Duration) -> Result<Vec<HomeUser>, CallEvidence>)
     -> Option<Vec<UserTile>> {
     let users_run = retry_account_call(INTERACTIVE_ACCOUNT, clock,
-        |attempts, _, _| {
-            output.progress(LoginProgress::DiscoveryTrouble { epoch, misses: attempts }.into());
+        |attempts, elapsed, _| {
+            output.progress(LoginProgress::DiscoveryTrouble { epoch,
+                progress: discovery_retry_progress(DiscoveryRetryRun::HomeUsers,
+                    attempts, elapsed) }.into());
         }, |remaining| home_users(ac, remaining));
+    if !output.progress(LoginProgress::DiscoveryRetrySettled {
+        epoch, run: DiscoveryRetryRun::HomeUsers,
+    }.into()) { return None; }
     let users = match users_run.result {
         AccountCallEnd::Answer(users) => Ok(users),
         AccountCallEnd::Failed(evidence) => Err(evidence),
@@ -1398,6 +1415,15 @@ fn retry_account_call<T>(policy: AccountRetryPolicy, clock: &mut impl RetryClock
                 }
             }
         }
+    }
+}
+
+fn discovery_retry_progress(run: DiscoveryRetryRun, misses: u32,
+    elapsed: Duration) -> DiscoveryRetryProgress {
+    DiscoveryRetryProgress {
+        run,
+        misses,
+        elapsed_ms: elapsed.as_millis().min(u32::MAX as u128) as u32,
     }
 }
 
@@ -3101,10 +3127,15 @@ fn discover_and_store_with_resources_and_clock(ac: &AccountClient, client_id: &s
     mut resources_call: impl FnMut(&AccountClient, Duration) -> Result<Vec<Resource>, CallEvidence>) -> Discovery {
     if !output.live() { return Discovery::Cancelled; }
     let run = retry_account_call(INTERACTIVE_ACCOUNT, clock,
-        |attempts, _, _| {
-            output.progress(LoginProgress::DiscoveryTrouble { epoch, misses: attempts }.into());
+        |attempts, elapsed, _| {
+            output.progress(LoginProgress::DiscoveryTrouble { epoch,
+                progress: discovery_retry_progress(DiscoveryRetryRun::Resources,
+                    attempts, elapsed) }.into());
         },
         |remaining| resources_call(ac, remaining));
+    if !output.progress(LoginProgress::DiscoveryRetrySettled {
+        epoch, run: DiscoveryRetryRun::Resources,
+    }.into()) { return Discovery::Cancelled; }
     let resources = match run.result {
         AccountCallEnd::Answer(r) => r,
         AccountCallEnd::Cancelled => return Discovery::Cancelled,
