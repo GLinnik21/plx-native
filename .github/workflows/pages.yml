@@ -99,8 +99,11 @@ jobs:
 
           cp docs/screenshots/home.jpg _site/docs/screenshots/home.jpg
 
-          cp pkg/appfont.ttf _site/fonts/appfont.ttf
-          cp pkg/appfont-bold.ttf _site/fonts/appfont-bold.ttf
+          # Subsets pkg/appfont.ttf / pkg/appfont-bold.ttf (the APP's fonts, untouched) down to
+          # the characters the site actually renders and writes WOFF2 into _site/fonts/ — see
+          # tools/subset-site-fonts.py for the character set and why. Two ~400 KB TTFs become two
+          # ~20 KB WOFF2s.
+          python3 tools/subset-site-fonts.py subset --out-dir _site/fonts
 
           python3 tools/render-doc-page.py docs/install-and-verify.md > _site/install/index.html
           python3 tools/render-doc-page.py docs/troubleshooting.md > _site/troubleshooting/index.html
@@ -123,6 +126,11 @@ jobs:
           set -euo pipefail
           python3 ci/nightly.py latest-json --repo "${{ github.repository }}" > _site/nightly/latest.json
           cat _site/nightly/latest.json
+
+      - name: Check PlxAppFont subset covers the staged site
+        # _site/nightly/latest.json is JSON data, not rendered text (site.js pulls only ASCII
+        # version/date fields from it today), so it is deliberately outside this check's scan.
+        run: python3 tools/subset-site-fonts.py check --site-dir _site
 
       - name: Check for missing assets
         run: |

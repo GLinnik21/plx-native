@@ -50,14 +50,14 @@
 
 @font-face {
   font-family: "PlxAppFont";
-  src: url("fonts/appfont.ttf") format("truetype");
+  src: url("fonts/appfont.woff2") format("woff2");
   font-weight: 400;
   font-style: normal;
   font-display: swap;
 }
 @font-face {
   font-family: "PlxAppFont";
-  src: url("fonts/appfont-bold.ttf") format("truetype");
+  src: url("fonts/appfont-bold.woff2") format("woff2");
   font-weight: 700;
   font-style: normal;
   font-display: swap;
