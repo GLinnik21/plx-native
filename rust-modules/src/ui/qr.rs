@@ -2,6 +2,7 @@
 //! Encode on mount, upload once in `prepare`, then paint one texture per frame.
 use super::{theme, Painter, Rect};
 use super::machine::Measure;
+use super::label::HAlign;
 use super::text_view::TextView;
 
 /// Caption-sized link text with a 32 px cap-top pitch. At the shared 24 px face this leaves
@@ -21,6 +22,7 @@ pub(crate) struct QrLinkLayout {
 fn link_text<'a>(text: &'a str, measure: &'a dyn Measure) -> TextView<'a> {
     TextView::new(text, theme::size::CAPTION, theme::TEXT_READING)
         .with_measure(measure)
+        .h(HAlign::Center)
         .leading(LINK_LINE_H)
         .break_long_words()
 }
@@ -40,12 +42,12 @@ impl QrLinkLayout {
     pub(crate) fn new(frame: Rect, caption: &str, address: &str, measure: &dyn Measure) -> Self {
         let side = frame.w.min(frame.h * 0.60).max(0.0);
         let code = Rect::new(frame.cx() - side / 2.0, frame.y, side, side);
-        let caption_h = text_block_height(caption, frame.w, measure);
-        let caption = Rect::new(frame.x, code.y + code.h + theme::space::MD, frame.w, caption_h);
+        let caption_h = text_block_height(caption, code.w, measure);
+        let caption = Rect::new(code.x, code.y + code.h + theme::space::MD, code.w, caption_h);
         let gap = if caption_h > 0.0 { theme::space::MD } else { 0.0 };
         let address = Rect::new(
-            frame.x, caption.y + caption.h + gap, frame.w,
-            text_block_height(address, frame.w, measure),
+            code.x, caption.y + caption.h + gap, code.w,
+            text_block_height(address, code.w, measure),
         );
         let bottom = if address.h > 0.0 { address.y + address.h }
             else if caption.h > 0.0 { caption.y + caption.h }
@@ -70,7 +72,7 @@ impl<'a> QrLink<'a> {
         QrLinkLayout::new(frame, self.caption, self.address, measure)
     }
 
-    /// Both runs stay aligned to the content column, independently of the centred QR square.
+    /// Both runs are centred on the QR square, inside its allocated width.
     /// Measuring and painting share the same text view, explicit line breaks, and line pitch.
     pub(crate) fn draw(&self, painter: Painter, frame: Rect, measure: &dyn Measure) -> QrLinkLayout {
         let layout = self.layout(frame, measure);
@@ -156,7 +158,7 @@ mod tests {
     const ADDRESS: &str = "github.com/GLinnik21/plx-native\n/blob/main/docs/localization.md";
 
     #[test]
-    fn qr_link_preserves_code_size_and_aligns_text_to_the_column() {
+    fn qr_link_preserves_code_size_and_centres_text_within_its_width() {
         let frame = Rect::new(960.0, 180.0, 864.0, 720.0);
         let link = QrLink::new("Scan the QR code", ADDRESS);
         let layout = link.layout(frame, &CaptionMetrics);
@@ -164,9 +166,11 @@ mod tests {
         assert_eq!(layout.code.w, layout.code.h);
         assert_eq!(layout.code.cx(), frame.cx());
         assert_eq!(layout.code.y, frame.y);
-        assert_eq!(layout.caption.x, frame.x);
-        assert_eq!(layout.address.x, frame.x);
-        assert!(layout.code.x > layout.caption.x, "text is aligned to its column, not to the QR");
+        for block in [layout.caption, layout.address] {
+            assert_eq!(block.x, layout.code.x);
+            assert_eq!(block.w, layout.code.w);
+            assert_eq!(block.cx(), layout.code.cx());
+        }
         assert_eq!(link.address, ADDRESS, "display address must remain literal, including /blob/main/");
     }
 
