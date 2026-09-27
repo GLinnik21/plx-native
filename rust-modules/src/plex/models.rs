@@ -210,8 +210,8 @@ pub struct Setting {
 }
 
 /// A SHOW's language settings — its Advanced dialog in Plex Web. `None` / `-1` mean "Account
-/// default", which this client cannot read (it lives on plex.tv) and so treats as unset.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// default", inherited from the active Plex profile when its preferences are available.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShowLangPrefs {
     /// `audioLanguage`, e.g. `"hu-HU"`
     pub audio: Option<String>,
@@ -220,6 +220,10 @@ pub struct ShowLangPrefs {
     /// `subtitleMode`: -1 account default · 0 manually selected · 1 shown with foreign audio ·
     /// 2 always enabled
     pub subtitle_mode: i32,
+}
+
+impl Default for ShowLangPrefs {
+    fn default() -> Self { Self { audio: None, subtitle: None, subtitle_mode: -1 } }
 }
 
 impl ShowLangPrefs {

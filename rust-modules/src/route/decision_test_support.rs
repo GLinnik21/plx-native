@@ -97,6 +97,7 @@ pub(super) fn fresh_registry(ps: &mut PlaybackSession) -> crate::testlock::Seria
     // land a route explicitly.
     reset_session(ps);
     restore_quality(Quality::Original);
+    restore_direct_play_mode(DirectPlayMode::Auto);
     crate::player::reset_route_requests_for_test(ps);
     crate::plex::reset_servers_for_test();
     crate::player::clear_original_failure();

@@ -705,3 +705,10 @@ fn an_account_default_show_setting_is_no_preference() {
         assert_eq!(encode_audio_id(false, 1, 0, &tracks, prefs), 1, "{show:?}");
     }
 }
+
+#[test]
+fn inherited_subtitles_use_account_language_and_mode() {
+    let tracks = [sub(1, 0, "eng", false), sub(2, 1, "fra", false)];
+    let account = SubtitleLangPrefs { language: Some("fr"), mode: 2, forced: 0 };
+    assert_eq!(pick_dp_subtitle_account(&tracks, &crate::plex::ShowLangPrefs::default(), account, "eng"), Some((2, 1)));
+}
