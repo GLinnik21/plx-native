@@ -74,7 +74,7 @@ fn language_entry_seats_the_engine_on_the_saved_preference() {
         let _saved = SavedLanguage::new(preference);
         let entry = EntryId(7);
         let mut surface = RouteSurface::new(
-            entry, InstanceId(0), Family::Settings, SettingsPage::Language,
+            entry, InstanceId(0), Family::Settings, SettingsPage::Language, crate::pms::HubsSnapshot::empty_for_test().view(),
         );
         let effects = step(&mut surface, ScreenEvent::Mount, None);
         let mut engine = crate::ui::focus::FocusEngine::new();
@@ -140,7 +140,7 @@ fn contribution_is_focusable_and_right_opens_the_guide() {
 fn signed_out_settings_reaches_language_and_back_restores_it_after_contribution() {
     let _guard = crate::testlock::serial();
     let _session = scratch_session("language-back");
-    let mut surface = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root);
+    let mut surface = RouteSurface::new(EntryId(0), InstanceId(0), Family::Settings, SettingsPage::Root, crate::pms::HubsSnapshot::empty_for_test().view());
     step(&mut surface, ScreenEvent::Mount, None);
     step(&mut surface, ScreenEvent::Activate(3), None);
     assert_eq!(surface.inner.top().unwrap().arg, SettingsPage::Language);

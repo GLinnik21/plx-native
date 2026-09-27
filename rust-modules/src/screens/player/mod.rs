@@ -1259,7 +1259,6 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Screen<H> for Playe
         if self.repair_alert.visible() {
             self.repair_alert.draw_scrim();
             self.repair_alert.draw(crate::i18n::msg::settings_cancel_c(), crate::i18n::msg::widgets_repair_action_c(), f.measure);
-            let frames = self.repair_alert.frames(f.measure);
         }
         self.record_stops(f, hud_drawn);
     }

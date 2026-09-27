@@ -261,8 +261,8 @@ pub(crate) fn layout(row: &mut crate::ui::player_hud::TransportRow, measure: &dy
 /// one is how a stray click starts an episode the user did not ask for.
 pub(crate) fn layout_peek(row: &crate::ui::player_hud::TransportRow, measure: &dyn crate::ui::machine::Measure) -> Layout {
     layout_of(
-        crate::ui::player_hud::ctrl_slot_w(row, NEXT_LABEL, measure),
-        crate::ui::widgets::Button::pill_w_measured(CREDITS_LABEL, theme::size::BODY, false, false, measure),
+        crate::ui::player_hud::ctrl_slot_w(row, crate::i18n::msg::widgets_next_episode(), measure),
+        crate::ui::widgets::Button::pill_w_measured(crate::i18n::msg::widgets_next_credits_c(), theme::size::BODY, false, false, measure),
     )
 }
 

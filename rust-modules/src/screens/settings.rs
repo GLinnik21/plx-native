@@ -52,7 +52,7 @@ use crate::ui::{theme, Painter, Rect};
 
 use super::family::{inner_cx, table_focus, InnerHost, SettingsPage, ALERT_GROUP};
 use super::plaintext_question::{self, AlertStep, PlaintextAlert};
-use super::registry::{word, DirectoryLike};
+use super::registry::{word, AppFx, DirectoryLike};
 
 /// Which ceremony the surface carries.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

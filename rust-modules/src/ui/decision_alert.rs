@@ -320,7 +320,7 @@ impl DecisionAlert {
         let max = self.measured(measure).scroll_max;
         self.scroll_target = (self.scroll_target + delta as f32 * theme::size::BODY as f32 * 6.0)
             .clamp(0.0, max);
-        crate::ui::popover::note_own_damage();
+        let _own = crate::ui::popover::own_motion();
         crate::ui::idle::invalidate();
         self.scroll_target.to_bits()
     }

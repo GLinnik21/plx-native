@@ -342,7 +342,7 @@ fn footer_rect(measure: &dyn Measure) -> Rect {
 /// centring — nothing downstream depends on the pixel being exact, only on `draw` and every
 /// `Focusable` query reading the SAME number, which this function is the one place either computes.
 fn pad_geom(measure: &dyn Measure) -> (f32, f32, f32) {
-    let title_h = measure.line_h(theme::size::crate::i18n::msg::settings_profiles_title());
+    let title_h = measure.line_h(theme::size::TITLE);
     let unit_h = title_h + PAD_TITLE_GRID + PAD_GRID_H;
     let unit_top = (SCR_H as f32 - unit_h) * 0.5;
     let grid_y = unit_top + title_h + PAD_TITLE_GRID;
@@ -1234,7 +1234,7 @@ impl ProfilesScreen {
                 t.as_ptr(),
                 SCR_W as f32 * 0.5,
                 title_y,
-                theme::size::crate::i18n::msg::settings_profiles_title(),
+                theme::size::TITLE,
                 theme::TEXT_PRIMARY,
                 1,
                 1,
@@ -1295,12 +1295,12 @@ impl ProfilesScreen {
                     );
                 } else if let Ok(lc) = CString::new((*k as char).to_string()) {
                     let ty =
-                        crate::text::text_vcenter_y(theme::size::crate::i18n::msg::settings_profiles_title(), 1, rect.y + rect.h * 0.5);
+                        crate::text::text_vcenter_y(theme::size::TITLE, 1, rect.y + rect.h * 0.5);
                     p.text(
                         lc.as_ptr(),
                         rect.x + rect.w * 0.5,
                         ty,
-                        theme::size::crate::i18n::msg::settings_profiles_title(),
+                        theme::size::TITLE,
                         ink,
                         1,
                         1,

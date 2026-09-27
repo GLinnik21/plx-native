@@ -552,7 +552,7 @@ fn an_unnamed_external_share_is_drawn_like_the_household_and_that_is_the_open_bu
         .collect();
     assert_eq!(
         drawn,
-        [OWN_ACCOUNT, OWN_ACCOUNT, "friend"],
+        [own_account(), own_account(), "friend"],
         "the unnamed share reads as this account, exactly as the household's does — the \
          empty-credit bug `docs/shared-servers.md` carries, unchanged and out of scope here"
     );
