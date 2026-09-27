@@ -131,6 +131,10 @@ fn working_phase(phase: Phase) -> bool {
     matches!(phase, Phase::Creating | Phase::Discovering)
 }
 
+fn discovery_trouble_visible(phase: Phase, reason: &str) -> bool {
+    phase == Phase::Discovering && !reason.is_empty()
+}
+
 /// The verb on both the failed and the stuck read-out, because it is the same call underneath.
 ///
 /// `auth::retry`/`auth::restart_stalled_wait` bump the auth epoch, so a worker still blocked in the
@@ -652,13 +656,28 @@ fn support_line(offer: &auth::owner::IncidentOffer) -> String {
         link => format!("{}.{}", offer.key.kind.code(), link.code()),
     };
     let storage = crate::telemetry::incident::storage_evidence_line(offer.context.as_ref());
+    let discovery = offer.context.as_ref().and_then(|ctx| ctx.discovery.map(|e| {
+        let target = e.target.map_or("discovery", |target| match target {
+            crate::telemetry::incident::DiscoveryTarget::PlexTv => "plex.tv",
+            crate::telemetry::incident::DiscoveryTarget::Servers => "your servers",
+        });
+        let attempts = match ctx.unanswered {
+            crate::telemetry::incident::UnansweredBucket::Zero
+            | crate::telemetry::incident::UnansweredBucket::One => 1,
+            crate::telemetry::incident::UnansweredBucket::TwoToFive => 3,
+            crate::telemetry::incident::UnansweredBucket::SixPlus => 6,
+        };
+        format!("target:{target} class:{} attempts:{attempts}", ctx.link.code())
+    }));
+    let discovery = discovery.map_or(String::new(), |line| format!(" \u{b7} {line}"));
     format!(
-        "{} {} \u{b7} {} \u{b7} {} \u{b7} {} \u{b7} {}",
+        "{} {} \u{b7} {} \u{b7} {} \u{b7} {}{} \u{b7} {}",
         crate::plex::identity::PRODUCT,
         crate::plex::identity::VERSION,
         crate::webos::info().release_line(),
         set,
         code,
+        discovery,
         storage
     )
 }
@@ -819,8 +838,10 @@ impl LoginScreen {
             self.qr_replaced = snapshot.code_replaced;
             self.qr_png_pending = Some((snapshot.qr_generation, Arc::clone(&snapshot.png)));
         }
-        if self.phase == Phase::Error {
+        if matches!(self.phase, Phase::Error | Phase::Discovering) {
             self.error = Arc::clone(&snapshot.error);
+        } else {
+            self.error = Arc::from("");
         }
         if self.phase == Phase::Deleted {
             self.delete_leftovers = snapshot.delete_leftovers;
@@ -1439,6 +1460,8 @@ impl LoginScreen {
     ) {
         let caption = CString::new(msg).unwrap_or_default();
         let stuck = self.has_control();
+        let discovery_trouble = discovery_trouble_visible(self.phase, &self.error)
+            .then(|| CString::new(self.error.as_ref()).unwrap_or_default());
         self.draw_readout(
             f,
             p,
@@ -1447,7 +1470,7 @@ impl LoginScreen {
             StatusKind::Working,
             // The reason arrives WITH the control, and only then: it exists to explain why a
             // button just appeared under a spinner that was doing fine a moment ago.
-            stuck.then_some(c"This is taking longer than usual."),
+            discovery_trouble.as_deref().or_else(|| stuck.then_some(c"This is taking longer than usual.")),
             focus,
         );
     }
@@ -2199,6 +2222,15 @@ mod tests {
             "nor does a healthy one — a button that flashes past teaches people to ignore it"
         );
         assert!(escape_offered(12_000.0));
+    }
+
+    #[test]
+    fn discovery_reason_is_absent_on_the_first_miss_and_present_after_progress() {
+        assert!(!discovery_trouble_visible(Phase::Discovering, ""));
+        assert!(discovery_trouble_visible(Phase::Discovering,
+            "Plex isn't responding. Still trying…"));
+        assert!(!discovery_trouble_visible(Phase::Waiting,
+            "Plex isn't responding. Still trying…"));
     }
 
     /// **The escape belongs ONLY to the two phases that wait on a network call.** Ported verbatim.

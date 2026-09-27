@@ -226,6 +226,19 @@ fn a_stalled_wait_is_never_sent_standing() {
     assert_eq!(offer(&owner).unwrap().id, held.id, "but not the offer");
 }
 
+#[test]
+fn discovery_trouble_is_non_terminal_and_never_an_incident() {
+    let mut owner = signing_in();
+    let epoch = owner.state.epoch;
+    observe(&mut owner, LoginProgress::Authorized { epoch, token: "token".into() }, false);
+    assert_eq!(owner.read().0.phase, Phase::Discovering);
+    observe(&mut owner, LoginProgress::DiscoveryTrouble { epoch }, false);
+    let read = owner.read();
+    assert_eq!(read.0.phase, Phase::Discovering);
+    assert_eq!(&*read.0.error, "Plex isn't responding. Still trying…");
+    assert!(read.0.incident.is_none(), "an in-flight retry is not a terminal incident");
+}
+
 /// The QR code is still on screen during a stall, possibly mid-scan: no permission state may put
 /// the alert over it. The offer lives behind *Details*, and a press there still sends a one-off.
 #[test]

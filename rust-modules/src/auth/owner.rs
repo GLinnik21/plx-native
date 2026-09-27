@@ -2489,6 +2489,7 @@ impl SessionMachine {
                     LoginProgress::CodeReplacing { epoch }
                     | LoginProgress::CodeReady { epoch, .. }
                     | LoginProgress::Authorized { epoch, .. }
+                    | LoginProgress::DiscoveryTrouble { epoch }
                     | LoginProgress::LinkTrouble { epoch, .. } => (*epoch, false),
                     LoginProgress::Failed { epoch, .. } => (*epoch, true),
                     LoginProgress::SignedIn { .. } => return false,
@@ -2526,8 +2527,15 @@ impl SessionMachine {
                         self.state.persisted.account_token = token.clone();
                         self.state.authorized_in_flow = true;
                         self.state.link_trouble = false;
+                        self.state.error.clear();
                         self.state.phase = Phase::Discovering;
                         self.state.pending.get_mut(&req).unwrap().expected = Identity::of(&self.state.persisted);
+                    }
+                    LoginProgress::DiscoveryTrouble { .. } => {
+                        if !matches!(envelope.key.op, SessionOp::Login | SessionOp::Rediscover) {
+                            return false;
+                        }
+                        self.state.error = "Plex isn't responding. Still trying…".into();
                     }
                     LoginProgress::LinkTrouble { trouble, .. } => {
                         if envelope.key.op != SessionOp::Login { return false; }

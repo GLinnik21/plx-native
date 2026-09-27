@@ -221,6 +221,10 @@ pub(super) fn write_context(w: &mut Canon, c: &IncidentContext) {
     if let Some(outcome) = c.plaintext_consent {
         w.str(outcome.code());
     }
+    if let Some(discovery) = c.discovery {
+        w.str(discovery.trigger.code());
+        if let Some(target) = discovery.target { w.str(target.code()); }
+    }
 }
 
 pub(super) fn write_offer(w: &mut Canon, offer: &IncidentOffer) {

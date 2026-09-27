@@ -129,6 +129,55 @@ impl PinWatch for ScriptedPin {
     }
 }
 
+struct RetryScript { elapsed: Duration, waits: Vec<Duration>, cancel: bool }
+impl RetryClock for RetryScript {
+    fn elapsed(&self) -> Duration { self.elapsed }
+    fn wait(&mut self, d: Duration) -> bool {
+        self.waits.push(d);
+        self.elapsed += d;
+        !self.cancel
+    }
+}
+
+#[test]
+fn account_retry_runner_uses_the_interactive_ladder_and_lets_the_last_attempt_answer() {
+    let dns = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+        status: None, body_limit: None, curl_rc: Some(6) });
+    let mut answers = vec![Err(dns), Err(dns), Ok("servers")].into_iter();
+    let mut clock = RetryScript { elapsed: Duration::ZERO, waits: Vec::new(), cancel: false };
+    let mut misses = Vec::new();
+    let run = retry_account_call(INTERACTIVE_ACCOUNT, &mut clock,
+        |attempt, elapsed, _| misses.push((attempt, elapsed)), |_| answers.next().unwrap());
+    assert_eq!(run.result, AccountCallEnd::Answer("servers"));
+    assert_eq!(run.attempts, 3);
+    assert_eq!(clock.waits, [Duration::from_secs(2), Duration::from_secs(4)]);
+    assert_eq!(misses.len(), 2);
+}
+
+#[test]
+fn account_retry_runner_cancels_and_does_not_guess_at_retry_after() {
+    let mut cancelled = RetryScript { elapsed: Duration::ZERO, waits: Vec::new(), cancel: true };
+    let dns = Err(crate::net::RequestFailure { cause: crate::net::RequestError::Transport,
+        status: None, body_limit: None, curl_rc: Some(6) });
+    let run = retry_account_call::<()>(INTERACTIVE_ACCOUNT, &mut cancelled, |_, _, _| {},
+        |_| Err(dns));
+    assert_eq!(run.result, AccountCallEnd::Cancelled);
+    assert_eq!(run.attempts, 1);
+
+    let mut clock = RetryScript { elapsed: Duration::ZERO, waits: Vec::new(), cancel: false };
+    let run = retry_account_call::<()>(INTERACTIVE_ACCOUNT, &mut clock, |_, _, _| {},
+        |_| Err(Ok(429)));
+    assert_eq!(run.result, AccountCallEnd::Failed(Ok(429)));
+    assert_eq!(run.attempts, 1, "without Retry-After headers a 429 is not retried");
+}
+
+#[test]
+fn interactive_account_request_timeout_is_clamped_to_eight_seconds_and_the_remaining_budget() {
+    assert_eq!(account_timeouts(Duration::from_secs(30)).total_ms, 8_000);
+    assert_eq!(account_timeouts(Duration::from_millis(1250)).total_ms, 1_250);
+    assert_eq!(account_timeouts(Duration::ZERO).total_ms, 1);
+}
+
 /// **The wait ends with the pin, not some multiple of it.**
 ///
 /// plex.tv mints a code with `expiresIn: 900` and answers a poll of a dead one with

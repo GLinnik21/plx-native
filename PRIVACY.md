@@ -128,7 +128,8 @@ https_unsettled or https_answered) and, when it asked, what became of the questi
 (`plaintext_consent`: offered, accepted, declined or revoked) — never the address itself, the
 server or whose it is. When the account has no
 server, it carries how many other devices plex.tv listed (`resources`, bucketed) and whether that
-happened right after signing in or on a retry (`discovery_trigger`).
+happened right after signing in or on a retry (`discovery_trigger`). For unreachable discovery it
+also says whether the failed target was plex.tv or the listed servers (`discovery_target`).
 It also carries whether the report was `consent`ed to as a standing choice or as a one-off, the app version and when it
 happened. It never includes your account name, tokens, PIN, sign-in code or network addresses. With
 crash reports on, it is sent automatically, carries the Crash report ID, and the sign-in screen

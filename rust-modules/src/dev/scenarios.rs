@@ -2166,6 +2166,20 @@ pub(crate) fn signin_trouble_poll() -> Option<crate::plex::account::PinPoll> {
         .then(|| crate::plex::account::PinPoll::Unreachable(Err(synthetic_dns_failure())))
 }
 
+/// `/tmp/plxnative-signinfail=resources|resources-blip` — fail the plex.tv resource listing on
+/// every attempt, or on its first attempt only. The latter exercises the in-place retry while the
+/// sign-in screen remains in Discovering.
+pub(crate) fn signin_trouble_resources()
+    -> Option<Result<Vec<crate::plex::account::Resource>, crate::plex::account::CallEvidence>> {
+    static BLIPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    match signinfail_spec()?.as_str() {
+        "resources" => Some(Err(Err(synthetic_dns_failure()))),
+        "resources-blip" if !BLIPPED.swap(true, std::sync::atomic::Ordering::AcqRel) =>
+            Some(Err(Err(synthetic_dns_failure()))),
+        _ => None,
+    }
+}
+
 /// `/tmp/plxnative-consentstate=unset|yes4|yes7|no` — boot with this consent record instead of
 /// the stored one: never asked, error reports allowed at scope 4 (before the onboarding report
 /// existed) or 7, or declined. Installed through `consent::install` like a real load, and written

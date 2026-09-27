@@ -280,6 +280,22 @@ pub(crate) enum DiscoveryTrigger {
     Rediscover,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum DiscoveryTarget { PlexTv, Servers }
+impl DiscoveryTarget {
+    pub(crate) fn code(self) -> &'static str {
+        match self { Self::PlexTv => "plex_tv", Self::Servers => "servers" }
+    }
+}
+
+/// Evidence shared by every discovery verdict. `target` is absent for NoServers so moving its
+/// trigger into this shared record leaves that established JSON byte-for-byte unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct DiscoveryEvidence {
+    pub trigger: DiscoveryTrigger,
+    pub target: Option<DiscoveryTarget>,
+}
+
 impl DiscoveryTrigger {
     pub(crate) fn code(self) -> &'static str {
         match self {
@@ -294,7 +310,7 @@ impl DiscoveryTrigger {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct NoServersEvidence {
     pub resources: CountBucket,
-    pub trigger: DiscoveryTrigger,
+    pub discovery: DiscoveryEvidence,
 }
 
 /// How long the current run of misses has lasted, bucketed — never the raw duration.
@@ -435,6 +451,8 @@ pub(crate) struct IncidentContext {
     /// What `/resources` returned when it named no server — only on [`DiscoveryClass::NoServers`].
     #[serde(default)]
     pub no_servers: Option<NoServersEvidence>,
+    #[serde(default)]
+    pub discovery: Option<DiscoveryEvidence>,
     /// Unix-epoch milliseconds when the context was BUILT — not when a report carrying it reaches
     /// the wire, which for a one-off is whenever the person presses Send and for a standing report
     /// can be a later launch's flush. `0` when the wall clock was at or before the epoch, and for
@@ -468,6 +486,7 @@ impl IncidentContext {
             insecure: None,
             plaintext_consent: None,
             no_servers: None,
+            discovery: None,
             occurred_at_ms: now_ms(),
         }
     }
@@ -490,6 +509,7 @@ impl IncidentContext {
             insecure: None,
             plaintext_consent: None,
             no_servers: None,
+            discovery: None,
             occurred_at_ms: 0,
         }
     }
@@ -523,7 +543,21 @@ impl IncidentContext {
 
     /// The evidence behind a no-servers discovery verdict.
     pub(crate) fn with_no_servers(mut self, evidence: NoServersEvidence) -> Self {
+        self.discovery = Some(evidence.discovery);
         self.no_servers = Some(evidence);
+        self
+    }
+
+    pub(crate) fn with_discovery(mut self, evidence: DiscoveryEvidence) -> Self {
+        self.discovery = Some(evidence);
+        self
+    }
+
+    /// A completed bounded retry run. Reuses the established bucket fields and deliberately does
+    /// not set `code_generation`, which belongs only to QR/PIN issuance.
+    pub(crate) fn with_retry_run(mut self, attempts: u32, elapsed: std::time::Duration) -> Self {
+        self.unanswered = UnansweredBucket::from_count(attempts);
+        self.failing_for = FailingForBucket::from_duration(Some(elapsed));
         self
     }
 
@@ -631,7 +665,12 @@ pub(crate) fn event_body(
     }
     if let Some(e) = ctx.no_servers {
         incident["resources"] = Value::from(e.resources.code());
+    }
+    if let Some(e) = ctx.discovery {
         incident["discovery_trigger"] = Value::from(e.trigger.code());
+        if let Some(target) = e.target {
+            incident["discovery_target"] = Value::from(target.code());
+        }
     }
     if let Some(helper) = ctx.helper {
         incident["helper"] = serde_json::to_value(helper).expect("closed helper evidence");
@@ -1074,7 +1113,7 @@ mod tests {
         IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::NoServers), None)
             .with_no_servers(NoServersEvidence {
                 resources: CountBucket::TwoToFive,
-                trigger: DiscoveryTrigger::Rediscover,
+                discovery: DiscoveryEvidence { trigger: DiscoveryTrigger::Rediscover, target: None },
             })
     }
 
@@ -1162,6 +1201,23 @@ mod tests {
             ]
         );
         assert_eq!(v["contexts"]["incident"]["keymanager_stage"], "finish");
+
+        let discovery = IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::Silent),
+            Some(Err(RequestFailure { cause: RequestError::Transport, status: None,
+                body_limit: None, curl_rc: Some(6) })))
+            .with_discovery(DiscoveryEvidence { trigger: DiscoveryTrigger::Login,
+                target: Some(DiscoveryTarget::PlexTv) })
+            .with_retry_run(3, Duration::from_secs(6));
+        let v = event_body("a", "", None, discovery, ConsentKind::OneOff);
+        assert_eq!(keys(&v["contexts"]["incident"]), [
+            "consent", "curl_rc", "discovery_target", "discovery_trigger", "failing_for",
+            "kind", "link", "type", "unanswered",
+        ]);
+        assert_eq!(v["contexts"]["incident"]["discovery_target"], "plex_tv");
+        assert_eq!(v["contexts"]["incident"]["discovery_trigger"], "login");
+        assert_eq!(v["contexts"]["incident"]["unanswered"], "two_to_five");
+        assert_eq!(v["contexts"]["incident"]["failing_for"], "under_10s");
+        assert!(v["contexts"]["incident"].get("code_generation").is_none());
 
         // An insecure-only verdict adds exactly its route buckets and plaintext facts.
         let v = event_body("a", "", None, insecure_context(), ConsentKind::OneOff);
@@ -1292,7 +1348,13 @@ mod tests {
             }
         }
         // The discovery evidence rides only on its own kinds, so walk it where it is carried.
-        for ctx in [insecure_context(), no_servers_context()] {
+        let silent = IncidentContext::new(IncidentKind::Discovery(DiscoveryClass::Silent),
+            Some(Err(RequestFailure { cause: RequestError::Transport, status: None,
+                body_limit: None, curl_rc: Some(6) })))
+            .with_discovery(DiscoveryEvidence { trigger: DiscoveryTrigger::Login,
+                target: Some(DiscoveryTarget::PlexTv) })
+            .with_retry_run(3, Duration::from_secs(6));
+        for ctx in [insecure_context(), no_servers_context(), silent] {
             bodies.push(event_body("a", "b", Some(&"e".repeat(32)), ctx, ConsentKind::Standing));
             bodies.push(event_body("a", "b", None, ctx, ConsentKind::OneOff));
         }
