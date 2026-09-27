@@ -311,6 +311,7 @@ pub(crate) fn preview_domains() -> String {
         codes(
             &[
                 F::DecisionRefused,
+                F::PlaybackPolicy,
                 F::NoVideoTranscodeTarget,
                 F::NoVideoTrack,
                 F::MediaSource,

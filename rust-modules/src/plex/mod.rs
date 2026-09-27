@@ -210,13 +210,12 @@ pub(crate) use servers::{
 #[allow(unused_imports)]
 pub use timeline::{queue_index_of, QueueRow};
 // DP_AUDIO_CODECS rides along for `devcaps`, which intersects it with the device's own codec
-// table — the caps snapshot is what `is_dp_audio` and the profile string then both read.
+// table — normal routing and its profile read the same codec and channel limits.
 // `DP_SUBTITLE_CODECS` / `is_dp_subtitle` are the subtitle twin: the profile's `subtitleCodec=`
 // list and route's MDE `subtitleStreamID` gate, so a selected PGS cannot be advertised in one
 // and omitted from the other.
-// `link_policy` is the other gate on the same decision: `is_dp_audio` asks what the PIPELINE can
-// decode, `link_policy` asks what the CONNECTION can carry, and `route::build_stream` must pass
-// both before it streams a file itself.
+// `is_dp_audio_track` checks normal codec/channel eligibility, while `link_policy` constrains
+// the connection. Forced mode retains software feed limits and uses a separate PMS profile.
 #[allow(unused_imports)]
 pub use transcoder::{
     DP_AUDIO_CODECS, DP_SUBTITLE_CODECS, LinkPolicy, is_dp_audio, is_dp_audio_track, is_dp_subtitle, link_policy,

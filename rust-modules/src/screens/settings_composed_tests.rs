@@ -93,6 +93,7 @@ struct SurfaceRig {
     directory: crate::stores::browse::DirectorySnapshot,
     /// How many times BACK reached the root of the ROOT stack (the platform's Home).
     roots: u32,
+    preference_commands: Vec<registry::PreferenceCmd>,
 }
 
 impl SurfaceRig {
@@ -103,6 +104,7 @@ impl SurfaceRig {
             stores: crate::stores::Stores::default(),
             directory: Default::default(),
             roots: 0,
+            preference_commands: Vec::new(),
         }
     }
 }
@@ -136,10 +138,11 @@ impl Rig<InnerHost> for SurfaceRig {
     fn app_fx(
         &mut self,
         _from: MachineId,
-        _fx: AppFx,
+        effect: AppFx,
         _parts: &CxParts<u32>,
         _out: &mut Effects<'_, InnerHost>,
     ) {
+        if let AppFx::Preferences(command) = effect { self.preference_commands.push(command); }
     }
     fn log(&mut self, _line: &str) {}
     fn prepare(&mut self, _b: &mut Budget, _present: &mut Present) {}
@@ -506,4 +509,151 @@ fn a_real_push_seats_the_new_page_fresh_and_a_pop_restores_the_row_that_opened_i
         "BACK restores the parent to the row that opened it, unaffected by this fix (the pop \
          path's own `FocusTarget::Elem`)"
     );
+}
+
+/// Parent and picker share the surface entry and table group. A remembered parent row must not
+/// replace the saved option when entering, and a remembered option must not replace the parent
+/// row on return. Drive the real engine: checking TableView::sel before its Enter effect runs
+/// cannot observe either leak.
+#[test]
+fn playback_picker_seats_the_saved_option_and_restores_its_parent_row() {
+    let _g = crate::testlock::serial();
+    let _sess = scratch_session("composed-playback-picker-seat");
+    let previous_quality = crate::route::quality();
+    let previous_mode = crate::route::direct_play_mode();
+    crate::route::restore_quality(crate::route::Quality::P480);
+    crate::route::restore_direct_play_mode(crate::route::DirectPlayMode::Auto);
+    for back in [Key::Back, Key::Left] {
+        let (mut d, mut rig, id) = consent_opened(SettingsPage::Playback);
+        // A real DOWN/UP gives the engine an explicit parent cursor at Default quality.
+        frame(&mut d, &mut rig, 32, vec![key(Key::Down, tick(32))]);
+        frame(&mut d, &mut rig, 48, vec![key(Key::Up, tick(48))]);
+        assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 0 }));
+        frame(&mut d, &mut rig, 64, vec![key(Key::Ok, tick(64))]);
+        assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 6 }),
+            "the quality picker opens at saved P480, not the parent's remembered row 0");
+        frame(&mut d, &mut rig, 80, vec![]);
+        assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 6 }));
+        frame(&mut d, &mut rig, 96, vec![key(back, tick(96))]);
+        assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 0 }),
+            "{back:?} restores Default quality, not the picker's remembered row 6");
+        assert_eq!(d.nav.input_owner(), Some(InputOwner::Entry(id)));
+        assert_eq!(crate::route::quality(), crate::route::Quality::P480,
+            "leaving the picker does not change the saved preference");
+    }
+    crate::route::restore_quality(previous_quality);
+    crate::route::restore_direct_play_mode(previous_mode);
+}
+
+
+/// A receipt is a real async table landing: the mount had no focusable rows. The first OK after
+/// success (or a failed load's Retry row) must work without a direction key seating the engine.
+#[test]
+fn account_preference_landing_seats_the_first_rows_and_retry_landing() {
+    use crate::plex::account::{AudioPreferences, PreferenceError, PreferenceRequest};
+    use registry::{AccountPreferenceReply, PreferenceCmd};
+    let _g = crate::testlock::serial();
+    let _sess = scratch_session("composed-preference-load-seat");
+    let previous = crate::plex::session::current_snapshot();
+    struct RestoreProfile(std::sync::Arc<crate::plex::session::CurrentProfile>);
+    impl Drop for RestoreProfile {
+        fn drop(&mut self) {
+            crate::plex::session::publish_profile_for_test(self.0.user.clone(), self.0.generation);
+        }
+    }
+    let _restore = RestoreProfile(previous);
+    let user = crate::plex::session::UserRef { id: 7, uuid: "preference-seat-fixture".into(),
+        ..Default::default() };
+    crate::plex::session::publish_profile_for_test(Some(user.clone()), 71);
+    let (request, snapshot) = PreferenceRequest::fixture_for_test(user, 71, AudioPreferences::default());
+    for fail_first in [false, true] {
+        let (mut d, mut rig, id) = consent_opened(SettingsPage::AudioSubtitles);
+        frame(&mut d, &mut rig, 32, vec![]);
+        assert_eq!(d.focus(), None, "loading has no rows to focus");
+        let Some(PreferenceCmd::Load { reply }) = rig.preference_commands.pop() else {
+            panic!("the screen must ask its host for the initial load");
+        };
+        reply.send(AccountPreferenceReply { request: Some(request.clone()), outcome: if fail_first {
+            Err(PreferenceError::Unavailable)
+        } else { Ok(snapshot.clone()) } }).unwrap();
+        frame(&mut d, &mut rig, 48, vec![]);
+        assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 0 }),
+            "the first loaded rows, including an error's Retry, must be seated");
+        if fail_first {
+            frame(&mut d, &mut rig, 64, vec![key(Key::Ok, tick(64))]);
+            let Some(PreferenceCmd::Load { reply }) = rig.preference_commands.pop() else {
+                panic!("OK must immediately activate Retry");
+            };
+            frame(&mut d, &mut rig, 80, vec![]);
+            reply.send(AccountPreferenceReply { request: Some(request.clone()), outcome: Ok(snapshot.clone()) }).unwrap();
+            frame(&mut d, &mut rig, 96, vec![]);
+            assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 0 }));
+        }
+        frame(&mut d, &mut rig, 112, vec![key(Key::Ok, tick(112))]);
+        assert!(path(&d, id).contains("picker=Some(AudioLanguage)"),
+            "the first OK after loading must open the language picker: {}", path(&d, id));
+        frame(&mut d, &mut rig, 128, vec![key(Key::Back, tick(128))]);
+        frame(&mut d, &mut rig, 144, vec![key(Key::Down, tick(144))]);
+        frame(&mut d, &mut rig, 160, vec![key(Key::Ok, tick(160))]);
+        frame(&mut d, &mut rig, 176, vec![key(Key::Ok, tick(176))]);
+        let Some(PreferenceCmd::Save { reply, .. }) = rig.preference_commands.pop() else {
+            panic!("choosing a subtitle mode must ask the host to save");
+        };
+        frame(&mut d, &mut rig, 192, vec![key(Key::Down, tick(192))]);
+        assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 2 }));
+        assert!(reply.send(AccountPreferenceReply { request: Some(request.clone()),
+            outcome: Ok(snapshot.clone()) }).is_ok());
+        frame(&mut d, &mut rig, 208, vec![]);
+        assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 2 }),
+            "an ordinary save landing must retain the user's current row");
+    }
+}
+
+
+/// The warning uses engine-owned Control presses, not bare table activation. A complete OK
+/// down/up pair must confirm its focused answer, after entering through the real table flow.
+#[test]
+fn force_warning_engine_focus_confirms_only_the_chosen_answer() {
+    use crate::ui::machine::{Edge, InputKind};
+    let _g = crate::testlock::serial();
+    let _sess = scratch_session("composed-force-warning");
+    let previous = crate::route::direct_play_mode();
+    crate::route::restore_direct_play_mode(crate::route::DirectPlayMode::Auto);
+    let ok = |ms| {
+        let down = key(Key::Ok, tick(ms));
+        let mut up = down.clone();
+        if let InputKind::Key { edge, .. } = &mut up.kind { *edge = Edge::Up; }
+        vec![down, up]
+    };
+    for confirm in [false, true] {
+        let (mut d, mut rig, id) = consent_opened(SettingsPage::Playback);
+        frame(&mut d, &mut rig, 32, vec![key(Key::Down, tick(32))]);
+        assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 1 }));
+        frame(&mut d, &mut rig, 48, ok(48));
+        assert!(path(&d, id).contains("picker=Some(DirectPlay)"));
+        frame(&mut d, &mut rig, 64, vec![key(Key::Down, tick(64))]);
+        frame(&mut d, &mut rig, 80, ok(80));
+        assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: registry::ALERT }),
+            "opening Force always seats Cancel and consumes the picker input");
+        assert!(rig.preference_commands.is_empty());
+        if confirm {
+            frame(&mut d, &mut rig, 96, vec![key(Key::Right, tick(96))]);
+            assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: registry::ALERT + 1 }));
+        }
+        frame(&mut d, &mut rig, 112, ok(112));
+        // A Control's pressed animation may defer its commit until it has reached its dip.
+        for ms in (128..=448).step_by(16) { frame(&mut d, &mut rig, ms, vec![]); }
+        assert_eq!(d.focus(), Some(FocusKey { entry: id, elem: 1 }));
+        assert!(!path(&d, id).contains("confirm=true"), "the chosen answer closes the warning");
+        if confirm {
+            assert!(matches!(rig.preference_commands.pop(), Some(registry::PreferenceCmd::DirectPlay {
+                mode: crate::route::DirectPlayMode::Forced, ..
+            })), "Enable Force emits the admitted persistence request");
+        } else {
+            assert!(rig.preference_commands.is_empty(), "Cancel must never request persistence");
+        }
+        assert_eq!(crate::route::direct_play_mode(), crate::route::DirectPlayMode::Auto,
+            "the composed fixture executes no live persistence");
+    }
+    crate::route::restore_direct_play_mode(previous);
 }

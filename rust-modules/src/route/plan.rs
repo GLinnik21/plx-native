@@ -1668,7 +1668,7 @@ fn audio_intents<'a>(tracks: &[crate::metadata::Stream], prefs: AudioLangPrefs<'
 /// timeline can report the truth. [`audio_intents`] ranks what to honour; this takes the first
 /// entry it can carry:
 ///   - [`AudioIntent::Selection`]: that track when it is direct-playable, else a direct-playable track
-///     in ITS language (an English DTS picked on a phone plays as the English AC3 beside it, not
+///     in ITS language (an unsupported English DTS pick plays as the English AC3 beside it, not
 ///     as the default dub) — the Load payload uses THAT track's codec so there is no mismatch;
 ///   - [`AudioIntent::Language`]: the first direct-playable track in it;
 ///   - [`AudioIntent::FileDefault`]: the file's flagged default track if its codec
@@ -1975,7 +1975,7 @@ pub(super) fn lang_matches(a: &str, b: &str) -> bool {
 /// by an encoder instead of a direct play (the first entry with a usable id wins).
 ///
 /// A remux COPIES, so this is the smart-DP sibling (`dp_audio_id`) — putting a selected
-/// TrueHD/DTS track would ship audio the TV cannot decode. `env_audio_sid` is the session/retry
+/// TrueHD or unsupported DTS track would ship audio the TV cannot decode. `env_audio_sid` is the session/retry
 /// pick and wins on re-encode when set, including a remux leftover sibling (mid-play quality drop
 /// keeps what is already playing); a cold play zeros it (`request_play`). Otherwise:
 ///   - [`AudioIntent::Selection`]: that track itself — a re-encode can transcode a selected DTS to
@@ -2017,6 +2017,14 @@ fn encode_audio_id(
 }
 
 
+/// Whether the client can render this embedded subtitle codec.
+fn embedded_subtitle_renderable(codec: &str) -> bool {
+    // Advertised bitmap/ASS/text codecs plus ff::sub_kind's raw UTF-8 packet formats.
+    crate::plex::is_dp_subtitle(codec) || matches!(codec,
+        "vplayer" | "pjs" | "jacosub" | "microdvd" | "sami" | "realtext" |
+        "subviewer" | "subviewer1" | "stl" | "mpl2")
+}
+
 /// The subtitle to turn ON at the start of a DIRECT-PLAY, from the server's own per-part
 /// selection — returning (stream id, embedded-subtitle ordinal for the client renderer), or
 /// None to start with subtitles off (the shipped behaviour when the server has no selection).
@@ -2044,19 +2052,12 @@ fn encode_audio_id(
 ///   - this is the direct-play path only. The transcode path keeps PUTting `subtitleStreamID=0`
 ///     (subs off) as before: honouring a selection there means a server-side BURN, i.e. a
 ///     re-encode carrying a picture-quality cost, which is a trade to put behind the settings
-///     surface this app does not have yet rather than to make silently at every play. Once a
-///     direct-played item DOES go to the transcoder mid-session (a DTS/TrueHD audio pick), the
+///     surface explicitly rather than to make silently at every play. Once a
+///     direct-played item DOES go to the transcoder mid-session (an unsupported DTS/TrueHD audio pick), the
 ///     seeded `cur_sub_sid` rides along, so the subtitle already on screen keeps burning. Note the
 ///     read-back is therefore ONE-WAY on that path: an item that starts as a transcode still PUTs
 ///     `subtitleStreamID=0`, which not only suppresses the burn but CLEARS the server's selection
 ///     for everyone. That predates this change; honouring it instead is the same burn decision.
-fn embedded_subtitle_renderable(codec: &str) -> bool {
-    // Advertised bitmap/ASS/text codecs plus ff::sub_kind's raw UTF-8 packet formats.
-    crate::plex::is_dp_subtitle(codec) || matches!(codec,
-        "vplayer" | "pjs" | "jacosub" | "microdvd" | "sami" | "realtext" |
-        "subviewer" | "subviewer1" | "stl" | "mpl2")
-}
-
 pub(super) fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64, i32)> {
     let i = subs.iter().position(|s| s.selected && !s.external)?;
     let ord = crate::metadata::sub_render_ordinal(subs, i);
@@ -2153,6 +2154,19 @@ fn pick_dp_subtitle_account(
     })
 }
 
+/// Software feed formats and Dolby Vision declaration support, independent of device limits.
+pub(super) fn video_feed_supported(vcodec: &str, dv: crate::metadata::DvPresentation) -> bool {
+    matches!(vcodec, "h264" | "hevc") && dv.refusal().is_none()
+}
+
+pub(super) fn direct_play_policy(mode: DirectPlayMode, policy: crate::plex::LinkPolicy) -> crate::plex::LinkPolicy {
+    match mode {
+        DirectPlayMode::Auto => policy,
+        DirectPlayMode::Forced => crate::plex::LinkPolicy { direct_play: true, remux: false },
+        DirectPlayMode::Disabled => crate::plex::LinkPolicy { direct_play: false, remux: policy.remux },
+    }
+}
+
 /// PURE: the local direct-play VIDEO test — the codec, the source's stated frame size and its
 /// Dolby Vision layering must ALL clear what this device and this pipeline can actually show.
 ///
@@ -2199,18 +2213,6 @@ fn pick_dp_subtitle_account(
 /// Unknown dimensions (0) PASS: PMS omitting a Media attribute is not evidence of 4K, and
 /// failing open is yesterday's behavior for every file the server never measured — the same
 /// misread-degrades-to-assumed rule `devcaps::parse` applies, and `Dovi` applies it too.
-pub(super) fn video_feed_supported(vcodec: &str, dv: crate::metadata::DvPresentation) -> bool {
-    matches!(vcodec, "h264" | "hevc") && dv.refusal().is_none()
-}
-
-pub(super) fn direct_play_policy(mode: DirectPlayMode, policy: crate::plex::LinkPolicy) -> crate::plex::LinkPolicy {
-    match mode {
-        DirectPlayMode::Auto => policy,
-        DirectPlayMode::Forced => crate::plex::LinkPolicy { direct_play: true, remux: false },
-        DirectPlayMode::Disabled => crate::plex::LinkPolicy { direct_play: false, remux: policy.remux },
-    }
-}
-
 pub(super) fn video_direct_plays(
     vcodec: &str,
     src_w: i64,

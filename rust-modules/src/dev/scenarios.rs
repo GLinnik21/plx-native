@@ -905,6 +905,8 @@ fn settings_boot_arm(app: &mut App, fr: &mut Frame) {
                 "home" => crate::screens::family::SettingsPage::Favourites,
                 "privacy" => crate::screens::family::SettingsPage::Privacy,
                 "legal" => crate::screens::family::SettingsPage::Legal,
+                "playback" => crate::screens::family::SettingsPage::Playback,
+                "audio" => crate::screens::family::SettingsPage::AudioSubtitles,
                 _other => {
                     #[cfg(feature = "devtriggers")]
                     crate::log(&format!("BADTRIGGER settings-boot target {_other:?} unknown; opened root instead"));

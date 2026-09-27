@@ -723,16 +723,15 @@ byte for byte; only the *choosing* is bypassed.
 `stream_dovi`/`stream_immersive` — five fields normally installed together by `route::apply_plan`
 from a PMS decision and replaced together by later route transitions. The older `plxnative-url`
 trigger hands over a URL and nothing else, so a URL-fed 4K HEVC file was declared to the television
-as whatever the route happened to hold: on a fresh boot, the empty string, which falls through the
-engine's `_ =>` arm to an H264 payload with `"AC3"` audio.
+as whatever the route happened to hold. An absent or unsupported audio declaration now fails
+before Load instead of silently declaring AC3.
 The declaration is precisely what governs HEVC-vs-H264 payload selection, LG's `"AC3 PLUS"`
 renaming of E-AC-3, and both Dolby nodes — so a tier that cannot set it cannot test any of them.
 `plxnative-playurl` sets all five in one write (`route::set_stream_declaration`).
 
-That fallthrough is also the tier's main false-PASS risk, and the manifest is shaped against it: an
-unread trigger produces exactly the right payload for the AC-3 baseline case. So the matrix carries
-cases whose expected `load_audio` is `"AC3 PLUS"` and `"AAC"` — values the fallthrough cannot
-produce by accident — and the `load_decl` assertion grades the app's new `load:` event-log line.
+The matrix carries codec-specific `load_audio` expectations, including `"AC3 PLUS"`, `"AAC"` and
+`"DTS"`. Together with the `load_decl` assertion, these prove that each fixture supplies its
+intended declaration rather than relying on generic playback liveness.
 
 **Assertions.** `stream_path` (the demuxer opened *this* case's fixture, not something a stale
 trigger pointed it at), `load_decl` (above), `codec` and `audio_stream_index` (what the demuxer

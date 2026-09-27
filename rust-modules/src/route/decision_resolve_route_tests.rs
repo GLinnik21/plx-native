@@ -956,7 +956,7 @@ fn audio_change_invalidates_a_pending_original_recovery() {
     );
     request_user_route_intent(&ps, UserRouteIntent::RecoverOriginal);
 
-    commit_audio_selection_with_channels(&mut ps, 1, "aac", 99, 2);
+    commit_audio_selection(&mut ps, 1, "aac", 99, 2);
 
     assert!(ps.auto_original.is_none());
     let action = claim_route_action().expect("the new audio track needs HLS retranscode");

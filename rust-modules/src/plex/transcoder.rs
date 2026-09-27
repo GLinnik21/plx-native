@@ -23,9 +23,9 @@ use super::probe::Location;
 /// two-sided test — what our demuxer/payload path can feed, before asking whether this
 /// particular SoC can decode it. The live set is `devcaps::Caps::audio` (this list ∩ the
 /// device's own codec table), and the ONE-definition rule moved there with it: the
-/// [`is_dp_audio`] predicate that gates every direct-play decision (route + the track menu's
-/// native-switch) and the profile string's audio lists BOTH read the caps snapshot, so the
-/// claim sent to PMS and the gate applied locally cannot drift apart.
+/// Normal routing uses [`is_dp_audio_track`] for membership and channel bounds, shared with
+/// the device profile. Forced mode instead uses the implemented software feed formats and
+/// its separate profile, without conservative device bounds.
 pub const DP_AUDIO_CODECS: &str = "aac,ac3,eac3,dts";
 pub fn is_dp_audio(codec: &str) -> bool {
     crate::devcaps::caps().audio_has(codec)

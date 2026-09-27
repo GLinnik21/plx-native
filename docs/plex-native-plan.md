@@ -4,7 +4,8 @@
 establish a proper communication by protocol with Plex server and also session that server
 expects."
 
-This is the single authoritative spec for: (1) the capability profile the client declares,
+This is a historical implementation plan, not the current capability specification. For current
+DTS and playback-preference policy see [Playback settings](playback-settings.md). It originally covered: (1) the capability profile the client declares,
 (2) the `/decision` handshake that replaces the hard-coded codec test, (3) the session +
 timeline correlation that makes Now Playing correct, (4) HEVC/HDR10 direct-play through the
 in-house demuxer + Starfish, (5) how soft subtitles + audio-track selection fold in once

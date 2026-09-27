@@ -633,7 +633,7 @@ fn sink_envelope_now(ps: &crate::route::PlaybackSession, is_h265: bool) -> SinkE
         crate::route::sink_max_raster(ps),
         crate::route::stream_fps(ps),
         crate::devcaps::caps(),
-        crate::devcaps::measured(),
+        crate::devcaps::measured() && !crate::route::forced_direct_play(ps),
     )
 }
 

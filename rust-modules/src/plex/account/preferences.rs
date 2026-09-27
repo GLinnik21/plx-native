@@ -59,7 +59,8 @@ impl PreferenceError {
 }
 
 impl PreferenceRequest {
-    /// No network or storage I/O: the session and active identity are immutable live snapshots.
+    /// Captures the active identity and session. No account request runs here, but session::peek
+    /// may schedule a background storage refresh; call only after live IO has been admitted.
     pub(crate) fn capture() -> Option<Self> {
         let current = crate::plex::session::current_snapshot();
         let user = current.user.clone()?;
@@ -71,6 +72,18 @@ impl PreferenceRequest {
     }
 
     pub(crate) fn is_current(&self) -> bool { self.key.is_current() }
+
+    /// A fully synthetic receipt for composed UI tests; neither credentials nor preferences are
+    /// read from disk or fetched from Plex. The caller publishes this identity under testlock.
+    #[cfg(test)]
+    pub(crate) fn fixture_for_test(user: crate::plex::session::UserRef, generation: u32,
+        preferences: AudioPreferences) -> (Self, PreferenceSnapshot)
+    {
+        crate::testlock::assert_held("account preference receipt fixture");
+        let key = AudioPreferencesKey::new(&user, generation);
+        (Self { client_id: "preference-fixture-client".into(), credential: "synthetic-token".into(),
+            user, key: key.clone() }, PreferenceSnapshot { preferences, key, revision: 0 })
+    }
 
     pub(crate) fn load(&self) -> Result<PreferenceSnapshot, PreferenceError> {
         self.load_with(&super::AUDIO_PREFERENCES_CACHE, &PREFERENCE_IO,

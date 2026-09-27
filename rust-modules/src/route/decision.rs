@@ -4748,7 +4748,6 @@ pub(crate) fn restore_direct_play_mode(mode: DirectPlayMode) {
 }
 
 /// Blocking persistence seam; Settings dispatches it on the storage worker.
-#[allow(dead_code)] // Settings integration is supplied by the parent lane.
 pub(crate) fn set_direct_play_mode(mode: DirectPlayMode) -> bool {
     let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_direct_play_mode(mode)))
         .is_some_and(|write| matches!(write.classify(),
@@ -4757,7 +4756,6 @@ pub(crate) fn set_direct_play_mode(mode: DirectPlayMode) -> bool {
     saved
 }
 
-#[allow(dead_code)] // Settings integration is supplied by the parent lane.
 pub(crate) fn set_default_quality(q: Quality) -> bool {
     let q = supported_quality(q);
     let saved = crate::plex::session::update_with_outcome(|s| Some(s.with_playback_quality(q)))
@@ -4769,11 +4767,6 @@ pub(crate) fn set_default_quality(q: Quality) -> bool {
 
 pub(crate) fn forced_direct_play(ps: &PlaybackSession) -> bool {
     ps.direct_play_mode == DirectPlayMode::Forced
-}
-
-#[allow(dead_code)] // Player UI integration is supplied by the parent lane.
-pub(crate) fn effective_quality(ps: &PlaybackSession) -> Quality {
-    if forced_direct_play(ps) { Quality::Original } else { quality() }
 }
 
 pub(crate) fn audio_track_direct_plays(ps: &PlaybackSession, codec: &str, channels: i64) -> bool {
@@ -6431,12 +6424,7 @@ fn retranscode_as(ps: &mut PlaybackSession, expected: &WorkerTicket, offset_secs
 /// file — no transcode, keeps 4K HEVC) when the item direct-plays AND the target codec is
 /// direct-playable; else a server re-transcode with that stream selected. `idx` is the
 /// CONTAINER audio ordinal (the menu converts its row via metadata::audio_ordinal).
-#[allow(dead_code)] // Compatibility while callers adopt channel-aware selection.
-pub(crate) fn commit_audio_selection(ps: &mut PlaybackSession, idx: i32, codec: &str, stream_id: i64) {
-    commit_audio_selection_with_channels(ps, idx, codec, stream_id, 0);
-}
-
-pub(crate) fn commit_audio_selection_with_channels(ps: &mut PlaybackSession, idx: i32, codec: &str, stream_id: i64, channels: i64) {
+pub(crate) fn commit_audio_selection(ps: &mut PlaybackSession, idx: i32, codec: &str, stream_id: i64, channels: i64) {
     if forced_direct_play(ps) && !audio_track_direct_plays(ps, codec, channels) {
         ps.play_verdict = Some("Force Direct Play is enabled. This audio format needs conversion. Return Direct Play to Auto in Settings.".into());
         return;
@@ -6489,7 +6477,7 @@ pub(crate) fn apply_deferred_original_effects(ps: &mut PlaybackSession, mut effe
         apply_quality_choice(ps, q);
     }
     if let Some((idx, codec, stream_id, channels)) = effects.audio.take() {
-        commit_audio_selection_with_channels(ps, idx, &codec, stream_id, channels);
+        commit_audio_selection(ps, idx, &codec, stream_id, channels);
     }
 }
 

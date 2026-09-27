@@ -78,9 +78,8 @@ pub(crate) struct Caps {
     pub vp9: bool,
     /// The direct-playable AUDIO subset: `plex::DP_AUDIO_CODECS` (what the pipeline decodes)
     /// intersected with the table's audio rows, in `DP_AUDIO_CODECS`'s own URL form/order.
-    /// This field is the one definition both consumers read — `plex::is_dp_audio` (the gate on
-    /// every direct-play decision) and the profile string's audio lists — so the two cannot
-    /// drift apart (the coupling `DP_AUDIO_CODECS`'s doc has always promised).
+    /// Normal routing reads this and the channel ceilings through `plex::is_dp_audio_track`,
+    /// as does its PMS profile. Forced mode uses the software feed set independently.
     pub audio: String,
     /// Nonzero, per-codec channel ceilings from the device table, duplicate rows MIN-merged.
     /// Missing legacy limits remain unknown; DTS is admitted only with a measured limit.

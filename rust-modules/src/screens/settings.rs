@@ -447,6 +447,8 @@ fn mount_page(
 ) -> Box<dyn Screen<InnerHost>> {
     match arg {
         SettingsPage::Root => Box::new(RootPage::new(entry, cx.views)),
+        SettingsPage::Playback => Box::new(super::preferences::PreferencesPage::new(entry, super::preferences::Kind::Playback)),
+        SettingsPage::AudioSubtitles => Box::new(super::preferences::PreferencesPage::new(entry, super::preferences::Kind::AudioSubtitles)),
         SettingsPage::Legal => Box::new(super::legal::LegalIndex::new(entry)),
         SettingsPage::About => Box::new(super::legal::DocumentPage::about(entry)),
         SettingsPage::Document(i) => Box::new(super::legal::DocumentPage::legal(entry, i)),
@@ -488,6 +490,8 @@ fn mount_page(
 /// trusting it:
 ///
 ///  * `RootPage` → `RootState`: the selected row, Automatically Sign In, and trailer autoplay.
+///  * `PreferencesPage`: page/picker identity, confirmed values, pending/error presentation and
+///    the Force acknowledgement state. See `screens::preferences::SHAPE`.
 ///  * `ConsentPage` (Privacy & data, and each first-run stage) → `ConsentState`: the mode, both
 ///    halves of the draft decision, and whether the delete alert is up.
 ///  * `OnboardScreen` (Favorite libraries) → `OnboardState`: whether it is the Settings or the
@@ -945,7 +949,8 @@ impl Mounter<InnerHost> for RouteSurface {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Action {
-    Favourites,
+    Playback,
+    AudioSubtitles,    Favourites,
     Privacy,
     Legal,
     AutoSignIn,
@@ -1106,6 +1111,15 @@ impl RootPage {
         );
         sections.push(system);
         actions.push(Action::About);
+        let mut playback = Section::new("Playback").row(
+            Row::new("Video & playback").detail("Default quality and Direct Play.").chevron(true));
+        actions.push(Action::Playback);
+        if signed_in {
+            playback = playback.row(Row::new("Audio & subtitles")
+                .detail("Language preferences synced with your Plex account.").chevron(true));
+            actions.push(Action::AudioSubtitles);
+        }
+        sections.push(playback);
         self.rows = actions;
         self.table.compact = false;
         self.table.header_ink = theme::TEXT_READING;
@@ -1173,7 +1187,7 @@ impl RootPage {
                 RouteLayout::screen(),
                 None,
                 "Settings",
-                "Settings apply to this Plex profile on this television. You can return here from the profile menu at any time.",
+                "Manage this television and your Plex profile. Language preferences sync with your Plex account; playback defaults apply to this television.",
             ),
             &self.table,
             GroupId(0),
@@ -1222,6 +1236,8 @@ impl RootPage {
                 }
                 self.rebuild(self.table.sel, directory);
             }
+            Action::Playback => fx.push(Fx::Nav(NavOp::Push(SettingsPage::Playback))),
+            Action::AudioSubtitles => fx.push(Fx::Nav(NavOp::Push(SettingsPage::AudioSubtitles))),
             Action::Favourites => fx.push(Fx::Nav(NavOp::Push(SettingsPage::Favourites))),
             Action::Privacy => fx.push(Fx::Nav(NavOp::Push(SettingsPage::Privacy))),
             Action::Legal => fx.push(Fx::Nav(NavOp::Push(SettingsPage::Legal))),

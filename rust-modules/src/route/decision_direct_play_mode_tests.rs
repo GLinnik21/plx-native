@@ -116,7 +116,7 @@ fn force_retains_feed_limits_and_session_snapshot_across_retry_and_track_edits()
     assert!(fallback_auto_to_hls(&mut ps, 1000, 0).is_none());
     assert!(transcode_seek(&mut ps, 0).is_none());
     assert!(recover_auto_to_original(&mut ps, 0).is_none());
-    commit_audio_selection_with_channels(&mut ps, 0, "truehd", 9, 8);
+    commit_audio_selection(&mut ps, 0, "truehd", 9, 8);
     assert!(play_verdict(&ps).unwrap().contains("Return Direct Play to Auto"));
     assert_eq!(cur_audio_sid(&ps), 0, "refusing an unsupported track leaves the current selection intact");
     restore_direct_play_mode(DirectPlayMode::Auto);

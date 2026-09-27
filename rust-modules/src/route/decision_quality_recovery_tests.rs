@@ -1605,7 +1605,7 @@ fn audio_selected_during_original_trial_uses_the_route_that_actually_lands() {
         Some(AutoOriginalReload::Direct)
     );
 
-    commit_audio_selection_with_channels(&mut ps, 2, "aac", 99, 2);
+    commit_audio_selection(&mut ps, 2, "aac", 99, 2);
     assert!(
         !pending_user_route_intent(UserRouteIntent::NativeAudioReload),
         "the temporary Direct actuator must not escape the Original trial",

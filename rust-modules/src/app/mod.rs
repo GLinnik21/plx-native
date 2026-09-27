@@ -125,6 +125,7 @@ mod recorder;
 pub(crate) mod events;
 pub(crate) mod lifecycle;
 pub(crate) mod playback;
+mod preferences;
 pub(crate) mod input;
 pub(crate) mod bridge;
 pub(crate) mod chrome;
