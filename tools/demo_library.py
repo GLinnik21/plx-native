@@ -561,7 +561,9 @@ def site_credits(assets, catalog, dst=SITE_CREDITS):
     <meta name="description" content="Credits and licences for the openly licensed artwork in the PlxNative screenshots." />
     <title>Artwork credits — PlxNative</title>
     <link rel="canonical" href="https://plxnative.com/credits.html" />
-    <link rel="icon" type="image/png" href="assets/logo-master.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="48x48" href="icons/favicon-48.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png" />
     <meta name="theme-color" content="#202022" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="PlxNative" />
@@ -588,7 +590,7 @@ def site_credits(assets, catalog, dst=SITE_CREDITS):
         <header class="site-header">
           <div class="header-bar">
             <a class="brand" href="./" aria-label="Back to PlxNative">
-              <span class="brand-mark"><img src="assets/logo-master.png" alt="" /></span>
+              <span class="brand-mark"><img src="icons/brand-mark.png" alt="" width="22" height="22" /></span>
               <span class="brand-name"><span class="back-arrow" aria-hidden="true">&larr;</span> PlxNative</span>
             </a>
             <nav class="site-nav" aria-label="Primary navigation">
