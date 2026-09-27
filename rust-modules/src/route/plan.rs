@@ -531,6 +531,8 @@ pub(crate) struct ResolveEnv {
     pub machine_id: String,
     pub audio_sid: i64,
     pub sub_sid: i64,
+    /// A retry carries the viewer's explicit Off as well as a positive subtitle id.
+    pub subtitle_override: Option<i64>,
     /// the loaded detail's streams when it IS this item — saves the worker a GET
     pub cached_item: Option<crate::metadata::PlayingItem>,
     /// The user's pick off the quality ladder, captured at the press like everything else here.
@@ -981,6 +983,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         tracks.iter().enumerate().find(|(_, t)| t.id == env.audio_sid
             && audio_direct_plays(env.direct_play_mode, &t.codec, t.channels))
             .map(|(i, t)| (i as i32, t.codec.to_lowercase(), t.id))
+            .or_else(|| (!forced).then(|| pick_dp_audio_pref(tracks, acodec, audio_prefs)).flatten())
     } else if rk.is_empty() {
         None
     } else {
@@ -1024,7 +1027,12 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
             let account = account_subtitles.as_ref().map(|(language, mode, forced)| SubtitleLangPrefs {
                 language: language.as_deref(), mode: *mode, forced: *forced,
             }).unwrap_or_default();
-            pick_dp_subtitle_account(&p.subs, &show_prefs, account, &audio_lang)
+            if let Some(id) = env.subtitle_override {
+                p.subs.iter().position(|s| s.id == id && !s.external && embedded_subtitle_renderable(&s.codec))
+                    .and_then(|i| (id > 0).then_some((id, crate::metadata::sub_render_ordinal(&p.subs, i))))
+            } else {
+                pick_dp_subtitle_account(&p.subs, &show_prefs, account, &audio_lang)
+            }
         });
     if sub_pick.is_some()
         && show_prefs.subtitle.is_some()
@@ -2022,6 +2030,13 @@ fn encode_audio_id(
 ///     read-back is therefore ONE-WAY on that path: an item that starts as a transcode still PUTs
 ///     `subtitleStreamID=0`, which not only suppresses the burn but CLEARS the server's selection
 ///     for everyone. That predates this change; honouring it instead is the same burn decision.
+fn embedded_subtitle_renderable(codec: &str) -> bool {
+    // Advertised bitmap/ASS/text codecs plus ff::sub_kind's raw UTF-8 packet formats.
+    crate::plex::is_dp_subtitle(codec) || matches!(codec,
+        "vplayer" | "pjs" | "jacosub" | "microdvd" | "sami" | "realtext" |
+        "subviewer" | "subviewer1" | "stl" | "mpl2")
+}
+
 pub(super) fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64, i32)> {
     let i = subs.iter().position(|s| s.selected && !s.external)?;
     let ord = crate::metadata::sub_render_ordinal(subs, i);
@@ -2029,7 +2044,7 @@ pub(super) fn pick_dp_subtitle(subs: &[crate::metadata::Stream]) -> Option<(i64,
     // timeline report key on, so rendering a stream we cannot NAME would show a subtitle while
     // the menu says Off. (`ord < 0` is unreachable through the `!external` filter above — it is
     // kept so a change on either side degrades to "off" instead of feeding the renderer a -1.)
-    if ord < 0 || subs[i].id <= 0 {
+    if ord < 0 || subs[i].id <= 0 || !embedded_subtitle_renderable(&subs[i].codec) {
         return None;
     }
     Some((subs[i].id, ord))
@@ -2109,7 +2124,8 @@ fn pick_dp_subtitle_account(
     ];
     tiers.iter().find_map(|tier| {
         (0..subs.len())
-            .filter(|&i| !subs[i].external && lang_matches(lang, &subs[i].lang_code)
+            .filter(|&i| !subs[i].external && embedded_subtitle_renderable(&subs[i].codec)
+                && lang_matches(lang, &subs[i].lang_code)
                 && (account.forced != 2 || subs[i].forced)
                 && (account.forced != 3 || !subs[i].forced)
                 && tier(&subs[i]))

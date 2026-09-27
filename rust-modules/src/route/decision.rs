@@ -4857,7 +4857,10 @@ pub(crate) fn set_quality_for_retry(q: Quality) {
 }
 
 pub(crate) fn set_quality(ps: &mut PlaybackSession, q: Quality) {
-    if forced_direct_play(ps) { return; }
+    if forced_direct_play(ps) {
+        let _ = persist_quality_choice(q);
+        return;
+    }
 
     let q = supported_quality(q);
     let unchanged = q == quality();
@@ -5369,6 +5372,7 @@ impl ResolveEnv {
             },
             audio_sid: cur_audio_sid(ps),
             sub_sid: cur_sub_sid(ps),
+            subtitle_override: None,
             cached_item: meta.cached_playing(sid, rk),
             quality: quality(),
             direct_play_mode: direct_play_mode(),
@@ -5716,6 +5720,7 @@ fn request_play_inner(
         env.direct_play_mode = retry.direct_play_mode;
         env.audio_sid = retry.audio_sid;
         env.sub_sid = retry.sub_sid;
+        env.subtitle_override = Some(retry.sub_sid);
     }
     let gen = PLAY_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     if let Some(resume_ns) = retry.map(|r| r.resume_ns).filter(|ns| *ns > 0) {
@@ -6671,3 +6676,7 @@ mod quality_recovery_tests;
 #[cfg(test)]
 #[path = "decision_timeline_tests.rs"]
 mod timeline_tests;
+
+#[cfg(test)]
+#[path = "decision_direct_play_mode_tests.rs"]
+mod direct_play_mode_tests;

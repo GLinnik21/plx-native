@@ -712,3 +712,38 @@ fn inherited_subtitles_use_account_language_and_mode() {
     let account = SubtitleLangPrefs { language: Some("fr"), mode: 2, forced: 0 };
     assert_eq!(pick_dp_subtitle_account(&tracks, &crate::plex::ShowLangPrefs::default(), account, "eng"), Some((2, 1)));
 }
+
+#[test]
+fn account_subtitle_precedence_foreign_audio_and_forced_modes() {
+    let mut tracks = [sub(1, 0, "eng", false), sub(2, 1, "fra", false), sub(3, 2, "fra", false)];
+    tracks[2].forced = true;
+    let account = SubtitleLangPrefs { language: Some("fr"), mode: 2, forced: 0 };
+    let mut show = crate::plex::ShowLangPrefs::default();
+    for (forced, want) in [(0, 2), (1, 3), (2, 3), (3, 2)] {
+        assert_eq!(pick_dp_subtitle_account(&tracks, &show, SubtitleLangPrefs { forced, ..account }, "eng").map(|p| p.0), Some(want));
+    }
+    assert_eq!(pick_dp_subtitle_account(&tracks[..2], &show, SubtitleLangPrefs { forced: 2, ..account }, "eng"), None);
+    let foreign = SubtitleLangPrefs { mode: 1, ..account };
+    assert_eq!(pick_dp_subtitle_account(&tracks, &show, foreign, "fra"), None);
+    assert_eq!(pick_dp_subtitle_account(&tracks, &show, foreign, "eng"), Some((2, 1)));
+    assert_eq!(pick_dp_subtitle_account(&tracks, &show, foreign, ""), None);
+    show.subtitle_mode = 0;
+    assert_eq!(pick_dp_subtitle_account(&tracks, &show, account, "eng"), None);
+    show.subtitle_mode = -1;
+    show.subtitle = Some("en".into());
+    assert_eq!(pick_dp_subtitle_account(&tracks, &show, account, "fra"), Some((1, 0)));
+    tracks[1].selected = true;
+    assert_eq!(pick_dp_subtitle_account(&tracks, &show, SubtitleLangPrefs { forced: 2, ..account }, "fra"), Some((2, 1)), "PMS selection outranks both show and forced-only policy");
+}
+
+#[test]
+fn account_subtitles_skip_unrenderable_tracks_without_enabling_a_burn() {
+    let mut tracks = [sub(1, 0, "fra", false), sub(2, 1, "fra", true), sub(3, 2, "fra", false)];
+    tracks[0].codec = "unsupported".into();
+    let account = SubtitleLangPrefs { language: Some("fr"), mode: 2, forced: 0 };
+    let show = crate::plex::ShowLangPrefs::default();
+    assert_eq!(pick_dp_subtitle_account(&tracks, &show, account, "eng"), Some((3, 1)));
+    assert_eq!(pick_dp_subtitle_account(&tracks[..2], &show, account, "eng"), None);
+    tracks[1].selected = true;
+    assert_eq!(pick_dp_subtitle_account(&tracks, &show, account, "eng"), None, "a PMS sidecar selection prevents automatic embedded selection");
+}
