@@ -5,7 +5,8 @@
 //!   host runs under, and what every `ModalStack` present/dismiss is; the application's PAGE stack
 //!   runs [`PageDip`] instead, since phase 12 (D1) made this the only route transition there is.
 //! - [`PageDip`] — `ui::nav`'s dip lifted off its statics: Out 70 ms → one-frame Hold at the
-//!   FLOOR, where the op applies → In 140 ms. Same schedule, same smoothstep, same
+//!   FLOOR, where the op applies → In 140 ms. A dip from rest first holds its capture frame at
+//!   full alpha, so the ramp starts one frame after the request. Same smoothstep, same
 //!   continuous-chrome rule (`chrome_alpha` is 1 while the shared top bar exists on both sides,
 //!   sticky-false for the duration of a retargeted fade), same reversal on cancel. It reports
 //!   `Motion` from inside `tick`. The dispatcher uses [`PageImage`] to capture the outgoing page
@@ -125,6 +126,9 @@ pub struct PageDip {
     /// Linear 0..1 — 0 = at the floor, 1 = fully present.
     t: f32,
     continuous: bool,
+    /// The next `Out` tick draws the page where it is instead of stepping: set by a request from
+    /// rest, whose first frame is the page's capture frame (see [`PageDip::request`]).
+    hold: bool,
 }
 
 impl Default for PageDip {
@@ -139,6 +143,7 @@ impl PageDip {
             phase: DipPhase::Idle,
             t: 1.0,
             continuous: false,
+            hold: false,
         }
     }
 
@@ -167,12 +172,20 @@ impl Transition for PageDip {
         // it mid-fade (`ui::nav`'s rule)
         let running = self.phase != DipPhase::Idle;
         self.continuous = if running { self.continuous && continuous } else { continuous };
+        // A dip from rest starts on the frame that captures the page, and the frames after that
+        // one are not presented until the capture leaves the GPU (`gfx::SNAPSHOT_THIS_FRAME`):
+        // the panel holds whatever the capture frame drew. That frame draws the page as it was,
+        // so the wait is latency before the fade rather than a stall one step into it — the same
+        // rule `modal::PopoverMotion::hold_one_frame` keeps for a surface's appear spring. A
+        // dip already running is never re-held (nor released early).
+        self.hold |= !running;
         // fade out FROM WHEREVER the alpha is; a request parked at the floor commits next frame
         self.phase = DipPhase::Out;
     }
 
     fn cancel(&mut self) -> bool {
         if self.phase == DipPhase::Out {
+            self.hold = false;
             self.phase = DipPhase::In; // `t` kept: the ramp reverses
             true
         } else {
@@ -190,6 +203,7 @@ impl Transition for PageDip {
                 self.t = 1.0;
                 false
             }
+            DipPhase::Out if std::mem::take(&mut self.hold) => false,
             DipPhase::Out => {
                 // Spelled as an assignment, not `-= dt`: `t` is already bounded to one ≤140ms
                 // cycle (reset to 1.0/0.0 at every phase edge, never summed across cycles), and
@@ -534,6 +548,26 @@ mod tests {
         assert!(present.take(1000), "the dip reported motion from inside tick");
     }
 
+    /// The frame a dip starts on is the frame that captures the page, and the frames after it are
+    /// not presented until that capture leaves the GPU (`gfx::SNAPSHOT_THIS_FRAME`): whatever the
+    /// capture frame shows, the panel holds. It must therefore show the unchanged page — alpha 1 —
+    /// so the fence wait is latency before the fade and not a stall one step into it. The next
+    /// tick takes the first real step, and the tick that holds still reports motion.
+    #[test]
+    fn a_dip_from_rest_holds_full_alpha_on_its_capture_frame() {
+        let mut present = Present::new();
+        assert!(present.take(0));
+        let mut d = PageDip::new();
+        d.request(false);
+        let mut ph = PresentHandle::of(&mut present);
+        assert!(!d.tick(Tick { ms: 0, dt_us: 16_667 }, &mut ph));
+        assert_eq!(d.page_alpha(), 1.0, "the capture frame draws the page as it was");
+        assert!(present.take(16), "the held frame still asks for the next one");
+        let mut ph = PresentHandle::of(&mut present);
+        assert!(!d.tick(Tick { ms: 16, dt_us: 16_667 }, &mut ph));
+        assert!(d.page_alpha() < 1.0, "the frame after the capture starts the fade");
+    }
+
     #[test]
     fn a_route_push_commits_at_once_and_draws_both_levels_until_it_settles() {
         let mut p = RoutePush::new();
@@ -589,20 +623,21 @@ mod page_image_tests {
         let mut dip = PageDip::new();
         dip.request(true);
         let mut present = crate::ui::present::Present::new();
-        for i in 0..4 {
+        // the capture frame (nothing in flight yet), then the frames its fence defers
+        for (i, waiting) in [false, true, true, true, true].into_iter().enumerate() {
             assert!(!dip.tick_presented(
                 Tick {
-                    ms: i * 16,
+                    ms: i as u32 * 16,
                     dt_us: 16_667
                 },
                 &mut PresentHandle::of(&mut present),
-                true
+                waiting
             ));
             assert_eq!(dip.page_alpha(), 1.0);
         }
         assert!(!dip.tick_presented(
             Tick {
-                ms: 64,
+                ms: 80,
                 dt_us: 16_667
             },
             &mut PresentHandle::of(&mut present),
