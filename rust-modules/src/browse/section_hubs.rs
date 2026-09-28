@@ -56,7 +56,7 @@
 #![allow(dead_code)] // the accessors are Landing 3's; see the Dormant note above
 
 use crate::plex::ServerId;
-use crate::pms::{parse_item, PmsMovie, MAX_SHELF_ITEMS};
+use crate::pms::{listable, parse_item, PmsMovie, MAX_SHELF_ITEMS};
 use std::panic::catch_unwind;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -714,13 +714,12 @@ pub(super) struct HubResult {
 /// One response into published shelves. **Pure**, so every rule below is host-graded against the
 /// fixture in this module's tests rather than inferred from a screenshot.
 ///
-/// The filter is [`crate::pms`]'s: skip the types this product has no level for, require a title
+/// The filter is [`crate::pms`]'s: allow only the types this product can list, require a title
 /// and a thumb, and read the ITEM's own `type` rather than the hub's — which can be `mixed`. An
 /// EMPTY hub is dropped entirely, which §3a measured as the common case (one movie section
 /// answered with 6 hubs of which 5 were empty), so this is required rather than tidy: a client
 /// that draws what it is given draws five headings over nothing.
 pub(crate) fn parse_hubs(mc: &crate::plex::MediaContainer, sid: ServerId) -> Vec<Shelf> {
-    const SKIP: [&str; 6] = ["album", "artist", "track", "photo", "clip", "playlist"];
     let mut out = Vec::new();
     for hub in &mc.hub {
         if out.len() >= MAX_SHELVES {
@@ -729,7 +728,7 @@ pub(crate) fn parse_hubs(mc: &crate::plex::MediaContainer, sid: ServerId) -> Vec
         let items: Vec<PmsMovie> = hub
             .metadata
             .iter()
-            .filter(|m| !SKIP.contains(&m.kind.as_str()))
+            .filter(|m| listable(&m.kind))
             .map(|m| parse_item(m, sid))
             .filter(|m| !m.title.is_empty() && !m.thumb.is_empty())
             .take(MAX_SHELF_ITEMS)
@@ -1026,10 +1025,27 @@ mod tests {
         let sh = parsed();
         let mixed = &sh[1];
         assert_eq!(mixed.items.len(), 2);
-        // `PmsMovie::kind` is the app's own small enum (0 movie / 1 show / 2 season / 3 episode),
+        // `PmsMovie::kind` is the app's own small enum (0 movie / 1 show / 2 season / 3 episode /
+        // 4 collection),
         // and the point is that each item kept ITS OWN — a hub typed `mixed` cannot supply one
         assert_eq!(mixed.items[0].kind, 1, "a show");
         assert_eq!(mixed.items[1].kind, 3, "an episode");
+    }
+
+    #[test]
+    fn collection_metadata_is_dropped_but_collection_shelves_of_movies_survive() {
+        let json = r#"{"MediaContainer":{"Hub":[
+          {"hubIdentifier":"movie.recentlyadded.1","title":"Recently Added","type":"mixed",
+           "Metadata":[{"ratingKey":"50001","type":"collection","title":"A Collection","thumb":"/c"}]},
+          {"hubIdentifier":"custom.collection.1.50001.50001","title":"A Collection","type":"movie",
+           "key":"/library/collections/50001/children","Metadata":[
+             {"ratingKey":"11","type":"movie","title":"A Film","thumb":"/m"}]}]}}"#;
+        let shelves = parse_hubs(&container(json), ServerId::from_raw(0));
+        assert_eq!(shelves.len(), 1, "a collection row must not become a movie card");
+        assert_eq!(shelves[0].id, "custom.collection.1.50001.50001");
+        assert_eq!(shelves[0].items.len(), 1);
+        assert_eq!(shelves[0].items[0].rk, "11");
+        assert_eq!(shelves[0].items[0].kind, 0);
     }
 
     /// An item with no thumb is not drawable in a shelf and is dropped, and a hub left with nothing

@@ -111,6 +111,18 @@ fn related_rows_carry_the_watch_state_the_wire_already_had() {
     assert!(!rows[3].unwatched, "…and it is not untouched either");
 }
 
+#[test]
+fn related_rows_do_not_emit_collections_as_movie_cards() {
+    let body = r#"{"MediaContainer":{"Hub":[{"Metadata":[
+        {"ratingKey":"50001","type":"collection","title":"A Collection","thumb":"/c"},
+        {"ratingKey":"11","type":"movie","title":"A Film","thumb":"/m"}
+    ]}]}}"#;
+    let mc = serde_json::from_str::<crate::plex::Envelope>(body).expect("parses").media_container;
+    let rows = related_rows(&mc, SRV_A);
+    assert_eq!(rows.len(), 1, "the collection row must be filtered out");
+    assert_eq!(rows[0].rk, "11");
+}
+
 /// The two bounds on the shelf, which are one function's job and were easy to lose in the move
 /// to the shared row mapping.
 ///
