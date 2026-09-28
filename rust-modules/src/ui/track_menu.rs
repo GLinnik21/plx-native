@@ -1441,11 +1441,11 @@ mod tests {
 mod enhancement_menu_tests {
     use super::*;
     use super::tests::store_with_audio;
-    use crate::route::{enhancement_test_session, reset_player_control_for_test, EnhTestRoute};
+    use crate::route::{enhancement_test_session, reset_player_control_for_test, EnhTestFixture};
 
     /// One playing audio track — enough for `tracks(meta)` to be `Some` so `build_audio` does not
     /// take its "no playing item" early return. The enhancement offer itself is driven entirely by
-    /// the `PlaybackSession` (`EnhTestRoute`), never by this store.
+    /// the `PlaybackSession` (`EnhTestFixture`), never by this store.
     fn one_track_store() -> crate::stores::metadata::MetadataStore {
         store_with_audio(vec![crate::metadata::Stream {
             id: 501,
@@ -1457,9 +1457,9 @@ mod enhancement_menu_tests {
         }])
     }
 
-    /// Build the Audio tab against `route`. Caller holds `testlock::serial()` — `EnhTestRoute`
+    /// Build the Audio tab against `route`. Caller holds `testlock::serial()` — `EnhTestFixture`
     /// touches the process-global server registry and (when `in_flight`) `PLAYER_CONTROL`.
-    fn audio_tab(route: EnhTestRoute) -> (TrackMenuState, crate::route::PlaybackSession) {
+    fn audio_tab(route: EnhTestFixture) -> (TrackMenuState, crate::route::PlaybackSession) {
         let (ps, _sid) = enhancement_test_session(route);
         let store = one_track_store();
         let menu = TrackMenuState::new(&ps, store.view(), 0, Vec::new());
@@ -1477,7 +1477,7 @@ mod enhancement_menu_tests {
     fn enh_rows_absent_no_pass() {
         let _g = crate::testlock::serial();
         let (menu, ps) =
-            audio_tab(EnhTestRoute { pass: crate::plex::serverinfo::Subscription::No, ..Default::default() });
+            audio_tab(EnhTestFixture { pass: crate::plex::serverinfo::Subscription::No, ..Default::default() });
         assert_eq!(menu.enhance_shown, None);
         assert_eq!(menu.table.sections.len(), 1, "track list only — no second section at all");
         teardown(&ps);
@@ -1486,7 +1486,7 @@ mod enhancement_menu_tests {
     #[test]
     fn enh_rows_absent_unknown_subscription() {
         let _g = crate::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestRoute {
+        let (menu, ps) = audio_tab(EnhTestFixture {
             pass: crate::plex::serverinfo::Subscription::Unknown,
             ..Default::default()
         });
@@ -1497,7 +1497,7 @@ mod enhancement_menu_tests {
     #[test]
     fn enh_rows_absent_incapable_track() {
         let _g = crate::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestRoute { carried_capable: Some(false), ..Default::default() });
+        let (menu, ps) = audio_tab(EnhTestFixture { carried_capable: Some(false), ..Default::default() });
         assert_eq!(menu.enhance_shown, None);
         teardown(&ps);
     }
@@ -1505,7 +1505,7 @@ mod enhancement_menu_tests {
     #[test]
     fn enh_rows_absent_dv() {
         let _g = crate::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestRoute { dv_declared: true, ..Default::default() });
+        let (menu, ps) = audio_tab(EnhTestFixture { dv_declared: true, ..Default::default() });
         assert_eq!(menu.enhance_shown, None);
         teardown(&ps);
     }
@@ -1513,7 +1513,7 @@ mod enhancement_menu_tests {
     #[test]
     fn enh_rows_absent_subtitle_shown() {
         let _g = crate::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestRoute { subtitle_shown: true, ..Default::default() });
+        let (menu, ps) = audio_tab(EnhTestFixture { subtitle_shown: true, ..Default::default() });
         assert_eq!(menu.enhance_shown, None);
         teardown(&ps);
     }
@@ -1524,7 +1524,7 @@ mod enhancement_menu_tests {
     #[test]
     fn enh_rows_absent_sidecar_shown() {
         let _g = crate::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestRoute { subtitle_shown: true, ..Default::default() });
+        let (menu, ps) = audio_tab(EnhTestFixture { subtitle_shown: true, ..Default::default() });
         assert_eq!(menu.enhance_shown, None);
         teardown(&ps);
     }
@@ -1534,7 +1534,7 @@ mod enhancement_menu_tests {
     #[test]
     fn enh_rows_absent_hls() {
         let _g = crate::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestRoute { remux: Some(false), ..Default::default() });
+        let (menu, ps) = audio_tab(EnhTestFixture { remux: Some(false), ..Default::default() });
         assert_eq!(menu.enhance_shown, None);
         teardown(&ps);
     }
@@ -1542,7 +1542,7 @@ mod enhancement_menu_tests {
     #[test]
     fn enh_rows_absent_reencode_rung() {
         let _g = crate::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestRoute { remux: Some(false), ..Default::default() });
+        let (menu, ps) = audio_tab(EnhTestFixture { remux: Some(false), ..Default::default() });
         assert_eq!(menu.enhance_shown, None);
         teardown(&ps);
     }
@@ -1550,7 +1550,7 @@ mod enhancement_menu_tests {
     #[test]
     fn enh_rows_absent_relay() {
         let _g = crate::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestRoute { remux: Some(false), ..Default::default() });
+        let (menu, ps) = audio_tab(EnhTestFixture { remux: Some(false), ..Default::default() });
         assert_eq!(menu.enhance_shown, None);
         teardown(&ps);
     }
@@ -1560,7 +1560,7 @@ mod enhancement_menu_tests {
     #[test]
     fn enh_rows_absent_forced() {
         let _g = crate::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestRoute { base_present: false, ..Default::default() });
+        let (menu, ps) = audio_tab(EnhTestFixture { base_present: false, ..Default::default() });
         assert_eq!(menu.enhance_shown, None);
         teardown(&ps);
     }
@@ -1568,7 +1568,7 @@ mod enhancement_menu_tests {
     #[test]
     fn enh_rows_absent_refused() {
         let _g = crate::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestRoute { refused: true, ..Default::default() });
+        let (menu, ps) = audio_tab(EnhTestFixture { refused: true, ..Default::default() });
         assert_eq!(menu.enhance_shown, None);
         teardown(&ps);
     }
@@ -1576,7 +1576,7 @@ mod enhancement_menu_tests {
     #[test]
     fn enh_rows_absent_server_default_audio() {
         let _g = crate::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestRoute { carried_capable: None, ..Default::default() });
+        let (menu, ps) = audio_tab(EnhTestFixture { carried_capable: None, ..Default::default() });
         assert_eq!(menu.enhance_shown, None);
         teardown(&ps);
     }
@@ -1586,7 +1586,7 @@ mod enhancement_menu_tests {
     #[test]
     fn enh_rows_present_pass_capable_direct() {
         let _g = crate::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestRoute { remux: None, ..Default::default() });
+        let (menu, ps) = audio_tab(EnhTestFixture { remux: None, ..Default::default() });
         assert!(menu.enhance_shown.is_some());
         assert_eq!(menu.table.sections.len(), 2, "track list + the headerless enhancement section");
         let enh = &menu.table.sections[1];
@@ -1600,7 +1600,7 @@ mod enhancement_menu_tests {
     #[test]
     fn enh_rows_present_pass_capable_enhanced_remux() {
         let _g = crate::testlock::serial();
-        let (menu, ps) = audio_tab(EnhTestRoute {
+        let (menu, ps) = audio_tab(EnhTestFixture {
             remux: Some(true),
             applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
             ..Default::default()
@@ -1617,7 +1617,7 @@ mod enhancement_menu_tests {
     #[test]
     fn enh_rows_follow_audio_rows_indices_stable() {
         let _g = crate::testlock::serial();
-        let (ps, _sid) = enhancement_test_session(EnhTestRoute::default());
+        let (ps, _sid) = enhancement_test_session(EnhTestFixture::default());
         let store = store_with_audio(vec![
             crate::metadata::Stream {
                 id: 501,
@@ -1639,7 +1639,7 @@ mod enhancement_menu_tests {
     #[test]
     fn enh_ok_toggles_and_keeps_open() {
         let _g = crate::testlock::serial();
-        let (mut menu, ps) = audio_tab(EnhTestRoute::default());
+        let (mut menu, ps) = audio_tab(EnhTestFixture::default());
         let store = one_track_store();
         menu.focus_row(1); // row 0 = the one audio track; row 1 = Boost dialog
         let outcome = menu.on_ok(store.view());
@@ -1671,7 +1671,7 @@ mod enhancement_menu_tests {
     fn enh_row_shows_desired_while_pending_applied_otherwise() {
         let _g = crate::testlock::serial();
         // Settled (no user edit queued): the row reads what the contract actually APPLIED.
-        let (menu, ps) = audio_tab(EnhTestRoute {
+        let (menu, ps) = audio_tab(EnhTestFixture {
             applied: crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
             ..Default::default()
         });
@@ -1686,7 +1686,7 @@ mod enhancement_menu_tests {
         let _g = crate::testlock::serial();
         let desired = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true };
         crate::player::set_audio_enhancements(desired);
-        let (menu, ps) = audio_tab(EnhTestRoute { in_flight: true, ..Default::default() });
+        let (menu, ps) = audio_tab(EnhTestFixture { in_flight: true, ..Default::default() });
         assert_eq!(menu.enhance_shown, Some(desired));
         crate::player::set_audio_enhancements(crate::plex::AudioEnhancements::NONE);
         teardown(&ps);
@@ -1722,7 +1722,7 @@ mod enhancement_menu_tests {
         for language in [Preference::En, Preference::Es, Preference::Be] {
             let _g = crate::testlock::serial();
             let _guard = language_on_this_thread_for_test(language);
-            let (menu, ps) = audio_tab(EnhTestRoute {
+            let (menu, ps) = audio_tab(EnhTestFixture {
                 applied: crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true },
                 ..Default::default()
             });

@@ -7205,7 +7205,7 @@ pub(crate) fn audio_enhancements_offered_live(ps: &PlaybackSession) -> bool {
 /// Plex Pass tristate, and returns the session plus that server's id so the caller can
 /// `crate::plex::reset_servers_for_test()` when done. Caller holds `crate::testlock::serial()`.
 #[cfg(test)]
-pub(crate) struct EnhTestRoute {
+pub(crate) struct EnhTestFixture {
     pub(crate) pass: crate::plex::serverinfo::Subscription,
     /// `None` = still direct-playing (Direct family). `Some(true)` = a progressive-MKV remux
     /// (Remux family — a plain Original remux, or an already-applied enhancement). `Some(false)`
@@ -7236,7 +7236,7 @@ pub(crate) struct EnhTestRoute {
 }
 
 #[cfg(test)]
-impl Default for EnhTestRoute {
+impl Default for EnhTestFixture {
     fn default() -> Self {
         Self {
             pass: crate::plex::serverinfo::Subscription::Yes,
@@ -7254,7 +7254,7 @@ impl Default for EnhTestRoute {
 }
 
 #[cfg(test)]
-pub(crate) fn enhancement_test_session(route: EnhTestRoute) -> (PlaybackSession, ServerId) {
+pub(crate) fn enhancement_test_session(route: EnhTestFixture) -> (PlaybackSession, ServerId) {
     let sid = crate::plex::register_for_test("enh-menu-test", "127.0.0.1", 1, "token", "enh-menu-client");
     crate::plex::serverinfo::store_for_test(sid, route.pass, "1.43.4");
 

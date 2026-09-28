@@ -1871,7 +1871,7 @@ pub(crate) fn overscan_rects(out: &mut Vec<(&'static str, Rect)>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::route::{reset_player_control_for_test, EnhTestRoute};
+    use crate::route::{reset_player_control_for_test, EnhTestFixture};
 
     /// Issue #266 PR 4: the Audio row's " · dialog boost"/" · loudness" suffix names what the
     /// server DEMONSTRABLY did with the ask (`EnhancementOutcome::Applied`), never merely what the
@@ -1887,7 +1887,7 @@ mod tests {
             (both, true, false),   // Refused: asked, but the server did not honour it
         ] {
             let (ps, _sid) =
-                crate::route::enhancement_test_session(EnhTestRoute { applied, refused, ..Default::default() });
+                crate::route::enhancement_test_session(EnhTestFixture { applied, refused, ..Default::default() });
             let d = crate::player::Diag::default();
             let audio_row = pipeline_rows(&ps, &d, (0, 0, 0), 0)
                 .into_iter()
@@ -1913,18 +1913,18 @@ mod tests {
         let asked = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
         let d = crate::player::Diag::default();
 
-        let (ps, _sid) = crate::route::enhancement_test_session(EnhTestRoute::default());
+        let (ps, _sid) = crate::route::enhancement_test_session(EnhTestFixture::default());
         assert!(!route_line(&ps, &d).contains("enh="), "Off: no enh= at all");
         reset_player_control_for_test(&ps);
         crate::plex::reset_servers_for_test();
 
         let (ps, _sid) =
-            crate::route::enhancement_test_session(EnhTestRoute { applied: asked, ..Default::default() });
+            crate::route::enhancement_test_session(EnhTestFixture { applied: asked, ..Default::default() });
         assert!(route_line(&ps, &d).contains("enh=applied"));
         reset_player_control_for_test(&ps);
         crate::plex::reset_servers_for_test();
 
-        let (ps, _sid) = crate::route::enhancement_test_session(EnhTestRoute {
+        let (ps, _sid) = crate::route::enhancement_test_session(EnhTestFixture {
             applied: asked,
             refused: true,
             ..Default::default()
@@ -1933,7 +1933,7 @@ mod tests {
         reset_player_control_for_test(&ps);
         crate::plex::reset_servers_for_test();
 
-        let (ps, _sid) = crate::route::enhancement_test_session(EnhTestRoute {
+        let (ps, _sid) = crate::route::enhancement_test_session(EnhTestFixture {
             applied: asked,
             unverified: true,
             ..Default::default()
