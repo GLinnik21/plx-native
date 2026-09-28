@@ -39,6 +39,9 @@ pub(crate) struct LinkedHeading<'a> {
     title: &'a str,
     count: &'a str,
     presentation: Presentation,
+    /// The heading's room from its origin, chevron included — `card_row::draw_heading`'s
+    /// `max_w`. `INFINITY` (the default) never elides.
+    max_w: f32,
 }
 
 impl<'a> LinkedHeading<'a> {
@@ -49,6 +52,7 @@ impl<'a> LinkedHeading<'a> {
             title,
             count,
             presentation: Presentation::Entry,
+            max_w: f32::INFINITY,
         }
     }
 
@@ -57,7 +61,20 @@ impl<'a> LinkedHeading<'a> {
             title,
             count,
             presentation: Presentation::Heading,
+            max_w: f32::INFINITY,
         }
+    }
+
+    /// Bound a `Heading` to `max_w` from its origin (the Library's rail sits to the right of its
+    /// shelves). The text runs elide through `card_row::bounded_heading_flow`, the same rule an
+    /// unlinked shelf heading follows; the chevron always keeps its room.
+    pub(crate) const fn bounded(mut self, max_w: f32) -> Self {
+        self.max_w = max_w;
+        self
+    }
+
+    fn text_room(&self) -> f32 {
+        self.max_w - (CHEVRON_GAP + CHEVRON_SIZE - CHEVRON_BEARING_L - CHEVRON_BEARING_R)
     }
 
     pub(crate) fn measure(&self, measure: &dyn Measure) -> LinkedMeasure {
@@ -72,11 +89,13 @@ impl<'a> LinkedHeading<'a> {
                 }
                 w
             }
-            Presentation::Heading => {
-                card_row::heading_flow(self.title, self.count, |s, _, size, bold, _| {
-                    measure.width_str(s, size, bold != 0)
-                })
-            }
+            Presentation::Heading => card_row::bounded_heading_flow(
+                self.title,
+                self.count,
+                self.text_room(),
+                measure,
+                |s, _, size, bold, _| measure.width_str(s, size, bold != 0),
+            ),
         };
         LinkedMeasure {
             run_w,
@@ -124,7 +143,15 @@ impl<'a> LinkedHeading<'a> {
         }
     }
 
-    pub(crate) fn draw(&self, p: Painter, x: f32, y: f32, focus_t: f32, m: &LinkedMeasure) {
+    pub(crate) fn draw(
+        &self,
+        p: Painter,
+        x: f32,
+        y: f32,
+        focus_t: f32,
+        m: &LinkedMeasure,
+        measure: &dyn Measure,
+    ) {
         let focused = focus_t > 0.0;
         let face = self.face_rect(x, y, focus_t, m);
         if self.presentation == Presentation::Entry || focused {
@@ -188,17 +215,23 @@ impl<'a> LinkedHeading<'a> {
             }
             Presentation::Heading => {
                 let cap_y = y;
-                card_row::heading_flow(self.title, self.count, |s, dx, size, bold, ink| {
-                    draw_cap(
-                        p,
-                        s,
-                        content_x + dx,
-                        cap_y,
-                        size,
-                        bold != 0,
-                        if focused { ACCENT_INK } else { ink },
-                    )
-                });
+                card_row::bounded_heading_flow(
+                    self.title,
+                    self.count,
+                    self.text_room(),
+                    measure,
+                    |s, dx, size, bold, ink| {
+                        draw_cap(
+                            p,
+                            s,
+                            content_x + dx,
+                            cap_y,
+                            size,
+                            bold != 0,
+                            if focused { ACCENT_INK } else { ink },
+                        )
+                    },
+                );
                 rx += m.run_w;
             }
         }

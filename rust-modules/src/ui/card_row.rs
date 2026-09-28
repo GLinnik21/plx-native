@@ -525,27 +525,7 @@ pub(crate) fn draw_heading(
     max_w: f32,
     measure: &dyn crate::ui::machine::Measure,
 ) {
-    heading_flow(title, source, |s, dx, sz, bold, ink| {
-        // **`max_w` is a RIGHT BOUNDARY, and a run that would cross it is elided rather than
-        // clipped** — through `text::elide`, the single truncation impl in the app, so a bounded
-        // heading reads like every other bounded string here.
-        //
-        // It exists because the Library's A–Z rail occupies the right of the content region: a
-        // heading drawn to the panel edge runs UNDER the letters, which looks broken and is not
-        // something the rail can fix from its own side. Every other caller passes `INFINITY` and
-        // pays nothing — the elide is skipped outright, so the memoised binary search is never
-        // entered for a heading nobody bounded.
-        let room = max_w - dx;
-        if max_w.is_finite() && room < MIN_HEADING_RUN {
-            return 0.0; // no room left for this run at all — drop it rather than draw a stub
-        }
-        let owned;
-        let s = if max_w.is_finite() {
-            owned = crate::text::elide_by(s, room, false, |t| measure.width_str(t, sz, bold != 0));
-            owned.as_str()
-        } else {
-            s
-        };
+    bounded_heading_flow(title, source, max_w, measure, |s, dx, sz, bold, ink| {
         // the CString must outlive the draw call, not the closure (`ui/CLAUDE.md`'s first gotcha)
         match std::ffi::CString::new(s) {
             Ok(cs) => p.text(
@@ -560,6 +540,39 @@ pub(crate) fn draw_heading(
             Err(_) => 0.0,
         }
     });
+}
+
+/// [`heading_flow`] against a right boundary: the one elision rule every shelf heading shares,
+/// [`draw_heading`]'s and `ui::linked_heading`'s. `run` receives each run already elided and
+/// returns its advance, so the measured and the drawn flow stay one expression.
+///
+/// **`max_w` is a RIGHT BOUNDARY, and a run that would cross it is elided rather than clipped** —
+/// through `text::elide`, the single truncation impl in the app, so a bounded heading reads like
+/// every other bounded string here. It exists because the Library's A–Z rail occupies the right
+/// of the content region: a heading drawn to the panel edge runs UNDER the letters, which looks
+/// broken and is not something the rail can fix from its own side. Every other caller passes
+/// `INFINITY` and pays nothing — the elide is skipped outright, so the memoised binary search is
+/// never entered for a heading nobody bounded.
+pub(crate) fn bounded_heading_flow(
+    title: &str,
+    source: &str,
+    max_w: f32,
+    measure: &dyn crate::ui::machine::Measure,
+    mut run: impl FnMut(&str, f32, std::os::raw::c_int, std::os::raw::c_int, [f32; 4]) -> f32,
+) -> f32 {
+    heading_flow(title, source, |s, dx, sz, bold, ink| {
+        let room = max_w - dx;
+        if max_w.is_finite() && room < MIN_HEADING_RUN {
+            return 0.0; // no room left for this run at all — drop it rather than draw a stub
+        }
+        if max_w.is_finite() {
+            let owned =
+                crate::text::elide_by(s, room, false, |t| measure.width_str(t, sz, bold != 0));
+            run(&owned, dx, sz, bold, ink)
+        } else {
+            run(s, dx, sz, bold, ink)
+        }
+    })
 }
 
 /// The narrowest run [`draw_heading`] will draw against a bound. Below it an elide has nothing left

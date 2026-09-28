@@ -1986,12 +1986,17 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 /// `PAGE_MEMORY_SHAPE` gains its stable member interner, and `CollectionScreen::SHAPE`
 /// joins the inventory. Existing replay fixtures cannot name or restore this page and must be
 /// re-recorded before a collection transcript is trusted.
+///
+/// **Linked collection shelves** (`0x9f04_34b2_c8db_d655` → this): the Library's owned
+/// `Shelf` gains `heading`, the linked heading's group and element for a promoted
+/// `custom.collection.*` shelf. Re-record replay fixtures before trusting a Library transcript.
 #[cfg(test)]
 // Playback/account preference pages add their arguments and logical state to the inventory.
 // The Library's TYPE transaction now names a listing type by code (`LibraryType{code:u32}`) since
 // movie sections list their collections too, and its layout reserves an empty answer's read-out
-// band (`LibraryLayout{…empty:bool…}`); the previous pin was 0x44f2_b3ed_2851_659a.
-const SCREEN_SHAPES_PIN: u64 = 0x9f04_34b2_c8db_d655;
+// band (`LibraryLayout{…empty:bool…}`); the previous pin was 0x44f2_b3ed_2851_659a. Linked
+// collection shelves then moved it from 0x9f04_34b2_c8db_d655 (see the doc paragraph above).
+const SCREEN_SHAPES_PIN: u64 = 0x38a9_2955_0af8_72f6;
 
 #[cfg(test)]
 mod arg_tests {

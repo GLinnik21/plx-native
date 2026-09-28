@@ -1159,27 +1159,35 @@ class CatalogLibrary(Library):
 
     def section_collection_hubs(self, section, kind):
         """The catalog's collections in one library, as the shelves a real server lists after
-        Recently Added: `custom.collection.<section>.<id>.<id>`, in the catalog's order."""
+        Recently Added: `custom.collection.<section>.<ratingKey>.<ratingKey>` (a live probe: the
+        promoted hub's id is the collection's RATING key, not its tag id), in the catalog's order."""
         hubs = []
         for c in self.collections.values():
             rows = [it for it in self.collection_rows(c["id"]) if it["librarySectionID"] == section]
             if rows:
                 hubs.append({"title": c["tag"], "type": kind, "size": len(rows),
-                             "hubIdentifier": f"custom.collection.{section}.{c['id']}.{c['id']}",
+                             "hubIdentifier": f"custom.collection.{section}.{c['ratingKey']}.{c['ratingKey']}",
                              "key": f"/library/collections/{c['ratingKey']}/children", "Metadata": rows[:12]})
         return hubs
 
     def home_hubs(self):
-        """`/hubs` after Continue Watching: the catalog's shelves, in its order."""
+        """`/hubs` after Continue Watching: the catalog's shelves, in its order. A collection shelf
+        is published the way a real server promotes one — `custom.collection.<section>.<rk>.<rk>`
+        keyed by the collection's member listing — so its heading links to the collection page."""
         out = []
         for h in self.catalog["hubs"]:
             if "recent" in h:
                 rows = self.recent(h["recent"], 12)
+                ident, key = h["hubIdentifier"], f"/hubs/demo/{h['hubIdentifier']}"
             else:
-                rows = self.collection_rows(
-                    next(c["id"] for c in self.collections.values() if c["tag"] == h["collection"]))
-            out.append({"title": h["title"], "type": h["type"], "hubIdentifier": h["hubIdentifier"],
-                        "key": f"/hubs/demo/{h['hubIdentifier']}", "Metadata": rows})
+                coll = next(c for c in self.collections.values() if c["tag"] == h["collection"])
+                rows = self.collection_rows(coll["id"])
+                section = rows[0]["librarySectionID"] if rows else 1
+                rk = coll["ratingKey"]
+                ident = f"custom.collection.{section}.{rk}.{rk}"
+                key = f"/library/collections/{rk}/children"
+            out.append({"title": h["title"], "type": h["type"], "hubIdentifier": ident,
+                        "key": key, "Metadata": rows})
         return out
 
 

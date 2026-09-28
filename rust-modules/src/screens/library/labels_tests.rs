@@ -204,7 +204,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
     // Port the original Library assertion against the owned screen's production helper.
     let caption = |item: PmsMovie, is_continue| {
         let shelf = crate::browse::section_hubs::Shelf {
-            id: "x".into(), title: "Recently Added".into(), is_continue,
+            id: "x".into(), key: String::new(), title: "Recently Added".into(), is_continue,
             landscape: false, items: vec![item],
         };
         shelf_label(&shelf, 0).caption.map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
@@ -247,6 +247,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
         };
         let shelf = |items: Vec<PmsMovie>| crate::browse::section_hubs::Shelf {
             id: "tv.recentlyreleased".into(),
+            key: String::new(),
             title: "Recently Released Episodes".into(),
             is_continue: false,
             landscape: true,
