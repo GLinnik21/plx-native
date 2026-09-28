@@ -381,6 +381,9 @@ pub(crate) enum LibraryCmd {
     /// Open the Sort or Filter menu exactly as OK on its toolbar chip does (the screenshot
     /// pipeline's `plxnative-libmenu`).
     OpenMenu(LibraryMenuKind),
+    /// Choose a TYPE menu value exactly as its row does (the screenshot pipeline's and the fps
+    /// suite's `plxnative-libtype`).
+    SetType(crate::browse::LibraryType),
     Page(i32),
     Sweep,
     SwitchStep(u32),
@@ -1981,7 +1984,10 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 /// re-recorded before a collection transcript is trusted.
 #[cfg(test)]
 // Playback/account preference pages add their arguments and logical state to the inventory.
-const SCREEN_SHAPES_PIN: u64 = 0x44f2_b3ed_2851_659a;
+// The Library's TYPE transaction now names a listing type by code (`LibraryType{code:u32}`) since
+// movie sections list their collections too, and its layout reserves an empty answer's read-out
+// band (`LibraryLayout{…empty:bool…}`); the previous pin was 0x44f2_b3ed_2851_659a.
+const SCREEN_SHAPES_PIN: u64 = 0x9f04_34b2_c8db_d655;
 
 #[cfg(test)]
 mod arg_tests {

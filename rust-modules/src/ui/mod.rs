@@ -28,6 +28,7 @@ pub(crate) mod card_motion_metrics;
 pub(crate) mod value_chip; // shared label/value/owner capsule used by menu-opening controls
 pub mod chapters_panel;
 pub(crate) mod containers; // RESTRUCTURE (spec §6.2): Navigation = TabContainer → NavStack → ModalStack, the transitions, the host fold
+pub(crate) mod collection_tile; // the neutral tile a thumb-less collection draws on every surface
 pub mod consts;
 pub(crate) mod decision_alert;
 pub(crate) mod decision_prompt;

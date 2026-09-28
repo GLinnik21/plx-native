@@ -180,6 +180,8 @@ fn a_filter_menu_resets_its_covered_library_grid_memory_without_taking_menu_focu
         ),
     );
     frame(&mut d, &mut rig, AppArg::Library, tick(80), vec![]);
+    // The heading seats TYPE (every library lists more than one type); two RIGHTs reach FILTER.
+    frame(&mut d, &mut rig, AppArg::Library, tick(80), script_key(Key::Right, tick(80)));
     frame(
         &mut d,
         &mut rig,

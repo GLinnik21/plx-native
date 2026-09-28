@@ -43,7 +43,7 @@ fn scrolled_grid_admits_only_visible_art_and_never_rewarms_hidden_rows() {
                 ..Default::default()
             })).collect(), Vec::new()).with_library_type(if episodes {
                 crate::browse::LibraryType::Episodes
-            } else { crate::browse::LibraryType::Shows });
+            } else { crate::browse::LibraryType::Primary });
         let mut page = fixture.screen();
         let layout = page.layout;
         let scroll = layout.row_reveal(20);

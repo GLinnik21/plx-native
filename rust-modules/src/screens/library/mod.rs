@@ -134,6 +134,10 @@ pub(crate) struct LibraryScreen {
     instance: InstanceId,
     kind: SecKind,
     wanted_kind: Option<SecKind>,
+    /// What the committed listing lists — a projection of the store's publication, refreshed by
+    /// `sync` like the layout's episode geometry, so not logical state of its own. The toolbar
+    /// reads it: collections take no filters, so FILTER leaves the row while they are listed.
+    listed: crate::browse::LibraryType,
     keys: KeyRegistry,
     pair: MasterDetail<RailPart, GridPart, Regions>,
     /// The heading row's group: per section and epoch, registered beside the pair's.
@@ -182,7 +186,7 @@ impl LibraryScreen {
     pub(crate) fn new(entry: EntryId, instance: InstanceId, kind: SecKind) -> Self {
         let layout = Layout::new(false, &[], 0, false);
         Self {
-            entry, instance, kind, wanted_kind: Some(kind), keys: KeyRegistry::default(),
+            entry, instance, kind, wanted_kind: Some(kind), listed: Default::default(), keys: KeyRegistry::default(),
             pair: MasterDetail::new(
                 RailPart::new(entry, RAIL_GROUP), GridPart::new(entry, GRID_GROUP),
                 MasterDetailLayout { master: Rect::FULL, detail: Rect::FULL },
@@ -223,6 +227,9 @@ impl LibraryScreen {
 
     fn key(&self, elem: u32) -> FocusKey<u32> { FocusKey { entry: self.entry, elem } }
 
+    /// What the committed listing lists — the TYPE menu's value as the page last synced it.
+    pub(crate) fn listed(&self) -> crate::browse::LibraryType { self.listed }
+
     /// The heading row's group for the section on the page.
     #[cfg(test)]
     pub(crate) fn toolbar_group(&self) -> GroupId { self.toolbar }
@@ -252,7 +259,8 @@ impl LibraryScreen {
 
     fn sync<H: LibraryLike>(&mut self, cx: &Cx<'_, H>) {
         let listing = H::listing(cx);
-        self.layout = self.layout.with_episodes(listing.library_type() == crate::browse::LibraryType::Episodes);
+        self.listed = listing.library_type();
+        self.layout = self.layout.with_episodes(self.listed == crate::browse::LibraryType::Episodes);
         let directory = H::directory(cx);
         let identity = listing.id().map(|id| LibrarySectionIdentity { sid: id.sid, key: id.section });
         let epoch = listing.id().map(|id| id.epoch).or(directory.epoch());
@@ -406,7 +414,9 @@ impl LibraryScreen {
             f32::from(focus.is_some_and(|key| row.elems.contains(&key.elem))))).collect();
         let rows = self.pair.detail.elems.len().div_ceil(self.layout.cols());
         let grid_head = rows > 0 || self.grid_fade.is_swapping()
-            || (self.section.is_some() && self.wanted_kind.is_none() && self.kind == SecKind::Show && self.readout == Readout::Empty);
+            // An empty answer keeps the heading row: its TYPE chip is how the reader leaves an
+            // empty listing (no collections, no episodes) for one that has something in it.
+            || (self.section.is_some() && self.wanted_kind.is_none() && self.readout == Readout::Empty);
         let episodes = self.layout.is_episodes();
         self.layout = if self.readout == Readout::Failed {
             Layout::failed(!self.libraries.is_empty(), &pitches)
@@ -420,6 +430,8 @@ impl LibraryScreen {
         }
         self.layout.status = self.readout == Readout::Failed;
         self.target_layout.status = self.layout.status;
+        self.layout.empty = self.readout == Readout::Empty;
+        self.target_layout.empty = self.layout.empty;
         self.pair.detail.set_geometry(self.layout, self.scroll.pos, self.target_layout, self.scroll_target);
     }
 
@@ -681,6 +693,15 @@ impl LibraryScreen {
                 self.reseat(FocusTarget::Elem(self.key(elem)), fx);
             }
             LibraryCmd::ItemMenu => return cx.focus.current.map_or(Handled::No, |key| self.activate(key.elem, true, cx, fx)),
+            // The TYPE menu's own edit, delivered the way its row delivers it.
+            LibraryCmd::SetType(kind) => {
+                let Some(target) = GridTarget::from_view(H::listing(cx)) else { return Handled::No };
+                let address = SectionAddress { epoch: target.epoch, sid: target.sid, section: target.section };
+                self.step(&ScreenEvent::App(AppMsg::LibraryEdit {
+                    target: address, edit: crate::stores::browse::QueryEdit::LibraryType(kind),
+                }), cx, fx);
+                return Handled::Yes;
+            }
             LibraryCmd::OpenMenu(kind) => {
                 let elem = match kind {
                     crate::screens::registry::LibraryMenuKind::Type => TYPE,

@@ -861,7 +861,10 @@ pub(crate) fn focused_caption(m: &crate::pms::PmsMovie, is_continue: bool) -> Op
     if is_continue {
         return cw_caption(m);
     }
-    let s = if m.kind == 3 && m.ep_index > 0 {
+    let s = if m.kind == crate::pms::KIND_COLLECTION {
+        // A collection is its size, never a year: the members span several, and PMS sends none.
+        crate::ui::fmt::item_count(m.child_count)
+    } else if m.kind == 3 && m.ep_index > 0 {
         if m.season_index > 0 {
             format!("S{} \u{2022} E{}", m.season_index, m.ep_index)
         } else {
@@ -1375,6 +1378,19 @@ pub(crate) fn resume_bar(p: Painter, r: Rect, frac: f32, rad: f32) {
 // ---------------------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
+    /// A collection's caption is its size — "1 item", "3 items" — never a year it does not have.
+    #[test]
+    fn a_collection_caption_counts_its_items() {
+        let caption = |child_count, year| super::focused_caption(&crate::pms::PmsMovie {
+            kind: crate::pms::KIND_COLLECTION, child_count, year, ..Default::default()
+        }, false).map(|c| c.into_string().unwrap());
+        assert_eq!(caption(3, 0).as_deref(), Some("3 items"));
+        assert_eq!(caption(1, 1999).as_deref(), Some("1 item"));
+        assert_eq!(caption(0, 0).as_deref(), Some("0 items"));
+        let film = crate::pms::PmsMovie { year: 1999, child_count: 3, ..Default::default() };
+        assert_eq!(super::focused_caption(&film, false).unwrap().to_str().unwrap(), "1999");
+    }
+
     #[test]
     fn discovery_and_text_recording_keep_visible_cards_when_gl_is_suppressed() {
         use crate::ui::frame::backdrop::{self, Sources};

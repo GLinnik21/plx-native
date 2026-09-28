@@ -676,10 +676,13 @@ class Library:
         rows.sort(key=keyf, reverse=(direction == "desc"))
         return rows
 
-    def first_characters(self, key):
-        """Counts in the unfiltered ascending titleSort order, exactly the rail's query."""
+    def first_characters(self, key, q=None):
+        """Counts in the unfiltered ascending titleSort order, exactly the rail's query —
+        of the section's collections for `type=18`, as PMS answers `firstCharacter?type=18`."""
         counts = {}
-        for item in self.section_items(key, {}):
+        rows = (sorted(self.collection_metadata(key), key=lambda c: c["titleSort"].lower())
+                if (q or {}).get("type") == "18" else self.section_items(key, {}))
+        for item in rows:
             letter = item["titleSort"][0].upper()
             counts[letter] = counts.get(letter, 0) + 1
         return [{"key": letter.lower(), "title": letter, "size": count}
@@ -724,6 +727,33 @@ class Library:
         return [it for it in self.items.values() if it["type"] in ("movie", "show") and any(
             t["id"] == pid for t in it.get("Role", []) + it.get("Director", []) + it.get("Writer", []))]
 
+    def composite(self, rk, width, height):
+        """The server's automatic collection poster (`/library/collections/<rk>/composite/<stamp>`):
+        a 2x2 of its first members' posters, as JPEG; None (a 404) for a collection with none."""
+        c = self.collection_by_rating_key(int(rk)) if str(rk).isdigit() else None
+        paths = [self.images.get(int(it["ratingKey"]), {}).get("thumb")
+                 for it in (self.collection_rows(c["id"]) if c else [])]
+        paths = [p for p in paths if p is not None][:4]
+        if not paths:
+            return None
+        paths = (paths * 4)[:4]
+        try:
+            w, h = max(2, min(int(width), 3840)), max(2, min(int(height), 2160))
+        except (TypeError, ValueError):
+            w, h = 400, 600
+        key = ("composite", str(rk), w, h)
+        cw, ch = w // 2, h // 2
+        scale = "".join(f"[{i}]scale={cw}:{ch}:force_original_aspect_ratio=increase,crop={cw}:{ch}[t{i}];"
+                        for i in range(4))
+        with self._lock:
+            if key not in self._scaled:
+                self._scaled[key] = subprocess.check_output([
+                    "ffmpeg", "-v", "error", "-threads", "1",
+                    *[a for p in paths for a in ("-i", str(p))],
+                    "-filter_complex", scale + "[t0][t1][t2][t3]xstack=inputs=4:layout=0_0|w0_0|0_h0|w0_h0",
+                    "-frames:v", "1", "-q:v", "3", "-bitexact", "-f", "image2pipe", "-vcodec", "mjpeg", "-"])
+            return "image/jpeg", self._scaled[key]
+
     def collection_rows(self, cid):
         rows = [it for it in self.items.values()
                 if any(c["id"] == cid for c in it.get("Collection", []))]
@@ -742,9 +772,12 @@ class Library:
                 "ratingKey": str(rk), "key": f"/library/collections/{rk}/children",
                 "type": "collection", "title": c["tag"], "titleSort": c["tag"],
                 "index": c["id"], "childCount": len(members),
-                "thumb": f"/library/collections/{rk}/composite/{updated}",
                 "updatedAt": updated, "librarySectionID": int(section), "smart": 0,
             })
+            # A collection with members has the server's automatic composite; the EMPTY one has
+            # no artwork at all, which is the case a client's neutral collection tile draws.
+            if members:
+                rows[-1]["thumb"] = f"/library/collections/{rk}/composite/{updated}"
         return rows
 
     def collection_by_rating_key(self, rk):
@@ -1051,6 +1084,8 @@ class CatalogLibrary(Library):
         — a clearLogo as a transparent PNG, the rest as JPEG; None when the item has no such image
         — a 404, as for a real item without art."""
         segs = [s for s in urllib.parse.urlsplit(url).path.split("/") if s]
+        if len(segs) >= 4 and segs[:2] == ["library", "collections"] and segs[3] == "composite":
+            return self.composite(segs[2], width, height)
         if len(segs) < 4 or segs[:2] != ["library", "metadata"] or not segs[2].isdigit():
             return None
         path = self.images.get(int(segs[2]), {}).get(segs[3])
@@ -1100,9 +1135,12 @@ class CatalogLibrary(Library):
                 "ratingKey": str(rk), "key": f"/library/collections/{rk}/children",
                 "type": "collection", "title": c["tag"], "titleSort": c["tag"],
                 "index": c["id"], "childCount": len(members),
-                "thumb": f"/library/collections/{rk}/composite/{updated}",
                 "updatedAt": updated, "librarySectionID": int(section), "smart": 0,
             })
+            # A collection with members has the server's automatic composite; the EMPTY one has
+            # no artwork at all, which is the case a client's neutral collection tile draws.
+            if members:
+                rows[-1]["thumb"] = f"/library/collections/{rk}/composite/{updated}"
         return rows
 
     def collection_by_rating_key(self, rk):
@@ -1285,7 +1323,13 @@ class MockPms:
                 mc["size"] = len(mc[k])
         return {"MediaContainer": mc}
 
-    def sort_meta(self):
+    def sort_meta(self, kind=None):
+        if kind == "18":
+            # PMS's collection listing declares ONE sort (probed on 1.43): titleSort.
+            return {"Type": [{"key": "/library/sections/1/all?type=18", "type": "collection",
+                              "title": "Collections", "active": True,
+                              "Sort": [{"key": "titleSort", "defaultDirection": "asc",
+                                        "descKey": "titleSort:desc", "title": "Title"}]}]}
         return {"Type": [{"key": "/library/sections/1/all?type=1", "type": "movie", "title": "movie",
                           "active": True,
                           "Sort": [{"key": "titleSort", "defaultDirection": "asc", "title": "Title"},
@@ -1403,7 +1447,7 @@ class MockPms:
                 rows = lib.section_items(segs[2], q)
             page, extra = paged(rows)
             if q.get("includeMeta") == "1":
-                extra["Meta"] = self.sort_meta()
+                extra["Meta"] = self.sort_meta(q.get("type"))
             return j(self.container(Metadata=page, **extra))
         if len(segs) == 4 and segs[:2] == ["library", "sections"]:
             d = segs[3]
@@ -1415,7 +1459,7 @@ class MockPms:
                                                     "fastKey": f"/library/sections/{segs[2]}/all?genre={g['id']}"}
                                                    for g in lib.genres.values()]))
             if d == "firstCharacter":
-                return j(self.container(Directory=lib.first_characters(segs[2])))
+                return j(self.container(Directory=lib.first_characters(segs[2], q)))
             return j(self.container(Directory=[]))
         if len(segs) >= 3 and segs[:2] == ["library", "metadata"]:
             ids = segs[2]

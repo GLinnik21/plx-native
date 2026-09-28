@@ -600,6 +600,12 @@ pub(crate) fn resolve_card_art(p: Painter, rect: Rect, art: &Art<'_>) -> (u32, f
     image
 }
 
+/// The name a poster card draws on the neutral collection tile, when it draws one: a collection
+/// row whose server sent no `thumb`. A composite or custom thumb is artwork and draws as a poster.
+fn neutral_collection_name(m: Option<&crate::pms::PmsMovie>) -> Option<&str> {
+    m.filter(|m| m.kind == crate::pms::KIND_COLLECTION && m.thumb.is_empty()).map(|m| m.title.as_str())
+}
+
 pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, scale: f32, f: f32) {
     // Text prewarming visits an offscreen page. This leaf has no text: starting
     // image work here would bypass on-screen admission, and pollute its history.
@@ -618,6 +624,13 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
             // library drew skeletons for most tiles and OUR films for the few ratingKeys that
             // happen to collide — both servers number from 1, so collisions are the normal case.
             let (t, tw, th) = image;
+            if let Some(name) = neutral_collection_name(m) {
+                // A collection with no artwork of its own: nothing will ever resolve, so a skeleton
+                // would read as loading forever. It wears its mark and name instead, and no state
+                // mark — a collection has no watch state (`poster_mark`).
+                crate::ui::collection_tile::draw(p, r, rad, name);
+                return;
+            }
             if t != 0 {
                 p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
             } else {

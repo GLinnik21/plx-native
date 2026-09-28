@@ -78,7 +78,7 @@ impl PendingTransactions {
     }
 }
 
-pub(super) const SHAPE: &str = "PendingTransactions{section:Option<{epoch:u32,index:u32,identity:{sid:u32,key:u64},kind:u32}>,grid:Option<{target:{epoch:u32,sid:u32,section:u64,query:u32},action:Sort{key:str,desc:bool}|Unwatched{desired:bool}|Genre{id:Option<str>}|LibraryType{type:u32}}>}";
+pub(super) const SHAPE: &str = "PendingTransactions{section:Option<{epoch:u32,index:u32,identity:{sid:u32,key:u64},kind:u32}>,grid:Option<{target:{epoch:u32,sid:u32,section:u64,query:u32},action:Sort{key:str,desc:bool}|Unwatched{desired:bool}|Genre{id:Option<str>}|LibraryType{code:u32}}>}";
 
 impl crate::ui::machine::LogicalState for PendingTransactions {
     fn write(&self, c: &mut crate::ui::machine::Canon) {
@@ -96,7 +96,7 @@ impl crate::ui::machine::LogicalState for PendingTransactions {
                 GridAction::Sort { key, desc } => { c.u32(0).str(key).bool(*desc); }
                 GridAction::Unwatched { desired } => { c.u32(1).bool(*desired); }
                 GridAction::Genre { id } => { c.u32(2).option(id.as_deref(), |c, id| { c.str(id); }); }
-                GridAction::LibraryType(kind) => { c.u32(3).u32(kind.plex_type() as u32); }
+                GridAction::LibraryType(kind) => { c.u32(3).u32(kind.code()); }
             }
         });
     }

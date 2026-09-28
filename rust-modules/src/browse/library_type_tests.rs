@@ -52,7 +52,7 @@ mod tests {
         }));
         let listing = state.listing_snapshot();
         assert_eq!(listing.view().library_type(), LibraryType::Episodes);
-        assert_eq!(old.view().library_type(), LibraryType::Shows, "retained publication stays immutable");
+        assert_eq!(old.view().library_type(), LibraryType::Primary, "retained publication stays immutable");
         assert_ne!(listing.view().id().unwrap().query, old.view().id().unwrap().query);
         assert_eq!(listing.view().total(), -1);
         assert!(listing.view().item(0).is_none());
@@ -68,7 +68,7 @@ mod tests {
             vec![("type".into(), "4".into()), ("unwatched".into(), "1".into())]);
 
         state.set_cur(3);
-        assert_eq!(state.listing_snapshot().view().library_type(), LibraryType::Shows);
+        assert_eq!(state.listing_snapshot().view().library_type(), LibraryType::Primary);
         assert!(state.set_library_type(LibraryType::Seasons));
         state.set_unwatched(true);
         assert_eq!(state.states[3].query_filters(SecKind::Show),
@@ -85,6 +85,45 @@ mod tests {
         assert_eq!(state.query_gen(), gen);
         state.set_unwatched(true);
         assert_eq!(state.states[0].query_filters(SecKind::Movie), vec![("unwatched".into(), "1".into())]);
+    }
+
+    /// **Design A: a movie library lists its collections from the TYPE menu.** The listing asks
+    /// for `type=18` (and `firstCharacter?type=18` for its letters, via `plex_type`), sends neither
+    /// filter — a collection has no watch state or genre — and shows neither as applied. Unwatched
+    /// is the section's own switch and comes back with its films; a genre belongs to one metadata
+    /// type's menu, so a type change drops it, as it always has between TV types.
+    #[test]
+    fn a_movie_library_lists_its_collections_without_filters() {
+        let _guard = crate::testlock::serial();
+        assert_eq!(LibraryType::offered(SecKind::Movie), [LibraryType::Primary, LibraryType::Collections]);
+        assert_eq!(LibraryType::offered(SecKind::Show),
+            [LibraryType::Primary, LibraryType::Seasons, LibraryType::Episodes, LibraryType::Collections]);
+        assert_eq!(LibraryType::Collections.plex_type(SecKind::Movie), Some(18));
+        assert_eq!(LibraryType::Collections.plex_type(SecKind::Show), Some(18));
+        assert_eq!(LibraryType::Primary.plex_type(SecKind::Movie), None, "films are still asked for untyped");
+
+        let mut state = BrowseState::default();
+        seed_two_source_table_for_owner_test(&mut state);
+        state.set_cur(0);
+        assert_eq!(state.sections[0].kind, SecKind::Movie);
+        let gen = state.query_gen();
+        assert!(!state.set_library_type(LibraryType::Seasons), "a movie library has no seasons");
+        assert_eq!(state.query_gen(), gen);
+        state.set_unwatched(true);
+        state.states[0].genre = Some(Arc::new(GenreEntry { id: "7".into(), title: "Drama".into() }));
+        assert!(state.set_library_type(LibraryType::Collections));
+        assert_ne!(state.query_gen(), gen);
+        assert_eq!(state.states[0].query_filters(SecKind::Movie), vec![("type".into(), "18".into())]);
+        let listing = state.listing_snapshot();
+        assert_eq!(listing.view().library_type(), LibraryType::Collections);
+        assert!(!listing.view().unwatched() && listing.view().genre().is_none(),
+            "neither filter reads as applied to a collections listing");
+        assert!(!state.set_genre_by_id(Some("7")), "genres are the primary listing's");
+
+        assert!(state.set_library_type(LibraryType::Primary));
+        assert_eq!(state.states[0].query_filters(SecKind::Movie),
+            vec![("unwatched".into(), "1".into())],
+            "the films' Unwatched switch comes back with them");
     }
 
     #[test]

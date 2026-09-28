@@ -107,6 +107,12 @@ pub(crate) fn episode_address(season: i64, index: i64) -> String {
     parts.join(" \u{b7} ")
 }
 
+/// A collection's size — `"1 item"`, `"12 items"`. ONE formatter for the collection page's meta
+/// line and every collection tile's caption, so the two cannot count one collection two ways.
+pub(crate) fn item_count(n: i64) -> String {
+    format!("{n} {}", if n == 1 { "item" } else { "items" })
+}
+
 pub(crate) fn episode_ordinal(season: i64, index: i64) -> String {
     format!("S{season}, E{index}")
 }

@@ -219,6 +219,22 @@
       "_fps_floor_note": "SUPERSEDED by _rebaseline_note above; kept for its reasoning. Measured healthy median 49 fps on device 2026-07-31 (this scene's oscillator steps focus every 350ms and the spring now settles inside that period, so the gaps are real idle — the drop from ~60 is the settle predicate working, not a regression). A FROZEN animator reads ~0.5/s, the keepalive alone, so 25 separates them by a wide margin without gating on the exact duty cycle. Fill-rate regressions stay on `loop_floor`, which grades loop= and falls with the render rate while presenting."
     },
     {
+      "name": "library-collections",
+      "tier": "ui",
+      "route": "library",
+      "loop_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 6,
+      "comment": "The Movies library listed as its collections (TYPE menu > Collections, `all?type=18`): `libtype` switches the listing through the TYPE menu's own edit, then `libosc` sweeps the collection grid, whose cards mix posters and the neutral glyph-and-name tile. Device baselines are not yet measured.",
+      "triggers": {
+        "plxnative-library": true,
+        "plxnative-libtype": "collections",
+        "plxnative-libosc": true
+      },
+      "fps_floor": 30,
+      "_fps_floor_note": "Borrowed from library-scroll (frozen/alive separator, not a measured healthy median); rebaseline once the scene has run on the device."
+    },
+    {
       "name": "library-switch",
       "tier": "ui",
       "route": "library",

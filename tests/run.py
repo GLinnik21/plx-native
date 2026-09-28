@@ -130,6 +130,8 @@ RUN_STREAM_MARK = None  # the remote command text — see _run_stream_pids()
 ALL_TRIGGERS = [
     "plxnative-detail", "plxnative-detailplay", "plxnative-detailsec", "plxnative-detailcol",
     "plxnative-collection",
+    # the Library's listing type (TYPE menu value), for scenes such as library-collections
+    "plxnative-libtype",
     "plxnative-autoseek", "plxnative-menupick", "plxnative-menu", "plxnative-noaudio",
     "plxnative-grid", "plxnative-autoplay", "plxnative-h265", "plxnative-playidx", "plxnative-url",
     "plxnative-play", "plxnative-server", "plxnative-ffprobe", "plxnative-token", "plxnative-servers",
