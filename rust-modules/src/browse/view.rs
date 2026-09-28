@@ -211,11 +211,17 @@ impl<'a> ListingView<'a> {
     pub(crate) fn sort_desc(self) -> bool {
         self.0.data.as_ref().is_some_and(|s| s.sort_desc)
     }
+    /// The genre filter AS APPLIED — `None` while a type the filters do not apply to is listed
+    /// ([`super::LibraryType::filters`]).
     pub(crate) fn genre(self) -> Option<&'a GenreEntry> {
-        self.0.data.as_ref()?.genre.as_deref()
+        let data = self.0.data.as_ref()?;
+        data.library_type.filters().then_some(())?;
+        data.genre.as_deref()
     }
+    /// The Unwatched filter AS APPLIED — `false` while collections are listed, even though the
+    /// section keeps the switch for when its own type is listed again.
     pub(crate) fn unwatched(self) -> bool {
-        self.0.data.as_ref().is_some_and(|s| s.unwatched)
+        self.0.data.as_ref().is_some_and(|s| s.unwatched && s.library_type.filters())
     }
     pub(crate) fn library_type(self) -> super::LibraryType {
         self.0.data.as_ref().map_or(super::LibraryType::default(), |s| s.library_type)

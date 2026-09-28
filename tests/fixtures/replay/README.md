@@ -148,3 +148,10 @@ Collection screen's logical state to the screen census. The prior anchors were o
 refused (`replay: REFUSED — invalid or incompatible recording`, all three, both modes), then all
 three were re-recorded with `tools/plxnative-rec rerecord` against shape `7683106202277674285`
 and passed Targets and Resolve with zero difference counters.
+
+The Library's Collections type (#205) moves both halves of the census: `PmsMovie` gains
+`child_count` (the hubs record and initial state), and the Library's TYPE transaction and layout
+change shape (`LibraryType{code:u32}`, `LibraryLayout{…empty:bool…}`). The prior anchors were
+observed being refused (`replay: REFUSED — invalid or incompatible recording`, all three, both
+modes), then all three were re-recorded with `tools/plxnative-rec rerecord` against shape
+`5354288741423994209` and passed Targets and Resolve with zero difference counters.

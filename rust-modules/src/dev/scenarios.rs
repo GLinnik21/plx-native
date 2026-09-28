@@ -147,7 +147,7 @@ pub(crate) struct Scenarios {
     pub(crate) deep_bench: Option<bench::DeepBench>,
     /// The boot-time trigger flags the loop consults every frame after.
     pub(crate) dev: DevFlags,
-    /// The screenshot pipeline's arms (`plxnative-libgrid`, `-libshelf`, `-libmenu`, `-clockstop`) — see [`screenshot`].
+    /// The screenshot pipeline's arms (`plxnative-libtype`, `-libgrid`, `-libshelf`, `-libmenu`, `-clockstop`) — see [`screenshot`].
     pub(crate) shots: screenshot::ScreenshotArms,
 }
 
@@ -1574,6 +1574,7 @@ pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
     press_arm(app, fr);
     itemmenu_arm(app, fr);
     acct_arm(app, fr);
+    screenshot::libtype_arm(app, fr);
     screenshot::libgrid_arm(app, fr);
     screenshot::libshelf_arm(app, fr);
     screenshot::libmenu_arm(app, fr);

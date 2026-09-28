@@ -51,6 +51,24 @@ class LibraryRail(unittest.TestCase):
         self.assertTrue(any(c.get("childCount") == 0 for c in collections),
                         "the fixture includes an empty collection")
 
+    def test_collection_listing_matches_the_library_type_menu_contract(self):
+        """The Library's Collections type: `all?type=18&includeMeta=1` declares only titleSort,
+        `firstCharacter?type=18` counts collections, and only a collection with members has art."""
+        pms = MockPms(Library())
+        first = get(pms, "/library/sections/1/all?type=18&includeMeta=1"
+                         "&X-Plex-Container-Start=0&X-Plex-Container-Size=60")
+        kinds = first["Meta"]["Type"]
+        self.assertEqual([k["type"] for k in kinds], ["collection"])
+        self.assertEqual([s["key"] for s in kinds[0]["Sort"]], ["titleSort"])
+        self.assertEqual(first["totalSize"], len(first["Metadata"]))
+        letters = get(pms, "/library/sections/1/firstCharacter?type=18")["Directory"]
+        self.assertEqual(sum(d["size"] for d in letters), first["totalSize"])
+        self.assertEqual([d["title"] for d in letters],
+                         sorted({row["titleSort"][0].upper() for row in first["Metadata"]}),
+                         "the rail's letters come in the listing's titleSort order")
+        for row in first["Metadata"]:
+            self.assertEqual("thumb" in row, row["childCount"] > 0, row["title"])
+
     def test_default_generated_data_is_stable(self):
         hashes = {
             1: "179ea74803d88bfd0b0a4ab0e4bbb38aaf4612f73da1d50ef8d1416f5b2d29aa",

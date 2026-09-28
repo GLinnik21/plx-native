@@ -1,5 +1,5 @@
 //! A registered Library menu surface. Navigation owns its lifetime, phase, and input scope.
-use crate::browse::{LibraryType, GenreEntry, SortEntry, SrcGroup, SrcRow};
+use crate::browse::{LibraryType, GenreEntry, SecKind, SortEntry, SrcGroup, SrcRow};
 use crate::screens::registry::{AppFx, AppMsg, LibraryLike, LibraryMenuArg, LibraryMenuKind};
 use crate::stores::browse::{BrowseCmd, LibraryWork, QueryEdit, SectionAddress};
 use crate::stores::{StoreCmd, StoreId};
@@ -235,18 +235,31 @@ fn sort_draft(sorts: &[SortEntry], sort_index: usize, sort_desc: bool) -> MenuDr
     }
 }
 
-fn type_draft(current: LibraryType) -> MenuDraft {
+/// The kind of the library `listing` lists — the section the directory names at the listing's own
+/// address, so the TYPE menu offers what THAT library can list.
+fn listing_kind(
+    listing: crate::stores::browse::ListingView<'_>,
+    directory: crate::stores::browse::DirectoryView<'_>,
+) -> SecKind {
+    listing.id().and_then(|id| directory.sections().iter()
+        .find(|section| section.sid == Some(id.sid) && section.key == id.section))
+        .map_or(SecKind::Movie, |section| section.kind)
+}
+
+/// The TYPE menu: every [`LibraryType`] the section's kind offers, the current one checked.
+fn type_draft(section_kind: SecKind, current: LibraryType) -> MenuDraft {
     let mut section = Section::new("Filter by");
     let mut rows = Vec::new();
     let mut selected = 0;
-    for (index, kind) in [LibraryType::Shows, LibraryType::Seasons, LibraryType::Episodes].into_iter().enumerate() {
-        section = section.row(Row::new(kind.title()).checked(kind == current));
-        rows.push((format!("type:{}", kind.plex_type()), Action::Edit(QueryEdit::LibraryType(kind)), index as i32));
+    for (index, &kind) in LibraryType::offered(section_kind).iter().enumerate() {
+        section = section.row(Row::new(kind.title(section_kind)).checked(kind == current));
+        rows.push((format!("type:{}", kind.code()), Action::Edit(QueryEdit::LibraryType(kind)), index as i32));
         if kind == current { selected = index as i32; }
     }
     let mut stamp = Stamp::default();
     stamp.tag(13);
-    stamp.i64(current.plex_type());
+    stamp.tag(u8::from(section_kind == SecKind::Show));
+    stamp.u32(current.code());
     MenuDraft { stamp: stamp.finish(), sections: vec![section], rows, selected }
 }
 
@@ -413,12 +426,12 @@ impl LibraryMenu {
         };
         let mut section = Section::new(title);
         match self.kind {
-            LibraryMenuKind::Type => return type_draft(listing.library_type()),
+            LibraryMenuKind::Type => return type_draft(listing_kind(listing, directory), listing.library_type()),
             LibraryMenuKind::Sort => {
                 return sort_draft(listing.sorts(), listing.sort_index(), listing.sort_desc());
             }
             LibraryMenuKind::Filter => {
-                return filter_draft(self.desired_unwatched.unwrap_or(listing.unwatched()), listing.genre(), listing.library_type() == LibraryType::Shows);
+                return filter_draft(self.desired_unwatched.unwrap_or(listing.unwatched()), listing.genre(), listing.library_type() == LibraryType::Primary);
             }
             LibraryMenuKind::Genre => {
                 return genre_draft(listing.genres(), listing.genre());
@@ -893,17 +906,33 @@ mod tests {
 
     #[test]
     fn tv_type_menu_checks_and_commits_each_granularity() {
-        for (selected, current) in [LibraryType::Shows, LibraryType::Seasons, LibraryType::Episodes].into_iter().enumerate() {
-            let draft = type_draft(current);
+        let types = [LibraryType::Primary, LibraryType::Seasons, LibraryType::Episodes, LibraryType::Collections];
+        for (selected, current) in types.into_iter().enumerate() {
+            let draft = type_draft(SecKind::Show, current);
             assert_eq!(draft.selected, selected as i32);
             assert_eq!(draft.sections[0].rows.iter().map(|row| row.label.as_str()).collect::<Vec<_>>(),
-                ["TV Shows", "Seasons", "Episodes"]);
+                ["TV Shows", "Seasons", "Episodes", "Collections"]);
             for (index, row) in draft.sections[0].rows.iter().enumerate() {
                 assert_eq!(row.checked, index == selected);
             }
             assert!(matches!(draft.rows[selected].1, Action::Edit(QueryEdit::LibraryType(kind)) if kind == current));
         }
-        assert_ne!(type_draft(LibraryType::Shows).stamp, type_draft(LibraryType::Episodes).stamp);
+        assert_ne!(type_draft(SecKind::Show, LibraryType::Primary).stamp,
+            type_draft(SecKind::Show, LibraryType::Episodes).stamp);
+    }
+
+    #[test]
+    fn movie_type_menu_offers_movies_and_collections() {
+        for (selected, current) in [LibraryType::Primary, LibraryType::Collections].into_iter().enumerate() {
+            let draft = type_draft(SecKind::Movie, current);
+            assert_eq!(draft.selected, selected as i32);
+            assert_eq!(draft.sections[0].rows.iter().map(|row| row.label.as_str()).collect::<Vec<_>>(),
+                ["Movies", "Collections"]);
+            assert!(matches!(draft.rows[selected].1, Action::Edit(QueryEdit::LibraryType(kind)) if kind == current));
+        }
+        // The same checked row names a different menu in the other kind of library.
+        assert_ne!(type_draft(SecKind::Movie, LibraryType::Collections).stamp,
+            type_draft(SecKind::Show, LibraryType::Collections).stamp);
     }
 
     #[test]

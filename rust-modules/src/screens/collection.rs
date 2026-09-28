@@ -395,7 +395,7 @@ impl CollectionScreen {
         let meta = if count == 0 && collection.status != CollectionStatus::Empty {
             CString::new("Collection").unwrap_or_default()
         } else {
-            CString::new(format!("{count} {} · Collection", if count == 1 { "item" } else { "items" }))
+            CString::new(format!("{} · Collection", crate::ui::fmt::item_count(count as i64)))
                 .unwrap_or_default()
         };
         Label::new(meta.as_ptr(), theme::size::BODY, theme::TEXT_SECONDARY)

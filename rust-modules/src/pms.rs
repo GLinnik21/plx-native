@@ -128,6 +128,9 @@ pub struct PmsMovie {
     /// Released"). Formatted by [`crate::ui::fmt::pretty_date`], which already takes `year` as the
     /// fallback for an item the server dated only to a year.
     pub(crate) aired: String,
+    /// A collection's member count (`childCount`) — its tile's caption, "12 items". 0 on every
+    /// other kind, where the listing's count fields mean leaves rather than members.
+    pub(crate) child_count: i64,
 }
 
 impl PmsMovie {
@@ -329,6 +332,9 @@ pub(crate) fn parse_item(it: &crate::plex::Metadata, sid: ServerId) -> PmsMovie 
         KIND_COLLECTION => false,
         _ => it.view_count > 0,
     };
+    if m.kind == KIND_COLLECTION {
+        m.child_count = it.child_count.max(0);
+    }
     m.title = clean(&it.title);
     m.year = it.year as c_int;
     m.rating = clean(&it.content_rating);

@@ -20,6 +20,19 @@ fn collection_rows_have_their_own_kind_and_unknown_types_are_not_listable() {
     }
 }
 
+/// A collection row keeps its member count (the Library caption's "N items"); no other kind reads
+/// `childCount` into it, so a show's season count never masquerades as one.
+#[test]
+fn a_collection_row_carries_its_member_count() {
+    let row = |kind: &str, child_count: i64| crate::plex::Metadata {
+        kind: kind.into(), rating_key: "50001".into(), title: "Trilogy".into(), child_count,
+        ..Default::default()
+    };
+    assert_eq!(parse_item(&row("collection", 3), sid(0)).child_count, 3);
+    assert_eq!(parse_item(&row("collection", -1), sid(0)).child_count, 0, "a nonsense count reads as none");
+    assert_eq!(parse_item(&row("show", 5), sid(0)).child_count, 0);
+}
+
 #[test]
 #[should_panic(expected = "requires its server in the retained Browse directory")]
 fn a_directory_scoped_hubs_fixture_refuses_an_empty_browse_publication() {
