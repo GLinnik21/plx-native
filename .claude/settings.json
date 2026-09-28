@@ -32,5 +32,16 @@
         ]
       }
     ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(CARGO_INCREMENTAL=0 cargo +nightly check --manifest-path rust-modules/Cargo.toml --lib --no-default-features)",
+      "Bash(make check)",
+      "Bash(tools/build-gc.sh -n *)",
+      "Bash(tools/tv-lock.sh status *)",
+      "Bash(tools/tv-lock.sh status)",
+      "Bash(tools/tv-session.sh log)",
+      "Bash(tools/tv-session.sh status)"
+    ]
   }
 }
