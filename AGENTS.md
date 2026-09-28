@@ -81,13 +81,17 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   `.claude/worktrees/.cargo/config.toml` (`plx-build-gc-policy`) with `incremental = false`,
   `[profile.dev] debug = "line-tables-only"` and `debug = false` for third-party packages as a
   backstop; the env var outranks that file and states the intent where a reader can see it.
-- **`make disk` before and after a fleet.** Build trees are per-checkout and nothing collects
-  them for you; the cargo **incremental cache**, not FFmpeg, is most of the bulk.
+- **`make disk` before and after a fleet.** Build trees are per-checkout; the cargo
+  **incremental cache**, not FFmpeg, is most of the bulk.
   `tools/build-gc.sh --incremental|--lanes|--all` deletes only rebuildable output. After tearing
   a fleet down, run `--worktrees` (removes finished lanes — clean, unlocked, already on `main` —
   which `git branch --merged` cannot see once they are squash-merged) and then `--orphans` (lane
   target dirs live outside the repo under `$PLX_FLEET_DIR` and outlive their worktree).
-  `docs/agent-reference.md` keeps the measurements behind this.
+  `docs/agent-reference.md` keeps the measurements behind this. None of this has to be run by
+  hand any more: `tools/build-gc.sh --auto` stages the same reclaim on its own, gated by free
+  space and (for `--lanes`) an idle guard, from a `SessionEnd` hook and the optional hourly
+  `make disk-watch` launchd agent — `make disk` stays the report to read before intervening
+  yourself, or when the volume needs relief faster than the automatic trigger provides it.
 - Use the `which-tier` skill to choose between host checks, `ui-sim`, and real-device verification.
   Pixel output, LG text rasterization, video-plane composition, performance, and native playback
   generally need the TV before being called verified.

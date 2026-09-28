@@ -198,8 +198,19 @@ print-sentry-project: ; @echo '$(SENTRY_PROJECT)'
 
 # `make disk` — what every checkout of this repository is costing, in one table, plus how to get
 # it back. It is a report; `tools/build-gc.sh --incremental|--lanes|--all` is the reclaim, and
-# the script's header carries the measurement that motivated all three.
+# the script's header carries the measurement that motivated all three. Nothing here has to be run
+# by hand anymore: `tools/build-gc.sh --auto` runs the same reclaim on its own, staged by free-space
+# pressure, from a `SessionEnd` hook (`.claude/hooks/build-gc-auto.sh`) and from the per-user
+# launchd agent `disk-watch` installs below — `make disk` remains the report to read when deciding
+# whether to intervene by hand.
 disk: ; @./tools/build-gc.sh
+
+# `make disk-watch` — install the per-user launchd agent that runs `tools/build-gc.sh --auto`
+# hourly in the background, so the automatic reclaim above does not depend on a session ending to
+# fire. macOS only; `tools/install-disk-watch.sh` prints the cron equivalent and exits 0 elsewhere.
+# `disk-watch-uninstall` removes it. Neither target touches the TV or any tracked file.
+disk-watch: ; @./tools/install-disk-watch.sh
+disk-watch-uninstall: ; @./tools/install-disk-watch.sh --uninstall
 
 # --- webOS NDK toolchain -----------------------------------------------------
 WEBOS_SDK   ?= $(HOME)/webos-ndk/arm-webos-linux-gnueabi_sdk-buildroot

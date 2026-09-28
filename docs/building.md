@@ -37,6 +37,13 @@ directories live outside the repo and outlive the worktree that made them. `--wo
 different in kind, not degree: it removes FINISHED lane checkouts themselves (clean, unlocked,
 already on `main`) — not just their build output — so it is not part of `--all`.
 
+None of the above has to be run by hand: `tools/build-gc.sh --auto` stages the same reclaim on its
+own, gated by free space on the volume (`PLX_GC_MIN_FREE_GIB`, default 20) and, for `--lanes`, by
+a lane idle guard (`PLX_GC_IDLE_MIN`, default 60) so a lane an agent might resume soon is spared.
+It runs from a Claude Code `SessionEnd` hook and from the hourly launchd agent `make disk-watch`
+installs (`tools/install-disk-watch.sh`, macOS only — run it yourself; nothing here installs it
+for you). Logs land in `~/Library/Logs/plxnative-build-gc.log` (or `$PLX_GC_LOG`).
+
 The bundled FFmpeg is not rebuilt per checkout. Its source and object tree is machine-wide under
 `$PLX_BUILD_CACHE` (default `~/.cache/plxnative`), keyed by configure flags and toolchain, so a
 fresh clone gets its own prefix in seconds rather than minutes.
