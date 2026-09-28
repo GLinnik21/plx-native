@@ -133,8 +133,16 @@ spec's "Media Queries" section documents the full query language.
   404s.) `titleSort<=`/`>=` behave as a lexicographic range, not begins/ends-with.
 - **Collections — two id spaces:** `/library/sections/{key}/collections` → `Metadata[]` with
   **ratingKey** (browse via `/library/collections/{rk}/children`); the `/collection` filter dir
-  returns **tag ids** for `/all?collection={tag}`. Don't mix. `includeCollections=1` inlines
-  collections into `/all`.
+  returns **tag ids** for `/all?collection={tag}`. Don't mix. A collection row's `index` is that
+  tag id, while its `guid` is shared with search hits and member `Collection[]` tags. Adding
+  `includeCollections=1` to `/hubs/search` yields full collection `Metadata[]` rows rather than
+  tag-shaped `Directory[]` hits.
+- **Collection routes and hubs:** `/library/collections/{rk}/children` and `/items` return the same
+  paged members. A promoted `custom.collection.*` hub embeds the members and carries the collection
+  ratingKey in its identifier; a member's `collection.related.*` hub lists the whole collection.
+  Automatic art is `/library/collections/{rk}/composite/{stamp}` (possibly with a query), while a
+  custom poster is `/library/metadata/{rk}/thumb/{stamp}`. An unshared section answers 403 from its
+  collections listing; preserve that as authorization denial rather than an empty result.
 - **Paging gotcha:** a query-param `X-Plex-Container-Size` WITHOUT `Start` is silently ignored —
   always send both (the client does), or use the headers. Header `Size: 0` = count-only probe.
   `totalSize` is only present on paged responses.
