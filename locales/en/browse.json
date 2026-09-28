@@ -567,7 +567,7 @@
     "args": {
       "count": "i64"
     },
-    "description": "browse search items"
+    "description": "Number of items inside one collection, shared by search results, collection tiles and the collection page"
   },
   "browse.search.no_results": {
     "value": "No results for “{query}”",
@@ -1939,5 +1939,35 @@
       "library": "str"
     },
     "description": "Empty collection listing in the selected library"
+  },
+  "browse.collection.loading": {
+    "value": "Loading collection…",
+    "description": "Collection page read-out while its first answer is pending"
+  },
+  "browse.collection.empty": {
+    "value": "This collection is empty",
+    "description": "Collection page read-out when the collection has no items"
+  },
+  "browse.collection.unavailable": {
+    "value": "This collection is not available",
+    "description": "Collection page read-out when the server refuses or no longer has the collection"
+  },
+  "browse.collection.kind": {
+    "value": "Collection",
+    "description": "The collection page meta line before its size is known; the kind of page shown"
+  },
+  "browse.collection.meta": {
+    "value": "{items} · Collection",
+    "args": {
+      "items": "str"
+    },
+    "description": "Collection page meta line; items is a localized item count such as “12 items”"
+  },
+  "browse.collection.season_mark": {
+    "value": "SEASON {number}",
+    "args": {
+      "number": "i64"
+    },
+    "description": "Upper-case mark drawn on a season poster inside a collection"
   }
 }

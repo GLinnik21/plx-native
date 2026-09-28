@@ -10,7 +10,7 @@ names and values are both on screen and both boundaries; keycap names and machin
 Beyond the widget constructors, the boundaries include the few places product text is stored
 before a screen draws it: sign-in failures (`fail_login`, `fail_empty_home_roster`, `.error =`),
 the playback verdict (`.verdict =`), subtitle-engine faults (`error_frame`, and `Err(` inside
-`player/ass.rs`), the HUD kicker and busy read-out, tile labels, and `title:` alongside the
+`player/ass.rs`), the HUD kicker and busy read-out, tile labels, linked shelf headings, poster marks, and `title:` alongside the
 `caption:`/`readout:`/`panel:` field initialisers. A prose `const` is followed
 across files: a boundary that names another module's `const X: &str = "…"` is a finding here.
 """
@@ -32,9 +32,13 @@ CONSTRUCTORS = {
     'Field': (0, 1), 'ValueChip': (0, 1),
 }
 # Associated functions and enum variants that carry display text: `Owner::name(...)`.
-PATHS = {('Kicker', 'Context'): (0,), ('Busy', 'Readout'): (1,), ('TileLabel', 'titled'): (0, 1)}
+PATHS = {('Kicker', 'Context'): (0,), ('Busy', 'Readout'): (1,), ('TileLabel', 'titled'): (0, 1),
+         # The shared linked shelf heading / Filmography entry: title and count are both drawn.
+         ('LinkedHeading', 'entry'): (0, 1), ('LinkedHeading', 'heading'): (0, 1)}
 # Calls by bare name (free function or method) whose argument is text a screen later shows.
-CALLS = {'fail_login': (0,), 'fail_empty_home_roster': (0,), 'error_frame': (1,)}
+CALLS = {'fail_login': (0,), 'fail_empty_home_roster': (0,), 'error_frame': (1,),
+         # `widgets::poster_label(p, rect, radius, text, measure)`: the mark on a poster tile.
+         'poster_label': (3,)}
 # Calls that are boundaries only inside one file: `player/ass.rs` returns its faults as `Err(..)`,
 # and each one becomes the subtitle read-out.
 FILE_CALLS = {'rust-modules/src/player/ass.rs': {'Err': (0,)}}

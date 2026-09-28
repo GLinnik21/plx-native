@@ -1166,4 +1166,25 @@ mod tests {
     }
 
     include!("menu_contract_tests.rs");
+
+    /// **Every TYPE row fits the popover, in every shipped language** — movie and TV sections
+    /// alike, Collections included, with the section header. Measured with the device's
+    /// whole-pixel advances at the popover's fixed width.
+    #[test]
+    fn every_type_row_fits_the_popover_in_every_language() {
+        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        let mut out = Vec::new();
+        for language in [Preference::En, Preference::Es, Preference::Be] {
+            let _guard = language_on_this_thread_for_test(language);
+            for kind in [SecKind::Movie, SecKind::Show] {
+                let draft = type_draft(kind, LibraryType::Collections);
+                let mut table = TableView::new();
+                table.set_sections(draft.sections, draft.selected, false);
+                out.extend(table.elided_rows(650.0, &ShippedMeasure, HEADROOM)
+                    .into_iter().map(|e| format!("{} {kind:?}: {e}", language.tag())));
+            }
+        }
+        assert!(out.is_empty(), "TYPE rows the popover would end in an ellipsis:\n  {}", out.join("\n  "));
+    }
 }

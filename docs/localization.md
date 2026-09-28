@@ -56,7 +56,8 @@ wording can change without renaming its key; change a key only when its meaning 
 Some slots have a fixed width and line count, and a translation that overflows one ends in `…`.
 Host tests measure each shipped language with the TV's own glyph widths and fail when such a line
 would not fit. The covered slots are Settings row titles and subtitles, the sign-in failure
-read-out, alert answer buttons, and the player's More menu. When one of these tests fails, shorten
+read-out, alert answer buttons, the player's More menu, the Library's TYPE menu, and the
+collection page's meta line and season marks. When one of these tests fails, shorten
 the wording; do not abbreviate it past readability.
 
 Review the affected screens with the desktop simulator. `PLXNATIVE_LOCALE=es`, `be` or `en`

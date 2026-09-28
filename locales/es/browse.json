@@ -447,5 +447,11 @@
   "browse.diagnostics.fed_rate": "{video} fps · {audio}/s",
   "browse.diagnostics.uncertainty": " · ±{percent} %",
   "browse.diagnostics.plex_pass": "{version} · Plex Pass",
-  "browse.library.no_collections": "No hay colecciones en {library}"
+  "browse.library.no_collections": "No hay colecciones en {library}",
+  "browse.collection.loading": "Cargando la colección…",
+  "browse.collection.empty": "Esta colección está vacía",
+  "browse.collection.unavailable": "Esta colección no está disponible",
+  "browse.collection.kind": "Colección",
+  "browse.collection.meta": "{items} · Colección",
+  "browse.collection.season_mark": "TEMPORADA {number}"
 }

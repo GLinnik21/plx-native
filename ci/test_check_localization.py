@@ -139,5 +139,15 @@ class InventoryTests(unittest.TestCase):
         source = '''fn tabs() -> Tab { Tab { title: "Other".to_string(), key: "other" } }'''
         self.assertEqual(self.texts(source), {'Other'})
 
+    def test_linked_headings_and_poster_marks_are_boundaries(self):
+        source = '''fn draw() {
+            LinkedHeading::entry("Filmography", count).draw(p, x, y, 0.0, &m, measure);
+            LinkedHeading::heading(&shelf.title, "items").bounded(w);
+            let mark = format!("SEASON {}", n);
+            widgets::poster_label(p, rect, radius, &mark, measure);
+            widgets::poster_label(p, rect, radius, &msg::browse_collection_season_mark(n), measure);
+        }'''
+        self.assertEqual(self.texts(source), {'Filmography', 'items', 'SEASON {}'})
+
 if __name__ == '__main__':
     unittest.main()

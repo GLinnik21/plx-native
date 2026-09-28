@@ -1181,7 +1181,7 @@ fn collection_arm(app: &mut App, fr: &mut Frame) -> bool {
     };
     crate::app::bridge::nav_push(&mut app.pages, AppArg::Content(
         crate::screens::registry::ContentArg::Collection {
-            sid, rk: rk.clone(), sec: 0, tag: 0, name: "Collection".into(),
+            sid, rk: rk.clone(), sec: 0, tag: 0, name: crate::i18n::msg::browse_collection_kind().into(),
         }));
     #[cfg(feature = "devtriggers")]
     crate::log(&format!("plxnative-collection: rk={rk} server={} start", sid.raw()));

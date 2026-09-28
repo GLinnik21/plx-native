@@ -461,5 +461,11 @@
   "browse.diagnostics.fed_rate": "{video} кадр/с · {audio}/с",
   "browse.diagnostics.uncertainty": " · ±{percent} %",
   "browse.diagnostics.plex_pass": "{version} · Plex Pass",
-  "browse.library.no_collections": "У бібліятэцы «{library}» няма калекцый"
+  "browse.library.no_collections": "У бібліятэцы «{library}» няма калекцый",
+  "browse.collection.loading": "Загрузка калекцыі…",
+  "browse.collection.empty": "Гэтая калекцыя пустая",
+  "browse.collection.unavailable": "Гэтая калекцыя недаступная",
+  "browse.collection.kind": "Калекцыя",
+  "browse.collection.meta": "{items} · Калекцыя",
+  "browse.collection.season_mark": "СЕЗОН {number}"
 }
