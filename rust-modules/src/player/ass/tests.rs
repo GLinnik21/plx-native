@@ -80,7 +80,7 @@ fn off_retires_a_racing_publication_and_pending_source_outside_the_mailbox_lock(
     let runtime = Runtime::new();
     let source = Arc::new(source(vec![event(0, 0, 2000)]));
     let key = request_key(&source);
-    let frame = error_frame(key, "fixture");
+    let frame = error_frame(key, Fault::RenderFailed);
     let source_witness = Arc::downgrade(&source);
     let frame_witness = Arc::downgrade(&frame);
     let mut engine = Engine {
@@ -144,7 +144,7 @@ fn cancellation_before_worker_parks_is_remembered_and_releases_resources() {
     let runtime = Arc::new(Runtime::new());
     let source = Arc::new(source(vec![event(0, 0, 2000)]));
     let key = request_key(&source);
-    let frame = error_frame(key, "fixture");
+    let frame = error_frame(key, Fault::RenderFailed);
     let witness = Arc::downgrade(&frame);
     runtime.source_id.store(source.id, Ordering::Release);
     runtime.mailbox.lock().unwrap().published = Some((key.epoch, frame.clone()));

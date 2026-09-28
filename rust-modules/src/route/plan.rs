@@ -416,6 +416,56 @@ pub(super) fn decision_codecs(mc: &crate::plex::MediaContainer) -> Option<(Strin
 pub(super) const DECISION_UNPLAYABLE: i64 = 2000;
 
 
+/// **Why a plan leaves without a URL on purpose**, as a typed verdict rather than a sentence.
+///
+/// The server's own refusal is quoted verbatim ([`PlayVerdict::Server`]: PMS wrote it, in the
+/// server's language, and it may be empty). Every other arm is the APP's policy decision, so it is
+/// stored as a variant and worded only where it is read ([`PlayVerdict::text`]) — a stored sentence
+/// would freeze one language into playback state that tests, logs and replays also read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PlayVerdict {
+    /// `/decision`'s own sentence, quoted and never translated. `""` when it gave none.
+    Server(String),
+    /// Direct Play is Disabled, and this stream can only be played as the original.
+    DirectPlayDisabled,
+    /// Force Direct Play is on, and this is why the original cannot play.
+    Forced(ForcedFailure),
+}
+
+/// The limitation a Force Direct Play verdict names. Each one carries the same recovery step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ForcedFailure {
+    NoOriginal,
+    Container,
+    Video,
+    Audio,
+    Unauthorized,
+    /// The resolve reached the transcode path, which Force never takes.
+    OpenFailed,
+    /// A later audio-track pick needs conversion.
+    AudioNeedsConversion,
+}
+
+impl PlayVerdict {
+    /// The read-out's sentence: the server's verbatim, or the app's own from the catalog.
+    pub(crate) fn text(&self) -> &str {
+        use crate::i18n::msg;
+        match self {
+            Self::Server(sentence) => sentence,
+            Self::DirectPlayDisabled => msg::widgets_verdict_direct_play_disabled(),
+            Self::Forced(why) => match why {
+                ForcedFailure::NoOriginal => msg::widgets_verdict_forced_no_original(),
+                ForcedFailure::Container => msg::widgets_verdict_forced_container(),
+                ForcedFailure::Video => msg::widgets_verdict_forced_video(),
+                ForcedFailure::Audio => msg::widgets_verdict_forced_audio(),
+                ForcedFailure::Unauthorized => msg::widgets_verdict_forced_unauthorized(),
+                ForcedFailure::OpenFailed => msg::widgets_verdict_forced_open(),
+                ForcedFailure::AudioNeedsConversion => msg::widgets_verdict_forced_audio_conversion(),
+            },
+        }
+    }
+}
+
 /// PURE: the server's pre-flight refusal, or None.
 ///
 /// `/decision` is asked BEFORE a byte of video moves, and it can answer "no" — verified live
@@ -735,7 +785,7 @@ pub(crate) struct Plan {
     /// that is how it fails, on the same path as every other unresolvable plan — and the sentence
     /// rides along so the read-out can quote the server instead of guessing. `None` on every other
     /// plan, including one that simply failed to reach the server.
-    pub verdict: Option<String>,
+    pub verdict: Option<PlayVerdict>,
     /// the episode queued after this one, straight off the `continuous=1` PlayQueue
     pub up_next: Option<UpNext>,
     /// that same PlayQueue's whole returned window, projected on the worker (see `queue`)
@@ -783,7 +833,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         ..Default::default()
     };
     if env.direct_play_mode == DirectPlayMode::Disabled && rk.is_empty() {
-        plan.verdict = Some("Direct Play is disabled. This original-only stream requires Direct Play to be set to Auto.".into());
+        plan.verdict = Some(PlayVerdict::DirectPlayDisabled);
         return plan;
     }
     let forced = env.direct_play_mode == DirectPlayMode::Forced;
@@ -1098,15 +1148,15 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     };
     let mut directplay = mde.as_ref().is_some_and(|v| v.original && (!forced || !v.video_forbids_copy));
     if forced {
-        let failure = if part.is_empty() { Some("No original media is available.") }
-            else if !streamable { Some("This original container is not supported by the playback engine.") }
-            else if !video_dp { Some("This video format is not supported by the playback engine.") }
+        let failure = if part.is_empty() { Some(ForcedFailure::NoOriginal) }
+            else if !streamable { Some(ForcedFailure::Container) }
+            else if !video_dp { Some(ForcedFailure::Video) }
             else if audio_sel.is_none() && (!tracks.is_empty() || !audio_direct_plays(env.direct_play_mode, acodec, 0)) {
-                Some("This audio format is not supported by the playback engine.")
-            } else if !rk.is_empty() && !directplay { Some("The server did not authorize original playback.") }
+                Some(ForcedFailure::Audio)
+            } else if !rk.is_empty() && !directplay { Some(ForcedFailure::Unauthorized) }
             else { None };
         if let Some(failure) = failure {
-            plan.verdict = Some(format!("Force Direct Play is enabled. {failure} Return Direct Play to Auto in Settings."));
+            plan.verdict = Some(PlayVerdict::Forced(failure));
             return plan;
         }
     }
@@ -1314,8 +1364,8 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     plan.auto_original_watched = playback_quality == Quality::Auto && auto_original && !env.preview;
     if playback_quality != Quality::Auto && !tentative_quality.direct_play {
         crate::player::log(&format!(
-            "route: quality ceiling {} — source {}kbps {src_w}x{src_h}; denying direct play + remux, re-encoding",
-            playback_quality.label(),
+            "route: quality ceiling {:?} — source {}kbps {src_w}x{src_h}; denying direct play + remux, re-encoding",
+            playback_quality,
             env.src_kbps
         ));
     }
@@ -1400,7 +1450,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         return plan;
     }
     if forced {
-        plan.verdict = Some("Force Direct Play could not open the original. Return Direct Play to Auto in Settings.".into());
+        plan.verdict = Some(PlayVerdict::Forced(ForcedFailure::OpenFailed));
         return plan;
     }
     // Transcode OR container-remux, both served via start.mkv. If the SOURCE video is
@@ -1508,7 +1558,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
                 "decision: REFUSED general={:?} transcode={:?} — {v}",
                 mc.general_decision_code, mc.transcode_decision_code
             ));
-            plan.verdict = Some(v);
+            plan.verdict = Some(PlayVerdict::Server(v));
             return plan;
         }
         // the Load payload must match the server's ACTUAL output codecs

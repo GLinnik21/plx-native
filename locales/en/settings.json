@@ -877,5 +877,173 @@
   "settings.legal.privacy.signin_body": {
     "description": "In-app privacy disclosure, aligned with PRIVACY.md.",
     "value": "If signing in fails, the same channel can carry a sign-in problem report: which sign-in step failed (or which fixed kind of failure inside the app stopped it), how the connection answered (an error class with its HTTP status or network error number), rounded try counts and durations, how many codes were shown, and, when a sign-in could not be saved, a storage failure class, which key-service step it stopped at and the key service's own numeric error code, fixed storage-helper failure stages and error codes, storage-candidate errno numbers (never file paths or owners), the app version and when it happened. It never includes your account name, tokens, PIN, sign-in code or network addresses. With crash reports on, it is sent automatically under your Crash report ID, and the sign-in screen shows its Report ID. Otherwise it is sent only if you press Send report on the sign-in screen, once, without any Crash report ID and with a random Report ID that identifies only that one report."
+  },
+  "settings.consent.preview.incident": {
+    "value": "\n\nSign-in problem report (automatically only when error reporting is on; otherwise only when you press Send report, and then without the crash report identifier):\n",
+    "description": "Heading in the crash-report preview above the sign-in problem report sample. Privacy disclosure: keep the conditions exact. 'Send report' names the button."
+  },
+  "settings.consent.placeholder.address": {
+    "value": "address",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.flags": {
+    "value": "flags",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.fault_address": {
+    "value": "fault address",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.caller_address": {
+    "value": "caller address",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.symbol_address": {
+    "value": "symbol address",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.compiled_function": {
+    "value": "compiled function",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.source_line": {
+    "value": "source line",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.source_column": {
+    "value": "source column",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.source_location": {
+    "value": "validated compile-time source:line",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.record_id": {
+    "value": "stable id for this crash-log record",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.crashed_build_id": {
+    "value": "crashed ELF build id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.running_build_id": {
+    "value": "running ELF build id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.error_event_id": {
+    "value": "random per-error event id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.crash_event_id": {
+    "value": "random id for this crash",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.message_hash": {
+    "value": "message hash",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.load_address": {
+    "value": "load address",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.mapped_bytes": {
+    "value": "mapped bytes",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.kernel_release": {
+    "value": "kernel release",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.kernel_build": {
+    "value": "kernel build suffix",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.debug_id": {
+    "value": "ELF debug id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.build_id": {
+    "value": "ELF build id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.code_id": {
+    "value": "ELF code id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.virtual_address": {
+    "value": "ELF virtual address",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.bytes": {
+    "value": "bytes",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.thread_address": {
+    "value": "thread instruction address",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.thread_id": {
+    "value": "thread id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.thread_label": {
+    "value": "internal thread label",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.webos_release": {
+    "value": "webOS release",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.webos_codename": {
+    "value": "webOS release codename",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.webos_api": {
+    "value": "webOS API version",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.soc_class": {
+    "value": "SoC/platform class",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.revision_class": {
+    "value": "hardware revision class",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.model_class": {
+    "value": "device model class",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.crash_time": {
+    "value": "crash time",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.crash_report_id": {
+    "value": "crash report id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.session_id": {
+    "value": "random session id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.event_time": {
+    "value": "event time",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.random_id": {
+    "value": "random id",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.project_key": {
+    "value": "project key",
+    "description": "Placeholder in the consent screen's payload preview, shown between angle brackets where a real report carries a random or device-specific value. Name what the value is; lower case."
+  },
+  "settings.consent.placeholder.app_version": {
+    "value": "app version",
+    "description": "Placeholder shown inside angle brackets in the data preview, standing for this app's version number."
+  },
+  "settings.consent.placeholder.webos_codename_short": {
+    "value": "webOS codename",
+    "description": "Placeholder shown inside angle brackets in the data preview, standing for the TV software's release codename."
   }
 }

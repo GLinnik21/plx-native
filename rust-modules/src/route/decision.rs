@@ -103,7 +103,7 @@ pub(crate) struct PlaybackSession {
     ///
     /// [`apply_plan`] installs it and [`request_play`] retires it, so it always describes the item
     /// the player is showing.
-    play_verdict: Option<String>,
+    play_verdict: Option<PlayVerdict>,
     /// The resolve itself could not produce a plan (no client, worker panic, or worker spawn
     /// refusal).  Unlike `play_verdict`, this is OUR failure rather than a PMS sentence; it makes
     /// an empty plan terminal and retryable instead of falling back to an idle black frame.
@@ -3830,7 +3830,7 @@ pub(crate) fn play_resolution_failed(ps: &PlaybackSession) -> bool {
 /// only reads it. The borrow lives until the next main-thread write, which is `apply_plan` or
 /// `request_play` — neither of which can run inside a frame's draw.
 pub(crate) fn play_verdict(ps: &PlaybackSession) -> Option<&str> {
-    ps.play_verdict.as_deref()
+    ps.play_verdict.as_ref().map(PlayVerdict::text)
 }
 /// Retire the refusal — "this playback request is withdrawn", the one thing besides a fresh
 /// resolve that ends a verdict's life. [`request_play`] clears it because a NEW item is being
@@ -4702,16 +4702,27 @@ impl Quality {
     /// The picker's row text. ONE string per rung rather than a label plus a trailing value,
     /// because the row already carries the picker's leading checkmark — `ui/table.rs`'s rule is
     /// that a mark says where you are and a word says what is set, and no row says both.
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Quality::Auto => "Auto",
-            Quality::Original => "Original",
-            Quality::P1080High => "1080p \u{b7} 20 Mbps",
-            Quality::P1080 => "1080p \u{b7} 8 Mbps",
-            Quality::P720 => "720p \u{b7} 4 Mbps",
-            Quality::P720Low => "720p \u{b7} 2 Mbps",
-            Quality::P480 => "480p \u{b7} 720 kbps",
-        }
+    ///
+    /// Display text in the UI language with its regional digits; a log line names the rung by
+    /// `{:?}` instead, so the log does not depend on the viewer's language.
+    pub(crate) fn label(self) -> String {
+        use crate::i18n::{current, msg};
+        let (lines, kbps): (i64, i64) = match self {
+            Quality::Auto => return msg::settings_playback_auto().to_owned(),
+            Quality::Original => return msg::widgets_quality_original().to_owned(),
+            Quality::P1080High => (1080, 20_000),
+            Quality::P1080 => (1080, 8_000),
+            Quality::P720 => (720, 4_000),
+            Quality::P720Low => (720, 2_000),
+            Quality::P480 => (480, 720),
+        };
+        let rate = if kbps >= 1000 {
+            msg::widgets_tracks_mbps(&current().number(kbps / 1000))
+        } else {
+            msg::widgets_tracks_kbps(&current().number(kbps))
+        };
+        // `1080p` is the format's own conventional name in every shipped language.
+        format!("{lines}p \u{b7} {rate}")
     }
 
     /// An in-memory index back to a rung — out of range is `Original`, never a neighbouring rung,
@@ -5674,7 +5685,7 @@ fn request_play_inner(
         // of, taken from the arrays themselves so the two can never disagree.
         unsafe {
             set_c(s.title.as_mut_ptr(), s.title.len(), title);
-            set_c(s.ctxline.as_mut_ptr(), s.ctxline.len(), ctx);
+            set_c(s.ctxline.as_mut_ptr(), s.ctxline.len(), crate::metadata::context_label(ctx));
         }
         s.cur_audio_sid = 0;
         s.cur_sub_sid = 0;
@@ -5826,8 +5837,8 @@ pub(crate) fn retry_current_play(ps: &mut PlaybackSession, meta: &mut crate::sto
         return false;
     };
     crate::player::log(&format!(
-        "playback retry: resolving item again at quality {}",
-        quality().label(),
+        "playback retry: resolving item again at quality {:?}",
+        quality(),
     ));
     request_play_inner(ps, meta, request, Some(current_retry_context(ps, resume_ns)), None, true)
 }
@@ -6426,7 +6437,7 @@ fn retranscode_as(ps: &mut PlaybackSession, expected: &WorkerTicket, offset_secs
 /// CONTAINER audio ordinal (the menu converts its row via metadata::audio_ordinal).
 pub(crate) fn commit_audio_selection(ps: &mut PlaybackSession, idx: i32, codec: &str, stream_id: i64, channels: i64) {
     if forced_direct_play(ps) && !audio_track_direct_plays(ps, codec, channels) {
-        ps.play_verdict = Some("Force Direct Play is enabled. This audio format needs conversion. Return Direct Play to Auto in Settings.".into());
+        ps.play_verdict = Some(PlayVerdict::Forced(ForcedFailure::AudioNeedsConversion));
         return;
     }
     if original_recovery_pending() {

@@ -848,20 +848,22 @@ impl Extra {
         self.subtype == "trailer" || self.extra_type == 1
     }
 
-    /// Human subtype for the extras shelf caption. Unknown subtypes stay "Extra".
+    /// Human subtype for the extras shelf caption, in the UI language. Unknown subtypes read as
+    /// the generic extra. The match is on PMS's own subtype names, which are never drawn.
     pub(crate) fn caption(&self) -> &'static str {
+        use crate::i18n::msg;
         match self.subtype.as_str() {
-            "trailer" => "Trailer",
-            "behindTheScenes" => "Behind the Scenes",
-            "featurette" => "Featurette",
-            "sceneOrSample" => "Scene",
-            "deletedScene" => "Deleted Scene",
-            "interview" => "Interview",
+            "trailer" => msg::browse_detail_trailer(),
+            "behindTheScenes" => msg::browse_extra_behind_the_scenes(),
+            "featurette" => msg::browse_extra_featurette(),
+            "sceneOrSample" => msg::browse_extra_scene(),
+            "deletedScene" => msg::browse_extra_deleted_scene(),
+            "interview" => msg::browse_extra_interview(),
             _ => match self.extra_type {
-                1 => "Trailer",
-                5 => "Behind the Scenes",
-                6 => "Scene",
-                _ => "Extra",
+                1 => msg::browse_detail_trailer(),
+                5 => msg::browse_extra_behind_the_scenes(),
+                6 => msg::browse_extra_scene(),
+                _ => ExtraContext::Extra.label(),
             },
         }
     }
@@ -876,22 +878,56 @@ impl Extra {
     }
 }
 
-/// HUD context line AND the PlayQueue gate. [`crate::route::request_play`] omits `continuous`
-/// when `ctx` equals this, so EOS cannot Up-Next into a sibling extra. The HUD prints the
-/// same word.
-pub(crate) const TRAILER_CONTEXT: &str = match std::str::from_utf8(TRAILER_CONTEXT_C.to_bytes()) {
-    Ok(s) => s,
-    Err(_) => panic!("TRAILER_CONTEXT_C is ASCII"),
-};
-/// The same word as a C string, for a painter that draws it every frame — ONE literal, with the
-/// `&str` above derived from it at compile time, so the two spellings cannot drift apart and the
-/// draw path never allocates to reach it.
-pub(crate) const TRAILER_CONTEXT_C: &std::ffi::CStr = c"Trailer";
+/// **What an extra's playback request carries as its context**, typed so the comparison and the
+/// words cannot be the same string. [`ExtraContext::key`] is the stable value a request carries
+/// and [`crate::route::request_play`] compares — it omits `continuous` for both kinds, so EOS
+/// cannot Up-Next into a sibling extra — and it is never drawn; [`ExtraContext::label`] is what the
+/// HUD prints in its place ([`context_label`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ExtraContext {
+    Trailer,
+    /// Any non-trailer extra.
+    Extra,
+}
+
+impl ExtraContext {
+    /// The comparison key. Deliberately not a word, so no display text can be mistaken for it.
+    pub(crate) const fn key(self) -> &'static str {
+        match self {
+            Self::Trailer => "plx:context/trailer",
+            Self::Extra => "plx:context/extra",
+        }
+    }
+
+    pub(crate) fn of(ctx: &str) -> Option<Self> {
+        [Self::Trailer, Self::Extra].into_iter().find(|kind| kind.key() == ctx)
+    }
+
+    /// The HUD's word for this kind, in the UI language.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Trailer => crate::i18n::msg::browse_detail_trailer(),
+            Self::Extra => crate::i18n::msg::browse_extra_extra(),
+        }
+    }
+}
+
+/// The trailer's request context: see [`ExtraContext::key`].
+pub(crate) const TRAILER_CONTEXT: &str = ExtraContext::Trailer.key();
 /// Non-trailer extras. Same queue rule as a trailer: omit `continuous` so EOS cannot Up-Next.
-pub(crate) const EXTRA_CONTEXT: &str = "Extra";
+pub(crate) const EXTRA_CONTEXT: &str = ExtraContext::Extra.key();
 
 pub(crate) fn context_omits_queue_continuous(ctx: &str) -> bool {
-    ctx == TRAILER_CONTEXT || ctx == EXTRA_CONTEXT
+    ExtraContext::of(ctx).is_some()
+}
+
+/// The HUD context line for a request context: an extra's kind in the UI language, and any other
+/// context unchanged — a feature's context line is already display text.
+pub(crate) fn context_label(ctx: &str) -> &str {
+    match ExtraContext::of(ctx) {
+        Some(kind) => kind.label(),
+        None => ctx,
+    }
 }
 
 pub(crate) fn extra_play_context(extra: &Extra) -> &'static str {

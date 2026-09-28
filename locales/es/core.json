@@ -14,5 +14,19 @@
   "core.shared_by": "Compartido por {handle}",
   "core.preview_fault": "Informe alternativo de fallo de C",
   "core.preview_panic": "Informe alternativo de pánico de Rust",
-  "core.preview_domains": "Valores posibles de errores de reproducción:"
+  "core.preview_domains": "Valores posibles de errores de reproducción:",
+  "core.preview_domain_line": "{label}: {values}",
+  "core.preview_domain_failure_kind": "tipo de fallo (incluidos los códigos históricos que se conservan)",
+  "core.preview_domain_delivery": "entrega",
+  "core.preview_domain_quality": "calidad",
+  "core.preview_domain_observed_rate": "velocidad observada",
+  "core.preview_domain_raster": "resolución",
+  "core.preview_domain_pipeline": "fase de reproducción",
+  "core.preview_domain_http": "HTTP",
+  "core.preview_domain_buffer": "búfer",
+  "core.preview_domain_elapsed": "tiempo transcurrido",
+  "core.preview_domain_hls_direction": "dirección de HLS",
+  "core.preview_domain_delivery_reason": "motivo de la entrega",
+  "core.preview_domain_original_phase": "fase de Original (incluidos los códigos históricos que se conservan)",
+  "core.preview_domain_original_outcome": "resultado de Original"
 }

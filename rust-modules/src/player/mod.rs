@@ -567,7 +567,7 @@ pub(crate) fn support_line(kind: FailureKind) -> String {
 }
 fn support_line_of(i: &crate::webos::Info, hw: &crate::webos::Hardware, kind: FailureKind) -> String {
     let set = hw.set_line();
-    let set: &str = if set.is_empty() { "unknown set" } else { &set };
+    let set: &str = if set.is_empty() { crate::i18n::msg::settings_login_unknown_device() } else { &set };
     format!(
         "{} {} · {} · {} · {}",
         crate::plex::identity::PRODUCT,
@@ -2297,7 +2297,11 @@ mod tests {
             &crate::webos::Hardware::default(),
             FailureKind::Unspecified,
         );
-        assert!(bare.contains("webOS unknown · unknown set · unspecified"), "{bare}");
+        assert!(bare.contains(&format!(
+            "{} · {} · unspecified",
+            crate::i18n::msg::browse_diagnostics_unknown_os(),
+            crate::i18n::msg::settings_login_unknown_device(),
+        )), "{bare}");
     }
 
     #[test]

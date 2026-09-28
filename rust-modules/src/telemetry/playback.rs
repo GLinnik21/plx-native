@@ -293,23 +293,10 @@ pub(crate) fn preview_domains() -> String {
         RateClass as R, TraceAge as A, TraceDirection as I, TraceOutcome as O,
     };
     use FailureKind as F;
-    format!(
-        "{}\n\
-         failure kind (including retained historical codes): {}\n\
-         delivery: {}\n\
-         quality: {}\n\
-         observed rate: {}\n\
-         raster: {}\n\
-         pipeline: {}\n\
-         HTTP: {}\n\
-         buffer: {}\n\
-         elapsed: {}\n\
-         HLS direction: {}\n\
-         delivery reason: {}\n\
-         Original phase (including retained historical codes): {}\n\
-         Original outcome: {}",
-        crate::i18n::msg::core_preview_domains(),
-        codes(
+    use crate::i18n::msg;
+    // The labels are the reader's words; the codes after them are the wire values themselves.
+    let domains: [(&str, String); 13] = [
+        (msg::core_preview_domain_failure_kind(), codes(
             &[
                 F::DecisionRefused,
                 F::PlaybackPolicy,
@@ -322,9 +309,9 @@ pub(crate) fn preview_domains() -> String {
                 F::Unspecified,
             ],
             F::code,
-        ),
-        codes(&[D::Direct, D::Remux, D::Hls, D::Transcode], D::code),
-        codes(
+        )),
+        (msg::core_preview_domain_delivery(), codes(&[D::Direct, D::Remux, D::Hls, D::Transcode], D::code)),
+        (msg::core_preview_domain_quality(), codes(
             &[
                 Q::Unknown,
                 Q::Auto,
@@ -344,8 +331,8 @@ pub(crate) fn preview_domains() -> String {
                 Q::M22,
             ],
             Q::code,
-        ),
-        codes(
+        )),
+        (msg::core_preview_domain_observed_rate(), codes(
             &[
                 R::Unknown,
                 R::Under1m,
@@ -356,10 +343,10 @@ pub(crate) fn preview_domains() -> String {
                 R::Over20m
             ],
             R::code,
-        ),
-        codes(&[X::Unknown, X::Sd, X::Hd, X::Fhd, X::Uhd], X::code),
-        codes(&[L::Loading, L::Playing, L::Bound, L::Streaming], L::code),
-        codes(
+        )),
+        (msg::core_preview_domain_raster(), codes(&[X::Unknown, X::Sd, X::Hd, X::Fhd, X::Uhd], X::code)),
+        (msg::core_preview_domain_pipeline(), codes(&[L::Loading, L::Playing, L::Bound, L::Streaming], L::code)),
+        (msg::core_preview_domain_http(), codes(
             &[
                 H::None,
                 H::Success,
@@ -368,8 +355,8 @@ pub(crate) fn preview_domains() -> String {
                 H::Other
             ],
             H::code
-        ),
-        codes(
+        )),
+        (msg::core_preview_domain_buffer(), codes(
             &[
                 B::Unknown,
                 B::Empty,
@@ -379,8 +366,8 @@ pub(crate) fn preview_domains() -> String {
                 B::Over30s
             ],
             B::code
-        ),
-        codes(
+        )),
+        (msg::core_preview_domain_elapsed(), codes(
             &[
                 A::Under1s,
                 A::S1To3,
@@ -390,17 +377,17 @@ pub(crate) fn preview_domains() -> String {
                 A::Over2m
             ],
             A::code
-        ),
-        codes(&[I::Up, I::Down, I::Refresh], I::code),
-        codes(
+        )),
+        (msg::core_preview_domain_hls_direction(), codes(&[I::Up, I::Down, I::Refresh], I::code)),
+        (msg::core_preview_domain_delivery_reason(), codes(
             &[
                 W::LinkFallback,
                 W::OriginalRecovery,
                 W::OriginalOpenRollback
             ],
             W::code
-        ),
-        codes(
+        )),
+        (msg::core_preview_domain_original_phase(), codes(
             &[
                 P::RetireHls,
                 P::SampleSource,
@@ -410,8 +397,8 @@ pub(crate) fn preview_domains() -> String {
                 P::CommitHls
             ],
             P::code
-        ),
-        codes(
+        )),
+        (msg::core_preview_domain_original_outcome(), codes(
             &[
                 O::Started,
                 O::Succeeded,
@@ -423,8 +410,14 @@ pub(crate) fn preview_domains() -> String {
                 O::Refused
             ],
             O::code
-        ),
-    )
+        )),
+    ];
+    let mut out = msg::core_preview_domains().to_owned();
+    for (label, values) in domains {
+        out.push('\n');
+        out.push_str(&msg::core_preview_domain_line(label, &values));
+    }
+    out
 }
 
 #[cfg(test)]

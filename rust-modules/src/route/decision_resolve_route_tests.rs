@@ -1301,7 +1301,7 @@ fn abandoned_resolves_retire_the_streaming_resources_they_created() {
         plan: Plan {
             sid,
             sess: "refused-logical-resource".into(),
-            verdict: Some("server refused this route".into()),
+            verdict: Some(PlayVerdict::Server("server refused this route".into())),
             ..Default::default()
         },
         rk: "refused-rk".into(),
@@ -1457,7 +1457,7 @@ fn a_refused_retry_keeps_its_position_and_full_request_for_the_next_quality() {
 
     apply_plan(&mut ps, 
         Plan {
-            verdict: Some("temporary refusal".into()),
+            verdict: Some(PlayVerdict::Server("temporary refusal".into())),
             ..Default::default()
         },
         "episode-42",

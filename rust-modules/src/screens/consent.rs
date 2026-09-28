@@ -999,8 +999,8 @@ impl PreviewPage {
             PreviewKind::ErrorsId => errors_id_document(),
             PreviewKind::AnalyticsId => analytics_id_document(),
             PreviewKind::Policy => super::legal::privacy_policy().to_string(),
-            PreviewKind::Crash => preview_crash(),
-            PreviewKind::Usage => preview_usage(),
+            PreviewKind::Crash => localize_placeholders(&preview_crash()),
+            PreviewKind::Usage => localize_placeholders(&preview_usage()),
         };
         Self {
             entry,
@@ -1133,10 +1133,7 @@ pub(crate) fn preview_crash() -> String {
         .and_then(|v| serde_json::to_string_pretty(&v).ok())
         .unwrap_or_else(|| String::from_utf8_lossy(&handled).into_owned());
     out.push_str(&handled_text);
-    out.push_str(
-        "\n\nSign-in problem report (automatically only when error reporting is on; otherwise \
-         only when you press Send report, and then without the crash report identifier):\n",
-    );
+    out.push_str(crate::i18n::msg::settings_consent_preview_incident());
     let incident = crate::telemetry::incident::preview_event();
     let incident_text = serde_json::from_slice::<serde_json::Value>(&incident)
         .ok()
@@ -1235,6 +1232,89 @@ pub(crate) fn preview_usage() -> String {
         out.push_str("\n\n");
     }
     out
+}
+
+/// **The previews' placeholders, in the reader's language.** The payloads above come from the real
+/// serialisers, and where a real report would carry a random or build-specific value they carry a
+/// `<placeholder>` naming it. Those names are the one app-authored prose inside the JSON, so they are
+/// translated HERE, where the payload becomes a page; field names, codes and representative values
+/// are the wire itself and pass through untouched. An unknown `<…>` also passes through, and
+/// `every_preview_placeholder_is_translated` fails the build's tests before one can ship.
+fn localize_placeholders(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('<') {
+        out.push_str(&rest[..open]);
+        let tail = &rest[open..];
+        match tail.find('>').and_then(|close| placeholder(&tail[1..close]).map(|word| (close, word))) {
+            Some((close, word)) => {
+                out.push('<');
+                out.push_str(word);
+                out.push('>');
+                rest = &tail[close + 1..];
+            }
+            None => {
+                out.push('<');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// A preview placeholder's words, or `None` for text that is not one of them.
+fn placeholder(token: &str) -> Option<&'static str> {
+    use crate::i18n::msg;
+    Some(match token {
+        "address" => msg::settings_consent_placeholder_address(),
+        "flags" => msg::settings_consent_placeholder_flags(),
+        "fault address" => msg::settings_consent_placeholder_fault_address(),
+        "caller address" => msg::settings_consent_placeholder_caller_address(),
+        "symbol address" => msg::settings_consent_placeholder_symbol_address(),
+        "compiled function" => msg::settings_consent_placeholder_compiled_function(),
+        "source line" => msg::settings_consent_placeholder_source_line(),
+        "source column" => msg::settings_consent_placeholder_source_column(),
+        "validated compile-time source:line" => msg::settings_consent_placeholder_source_location(),
+        "stable id for this crash-log record" => msg::settings_consent_placeholder_record_id(),
+        "crashed ELF build id" => msg::settings_consent_placeholder_crashed_build_id(),
+        "running ELF build id" => msg::settings_consent_placeholder_running_build_id(),
+        "random per-error event id" => msg::settings_consent_placeholder_error_event_id(),
+        "random id for this crash" => msg::settings_consent_placeholder_crash_event_id(),
+        "message hash" => msg::settings_consent_placeholder_message_hash(),
+        "load address" => msg::settings_consent_placeholder_load_address(),
+        "mapped bytes" => msg::settings_consent_placeholder_mapped_bytes(),
+        "kernel release" => msg::settings_consent_placeholder_kernel_release(),
+        "kernel build suffix" => msg::settings_consent_placeholder_kernel_build(),
+        "ELF debug id" => msg::settings_consent_placeholder_debug_id(),
+        "ELF build id" => msg::settings_consent_placeholder_build_id(),
+        "ELF code id" => msg::settings_consent_placeholder_code_id(),
+        "ELF virtual address" => msg::settings_consent_placeholder_virtual_address(),
+        "bytes" => msg::settings_consent_placeholder_bytes(),
+        "thread instruction address" => msg::settings_consent_placeholder_thread_address(),
+        "thread id" => msg::settings_consent_placeholder_thread_id(),
+        "internal thread label" => msg::settings_consent_placeholder_thread_label(),
+        "webOS release" => msg::settings_consent_placeholder_webos_release(),
+        "webOS release codename" => msg::settings_consent_placeholder_webos_codename(),
+        "webOS API version" => msg::settings_consent_placeholder_webos_api(),
+        "SoC/platform class" => msg::settings_consent_placeholder_soc_class(),
+        "hardware revision class" => msg::settings_consent_placeholder_revision_class(),
+        "device model class" => msg::settings_consent_placeholder_model_class(),
+        "crash time" => msg::settings_consent_placeholder_crash_time(),
+        "crash report id" => msg::settings_consent_placeholder_crash_report_id(),
+        "random session id" => msg::settings_consent_placeholder_session_id(),
+        "event time" => msg::settings_consent_placeholder_event_time(),
+        "random id" => msg::settings_consent_placeholder_random_id(),
+        "project key" => msg::settings_consent_placeholder_project_key(),
+        "app version" => msg::settings_consent_placeholder_app_version(),
+        "webOS codename" => msg::settings_consent_placeholder_webos_codename_short(),
+        // Placeholders that list the field's possible wire values: the codes are the payload.
+        "ok / missing / n/a" => "ok / missing / n/a",
+        "devmode / homebrew / unknown" => "devmode / homebrew / unknown",
+        "local / remote / relay / unknown" => "local / remote / relay / unknown",
+        "v4 / v6 / unknown" => "v4 / v6 / unknown",
+        _ => return None,
+    })
 }
 
 /// The union of both channels — test-only (`the_preview_shows_every_event_this_build_can_emit`).

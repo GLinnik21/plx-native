@@ -1392,7 +1392,7 @@ pub(crate) enum Kicker {
     /// an episode's own address and name ("S1, E1 · Pilot"): primary ink, bold — it IS the
     /// episode's title, with the show's name as the display title under it
     Episode(*const std::os::raw::c_char),
-    /// a context label (`metadata::TRAILER_CONTEXT`, an extra's kind, a movie's route ctxline):
+    /// a context label (`metadata::context_label`: an extra's kind, a movie's route ctxline):
     /// secondary ink, regular — it only says what the display title is
     Context(*const std::os::raw::c_char),
 }

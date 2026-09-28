@@ -402,7 +402,7 @@ fn request_episode(ps: &mut crate::route::PlaybackSession, meta: &mut crate::sto
         dur_ms: ep.dur_ms, rating: ep.rating.clone(), thumb: ep.thumb.clone(), detail_rk: d.rk.clone(),
     })));
     let title = if ep.title.is_empty() { &d.title } else { &ep.title };
-    let context = format!("{}  ·  S{} E{}", d.title, ep.season, ep.index);
+    let context = format!("{}  ·  {}", d.title, crate::ui::fmt::episode_ordinal(ep.season, ep.index));
     crate::route::request_play(ps, meta, crate::route::item_sid(d.sid), &ep.rk, &ep.part,
         &ep.vcodec, &ep.acodec, title, &context)
 }

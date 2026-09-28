@@ -57,8 +57,8 @@ enum Failure {
 impl Failure {
     fn message(self) -> &'static str {
         match self {
-            Failure::Fetch => "Couldn't load this subtitle from the server",
-            Failure::Empty => "This subtitle file has no readable lines",
+            Failure::Fetch => crate::i18n::msg::widgets_sidecar_fetch_failed(),
+            Failure::Empty => crate::i18n::msg::widgets_sidecar_empty(),
         }
     }
 }

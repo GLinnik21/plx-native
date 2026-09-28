@@ -100,5 +100,65 @@
   "core.preview_domains": {
     "value": "Closed handled-playback domains:",
     "description": "Heading in consent technical report preview"
+  },
+  "core.preview_domain_line": {
+    "value": "{label}: {values}",
+    "args": {
+      "label": "str",
+      "values": "str"
+    },
+    "description": "One line of the consent preview's list of possible values: a field name, then its possible technical codes."
+  },
+  "core.preview_domain_failure_kind": {
+    "value": "failure kind (including retained historical codes)",
+    "description": "Field name in the consent preview's list of possible playback-error values."
+  },
+  "core.preview_domain_delivery": {
+    "value": "delivery",
+    "description": "Field name in the consent preview's list of possible playback-error values: how the video was delivered."
+  },
+  "core.preview_domain_quality": {
+    "value": "quality",
+    "description": "Field name in the consent preview's list of possible playback-error values."
+  },
+  "core.preview_domain_observed_rate": {
+    "value": "observed rate",
+    "description": "Field name in the consent preview's list of possible playback-error values: the measured bitrate class."
+  },
+  "core.preview_domain_raster": {
+    "value": "raster",
+    "description": "Field name in the consent preview's list of possible playback-error values: the picture size class."
+  },
+  "core.preview_domain_pipeline": {
+    "value": "pipeline",
+    "description": "Field name in the consent preview's list of possible playback-error values: the playback pipeline stage."
+  },
+  "core.preview_domain_http": {
+    "value": "HTTP",
+    "description": "Field name in the consent preview's list of possible playback-error values: the HTTP status class."
+  },
+  "core.preview_domain_buffer": {
+    "value": "buffer",
+    "description": "Field name in the consent preview's list of possible playback-error values: the buffered time class."
+  },
+  "core.preview_domain_elapsed": {
+    "value": "elapsed",
+    "description": "Field name in the consent preview's list of possible playback-error values: time since an event."
+  },
+  "core.preview_domain_hls_direction": {
+    "value": "HLS direction",
+    "description": "Field name in the consent preview's list of possible playback-error values: whether streaming quality went up or down."
+  },
+  "core.preview_domain_delivery_reason": {
+    "value": "delivery reason",
+    "description": "Field name in the consent preview's list of possible playback-error values."
+  },
+  "core.preview_domain_original_phase": {
+    "value": "Original phase (including retained historical codes)",
+    "description": "Field name in the consent preview's list of possible playback-error values: the stage of an original-quality attempt."
+  },
+  "core.preview_domain_original_outcome": {
+    "value": "Original outcome",
+    "description": "Field name in the consent preview's list of possible playback-error values: the result of an original-quality attempt."
   }
 }

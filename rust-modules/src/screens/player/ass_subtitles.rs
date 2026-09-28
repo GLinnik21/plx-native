@@ -122,7 +122,7 @@ impl AssSubtitles {
     }
 
     pub(crate) fn error(&self) -> Option<&'static str> {
-        self.frame.as_ref().and_then(|f| f.error)
+        self.frame.as_ref().and_then(|f| f.error).map(crate::player::ass::Fault::message)
     }
 
     pub(crate) fn release(&mut self) {

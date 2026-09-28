@@ -16,7 +16,7 @@ fn an_empty_roster_with_a_reason_is_a_readout_and_not_the_spinner() {
     assert!(s.has_spinner(0), "loading an empty roster spins");
 
     let mut failed = snapshot(Phase::Profiles, Vec::new());
-    failed.error = Arc::from(auth::owner::ROSTER_REFUSED);
+    failed.error = Arc::from(auth::owner::roster_refused());
     s.resync(failed.read());
     assert!(s.roster_readout(), "a finished, empty roster reads out its reason");
     assert!(!s.has_spinner(0), "the read-out is still: drawing and ticking share one predicate");
@@ -734,7 +734,7 @@ fn session_cmds(fx: &[Stamped<SessionHost>]) -> Vec<&'static str> {
 /// the BACK key, with *Sign out* secondary beside it on the read-out's own row.
 #[test]
 fn a_roster_readout_offers_a_focused_back_whose_ok_is_the_back_key() {
-    for reason in [auth::owner::ROSTER_REFUSED, auth::owner::ROSTER_UNREACHABLE] {
+    for reason in [auth::owner::roster_refused(), auth::owner::roster_unreachable()] {
         let read = readout(reason, true);
         let mut s = ProfilesScreen::new(EntryId(0), read.read());
         let back = FocusKey { entry: EntryId(0), elem: READOUT_BACK };
@@ -769,7 +769,7 @@ fn a_roster_readout_offers_a_focused_back_whose_ok_is_the_back_key() {
 /// would claim otherwise, so none is offered and *Sign out* stays the read-out's one control.
 #[test]
 fn a_readout_whose_back_leaves_the_app_offers_no_back_pill() {
-    let read = readout(auth::owner::ROSTER_REFUSED, false);
+    let read = readout(auth::owner::roster_refused(), false);
     let mut s = ProfilesScreen::new(EntryId(0), read.read());
     let c = cx_with(None, &read);
     let (_, fx) = step_ev_with(&mut s, &ScreenEvent::Tick(Tick::default()), None, &read, InstanceId(3));

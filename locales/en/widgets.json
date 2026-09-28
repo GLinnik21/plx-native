@@ -689,5 +689,125 @@
       "label": "str",
       "milliseconds": "i64"
     }
+  },
+  "widgets.verdict.direct_play_disabled": {
+    "value": "Direct Play is disabled. This original-only stream requires Direct Play to be set to Auto.",
+    "description": "Playback failure detail when the Direct Play setting is Disabled but the stream can only play as the original file."
+  },
+  "widgets.verdict.forced_no_original": {
+    "value": "Force Direct Play is enabled. No original media is available. Return Direct Play to Auto in Settings.",
+    "description": "Playback failure detail while Force Direct Play is on: the item has no original file."
+  },
+  "widgets.verdict.forced_container": {
+    "value": "Force Direct Play is enabled. This original container is not supported by the playback engine. Return Direct Play to Auto in Settings.",
+    "description": "Playback failure detail while Force Direct Play is on: the file's container format cannot be played directly."
+  },
+  "widgets.verdict.forced_video": {
+    "value": "Force Direct Play is enabled. This video format is not supported by the playback engine. Return Direct Play to Auto in Settings.",
+    "description": "Playback failure detail while Force Direct Play is on: the video format cannot be played directly."
+  },
+  "widgets.verdict.forced_audio": {
+    "value": "Force Direct Play is enabled. This audio format is not supported by the playback engine. Return Direct Play to Auto in Settings.",
+    "description": "Playback failure detail while Force Direct Play is on: the audio format cannot be played directly."
+  },
+  "widgets.verdict.forced_unauthorized": {
+    "value": "Force Direct Play is enabled. The server did not authorize original playback. Return Direct Play to Auto in Settings.",
+    "description": "Playback failure detail while Force Direct Play is on: the Plex server did not allow playing the original file."
+  },
+  "widgets.verdict.forced_open": {
+    "value": "Force Direct Play could not open the original. Return Direct Play to Auto in Settings.",
+    "description": "Playback failure detail while Force Direct Play is on: the original file could not be opened."
+  },
+  "widgets.verdict.forced_audio_conversion": {
+    "value": "Force Direct Play is enabled. This audio format needs conversion. Return Direct Play to Auto in Settings.",
+    "description": "Playback failure detail while Force Direct Play is on: the selected audio track would need server conversion."
+  },
+  "widgets.quality.original": {
+    "value": "Original",
+    "description": "Playback quality choice that plays the original file without conversion."
+  },
+  "widgets.ass.start_failed": {
+    "value": "Couldn’t start styled subtitles",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.invalid_file": {
+    "value": "This styled subtitle file is invalid or too large",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.invalid_track": {
+    "value": "This styled subtitle track is invalid or too large",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.invalid_events": {
+    "value": "This styled subtitle track contains invalid events",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.track_too_large": {
+    "value": "This styled subtitle track is too large",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.too_many_fonts": {
+    "value": "This styled subtitle track contains too many fonts",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.invalid_fonts": {
+    "value": "This styled subtitle track contains invalid fonts",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.render_failed": {
+    "value": "Couldn’t render this styled subtitle",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.unavailable": {
+    "value": "Styled subtitle support is unavailable in this installation",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.fonts_unavailable": {
+    "value": "Couldn’t load subtitle fonts",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.init_failed": {
+    "value": "Couldn’t initialize styled subtitles",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.font_too_large": {
+    "value": "The installed subtitle font is too large",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.unreadable": {
+    "value": "This styled subtitle file could not be read",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.font_name": {
+    "value": "This subtitle font name is invalid",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.track_fonts": {
+    "value": "Couldn’t load this subtitle’s fonts",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.too_many_events": {
+    "value": "This styled subtitle track contains too many events",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.invalid_regions": {
+    "value": "The styled subtitle renderer returned invalid regions",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.invalid_pixels": {
+    "value": "The styled subtitle renderer returned invalid pixels",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.ass.overlapping_regions": {
+    "value": "The styled subtitle renderer returned overlapping regions",
+    "description": "Message drawn in place of styled (ASS/SSA) subtitles when they cannot be shown."
+  },
+  "widgets.sidecar.fetch_failed": {
+    "value": "Couldn’t load this subtitle from the server",
+    "description": "Message drawn in place of an external subtitle file that could not be downloaded."
+  },
+  "widgets.sidecar.empty": {
+    "value": "This subtitle file has no readable lines",
+    "description": "Message drawn in place of an external subtitle file that contains no readable text."
   }
 }

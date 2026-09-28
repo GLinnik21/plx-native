@@ -334,8 +334,12 @@ pub(crate) enum DevCommitDelta { Activated, StartAccount { login_req: u32 } }
 
 /// The picker's read-outs when it has no tiles and cannot get any. Neutral wording, drawn as a
 /// failed read-out on the picker itself (`screens/profiles.rs`), never as a sign-in failure.
-pub(crate) const ROSTER_UNREACHABLE: &str = "Couldn\u{2019}t load profiles — check the connection.";
-pub(crate) const ROSTER_REFUSED: &str = "Switching profiles isn\u{2019}t available from this profile.";
+pub(crate) fn roster_unreachable() -> &'static str {
+    crate::i18n::msg::browse_auth_roster_unreachable()
+}
+pub(crate) fn roster_refused() -> &'static str {
+    crate::i18n::msg::browse_auth_roster_refused()
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) enum BootstrapAuthority {
@@ -720,7 +724,7 @@ pub(crate) struct SessionInit {
     #[serde(default)]
     pub plaintext: Option<super::PlaintextVerdict>,
     /// The identity plex.tv REFUSED a roster to while nothing was cached to switch from — the
-    /// verdict behind [`ROSTER_REFUSED`]'s read-out, kept so the account menu stops offering
+    /// verdict behind [`roster_refused`]'s read-out, kept so the account menu stops offering
     /// *Change profile* into that dead end ([`SessionSnapshot::switch_refused`]). Keyed by the
     /// identity, so a profile switch to anyone else reads it as unrefused. The identity's
     /// lifecycle retires it outright: `erase` (sign-out; the same account signed back in is the
@@ -762,7 +766,7 @@ impl SessionInit {
 
     /// Put up #132's refused read-out and remember the verdict for this identity.
     fn refuse_switch(&mut self) {
-        self.error = ROSTER_REFUSED.into();
+        self.error = roster_refused().into();
         self.switch_refused_for = Some(Identity::of(&self.persisted));
     }
 
@@ -1292,7 +1296,7 @@ impl SessionMachine {
         let Some(req) = self.allocate(SessionOp::Ready, None) else {
             self.state.phase = Phase::Profiles;
             self.state.apply_pending = false;
-            self.state.error = "Couldn't switch profile. Try again.".into();
+            self.state.error = crate::i18n::msg::browse_auth_switch_retry().into();
             self.replace_publication();
             return true;
         };
@@ -1482,18 +1486,18 @@ impl SessionMachine {
             }
             let op = self.state.pending.remove(&reply.req).unwrap().key.op;
             match op {
-                SessionOp::Login | SessionOp::Rediscover => self.fail_login("Couldn't finish sign-in. Try again.",
+                SessionOp::Login | SessionOp::Rediscover => self.fail_login(crate::i18n::msg::browse_auth_finish_failed(),
                     Some(IncidentContext::internal(InternalClass::CommitRefused)), emit),
                 SessionOp::ProfileSwitch | SessionOp::Ready => {
                     self.state.phase = Phase::Profiles;
                     self.state.apply_pending = false;
-                    self.state.error = "Couldn't switch profile — check the connection.".into();
+                    self.state.error = crate::i18n::msg::browse_auth_switch_failed().into();
                 }
                 SessionOp::HomeRoster | SessionOp::ServerRoster | SessionOp::Endpoint(_) | SessionOp::Picker => {}
                 SessionOp::DevBoundary => {
                     self.state.phase = Phase::Error;
                     self.state.apply_pending = false;
-                    self.state.error = "Couldn't change session authority. Try again.".into();
+                    self.state.error = crate::i18n::msg::browse_auth_authority_failed().into();
                 }
             }
             emit(SessionFx::Retire { req: reply.req });
@@ -1651,15 +1655,15 @@ impl SessionMachine {
             // This is an unsequenced, never-admitted refusal. Accepted requests (including ones
             // without a first observation) cannot enter this branch.
             match pending.key.op {
-                SessionOp::Login => self.fail_login("Couldn't start sign-in. Try again.",
+                SessionOp::Login => self.fail_login(crate::i18n::msg::browse_auth_start_failed(),
                     Some(IncidentContext::internal(InternalClass::AdmissionRefused)), emit),
-                SessionOp::Rediscover => self.fail_login("Couldn't restart server discovery. Try again.",
+                SessionOp::Rediscover => self.fail_login(crate::i18n::msg::browse_auth_rediscover_failed(),
                     Some(IncidentContext::internal(InternalClass::AdmissionRefused)), emit),
                 SessionOp::ProfileSwitch => {
                     self.state.phase = Phase::Profiles;
-                    self.state.error = "Couldn't switch profile. Try again.".into();
+                    self.state.error = crate::i18n::msg::browse_auth_switch_retry().into();
                 }
-                SessionOp::HomeRoster => self.fail_empty_home_roster(ROSTER_UNREACHABLE),
+                SessionOp::HomeRoster => self.fail_empty_home_roster(roster_unreachable()),
                 _ => {}
             }
             self.retire(req, emit);
@@ -1808,7 +1812,7 @@ impl SessionMachine {
         if self.state.pending_erase.is_some() { return false; }
         if self.advance_epoch(emit).is_none() { return false; }
         if self.state.persisted.account_token.is_empty() {
-            self.fail_login("You're signed out — sign in to use profiles.", None, emit);
+            self.fail_login(crate::i18n::msg::browse_auth_signed_out(), None, emit);
             self.replace_publication();
             return true;
         }
@@ -2018,7 +2022,7 @@ impl SessionMachine {
                 return true;
             }
             (CaptureIntent::Login, SessionReadValue::LoginClientId(_)) => {
-                self.fail_login("Couldn't start sign-in. Try again.",
+                self.fail_login(crate::i18n::msg::browse_auth_start_failed(),
                     Some(IncidentContext::internal(InternalClass::ClientIdUnavailable)), emit);
                 self.retire(req, emit);
                 self.replace_publication();
@@ -2073,9 +2077,9 @@ impl SessionMachine {
             if pending.key.op == SessionOp::ProfileSwitch && pending.phase == StreamPhase::Running {
                 self.state.phase = Phase::Profiles;
                 self.state.pin_denied = false;
-                self.state.error = "Couldn't switch profile. Try again.".into();
+                self.state.error = crate::i18n::msg::browse_auth_switch_retry().into();
             } else if pending.key.op == SessionOp::HomeRoster {
-                self.fail_empty_home_roster(ROSTER_UNREACHABLE);
+                self.fail_empty_home_roster(roster_unreachable());
             }
             self.retire(req, emit);
             self.replace_publication();
@@ -2167,7 +2171,7 @@ impl SessionMachine {
                     Some(users) if !users.is_empty() => users,
                     graded => {
                         if graded.is_none() {
-                            self.fail_empty_home_roster(ROSTER_UNREACHABLE);
+                            self.fail_empty_home_roster(roster_unreachable());
                         } else {
                             self.refuse_empty_home_roster();
                         }
@@ -2495,9 +2499,9 @@ impl SessionMachine {
                 if !envelope.terminal { return false; }
                 let (message, class) = match (envelope.key.op, &envelope.outcome) {
                     (SessionOp::Rediscover, SessionArrival::Refused) =>
-                        ("Couldn't restart server discovery. Try again.", InternalClass::WorkerRefused),
-                    (_, SessionArrival::Refused) => ("Couldn't start sign-in. Try again.", InternalClass::WorkerRefused),
-                    _ => ("Couldn't finish sign-in. Try again.", InternalClass::WorkerDropped),
+                        (crate::i18n::msg::browse_auth_rediscover_failed(), InternalClass::WorkerRefused),
+                    (_, SessionArrival::Refused) => (crate::i18n::msg::browse_auth_start_failed(), InternalClass::WorkerRefused),
+                    _ => (crate::i18n::msg::browse_auth_finish_failed(), InternalClass::WorkerDropped),
                 };
                 self.fail_login(message, Some(IncidentContext::internal(class)), emit);
             }
@@ -2528,7 +2532,7 @@ impl SessionMachine {
                     LoginProgress::CodeReady { code, qr_png, .. } => {
                         if envelope.key.op != SessionOp::Login { return false; }
                         let Some(next) = self.state.next_qr.checked_add(1) else {
-                            self.fail_login("Couldn't start sign-in. Try again.",
+                            self.fail_login(crate::i18n::msg::browse_auth_start_failed(),
                                 Some(IncidentContext::internal(InternalClass::Exhausted)), emit);
                             self.state.pending.remove(&req);
                             emit(SessionFx::Cancel { requests: vec![req], epoch: self.state.epoch });
@@ -4876,8 +4880,8 @@ mod tests {
     fn change_profile_with_no_roster_reads_out_the_failure_and_back_resumes_the_session() {
         let _g = crate::testlock::serial();
         for (users, reason) in [
-            (None, ROSTER_UNREACHABLE),
-            (Some(Vec::new()), ROSTER_REFUSED),
+            (None, roster_unreachable()),
+            (Some(Vec::new()), roster_refused()),
         ] {
             let (mut owner, _) = empty_roster_change_profile(users);
             assert_eq!(owner.state.phase, Phase::Profiles,
@@ -4946,13 +4950,13 @@ mod tests {
         step(&mut owner, SessionEvent::Command(Command::StartSwitch(Picker::ChangeProfile)));
         assert_eq!(owner.state.phase, Phase::Profiles,
             "the picker the app just routed to must have a state behind it");
-        assert_eq!(owner.state.error, ROSTER_REFUSED);
+        assert_eq!(owner.state.error, roster_refused());
         assert!(owner.state.users.is_empty());
         // TV, PR #212: this read-out exists BEFORE the Profiles screen mounts, so only the step
         // that entered it can announce it — and it must, once.
         let entered = owner.publication();
         assert_eq!(roster_readout_entered(&before, &entered).as_deref(),
-            Some(format!("profiles: no profiles to offer — {ROSTER_REFUSED} (BACK returns)").as_str()));
+            Some(format!("profiles: no profiles to offer — {} (BACK returns)", roster_refused()).as_str()));
         assert_eq!(roster_readout_entered(&entered, &entered), None, "announced once, not per step");
 
         let reply = ReplyTo { instance: 0, correlation: 7 };
@@ -5078,7 +5082,7 @@ mod tests {
         let envelope = roster_envelope(&mut owner, req, key, Some(Vec::new()));
         step(&mut owner, SessionEvent::Result(envelope));
         let read = owner.publication();
-        assert_eq!(read.roster_readout(), Some(ROSTER_REFUSED), "rig: the read-out is up");
+        assert_eq!(read.roster_readout(), Some(roster_refused()), "rig: the read-out is up");
         assert!(!read.readout_back_resumes);
         let reply = ReplyTo { instance: 0, correlation: 7 };
         let effects = step(&mut owner, SessionEvent::Command(Command::BackAtRoot { reply }));

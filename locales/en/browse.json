@@ -1636,5 +1636,65 @@
   "browse.preferences.invalid_preference": {
     "value": "This preference value is not supported.",
     "description": "Plex account preferences: invalid preference error"
+  },
+  "browse.auth.roster_unreachable": {
+    "value": "Couldn’t load profiles — check the connection.",
+    "description": "Read-out on the profile picker when the household's profiles could not be loaded."
+  },
+  "browse.auth.roster_refused": {
+    "value": "Switching profiles isn’t available from this profile.",
+    "description": "Read-out on the profile picker when Plex refuses to list profiles for the current profile."
+  },
+  "browse.auth.switch_retry": {
+    "value": "Couldn't switch profile. Try again.",
+    "description": "Profile picker error after a profile switch could not be completed."
+  },
+  "browse.auth.authority_failed": {
+    "value": "Couldn't change session authority. Try again.",
+    "description": "Sign-in error when the app could not switch which server or account the session is based on."
+  },
+  "browse.auth.finish_failed": {
+    "value": "Couldn't finish sign-in. Try again.",
+    "description": "Sign-in error when the final sign-in step could not be completed."
+  },
+  "browse.auth.start_failed": {
+    "value": "Couldn't start sign-in. Try again.",
+    "description": "Sign-in error when the sign-in process could not begin."
+  },
+  "browse.auth.rediscover_failed": {
+    "value": "Couldn't restart server discovery. Try again.",
+    "description": "Sign-in error when the search for Plex servers could not be restarted."
+  },
+  "browse.auth.signed_out": {
+    "value": "You're signed out — sign in to use profiles.",
+    "description": "Sign-in read-out when profiles were requested but no account is signed in."
+  },
+  "browse.extra.behind_the_scenes": {
+    "value": "Behind the Scenes",
+    "description": "Kind of a bonus video, shown under its title on the Extras shelf."
+  },
+  "browse.extra.featurette": {
+    "value": "Featurette",
+    "description": "Kind of a bonus video (a short documentary about the film), shown under its title on the Extras shelf."
+  },
+  "browse.extra.scene": {
+    "value": "Scene",
+    "description": "Kind of a bonus video (a scene or sample), shown under its title on the Extras shelf."
+  },
+  "browse.extra.deleted_scene": {
+    "value": "Deleted Scene",
+    "description": "Kind of a bonus video, shown under its title on the Extras shelf."
+  },
+  "browse.extra.interview": {
+    "value": "Interview",
+    "description": "Kind of a bonus video, shown under its title on the Extras shelf."
+  },
+  "browse.extra.extra": {
+    "value": "Extra",
+    "description": "Generic kind of a bonus video, shown on the Extras shelf and above its title while it plays."
+  },
+  "browse.person.other": {
+    "value": "Other",
+    "description": "Filmography tab on a person page that gathers the departments with only a few credits."
   }
 }

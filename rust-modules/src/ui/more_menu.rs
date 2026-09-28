@@ -341,14 +341,14 @@ fn rows_for() -> Vec<Action> {
     v
 }
 
-fn label(a: Action) -> &'static str {
+fn label(a: Action) -> std::borrow::Cow<'static, str> {
     match a {
-        Action::ToggleStats => crate::i18n::msg::widgets_menu_stats(),
+        Action::ToggleStats => crate::i18n::msg::widgets_menu_stats().into(),
         // the rung names itself — rate and frame in one string, because the row already carries
         // the picker's leading mark (see this module's doc)
-        Action::SetQuality(q) => q.label(),
-        Action::SendDiagnostics => crate::i18n::msg::widgets_menu_diagnostics(),
-        Action::None => "",
+        Action::SetQuality(q) => q.label().into(),
+        Action::SendDiagnostics => crate::i18n::msg::widgets_menu_diagnostics().into(),
+        Action::None => "".into(),
     }
 }
 

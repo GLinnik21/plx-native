@@ -3561,7 +3561,7 @@ impl DetailScreen {
         } else {
             ep.title.clone()
         };
-        let context = format!("{}  \u{b7}  S{} E{}", d.title, ep.season, ep.index);
+        let context = format!("{}  \u{b7}  {}", d.title, crate::ui::fmt::episode_ordinal(ep.season, ep.index));
         let resume_ns = play_resume_ns(from_start, ep.resume_ms, ep.dur_ms);
         let now_playing = crate::metadata::NowPlaying {
             is_episode: true,

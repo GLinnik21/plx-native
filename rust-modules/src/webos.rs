@@ -161,12 +161,12 @@ impl Hardware {
 }
 
 impl Info {
-    /// `webOS 4.10.2`, or `webOS unknown` when the file could not be read — the release is the
-    /// one field a stranger's report needs, and the word "unknown" is the honest reading of an
-    /// empty one rather than a plausible default.
+    /// `webOS 4.10.2`, or the UI language's "webOS unknown" read-out when the file could not be
+    /// read — the release is the one field a stranger's report needs, and "unknown" is the honest
+    /// reading of an empty one rather than a plausible default.
     pub(crate) fn release_line(&self) -> String {
         if self.major == 0 {
-            "webOS unknown".to_string()
+            crate::i18n::msg::browse_diagnostics_unknown_os().to_string()
         } else {
             format!("webOS {}", self.release)
         }
@@ -1241,7 +1241,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(i.release_line(), "webOS 4.10.2");
-        assert_eq!(Info::default().release_line(), "webOS unknown");
+        assert_eq!(Info::default().release_line(), crate::i18n::msg::browse_diagnostics_unknown_os());
     }
 
     /// The predicate the jail pre-flight gates on. Exact-prefix, and nothing broader — see the

@@ -852,8 +852,8 @@ impl ProfilesScreen {
     }
 
     /// **The picker has nobody to offer and has stopped waiting**: no tiles, and the session put
-    /// a reason in `error` while still on this route (`auth::owner::ROSTER_UNREACHABLE` /
-    /// `ROSTER_REFUSED`). Drawn as a failed read-out in place of the loading spinner — which,
+    /// a reason in `error` while still on this route (`auth::owner::roster_unreachable` /
+    /// `roster_refused`). Drawn as a failed read-out in place of the loading spinner — which,
     /// with no failure state to end it, spun forever (#132) — and BACK leaves it
     /// (`auth::owner`'s `roster_dead_end`), which its *Back* control says on screen
     /// ([`Self::readout_back`]).

@@ -931,7 +931,7 @@ fn abr_mode(d: &crate::player::Diag, selected: crate::route::Quality) -> String 
         crate::player::ABR_MODE_ORIGINAL => crate::i18n::msg::browse_diagnostics_auto_original().to_string(),
         crate::player::ABR_MODE_HLS => crate::i18n::msg::browse_diagnostics_auto_hls().to_string(),
         _ if selected == crate::route::Quality::Auto => crate::i18n::msg::browse_diagnostics_auto_idle().to_string(),
-        _ => crate::i18n::msg::browse_diagnostics_manual_quality(selected.label()),
+        _ => crate::i18n::msg::browse_diagnostics_manual_quality(&selected.label()),
     }
 }
 
@@ -1231,7 +1231,7 @@ fn abr_quality(d: &crate::player::Diag, selected: crate::route::Quality) -> Stri
             now.push_str(&crate::i18n::msg::browse_diagnostics_decoded(&decoded_raster(d)));
             now
         }
-        _ => crate::i18n::msg::browse_diagnostics_quality_decoded(selected.label(), &decoded_raster(d)),
+        _ => crate::i18n::msg::browse_diagnostics_quality_decoded(&selected.label(), &decoded_raster(d)),
     }
 }
 

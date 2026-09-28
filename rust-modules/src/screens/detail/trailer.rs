@@ -33,7 +33,12 @@ use crate::ui::player_hud::{LINGER_MS, PLAY_MARK_MS};
 /// non-information while "Official Trailer" or "Teaser 2" do not.
 pub(super) fn transport_title<'a>(film_title: &'a str, extra_title: &'a str) -> &'a str {
     let trimmed = extra_title.trim();
-    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case(crate::metadata::TRAILER_CONTEXT) {
+    // PMS scans the boilerplate title in English whatever the UI language, so both the kicker's
+    // own word and the server's "Trailer" count as saying nothing new.
+    if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("trailer")
+        || trimmed.to_lowercase() == crate::metadata::ExtraContext::Trailer.label().to_lowercase()
+    {
         film_title
     } else {
         extra_title

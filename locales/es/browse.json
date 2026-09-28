@@ -378,5 +378,20 @@
   "browse.preferences.timed_out": "Plex tardó demasiado en responder. Inténtalo de nuevo.",
   "browse.preferences.unavailable": "No se pudo conectar con Plex. Comprueba tu conexión e inténtalo de nuevo.",
   "browse.preferences.invalid_response": "Plex devolvió una respuesta inesperada. Inténtalo de nuevo.",
-  "browse.preferences.invalid_preference": "Este valor de preferencia no es compatible."
+  "browse.preferences.invalid_preference": "Este valor de preferencia no es compatible.",
+  "browse.auth.roster_unreachable": "No se pudieron cargar los perfiles; comprueba la conexión.",
+  "browse.auth.roster_refused": "No se puede cambiar de perfil desde este perfil.",
+  "browse.auth.switch_retry": "No se pudo cambiar de perfil. Inténtalo de nuevo.",
+  "browse.auth.authority_failed": "No se pudo cambiar el origen de la sesión. Inténtalo de nuevo.",
+  "browse.auth.finish_failed": "No se pudo completar el inicio de sesión. Inténtalo de nuevo.",
+  "browse.auth.start_failed": "No se pudo comenzar el inicio de sesión. Inténtalo de nuevo.",
+  "browse.auth.rediscover_failed": "No se pudo reiniciar la búsqueda de servidores. Inténtalo de nuevo.",
+  "browse.auth.signed_out": "Has cerrado sesión; inicia sesión para usar los perfiles.",
+  "browse.extra.behind_the_scenes": "Detrás de las cámaras",
+  "browse.extra.featurette": "Reportaje",
+  "browse.extra.scene": "Escena",
+  "browse.extra.deleted_scene": "Escena eliminada",
+  "browse.extra.interview": "Entrevista",
+  "browse.extra.extra": "Extra",
+  "browse.person.other": "Otros"
 }

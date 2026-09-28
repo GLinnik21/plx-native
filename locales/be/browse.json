@@ -392,5 +392,20 @@
   "browse.preferences.timed_out": "Plex занадта доўга не адказваў. Паспрабуйце зноў.",
   "browse.preferences.unavailable": "Не ўдалося злучыцца з Plex. Праверце злучэнне і паспрабуйце зноў.",
   "browse.preferences.invalid_response": "Plex вярнуў нечаканы адказ. Паспрабуйце зноў.",
-  "browse.preferences.invalid_preference": "Гэта значэнне налады не падтрымліваецца."
+  "browse.preferences.invalid_preference": "Гэта значэнне налады не падтрымліваецца.",
+  "browse.auth.roster_unreachable": "Не ўдалося загрузіць профілі — праверце злучэнне.",
+  "browse.auth.roster_refused": "З гэтага профілю нельга змяніць профіль.",
+  "browse.auth.switch_retry": "Не ўдалося змяніць профіль. Паспрабуйце зноў.",
+  "browse.auth.authority_failed": "Не ўдалося змяніць крыніцу сеанса. Паспрабуйце зноў.",
+  "browse.auth.finish_failed": "Не ўдалося завяршыць уваход. Паспрабуйце зноў.",
+  "browse.auth.start_failed": "Не ўдалося пачаць уваход. Паспрабуйце зноў.",
+  "browse.auth.rediscover_failed": "Не ўдалося перазапусціць пошук сервераў. Паспрабуйце зноў.",
+  "browse.auth.signed_out": "Вы выйшлі з уліковага запісу — увайдзіце, каб карыстацца профілямі.",
+  "browse.extra.behind_the_scenes": "За кадрам",
+  "browse.extra.featurette": "Рэпартаж",
+  "browse.extra.scene": "Сцэна",
+  "browse.extra.deleted_scene": "Выдаленая сцэна",
+  "browse.extra.interview": "Інтэрв’ю",
+  "browse.extra.extra": "Дадатак",
+  "browse.person.other": "Іншае"
 }
