@@ -63,8 +63,13 @@ struct Live {
 
 impl Live {
     fn start(mode: EnhMode) -> Self {
+        Self::start_with_parts(mode, 0, PartAnswer::Serve)
+    }
+
+    /// A server whose raw Part GETs answer `parts`, and whose media GETs serve `media_bytes`.
+    fn start_with_parts(mode: EnhMode, media_bytes: usize, parts: PartAnswer) -> Self {
         assert!(crate::net::global_init() && crate::curlio::available());
-        let (port, done, server) = enhancement_pms(MDE_DIRECTPLAY, mode, 0);
+        let (port, done, server) = enhancement_pms_parts(MDE_DIRECTPLAY, mode, media_bytes, parts);
         let sid = crate::plex::register_for_test("enh-live", "127.0.0.1", port, "token", "enh-client");
         crate::plex::client_for(sid).unwrap().set_link(crate::plex::probe::Location::Local);
         crate::plex::serverinfo::store_for_test(sid, Subscription::Yes, "1.43.4");
@@ -392,6 +397,77 @@ fn toggle_off_with_direct_candidate_releases_to_direct() {
     assert_eq!(applied_quality(), Quality::Auto, "Auto quality preserved");
     let requests = live.finish();
     assert!(decisions(&requests).is_empty(), "a release opens the raw Part: {requests:?}");
+    cleanup(&mut ps);
+}
+
+/// A direct candidate whose Original is this server's own Part (the shape a real resolve
+/// installs: `probe_part` is the Part key, not a fixture URL).
+fn server_part_candidate(audio: CarriedAudio) -> AutoOriginalCandidate {
+    AutoOriginalCandidate {
+        probe_part: "/library/parts/960001/1/file.mkv".into(),
+        ..candidate(true, audio, None)
+    }
+}
+
+fn part_gets(requests: &[String]) -> Vec<&String> {
+    requests.iter().filter(|r| r.starts_with("GET /library/parts/")).collect()
+}
+
+/// PR 4 device run (PMS 1.43.4, rk=72): the release of a cold-started enhanced remux opened the
+/// Original Part, PMS answered **503**, and the rollback restored the ENHANCED remux — so the
+/// viewer who switched Normalize Loudness off kept hearing it, under a menu and a persisted
+/// preference that both said off. A Part the server will not serve is never opened as the trial:
+/// the release lands on the candidate's plain remux (the same codec-copy Original, no DSP), which
+/// is what the resolve builds whenever the server will not direct-play.
+#[test]
+fn release_with_refused_part_lands_on_the_plain_remux_not_the_enhanced_route() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start_with_parts(EnhMode::Honor("ac3"), 4096, PartAnswer::Refuse);
+    restore_quality(Quality::Original);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(server_part_candidate(a1())), 0);
+    assert!(toggle(&mut ps, NONE));
+    let (_, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Original(AutoOriginalReload::Remux), "a refused Part is not a direct trial");
+    assert!(original_recovery_pending(), "the plain remux is still a trial the held route backs");
+    assert!(ps.url.contains("start.mkv"), "{}", ps.url);
+    assert!(ps.cur_contract.remux);
+    assert_eq!(ps.cur_contract.audio, NONE, "the preference the viewer set is what plays");
+    assert_eq!(ps.cur_enhancement, EnhancementOutcome::Off);
+    let requests = live.finish();
+    assert_eq!(part_gets(&requests).len(), 1, "one admission request: {requests:?}");
+    assert!(
+        part_gets(&requests)[0].contains("X-Plex-Session-Identifier=enh-remux-1"),
+        "the admission asks on the exact identity the Part body would use: {requests:?}"
+    );
+    let d = decisions(&requests);
+    assert_eq!(d.len(), 1, "{requests:?}");
+    assert_eq!(query_param(d[0], "normalizeLoudness"), None, "a PLAIN remux: {}", d[0]);
+    assert_eq!(query_param(d[0], "directStreamAudio"), Some("1"), "{}", d[0]);
+    cleanup(&mut ps);
+}
+
+/// The admitted case is unchanged: the Part answers, so the release opens it as the trial.
+#[test]
+fn release_with_admitted_part_is_still_direct_play() {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let live = Live::start_with_parts(EnhMode::Honor("ac3"), 4096, PartAnswer::Serve);
+    restore_quality(Quality::Original);
+    reset_player_control_for_test(&ps);
+    crate::player::restore_audio_enhancements(PREF);
+    install(&mut ps, &live, Delivery::Remux(PREF), a1(), Some(server_part_candidate(a1())), 0);
+    assert!(toggle(&mut ps, NONE));
+    let (_, tail) = claim(&mut ps);
+    assert_eq!(tail, ClaimTail::Original(AutoOriginalReload::Direct));
+    assert!(ps.url.contains("/library/parts/960001/1/file.mkv"), "{}", ps.url);
+    assert!(!is_transcoding(&ps));
+    assert_eq!(ps.cur_contract.audio, NONE);
+    let requests = live.finish();
+    assert_eq!(part_gets(&requests).len(), 1, "{requests:?}");
+    assert!(decisions(&requests).is_empty(), "no remux was registered: {requests:?}");
     cleanup(&mut ps);
 }
 

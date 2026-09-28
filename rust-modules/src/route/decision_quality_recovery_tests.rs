@@ -1759,7 +1759,9 @@ fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
     let server = std::thread::spawn(move || {
         let mut requests = Vec::new();
         let mut resource_closed = false;
-        for index in 0..4 {
+        // 0 the Part admission, 1 the direct body, 2 the HLS retirement, 3 the later Range
+        // reopen, 4 the final close.
+        for index in 0..5 {
             let (mut socket, _) = listener.accept().expect("accept direct lifecycle request");
             let mut reader = BufReader::new(socket.try_clone().expect("clone socket"));
             let mut first = String::new();
@@ -1772,7 +1774,7 @@ fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
                 }
             }
             requests.push(first.clone());
-            if index == 1 || index == 3 {
+            if index == 2 || index == 4 {
                 assert!(first.contains("/stop?"), "{first}");
                 resource_closed |= first.contains("closeResourceSession=1");
                 socket
@@ -1780,7 +1782,7 @@ fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
                         b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                     )
                     .expect("stop response");
-                if index == 1 {
+                if index == 2 {
                     stop_tx.send(first).expect("publish stop request");
                 }
             } else if resource_closed {
@@ -1894,7 +1896,13 @@ fn a_confirmed_direct_recovery_remains_seekable_after_hls_is_retired() {
         "",
         "final teardown spends the retained owner"
     );
-    assert_eq!(requests.len(), 4);
+    assert_eq!(requests.len(), 5);
+    assert!(
+        requests[0].contains("/library/parts/1/file.mkv")
+            && requests[0].contains("X-Plex-Session-Identifier=direct-hls"),
+        "the Part is admitted on the exact identity the trial opens it on: {}",
+        requests[0],
+    );
     let stops: Vec<_> = requests
         .iter()
         .filter(|line| line.contains("/stop?"))
@@ -1964,17 +1972,20 @@ fn stopping_a_pending_direct_recovery_closes_its_resource_once() {
                             break;
                         }
                     }
+                    let is_part = first.contains("/library/parts/");
                     requests.push(first);
                     // The observation window opens at the first request, not at thread start,
                     // so how long the client took to get scheduled cannot eat into it.
                     observe_until.get_or_insert_with(|| {
                         std::time::Instant::now() + std::time::Duration::from_secs(1)
                     });
-                    socket
-                        .write_all(
-                            b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                        )
-                        .expect("stop response");
+                    // The Part admission before the trial reads a body; every stop is empty.
+                    let response: &[u8] = if is_part {
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nPART"
+                    } else {
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    };
+                    socket.write_all(response).expect("stop response");
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                     std::thread::sleep(std::time::Duration::from_millis(4));

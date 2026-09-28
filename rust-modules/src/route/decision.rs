@@ -664,6 +664,17 @@ pub(crate) enum RecoveryCause {
     EnhancementReleased,
 }
 
+impl RecoveryCause {
+    /// The log prefix this cause's recovery lines carry.
+    fn log_tag(self) -> &'static str {
+        match self {
+            RecoveryCause::Automatic => "auto",
+            RecoveryCause::ManualOriginal => "quality",
+            RecoveryCause::EnhancementReleased => "enhancement",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AutomaticRouteIntent {
     OriginalToHls {
@@ -3480,6 +3491,23 @@ pub(crate) fn recover_auto_to_original_for(
         return None;
     }
     let mut rollback = snapshot_route(ps, expected_encoder.clone(), offset_secs);
+    // A direct trial is only worth starting on a Part the server will actually serve this
+    // identity. One the server refuses is reached as its codec-copy remux instead — the shape the
+    // resolve builds whenever the server will not direct-play — rather than opened, failed and
+    // rolled back to the route being left (see [`admit_original_part`]).
+    let flavour = match flavour {
+        RecoveryFlavour::Direct => match admit_original_part(ps, &candidate, expected) {
+            PartAdmission::Admitted => RecoveryFlavour::Direct,
+            PartAdmission::Refused(why) => {
+                crate::player::log(&format!(
+                    "{}: server refused the Original Part ({why}); restoring Original as a remux",
+                    cause.log_tag()
+                ));
+                RecoveryFlavour::Remux(crate::plex::AudioEnhancements::NONE)
+            }
+        },
+        remux => remux,
+    };
     let RecoveryFlavour::Remux(audio) = flavour else {
         return recover_original_direct(ps, &candidate, expected, rollback, watched, cause, false);
     };
@@ -3492,10 +3520,28 @@ pub(crate) fn recover_auto_to_original_for(
         match prepare_original_remux(ps, &candidate, expected, offset_secs, watched, audio)? {
             OriginalRemux::Prepared(replacement) => replacement,
             // The server will not apply the params and the candidate direct-plays: the plain
-            // Original IS that direct play, exactly as the resolve's own fallback returns to it.
-            OriginalRemux::RefusedToDirect => {
-                return recover_original_direct(ps, &candidate, expected, rollback, watched, cause, true);
-            }
+            // Original IS that direct play, exactly as the resolve's own fallback returns to it —
+            // when the server will serve its Part; otherwise the plain remux of the same Original.
+            OriginalRemux::RefusedToDirect => match admit_original_part(ps, &candidate, expected) {
+                PartAdmission::Admitted => {
+                    return recover_original_direct(ps, &candidate, expected, rollback, watched, cause, true);
+                }
+                PartAdmission::Refused(why) => {
+                    crate::player::log(&format!(
+                        "{}: server refused the Original Part ({why}); restoring Original as a remux",
+                        cause.log_tag()
+                    ));
+                    let none = crate::plex::AudioEnhancements::NONE;
+                    match prepare_original_remux(ps, &candidate, expected, offset_secs, watched, none)? {
+                        OriginalRemux::Prepared(replacement) => {
+                            // The enhancement the plain remux dropped was the server's refusal.
+                            ps.cur_enhancement = EnhancementOutcome::Refused;
+                            replacement
+                        }
+                        OriginalRemux::RefusedToDirect => return None,
+                    }
+                }
+            },
         };
     rollback.replacement_encoder = replacement;
     set_pending_original(ps, rollback, automatic);
@@ -3516,6 +3562,75 @@ pub(crate) fn recover_auto_to_original_for(
         crate::player::report::DeliveryReason::OriginalRecovery,
     );
     Some(AutoOriginalReload::Remux)
+}
+
+/// Whether the server will serve an Original's raw Part to this playback right now.
+pub(super) enum PartAdmission {
+    Admitted,
+    /// Why not, for the log: the HTTP status, or the transport failure that stood for one.
+    Refused(String),
+}
+
+/// Bytes the admission reads before it lets go: enough to prove a body arrives, nothing more.
+const PART_ADMISSION_BYTES: usize = 16 * 1024;
+/// Header and body budget, each. The claim this answers runs on the pump's main-thread PMS half
+/// beside a `/decision` call, so it is bounded well under the API timeout that call carries.
+const PART_ADMISSION_BUDGET: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// **Ask the server for the Original's Part on the exact identity the trial would open it on,
+/// before the trial is started.** A recovery used to publish the raw Part as an unproven trial
+/// and let the demuxer find out: PR 4's device run (PMS 1.43.4, issue #266) released an enhanced
+/// remux to its direct play, the Part came back **503**, and the rollback restored the enhanced
+/// route — the only route `PendingOriginal` holds — under a preference, a menu and a log line that
+/// all said the enhancement was off. The Auto watchdog already samples this Part before it
+/// recovers (`probe_original_while_hls_cancellable`); a manual Original and an enhancement release
+/// did not ask at all.
+///
+/// What PMS keys that 503 on did not reproduce from a host against the same server with the
+/// same identity (every Part GET after an enhanced remux decision, with the encoder held,
+/// stopped physically, stopped with `closeResourceSession=1`, or abandoned, answered 200/206), so
+/// this reads the answer rather than predicting it. **It does not re-register an MDE first:**
+/// measured on that server, an MDE `/decision` on a session with a live encoder ends that encoder
+/// (HLS segments 404, a later `start.mkv` without a fresh decision 400) — which is precisely the
+/// route a failed trial must be able to return to.
+///
+/// A fixture candidate (`probe_part` not a server path) has nothing to ask and is admitted, and so
+/// is a Part the server did not answer inside the budget: the admission bounds how long the claim
+/// can hold the pump, and an unanswered question is not a refusal.
+fn admit_original_part(
+    ps: &PlaybackSession,
+    candidate: &AutoOriginalCandidate,
+    expected: &WorkerTicket,
+) -> PartAdmission {
+    if !candidate.probe_part.starts_with('/') {
+        return PartAdmission::Admitted;
+    }
+    let Some(client) = cur_client(ps) else {
+        return PartAdmission::Refused("no client for this server".into());
+    };
+    let url = client
+        .direct_play_url(&candidate.probe_part, expected.encoder())
+        .to_url();
+    use crate::curlio::{OpenErr, ThroughputFailure};
+    match crate::curlio::sample_throughput_result(
+        &url,
+        PART_ADMISSION_BYTES,
+        PART_ADMISSION_BUDGET,
+        PART_ADMISSION_BUDGET,
+    ) {
+        // Only the server's own answer refuses: a status it will not stream, or headers with no
+        // body behind them.
+        Err(ThroughputFailure::Open(OpenErr::Status(status))) => {
+            PartAdmission::Refused(format!("HTTP {status}"))
+        }
+        Err(failure @ (ThroughputFailure::NoBody { .. } | ThroughputFailure::BodyRead { .. })) => {
+            PartAdmission::Refused(format!("{failure:?}"))
+        }
+        // A body, or no answer inside the budget (a slow server, a transport failure, no bounded
+        // client on this build): nothing says the server refuses, so the trial's own open — with
+        // its rollback — stays the judge, exactly as before this admission existed.
+        Ok(_) | Err(_) => PartAdmission::Admitted,
+    }
 }
 
 /// The direct-play half of an Original recovery (the candidate's raw Part). `enhancement_refused`
