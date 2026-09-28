@@ -1756,7 +1756,8 @@ mod tests {
         );
     }
 
-    /// **A `/hubs/search` `collection` row carries no `thumb` at all** (verified live — no
+    /// **A tag-shaped `/hubs/search` `collection` row (a request without `includeCollections=1`)
+    /// carries no `thumb` at all** (verified live — no
     /// `ratingKey` either; only `key` and a tag `id`), so an empty source stops being a rarity and
     /// becomes a whole shelf of them. It must produce NO request: `…&url=&X-Plex-Token=…` is a
     /// `404 text/html` from this server (measured), and every one of them would burn a slot as

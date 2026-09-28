@@ -186,7 +186,9 @@ pub struct Hub {
     /// | `Metadata[]` | `movie`, `show`, `episode`, `album`, `artist`, `track` |
     /// | **`Directory[]`** | **`actor`, `director`, `collection`** |
     ///
-    /// So Cast & Crew *and* Collections both come through here. `plex-openapi.json`'s own worked
+    /// So Cast & Crew *and* Collections both come through here — Collections only when the request
+    /// omits `includeCollections=1`, which moves them to full `Metadata[]` collection rows and which
+    /// `Client::search` always sends. `plex-openapi.json`'s own worked
     /// example for `/hubs/search` disagrees — it puts shows under `Directory` — which is why this
     /// was probed live rather than modelled from the spec, and why the split is written down here
     /// instead of being rediscovered the next time a hub looks empty.

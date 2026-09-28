@@ -783,7 +783,7 @@ class Library:
     def collection_by_rating_key(self, rk):
         return next((c for c in self.collections.values() if c["ratingKey"] == rk), None)
 
-    def search(self, query, limit=3):
+    def search(self, query, limit=3, include_collections=False):
         """`/hubs/search` as hubs. Each hub holds at most `limit` rows and its `size` is the number
         it holds, as measured (docs/pms-api.md: "`limit` caps each hub separately", 3 when absent,
         and `Hub.size` is the rows returned).
@@ -796,7 +796,12 @@ class Library:
         after the direct title hits, in library order. The order and the choice of which relations
         a real server applies are assumptions: the spec names these two examples and says the hubs
         are ordered "based on quality", which the mock does not try to model. Shows, episodes and
-        the other hubs hold direct hits only."""
+        the other hubs hold direct hits only.
+
+        `include_collections` is `includeCollections=1`, measured live (docs/pms-api.md §2b): the
+        collection hub's rows move from tag-shaped `Directory[]` rows (tag `id`, `count`, `key`; no
+        ratingKey, no thumb) to the collections' full `Metadata[]` rows — the same rows
+        `/library/sections/{s}/collections` lists, plus a `score`."""
         hits = search_matcher(query)
         limit = max(1, int(limit))
         genres = [g for g in self.genres.values() if hits(g["tag"])]
@@ -825,11 +830,17 @@ class Library:
                        librarySectionID=1) for t in matched][:limit]
         hubs.append({"title": "actor", "type": "actor", "hubIdentifier": "actor",
                      "size": len(people), "Directory": people})
-        cols = [{"tag": c["tag"], "id": c["id"], "type": "collection", "librarySectionID": 1,
-                 "key": f"/library/sections/1/all?collection={c['id']}", "reasonTitle": ""}
-                for c in self.collections.values() if hits(c["tag"])][:limit]
+        if include_collections:
+            cols = [dict(row, score="0.90000") for row in self.collection_metadata(1)
+                    if hits(row["title"])][:limit]
+            container = "Metadata"
+        else:
+            cols = [{"tag": c["tag"], "id": c["id"], "type": "collection", "librarySectionID": 1,
+                     "key": f"/library/sections/1/all?collection={c['id']}", "reasonTitle": ""}
+                    for c in self.collections.values() if hits(c["tag"])][:limit]
+            container = "Directory"
         hubs.append({"title": "collection", "type": "collection", "hubIdentifier": "collection",
-                     "size": len(cols), "Directory": cols})
+                     "size": len(cols), container: cols})
         return hubs
 
 
@@ -1552,7 +1563,8 @@ class MockPms:
             return j(self.container(Hub=hubs))
         if p == "/hubs/search":
             lim = q.get("limit", "")
-            return j(self.container(Hub=lib.search(q.get("query", ""), int(lim) if lim.isdigit() else 3)))
+            return j(self.container(Hub=lib.search(q.get("query", ""), int(lim) if lim.isdigit() else 3,
+                                                   include_collections=q.get("includeCollections") == "1")))
         if p == "/photo/:/transcode" and catalog:
             img = lib.image(q.get("url", ""), q.get("width"), q.get("height"))
             return (200, *img) if img else (404, "text/plain", b"no image")

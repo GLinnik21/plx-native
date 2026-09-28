@@ -417,21 +417,8 @@ pub(super) fn tile<H: SearchLike>(
     if !crate::ui::on_axis(rect.x, rect.w, SCR_W, 32.0) {
         return;
     }
-    let art = match (model.kind, item) {
-        (Kind::Episode, Item::Media(media)) => Art::Still(Some(media)),
-        (_, Item::Media(media)) => Art::Poster(Some(media)),
-        (Kind::Person, Item::Tag(tag)) => Art::Person {
-            sid: tag.sid,
-            key: &tag.thumb,
-            res: (300, 300),
-        },
-        (_, Item::Tag(tag)) if tag.thumb.is_empty() => Art::Poster(None),
-        (_, Item::Tag(tag)) => Art::Thumb {
-            sid: tag.sid,
-            key: &tag.thumb,
-            res: (250, 375),
-        },
-    };
+    let neutral = neutral_row(model.kind, item);
+    let art = tile_art(model.kind, item, neutral.as_ref());
     let resume = match item {
         Item::Media(media) if model.kind != Kind::Episode => media.resume_frac(),
         _ => None,
@@ -440,6 +427,7 @@ pub(super) fn tile<H: SearchLike>(
         let sid = match item {
             Item::Media(media) => media.sid,
             Item::Tag(tag) => tag.sid,
+            Item::Collection(hit) => hit.item.sid,
         };
         let handle = view
             .scope()
@@ -475,6 +463,47 @@ pub(super) fn tile<H: SearchLike>(
         f,
         p,
     );
+}
+
+/// What a result tile draws. A collection always draws through `Art::Poster` with its row, so the
+/// shared card composite decides between its poster (custom, or #274's fan for the server's
+/// composite) and the shared neutral collection tile (`ui::collection_tile`, for a row with no
+/// thumb) — this screen draws no collection face of its own. `neutral` is the stand-in row for a
+/// tag-shaped collection hit ([`neutral_row`]), which carries no row to hand over.
+fn tile_art<'a>(kind: Kind, item: &'a Item, neutral: Option<&'a crate::pms::PmsMovie>) -> Art<'a> {
+    match (kind, item) {
+        (Kind::Episode, Item::Media(media)) => Art::Still(Some(media)),
+        (_, Item::Media(media)) => Art::Poster(Some(media)),
+        (_, Item::Collection(hit)) => Art::Poster(Some(&hit.item)),
+        (Kind::Person, Item::Tag(tag)) => Art::Person {
+            sid: tag.sid,
+            key: &tag.thumb,
+            res: (300, 300),
+        },
+        (Kind::Collection, Item::Tag(_)) if neutral.is_some() => Art::Poster(neutral),
+        (_, Item::Tag(tag)) if tag.thumb.is_empty() => Art::Poster(None),
+        (_, Item::Tag(tag)) => Art::Thumb {
+            sid: tag.sid,
+            key: &tag.thumb,
+            res: (250, 375),
+        },
+    }
+}
+
+/// A tag-shaped collection hit (a server that ignored `includeCollections=1`) has no artwork and
+/// no row. It still IS a collection with a name, so it gets a thumb-less kind-4 stand-in and with
+/// it the same neutral tile a thumb-less collection row draws, rather than a skeleton that reads as
+/// loading forever. `None` for everything else.
+fn neutral_row(kind: Kind, item: &Item) -> Option<crate::pms::PmsMovie> {
+    match (kind, item) {
+        (Kind::Collection, Item::Tag(tag)) if tag.thumb.is_empty() => Some(crate::pms::PmsMovie {
+            sid: tag.sid,
+            title: tag.name.clone(),
+            kind: crate::pms::KIND_COLLECTION,
+            ..Default::default()
+        }),
+        _ => None,
+    }
 }
 
 fn stop<H: SearchLike>(
@@ -635,11 +664,11 @@ fn subtitle(kind: Kind, item: &Item, handle: &str) -> String {
             }
         }
         Item::Media(media) if media.year > 0 => parts.push(media.year.to_string()),
-        Item::Tag(tag) if kind == Kind::Collection && tag.count > 0 => parts.push(format!(
-            "{} item{}",
-            tag.count,
-            if tag.count == 1 { "" } else { "s" }
-        )),
+        // a collection is its size, in the one formatter every collection surface shares
+        Item::Collection(hit) => parts.push(crate::ui::fmt::item_count(hit.item.child_count)),
+        Item::Tag(tag) if kind == Kind::Collection && tag.count > 0 => {
+            parts.push(crate::ui::fmt::item_count(tag.count))
+        }
         _ => {}
     }
     if !handle.is_empty() {
@@ -1305,5 +1334,48 @@ mod tests {
             ),
             "1 item"
         );
+        // a collection that arrived as a full row reads its childCount through the shared
+        // formatter — an empty collection is "0 items", as on its own page
+        let full = |child_count| Item::Collection(crate::search::CollectionHit {
+            item: crate::pms::PmsMovie { child_count, kind: crate::pms::KIND_COLLECTION, ..Default::default() },
+            ..Default::default()
+        });
+        assert_eq!(subtitle(Kind::Collection, &full(12), ""), "12 items");
+        assert_eq!(subtitle(Kind::Collection, &full(1), "friend"), "1 item · friend");
+        assert_eq!(subtitle(Kind::Collection, &full(0), ""), "0 items");
+        assert_eq!(subtitle(Kind::Collection, &Item::Tag(TagHit::default()), ""), "");
+    }
+
+    /// Every collection result reaches the shared card as `Art::Poster` with a kind-4 row, which
+    /// is what makes the card draw the shared neutral tile (`ui::collection_tile`) when the row has
+    /// no thumb and the poster (or the fan) when it has one — for a full row AND for a tag-shaped
+    /// hit, whose stand-in carries the collection's name for the tile to print.
+    #[test]
+    fn a_thumbless_collection_hit_reaches_the_card_as_a_neutral_collection_row() {
+        let full = Item::Collection(crate::search::CollectionHit {
+            item: crate::pms::PmsMovie { title: "Shorts".into(), kind: crate::pms::KIND_COLLECTION,
+                ..Default::default() },
+            tag: 7,
+        });
+        assert!(neutral_row(Kind::Collection, &full).is_none(), "a full row IS the row");
+        assert!(matches!(tile_art(Kind::Collection, &full, None),
+            Art::Poster(Some(m)) if m.kind == crate::pms::KIND_COLLECTION && m.thumb.is_empty()
+                && m.title == "Shorts"));
+        let with_art = Item::Collection(crate::search::CollectionHit {
+            item: crate::pms::PmsMovie { thumb: "/library/metadata/50007/thumb/1".into(),
+                kind: crate::pms::KIND_COLLECTION, ..Default::default() },
+            tag: 7,
+        });
+        assert!(matches!(tile_art(Kind::Collection, &with_art, None),
+            Art::Poster(Some(m)) if !m.thumb.is_empty()));
+
+        let tag = Item::Tag(TagHit { name: "Shorts".into(), id: "7".into(), ..Default::default() });
+        let neutral = neutral_row(Kind::Collection, &tag).expect("a tag hit gets a stand-in row");
+        assert!(matches!(tile_art(Kind::Collection, &tag, Some(&neutral)),
+            Art::Poster(Some(m)) if m.kind == crate::pms::KIND_COLLECTION && m.thumb.is_empty()
+                && m.title == "Shorts"));
+        // a person without a headshot is not a collection
+        let person = Item::Tag(TagHit { name: "Peter Sallis".into(), ..Default::default() });
+        assert!(neutral_row(Kind::Person, &person).is_none());
     }
 }
