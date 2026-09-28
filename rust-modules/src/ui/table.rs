@@ -21,7 +21,7 @@ pub enum Badge {
     Text(String),
 }
 impl Badge {
-    fn text(&self) -> &str {
+    pub(crate) fn text(&self) -> &str {
         match self {
             Badge::Ad => crate::i18n::msg::widgets_badge_ad(),
             Badge::Forced => crate::i18n::msg::widgets_badge_forced(),

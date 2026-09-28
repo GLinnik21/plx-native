@@ -860,6 +860,57 @@ fn tracks_to_timing_hands_off_without_stacking_a_second_surface() {
     assert_eq!(left.len(), 1, "exactly one player-overlay surface once the fade settles");
 }
 
+/// **`player_overlay_hud_state` over every phase a surface can be in.** Opening, Open and
+/// Closing all count (a closing panel is still on screen); Hidden never does. A Tracks panel
+/// alone lifts the captions and leaves the transport alone; the capsule in ANY visible phase
+/// hides the transport and suppresses the lift; and a surface that is not a player panel at all
+/// (Settings over the player) lifts the captions as `Dispatcher::surface_up` always did.
+#[test]
+fn the_hud_state_helper_reads_every_phase_of_every_surface() {
+    use crate::screens::player::overlay::OverlayKind;
+    let ps = crate::route::PlaybackSession::IDLE;
+    let _g = crate::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    frame(&mut d, &mut rig, AppArg::Player, tick(0), vec![]);
+    open_player_overlay(&ps, crate::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Tracks { tab: 1 });
+    frame(&mut d, &mut rig, AppArg::Player, tick(1), vec![]);
+    open_player_overlay(&ps, crate::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Timing);
+    frame(&mut d, &mut rig, AppArg::Player, tick(2), vec![]);
+    crate::app::bridge::open_settings(&mut d);
+    frame(&mut d, &mut rig, AppArg::Player, tick(3), vec![]);
+    let find = |d: &Dispatcher<AppHost>, want: fn(&AppArg) -> bool| {
+        d.nav.modals.surfaces.iter().position(|s| want(&s.entry.arg)).expect("surface presented")
+    };
+    let tracks = find(&d, |a| matches!(a, AppArg::PlayerOverlay(p) if matches!(p.kind, OverlayKind::Tracks { .. })));
+    let timing = find(&d, |a| matches!(a, AppArg::PlayerOverlay(p) if p.kind == OverlayKind::Timing));
+    let other = find(&d, |a| !matches!(a, AppArg::PlayerOverlay(_)));
+    use Phase::{Closing, Hidden, Open, Opening};
+    for (tr, ti, ot, want) in [
+        (Hidden, Hidden, Hidden, (false, false)),
+        (Open, Hidden, Hidden, (false, true)),
+        (Opening, Hidden, Hidden, (false, true)),
+        (Closing, Hidden, Hidden, (false, true)),
+        (Hidden, Open, Hidden, (true, false)),
+        (Hidden, Opening, Hidden, (true, false)),
+        (Hidden, Closing, Hidden, (true, false)),
+        (Closing, Opening, Hidden, (true, false)),
+        (Open, Closing, Hidden, (true, false)),
+        (Hidden, Hidden, Open, (false, true)),
+        (Hidden, Hidden, Closing, (false, true)),
+        (Hidden, Open, Open, (true, false)),
+    ] {
+        d.nav.modals.surfaces[tracks].phase = tr;
+        d.nav.modals.surfaces[timing].phase = ti;
+        d.nav.modals.surfaces[other].phase = ot;
+        assert_eq!(
+            crate::app::bridge::player_overlay_hud_state(&d),
+            want,
+            "tracks={tr:?} timing={ti:?} other={ot:?}",
+        );
+    }
+}
+
 /// **THE FOURTH ROOT** (`app/input.rs`'s `back_at_root`, and the key ladder's dispatcher arm).
 ///
 /// BACK at the FIRST consent stage was SWALLOWED for as long as that screen was a `Popover`:

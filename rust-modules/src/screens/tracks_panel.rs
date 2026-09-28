@@ -420,7 +420,7 @@ pub(crate) fn subtitle_rows(subs: &[Stream]) -> Vec<TrackRow> {
         // Subtitles menu draws, instead of this panel re-deriving its own "Forced"/"SDH" tags
         // from the raw flags and the raw `s.title` (which double-counted a title that only
         // repeated its own kind word, e.g. "Форс. iTunes" used to read `FORCED · Форс. iTunes`).
-        let label = track_label::parse(&s.title, s.forced, s.sdh);
+        let label = track_label::parse(&s.title, &name, s.forced, s.sdh);
         let mut head = s.codec.to_uppercase();
         for (on, tag) in [
             // Both flags can be set on one track (a forced SDH file): show both, as this panel
@@ -1442,6 +1442,21 @@ mod tests {
         assert_eq!(rows[0].detail, "SUBRIP \u{b7} 2 tracks");
         assert_eq!(rows[1].detail, "SUBRIP \u{b7} Forced");
         assert_eq!(rows[2].detail, "SUBRIP \u{b7} SDH");
+    }
+
+    /// A track flagged BOTH forced and SDH says both, as this panel always has — the shared
+    /// parser's single `Kind` must not collapse the pair to its higher-priority half.
+    #[test]
+    fn a_track_flagged_forced_and_sdh_shows_both() {
+        let mut both = sub("English", "subrip");
+        both.forced = true;
+        both.sdh = true;
+        let rows = subtitle_rows(&[both]);
+        assert_eq!(rows[0].detail, "SUBRIP \u{b7} Forced \u{b7} SDH");
+        // and a title that only spells a kind adds that flag rather than repeating the word
+        let mut titled = sub("English", "subrip");
+        titled.title = "English SDH".into();
+        assert_eq!(subtitle_rows(&[titled])[0].detail, "SUBRIP \u{b7} SDH");
     }
 
     /// The VIDEO and FILE columns, against the design's `streamGroups` for the same item. Each

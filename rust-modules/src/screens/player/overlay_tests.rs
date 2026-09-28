@@ -417,6 +417,32 @@ fn a_color_press_commits_without_dismissing_the_tracks_panel() {
     assert!(dismissed, "Off still commits and closes");
 }
 
+/// **OK on the dim Timing row while subtitles are Off is inert — it neither opens the capsule
+/// nor closes the panel.** The row reads "nothing to time"; an OK that silently dismissed the
+/// panel would throw away the viewer's place for no effect at all.
+#[test]
+fn ok_on_the_dim_timing_row_while_off_keeps_the_panel_open() {
+    let _g = crate::testlock::serial();
+    crate::player::sidecar::reset();
+    crate::player::set_subtitle_offset(0);
+    let ps = crate::route::PlaybackSession::IDLE;
+    let meta = crate::stores::metadata::MetadataStore::default();
+    let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
+    // no playing item: Off, then Timing, then Color — and Off is the checked row
+    let timing = 1;
+    {
+        let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
+        assert_eq!(menu.targets()[timing as usize], crate::ui::track_menu::RowTarget::Timing);
+    }
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: timing }, by: By::Dir });
+    let (_, reqs, dismissed) = activate(&mut page, timing);
+    assert!(!dismissed, "an inert row keeps the panel up");
+    assert!(
+        !reqs.iter().any(|r| matches!(r, PlayerReq::OpenOverlay(_) | PlayerReq::CommitTrack(_))),
+        "and asks for nothing: {reqs:?}",
+    );
+}
+
 /// **The Timing hand-off.** Selecting the Subtitles menu's own Timing row while a subtitle is
 /// active returns `TrackOk::OpenTiming` (`ui::track_menu`'s own
 /// `timing_returns_open_timing_once_a_subtitle_is_active_and_is_inert_while_off`); `activate`'s
@@ -519,8 +545,9 @@ fn timing_left_and_right_commit_subtitle_offset() {
 }
 
 /// OK and BACK both close the capsule (`TimingCapsule::key`'s `Key::Ok | Key::Back` arm) —
-/// dismissing the surface and asking the loop to bring the HUD back down, with the offset kept:
-/// neither key raises a reset commit.
+/// dismissing the surface with the offset kept: neither key raises a reset commit, and neither
+/// asks for anything else (the transport staying down is `PlayerScreen::set_hud_hidden`'s, for
+/// every way the surface can close).
 #[test]
 fn timing_ok_and_back_close_and_keep_the_offset() {
     let _g = crate::testlock::serial();
@@ -532,7 +559,7 @@ fn timing_ok_and_back_close_and_keep_the_offset() {
         let (handled, reqs, dismissed) = press(&mut page, sym, wcode, Edge::Down);
         assert_eq!(handled, Handled::Yes);
         assert!(dismissed, "sym={sym} wcode={wcode}: closes the capsule");
-        assert_eq!(reqs, vec![PlayerReq::HideHud], "sym={sym} wcode={wcode}: no offset reset alongside it");
+        assert_eq!(reqs, vec![], "sym={sym} wcode={wcode}: no offset reset alongside it");
     }
 }
 

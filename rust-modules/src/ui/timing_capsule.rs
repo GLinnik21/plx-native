@@ -46,15 +46,33 @@ const SHAKE_KICK: f32 = 900.0;
 /// radius (`CAPSULE_H / 2`, a full pill).
 pub(crate) const CAPSULE_H: f32 = 84.0;
 /// The fixed width of the centred text block the capsule's sentence is laid out in (mock:
-/// `width` is unset but the copy never wraps at this size — 520 is comfortably wider than the
-/// longest string this reads, "Subtitles 30.0 s earlier").
-pub(crate) const CAPSULE_TEXT_W: f32 = 520.0;
+/// `width` is unset and the English copy never wraps in its 520). 580 because the longest shipped
+/// sentence is Spanish, "Subtítulos 30,0 s más tarde" at 532 px in the bold TITLE face;
+/// `the_capsule_sentence_fits_its_block_in_every_language` measures every language with the TV's
+/// own advances, so a longer translation fails there rather than clipping on the set.
+pub(crate) const CAPSULE_TEXT_W: f32 = 580.0;
 /// The gap between each chevron and the text block (mock: `gap:22px`).
 pub(crate) const CAPSULE_GAP: f32 = 22.0;
 /// Horizontal padding inside the pill, chevron to edge (mock: `padding:0 26px`).
 const CAPSULE_PAD_X: f32 = 26.0;
 /// The chevron glyph's own box (mock's `<svg width="18" height="30">`).
 const CHEVRON_SZ: f32 = 30.0;
+
+/// The capsule's sentence for `offset_ms` in `locale` — catalog text, with the magnitude in the
+/// locale's own decimal and seconds unit (`core.seconds`, as the Timing row's read-out uses).
+fn text_in(offset_ms: i64, locale: &crate::i18n::LocaleContext) -> String {
+    use crate::i18n::msg;
+    if offset_ms == 0 {
+        return msg::widgets_tracks_capsule_original_in(locale).to_string();
+    }
+    let tenths = (offset_ms.unsigned_abs() / 100) as i64;
+    let duration = msg::core_seconds_in(locale, &locale.decimal(tenths, 1));
+    if offset_ms > 0 {
+        msg::widgets_tracks_capsule_later_in(locale, &duration)
+    } else {
+        msg::widgets_tracks_capsule_earlier_in(locale, &duration)
+    }
+}
 
 /// What a key did to the capsule, for the caller to act on — [`Step`](CapsuleOut::Step) commits a
 /// new offset through the ordinary `TrackCommit::SubtitleOffset` path, [`Close`](CapsuleOut::Close)
@@ -104,7 +122,10 @@ impl TimingCapsule {
                 let dir: i64 = if matches!(k, Key::Left { .. }) { -1 } else { 1 };
                 let repeat = edge == Edge::Repeat;
                 if !repeat {
+                    // a fresh press starts a new gesture: no fast-step count, and no detent
+                    // carried over from the last hold to swallow this one's repeats
                     self.repeats = 0;
+                    self.detent_until = None;
                 }
                 self.step(dir, repeat, now)
             }
@@ -164,12 +185,7 @@ impl TimingCapsule {
     /// The capsule's sentence: what HAPPENS to the subtitles, never a signed number
     /// (`player.ref.html`'s `capsuleText`, adapted to this app's own leading word).
     fn text(&self) -> String {
-        if self.offset_ms == 0 {
-            return "Original timing".to_string();
-        }
-        let tenths = self.offset_ms.unsigned_abs() / 100;
-        let word = if self.offset_ms > 0 { "later" } else { "earlier" };
-        format!("Subtitles {}.{} s {word}", tenths / 10, tenths % 10)
+        text_in(self.offset_ms, crate::i18n::current())
     }
 
     /// Is the LEFT (earlier/lower) direction at its limit right now? Dims that chevron
@@ -192,7 +208,8 @@ impl TimingCapsule {
         }
         let text = self.text();
         let Ok(cs) = CString::new(text.as_str()) else { return };
-        let p = Painter::root();
+        // the container's appear fraction fades the capsule in and out, as every player panel does
+        let p = Painter::root().alpha(appear);
         let w = CHEVRON_SZ * 2.0 + CAPSULE_GAP * 2.0 + CAPSULE_TEXT_W + CAPSULE_PAD_X * 2.0;
         let cx = crate::ui::consts::SCR_W * 0.5 + self.shake.pos;
         let r = Rect::new(cx - w * 0.5, bottom_y - CAPSULE_H, w, CAPSULE_H);
@@ -320,5 +337,50 @@ mod tests {
         let mut c = cap();
         assert_eq!(c.key(Key::Right { alt: false }, Edge::Up, 0), None);
         assert_eq!(c.offset_ms(), 0);
+    }
+
+    /// A fresh press starts a new gesture: a detent the LAST hold set must not swallow the
+    /// repeats of this one.
+    #[test]
+    fn a_fresh_down_clears_a_running_detent() {
+        let mut c = sidecar_cap();
+        c.key(Key::Left { alt: false }, Edge::Down, 0); // -100
+        assert_eq!(c.key(Key::Right { alt: false }, Edge::Repeat, 110), Some(CapsuleOut::Step(0)));
+        // detent runs until 710; a fresh Down at 650 steps, and ITS hold's repeat at 700 moves
+        assert_eq!(c.key(Key::Right { alt: false }, Edge::Down, 650), Some(CapsuleOut::Step(100)));
+        assert_eq!(c.key(Key::Right { alt: false }, Edge::Repeat, 700), Some(CapsuleOut::Step(200)));
+    }
+
+    /// The sentence is catalog text with the locale's decimal and seconds unit.
+    #[test]
+    fn the_text_is_localized() {
+        use crate::i18n::{LocaleContext, Preference};
+        let es = LocaleContext::resolve(Preference::Es, None, Some("es-ES"), None, None);
+        let be = LocaleContext::resolve(Preference::Be, None, Some("be-BY"), None, None);
+        assert_eq!(text_in(300, &es), "Subtítulos 0,3 s más tarde");
+        assert_eq!(text_in(-300, &be), "Субцітры на 0,3 с раней");
+        assert_eq!(text_in(0, &es), "Sincronización original");
+    }
+
+    /// **The capsule's sentence fits its fixed [`CAPSULE_TEXT_W`] block in every shipped
+    /// language**, at the widest magnitude the range allows (30.0 s), measured with the device's
+    /// whole-pixel advances in the bold face `draw` uses.
+    #[test]
+    fn the_capsule_sentence_fits_its_block_in_every_language() {
+        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::i18n::{LocaleContext, Preference};
+        use crate::ui::machine::Measure;
+        let mut out = Vec::new();
+        for (language, region) in [(Preference::En, "en-US"), (Preference::Es, "es-ES"), (Preference::Be, "be-BY")] {
+            let locale = LocaleContext::resolve(language, None, Some(region), None, None);
+            for ms in [-30_000, 30_000, 0] {
+                let t = text_in(ms, &locale);
+                let w = ShippedMeasure.width_str(&t, theme::size::TITLE, true);
+                if w > CAPSULE_TEXT_W * HEADROOM {
+                    out.push(format!("{}: {t:?} is {w:.0}px in {CAPSULE_TEXT_W:.0}px", language.tag()));
+                }
+            }
+        }
+        assert!(out.is_empty(), "capsule text the television would clip:\n  {}", out.join("\n  "));
     }
 }

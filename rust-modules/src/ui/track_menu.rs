@@ -441,12 +441,19 @@ impl TrackMenuState {
         }
     }
 
-    /// Whether OK on the focused row leaves the panel OPEN: only Color does, so a run of presses
-    /// (cycling the ladder) is felt without a reopen-and-rewalk between them. Timing does not —
-    /// picking it hands off to a different overlay ([`TrackOk::OpenTiming`]) rather than staying on
-    /// this panel.
+    /// Whether OK on the focused row leaves the panel OPEN: Color does, so a run of presses
+    /// (cycling the ladder) is felt without a reopen-and-rewalk between them; so does the dim,
+    /// inert Timing row while subtitles are Off, since OK there does nothing at all. A live Timing
+    /// row does not — picking it hands off to a different overlay ([`TrackOk::OpenTiming`]).
     pub(crate) fn ok_keeps_open(&self) -> bool {
-        self.tab == 1 && matches!(self.targets.get(self.table.sel.max(0) as usize), Some(RowTarget::Color))
+        self.tab == 1
+            && match self.targets.get(self.table.sel.max(0) as usize) {
+                Some(RowTarget::Color) => true,
+                // the dim Timing row while subtitles are Off is INERT: OK does nothing, so it
+                // must not close the panel either
+                Some(RowTarget::Timing) => self.active_sub < 0,
+                _ => false,
+            }
     }
 
     /// The panel geometry — shared by `update` and `draw` so scrolling math matches.
@@ -742,7 +749,7 @@ impl RowBadge {
         match self {
             RowBadge::Forced => Badge::Forced,
             RowBadge::Sdh => Badge::Sdh,
-            RowBadge::External => Badge::Text("EXTERNAL".to_string()),
+            RowBadge::External => Badge::Text(crate::i18n::msg::widgets_tracks_external_badge().to_string()),
             RowBadge::Codec(c) => Badge::Text(c.clone()),
         }
     }
@@ -775,13 +782,13 @@ fn sub_tracks(subs: &[metadata::Stream], offered: &[usize], names: &crate::playe
         .filter_map(|&i| {
             let s = subs.get(i)?;
             let lang = if s.lang.trim().is_empty() {
-                "Unknown".to_string()
+                crate::i18n::msg::widgets_tracks_unknown().to_string()
             } else {
                 s.lang.clone()
             };
             let container = names.sub(metadata::sub_render_ordinal(subs, i));
             let merged = track_label::track_name(&s.title, container, &lang);
-            let label = track_label::parse(&merged, s.forced, s.sdh);
+            let label = track_label::parse(&merged, &lang, s.forced, s.sdh);
             let mut detail = label.source;
             if detail.is_empty() {
                 if let Some(region) = track_label::region_detail(&s.language_tag) {
@@ -839,6 +846,18 @@ fn badge_key(b: &Option<RowBadge>) -> String {
     }
 }
 
+/// Are two tracks the same LANGUAGE? By `metadata::lang_matches` on their codes — so an ISO
+/// 639-2/B "fre" and a 639-2/T "fra" (or a regional "fr-CA") land in ONE group rather than two
+/// sections both headed "French". Two tracks without a code fall back to their display name, so
+/// "Unknown" tracks still group with each other.
+fn same_language(a: &SubTrackInfo, b: &SubTrackInfo) -> bool {
+    if a.code.is_empty() || b.code.is_empty() {
+        a.code.is_empty() && b.code.is_empty() && a.lang == b.lang
+    } else {
+        metadata::lang_matches(&a.code, &b.code)
+    }
+}
+
 /// Is `code` one of `yours` (`metadata::lang_matches`, never literal equality — "fra"/"fre" and a
 /// regional "fr-CA" all name French)? An empty code never matches — an "Unknown" track can never
 /// silently land in "yours".
@@ -864,7 +883,7 @@ fn flat_row(t: &SubTrackInfo, active_sub: c_int) -> Row {
         parts.push(t.detail.clone());
     }
     if let Some(n) = t.ordinal {
-        parts.push(format!("Track {n}"));
+        parts.push(crate::i18n::msg::widgets_tracks_track_ordinal(n as i64));
     }
     if !parts.is_empty() {
         row = row.detail(parts.join(" \u{b7} "));
@@ -880,7 +899,7 @@ fn flat_row(t: &SubTrackInfo, active_sub: c_int) -> Row {
 /// "SDH", "Full", "Commentary"), in which case a Forced/SDH badge that would only repeat the
 /// label is dropped.
 fn in_lang_row(t: &SubTrackInfo, active_sub: c_int) -> Row {
-    let nth = t.ordinal.map(|n| format!("Track {n}"));
+    let nth = t.ordinal.map(|n| crate::i18n::msg::widgets_tracks_track_ordinal(n as i64));
     let label = if !t.detail.is_empty() {
         match &nth {
             Some(n) => format!("{} \u{b7} {}", t.detail, n),
@@ -946,7 +965,7 @@ pub(crate) fn sub_layout(
     // subtitle's, exactly as `yours` states them.
     let mut lang_buckets: Vec<(String, Vec<SubTrackInfo>)> = Vec::new();
     for t in mine.drain(..) {
-        match lang_buckets.iter_mut().find(|(code, _)| code == &t.code) {
+        match lang_buckets.iter_mut().find(|(_, bucket)| same_language(&bucket[0], &t)) {
             Some((_, bucket)) => bucket.push(t),
             None => lang_buckets.push((t.code.clone(), vec![t])),
         }
@@ -954,7 +973,8 @@ pub(crate) fn sub_layout(
     lang_buckets.sort_by_key(|(code, _)| yours_rank(code, yours));
 
     // 1. "Subtitles": Off, then every single-track "yours" language, flat.
-    let mut sections = vec![Section::new("Subtitles").row(Row::new("Off").checked(active_sub < 0))];
+    let mut sections = vec![Section::new(crate::i18n::msg::widgets_tracks_subtitles())
+        .row(Row::new(crate::i18n::msg::widgets_tracks_off()).checked(active_sub < 0))];
     let mut targets = vec![RowTarget::Off];
 
     // 2. Each multi-track "yours" language interrupts with its own section; a single-track
@@ -963,7 +983,8 @@ pub(crate) fn sub_layout(
     // (headerless) section instead, exactly mirroring `player.html`'s `sectionsFor`.
     for (_, bucket) in lang_buckets {
         if bucket.len() > 1 {
-            let mut sec = Section::new(bucket[0].lang.clone()).accessory(format!("{} tracks", bucket.len()));
+            let mut sec = Section::new(bucket[0].lang.clone())
+                .accessory(crate::i18n::msg::widgets_tracks_count(bucket.len() as i64));
             for t in &bucket {
                 sec = sec.row(in_lang_row(t, active_sub));
                 targets.push(RowTarget::Sub(t.i));
@@ -989,27 +1010,29 @@ pub(crate) fn sub_layout(
     let mut settings = Section::new("");
     if show_timing {
         settings = settings.row(
-            Row::new("Timing")
+            Row::new(crate::i18n::msg::widgets_tracks_timing())
                 .value(format_offset(offset_ms))
                 .chevron(true)
                 .dim(active_sub < 0),
         );
         targets.push(RowTarget::Timing);
     }
-    settings = settings.row(Row::new("Color").value(tone.label()));
+    settings = settings.row(Row::new(crate::i18n::msg::widgets_tracks_color()).value(tone_label(tone)));
     targets.push(RowTarget::Color);
     sections.push(settings);
 
     // 4. "Other languages": flat rows, sorted by language name then rank, with a language-count
     // accessory (distinct `lang_code`s, not track count).
     if !other.is_empty() {
-        let n = other
-            .iter()
-            .map(|t| t.code.as_str())
-            .collect::<std::collections::HashSet<_>>()
-            .len();
-        let mut sec = Section::new("Other languages")
-            .accessory(format!("{n} {}", if n == 1 { "language" } else { "languages" }));
+        // distinct LANGUAGES, by the same matcher the buckets use — "fre" and "fra" are one
+        let mut langs: Vec<&SubTrackInfo> = Vec::new();
+        for t in &other {
+            if !langs.iter().any(|l| same_language(l, t)) {
+                langs.push(t);
+            }
+        }
+        let mut sec = Section::new(crate::i18n::msg::widgets_tracks_other_languages())
+            .accessory(crate::i18n::msg::widgets_tracks_language_count(langs.len() as i64));
         for t in &other {
             sec = sec.row(flat_row(t, active_sub));
             targets.push(RowTarget::Sub(t.i));
@@ -1243,6 +1266,112 @@ mod tests {
         let subs = vec![stream(1, 0, "German", "deu", "")];
         let (sections, _targets) = sub_layout(&subs, &[0], &names, &[], -1, true, 0, SubtitleTone::White);
         assert_eq!(sections.last().unwrap().accessory, "1 language");
+    }
+
+    /// **One language, one group, whatever ISO 639-2 spelling each track carries** — "fre" (the
+    /// B code) and "fra" (the T code) are both French, so they bucket together under one "French"
+    /// section and count as one language under "Other languages".
+    #[test]
+    fn bibliographic_and_terminology_codes_of_one_language_group_together() {
+        let subs = vec![
+            stream(1, 0, "French", "fre", "iTunes"),
+            stream(2, 1, "French", "fra", "Netflix"),
+        ];
+        let offered: Vec<usize> = (0..subs.len()).collect();
+        let names = TrackNames::new();
+        let (sections, _) = sub_layout(&subs, &offered, &names, &["fra"], -1, true, 0, SubtitleTone::White);
+        let headers: Vec<&str> = sections.iter().map(|s| s.header.as_str()).collect();
+        assert_eq!(headers, ["Subtitles", "French", ""], "one French section, not two flat rows");
+        assert_eq!(sections[1].accessory, "2 tracks");
+
+        let (sections, _) = sub_layout(&subs, &offered, &names, &[], -1, true, 0, SubtitleTone::White);
+        assert_eq!(sections.last().unwrap().accessory, "1 language");
+    }
+
+    /// **Every Subtitles-panel row fits the panel in every shipped language** — the grouped
+    /// layout's section words, the kind fallbacks, the "Track N" ordinal and a region name beside
+    /// each badge, at [`SUB_PANEL_W`], measured with the device's whole-pixel advances. (A source is
+    /// server text and may elide; the fixture's sources are short so only app text is judged.)
+    #[test]
+    fn every_subtitles_row_fits_the_panel_in_every_language() {
+        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        let mut subs = vec![
+            stream(1, 0, "Russian", "rus", "forced, DVD R5"),
+            stream(2, 1, "Russian", "rus", "Netflix"),
+            stream(3, 2, "Russian", "rus", ""),
+            stream(4, 3, "Russian", "rus", ""),
+            stream(5, 4, "Russian", "rus", "SDH"),
+            stream(6, 5, "Russian", "rus", "Commentary"),
+            stream(7, 6, "Spanish", "spa", ""),
+            stream(8, 7, "Portuguese", "por", "Full SDH"),
+        ];
+        subs[6].language_tag = "es-419".into();
+        subs[7].external = true;
+        let offered: Vec<usize> = (0..subs.len()).collect();
+        let names = TrackNames::new();
+        let mut out = Vec::new();
+        for language in [Preference::En, Preference::Es, Preference::Be] {
+            let _guard = language_on_this_thread_for_test(language);
+            let (sections, _) =
+                sub_layout(&subs, &offered, &names, &["rus"], 1, true, -30_000, SubtitleTone::LightGrey);
+            let mut table = TableView::new();
+            table.set_sections(sections, 0, false);
+            out.extend(table.elided_rows(SUB_PANEL_W, &ShippedMeasure, HEADROOM)
+                .into_iter().map(|e| format!("{}: {e}", language.tag())));
+        }
+        assert!(out.is_empty(), "rows the panel would end in an ellipsis:\n  {}", out.join("\n  "));
+    }
+
+    /// **The pseudo-locale sweep of the grouped Subtitles panel**: every header, accessory, label,
+    /// detail, value and badge it builds is catalog text (the pseudo-locale's `[!!` marker or its
+    /// accented vowels), the fixture's own server values, or letter-free.
+    #[test]
+    fn every_app_owned_subtitles_string_comes_from_the_catalog() {
+        let _pseudo = crate::i18n::pseudo_on_this_thread_for_test();
+        // a title's own "Commentary" stays its source (the mock strips no commentary word), so it
+        // is server text here like the rest
+        let server = ["Russian", "Spanish", "Portuguese", "Netflix", "DVD R5", "Commentary"];
+        let mut subs = vec![
+            stream(1, 0, "Russian", "rus", "Netflix"),
+            stream(2, 1, "Russian", "rus", ""),
+            stream(3, 2, "Russian", "rus", ""),
+            stream(4, 3, "Russian", "rus", "forced"),
+            stream(5, 4, "Russian", "rus", "SDH"),
+            stream(6, 5, "Russian", "rus", "Commentary"),
+            stream(7, 6, "Spanish", "spa", ""),
+            stream(8, 7, "Portuguese", "por", "DVD R5"),
+            stream(9, 8, "", "", ""),
+        ];
+        subs[6].language_tag = "es-419".into();
+        subs[7].external = true;
+        let offered: Vec<usize> = (0..subs.len()).collect();
+        let (sections, _) =
+            sub_layout(&subs, &offered, &TrackNames::new(), &["rus"], 1, true, 300, SubtitleTone::Grey);
+        let mut runs: Vec<String> = Vec::new();
+        for sec in &sections {
+            runs.push(sec.header.clone());
+            runs.push(sec.accessory.clone());
+            for row in &sec.rows {
+                runs.push(row.label.clone());
+                runs.push(row.detail.clone());
+                runs.extend(row.value.clone());
+                runs.extend(row.badges.iter().map(|b| b.text().to_string()));
+            }
+        }
+        let pseudo = |run: &str| run.contains("[!!") || run.contains(['á', 'ë', 'ï', 'ö', 'ü']);
+        let stray: Vec<&String> = runs
+            .iter()
+            .filter(|run| !pseudo(run))
+            .filter(|run| {
+                let mut rest = run.replace('\u{b7}', " ");
+                for value in server {
+                    rest = rest.replace(value, "");
+                }
+                rest.chars().any(char::is_alphabetic)
+            })
+            .collect();
+        assert!(stray.is_empty(), "text drawn without the catalog: {stray:?}");
     }
 
     // ---- sub_layout: Timing absent under transcode, dim while Off -----------------------------

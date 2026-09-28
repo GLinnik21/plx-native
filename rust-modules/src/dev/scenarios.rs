@@ -1484,7 +1484,7 @@ fn menupick_arm(app: &mut App, fr: &mut Frame) {
 ///
 /// **Stage 2**, on a later frame once [`crate::route::cur_sub_sid`] agrees the commit has landed:
 /// open the capsule directly — no `pin_headless_hud` call, because the production capsule frame
-/// hides the HUD rather than pinning it (`OverlayKind::hides_hud`, `PlayerReq::HideHud`).
+/// hides the HUD rather than pinning it (`OverlayKind::hides_hud`, `PlayerScreen::set_hud_hidden`).
 fn subtiming_arm(app: &mut App, _fr: &mut Frame) {
     if let Some(sid) = app.scenarios.subtiming_sid {
         if crate::route::cur_sub_sid(&app.player.session) == sid {

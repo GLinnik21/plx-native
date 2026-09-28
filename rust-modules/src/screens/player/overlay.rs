@@ -532,10 +532,10 @@ impl PlayerOverlayScreen {
                         PlayerReq::CommitTrack(crate::ui::track_menu::TrackCommit::SubtitleOffset(v)),
                     );
                 }
-                Some(CapsuleOut::Close) => {
-                    self.dismiss(fx);
-                    Self::ask(fx, PlayerReq::HideHud);
-                }
+                // The transport stays down after the capsule leaves — not asked for here, since a
+                // pointer miss closes it without reaching this ladder; `PlayerScreen::set_hud_hidden`
+                // turns ANY close into a dismissed HUD on the frame the surface is gone.
+                Some(CapsuleOut::Close) => self.dismiss(fx),
                 Some(CapsuleOut::Bump) | None => {}
             }
             return Handled::Yes;
@@ -664,7 +664,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
                 // the rule `app/run.rs` kept as "keep the HUD alive while the track menu / Info
                 // card / Chapters strip is open", stated once here by the surface that IS open.
                 // Timing is the deliberate exception: it HIDES the HUD rather than sharing its
-                // read time, so extending it here would fight `PlayerReq::HideHud`/`hud_hidden`.
+                // read time, so extending it here would fight `hud_hidden`.
                 if !matches!(self.panel, Panel::Timing(_)) {
                     Self::ask(fx, PlayerReq::ExtendHud(HUD_LINGER_MS));
                 }

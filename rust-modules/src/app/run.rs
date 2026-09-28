@@ -2268,7 +2268,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         if let Some(player) = super::bridge::player_mut(&mut app.pages) {
                             player.busy = busy;
                             player.transport = bare_middle;
-                            player.hud_hidden = hud_hidden;
+                            player.set_hud_hidden(hud_hidden);
                             player.lifted = lifted;
                         }
                         // THE PAGE, and its four panels: `Dispatcher::draw(.., true)` runs the page

@@ -394,6 +394,19 @@ impl PlayerScreen {
             && !self.hud_hidden
     }
 
+    /// **Push this frame's `hud_hidden`** (`app/run.rs`, from `bridge::player_overlay_hud_state`)
+    /// — and the ONE place a HUD-hiding surface's close becomes a dismissed transport. On the
+    /// falling edge (the capsule's surface has just left, whatever closed it: OK/BACK, a pointer
+    /// miss through `OnMiss::Dismiss`, a playback teardown) `hud.dismissed` is set, so the
+    /// transport does not reappear over the film just because the capsule stopped hiding it. It
+    /// stays down until a bound key raises it, exactly like an UP-hide.
+    pub(crate) fn set_hud_hidden(&mut self, hidden: bool) {
+        if self.hud_hidden && !hidden {
+            self.hud.dismissed = true;
+        }
+        self.hud_hidden = hidden;
+    }
+
     /// Does the caption block lift clear of the transport this frame? [`Self::hud_up`] already
     /// excludes `hud_hidden`, but `self.lifted` does not (a Tracks→Timing hand-off can leave a
     /// stale `lifted` from the same frame's OTHER surface), so this re-asserts the gate rather than
@@ -1656,6 +1669,50 @@ mod step_ladder_tests {
         page.record_stops(&mut f, page.hud_drawn(ps, 1_000));
         let got: Vec<u32> = f.into_stops().iter().map(|s| s.key.elem).collect();
         assert_eq!(got, Vec::<u32>::new(), "no scrub/row/tab stop registers under the capsule");
+    }
+
+    /// **However the capsule's surface closes, the transport stays down after it** (finding: a
+    /// pointer miss closed it through `OnMiss::Dismiss` without the key ladder's old HideHud
+    /// request). `set_hud_hidden`'s falling edge is the one place that turns the close into a
+    /// dismissed HUD; a later bound key raises it again as usual.
+    #[test]
+    fn the_capsule_leaving_leaves_the_transport_dismissed_however_it_closed() {
+        let _g = crate::testlock::serial();
+        let paused = crate::player::TX.paused.swap(true, std::sync::atomic::Ordering::Relaxed);
+        let cx = cx();
+        let ps = TestHost::session(&cx);
+        let mut page = PlayerScreen::new(ENTRY);
+        page.transport = true;
+        assert!(page.hud_drawn(ps, 1_000), "paused: the transport is up before the capsule");
+        page.set_hud_hidden(true);
+        assert!(!page.hud_drawn(ps, 1_000), "hidden under the capsule");
+        page.set_hud_hidden(false); // the surface is gone — no key reached the overlay's ladder
+        assert!(!page.hud_drawn(ps, 1_000), "and stays down once the capsule has left");
+        page.hud.note_fresh_press(ps, 1_100, true);
+        assert!(page.hud_drawn(ps, 1_100), "a bound key raises it again");
+        crate::player::TX.paused.store(paused, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// **A fresh LEFT on the capsule while paused keeps the transport hidden.** The capsule's own
+    /// first press goes through `note_global_press` → `note_fresh_press`, which clears
+    /// `hud.dismissed`; paused, that alone would put the transport back over the capsule. The
+    /// per-frame `hud_hidden` gate is what keeps it down, and this is the layer that draws it.
+    #[test]
+    fn a_fresh_press_on_the_capsule_while_paused_keeps_the_transport_hidden() {
+        let _g = crate::testlock::serial();
+        let paused = crate::player::TX.paused.swap(true, std::sync::atomic::Ordering::Relaxed);
+        let cx = cx();
+        let ps = TestHost::session(&cx);
+        let mut page = PlayerScreen::new(ENTRY);
+        page.transport = true;
+        page.set_hud_hidden(true);
+        page.hud.dismissed = true;
+        page.hud.note_fresh_press(ps, 1_000, true); // the LEFT that steps the capsule
+        assert!(!page.hud.dismissed, "the press did un-dismiss the HUD");
+        assert!(!page.hud_up(ps, 1_000), "yet the transport stays hidden under the capsule");
+        assert!(!page.hud_drawn(ps, 1_000));
+        assert!(!page.subs_lift(ps, 1_000), "and the captions do not lift for it");
+        crate::player::TX.paused.store(paused, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// **Issue #162's census: every control the D-pad can activate is clickable with the Magic

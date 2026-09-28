@@ -508,12 +508,6 @@ pub(crate) fn player_requests(
                     player.publish();
                 }
             }
-            PlayerReq::HideHud => {
-                if let Some(player) = super::bridge::player_mut(pages) {
-                    player.hud.dismissed = true;
-                    player.publish();
-                }
-            }
             PlayerReq::FocusTabs => {
                 if let Some(player) = super::bridge::player_mut(pages) {
                     player.hud.nav.focus = 2;
