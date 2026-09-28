@@ -96,6 +96,9 @@ pub(crate) struct Shelf {
     /// Where a promoted `custom.collection.*` shelf's linked heading leads, classified once at
     /// parse ([`crate::plex::collections::promoted_collection_link`]); `None` for every other hub.
     pub(crate) link: Option<crate::plex::collections::CollectionRef>,
+    /// Every item the hub's listing holds (`plex::Hub::total`), which `items` caps — a linked
+    /// collection heading's "· N". 0 when the server named no total.
+    pub(crate) total: usize,
     pub(crate) title: String,
     /// A Continue Watching row scoped to this section. **Not `home.continue`**, which is
     /// `pms`'s whole-server id and does not appear here — see [`shelf_is_continue`].
@@ -662,6 +665,7 @@ pub(crate) fn seed_named_shelves_for_owner_test(
                 id: (*id).into(),
                 key: (*key).into(),
                 link: crate::plex::collections::promoted_collection_link(sid, id, key, title, section),
+                total: per_row,
                 title: (*title).into(),
                 is_continue: shelf_is_continue(id, key),
                 landscape: false,
@@ -770,6 +774,7 @@ pub(crate) fn parse_hubs(mc: &crate::plex::MediaContainer, sid: ServerId, sectio
             link: crate::plex::collections::promoted_collection_link(
                 sid, &hub.hub_identifier, &hub.key, &hub.title, section,
             ),
+            total: hub.total(),
             title: hub.title.clone(),
             items,
         });

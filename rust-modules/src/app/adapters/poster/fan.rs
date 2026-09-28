@@ -134,7 +134,7 @@ fn mock_px(v: f32) -> f32 {
 /// `.mc { width:44%; height:44% }`. Percentages of a 2:3 tile, so the box is 110×165 mock px —
 /// itself exactly 2:3 — and a member's HEIGHT is 44% of the tile's height whichever way it is
 /// read (198 of 450 bake px, 132 wide). The poster is cover-fitted into that box, as before.
-const MEMBER_FRAC: f32 = 0.44;
+const MEMBER_FRAC: f32 = crate::ui::collection_tile::FAN_MEMBER_FRAC;
 /// `.mc { border-radius:6px }`.
 const MEMBER_RADIUS_MOCK: f32 = 6.0;
 /// `.mc { box-shadow: 0 6px 14px rgba(0,0,0,.45) }` — offset, blur, alpha.
@@ -146,7 +146,7 @@ const RIM_W_MOCK: f32 = 1.0;
 const RIM_ALPHA: f32 = 0.18;
 /// `.scr { height:45%; background:linear-gradient(transparent, rgba(0,0,0,.55)) }`: the scrim
 /// starts at 55% of the height and darkens LINEARLY to 0.55 at the bottom edge.
-const SCRIM_FROM: f32 = 0.55;
+const SCRIM_FROM: f32 = crate::ui::collection_tile::FAN_SCRIM_FROM;
 const SCRIM_MAX: f32 = 0.55;
 
 /// sin(9°) and sin(8°): `.c1 { rotate(-9deg) }` and `.c2 { rotate(8deg) }`. Constants, so no
@@ -167,7 +167,7 @@ const BACK_LEFT: Placement = Placement { left: 0.18, top: 0.14, sin: -SIN_9 };
 /// `.c2` — the THIRD member, back right, over `.c1`.
 const BACK_RIGHT: Placement = Placement { left: 0.40, top: 0.12, sin: SIN_8 };
 /// `.c3` — the FIRST member, upright, on top.
-const FRONT: Placement = Placement { left: 0.28, top: 0.10, sin: 0.0 };
+const FRONT: Placement = Placement { left: 0.28, top: crate::ui::collection_tile::FAN_FRONT_TOP, sin: 0.0 };
 
 /// Composite the fan in the mock's paint order: the UltraBlur ground (`.ubg`), the scrim
 /// (`.scr`, UNDER the members), then `.c1`, `.c2`, `.c3`. `front` is the collection's first

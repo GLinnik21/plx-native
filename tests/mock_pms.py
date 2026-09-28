@@ -1012,6 +1012,7 @@ class CatalogLibrary(Library):
                         self.images[erk]["art"] = self.images[rk]["art"]
                     self.items[erk] = ep
         self._add_empty_collection("Empty Collection")
+        self._add_name_fitting_collections()
         self._pin_clock(hero or cat["hero"])
         self._roll_up()
         for it in self.items.values():
@@ -1119,6 +1120,32 @@ class CatalogLibrary(Library):
                     "-bitexact", *encode, "-"])
             return ctype, self._scaled[key]
 
+    # Collections whose names exercise the collection tile's name fitting
+    # (`ui/collection_tile.rs::fit_name`): one short line, a balanced three, and one too long for
+    # three lines at either size, which steps down and elides. Demo-only: the generated library
+    # keeps its closed alphabet.
+    NAME_FITTING_COLLECTIONS = (
+        ("Shorts", 0),
+        ("Blender Studio Anniversary Collection", 1),
+        ("The Complete Blender Foundation Open Movie Projects Archive Collection", 2),
+    )
+
+    def _add_name_fitting_collections(self):
+        movies = sorted((it for it in self.items.values() if it["type"] == "movie"),
+                        key=lambda it: int(it["ratingKey"]))
+        for tag, offset in self.NAME_FITTING_COLLECTIONS:
+            cid = len(self.collections) + 1
+            self.collections[cid] = {"id": cid, "ratingKey": 50000 + cid, "tag": tag}
+            for it in movies[offset * 3:offset * 3 + 3]:
+                it.setdefault("Collection", []).append({"tag": tag, "id": cid})
+
+    def collection_metadata(self, section):
+        """The base listing, plus each collection's member order as PMS states it
+        (`collectionSort`: 0 release date, 2 custom) — custom where the catalog orders it."""
+        orders = getattr(self, "catalog", {}).get("collection_order", {})
+        return [dict(row, collectionSort="2" if row["title"] in orders else "0")
+                for row in super().collection_metadata(section)]
+
     def collection_rows(self, cid):
         """A collection's members (Home's shelf and the library's alike): in the catalog's
         `collection_order` for it when it has one — a real server's custom collection order —
@@ -1136,7 +1163,10 @@ class CatalogLibrary(Library):
         Recently Added: `custom.collection.<section>.<ratingKey>.<ratingKey>` (a live probe: the
         promoted hub's id is the collection's RATING key, not its tag id), in the catalog's order."""
         hubs = []
+        unpromoted = {tag for tag, _ in self.NAME_FITTING_COLLECTIONS}
         for c in self.collections.values():
+            if c["tag"] in unpromoted:
+                continue  # listed in the library's Collections, not promoted as a shelf
             rows = [it for it in self.collection_rows(c["id"]) if it["librarySectionID"] == section]
             if rows:
                 hubs.append({"title": c["tag"], "type": kind, "size": len(rows),
@@ -1161,7 +1191,7 @@ class CatalogLibrary(Library):
                 ident = f"custom.collection.{section}.{rk}.{rk}"
                 key = f"/library/collections/{rk}/children"
             out.append({"title": h["title"], "type": h["type"], "hubIdentifier": ident,
-                        "key": key, "Metadata": rows})
+                        "key": key, "size": len(rows), "Metadata": rows})
         return out
 
 

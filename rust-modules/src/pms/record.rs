@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use super::{Landing, LandingClient, SourceBuild};
 
-pub(crate) const SHAPE: &str = "HubsResultV1{gen:u32,seq:u32,sid:u16,client:Option<u32>,token_gen:u32,build:Option<{cw:[{last_viewed_at:i64,m:PmsMovie}],shelves:[{title:str,hub_id:str,key:str,items:[PmsMovie]}]}>};PmsMovie{sid:u16,sec:i64,title:str,year:i32,rating:str,dur_ns:i64,part:str,thumb:str,still:str,art:str,summary:str,rk:str,vcodec:str,acodec:str,blur:[[f32bits;3];4],has_blur:bool,kind:i32,resume_ms:i64,show_rk:str,season_index:i32,show_title:str,ep_index:i32,unwatched:bool,watched:bool,aired:str,child_count:i64}";
+pub(crate) const SHAPE: &str = "HubsResultV1{gen:u32,seq:u32,sid:u16,client:Option<u32>,token_gen:u32,build:Option<{cw:[{last_viewed_at:i64,m:PmsMovie}],shelves:[{title:str,hub_id:str,key:str,items:[PmsMovie],total:u64}]}>};PmsMovie{sid:u16,sec:i64,title:str,year:i32,rating:str,dur_ns:i64,part:str,thumb:str,still:str,art:str,summary:str,rk:str,vcodec:str,acodec:str,blur:[[f32bits;3];4],has_blur:bool,kind:i32,resume_ms:i64,show_rk:str,season_index:i32,show_title:str,ep_index:i32,unwatched:bool,watched:bool,aired:str,child_count:i64}";
 
 pub(crate) fn encode(landing: &Landing) -> Value {
     let Landing { gen, seq, sid, client, token_gen, build } = landing;
@@ -117,7 +117,7 @@ mod tests {
             build: Some(SourceBuild {
                 cw: vec![CwItem { last_viewed_at: i64::MAX, m: m.clone() }],
                 shelves: vec![Shelf { title: "Shelf".into(), hub_id: "provider.hub".into(),
-                    key: "/hub/key".into(), items: vec![m] }],
+                    key: "/hub/key".into(), items: vec![m], total: 0 }],
             }) }
     }
 

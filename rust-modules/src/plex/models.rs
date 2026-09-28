@@ -199,6 +199,18 @@ pub struct Hub {
     /// ones are worth drawing.
     #[serde(default, deserialize_with = "de_i64")]
     pub size: i64,
+    /// How many items the hub's listing holds in ALL, when the hub embeds only a page of them
+    /// (`plex-openapi.json`'s `Hub.totalSize`). A collection hub's member count — the "· N" its
+    /// linked heading carries — is this, or [`Self::size`] when the server sent no total.
+    #[serde(rename = "totalSize", default, deserialize_with = "de_i64")]
+    pub total_size: i64,
+}
+
+impl Hub {
+    /// Every item the hub's listing holds: `totalSize`, else `size`, never negative.
+    pub fn total(&self) -> usize {
+        self.total_size.max(self.size).max(0) as usize
+    }
 }
 
 /// One of an item's per-item settings — the show page's "Advanced" dialog in Plex Web. Only the
@@ -315,6 +327,11 @@ pub struct Metadata {
     pub content_rating: String,
     #[serde(default)]
     pub summary: String,
+    /// A collection's member order, as its owner set it in Plex: `0` release date, `1`
+    /// alphabetical, `2` custom (python-plexapi's `Collection.collectionSort`). Absent on every
+    /// other row, and on a collection whose server did not send it.
+    #[serde(rename = "collectionSort", default, deserialize_with = "de_opt_i64")]
+    pub collection_sort: Option<i64>,
     #[serde(default)]
     pub tagline: String,
     #[serde(default)]

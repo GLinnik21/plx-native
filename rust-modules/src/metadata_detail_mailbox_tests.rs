@@ -152,6 +152,24 @@ fn the_collection_hub_is_split_out_of_related_and_never_duplicated() {
     assert!(shelf.members.iter().all(|m| m.sid == SRV_A));
     let related: Vec<&str> = rows.related.iter().map(|m| m.rk.as_str()).collect();
     assert_eq!(related, ["40", "41"], "no collection member is repeated in Related");
+    assert_eq!(shelf.count, 3, "no total from the server: the listed members");
+}
+
+/// The collection heading's "· N" is the collection's own size: a hub that embeds a page of its
+/// members names the whole listing in `totalSize` (else `size`).
+#[test]
+fn the_collection_shelf_counts_the_hubs_total_not_its_page() {
+    let body = r#"{"MediaContainer":{"Hub":[
+        {"hubIdentifier":"collection.related.1.1","title":"Starfall Saga Collection",
+         "key":"/library/sections/1/all?type=1&tagId=812","size":2,"totalSize":"12","Metadata":[
+            {"ratingKey":"30","type":"movie","title":"one"},
+            {"ratingKey":"31","type":"movie","title":"two"}]}
+    ]}}"#;
+    let mc = serde_json::from_str::<crate::plex::Envelope>(body).expect("parses").media_container;
+    assert_eq!(related_rows(&mc, SRV_A, "30").collection.expect("a shelf").count, 12);
+    let body = body.replace(r#","totalSize":"12""#, "").replace(r#""size":2"#, r#""size":7"#);
+    let mc = serde_json::from_str::<crate::plex::Envelope>(&body).expect("parses").media_container;
+    assert_eq!(related_rows(&mc, SRV_A, "30").collection.expect("a shelf").count, 7);
 }
 
 /// A collection whose only listed member is the page's own film is no shelf — and its hub still
@@ -180,7 +198,9 @@ fn a_lone_member_gets_no_collection_shelf_and_a_large_one_is_capped() {
     );
     let mc = serde_json::from_str::<crate::plex::Envelope>(&body).expect("parses").media_container;
     let rows = related_rows(&mc, SRV_A, "100");
-    assert_eq!(rows.collection.expect("a shelf").members.len(), COLLECTION_MAX);
+    let big = rows.collection.expect("a shelf");
+    assert_eq!(big.members.len(), COLLECTION_MAX);
+    assert_eq!(big.count, 30, "the heading counts every listed member, not the capped shelf");
     assert!(rows.related.is_empty(), "the members past the cap do not spill into Related");
 }
 

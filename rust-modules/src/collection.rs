@@ -19,6 +19,26 @@ pub(crate) struct CollectionTarget {
     pub(crate) want: usize,
 }
 
+/// The order a collection lists its members in — its owner's `collectionSort`, which the page names
+/// over its grid ("Items · Release order"). An order the server did not state is not guessed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum CollectionOrder {
+    Release,
+    Title,
+    Custom,
+}
+
+impl CollectionOrder {
+    pub(crate) fn of(collection_sort: Option<i64>) -> Option<Self> {
+        match collection_sort? {
+            0 => Some(Self::Release),
+            1 => Some(Self::Title),
+            2 => Some(Self::Custom),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum CollectionStatus {
     #[default]
@@ -36,6 +56,8 @@ pub(crate) struct Collection {
     pub(crate) summary: String,
     pub(crate) thumb: String,
     pub(crate) child_count: usize,
+    /// The member order the header stated, if it stated one.
+    pub(crate) order: Option<CollectionOrder>,
     pub(crate) items: Vec<PmsMovie>,
     pub(crate) total: usize,
     pub(crate) status: CollectionStatus,
@@ -55,9 +77,13 @@ impl Collection {
     /// until the header replaces it.
     fn loading(id: CollectionRef, want: usize, client_key: Option<(u32, u32)>) -> Self {
         Self { title: id.name.clone(), id, summary: String::new(), thumb: String::new(),
-            child_count: 0, items: Vec::new(), total: 0, status: CollectionStatus::Loading,
+            child_count: 0, order: None, items: Vec::new(), total: 0, status: CollectionStatus::Loading,
             more: true, offset: 0, want, header_ready: false, client_key }
     }
+
+    /// Whether the header (title, art, summary) has landed — before it, an empty `thumb` is not
+    /// yet an answer.
+    pub(crate) fn header_ready(&self) -> bool { self.header_ready }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -196,6 +222,7 @@ impl CollectionState {
                 c.thumb = head.thumb;
                 c.summary = head.summary;
                 c.child_count = head.child_count;
+                c.order = head.order;
                 c.header_ready = true;
                 c.status = CollectionStatus::Loading;
                 true
@@ -264,12 +291,19 @@ enum Job {
 
 /// A collection row's header fields, as both the tag resolution and the metadata GET read them.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct Header { title: String, thumb: String, summary: String, child_count: usize }
+struct Header {
+    title: String,
+    thumb: String,
+    summary: String,
+    child_count: usize,
+    #[serde(default)]
+    order: Option<CollectionOrder>,
+}
 
 impl Header {
     fn of(row: &crate::plex::Metadata) -> Self {
         Self { title: row.title.clone(), thumb: row.thumb.clone(), summary: row.summary.clone(),
-            child_count: row.child_count.max(0) as usize }
+            child_count: row.child_count.max(0) as usize, order: CollectionOrder::of(row.collection_sort) }
     }
 }
 
@@ -341,7 +375,7 @@ fn run_job(client: &'static crate::plex::Client, sid: ServerId, job: Job) -> Lan
 
 #[cfg(test)]
 fn header(title: &str, child_count: usize) -> Header {
-    Header { title: title.into(), thumb: String::new(), summary: String::new(), child_count }
+    Header { title: title.into(), thumb: String::new(), summary: String::new(), child_count, order: None }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -401,6 +435,22 @@ mod tests {
         crate::plex::Metadata { rating_key: "9".into(), kind: kind.into(), title: "Pilot".into(),
             thumb: thumb.into(), parent_thumb: parent.into(), grandparent_thumb: grandparent.into(),
             parent_index: 3, index: 4, grandparent_title: "Show".into(), ..Default::default() }
+    }
+
+    /// The page names the member order the collection's owner chose, from the header's
+    /// `collectionSort` (string-encoded, like every PMS number); an unstated or unknown order is
+    /// not guessed.
+    #[test]
+    fn the_header_reads_the_collections_member_order() {
+        let head = |body: &str| {
+            let row: crate::plex::Metadata = serde_json::from_str(body).expect("parses");
+            Header::of(&row).order
+        };
+        assert_eq!(head(r#"{"title":"Saga","collectionSort":"0"}"#), Some(CollectionOrder::Release));
+        assert_eq!(head(r#"{"title":"Saga","collectionSort":1}"#), Some(CollectionOrder::Title));
+        assert_eq!(head(r#"{"title":"Saga","collectionSort":"2"}"#), Some(CollectionOrder::Custom));
+        assert_eq!(head(r#"{"title":"Saga"}"#), None);
+        assert_eq!(head(r#"{"title":"Saga","collectionSort":"9"}"#), None);
     }
 
     #[test]

@@ -420,6 +420,9 @@ struct HubRow {
     /// the same pass, which is a separate, deliberate harmonization; `heading_flow`'s doc has it.)
     /// Populated by the multi-server data layer when it lands.
     source: String,
+    /// Every item the shelf's listing holds, which `len` caps — a linked collection heading's
+    /// "· N" (`HubRef::total`). 0 when the server named no total.
+    total: usize,
     start: usize,
     len: usize,
 }
@@ -489,6 +492,8 @@ pub(crate) struct HubRef<'a> {
     pub(crate) identity: Option<HubIdentity<'a>>,
     pub(crate) title: &'a str,
     pub(crate) source: &'a str,
+    /// Every item the shelf's listing holds (0 when unknown); `items` is the capped page.
+    pub(crate) total: usize,
     pub(crate) items: &'a [PmsMovie],
 }
 
@@ -529,7 +534,7 @@ impl<'a> HubsView<'a> {
         let end = row.start.checked_add(row.len)?;
         Some(HubRef {
             identity: stable_hub_identity(row, &self.data.items),
-            title: &row.title, source: &row.source,
+            title: &row.title, source: &row.source, total: row.total,
             items: self.data.items.get(row.start..end)?,
         })
     }
@@ -747,6 +752,9 @@ struct Shelf {
     hub_id: String,
     key: String,
     items: Vec<PmsMovie>,
+    /// Every item the hub's listing holds (`plex::Hub::total`) — a collection shelf's "· N".
+    #[serde(default)]
+    total: usize,
 }
 
 /// ONE source's whole contribution to Home — its Continue Watching items (merged with everyone
@@ -838,6 +846,7 @@ fn project(
             hub_id: hub.hub_identifier.clone(),
             key: hub.key.clone(),
             items,
+            total: hub.total(),
         });
     }
     out
@@ -938,6 +947,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
             hub_id: "home.continue".to_string(),
             key: String::new(),
             source: String::new(),
+            total: 0,
             start: 0,
             len: new_cat.len(),
         });
@@ -975,6 +985,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
                     hub_id: sh.hub_id.clone(),
                     key: sh.key.clone(),
                     source: (*handle).to_string(),
+                    total: sh.total,
                     start,
                     len: new_cat.len() - start,
                 });
@@ -1957,6 +1968,7 @@ fn build_test(n: usize) -> SourceBuild {
                     ..PmsMovie::default()
                 })
                 .collect(),
+            total: 0,
         }],
     }
 }
@@ -2019,6 +2031,7 @@ pub(crate) fn seed_two_library_home_for_test(
             hub_id: "home.movies.recent".into(),
             key: String::new(),
             items: vec![item(&sections[0], "alpha"), item(&sections[1], "beta")],
+            total: 0,
         }],
     });
     let scope = BrowseScope::retained(directory);

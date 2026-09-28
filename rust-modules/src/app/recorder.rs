@@ -2317,8 +2317,12 @@ mod tests {
         //
         // Localization adds the captured preference in ControlledHomeInitV6 / SessionInitV5,
         // moving main's census (0x4687_2768_0762_9a4d, above; 0x3b46_89f3_2380_2be7 before the
-        // collections member count) to this value.
-        assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0xa1e4_897f_3373_3a4e);
+        // collections member count) to 0xa1e4_897f_3373_3a4e.
+        //
+        // **A collection shelf's total moves it to this value.** A Home shelf and a hub row carry
+        // the hub's `totalSize` (the linked heading's "· N"), in both the hubs record and the
+        // hubs initial state.
+        assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0x30c2_e571_b86e_d7b6);
     }
 
     /// The gate at the REAL hubs landing site, through the recording the driver loads: a result
@@ -2533,6 +2537,10 @@ mod tests {
         let mut pre_settings = APP_SHAPES.to_vec();
         let record = pre_settings.iter().position(|shape| *shape == crate::pms::record::SHAPE).unwrap();
         pre_settings[record] = PRE_CHILD_COUNT_RECORD_SHAPE;
+        // ...and under the hubs initial state before a hub row carried its total.
+        const PRE_TOTAL_INITIAL_SHAPE: &str = "HubsInitialV1{version:u32,generation:u32,next_request:u32,seen:u64,seen_facts:u32,sections_generation:u32,catalog_generation:u32,sources:[{sid:u16,client:Option<u32>,token_gen:u32,handle:str,state:u32,fetching:bool,seq:u32,retry_bits:u32,retry_n:u32,last:Option<SourceBuild>}],catalog:{items:[PmsMovie],hubs:[{title:str,hub_id:str,key:str,source:str,start:u64,len:u64}],heroes:[{idx:u64,source:str}]}}";
+        let initial = pre_settings.iter().position(|shape| *shape == crate::pms::initial::SHAPE).unwrap();
+        pre_settings[initial] = PRE_TOTAL_INITIAL_SHAPE;
         pre_settings[APP_SHAPES.len() - 2] = super::super::bootstrap::PRE_SETTINGS_SHAPE;
         assert_eq!(crate::ui::rec::state_fp(&pre_settings), 0x9f03_9e4f_2ff6_4d19,
             "retain the pre-typed-Settings census");

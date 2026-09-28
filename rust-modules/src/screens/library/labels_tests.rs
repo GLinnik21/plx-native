@@ -204,7 +204,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
     // Port the original Library assertion against the owned screen's production helper.
     let caption = |item: PmsMovie, is_continue| {
         let shelf = crate::browse::section_hubs::Shelf {
-            id: "x".into(), key: String::new(), link: None, title: "Recently Added".into(), is_continue,
+            id: "x".into(), key: String::new(), link: None, total: 0, title: "Recently Added".into(), is_continue,
             landscape: false, items: vec![item],
         };
         shelf_label(&shelf, 0).caption.map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
@@ -249,6 +249,7 @@ fn a_focused_poster_tile_always_fills_the_caption_rung_it_reserves() {
             id: "tv.recentlyreleased".into(),
             key: String::new(),
             link: None,
+            total: 0,
             title: "Recently Released Episodes".into(),
             is_continue: false,
             landscape: true,

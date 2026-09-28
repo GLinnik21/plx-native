@@ -6,7 +6,7 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 
-pub(crate) const SHAPE: &str = "HubsInitialV1{version:u32,generation:u32,next_request:u32,seen:u64,seen_facts:u32,sections_generation:u32,catalog_generation:u32,sources:[{sid:u16,client:Option<u32>,token_gen:u32,handle:str,state:u32,fetching:bool,seq:u32,retry_bits:u32,retry_n:u32,last:Option<SourceBuild>}],catalog:{items:[PmsMovie],hubs:[{title:str,hub_id:str,key:str,source:str,start:u64,len:u64}],heroes:[{idx:u64,source:str}]}}";
+pub(crate) const SHAPE: &str = "HubsInitialV1{version:u32,generation:u32,next_request:u32,seen:u64,seen_facts:u32,sections_generation:u32,catalog_generation:u32,sources:[{sid:u16,client:Option<u32>,token_gen:u32,handle:str,state:u32,fetching:bool,seq:u32,retry_bits:u32,retry_n:u32,last:Option<SourceBuild>}],catalog:{items:[PmsMovie],hubs:[{title:str,hub_id:str,key:str,source:str,total:u64,start:u64,len:u64}],heroes:[{idx:u64,source:str}]}}";
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -138,9 +138,9 @@ impl Initial {
         movies(items, w);
         w.u64(hubs.len() as u64);
         for h in hubs {
-            let HubRow { title, hub_id, key, source, start, len } = h;
+            let HubRow { title, hub_id, key, source, total, start, len } = h;
             for text in [title, hub_id, key, source] { w.text(text); }
-            w.u64(*start as u64); w.u64(*len as u64);
+            w.u64(*total as u64); w.u64(*start as u64); w.u64(*len as u64);
         }
         w.u64(heroes.len() as u64);
         for h in heroes { let HeroSlot { idx, source } = h; w.u64(*idx as u64); w.text(source); }
@@ -153,9 +153,10 @@ fn source_build(b: &SourceBuild, w: &mut impl Sink) {
     for item in cw { let CwItem { last_viewed_at, m } = item; w.u64(*last_viewed_at as u64); movie(m, w); }
     w.u64(shelves.len() as u64);
     for shelf in shelves {
-        let Shelf { title, hub_id, key, items } = shelf;
+        let Shelf { title, hub_id, key, items, total } = shelf;
         for text in [title, hub_id, key] { w.text(text); }
         movies(items, w);
+        w.u64(*total as u64);
     }
 }
 
