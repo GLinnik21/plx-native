@@ -1301,7 +1301,12 @@ impl HomeScreen {
                 continue;
             };
             let row_y = self.grid.shelves[row].base_y;
-            if !on_axis(row_y, CARD_H, SCR_H, 0.0) {
+            // The shelf spans from its heading's line — ABOVE the cards — to the bottom of its
+            // label band. Culling by the card rect alone left a heading already on screen undrawn
+            // until the first card pixel crossed the bottom edge, so it popped in mid-scroll.
+            let top = heading_y(row_y, self.grid.shelves[row].lift());
+            let bottom = row_y + CARD_H + self.grid.shelves[row].under_band();
+            if !on_axis(top, bottom - top, SCR_H, 0.0) {
                 continue;
             }
             if let Some(linked) = self.heading_widget(view, row).filter(|_| env.sp > 0.02) {

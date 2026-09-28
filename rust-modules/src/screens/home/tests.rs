@@ -2391,3 +2391,37 @@ fn back_from_the_collection_page_returns_focus_to_the_heading() {
     assert_eq!(Focusable::<TestHost>::reconcile(&restored, heading, &context), heading,
         "the heading is a stable key: the restored page lands back on it");
 }
+
+/// A shelf whose cards are still below the screen's bottom edge already has its heading on screen:
+/// the heading sits `TITLE_DY` ABOVE the cards. Culling the shelf by its card rect alone left that
+/// heading undrawn until the first card pixel crossed the edge, so scrolling down the grid made the
+/// next shelf's title pop in at full ink instead of sliding up with the page.
+#[test]
+fn a_shelf_heading_on_screen_is_drawn_while_its_cards_are_still_below_the_edge() {
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    crate::pms::seed_for_test(&mut state, &adapter, 3, crate::pms::HubState::Ready);
+    let snapshot = crate::pms::hubs_snapshot(&state);
+    let view = snapshot.view();
+    let mut s = screen(view);
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    s.layout_grid();
+    let title = view.hub(0).unwrap().title.to_string();
+    let drawn = |s: &HomeScreen| {
+        crate::text::capture_text_runs_for_test(|| {
+            let env = s.env(0.0);
+            s.draw_grid(view, &env, Painter::recording(), 1.0, None, None, &FixtureMeasure);
+        })
+        .iter()
+        .any(|run| run.contains(title.as_str()))
+    };
+    // Cards 4px under the bottom edge; the heading's line is well inside the screen.
+    s.grid.shelves[0].base_y = SCR_H + 4.0;
+    assert!(heading_y(s.grid.shelves[0].base_y, s.grid.shelves[0].lift()) < SCR_H - 20.0);
+    assert!(drawn(&s), "the heading above an off-screen card row must still be drawn");
+    // …and a shelf whose heading has not reached the edge yet is still culled.
+    s.grid.shelves[0].base_y = SCR_H + TITLE_DY + 4.0;
+    assert!(!drawn(&s), "a shelf entirely below the screen draws nothing");
+}
