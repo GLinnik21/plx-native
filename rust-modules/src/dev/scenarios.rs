@@ -140,6 +140,11 @@ pub(crate) struct Scenarios {
     /// Stage 1's committed stream id, held until `route::cur_sub_sid` agrees — stage 2's own
     /// gate — then cleared once the capsule has been asked to open.
     pub(crate) subtiming_sid: Option<i64>,
+    /// The frame clock at which [`subtiming_sid`](Self::subtiming_sid) was armed — stage 2's
+    /// deadline: if `route::cur_sub_sid` has not agreed within ~3 s of this, the arm opens the
+    /// capsule anyway rather than waiting on a commit that may never land (see `subtiming_arm`'s
+    /// own doc for why a commit can silently not converge).
+    pub(crate) subtiming_armed_at: u32,
     pub(crate) pause_tried: bool,
     /// An armed Pause edge: (due at, hold ms, the media position it also waits for).
     pub(crate) pause_script: Option<(u32, Option<u32>, Option<u32>)>,
@@ -1473,28 +1478,80 @@ fn menupick_arm(app: &mut App, fr: &mut Frame) {
     }
 }
 
+/// [`subtiming_arm`]'s pure stage-2 decision: given the frame clock, when stage 1 armed (committed
+/// or, on the fused fast path, opened directly), the session's live `route::cur_sub_sid`, and the
+/// stream id stage 1 wants, what should this frame do?
+///
+/// [`SubtimingStep::Open`] once the commit has visibly landed; [`SubtimingStep::OpenMismatch`]
+/// once 3 s have passed without it landing — a bound, not a guess: a retry can reset track
+/// selection underneath this commit, or a transcode's PUT can simply never resolve, and a scene
+/// that waits forever for `cur_sub_sid` to agree fails as "the arm logged nothing", with no way to
+/// tell stage 1 even fired. Opening late (mismatched) is still useful evidence; never opening is
+/// not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SubtimingStep {
+    Wait,
+    Open,
+    OpenMismatch,
+}
+
+const SUBTIMING_DEADLINE_MS: u32 = 3_000;
+
+fn subtiming_step(now: u32, armed_at: u32, cur_sid: i64, want_sid: i64) -> SubtimingStep {
+    if cur_sid == want_sid {
+        SubtimingStep::Open
+    } else if now.wrapping_sub(armed_at) > SUBTIMING_DEADLINE_MS {
+        SubtimingStep::OpenMismatch
+    } else {
+        SubtimingStep::Wait
+    }
+}
+
 /// `/tmp/plxnative-subtiming` — the Timing capsule's own headless trigger (plan
 /// `subtitle-menu-capsule` §5), self-contained rather than riding `plxnative-menupick`: that one
 /// fires at 7000 ms and would stack a Tracks panel on top of the capsule this trigger wants alone.
 ///
-/// **Stage 1**, once the film is playing and not transcoding: pick the first embedded TEXT
-/// subtitle, preferring English (on `movie_h264_ac3_1080p` that is index 2, the same track
-/// `subtitle_text_srt` already selects, so the fixture server sees no new selection) and commit
-/// it exactly as `menupick_arm` commits a picked row.
+/// **Stage 1**, once the item's PLAN has landed and it is not transcoding: pick the first embedded
+/// TEXT subtitle, preferring English (on `movie_h264_ac3_1080p` that is index 2, the same track
+/// `subtitle_text_srt` already selects, so the fixture server sees no new selection). The gate is
+/// `route::cur_rk` being non-empty (the same "no plan yet" idiom `decision.rs` itself uses), NOT
+/// `player::is_playing`: on this item the pipeline does not present its first decoded frame until
+/// ~13 s into a 26 s scene, so gating on "playing" opened the capsule too late to clear warmup, or
+/// — depending how long that particular run took to reach it — not at all. `route::cur_sub_sid` is
+/// already meaningful the moment the plan lands (`decision.rs::apply_plan` sets it from the
+/// resolved `/decision` verdict), long before a frame is on screen.
 ///
-/// **Stage 2**, on a later frame once [`crate::route::cur_sub_sid`] agrees the commit has landed:
-/// open the capsule directly — no `pin_headless_hud` call, because the production capsule frame
-/// hides the HUD rather than pinning it (`OverlayKind::hides_hud`, `PlayerScreen::set_hud_hidden`).
-fn subtiming_arm(app: &mut App, _fr: &mut Frame) {
-    if let Some(sid) = app.scenarios.subtiming_sid {
-        if crate::route::cur_sub_sid(&app.player.session) == sid {
-            app.scenarios.subtiming_sid = None;
-            crate::app::bridge::open_player_overlay(
-                &app.player.session,
-                app.bridge.metadata_view(),
-                &mut app.pages,
-                crate::screens::player::overlay::OverlayKind::Timing,
-            );
+/// If the server already selected exactly this track (the `server-selected subtitle:` line —
+/// `cur_sub_sid` already agrees), there is nothing to commit: skip straight to opening, with no
+/// server write at all. Otherwise commit it exactly as `menupick_arm` commits a picked row, and arm
+/// stage 2.
+///
+/// **Stage 2**, on a later frame: [`subtiming_step`] decides whether the commit has visibly landed
+/// (open) or a 3 s deadline has passed without it (open anyway, logged as a mismatch) — see its own
+/// doc for why an unbounded wait is not acceptable. No `pin_headless_hud` call in either path,
+/// because the production capsule frame hides the HUD rather than pinning it
+/// (`OverlayKind::hides_hud`, `PlayerScreen::set_hud_hidden`).
+fn subtiming_arm(app: &mut App, fr: &mut Frame) {
+    if let Some(want_sid) = app.scenarios.subtiming_sid {
+        let cur_sid = crate::route::cur_sub_sid(&app.player.session);
+        match subtiming_step(fr.now, app.scenarios.subtiming_armed_at, cur_sid, want_sid) {
+            SubtimingStep::Wait => {}
+            step => {
+                app.scenarios.subtiming_sid = None;
+                if step == SubtimingStep::OpenMismatch {
+                    crate::log(&format!(
+                        "subtiming: opened (sid mismatch cur={cur_sid} want={want_sid})"
+                    ));
+                } else {
+                    crate::log("subtiming: opened");
+                }
+                crate::app::bridge::open_player_overlay(
+                    &app.player.session,
+                    app.bridge.metadata_view(),
+                    &mut app.pages,
+                    crate::screens::player::overlay::OverlayKind::Timing,
+                );
+            }
         }
         return;
     }
@@ -1502,7 +1559,7 @@ fn subtiming_arm(app: &mut App, _fr: &mut Frame) {
         return;
     }
     if !matches!(app.route(), AppArg::Player)
-        || !crate::player::is_playing(&app.player.session)
+        || crate::route::cur_rk(&app.player.session).is_empty()
         || crate::route::is_transcoding(&app.player.session)
     {
         return;
@@ -1513,11 +1570,27 @@ fn subtiming_arm(app: &mut App, _fr: &mut Frame) {
         .iter()
         .position(|s| !crate::ui::track_menu::is_image_sub_codec(&s.codec) && s.lang_code == "eng")
         .or_else(|| item.subs.iter().position(|s| !crate::ui::track_menu::is_image_sub_codec(&s.codec)));
-    let Some(i) = idx else { return };
+    let Some(i) = idx else {
+        crate::log("subtiming: no text sub");
+        app.scenarios.subtiming_tried = true;
+        return;
+    };
     let stream_id = item.subs[i].id;
     let render_ordinal = crate::metadata::sub_render_ordinal(&item.subs, i);
     app.scenarios.subtiming_tried = true;
+    if crate::route::cur_sub_sid(&app.player.session) == stream_id {
+        crate::log(&format!("subtiming: already sid={stream_id} — opened without a commit"));
+        crate::app::bridge::open_player_overlay(
+            &app.player.session,
+            app.bridge.metadata_view(),
+            &mut app.pages,
+            crate::screens::player::overlay::OverlayKind::Timing,
+        );
+        return;
+    }
+    crate::log(&format!("subtiming: committed sid={stream_id}"));
     app.scenarios.subtiming_sid = Some(stream_id);
+    app.scenarios.subtiming_armed_at = fr.now;
     crate::app::playback::commit_track(
         &mut app.player.session,
         crate::ui::track_menu::TrackCommit::Subtitle {
@@ -1527,6 +1600,32 @@ fn subtiming_arm(app: &mut App, _fr: &mut Frame) {
             sidecar_codec: String::new(),
         },
     );
+}
+
+#[cfg(test)]
+mod subtiming_step_tests {
+    use super::{subtiming_step, SubtimingStep};
+
+    #[test]
+    fn opens_the_moment_cur_sub_sid_agrees() {
+        assert_eq!(subtiming_step(1_000, 900, 2698, 2698), SubtimingStep::Open);
+    }
+
+    #[test]
+    fn waits_before_the_deadline_while_it_disagrees() {
+        assert_eq!(subtiming_step(1_000, 900, 0, 2698), SubtimingStep::Wait);
+        assert_eq!(subtiming_step(3_899, 900, 0, 2698), SubtimingStep::Wait);
+    }
+
+    #[test]
+    fn opens_mismatched_once_the_deadline_passes_without_agreement() {
+        assert_eq!(subtiming_step(3_901, 900, 0, 2698), SubtimingStep::OpenMismatch);
+    }
+
+    #[test]
+    fn agreement_wins_even_past_the_deadline() {
+        assert_eq!(subtiming_step(9_000, 900, 2698, 2698), SubtimingStep::Open);
+    }
 }
 
 fn marker_arm(app: &mut App, _fr: &mut Frame) {

@@ -531,10 +531,11 @@
       "route": "player",
       "overlay": "timing",
       "loop_floor": 45,
-      "run_secs": 26,
+      "run_secs": 36,
       "warmup_s": 9,
       "item": "movie_h264_ac3_1080p",
       "comment": "The Timing capsule (plan `subtitle-menu-capsule` §4): opened by the self-contained plxnative-subtiming trigger, which selects the item's first embedded English subtitle and then opens the capsule directly, never through plxnative-menupick (that one fires at 7000ms and would stack a Tracks panel underneath). movie_h264_ac3_1080p is used rather than track-menu's 4K HDR item because it has embedded subrip and plays direct, so committing a subtitle track does not reload the pipeline mid-scene.",
+      "_run_secs_note": "26 was too short on real hardware: on this item playback does not reach its first decoded frame (pos=0) until ~13s into the run, so warmup_s=9 left only ~4s of settled measurement before the scene ended -- a device run once needed 13 real seconds just to reach pos=0, one sample short of loop_floor's post-warmup minimum. 36 gives the same warmup plus a real post-warmup window after this item's own start latency, not just after the trigger fires.",
       "triggers": {
         "plxnative-play": "$rk",
         "plxnative-subtiming": "1"

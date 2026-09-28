@@ -2991,6 +2991,7 @@ mod lifecycle_regression_tests {
                 menupick_row: Default::default(),
                 subtiming_tried: Default::default(),
                 subtiming_sid: Default::default(),
+                subtiming_armed_at: Default::default(),
                 pause_tried: Default::default(),
                 pause_script: Default::default(),
                 pause_resume_at: Default::default(),

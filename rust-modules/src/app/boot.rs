@@ -1293,6 +1293,7 @@ pub(crate) unsafe fn construct(
             menupick_row,
             subtiming_tried: false,
             subtiming_sid: None,
+            subtiming_armed_at: 0,
             pause_tried,
             pause_script,
             pause_resume_at,
