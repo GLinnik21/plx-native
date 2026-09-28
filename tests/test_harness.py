@@ -1889,6 +1889,20 @@ class DefaultTier(unittest.TestCase):
             self.assertNotEqual(self._list("--pipeline", extra).returncode, 0,
                                 f"--pipeline {extra} should refuse")
 
+    def test_fps_listing_survives_a_bench_scene_with_no_loop_floor(self):
+        """`--fps --list` walks every fps_scene and printed `loop_floor={s['loop_floor']}`
+        unconditionally, which assumed every scene gates on it. The push/modal/deep-100 bench
+        scenes gate on `bench_worst_ms` instead and carry no `loop_floor` at all, so the listing
+        crashed with KeyError('loop_floor') partway through printing — after the ordinary cases,
+        so a bare `--list` (the pipeline-tier listing) never saw it. The fix must print what a
+        bench scene actually gates on rather than assuming every scene shares one key."""
+        out = self._list("--fps")
+        self.assertEqual(out.returncode, 0,
+                         f"--fps --list crashed:\n{out.stdout}\n{out.stderr}")
+        self.assertIn("fps:push-100", out.stdout)
+        self.assertNotIn("Traceback", out.stderr)
+        self.assertNotIn("KeyError", out.stderr)
+
     def test_the_manifest_declares_a_frame_rate_axis(self):
         """Every fixture ran at 24p until 2026-08-22, so `engine::fps_rational`'s branches had one
         input between them. Pin that the matrix now carries both sides of its split: a
