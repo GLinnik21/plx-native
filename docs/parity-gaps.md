@@ -867,20 +867,17 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Where:* `ui/library.rs` (a `Menu::Context` state reusing the existing `Popover` + `TableView` the sort/filter menus already use, and a long-press branch in `on_ok`/the press commit), `app.rs` (a new `Action` arm). PMS side is already there: `plex/library.rs:90-97` `scrobble`/`unscrobble`.  
   *Verified:* CONFIRMED. ui/press.rs:144 `pub fn is_long(now: u32) -> bool` has ZERO call sites — `rg -n is_long` returns only the definition, the module doc at ui/press.rs:5, and the ui/CLAUDE.md mention. Activation map: ui/library.rs:442-473 `on_ok()` returns a bare `Action::Card` for `Area::Grid` (and `click()` at :718-720 does the same), app.rs:2284/1746 routes it to `open_library_card` (app.rs:641-649) which always opens Detail. ui/library.rs:75-81 `enum Action { None, GoHome, Card }` — no third verb. There is also no OPTIONS/context key to bind: ui/consts.rs:44-51 defines only CH▲/CH▼ (33/34) and PAUS
 
-- **Sort/filter selections are not persisted across app restarts** — `minor` / `small`  
-  The official client remembers each library's sort and filter between sessions. Ours keeps them only
-  in the Bridge-owned BrowseStore's in-memory state: quit the app (or switch profile and back) and
-  every section is back to titleSort ascending, no genre, unwatched off.
-  *Where:* `rust-modules/src/stores/browse.rs` and `rust-modules/src/browse/mod.rs` (serialize
-  `{section_key → (sort key, desc, unwatched, genre id)}` on change,
-  restore it when asynchronous section discovery lands), reusing the existing atomic JSON
-  persistence pattern.
-  *Verified:* CONFIRMED. `Stores::browse` gives each Bridge its own `BrowseState`, but that state
-  is in memory only; `BrowseCmd::Reset` clears it on an account/profile switch, and no Browse
-  persistence path restores sort, direction, genre or unwatched state after a process restart.
-  The retained per-owner publication is a read snapshot, not persistence. I
-  checked the crate's on-disk write surface: `rg -n "fs::write|File::create|write_all|serde_json::to_string"`
-  finds the auth/session store plus test-harness writes, but no Browse state serialization.
+- **Filter selections are not persisted across app restarts** — `minor` / `small`  
+  The official client remembers each library's sort and filter between sessions. Ours now remembers
+  the SORT (key and direction, per profile, per library — `Session::library_sorts`, GitHub #278),
+  but keeps the filters only in the Bridge-owned BrowseStore's in-memory state: quit the app (or
+  switch profile and back) and every section is back to no genre, unwatched off.
+  *Where:* `rust-modules/src/browse/mod.rs` — extend `note_sort_choice` / `restore_for` (and the
+  `LibrarySorts` record in `plex/session.rs`) with the unwatched flag and genre id; a genre id
+  must be re-validated against the section's genre list before it is sent, exactly as a
+  remembered sort key is re-validated against the menu.
+  *Verified:* sort persistence is graded by `browse::sort_memory_tests` (a loopback PMS, a cold
+  session cache read back from disk, a fresh store). Nothing persists `unwatched` or `genre`.
 
 - **No way to enter the grid with a preset query (a hub's "See All")** — `minor` / `medium`  
   In the official client every hub row has a "See All" that opens the library grid pre-sorted/pre-filtered to that hub (Recently Added → the grid sorted by addedAt desc). Our grid can only ever be entered at whatever query the section last remembered — the owned Library uses a `SectionAddress` and `BrowseCmd::Addressed` for its own controls, but no external hub action supplies a preset query.

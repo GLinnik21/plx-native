@@ -510,6 +510,25 @@ pub struct Session {
     /// entry, never the credentials.
     #[serde(default, deserialize_with = "de_soft_vec")]
     pub last_library: Vec<LastLibrary>,
+    /// **The sort each library was last browsed in**, per profile — so a library the viewer
+    /// sorted by Plays (or Date Added, or anything else its server offers) opens that way again
+    /// after a restart instead of falling back to the server's title order (GitHub #278).
+    ///
+    /// Keyed like [`Session::last_library`] and for its reasons: by profile, because a sort is a
+    /// person's habit rather than the television's, and by (machine id, section key), never a
+    /// section INDEX. The sort is recorded by its KEY, never by its menu position: the menu is
+    /// the server's (`Meta.Type[].Sort`) and a PMS update may reorder it. `browse` applies a
+    /// recorded key only once the section's own menu has offered it again, so a key a server
+    /// stopped advertising falls silently back to the default rather than being sent blind.
+    ///
+    /// Bounded per profile ([`LibrarySorts::CAP`], most recent kept), and choosing a library's
+    /// DEFAULT order removes its entry rather than recording it, so the list holds only the
+    /// libraries somebody actually re-sorted.
+    ///
+    /// Soft-parsed for the reason every list in this struct is; omitted while empty so a session
+    /// that never re-sorted anything serializes exactly as it did before the field existed.
+    #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
+    pub library_sorts: Vec<LibrarySorts>,
     /// **Every profile this television has switched to, with the credentials that switch
     /// resolved** — so the who's-watching picker can seat a household member with plex.tv
     /// unreachable. Written by the profile switch on every ONLINE success (replace-by-uuid), read
@@ -629,6 +648,8 @@ struct CanonicalSessionPreferences {
     auto_sign_in: bool,
     #[serde(default, deserialize_with = "de_soft_vec")]
     last_library: Vec<LastLibrary>,
+    #[serde(default, deserialize_with = "de_soft_vec", skip_serializing_if = "Vec::is_empty")]
+    library_sorts: Vec<LibrarySorts>,
     #[serde(default, deserialize_with = "de_soft_hero_blur")]
     last_hero_blur: Option<[[f32; 3]; 4]>,
     #[serde(default = "default_true", deserialize_with = "de_soft_bool_on")]
@@ -659,6 +680,7 @@ impl Default for CanonicalSessionPreferences {
             direct_play_mode: DirectPlayMode::Auto,
             auto_sign_in: false,
             last_library: Vec::new(),
+            library_sorts: Vec::new(),
             last_hero_blur: None,
             trailer_autoplay: true,
             subtitle_tone: SubtitleTone::White,
@@ -702,6 +724,7 @@ fn split_public(session: &Session) -> Result<crate::storage::state::PublicPayloa
         direct_play_mode: session.direct_play_mode,
         auto_sign_in: session.auto_sign_in,
         last_library: session.last_library.clone(),
+        library_sorts: session.library_sorts.clone(),
         last_hero_blur: session.last_hero_blur,
         trailer_autoplay: session.trailer_autoplay,
         subtitle_tone: session.subtitle_tone,
@@ -767,6 +790,7 @@ pub(crate) fn join_canonical(
         direct_play_mode: preferences.direct_play_mode,
         auto_sign_in: preferences.auto_sign_in,
         last_library: preferences.last_library,
+        library_sorts: preferences.library_sorts,
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
         subtitle_tone: preferences.subtitle_tone,
@@ -791,6 +815,7 @@ fn public_session(public: &crate::storage::state::PublicPayload) -> Session {
         direct_play_mode: preferences.direct_play_mode,
         auto_sign_in: preferences.auto_sign_in,
         last_library: preferences.last_library,
+        library_sorts: preferences.library_sorts,
         last_hero_blur: preferences.last_hero_blur,
         trailer_autoplay: preferences.trailer_autoplay,
         subtitle_tone: preferences.subtitle_tone,
@@ -1503,6 +1528,74 @@ impl LastLibrary {
     }
 }
 
+/// One profile's remembered library sorts. See [`Session::library_sorts`].
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct LibrarySorts {
+    /// The Plex Home user's `uuid`, or **empty for the account owner** — [`LastLibrary`]'s
+    /// convention, and for the same reason.
+    pub user: String,
+    /// Oldest first: [`LibrarySorts::set`] moves a re-sorted library to the end, and the cap
+    /// drops from the front.
+    #[serde(deserialize_with = "de_soft_vec")]
+    pub libs: Vec<SectionSort>,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+}
+
+/// One library's remembered sort: the section, the server's own sort KEY (`titleSort`,
+/// `addedAt`, the client-side `viewCount`) and its direction.
+#[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
+#[serde(default)]
+pub struct SectionSort {
+    pub machine_id: String,
+    pub key: i64,
+    pub sort: String,
+    pub desc: bool,
+    #[serde(flatten, default, skip_serializing_if = "OpaqueExtensions::is_empty")]
+    pub(crate) extensions: OpaqueExtensions,
+}
+
+impl LibrarySorts {
+    /// Libraries remembered per profile. A household re-sorts a handful; the cap exists so a
+    /// television that has browsed many shares over the years cannot grow the public payload
+    /// (256 KiB for everything, `storage::state`) without bound — ~90 bytes an entry, so a full
+    /// list is ~2 KiB per profile.
+    pub const CAP: usize = 24;
+    /// Longest sort key recorded. Real keys are a few words (`show.titleSort,episode.index` is
+    /// the longest PMS advertises); anything longer is not a key worth carrying across restarts.
+    const MAX_SORT: usize = 96;
+
+    /// This profile's remembered sort for one library, as `(sort key, descending)`.
+    pub fn get(&self, machine_id: &str, key: i64) -> Option<(&str, bool)> {
+        if machine_id.is_empty() {
+            return None;
+        }
+        self.libs.iter().find(|lib| lib.machine_id == machine_id && lib.key == key)
+            .map(|lib| (lib.sort.as_str(), lib.desc))
+    }
+    /// Record a library's sort as the most recent, or FORGET it with `None` (the viewer went
+    /// back to the default order, which needs no record to be restored). Evicts the oldest
+    /// entries past [`CAP`](Self::CAP). A library with no machine id is never recorded — for
+    /// [`LastLibrary::set`]'s reason — and neither is an empty or oversized key.
+    pub fn set(&mut self, machine_id: &str, key: i64, sort: Option<(&str, bool)>) {
+        self.libs.retain(|lib| !(lib.machine_id == machine_id && lib.key == key));
+        let Some((sort, desc)) = sort else { return };
+        if machine_id.is_empty() || sort.is_empty() || sort.len() > Self::MAX_SORT {
+            return;
+        }
+        self.libs.push(SectionSort {
+            machine_id: machine_id.to_string(),
+            key,
+            sort: sort.to_string(),
+            desc,
+            extensions: Default::default(),
+        });
+        let excess = self.libs.len().saturating_sub(Self::CAP);
+        self.libs.drain(..excess);
+    }
+}
+
 /// **One profile's FAVOURITE libraries** — the first-run route's record (`Shared Sources.dc.html`
 /// deliverable F), and what the Favorite libraries editor writes back when its one action commits.
 ///
@@ -2054,6 +2147,27 @@ impl Session {
             extensions: Default::default(),
             });
         }
+    }
+
+    /// One profile's remembered library sorts — `None` for a profile that never re-sorted one.
+    pub fn sorts_for(&self, user: &str) -> Option<&LibrarySorts> {
+        self.library_sorts.iter().find(|sorts| sorts.user == user)
+    }
+
+    /// Record (or, with `None`, forget) one library's sort for one profile, leaving every other
+    /// profile's alone — a method for [`Session::set_recents_for`]'s reason. A profile whose
+    /// last entry is forgotten loses its record entirely, so the list never carries empties.
+    pub fn set_sort_for(&mut self, user: &str, machine_id: &str, key: i64,
+        sort: Option<(&str, bool)>) {
+        match self.library_sorts.iter_mut().find(|sorts| sorts.user == user) {
+            Some(slot) => slot.set(machine_id, key, sort),
+            None => {
+                let mut fresh = LibrarySorts { user: user.to_string(), ..Default::default() };
+                fresh.set(machine_id, key, sort);
+                self.library_sorts.push(fresh);
+            }
+        }
+        self.library_sorts.retain(|sorts| !sorts.libs.is_empty());
     }
 }
 

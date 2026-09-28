@@ -23,6 +23,13 @@
 //! [`with_plays_sort`] appends that one client-side entry where [`SecKind`] proves it works,
 //! and only once, in case a future server starts advertising the key itself (issue #146).
 //!
+//! The CHOSEN sort of a library's own listing is remembered across restarts, per profile, by
+//! (machine id, section key) and by the sort's KEY, never its menu position
+//! (`plex::session::Session::library_sorts`, issue #278). It is applied on the section's first
+//! page only after that page's menu has offered the key again — the discovery request never
+//! carries it, for the 500 above — and the unsorted discovery page is then never published
+//! ([`fetch_listing_page`]). A key the menu no longer offers falls back silently to the default.
+//!
 //! [`BrowseState`] is main-thread-only; worker threads touch only their owning store adapter's
 //! mailboxes + atomics and the `&'static` Plex client.
 //!
@@ -678,6 +685,10 @@ pub(crate) struct BrowseState {
     tab_shape: u32,
     retry_cd: u32,
     remembered: Vec<(SecKind, String, i64)>,
+    /// This profile's remembered library sorts ([`crate::plex::session::Session::library_sorts`]),
+    /// loaded beside [`remembered`](Self::remembered) and cleared with it on a reset, so a
+    /// profile switch can never open one person's library in another's order.
+    sort_memory: crate::plex::session::LibrarySorts,
     recorded: Option<crate::plex::session::HomePins>,
     pending_pins: Option<(String, std::sync::Arc<std::sync::Mutex<PinWrite>>)>,
 }
@@ -766,6 +777,7 @@ impl Default for BrowseState {
             tab_shape: u32::MAX,
             retry_cd: 0,
             remembered: Vec::new(),
+            sort_memory: Default::default(),
             recorded: None,
             pending_pins: None,
             session_generation: crate::plex::session::visible_generation(),
@@ -1088,6 +1100,56 @@ impl BrowseState {
             Some(next)
         });
     }
+    /// Remember section `i`'s sort across restarts (GitHub #278) — the viewer just chose it.
+    ///
+    /// Only the library's own listing (`LibraryType::Primary`) is remembered: the Seasons /
+    /// Episodes / Collections views are not themselves restored on a launch, and their menus are
+    /// another metadata type's. The DEFAULT order (the menu's first entry, ascending — what a
+    /// section with no record lands on) forgets the entry instead of recording it.
+    fn note_sort_choice(&mut self, i: usize) {
+        let Some(state) = self.states.get(i) else { return };
+        if state.library_type != LibraryType::Primary {
+            return;
+        }
+        let Some(chosen) = state.sorts.get(state.sort_idx) else { return };
+        let is_default = state.sort_idx == 0 && !state.sort_desc;
+        let choice = (!is_default).then(|| (chosen.key.clone(), state.sort_desc));
+        let Some(section) = self.sections.get(i) else { return };
+        let Some(machine) = self.sources.get(section.src).map(|s| s.machine_id.clone()) else {
+            return;
+        };
+        let key = section.key;
+        fn wanted(choice: &Option<(String, bool)>) -> Option<(&str, bool)> {
+            choice.as_ref().map(|(sort, desc)| (sort.as_str(), *desc))
+        }
+        self.sort_memory.set(&machine, key, wanted(&choice));
+        // Deduplicated against the STORED record, under the worker's read — never against
+        // `sort_memory`, which a pin reconcile may have just reloaded from an older snapshot.
+        let user = crate::plex::session::current_profile_key();
+        crate::plex::session::queue_update(move |current| {
+            if current.sorts_for(&user).and_then(|sorts| sorts.get(&machine, key))
+                == wanted(&choice) {
+                return None;
+            }
+            let mut next = current.clone();
+            next.set_sort_for(&user, &machine, key, wanted(&choice));
+            Some(next)
+        });
+    }
+    /// The remembered sort to restore on section `i`'s FIRST page, if any: only while its menu
+    /// is still unknown (`sorts` empty — the page that asks `includeMeta=1`) and only for the
+    /// library's own listing. Whether the server still offers the key is decided in the worker,
+    /// against the menu that page brings back ([`fetch_listing_page`]).
+    fn restore_for(&self, i: usize) -> Option<Restore> {
+        let state = self.states.get(i)?;
+        if !state.sorts.is_empty() || state.library_type != LibraryType::Primary {
+            return None;
+        }
+        let section = self.sections.get(i)?;
+        let machine = &self.sources.get(section.src)?.machine_id;
+        let (sort, desc) = self.sort_memory.get(machine, section.key)?;
+        Some(Restore { kind: section.kind, sort: sort.to_string(), desc })
+    }
     fn cur_source_idx(&self) -> Option<usize> {
         self.sections
             .get(self.cur())
@@ -1261,7 +1323,13 @@ impl BrowseState {
                     }
                 }
                 match query {
-                    Some(QueryEdit::Sort { key, desc }) => self.set_sort_by_key(&key, desc),
+                    Some(QueryEdit::Sort { key, desc }) => {
+                        let landed = self.set_sort_by_key(&key, desc);
+                        if landed {
+                            self.note_sort_choice(index);
+                        }
+                        landed
+                    }
                     Some(QueryEdit::Unwatched(on)) => self.set_unwatched(on),
                     Some(QueryEdit::Genre(id)) => self.set_genre_by_id(id.as_deref()),
                     Some(QueryEdit::LibraryType(library_type)) => self.set_library_type(library_type),
@@ -1492,6 +1560,7 @@ impl BrowseState {
                 SecKind::from_wire(&target.kind)
                     .map(|kind| (kind, target.machine_id.clone(), target.key))
             }).collect()).unwrap_or_default();
+        self.sort_memory = session.sorts_for(user).cloned().unwrap_or_default();
     }
     /// The pin rules' view of the section table.
     ///
@@ -1839,6 +1908,7 @@ impl BrowseState {
         self.states = Vec::new();
         self.recorded = None;
         self.remembered = Vec::new();
+        self.sort_memory = Default::default();
         self.tab_shape = u32::MAX;
         self.cur = 0;
         self.retry_cd = 0;
@@ -2167,6 +2237,7 @@ impl BrowseState {
         // Every listing but the section's own default is ordered by the menu it has just
         // discovered — seasons and episodes by Show, collections by the Title they declare.
         let confirm_sort = state.library_type != LibraryType::Primary;
+        let restore = self.restore_for(current);
         let gen = self.query_gen();
         let key = section.key;
         let Some(sid) = self.section_sid(current) else { return };
@@ -2175,16 +2246,17 @@ impl BrowseState {
         adapter.fetching.store(true, Ordering::SeqCst);
         let worker_adapter = Arc::clone(adapter);
         let spawned = crate::task::spawn_small("page", move || {
-            let (items, total, sorts) = catch_unwind(|| {
+            let page = catch_unwind(|| {
                 let query = SectionQuery {
                     section_key: key, sort: &sort, filters: &filters,
                     start: start as i64, size: PAGE as i64, include_meta,
                 };
-                fetch_listing_page(client, sid, &query, confirm_sort)
-            }).unwrap_or((Vec::new(), -1, None));
+                fetch_listing_page(client, sid, &query, confirm_sort, restore.as_ref())
+            }).unwrap_or_else(|_| ListingPage::failed());
             *worker_adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) =
                 Some(PageResult {
-                    client, token_gen, gen, sec: current, start, items, total, sorts,
+                    client, token_gen, gen, sec: current, start, items: page.items,
+                    total: page.total, sorts: page.sorts, restored: page.restored,
                 });
         });
         if !spawned {
@@ -2280,6 +2352,14 @@ impl BrowseState {
                                             state.sort_desc = sorts.first().is_some_and(|sort| sort.default_desc);
                                             sorts
                                         };
+                                        // The page was fetched in a remembered order (#278): the
+                                        // menu must show the order the grid is actually in.
+                                        if let Some((key, desc)) = &result.restored {
+                                            if let Some(index) = sorts.iter().position(|sort| &sort.key == key) {
+                                                state.sort_idx = index;
+                                                state.sort_desc = *desc;
+                                            }
+                                        }
                                         state.sorts = Arc::new(sorts);
                                     }
                                 }
@@ -2309,14 +2389,51 @@ impl BrowseState {
 
 // ---- fetch plumbing (generation + single-flight + mailboxes) --------------------------------
 
+/// A remembered sort to put the first page in, once its menu proves the server still offers it —
+/// see [`fetch_listing_page`]. Built by [`BrowseState::restore_for`] from
+/// [`crate::plex::session::Session::library_sorts`].
+struct Restore {
+    kind: SecKind,
+    sort: String,
+    desc: bool,
+}
+
+/// One page's answer from [`fetch_listing_page`].
+struct ListingPage {
+    items: Vec<PmsMovie>,
+    /// `totalSize`; **negative = the fetch failed** (see [`PageResult::total`]).
+    total: i64,
+    sorts: Option<Vec<SortEntry>>,
+    /// The remembered `(sort key, descending)` this page was fetched in, when a [`Restore`] was
+    /// asked for and the menu offered its key — what the landing points the menu at.
+    restored: Option<(String, bool)>,
+}
+
+impl ListingPage {
+    fn failed() -> Self {
+        Self { items: Vec::new(), total: -1, sorts: None, restored: None }
+    }
+}
+
+/// The advertised menu entry to restore `restore.sort` through, or the client-side Plays entry
+/// where [`with_plays_sort`] would have added it — the same gate, so a key the landing's menu
+/// will not show is never sent. `None` means the server no longer offers it.
+fn restorable(sorts: &[SortEntry], restore: &Restore) -> Option<SortEntry> {
+    sorts.iter().find(|sort| sort.key == restore.sort).cloned().or_else(|| {
+        (restore.sort == PLAYS_SORT_KEY && kind_offers_plays_sort(restore.kind))
+            .then(|| plays_sort_entry(String::new()))
+    })
+}
+
 fn fetch_listing_page(
     client: &crate::plex::Client,
     sid: ServerId,
     query: &SectionQuery<'_>,
     confirm_sort: bool,
-) -> (Vec<PmsMovie>, i64, Option<Vec<SortEntry>>) {
+    restore: Option<&Restore>,
+) -> ListingPage {
     let Some(mut container) = client.section_items_query(query) else {
-        return (Vec::new(), -1, None);
+        return ListingPage::failed();
     };
     let sorts: Option<Vec<SortEntry>> = container.meta.as_ref().and_then(|meta| {
         meta.types.iter().find(|kind| kind.active != 0)
@@ -2336,15 +2453,35 @@ fn fetch_listing_page(
             let sort = first.query(first.default_desc);
             let sorted = SectionQuery { sort: &sort, include_meta: false, ..*query };
             let Some(sorted_container) = client.section_items_query(&sorted) else {
-                return (Vec::new(), -1, None);
+                return ListingPage::failed();
             };
             container = sorted_container;
+        }
+    }
+    // **A remembered sort (#278) is applied the same way, and only the same way.** The saved key
+    // is never sent on the discovery request itself: an unrecognised sort key 500s the WHOLE
+    // listing, and a key the server offered last month (or the client-side Plays sort on a PMS
+    // that stopped honouring it) would then fail the section's first page on every launch, with
+    // no menu ever landing to choose anything else from. So the menu is discovered first and the
+    // page re-asked in the remembered order only when that menu still offers the key; the
+    // unsorted page is never published, so the grid shows no reorder. If the sorted re-ask
+    // FAILS, the unsorted page stands in the default order rather than failing the section —
+    // a remembered preference must never be the reason a library cannot open.
+    let mut restored = None;
+    if let (Some(restore), true) = (restore, query.include_meta && query.sort.is_empty()) {
+        if let Some(entry) = sorts.as_deref().and_then(|sorts| restorable(sorts, restore)) {
+            let sort = entry.query(restore.desc);
+            let sorted = SectionQuery { sort: &sort, include_meta: false, ..*query };
+            if let Some(sorted_container) = client.section_items_query(&sorted) {
+                container = sorted_container;
+                restored = Some((restore.sort.clone(), restore.desc));
+            }
         }
     }
     let total = if container.total_size > 0 { container.total_size }
         else { query.start + container.metadata.len() as i64 };
     let items = container.metadata.iter().map(|item| parse_item(item, sid)).collect();
-    (items, total, sorts)
+    ListingPage { items, total, sorts, restored }
 }
 
 /// Bumped whenever the section table's SHAPE changes — a source's sections appended, or the whole
@@ -2373,6 +2510,8 @@ struct PageResult {
     /// store (a transient network error once wiped a whole populated section to "empty").
     total: i64,
     sorts: Option<Vec<SortEntry>>, // Some when the fetch carried includeMeta=1
+    /// Some when the page was fetched in a remembered sort — see [`ListingPage::restored`].
+    restored: Option<(String, bool)>,
 }
 // menu-data landings carry the table EPOCH so a landing spawned before a [`reset`] (profile
 // switch) can never populate the NEW user's state at the same index
@@ -2559,14 +2698,15 @@ fn kind_offers_plays_sort(kind: SecKind) -> bool {
 /// feature exists for.
 fn with_plays_sort(mut sorts: Vec<SortEntry>, kind: SecKind) -> Vec<SortEntry> {
     if kind_offers_plays_sort(kind) && !sorts.iter().any(|sort| sort.key == PLAYS_SORT_KEY) {
-        sorts.push(SortEntry {
-            key: PLAYS_SORT_KEY.into(),
-            desc_key: String::new(),
-            title: crate::i18n::msg::browse_library_plays().into(),
-            default_desc: true,
-        });
+        sorts.push(plays_sort_entry(crate::i18n::msg::browse_library_plays().into()));
     }
     sorts
+}
+
+/// The client-side Plays entry. The title is a parameter so the page worker, which only needs
+/// the entry's QUERY to restore a remembered sort ([`restorable`]), never reads the locale.
+fn plays_sort_entry(title: String) -> SortEntry {
+    SortEntry { key: PLAYS_SORT_KEY.into(), desc_key: String::new(), title, default_desc: true }
 }
 
 /// Point the app's CURRENT server at the source of section `i`, and drop the per-server state that
@@ -3199,7 +3339,7 @@ pub(crate) fn queue_page_failure_for_owner_test(
     adapter.fetching.store(true, Ordering::SeqCst);
     *adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(PageResult {
         client, token_gen: client.token_gen(), gen: state.query_gen(), sec, start: 0,
-        items: Vec::new(), total: -1, sorts: None,
+        items: Vec::new(), total: -1, sorts: None, restored: None,
     });
 }
 
@@ -3231,7 +3371,7 @@ pub(crate) fn spawn_owned_page_for_test(
             Some(PageResult {
                 client, token_gen, gen, sec, start: 0,
                 items: vec![PmsMovie { sid, title, ..Default::default() }],
-                total: 1, sorts: None,
+                total: 1, sorts: None, restored: None,
             });
         done_tx.send(()).expect("test receives worker completion");
     }));
@@ -3264,6 +3404,10 @@ mod reachability_tests;
 
 #[cfg(test)]
 mod library_type_tests;
+
+#[cfg(test)]
+#[path = "browse_sort_memory_tests.rs"]
+mod sort_memory_tests;
 
 #[cfg(test)]
 mod localized_type_tests {

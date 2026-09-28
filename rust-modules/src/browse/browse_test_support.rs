@@ -214,7 +214,7 @@ pub(super) fn queue_page_from(
         start: 0,
         items: Vec::new(),
         total: 0,
-        sorts: None,
+        sorts: None, restored: None,
     });
     browse.adapter.fetching.store(true, Ordering::SeqCst);
     let _outcome = browse.pump();
@@ -291,7 +291,7 @@ pub(super) fn land_page(browse: &mut TestBrowse, total: i64, items: usize) {
         start: 0,
         items: (0..items).map(|_| PmsMovie::default()).collect(),
         total,
-        sorts: None,
+        sorts: None, restored: None,
     };
     *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
     let _outcome = browse.pump();
@@ -309,7 +309,7 @@ pub(super) fn land_page_with_sorts(browse: &mut TestBrowse, sorts: Vec<SortEntry
         start: 0,
         items: Vec::new(),
         total: 0,
-        sorts: Some(sorts),
+        sorts: Some(sorts), restored: None,
     };
     *browse.adapter.page_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
     let _outcome = browse.pump();

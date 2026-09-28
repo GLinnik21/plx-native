@@ -393,6 +393,32 @@ fn the_subtitle_tone_survives_the_canonical_split() {
     assert_eq!(public_session(&empty).subtitle_tone(), SubtitleTone::White);
 }
 
+/// Remembered library sorts (#278) live in the PUBLIC preferences half too, so the DB8 path —
+/// not only the plaintext file the host suite writes — must carry them through `split_public` →
+/// `join_canonical` and the locked-bundle snapshot; and a session that never re-sorted anything
+/// must not grow the key at all.
+#[test]
+fn remembered_library_sorts_survive_the_canonical_split() {
+    let mut session = Session::default();
+    assert!(split_public(&session).unwrap().preferences.get("library_sorts").is_none());
+    session.set_sort_for("u-sorter", "machine", 3, Some(("viewCount", true)));
+    let public = split_public(&session).unwrap();
+    let joined = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
+    for restored in [&joined, &public_session(&public)] {
+        assert_eq!(restored.sorts_for("u-sorter").and_then(|sorts| sorts.get("machine", 3)),
+            Some(("viewCount", true)));
+        assert!(restored.sorts_for("").is_none(), "another profile's record is its own");
+    }
+    // a malformed entry costs itself, never the preferences beside it
+    let mut public = public;
+    public.preferences["library_sorts"][0]["libs"].as_array_mut().unwrap()
+        .push(serde_json::json!({"machine_id": 7}));
+    public.preferences["library_sorts"].as_array_mut().unwrap().push(serde_json::json!("bad"));
+    let joined = join_canonical(&public, MINIMAL_PROTECTED_AUTH).unwrap();
+    assert_eq!(joined.library_sorts.len(), 1);
+    assert_eq!(joined.sorts_for("u-sorter").map(|sorts| sorts.libs.len()), Some(1));
+}
+
 /// **A session written before household evidence existed reads as TODAY's behaviour, not worse.**
 ///
 /// `SourceRef::home`/`owner_id` are absent from every file on every television right now, and the
