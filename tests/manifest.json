@@ -196,9 +196,10 @@
       "loop_floor": 50,
       "run_secs": 20,
       "warmup_s": 6,
-      "comment": "Direct Collection-page boot against mock_pms collection ratingKey 50001. The screen loads its header and ordered children through the real collection store and settles after artwork and scroll motion. Device baselines are not yet measured.",
+      "item": "collection",
+      "comment": "Direct Collection-page boot on the `collection` item (a MOVIE collection with at least two members that have posters), resolved through manifest.local.json like every other `item`: `$rk` below becomes that collection's ratingKey. The screen loads its header and ordered children through the real collection store and settles after artwork and scroll motion. An installation that maps no collection SKIPS this scene rather than opening a ratingKey its server does not hold, which would settle on the failure read-out and pass the ceiling vacuously. By hand in the simulator against tests/mock_pms.py, the trigger's value is that mock's collection ratingKey, 50001. Device baselines are not yet measured.",
       "triggers": {
-        "plxnative-collection": 50001
+        "plxnative-collection": "$rk"
       },
       "fps_ceiling": 5,
       "_fps_ceiling_note": "The page settles; this guards a retry/spinner/scroll path reporting frames forever. Device baseline still owed."
@@ -225,7 +226,8 @@
       "loop_floor": 50,
       "run_secs": 18,
       "warmup_s": 6,
-      "comment": "The Movies library listed as its collections (TYPE menu > Collections, `all?type=18`): `libtype` switches the listing through the TYPE menu's own edit, then `libosc` sweeps the collection grid, whose cards mix posters and the neutral glyph-and-name tile. Device baselines are not yet measured.",
+      "item": "collection",
+      "comment": "The Movies library listed as its collections (TYPE menu > Collections, `all?type=18`): `libtype` switches the listing through the TYPE menu's own edit, then `libosc` sweeps the collection grid, whose cards mix posters and the neutral glyph-and-name tile. `plxnative-library` enters the server's preferred MOVIES library and no trigger names a section, so the scene declares the `collection` item for its REQUIREMENT, not its ratingKey (no trigger reads `$rk`): an installation that maps no collection skips it instead of sweeping an empty grid, and the mapped collection must live in that same Movies library. Device baselines are not yet measured.",
       "triggers": {
         "plxnative-library": true,
         "plxnative-libtype": "collections",
