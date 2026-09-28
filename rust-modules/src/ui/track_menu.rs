@@ -16,9 +16,10 @@
 //! language, in that order (`route::cur_sub_pref_lang`, carried in by `screens::player::overlay`).
 //!
 //! **Timing** is a single row that reads out the current offset; OK on it does not step anything
-//! here — it returns [`TrackOk::OpenTiming`], which `screens::player::overlay` turns into a
-//! hand-off to the Timing capsule overlay (`OverlayKind::Timing`, not yet wired — see the
-//! `// lane B:` marker there). The row is dim and inert while subtitles are Off, and the whole
+//! here — it returns [`TrackOk::OpenTiming`], which `screens::player::overlay`'s `activate` turns
+//! into a hand-off: it dismisses this panel and presents the Timing capsule overlay
+//! (`OverlayKind::Timing`, `ui::timing_capsule`) in its place. The row is dim and inert while
+//! subtitles are Off (OK there neither opens the capsule nor closes the panel), and the whole
 //! section is omitted during a transcode, which burns captions into the picture where no
 //! client-side offset can reach.
 //!
@@ -114,9 +115,8 @@ pub(crate) enum TrackCommit {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum TrackOk {
     Commit(TrackCommit),
-    /// Open the Timing capsule overlay. A no-op placeholder until lane B wires
-    /// `OverlayKind::Timing` in `screens::player::overlay` — returning this from [`TrackMenuState::on_ok`]
-    /// compiles and is exhaustively matched there, but nothing opens the capsule yet.
+    /// Open the Timing capsule overlay: `screens::player::overlay`'s `activate` dismisses the
+    /// Tracks panel and asks for `OverlayKind::Timing` in its place.
     OpenTiming,
 }
 

@@ -1,17 +1,17 @@
-//! **The player's four overlays, as entries on the page's own `ModalStack`** (restructure spec §6.2
+//! **The player's overlays, as entries on the page's own `ModalStack`** (restructure spec §6.2
 //! "Page-owned panels … Player: its four overlays", §9, phase 9).
 //!
 //! The track menu, the Info card, the Chapters strip and the `…` options popover were four
 //! `Route::Player { overlay }` values driven by four arms of `app/run.rs`'s key ladder, over four
-//! modules' worth of `static mut`. They are now four `AppArg` variants presented on the player
+//! modules' worth of `static mut`. They are now `AppArg` variants presented on the player
 //! page's stack, mounted by the one `Mounter`, styled `PlayerPanel { survives_failure }`, and each
 //! owning its panel's state as a field. The container owns the PHASE and the appear spring; the
 //! surface owns input while it is `Opening | Open`.
 //!
-//! **One screen type with an inner enum, not four types**, because the four differ only in which
+//! **One screen type with an inner enum, not one type per panel**, because they differ only in which
 //! panel they hold and share every rule that matters here: what a transport key does, how a held
-//! direction is paced, when a panel dismisses itself, and how a decision reaches the loop. Four
-//! copies of those rules is exactly the drift `overlay_swallows_key` was written to end.
+//! direction is paced, when a panel dismisses itself, and how a decision reaches the loop. A copy
+//! of those rules per panel is exactly the drift `overlay_swallows_key` was written to end.
 //!
 //! **The transport-key rule is the one behaviour a reader must not lose.** A viewer holding the
 //! track menu, the Info card or the Chapters strip open still expects PAUSE/PLAY to work, and the
@@ -88,13 +88,13 @@ pub(crate) enum OverlayKind {
 }
 
 impl OverlayKind {
-    /// The heartbeat's `overlay=` word. These four spellings are the ones `tests/manifest.json`'s
+    /// The heartbeat's `overlay=` word. These spellings are the ones `tests/manifest.json`'s
     /// fps scenes select by; changing one silently disarms a scene rather than failing anything
     /// visible (§15.3). Since phase 10 item 4 they reach the heartbeat DIRECTLY — `app::overlay_word`
     /// is the topmost surface's own `Screen::name`, so there is no mapping table between this
     /// function and the printed line, and `app::heartbeat_word_tests` derives its alphabet by
     /// presenting every surface argument and reading the word back.
-    /// **WHICH of the four this is, with the parameter thrown away** — the identity
+    /// **WHICH panel this is, with the parameter thrown away** — the identity
     /// `ScreenArg::same_instance` compares, and the reason it is not the whole `OverlayKind`.
     ///
     /// The two on-screen discs open the SAME track menu on their own tab, and the failure
@@ -474,7 +474,7 @@ impl PlayerOverlayScreen {
         Handled::Yes
     }
 
-    /// The one key ladder these four share, for everything the ENGINE does not already resolve
+    /// The one key ladder these panels share, for everything the ENGINE does not already resolve
     /// (§7.3 step 1). Transport keys always fall through here first (module doc) — the only keys
     /// this ladder still fully owns. A direction is paced by [`PANEL_REPEAT_MS`] and then handed
     /// to the engine's own `neighbour`/`EdgeRule` (`Handled::No`) unless the engine has already
@@ -706,7 +706,7 @@ impl PlayerOverlayScreen {
 /// `Focusable` impl (§7.1: "the engine never mutates a screen"), which is why each wrapper's
 /// `state` field is `&'a StateType` rather than `&'a mut` (see each wrapper's own doc). This
 /// screen holds exactly one panel at a time, so there is no `Composed`/`layout()` here — that
-/// trait concatenates SEVERAL simultaneous parts, and these four never coexist.
+/// trait concatenates SEVERAL simultaneous parts, and one instance's panels never coexist.
 impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for PlayerOverlayScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         match &self.panel {

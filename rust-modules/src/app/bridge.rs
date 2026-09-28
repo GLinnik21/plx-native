@@ -2166,7 +2166,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     out
 }
 
-/// **Open one of the player's four panels on the PLAYER PAGE's own `ModalStack`** (§6.2).
+/// **Open one of the player's panels on the PLAYER PAGE's own `ModalStack`** (§6.2).
 ///
 /// Idempotent per KIND while that kind is up, for `open_settings`'s reason: a second press on the
 /// disc that opened it must not stack a second copy. Opening a DIFFERENT kind over an open one is
@@ -2252,8 +2252,8 @@ pub(crate) fn player_overlay_hud_state(d: &Dispatcher<AppHost>) -> (bool, bool) 
 
 /// Should the player's diagnostics ("Stats for nerds") panel draw this frame?
 ///
-/// No, while any of the player's own four overlay panels (`OverlayKind::Tracks`/`Info`/
-/// `Chapters`/`More`) is up. `app/diagnostics.rs`'s panel is sized to its content rather than to
+/// No, while any of the player's own overlay panels (`OverlayKind::Tracks`/`Info`/
+/// `Chapters`/`More`/`Timing`) is up. `app/diagnostics.rs`'s panel is sized to its content rather than to
 /// the screen, but during playback that content routinely spans ~90% of the screen's width from
 /// the left safe margin — wide enough to reach every one of those panels' bottom-right-anchored
 /// rects — and on the player route it has always painted genuinely last, i.e. on TOP of them.

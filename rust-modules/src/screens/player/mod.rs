@@ -15,7 +15,7 @@
 //! **What is here and what is not.** Phase 9 moves the STATE and the DRAW; the key ladder in
 //! `app/run.rs` remains a CALLER of this screen for the bare transport, exactly as `ui::press`'s
 //! typed facade left the ladders callers of `App.input.press` in phase 2 (§14, "Press during
-//! coexistence"). The four overlays are different: they are entries on this page's own
+//! coexistence"). The overlays are different: they are entries on this page's own
 //! `ModalStack` and own their input outright, so their arms left the ladder with them.
 //!
 //! Two fields are PUBLISHED rather than owned by `player::TX` (§2.3): `hud.until` and `scrub.ns`.

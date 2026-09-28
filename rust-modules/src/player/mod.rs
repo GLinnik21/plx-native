@@ -61,7 +61,7 @@ use shared::{
 /// demonstrates.
 ///
 /// **It seeds the real store and stubs nothing else** — the same `SHARED.track_names` the demuxer
-/// writes, read back through the same `ui::track_menu::track_name` precedence. So a seeded
+/// writes, read back through the same `metadata::track_label::track_name` precedence. So a seeded
 /// screenshot verifies the ROW, honestly; what it cannot verify is the FFI read that fills the
 /// store on a television. Compiled out of a release build with every other trigger (`dev::read` is
 /// a compile-time `None`), so a shipped binary cannot be made to show a name that is not the
