@@ -892,6 +892,12 @@ pub const TILE_MARK_VEIL: [f32; 4] = with_a(BLACK, 0.40);
 /// The tick's own soft drop shadow, INSIDE the veil — belt and braces on a bright frame, and what
 /// keeps the mark from dissolving into a busy one (the design's `drop-shadow(0 2px 7px …)`).
 pub const TILE_MARK_SHADOW: [f32; 4] = with_a(BLACK, 0.60);
+/// The ink of a collection's NAME set on its baked fan (`Collections.dc.html` G1:
+/// `.art b { color: rgba(255,255,255,.94) }`), drawn live by `ui::collection_tile::draw_fan_name`.
+pub const FAN_NAME_INK: [f32; 4] = with_a(WHITE, 0.94);
+/// The drop under that name (the mock's `text-shadow: 0 2px 8px rgba(0,0,0,.5)`), set as an offset
+/// copy of the name: the glyph path has no blur, and the fan's own scrim carries the legibility.
+pub const FAN_NAME_SHADOW: [f32; 4] = with_a(BLACK, 0.50);
 /// Error/destructive signal ink — the wrong-PIN dot flash. Desaturated toward the palette's
 /// warm neutrals so it reads as a state, not an alarm.
 pub const DANGER: [f32; 4] = RED_400;

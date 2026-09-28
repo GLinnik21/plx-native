@@ -610,6 +610,16 @@ fn neutral_collection_name(m: Option<&crate::pms::PmsMovie>) -> Option<&str> {
 }
 
 pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, scale: f32, f: f32) {
+    card_named(p, frame, art, None, rad, focused, scale, f)
+}
+
+/// [`card`] for a caller whose art is a bare path to a collection's thumb and who knows the
+/// collection's `name` (the collection page's header): when the thumb is a server composite and so
+/// resolves to our baked fan, the name is set over it (`collection_tile::draw_fan_name`), as the
+/// poster arm does for a collection ROW by itself. `frame` is the RESTING rect in both.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn card_named(p: Painter, frame: Rect, art: Art, name: Option<&str>, rad: f32, focused: bool,
+    scale: f32, f: f32) {
     // Text prewarming visits an offscreen page. This leaf has no text: starting
     // image work here would bypass on-screen admission, and pollute its history.
     if p.is_recording() { return; }
@@ -636,6 +646,11 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
             }
             if t != 0 {
                 p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
+                // A collection whose thumb is the server's composite is drawn as our baked fan,
+                // which leaves its name to be set live — on every tile, focused or not.
+                if let Some(m) = m.filter(|m| m.kind == crate::pms::KIND_COLLECTION) {
+                    crate::ui::collection_tile::draw_fan_name(p, frame, r, &m.thumb, &m.title);
+                }
             } else {
                 p.rect_sheened(r, rad, theme::SKELETON_TOP, theme::SKELETON_BOT);
             }
@@ -671,10 +686,13 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
                 }
             }
         }
-        Art::Thumb { .. } => {
+        Art::Thumb { key, .. } => {
             let (t, tw, th) = image;
             if t != 0 {
                 p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
+                if let Some(name) = name {
+                    crate::ui::collection_tile::draw_fan_name(p, frame, r, key, name);
+                }
             } else {
                 p.rrect_sheened(r, rad, theme::CARD_PLACEHOLDER);
             }
