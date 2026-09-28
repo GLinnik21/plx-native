@@ -1158,6 +1158,19 @@ clean:
 
 test: deploy run
 
+# `make check` is now a machine-wide QUEUE, not a direct alias for the suite below. On
+# 2026-09-28, ~7 agent worktrees ran `make check` at once on one 10-core/16 GB Mac: each
+# is a cold 412k-line rustc build (~1 GB RSS), swap hit 9-15 GB, and one run took 60
+# minutes (`cargo test --lib` build 26m33 vs. a normal ~1-2 min, hostsim build 17m37) —
+# where a lone run is ~10 min. Queuing through `tools/check-lock.py`'s machine-wide
+# flock (`~/.cache/plxnative/check.lock` by default, shared by every worktree) is
+# strictly faster for everyone: the kernel releases the lock the moment a holder dies,
+# so there is nothing to clean up by hand. `PLX_CHECK_LOCK=off` bypasses it. See
+# `check-unlocked` below for the actual suite; CI runs `make check` uncontended, so the
+# wrapper acquires immediately there.
+check:
+	@python3 tools/check-lock.py -- $(MAKE) --no-print-directory check-unlocked
+
 # `make check` — the HOST unit suite plus `lint` below, the only correctness signal
 # available without a television. Deliberately NOT a prerequisite of `all`: the normal build is a
 # cross compile for the TV and must not be made to depend on a host toolchain run succeeding (a host
@@ -1194,7 +1207,7 @@ check-localization:
 	python3 ci/test_check_localization.py
 	python3 ci/check-localization.py
 
-check: lint check-localization
+check-unlocked: lint check-localization
 	python3 ci/test_ass_composite.py
 	python3 ci/test_ass_regions.py
 	@# EVERY host test runs in a THROWAWAY runtime root, and that is a correctness fix rather than
@@ -1360,6 +1373,12 @@ check: lint check-localization
 	python3 ci/test_source_bundle.py
 	python3 ci/test_restore_runtime.py
 	python3 ci/test-compat.py
+	@# The `check` lock wrapper's own suite: two invocations serialize, a SIGKILLed holder
+	@# unblocks the waiter promptly, --timeout exits 75, and PLX_CHECK_LOCK=off really
+	@# bypasses it. Runs against a throwaway lock path — never the real
+	@# ~/.cache/plxnative/check.lock — so it cannot contend with the `check` that is
+	@# running it.
+	python3 ci/test_check_lock.py
 
 # `make lint` — the three clippy lints that catch a SHADOWED branch, the one bug class the unit
 # suite structurally cannot reach. `app.rs` shipped a duplicated `else if` whose empty body hid the
@@ -1939,5 +1958,5 @@ fetch-profile:
 	-$(SCP) root@$(TV):$(RUNDIR)/plxnative-hwcnt.jsonl pkg/plxnative-hwcnt.jsonl
 	@ls -l pkg/plxnative-*.jsonl 2>/dev/null || echo "no profiler output in $(RUNDIR) on the TV ($(APPID))"
 
-.PHONY: libass libass-host screenshots screenshots-sim demo-library disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check check-ffmpeg lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe tv-capture-bench mali-irq-sample plxnative-stackwalk sim sim-macos sim-linux sim-wsl sim-run sim-macos-run sim-shot sim-macos-shot sim-token sim-macos-token sim-play sim-macos-play sim-clean sim-macos-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
+.PHONY: libass libass-host screenshots screenshots-sim demo-library disk symbols sentry-symbols sentry-native all setup-env telemetry-local deploy verify-deploy run run-stream kill check check-unlocked check-ffmpeg lint test ipk clean tv-lock-require threadprobe sockprobe logmprobe mali-hwcnt-probe tv-capture-bench mali-irq-sample plxnative-stackwalk sim sim-macos sim-linux sim-wsl sim-run sim-macos-run sim-shot sim-macos-shot sim-token sim-macos-token sim-play sim-macos-play sim-clean sim-macos-clean macapp macapp-zip fixtures fixtures-quick fixtures-pipeline fetch-profile \
         release-guard lab-guard install uninstall $(QUERY_GOALS)

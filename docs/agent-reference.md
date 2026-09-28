@@ -97,7 +97,14 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   launch, keep alive `RUN_SECS` (default 18s), then `cat` the on-device event log back to your
   terminal.
 - `make check` — the **host** unit suite, no TV, preceded by `make lint`. Not a prerequisite of
-  `all` — the cross-build must never depend on a host toolchain run. It runs `cargo test --lib`
+  `all` — the cross-build must never depend on a host toolchain run. `check` itself is now a thin
+  wrapper (`tools/check-lock.py`) around the real recipe, `check-unlocked`: a machine-wide `flock`
+  serializes every `make check` across every worktree on the machine, because concurrent cold
+  builds (~1 GB RSS each) thrash far worse than queuing (measured 2026-09-28: a lone run ~10 min,
+  seven concurrent ones stretched one run to 60 min). A second caller waits and gets the holder's
+  pid/worktree/start time printed every 60 s rather than silently sharing the CPU/RAM; `PLX_CHECK_LOCK=off`
+  bypasses the lock, and `--timeout` (passed to the wrapper directly, not through `make`) exits 75
+  instead of waiting forever. It runs `cargo test --lib`
   **twice: once on the default feature set and once with `--features hostsim`**, which is not a
   duplicate run. The host feed seam (`player/ffi_host.rs`) exists ONLY in the hostsim
   configuration, so every test that drives an access unit through `sf_feed` is compiled out of the
