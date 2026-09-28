@@ -79,12 +79,7 @@ pub(crate) fn member_caption(item: &PmsMovie) -> TileLabel {
         };
         return TileLabel::titled(&item.title, &caption);
     }
-    if item.kind == 2 && !item.show_title.is_empty() {
-        return TileLabel::titled(&item.title, &item.show_title);
-    }
-    let mut label = TileLabel::title(&item.title);
-    label.caption = card_row::focused_caption(item, false);
-    label
+    card_row::poster_label(item)
 }
 
 pub(crate) struct CollectionScreen {
@@ -487,17 +482,8 @@ impl<H: ContentLike + CollectionLike> Focusable<H> for CollectionScreen {
     fn neighbour(&self, key: crate::ui::machine::FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
         let Some(collection) = self.collection(cx) else { return Step::Edge };
         let Some(index) = self.item_index(collection, key.elem) else { return Step::Edge };
-        let cols = crate::ui::poster_grid::COLS;
-        let next = match dir {
-            Dir::Left if index % cols > 0 => Some(index - 1),
-            Dir::Right if index % cols + 1 < cols && index + 1 < collection.items.len() => Some(index + 1),
-            Dir::Up if index >= cols => Some(index - cols),
-            // The Library grid's rule (`library/parts.rs`): Down from above a short last row lands
-            // on its last member rather than stopping where no card sits directly below.
-            Dir::Down if (index / cols + 1) * cols < collection.items.len() =>
-                Some((index + cols).min(collection.items.len() - 1)),
-            _ => None,
-        };
+        let next = crate::ui::poster_grid::neighbour(index, collection.items.len(),
+            crate::ui::poster_grid::COLS, dir);
         next.map(|index| Step::Move(self.key_at(collection, index))).unwrap_or(Step::Edge)
     }
 

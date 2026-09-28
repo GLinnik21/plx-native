@@ -96,9 +96,7 @@ impl Layout {
 
     pub(super) fn with_grid_focus(mut self, row: Option<usize>) -> Self {
         self.grid_bands = [GridBand::CLOSED; MAX_GRID_BANDS];
-        if let Some(row) = row.filter(|&row| row < self.rows) {
-            self.grid_bands[0] = GridBand { row, expansion: 1.0 };
-        }
+        self.grid_bands[..1].copy_from_slice(&crate::ui::poster_grid::settled(row.filter(|&row| row < self.rows)));
         self
     }
 
@@ -107,9 +105,7 @@ impl Layout {
     }
 
     fn band_growth_before(&self, row: usize) -> f32 {
-        self.grid_bands.iter().filter(|band| band.row < row.min(self.rows))
-            .map(|band| crate::ui::card_row::under_band(band.expansion)
-                - crate::ui::card_row::LABEL_BAND_COLLAPSED).sum()
+        crate::ui::poster_grid::growth_before(row.min(self.rows), &self.grid_bands)
     }
 
     fn row_top(&self, row: usize) -> f32 {

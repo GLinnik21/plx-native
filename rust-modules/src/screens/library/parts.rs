@@ -43,12 +43,7 @@ pub(super) fn grid_label(item: &crate::pms::PmsMovie) -> card_row::TileLabel {
         else { card_row::TileLabel::titled(&name,
             &crate::ui::fmt::pretty_date(&item.aired, item.year as i64)) };
     }
-    if item.kind == 2 && !item.show_title.is_empty() {
-        return card_row::TileLabel::titled(&item.title, &item.show_title);
-    }
-    let mut label = card_row::TileLabel::title(&item.title);
-    label.caption = card_row::focused_caption(item, false);
-    label
+    card_row::poster_label(item)
 }
 
 #[derive(Default)]
@@ -505,17 +500,7 @@ impl<H: LibraryLike> Focusable<H> for GridPart {
 
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, _cx: &Cx<'_, H>) -> Step<u32> {
         let Some(index) = self.index_of(key.elem) else { return Step::Edge };
-        let cols = self.target_layout.cols();
-        let row = index / cols;
-        let col = index % cols;
-        let next = match dir {
-            Dir::Left => col.checked_sub(1).map(|c| row * cols + c),
-            Dir::Right => (col + 1 < cols).then_some(index + 1),
-            Dir::Up => row.checked_sub(1).map(|r| r * cols + col),
-            Dir::Down => ((row + 1) * cols < self.elems.len())
-                .then(|| ((row + 1) * cols + col).min(self.elems.len() - 1)),
-        }
-        .filter(|&i| i < self.elems.len());
+        let next = crate::ui::poster_grid::neighbour(index, self.elems.len(), self.target_layout.cols(), dir);
         next.map_or(Step::Edge, |i| Step::Move(FocusKey { entry: key.entry, elem: self.elems[i] }))
     }
 

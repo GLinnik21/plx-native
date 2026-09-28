@@ -870,6 +870,18 @@ pub(crate) fn strip<'a>(
 /// one screen, one object, one answer.
 ///
 /// `None` is still possible and still means one rung: an item the server dated to nothing at all.
+/// A grid poster card's label, for every kind but the episode each grid words its own way: a
+/// season names its show, and anything else is its title over its [`focused_caption`]. The
+/// Library grid and the Collection page share it, so one item reads the same on both.
+pub(crate) fn poster_label(item: &crate::pms::PmsMovie) -> TileLabel {
+    if item.kind == 2 && !item.show_title.is_empty() {
+        return TileLabel::titled(&item.title, &item.show_title);
+    }
+    let mut label = TileLabel::title(&item.title);
+    label.caption = focused_caption(item, false);
+    label
+}
+
 pub(crate) fn focused_caption(m: &crate::pms::PmsMovie, is_continue: bool) -> Option<std::ffi::CString> {
     if is_continue {
         return cw_caption(m);
