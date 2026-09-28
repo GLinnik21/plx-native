@@ -63,7 +63,7 @@ is not a subset failure, it is a whole bypassed layer:
 
 | tier | command | cost | can never answer |
 |---|---|---|---|
-| **1 — host suite** | `make check` | **3.8 s warm**, no TV | anything that needs a native library, a Linux kernel, or a pixel |
+| **1 — host suite** | `make check` | **3.8 s warm once running**, no TV, but machine-wide-serialized: it queues behind any other worktree's `make check` first | anything that needs a native library, a Linux kernel, or a pixel |
 | **1.5 — simulator** | `make sim` + the `ui-sim` skill | seconds, N at once | frame rate, text rasterization, anything about video |
 | **2 — the device** | `tv-lock` → `wake-tv` → `tv-session` / `tests/run.py` | one television, serialized | what only a PHOTOGRAPH of the panel shows — see below |
 
@@ -329,8 +329,10 @@ built the package; a real release goes through the **`cut-release`** skill.
 
 ## Cheapest first, and why it is not just thrift
 
-Run `make check` before waking a television. It costs under a second, it needs no NDK, no lock and
-no set, and it is the **only signal you get without taking the mutex** — which matters because the
+Run `make check` before waking a television. It costs under a second once it is running, needs no
+NDK and no TV, and it is the **only signal you get without taking the television's mutex** — a
+different mutex now serializes `make check` itself machine-wide (`tools/check-lock.py`), so a
+contended run waits on another worktree rather than on the TV — which matters because the
 television is not merely slow, it is *shared*, and every minute you hold it is a minute another
 lane is queued behind you or, worse, colliding with you and producing data that looks fine. The
 ordering is therefore: host suite → simulator → device, and you move down a tier only when the one

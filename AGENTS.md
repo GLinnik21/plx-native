@@ -70,6 +70,12 @@ the macOS simulator are valuable, but they cannot prove every device behavior.
   seconds. Report the `test result:` line itself rather than a summary — `| tail -n 25` eats it
   when several stages run.
 - `make check` runs the fast host unit suite and lint gate. Use it for ordinary Rust changes.
+  `make check` is serialized machine-wide (a `flock` in `tools/check-lock.py`, shared by every
+  worktree): a second invocation waits and prints the holder's pid/worktree/start time every 60 s
+  rather than compiling alongside it, because concurrent cold builds thrash one Mac far worse than
+  queuing (measured 2026-09-28: a lone run ~10 min, seven at once made one take 60 min).
+  `PLX_CHECK_LOCK=off` bypasses the lock. Never launch it in the foreground with a short tool
+  timeout — a queued run can wait a long time before it even starts building.
 - `make` performs the ARM cross-build. Do not assume a host-only green result proves the target
   still builds.
 - After editing `rust-modules/src/**/*.rs`, also check the shipping feature set with
