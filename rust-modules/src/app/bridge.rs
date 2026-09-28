@@ -39,6 +39,7 @@
 use std::ffi::CStr;
 
 use crate::screens::family::SettingsPage;
+use crate::screens::player::HudPolicy;
 use crate::screens::registry::{AppArg, AppFx, AppMounter, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, HomeTab, ItemMenuKind, LibraryReq, LoopReq, PageMemory};
 use crate::stores::{StoreCmd, StoreEv, StoreId};
 use crate::ui::containers::modal::{HostRender, HostUpdate, Phase, Style};
@@ -2230,24 +2231,29 @@ pub(crate) fn player_overlay_up(d: &Dispatcher<AppHost>) -> bool {
         .any(|s| matches!(s.entry.arg, AppArg::PlayerOverlay(_)))
 }
 
-/// **This frame's `(hud_hidden, lifted)` read for the transport** (plan `subtitle-menu-capsule`
-/// §4): scans every player-overlay surface whose phase is not `Hidden` — Opening, Open, AND
-/// Closing. `input_owner()` (`ModalStack::input_owner`) is deliberately NOT used here: it excludes
-/// `Closing`, and a Tracks→Timing hand-off dismisses the Tracks surface (which starts Closing the
-/// same frame the fresh Timing surface starts Opening) — reading only the input owner would see
-/// Timing alone and miss that Tracks' own closing fade must not flash the transport either.
+/// **This frame's [`HudPolicy`] for the transport** (plan `subtitle-menu-capsule` §4): scans every
+/// surface whose phase is not `Hidden` — Opening, Open, AND Closing. `input_owner()`
+/// (`ModalStack::input_owner`) is deliberately NOT used here: it excludes `Closing`, and a
+/// Tracks→Timing hand-off dismisses the Tracks surface (which starts Closing the same frame the
+/// fresh Timing surface starts Opening) — reading only the input owner would see Timing alone and
+/// miss that Tracks' own closing fade must not flash the transport either.
 ///
-/// `hud_hidden` is true if ANY such player-overlay surface's kind
-/// [`hides_hud`](OverlayKind::hides_hud) — today only [`OverlayKind::Timing`]. `lifted` is the
-/// answer the loop read from `Dispatcher::surface_up` before the capsule existed — ANY modal
-/// surface counts, a player panel or not (subtitles clear the transport while something is being
-/// read over them) — but only when `hud_hidden` is false: a Tracks(Closing) + Timing(Opening)
-/// pair must read `(true, false)`, not lift the captions AND hide the transport in one frame.
-pub(crate) fn player_overlay_hud_state(d: &Dispatcher<AppHost>) -> (bool, bool) {
-    let hud_hidden = d.nav.modals.surfaces.iter().any(|s| {
-        s.phase != Phase::Hidden && matches!(&s.entry.arg, AppArg::PlayerOverlay(arg) if arg.kind.hides_hud())
-    });
-    (hud_hidden, !hud_hidden && d.surface_up())
+/// [`HudPolicy::Hidden`] if ANY such player-overlay surface's kind says so
+/// (`OverlayKind::hud_policy` — today only `OverlayKind::Timing`); otherwise
+/// [`HudPolicy::Lifted`] if ANY modal surface is up, a player panel or not (subtitles clear the
+/// transport while something is being read over them — the answer the loop read from
+/// `Dispatcher::surface_up` before the capsule existed); otherwise [`HudPolicy::Normal`]. So a
+/// Tracks(Closing) + Timing(Opening) pair reads `Hidden`, never lifting the captions AND hiding
+/// the transport in one frame.
+pub(crate) fn player_hud_policy(d: &Dispatcher<AppHost>) -> HudPolicy {
+    let hides = |arg: &AppArg| matches!(arg, AppArg::PlayerOverlay(p) if p.kind.hud_policy() == HudPolicy::Hidden);
+    if surface_up(d, hides) {
+        HudPolicy::Hidden
+    } else if d.surface_up() {
+        HudPolicy::Lifted
+    } else {
+        HudPolicy::Normal
+    }
 }
 
 /// Should the player's diagnostics ("Stats for nerds") panel draw this frame?

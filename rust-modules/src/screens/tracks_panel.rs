@@ -406,7 +406,7 @@ pub(crate) fn audio_rows(audio: &[Stream]) -> Vec<TrackRow> {
 /// tell them apart; a forced track never merges into a full one. First-seen order is preserved,
 /// which is the server's order, so the list still reads in container sequence.
 pub(crate) fn subtitle_rows(subs: &[Stream]) -> Vec<TrackRow> {
-    use crate::metadata::track_label::{self, Kind};
+    use crate::metadata::track_label;
     // (key, name, detail-head, count) — a Vec rather than a map so first-seen order survives; a
     // subtitle list is a handful of entries, so the linear scan is not worth a hash.
     let mut out: Vec<(String, String, String, usize)> = Vec::new();
@@ -422,11 +422,12 @@ pub(crate) fn subtitle_rows(subs: &[Stream]) -> Vec<TrackRow> {
         // repeated its own kind word, e.g. "Форс. iTunes" used to read `FORCED · Форс. iTunes`).
         let label = track_label::parse(&s.title, &name, s.forced, s.sdh);
         let mut head = s.codec.to_uppercase();
+        // Both flags can be set on one track (a forced SDH file): show both, as this panel always
+        // has; the parsed kind only ADDS a flag the title spelled out.
+        let (forced, sdh) = track_label::flags(&label, s.forced, s.sdh);
         for (on, tag) in [
-            // Both flags can be set on one track (a forced SDH file): show both, as this panel
-            // always has; the parsed kind only ADDS a flag the title spelled out.
-            (s.forced || label.kind == Kind::Forced, crate::i18n::msg::widgets_tracks_forced()),
-            (s.sdh || label.kind == Kind::Sdh, crate::i18n::msg::widgets_badge_sdh()),
+            (forced, crate::i18n::msg::widgets_tracks_forced()),
+            (sdh, crate::i18n::msg::widgets_badge_sdh()),
             (s.external, crate::i18n::msg::widgets_tracks_external()),
         ] {
             if on {

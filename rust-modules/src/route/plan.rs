@@ -781,7 +781,7 @@ pub(crate) struct Plan {
     pub sub_render_ordinal: Option<i32>,
     /// The subtitle-language preference this play resolved under — the SHOW's own pref if it set
     /// one, else the ACCOUNT's — as a BCP-47 code, for the Subtitles menu's "yours" grouping
-    /// (`ui::track_menu::sub_layout`). `ui/` sees only this code, never a Plex account type.
+    /// (`metadata::sub_layout::sub_sections`). `ui/` sees only this code, never a Plex account type.
     pub sub_pref_lang: Option<String>,
     /// the playing item's track store, fetched off-thread and installed by apply_plan
     pub playing: Option<crate::metadata::PlayingItem>,

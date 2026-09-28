@@ -9,11 +9,13 @@
 //! `/tmp/dsplayer/player.html:1104-1162`): Off and every single-track "yours" language sit under
 //! one "Subtitles" header; a "yours" language with several tracks gets its own section (header =
 //! language, `accessory("N tracks")`), ranked full < SDH < forced < commentary; a headerless
-//! section holds Timing and Color; and everything else falls under "Other languages". [`sub_layout`]
-//! builds this pure — subs/names/yours in, sections plus a flat [`RowTarget`] vec out — so it is
-//! host-tested without a `PlaybackSession`/`MetadataView` fixture. "Yours" is the pref language
-//! (if the play resolved under one), the playing audio's language, and the current subtitle's own
-//! language, in that order (`route::cur_sub_pref_lang`, carried in by `screens::player::overlay`).
+//! section holds Timing and Color; and everything else falls under "Other languages". That
+//! grouping is a pure DATA model, `metadata::sub_layout` (host-tested without a
+//! `PlaybackSession`/`MetadataView` fixture); this module only turns it into `TableView` sections
+//! ([`table_sections`]) and answers focus/OK over the flat [`RowTarget`] vec it yields. "Yours" is
+//! the pref language (if the play resolved under one), the playing audio's language, and the
+//! current subtitle's own language, in that order (`route::cur_sub_pref_lang`, carried in by
+//! `screens::player::overlay`).
 //!
 //! **Timing** is a single row that reads out the current offset; OK on it does not step anything
 //! here — it returns [`TrackOk::OpenTiming`], which `screens::player::overlay`'s `activate` turns
@@ -24,9 +26,11 @@
 //! client-side offset can reach.
 //!
 //! **Color** is a single cycling row: OK steps `SubtitleTone::LADDER` with wrap and keeps the
-//! panel open ([`TrackMenuState::ok_keeps_open`]), so a run of presses is felt immediately.
-#![allow(dead_code)]
+//! panel open ([`TrackOk::Commit`]'s `keep_open`), so a run of presses is felt immediately — and
+//! re-writes that one row's read-out in place rather than rebuilding the list.
 use crate::metadata;
+use crate::metadata::sub_layout::{self, RowBadge, SubHeader, SubRow, SubSection, SubTrack};
+pub(crate) use crate::metadata::sub_layout::RowTarget;
 use crate::metadata::track_label;
 use crate::plex::session::SubtitleTone;
 use crate::ui::consts::SCR_H;
@@ -56,12 +60,11 @@ pub(crate) struct TrackMenuState {
     tab: c_int, // 0=Audio, 1=Subtitles
     active_audio: c_int, // index into the playing item's audio list
     active_sub: c_int, // -1 = Off, else index into the playing item's subs list
-    /// The flat row → meaning map for the CURRENTLY BUILT tab's table — [`sub_layout`]'s second
-    /// return value, kept alongside the `Section`s it built so [`Self::on_ok`], [`Self::sel_for_tab`]
-    /// and [`Self::ok_keeps_open`] read back what a row IS by POSITION instead of re-deriving it
-    /// (and instead of disagreeing with what was actually drawn, the way a fresh call to
-    /// [`visible_subs`] could once a transcode starts). Empty on the Audio tab, which has no such
-    /// indirection.
+    /// The flat row → meaning map for the CURRENTLY BUILT tab's table — one [`SubRow::target`] per
+    /// drawn row, kept alongside the `Section`s it built so [`Self::on_ok`] reads back what a row
+    /// IS by POSITION instead of re-deriving it (and instead of disagreeing with what was actually
+    /// drawn, the way a fresh call to [`visible_subs`] could once a transcode starts). Empty on the
+    /// Audio tab, which has no such indirection.
     targets: Vec<RowTarget>,
     /// The timing offset (ms) the Timing row reads out — seeded from the player on open. Kept
     /// locally (rather than re-reading the player's atomic on every draw) so the Timing capsule's
@@ -75,8 +78,8 @@ pub(crate) struct TrackMenuState {
     tone: SubtitleTone,
     /// "Your languages" this play resolved under, in PREFERENCE order — the pref's BCP-47 code (if
     /// the play resolved under one), the playing audio's language, and the current subtitle's own,
-    /// exactly as [`sub_layout`]'s `yours` parameter reads them (compared with
-    /// `metadata::lang_matches`, never by literal string equality). Owned rather than borrowed, so
+    /// exactly as `metadata::sub_layout::sub_sections`' `yours` parameter reads them (compared by
+    /// `metadata::lang_key`, never by literal string equality). Owned rather than borrowed, so
     /// a rebuild (tab switch) needs nothing from the caller beyond `ps`/`meta`.
     yours: Vec<String>,
     table: TableView, // main-thread only
@@ -108,41 +111,35 @@ pub(crate) enum TrackCommit {
     SubtitleOffset(i64),
 }
 
-/// **What OK on the focused row means**, one level up from [`TrackCommit`]: most rows commit a
-/// pick outright, but the Timing row instead hands off to a different overlay
-/// (`screens::player::overlay`'s Tracks→Timing transition, plan §4) — a decision this panel can
-/// state but not perform, since it does not own the overlay stack.
+/// **The whole outcome of OK on the focused row**, one level up from [`TrackCommit`] — what to
+/// perform AND whether the panel stays, so the caller reads one value rather than asking twice
+/// (once before `on_ok` rebuilt the rows under the cursor). The Timing row hands off to a
+/// different overlay (`screens::player::overlay`'s Tracks→Timing transition, plan §4) — a
+/// decision this panel can state but not perform, since it does not own the overlay stack.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum TrackOk {
-    Commit(TrackCommit),
+    /// Perform `commit`. `keep_open` is true for Color, so a run of presses (cycling the ladder)
+    /// is felt without a reopen-and-rewalk between them; every track pick closes the panel.
+    Commit { commit: TrackCommit, keep_open: bool },
+    /// Nothing changed (the already-playing audio track): close the panel.
+    Dismiss,
     /// Open the Timing capsule overlay: `screens::player::overlay`'s `activate` dismisses the
     /// Tracks panel and asks for `OverlayKind::Timing` in its place.
     OpenTiming,
-}
-
-/// One flat Subtitles-panel row, by POSITION — `sub_layout`'s second return value, one entry per
-/// row in the exact order its `Section`s draw (`TableView::sel` is one flat index over all of
-/// them). Replaces the old `tone_base`/`offset_base` split-by-arithmetic scheme: every reader
-/// (`on_ok`, `sel_for_tab`, `ok_keeps_open`) matches on `targets[sel]` instead of re-deriving which
-/// section a row fell in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RowTarget {
-    Off,
-    /// A track row — the index into the playing item's subs list ([`metadata::PlayingItem::subs`]).
-    Sub(usize),
-    Timing,
-    Color,
+    /// The dim Timing row while subtitles are Off: OK does nothing, and so must not close the
+    /// panel either.
+    Inert,
 }
 
 impl TrackMenuState {
     /// Build the menu focused on `tab` (0=Audio, 1=Subtitles) — the on-screen audio/subs icons
     /// pick a specific tab this way; the plain open path passes 0. `yours` is "your languages" in
-    /// preference order (pref, playing audio, current subtitle) — see [`sub_layout`]'s doc.
+    /// preference order (pref, playing audio, current subtitle) — see [`Self::yours`].
     pub(crate) fn new(
         ps: &crate::route::PlaybackSession,
         meta: metadata::MetadataView<'_>,
         tab: c_int,
-        yours: &[&str],
+        yours: Vec<String>,
     ) -> Self {
         let mut s = TrackMenuState {
             tab,
@@ -151,7 +148,7 @@ impl TrackMenuState {
             targets: Vec::new(),
             offset_ms: crate::player::subtitle_offset_ms(),
             tone: crate::player::subtitle_tone(),
-            yours: yours.iter().map(|y| y.to_string()).collect(),
+            yours,
             table: TableView::new(),
         };
         s.sync_item(ps, meta);
@@ -210,29 +207,6 @@ impl TrackMenuState {
             .unwrap_or(0)
     }
 
-    /// selectable rows in `tab` — the Audio tab is one row per track; the Subtitles tab is
-    /// whatever [`sub_layout`] built, which `n_rows` re-derives when `tab` is not the one
-    /// currently built (`self.targets` only ever holds the built tab's answer).
-    fn n_rows(&self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int) -> c_int {
-        if tab == 0 {
-            n_audio(meta)
-        } else {
-            let (_, targets) = self.layout(ps, meta);
-            targets.len() as c_int
-        }
-    }
-    /// the table row that should be focused when entering `tab` (its active selection) — on the
-    /// Subtitles tab this is the row whose target is `Sub(active_sub)`, or `Off` when subtitles
-    /// are off, found by position in the freshly built `targets` (plan §3).
-    fn sel_for_tab(&self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int) -> c_int {
-        if tab == 0 {
-            self.active_audio().max(0)
-        } else {
-            let (_, targets) = self.layout(ps, meta);
-            sel_for_targets(&targets, self.active_sub)
-        }
-    }
-
     /// Derive the checked tracks from the PLAYBACK state on every open — the route owns the truth
     /// (CUR_AUDIO_SID/CUR_SUB_SID, set by the start-of-play pick and every commit), so the menu can
     /// never show a stale or desynced checkmark: the auto-picked default/smart-DP track is checked
@@ -289,8 +263,8 @@ impl TrackMenuState {
     }
 
     /// commit the focused row as the active track for its tab — dismissing the panel afterward is
-    /// the container's job now, not this method's.
-    pub(crate) fn on_ok(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> Option<TrackOk> {
+    /// the container's job now, not this method's; the answer says whether it should.
+    pub(crate) fn on_ok(&mut self, meta: metadata::MetadataView<'_>) -> TrackOk {
         let tab = self.tab;
         let sel = self.table.sel;
         if tab == 0 {
@@ -306,15 +280,18 @@ impl TrackMenuState {
                     crate::diag::event(crate::diag::schema::DiagEvent::FeatureUsed {
                         feature: crate::diag::schema::Feature::AudioTrack,
                     });
-                    return Some(TrackOk::Commit(TrackCommit::Audio {
-                        ordinal: ord,
-                        codec: s.codec.clone(),
-                        stream_id: s.id,
-                        channels: s.channels,
-                    }));
+                    return TrackOk::Commit {
+                        commit: TrackCommit::Audio {
+                            ordinal: ord,
+                            codec: s.codec.clone(),
+                            stream_id: s.id,
+                            channels: s.channels,
+                        },
+                        keep_open: false,
+                    };
                 }
             }
-            return None;
+            return TrackOk::Dismiss;
         }
 
         match self.targets.get(sel.max(0) as usize).copied() {
@@ -323,14 +300,15 @@ impl TrackMenuState {
                 // always republishes, and re-committing the track would re-burn a transcode
                 let n = SubtitleTone::LADDER.len() as u8;
                 self.tone = SubtitleTone::from_index((self.tone.index() + 1) % n);
-                // the panel stays up (`ok_keeps_open`): redraw the read-out in place, focus unmoved
-                let (sections, targets) = self.layout(ps, meta);
-                self.targets = targets;
-                self.table.set_sections(sections, sel, true);
-                Some(TrackOk::Commit(TrackCommit::SubtitleTone(self.tone)))
+                // the panel stays up: re-write this row's read-out in place, focus unmoved — the
+                // grouping does not depend on the tone, so nothing else is rebuilt
+                if let Some(row) = self.table.row_mut(sel) {
+                    row.value = Some(tone_label(self.tone).to_string());
+                }
+                TrackOk::Commit { commit: TrackCommit::SubtitleTone(self.tone), keep_open: true }
             }
-            Some(RowTarget::Timing) if self.active_sub >= 0 => Some(TrackOk::OpenTiming),
-            Some(RowTarget::Timing) => None, // dim and inert while subtitles are Off
+            Some(RowTarget::Timing) if self.active_sub >= 0 => TrackOk::OpenTiming,
+            Some(RowTarget::Timing) => TrackOk::Inert, // dim and inert while subtitles are Off
             target => {
                 // Off (or a stale/out-of-range selection) → -1; else the row's own subs-list index
                 let new_sub: c_int = match target {
@@ -355,12 +333,15 @@ impl TrackMenuState {
                     .filter(|_| new_sub >= 0)
                     .and_then(|t| t.subs.get(new_sub as usize))
                     .filter(|s| s.sidecar_renderable());
-                Some(TrackOk::Commit(TrackCommit::Subtitle {
-                    render_ordinal: ridx,
-                    stream_id: self.sub_stream_id(meta),
-                    sidecar_key: sidecar.map(|s| s.key.clone()),
-                    sidecar_codec: sidecar.map(|s| s.codec.clone()).unwrap_or_default(),
-                }))
+                TrackOk::Commit {
+                    commit: TrackCommit::Subtitle {
+                        render_ordinal: ridx,
+                        stream_id: self.sub_stream_id(meta),
+                        sidecar_key: sidecar.map(|s| s.key.clone()),
+                        sidecar_codec: sidecar.map(|s| s.codec.clone()).unwrap_or_default(),
+                    },
+                    keep_open: false,
+                }
             }
         }
     }
@@ -408,25 +389,16 @@ impl TrackMenuState {
         sec
     }
 
-    /// Build the Subtitles tab's sections and row map from the CURRENT state — the one call site
-    /// every subtitle-tab reader (`rebuild`, `on_ok`, `n_rows`, `sel_for_tab`) goes through, so
-    /// they can never disagree about what a row is.
+    /// Build the Subtitles tab's sections and row map from the CURRENT state — the one place the
+    /// model (`metadata::sub_layout::sub_sections`) is asked, so what a row IS can never disagree
+    /// with what was drawn.
     fn layout(&self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) -> (Vec<Section>, Vec<RowTarget>) {
         let item = tracks(meta);
         let subs: &[metadata::Stream] = item.map(|t| t.subs.as_slice()).unwrap_or(&[]);
         let offered = visible_subs(ps, meta);
         let names = crate::player::SHARED.track_names.lock().unwrap();
-        let yours: Vec<&str> = self.yours.iter().map(String::as_str).collect();
-        sub_layout(
-            subs,
-            &offered,
-            &names,
-            &yours,
-            self.active_sub,
-            !crate::route::is_transcoding(ps),
-            self.offset_ms,
-            self.tone,
-        )
+        let model = sub_layout::sub_sections(subs, &offered, &names, &self.yours, !crate::route::is_transcoding(ps));
+        table_sections(&model, self.active_sub, self.offset_ms, self.tone)
     }
 
     fn rebuild(&mut self, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>, tab: c_int, slide: bool) {
@@ -439,21 +411,6 @@ impl TrackMenuState {
             self.targets = targets;
             self.table.set_sections(sections, sel, slide);
         }
-    }
-
-    /// Whether OK on the focused row leaves the panel OPEN: Color does, so a run of presses
-    /// (cycling the ladder) is felt without a reopen-and-rewalk between them; so does the dim,
-    /// inert Timing row while subtitles are Off, since OK there does nothing at all. A live Timing
-    /// row does not — picking it hands off to a different overlay ([`TrackOk::OpenTiming`]).
-    pub(crate) fn ok_keeps_open(&self) -> bool {
-        self.tab == 1
-            && match self.targets.get(self.table.sel.max(0) as usize) {
-                Some(RowTarget::Color) => true,
-                // the dim Timing row while subtitles are Off is INERT: OK does nothing, so it
-                // must not close the panel either
-                Some(RowTarget::Timing) => self.active_sub < 0,
-                _ => false,
-            }
     }
 
     /// The panel geometry — shared by `update` and `draw` so scrolling math matches.
@@ -650,20 +607,10 @@ fn tone_label(tone: SubtitleTone) -> &'static str {
     }
 }
 
-/// An offset as localized signed seconds to the tenth; examples below use English formatting.
-/// ASCII hyphen-minus rather than U+2212, which the UI font is not guaranteed to carry.
+/// An offset as localized signed seconds to the tenth (`ui::timing_capsule::offset_seconds_in`,
+/// the one offset formatter).
 fn format_offset(ms: i64) -> String {
-    format_offset_in(ms, crate::i18n::current())
-}
-
-fn format_offset_in(ms: i64, locale: &crate::i18n::LocaleContext) -> String {
-    let sign = match ms.signum() {
-        1 => "+",
-        -1 => "-",
-        _ => "",
-    };
-    let tenths = (ms.unsigned_abs() / 100) as i64;
-    crate::i18n::msg::core_seconds_in(locale, &format!("{sign}{}", locale.decimal(tenths, 1)))
+    crate::ui::timing_capsule::offset_seconds_in(ms, true, crate::i18n::current())
 }
 
 /// The row whose `RowTarget` names the checked subtitle track (or `Off`), by position in
@@ -682,22 +629,6 @@ fn sel_for_targets(targets: &[RowTarget], active_sub: c_int) -> c_int {
 // ---- section building ----
 use crate::metadata::friendly_codec; // the ONE codec→display-name map (shared with the Info card)
 use crate::metadata::track_label::Kind;
-
-/// Image (bitmap) subtitle codecs — PGS/VobSub/DVD/DVB. The demuxer software-decodes these to
-/// RGBA and the player composites them over the video, so they render on the direct-play path;
-/// the menu tags the codec for clarity.
-pub(crate) fn is_image_sub_codec(codec: &str) -> bool {
-    matches!(
-        codec.to_ascii_lowercase().as_str(),
-        "pgs"
-            | "hdmv_pgs_subtitle"
-            | "vobsub"
-            | "dvd_subtitle"
-            | "dvdsub"
-            | "dvb_subtitle"
-            | "dvbsub"
-    )
-}
 
 /// "AC-3 5.1", "Dolby TrueHD 7.1", "DTS 5.1" — a compact codec + channel-layout descriptor.
 fn audio_descriptor(s: &metadata::Stream) -> String {
@@ -731,152 +662,21 @@ fn channel_short(layout: &str) -> String {
     }
 }
 
-// ---- Subtitles-tab grouping (`sub_layout`, plan §3) -------------------------------------------
+// ---- Subtitles-tab sections (the model is `metadata::sub_layout`, plan §3) ------------------
 
-/// One badge a Subtitles-panel row may show — never more than one (`player.html:954`'s priority:
-/// FORCED > SDH > EXTERNAL > an image codec). A thin local mirror of `ui::table::Badge` because
-/// that type does not derive `Clone`/`Eq` and this one needs to be compared (for the
-/// "identical tracks" ordinal grouping) before it is ever turned into a drawn `Badge`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum RowBadge {
-    Forced,
-    Sdh,
-    External,
-    Codec(String),
-}
-impl RowBadge {
-    fn badge(&self) -> Badge {
-        match self {
-            RowBadge::Forced => Badge::Forced,
-            RowBadge::Sdh => Badge::Sdh,
-            RowBadge::External => Badge::Text(crate::i18n::msg::widgets_tracks_external_badge().to_string()),
-            RowBadge::Codec(c) => Badge::Text(c.clone()),
-        }
-    }
-}
-
-/// One subtitle track's LAYOUT input, computed once from `metadata::Stream` + the container's own
-/// tag, before grouping — [`sub_layout`] groups a `Vec` of these rather than re-parsing per row.
-#[derive(Clone)]
-struct SubTrackInfo {
-    /// index into the playing item's subs list — what a built row's `RowTarget::Sub` carries.
-    i: usize,
-    lang: String,
-    /// lower-cased `Stream.lang_code`, `""` when unset (never matched by `lang_matches`, which
-    /// refuses an empty tag on either side).
-    code: String,
-    /// `SubLabel.source`, or the region fallback when that is empty (`track_label::region_detail`).
-    detail: String,
-    kind: Kind,
-    badge: Option<RowBadge>,
-    /// `Some(n)` when this track is otherwise IDENTICAL (same lang, detail, badge) to at least one
-    /// other offered track — an ordinal among the identical ones only (`player.html:959-962,1110`).
-    ordinal: Option<u32>,
-}
-
-/// Parse every offered track into a [`SubTrackInfo`] and fill in [`SubTrackInfo::ordinal`] for
-/// tracks that would otherwise draw the exact same row.
-fn sub_tracks(subs: &[metadata::Stream], offered: &[usize], names: &crate::player::TrackNames) -> Vec<SubTrackInfo> {
-    let mut out: Vec<SubTrackInfo> = offered
-        .iter()
-        .filter_map(|&i| {
-            let s = subs.get(i)?;
-            let lang = if s.lang.trim().is_empty() {
-                crate::i18n::msg::widgets_tracks_unknown().to_string()
-            } else {
-                s.lang.clone()
-            };
-            let container = names.sub(metadata::sub_render_ordinal(subs, i));
-            let merged = track_label::track_name(&s.title, container, &lang);
-            let label = track_label::parse(&merged, &lang, s.forced, s.sdh);
-            let mut detail = label.source;
-            if detail.is_empty() {
-                if let Some(region) = track_label::region_detail(&s.language_tag) {
-                    detail = region;
-                }
-            }
-            // the panel's one-badge priority: FORCED > SDH > EXTERNAL > an image codec
-            let badge = if label.kind == Kind::Forced {
-                Some(RowBadge::Forced)
-            } else if label.kind == Kind::Sdh {
-                Some(RowBadge::Sdh)
-            } else if s.external {
-                Some(RowBadge::External)
-            } else if is_image_sub_codec(&s.codec) {
-                Some(RowBadge::Codec(s.codec.to_uppercase()))
-            } else {
-                None
-            };
-            Some(SubTrackInfo {
-                i,
-                lang,
-                code: s.lang_code.trim().to_ascii_lowercase(),
-                detail,
-                kind: label.kind,
-                badge,
-                ordinal: None,
-            })
-        })
-        .collect();
-
-    let key = |t: &SubTrackInfo| (t.lang.clone(), t.detail.clone(), badge_key(&t.badge));
-    let mut totals: std::collections::HashMap<(String, String, String), u32> = std::collections::HashMap::new();
-    for t in &out {
-        *totals.entry(key(t)).or_insert(0) += 1;
-    }
-    let mut seen: std::collections::HashMap<(String, String, String), u32> = std::collections::HashMap::new();
-    for t in &mut out {
-        let k = key(t);
-        if totals[&k] > 1 {
-            let n = seen.entry(k).or_insert(0);
-            *n += 1;
-            t.ordinal = Some(*n);
-        }
-    }
-    out
-}
-
-fn badge_key(b: &Option<RowBadge>) -> String {
+/// The drawn form of a row's one badge.
+fn row_badge(b: &RowBadge) -> Badge {
     match b {
-        None => String::new(),
-        Some(RowBadge::Forced) => "forced".to_string(),
-        Some(RowBadge::Sdh) => "sdh".to_string(),
-        Some(RowBadge::External) => "external".to_string(),
-        Some(RowBadge::Codec(c)) => format!("codec:{c}"),
+        RowBadge::Forced => Badge::Forced,
+        RowBadge::Sdh => Badge::Sdh,
+        RowBadge::External => Badge::Text(crate::i18n::msg::widgets_tracks_external_badge().to_string()),
+        RowBadge::Codec(c) => Badge::Text(c.clone()),
     }
-}
-
-/// Are two tracks the same LANGUAGE? By `metadata::lang_matches` on their codes — so an ISO
-/// 639-2/B "fre" and a 639-2/T "fra" (or a regional "fr-CA") land in ONE group rather than two
-/// sections both headed "French". Two tracks without a code fall back to their display name, so
-/// "Unknown" tracks still group with each other.
-fn same_language(a: &SubTrackInfo, b: &SubTrackInfo) -> bool {
-    if a.code.is_empty() || b.code.is_empty() {
-        a.code.is_empty() && b.code.is_empty() && a.lang == b.lang
-    } else {
-        metadata::lang_matches(&a.code, &b.code)
-    }
-}
-
-/// Is `code` one of `yours` (`metadata::lang_matches`, never literal equality — "fra"/"fre" and a
-/// regional "fr-CA" all name French)? An empty code never matches — an "Unknown" track can never
-/// silently land in "yours".
-fn is_yours(code: &str, yours: &[&str]) -> bool {
-    !code.is_empty() && yours.iter().any(|y| !y.trim().is_empty() && metadata::lang_matches(y, code))
-}
-/// `code`'s position in `yours` (the preference order a "yours" language group is itself
-/// ordered by) — `usize::MAX` (sorts last) when nothing in `yours` matches, which `is_yours`
-/// already ruled out for anything actually grouped as "mine".
-fn yours_rank(code: &str, yours: &[&str]) -> usize {
-    yours
-        .iter()
-        .position(|y| !y.trim().is_empty() && metadata::lang_matches(y, code))
-        .unwrap_or(usize::MAX)
 }
 
 /// A flat row: label = language, detail = source/region (+ "Track N" when this track needed one),
 /// one badge. Used for a single-track "yours" language, and for every "Other languages" row.
-fn flat_row(t: &SubTrackInfo, active_sub: c_int) -> Row {
+fn flat_row(t: &SubTrack, active_sub: c_int) -> Row {
     let mut row = Row::new(t.lang.clone()).checked(active_sub >= 0 && t.i == active_sub as usize);
     let mut parts: Vec<String> = Vec::new();
     if !t.detail.is_empty() {
@@ -889,7 +689,7 @@ fn flat_row(t: &SubTrackInfo, active_sub: c_int) -> Row {
         row = row.detail(parts.join(" \u{b7} "));
     }
     if let Some(b) = &t.badge {
-        row = row.badge(b.badge());
+        row = row.badge(row_badge(b));
     }
     row
 }
@@ -898,7 +698,7 @@ fn flat_row(t: &SubTrackInfo, active_sub: c_int) -> Row {
 /// source (+ "Track N" if needed), or — for a NAMELESS track — the kind word itself ("Forced",
 /// "SDH", "Full", "Commentary"), in which case a Forced/SDH badge that would only repeat the
 /// label is dropped.
-fn in_lang_row(t: &SubTrackInfo, active_sub: c_int) -> Row {
+fn in_lang_row(t: &SubTrack, active_sub: c_int) -> Row {
     let nth = t.ordinal.map(|n| crate::i18n::msg::widgets_tracks_track_ordinal(n as i64));
     let label = if !t.detail.is_empty() {
         match &nth {
@@ -920,126 +720,55 @@ fn in_lang_row(t: &SubTrackInfo, active_sub: c_int) -> Row {
         && matches!(t.badge, Some(RowBadge::Forced) | Some(RowBadge::Sdh));
     if !drop_badge_for_kind {
         if let Some(b) = &t.badge {
-            row = row.badge(b.badge());
+            row = row.badge(row_badge(b));
         }
     }
     row
 }
 
-/// **Group and order the Subtitles panel's rows** (plan §3, `player.html:1104-1162`) — pure over
-/// plain values, so it is host-tested without a `PlaybackSession`/`MetadataView`/store fixture.
+/// **Draw the Subtitles model** (`metadata::sub_layout::sub_sections`) as `TableView` sections —
+/// the catalog words for each header, the checkmark on `active_sub` (-1 for Off), and the
+/// Timing/Color read-outs (`offset_ms`, `tone`; Timing is dim while subtitles are Off).
 ///
-/// `subs` is the playing item's FULL subtitle list; `offered` is [`visible_subs`]'s answer (the
-/// offered subset once sidecars-only-on-direct-play is applied); `names` is the demuxer's own tag
-/// list, joined the same way [`TrackMenuState::build_audio`] joins the Audio tab's; `yours` is
-/// "your languages" in PREFERENCE order; `active_sub` is the subs-list index of the checked track
-/// (-1 for Off); `show_timing` is `!is_transcoding` (a transcode burns captions server-side, so no
-/// client offset can reach them); `offset_ms`/`tone` are what the Timing/Color rows read out.
-///
-/// Returns the sections to draw AND a flat `targets` vec, one entry per row in the SAME order the
-/// sections draw — every other reader (`on_ok`, `sel_for_tab`, `ok_keeps_open`) reads back what a
-/// row IS from `targets[sel]` rather than re-deriving it.
-pub(crate) fn sub_layout(
-    subs: &[metadata::Stream],
-    offered: &[usize],
-    names: &crate::player::TrackNames,
-    yours: &[&str],
+/// Returns the sections AND a flat `targets` vec, one [`SubRow::target`] per row in the SAME
+/// order the sections draw — [`TrackMenuState::on_ok`] reads back what a row IS from
+/// `targets[sel]` rather than re-deriving it.
+fn table_sections(
+    model: &[SubSection],
     active_sub: c_int,
-    show_timing: bool,
     offset_ms: i64,
     tone: SubtitleTone,
 ) -> (Vec<Section>, Vec<RowTarget>) {
-    let all = sub_tracks(subs, offered, names);
-    let (mut mine, mut other): (Vec<_>, Vec<_>) = all.into_iter().partition(|t| is_yours(&t.code, yours));
-    mine.sort_by(|a, b| a.kind.rank().cmp(&b.kind.rank()).then(a.i.cmp(&b.i)));
-    other.sort_by(|a, b| {
-        a.lang
-            .to_ascii_lowercase()
-            .cmp(&b.lang.to_ascii_lowercase())
-            .then(a.kind.rank().cmp(&b.kind.rank()))
-            .then(a.i.cmp(&b.i))
-    });
-
-    // Bucket `mine` by language code, first-seen order, then reorder the buckets by each one's
-    // position in `yours` — the pref's language leads, then the playing audio's, then the current
-    // subtitle's, exactly as `yours` states them.
-    let mut lang_buckets: Vec<(String, Vec<SubTrackInfo>)> = Vec::new();
-    for t in mine.drain(..) {
-        match lang_buckets.iter_mut().find(|(_, bucket)| same_language(&bucket[0], &t)) {
-            Some((_, bucket)) => bucket.push(t),
-            None => lang_buckets.push((t.code.clone(), vec![t])),
-        }
-    }
-    lang_buckets.sort_by_key(|(code, _)| yours_rank(code, yours));
-
-    // 1. "Subtitles": Off, then every single-track "yours" language, flat.
-    let mut sections = vec![Section::new(crate::i18n::msg::widgets_tracks_subtitles())
-        .row(Row::new(crate::i18n::msg::widgets_tracks_off()).checked(active_sub < 0))];
-    let mut targets = vec![RowTarget::Off];
-
-    // 2. Each multi-track "yours" language interrupts with its own section; a single-track
-    // language folds back into "Subtitles" ONLY while that is still the last section built — once
-    // a multi-track section has intervened, the next single-track language gets its own bare
-    // (headerless) section instead, exactly mirroring `player.html`'s `sectionsFor`.
-    for (_, bucket) in lang_buckets {
-        if bucket.len() > 1 {
-            let mut sec = Section::new(bucket[0].lang.clone())
-                .accessory(crate::i18n::msg::widgets_tracks_count(bucket.len() as i64));
-            for t in &bucket {
-                sec = sec.row(in_lang_row(t, active_sub));
-                targets.push(RowTarget::Sub(t.i));
+    use crate::i18n::msg;
+    let mut targets = Vec::new();
+    let sections = model
+        .iter()
+        .map(|sec| {
+            let mut out = match &sec.header {
+                SubHeader::Subtitles => Section::new(msg::widgets_tracks_subtitles()),
+                SubHeader::Language { name, tracks } => {
+                    Section::new(name.clone()).accessory(msg::widgets_tracks_count(*tracks as i64))
+                }
+                SubHeader::Bare => Section::new(""),
+                SubHeader::OtherLanguages { languages } => Section::new(msg::widgets_tracks_other_languages())
+                    .accessory(msg::widgets_tracks_language_count(*languages as i64)),
+            };
+            for row in &sec.rows {
+                targets.push(row.target());
+                out = out.row(match row {
+                    SubRow::Off => Row::new(msg::widgets_tracks_off()).checked(active_sub < 0),
+                    SubRow::Flat(t) => flat_row(t, active_sub),
+                    SubRow::InLanguage(t) => in_lang_row(t, active_sub),
+                    SubRow::Timing => Row::new(msg::widgets_tracks_timing())
+                        .value(format_offset(offset_ms))
+                        .chevron(true)
+                        .dim(active_sub < 0),
+                    SubRow::Color => Row::new(msg::widgets_tracks_color()).value(tone_label(tone)),
+                });
             }
-            sections.push(sec);
-        } else {
-            let t = &bucket[0];
-            targets.push(RowTarget::Sub(t.i));
-            let row = flat_row(t, active_sub);
-            let reuse = sections
-                .last()
-                .is_some_and(|s| !s.header.is_empty() && s.accessory.is_empty());
-            if reuse {
-                sections.last_mut().unwrap().rows.push(row);
-            } else {
-                sections.push(Section::new("").row(row));
-            }
-        }
-    }
-
-    // 3. A headerless section: Timing (omitted under transcode, dim and inert while Off), then
-    // Color — always a NEW section, never folded into whatever came before.
-    let mut settings = Section::new("");
-    if show_timing {
-        settings = settings.row(
-            Row::new(crate::i18n::msg::widgets_tracks_timing())
-                .value(format_offset(offset_ms))
-                .chevron(true)
-                .dim(active_sub < 0),
-        );
-        targets.push(RowTarget::Timing);
-    }
-    settings = settings.row(Row::new(crate::i18n::msg::widgets_tracks_color()).value(tone_label(tone)));
-    targets.push(RowTarget::Color);
-    sections.push(settings);
-
-    // 4. "Other languages": flat rows, sorted by language name then rank, with a language-count
-    // accessory (distinct `lang_code`s, not track count).
-    if !other.is_empty() {
-        // distinct LANGUAGES, by the same matcher the buckets use — "fre" and "fra" are one
-        let mut langs: Vec<&SubTrackInfo> = Vec::new();
-        for t in &other {
-            if !langs.iter().any(|l| same_language(l, t)) {
-                langs.push(t);
-            }
-        }
-        let mut sec = Section::new(crate::i18n::msg::widgets_tracks_other_languages())
-            .accessory(crate::i18n::msg::widgets_tracks_language_count(langs.len() as i64));
-        for t in &other {
-            sec = sec.row(flat_row(t, active_sub));
-            targets.push(RowTarget::Sub(t.i));
-        }
-        sections.push(sec);
-    }
-
+            out
+        })
+        .collect();
     (sections, targets)
 }
 
@@ -1070,6 +799,32 @@ mod tests {
     use super::*;
     use crate::player::TrackNames;
 
+    /// The model and its drawing in one call — what the panel shows for these inputs.
+    #[allow(clippy::too_many_arguments)]
+    fn sub_layout(
+        subs: &[metadata::Stream],
+        offered: &[usize],
+        names: &TrackNames,
+        yours: &[&str],
+        active_sub: c_int,
+        show_timing: bool,
+        offset_ms: i64,
+        tone: SubtitleTone,
+    ) -> (Vec<Section>, Vec<RowTarget>) {
+        let yours: Vec<String> = yours.iter().map(|y| y.to_string()).collect();
+        let model = sub_layout::sub_sections(subs, offered, names, &yours, show_timing);
+        table_sections(&model, active_sub, offset_ms, tone)
+    }
+
+    /// A store with `subs` installed as the playing item's subtitle list.
+    fn store_with(subs: Vec<metadata::Stream>) -> crate::stores::metadata::MetadataStore {
+        let mut store = crate::stores::metadata::MetadataStore::default();
+        assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(
+            metadata::PlayingItem::with_subs(subs)
+        ))));
+        store
+    }
+
     fn stream(id: i64, index: i64, lang: &str, lang_code: &str, title: &str) -> metadata::Stream {
         metadata::Stream {
             id,
@@ -1080,62 +835,6 @@ mod tests {
             title: title.into(),
             ..Default::default()
         }
-    }
-
-    // ---- sub_layout: section order -----------------------------------------------------------
-
-    #[test]
-    fn section_order_is_subtitles_then_multitrack_languages_then_settings_then_other() {
-        let subs = vec![
-            stream(1, 0, "English", "eng", ""),
-            stream(2, 1, "Russian", "rus", "iTunes"),
-            stream(3, 2, "Russian", "rus", "Netflix"), // multi-track "yours" → own section
-            stream(4, 3, "French", "fre", ""),         // not "yours" → "Other languages"
-        ];
-        let offered: Vec<usize> = (0..subs.len()).collect();
-        let names = TrackNames::new();
-
-        // yours = [eng, rus]: English (single-track) is bucketed FIRST, so it folds into
-        // "Subtitles" (still the untouched initial section) before Russian's own section
-        // interrupts.
-        let (sections, _targets) =
-            sub_layout(&subs, &offered, &names, &["eng", "rus"], -1, true, 0, SubtitleTone::White);
-        let headers: Vec<&str> = sections.iter().map(|s| s.header.as_str()).collect();
-        assert_eq!(headers, ["Subtitles", "Russian", "", "Other languages"]);
-        assert_eq!(sections[0].rows[1].label, "English", "folded into Subtitles");
-        assert_eq!(sections[1].accessory, "2 tracks");
-        assert_eq!(sections[3].accessory, "1 language");
-
-        // yours = [rus, eng]: the multi-track Russian bucket now outranks the single-track
-        // English one, so Russian's section comes FIRST — once it has interrupted, English no
-        // longer folds back into "Subtitles" and gets its own bare section instead
-        // (`player.html`'s own `sectionsFor` rule: only the section BEFORE the first interruption
-        // stays "Subtitles").
-        let (sections, _targets) =
-            sub_layout(&subs, &offered, &names, &["rus", "eng"], -1, true, 0, SubtitleTone::White);
-        let headers: Vec<&str> = sections.iter().map(|s| s.header.as_str()).collect();
-        assert_eq!(headers, ["Subtitles", "Russian", "", "", "Other languages"]);
-        assert_eq!(sections[2].rows[0].label, "English", "its own bare section, not Subtitles");
-        assert_eq!(sections[3].rows.len(), 2, "the headerless Timing + Color section");
-    }
-
-    // ---- sub_layout: "yours" order ------------------------------------------------------------
-
-    #[test]
-    fn yours_flat_rows_follow_the_preference_order_pref_then_audio_then_current() {
-        let subs = vec![
-            stream(1, 0, "French", "fre", ""),
-            stream(2, 1, "English", "eng", ""),
-            stream(3, 2, "Russian", "rus", ""),
-        ];
-        let offered: Vec<usize> = (0..subs.len()).collect();
-        let names = TrackNames::new();
-        // pref=rus, audio=eng, current=fre — every one a single track, so all three stay flat
-        // under "Subtitles" and must read in THIS order, not file order.
-        let (sections, _targets) =
-            sub_layout(&subs, &offered, &names, &["rus", "eng", "fre"], -1, true, 0, SubtitleTone::White);
-        let labels: Vec<&str> = sections[0].rows.iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, ["Off", "Russian", "English", "French"]);
     }
 
     // ---- sub_layout: a single "yours" language is flat under "Subtitles" ----------------------
@@ -1149,27 +848,6 @@ mod tests {
         assert_eq!(sections[0].rows.len(), 2, "Off + the one track");
         assert_eq!(sections[0].rows[1].label, "Spanish");
         assert_eq!(targets[1], RowTarget::Sub(0));
-    }
-
-    // ---- sub_layout: a multi-track section, "N tracks" and rank order -------------------------
-
-    #[test]
-    fn a_multitrack_yours_language_ranks_full_then_sdh_then_forced_then_commentary() {
-        // file order deliberately scrambles the rank order: commentary, forced, full, sdh
-        let subs = vec![
-            stream(1, 0, "Russian", "rus", "Commentary"),
-            stream(2, 1, "Russian", "rus", "Форс."),
-            stream(3, 2, "Russian", "rus", ""),
-            stream(4, 3, "Russian", "rus", "SDH"),
-        ];
-        let offered: Vec<usize> = (0..subs.len()).collect();
-        let names = TrackNames::new();
-        let (sections, _targets) =
-            sub_layout(&subs, &offered, &names, &["rus"], -1, true, 0, SubtitleTone::White);
-        assert_eq!(sections[1].header, "Russian");
-        assert_eq!(sections[1].accessory, "4 tracks");
-        let labels: Vec<&str> = sections[1].rows.iter().map(|r| r.label.as_str()).collect();
-        assert_eq!(labels, ["Full", "SDH", "Forced", "Commentary"]);
     }
 
     // ---- sub_layout: a nameless track reads as its kind, with no badge ------------------------
@@ -1265,26 +943,6 @@ mod tests {
 
         let subs = vec![stream(1, 0, "German", "deu", "")];
         let (sections, _targets) = sub_layout(&subs, &[0], &names, &[], -1, true, 0, SubtitleTone::White);
-        assert_eq!(sections.last().unwrap().accessory, "1 language");
-    }
-
-    /// **One language, one group, whatever ISO 639-2 spelling each track carries** — "fre" (the
-    /// B code) and "fra" (the T code) are both French, so they bucket together under one "French"
-    /// section and count as one language under "Other languages".
-    #[test]
-    fn bibliographic_and_terminology_codes_of_one_language_group_together() {
-        let subs = vec![
-            stream(1, 0, "French", "fre", "iTunes"),
-            stream(2, 1, "French", "fra", "Netflix"),
-        ];
-        let offered: Vec<usize> = (0..subs.len()).collect();
-        let names = TrackNames::new();
-        let (sections, _) = sub_layout(&subs, &offered, &names, &["fra"], -1, true, 0, SubtitleTone::White);
-        let headers: Vec<&str> = sections.iter().map(|s| s.header.as_str()).collect();
-        assert_eq!(headers, ["Subtitles", "French", ""], "one French section, not two flat rows");
-        assert_eq!(sections[1].accessory, "2 tracks");
-
-        let (sections, _) = sub_layout(&subs, &offered, &names, &[], -1, true, 0, SubtitleTone::White);
         assert_eq!(sections.last().unwrap().accessory, "1 language");
     }
 
@@ -1412,86 +1070,53 @@ mod tests {
         crate::player::sidecar::reset();
         crate::player::set_subtitle_offset(0);
         let ps = crate::route::PlaybackSession::IDLE;
-        let mut store = crate::stores::metadata::MetadataStore::default();
-        assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(
-            crate::metadata::PlayingItem {
-                sid: crate::plex::ServerId::from_raw(0),
-                rk: "rk".into(),
-                show_rk: String::new(),
-                audio: Vec::new(),
-                subs: vec![crate::metadata::Stream {
-                    id: 1,
-                    index: 0,
-                    lang: "English".into(),
-                    lang_code: "eng".into(),
-                    codec: "srt".into(),
-                    ..Default::default()
-                }],
-                video_fps: 0.0,
-                width: 0,
-                height: 0,
-                bitrate: 0,
-                dovi: Default::default(),
-                markers: Vec::new(),
-                chapters: Vec::new(),
-                blur: None,
-            },
-        ))));
-        let menu = TrackMenuState::new(&ps, store.view(), 1, &[]);
+        let store = store_with(vec![crate::metadata::Stream {
+            id: 1,
+            index: 0,
+            lang: "English".into(),
+            lang_code: "eng".into(),
+            codec: "srt".into(),
+            ..Default::default()
+        }]);
+        let menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
         assert_eq!(
             menu.targets,
             vec![RowTarget::Off, RowTarget::Timing, RowTarget::Color, RowTarget::Sub(0)]
         );
     }
 
-    // ---- track_menu: sel_for_tab lands on the checked sub inside a group ----------------------
+    // ---- track_menu: a rebuild lands on the checked sub inside a group -------------------------
 
     #[test]
-    fn sel_for_tab_lands_on_the_checked_sub_inside_a_multitrack_group() {
+    fn a_rebuild_lands_on_the_checked_sub_inside_a_multitrack_group() {
         let _g = crate::testlock::serial();
         crate::player::sidecar::reset();
         let ps = crate::route::PlaybackSession::IDLE;
-        let mut store = crate::stores::metadata::MetadataStore::default();
-        assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(
-            crate::metadata::PlayingItem {
-                sid: crate::plex::ServerId::from_raw(0),
-                rk: "rk".into(),
-                show_rk: String::new(),
-                audio: Vec::new(),
-                subs: vec![
-                    crate::metadata::Stream {
-                        id: 1,
-                        index: 0,
-                        lang: "Russian".into(),
-                        lang_code: "rus".into(),
-                        codec: "srt".into(),
-                        title: "iTunes".into(),
-                        ..Default::default()
-                    },
-                    crate::metadata::Stream {
-                        id: 2,
-                        index: 1,
-                        lang: "Russian".into(),
-                        lang_code: "rus".into(),
-                        codec: "srt".into(),
-                        title: "Netflix".into(),
-                        ..Default::default()
-                    },
-                ],
-                video_fps: 0.0,
-                width: 0,
-                height: 0,
-                bitrate: 0,
-                dovi: Default::default(),
-                markers: Vec::new(),
-                chapters: Vec::new(),
-                blur: None,
+        let store = store_with(vec![
+            crate::metadata::Stream {
+                id: 1,
+                index: 0,
+                lang: "Russian".into(),
+                lang_code: "rus".into(),
+                codec: "srt".into(),
+                title: "iTunes".into(),
+                ..Default::default()
             },
-        ))));
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, &["rus"]);
+            crate::metadata::Stream {
+                id: 2,
+                index: 1,
+                lang: "Russian".into(),
+                lang_code: "rus".into(),
+                codec: "srt".into(),
+                title: "Netflix".into(),
+                ..Default::default()
+            },
+        ]);
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1, vec!["rus".into()]);
         menu.active_sub = 1; // the second track is the checked one
-        let sel = menu.sel_for_tab(&ps, store.view(), 1);
-        assert_eq!(menu.targets.get(sel as usize).copied(), Some(RowTarget::Sub(1)));
+        menu.rebuild(&ps, store.view(), 1, false);
+        assert_eq!(menu.targets.get(menu.sel() as usize).copied(), Some(RowTarget::Sub(1)));
+        assert_eq!(menu.sel(), sel_for_targets(&menu.targets, 1));
     }
 
     // ---- track_menu: sidecar, tone and Timing rows dispatch to their own outcomes -------------
@@ -1507,44 +1132,27 @@ mod tests {
         crate::player::set_subtitle_offset(0);
         crate::player::restore_subtitle_tone(SubtitleTone::White);
         let ps = crate::route::PlaybackSession::IDLE;
-        let mut store = crate::stores::metadata::MetadataStore::default();
-        assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(
-            crate::metadata::PlayingItem {
-                sid: crate::plex::ServerId::from_raw(0),
-                rk: "rk".into(),
-                show_rk: String::new(),
-                audio: Vec::new(),
-                subs: vec![
-                    crate::metadata::Stream {
-                        id: 41,
-                        index: 0,
-                        lang: "English".into(),
-                        lang_code: "eng".into(),
-                        codec: "srt".into(),
-                        ..Default::default()
-                    },
-                    crate::metadata::Stream {
-                        id: 42,
-                        index: 1,
-                        lang: "French".into(),
-                        lang_code: "fre".into(),
-                        codec: "srt".into(),
-                        external: true,
-                        key: "/library/streams/42.srt".into(),
-                        ..Default::default()
-                    },
-                ],
-                video_fps: 0.0,
-                width: 0,
-                height: 0,
-                bitrate: 0,
-                dovi: Default::default(),
-                markers: Vec::new(),
-                chapters: Vec::new(),
-                blur: None,
+        let store = store_with(vec![
+            crate::metadata::Stream {
+                id: 41,
+                index: 0,
+                lang: "English".into(),
+                lang_code: "eng".into(),
+                codec: "srt".into(),
+                ..Default::default()
             },
-        ))));
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, &[]);
+            crate::metadata::Stream {
+                id: 42,
+                index: 1,
+                lang: "French".into(),
+                lang_code: "fre".into(),
+                codec: "srt".into(),
+                external: true,
+                key: "/library/streams/42.srt".into(),
+                ..Default::default()
+            },
+        ]);
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
         // Off(0), Timing(1), Color(2), English(3), French sidecar(4) — "Other languages" sorts
         // English before French, and the settings section always precedes it.
         assert_eq!(
@@ -1560,26 +1168,28 @@ mod tests {
 
         menu.focus_row(4);
         assert_eq!(
-            menu.on_ok(&ps, store.view()),
-            Some(TrackOk::Commit(TrackCommit::Subtitle {
-                render_ordinal: -1,
-                stream_id: 42,
-                sidecar_key: Some("/library/streams/42.srt".into()),
-                sidecar_codec: "srt".into(),
-            }))
+            menu.on_ok(store.view()),
+            TrackOk::Commit {
+                commit: TrackCommit::Subtitle {
+                    render_ordinal: -1,
+                    stream_id: 42,
+                    sidecar_key: Some("/library/streams/42.srt".into()),
+                    sidecar_codec: "srt".into(),
+                },
+                keep_open: false,
+            }
         );
 
         menu.focus_row(2);
         assert_eq!(
-            menu.on_ok(&ps, store.view()),
-            Some(TrackOk::Commit(TrackCommit::SubtitleTone(SubtitleTone::LADDER[1])))
+            menu.on_ok(store.view()),
+            TrackOk::Commit { commit: TrackCommit::SubtitleTone(SubtitleTone::LADDER[1]), keep_open: true }
         );
-        assert!(menu.ok_keeps_open());
 
         menu.focus_row(1);
         assert_eq!(
-            menu.on_ok(&ps, store.view()),
-            Some(TrackOk::OpenTiming),
+            menu.on_ok(store.view()),
+            TrackOk::OpenTiming,
             "the sidecar is now the active subtitle, so Timing is no longer inert"
         );
     }
@@ -1593,7 +1203,7 @@ mod tests {
         crate::player::restore_subtitle_tone(SubtitleTone::White);
         let ps = crate::route::PlaybackSession::IDLE;
         let store = crate::stores::metadata::MetadataStore::default();
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, &[]);
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
         let color_row = menu
             .targets
             .iter()
@@ -1604,10 +1214,12 @@ mod tests {
         let ladder = SubtitleTone::LADDER;
         for want in ladder.iter().cycle().skip(1).take(ladder.len()) {
             assert_eq!(
-                menu.on_ok(&ps, store.view()),
-                Some(TrackOk::Commit(TrackCommit::SubtitleTone(*want)))
+                menu.on_ok(store.view()),
+                TrackOk::Commit { commit: TrackCommit::SubtitleTone(*want), keep_open: true }
             );
-            assert!(menu.ok_keeps_open());
+            // the read-out is re-written in place on the focused row
+            let row = menu.table.row_mut(color_row as c_int).expect("Color row");
+            assert_eq!(row.value.as_deref(), Some(tone_label(*want)));
         }
     }
 
@@ -1619,32 +1231,15 @@ mod tests {
         crate::player::sidecar::reset();
         crate::player::set_subtitle_offset(0);
         let ps = crate::route::PlaybackSession::IDLE;
-        let mut store = crate::stores::metadata::MetadataStore::default();
-        assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(
-            crate::metadata::PlayingItem {
-                sid: crate::plex::ServerId::from_raw(0),
-                rk: "rk".into(),
-                show_rk: String::new(),
-                audio: Vec::new(),
-                subs: vec![crate::metadata::Stream {
-                    id: 1,
-                    index: 0,
-                    lang: "English".into(),
-                    lang_code: "eng".into(),
-                    codec: "srt".into(),
-                    ..Default::default()
-                }],
-                video_fps: 0.0,
-                width: 0,
-                height: 0,
-                bitrate: 0,
-                dovi: Default::default(),
-                markers: Vec::new(),
-                chapters: Vec::new(),
-                blur: None,
-            },
-        ))));
-        let mut menu = TrackMenuState::new(&ps, store.view(), 1, &[]);
+        let store = store_with(vec![crate::metadata::Stream {
+            id: 1,
+            index: 0,
+            lang: "English".into(),
+            lang_code: "eng".into(),
+            codec: "srt".into(),
+            ..Default::default()
+        }]);
+        let mut menu = TrackMenuState::new(&ps, store.view(), 1, Vec::new());
         let timing_row = menu
             .targets
             .iter()
@@ -1652,7 +1247,7 @@ mod tests {
             .expect("Timing row");
 
         menu.focus_row(timing_row as c_int);
-        assert_eq!(menu.on_ok(&ps, store.view()), None, "subtitles are Off: inert");
+        assert_eq!(menu.on_ok(store.view()), TrackOk::Inert, "subtitles are Off: inert");
 
         let sub_row = menu
             .targets
@@ -1660,10 +1255,10 @@ mod tests {
             .position(|t| matches!(t, RowTarget::Sub(_)))
             .expect("a track row");
         menu.focus_row(sub_row as c_int);
-        menu.on_ok(&ps, store.view());
+        menu.on_ok(store.view());
 
         menu.focus_row(timing_row as c_int);
-        assert_eq!(menu.on_ok(&ps, store.view()), Some(TrackOk::OpenTiming));
+        assert_eq!(menu.on_ok(store.view()), TrackOk::OpenTiming);
     }
 
     // ---- format_offset ---------------------------------------------------------------------------
@@ -1838,8 +1433,8 @@ mod localized_offset_tests {
             (Preference::Be, "be-BY", "-0,1 с", "+1,3 с"),
         ] {
             let locale = LocaleContext::resolve(preference, None, Some(region), None, None);
-            assert_eq!(super::format_offset_in(-100, &locale), negative);
-            assert_eq!(super::format_offset_in(1300, &locale), positive);
+            assert_eq!(crate::ui::timing_capsule::offset_seconds_in(-100, true, &locale), negative);
+            assert_eq!(crate::ui::timing_capsule::offset_seconds_in(1300, true, &locale), positive);
         }
     }
 }

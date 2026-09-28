@@ -448,7 +448,7 @@ fn ok_on_the_dim_timing_row_while_off_keeps_the_panel_open() {
 /// `timing_returns_open_timing_once_a_subtitle_is_active_and_is_inert_while_off`); `activate`'s
 /// Tracks arm spends that by dismissing the Tracks panel and asking for the capsule to open in its
 /// place, WITHOUT the read-time `ExtendHud` every ordinary commit raises — the capsule owns its own
-/// visible time (it hides the HUD outright, `OverlayKind::hides_hud`), so extending a HUD it is
+/// visible time (it hides the HUD outright, `OverlayKind::hud_policy`), so extending a HUD it is
 /// about to hide would be dead motion.
 #[test]
 fn open_timing_dismisses_tracks_and_opens_the_capsule_with_no_extend_hud() {
@@ -458,28 +458,14 @@ fn open_timing_dismisses_tracks_and_opens_the_capsule_with_no_extend_hud() {
     let ps = crate::route::PlaybackSession::IDLE;
     let mut store = crate::stores::metadata::MetadataStore::default();
     assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(
-        crate::metadata::PlayingItem {
-            sid: crate::plex::ServerId::from_raw(0),
-            rk: "rk".into(),
-            show_rk: String::new(),
-            audio: Vec::new(),
-            subs: vec![crate::metadata::Stream {
-                id: 1,
-                index: 0,
-                lang: "English".into(),
-                lang_code: "eng".into(),
-                codec: "srt".into(),
-                ..Default::default()
-            }],
-            video_fps: 0.0,
-            width: 0,
-            height: 0,
-            bitrate: 0,
-            dovi: Default::default(),
-            markers: Vec::new(),
-            chapters: Vec::new(),
-            blur: None,
-        },
+        crate::metadata::PlayingItem::with_subs(vec![crate::metadata::Stream {
+            id: 1,
+            index: 0,
+            lang: "English".into(),
+            lang_code: "eng".into(),
+            codec: "srt".into(),
+            ..Default::default()
+        }]),
     ))));
     let mut page = PlayerOverlayScreen::new(&ps, store.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
     let (sub_row, timing_row) = {
@@ -546,7 +532,7 @@ fn timing_left_and_right_commit_subtitle_offset() {
 
 /// OK and BACK both close the capsule (`TimingCapsule::key`'s `Key::Ok | Key::Back` arm) —
 /// dismissing the surface with the offset kept: neither key raises a reset commit, and neither
-/// asks for anything else (the transport staying down is `PlayerScreen::set_hud_hidden`'s, for
+/// asks for anything else (the transport staying down is `PlayerScreen::set_hud_policy`'s, for
 /// every way the surface can close).
 #[test]
 fn timing_ok_and_back_close_and_keep_the_offset() {
@@ -580,7 +566,7 @@ fn timing_forwards_transport_and_leaves_the_capsule_up() {
 }
 
 /// No `ExtendHud` is ever raised while the capsule is the active panel's `Tick` — the capsule
-/// itself hides the HUD (`OverlayKind::hides_hud`), so keeping it "alive" for the transport's own
+/// itself hides the HUD (`OverlayKind::extends_hud` is false), so keeping it "alive" for the transport's own
 /// read time would fight that.
 #[test]
 fn timing_ticks_do_not_extend_the_hud() {
@@ -763,4 +749,23 @@ fn every_panel_row_the_dpad_reaches_is_clickable_with_the_pointer() {
         let gaps = pointer_gaps(&mut map, ENTRY, &rows);
         assert!(gaps.is_empty(), "{kind:?}: rows the pointer cannot click:\n{}", gaps.join("\n"));
     }
+}
+
+/// **`OverlayKind::ALL` lists every kind exactly once**, and the census derived from it cannot
+/// silently miss a new one: the `match` below names every variant with no wildcard, so adding a
+/// variant fails to compile HERE — the reminder to add it to `ALL` as well — and the slots `ALL`
+/// covers must be exactly `0..ALL.len()`, which a kind left out of `ALL` would break.
+#[test]
+fn every_kind_is_listed_once() {
+    let listed = |k: OverlayKind| match k {
+        OverlayKind::Tracks { .. }
+        | OverlayKind::Info
+        | OverlayKind::Chapters
+        | OverlayKind::More { .. }
+        | OverlayKind::Timing => OverlayKind::ALL.iter().any(|a| a.slot() == k.slot()),
+    };
+    let mut slots: Vec<u8> = OverlayKind::ALL.iter().map(|k| k.slot()).collect();
+    slots.sort_unstable();
+    assert_eq!(slots, (0..OverlayKind::ALL.len() as u8).collect::<Vec<_>>());
+    assert!(OverlayKind::ALL.into_iter().all(listed));
 }

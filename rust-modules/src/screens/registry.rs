@@ -1793,7 +1793,7 @@ where
 #[cfg(test)]
 pub(crate) fn every_surface_arg() -> Vec<AppArg> {
     use crate::screens::player::overlay::{OverlayKind, PlayerOverlayArg};
-    let args = vec![
+    let mut args = vec![
         AppArg::LibraryMenu(LibraryMenuArg {
             host: crate::ui::machine::InstanceId(1),
             target: crate::stores::browse::SectionAddress {
@@ -1828,16 +1828,11 @@ pub(crate) fn every_surface_arg() -> Vec<AppArg> {
         AppArg::AboutPanel,
         AppArg::PersonBio,
         AppArg::CollectionAbout,
-        // The five panels are ONE screen with five kinds, and each answers a different
-        // `Screen::name` — so every kind is listed, not one representative.
-        AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Tracks { tab: 0 } }),
-        AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Info }),
-        AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Chapters }),
-        AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::More { quality: false } }),
-        AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Timing }),
-        AppArg::Settings(SettingsPage::Root),
-        AppArg::FirstRunConsent(0),
     ];
+    // The player's panels are ONE screen with several kinds, and each answers a different
+    // `Screen::name` — so every kind is listed, not one representative.
+    args.extend(OverlayKind::ALL.map(|kind| AppArg::PlayerOverlay(PlayerOverlayArg { kind })));
+    args.extend([AppArg::Settings(SettingsPage::Root), AppArg::FirstRunConsent(0)]);
     for a in &args {
         match a {
             AppArg::LibraryMenu(_)

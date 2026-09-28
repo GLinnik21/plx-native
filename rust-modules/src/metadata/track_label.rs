@@ -299,6 +299,14 @@ pub(crate) fn parse(name: &str, lang: &str, forced_flag: bool, sdh_flag: bool) -
     SubLabel { source, kind }
 }
 
+/// **A track's `(forced, SDH)` pair**: the structured `Stream.forced`/`Stream.sdh` flags, OR'd with
+/// whatever the parsed [`SubLabel::kind`] says. The one rule for the callers that show both halves
+/// (the Tracks panel's detail line, which lists a forced SDH file as both); `parse` itself keeps
+/// only the single highest-priority [`Kind`].
+pub(crate) fn flags(label: &SubLabel, forced: bool, sdh: bool) -> (bool, bool) {
+    (forced || label.kind == Kind::Forced, sdh || label.kind == Kind::Sdh)
+}
+
 // ---- title merge (moved from `ui::track_menu::track_name`) ----------------------------------
 
 /// **The one name a track row shows, from the two places a name can come from.**
@@ -548,7 +556,8 @@ mod tests {
     #[test]
     fn sub_sets_homealone_the_floor_case() {
         // nothing anywhere: no title, no flags — every track reads as an unmarked Full with an
-        // empty source, which is the fallback-label floor `sub_layout` has to draw something for.
+        // empty source, which is the fallback-label floor `ui::track_menu::in_lang_row` has to
+        // draw something for.
         let l = parse("", "", false, false);
         assert_eq!(l.source, "");
         assert_eq!(l.kind, Kind::Full);

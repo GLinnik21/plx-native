@@ -283,13 +283,7 @@ mod heartbeat_word_tests {
         // in the derived alphabet with everything else — asserted here because it is the one place
         // a reader can see that the panel words and the family words come from ONE source now.
         use crate::screens::player::overlay::OverlayKind;
-        for kind in [
-            OverlayKind::Tracks { tab: 0 },
-            OverlayKind::Info,
-            OverlayKind::Chapters,
-            OverlayKind::More { quality: false },
-            OverlayKind::Timing,
-        ] {
+        for kind in OverlayKind::ALL {
             assert!(
                 overlays.contains(&kind.word()),
                 "{kind:?} prints {:?}, which the mounter's own alphabet must carry",

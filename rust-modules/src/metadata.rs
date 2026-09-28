@@ -5,6 +5,7 @@
 //! buffers from the C port are gone.
 use std::os::raw::c_int;
 pub(crate) mod record;
+pub(crate) mod sub_layout;
 pub(crate) mod track_label;
 use std::panic::catch_unwind;
 
@@ -2227,6 +2228,29 @@ pub(crate) struct PlayingItem {
     /// (`screen::Scrim::over_video`).
     pub(crate) blur: Option<[[f32; 3]; 4]>,
 }
+
+#[cfg(test)]
+impl PlayingItem {
+    /// A playing item on server slot 0 carrying only `subs` — the fixture the track-menu and
+    /// overlay tests install, where nothing but the subtitle list is read.
+    pub(crate) fn with_subs(subs: Vec<Stream>) -> Self {
+        PlayingItem {
+            sid: crate::plex::ServerId::from_raw(0),
+            rk: "rk".into(),
+            show_rk: String::new(),
+            audio: Vec::new(),
+            subs,
+            video_fps: 0.0,
+            width: 0,
+            height: 0,
+            bitrate: 0,
+            dovi: Default::default(),
+            markers: Vec::new(),
+            chapters: Vec::new(),
+            blur: None,
+        }
+    }
+}
 /// Load the playing-item track store for `rk` at play time (route::build_stream). Reuses the
 /// loaded detail's streams when it IS this item (no extra GET on the play path — the same
 /// optimization the old `audio_tracks` fetch had); otherwise one metadata fetch. An empty `rk`
@@ -2405,7 +2429,7 @@ pub(crate) fn sub_render_ordinal(subs: &[Stream], i: usize) -> i32 {
 }
 
 // ---- language matching (moved from `route::plan`, §1) -------------------------------------
-// `route::plan`'s audio/subtitle preference ladder and `ui::track_menu`'s "yours"/"Other
+// `route::plan`'s audio/subtitle preference ladder and `metadata::sub_layout`'s "yours"/"Other
 // languages" grouping both need to know whether two language tags name the same language, so
 // this lives in the data layer both sides already name rather than in either one's own module.
 
@@ -2598,21 +2622,38 @@ const LANG_SPELLINGS: &[&[&str]] = &[
     &["zu", "zul"],
 ];
 
+/// **The one canonical spelling of a language tag's LANGUAGE**, the key [`lang_matches`] compares
+/// by: the primary subtag, lower-cased, folded onto the first spelling of its [`LANG_SPELLINGS`]
+/// row(s) when it has one (`"fr-CA"`, `"fre"` and `"fra"` all answer `"fr"`), or itself when it
+/// has none. `None` for an empty tag, which names no language and so matches nothing. A caller that
+/// groups many tracks computes this ONCE per track and buckets by it, rather than asking
+/// `lang_matches` pairwise.
+pub(crate) fn lang_key(tag: &str) -> Option<std::borrow::Cow<'static, str>> {
+    let primary = tag.trim().split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
+    if primary.is_empty() {
+        return None;
+    }
+    // The smallest spelling over EVERY row that lists it, not the first row's head: Norwegian is
+    // listed both as `nb`/`nob` and as `no`/`nor`/`nb`/`nob`, and all four must share one key.
+    let canonical = LANG_SPELLINGS
+        .iter()
+        .filter(|spellings| spellings.contains(&primary.as_str()))
+        .flat_map(|spellings| spellings.iter().copied())
+        .min();
+    Some(match canonical {
+        Some(spelling) => std::borrow::Cow::Borrowed(spelling),
+        None => std::borrow::Cow::Owned(primary),
+    })
+}
+
 /// Do two language tags name the same language? Either side may be a Plex preference
 /// (`"hu-HU"`, `"pt-BR"`) or a stream's ISO-639-2 `languageCode` (`"hun"`, `"ger"`/`"deu"`), so the
 /// same test serves a preference against a stream AND a picked stream against its siblings (a
 /// `fre` pick and a `fra` sibling are one language). Only the primary subtag counts — a stream
-/// says "Portuguese", never "Brazilian". An empty tag matches nothing.
+/// says "Portuguese", never "Brazilian". An empty tag matches nothing. Same [`lang_key`] = same
+/// language.
 pub(crate) fn lang_matches(a: &str, b: &str) -> bool {
-    let primary = |t: &str| t.trim().split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
-    let (a, b) = (primary(a), primary(b));
-    if a.is_empty() || b.is_empty() {
-        return false;
-    }
-    a == b
-        || LANG_SPELLINGS
-            .iter()
-            .any(|spellings| spellings.contains(&a.as_str()) && spellings.contains(&b.as_str()))
+    matches!((lang_key(a), lang_key(b)), (Some(a), Some(b)) if a == b)
 }
 
 #[cfg(test)]
@@ -2624,6 +2665,33 @@ mod lang_matches_tests {
         assert!(lang_matches("fr-CA", "fra"));
         assert!(lang_matches("fr-CA", "fre"));
         assert!(!lang_matches("fr-CA", "eng"));
+    }
+
+    /// **`lang_key` agrees with the pairwise row rule it replaced** — two spellings share a key
+    /// exactly when some [`LANG_SPELLINGS`](super::LANG_SPELLINGS) row lists both (Norwegian's
+    /// overlapping rows included).
+    #[test]
+    fn lang_key_agrees_with_the_pairwise_row_rule() {
+        let rows = super::LANG_SPELLINGS;
+        // every pair a row lists is one language…
+        for row in rows {
+            for a in row.iter() {
+                for b in row.iter() {
+                    assert!(lang_matches(a, b), "{a} vs {b}");
+                }
+            }
+        }
+        // …and two rows that share no spelling are two
+        for r1 in rows {
+            for r2 in rows {
+                if !r1.iter().any(|a| r2.contains(a)) {
+                    assert!(!lang_matches(r1[0], r2[0]), "{} vs {}", r1[0], r2[0]);
+                }
+            }
+        }
+        assert_eq!(super::lang_key("fre").as_deref(), Some("fr"));
+        assert_eq!(super::lang_key("xx-YY").as_deref(), Some("xx"));
+        assert_eq!(super::lang_key("  "), None);
     }
 }
 

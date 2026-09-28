@@ -4,6 +4,7 @@
 use super::*;
 use crate::ui::machine::Chrome;
 use crate::ui::screen::ScreenArg;
+use crate::screens::player::HudPolicy;
 #[allow(unused_imports)]
 use super::test_support::*;
 use super::test_support::{frame, every_route};
@@ -727,13 +728,7 @@ fn a_player_panel_is_a_surface_on_the_players_own_page_and_leaves_the_instance_a
     let instance = d.nav.top_page().and_then(|e| e.inst.as_ref()).map(|i| i.id);
     assert!(instance.is_some(), "…with a live instance");
     let depth = d.nav.tabs.stack.depth();
-    for kind in [
-        crate::screens::player::overlay::OverlayKind::Tracks { tab: 1 },
-        crate::screens::player::overlay::OverlayKind::Info,
-        crate::screens::player::overlay::OverlayKind::Chapters,
-        crate::screens::player::overlay::OverlayKind::More { quality: false },
-        crate::screens::player::overlay::OverlayKind::Timing,
-    ] {
+    for kind in crate::screens::player::overlay::OverlayKind::ALL {
         open_player_overlay(&ps, crate::stores::metadata::MetadataStore::default().view(), &mut d, kind);
         frame(&mut d, &mut rig, AppArg::Player, tick(1), vec![]);
         assert_eq!(player_overlay_kind(&d), Some(kind), "{kind:?} is up");
@@ -773,13 +768,7 @@ fn same_instance_reads_the_playback_and_not_the_overlay() {
     use crate::ui::screen::ScreenArg;
     let player = AppArg::Player;
     assert!(player.same_instance(&AppArg::Player));
-    for kind in [
-        OverlayKind::Tracks { tab: 0 },
-        OverlayKind::Info,
-        OverlayKind::Chapters,
-        OverlayKind::More { quality: false },
-        OverlayKind::Timing,
-    ] {
+    for kind in OverlayKind::ALL {
         let panel = AppArg::PlayerOverlay(PlayerOverlayArg { kind });
         assert!(
             !player.same_instance(&panel) && !panel.same_instance(&player),
@@ -805,9 +794,9 @@ fn same_instance_reads_the_playback_and_not_the_overlay() {
 /// a fresh `Timing` one in the same beat this test drives by hand — `open_player_overlay` +
 /// `dismiss_player_overlays` + `open_player_overlay` mirrors exactly what that arm does, one call
 /// each. The frame in between is the one plan §4 calls out by name: Tracks is `Closing` while
-/// Timing is `Opening`, and `bridge::player_overlay_hud_state`'s `(hud_hidden, lifted)` must read
-/// `(true, false)` right there — Timing's own `hides_hud` outranking Tracks' still-fading `lifted`
-/// — never a frame where the HUD is neither lifted nor hidden, and never one where both panels
+/// Timing is `Opening`, and `bridge::player_hud_policy` must read `HudPolicy::Hidden` right there —
+/// Timing's own `hud_policy` outranking Tracks' still-fading `Lifted` — never a frame where the
+/// HUD is neither lifted nor hidden, and never one where both panels
 /// still count as "up" for `player_overlay_kind`'s purposes.
 #[test]
 fn tracks_to_timing_hands_off_without_stacking_a_second_surface() {
@@ -847,9 +836,9 @@ fn tracks_to_timing_hands_off_without_stacking_a_second_surface() {
         "Timing is up: {surfaces:?}",
     );
     assert_eq!(
-        crate::app::bridge::player_overlay_hud_state(&d),
-        (true, false),
-        "hud_hidden outranks Tracks' own still-fading lifted, exactly this one frame",
+        crate::app::bridge::player_hud_policy(&d),
+        HudPolicy::Hidden,
+        "Hidden outranks Tracks' own still-fading Lifted, exactly this one frame",
     );
 
     // Let the fade finish: Tracks disappears and Timing alone remains the input owner.
@@ -860,7 +849,7 @@ fn tracks_to_timing_hands_off_without_stacking_a_second_surface() {
     assert_eq!(left.len(), 1, "exactly one player-overlay surface once the fade settles");
 }
 
-/// **`player_overlay_hud_state` over every phase a surface can be in.** Opening, Open and
+/// **`player_hud_policy` over every phase a surface can be in.** Opening, Open and
 /// Closing all count (a closing panel is still on screen); Hidden never does. A Tracks panel
 /// alone lifts the captions and leaves the transport alone; the capsule in ANY visible phase
 /// hides the transport and suppresses the lift; and a surface that is not a player panel at all
@@ -885,26 +874,27 @@ fn the_hud_state_helper_reads_every_phase_of_every_surface() {
     let tracks = find(&d, |a| matches!(a, AppArg::PlayerOverlay(p) if matches!(p.kind, OverlayKind::Tracks { .. })));
     let timing = find(&d, |a| matches!(a, AppArg::PlayerOverlay(p) if p.kind == OverlayKind::Timing));
     let other = find(&d, |a| !matches!(a, AppArg::PlayerOverlay(_)));
+    use HudPolicy::{Lifted, Normal};
     use Phase::{Closing, Hidden, Open, Opening};
     for (tr, ti, ot, want) in [
-        (Hidden, Hidden, Hidden, (false, false)),
-        (Open, Hidden, Hidden, (false, true)),
-        (Opening, Hidden, Hidden, (false, true)),
-        (Closing, Hidden, Hidden, (false, true)),
-        (Hidden, Open, Hidden, (true, false)),
-        (Hidden, Opening, Hidden, (true, false)),
-        (Hidden, Closing, Hidden, (true, false)),
-        (Closing, Opening, Hidden, (true, false)),
-        (Open, Closing, Hidden, (true, false)),
-        (Hidden, Hidden, Open, (false, true)),
-        (Hidden, Hidden, Closing, (false, true)),
-        (Hidden, Open, Open, (true, false)),
+        (Hidden, Hidden, Hidden, Normal),
+        (Open, Hidden, Hidden, Lifted),
+        (Opening, Hidden, Hidden, Lifted),
+        (Closing, Hidden, Hidden, Lifted),
+        (Hidden, Open, Hidden, HudPolicy::Hidden),
+        (Hidden, Opening, Hidden, HudPolicy::Hidden),
+        (Hidden, Closing, Hidden, HudPolicy::Hidden),
+        (Closing, Opening, Hidden, HudPolicy::Hidden),
+        (Open, Closing, Hidden, HudPolicy::Hidden),
+        (Hidden, Hidden, Open, Lifted),
+        (Hidden, Hidden, Closing, Lifted),
+        (Hidden, Open, Open, HudPolicy::Hidden),
     ] {
         d.nav.modals.surfaces[tracks].phase = tr;
         d.nav.modals.surfaces[timing].phase = ti;
         d.nav.modals.surfaces[other].phase = ot;
         assert_eq!(
-            crate::app::bridge::player_overlay_hud_state(&d),
+            crate::app::bridge::player_hud_policy(&d),
             want,
             "tracks={tr:?} timing={ti:?} other={ot:?}",
         );

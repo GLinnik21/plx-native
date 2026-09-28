@@ -2262,14 +2262,13 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // Both subtitle paths lift clear of the transport for the same reason and
                         // by the same test — an open track menu counts, since that is exactly when
                         // the user is reading the bottom of the screen. The Timing capsule is the
-                        // one panel that instead HIDES the transport outright (`hud_hidden`
-                        // outranks `lifted` — see `bridge::player_overlay_hud_state`).
-                        let (hud_hidden, lifted) = super::bridge::player_overlay_hud_state(&app.pages);
+                        // one panel that instead HIDES the transport outright (`HudPolicy::Hidden`
+                        // outranks `Lifted` — see `bridge::player_hud_policy`).
+                        let hud_policy = super::bridge::player_hud_policy(&app.pages);
                         if let Some(player) = super::bridge::player_mut(&mut app.pages) {
                             player.busy = busy;
                             player.transport = bare_middle;
-                            player.set_hud_hidden(hud_hidden);
-                            player.lifted = lifted;
+                            player.set_hud_policy(hud_policy);
                         }
                         // THE PAGE, and its panels: `Dispatcher::draw(.., true)` runs the page
                         // pass (subtitles, the transport, the read-out — `PlayerScreen::draw`) and
@@ -2989,9 +2988,7 @@ mod lifecycle_regression_tests {
                 menu_tried: Default::default(),
                 menupick_tried: Default::default(),
                 menupick_row: Default::default(),
-                subtiming_tried: Default::default(),
-                subtiming_sid: Default::default(),
-                subtiming_armed_at: Default::default(),
+                subtiming: Default::default(),
                 pause_tried: Default::default(),
                 pause_script: Default::default(),
                 pause_resume_at: Default::default(),

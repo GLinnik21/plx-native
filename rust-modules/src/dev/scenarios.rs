@@ -134,17 +134,8 @@ pub(crate) struct Scenarios {
     /// old doc: the panel opens and is picked on separate frames, so the pick is carried here until
     /// the surface it names exists.
     pub(crate) menupick_row: Option<c_int>,
-    /// `/tmp/plxnative-subtiming` — see [`subtiming_arm`]'s own doc: `true` once stage 1 (the
-    /// subtitle commit) has fired, so a later frame does not commit a second time.
-    pub(crate) subtiming_tried: bool,
-    /// Stage 1's committed stream id, held until `route::cur_sub_sid` agrees — stage 2's own
-    /// gate — then cleared once the capsule has been asked to open.
-    pub(crate) subtiming_sid: Option<i64>,
-    /// The frame clock at which [`subtiming_sid`](Self::subtiming_sid) was armed — stage 2's
-    /// deadline: if `route::cur_sub_sid` has not agreed within ~3 s of this, the arm opens the
-    /// capsule anyway rather than waiting on a commit that may never land (see `subtiming_arm`'s
-    /// own doc for why a commit can silently not converge).
-    pub(crate) subtiming_armed_at: u32,
+    /// `/tmp/plxnative-subtiming` — see [`subtiming_arm`] and [`Subtiming`].
+    pub(crate) subtiming: Subtiming,
     pub(crate) pause_tried: bool,
     /// An armed Pause edge: (due at, hold ms, the media position it also waits for).
     pub(crate) pause_script: Option<(u32, Option<u32>, Option<u32>)>,
@@ -1464,7 +1455,7 @@ fn menupick_arm(app: &mut App, fr: &mut Frame) {
         let meta = app.bridge.metadata_view();
         match crate::app::bridge::player_overlay_mut(&mut app.pages) {
             Some(surface) => {
-                match surface.pick_track_row(&app.player.session, meta, row) {
+                match surface.pick_track_row(meta, row) {
                     Some(commit) => crate::app::playback::commit_track(&mut app.player.session, commit),
                     // The menu's own on_ok treats picking the already-active row as a no-op: no
                     // commit, no route transition line. Without this, a manifest case whose row
@@ -1476,6 +1467,29 @@ fn menupick_arm(app: &mut App, fr: &mut Frame) {
             None => app.scenarios.menupick_row = Some(row),
         }
     }
+}
+
+/// `/tmp/plxnative-subtiming`'s own state across frames — see [`subtiming_arm`].
+#[derive(Debug, Default)]
+pub(crate) struct Subtiming {
+    /// `true` once stage 1 (the subtitle commit) has fired, so a later frame does not commit a
+    /// second time.
+    tried: bool,
+    /// Stage 1's commit, held until `route::cur_sub_sid` agrees — stage 2's own gate — then
+    /// cleared once the capsule has been asked to open.
+    pending: Option<SubtimingPending>,
+}
+
+/// A stage-1 commit stage 2 is waiting on.
+#[derive(Debug, Clone, Copy)]
+struct SubtimingPending {
+    /// The committed stream id.
+    sid: i64,
+    /// The frame clock at which it was armed — stage 2's deadline: if `route::cur_sub_sid` has not
+    /// agreed within ~3 s of this, the arm opens the capsule anyway rather than waiting on a commit
+    /// that may never land (see `subtiming_arm`'s own doc for why a commit can silently not
+    /// converge).
+    armed_at: u32,
 }
 
 /// [`subtiming_arm`]'s pure stage-2 decision: given the frame clock, when stage 1 armed (committed
@@ -1530,14 +1544,15 @@ fn subtiming_step(now: u32, armed_at: u32, cur_sid: i64, want_sid: i64) -> Subti
 /// (open) or a 3 s deadline has passed without it (open anyway, logged as a mismatch) — see its own
 /// doc for why an unbounded wait is not acceptable. No `pin_headless_hud` call in either path,
 /// because the production capsule frame hides the HUD rather than pinning it
-/// (`OverlayKind::hides_hud`, `PlayerScreen::set_hud_hidden`).
+/// (`OverlayKind::hud_policy`, `PlayerScreen::set_hud_policy`).
 fn subtiming_arm(app: &mut App, fr: &mut Frame) {
-    if let Some(want_sid) = app.scenarios.subtiming_sid {
+    use crate::metadata::sub_layout::is_image_sub_codec;
+    if let Some(SubtimingPending { sid: want_sid, armed_at }) = app.scenarios.subtiming.pending {
         let cur_sid = crate::route::cur_sub_sid(&app.player.session);
-        match subtiming_step(fr.now, app.scenarios.subtiming_armed_at, cur_sid, want_sid) {
+        match subtiming_step(fr.now, armed_at, cur_sid, want_sid) {
             SubtimingStep::Wait => {}
             step => {
-                app.scenarios.subtiming_sid = None;
+                app.scenarios.subtiming.pending = None;
                 if step == SubtimingStep::OpenMismatch {
                     crate::log(&format!(
                         "subtiming: opened (sid mismatch cur={cur_sid} want={want_sid})"
@@ -1545,17 +1560,12 @@ fn subtiming_arm(app: &mut App, fr: &mut Frame) {
                 } else {
                     crate::log("subtiming: opened");
                 }
-                crate::app::bridge::open_player_overlay(
-                    &app.player.session,
-                    app.bridge.metadata_view(),
-                    &mut app.pages,
-                    crate::screens::player::overlay::OverlayKind::Timing,
-                );
+                open_timing(app);
             }
         }
         return;
     }
-    if app.scenarios.subtiming_tried || !crate::dev::flag("subtiming") {
+    if app.scenarios.subtiming.tried || !crate::dev::flag("subtiming") {
         return;
     }
     if !matches!(app.route(), AppArg::Player)
@@ -1568,29 +1578,23 @@ fn subtiming_arm(app: &mut App, fr: &mut Frame) {
     let idx = item
         .subs
         .iter()
-        .position(|s| !crate::ui::track_menu::is_image_sub_codec(&s.codec) && s.lang_code == "eng")
-        .or_else(|| item.subs.iter().position(|s| !crate::ui::track_menu::is_image_sub_codec(&s.codec)));
+        .position(|s| !is_image_sub_codec(&s.codec) && s.lang_code == "eng")
+        .or_else(|| item.subs.iter().position(|s| !is_image_sub_codec(&s.codec)));
     let Some(i) = idx else {
         crate::log("subtiming: no text sub");
-        app.scenarios.subtiming_tried = true;
+        app.scenarios.subtiming.tried = true;
         return;
     };
     let stream_id = item.subs[i].id;
     let render_ordinal = crate::metadata::sub_render_ordinal(&item.subs, i);
-    app.scenarios.subtiming_tried = true;
+    app.scenarios.subtiming.tried = true;
     if crate::route::cur_sub_sid(&app.player.session) == stream_id {
         crate::log(&format!("subtiming: already sid={stream_id} — opened without a commit"));
-        crate::app::bridge::open_player_overlay(
-            &app.player.session,
-            app.bridge.metadata_view(),
-            &mut app.pages,
-            crate::screens::player::overlay::OverlayKind::Timing,
-        );
+        open_timing(app);
         return;
     }
     crate::log(&format!("subtiming: committed sid={stream_id}"));
-    app.scenarios.subtiming_sid = Some(stream_id);
-    app.scenarios.subtiming_armed_at = fr.now;
+    app.scenarios.subtiming.pending = Some(SubtimingPending { sid: stream_id, armed_at: fr.now });
     crate::app::playback::commit_track(
         &mut app.player.session,
         crate::ui::track_menu::TrackCommit::Subtitle {
@@ -1599,6 +1603,16 @@ fn subtiming_arm(app: &mut App, fr: &mut Frame) {
             sidecar_key: None,
             sidecar_codec: String::new(),
         },
+    );
+}
+
+/// Present the Timing capsule on the player page — both of [`subtiming_arm`]'s open paths.
+fn open_timing(app: &mut App) {
+    crate::app::bridge::open_player_overlay(
+        &app.player.session,
+        app.bridge.metadata_view(),
+        &mut app.pages,
+        crate::screens::player::overlay::OverlayKind::Timing,
     );
 }
 

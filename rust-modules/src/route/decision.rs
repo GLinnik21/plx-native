@@ -234,7 +234,7 @@ pub(crate) struct PlaybackSession {
     cur_sub_sid: i64,
     /// The subtitle-language preference this play resolved under — the show's pref if it set one,
     /// else the account's — carried straight from [`super::plan::Plan::sub_pref_lang`] so the
-    /// Subtitles menu's "yours" grouping (`ui::track_menu::sub_layout`) survives a reload.
+    /// Subtitles menu's "yours" grouping (`metadata::sub_layout::sub_sections`) survives a reload.
     cur_sub_pref_lang: Option<String>,
     /// the playing item's Part id (from the part key), so an audio switch can PUT the
     /// server-side stream selection — the transcoder encodes the part's SELECTED audio.
@@ -3873,7 +3873,7 @@ pub(crate) fn cur_sub_sid(ps: &PlaybackSession) -> i64 {
     ps.cur_sub_sid
 }
 /// The subtitle-language preference this play resolved under (show pref, else account pref), as
-/// a BCP-47 code — `ui::track_menu::sub_layout`'s "yours" grouping reads this, never a Plex
+/// a BCP-47 code — `metadata::sub_layout::sub_sections`'s "yours" grouping reads this, never a Plex
 /// account type.
 pub(crate) fn cur_sub_pref_lang(ps: &PlaybackSession) -> Option<&str> {
     ps.cur_sub_pref_lang.as_deref()
