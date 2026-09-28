@@ -208,6 +208,144 @@ pub(crate) fn pickuser_index() -> Option<usize> {
     crate::dev::read("pickuser").and_then(|s| s.parse().ok())
 }
 
+/// `/tmp/plxnative-readout=<case>` — boot straight into a chosen page-filling `Failed` read-out
+/// for the read-out glyph work's own visual verification (spec "1A"), with NO network call and no
+/// account touched: paired with `plxnative-login` (which already forces `BootTo::Login` with no
+/// session), `login_worker_with_output` reads this ONCE at the top of the worker thread and, for
+/// every case named here, skips straight to `auth::output_failed` with a canned caption and
+/// [`crate::telemetry::incident::IncidentContext`] instead of minting a PIN or discovering
+/// anything — the exact same terminal path a real failure reaches, so `LoginScreen`'s `Phase::
+/// Error` draw, `readout_kind` and `readout_glyph` are exercised UNMODIFIED. Every value below is
+/// the one `auth::discovery_failure`'s table would have built for the same cause; see that
+/// function and `telemetry::incident::IncidentContext::readout_glyph`'s doc for why each case maps
+/// to the glyph it does. `Home`, `Library` and `ProfileSwitch` read-outs are NOT covered by this
+/// trigger — they are not reached through the sign-in worker, and short-circuiting their own
+/// stores/session state the same way needs plumbing this pass did not reach; verify a glyph in
+/// that family through `StatusOverlay`'s host geometry tests and its shared `page()` code path
+/// instead (the same function every case here also draws through).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReadoutCase {
+    PinCreate,
+    PinExpired,
+    Authorization,
+    DiscoveryNoServers,
+    DiscoveryRefused,
+    DiscoveryServersSilent,
+    DiscoveryPlexTvDns,
+    DiscoveryPlexTvTls,
+    DiscoveryPlexTvAnswered,
+    DiscoveryPlexTvOther,
+    DiscoveryInsecureOnly,
+    SaveFailed,
+}
+
+pub(crate) fn readout_case() -> Option<ReadoutCase> {
+    crate::dev::read("readout").and_then(|s| match s.trim() {
+        "pin_create" => Some(ReadoutCase::PinCreate),
+        "pin_expired" => Some(ReadoutCase::PinExpired),
+        "authorization" => Some(ReadoutCase::Authorization),
+        "discovery_no_servers" => Some(ReadoutCase::DiscoveryNoServers),
+        "discovery_refused" => Some(ReadoutCase::DiscoveryRefused),
+        "discovery_servers_silent" => Some(ReadoutCase::DiscoveryServersSilent),
+        "discovery_plextv_dns" => Some(ReadoutCase::DiscoveryPlexTvDns),
+        "discovery_plextv_tls" => Some(ReadoutCase::DiscoveryPlexTvTls),
+        "discovery_plextv_answered" => Some(ReadoutCase::DiscoveryPlexTvAnswered),
+        "discovery_plextv_other" => Some(ReadoutCase::DiscoveryPlexTvOther),
+        "discovery_insecure_only" => Some(ReadoutCase::DiscoveryInsecureOnly),
+        "save_failed" => Some(ReadoutCase::SaveFailed),
+        _ => None,
+    })
+}
+
+impl ReadoutCase {
+    /// The canned caption + [`IncidentContext`](crate::telemetry::incident::IncidentContext)
+    /// `login_worker_with_output` feeds `output_failed` in place of the real network calls — see
+    /// [`readout_case`]'s doc.
+    pub(crate) fn canned_login_failure(
+        self,
+    ) -> (&'static str, crate::telemetry::incident::IncidentContext) {
+        use crate::telemetry::incident::{
+            DiscoveryClass, DiscoveryEvidence, DiscoveryTarget, DiscoveryTrigger, IncidentContext,
+            IncidentKind, LinkClass,
+        };
+        fn ctx(kind: IncidentKind) -> IncidentContext {
+            IncidentContext::new(kind, None)
+        }
+        fn plextv(target: DiscoveryTarget) -> DiscoveryEvidence {
+            DiscoveryEvidence { trigger: DiscoveryTrigger::Login, target: Some(target) }
+        }
+        match self {
+            Self::PinCreate => (
+                "Couldn\u{2019}t reach Plex. Check your internet connection, then try again.",
+                ctx(IncidentKind::PinCreate),
+            ),
+            Self::PinExpired => ("Sign-in timed out \u{2014} try again.", ctx(IncidentKind::PinExpired)),
+            Self::Authorization => (
+                "Plex didn't accept this sign-in. Try again.",
+                ctx(IncidentKind::Authorization),
+            ),
+            Self::DiscoveryNoServers => (
+                "This Plex account has no server yet.",
+                ctx(IncidentKind::Discovery(DiscoveryClass::NoServers)),
+            ),
+            Self::DiscoveryRefused => (
+                "Your Plex server refused the connection \u{2014} check its network access settings.",
+                ctx(IncidentKind::Discovery(DiscoveryClass::Refused)),
+            ),
+            Self::DiscoveryServersSilent => {
+                let mut c = ctx(IncidentKind::Discovery(DiscoveryClass::Silent));
+                c.discovery = Some(plextv(DiscoveryTarget::Servers));
+                (
+                    "plex.tv listed your servers, but none of them answered. Make sure your Plex \
+                     Media Server is on and online, then try again.",
+                    c,
+                )
+            }
+            Self::DiscoveryPlexTvDns => {
+                let mut c = ctx(IncidentKind::Discovery(DiscoveryClass::Silent));
+                c.link = LinkClass::Dns;
+                c.discovery = Some(plextv(DiscoveryTarget::PlexTv));
+                ("This TV couldn't find plex.tv, so your servers weren't checked.", c)
+            }
+            Self::DiscoveryPlexTvTls => {
+                let mut c = ctx(IncidentKind::Discovery(DiscoveryClass::Silent));
+                c.link = LinkClass::Tls;
+                c.discovery = Some(plextv(DiscoveryTarget::PlexTv));
+                (
+                    "This TV couldn't make a secure connection to plex.tv. Check the TV's date and \
+                     time, then try again.",
+                    c,
+                )
+            }
+            Self::DiscoveryPlexTvAnswered => {
+                let mut c = ctx(IncidentKind::Discovery(DiscoveryClass::Silent));
+                c.link = LinkClass::Answered5xx;
+                c.discovery = Some(plextv(DiscoveryTarget::PlexTv));
+                (
+                    "plex.tv is having trouble right now, so your servers weren't checked. Try \
+                     again in a few minutes.",
+                    c,
+                )
+            }
+            Self::DiscoveryPlexTvOther => {
+                let mut c = ctx(IncidentKind::Discovery(DiscoveryClass::Silent));
+                c.discovery = Some(plextv(DiscoveryTarget::PlexTv));
+                ("This TV couldn't reach plex.tv, so your servers weren't checked.", c)
+            }
+            Self::DiscoveryInsecureOnly => (
+                "This server only offers an unencrypted connection.",
+                ctx(IncidentKind::Discovery(DiscoveryClass::InsecureOnly)),
+            ),
+            // The real "Couldn't save your sign-in" warning arrives through a different path
+            // (`persistence_warning`, drawn by `LoginScreen::draw_warning`) — this case takes the
+            // ordinary `Phase::Error` route instead, which draws a different caption ("Couldn't
+            // sign in") but the SAME page-placed `Failed` layout and the SAME `KeyBadgeAlert`
+            // glyph, which is the only thing this trigger exists to show.
+            Self::SaveFailed => ("Couldn\u{2019}t sign in", ctx(IncidentKind::SaveFailed)),
+        }
+    }
+}
+
 /// `/tmp/plxnative-logintest` — validate the plex.tv account path end to end on the device.
 pub(crate) fn arm_logintest() {
     if crate::dev::flag("logintest") {

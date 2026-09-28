@@ -183,6 +183,45 @@ pub enum Icon {
     /// It negates by DRAINING to [`theme::RATING_MUTED`] rather than going hollow: a single fruit
     /// can carry an outline, but outlining every shape in a crowd is a tangle of strokes at 30px.
     Crowd,
+    // ---- read-out glyphs (the 112px mark `StatusOverlay::page` draws above a page-filling
+    // `Failed` verdict — spec "1A") ----
+    //
+    // Twelve marks, one family: a BASE says what is involved (a server, plex.tv, an account, a
+    // sign-in's stored key, a profile roster, a wait's clock), a BADGE knocked out of it says what
+    // went wrong (a plus/minus/x/question/alert), and `telemetry::incident::IncidentContext::
+    // readout_glyph` is the ONE place that reads an `IncidentKind` and picks which. `WifiSlash`
+    // stands alone — there is no server to blame when the TV itself has no link. Drawn by
+    // `tools/readout-glyphs.py` (`shapely` polygon booleans, not hand-authored paths) because the
+    // badge's knockout is `fill-rule="evenodd"` — see [`Icon::CheckCircleFill`]'s doc for why that
+    // is the one place this module's "every subpath winds the same way" rule does not hold — and a
+    // hand-drawn badge-on-base composite would recreate exactly the seam that doc warns about.
+    /// A clock, alert badge — a wait that ran out (`IncidentKind::PinExpired`/`LinkStalled`).
+    ClockBadgeAlert,
+    /// A cloud, alert badge — plex.tv answered but with an error, or the app's own machinery
+    /// failed (an `Internal` cause, the closest honest read among these twelve).
+    CloudBadgeAlert,
+    /// A globe, minus badge — plex.tv did not answer and the failure is not DNS or TLS.
+    GlobeBadgeMinus,
+    /// A globe, question badge — plex.tv could not be found (DNS).
+    GlobeBadgeQuestion,
+    /// A key, alert badge — the sign-in could not be saved or read back
+    /// (`IncidentKind::SaveFailed`/`StoredLocked`).
+    KeyBadgeAlert,
+    /// A lock, alert badge — plex.tv could not be reached securely (TLS).
+    LockBadgeAlert,
+    /// Two people, alert badge — a profile switch failed (`IncidentKind::ProfileSwitch`).
+    PeopleBadgeAlert,
+    /// One person, X badge — plex.tv refused the account token (`IncidentKind::Authorization`).
+    PersonBadgeXmark,
+    /// A server, minus badge — a known server did not answer (Home's and the Library's own
+    /// "can't reach" verdict, and `Discovery(Silent)` targeting `Servers`).
+    ServerBadgeMinus,
+    /// A server, plus badge — the account has no server at all (`DiscoveryClass::NoServers`).
+    ServerBadgePlus,
+    /// A server, X badge — a server answered and refused (`DiscoveryClass::Refused`).
+    ServerBadgeXmark,
+    /// A crossed-out wifi arc — no internet to even reach plex.tv (`IncidentKind::PinCreate`).
+    WifiSlash,
 }
 
 /// **Where a mark's INK sits inside its 24-unit viewBox**, as `(left, right)` fractions — and
@@ -256,6 +295,18 @@ fn src(id: Icon) -> &'static str {
         Icon::TomatoCalyx => include_str!("../../../assets/icons/tomato-calyx.svg"),
         Icon::TomatoHollow => include_str!("../../../assets/icons/tomato-hollow.svg"),
         Icon::Crowd => include_str!("../../../assets/icons/crowd.svg"),
+        Icon::ClockBadgeAlert => include_str!("../../../assets/icons/clock-badge-alert.svg"),
+        Icon::CloudBadgeAlert => include_str!("../../../assets/icons/cloud-badge-alert.svg"),
+        Icon::GlobeBadgeMinus => include_str!("../../../assets/icons/globe-badge-minus.svg"),
+        Icon::GlobeBadgeQuestion => include_str!("../../../assets/icons/globe-badge-question.svg"),
+        Icon::KeyBadgeAlert => include_str!("../../../assets/icons/key-badge-alert.svg"),
+        Icon::LockBadgeAlert => include_str!("../../../assets/icons/lock-badge-alert.svg"),
+        Icon::PeopleBadgeAlert => include_str!("../../../assets/icons/people-badge-alert.svg"),
+        Icon::PersonBadgeXmark => include_str!("../../../assets/icons/person-badge-xmark.svg"),
+        Icon::ServerBadgeMinus => include_str!("../../../assets/icons/server-badge-minus.svg"),
+        Icon::ServerBadgePlus => include_str!("../../../assets/icons/server-badge-plus.svg"),
+        Icon::ServerBadgeXmark => include_str!("../../../assets/icons/server-badge-xmark.svg"),
+        Icon::WifiSlash => include_str!("../../../assets/icons/wifi-slash.svg"),
     }
 }
 
@@ -276,15 +327,43 @@ static mut CACHE: Vec<Entry> = Vec::new();
 // (Bump SS to supersample + box-downsample here if a size ever looks jaggy.)
 const SS: i32 = 1;
 
+/// The largest square any icon is ever rasterized at — the page read-out's 112px glyph
+/// (`ui::widgets::StatusOverlay::GLYPH_SIZE`), the largest consumer today. `icon_raster_px`
+/// clamps to this so a runaway caller cannot blow the texture cache open-ended — `tex_for` keys
+/// `CACHE` on the CLAMPED size, not the caller's raw `px` (each distinct `(Icon, clamped px)`
+/// pair keeps its own GL texture for the process lifetime — `CACHE` never evicts), so every
+/// runaway `px` above this cap collapses onto the same one entry rather than minting a new
+/// texture per distinct oversized value — while staying wide enough that every size this
+/// codebase actually draws — including the page glyph's shrink toward
+/// `StatusOverlay::GLYPH_MIN_SIZE` when `glyph_ceiling` is tight — rasterizes 1:1 rather than
+/// being upscaled from a smaller raster and going soft. Raise this, not the clamp's magic number,
+/// if a future icon needs to draw larger still.
+const MAX_ICON_PX: i32 = 112;
+/// The pixel size `tex_for` actually rasterizes a draw of `px` at, before `render_scale`'s
+/// multiply. Split out so a host test can assert a real draw size survives the clamp instead of
+/// a bypassed `rasterize()` call at a hand-picked size — which is how the clamp sitting at 96
+/// silently downscaled the 112px page glyph (soft on a real panel) with every existing icon test
+/// still green, since none of them rasterized through this function at all.
+pub(crate) fn icon_raster_px(px: i32) -> i32 {
+    px.clamp(8, MAX_ICON_PX)
+}
+
 fn tex_for(id: Icon, px: i32) -> c_uint {
     unsafe {
         let cache = &mut *addr_of_mut!(CACHE);
-        if let Some(e) = cache.iter().find(|e| e.id == id && e.px == px) {
+        // Keyed on the CLAMPED size, not the caller's raw `px` — two different `px` values that
+        // land on the same `icon_raster_px` result rasterize identically, so they share one
+        // texture instead of minting a duplicate. This is also what makes `MAX_ICON_PX`'s own
+        // doc claim ("a runaway caller cannot blow the cache open-ended") actually true: keyed on
+        // the raw `px`, a caller sweeping through distinct oversized values still minted one
+        // entry per value, unbounded, the clamp having capped only the RASTER, not the cache.
+        let raster_px = icon_raster_px(px);
+        if let Some(e) = cache.iter().find(|e| e.id == id && e.px == raster_px) {
             return e.tex;
         }
         // `render_scale` is the simulator's supersampling (1 on a television): the mask is
         // rasterised at physical size and still drawn into the same logical rect.
-        let target = px.clamp(8, 96) * crate::surface::render_scale();
+        let target = raster_px * crate::surface::render_scale();
         let hi = target * SS;
         let tex = match crate::svg::rasterize(src(id), hi, hi) {
             Some(rgba) => {
@@ -293,7 +372,7 @@ fn tex_for(id: Icon, px: i32) -> c_uint {
             }
             None => 0,
         };
-        cache.push(Entry { id, px, tex });
+        cache.push(Entry { id, px: raster_px, tex });
         tex
     }
 }
@@ -403,6 +482,75 @@ mod ink_tests {
                 !svg.contains(unsupported),
                 "agreement asset uses unsupported {unsupported}"
             );
+        }
+    }
+
+    /// Every one of the twelve read-out marks (spec "1A") rasterizes at the size
+    /// `StatusOverlay::page`'s glyph actually draws them at (112px, this family's only draw
+    /// size) — `crate::svg::rasterize` returns `Some`, reaches full opacity somewhere inside the
+    /// mask (nanosvg did not silently fail to fill the shape), and leaves the outermost ring of
+    /// pixels untouched (no ink on the border), the same two checks the module doc's own
+    /// authoring contract asks a human to grade by eye.
+    #[test]
+    fn every_readout_glyph_rasterizes_clean_at_its_draw_size() {
+        // Routed through `icon_raster_px`, the SAME clamp `tex_for` applies to a real draw —
+        // not a bypassed `rasterize()` call at a hand-picked size. This is what catches a clamp
+        // sitting below the page glyph's natural size again: `icon_raster_px(112)` would come
+        // back 96 under the old cap, and every assertion below would then be grading a 96px
+        // raster while believing it was 112.
+        let px = icon_raster_px(112);
+        assert_eq!(px, 112, "the page glyph's 112px draw size must survive the production clamp");
+        for id in [
+            Icon::ClockBadgeAlert,
+            Icon::CloudBadgeAlert,
+            Icon::GlobeBadgeMinus,
+            Icon::GlobeBadgeQuestion,
+            Icon::KeyBadgeAlert,
+            Icon::LockBadgeAlert,
+            Icon::PeopleBadgeAlert,
+            Icon::PersonBadgeXmark,
+            Icon::ServerBadgeMinus,
+            Icon::ServerBadgePlus,
+            Icon::ServerBadgeXmark,
+            Icon::WifiSlash,
+        ] {
+            let rgba = crate::svg::rasterize(src(id), px, px)
+                .unwrap_or_else(|| panic!("{id:?} failed to rasterize at {px}px"));
+            assert_eq!(rgba.len(), (px * px * 4) as usize, "{id:?} wrong buffer size");
+            let alpha = |x: i32, y: i32| rgba[((y * px + x) * 4 + 3) as usize];
+            let max_alpha = (0..px).flat_map(|y| (0..px).map(move |x| alpha(x, y))).max().unwrap();
+            assert_eq!(max_alpha, 255, "{id:?} never reaches full opacity at {px}px");
+            for x in 0..px {
+                assert_eq!(alpha(x, 0), 0, "{id:?} has ink on the top border");
+                assert_eq!(alpha(x, px - 1), 0, "{id:?} has ink on the bottom border");
+            }
+            for y in 0..px {
+                assert_eq!(alpha(0, y), 0, "{id:?} has ink on the left border");
+                assert_eq!(alpha(px - 1, y), 0, "{id:?} has ink on the right border");
+            }
+        }
+    }
+
+    /// **Every size the Library's `glyph_ceiling` shrink can actually land the page glyph at
+    /// rasterizes 1:1 too**, not just the natural 112px — `StatusOverlay::glyph_rect` scales
+    /// continuously between `GLYPH_MIN_SIZE` (56, below which it draws nothing) and `GLYPH_SIZE`
+    /// (112), and every value in that range must clear `MAX_ICON_PX` unclamped or a shrunk glyph
+    /// goes soft exactly where the Library fix put it. One representative mark (rasterizing all
+    /// twelve at every size would be redundant with the test above, which already grades all
+    /// twelve at 112) is enough to catch a clamp regression at the sizes that matter.
+    #[test]
+    fn the_glyph_shrink_range_rasterizes_1to1_through_the_production_clamp() {
+        for size in [56, 64, 76, 88, 96, 104, 112] {
+            assert_eq!(
+                icon_raster_px(size),
+                size,
+                "size {size}px (inside the glyph's shrink range) was clamped — MAX_ICON_PX must cover it"
+            );
+            let rgba = crate::svg::rasterize(src(Icon::WifiSlash), size, size)
+                .unwrap_or_else(|| panic!("WifiSlash failed to rasterize at {size}px"));
+            let alpha = |x: i32, y: i32| rgba[((y * size + x) * 4 + 3) as usize];
+            let max_alpha = (0..size).flat_map(|y| (0..size).map(move |x| alpha(x, y))).max().unwrap();
+            assert_eq!(max_alpha, 255, "WifiSlash never reaches full opacity at {size}px");
         }
     }
 }

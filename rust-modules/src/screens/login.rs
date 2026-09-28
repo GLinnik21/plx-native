@@ -301,15 +301,19 @@ fn qr_layout(layout: RouteLayout) -> QrLayout {
 /// is (`ui/table_screen.rs`'s rule: "the DRAW reads the same formula"). `labels` is the row by
 /// slot — the primary, then *Details* — and `note` the report's one quiet status line under it.
 /// It fills the page, so a `Failed` one hangs from `StatusOverlay::FULL_ANCHOR_TOP` through
-/// `.page()`, the same as Home's and the Library's.
+/// `.page()`, the same as Home's and the Library's. `glyph` is discarded by `page()` for every
+/// kind but `Failed` — this function draws `Working` read-outs too (the QR wait), which is why
+/// every caller must still name one: `page()`'s whole point is that a `Failed` page read-out
+/// cannot be built without saying what failed.
 fn readout_overlay<'a>(
     caption: &'a CStr,
     kind: StatusKind,
     reason: Option<&'a CStr>,
     labels: [Option<&'a CStr>; 2],
     note: Option<&'a Note>,
+    glyph: crate::ui::icons::Icon,
 ) -> StatusOverlay<'a> {
-    let mut o = StatusOverlay::new(Rect::FULL, caption, kind).page();
+    let mut o = StatusOverlay::new(Rect::FULL, caption, kind).page(glyph);
     if let Some(r) = reason {
         o = o.reason(r);
     }
@@ -333,7 +337,9 @@ fn status_row_rects(
     kind: StatusKind,
     has_reason: bool,
 ) -> [Option<Rect>; 2] {
-    readout_overlay(c"", kind, has_reason.then_some(c""), labels, None).action_frames_measured(measure)
+    // Geometry only — the glyph never moves the row, so any `Icon` measures identically.
+    readout_overlay(c"", kind, has_reason.then_some(c""), labels, None, crate::ui::icons::Icon::ClockBadgeAlert)
+        .action_frames_measured(measure)
 }
 
 /// The lone action's rect — [`status_row_rects`] for a read-out with one control.
@@ -1205,6 +1211,27 @@ impl LoginScreen {
         }
     }
 
+    /// The `Failed` read-out's glyph — from the SAME evidence the caption came from, so the two
+    /// answer one decision rather than two that could disagree. The unconfirmed-save warning is
+    /// `IncidentKind::SaveFailed` in everything but shape (`persistence_warning` carries no
+    /// `IncidentContext` of its own; `report.offer`'s does, set alongside it by `resync`), so it
+    /// reads `KeyBadgeAlert` directly rather than re-deriving the same answer through one.
+    /// Meaningless while `readout_kind()` is not `Failed` (a `Working`/`Empty` read-out draws no
+    /// glyph) — callers that share this screen's builder for those kinds still pass it through,
+    /// since `StatusOverlay::page` is what actually decides whether it is ever drawn.
+    fn readout_glyph(&self) -> crate::ui::icons::Icon {
+        if self.persistence_warning.is_some() {
+            return crate::ui::icons::Icon::KeyBadgeAlert;
+        }
+        match self.report.offer.as_ref().and_then(|o| o.readout_context()) {
+            Some(ctx) => ctx.readout_glyph(),
+            // No incident context to read (should not happen alongside `Phase::Error`, which
+            // `auth::output_failed` always pairs with one) — the wait's own clock is the closest
+            // honest reading of "something about time or connectivity went wrong".
+            None => crate::ui::icons::Icon::ClockBadgeAlert,
+        }
+    }
+
     /// Every element's rect — shared verbatim by `draw`'s stops and every `Focusable` query, so
     /// the two can never drift apart (`ui/table_screen.rs`'s rule).
     fn elem_rect(&self, elem: u32, measure: &dyn Measure) -> Option<Rect> {
@@ -1400,7 +1427,7 @@ impl LoginScreen {
     ) -> StatusOverlay<'a> {
         debug_assert_eq!(kind, self.readout_kind(), "the geometry reads the same kind the draw paints");
         let (labels, _) = self.readout_labels();
-        readout_overlay(caption, kind, reason, labels, note).phase(self.spin_ms as u32)
+        readout_overlay(caption, kind, reason, labels, note, self.readout_glyph()).phase(self.spin_ms as u32)
     }
 
     /// The failed sign-in's read-out: the verdict, the phase's reason and its controls.
@@ -2606,7 +2633,7 @@ mod tests {
         let failed = screen_with(Phase::Error, S::NotNow, pin);
         let (labels, has_reason) = failed.readout_labels();
         assert!(has_reason, "the sign-in failure always says why");
-        let overlay = readout_overlay(c"", failed.readout_kind(), Some(c""), labels, None);
+        let overlay = readout_overlay(c"", failed.readout_kind(), Some(c""), labels, None, failed.readout_glyph());
         let verdict = overlay.verdict_band_measured(&m);
         assert_eq!(verdict.y, StatusOverlay::FULL_ANCHOR_TOP);
         assert_eq!(overlay.action_frame_measured(&m).unwrap().y, primary.y, "the drawn row is the hit row");
@@ -2661,7 +2688,9 @@ mod tests {
     fn status_action_rect_matches_the_widget_it_is_reproducing() {
         for kind in [StatusKind::Working, StatusKind::Failed, StatusKind::Empty] {
             for has_reason in [false, true] {
-                let mut o = StatusOverlay::new(Rect::FULL, c"caption", kind).page().action(ESCAPE);
+                // Geometry only — the glyph never moves the action row, so any `Icon` measures identically.
+                let mut o = StatusOverlay::new(Rect::FULL, c"caption", kind)
+                    .page(crate::ui::icons::Icon::ClockBadgeAlert).action(ESCAPE);
                 if has_reason {
                     o = o.reason(c"This is taking longer than usual.");
                 }
