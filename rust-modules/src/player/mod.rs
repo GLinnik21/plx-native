@@ -1529,6 +1529,45 @@ fn clamp_subtitle_offset_ms(offset_ms: i64) -> i32 {
     offset_ms.clamp(earliest, latest) as i32
 }
 
+/// The viewer's Plex Pass audio-DSP preference (issue #266: dialog boost, loudness normalization),
+/// as two bits — a PREFERENCE, like [`SUBTITLE_TONE`], so it outlives a playback. Only the
+/// resolve's `ResolveEnv::snapshot` reads it, on the main thread, and it reaches the wire only
+/// through `route::desired_audio`: with no Plex Pass (or an unknown one) nothing reads it at all.
+static AUDIO_ENHANCEMENTS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+const ENH_BOOST_DIALOG: u8 = 1;
+const ENH_NORMALIZE_LOUDNESS: u8 = 2;
+
+/// The current preference (see [`AUDIO_ENHANCEMENTS`]).
+pub(crate) fn audio_enhancements() -> crate::plex::AudioEnhancements {
+    let bits = AUDIO_ENHANCEMENTS.load(Relaxed);
+    crate::plex::AudioEnhancements {
+        boost_dialog: bits & ENH_BOOST_DIALOG != 0,
+        normalize_loudness: bits & ENH_NORMALIZE_LOUDNESS != 0,
+    }
+}
+
+/// Restore the persisted preference without writing it back — boot and the credentials handoff,
+/// the same two places [`restore_subtitle_tone`] is called from.
+pub(crate) fn restore_audio_enhancements(a: crate::plex::AudioEnhancements) {
+    let bits = if a.boost_dialog { ENH_BOOST_DIALOG } else { 0 }
+        | if a.normalize_loudness { ENH_NORMALIZE_LOUDNESS } else { 0 };
+    AUDIO_ENHANCEMENTS.store(bits, Relaxed);
+}
+
+/// Select a preference on the main thread and retain its persistence for the shared storage
+/// worker, exactly as [`set_subtitle_tone`] does. No menu row calls this yet (issue #266's menu
+/// lands later); it is the one door every future writer goes through.
+#[allow(dead_code)] // first production caller is the Audio tab's toggle rows (#266, a later PR)
+pub(crate) fn set_audio_enhancements(a: crate::plex::AudioEnhancements) {
+    restore_audio_enhancements(a);
+    persist_audio_enhancements(a);
+}
+
+fn persist_audio_enhancements(a: crate::plex::AudioEnhancements) {
+    let _ = crate::storage_worker::submit_retained(move || crate::plex::session::set_audio_enhancements(a));
+}
+
 /// Restore the persisted preference without writing it back (boot, and the credentials handoff
 /// after a fresh sign-in — the two places `route::restore_quality` is called from).
 pub(crate) fn restore_subtitle_tone(tone: crate::plex::session::SubtitleTone) {

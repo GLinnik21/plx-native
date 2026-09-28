@@ -77,6 +77,57 @@ fn a_plan_that_never_resolved_makes_no_claim_about_the_source() {
     );
 }
 
+/// Issue #266: `apply_plan` is the ONE place a resolve's audio facts enter the session. The
+/// contract's `audio` (what the URL asked for), the outcome (what the decision did with it) and
+/// the carried track (what the pipeline feeds) are installed exactly as the plan built them —
+/// no fabricated `CarriedAudio` from the flat codec fields, and a plan without a track installs
+/// `None` rather than a confident default.
+#[test]
+fn apply_plan_installs_contract_outcome_audio() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let carried = CarriedAudio {
+        sid: 31,
+        ordinal: 2,
+        codec: "truehd".into(),
+        channels: 8,
+        can_normalize_loudness: true,
+        immersive: false,
+    };
+    let audio = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
+    apply_plan(
+        &mut ps,
+        Plan {
+            url: "https://example.invalid/start.mkv".into(),
+            acodec: "ac3".into(),
+            src_acodec: "truehd".into(),
+            contract: crate::plex::EncodeContract { audio, ..Default::default() },
+            enhancement: EnhancementOutcome::Applied,
+            audio: Some(carried.clone()),
+            ..Default::default()
+        },
+        "rk-enh",
+    );
+    assert_eq!(ps.cur_contract.audio, audio, "the contract carries what the URL asked for");
+    assert_eq!(ps.cur_enhancement, EnhancementOutcome::Applied);
+    assert_eq!(cur_audio(&ps), Some(carried), "the plan's own track, not one rebuilt from acodec");
+
+    // A plan that carried no track (server default, list not fetched) installs no track.
+    apply_plan(
+        &mut ps,
+        Plan {
+            url: "https://example.invalid/f.mkv".into(),
+            acodec: "eac3".into(),
+            src_acodec: "eac3".into(),
+            ..Default::default()
+        },
+        "rk-plain",
+    );
+    assert_eq!(ps.cur_contract.audio, crate::plex::AudioEnhancements::NONE);
+    assert_eq!(ps.cur_enhancement, EnhancementOutcome::Off);
+    assert_eq!(cur_audio(&ps), None, "no fabricated track from the flat codec fields");
+}
+
 #[test]
 #[cfg(feature = "devtriggers")]
 fn remux_review_probe_installs_effective_selection_before_decision_and_start() {
@@ -128,7 +179,7 @@ fn remux_review_http_200_refusal_never_gets_media() {
     assert!(crate::net::global_init() && crate::curlio::available());
     let (port, done, server) = selection_probe_pms(true, 0);
     let sid = crate::plex::register_for_test("refused-probe", "127.0.0.1", port, "token", "refused-probe-client");
-    let sample = measure_remote_remux(crate::plex::client_for(sid).unwrap(), "rk", "refused-session", 2, 0, 320);
+    let sample = measure_remote_remux(crate::plex::client_for(sid).unwrap(), "rk", "refused-session", 2, 0, 320, crate::plex::AudioEnhancements::NONE).sample;
     done.send(()).unwrap();
     let requests = server.join().unwrap();
     assert!(sample.is_none());
@@ -825,7 +876,7 @@ fn a_720p_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
         "start.mkv must name that DTS, not the AC3 sibling: {}",
         plan.url
     );
-    assert_eq!(plan.audio_sid, 2669);
+    assert_eq!(plan.audio.as_ref().map_or(0, |a| a.sid), 2669);
     restore_quality(Quality::Original);
     crate::plex::reset_servers_for_test();
 }
@@ -912,7 +963,7 @@ fn a_720p_reencode_keeps_the_files_default_language_over_english() {
         "start.mkv must name the French default, not English: {}",
         plan.url
     );
-    assert_eq!(plan.audio_sid, 10975);
+    assert_eq!(plan.audio.as_ref().map_or(0, |a| a.sid), 10975);
     restore_quality(Quality::Original);
     crate::plex::reset_servers_for_test();
 }
@@ -999,7 +1050,7 @@ fn a_720p_reencode_keeps_the_default_ac3_over_an_unselected_english_dts() {
         "start.mkv must name the default AC3, not the DTS: {}",
         plan.url
     );
-    assert_eq!(plan.audio_sid, 2663);
+    assert_eq!(plan.audio.as_ref().map_or(0, |a| a.sid), 2663);
     restore_quality(Quality::Original);
     crate::plex::reset_servers_for_test();
 }
@@ -1088,7 +1139,7 @@ fn a_auto_hls_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
         "start.m3u8 must name that DTS, not the AC3 sibling: {}",
         plan.url
     );
-    assert_eq!(plan.audio_sid, 2669);
+    assert_eq!(plan.audio.as_ref().map_or(0, |a| a.sid), 2669);
     restore_quality(Quality::Original);
     crate::plex::reset_servers_for_test();
 }

@@ -45,6 +45,10 @@ struct RetryContext {
     sub_sid: i64,
     sub_offset_ms: i64,
     direct_play_mode: DirectPlayMode,
+    /// Issue #266: resolve this retry WITHOUT the audio enhancement. Set only by a start-failure
+    /// rescue ([`retry_current_play`]) of a playback that was enhanced: an enhanced `start.mkv`
+    /// that failed to open is the one failure a plain retry would repeat verbatim.
+    suppress_enhancement: bool,
 }
 
 /// Everything the main thread needs to resolve and render the playback in progress, in one struct.
@@ -78,27 +82,20 @@ struct RetryContext {
 /// (a real DSP transcode) beside an AAC 5.1 source where the audio was transcoded to AC3 either
 /// way, params or not — so "the decision shows a transcode" alone cannot tell the two apart.
 ///
-/// Always `Off` in this PR: nothing here yet ever sets `EncodeContract::audio` to anything but
-/// `NONE`, so nothing produces `Applied`/`Unverified`/`Refused` either. The three non-`Off`
-/// variants exist now only so `cur_contract`'s sibling field and its projections
-/// (`AppliedRouteProjection`, the publication) have a real type to carry from the start, instead
-/// of a later PR widening an enum every match arm across the module has to be re-checked against.
+/// Graded by `build_stream` (`classify_outcome`, or `Refused` from its fallback) and installed by
+/// `apply_plan` beside `cur_contract` — written only after a decision, never at the selection (I9).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub(super) enum EnhancementOutcome {
     #[default]
     Off,
     /// Remux, the audio decision was a transcode, and the source codec is in the profile's own
     /// copy list — the params demonstrably did something.
-    #[allow(dead_code)] // constructed by a later PR (issue #266 §5+); the variant exists now
-    // so `cur_enhancement`'s type never has to widen out from under a live match arm.
     Applied,
     /// The audio would have been transcoded anyway (PMS M2's AAC 5.1 case) — asked for, delivered,
     /// but not provably BECAUSE of the ask.
-    #[allow(dead_code)] // see `Applied`
     Unverified,
     /// The server refused the params outright, or silently ignored them (audio came back `copy`
     /// despite the ask) — an old or non-conforming PMS.
-    #[allow(dead_code)] // see `Applied`
     Refused,
 }
 
@@ -148,8 +145,8 @@ pub(crate) struct PlaybackSession {
     /// each carried for the same reason: a seek ([`transcode_seek`]) and an audio switch
     /// ([`retranscode`]) rebuild the start.mkv query from scratch, and a rebuild that read the
     /// LIVE selection instead of this stored shape would change the encode's resolution mid-film,
-    /// hand the server back a copy permission mid-playback, or (once a later PR writes it) drop
-    /// the enhancement DSP on the next seek. Folding the four into one `EncodeContract` is what
+    /// hand the server back a copy permission mid-playback, or drop the enhancement DSP on the
+    /// next seek. Folding the four into one `EncodeContract` is what
     /// keeps that coupling a single write instead of four fields that could drift independently.
     ///
     /// **[`set_quality`] is the ONE writer that may move `ceiling` mid-film**, and that is the
@@ -159,10 +156,9 @@ pub(crate) struct PlaybackSession {
     /// or moves a rung on its own — the adaptive switch is not here.
     cur_contract: crate::plex::EncodeContract,
     /// What the last successful transcode decision actually did with the Plex Pass audio DSP
-    /// (issue #266) — distinct from `cur_contract.audio`, which is what was ASKED for. Always
-    /// `Off` in this PR: nothing yet asks for the enhancement, so nothing yet has anything to
-    /// report. See `route::decision::EnhancementOutcome` — `Applied`/`Unverified`/`Refused` are a
-    /// later PR's to produce.
+    /// (issue #266) — distinct from `cur_contract.audio`, which is what the accepted decision
+    /// carried. Installed by `apply_plan` from `Plan::enhancement`; reset to `Off` by a new
+    /// request. See `route::decision::EnhancementOutcome`.
     cur_enhancement: EnhancementOutcome,
     /// What the resolve measured the playing source at — `(kbps, w, h)`, `0` where nobody said.
     /// The input [`set_quality`] re-runs [`quality_policy`] on when a rung is picked mid-film, so
@@ -3418,11 +3414,12 @@ pub(crate) fn recover_auto_to_original_for(
             s.cur_auto_original_watched = automatic;
             s.cur_audio = candidate.audio.clone();
             s.stream_vcodec = candidate.vcodec.clone();
+            // A server-default candidate carries no track facts; the file's own default codec
+            // (`src_acodec`, the resolve's source argument) is what that direct play decodes.
             s.stream_acodec = candidate
                 .audio
                 .as_ref()
-                .map(|a| a.codec.clone())
-                .unwrap_or_default();
+                .map_or_else(|| s.src_acodec.clone(), |a| a.codec.clone());
             s.stream_fps = candidate.fps;
             s.stream_dovi = candidate.dovi;
             s.stream_dv_decision = candidate.dv_decision;
@@ -5150,6 +5147,12 @@ pub(super) fn measure_remote_original(url: &str, source_kbps: i64) -> Option<cra
 /// Encoder spin-up stays inside the existing 4s probe budget; a miss fails toward HLS rather
 /// than waiting longer. First-byte wait on this sample is the remux coming up, not a measure of
 /// transport capacity.
+///
+/// Issue #266: with an enhanced `audio` this is the FIRST decision the params reach, so the
+/// server's refusal (or silent ignoring) of them is caught here, not read as "no Original": the
+/// probe re-asks once with `NONE` on the same session — replacing the enhanced registration
+/// before any enhanced `start.mkv` is fetched — samples that plain remux, and reports
+/// [`RemuxProbe::enhancement_refused`] so the play is built without the params and records it.
 pub(super) fn measure_remote_remux(
     client: &crate::plex::Client,
     rk: &str,
@@ -5157,29 +5160,45 @@ pub(super) fn measure_remote_remux(
     audio_stream_id: i64,
     subtitle_stream_id: i64,
     source_kbps: i64,
-) -> Option<crate::abr::CapacityObservation> {
-    let spec = transcode_spec(
-        rk,
-        session,
-        session,
-        crate::plex::TranscodeOffset::Fresh,
-        audio_stream_id,
-        subtitle_stream_id,
-        crate::plex::EncodeContract {
-            remux: true,
-            delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
-            no_video_copy: false,
-            ceiling: None,
-            audio: crate::plex::AudioEnhancements::NONE,
-        },
-    );
-    let Some(decision) = client.transcode_decision(&spec) else {
+    // Issue #266: the DSP the play-path decision will carry on this same session, so the sample
+    // is the remux that plays (`build_stream`'s `pre_audio`); `NONE` without Plex Pass.
+    audio: crate::plex::AudioEnhancements,
+) -> RemuxProbe {
+    let spec_for = |audio| {
+        transcode_spec(
+            rk,
+            session,
+            session,
+            crate::plex::TranscodeOffset::Fresh,
+            audio_stream_id,
+            subtitle_stream_id,
+            crate::plex::EncodeContract {
+                remux: true,
+                delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+                no_video_copy: false,
+                ceiling: None,
+                audio,
+            },
+        )
+    };
+    let mut spec = spec_for(audio);
+    let mut decision = client.transcode_decision(&spec);
+    let mut enhancement_refused = false;
+    if audio.any() && enhancement_fallback(decision.as_ref(), audio) == Fallback::Retry {
+        // Nothing enhanced has been fetched yet: re-deciding on the same session replaces the
+        // enhanced registration, exactly as the play path's own fallback does.
+        crate::player::log("enhancement: refused/ignored by server in remote remux preflight; fell back");
+        enhancement_refused = true;
+        spec = spec_for(crate::plex::AudioEnhancements::NONE);
+        decision = client.transcode_decision(&spec);
+    }
+    let Some(decision) = decision else {
         crate::player::log("auto: remote remux preflight had no /decision; using HLS");
-        return None;
+        return RemuxProbe { sample: None, enhancement_refused };
     };
     if refusal(&decision).is_some() {
         crate::player::log("auto: remote remux preflight refused by /decision; using HLS");
-        return None;
+        return RemuxProbe { sample: None, enhancement_refused };
     }
     let sample = measure_remote_original(&client.transcode_start_url(&spec).to_url(), source_kbps);
     if sample.is_none() {
@@ -5187,7 +5206,15 @@ pub(super) fn measure_remote_remux(
         // would 503 that next start; physical-stop keeps the Streaming Resource.
         let _ = client.transcode_stop_physical(session);
     }
-    sample
+    RemuxProbe { sample, enhancement_refused }
+}
+
+/// What [`measure_remote_remux`] learned: the capacity sample (`None` = no usable sample, fall to
+/// HLS), and whether the server refused or ignored the enhancement it was asked for — in which case
+/// the sample is of the PLAIN remux and the play must be built without the params.
+pub(super) struct RemuxProbe {
+    pub(super) sample: Option<crate::abr::CapacityObservation>,
+    pub(super) enhancement_refused: bool,
 }
 
 /// MDE handshake result. `None` from [`server_decision`] means the body was missing or unusable:
@@ -5424,6 +5451,17 @@ pub(super) fn resolve_playqueue(
 }
 
 impl ResolveEnv {
+    /// Mark this resolve as a hero preview. A preview is direct play or nothing
+    /// (`preview::accepts_direct_play`) and an enhancement is a remux by definition, so a preview
+    /// never asks for one — without this, a Plex Pass viewer's opt-in would turn every trailer
+    /// preview into a refused remux.
+    pub(super) fn set_preview(&mut self, preview: bool) {
+        self.preview = preview;
+        if preview {
+            self.audio_enhancements = crate::plex::AudioEnhancements::NONE;
+        }
+    }
+
     /// MAIN THREAD ONLY.
     /// `sid` arrives BY VALUE from the caller, which is the whole point: the item being played
     /// carries the server it came from (`PmsMovie`/`UpNext`/`Detail` all hold one now), so a play
@@ -5448,6 +5486,8 @@ impl ResolveEnv {
             src_kbps: resolve_src_kbps(meta.current(), sid, rk),
             omit_queue_continuous: false,
             preview: false,
+            audio_enhancements: crate::player::audio_enhancements(),
+            pass: crate::plex::serverinfo::subscription_of(sid),
             #[cfg(test)]
             dv_capability: None,
         }
@@ -5753,6 +5793,8 @@ fn request_play_inner(
         }
         s.cur_audio = None;
         s.cur_sub_sid = 0;
+        // The outgoing item's enhancement outcome is not this one's; the landing installs its own.
+        s.cur_enhancement = EnhancementOutcome::Off;
         // Retire the OUTGOING item's queue before its successor resolves: this names the episode
         // after the one that WAS playing, and leaving it up would offer the Up Next control a
         // stale "next" for the whole resolve window — including, when the user just started that
@@ -5781,8 +5823,9 @@ fn request_play_inner(
     // captured HERE, on the main thread, and moved into the worker — see ResolveEnv
     let mut env = ResolveEnv::snapshot(ps, meta.view(), sid, rk);
     env.omit_queue_continuous = crate::metadata::context_omits_queue_continuous(ctx);
-    env.preview = request.preview;
+    env.set_preview(request.preview);
     if let Some(retry) = retry {
+        apply_retry_enhancement(&mut env, retry);
         // `request_play` resets the live selection because that is correct for a new item.  A
         // retry is the SAME item: override the fresh defaults with the selection captured before
         // that reset so a rescue does not silently turn subtitles/audio back to server default.
@@ -5892,6 +5935,25 @@ fn current_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
         sub_sid: cur_sub_sid(ps),
         sub_offset_ms: crate::player::subtitle_offset_ms(),
         direct_play_mode: ps.direct_play_mode,
+        suppress_enhancement: false,
+    }
+}
+
+/// The context a START-FAILURE rescue resolves under: [`current_retry_context`], plus the
+/// enhancement suppressed when the failed route carried one. Kept apart from the in-flight
+/// contract-change re-resolve (which also builds a `RetryContext`), because that one is not a
+/// failure and must keep the viewer's enhancement.
+fn rescue_retry_context(ps: &PlaybackSession, resume_ns: i64) -> RetryContext {
+    RetryContext {
+        suppress_enhancement: ps.cur_contract.audio.any(),
+        ..current_retry_context(ps, resume_ns)
+    }
+}
+
+/// Apply a retry's enhancement decision to the resolve environment it is about to hand the worker.
+fn apply_retry_enhancement(env: &mut ResolveEnv, retry: RetryContext) {
+    if retry.suppress_enhancement {
+        env.audio_enhancements = crate::plex::AudioEnhancements::NONE;
     }
 }
 
@@ -5904,7 +5966,7 @@ pub(crate) fn retry_current_play(ps: &mut PlaybackSession, meta: &mut crate::sto
         "playback retry: resolving item again at quality {:?}",
         quality(),
     ));
-    request_play_inner(ps, meta, request, Some(current_retry_context(ps, resume_ns)), None, true)
+    request_play_inner(ps, meta, request, Some(rescue_retry_context(ps, resume_ns)), None, true)
 }
 
 /// ASYNC twins of `play_movie` / `play_episode`: identical HUD strings and inputs. On `true`, the
@@ -6166,10 +6228,10 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
             // makes that true without a second clear anyone can forget.
             play_verdict: plan.verdict,
             resolve_failed,
+            // The APPLIED enhancement (I9): `contract.audio` is what the server's decision accepted
+            // (a refused ask was rebuilt with `NONE`), and `enhancement` grades it.
             cur_contract: plan.contract,
-            // Always `Off` in this PR: nothing yet asks the transcoder for the enhancement, so a
-            // landing has nothing to report. See `EnhancementOutcome`'s doc.
-            cur_enhancement: EnhancementOutcome::Off,
+            cur_enhancement: plan.enhancement,
             cur_src: plan.src_measure,
             cur_transport_kbps: plan.transport_kbps,
             cur_source_decodable: plan.source_decodable,
@@ -6188,22 +6250,9 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
             // the 10 s progress reporter engine.rs is about to spawn) resolves its server from it.
             cur_rk: rk.to_string(),
             cur_sid: plan.sid,
-            // `plan.audio` is the new #266 fact (`None` on every path this PR builds — see its
-            // doc); `plan.audio_sid` is the pre-existing legacy scalar every `build_stream` branch
-            // still sets. Falling back to a bare-sid `CarriedAudio` when `plan.audio` carries
-            // nothing keeps `cur_audio_sid()`'s projection byte-identical to the old
-            // `cur_audio_sid: plan.audio_sid` assignment it replaced — a later PR's offering policy
-            // is what starts populating `plan.audio` with the rest of the facts.
-            cur_audio: plan.audio.or_else(|| {
-                (plan.audio_sid != 0).then(|| CarriedAudio {
-                    sid: plan.audio_sid,
-                    ordinal: -1,
-                    codec: String::new(),
-                    channels: 0,
-                    can_normalize_loudness: false,
-                    immersive: false,
-                })
-            }),
+            // The carried track, as `build_stream` froze it from the fetched stream. `None` = the
+            // plan names the server default, or its track list was never fetched.
+            cur_audio: plan.audio,
             // the part/show-selected subtitle (0 = none), so the menu checkmark, the timeline report
             // and any later transcode of this item all agree with what the renderer is told below
             cur_sub_sid: plan.sub_sid,
@@ -6338,7 +6387,8 @@ fn prepare_original_remux(
     let output_codecs = decision.as_ref().and_then(decision_codecs).unwrap_or_else(|| {
         (
             candidate.vcodec.clone(),
-            candidate.audio.as_ref().map_or_else(String::new, |a| a.codec.clone()),
+            // Server-default candidate: the file's own default codec, as the direct-play twin.
+            candidate.audio.as_ref().map_or_else(|| ps.src_acodec.clone(), |a| a.codec.clone()),
         )
     });
     let url = c.transcode_start_url(&spec).to_url();
@@ -6782,3 +6832,7 @@ mod direct_play_mode_tests;
 #[cfg(test)]
 #[path = "carried_audio_tests.rs"]
 mod carried_audio_tests;
+
+#[cfg(test)]
+#[path = "plan_audio_enhancement_tests.rs"]
+mod plan_audio_enhancement_tests;

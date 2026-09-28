@@ -324,7 +324,7 @@ fn timeline_lease_cannot_cross_engine_teardown() {
             sess: "logical-old".into(),
             pq_id: "pq-old".into(),
             pq_item_id: "pqi-old".into(),
-            audio_sid: 7,
+            audio: Some(CarriedAudio::named(7, -1)),
             sub_sid: 9,
             ..Default::default()
         },

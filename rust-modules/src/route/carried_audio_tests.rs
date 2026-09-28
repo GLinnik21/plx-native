@@ -1,7 +1,7 @@
-//! Issue #266 (PR1): `CarriedAudio` — the frozen audio-track snapshot that replaced the four
+//! Issue #266: `CarriedAudio` — the frozen audio-track snapshot that replaced the four
 //! independent `audio_sid`/`audio_ordinal`/`acodec`/`immersive` fields it now carries together.
-//! Nothing in this PR ever offers an enhancement (`AudioEnhancements` stays `NONE` on every path
-//! `build_stream` constructs), so these tests pin the surrounding mechanics instead: what
+//! The offering policy has its own file (`plan_audio_enhancement_tests.rs`); these tests pin the
+//! surrounding mechanics: what
 //! `from_stream` actually reads off a `metadata::Stream`, and that `None` — "server default,
 //! facts unknown" — survives every projection/pending/candidate round trip unchanged rather than
 //! being turned into a confident `Some` by a struct-literal default somewhere along the way.
@@ -9,6 +9,7 @@
 use super::*;
 #[allow(unused_imports)]
 use super::test_support::*;
+use super::test_support::apply_plan;
 
 /// `has_atmos` (and therefore `CarriedAudio::immersive`) reads `Stream.profile` alone — Dolby's
 /// own spec says the channel layout cannot tell Atmos apart from plain surround, and PMS composes
@@ -114,4 +115,49 @@ fn candidate_audio_none_matches_legacy_payload() {
     let mut ps_known = PlaybackSession::IDLE;
     ps_known.auto_original = Some(test_original_candidate(None));
     assert!(auto_original_features(&ps_known).atmos);
+
+    // …and through the recovery that actually INSTALLS the candidate. The legacy flat fields this
+    // replaced gave a server-default candidate the file's own default codec (`acodec` = the
+    // resolve's source argument), ordinal -1 (leave the demuxer on the default track) and no
+    // Atmos. `None` must reproduce that payload exactly: an empty codec here is a Load payload
+    // describing no audio at all.
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    restore_quality(Quality::Auto);
+    let mut candidate = test_original_candidate(None);
+    candidate.audio = None;
+    apply_plan(
+        &mut ps,
+        Plan {
+            url: "https://example.invalid/hls/master.m3u8".into(),
+            tsession: "encoder-1".into(),
+            vcodec: "h264".into(),
+            acodec: "aac".into(),
+            src_vcodec: "hevc".into(),
+            src_acodec: "eac3".into(),
+            contract: crate::plex::EncodeContract {
+                delivery: crate::plex::TranscodeDelivery::FixedHls { seconds_per_segment: 2 },
+                ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
+                ..Default::default()
+            },
+            transport_kbps: 28_000,
+            auto_original: Some(candidate),
+            ..Default::default()
+        },
+        "rk-auto",
+    );
+    crate::player::set_audio_track(3);
+    assert_eq!(recover_auto_to_original(&mut ps, 120), Some(AutoOriginalReload::Direct));
+    assert_eq!(stream_acodec(&ps), "eac3", "the file's own default codec, as the legacy payload");
+    assert_eq!(
+        crate::player::SHARED.desired_audio_idx.load(std::sync::atomic::Ordering::Relaxed),
+        -1,
+        "no known ordinal: the demuxer feeds the file's default track",
+    );
+    assert!(!stream_immersive(&ps), "an unknown track never declares Atmos");
+    restore_quality(Quality::Original);
+    reset_session(&mut ps);
+    install_active_encoder("");
+    crate::player::reset_audio_track();
+    crate::player::reset_subtitle();
 }

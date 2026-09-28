@@ -122,6 +122,48 @@ read-out; the consent flow itself needs the TV and a real LAN address.
     # HTTPS-fails / plaintext-answers shape, just not the loopback-ineligibility warning):
     python3 tests/mock_pms.py --plaintext-only-lan --advertise-ip 127.0.0.1
     # plxnative-plextv=http://127.0.0.1:32499
+
+Issue #266 (Boost Dialog / Normalize Loudness) fixtures and flags, every one default-off except
+the loudness attribute itself:
+
+`--no-plex-pass` answers `/` and `/identity` with `myPlexSubscription=false` (the version string
+is untouched — `tools/mock-guest.py` keys off it). Every generated and verification audio stream
+otherwise carries `canNormalizeLoudness="1"` (PMS string-encodes booleans on the wire); pass
+`--no-loudness-analysis` to omit the key entirely, modelling a server that never ran loudness
+analysis on the source.
+
+`/video/:/transcode/universal/decision` answers a live `boostDialog=1` or `normalizeLoudness=1`
+like measured PMS 1.43.4 with Plex Pass (M1/M2 in the design plan): the Part's decision becomes
+"transcode", the video stream stays "copy", and the audio stream becomes "transcode" with
+`codec=ac3` at the SAME channel count as the source — whether the request shape was a remux
+(`directPlay=0&directStream=1`) or an MDE probe (`directPlay=1&directStreamAudio=1`); a param of
+`0` or absent is byte-identical to today. `--refuse-enhancements` answers instead with the
+server-refusal shape (`generalDecisionCode=2000`, a `transcodeDecisionCode`/`transcodeDecisionText`
+naming the enhancement, `route/plan.rs::refusal` reads this). `--ignore-enhancements` accepts the
+params but leaves the audio decision "copy" (an old server that does not act on them). Both can
+also be flipped live, mid-run, with `POST /_mock/config` — JSON body
+`{"refuse_enhancements": true, "ignore_enhancements": false, "plex_pass": false}` — so one test
+case can resolve once, then refuse only from the next decision on.
+
+Five fixed fixture movies (own section id 3, so ordinary section/rail counts and hashes over
+sections 1/2 are untouched, but each is reachable directly at its ratingKey) exercise the offering
+and fallback rules:
+  - 960001 `ac3_2ch_capable` — AC3 2.0.
+  - 960002 `aac51_capable` — AAC 5.1.
+  - 960003 `dv_p8` — Dolby Vision profile 8 (`DOVIPresent`/`DOVIProfile` etc. on the video stream).
+  - 960004 `default_embedded_srt` — a default embedded SRT subtitle.
+  - 960005 `server_selected_external_srt` — an external SRT stream, `selected=true`, `key` set,
+    `codec="srt"`.
+
+`GET /_mock/requests` returns every request `handle()` routed — `{"method", "path", "query",
+"session"}`, with any query key containing "token" stripped — as a JSON array, in arrival order;
+`DELETE /_mock/requests` clears it. (Raw ranged media-byte GETs under `/library/parts/<id>`
+bypass `handle()`, as before, and stay on the older `pms.requests` list only.)
+
+`--transcode-fixture PATH` serves that file, with the same Range/206 handling as `--media`'s part
+bytes, for every `/video/:/transcode/universal/start...` request in place of the 404 a session
+with no server-side transcoder otherwise returns. It is for exercising the TV's playback pipeline
+against a real container; it claims no DSP realism for the enhancement itself.
 """
 import argparse
 import hashlib
@@ -154,6 +196,17 @@ VERIFY_SIDECAR_ID = 901009
 # so a deliberately huge --shows run remains this module's problem to notice, not to silently hit.
 EXTRA_MEDIA_RK_BASE = 990001
 EXTRA_MEDIA_PART_ID_BASE = 991001
+# #266 enhancement fixtures (module doc): own librarySectionID (3, never registered in
+# `Library.sections`), so they never appear in a section/rail listing or count, but are always
+# present and reachable directly by ratingKey. 960001..960005 sits clear of the generated range
+# (max ~205026 for a --shows-heavy run, see the EXTRA_MEDIA comment above) and of EXTRA_MEDIA/VERIFY.
+ENHANCEMENT_SECTION_ID = 3
+ENHANCEMENT_PART_ID_BASE = 961001
+ENHANCEMENT_AC3_2CH_RK = 960001
+ENHANCEMENT_AAC_51_RK = 960002
+ENHANCEMENT_DV_P8_RK = 960003
+ENHANCEMENT_DEFAULT_SRT_RK = 960004
+ENHANCEMENT_EXTERNAL_SRT_RK = 960005
 VERIFY_PREFS = [
     {"id": "audioLanguage", "value": "de"},
     {"id": "subtitleLanguage", "value": "en"},
@@ -211,11 +264,13 @@ class Library:
     ids are dense from 1; the opt-in verification ids are fixed and deliberately conspicuous."""
 
     def __init__(self, seed=1, movies=48, shows=6, seasons=2, episodes=6, rail_fixture=False,
-                 media=None, extra_media=None):
+                 media=None, extra_media=None, loudness_analysis=True):
         # Movie keys start at 1001; shows start at 2001. Refuse a fixture that would silently
         # overwrite a film with a show instead of exercising the requested listing size.
         if not 0 <= movies <= 1000:
             raise ValueError("movies must be between 0 and 1000")
+        # #266: whether a generated/verification audio stream carries canNormalizeLoudness.
+        self.loudness_analysis = loudness_analysis
         rng = random.Random(seed)
         self.seed = seed
         self.machine = "s%08x" % rng.getrandbits(32) + "s%08x" % rng.getrandbits(32)
@@ -266,6 +321,7 @@ class Library:
                 it["viewOffset"] = it["duration"] // 3
                 it["lastViewedAt"] = 1_700_100_000 + i
         self._roll_up()
+        self._add_enhancement_fixtures()
         if media is not None or extra_media:
             self.media_files = {}
             self.sidecars = {}
@@ -344,8 +400,7 @@ class Library:
             }
         return {}
 
-    @staticmethod
-    def _stream_wire(stream, sid):
+    def _stream_wire(self, stream, sid):
         kind = {"video": 1, "audio": 2, "subtitle": 3}.get(stream.get("codec_type"))
         if kind is None:
             return None
@@ -380,6 +435,8 @@ class Library:
             out.update(channels=int(stream.get("channels", 0)),
                        audioChannelLayout=stream.get("channel_layout", ""),
                        displayTitle=f"{lang or 'und'} ({codec.upper()})")
+            if self.loudness_analysis:
+                out["canNormalizeLoudness"] = "1"
         else:
             out["displayTitle"] = f"{lang or 'und'} ({codec.upper()})"
             out["forced"] = bool(disp.get("forced", 0))
@@ -516,6 +573,12 @@ class Library:
         return out
 
     def _media(self, rng, rk, part, duration):
+        audio = {"id": part * 10 + 2, "streamType": 2, "codec": "ac3", "index": 1,
+                 "channels": 6, "language": "en", "languageCode": "eng",
+                 "displayTitle": "English (AC3 5.1)", "selected": True}
+        if self.loudness_analysis:
+            # PMS string-encodes this boolean on the wire (#266).
+            audio["canNormalizeLoudness"] = "1"
         return [{
             "id": rk, "duration": duration, "bitrate": 8000, "width": 1920, "height": 1080,
             "aspectRatio": 1.78, "audioChannels": 6, "audioCodec": "ac3", "videoCodec": "h264",
@@ -528,14 +591,90 @@ class Library:
                 "Stream": [
                     {"id": part * 10 + 1, "streamType": 1, "codec": "h264", "index": 0,
                      "width": 1920, "height": 1080, "displayTitle": "1080p (H.264)"},
-                    {"id": part * 10 + 2, "streamType": 2, "codec": "ac3", "index": 1,
-                     "channels": 6, "language": "en", "languageCode": "eng",
-                     "displayTitle": "English (AC3 5.1)", "selected": True},
+                    audio,
                     {"id": part * 10 + 3, "streamType": 3, "codec": "srt", "index": 2,
                      "language": "en", "languageCode": "eng", "displayTitle": "English (SRT)"},
                 ],
             }],
         }]
+
+    def _enhancement_movie_media(self, rng, rk, part, duration, *, acodec, channels,
+                                  video_extra=None, sub=None):
+        """One fixed #266 fixture item's Media block. `sub`: `None` (an ordinary embedded SRT,
+        not selected/default — same as `_media`'s), `"embedded_default"` (default+selected
+        embedded SRT), or `"external_selected"` (a server-selected external SRT sidecar stream,
+        `key` set, never actually fetchable — no sidecar file backs it, matching a movie fixture
+        this module never claims to be a probed file)."""
+        video = {"id": part * 10 + 1, "streamType": 1, "codec": "h264", "index": 0,
+                 "width": 1920, "height": 1080, "displayTitle": "1080p (H.264)"}
+        if video_extra:
+            video.update(video_extra)
+        audio = {"id": part * 10 + 2, "streamType": 2, "codec": acodec, "index": 1,
+                 "channels": channels, "language": "en", "languageCode": "eng",
+                 "displayTitle": f"English ({acodec.upper()} {channels}ch)", "selected": True}
+        if self.loudness_analysis:
+            audio["canNormalizeLoudness"] = "1"
+        streams = [video, audio]
+        embedded_sub = {"id": part * 10 + 3, "streamType": 3, "codec": "srt", "index": 2,
+                        "language": "en", "languageCode": "eng", "displayTitle": "English (SRT)"}
+        if sub == "embedded_default":
+            embedded_sub.update(default=True, selected=True)
+        streams.append(embedded_sub)
+        if sub == "external_selected":
+            sid = part * 100 + len(streams) + 1
+            streams.append({
+                "id": sid, "streamType": 3, "codec": "srt", "index": len(streams),
+                "external": True, "selected": True, "default": False,
+                "language": "eng", "languageCode": "eng", "key": f"/library/streams/{sid}",
+                "displayTitle": "English (external SRT)",
+            })
+        return [{
+            "id": rk, "duration": duration, "bitrate": 8000, "width": 1920, "height": 1080,
+            "aspectRatio": 1.78, "audioChannels": channels, "audioCodec": acodec,
+            "videoCodec": "h264", "videoResolution": "1080", "container": "mkv",
+            "videoFrameRate": "24p", "videoProfile": "high",
+            "Part": [{
+                "id": part, "key": f"/library/parts/{part}/{1_700_000_000 + part}/file.mkv",
+                "duration": duration, "file": f"/{sname(rng)}/{sname(rng)}.mkv",
+                "size": 4_000_000_000, "container": "mkv", "videoProfile": "high",
+                "Stream": streams,
+            }],
+        }]
+
+    def _add_enhancement_fixtures(self):
+        """The five fixed #266 fixture movies named in the module doc, on their own
+        `librarySectionID` (`ENHANCEMENT_SECTION_ID`) that is never added to `self.sections` —
+        so they are invisible to every section/rail listing, count and firstCharacter query, and
+        the existing generated-data hashes and letter-count tests are unaffected — while staying
+        reachable, always, directly by `/library/metadata/<ratingKey>` and `/decision`."""
+        section = {"key": str(ENHANCEMENT_SECTION_ID), "title": "s00000003"}
+        specs = [
+            (ENHANCEMENT_AC3_2CH_RK, "ac3", 2, None, None),
+            (ENHANCEMENT_AAC_51_RK, "aac", 6, None, None),
+            (ENHANCEMENT_DV_P8_RK, "hevc", 6, {
+                "codec": "hevc",
+                "DOVIPresent": True, "DOVIProfile": 8, "DOVIBLCompatID": 1,
+                "DOVIELPresent": False, "DOVILevel": 6, "DOVIVersion": "1.0",
+                "DOVIBLPresent": True, "DOVIRPUPresent": True,
+            }, None),
+            (ENHANCEMENT_DEFAULT_SRT_RK, "ac3", 6, None, "embedded_default"),
+            (ENHANCEMENT_EXTERNAL_SRT_RK, "ac3", 6, None, "external_selected"),
+        ]
+        for n, (rk, acodec, channels, video_extra, sub) in enumerate(specs, start=1):
+            part = ENHANCEMENT_PART_ID_BASE + n
+            rng = random.Random(rk)
+            it = self._base(rng, rk, "movie", section)
+            dur = 100 * 60_000
+            it.update({
+                "duration": dur, "contentRating": "PG-13", "studio": sname(rng),
+                "tagline": swords(rng, 4), "originallyAvailableAt": f"{it['year']}-03-14",
+                "rating": 7.0, "audienceRating": 7.0, "Genre": [], "Director": [], "Writer": [],
+                "Role": [], "Country": [], "Chapter": [], "Marker": [], "Rating": [],
+                "Media": self._enhancement_movie_media(
+                    rng, rk, part, dur, acodec=acodec, channels=channels,
+                    video_extra=video_extra, sub=sub),
+            })
+            self.items[rk] = it
 
     def _base(self, rng, rk, kind, section):
         return {
@@ -871,7 +1010,8 @@ class CatalogLibrary(Library):
     `season*10+n` — so a scene manifest can name an item by key and the key never moves unless
     the catalog does."""
 
-    def __init__(self, catalog_path, cache=None, hero=None):
+    def __init__(self, catalog_path, cache=None, hero=None, loudness_analysis=True):
+        self.loudness_analysis = loudness_analysis
         catalog_path = pathlib.Path(catalog_path)
         cat = json.loads(catalog_path.read_text())
         assets = json.loads((catalog_path.parent / "assets.json").read_text())["assets"]
@@ -1290,6 +1430,20 @@ class MockPms:
         self.user_profile = {"autoSelectAudio": True, "defaultAudioLanguage": "en",
                              "defaultSubtitleLanguage": "en", "autoSelectSubtitle": 1,
                              "defaultSubtitleForced": 0, "defaultSubtitleAccessibility": 0}
+        # #266: myPlexSubscription on `/`/`/identity`; `serve(plex_pass=False)` or
+        # `POST /_mock/config {"plex_pass": false}` flips it live.
+        self.plex_pass = True
+        # #266: `/decision` behaviour for a live boostDialog/normalizeLoudness param — both
+        # runtime-togglable through `POST /_mock/config`, so one test case can resolve once and
+        # only then start refusing/ignoring.
+        self.refuse_enhancements = False
+        self.ignore_enhancements = False
+        # `--transcode-fixture PATH`: serve this file (Range/206 supported) for every
+        # /video/:/transcode/universal/start* request instead of the plain 404.
+        self.transcode_fixture = None
+        # Every request `handle()` routed, in arrival order: {"method","path","query","session"}.
+        # Query keys naming a token are stripped, never just redacted — never send a real value.
+        self.request_log = []
 
     @staticmethod
     def safe_path(path):
@@ -1341,6 +1495,42 @@ class MockPms:
         lib = self.lib
         j = lambda obj, status=200: (status, "application/json", json.dumps(obj).encode())
         segs = [s for s in p.split("/") if s]
+
+        # Never a token value, even in the in-memory log: strip any query key naming one.
+        logged_query = {k: v for k, v in q.items() if "token" not in k.lower()}
+        with self.lock:
+            self.request_log.append({
+                "method": method, "path": p, "query": logged_query,
+                "session": headers.get("X-Plex-Session-Identifier"),
+            })
+
+        if p == "/_mock/requests":
+            if method == "GET":
+                with self.lock:
+                    return j(list(self.request_log))
+            if method == "DELETE":
+                with self.lock:
+                    self.request_log.clear()
+                return j({"ok": True})
+            return j({"error": "method not allowed"}, 405)
+        if p == "/_mock/config":
+            if method != "POST":
+                return j({"error": "method not allowed"}, 405)
+            try:
+                patch = json.loads(body or b"{}")
+            except json.JSONDecodeError:
+                return j({"error": "invalid JSON body"}, 400)
+            if not isinstance(patch, dict):
+                return j({"error": "body must be a JSON object"}, 400)
+            allowed = {"refuse_enhancements", "ignore_enhancements", "plex_pass"}
+            unknown = set(patch) - allowed
+            if unknown:
+                return j({"error": f"unknown config key(s): {sorted(unknown)}"}, 400)
+            with self.lock:
+                for key, value in patch.items():
+                    setattr(self, key, bool(value))
+                current = {k: getattr(self, k) for k in allowed}
+            return j(current)
 
         def paged(rows):
             start = int(q.get("X-Plex-Container-Start",
@@ -1416,7 +1606,8 @@ class MockPms:
         catalog = isinstance(lib, CatalogLibrary)
         if p == "/" or p == "/identity":
             return j(self.container(machineIdentifier=lib.machine, friendlyName=lib.friendly,
-                                    version="1.41.0.0000-synthetic", myPlexSubscription=True,
+                                    version="1.41.0.0000-synthetic",
+                                    myPlexSubscription=self.plex_pass,
                                     platform="Linux", myPlex=True))
         if p == "/library/sections":
             return j(self.container(Directory=[dict(s, agent="tv.plex.agents.movie",
@@ -1649,6 +1840,40 @@ class MockPms:
             item = lib.items.get(rk)
             part_id = (item.get("Media", [{}])[0].get("Part", [{}])[0].get("id")
                        if item else None)
+            # #266: a LIVE boostDialog=1 or normalizeLoudness=1 — a `0` or absent param is
+            # byte-identical to the branches below, untouched. Measured against PMS 1.43.4 with
+            # Plex Pass (design plan M1/M2): whether the request shape was the remux one
+            # (directPlay=0&directStream=1) or the MDE probe (directPlay=1&directStreamAudio=1),
+            # the Part becomes a transcode — video stays "copy", audio becomes "transcode" at
+            # `ac3`, same channel count as the source — so both shapes are modelled identically
+            # here rather than branching on directPlay/directStream at all.
+            enhancement = q.get("boostDialog") == "1" or q.get("normalizeLoudness") == "1"
+            if item is not None and part_id is not None and enhancement:
+                if self.refuse_enhancements:
+                    # The refusal shape `route/plan.rs::refusal` reads: `generalDecisionCode`
+                    # 2000, with the cause in `transcodeDecisionText` (falling back to
+                    # `generalDecisionText` only when the server sends no transcode text).
+                    return j(self.container(
+                        generalDecisionCode=2000,
+                        generalDecisionText="Neither direct play nor conversion is available.",
+                        transcodeDecisionCode=4020,
+                        transcodeDecisionText="Server declined the requested audio enhancement.",
+                        mdeDecisionCode=2000, Metadata=[]))
+                row = json.loads(json.dumps(item))
+                part = row["Media"][0]["Part"][0]
+                part["decision"] = "transcode"
+                for stream in part["Stream"]:
+                    if stream["streamType"] != 2:
+                        stream["decision"] = "copy"
+                    elif self.ignore_enhancements:
+                        # An old/ignoring server: accepts the params, audio decision stays copy.
+                        stream["decision"] = "copy"
+                    else:
+                        stream["decision"] = "transcode"
+                        stream["codec"] = "ac3"
+                return j(self.container(generalDecisionCode=1000, generalDecisionText="Transcode OK",
+                                        mdeDecisionCode=1000, transcodeDecisionCode=1000,
+                                        Metadata=[row]))
             # Any item backed by a REAL probed file (--media or --extra-media) answers direct
             # play, the same way a PMS does for a file its own caps accept — not just the two
             # fixed verification ids. `media_files` is the one place that distinguishes "this rk
@@ -1676,29 +1901,22 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # _do logs a redacted request path; BaseHTTPRequestHandler would log tokens.
 
-    def _media(self, method):
-        u = urllib.parse.urlsplit(self.path)
-        segs = [s for s in u.path.split("/") if s]
-        if len(segs) < 3 or segs[:2] != ["library", "parts"] or not segs[2].isdigit():
-            return False
-        part_id = int(segs[2])
-        path = getattr(self.server.pms.lib, "media_files", {}).get(part_id)
-        if path is None:
-            return False
-        content_type = getattr(self.server.pms.lib, "media_content_type", {}).get(
-            part_id, "video/x-matroska")
+    def _serve_file_ranged(self, method, path, content_type):
+        """A byte range GET/HEAD of `path`, real `Range`/206 handling included — the same helper
+        `/library/parts/<id>` verification bytes and `--transcode-fixture` both serve through, so
+        the start.mkv fixture gets exactly the Range semantics the part-probe path already
+        proved. Returns the status actually sent."""
         size = path.stat().st_size
         start, end, status = 0, max(0, size - 1), 200
         raw_range = self.headers.get("Range")
         if raw_range:
-            import re
             match = re.fullmatch(r"bytes=(\d*)-(\d*)", raw_range.strip())
             if not match or (not match.group(1) and not match.group(2)):
                 self.send_response(416)
                 self.send_header("Content-Range", f"bytes */{size}")
                 self.send_header("Content-Length", "0")
                 self.end_headers()
-                return True
+                return 416
             if match.group(1):
                 start = int(match.group(1))
                 end = min(int(match.group(2)) if match.group(2) else end, end)
@@ -1710,7 +1928,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Range", f"bytes */{size}")
                 self.send_header("Content-Length", "0")
                 self.end_headers()
-                return True
+                return 416
             status = 206
         length = end - start + 1
         self.send_response(status)
@@ -1731,6 +1949,34 @@ class Handler(BaseHTTPRequestHandler):
                         break
                     self.wfile.write(block)
                     left -= len(block)
+        return status
+
+    def _media(self, method):
+        u = urllib.parse.urlsplit(self.path)
+        segs = [s for s in u.path.split("/") if s]
+        if len(segs) < 3 or segs[:2] != ["library", "parts"] or not segs[2].isdigit():
+            return False
+        part_id = int(segs[2])
+        path = getattr(self.server.pms.lib, "media_files", {}).get(part_id)
+        if path is None:
+            return False
+        content_type = getattr(self.server.pms.lib, "media_content_type", {}).get(
+            part_id, "video/x-matroska")
+        status = self._serve_file_ranged(method, path, content_type)
+        with self.server.pms.lock:
+            self.server.pms.requests.append((self.path, status))
+        return True
+
+    def _transcode_fixture(self, method):
+        u = urllib.parse.urlsplit(self.path)
+        if not u.path.startswith("/video/:/transcode/universal/start"):
+            return False
+        path = getattr(self.server.pms, "transcode_fixture", None)
+        if path is None:
+            return False
+        container = path.suffix.lstrip(".").lower()
+        content_type = Library._CONTAINER_CONTENT_TYPE.get(container, "video/x-matroska")
+        status = self._serve_file_ranged(method, path, content_type)
         with self.server.pms.lock:
             self.server.pms.requests.append((self.path, status))
         return True
@@ -1739,7 +1985,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.server.verbose:
             print(f"mock_pms: REQUEST {method} {self.server.pms.safe_path(self.path)}",
                   file=sys.stderr, flush=True)
-        if method in ("GET", "HEAD") and self._media(method):
+        if method in ("GET", "HEAD") and (self._media(method) or self._transcode_fixture(method)):
             return
         n = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(n) if n else b""
@@ -1785,7 +2031,8 @@ class Server(ThreadingHTTPServer):
 def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture=False,
           media=None, extra_media=None, catalog=None, catalog_cache=None, hero=None,
           plaintext_only_lan=False, advertise_ip=None, insecure_fail_mode="handshake",
-          authorize_after=None):
+          authorize_after=None, plex_pass=True, loudness_analysis=True,
+          refuse_enhancements=False, ignore_enhancements=False, transcode_fixture=None):
     """Start a mock PMS in a daemon thread; returns (server, pms). Loopback only by default: the
     app on the simulator is on this machine, and a LAN-facing listener would be one more thing
     the outbound guard has to reason about. `catalog` serves the demo library instead of a seed.
@@ -1799,13 +2046,27 @@ def serve(port, seed=1, host="127.0.0.1", verbose=False, movies=48, rail_fixture
     `.close()` alongside `srv.shutdown()`.
 
     `authorize_after=N` links the QR sign-in's demo code on the Nth pin poll (`None`: never, except
-    that `plaintext_only_lan` implies 2 so its reproduction signs in by itself)."""
+    that `plaintext_only_lan` implies 2 so its reproduction signs in by itself).
+
+    #266: `plex_pass=False`/`loudness_analysis=False` set the starting state of
+    `pms.plex_pass`/`Library.loudness_analysis`; `refuse_enhancements`/`ignore_enhancements` set
+    the starting state of the same-named `pms.*` flags — all four are still flippable afterwards,
+    live, through `POST /_mock/config`. `transcode_fixture` is the file every
+    `/video/:/transcode/universal/start*` request serves instead of the plain 404, Range/206
+    included; `None` (default) leaves that endpoint unchanged."""
+    if transcode_fixture is not None and not pathlib.Path(transcode_fixture).is_file():
+        raise ValueError(f"--transcode-fixture file is missing: {transcode_fixture}")
     if catalog is not None:
-        lib = CatalogLibrary(catalog, cache=catalog_cache, hero=hero)
+        lib = CatalogLibrary(catalog, cache=catalog_cache, hero=hero,
+                             loudness_analysis=loudness_analysis)
     else:
         lib = Library(seed=seed, movies=movies, rail_fixture=rail_fixture, media=media,
-                      extra_media=extra_media)
+                      extra_media=extra_media, loudness_analysis=loudness_analysis)
     pms = MockPms(lib)
+    pms.plex_pass = plex_pass
+    pms.refuse_enhancements = refuse_enhancements
+    pms.ignore_enhancements = ignore_enhancements
+    pms.transcode_fixture = pathlib.Path(transcode_fixture) if transcode_fixture else None
     if authorize_after is None and plaintext_only_lan:
         authorize_after = 2
     pms.authorize_after = authorize_after
@@ -2143,6 +2404,24 @@ def main():
     ap.add_argument("--authorize-after", type=int, metavar="N",
                     help="link the QR sign-in's demo code on the Nth pin poll with a synthetic "
                          "account token (default: never; --plaintext-only-lan implies 2)")
+    ap.add_argument("--no-plex-pass", action="store_true",
+                    help="#266: / and /identity answer myPlexSubscription=false (the version "
+                         "string is untouched — tools/mock-guest.py depends on it)")
+    ap.add_argument("--no-loudness-analysis", action="store_true",
+                    help="#266: omit canNormalizeLoudness from every audio stream — by default "
+                         "it is sent as \"1\" (PMS string-encodes it), modelling a server that "
+                         "never analysed the source for loudness")
+    ap.add_argument("--refuse-enhancements", action="store_true",
+                    help="#266: a live boostDialog=1/normalizeLoudness=1 on /decision gets the "
+                         "server-refusal shape (generalDecisionCode=2000) instead of a transcode "
+                         "decision; also flippable live via POST /_mock/config")
+    ap.add_argument("--ignore-enhancements", action="store_true",
+                    help="#266: a live boostDialog=1/normalizeLoudness=1 is accepted but the "
+                         "audio decision stays \"copy\" — an old server that does not act on the "
+                         "params; also flippable live via POST /_mock/config")
+    ap.add_argument("--transcode-fixture", type=pathlib.Path,
+                    help="#266: serve this file (Range/206 supported) for every "
+                         "/video/:/transcode/universal/start* request instead of the plain 404")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
@@ -2163,7 +2442,11 @@ def main():
                          extra_media=a.extra_media, catalog=a.catalog, catalog_cache=a.catalog_cache,
                          hero=a.hero, plaintext_only_lan=a.plaintext_only_lan,
                          advertise_ip=a.advertise_ip, insecure_fail_mode=a.insecure_fail_mode,
-                         authorize_after=a.authorize_after)
+                         authorize_after=a.authorize_after, plex_pass=not a.no_plex_pass,
+                         loudness_analysis=not a.no_loudness_analysis,
+                         refuse_enhancements=a.refuse_enhancements,
+                         ignore_enhancements=a.ignore_enhancements,
+                         transcode_fixture=a.transcode_fixture)
     except ValueError as e:
         ap.error(str(e))
     what = f"catalog={a.catalog}" if a.catalog else f"seed={a.seed}"

@@ -102,6 +102,9 @@ pub(super) fn fresh_registry(ps: &mut PlaybackSession) -> crate::testlock::Seria
     reset_session(ps);
     restore_quality(Quality::Original);
     restore_direct_play_mode(DirectPlayMode::Auto);
+    // Issue #266: `ResolveEnv::snapshot` reads the enhancement preference from a global, so a
+    // test that set it must not leak an enhanced resolve into the next one.
+    crate::player::restore_audio_enhancements(crate::plex::AudioEnhancements::NONE);
     crate::player::reset_route_requests_for_test(ps);
     crate::plex::reset_servers_for_test();
     crate::player::clear_original_failure();
@@ -450,4 +453,75 @@ pub(super) fn ordered_stub_pms(
         }
     });
     (port, handle)
+}
+
+/// How [`enhancement_pms`] answers a transcode `/decision` that carries `boostDialog=1` or
+/// `normalizeLoudness=1` (issue #266). Shapes are the measured ones (`/tmp/plx266` M1/M2): an
+/// honoured ask is a Part transcode with the video copied and the audio re-encoded.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum EnhMode {
+    /// Audio `transcode`, declared as this output codec.
+    Honor(&'static str),
+    /// Audio `transcode` with no codec on either stream — `decision_codecs` finds nothing.
+    HonorNoCodecs,
+    /// `generalDecisionCode 2000` — the refusal wire `tests/mock_pms.py --refuse-enhancements` sends.
+    Refuse,
+    /// Audio `copy` despite the params — an old or non-conforming PMS.
+    Ignore,
+}
+
+/// Loopback PMS for the audio-enhancement resolve: MDE answers `mde`, a transcode decision answers
+/// per [`EnhMode`] when it carries a param and a plain remux (video+audio copy) when it does not,
+/// and every media GET (Part or `start.mkv`) serves `media_bytes` so a Remote probe can complete.
+/// Runs until the returned sender fires; the join handle yields every request line.
+pub(super) fn enhancement_pms(
+    mde: &'static [u8],
+    mode: EnhMode,
+    media_bytes: usize,
+) -> (i32, std::sync::mpsc::Sender<()>, std::thread::JoinHandle<Vec<String>>) {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port() as i32;
+    listener.set_nonblocking(true).unwrap();
+    let (done, stop) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let mut requests = Vec::new();
+        loop {
+            match crate::testnet::accept(&listener) {
+                Ok((mut socket, _)) => {
+                    let line = drain_http(&mut socket);
+                    let enhanced = query_param(&line, "boostDialog") == Some("1")
+                        || query_param(&line, "normalizeLoudness") == Some("1");
+                    if line.contains("start.mkv") || line.starts_with("GET /library/parts/") {
+                        if media_bytes > 0 {
+                            write!(socket, "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 0-{}/{}\r\nContent-Length: {media_bytes}\r\nConnection: close\r\n\r\n", media_bytes - 1, media_bytes * 2).unwrap();
+                            let _ = socket.write_all(&vec![0x55; media_bytes]);
+                        } else {
+                            write!(socket, "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                        }
+                    } else if line.contains("/decision?") && line.contains("hasMDE=1") {
+                        write_json(&mut socket, mde);
+                    } else if line.contains("/decision?") {
+                        let body: String = match (enhanced, mode) {
+                            (true, EnhMode::Refuse) => r#"{"MediaContainer":{"generalDecisionCode":2000,"transcodeDecisionCode":4020,"transcodeDecisionText":"synthetic enhancement refusal","Metadata":[]}}"#.into(),
+                            (true, EnhMode::HonorNoCodecs) => String::from_utf8(MDE_TRANSCODE_COPY.to_vec()).unwrap(),
+                            (true, EnhMode::Honor(codec)) => format!(r#"{{"MediaContainer":{{"Metadata":[{{"Media":[{{"Part":[{{"decision":"transcode","Stream":[{{"streamType":1,"codec":"hevc","decision":"copy"}},{{"streamType":2,"codec":"{codec}","decision":"transcode"}}]}}]}}]}}]}}}}"#),
+                            (true, EnhMode::Ignore) | (false, _) => r#"{"MediaContainer":{"Metadata":[{"Media":[{"Part":[{"decision":"transcode","Stream":[{"streamType":1,"codec":"hevc","decision":"copy"},{"streamType":2,"codec":"ac3","decision":"copy"}]}]}]}]}}"#.into(),
+                        };
+                        write_json(&mut socket, body.as_bytes());
+                    } else {
+                        write_json(&mut socket, EMPTY_MC);
+                    }
+                    requests.push(line);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if stop.try_recv().is_ok() { break; }
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                Err(e) => panic!("fixture accept: {e}"),
+            }
+        }
+        requests
+    });
+    (port, done, handle)
 }
