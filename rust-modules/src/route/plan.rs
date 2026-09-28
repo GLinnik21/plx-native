@@ -241,6 +241,45 @@ pub(super) struct AutoOriginalCandidate {
     pub(super) subtitle_ordinal: Option<i32>,
 }
 
+impl AutoOriginalCandidate {
+    /// Follow a mid-play audio pick on a Direct or Remux route (issue #266). These two methods are
+    /// the ONLY writers of the candidate's audio and subtitle halves once it is installed.
+    ///
+    /// Why retarget instead of dropping, as the HLS family does: on Direct/Remux the candidate is
+    /// also the way BACK from an enhanced remux (`EnhancementReleased`), so it must describe the
+    /// track the viewer is hearing now — a release that restored the capture-time track would
+    /// undo their pick. On HLS the candidate is only a recovery target and the old drop stays.
+    ///
+    /// The track is taken as a unit (sid, ordinal, codec, channels, capability, immersive), so the
+    /// release's Load payload can never pair one track's ordinal with another's codec. `immersive`
+    /// survives only on a direct candidate, for `carried_track`'s reason. `false` means the pick
+    /// cannot be carried by this candidate — a direct candidate cannot feed a track the TV cannot
+    /// decode — and the caller drops the candidate.
+    pub(super) fn retarget_audio(&mut self, a: &CarriedAudio, direct_plays: bool) -> bool {
+        if self.direct && !direct_plays {
+            return false;
+        }
+        let mut carried = a.clone();
+        carried.immersive &= self.direct;
+        self.audio = Some(carried);
+        true
+    }
+
+    /// Follow a mid-play subtitle pick (see [`retarget_audio`](Self::retarget_audio)). `ordinal`
+    /// is `None` for Off and `Some(render ordinal)` for a pick; an external sidecar pick has no
+    /// demuxer ordinal (`-1`), which is stored as `None` because `player::sidecar` draws it once
+    /// the route is direct and `request_subtitle(-1)` never touches that renderer. A pick the
+    /// client cannot draw would need a burn, which the Original route by definition does not do:
+    /// `false`, and the caller drops the candidate.
+    pub(super) fn retarget_subtitle(&mut self, ordinal: Option<i32>, client_renderable: bool) -> bool {
+        if ordinal.is_some() && !client_renderable {
+            return false;
+        }
+        self.subtitle_ordinal = ordinal.filter(|o| *o >= 0);
+        true
+    }
+}
+
 
 pub(super) fn source_probe_sample_outcome(
     sample: crate::curlio::ThroughputSample,

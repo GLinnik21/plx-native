@@ -778,10 +778,10 @@ fn failed_original_then_auto_keeps_the_live_adaptive_route() {
     let original = claim_route_action().expect("the manual Original action is explicit");
     assert_eq!(
         original.intent,
-        RouteIntent::User(UserRouteIntent::RecoverOriginal),
+        RouteIntent::User(UserRouteIntent::RecoverOriginal(RecoveryCause::ManualOriginal)),
     );
     assert_eq!(
-        recover_auto_to_original_for(&mut ps, &original.ticket, 142, false),
+        recover_auto_to_original_for(&mut ps, &original.ticket, 142, RecoveryCause::ManualOriginal),
         Some(AutoOriginalReload::Direct),
     );
     assert_eq!(rollback_seconds(&mut ps), Some(142));
@@ -1324,7 +1324,7 @@ fn manual_original_adopts_one_running_trial_and_revokes_its_auto_ticket_on_frame
     );
     let hls_worker = worker_ticket();
     assert_eq!(
-        recover_auto_to_original_for(&mut ps, &hls_worker, 120, true),
+        recover_auto_to_original_for(&mut ps, &hls_worker, 120, RecoveryCause::Automatic),
         Some(AutoOriginalReload::Direct),
     );
     let trial_worker = worker_ticket();

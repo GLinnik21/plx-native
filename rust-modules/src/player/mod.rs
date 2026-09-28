@@ -1324,9 +1324,16 @@ pub(crate) fn request_audio_switch(ps: &crate::route::PlaybackSession, _sid: i64
 /// position next tick (switch_audio_native). Used when the item direct-plays and the target track
 /// is a direct-playable codec (aac/ac3/eac3).
 pub(crate) fn request_audio_track(ps: &mut crate::route::PlaybackSession, audio_idx: i32, codec: &str) {
+    stage_native_audio(ps, audio_idx, codec);
+    crate::route::request_user_route_intent(ps, crate::route::UserRouteIntent::NativeAudioReload);
+}
+/// Everything a native audio switch needs BEFORE its direct-play reload, without queueing one:
+/// the Load payload codec, the demuxer's stream index, and the old track's embedded cues gone.
+/// A claimed action that owes a displaced pick its reload (issue #266) stages it here and runs
+/// the reload itself, so no second intent is queued mid-claim.
+pub(crate) fn stage_native_audio(ps: &mut crate::route::PlaybackSession, audio_idx: i32, codec: &str) {
     crate::route::set_stream_acodec(ps, codec); // the reload's Load payload uses this audio codec
     SHARED.desired_audio_idx.store(audio_idx, Relaxed);
-    crate::route::request_user_route_intent(ps, crate::route::UserRouteIntent::NativeAudioReload);
     SHARED.sub_cues.lock().unwrap().clear();
 }
 /// reset to the default (best) audio stream — called on a new item so a prior track choice
@@ -1394,7 +1401,10 @@ pub(crate) fn reset_route_requests_for_test(ps: &crate::route::PlaybackSession) 
 /// the adaptive worker publishes through the same synchronized route-intent controller after its
 /// source probes pass.
 pub(crate) fn request_original_recovery(ps: &crate::route::PlaybackSession) {
-    crate::route::request_user_route_intent(ps, crate::route::UserRouteIntent::RecoverOriginal);
+    crate::route::request_user_route_intent(
+        ps,
+        crate::route::UserRouteIntent::RecoverOriginal(crate::route::RecoveryCause::ManualOriginal),
+    );
     SHARED.sub_cues.lock().unwrap().clear();
 }
 
@@ -1556,12 +1566,21 @@ pub(crate) fn restore_audio_enhancements(a: crate::plex::AudioEnhancements) {
 }
 
 /// Select a preference on the main thread and retain its persistence for the shared storage
-/// worker, exactly as [`set_subtitle_tone`] does. No menu row calls this yet (issue #266's menu
-/// lands later); it is the one door every future writer goes through.
-#[allow(dead_code)] // first production caller is the Audio tab's toggle rows (#266, a later PR)
+/// worker, exactly as [`set_subtitle_tone`] does.
 pub(crate) fn set_audio_enhancements(a: crate::plex::AudioEnhancements) {
     restore_audio_enhancements(a);
     persist_audio_enhancements(a);
+}
+
+/// **The Audio tab's toggle rows land here** (issue #266): persist the preference, then bring the
+/// playing route in line with it. The reconcile itself defers behind a pending Original trial, so
+/// a toggle during one applies to whichever route that trial settles on.
+#[allow(dead_code)] // first production caller is the Audio tab's toggle rows (#266 PR 4)
+pub(crate) fn request_audio_enhancement(ps: &mut crate::route::PlaybackSession, a: crate::plex::AudioEnhancements) {
+    set_audio_enhancements(a);
+    crate::route::reconcile_enhancement(ps, false);
+    // the rows' checkmarks move on this — see `route::persist_quality_choice`
+    crate::ui::idle::invalidate();
 }
 
 fn persist_audio_enhancements(a: crate::plex::AudioEnhancements) {

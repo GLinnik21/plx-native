@@ -646,7 +646,22 @@ pub(crate) enum UserRouteIntent {
     Retranscode,
     NativeAudioReload,
     AdaptiveReload,
-    RecoverOriginal,
+    RecoverOriginal(RecoveryCause),
+}
+
+/// Why an HLS/remux → Original recovery is being attempted. The cause decides which applied
+/// contract may authorise it and whether the Auto watchdog keeps watching the result, so it rides
+/// the intent instead of being re-derived from a quality atomic that may have moved since.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RecoveryCause {
+    /// The Auto worker proved the source fits: only an applied Auto contract may take it.
+    Automatic,
+    /// The viewer picked Original: the DESIRED quality must still say so at claim time.
+    ManualOriginal,
+    /// Issue #266: the enhanced remux is no longer wanted (toggle off, subtitle on, a track the
+    /// enhancement cannot carry) and the candidate direct-plays. The route stays Original-family,
+    /// so either applied Auto or Original may take it, and an Auto playback keeps its watchdog.
+    EnhancementReleased,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -685,6 +700,10 @@ pub(crate) struct ClaimedRouteAction {
     serial: u64,
     pub(crate) ticket: WorkerTicket,
     pub(crate) intent: RouteIntent,
+    /// Issue #266: a track pick's own reload was DISPLACED by an enhancement reconcile queued in
+    /// its place (`PlayerControl::displaced_pick`). Taken with the user intent it rode, so a
+    /// claim that cannot honour the enhancement still owes the pick its legacy reload.
+    pub(crate) displaced_pick: bool,
 }
 
 /// Identity of one prepared route transaction.
@@ -926,6 +945,10 @@ pub(super) struct PlayerControl {
     applied_projection: Option<AppliedRouteProjection>,
     next_action: u64,
     pending_user: Option<UserRouteIntent>,
+    /// Issue #266: the pending user intent stands in for a track pick's reload (see
+    /// [`reconcile_enhancement`]). Lives and dies with `pending_user`: cleared at every site that
+    /// clears it, taken with it at claim, so it can never outlive the pick it describes.
+    displaced_pick: bool,
     pending_auto: Option<AutomaticRouteIntent>,
     /// Latest requested playhead which has not yet crossed a real media discontinuity.
     pending_seek_ns: Option<i64>,
@@ -966,6 +989,7 @@ static PLAYER_CONTROL: std::sync::Mutex<PlayerControl> = std::sync::Mutex::new(P
     applied_projection: None,
     next_action: 0,
     pending_user: None,
+    displaced_pick: false,
     pending_auto: None,
     pending_seek_ns: None,
     phase: ControlPhase::Stable,
@@ -1090,9 +1114,11 @@ fn merge_user_route_intent(
 ) -> UserRouteIntent {
     use UserRouteIntent::{AdaptiveReload, NativeAudioReload, RecoverOriginal, Retranscode};
     match (pending, incoming) {
-        (_, RecoverOriginal) => RecoverOriginal,
-        (Some(RecoverOriginal), Retranscode) if preserve_original_recovery => RecoverOriginal,
-        (Some(RecoverOriginal), newer) => newer,
+        (_, RecoverOriginal(cause)) => RecoverOriginal(cause),
+        (Some(RecoverOriginal(cause)), Retranscode) if preserve_original_recovery => {
+            RecoverOriginal(cause)
+        }
+        (Some(RecoverOriginal(_)), newer) => newer,
         (Some(Retranscode), NativeAudioReload | AdaptiveReload)
         | (Some(NativeAudioReload | AdaptiveReload), Retranscode) => Retranscode,
         (Some(NativeAudioReload), AdaptiveReload) | (Some(AdaptiveReload), NativeAudioReload) => {
@@ -1132,6 +1158,7 @@ fn begin_playback_request() -> bool {
     control.desired_revision = next_generation(control.desired_revision);
     control.desired_quality = quality();
     control.pending_user = None;
+    control.displaced_pick = false;
     control.pending_auto = None;
     control.pending_seek_ns = None;
     if let Some(fallback) = fallback {
@@ -1282,7 +1309,15 @@ pub(crate) fn publish_automatic_route_intent(
 /// an Original trial. Multiple user changes coalesce to the newest desired contract; their durable
 /// fields already live in `Session`, so one later rebuild applies the whole projection.
 pub(crate) fn request_user_route_intent(ps: &PlaybackSession, intent: UserRouteIntent) {
+    queue_user_route_intent(ps, intent, false);
+}
+
+/// [`request_user_route_intent`], optionally marking that the queued intent stands in for a
+/// track pick's own reload (issue #266's `displaced_pick`). One lock for both writes, so a claim
+/// can never take the intent without the marker that explains it.
+fn queue_user_route_intent(ps: &PlaybackSession, intent: UserRouteIntent, displaced_pick: bool) {
     let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+    control.displaced_pick |= displaced_pick;
     // Setters already crossed an early boundary before publishing their projection. Queueing the
     // resulting route action is a second, independently reachable boundary: callers such as the
     // automatic-recovery UI can request an action directly, and both paths must fence old tickets.
@@ -1340,6 +1375,7 @@ pub(crate) fn cancel_user_route_intent(intent: UserRouteIntent) {
     let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
     if control.pending_user == Some(intent) {
         control.pending_user = None;
+        control.displaced_pick = false;
     }
 }
 
@@ -1350,7 +1386,9 @@ pub(crate) fn claim_route_action() -> Option<ClaimedRouteAction> {
     if control.phase != ControlPhase::Stable {
         return None;
     }
+    let mut displaced_pick = false;
     let intent = if let Some(user) = control.pending_user.take() {
+        displaced_pick = std::mem::take(&mut control.displaced_pick);
         RouteIntent::User(user)
     } else {
         let automatic = control.pending_auto.take()?;
@@ -1367,6 +1405,7 @@ pub(crate) fn claim_route_action() -> Option<ClaimedRouteAction> {
         serial,
         ticket,
         intent,
+        displaced_pick,
     })
 }
 
@@ -1807,6 +1846,7 @@ pub(crate) fn begin_engine_teardown(for_reload: bool) {
     if !for_reload {
         control.desired_revision = next_generation(control.desired_revision);
         control.pending_user = None;
+        control.displaced_pick = false;
         control.pending_seek_ns = None;
         control.phase = ControlPhase::Stopping;
         control.timeline = None;
@@ -1887,6 +1927,7 @@ pub(crate) fn reset_player_control_for_test(ps: &PlaybackSession) {
     // Physical attempts are process-monotonic. The result queue outlives an Engine reset, so
     // reusing an id here would make a late completion an ABA match for the next fixture/session.
     control.pending_user = None;
+    control.displaced_pick = false;
     control.pending_auto = None;
     control.pending_seek_ns = None;
     control.phase = ControlPhase::Stable;
@@ -3339,15 +3380,63 @@ fn install_auto_hls(
 #[cfg(test)]
 pub(crate) fn recover_auto_to_original(ps: &mut PlaybackSession, offset_secs: i64) -> Option<AutoOriginalReload> {
     let expected = worker_ticket();
-    recover_auto_to_original_for(ps, &expected, offset_secs, quality() == Quality::Auto)
+    let cause = if quality() == Quality::Auto {
+        RecoveryCause::Automatic
+    } else {
+        RecoveryCause::ManualOriginal
+    };
+    recover_auto_to_original_for(ps, &expected, offset_secs, cause)
+}
+
+/// Which Original route a recovery restores (issue #266).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RecoveryFlavour {
+    Direct,
+    /// A codec-preserving remux carrying these enhancement params (`NONE` for a plain remux).
+    Remux(crate::plex::AudioEnhancements),
+}
+
+/// The enhancement a recovery to `candidate` should carry: the offer is evaluated against the
+/// family of the route being BUILT (`candidate.direct ? Direct : Remux`), never the live one —
+/// during an HLS recovery the live contract still says `FixedHls` (family `Other`, never offered)
+/// and is only overwritten once the replacement is published.
+fn recovery_want(ps: &PlaybackSession, candidate: &AutoOriginalCandidate) -> crate::plex::AudioEnhancements {
+    let facts = EnhancementFacts {
+        pass: crate::plex::serverinfo::subscription_of(cur_sid(ps)),
+        base: Some(candidate),
+        carried: candidate.audio.as_ref(),
+        subtitle_shown: ps.cur_sub_sid != 0,
+        refused: ps.cur_enhancement == EnhancementOutcome::Refused,
+    };
+    let family = if candidate.direct {
+        RouteFamily::Direct
+    } else {
+        RouteFamily::Remux
+    };
+    desired_audio(crate::player::audio_enhancements(), enhancements_offered(&facts, family))
+}
+
+/// **Pure: Direct only when the candidate direct-plays AND no enhancement is wanted.** An enhanced
+/// Original is a remux by definition (M1), so a wanted enhancement turns a direct candidate into
+/// the codec-preserving remux carrying the params — the same shape the resolve would have built.
+pub(super) fn recovery_flavour(
+    candidate: &AutoOriginalCandidate,
+    want: crate::plex::AudioEnhancements,
+) -> RecoveryFlavour {
+    if candidate.direct && !want.any() {
+        RecoveryFlavour::Direct
+    } else {
+        RecoveryFlavour::Remux(want)
+    }
 }
 
 pub(crate) fn recover_auto_to_original_for(
     ps: &mut PlaybackSession,
     expected: &WorkerTicket,
     offset_secs: i64,
-    automatic: bool,
+    cause: RecoveryCause,
 ) -> Option<AutoOriginalReload> {
+    let automatic = cause == RecoveryCause::Automatic;
     if forced_direct_play(ps) { return None; }
     // One handoff owns both the unproven replacement and the retained client-side HLS route until
     // decoded frames commit it or an open failure restores that route snapshot. PMS-side HLS
@@ -3357,15 +3446,22 @@ pub(crate) fn recover_auto_to_original_for(
     if original_recovery_pending() {
         return None;
     }
-    let contract_allows = if automatic {
-        applied_quality() == Quality::Auto
-    } else {
-        desired_quality() == Quality::Original
+    let contract_allows = match cause {
+        RecoveryCause::Automatic => applied_quality() == Quality::Auto,
+        RecoveryCause::ManualOriginal => desired_quality() == Quality::Original,
+        RecoveryCause::EnhancementReleased => {
+            matches!(applied_quality(), Quality::Auto | Quality::Original)
+        }
     };
     if !contract_allows || !is_transcoding(ps) {
         return None;
     }
+    // The Auto watchdog keeps watching an Original it put there itself, and an enhancement
+    // release inside an Auto playback — the viewer changed the audio, not the quality policy.
+    let watched = automatic
+        || (cause == RecoveryCause::EnhancementReleased && applied_quality() == Quality::Auto);
     let candidate = ps.auto_original.clone()?;
+    let flavour = recovery_flavour(&candidate, recovery_want(ps, &candidate));
     // The worker may have committed several HLS encoders since the main-thread plan was installed.
     // Snapshot the physical route before replacing it, otherwise the rollback pairs the newest
     // encoder id with the bootstrap URL/rung and reopens different media at a different position.
@@ -3384,7 +3480,7 @@ pub(crate) fn recover_auto_to_original_for(
         return None;
     }
     let mut rollback = snapshot_route(ps, expected_encoder.clone(), offset_secs);
-    if candidate.direct {
+    if flavour == RecoveryFlavour::Direct {
         // The probe and the actual Part body must name the same exact Streaming Resource. A URL
         // left on the logical playback id can token-alias this HLS resource today, then fail a
         // later seek after cleanup because the alias choice is not durable.
@@ -3411,7 +3507,9 @@ pub(crate) fn recover_auto_to_original_for(
             s.cur_contract.delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
             s.cur_contract.no_video_copy = false;
             s.cur_contract.ceiling = None;
-            s.cur_auto_original_watched = automatic;
+            s.cur_contract.audio = crate::plex::AudioEnhancements::NONE;
+            s.cur_enhancement = EnhancementOutcome::Off;
+            s.cur_auto_original_watched = watched;
             s.cur_audio = candidate.audio.clone();
             s.stream_vcodec = candidate.vcodec.clone();
             // A server-default candidate carries no track facts; the file's own default codec
@@ -3434,10 +3532,16 @@ pub(crate) fn recover_auto_to_original_for(
         // are leaving, not the replacement now being opened; a failure of this open republishes
         // its own exact status from the pump.
         crate::player::clear_original_failure();
-        crate::player::log(if automatic {
-            "auto: recovered Original direct play; HLS encoder held pending frames"
-        } else {
-            "quality: Original restored direct play; HLS encoder held pending frames"
+        crate::player::log(match cause {
+            RecoveryCause::Automatic => {
+                "auto: recovered Original direct play; HLS encoder held pending frames"
+            }
+            RecoveryCause::ManualOriginal => {
+                "quality: Original restored direct play; HLS encoder held pending frames"
+            }
+            RecoveryCause::EnhancementReleased => {
+                "enhancement: released to Original direct play; remux encoder held pending frames"
+            }
         });
         crate::player::report::note_delivery_requested_for(
             playback_trace_generation(),
@@ -3453,14 +3557,22 @@ pub(crate) fn recover_auto_to_original_for(
     // old HLS encoder, then put both exact identities in PendingOriginal; decoded frames retire
     // HLS, while a failed open restores its client-side route snapshot and retires this unproven
     // remux. Only the next HLS response establishes PMS-side cursor continuity.
-    let replacement = prepare_original_remux(ps, &candidate, expected, offset_secs, automatic)?;
+    let RecoveryFlavour::Remux(audio) = flavour else {
+        unreachable!("the Direct flavour returned above");
+    };
+    let replacement =
+        prepare_original_remux(ps, &candidate, expected, offset_secs, watched, audio)?;
     rollback.replacement_encoder = replacement;
     set_pending_original(ps, rollback, automatic);
     crate::player::clear_original_failure();
-    crate::player::log(if automatic {
-        "auto: recovered Original remux; HLS encoder held pending frames"
-    } else {
-        "quality: Original restored remux; HLS encoder held pending frames"
+    crate::player::log(match cause {
+        RecoveryCause::Automatic => "auto: recovered Original remux; HLS encoder held pending frames",
+        RecoveryCause::ManualOriginal => {
+            "quality: Original restored remux; HLS encoder held pending frames"
+        }
+        RecoveryCause::EnhancementReleased => {
+            "enhancement: released to Original remux; previous encoder held pending frames"
+        }
     });
     crate::player::report::note_delivery_requested_for(
         playback_trace_generation(),
@@ -3509,6 +3621,9 @@ struct PendingOriginal {
     url: String,
     tsession: String,
     cur_contract: crate::plex::EncodeContract,
+    /// Travels with `cur_contract`: an enhanced remux released to direct play and rolled back
+    /// must come back graded as it was, not as the `Off` the failed candidate wrote.
+    cur_enhancement: EnhancementOutcome,
     cur_auto_original_watched: bool,
     cur_audio: Option<CarriedAudio>,
     stream_vcodec: String,
@@ -3529,9 +3644,9 @@ struct PendingOriginal {
     /// proven; a terminal failure drops them rather than leaking them into a later trial.
     deferred_quality: Option<Quality>,
     deferred_audio: Option<CarriedAudio>,
-    /// Unused in this PR (issue #266 PR1): reserved for a later PR's reconciliation of the
-    /// enhancement outcome against a deferred audio pick that only lands after this trial settles.
-    #[allow(dead_code)]
+    /// Issue #266: the enhancement preference changed while this trial owned the route. The
+    /// reconcile it asked for runs against whichever route the trial settles on — the candidate
+    /// or its rollback — never against the unproven half-state in between.
     deferred_reconcile: bool,
 }
 
@@ -3539,6 +3654,7 @@ struct PendingOriginal {
 pub(crate) struct DeferredOriginalEffects {
     quality: Option<Quality>,
     audio: Option<CarriedAudio>,
+    reconcile: bool,
 }
 
 impl DeferredOriginalEffects {
@@ -3546,11 +3662,12 @@ impl DeferredOriginalEffects {
         Self {
             quality: pending.deferred_quality.take(),
             audio: pending.deferred_audio.take(),
+            reconcile: std::mem::take(&mut pending.deferred_reconcile),
         }
     }
 
     fn is_empty(&self) -> bool {
-        self.quality.is_none() && self.audio.is_none()
+        self.quality.is_none() && self.audio.is_none() && !self.reconcile
     }
 }
 
@@ -3578,6 +3695,7 @@ fn snapshot_route(ps: &PlaybackSession, encoder: String, offset_secs: i64) -> Pe
         url: s.url.clone(),
         tsession: s.tsession.clone(),
         cur_contract: s.cur_contract,
+        cur_enhancement: s.cur_enhancement,
         cur_auto_original_watched: s.cur_auto_original_watched,
         cur_audio: s.cur_audio.clone(),
         stream_vcodec: s.stream_vcodec.clone(),
@@ -3746,6 +3864,7 @@ pub(crate) fn rollback_original_recovery(ps: &mut PlaybackSession) -> Option<Ori
         s.url = pending.url.clone();
         s.tsession = pending.tsession.clone();
         s.cur_contract = pending.cur_contract;
+        s.cur_enhancement = pending.cur_enhancement;
         s.cur_auto_original_watched = pending.cur_auto_original_watched;
         s.cur_audio = pending.cur_audio.clone();
         s.stream_vcodec = pending.stream_vcodec.clone();
@@ -6329,13 +6448,16 @@ fn apply_plan(ps: &mut PlaybackSession, meta: &mut crate::stores::metadata::Meta
 }
 
 /// Register and publish a codec-preserving Original remux without retiring `expected_hls`.
-/// `PendingOriginal` owns the two-session commit/rollback after this returns.
+/// `PendingOriginal` owns the two-session commit/rollback after this returns. `audio` is the
+/// recovery's own [`recovery_flavour`] (issue #266): `NONE` for the plain remux, else the params
+/// the enhanced Original carries.
 fn prepare_original_remux(
     ps: &mut PlaybackSession,
     candidate: &AutoOriginalCandidate,
     expected: &WorkerTicket,
     offset_secs: i64,
-    automatic: bool,
+    watched: bool,
+    audio: crate::plex::AudioEnhancements,
 ) -> Option<String> {
     let c = cur_client(ps)?;
     let rk = cur_rk(ps);
@@ -6368,10 +6490,17 @@ fn prepare_original_remux(
             delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
             no_video_copy: false,
             ceiling: None,
-            audio: crate::plex::AudioEnhancements::NONE,
+            audio,
         },
     );
     let decision = c.transcode_decision(&spec);
+    // A refused or ignored enhancement is a failed recovery, not a quiet plain remux: the route
+    // that would play is not the one asked for, and the held HLS/remux route is still intact.
+    if enhancement_fallback(decision.as_ref(), audio) == Fallback::Retry {
+        crate::player::log("enhancement: refused/ignored by server; recovery keeps current stream");
+        let _ = c.transcode_stop(&replacement);
+        return None;
+    }
     if let Some(reason) = decision.as_ref().and_then(refusal) {
         crate::player::log(&format!(
             "abr: Original remux decision refused{}",
@@ -6387,10 +6516,17 @@ fn prepare_original_remux(
     let output_codecs = decision.as_ref().and_then(decision_codecs).unwrap_or_else(|| {
         (
             candidate.vcodec.clone(),
-            // Server-default candidate: the file's own default codec, as the direct-play twin.
-            candidate.audio.as_ref().map_or_else(|| ps.src_acodec.clone(), |a| a.codec.clone()),
+            if audio.any() {
+                // I4: an enhanced remux re-encodes the audio; the profile's first target is what
+                // arrives, and the source codec here would be silent audio.
+                "ac3".to_owned()
+            } else {
+                // Server-default candidate: the file's own default codec, as the direct-play twin.
+                candidate.audio.as_ref().map_or_else(|| ps.src_acodec.clone(), |a| a.codec.clone())
+            },
         )
     });
+    let enhancement = classify_outcome(decision.as_ref(), candidate.audio.as_ref(), audio);
     let url = c.transcode_start_url(&spec).to_url();
     if replace_active_encoder_for(expected, &replacement).is_none() {
         let _ = c.transcode_stop(&replacement);
@@ -6403,7 +6539,9 @@ fn prepare_original_remux(
         s.cur_contract.delivery = crate::plex::TranscodeDelivery::ProgressiveMkv;
         s.cur_contract.no_video_copy = false;
         s.cur_contract.ceiling = None;
-        s.cur_auto_original_watched = automatic;
+        s.cur_contract.audio = audio;
+        s.cur_enhancement = enhancement;
+        s.cur_auto_original_watched = watched;
         s.cur_audio = candidate.audio.clone();
         s.stream_vcodec = output_codecs.0.clone();
         s.stream_acodec = output_codecs.1.clone();
@@ -6437,41 +6575,80 @@ pub(crate) fn retranscode_for(ps: &mut PlaybackSession, expected: &WorkerTicket,
             return None;
         }
     }
-    retranscode_as(ps, expected, offset_secs, false)
+    let contract = retranscode_contract(ps);
+    retranscode_as(ps, expected, offset_secs, contract)
 }
 
-fn retranscode_as(ps: &mut PlaybackSession, expected: &WorkerTicket, offset_secs: i64, remux: bool) -> Option<String> {
+/// The contract a plain rebuild of the current route asks for: today's delivery, ceiling and
+/// video-copy rule with `remux: false`, and the enhancement run through the one offer predicate
+/// (a re-encode is family `Other`, so NONE) — a pick mid-play never keeps params the offer no
+/// longer covers.
+///
+/// **One exception keeps an ENHANCED remux a remux.** A pick that leaves the offer standing
+/// (another capable track the candidate can carry) makes [`enhancement_step`] `NotInvolved`
+/// because the params already match, and its legacy reload lands here; rebuilding that as a
+/// re-encode would silently drop the enhancement the viewer still has switched on.
+fn retranscode_contract(ps: &PlaybackSession) -> crate::plex::EncodeContract {
+    let keep_enhanced = live_family(ps) == RouteFamily::Remux
+        && ps.cur_contract.audio.any()
+        && want_live(ps).any();
+    if keep_enhanced {
+        return enhanced_remux_contract(want_live(ps));
+    }
+    crate::plex::EncodeContract {
+        remux: false,
+        delivery: cur_delivery(ps),
+        no_video_copy: is_no_video_copy(ps),
+        ceiling: cur_ceiling(ps),
+        audio: desired_audio(
+            crate::player::audio_enhancements(),
+            enhancements_offered(&facts(ps), RouteFamily::Other),
+        ),
+    }
+}
+
+/// Rebuild the current item under `contract` (issue #266: the whole encode shape, enhancement
+/// included). Publishes `cur_contract` and `cur_enhancement` only after PMS accepted it — the
+/// applied enhancement is never written at the selection (I9).
+fn retranscode_as(
+    ps: &mut PlaybackSession,
+    expected: &WorkerTicket,
+    offset_secs: i64,
+    contract: crate::plex::EncodeContract,
+) -> Option<String> {
     if forced_direct_play(ps) { return None; }
     let c = cur_client(ps)?;
     let rk = cur_rk(ps);
     if rk.is_empty() || !is_worker_ticket_current(expected) {
         return None;
     }
-    // Resolve every fallible recovery input before publishing the new route. A missing candidate
-    // must leave the still-playing HLS session untouched, not strand it behind a remux marker.
-    let remux_codecs = if remux {
-        let s = &*ps;
-        Some((
-            s.src_vcodec.clone(),
-            s.auto_original
-                .as_ref()?
-                .audio
-                .as_ref()
-                .map_or_else(String::new, |a| a.codec.clone()),
-        ))
-    } else {
-        None
-    };
     // Snapshot the desired contract, but publish none of it before PMS has answered and the full
     // worker/action ticket still owns the route. This prevents a failed `/decision` from making
     // diagnostics claim the requested 22 Mbps while the old 1.1 Mbps encoder still serves bytes.
-    let delivery = cur_delivery(ps);
-    let ceiling = cur_ceiling(ps);
-    let no_video_copy = is_no_video_copy(ps);
+    let crate::plex::EncodeContract {
+        remux,
+        delivery,
+        ceiling,
+        audio,
+        ..
+    } = contract;
     let audio_sid = cur_audio_sid(ps);
     let subtitle_sid = cur_sub_sid(ps);
-    let (fallback_vcodec, fallback_acodec) = if let Some((vcodec, acodec)) = remux_codecs {
-        (vcodec, acodec)
+    let (fallback_vcodec, fallback_acodec) = if remux {
+        (
+            ps.src_vcodec.clone(),
+            if audio.any() {
+                // I4: the enhanced audio is re-encoded to the profile's first target; the source
+                // codec here would describe bytes that never arrive (silent audio).
+                "ac3".to_owned()
+            } else {
+                // A plain remux copies the carried track; server default falls back to the file's.
+                ps.cur_audio
+                    .as_ref()
+                    .filter(|a| !a.codec.is_empty())
+                    .map_or_else(|| ps.src_acodec.clone(), |a| a.codec.clone())
+            },
+        )
     } else if matches!(delivery, crate::plex::TranscodeDelivery::FixedHls { .. }) {
         ("h264".to_owned(), "aac".to_owned())
     } else {
@@ -6495,18 +6672,19 @@ fn retranscode_as(ps: &mut PlaybackSession, expected: &WorkerTicket, offset_secs
         crate::plex::TranscodeOffset::from_seconds(offset_secs.max(0)),
         audio_sid,
         subtitle_sid,
-        crate::plex::EncodeContract {
-            remux,
-            delivery,
-            no_video_copy,
-            ceiling,
-            audio: crate::plex::AudioEnhancements::NONE,
-        },
+        contract,
     );
     let Some(decision) = c.transcode_decision(&sp) else {
         let _ = c.transcode_stop(&qsess);
         return None;
     };
+    // A live toggle the server refuses (or silently ignores — audio `copy` despite the params)
+    // is a rejected action: the current stream is retained and the menu shows what plays.
+    if enhancement_fallback(Some(&decision), audio) == Fallback::Retry {
+        crate::player::log("enhancement: refused/ignored by server; current stream retained");
+        let _ = c.transcode_stop(&qsess);
+        return None;
+    }
     if let Some(reason) = refusal(&decision) {
         crate::player::log(&format!(
             "retranscode decision refused{}",
@@ -6534,8 +6712,10 @@ fn retranscode_as(ps: &mut PlaybackSession, expected: &WorkerTicket, offset_secs
         return None;
     }
     let expected_encoder = expected.encoder().to_owned();
+    let enhancement = classify_outcome(Some(&decision), ps.cur_audio.as_ref(), audio);
     { let s = &mut *ps; {
-        s.cur_contract.remux = remux;
+        s.cur_contract = contract;
+        s.cur_enhancement = enhancement;
         s.tsession = qsess.clone();
         s.url = url.clone();
         s.stream_vcodec = output_codecs.0.clone();
@@ -6571,6 +6751,363 @@ fn retranscode_as(ps: &mut PlaybackSession, expected: &WorkerTicket, offset_secs
     Some(url)
 }
 
+// ---- issue #266: the live audio-enhancement state machine ------------------------------------
+//
+// The enhancement decorates the Original route: turning it on makes a Direct/Remux playback an
+// enhanced remux, turning it off (or losing the offer — a subtitle, a track the server cannot
+// analyse) returns it to the frozen `AutoOriginalCandidate`. Every mid-play change funnels through
+// ONE reconcile which only ever queues `UserRouteIntent::Retranscode`; the claim then asks
+// `enhancement_step` what "Retranscode" means NOW. Deciding at claim rather than at the click is
+// what lets several quick picks and toggles coalesce into the route their final state describes,
+// with the merge table left exactly as it was.
+
+/// The family of the route playing NOW (see [`RouteFamily`]). Mid-play code and the menu pass
+/// this; the resolve and recovery pass the family of the route they are building instead.
+pub(super) fn live_family(ps: &PlaybackSession) -> RouteFamily {
+    if !is_transcoding(ps) {
+        RouteFamily::Direct
+    } else if ps.cur_contract.remux
+        && ps.cur_contract.delivery == crate::plex::TranscodeDelivery::ProgressiveMkv
+    {
+        RouteFamily::Remux
+    } else {
+        RouteFamily::Other
+    }
+}
+
+/// The offer's inputs, read from the live session alone — no metadata store: the carried track's
+/// capability was frozen into `cur_audio` when it was picked, and the candidate carries its own
+/// DV facts.
+pub(super) fn facts(ps: &PlaybackSession) -> EnhancementFacts<'_> {
+    EnhancementFacts {
+        pass: crate::plex::serverinfo::subscription_of(cur_sid(ps)),
+        base: ps.auto_original.as_ref(),
+        carried: ps.cur_audio.as_ref(),
+        subtitle_shown: ps.cur_sub_sid != 0,
+        refused: ps.cur_enhancement == EnhancementOutcome::Refused,
+    }
+}
+
+/// What the viewer's preference asks of the live route: an Original-family route (Direct or
+/// Remux) is judged as the remux an enhancement would make it; anything else is never offered.
+fn want_live(ps: &PlaybackSession) -> crate::plex::AudioEnhancements {
+    let target = match live_family(ps) {
+        RouteFamily::Direct | RouteFamily::Remux => RouteFamily::Remux,
+        RouteFamily::Other => RouteFamily::Other,
+    };
+    desired_audio(crate::player::audio_enhancements(), enhancements_offered(&facts(ps), target))
+}
+
+/// The one shape an enhanced Original takes: a codec-preserving progressive-MKV remux, video
+/// copied (I7 keeps DV, the only `no_video_copy` source, out of the offer), no ceiling.
+fn enhanced_remux_contract(audio: crate::plex::AudioEnhancements) -> crate::plex::EncodeContract {
+    crate::plex::EncodeContract {
+        remux: true,
+        delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+        no_video_copy: false,
+        ceiling: None,
+        audio,
+    }
+}
+
+/// What a claimed `Retranscode` must do about the enhancement.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EnhancementStep {
+    /// The enhancement has nothing to change: today's rebuild (or the displaced pick's own
+    /// legacy reload) runs.
+    NotInvolved,
+    /// Rebuild as this remux — on with new params, or a remux candidate's plain remux.
+    Remux(crate::plex::EncodeContract),
+    /// The enhancement is no longer wanted and the candidate direct-plays: return to it.
+    ReleaseToDirect,
+}
+
+/// **Pure over session state.** See the table in the plan's §3: a wanted enhancement that differs
+/// from the applied one builds the enhanced remux; an applied one no longer wanted returns to the
+/// candidate (direct, or its plain remux); everything else — including no candidate at all — is
+/// not the enhancement's business.
+pub(crate) fn enhancement_step(ps: &PlaybackSession) -> EnhancementStep {
+    let want = want_live(ps);
+    let applied = ps.cur_contract.audio;
+    if want.any() && want != applied {
+        return EnhancementStep::Remux(enhanced_remux_contract(want));
+    }
+    if applied.any() && !want.any() {
+        return match ps.auto_original.as_ref() {
+            Some(candidate) if candidate.direct => EnhancementStep::ReleaseToDirect,
+            Some(_) => EnhancementStep::Remux(enhanced_remux_contract(
+                crate::plex::AudioEnhancements::NONE,
+            )),
+            None => EnhancementStep::NotInvolved,
+        };
+    }
+    EnhancementStep::NotInvolved
+}
+
+/// **Bring the route in line with the enhancement preference.** Returns `true` when it queued the
+/// `Retranscode` that will do so — the caller then skips its own legacy reload, and
+/// `legacy_reloads` records that it did (`displaced_pick`), so a claim that cannot honour the
+/// enhancement still performs the pick's own reload. A pending Original trial owns the route:
+/// the reconcile is deferred to whichever route that trial settles on.
+pub(crate) fn reconcile_enhancement(ps: &PlaybackSession, legacy_reloads: bool) -> bool {
+    {
+        let mut control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(pending) = control.pending_original.as_mut() {
+            pending.deferred_reconcile = true;
+            return false;
+        }
+    }
+    if enhancement_step(ps) == EnhancementStep::NotInvolved {
+        return false;
+    }
+    queue_user_route_intent(ps, UserRouteIntent::Retranscode, legacy_reloads);
+    true
+}
+
+/// What the legacy commit branch would do NOW for the current selection — the reload a displaced
+/// pick is owed. Mirrors `commit_audio_selection`'s own native/transcode split.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum LegacyAction {
+    Native { ordinal: i32, codec: String },
+    Retranscode,
+}
+
+pub(crate) fn legacy_action(ps: &PlaybackSession) -> LegacyAction {
+    match (live_family(ps), ps.cur_audio.as_ref()) {
+        (RouteFamily::Direct, Some(a)) if audio_track_direct_plays(ps, &a.codec, a.channels) => {
+            LegacyAction::Native {
+                ordinal: a.ordinal,
+                codec: a.codec.clone(),
+            }
+        }
+        (RouteFamily::Direct, None) => {
+            // Unreachable: a displaced pick always installed `cur_audio` first. Should it ever
+            // happen, a rebuild carrying the server default is the reload that cannot mis-feed.
+            debug_assert!(false, "enhancement: legacy_action Direct+None");
+            crate::player::log("enhancement: legacy_action Direct+None");
+            LegacyAction::Retranscode
+        }
+        _ => LegacyAction::Retranscode,
+    }
+}
+
+/// The first thing a claimed `Retranscode` tries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClaimPrimary {
+    ReleaseToDirect,
+    Remux(crate::plex::EncodeContract),
+    /// The displaced pick's own legacy reload ([`legacy_action`]).
+    Legacy,
+    /// Today's rebuild, exactly: [`retranscode_for`].
+    Retranscode,
+}
+
+/// What a claim does when its primary effect is refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClaimFallback {
+    /// Run the displaced pick's legacy reload inside the same claimed action.
+    Legacy,
+    /// Settle as rejected; the current stream is retained.
+    Reject,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Dispatch {
+    pub(crate) primary: ClaimPrimary,
+    pub(crate) on_failure: ClaimFallback,
+}
+
+/// **Pure: the claim-time dispatch table** for a `Retranscode` (plan §6.1). Kept separate from the
+/// effects so every cell is unit-testable without PMS or an Engine.
+pub(crate) fn claim_dispatch(step: EnhancementStep, displaced_pick: bool) -> Dispatch {
+    let owed = if displaced_pick {
+        ClaimFallback::Legacy
+    } else {
+        ClaimFallback::Reject
+    };
+    match step {
+        EnhancementStep::ReleaseToDirect => Dispatch {
+            primary: ClaimPrimary::ReleaseToDirect,
+            on_failure: owed,
+        },
+        EnhancementStep::Remux(contract) => Dispatch {
+            primary: ClaimPrimary::Remux(contract),
+            on_failure: owed,
+        },
+        EnhancementStep::NotInvolved if displaced_pick => Dispatch {
+            primary: ClaimPrimary::Legacy,
+            on_failure: ClaimFallback::Reject,
+        },
+        EnhancementStep::NotInvolved => Dispatch {
+            primary: ClaimPrimary::Retranscode,
+            on_failure: ClaimFallback::Reject,
+        },
+    }
+}
+
+/// The physical half the pump performs after a claim's PMS half has run. The PMS half (this
+/// module) never calls `finish_route_action` for a tail that reloads; the pump's tail does, once,
+/// with the reload it is about to start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClaimTail {
+    /// A transcode route was prepared: reload onto `url`.
+    Retranscode,
+    /// A native direct-play audio switch was staged (`desired_audio_idx`, payload codec).
+    NativeAudio,
+    /// An Original trial was staged; its own PendingOriginal owns commit/rollback.
+    Original(AutoOriginalReload),
+    /// Refused: settle Rejected with this log line.
+    Rejected(&'static str),
+}
+
+/// Run the legacy reload a displaced pick is owed, inside the still-claimed action. No new intent
+/// is queued, so the user contract is not advanced mid-claim.
+fn run_legacy(ps: &mut PlaybackSession, expected: &WorkerTicket, offset_secs: i64) -> Option<ClaimTail> {
+    match legacy_action(ps) {
+        LegacyAction::Native { ordinal, codec } => {
+            crate::player::stage_native_audio(ps, ordinal, &codec);
+            Some(ClaimTail::NativeAudio)
+        }
+        LegacyAction::Retranscode => {
+            retranscode_for(ps, expected, offset_secs).map(|_| ClaimTail::Retranscode)
+        }
+    }
+}
+
+const RETRANSCODE_REJECTED: &str =
+    "route transition: user retranscode was rejected; current stream retained";
+const ENHANCEMENT_REJECTED: &str = "enhancement change rejected; current stream retained";
+const LEGACY_REJECTED: &str =
+    "enhancement: displaced pick's own reload was rejected; current stream retained";
+
+fn claim_fallback(
+    ps: &mut PlaybackSession,
+    expected: &WorkerTicket,
+    offset_secs: i64,
+    fallback: ClaimFallback,
+    reject: &'static str,
+) -> ClaimTail {
+    match fallback {
+        ClaimFallback::Legacy => {
+            run_legacy(ps, expected, offset_secs).unwrap_or(ClaimTail::Rejected(LEGACY_REJECTED))
+        }
+        ClaimFallback::Reject => ClaimTail::Rejected(reject),
+    }
+}
+
+/// PMS half of a claimed user `Retranscode` ("reconcile at claim").
+pub(crate) fn execute_retranscode_claim(
+    ps: &mut PlaybackSession,
+    action: &ClaimedRouteAction,
+    offset_secs: i64,
+) -> ClaimTail {
+    let dispatch = claim_dispatch(enhancement_step(ps), action.displaced_pick);
+    let expected = &action.ticket;
+    let done = match dispatch.primary {
+        ClaimPrimary::ReleaseToDirect => recover_auto_to_original_for(
+            ps,
+            expected,
+            offset_secs,
+            RecoveryCause::EnhancementReleased,
+        )
+        .map(ClaimTail::Original),
+        ClaimPrimary::Remux(contract) => {
+            retranscode_as(ps, expected, offset_secs, contract).map(|_| ClaimTail::Retranscode)
+        }
+        ClaimPrimary::Legacy => run_legacy(ps, expected, offset_secs),
+        ClaimPrimary::Retranscode => {
+            retranscode_for(ps, expected, offset_secs).map(|_| ClaimTail::Retranscode)
+        }
+    };
+    done.unwrap_or_else(|| {
+        let reject = match dispatch.primary {
+            ClaimPrimary::ReleaseToDirect | ClaimPrimary::Remux(_) => ENHANCEMENT_REJECTED,
+            ClaimPrimary::Legacy => LEGACY_REJECTED,
+            ClaimPrimary::Retranscode => RETRANSCODE_REJECTED,
+        };
+        claim_fallback(ps, expected, offset_secs, dispatch.on_failure, reject)
+    })
+}
+
+/// PMS half of a claimed user `RecoverOriginal`. A displaced pick merged under it (the merge table
+/// lets RecoverOriginal absorb a queued Retranscode) is still owed its reload if Original fails.
+pub(crate) fn execute_recover_original_claim(
+    ps: &mut PlaybackSession,
+    action: &ClaimedRouteAction,
+    offset_secs: i64,
+    cause: RecoveryCause,
+) -> ClaimTail {
+    match recover_auto_to_original_for(ps, &action.ticket, offset_secs, cause) {
+        Some(reload) => ClaimTail::Original(reload),
+        None => claim_fallback(
+            ps,
+            &action.ticket,
+            offset_secs,
+            if action.displaced_pick {
+                ClaimFallback::Legacy
+            } else {
+                ClaimFallback::Reject
+            },
+            "route transition: manual Original was rejected; current stream retained",
+        ),
+    }
+}
+
+/// C38: a `NativeAudioReload`/`AdaptiveReload` claim that took a displaced pick's marker (the
+/// merge table let it replace the Retranscode that carried it). On a direct route the reload
+/// feeds `desired_audio_idx`, which a displaced pick never wrote — store the picked track before
+/// reloading. Every other case already rebuilds from `cur_audio`/`cur_sub_sid`.
+pub(crate) fn honour_displaced_pick(ps: &mut PlaybackSession, displaced_pick: bool, arm: &str) {
+    if !displaced_pick {
+        return;
+    }
+    crate::player::log(&format!("enhancement: displaced pick on {arm}"));
+    if is_transcoding(ps) {
+        return;
+    }
+    let desired = crate::player::SHARED
+        .desired_audio_idx
+        .load(std::sync::atomic::Ordering::Relaxed);
+    if let Some(a) = ps.cur_audio.clone() {
+        if a.ordinal != desired {
+            crate::player::stage_native_audio(ps, a.ordinal, &a.codec);
+        }
+    }
+    debug_assert!(
+        ps.cur_audio.as_ref().is_none_or(|a| a.ordinal
+            == crate::player::SHARED.desired_audio_idx.load(std::sync::atomic::Ordering::Relaxed)),
+        "the displaced pick is honoured before a direct reload",
+    );
+}
+
+/// **Menu display truth.** While a user action is queued or in flight the rows show what the
+/// preference is asking of the live route; once settled they show what the server APPLIED. A
+/// claim-time rejection therefore shows what actually plays, and pressing the row again retries.
+#[allow(dead_code)] // first production caller is the Audio tab's toggle rows (#266 PR 4)
+pub(crate) fn displayed_audio_enhancements(ps: &PlaybackSession) -> crate::plex::AudioEnhancements {
+    let in_flight = {
+        let control = PLAYER_CONTROL.lock().unwrap_or_else(|e| e.into_inner());
+        control.pending_user.is_some() || control.phase != ControlPhase::Stable
+    };
+    if in_flight {
+        want_live(ps)
+    } else {
+        ps.cur_contract.audio
+    }
+}
+
+/// Are the rows shown at all (I1/I2: absent, never greyed)? The same predicate the resolve and
+/// the reconcile use, against the live route: an applied enhancement keeps its rows even though
+/// its own route is a remux.
+#[allow(dead_code)] // first production caller is the Audio tab's toggle rows (#266 PR 4)
+pub(crate) fn audio_enhancements_offered_live(ps: &PlaybackSession) -> bool {
+    let target = match live_family(ps) {
+        RouteFamily::Direct | RouteFamily::Remux => RouteFamily::Remux,
+        RouteFamily::Other => RouteFamily::Other,
+    };
+    enhancements_offered(&facts(ps), target)
+}
+
 // ---- selection commits: playback POLICY for the in-player track menu. The menu only reports
 // what row was picked; whether that means a native stream switch, a server re-transcode, or a
 // burn refresh is decided HERE, next to the codec sets and the transcode state it depends on. ----
@@ -6601,29 +7138,51 @@ pub(crate) fn commit_audio_selection(ps: &mut PlaybackSession, audio: CarriedAud
     // direct. Fence the old worker before publishing the selected stream or invalidating its
     // Original candidate; the queued reload below crosses its own action boundary afterwards.
     let _edit = begin_user_contract_boundary();
-    // The recovery declaration captures one exact source/audio pairing. Once the user changes
-    // that pairing while HLS is live, do not later resurrect the old track behind their back.
-    // A new playback (or selecting Auto again from Original) can establish a fresh candidate.
-    if matches!(
-        cur_delivery(ps),
-        crate::plex::TranscodeDelivery::FixedHls { .. }
-    ) {
-        ps.auto_original = None;
+    let family = live_family(ps);
+    let direct_plays = audio_track_direct_plays(ps, &audio.codec, audio.channels);
+    match family {
+        // The recovery declaration captures one exact source/audio pairing. Once the user changes
+        // that pairing while HLS is live, do not later resurrect the old track behind their back.
+        // A new playback (or selecting Auto again from Original) can establish a fresh candidate.
+        RouteFamily::Other => {
+            if matches!(
+                cur_delivery(ps),
+                crate::plex::TranscodeDelivery::FixedHls { .. }
+            ) {
+                ps.auto_original = None;
+            }
+        }
+        // Issue #266: on the Original family the candidate is also the way back from an enhanced
+        // remux, so it follows the pick instead (see `AutoOriginalCandidate::retarget_audio`).
+        RouteFamily::Direct | RouteFamily::Remux => {
+            if let Some(candidate) = ps.auto_original.as_mut() {
+                if !candidate.retarget_audio(&audio, direct_plays) {
+                    ps.auto_original = None;
+                }
+            }
+        }
     }
     let stream_id = audio.sid;
-    if !is_transcoding(ps) && audio_track_direct_plays(ps, &audio.codec, audio.channels) {
+    let native = family == RouteFamily::Direct && direct_plays;
+    let (ordinal, codec) = (audio.ordinal, audio.codec.clone());
+    { let s = &mut *ps; s.cur_audio = Some(audio) };
+    if native {
         // record the pick: the timeline then reports the stream that actually plays, and a
-        // later transcode event (subtitle burn refresh / transcode seek) keeps this track
-        let ordinal = audio.ordinal;
-        let codec = audio.codec.clone();
-        { let s = &mut *ps; s.cur_audio = Some(audio) };
+        // later transcode event (subtitle burn refresh / transcode seek) keeps this track.
         // persist the USER's pick server-side (official-client behavior): /status/sessions'
         // selected-stream display keys on the part selection, not the timeline report. Only
         // user picks persist — the start-of-play auto-pick (eng preference) reports only.
         put_selection(cur_sid(ps), cur_part_id(ps), cur_audio_sid(ps), cur_sub_sid(ps));
+    }
+    // The new track may change what the enhancement offer says (capability, candidate). If the
+    // route must change for that, the reconcile's Retranscode REPLACES this pick's own reload and
+    // is marked as owing it, so a refused enhancement still switches the track.
+    if reconcile_enhancement(ps, true) {
+        return;
+    }
+    if native {
         crate::player::request_audio_track(ps, ordinal, &codec);
     } else {
-        { let s = &mut *ps; s.cur_audio = Some(audio) };
         crate::player::request_audio_switch(ps, stream_id);
     }
 }
@@ -6638,32 +7197,57 @@ pub(crate) fn apply_deferred_original_effects(ps: &mut PlaybackSession, mut effe
     if let Some(audio) = effects.audio.take() {
         commit_audio_selection(ps, audio);
     }
+    if effects.reconcile {
+        reconcile_enhancement(ps, false);
+    }
 }
 
 /// Commit a subtitle pick (`sub_idx` -1 = Off): gate the client-side renderer (direct-play path)
 /// and select the burn stream for any transcode of the item — refreshing a live transcode so the
-/// server re-burns (or drops) it.
-pub(crate) fn commit_subtitle_selection(ps: &mut PlaybackSession, sub_idx: i32, stream_id: i64) {
+/// server re-burns (or drops) it. `client_renderable` = the client can draw this pick itself (an
+/// embedded ordinal or a sidecar), which is what lets the Original candidate carry it.
+///
+/// Deliberately NOT deferred behind a pending Original trial: the subtitle is client-rendered on
+/// the candidate, and Off in particular must take effect the moment it is picked.
+pub(crate) fn commit_subtitle_selection(
+    ps: &mut PlaybackSession,
+    sub_idx: i32,
+    stream_id: i64,
+    client_renderable: bool,
+) {
     let transcoding = is_transcoding(ps);
     // Burned subtitles are part of the server/decoder contract, so revoke old worker evidence
     // before changing them. A direct-play subtitle is client-rendered and needs no reload; fencing
     // there would kill the valid Original watchdog while leaving the physical route untouched.
     let _edit = transcoding.then(begin_user_contract_boundary);
-    // As with audio, a non-Off subtitle may require server burn-in and is not interchangeable
-    // with the direct declaration captured at playback start. Off is always safe to carry back.
-    if matches!(
-        cur_delivery(ps),
-        crate::plex::TranscodeDelivery::FixedHls { .. }
-    ) {
-        { let s = &mut *ps; {
-            if stream_id == 0 {
-                if let Some(candidate) = s.auto_original.as_mut() {
-                    candidate.subtitle_ordinal = None;
+    match live_family(ps) {
+        // As with audio, a non-Off subtitle may require server burn-in and is not interchangeable
+        // with the direct declaration captured at playback start. Off is always safe to carry back.
+        RouteFamily::Other => {
+            if matches!(
+                cur_delivery(ps),
+                crate::plex::TranscodeDelivery::FixedHls { .. }
+            ) {
+                let s = &mut *ps;
+                if stream_id == 0 {
+                    if let Some(candidate) = s.auto_original.as_mut() {
+                        candidate.subtitle_ordinal = None;
+                    }
+                } else {
+                    s.auto_original = None;
                 }
-            } else {
-                s.auto_original = None;
             }
-        } };
+        }
+        // Issue #266: the candidate follows the pick (see `retarget_subtitle`), so releasing an
+        // enhanced remux shows the subtitle the viewer just chose, client-rendered.
+        RouteFamily::Direct | RouteFamily::Remux => {
+            let pick = (stream_id != 0).then_some(sub_idx);
+            if let Some(candidate) = ps.auto_original.as_mut() {
+                if !candidate.retarget_subtitle(pick, client_renderable) {
+                    ps.auto_original = None;
+                }
+            }
+        }
     }
     // A timing offset was tuned against the track that was showing; a DIFFERENT pick (another
     // track, a sidecar, or Off) starts at zero. Re-committing the same track — a subtitle OK
@@ -6673,9 +7257,7 @@ pub(crate) fn commit_subtitle_selection(ps: &mut PlaybackSession, sub_idx: i32, 
     }
     crate::player::request_subtitle(sub_idx);
     set_subtitle(ps, stream_id);
-    if transcoding {
-        crate::player::request_transcode_refresh(ps); // retranscode PUTs the selection itself
-    } else {
+    if !transcoding {
         // This is an immediate client-rendered change: unlike a burn/audio rebuild it is already
         // part of the applied stream contract. Publish projection + reporter tracks as one reducer
         // event so a later rejected action cannot restore the pre-subtitle snapshot.
@@ -6683,6 +7265,14 @@ pub(crate) fn commit_subtitle_selection(ps: &mut PlaybackSession, sub_idx: i32, 
         // persist the pick server-side (and subs Off PUTs subtitleStreamID=0, clearing a
         // stale server-side selection that would otherwise burn on the next transcode)
         put_selection(cur_sid(ps), cur_part_id(ps), cur_audio_sid(ps), cur_sub_sid(ps));
+    }
+    // A subtitle turns the enhancement's offer off (I6) and Off may turn it back on. On direct
+    // play a subtitle never reloads, so there is no pick of its own to displace.
+    if reconcile_enhancement(ps, transcoding) {
+        return;
+    }
+    if transcoding {
+        crate::player::request_transcode_refresh(ps); // retranscode PUTs the selection itself
     }
 }
 
@@ -6836,3 +7426,7 @@ mod carried_audio_tests;
 #[cfg(test)]
 #[path = "plan_audio_enhancement_tests.rs"]
 mod plan_audio_enhancement_tests;
+
+#[cfg(test)]
+#[path = "decision_audio_enhancement_tests.rs"]
+mod audio_enhancement_tests;

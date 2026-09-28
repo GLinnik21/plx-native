@@ -853,9 +853,9 @@ fn subtitle_off_keeps_a_pending_original_recovery() {
         },
         "rk-subtitle-off",
     );
-    request_user_route_intent(&ps, UserRouteIntent::RecoverOriginal);
+    request_user_route_intent(&ps, UserRouteIntent::RecoverOriginal(RecoveryCause::ManualOriginal));
 
-    commit_subtitle_selection(&mut ps, -1, 0);
+    commit_subtitle_selection(&mut ps, -1, 0, false);
 
     assert_eq!(cur_sub_sid(&ps), 0);
     assert_eq!(
@@ -869,7 +869,7 @@ fn subtitle_off_keeps_a_pending_original_recovery() {
     let action = claim_route_action().expect("Original recovery remains the owned action");
     assert_eq!(
         action.intent,
-        RouteIntent::User(UserRouteIntent::RecoverOriginal),
+        RouteIntent::User(UserRouteIntent::RecoverOriginal(RecoveryCause::ManualOriginal)),
     );
     finish_route_action(&mut ps, &action, RouteApplyResult::Prepared);
 
@@ -900,7 +900,7 @@ fn a_direct_subtitle_change_keeps_the_original_watchdog_ticket_current() {
     );
     let watchdog = worker_ticket();
 
-    commit_subtitle_selection(&mut ps, 2, 88);
+    commit_subtitle_selection(&mut ps, 2, 88, true);
 
     assert_eq!(worker_ticket(), watchdog);
     assert!(auto_original_watch(&ps).is_some());
@@ -937,9 +937,9 @@ fn subtitle_on_invalidates_a_pending_original_recovery() {
         },
         "rk-subtitle-on",
     );
-    request_user_route_intent(&ps, UserRouteIntent::RecoverOriginal);
+    request_user_route_intent(&ps, UserRouteIntent::RecoverOriginal(RecoveryCause::ManualOriginal));
 
-    commit_subtitle_selection(&mut ps, 2, 88);
+    commit_subtitle_selection(&mut ps, 2, 88, true);
 
     assert!(ps.auto_original.is_none());
     let action = claim_route_action().expect("the burned subtitle needs HLS retranscode");
@@ -976,7 +976,7 @@ fn audio_change_invalidates_a_pending_original_recovery() {
         },
         "rk-audio-change",
     );
-    request_user_route_intent(&ps, UserRouteIntent::RecoverOriginal);
+    request_user_route_intent(&ps, UserRouteIntent::RecoverOriginal(RecoveryCause::ManualOriginal));
 
     commit_audio_selection(&mut ps, CarriedAudio { sid: 99, ordinal: 1, codec: "aac".into(), channels: 2, can_normalize_loudness: false, immersive: false });
 
@@ -2203,9 +2203,9 @@ fn sidecar_on_invalidates_a_pending_original_recovery() {
         },
         "rk-subtitle-on",
     );
-    request_user_route_intent(&ps, UserRouteIntent::RecoverOriginal);
+    request_user_route_intent(&ps, UserRouteIntent::RecoverOriginal(RecoveryCause::ManualOriginal));
 
-    commit_subtitle_selection(&mut ps, -1, 88);
+    commit_subtitle_selection(&mut ps, -1, 88, true);
 
     assert!(ps.auto_original.is_none());
     let action = claim_route_action().expect("the burned subtitle needs HLS retranscode");
@@ -2241,17 +2241,17 @@ fn picking_a_different_subtitle_track_resets_the_offset_and_re_picking_it_keeps_
         },
         "rk-subtitle-offset",
     );
-    commit_subtitle_selection(&mut ps, 2, 88);
+    commit_subtitle_selection(&mut ps, 2, 88, true);
     crate::player::set_subtitle_offset(1_500);
 
-    commit_subtitle_selection(&mut ps, 2, 88);
+    commit_subtitle_selection(&mut ps, 2, 88, true);
     assert_eq!(crate::player::subtitle_offset_ms(), 1_500, "the same track keeps its offset");
 
-    commit_subtitle_selection(&mut ps, 3, 89);
+    commit_subtitle_selection(&mut ps, 3, 89, true);
     assert_eq!(crate::player::subtitle_offset_ms(), 0, "another track starts at zero");
 
     crate::player::set_subtitle_offset(700);
-    commit_subtitle_selection(&mut ps, -1, 0);
+    commit_subtitle_selection(&mut ps, -1, 0, false);
     assert_eq!(crate::player::subtitle_offset_ms(), 0, "Off drops the offset too");
 
     reset_session(&mut ps);

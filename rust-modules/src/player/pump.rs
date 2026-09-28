@@ -621,6 +621,98 @@ fn start_original_trial_reload(
     }
 }
 
+/// Physical half of a claimed user action whose PMS half `route` already ran (`ClaimTail`). Every
+/// arm but `Rejected` replaces the Engine, so the caller returns straight after; `Rejected` is
+/// matched by the caller itself because the pump keeps using the live Engine after it.
+fn run_claim_tail(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    action: &crate::route::ClaimedRouteAction,
+    tail: crate::route::ClaimTail,
+    pending_seek: i64,
+    user_target: i64,
+) {
+    match tail {
+        crate::route::ClaimTail::Retranscode => {
+            retranscode_tail(ps, pa, action, user_target / 1_000_000_000, pending_seek, user_target);
+        }
+        crate::route::ClaimTail::NativeAudio => {
+            native_audio_tail(ps, pa, action, pending_seek, user_target);
+        }
+        crate::route::ClaimTail::Original(reload) => original_tail(ps, pa, reload, user_target),
+        crate::route::ClaimTail::Rejected(msg) => rejected_tail(ps, action, msg),
+    }
+}
+
+/// A prepared transcode route: settle the action, cross the seek, reload onto it.
+fn retranscode_tail(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    action: &crate::route::ClaimedRouteAction,
+    secs: i64,
+    pending_seek: i64,
+    user_target: i64,
+) {
+    crate::route::finish_route_action(ps, action, crate::route::RouteApplyResult::Prepared);
+    if pending_seek >= 0 {
+        crate::route::commit_user_seek();
+    }
+    super::log(&format!(
+        "route transition: user retranscode at {secs}s{}",
+        if pending_seek >= 0 { " + seek" } else { "" },
+    ));
+    settle_reload(
+        super::engine::reload_transcode(ps, pa, user_target),
+        "user retranscode reload",
+    );
+}
+
+/// A staged native audio switch (`desired_audio_idx` + payload codec): settle, reload direct.
+fn native_audio_tail(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    action: &crate::route::ClaimedRouteAction,
+    pending_seek: i64,
+    user_target: i64,
+) {
+    let idx = SHARED.desired_audio_idx.load(Relaxed);
+    crate::route::finish_route_action(ps, action, crate::route::RouteApplyResult::Prepared);
+    if pending_seek >= 0 {
+        crate::route::commit_user_seek();
+    }
+    super::log(&format!(
+        "route transition: native audio idx={idx} at {}s{}",
+        user_target / 1_000_000_000,
+        if pending_seek >= 0 { " + seek" } else { "" },
+    ));
+    settle_reload(
+        super::engine::switch_audio_native(ps, pa, idx, user_target),
+        "native audio reload",
+    );
+}
+
+/// A staged Original trial: its PendingOriginal already owns the phase, so there is no
+/// `finish_route_action` here; the reload lands on the requested position unconditionally.
+fn original_tail(
+    ps: &mut crate::route::PlaybackSession,
+    pa: &mut super::adapter::PlayerAdapter,
+    reload: crate::route::AutoOriginalReload,
+    user_target: i64,
+) {
+    crate::route::commit_user_seek();
+    start_original_trial_reload(ps, pa, reload, user_target);
+}
+
+/// Refused: restore the previous projection and keep playing what plays.
+fn rejected_tail(
+    ps: &mut crate::route::PlaybackSession,
+    action: &crate::route::ClaimedRouteAction,
+    msg: &str,
+) {
+    crate::route::finish_route_action(ps, action, crate::route::RouteApplyResult::Rejected);
+    super::log(msg);
+}
+
 pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapter::PlayerAdapter, now: u32) {
     use super::shared::PlaybackState;
     // ONE `&mut PlayerAdapter`, split into the live session and the seam token. Everything below
@@ -758,58 +850,27 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
             match action.intent.clone() {
                 crate::route::RouteIntent::User(intent) => match intent {
                     crate::route::UserRouteIntent::Retranscode => {
+                        // "Retranscode" means "reconcile at claim" (issue #266): the route PMS
+                        // half decides between the enhancement and today's rebuild.
                         let secs = user_target / 1_000_000_000;
-                        if crate::route::retranscode_for(ps, &action.ticket, secs).is_some() {
-                            crate::route::finish_route_action(
-                                ps,
-                                &action,
-                                crate::route::RouteApplyResult::Prepared,
-                            );
-                            if pending_seek >= 0 {
-                                crate::route::commit_user_seek();
-                            }
-                            super::log(&format!(
-                                "route transition: user retranscode at {secs}s{}",
-                                if pending_seek >= 0 { " + seek" } else { "" },
-                            ));
-                            settle_reload(
-                                super::engine::reload_transcode(ps, pa, user_target),
-                                "user retranscode reload",
-                            );
+                        let tail = crate::route::execute_retranscode_claim(ps, &action, secs);
+                        if let crate::route::ClaimTail::Rejected(msg) = tail {
+                            rejected_tail(ps, &action, msg);
+                        } else {
+                            run_claim_tail(ps, pa, &action, tail, pending_seek, user_target);
                             return;
                         }
-                        crate::route::finish_route_action(
-                            ps,
-                            &action,
-                            crate::route::RouteApplyResult::Rejected,
-                        );
-                        super::log("route transition: user retranscode was rejected; current stream retained");
                     }
                     crate::route::UserRouteIntent::NativeAudioReload => {
-                        let idx = SHARED.desired_audio_idx.load(Relaxed);
-                        crate::route::finish_route_action(
-                            ps,
-                            &action,
-                            crate::route::RouteApplyResult::Prepared,
-                        );
-                        if pending_seek >= 0 {
-                            crate::route::commit_user_seek();
-                        }
-                        super::log(&format!(
-                            "route transition: native audio idx={idx} at {}s{}",
-                            user_target / 1_000_000_000,
-                            if pending_seek >= 0 { " + seek" } else { "" },
-                        ));
-                        settle_reload(
-                            super::engine::switch_audio_native(ps, pa, idx, user_target),
-                            "native audio reload",
-                        );
+                        crate::route::honour_displaced_pick(ps, action.displaced_pick, "NativeAudioReload");
+                        native_audio_tail(ps, pa, &action, pending_seek, user_target);
                         return;
                     }
                     crate::route::UserRouteIntent::AdaptiveReload => {
                         if crate::route::is_transcoding(ps) {
                             let secs = user_target / 1_000_000_000;
                             if crate::route::transcode_seek(ps, secs).is_some() {
+                                crate::route::honour_displaced_pick(ps, action.displaced_pick, "AdaptiveReload");
                                 crate::route::finish_route_action(
                                     ps,
                                     &action,
@@ -828,13 +889,12 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
                                 );
                                 return;
                             }
-                            crate::route::finish_route_action(
-                                ps,
-                                &action,
-                                crate::route::RouteApplyResult::Rejected,
-                            );
-                            super::log("route transition: adaptive transcode reload was rejected");
+                            if action.displaced_pick {
+                                super::log("enhancement: displaced pick on AdaptiveReload");
+                            }
+                            rejected_tail(ps, &action, "route transition: adaptive transcode reload was rejected");
                         } else {
+                            crate::route::honour_displaced_pick(ps, action.displaced_pick, "AdaptiveReload");
                             crate::route::finish_route_action(
                                 ps,
                                 &action,
@@ -855,27 +915,14 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
                             return;
                         }
                     }
-                    crate::route::UserRouteIntent::RecoverOriginal => {
+                    crate::route::UserRouteIntent::RecoverOriginal(cause) => {
                         let secs = user_target / 1_000_000_000;
-                        match crate::route::recover_auto_to_original_for(
-                            ps,
-                            &action.ticket,
-                            secs,
-                            false,
-                        ) {
-                            Some(reload) => {
-                                crate::route::commit_user_seek();
-                                start_original_trial_reload(ps, pa, reload, user_target);
-                                return;
-                            }
-                            None => {
-                                crate::route::finish_route_action(
-                                    ps,
-                                    &action,
-                                    crate::route::RouteApplyResult::Rejected,
-                                );
-                                super::log("route transition: manual Original was rejected; current stream retained");
-                            }
+                        let tail = crate::route::execute_recover_original_claim(ps, &action, secs, cause);
+                        if let crate::route::ClaimTail::Rejected(msg) = tail {
+                            rejected_tail(ps, &action, msg);
+                        } else {
+                            run_claim_tail(ps, pa, &action, tail, pending_seek, user_target);
+                            return;
                         }
                     }
                 },
@@ -945,7 +992,7 @@ pub(crate) fn pump(ps: &mut crate::route::PlaybackSession, pa: &mut super::adapt
                                 ps,
                                 &action.ticket,
                                 secs,
-                                true,
+                                crate::route::RecoveryCause::Automatic,
                             ) {
                                 Some(reload) => {
                                     crate::route::commit_user_seek();
