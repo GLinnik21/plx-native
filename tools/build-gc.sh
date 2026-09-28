@@ -147,6 +147,7 @@ for a in "$@"; do
     --report)      MODE=report ;;
     --incremental) MODE=incremental ;;
     --lanes)       MODE=lanes ;;
+    --stale)       MODE=stale ;;
     --orphans)     MODE=orphans ;;
     --worktrees)   MODE=worktrees ;;
     --cache)       MODE=cache ;;
@@ -186,13 +187,36 @@ usage: tools/build-gc.sh [MODE] [-n]
                   whose branch still exists is reported as "branch left" so the owner decides.
                   Every worktree NOT removed is reported with one reason: dirty | locked |
                   unmerged | building | current | main.
+  --stale         delete SUPERSEDED per-hash cargo artifacts from every `deps/` directory this
+                  script can find — inside the lanes, inside the external $PLX_FLEET_DIR lane
+                  target dirs, AND inside the MAIN checkout's own `rust-modules/target*` (the one
+                  tree every other destructive mode leaves alone). Cargo keys each build by a
+                  metadata hash that folds in the exact feature/flag/profile combination (lib
+                  test, `--no-default-features` check, devtools/hostsim, ARM); a source edit
+                  reuses the SAME hash's files, but a hash nothing builds anymore — yesterday's
+                  feature set, a reverted flag — keeps its binary, `.d`, `.rlib`/`.rmeta` and every
+                  `*.rcgu.o` codegen-unit object forever, because cargo has no notion of "nobody
+                  asks for this anymore" and never sweeps it. In a lane or an external fleet
+                  target dir: keeps the newest hash per (crate name, artifact kind — test binary
+                  vs rlib vs other) plus any hash whose newest file is younger than
+                  $PLX_GC_STALE_HOURS hours (default 24); deletes every other hash's files
+                  outright. In the MAIN checkout: a separate, more conservative rule — a hash is
+                  only ever deleted for being OLDER than the threshold, and the newest hash per
+                  crate (regardless of kind) is never touched, because that tree is the one a
+                  human iterates in and a second live hash there is often deliberate. Either way,
+                  once a test-binary hash survives, its own `*.rcgu.o` objects are still declined
+                  individually once they age past the threshold — only a line-table backtrace
+                  needs the binary; the objects exist solely for a debugger attached to it.
+                  Respects the same in-use guard as every other mode: a `deps/` dir a live build
+                  is writing into is skipped, never swept.
   --cache         delete shared FFmpeg build trees under $PLX_BUILD_CACHE untouched for
                   $PLX_CACHE_MAX_DAYS days (default 30). They are keyed by configure flags AND
                   toolchain, so a version bump or an NDK upgrade strands the old entry silently —
                   a cache nothing prunes is the same unbounded growth this script exists for.
                   The tarball is kept; it is 11 MB and every checkout copies from it.
-  --all           --incremental everywhere plus --lanes, --orphans and --cache, and the main checkout's vendor build
-                  trees. Leaves the main checkout's target dirs.
+  --all           --incremental everywhere plus --lanes, --stale, --orphans and --cache, and the
+                  main checkout's vendor build trees. Leaves the main checkout's target dirs
+                  themselves in place — `--stale` only removes the superseded hashes inside them.
   --auto          staged reclaim, driven by free space on this volume, and the mode a hook or
                   launchd job runs unattended — see `tools/install-disk-watch.sh`. Always runs
                   --orphans first (cheap, safe, unconditional). Below $PLX_GC_MIN_FREE_GIB GiB
@@ -200,8 +224,11 @@ usage: tools/build-gc.sh [MODE] [-n]
                   lanes idle for at least $PLX_GC_IDLE_MIN minutes (default 60, judged by the
                   newest mtime anywhere under the worktree, target dirs included) — a lane an
                   agent might resume in the next few minutes is not the same as one nobody is
-                  touching, and a needless rebuild costs real money. Never the main checkout's
-                  target dirs, never --cache, never a tracked file. Single-instance: a mkdir lock
+                  touching, and a needless rebuild costs real money — then --stale last, which is
+                  the one stage allowed to touch the MAIN checkout (age-gated only there, per
+                  --stale's own conservative rule; never the newest hash per crate). Never
+                  --cache, never a tracked file, never any main-checkout file --stale itself
+                  would not also remove standalone. Single-instance: a mkdir lock
                   (stale-safe, $PLX_GC_LOCK_DIR) means a second --auto exits 0 quietly rather than
                   racing the first. Logs one line per stage to $PLX_GC_LOG (default
                   ~/Library/Logs/plxnative-build-gc.log on macOS,
@@ -398,6 +425,10 @@ run_auto_mode() {
     PLX_GC_AUTO_IDLE_MIN=$_idle_min run_auto_stage "lanes (idle >= ${_idle_min}m)" --lanes
     [ -n "$DRY" ] || { _cur=$(free_kib); _cur=${_cur:-0}; }
   fi
+  if [ "$_cur" -lt "$_min_kib" ] 2>/dev/null; then
+    run_auto_stage stale --stale
+    [ -n "$DRY" ] || { _cur=$(free_kib); _cur=${_cur:-0}; }
+  fi
 
   gc_log "end free=$(fmt_kb "$_cur")"
   echo "auto: $(fmt_kb "$_cur") free now"
@@ -516,6 +547,157 @@ external_incremental_trees() {
     case "$d" in *'*'*) continue ;; esac
     if [ -d "$d" ]; then echo "$d"; fi
   done
+}
+
+# --- `--stale`: superseded per-hash cargo artifacts -------------------------------------------
+#
+# WHY THIS EXISTS. Every mode above deletes a whole CACHE (`--incremental`) or a whole TREE
+# (`--lanes`, `--worktrees`); none of them look inside a live `target*/<profile>/deps` directory,
+# because everything in there is nominally "still needed" — cargo put it there for a reason and
+# will read some of it on the next build. What cargo does NOT do is ever forget a reason once it
+# stops applying: each distinct feature/flag/profile combination (a plain `--lib` test build, the
+# `--no-default-features` check gate, devtools/hostsim, the ARM cross build) gets its own metadata
+# hash, a source edit only touches the files under the CURRENT hash, and a hash nothing builds
+# anymore — yesterday's feature set, a reverted flag — keeps its binary and every `*.rcgu.o`
+# codegen-unit object beside it forever. Measured 2026-09-28 in the main checkout:
+# `rust-modules/target/debug/deps` held 6416 `plxnative_modules-*` files across 6 live-SIZED
+# hashes (~100 MB binary + objects each), all last written 2026-09-17 — 5.5 GB nothing had built
+# from in eleven days.
+#
+# THE UNIT OF DECISION IS THE METADATA HASH, NOT THE FILE. Every artifact cargo writes for one
+# compilation shares the same `<crate>-<hash>` prefix: the test/check binary itself
+# (`<crate>-<hash>`, executable, no extension), its dep-info (`<crate>-<hash>.d`), the rlib side
+# (`lib<crate>-<hash>.rlib`/`.rmeta`/`.a`/`.so`/`.dylib`), and — with this host's default
+# `split-debuginfo=unpacked` — one `<crate>-<hash>.<codegen-hash>-cgu.NN.rcgu.o` per codegen unit,
+# which is where nearly all the bulk lives (250-2300 files per hash, measured). Keeping or
+# deleting anything less than the whole hash-group at once produces a `.d` file with no binary or
+# an `.rlib` with half its objects gone — not smaller, just broken.
+PLX_GC_STALE_HOURS_DEFAULT=24
+STALE_HOURS=${PLX_GC_STALE_HOURS:-$PLX_GC_STALE_HOURS_DEFAULT}
+case "$STALE_HOURS" in ''|*[!0-9]*) STALE_HOURS=$PLX_GC_STALE_HOURS_DEFAULT ;; esac
+STALE_SECS=$((STALE_HOURS * 3600))
+# A 16-hex-digit run, spelled out one class per position rather than `{16}`: `/bin/sh` here
+# resolves to whatever ships as `awk`, and this script already assumes the BSD/macOS toolchain
+# elsewhere (see the `stat -f` fallbacks below) — an interval expression is not guaranteed
+# portable across every awk this might run under, and a fixed hash width is guaranteed by rustc.
+HASH16_RE='[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+file_mtime() { stat -f%m "$1" 2>/dev/null || stat -c%Y "$1" 2>/dev/null; }
+file_size()  { stat -f%z "$1" 2>/dev/null || stat -c%s "$1" 2>/dev/null; }
+
+# Every `deps/` directory under one `target*` root — covers a plain `target/debug/deps` as well
+# as a cross-build's `target/<triple>/debug/deps`, and every other feature-set root this script
+# already globs for (`target-sim`, `target-lab`, ...).
+stale_deps_dirs() {
+  find "$1" -type d -name deps 2>/dev/null
+}
+# The cargo target* roots directly under a worktree's `rust-modules/`, or (for a lane whose
+# CARGO_TARGET_DIR points at $FLEET_DIR/<lane>) directly under the lane directory itself.
+target_roots() {
+  for d in "$1"/rust-modules/target*; do
+    case "$d" in *'*'*) continue ;; esac
+    if [ -d "$d" ]; then echo "$d"; fi
+  done
+}
+external_target_roots() {
+  for d in "$1"/target*; do
+    case "$d" in *'*'*) continue ;; esac
+    if [ -d "$d" ]; then echo "$d"; fi
+  done
+}
+
+# THE SWEEP ITSELF, one `deps/` directory at a time. `$2` is the grouping scope: `kind` (lanes and
+# external fleet trees) keeps the newest hash per (crate name, artifact kind: test binary vs rlib
+# vs other) — the aggressive rule, appropriate for a tree that is rebuilt on demand anyway. `crate`
+# (the main checkout only) keeps the newest hash per crate name ALONE, never mind kind, which is
+# the more conservative floor: a human iterates in this tree and a second live hash there — a
+# `--no-default-features` check run beside the ordinary one — is often deliberate. Both scopes
+# additionally keep any hash whose newest file is younger than $PLX_GC_STALE_HOURS hours, and both
+# still decline a KEPT test-binary hash's individual `*.rcgu.o` objects once those age past the
+# threshold: only a line-table backtrace needs the binary; the objects exist solely for a debugger
+# attached to it, and nothing here attaches one to a superseded-in-spirit-but-still-newest binary.
+#
+# Two passes, both in one awk program fed `mtime\tsize\texec\tpath` lines (so nothing here builds
+# an associative array by hand in `/bin/sh`, which cannot): accumulate every file under its
+# `<crate>\t<hash>` key while scanning, then in `END` decide per hash and emit either `DEL\t<path>`
+# lines (one per file to remove) or a `SUM\t<label>\t<count>\t<bytes>` line just before the DEL
+# lines for that hash, so the shell loop below can print one report line per hash-group instead of
+# one per file — the object-file count alone would otherwise flood the terminal.
+run_stale_sweep_dir() {
+  _dd=$1 _scope=$2
+  find "$_dd" -maxdepth 1 -type f 2>/dev/null | while IFS= read -r f; do
+    _mt=$(file_mtime "$f") || continue
+    case "$_mt" in ''|*[!0-9]*) continue ;; esac
+    _sz=$(file_size "$f"); case "$_sz" in ''|*[!0-9]*) _sz=0 ;; esac
+    if [ -x "$f" ]; then _ex=1; else _ex=0; fi
+    printf '%s\t%s\t%s\t%s\n' "$_mt" "$_sz" "$_ex" "$f"
+  done | awk -v scope="$_scope" -v now="$(date +%s)" -v thresh="$STALE_SECS" -v hexre="^[A-Za-z0-9_]+-$HASH16_RE" '
+    BEGIN { FS="\t" }
+    {
+      mtime = $1 + 0; size = $2 + 0; exe = $3 + 0; path = $4
+      n = split(path, parts, "/"); base = parts[n]
+      islib = (base ~ /^lib/)
+      core = islib ? substr(base, 4) : base
+      if (!match(core, hexre)) next
+      key = substr(core, RSTART, RLENGTH)
+      hlen = length(key)
+      name = substr(key, 1, hlen - 17)
+      hash = substr(key, hlen - 15)
+      grp = name SUBSEP hash
+      is_obj = (base ~ /\.rcgu\.o$/)
+      is_bin = (!islib && core == key && exe == 1)
+      is_libart = islib && (base ~ /\.rlib$/ || base ~ /\.rmeta$/ || base ~ /\.a$/ || \
+                             base ~ /\.so$/ || base ~ /\.dylib$/)
+      if (is_bin) hkind[grp] = "bin"
+      else if (is_libart && hkind[grp] != "bin") hkind[grp] = "rlib"
+      else if (!(grp in hkind)) hkind[grp] = "other"
+      if (!(grp in hnewest) || mtime > hnewest[grp]) hnewest[grp] = mtime
+      hname[grp] = name; hhash[grp] = hash
+      c = ++fcount[grp]
+      fpath[grp, c] = path; fsize[grp, c] = size; fmtime[grp, c] = mtime; fisobj[grp, c] = is_obj
+      totalsize[grp] += size
+    }
+    END {
+      for (g in hnewest) {
+        gk = (scope == "kind") ? (hname[g] SUBSEP hkind[g]) : hname[g]
+        if (!(gk in gbestnewest) || hnewest[g] > gbestnewest[gk]) { gbestnewest[gk] = hnewest[g]; gbest[gk] = g }
+      }
+      for (g in hnewest) {
+        gk = (scope == "kind") ? (hname[g] SUBSEP hkind[g]) : hname[g]
+        keepnewest = (gbest[gk] == g)
+        young = ((now - hnewest[g]) < thresh)
+        label = hname[g] "-" hhash[g]
+        if (keepnewest || young) {
+          if (hkind[g] == "bin") {
+            declsize = 0; declcount = 0
+            for (i = 1; i <= fcount[g]; i++) {
+              if (fisobj[g, i] && (now - fmtime[g, i]) >= thresh) {
+                declsize += fsize[g, i]; declcount++
+                print "DEL\t" fpath[g, i]
+              }
+            }
+            if (declcount > 0) print "SUM\t" label " rcgu.o objects\t" declcount "\t" declsize
+          }
+        } else {
+          print "SUM\t" label "\t" fcount[g] "\t" totalsize[g]
+          for (i = 1; i <= fcount[g]; i++) print "DEL\t" fpath[g, i]
+        }
+      }
+    }
+  ' | {
+    _tab=$(printf '\t')
+    while IFS="$_tab" read -r _tag _a _b _c; do
+      case "$_tag" in
+        SUM)
+          _kb=$((${_c:-0} / 1024))
+          if [ -n "$DRY" ]; then printf '  would remove %8s  %s (%s files) in %s\n' "$(fmt_kb "$_kb")" "$_a" "$_b" "$_dd"
+          else printf '  removed %8s  %s (%s files) in %s\n' "$(fmt_kb "$_kb")" "$_a" "$_b" "$_dd"; fi
+          ;;
+        DEL)
+          if [ -z "$DRY" ]; then rm -f "$_a"; fi
+          ;;
+      esac
+    done
+  }
 }
 
 # AN EXPORTED `CARGO_TARGET_DIR` IS REPORTED AND NEVER DELETED, and the asymmetry is the whole
@@ -947,7 +1129,7 @@ report)
   fi
   df -h "$ROOT" | tail -1 | awk '{print "volume              " $4 " free of " $2}'
   echo
-  echo "reclaim with: tools/build-gc.sh --orphans | --incremental | --cache | --lanes | --worktrees | --all   (add -n to preview)"
+  echo "reclaim with: tools/build-gc.sh --orphans | --incremental | --stale | --cache | --lanes | --worktrees | --all   (add -n to preview)"
   ;;
 esac
 
@@ -960,6 +1142,39 @@ incremental|all)
   # mode advertised as clearing it cannot be blind to where a fleet actually keeps it.
   { worktrees | while IFS= read -r w; do incremental_trees "$w"; done
     external_incremental_trees; } | sort -u | skip_live | drop
+  ;;
+esac
+
+case "$MODE" in
+stale|all)
+  echo "== stale per-hash cargo artifacts in lanes and external fleet trees (kept: newest hash per crate/kind, plus anything under ${STALE_HOURS}h old) =="
+  { worktrees | while IFS= read -r w; do
+      [ "$w" = "$MAIN" ] && continue
+      target_roots "$w" | while IFS= read -r t; do stale_deps_dirs "$t"; done
+    done
+    if [ -n "$FLEET_DIR" ] && [ -d "$FLEET_DIR" ]; then
+      for lane_dir in "$FLEET_DIR"/*; do
+        [ -d "$lane_dir" ] || continue
+        external_target_roots "$lane_dir" | while IFS= read -r t; do stale_deps_dirs "$t"; done
+      done
+    fi
+  } | sort -u | while IFS= read -r dd; do
+      [ -n "$dd" ] || continue
+      if in_live_checkout "$dd" 2>/dev/null; then
+        printf '  in use, skipped  %s\n' "$dd" >&2
+        continue
+      fi
+      run_stale_sweep_dir "$dd" kind
+    done
+  echo "== stale per-hash cargo artifacts in the MAIN checkout (age only, never the newest hash per crate) =="
+  target_roots "$MAIN" | while IFS= read -r t; do stale_deps_dirs "$t"; done | sort -u | while IFS= read -r dd; do
+      [ -n "$dd" ] || continue
+      if in_live_checkout "$dd" 2>/dev/null; then
+        printf '  in use, skipped  %s\n' "$dd" >&2
+        continue
+      fi
+      run_stale_sweep_dir "$dd" crate
+    done
   ;;
 esac
 
