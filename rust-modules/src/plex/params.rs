@@ -53,54 +53,56 @@ impl TranscodeOffset {
     }
 }
 
-/// One universal-transcoder request (decision registration + the delivery's start endpoint). Mirrors
-/// `route::universal_base`: the CURRENT audio/subtitle selection rides every transcode of the
-/// item. `session` is the PMS playback/timeline wire id; `encoder_session` owns the physical
-/// transcoder. The mismatch probe measured the two independently, but the simultaneous-encoder
-/// TV spike proved PMS cannot prime a replacement while it shares the old X-Plex id. Production
-/// therefore keeps them equal for each encoder; the app's stable playback generation is internal
-/// and an adaptive replacement changes both wire fields together.
+/// Plex Pass's per-track transcoder DSP (issue #266): dialog boost and loudness normalization.
+/// PMS accepts the two independently (`boostDialog=1`, `normalizeLoudness=1` on the transcode
+/// query — never on MDE, per M1), so they are two flags rather than one; this client always
+/// offers them together with the same gate (`route::plan::desired_audio`), but the wire and the
+/// type stay as honest about the server's contract as the server itself is.
 ///
-/// **A ceiling is answered by choosing the FLAVOR, and only then by asking for a number.** The
-/// only bitrate literal in the whole spec is `maxVideoBitrate`, on the RE-ENCODE branch of
-/// `transcoder::transcode_query`; the [`remux`](Self::remux) branch deliberately sends no cap at
-/// all, because a resolution or bitrate cap is precisely what makes PMS re-encode instead of copy.
-/// And on the third path — direct play, this client's default and its whole point — a cap means
-/// nothing, since no encoder is running to obey it. So a link with a ceiling (Plex's 2 Mbit/s
-/// relay) is answered by denying direct play and denying the remux, leaving the one branch that
-/// can pick a rate: `transcoder::link_policy` is that decision, with the reasoning and the
-/// honesty note.
-///
-/// **[`ceiling`](Self::ceiling) does not contradict that paragraph — it is its second half, and
-/// it arrives only after the first half has run.** This field said "there is no bitrate field
-/// here" until 2026-08-23, and the sentence was right about a LINK ceiling and wrong as a general
-/// rule, because a link is not the only thing that can impose one. A **user-chosen** ceiling
-/// (`route::Quality` — the picker behind the player's `…` menu, for LG checklist #43 CASE1) is a
-/// different input with the identical mechanism: `route::quality_policy` returns the same
-/// [`LinkPolicy`](super::LinkPolicy) two flags `link_policy` does, `build_stream` composes the two
-/// by AND so the stricter always wins, and only once direct play and the remux have BOTH been
-/// denied does a number reach the wire here. Adding the field without that gate is the change that
-/// looks like it works and does nothing: the file that most needs the cap — a 30 Mbit/s source on
-/// a 4 Mbit/s link — is exactly the one that direct-plays, where no encoder ever reads it.
-///
-/// The invariant that keeps the two halves honest: a spec may carry a ceiling **and**
-/// `remux == true` only when the source was already measured under it, so the remux branch still
-/// sends no cap and still does not need one. It is asserted in two places because it is two
-/// claims — `transcoder`'s tests pin that a ceiling is INERT on a remux, and `route`'s gates 2
-/// and 4 pin that a remux is only ever reached for a source under it.
-pub struct TranscodeSpec<'a> {
-    pub rating_key: &'a str,
-    /// The active encoder's PMS playback/timeline wire id.
-    pub session: &'a str,
-    /// Physical universal-transcoder identity. Production keeps it equal to `session`; the two
-    /// fields remain explicit because the protocol probe and fixtures grade their wire roles.
-    pub encoder_session: &'a str,
-    /// The coupled profile/query/endpoint/demux contract for this encoder session.
-    pub delivery: TranscodeDelivery,
+/// `Copy`, `Default` (= [`NONE`](Self::NONE)), `Serialize`/`Deserialize` — it rides every
+/// [`EncodeContract`] built on the resolve worker and is persisted as the user's preference
+/// (`plex::session::Session::audio_enhancements`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub struct AudioEnhancements {
+    #[serde(default)]
+    pub boost_dialog: bool,
+    #[serde(default)]
+    pub normalize_loudness: bool,
+}
+
+impl AudioEnhancements {
+    pub const NONE: AudioEnhancements = AudioEnhancements {
+        boost_dialog: false,
+        normalize_loudness: false,
+    };
+
+    /// Either toggle on — the ONLY question `transcode_query` asks before it emits a param, and
+    /// the one `route::plan::enhancements_offered`/`desired_audio` gate before any of this reaches
+    /// the wire.
+    pub fn any(&self) -> bool {
+        self.boost_dialog || self.normalize_loudness
+    }
+
+    pub fn is_none(&self) -> bool {
+        !self.any()
+    }
+}
+
+/// The single value that describes the SHAPE of one universal-transcoder encode: flavor, delivery,
+/// the re-encode/no-copy switch, a user ceiling, and — issue #266 — which Plex Pass audio DSP the
+/// carried track gets. These five used to be four independent fields on [`TranscodeSpec`]; folding
+/// them into one value is what keeps "enhancement" honestly scoped to a remux: the audio params
+/// only ever mean anything alongside `remux == true` (M1 — MDE and a re-encode both ignore or
+/// mishandle them), so a caller that builds a contract states the whole shape in one place instead
+/// of four call sites that could each be edited without the others noticing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct EncodeContract {
     /// true = container-only remux (the source codecs are direct-playable, the container
     /// isn't): copy video+audio into progressive MKV, no re-encode, keeps 4K/HDR.
     /// false = full re-encode to the profile's HEVC/AC3 target at up to 4K.
     pub remux: bool,
+    /// The coupled profile/query/endpoint/demux contract for this encoder session.
+    pub delivery: TranscodeDelivery,
     /// **The server must not COPY the video track — an encoder has to run.** Only meaningful on
     /// the re-encode flavor (`remux == false`), where it swaps `directStream=1` for
     /// `directStream=0` + `directStreamAudio=1`: video re-encoded, audio still copied when it can
@@ -123,13 +125,6 @@ pub struct TranscodeSpec<'a> {
     /// sentence. Both beat a picture in the wrong colours with nothing on any surface to explain
     /// it.
     pub no_video_copy: bool,
-    /// Source audio stream id to select (0 = server default).
-    pub audio_stream_id: i64,
-    /// Subtitle stream id to BURN (0 = none). Burn is Plex's decision for our profile —
-    /// it advertises no soft-sub support (direct-play subs are client-rendered instead).
-    pub subtitle_stream_id: i64,
-    /// Restart at this exact content boundary, or omit `offset` for a fresh start.
-    pub offset: TranscodeOffset,
     /// The bound this playback's RE-ENCODE may not exceed — the user's pick off the quality
     /// ladder or Auto controller's current rung. `None` = Original/unrestricted and resolves to
     /// the historical [`Ceiling::NATIVE_4K`] query values.
@@ -138,6 +133,66 @@ pub struct TranscodeSpec<'a> {
     /// above. By the time a `Some` reaches here, `route::quality_policy` has already refused the
     /// two flavors no number can bind.
     pub ceiling: Option<Ceiling>,
+    /// Plex Pass DSP for the carried audio track (issue #266). `NONE` on every path this PR
+    /// builds — the offering policy that ever sets it lands in a later PR; here it exists only so
+    /// the field, the query emission and the session projections have somewhere honest to live.
+    pub audio: AudioEnhancements,
+}
+
+/// One universal-transcoder request (decision registration + the delivery's start endpoint). Mirrors
+/// `route::universal_base`: the CURRENT audio/subtitle selection rides every transcode of the
+/// item. `session` is the PMS playback/timeline wire id; `encoder_session` owns the physical
+/// transcoder. The mismatch probe measured the two independently, but the simultaneous-encoder
+/// TV spike proved PMS cannot prime a replacement while it shares the old X-Plex id. Production
+/// therefore keeps them equal for each encoder; the app's stable playback generation is internal
+/// and an adaptive replacement changes both wire fields together.
+///
+/// **A ceiling is answered by choosing the FLAVOR, and only then by asking for a number.** The
+/// only bitrate literal in the whole spec is `maxVideoBitrate`, on the RE-ENCODE branch of
+/// `transcoder::transcode_query`; the [`remux`](EncodeContract::remux) branch deliberately sends
+/// no cap at all, because a resolution or bitrate cap is precisely what makes PMS re-encode instead
+/// of copy. And on the third path — direct play, this client's default and its whole point — a cap
+/// means nothing, since no encoder is running to obey it. So a link with a ceiling (Plex's 2 Mbit/s
+/// relay) is answered by denying direct play and denying the remux, leaving the one branch that
+/// can pick a rate: `transcoder::link_policy` is that decision, with the reasoning and the
+/// honesty note.
+///
+/// **[`ceiling`](EncodeContract::ceiling) does not contradict that paragraph — it is its second
+/// half, and it arrives only after the first half has run.** This field said "there is no bitrate field
+/// here" until 2026-08-23, and the sentence was right about a LINK ceiling and wrong as a general
+/// rule, because a link is not the only thing that can impose one. A **user-chosen** ceiling
+/// (`route::Quality` — the picker behind the player's `…` menu, for LG checklist #43 CASE1) is a
+/// different input with the identical mechanism: `route::quality_policy` returns the same
+/// [`LinkPolicy`](super::LinkPolicy) two flags `link_policy` does, `build_stream` composes the two
+/// by AND so the stricter always wins, and only once direct play and the remux have BOTH been
+/// denied does a number reach the wire here. Adding the field without that gate is the change that
+/// looks like it works and does nothing: the file that most needs the cap — a 30 Mbit/s source on
+/// a 4 Mbit/s link — is exactly the one that direct-plays, where no encoder ever reads it.
+///
+/// The invariant that keeps the two halves honest: a spec may carry a ceiling **and**
+/// `remux == true` only when the source was already measured under it, so the remux branch still
+/// sends no cap and still does not need one. It is asserted in two places because it is two
+/// claims — `transcoder`'s tests pin that a ceiling is INERT on a remux, and `route`'s gates 2
+/// and 4 pin that a remux is only ever reached for a source under it.
+pub struct TranscodeSpec<'a> {
+    pub rating_key: &'a str,
+    /// The active encoder's PMS playback/timeline wire id.
+    pub session: &'a str,
+    /// Physical universal-transcoder identity. Production keeps it equal to `session`; the two
+    /// fields remain explicit because the protocol probe and fixtures grade their wire roles.
+    pub encoder_session: &'a str,
+    /// The encode's flavor/delivery/ceiling/audio-DSP shape — see [`EncodeContract`]. Was four
+    /// separate fields (`delivery`, `remux`, `no_video_copy`, `ceiling`) until issue #266 needed a
+    /// fifth (`audio`) that only ever means anything alongside `remux == true`; one value keeps
+    /// that coupling a type can't be built without stating.
+    pub contract: EncodeContract,
+    /// Source audio stream id to select (0 = server default).
+    pub audio_stream_id: i64,
+    /// Subtitle stream id to BURN (0 = none). Burn is Plex's decision for our profile —
+    /// it advertises no soft-sub support (direct-play subs are client-rendered instead).
+    pub subtitle_stream_id: i64,
+    /// Restart at this exact content boundary, or omit `offset` for a fresh start.
+    pub offset: TranscodeOffset,
 }
 
 /// A bound a playback must come in under, in the units PMS's own params use: `maxVideoBitrate` is

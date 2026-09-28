@@ -284,12 +284,12 @@ impl Client {
         // only on the re-encode flavor — a REMUX is a copy by definition, so the two can never
         // both be true (`build_stream` derives `remux` from a gate this flag has already failed).
         // See [`TranscodeSpec::no_video_copy`] for the measurement.
-        let hls = matches!(s.delivery, TranscodeDelivery::FixedHls { .. });
+        let hls = matches!(s.contract.delivery, TranscodeDelivery::FixedHls { .. });
         debug_assert!(
-            !(hls && s.remux),
+            !(hls && s.contract.remux),
             "fixed HLS is an encoded rendition, never a remux"
         );
-        let copy_ok = !hls && !(s.no_video_copy && !s.remux);
+        let copy_ok = !hls && !(s.contract.no_video_copy && !s.contract.remux);
         let protocol = if hls { "hls" } else { "http" };
         let mut q = QueryBuilder::new("")
             .str("path", &format!("/library/metadata/{}", s.rating_key))
@@ -315,14 +315,14 @@ impl Client {
         // than becoming a hole: `quality_policy` admits a remux only for a source it measured
         // under the ceiling, so those bytes are already inside the bound. A cap here would do the
         // one thing the remux exists to avoid — force the re-encode.
-        q = if s.remux && !hls {
+        q = if s.contract.remux && !hls {
             q.int("directStreamAudio", 1)
         } else {
-            let c = s.ceiling.unwrap_or(Ceiling::NATIVE_4K);
+            let c = s.contract.ceiling.unwrap_or(Ceiling::NATIVE_4K);
             let q = q
                 .str("videoResolution", &c.resolution())
                 .int("maxVideoBitrate", c.max_kbps);
-            match s.delivery {
+            match s.contract.delivery {
                 TranscodeDelivery::ProgressiveMkv => q,
                 TranscodeDelivery::FixedHls {
                     seconds_per_segment,
@@ -344,6 +344,16 @@ impl Client {
             q = q.int("directStreamAudio", 1);
         }
         q = q.opt_int("audioStreamID", s.audio_stream_id);
+        // Plex Pass audio DSP (issue #266) — the transcode leg ONLY (never `mde_decision_with_profile`,
+        // which builds its own query and never reads `TranscodeSpec` at all: I3). Only ever `1`;
+        // PMS treats absence as off, and an explicit `=0` was never observed to differ from
+        // omitting the param, so there is no baseline byte to preserve by sending it.
+        if s.contract.audio.boost_dialog {
+            q = q.int("boostDialog", 1);
+        }
+        if s.contract.audio.normalize_loudness {
+            q = q.int("normalizeLoudness", 1);
+        }
         if s.subtitle_stream_id > 0 {
             // burned in (Plex's default decision for our profile — no soft-sub support advertised)
             q = q
@@ -357,7 +367,7 @@ impl Client {
         q = self
             .playback_identity(q)
             .str("X-Plex-Client-Profile-Name", "Generic")
-            .str("X-Plex-Client-Profile-Extra", &profile_extra(s.delivery));
+            .str("X-Plex-Client-Profile-Extra", &profile_extra(s.contract.delivery));
         if let Some(offset) = s.offset.wire_seconds() {
             q = q.str("offset", &offset);
         }
@@ -469,7 +479,7 @@ impl Client {
 
     /// The delivery-matched stream target for `spec` — same params as the registering decision.
     pub fn transcode_start_url(&self, spec: &TranscodeSpec) -> StreamUrl {
-        let endpoint = match spec.delivery {
+        let endpoint = match spec.contract.delivery {
             TranscodeDelivery::ProgressiveMkv => "start.mkv",
             TranscodeDelivery::FixedHls { .. } => "start.m3u8",
         };
@@ -570,7 +580,7 @@ mod tests {
         link_policy, Ceiling, Client, LinkPolicy, Location, TranscodeDelivery, TranscodeSpec,
     };
     use crate::devcaps::Caps;
-    use crate::plex::{Origin, ServerId};
+    use crate::plex::{AudioEnhancements, EncodeContract, Origin, ServerId};
 
     // ---- the universal-transcoder query: who is allowed to COPY ---------------------------
 
@@ -585,17 +595,28 @@ mod tests {
     }
 
     fn spec<'a>(remux: bool, no_video_copy: bool) -> TranscodeSpec<'a> {
+        spec_with_audio(remux, no_video_copy, AudioEnhancements::NONE)
+    }
+
+    fn spec_with_audio<'a>(
+        remux: bool,
+        no_video_copy: bool,
+        audio: AudioEnhancements,
+    ) -> TranscodeSpec<'a> {
         TranscodeSpec {
             rating_key: "5",
             session: "s1",
             encoder_session: "s1",
-            delivery: super::TranscodeDelivery::ProgressiveMkv,
-            remux,
-            no_video_copy,
+            contract: EncodeContract {
+                remux,
+                delivery: super::TranscodeDelivery::ProgressiveMkv,
+                no_video_copy,
+                ceiling: None,
+                audio,
+            },
             audio_stream_id: 0,
             subtitle_stream_id: 0,
             offset: crate::plex::TranscodeOffset::Fresh,
-            ceiling: None,
         }
     }
 
@@ -868,7 +889,7 @@ mod tests {
         // A rung: 720p at 4 Mbps. Both axes move, and the old values are GONE — a query carrying
         // both would be a contradiction PMS resolves by position, which is not ours to assume.
         let mut s = spec(false, false);
-        s.ceiling = Some(Ceiling {
+        s.contract.ceiling = Some(Ceiling {
             max_kbps: 4000,
             max_w: 1280,
             max_h: 720,
@@ -908,7 +929,7 @@ mod tests {
         // those bytes are already inside the bound — and a cap here would force the very
         // re-encode the remux exists to avoid.
         let mut r = spec(true, false);
-        r.ceiling = Some(Ceiling {
+        r.contract.ceiling = Some(Ceiling {
             max_kbps: 4000,
             max_w: 1280,
             max_h: 720,
@@ -932,10 +953,10 @@ mod tests {
     #[test]
     fn fixed_hls_is_one_coherent_wire_contract() {
         let mut s = spec(false, false);
-        s.delivery = TranscodeDelivery::FixedHls {
+        s.contract.delivery = TranscodeDelivery::FixedHls {
             seconds_per_segment: 2,
         };
-        s.ceiling = Some(Ceiling {
+        s.contract.ceiling = Some(Ceiling {
             max_kbps: 720,
             max_w: 854,
             max_h: 480,
@@ -969,7 +990,7 @@ mod tests {
                 audio: "aac,ac3,eac3".into(),
             audio_channels: Default::default(),
             },
-            s.delivery,
+            s.contract.delivery,
         );
         let target = target_of(&profile);
         assert!(target.contains("protocol=hls"), "{target}");
@@ -981,7 +1002,7 @@ mod tests {
     #[test]
     fn an_hls_replacement_keeps_the_exact_fractional_content_boundary() {
         let mut s = spec(false, false);
-        s.delivery = TranscodeDelivery::FixedHls {
+        s.contract.delivery = TranscodeDelivery::FixedHls {
             seconds_per_segment: 2,
         };
         s.offset = crate::plex::TranscodeOffset::from_micros(2_002_000);
@@ -993,7 +1014,7 @@ mod tests {
     #[test]
     fn the_probe_builder_keeps_the_two_session_wires_explicit() {
         let mut s = spec(false, false);
-        s.delivery = TranscodeDelivery::FixedHls {
+        s.contract.delivery = TranscodeDelivery::FixedHls {
             seconds_per_segment: 2,
         };
         s.session = "playback-stable";
@@ -1246,5 +1267,107 @@ mod tests {
              +add-transcode-target(type=videoProfile&context=streaming&protocol=http\
              &container=matroska&videoCodec=hevc,h264&audioCodec=ac3,eac3,aac)"
         );
+    }
+
+    // ---- Plex Pass audio DSP (issue #266, PR1): boostDialog / normalizeLoudness -----------
+    //
+    // Production never sets `EncodeContract::audio` to anything but `NONE` in this PR (the
+    // offering policy lands later); these tests pin the wire mechanics `transcode_query` already
+    // has, in isolation, so a later PR's offering policy has a settled, tested contract to build
+    // on top of.
+
+    /// A remux with `normalizeLoudness` alone emits exactly that one param.
+    #[test]
+    fn remux_with_normalize_loudness_emits_param() {
+        let q = a_client().transcode_query(&spec_with_audio(
+            true,
+            false,
+            AudioEnhancements { boost_dialog: false, normalize_loudness: true },
+        ));
+        assert!(q.contains("normalizeLoudness=1"), "{q}");
+        assert!(!q.contains("boostDialog"), "{q}");
+    }
+
+    /// Both toggles on a remux emit both params, independently.
+    #[test]
+    fn remux_with_both_enhancements_emits_both() {
+        let q = a_client().transcode_query(&spec_with_audio(
+            true,
+            false,
+            AudioEnhancements { boost_dialog: true, normalize_loudness: true },
+        ));
+        assert!(q.contains("boostDialog=1"), "{q}");
+        assert!(q.contains("normalizeLoudness=1"), "{q}");
+    }
+
+    /// The re-encode flavor carries the same two params — `transcode_query` builds them
+    /// unconditionally off `s.contract.audio`, not gated to the remux branch.
+    #[test]
+    fn reencode_contract_with_audio_emits_params() {
+        let q = a_client().transcode_query(&spec_with_audio(
+            false,
+            false,
+            AudioEnhancements { boost_dialog: true, normalize_loudness: true },
+        ));
+        assert!(q.contains("boostDialog=1"), "{q}");
+        assert!(q.contains("normalizeLoudness=1"), "{q}");
+    }
+
+    /// `mde_decision` (`hasMDE=1`, `directPlay=1`) builds its own query from scratch and never
+    /// reads a `TranscodeSpec`/`EncodeContract` at all — M1's rule that these params only ever
+    /// mean anything alongside a remux, pinned structurally rather than by a flag this function
+    /// has no way to read.
+    #[cfg(feature = "devtriggers")]
+    #[test]
+    fn mde_never_carries_enhancements() {
+        use std::io::{BufRead, BufReader, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port() as i32;
+        let (tx, rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("accept decision");
+            let mut line = String::new();
+            BufReader::new(&socket)
+                .read_line(&mut line)
+                .expect("request line");
+            tx.send(line).expect("publish request");
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .expect("response");
+        });
+
+        let client = Client::new(
+            ServerId::from_raw(1),
+            "mach",
+            Origin::http("127.0.0.1", port),
+            "tok",
+            "cid",
+        );
+        let _ = client.mde_decision("5", "s1", 0, 0);
+        let line = rx.recv().expect("captured decision request");
+        assert!(!line.contains("boostDialog"), "{line}");
+        assert!(!line.contains("normalizeLoudness"), "{line}");
+        server.join().unwrap();
+    }
+
+    /// `AudioEnhancements::NONE` — every path this PR builds — must not change a single byte of
+    /// the query relative to before #266 touched this function: the ZERO BEHAVIOUR CHANGE gate
+    /// for the shipping default.
+    #[test]
+    fn enhancement_off_is_byte_identical() {
+        for (remux, no_video_copy) in [(false, false), (false, true), (true, false)] {
+            let with_none = a_client().transcode_query(&spec_with_audio(
+                remux,
+                no_video_copy,
+                AudioEnhancements::NONE,
+            ));
+            let bare = a_client().transcode_query(&spec(remux, no_video_copy));
+            assert_eq!(with_none, bare);
+            assert!(!with_none.contains("boostDialog"), "{with_none}");
+            assert!(!with_none.contains("normalizeLoudness"), "{with_none}");
+        }
     }
 }

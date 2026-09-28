@@ -114,7 +114,7 @@ fn remux_review_probe_installs_effective_selection_before_decision_and_start() {
             assert_eq!(query_param(request, "subtitleStreamID"), if burn == 0 { None } else { Some("9") });
             assert_eq!(query_param(request, "subtitles"), if burn == 0 { None } else { Some("burn") });
         }
-        assert!(plan.remux && plan.url.contains("start.mkv"), "state-dependent sample must admit remux: {}", plan.url);
+        assert!(plan.contract.remux && plan.url.contains("start.mkv"), "state-dependent sample must admit remux: {}", plan.url);
     }
     restore_quality(Quality::Original);
     crate::plex::reset_servers_for_test();
@@ -317,7 +317,7 @@ fn mde_transcode_does_not_return_the_part_url() {
         plan.url
     );
     assert!(
-        plan.remux,
+        plan.contract.remux,
         "Part.decision=transcode with no Stream[] cannot claim a video re-encode: {}",
         plan.url
     );
@@ -379,7 +379,7 @@ fn mde_transcode_for_truehd_only_still_remuxes() {
         plan.url
     );
     assert!(
-        plan.remux,
+        plan.contract.remux,
         "TrueHD-only must codec-copy remux, not re-encode 4K: {}",
         plan.url
     );
@@ -428,7 +428,7 @@ fn mde_video_stream_transcode_forbids_remux() {
         plan.url
     );
     assert!(
-        !plan.remux,
+        !plan.contract.remux,
         "video-stream transcode forbids a codec-copy remux"
     );
     crate::plex::reset_servers_for_test();
@@ -474,12 +474,12 @@ fn mde_transcode_copy_still_refuses_a_profile_5_remux() {
         "a declared P5 still asks MDE before accepting Original: {requests:?}"
     );
     assert!(
-        !plan.remux,
+        !plan.contract.remux,
         "a P5 remux is the IPT-PQ bitstream with no declaration: {}",
         plan.url
     );
     assert!(
-        plan.no_video_copy,
+        plan.contract.no_video_copy,
         "the copy permission has to be withdrawn or PMS copies anyway"
     );
     crate::plex::reset_servers_for_test();
@@ -531,7 +531,7 @@ fn unconfirmed_profile_5_forbids_copy_before_mde() {
             .find(|line| line.contains("/decision?"))
             .unwrap_or_else(|| panic!("decision missing: {requests:?}"));
         assert!(decision.contains("directStream=0"), "{capability:?}: {decision}");
-        assert!(!plan.remux, "{capability:?}");
+        assert!(!plan.contract.remux, "{capability:?}");
         assert_eq!(plan.dovi, crate::metadata::Dovi::NONE);
         assert_eq!(
             plan.dv_decision.presentation,
@@ -614,7 +614,7 @@ fn remote_auto_truehd_remux_probes_start_mkv_not_the_part() {
         "Remote Auto must probe the remux: {requests:?}"
     );
     assert!(
-        plan.remux,
+        plan.contract.remux,
         "TrueHD-only Remote Auto must codec-copy remux, not HLS-encode 4K: {}",
         plan.url
     );
@@ -801,7 +801,7 @@ fn a_720p_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
     server.join().unwrap();
 
     assert!(
-        !plan.remux,
+        !plan.contract.remux,
         "720p must re-encode, not copy: {}",
         plan.url
     );
@@ -888,7 +888,7 @@ fn a_720p_reencode_keeps_the_files_default_language_over_english() {
     server.join().unwrap();
 
     assert!(
-        !plan.remux,
+        !plan.contract.remux,
         "720p must re-encode, not copy: {}",
         plan.url
     );
@@ -975,7 +975,7 @@ fn a_720p_reencode_keeps_the_default_ac3_over_an_unselected_english_dts() {
     server.join().unwrap();
 
     assert!(
-        !plan.remux,
+        !plan.contract.remux,
         "720p must re-encode, not copy: {}",
         plan.url
     );
@@ -1064,7 +1064,7 @@ fn a_auto_hls_reencode_puts_the_selected_dts_not_the_ac3_sibling() {
     server.join().unwrap();
 
     assert!(
-        !plan.remux,
+        !plan.contract.remux,
         "Relay Auto must HLS-encode, not copy: {}",
         plan.url
     );
@@ -1166,7 +1166,7 @@ fn remote_auto_failed_remux_sample_physical_stops_before_hls() {
         "closeResourceSession=1 would 503 the next start: {requests:?}"
     );
     assert!(
-        !plan.remux,
+        !plan.contract.remux,
         "no remux sample → Auto falls through to HLS: {}",
         plan.url
     );
@@ -1221,7 +1221,7 @@ fn unreachable_mde_does_not_return_the_part_url() {
         plan.url
     );
     assert!(
-        plan.remux,
+        plan.contract.remux,
         "HEVC+EAC3 with unreachable MDE still codec-copy remuxes: {}",
         plan.url
     );

@@ -57,13 +57,17 @@ pub(super) fn test_original_candidate(subtitle_ordinal: Option<i32>) -> AutoOrig
         probe_part: "https://example.invalid/source.mkv".into(),
         direct: true,
         vcodec: "hevc".into(),
-        acodec: "eac3".into(),
         fps: 23.976,
         dovi: crate::metadata::Dovi::NONE,
         dv_decision: crate::metadata::DvDecision::NONE,
-        immersive: true,
-        audio_sid: 42,
-        audio_ordinal: Some(1),
+        audio: Some(CarriedAudio {
+            sid: 42,
+            ordinal: 1,
+            codec: "eac3".into(),
+            channels: 6,
+            can_normalize_loudness: false,
+            immersive: true,
+        }),
         subtitle_ordinal,
     }
 }
