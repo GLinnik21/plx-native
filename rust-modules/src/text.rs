@@ -432,6 +432,13 @@ pub(crate) fn drain_prewarm(budget_us: u64, now: impl FnMut() -> u64) -> usize {
     })
 }
 
+/// Recorded text a prewarm pass has not yet rasterised. A held page image is not replaced by a
+/// live capture while this is true (`ui::dispatch`'s quiescence predicate), so the capture frame
+/// never pays for a page's newly landed strings all at once.
+pub(crate) fn prewarm_pending() -> bool {
+    PREWARM.with(|q| !q.borrow().is_empty())
+}
+
 /// A transition ended or was replaced. Never carry its destination's work into an unrelated dip.
 pub(crate) fn clear_prewarm() {
     PREWARM.with(|q| q.borrow_mut().clear());
@@ -448,6 +455,78 @@ pub(crate) fn prewarm_resident_for_test(bytes: &[u8], sz: c_int, bold: c_int) ->
     PREWARMED_FOR_TEST.with(|w| {
         w.borrow().iter().any(|k| k.bytes == bytes && k.sz == sz && k.bold == bold)
     })
+}
+
+/// Every rung of `theme::size` — the faces a page's layout is measured in.
+const WARM_SIZES: [c_int; 9] = {
+    use crate::ui::theme::size::*;
+    [HERO, DISPLAY, TITLE, HEADLINE, BODY, LABEL, CAPTION, MICRO, DIAGNOSTIC]
+};
+/// Printable ASCII: the glyphs nearly every string the product measures is made of.
+const WARM_GLYPHS: &[u8] =
+    b" !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+/// Glyphs per warming job, so one job stays well inside an idle slice.
+const WARM_CHUNK: usize = 19;
+const WARM_CHUNKS: usize = WARM_GLYPHS.len().div_ceil(WARM_CHUNK);
+const WARM_JOBS: usize = WARM_SIZES.len() * 2 * WARM_CHUNKS;
+
+thread_local! {
+    /// The next [`warm_job`] to run. Main-render-thread only, like the faces it warms.
+    static WARM_NEXT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Job `j`: a face (size, weight) and the glyph run to load its metrics for. The first chunk of a
+/// face also opens it.
+fn warm_job(j: usize) -> (c_int, c_int, &'static [u8]) {
+    let chunk = j % WARM_CHUNKS;
+    let face = j / WARM_CHUNKS;
+    let lo = chunk * WARM_CHUNK;
+    let hi = (lo + WARM_CHUNK).min(WARM_GLYPHS.len());
+    (WARM_SIZES[face / 2], (face % 2) as c_int, &WARM_GLYPHS[lo..hi])
+}
+
+/// Run warming jobs from the cursor until `budget_us` has passed on `now` — at least one, like
+/// [`drain_budgeted`]. Returns how many ran; 0 once every face is warm.
+fn warm_step(budget_us: u64, mut now: impl FnMut() -> u64, mut run: impl FnMut(c_int, c_int, &[u8])) -> usize {
+    WARM_NEXT.with(|next| {
+        let start = now();
+        let mut done = 0;
+        while next.get() < WARM_JOBS && (done == 0 || now().saturating_sub(start) < budget_us) {
+            let (sz, bold, glyphs) = warm_job(next.get());
+            run(sz, bold, glyphs);
+            next.set(next.get() + 1);
+            done += 1;
+        }
+        done
+    })
+}
+
+/// **Open every theme face and load its ASCII glyph metrics, a slice at a time, while the loop is
+/// idle.** SDL_ttf opens a face on its first use at a size and loads each glyph's metrics on the
+/// first string that contains it, so the first layout of a page in a size the session has not
+/// used yet pays for both at once. Measured on the television: the first Detail page after boot
+/// spent 23 ms in 176 width measurements and four face opens in ONE frame (the page's first
+/// text-prewarm walk), and later visits spent under 1 ms. The metrics are per face and live as
+/// long as it does, so this is paid once per process, on frames that were going to sleep.
+pub(crate) fn warm_fonts_idle(budget_us: u64, now: impl FnMut() -> u64) -> usize {
+    if unsafe { *addr_of!(TEXT_OK) } == 0 {
+        return 0;
+    }
+    warm_step(budget_us, now, |sz, bold, glyphs| unsafe {
+        let f = font_at(sz, bold);
+        if f.is_null() {
+            return;
+        }
+        if let Ok(run) = CString::new(glyphs) {
+            let (mut w, mut h) = (0, 0);
+            TTF_SizeUTF8(f, run.as_ptr(), &mut w, &mut h);
+        }
+    })
+}
+
+#[cfg(test)]
+pub(crate) fn reset_font_warm_for_test() {
+    WARM_NEXT.with(|n| n.set(0));
 }
 
 /// An entry drawn within this many frames is HOT and is not evicted while any colder slot exists.
@@ -2095,6 +2174,39 @@ mod cache_policy_tests {
         assert_eq!(warmed, 3, "only work fitting this dip frame was started");
         assert_eq!(clock.get(), 6_000, "the warmer yielded at its named deadline");
         assert_eq!(jobs.into_iter().collect::<Vec<_>>(), vec![4, 5]);
+    }
+
+    #[test]
+    fn idle_font_warming_covers_every_theme_face_and_yields_at_its_budget() {
+        use std::cell::{Cell, RefCell};
+        reset_font_warm_for_test();
+        let clock = Cell::new(0u64);
+        let seen = RefCell::new(Vec::new());
+        // one job per 1 ms against a 2 ms slice: two jobs, then the loop sleeps
+        let ran = warm_step(2_000, || clock.get(), |sz, bold, glyphs| {
+            clock.set(clock.get() + 1_000);
+            seen.borrow_mut().push((sz, bold, glyphs.to_vec()));
+        });
+        assert_eq!(ran, 2);
+        // the rest of the idle slices finish the ladder, then warming is a no-op
+        while warm_step(2_000, || clock.get(), |sz, bold, glyphs| {
+            clock.set(clock.get() + 1_000);
+            seen.borrow_mut().push((sz, bold, glyphs.to_vec()));
+        }) > 0 {}
+        assert_eq!(warm_step(2_000, || clock.get(), |_, _, _| panic!("already warm")), 0);
+        let seen = seen.into_inner();
+        for &sz in &WARM_SIZES {
+            for bold in [0, 1] {
+                let glyphs: Vec<u8> = seen.iter()
+                    .filter(|(s, b, _)| *s == sz && *b == bold)
+                    .flat_map(|(_, _, g)| g.iter().copied())
+                    .collect();
+                assert_eq!(glyphs, WARM_GLYPHS, "size {sz} bold {bold}: every printable ASCII glyph, once");
+            }
+        }
+        assert!(WARM_SIZES.contains(&crate::ui::theme::size::HERO));
+        assert!(WARM_SIZES.contains(&crate::ui::theme::size::DIAGNOSTIC));
+        reset_font_warm_for_test();
     }
 
     /// A cache of `n` occupied slots whose `use_` serials are the given ones (in slot order), the

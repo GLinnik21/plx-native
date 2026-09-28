@@ -315,10 +315,18 @@ pub struct FixtureScreen {
     row: FixtureRow,
     /// See [`ANIMATED_PAGE`]. Inert for every other argument.
     spring: crate::ui::Spring,
-    /// The [`draw_order`] tick this page last drew at. Deliberately NOT part of [`FixtureState`],
-    /// which is the screen's LOGICAL state and feeds the tree's hash: when a page happened to be
-    /// drawn is render bookkeeping and must not move a state hash.
+    /// The [`draw_order`] tick this page last drew VISIBLY at — a text-prewarm pass through the
+    /// recording painter submits nothing and is counted in [`Self::recorded_draws`] instead.
+    /// Deliberately NOT part of [`FixtureState`], which is the screen's LOGICAL state and feeds
+    /// the tree's hash: when a page happened to be drawn is render bookkeeping and must not move
+    /// a state hash.
     pub draw_at: usize,
+    /// Draws through `Painter::recording()` (the page-dip text prewarm).
+    pub recorded_draws: u32,
+    /// The [`draw_order`] tick of the latest recording draw.
+    pub recorded_at: usize,
+    /// Recording draws made inside a [`crate::ui::rec::speculative`] pass.
+    pub speculative_draws: u32,
 }
 
 crate::focusable_via_composed!(FixtureScreen, FixtureHost);
@@ -478,7 +486,13 @@ impl Screen<FixtureHost> for FixtureScreen {
         composed_prepare(self, b, cx);
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, FixtureHost>) {
-        self.draw_at = draw_order();
+        if f.painter.is_recording() {
+            self.recorded_draws += 1;
+            self.recorded_at = draw_order();
+            self.speculative_draws += u32::from(crate::ui::rec::speculating());
+        } else {
+            self.draw_at = draw_order();
+        }
         composed_draw(self, f);
         if matches!(self.arg, FixtureArg::Page(_)) {
             f.painter.text(
@@ -589,6 +603,7 @@ impl FixtureModal {
                                     kind: ElemKind::Card,
                                 },
                                 draw_at: 0,
+                                recorded_draws: 0, recorded_at: 0, speculative_draws: 0,
                             }),
                             inflight: Vec::new(),
                             staged: false,
@@ -844,6 +859,7 @@ impl Mounter<FixtureHost> for FixtureMounter {
                 kind,
             },
             draw_at: 0,
+            recorded_draws: 0, recorded_at: 0, speculative_draws: 0,
         })
     }
 }

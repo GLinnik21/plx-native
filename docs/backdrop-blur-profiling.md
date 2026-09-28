@@ -1607,3 +1607,47 @@ live-page-plus-full-screen-image dissolve is gone. `FRAMEDROP` now carries
 
 These changes were host-tested only in this lane. No television was contacted, so the requested
 push-100/modal-100/deep-100 ≤20 ms outcome remains a prediction until the coordinator's device run.
+
+## 2026-09-28: the benches graded on missed refreshes, and what is still missed
+
+`bench_worst_ms=20.0` graded Top->Swap. Top->Swap includes the vsync wait, so a settled 19 ms
+frame failed the gate, and the gate could not tell such a frame from a real drop. The benches now
+count missed display refreshes per present interval: `max(0, round(ms/16.67) - 1)`. For the first
+frame after idle, the interval is its Top->Swap. `bench_missed_max` is 0. Every number below is
+from the television, with the panel off and the sound muted.
+
+| run | missed refreshes | worst_ms p50 / p95 / max |
+|---|---|---|
+| push, before (first 17 cycles) | 28 in 17 cycles; cycle 1 alone 7 | — |
+| push-100, after | 12 in 8 of 100 cycles; cycle 1: 4 | 19.6 / 25.6 / 41.6 |
+| modal-100, after | 16 in 9 of 100 cycles | 19.4 / 28.5 / 43.2 |
+| deep-100, after (200 steps) | 18 in 13 of 200 steps | 17.6 / 28.1 / 41.7 |
+
+**What was fixed.** The cold first Detail cycle had three causes.
+
+- **An 82 ms capture frame.** The replacement capture rasterised every string that had landed
+  after the dip's floor. The held top page is now walked through the text recorder, and
+  quiescence waits for the prewarm queue to drain.
+- **Face opens and glyph metrics.** The first walk still paid for four face opens and 176 cold
+  measurements: 23 ms in one frame. Idle font warming (`text::warm_fonts_idle`) now opens every
+  theme face and loads its ASCII glyph metrics in 2 ms slices while the loop sleeps. The walk fell
+  from 28.9 ms to 10.7 ms.
+- **The walk stacking on the GPU wait.** The walk is CPU only, so it now runs before the page
+  pass, overlapping the driver's wait in the first framebuffer command instead of adding to it.
+  The first Detail frame went from 51 ms to 33.5 ms, and then to 25.6 ms.
+
+**What is not fixed.** Almost every remaining miss is ONE frame.
+
+- **push-100 and deep-100.** The frames record `prepare`/`draw` spans of 1–2 ms. They wait 22–39
+  ms in `clear`, the first framebuffer command, during a held-image phase whose own GPU work is
+  one full-screen quad and the chrome. The frames before them were normal. The backlog they wait
+  on is not this frame's work, and no span attributes it. Whether it is the Home capture's GPU
+  cost, the compositor holding a buffer, or GPU DVFS is still open; `gpu_timer` saw the UI pass
+  average ~16 ms during transitions.
+- **modal-100.** Its steady misses are close frames whose `draw` is 25–31 ms with under 2 ms in
+  named spans, so the wait sits in an unspanned GL call.
+- **Cycle 1.** A 1080p backdrop upload (2 073 600 px) spent 22.5 ms in `upload_rgba` in one held
+  Detail frame, and Settings' first open spent 34.5 ms in `surf`.
+
+These cycles fail the gate on purpose. Raising `bench_missed_max` to the measured count would turn
+drops into a baseline.

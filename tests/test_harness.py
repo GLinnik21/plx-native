@@ -1188,17 +1188,20 @@ class FrameCeilingsManifest(unittest.TestCase):
 
 class BenchGrading(unittest.TestCase):
     """`parse_bench`/`grade_bench` — the stress-bench (`push-100`/`modal-100`) parser and its four
-    fail conditions (missed-frame, drift, rss-growth, incomplete-run) plus the latch exemption.
-    Synthetic `bench:` lines, so the arithmetic is pinned here rather than first exercised on the
-    television — the same reason `FrameCeilings` above is synthetic."""
+    fail conditions (missed refreshes, drift, rss-growth, incomplete-run). Synthetic `bench:`
+    lines, so the arithmetic is pinned here rather than first exercised on the television — the
+    same reason `FrameCeilings` above is synthetic."""
 
-    def _lines(self, kind, worsts, rss=None, n=None, done=True, target="detail"):
+    def _lines(self, kind, worsts, rss=None, n=None, done=True, target="detail", missed=None):
         n = n if n is not None else len(worsts)
         rss = rss if rss is not None else [1000] * len(worsts)
+        missed = missed if missed is not None else [0] * len(worsts)
         out = [
             f"bench: kind={kind} cycle={i}/{n} target={target} worst_ms={w:.1f} frames=5 "
-            f"dur_ms=1400 rss_kb={r}"
-            for i, (w, r) in enumerate(zip(worsts, rss), start=1)
+            f"dur_ms=1400 rss_kb={r} tex=108/49125 first_ms=6.0 missed={k} "
+            f"open=first:6.0,worst:{w:.1f}@3,iv:{w:.1f},missed:{k} "
+            f"close=first:5.0,worst:16.9@2,iv:17.0,missed:0"
+            for i, (w, r, k) in enumerate(zip(worsts, rss, missed), start=1)
         ]
         if done:
             out.append(f"bench: kind={kind} done cycles={n}")
@@ -1211,7 +1214,9 @@ class BenchGrading(unittest.TestCase):
         self.assertEqual([c["cycle"] for c in cycles], [1, 2])
         self.assertEqual(cycles[0],
                          {"cycle": 1, "n": 2, "target": "detail", "worst_ms": 5.0, "frames": 5,
-                          "dur_ms": 1400, "rss_kb": 1000})
+                          "dur_ms": 1400, "rss_kb": 1000, "first_ms": 6.0, "missed": 0,
+                          "open": "first:6.0,worst:5.0@3,iv:5.0,missed:0",
+                          "close": "first:5.0,worst:16.9@2,iv:17.0,missed:0"})
         modal_cycles, modal_done = run.parse_bench(lines, "modal")
         self.assertTrue(modal_done)
         self.assertEqual(len(modal_cycles), 1)
@@ -1220,18 +1225,35 @@ class BenchGrading(unittest.TestCase):
         lines = self._lines("push", [5.0] * 100, rss=[1000] * 100)
         ok, detail = run.grade_bench({"bench": "push"}, lines)
         self.assertTrue(ok, detail)
-        self.assertIn("worst_ms p50=", detail)
+        self.assertIn("worst_ms (Top->Swap", detail)
+        self.assertIn("missed refreshes=0", detail)
 
-    def test_one_cycle_over_bench_worst_ms_fails(self):
-        worsts = [5.0] * 11 + [25.0]  # default bench_worst_ms is 20.0
-        lines = self._lines("push", worsts)
+    def test_top_to_swap_over_budget_without_a_missed_refresh_passes(self):
+        """The vsync wait sits inside Top->Swap on this driver: 23 ms frames with no repeated
+        picture are a clean run, and the old 20 ms ceiling failed them."""
+        lines = self._lines("push", [23.0] * 12)
+        ok, detail = run.grade_bench({"bench": "push"}, lines)
+        self.assertTrue(ok, detail)
+
+    def test_one_missed_refresh_fails_and_names_the_cycle_and_its_halves(self):
+        missed = [0] * 11 + [1]
+        lines = self._lines("push", [18.0] * 11 + [29.0], missed=missed)
         ok, detail = run.grade_bench({"bench": "push"}, lines)
         self.assertFalse(ok)
-        self.assertIn("over bench_worst_ms=20.0", detail)
-        self.assertIn("cycle=12/12", detail)
+        self.assertIn("FAIL: missed refreshes=1 in 1 cycle(s) of 12 vs bench_missed_max 0", detail)
+        self.assertIn("cycle=12/12 target=detail missed=1 open=first:6.0,worst:29.0@3", detail)
+        ok, _ = run.grade_bench({"bench": "push", "bench_missed_max": 1}, lines)
+        self.assertTrue(ok)
+
+    def test_a_line_without_the_missed_field_fails_rather_than_grading_clean(self):
+        lines = [f"bench: kind=push cycle={i}/12 target=detail worst_ms=5.0 frames=5 dur_ms=1400 "
+                 f"rss_kb=1000" for i in range(1, 13)] + ["bench: kind=push done cycles=12"]
+        ok, detail = run.grade_bench({"bench": "push"}, lines)
+        self.assertFalse(ok)
+        self.assertIn("carry no `missed=` field", detail)
 
     def test_last_ten_cycles_drifting_above_the_first_ten_fails(self):
-        worsts = [5.0] * 10 + [10.0] * 10  # every value is well under bench_worst_ms
+        worsts = [5.0] * 10 + [10.0] * 10
         lines = self._lines("push", worsts)
         ok, detail = run.grade_bench({"bench": "push"}, lines)
         self.assertFalse(ok)
@@ -1260,21 +1282,8 @@ class BenchGrading(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("no `bench: kind=push` cycle lines", detail)
 
-    def test_bench_latch_exempt_ms_absorbs_one_cycle_and_names_it(self):
-        worsts = [5.0] * 11 + [25.0]  # over bench_worst_ms=20.0, at/under the exemption ceiling
-        lines = self._lines("push", worsts)
-        ok, detail = run.grade_bench({"bench": "push", "bench_latch_exempt_ms": 30.0}, lines)
-        self.assertTrue(ok, detail)
-        self.assertIn("1 cycle(s) exempted under bench_latch_exempt_ms=30.0", detail)
-        self.assertIn("cycle=12 target=detail worst_ms=25.0", detail)
-        # a SECOND cycle over the exemption ceiling still fails
-        worsts2 = [5.0] * 10 + [25.0, 35.0]
-        lines2 = self._lines("push", worsts2)
-        ok2, detail2 = run.grade_bench({"bench": "push", "bench_latch_exempt_ms": 30.0}, lines2)
-        self.assertFalse(ok2, detail2)
-
     def test_push_and_modal_kinds_are_graded_independently(self):
-        lines = self._lines("push", [5.0] * 12) + self._lines("modal", [25.0] * 12)
+        lines = self._lines("push", [5.0] * 12) + self._lines("modal", [25.0] * 12, missed=[1] * 12)
         ok_push, _ = run.grade_bench({"bench": "push"}, lines)
         ok_modal, _ = run.grade_bench({"bench": "modal"}, lines)
         self.assertTrue(ok_push)
@@ -1300,14 +1309,16 @@ class BenchManifest(unittest.TestCase):
 
 class DeepBenchGrading(unittest.TestCase):
     """`parse_deep_bench`/`grade_deep_bench` — the DEEP-stack bench (`deep-100`) parser and its
-    five fail conditions (missed-frame, push drift, pop drift, depth-rss growth, root-rss growth)
-    plus the incomplete-run case. Synthetic `bench: kind=deep` lines, same reasoning as
+    five fail conditions (missed refreshes, push drift, pop drift, depth-rss growth, unwound root
+    rss) plus the incomplete-run case. Synthetic `bench: kind=deep` lines, same reasoning as
     `BenchGrading` above: pinned here rather than first exercised on the television."""
 
-    def _lines(self, depth, worsts=None, rss=None, done=True, target="detail"):
+    def _lines(self, depth, worsts=None, rss=None, done=True, target="detail", missed=None,
+               root=None):
         n = 2 * depth
         worsts = worsts if worsts is not None else [5.0] * n
         rss = rss if rss is not None else [1000] * n
+        missed = missed if missed is not None else [0] * n
         out = []
         for i in range(n):
             cycle = i + 1
@@ -1317,10 +1328,13 @@ class DeepBenchGrading(unittest.TestCase):
                 dirn, d = "pop", depth - 1 - (i - depth)
             out.append(
                 f"bench: kind=deep cycle={cycle}/{n} target={target} dir={dirn} depth={d} "
-                f"worst_ms={worsts[i]:.1f} frames=5 dur_ms=1400 rss_kb={rss[i]}"
+                f"worst_ms={worsts[i]:.1f} frames=5 dur_ms=1400 rss_kb={rss[i]} tex=108/49125 "
+                f"first_ms=6.0 missed={missed[i]} "
+                f"open=first:6.0,worst:{worsts[i]:.1f}@2,iv:17.0,missed:{missed[i]}"
             )
         if done:
-            out.append(f"bench: kind=deep done cycles={n} rss_root_kb={rss[-1] if rss else 1000}")
+            out.append(f"bench: kind=deep done cycles={n} "
+                       f"rss_root_kb={root if root is not None else (rss[-1] if rss else 1000)}")
         return out
 
     def test_parse_deep_bench_reads_every_field(self):
@@ -1331,14 +1345,15 @@ class DeepBenchGrading(unittest.TestCase):
         self.assertEqual(
             steps[0],
             {"cycle": 1, "n": 6, "target": "detail", "dir": "push", "depth": 1,
-             "worst_ms": 5.0, "frames": 5, "dur_ms": 1400, "rss_kb": 1000},
+             "worst_ms": 5.0, "frames": 5, "dur_ms": 1400, "rss_kb": 1000, "first_ms": 6.0,
+             "missed": 0, "open": "first:6.0,worst:5.0@2,iv:17.0,missed:0", "close": None},
         )
         self.assertEqual([s["dir"] for s in steps], ["push"] * 3 + ["pop"] * 3)
         self.assertEqual([s["depth"] for s in steps], [1, 2, 3, 2, 1, 0])
 
     def test_a_healthy_run_of_depth_100_passes(self):
         lines = self._lines(100)
-        ok, detail = run.grade_deep_bench({"bench": "deep"}, lines)
+        ok, detail = run.grade_deep_bench({"bench": "deep", "bench_root_rss_kb": 2000}, lines)
         self.assertTrue(ok, detail)
 
     def test_no_deep_bench_lines_at_all_fails_rather_than_passing_vacuously(self):
@@ -1352,14 +1367,14 @@ class DeepBenchGrading(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("no `done` line", detail)
 
-    def test_one_step_over_bench_worst_ms_fails(self):
-        lines = self._lines(10)  # 20 steps (depth=10), default bench_worst_ms is 20.0
-        # make step 12 (a pop) the slow one
-        lines[11] = lines[11].replace("worst_ms=5.0", "worst_ms=25.0")
+    def test_one_missed_refresh_fails_and_names_the_step(self):
+        missed = [0] * 20
+        missed[11] = 2  # step 12 (a pop) repeated two pictures
+        lines = self._lines(10, missed=missed)
         ok, detail = run.grade_deep_bench({"bench": "deep"}, lines)
         self.assertFalse(ok)
-        self.assertIn("over bench_worst_ms=20.0", detail)
-        self.assertIn("cycle=12/20", detail)
+        self.assertIn("FAIL: missed refreshes=2 in 1 step(s) of 20", detail)
+        self.assertIn("cycle=12/20 dir=pop target=detail missed=2", detail)
 
     def test_push_drift_growing_with_depth_fails(self):
         depth = 20
@@ -1383,32 +1398,33 @@ class DeepBenchGrading(unittest.TestCase):
         ok, _ = run.grade_deep_bench({"bench": "deep", "bench_drift_ms": 10.0}, lines)
         self.assertTrue(ok)
 
-    def test_depth_rss_growing_past_step_ten_fails(self):
+    def test_memory_held_by_depth_beyond_the_unwound_root_fails(self):
         depth = 20
-        # rss climbs steadily across the 20 pushes, flat across the 20 pops. step10 (push index 9)
-        # to the deepest push (index 19) must clear the default bench_depth_rss_kb=16384.
+        # rss climbs steadily across the 20 pushes and is given back across the 20 pops: the
+        # deepest push is 38000 kB over the unwound root, past the default bench_depth_rss_kb=16384.
         push_rss = [1000 + 2000 * i for i in range(depth)]
-        pop_rss = [push_rss[-1]] * depth
+        pop_rss = list(reversed(push_rss))
         lines = self._lines(depth, rss=push_rss + pop_rss)
         ok, detail = run.grade_deep_bench({"bench": "deep"}, lines)
         self.assertFalse(ok)
-        self.assertIn("depth rss growth(maxdepth-step10)=", detail)
-        # raising bench_depth_rss_kb alone clears the DEPTH clause; bench_rss_growth_kb (root vs
-        # step10) is a separate clause over the same climb and must be raised too for an overall pass.
-        ok, _ = run.grade_deep_bench(
-            {"bench": "deep", "bench_depth_rss_kb": 1000000, "bench_rss_growth_kb": 1000000}, lines)
+        self.assertIn("depth rss(maxdepth-root)=38000kB (maxdepth=39000, root=1000)", detail)
+        ok, _ = run.grade_deep_bench({"bench": "deep", "bench_depth_rss_kb": 1000000}, lines)
         self.assertTrue(ok)
 
-    def test_root_rss_growing_past_step_ten_fails(self):
+    def test_the_unwound_root_is_graded_against_an_absolute_ceiling_not_step_ten(self):
+        """The device shape that failed the old step-10 delta: step 10 read while caches were still
+        filling (68104 kB), a root that unwound to the same ~86 MB every run. Absolute: passes."""
         depth = 20
-        push_rss = [1000] * depth
-        pop_rss = [1000] * (depth - 1) + [50000]  # the `done` line's rss_root_kb comes from here
-        lines = self._lines(depth, rss=push_rss + pop_rss)
-        ok, detail = run.grade_deep_bench({"bench": "deep"}, lines)
+        rss = [68104] * 10 + [86000] * 30
+        lines = self._lines(depth, rss=rss, root=86856)
+        ok, detail = run.grade_deep_bench({"bench": "deep", "bench_root_rss_kb": 98304}, lines)
+        self.assertTrue(ok, detail)
+        self.assertIn("root rss=86856kB vs bench_root_rss_kb 98304", detail)
+        # …and a root that did NOT give its pages back fails whatever step 10 read
+        lines = self._lines(depth, rss=rss, root=120000)
+        ok, detail = run.grade_deep_bench({"bench": "deep", "bench_root_rss_kb": 98304}, lines)
         self.assertFalse(ok)
-        self.assertIn("root rss growth(root-step10)=", detail)
-        ok, _ = run.grade_deep_bench({"bench": "deep", "bench_rss_growth_kb": 1000000}, lines)
-        self.assertTrue(ok)
+        self.assertIn("root rss=120000kB vs bench_root_rss_kb 98304", detail)
 
 
 class DeepBenchManifest(unittest.TestCase):
@@ -1423,6 +1439,7 @@ class DeepBenchManifest(unittest.TestCase):
         self.assertIn("plxnative-framedrop", deep["triggers"],
                      "deep-100: bench worst_ms reads 0.0 unarmed — see bench_frame_tick's doc")
         self.assertIn("bench_depth_rss_kb", deep)
+        self.assertIn("bench_root_rss_kb", deep, "the unwound end state is graded absolutely")
 
 
 class LoadManifest(unittest.TestCase):
@@ -1892,7 +1909,7 @@ class DefaultTier(unittest.TestCase):
     def test_fps_listing_survives_a_bench_scene_with_no_loop_floor(self):
         """`--fps --list` walks every fps_scene and printed `loop_floor={s['loop_floor']}`
         unconditionally, which assumed every scene gates on it. The push/modal/deep-100 bench
-        scenes gate on `bench_worst_ms` instead and carry no `loop_floor` at all, so the listing
+        scenes gate on missed refreshes instead and carry no `loop_floor` at all, so the listing
         crashed with KeyError('loop_floor') partway through printing — after the ordinary cases,
         so a bare `--list` (the pipeline-tier listing) never saw it. The fix must print what a
         bench scene actually gates on rather than assuming every scene shares one key."""
@@ -1900,6 +1917,7 @@ class DefaultTier(unittest.TestCase):
         self.assertEqual(out.returncode, 0,
                          f"--fps --list crashed:\n{out.stdout}\n{out.stderr}")
         self.assertIn("fps:push-100", out.stdout)
+        self.assertIn("bench_missed_max=0", out.stdout)
         self.assertNotIn("Traceback", out.stderr)
         self.assertNotIn("KeyError", out.stderr)
 

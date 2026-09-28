@@ -279,6 +279,18 @@ impl Instruments {
         self.ms(self.stamps[Phase::Swap as usize].wrapping_sub(self.stamps[Phase::Top as usize]))
     }
 
+    /// The just-presented frame's present-to-present interval in ms: its Swap stamp minus the
+    /// previous presented frame's. `None` unarmed, and for the first frame after startup or a
+    /// skipped present (an idle gap is not a cadence sample — `skip_present_phases`). Read it
+    /// BEFORE [`Self::frame_drop_line`], which advances the previous-present stamp.
+    pub(crate) fn present_interval_ms(&self) -> Option<f64> {
+        if !self.armed {
+            return None;
+        }
+        let previous = self.previous_present?;
+        Some(self.ms(self.stamps[Phase::Swap as usize].wrapping_sub(previous)))
+    }
+
     /// At the iteration's tail of a PRESENTED frame: fold the total into the peak and return the
     /// `FRAMEDROP` line when it crossed the threshold. The four per-frame counters come from
     /// [`Self::note_frame_counters`] — this frame's, not the accumulation since the last drop

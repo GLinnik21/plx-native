@@ -1242,6 +1242,7 @@ where
         let eligible = pages && host_render == HostRender::Live && !video_plane
             && self.nav.tabs.stack.transition.freezes_page() && self.page_snapshot.available();
         let page_quiescent = self.page_quiescent
+            && !crate::text::prewarm_pending()
             && !self.present.page_moving()
             && !crate::ui::idle::page_moving()
             && !self.budget.has_queued_work();
@@ -1277,6 +1278,57 @@ where
             extra_bytes: super::tex::resident_bytes() + glass.as_ref().map_or(0, |g|g.sources.borrow().resident_bytes()),
             ..Default::default()
         };
+        // A PageDip keeps the committed top as the visible/input page throughout its OUT half.
+        // Its pending destination is nevertheless a real staged screen, so run that same screen
+        // tree through a painter which records text and submits no visual primitive. Re-recording
+        // each frame is intentional: cache hits disappear from the queue, while work which missed
+        // this frame's deadline is rediscovered next frame without stale cross-navigation state.
+        //
+        // The same pass runs over the TOP page while an image stands in for it (the IN half and
+        // the hold after it). That is where a destination's content lands — a detail page's
+        // metadata arrives after its floor — and nothing else draws the page until the one
+        // replacement capture. Without it that capture rasterised every newly landed string in a
+        // single frame: 47 strings, 48 ms of an 84 ms frame, measured on the television. The
+        // quiescence predicate waits for this queue, so the capture finds the text resident.
+        //
+        // The walk is CPU only (it measures and records), so it runs BEFORE the page pass: the
+        // frame's first framebuffer command is where the driver waits out the previous frame's
+        // GPU work, and a walk placed ahead of it overlaps that wait instead of adding to it. A
+        // cold detail page's first walk is ~11 ms; after the page pass it stacked on a 15 ms wait
+        // into a 33 ms frame. The drain uploads textures, so it stays after the page pass.
+        let warm = prewarm_text_target(
+            nav.tabs.stack.transition.prewarms_text(),
+            matches!(paint, super::containers::transition::PagePaint::Held(_)),
+            source_pass,
+        );
+        if let Some(target) = warm {
+            crate::text::clear_prewarm();
+            let entry = match target {
+                PrewarmTarget::Pending => nav.tabs.stack.pending_target_mut(),
+                PrewarmTarget::HeldTop => nav.tabs.stack.top_mut(),
+            };
+            if let Some(entry) = entry {
+                if let Some(inst) = entry.inst.as_mut() {
+                    let Split { views, measure, .. } = rig.split();
+                    let mut warm_cx = parts.cx::<H>(views, measure);
+                    warm_cx.owner = InputOwner::Entry(entry.id);
+                    warm_cx.focus = input.engine.read(warm_cx.owner);
+                    let mut f = DrawFrame::with_navigation(
+                        &warm_cx,
+                        Painter::recording(),
+                        navigation,
+                    );
+                    f.page_alpha = 0.0;
+                    // Raw screen clears bypass Painter::recording; they must not erase
+                    // the outgoing page while its destination only records text. The walk
+                    // measures ahead of any frame that draws the page, so it is speculative to
+                    // the recorder (`rec::speculative`).
+                    crate::gfx::without_frame_clear(|| {
+                        super::rec::speculative(|| inst.screen.draw(&mut f))
+                    });
+                }
+            }
+        }
         // the page pass: the top page (and, under a push, the level beneath it), unless the
         // host fold REPLACED it
         if pages && host_render != HostRender::Replaced {
@@ -1378,30 +1430,7 @@ where
                 backdrop::draw_span("scrims", || nav.modals.draw_scrims(navigation.page_alpha, read));
             }
         }
-        // A PageDip keeps the committed top as the visible/input page throughout its OUT half.
-        // Its pending destination is nevertheless a real staged screen, so run that same screen
-        // tree through a painter which records text and submits no visual primitive. Re-recording
-        // each frame is intentional: cache hits disappear from the queue, while work which missed
-        // this frame's deadline is rediscovered next frame without stale cross-navigation state.
-        if prewarm_text_due(nav.tabs.stack.transition.prewarms_text(), source_pass) {
-            crate::text::clear_prewarm();
-            if let Some(entry) = nav.tabs.stack.pending_target_mut() {
-                if let Some(inst) = entry.inst.as_mut() {
-                    let Split { views, measure, .. } = rig.split();
-                    let mut warm_cx = parts.cx::<H>(views, measure);
-                    warm_cx.owner = InputOwner::Entry(entry.id);
-                    warm_cx.focus = input.engine.read(warm_cx.owner);
-                    let mut f = DrawFrame::with_navigation(
-                        &warm_cx,
-                        Painter::recording(),
-                        navigation,
-                    );
-                    f.page_alpha = 0.0;
-                    // Raw screen clears bypass Painter::recording; they must not erase
-                    // the outgoing page while its destination only records text.
-                    crate::gfx::without_frame_clear(|| inst.screen.draw(&mut f));
-                }
-            }
+        if warm.is_some() {
             crate::text::drain_prewarm(
                 super::containers::transition::TEXT_PREWARM_BUDGET_US,
                 || rig.now_us(),
@@ -3009,16 +3038,45 @@ mod edge_back_tests {
 }
 
 /// Text preparation belongs to the visible frame, not each rendering of its blur source.
-fn prewarm_text_due(requested: bool, source_pass: bool) -> bool {
-    requested && !source_pass
+/// Whose text a frame's prewarm pass records.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PrewarmTarget {
+    /// A dip's OUT half: the staged destination behind the still-visible outgoing page.
+    Pending,
+    /// An image stands in for the committed top page (the IN half, or the hold after it).
+    HeldTop,
+}
+
+/// `dip_out`: the transition asks for its pending destination to be warmed. `held`: this frame
+/// shows the top page as its captured image. The blur source pass never spends a second budget.
+fn prewarm_text_target(dip_out: bool, held: bool, source_pass: bool) -> Option<PrewarmTarget> {
+    if source_pass {
+        None
+    } else if dip_out {
+        Some(PrewarmTarget::Pending)
+    } else if held {
+        Some(PrewarmTarget::HeldTop)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
 mod prewarm_pass_tests {
+    use super::{prewarm_text_target, PrewarmTarget};
+
     #[test]
     fn blur_source_does_not_spend_a_second_text_prewarm_budget() {
-        assert!(!super::prewarm_text_due(true, true));
-        assert!(super::prewarm_text_due(true, false));
-        assert!(!super::prewarm_text_due(false, false));
+        assert_eq!(prewarm_text_target(true, true, true), None);
+        assert_eq!(prewarm_text_target(false, true, true), None);
+        assert_eq!(prewarm_text_target(true, false, false), Some(PrewarmTarget::Pending));
+        assert_eq!(prewarm_text_target(false, false, false), None);
+    }
+
+    #[test]
+    fn a_held_top_page_is_warmed_and_a_dip_out_still_warms_its_destination_first() {
+        assert_eq!(prewarm_text_target(false, true, false), Some(PrewarmTarget::HeldTop));
+        // OUT shows the OUTGOING page's image: its text is resident; the destination is not.
+        assert_eq!(prewarm_text_target(true, true, false), Some(PrewarmTarget::Pending));
     }
 }

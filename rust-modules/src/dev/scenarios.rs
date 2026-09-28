@@ -1805,35 +1805,30 @@ fn tex_field() -> String {
 /// frame's total. Gated on `presented`: an iteration the idle gate skipped drew nothing, so
 /// counting it toward `frames` or `worst_ms` would grade an absent frame as a fast one, exactly
 /// the reasoning `Instruments::frame_drop_line`'s own `worst` peak already uses.
-pub(crate) fn bench_frame_tick(app: &mut App, presented: bool) {
+pub(crate) fn bench_frame_tick(app: &mut App, presented: bool, now: u32) {
     if !presented {
         return;
     }
     let total = app.frame_last_ms();
+    let interval = app.frame_present_interval_ms();
     if let Some(b) = app.scenarios.push_bench.as_mut() {
-        if b.clock.phase == bench::BenchPhase::Measuring {
-            b.clock.frames += 1;
-            if total > b.clock.worst_ms {
-                b.clock.worst_ms = total;
-            }
-        }
+        bench::bench_note_frame(&mut b.clock, now, total, interval);
     }
     if let Some(b) = app.scenarios.modal_bench.as_mut() {
-        if b.clock.phase == bench::BenchPhase::Measuring {
-            b.clock.frames += 1;
-            if total > b.clock.worst_ms {
-                b.clock.worst_ms = total;
-            }
-        }
+        bench::bench_note_frame(&mut b.clock, now, total, interval);
     }
     if let Some(b) = app.scenarios.deep_bench.as_mut() {
-        if b.clock.phase == bench::BenchPhase::Measuring {
-            b.clock.frames += 1;
-            if total > b.clock.worst_ms {
-                b.clock.worst_ms = total;
-            }
-        }
+        bench::bench_note_frame(&mut b.clock, now, total, interval);
     }
+}
+
+/// The once-per-bench `bench: kind=<k> settled` line — how long boot took to go still before the
+/// first press, or that the cap ran out and the bench started on a page that never did.
+fn log_bench_settled(kind: &str, waited_ms: u32, capped: bool) {
+    crate::log(&format!(
+        "bench: kind={kind} settled after_ms={waited_ms}{}",
+        if capped { " capped=1 (the root page never went still; cycle 1 may include boot)" } else { "" }
+    ));
 }
 
 /// Opens `target` through the real bridge/nav call the interactive press uses, and returns the
@@ -1928,16 +1923,19 @@ pub(crate) fn push_bench_tick(app: &mut App, now: u32) {
             let opened = push_bench_open(app, target);
             app.scenarios.push_bench.as_mut().unwrap().opened = opened;
         }
-        bench::BenchStep::Settle(cycle) => {
-            let b = app.scenarios.push_bench.as_ref().unwrap();
-            let (n, opened, worst_ms, frames, cycle_start) =
-                (b.clock.n, b.opened, b.clock.worst_ms, b.clock.frames, b.clock.cycle_start);
-            let dur_ms = now.wrapping_sub(cycle_start);
-            crate::log(&format!(
-                "bench: kind=push cycle={}/{n} target={} worst_ms={worst_ms:.1} frames={frames} dur_ms={dur_ms} rss_kb={} {}",
-                cycle + 1, opened.name(), read_rss_kb(), tex_field(),
-            ));
+        bench::BenchStep::Settled(waited, capped) => log_bench_settled("push", waited, capped),
+        bench::BenchStep::Settle(_) => {
+            let opened = app.scenarios.push_bench.as_ref().unwrap().opened;
             push_bench_close(app, opened);
+        }
+        bench::BenchStep::Report(cycle) => {
+            let b = app.scenarios.push_bench.as_ref().unwrap();
+            let c = &b.clock;
+            crate::log(&format!(
+                "bench: kind=push cycle={}/{} target={} worst_ms={:.1} frames={} dur_ms={} rss_kb={} {} {}",
+                cycle + 1, c.n, b.opened.name(), c.worst_ms(), c.frames(),
+                now.wrapping_sub(c.cycle_start), read_rss_kb(), tex_field(), c.fields(),
+            ));
         }
         bench::BenchStep::Done(n) => {
             crate::log(&format!("bench: kind=push done cycles={n}"));
@@ -2000,17 +1998,17 @@ pub(crate) fn modal_bench_tick(app: &mut App, now: u32) {
             let target = b.targets[bench::bench_target_index(b.targets.len(), cycle)];
             modal_bench_open(app, target);
         }
-        bench::BenchStep::Settle(cycle) => {
+        bench::BenchStep::Settled(waited, capped) => log_bench_settled("modal", waited, capped),
+        bench::BenchStep::Settle(_) => crate::app::bridge::dismiss_surfaces(&mut app.pages),
+        bench::BenchStep::Report(cycle) => {
             let b = app.scenarios.modal_bench.as_ref().unwrap();
             let target = b.targets[bench::bench_target_index(b.targets.len(), cycle)];
-            let (n, worst_ms, frames, cycle_start) =
-                (b.clock.n, b.clock.worst_ms, b.clock.frames, b.clock.cycle_start);
-            let dur_ms = now.wrapping_sub(cycle_start);
+            let c = &b.clock;
             crate::log(&format!(
-                "bench: kind=modal cycle={}/{n} target={} worst_ms={worst_ms:.1} frames={frames} dur_ms={dur_ms} rss_kb={} {}",
-                cycle + 1, target.name(), read_rss_kb(), tex_field(),
+                "bench: kind=modal cycle={}/{} target={} worst_ms={:.1} frames={} dur_ms={} rss_kb={} {} {}",
+                cycle + 1, c.n, target.name(), c.worst_ms(), c.frames(),
+                now.wrapping_sub(c.cycle_start), read_rss_kb(), tex_field(), c.fields(),
             ));
-            crate::app::bridge::dismiss_surfaces(&mut app.pages);
         }
         bench::BenchStep::Done(n) => {
             crate::log(&format!("bench: kind=modal done cycles={n}"));
@@ -2119,19 +2117,19 @@ pub(crate) fn deep_bench_tick(app: &mut App, now: u32) {
             b.dir = dir;
             b.opened = opened;
         }
+        bench::BenchStep::Settled(waited, capped) => log_bench_settled("deep", waited, capped),
         bench::BenchStep::Settle(cycle) => {
             let b = app.scenarios.deep_bench.as_ref().unwrap();
-            let (n, opened, dir, worst_ms, frames, cycle_start, depth) = (
-                b.clock.n, b.opened, b.dir, b.clock.worst_ms, b.clock.frames, b.clock.cycle_start,
-                b.stack.len(),
-            );
-            let dur_ms = now.wrapping_sub(cycle_start);
+            let c = &b.clock;
             crate::log(&format!(
-                "bench: kind=deep cycle={}/{n} target={} dir={} depth={depth} worst_ms={worst_ms:.1} \
-                 frames={frames} dur_ms={dur_ms} rss_kb={}",
-                cycle + 1, opened.name(), dir.name(), read_rss_kb(),
+                "bench: kind=deep cycle={}/{} target={} dir={} depth={} worst_ms={:.1} \
+                 frames={} dur_ms={} rss_kb={} {}",
+                cycle + 1, c.n, b.opened.name(), b.dir.name(), b.stack.len(), c.worst_ms(),
+                c.frames(), now.wrapping_sub(c.cycle_start), read_rss_kb(), c.fields(),
             ));
         }
+        // A one-way clock never reports a round trip.
+        bench::BenchStep::Report(_) => {}
         bench::BenchStep::Done(n) => {
             crate::log(&format!("bench: kind=deep done cycles={n} rss_root_kb={}", read_rss_kb()));
             app.scenarios.deep_bench = None;

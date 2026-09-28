@@ -362,6 +362,11 @@ impl App {
     pub(crate) fn frame_last_ms(&self) -> f64 {
         self.instr.last_frame_ms()
     }
+    /// `instr`'s present-to-present read — see
+    /// [`crate::diag::heartbeat::Instruments::present_interval_ms`].
+    pub(crate) fn frame_present_interval_ms(&self) -> Option<f64> {
+        self.instr.present_interval_ms()
+    }
     /// Controlled construction receives decoded/captured inputs before bootstrap effects.
     pub(crate) unsafe fn from_init(initial: bootstrap::Initial, mode: bootstrap::Preflight,
         pms_host: *const c_char, pms_port: c_int, mt: crate::task::MainThread,

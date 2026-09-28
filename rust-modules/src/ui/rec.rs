@@ -921,12 +921,46 @@ impl TableMeasure {
         self.miss.borrow_mut().take()
     }
     fn query(&self, key: MetricKey) -> f32 {
+        self.answer(key, true)
+    }
+    /// `strict` is false only inside [`speculative`]: the key is looked up and a miss answers 0.0
+    /// without being charged against the replay.
+    fn answer(&self, key: MetricKey, strict: bool) -> f32 {
         #[cfg(test)]
         self.queries.borrow_mut().push(key.clone());
         if let Some(bits)=self.table.get(&key) { return f32::from_bits(*bits); }
-        self.miss.borrow_mut().get_or_insert(key);
+        if strict { self.miss.borrow_mut().get_or_insert(key); }
         0.0
     }
+}
+
+thread_local! {
+    static SPECULATIVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `pass` as a SPECULATIVE measurement pass: a text-prewarm walk that lays out a page no
+/// frame is drawing, so the glyphs a LATER frame may draw are resident before it. A recording
+/// captures the pass's answers like any other query, so a replay of a current recording answers
+/// it exactly. A replay does not REFUSE on a key the recording lacks inside the pass (it answers
+/// 0.0): the pass asks about states the recorded session may never have drawn, and which of them
+/// it asks about is the prewarm's policy, not the product's behaviour. Flow 12 is the case: its
+/// Detail page is held as an image while the Down key focuses a cast card, and the Person page is
+/// pushed before any replacement capture draws that card, so the anchor never measured the focused
+/// caption the held-page walk warms. The pass itself draws nothing and decides nothing; replay
+/// still grades every frame's state hash, presents, effects, and Focus/Hit resolutions, so an
+/// answer that leaked out of the pass into the product would diverge there, not pass silently.
+pub(crate) fn speculative<R>(pass: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) { SPECULATIVE.with(|s| s.set(self.0)); }
+    }
+    let _restore = Restore(SPECULATIVE.with(|s| s.replace(true)));
+    pass()
+}
+
+/// Whether a [`speculative`] pass is running on this thread.
+pub(crate) fn speculating() -> bool {
+    SPECULATIVE.with(std::cell::Cell::get)
 }
 
 impl Measure for TableMeasure {
@@ -1001,7 +1035,7 @@ impl Measurements {
         match self {
             Self::Live(source)=>live(*source),
             Self::Pending(failed)=>{ failed.set(true); 0.0 },
-            Self::Replay(table)=>table.query(key),
+            Self::Replay(table)=>table.answer(key, !speculating()),
             Self::Record {source,capture}=>{
                 let answer=live(*source);
                 let bits=answer.to_bits();
@@ -1537,6 +1571,30 @@ mod tests {
         assert!(m.take_miss().is_none());
         let _ = m.width(c"Pause", 28, false);
         assert_eq!(m.take_miss(), Some(MetricKey::Width {text:b"Pause".to_vec(),sz:28,bold:false}));
+    }
+
+    #[test]
+    fn a_speculative_pass_is_recorded_but_a_replay_miss_inside_it_is_not_charged() {
+        static M:crate::ui::fixture::FixtureMeasure=crate::ui::fixture::FixtureMeasure;
+        let record=Measurements::record(&M);
+        let warmed=speculative(|| record.width(c"s025b413f", 26, true));
+        let metrics:HashMap<_,_>=record.drain().unwrap().into_iter().collect();
+        let key=MetricKey::Width {text:b"s025b413f".to_vec(),sz:26,bold:true};
+        assert_eq!(metrics.get(&key), Some(&warmed.to_bits()), "a current recording answers the walk exactly");
+
+        // An older recording that never measured the key: the walk's miss is answered, not charged.
+        let replay=Measurements::Replay(TableMeasure::new(HashMap::new()));
+        assert_eq!(speculative(|| replay.width(c"s025b413f", 26, true)), 0.0);
+        assert_eq!(replay.drain(), Ok(Vec::new()));
+        assert!(!speculating(), "the scope ends with its pass");
+        // Outside the pass the same miss still refuses the replay.
+        replay.width(c"s025b413f", 26, true);
+        assert_eq!(replay.drain(), Err("replay measurement table miss"));
+
+        // A hit inside the pass answers the recorded bits.
+        let replay=Measurements::Replay(TableMeasure::new(metrics));
+        assert_eq!(speculative(|| replay.width(c"s025b413f", 26, true)).to_bits(), warmed.to_bits());
+        assert_eq!(replay.drain(), Ok(Vec::new()));
     }
 
     #[test]
