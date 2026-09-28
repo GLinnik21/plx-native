@@ -64,30 +64,24 @@ fn corners_come_from_their_poster_and_the_front_poster_is_on_top() {
         "front poster on top: {centre:?}"
     );
     // The side posters show beside the front one, unshaded (the mock dims neither).
-    assert!(
-        close(at(&out, 63, 191), [10, 200, 10], 4),
-        "left poster behind: {:?}",
-        at(&out, 63, 191)
-    );
-    assert!(
-        close(at(&out, 232, 179), [10, 10, 200], 4),
-        "right poster behind: {:?}",
-        at(&out, 232, 179)
-    );
+    let (hw, hh) = member_half();
+    let (lx, ly) = pixel_of(&BACK_LEFT, -0.88 * hw, -0.3 * hh);
+    assert!(close(at(&out, lx, ly), [10, 200, 10], 4), "left poster behind: {:?}", at(&out, lx, ly));
+    let (rx, ry) = pixel_of(&BACK_RIGHT, 0.88 * hw, -0.3 * hh);
+    assert!(close(at(&out, rx, ry), [10, 10, 200], 4), "right poster behind: {:?}", at(&out, rx, ry));
 }
 
 /// The output pixel containing the point `(lx, ly)` of a member's own frame, for a member placed
 /// by `p` (the same rotation [`draw`] inverts), and that member's half-extents.
-fn pixel_of(p: &Placement, lx: f32, ly: f32) -> (u32, u32) {
-    let (hw, hh) = member_half();
-    let (cx, cy) = (p.left * FAN_W as f32 + hw, p.top * FAN_H as f32 + hh);
-    let cos = (1.0 - p.sin * p.sin).sqrt();
-    let (dx, dy) = (lx * cos - ly * p.sin, lx * p.sin + ly * cos);
-    ((cx + dx).floor() as u32, (cy + dy).floor() as u32)
+fn pixel_of(p: &FanMember, lx: f32, ly: f32) -> (u32, u32) {
+    let m = crate::ui::collection_tile::fan_member(p, FAN_W as f32, FAN_H as f32);
+    let (dx, dy) = (lx * m.cosine() - ly * m.sin, lx * m.sin + ly * m.cosine());
+    ((m.cx + dx).floor() as u32, (m.cy + dy).floor() as u32)
 }
 
 fn member_half() -> (f32, f32) {
-    (MEMBER_FRAC * FAN_W as f32 / 2.0, MEMBER_FRAC * FAN_H as f32 / 2.0)
+    let m = crate::ui::collection_tile::fan_member(&FRONT, FAN_W as f32, FAN_H as f32);
+    (m.hw, m.hh)
 }
 
 /// Every poster in the app has rounded corners, and so do the members baked into a fan: a pixel

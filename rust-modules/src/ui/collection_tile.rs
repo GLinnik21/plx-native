@@ -43,15 +43,101 @@ const TYPE_FULL_W: f32 = 200.0;
 // ── The fan's own geometry, shared with the bake (`app::adapters::poster::fan`) so the name's
 // room is computed from the members the bake actually draws.
 
-/// `.mc { width:44%; height:44% }` — a member's box, as a fraction of the tile.
-pub(crate) const FAN_MEMBER_FRAC: f32 = 0.44;
-/// `.c3 { top:10% }` — the FRONT member's top, as a fraction of the tile's height.
-pub(crate) const FAN_FRONT_TOP: f32 = 0.10;
+/// `.mc { width:44%; height:44% }` — a member's box, as a fraction of the tile (before the deck's
+/// scale).
+const FAN_MEMBER_FRAC: f32 = 0.44;
+
+/// One member of the fan deck as the mock places it (`.c1`–`.c3`): its box's `left`/`top` as
+/// fractions of the tile and the sine of its tilt (positive = clockwise on screen). CSS rotates
+/// about the box's centre.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FanMember {
+    pub left: f32,
+    pub top: f32,
+    pub sin: f32,
+}
+
+/// sin(9°) and sin(8°): `.c1 { rotate(-9deg) }` and `.c2 { rotate(8deg) }`. Constants, so no
+/// transcendental is evaluated at bake time (`ci/allow/libm.txt`).
+const SIN_9: f32 = 0.156_434_46;
+const SIN_8: f32 = 0.139_173_1;
+/// `.c1` — the collection's SECOND member, back left.
+pub(crate) const FAN_BACK_LEFT: FanMember = FanMember { left: 0.18, top: 0.14, sin: -SIN_9 };
+/// `.c2` — the THIRD member, back right, over `.c1`.
+pub(crate) const FAN_BACK_RIGHT: FanMember = FanMember { left: 0.40, top: 0.12, sin: SIN_8 };
+/// `.c3` — the FIRST member, upright, on top.
+pub(crate) const FAN_FRONT: FanMember = FanMember { left: 0.28, top: 0.10, sin: 0.0 };
+const FAN_DECK: [FanMember; 3] = [FAN_BACK_LEFT, FAN_BACK_RIGHT, FAN_FRONT];
+
+/// The deck's size over the mock's, one uniform linear scale about the deck's centre: every member
+/// keeps its aspect, tilt and offset from the others. The owner asked for a bigger deck from sofa
+/// distance, starting at +12%. The ceiling is the name's band on the 200-wide header (C1): past
+/// about +11% a three-line name there no longer fits even at the step-down size with its half line
+/// of air above and below, and elides; +10% keeps it whole with a margin. The rotated back members
+/// stay well inside the mock's 18px side inset.
+pub(crate) const FAN_DECK_SCALE: f32 = 1.10;
+
+/// A member's box as drawn on a `w`×`h` tile: centre, half-extents and tilt.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PlacedMember {
+    pub cx: f32,
+    pub cy: f32,
+    pub hw: f32,
+    pub hh: f32,
+    pub sin: f32,
+}
+
+impl PlacedMember {
+    pub(crate) fn cosine(&self) -> f32 {
+        (1.0 - self.sin * self.sin).sqrt()
+    }
+
+    /// The rotated box's axis-aligned half-extents (its sharp corners — the 6px rounding only
+    /// pulls them in).
+    pub(crate) fn reach(&self) -> (f32, f32) {
+        let (s, c) = (self.sin.abs(), self.cosine());
+        (self.hw * c + self.hh * s, self.hw * s + self.hh * c)
+    }
+}
+
+fn mock_member(m: &FanMember, w: f32, h: f32) -> PlacedMember {
+    let (hw, hh) = (FAN_MEMBER_FRAC * w / 2.0, FAN_MEMBER_FRAC * h / 2.0);
+    PlacedMember { cx: m.left * w + hw, cy: m.top * h + hh, hw, hh, sin: m.sin }
+}
+
+/// Where member `m` is drawn on a `w`×`h` tile: the mock's deck scaled by [`FAN_DECK_SCALE`] about
+/// the centre of its rotated bounds, and that centre put on the tile's vertical axis.
+pub(crate) fn fan_member(m: &FanMember, w: f32, h: f32) -> PlacedMember {
+    let (mut x0, mut x1, mut y0, mut y1) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+    for d in &FAN_DECK {
+        let p = mock_member(d, w, h);
+        let (rx, ry) = p.reach();
+        x0 = x0.min(p.cx - rx);
+        x1 = x1.max(p.cx + rx);
+        y0 = y0.min(p.cy - ry);
+        y1 = y1.max(p.cy + ry);
+    }
+    let (bx, by) = ((x0 + x1) * 0.5, (y0 + y1) * 0.5);
+    let p = mock_member(m, w, h);
+    let s = FAN_DECK_SCALE;
+    PlacedMember { cx: w * 0.5 + s * (p.cx - bx), cy: by + s * (p.cy - by), hw: s * p.hw, hh: s * p.hh,
+        sin: p.sin }
+}
+
+/// The lowest point of any member on a `w`×`h` tile, rotated corners included.
+pub(crate) fn fan_deck_bottom(w: f32, h: f32) -> f32 {
+    FAN_DECK.iter().map(|m| {
+        let p = fan_member(m, w, h);
+        p.cy + p.reach().1
+    }).fold(f32::MIN, f32::max)
+}
+
 /// `.scr { height:45% }` — the bottom scrim starts at 55% of the tile's height.
 pub(crate) const FAN_SCRIM_FROM: f32 = 0.55;
 /// How far below the front member's box its drop shadow reaches, in mock px: `.mc { box-shadow:
 /// 0 6px 14px … }` — the 6px offset plus half the 14px blur, where it has faded to nothing visible.
 const FAN_SHADOW_REACH: f32 = 6.0 + 7.0;
+
 
 /// How a tile sets a name, in mock px (full size from [`TYPE_FULL_W`] up).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -184,7 +270,7 @@ fn set_line(text: String, sz: c_int, floor: c_int, column: f32, m: &dyn Measure)
 ///    tile, as the mock sets it — scaled down only on a tile narrower than [`TYPE_FULL_W`];
 /// 2. a name that fits on one line stays one centred line at the NORMAL size — never grown;
 /// 3. a longer one is balance-wrapped (`text-wrap: balance`) into as many lines as the band holds
-///    at that size, less the style's clear `gap` at its top — there is no fixed line cap;
+///    at that size — its ink plus the style's clear `gap` above and below — with no fixed line cap;
 /// 4. only if that overflows the band: the ONE smaller size, again as many lines as fit;
 /// 5. only if that still overflows: the last line that fits ends in an ellipsis;
 /// 6. a single word wider than the column shrinks toward the style's floor, then elides;
@@ -199,7 +285,12 @@ pub(crate) fn fit_name(name: &str, style: &NameStyle, rest_w: f32, band: f32,
     let text = if style.upper { name.to_uppercase() } else { name.to_owned() };
     let words: Vec<&str> = text.split_whitespace().collect();
     let pitch = |sz: c_int| sz as f32 * style.lead;
-    let room = |sz: c_int| (((band - style.gap * pitch(sz)) / pitch(sz)).floor() as usize).max(1);
+    // Lines that fit: the block's INK (line 0's cap top to the last baseline) plus the clear gap
+    // above AND below it — it is centred — within the band.
+    let room = |sz: c_int| {
+        let spare = band - 2.0 * style.gap * pitch(sz) - m.cap_h(sz);
+        ((spare / pitch(sz)).floor().max(0.0) as usize + 1).max(1)
+    };
     if words.is_empty() {
         return FittedName { lines: Vec::new(), sz: normal, pitch: pitch(normal), column };
     }
@@ -219,12 +310,13 @@ pub(crate) fn fit_name(name: &str, style: &NameStyle, rest_w: f32, band: f32,
 }
 
 /// The band a fan's name is centred in on a `rest` tile, as (top, height) from the tile's top:
-/// from the front member's bottom edge and its drop shadow (and never above the scrim) down to the
-/// mock's bottom inset. The fan's geometry scales with the tile; the inset is type, like the name.
+/// from the deck's lowest point — the rotated back members' corners included — and its drop
+/// shadow (and never above the scrim) down to the mock's bottom inset. The fan's geometry scales
+/// with the tile; the inset is type, like the name.
 pub(crate) fn fan_band(rest: Rect) -> (f32, f32) {
     let fan_k = rest.w / MOCK_W;
-    let member = (FAN_FRONT_TOP + FAN_MEMBER_FRAC) * rest.h + FAN_SHADOW_REACH * fan_k;
-    let top = member.max(FAN_SCRIM_FROM * rest.h);
+    let deck = fan_deck_bottom(rest.w, rest.h) + FAN_SHADOW_REACH * fan_k;
+    let top = deck.max(FAN_SCRIM_FROM * rest.h);
     let bottom = rest.h - NAME_BOTTOM * type_k(rest.w);
     (top, (bottom - top).max(0.0))
 }
@@ -322,13 +414,13 @@ pub(crate) fn is_fan(key: &str) -> bool {
     crate::plex::collections::composite_parts(key).is_some()
 }
 
-/// Where a fitted fan name's cap top sits on a `rest` tile, from the tile's top: its INK centred in
-/// [`fan_band`] below the style's clear gap — one line in the middle of the band, a full block
-/// filling it, never closer than half a line to the fan. The fan never moves.
+/// Where a fitted fan name's cap top sits on a `rest` tile, from the tile's top: its INK (line 0's
+/// cap top to the last baseline) centred in [`fan_band`], equal air above and below — one line in
+/// the middle of the band, a full block filling it, and (by [`fit_name`]'s room) never closer than
+/// half a line to the deck. The fan never moves.
 pub(crate) fn fan_name_top(rest: Rect, fit: &FittedName, m: &dyn Measure) -> f32 {
     let (top, band) = fan_band(rest);
-    let gap = FAN_NAME.gap * fit.pitch;
-    top + gap + ((band - gap - fit.ink(m)) * 0.5).max(0.0)
+    top + (band - fit.ink(m)) * 0.5
 }
 
 /// Set a collection's NAME over its baked fan, as G1 does: [`fit_name`]'s block centred in the band
@@ -371,9 +463,23 @@ mod tests {
     /// The ink's centre, relative to the band's centre.
     fn off_centre(f: &FittedName, w: f32) -> f32 {
         let (top, band) = fan_band(tile(w));
-        let gap = FAN_NAME.gap * f.pitch;
-        fan_name_top(tile(w), f, &ShippedMeasure) + f.ink(&ShippedMeasure) * 0.5 - (top + gap + (band - gap) * 0.5)
+        fan_name_top(tile(w), f, &ShippedMeasure) + f.ink(&ShippedMeasure) * 0.5 - (top + band * 0.5)
     }
+    /// The deck's lowest and side-most points, from each member's four corners rotated about its
+    /// centre — computed here independently of `PlacedMember::reach`.
+    fn corners(w: f32) -> (f32, f32, f32) {
+        let (mut left, mut right, mut bottom) = (f32::MAX, f32::MIN, f32::MIN);
+        for m in [FAN_BACK_LEFT, FAN_BACK_RIGHT, FAN_FRONT] {
+            let p = fan_member(&m, w, w * 1.5);
+            for (dx, dy) in [(-p.hw, -p.hh), (p.hw, -p.hh), (-p.hw, p.hh), (p.hw, p.hh)] {
+                let (x, y) = (p.cx + dx * p.cosine() - dy * p.sin, p.cy + dx * p.sin + dy * p.cosine());
+                left = left.min(x); right = right.max(x); bottom = bottom.max(y);
+            }
+        }
+        (left, right, bottom)
+    }
+    /// The band's top as the owner defines it: the lowest corner plus the shadow.
+    fn deck_line(w: f32) -> f32 { corners(w).2 + FAN_SHADOW_REACH * w / MOCK_W }
 
     #[test]
     fn the_mark_and_name_are_one_block_centred_on_the_tile() {
@@ -415,21 +521,67 @@ mod tests {
         assert_eq!(fit("Up", 150.0).sz, 18, "a tile narrower than the header scales down");
     }
 
-    /// The band runs from the front member's bottom edge and its drop shadow down to the mock's
-    /// 22px inset; a squat tile has less of it, so the same name gets fewer lines there.
+    /// The band runs from the deck's lowest point — the rotated back members' corners — and its
+    /// shadow down to the mock's 22px inset; a squat tile has less of it, so the same name gets
+    /// fewer lines there.
     #[test]
-    fn the_band_sits_under_the_front_member_and_its_shadow() {
+    fn the_band_starts_under_the_decks_lowest_corner_and_its_shadow() {
         for w in [200.0, 250.0] {
             let (top, band) = fan_band(tile(w));
-            let front_bottom = (FAN_FRONT_TOP + FAN_MEMBER_FRAC) * w * 1.5;
-            assert!(top >= front_bottom + FAN_SHADOW_REACH * w / MOCK_W - 0.01, "{w}: {top}");
+            assert!((top - deck_line(w)).abs() < 0.01, "{w}: band top {top} vs lowest corner + shadow {}", deck_line(w));
             assert!((top + band - (w * 1.5 - 22.0)).abs() < 0.01, "{w}: the bottom inset is 22px");
         }
         let squat = Rect::new(0.0, 0.0, 250.0, 250.0);
         assert!(fan_band(squat).1 < fan_band(tile(250.0)).1);
         let long = "The Complete Blender Foundation Open Movie Projects Archive Collection";
         let in_squat = fit_name(long, &FAN_NAME, 250.0, fan_band(squat).1, &ShippedMeasure);
-        assert!(in_squat.height() <= fan_band(squat).1 + 0.01 && elided(&in_squat), "{:?}", texts(&in_squat));
+        assert!(in_squat.ink(&ShippedMeasure) <= fan_band(squat).1 + 0.01 && elided(&in_squat), "{:?}", texts(&in_squat));
+    }
+
+    /// The deck is the mock's scaled +10% about its centre — same tilts, same aspect, same relative
+    /// offsets — centred on the tile, and its rotated corners keep the mock's 18px side inset.
+    #[test]
+    fn the_deck_is_the_mocks_scaled_uniformly_and_centred() {
+        for w in [200.0, 250.0] {
+            let (left, right, _) = corners(w);
+            let k = w / MOCK_W;
+            assert!(left >= 18.0 * k && w - right >= 18.0 * k, "{w}: side air {left} / {}", w - right);
+            assert!((left - (w - right)).abs() < 0.01, "{w}: centred");
+            let (a, b) = (fan_member(&FAN_FRONT, w, w * 1.5), fan_member(&FAN_BACK_LEFT, w, w * 1.5));
+            let (ma, mb) = (mock_member(&FAN_FRONT, w, w * 1.5), mock_member(&FAN_BACK_LEFT, w, w * 1.5));
+            assert!((a.hw / ma.hw - FAN_DECK_SCALE).abs() < 1e-4 && (a.hh / a.hw - ma.hh / ma.hw).abs() < 1e-4);
+            assert!(((a.cx - b.cx) / (ma.cx - mb.cx) - FAN_DECK_SCALE).abs() < 1e-3, "{w}: offsets scale with it");
+            assert!(((a.cy - b.cy) / (ma.cy - mb.cy) - FAN_DECK_SCALE).abs() < 1e-3);
+            assert_eq!(b.sin, -SIN_9);
+        }
+        assert_eq!(FAN_DECK_SCALE, 1.10);
+    }
+
+    /// **Centred on the INK**: from the band's top (the deck's lowest corner plus shadow) to line 0's
+    /// cap top equals the last baseline to the band's bottom, within 2px — for a one-line, a
+    /// three-line and a long name (as many lines as the band holds), at both widths.
+    #[test]
+    fn the_names_ink_is_centred_between_the_deck_and_the_inset() {
+        for w in [200.0, 250.0] {
+            for name in ["Cars", "Blender Studio Anniversary Collection",
+                "The Complete Blender Foundation Open Movie Projects Archive Collection"] {
+                let f = fit(name, w);
+                let top = fan_name_top(tile(w), &f, &ShippedMeasure);
+                let bottom = top + f.ink(&ShippedMeasure);
+                let above = top - deck_line(w);
+                let below = (w * 1.5 - 22.0) - bottom;
+                assert!((above - below).abs() <= 2.0, "{w} {name}: {above} above vs {below} below");
+                assert!(above >= 0.5 * f.pitch - 0.01, "{w} {name}: {above} is under half a line");
+            }
+        }
+    }
+
+    /// The deck grew; a typical three-line name still sets at the full 24px on a grid tile.
+    #[test]
+    fn a_three_line_name_still_sets_at_full_size_on_the_grid() {
+        let f = fit("Blender Studio Anniversary Collection", 250.0);
+        assert_eq!((f.lines.len(), f.sz), (3, 24), "{:?}", texts(&f));
+        assert!(!elided(&f));
     }
 
     /// A one-word name is one line at the normal size — never grown — in the MIDDLE of the band.
@@ -443,13 +595,15 @@ mod tests {
         }
     }
 
-    /// A typical name sets in BALANCED lines: two on G1's 250 tile, as the mock does; the header's
-    /// narrower column at the same type takes three. No narrower column keeps either count.
+    /// A typical name sets in BALANCED lines: two at 24px on G1's 250 tile, as the mock does; on the
+    /// header's 200 tile the band under the bigger deck holds two at the step-down size. No
+    /// narrower column keeps either count.
     #[test]
     fn a_typical_name_balances_its_lines() {
-        for (w, n) in [(200.0, 3), (250.0, 2)] {
+        for (w, n, sz) in [(200.0, 2, 20), (250.0, 2, 24)] {
             let f = fit("Harbor Lights Mysteries", w);
-            assert_eq!(f.lines.len(), n, "{w}: {:?}", texts(&f));
+            assert_eq!((f.lines.len(), f.sz), (n, sz), "{w}: {:?}", texts(&f));
+            assert!(!elided(&f));
             assert!(fits_column(&f) && off_centre(&f, w).abs() < 0.01);
             let widths: Vec<f32> = f.lines.iter().map(|l| ShippedMeasure.width_str(&l.text, l.sz, true)).collect();
             let greedy = greedy(&["HARBOR", "LIGHTS", "MYSTERIES"], f.column, f.sz, &ShippedMeasure);
@@ -458,35 +612,36 @@ mod tests {
         }
     }
 
-    /// C1: the header's name sets as the mock does — three lines at the full 24px on a 200 tile.
+    /// C1: the header's name breaks as the mock does — three whole lines on the 200 tile — at the
+    /// step-down size the band under the bigger deck holds.
     #[test]
     fn the_headers_name_takes_three_lines_like_the_mock() {
         let f = fit("Starfall Saga Collection", 200.0);
         assert_eq!(texts(&f), ["STARFALL", "SAGA", "COLLECTION"]);
-        assert_eq!(f.sz, 24);
+        assert_eq!(f.sz, 20);
     }
 
-    /// A long name uses every line the band holds below its clear gap — there is no line cap — and
-    /// renders complete with no ellipsis while it fits: at the normal size if it can, else at the
-    /// one step down. A block that uses all the band's lines fills it.
+    /// How many lines the band holds at `sz`: the ink plus half a line of air above and below.
+    fn room(w: f32, sz: i32) -> usize {
+        let (_, band) = fan_band(tile(w));
+        let pitch = sz as f32 * FAN_NAME.lead;
+        ((band - pitch - ShippedMeasure.cap_h(sz)) / pitch).floor() as usize + 1
+    }
+
+    /// A long name uses every line the band holds — there is no line cap — and renders complete
+    /// with no ellipsis while it fits: at the normal size if it can, else at the one step down.
     #[test]
     fn a_long_name_renders_complete_while_it_fits_the_band() {
-        let (_, band) = fan_band(tile(250.0));
-        let room = |f: &FittedName| band - FAN_NAME.gap * f.pitch;
-        let long = "Blender Foundation Open Movie Projects Archive Collection";
+        let long = "Blender Foundation Open Movie Archive Collection";
         let f = fit(long, 250.0);
         assert!(!elided(&f) && fits_column(&f), "{:?} at {}", texts(&f), f.sz);
-        assert!(f.lines.len() > 3, "no three-line cap: {:?}", texts(&f));
-        let at_normal = greedy(&long.to_uppercase().split_whitespace().collect::<Vec<_>>(), f.column, 24, &ShippedMeasure);
-        assert_eq!(f.sz, if at_normal.len() as f32 * 24.0 * 1.08 <= band - 0.5 * 24.0 * 1.08 { 24 } else { 20 },
-            "the normal size unless it overflows the band");
         assert_eq!(texts(&f).join(" "), long.to_uppercase());
-        assert!(f.height() <= room(&f) + 0.01 && off_centre(&f, 250.0).abs() < 0.01);
-        if f.lines.len() == (room(&f) / f.pitch).floor() as usize {
-            assert!(room(&f) - f.height() < f.pitch, "a full block fills the band");
-        }
-        let f = fit("Starfall Saga Anniversary Collection", 200.0);
-        assert!(!elided(&f), "{:?}", texts(&f));
+        assert!(f.lines.len() > 3, "no three-line cap: {:?} (room {})", texts(&f), room(250.0, f.sz));
+        let words: Vec<String> = long.to_uppercase().split_whitespace().map(str::to_owned).collect();
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        let at_normal = greedy(&words, f.column, 24, &ShippedMeasure).len();
+        assert_eq!(f.sz, if at_normal <= room(250.0, 24) { 24 } else { 20 }, "the normal size unless it overflows");
+        assert!(off_centre(&f, 250.0).abs() < 0.01);
     }
 
     /// The block never crowds the fan: its cap top sits at least half a line below the front
@@ -496,8 +651,7 @@ mod tests {
         let long = "The Complete Blender Foundation Open Movie Projects Archive Collection";
         for w in [200.0, 250.0] {
             let f = fit(long, w);
-            let clear = (FAN_FRONT_TOP + FAN_MEMBER_FRAC) * w * 1.5 + FAN_SHADOW_REACH * w / MOCK_W
-                + 0.5 * f.pitch;
+            let clear = deck_line(w) + 0.5 * f.pitch;
             let top = fan_name_top(tile(w), &f, &ShippedMeasure);
             assert!(top >= clear - 0.01, "{w}: block top {top} above {clear}: {:?} at {}", texts(&f), f.sz);
             assert!(fits_column(&f));
@@ -511,10 +665,8 @@ mod tests {
         let long = "The Complete and Utterly Definitive Chronological Anthology of Every Starfall Film Ever Made In Any Format";
         for w in [200.0, 250.0] {
             let f = fit(long, w);
-            let (_, band) = fan_band(tile(w));
             assert_eq!(f.sz, 20, "{w}");
-            assert_eq!(f.lines.len(), ((band - FAN_NAME.gap * f.pitch) / f.pitch).floor() as usize,
-                "{w}: every line the band holds");
+            assert_eq!(f.lines.len(), room(w, f.sz), "{w}: every line the band holds");
             assert!(f.lines.last().unwrap().text.ends_with('\u{2026}'), "{w}: {:?}", texts(&f));
             assert!(fits_column(&f));
         }
