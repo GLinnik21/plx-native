@@ -41,7 +41,11 @@ hazards, to buy parallelism that isn't there.
 
 That third row is the one people talk themselves past. The TV is a mutex, so N lanes that all need
 it finish **no faster than one** — they queue on `tools/tv-lock.sh` — while each still pays a
-worktree, a build tree and a merge. Three lanes of genuinely independent, host-verifiable work is
+worktree, a build tree and a merge. `make check` is now ALSO a mutex, machine-wide
+(`tools/check-lock.py`): N lanes each running it still finish no faster than one `make check` at a
+time, they just queue on a different lock than the TV's, and each lane's wait is announced (holder
+pid/worktree/start time) rather than silent. "Host-verifiable" still means no TV contention; it no
+longer means no contention at all. Three lanes of genuinely independent, host-verifiable work is
 where this starts paying.
 
 ## 1. Give the television to AT MOST ONE lane
@@ -183,7 +187,11 @@ What keeps that in check:
   `$PLX_BUILD_CACHE` (default `~/.cache/plxnative`); see the vendor bullet below.
 
 **The rule: workers run `make check` and nothing that cross-compiles. ONE integrator does the
-cross-build, once, at the end.** `make check` is `make lint` (three named clippy lints) plus
+cross-build, once, at the end.** Because `make check` now serializes machine-wide, several lanes
+running it "at once" actually run it one at a time; that is fine (it is the same total CPU time
+whether it overlaps or queues, and queued is faster in aggregate — see the check-lock comment in
+the Makefile) but do not expect N lanes' `make check` calls to finish in parallel. `make check` is
+`make lint` (three named clippy lints) plus
 `cargo test --lib`, `ci/flavor.py --selftest` and `tests/test_harness.py` — all four invoke their
 tool directly, so none of them enters `ci/build-ffmpeg.sh`. The FFmpeg build is reached down exactly
 one chain — `pkg/plxnative` → the Rust staticlib → `pkg/.ffabi-ok` → the header rule at
