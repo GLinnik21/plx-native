@@ -67,8 +67,15 @@ permissions:
   contents: read
 
 concurrency:
-  group: nightly
-  cancel-in-progress: false
+  # A real run (`schedule` or `workflow_dispatch`) stays in the single, never-cancelled `nightly`
+  # group: publish must never be cut off mid-run by anything, including a later real run — GitHub
+  # queues the newer one instead. A `pull_request` dry run gets its OWN group keyed on the PR
+  # number, for two reasons: it must never compete with (or, worse, get silently superseded by) a
+  # scheduled/dispatched run sharing the plain `nightly` group, and pushing several times to the
+  # same PR should cancel the PR's own stale, still-pending dry run rather than let every push run
+  # to completion (~15 min of ARM build each) only to be discarded.
+  group: ${{ github.event_name == 'pull_request' && format('nightly-pr-{0}', github.event.pull_request.number) || 'nightly' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   plan:
