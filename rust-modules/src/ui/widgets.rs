@@ -3406,6 +3406,20 @@ impl PageGround {
         0.08,
     ];
 
+    /// The faint warm tint a page's HEADER leans when no focused card hands the ground colours —
+    /// strongest top-left, where the page's title sits.
+    pub(crate) const HEADER_W: [f32; 4] = [0.10, 0.06, 0.02, 0.03];
+
+    /// A header-and-cards page's ground target: `focused`'s `UltraBlurColors` along
+    /// [`CARD_W`](Self::CARD_W) when it carries any, else the warm [`HEADER_W`](Self::HEADER_W)
+    /// tint. The Person and Collection pages share it.
+    pub(crate) fn page_target(focused: Option<&crate::pms::PmsMovie>) -> [[f32; 4]; 4] {
+        match focused.filter(|m| m.has_blur) {
+            Some(m) => AmbientWash::keyed(m.blur, Self::CARD_W),
+            None => AmbientWash::target([theme::WASH_WARM; 4], Self::HEADER_W),
+        }
+    }
+
     /// A ground resting on the app's own surface — what a screen mounts with, and what it stays
     /// until something focused hands it colours.
     pub(crate) const fn new() -> Self {

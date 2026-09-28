@@ -10,7 +10,7 @@ use crate::pms::PmsMovie;
 use crate::stores::collection::CollectionCmd;
 use crate::ui::card_row::{self, TileLabel};
 use crate::ui::consts::*;
-use crate::ui::label::{HAlign, Label, VAlign};
+use crate::ui::label::{Label, VAlign};
 use crate::ui::machine::{Canon, Cx, Edge, Effects, EntryId, GroupId, Handled, InputEvent,
     InputKind, Key, Leave, LogicalState, Machine, Tick};
 use crate::ui::present::{PresentEvent, Provenance};
@@ -19,7 +19,7 @@ use crate::ui::screen::{Activate, At, AxisMask, By, Dir, DrawFrame, EdgeRule, El
     RenderStrategy, Screen, ScreenEvent, Seat, Step, Stop};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{self, AmbientWash, Art, PageGround, StatusKind, StatusOverlay};
+use crate::ui::widgets::{self, Art, PageGround, StatusKind, StatusOverlay};
 use crate::ui::{Env, Painter, Rect, Spring};
 
 use super::registry::{AppFx, CardKeys, CardPageMemory, CollectionLike, ContentArg,
@@ -47,7 +47,6 @@ const MORE_GAP: f32 = theme::space::LG;
 const GRID_TOP: f32 = HEADER_TOP + ART_H + theme::space::XL;
 const STATUS_TOP: f32 = GRID_TOP;
 const LOAD_AHEAD: usize = crate::ui::poster_grid::COLS * 2;
-const AMB_HEADER_W: [f32; 4] = [0.10, 0.06, 0.02, 0.03];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Located { Header, Retry, Card(usize) }
@@ -57,7 +56,7 @@ fn summary_view<'a>(summary: &'a str, measure: &'a dyn crate::ui::machine::Measu
         .with_measure(measure)
         .leading(SUMMARY_LEAD)
         .max_lines(SUMMARY_LINES)
-        .fade_last(measure.width(crate::ui::text_view::more_mark(), theme::size::LABEL, true) + MORE_GAP)
+        .fade_for_more(MORE_GAP)
 }
 
 pub(crate) fn member_label(item: &PmsMovie) -> String {
@@ -322,9 +321,7 @@ impl CollectionScreen {
         let focused = cx.focus.current.filter(|key| key.entry == self.entry)
             .and_then(|key| self.item_index(collection, key.elem))
             .and_then(|index| collection.items.get(index));
-        let target = focused.or_else(|| collection.items.first()).filter(|item| item.has_blur)
-            .map(|item| AmbientWash::keyed(item.blur, PageGround::CARD_W))
-            .unwrap_or_else(|| AmbientWash::target([theme::WASH_WARM; 4], AMB_HEADER_W));
+        let target = PageGround::page_target(focused.or_else(|| collection.items.first()));
         if self.ground_seeded { self.ground.key_target(target, t.dt()); }
         else { self.ground.jump_target(target); self.ground_seeded = true; }
     }
@@ -391,12 +388,7 @@ impl CollectionScreen {
                 h + 2.0 * theme::space::SM));
         }
         view.draw(p, Rect::new(COL_X, summary_y, TEXT_W, h));
-        if self.summary_more {
-            Label::new(crate::ui::text_view::more_mark().as_ptr(), theme::size::LABEL,
-                if focused && self.header_marked { theme::TEXT_SECONDARY } else { theme::TEXT_TERTIARY })
-                .bold().h(HAlign::Right).v(VAlign::CapTop)
-                .draw(p, Rect::new(COL_X, view.last_line_cap_y(summary_y, h), TEXT_W, 0.0));
-        }
+        if self.summary_more { view.draw_more(p, COL_X, summary_y, TEXT_W, h, focused && self.header_marked); }
     }
 
     fn draw_card(&self, p: Painter, item: &PmsMovie, index: usize, focused: bool, press: f32,

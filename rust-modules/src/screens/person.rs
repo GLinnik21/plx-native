@@ -22,7 +22,7 @@ use crate::pms::PmsMovie;
 use crate::stores::person::PersonCmd;
 use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::consts::*;
-use crate::ui::label::{HAlign, Label, VAlign};
+use crate::ui::label::{Label, VAlign};
 use crate::ui::linked_heading::LinkedHeading;
 use crate::ui::machine::{
     Canon, Cx, Edge, Effects, EntryId, GroupId, Handled, InputEvent, InputKind, Key, Leave,
@@ -38,7 +38,7 @@ use crate::ui::screen::{
 use crate::ui::screen::Enter;
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{AmbientWash, Art, PageGround, StatusKind, StatusOverlay};
+use crate::ui::widgets::{Art, PageGround, StatusKind, StatusOverlay};
 use crate::ui::{Column, Env, Painter, Rect, ScrollColumn, View};
 
 use super::registry::{
@@ -119,8 +119,6 @@ const BOTTOM_PAD: f32 = crate::ui::consts::MARGIN_Y;
 // the pill reads as the header block's own closing line, not a new section starting under it.
 const ENTRY_GAP: f32 = theme::space::SM;
 
-const AMB_HEADER_W: [f32; 4] = [0.10, 0.06, 0.02, 0.03];
-const AMB_CARD_W: [f32; 4] = PageGround::CARD_W;
 
 // -------------------------------------------------------------------------------------------
 // pure store-shape predicates (ported from `ui/person.rs`, `Scene`-independent already there)
@@ -268,7 +266,7 @@ fn bio_view<'a>(bio: &'a str, a: f32, measure: &'a dyn Measure) -> TextView<'a> 
     .with_measure(measure)
     .leading(BIO_LEAD)
     .max_lines(BIO_LINES)
-    .fade_last(measure.width(crate::ui::text_view::more_mark(), theme::size::BODY, true) + BIO_MORE_GAP)
+    .fade_for_more(BIO_MORE_GAP)
 }
 
 fn text_w(d: f32) -> f32 {
@@ -382,18 +380,6 @@ fn scroll_target(col: &ScrollColumn, live: &Flow<'_>, settled: &Flow<'_>) -> f32
         settled.height(fi),
         content_h(col, settled),
     )
-}
-
-/// The ambient wash's target corners — the focused poster's `UltraBlurColors` while a card holds
-/// focus, else a faint warm header tint.
-fn amb_target(p: &Person, focused: Option<&PmsMovie>) -> [[f32; 4]; 4] {
-    match focused.filter(|m| m.has_blur) {
-        Some(m) => AmbientWash::keyed(m.blur, AMB_CARD_W),
-        None => {
-            let _ = p; // kept for symmetry with the legacy signature / future per-person tinting
-            AmbientWash::target([theme::WASH_WARM; 4], AMB_HEADER_W)
-        }
-    }
 }
 
 // -------------------------------------------------------------------------------------------
@@ -965,7 +951,7 @@ impl PersonScreen {
         }
 
         let focused_movie = self.focused_movie_in(p, cur);
-        let k = amb_target(p, focused_movie);
+        let k = PageGround::page_target(focused_movie);
         if self.amb_seeded {
             self.amb.key_target(k, dt);
         } else {
@@ -1218,21 +1204,7 @@ impl PersonScreen {
             let bh = bio.measure_h(BIO_W);
             bio.draw(p, Rect::new(col_x_, by, BIO_W, 0.0));
             if truncated {
-                Label::new(
-                    crate::ui::text_view::more_mark().as_ptr(),
-                    theme::size::BODY,
-                    match mark.is_some() {
-                        true => theme::TEXT_SECONDARY,
-                        false => theme::TEXT_TERTIARY,
-                    },
-                )
-                .bold()
-                .h(HAlign::Right)
-                .v(VAlign::CapTop)
-                .draw(
-                    p,
-                    Rect::new(col_x_, bio.last_line_cap_y(by, bh), BIO_W, 0.0),
-                );
+                bio.draw_more(p, col_x_, by, BIO_W, bh, mark.is_some());
             }
         }
         if let Some(y) = flow.entry_y {
