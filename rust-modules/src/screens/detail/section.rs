@@ -21,9 +21,11 @@ pub(crate) enum SectionId {
     Cast = 4,
     About = 5,
     Extras = 6,
+    /// A member movie's collection shelf, drawn directly above Related.
+    Collections = 7,
 }
 
-const _: () = assert!(SLOTS == (SectionId::Extras as usize) + 1);
+const _: () = assert!(SLOTS == (SectionId::Collections as usize) + 1);
 /// The hero is slot 0, which is what `DetailScreen::sections` and every `Spot` walk assume.
 const _: () = assert!(SectionId::Hero.raw() == 0);
 

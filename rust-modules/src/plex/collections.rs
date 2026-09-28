@@ -160,6 +160,31 @@ pub(crate) fn promoted_collection_hub<'a>(
     Some((section, rk))
 }
 
+/// A member's own-collection hub from `/library/metadata/{rk}/related`:
+/// `collection.related.{section}.{n}`, whose `key` filters its section by the collection's TAG id
+/// (`/library/sections/{s}/all?type=1&tagId={tag}&sort=…`). Answers `(section, tag)` — the section
+/// from the key's path, else the identifier's first segment, else 0; the tag from `tagId`, else 0
+/// (the collection store then resolves by title alone). Any other hub answers `None`.
+pub(crate) fn related_collection_hub(hub_identifier: &str, key: &str) -> Option<(i64, i64)> {
+    let tail = hub_identifier.strip_prefix("collection.related")?;
+    if !(tail.is_empty() || tail.starts_with('.')) {
+        return None;
+    }
+    let (path, query) = key.split_once('?').unwrap_or((key, ""));
+    let section = path
+        .strip_prefix("/library/sections/")
+        .and_then(|rest| rest.split('/').next())
+        .and_then(|s| s.parse().ok())
+        .or_else(|| tail.strip_prefix('.')?.split('.').next()?.parse().ok())
+        .unwrap_or(0);
+    let tag = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("tagId="))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    Some((section, tag))
+}
+
 pub(crate) fn is_collection_hub(hub_identifier: &str) -> bool {
     hub_identifier.starts_with("custom.collection.")
         || hub_identifier == "collection.related"
@@ -310,6 +335,29 @@ mod tests {
             "a related hub is tag-keyed and is resolved by the collection store"
         );
         assert_eq!(promoted_collection_hub("movie.recentlyadded.1", "/x"), None);
+    }
+
+    #[test]
+    fn a_related_collection_hub_names_its_section_and_tag() {
+        assert_eq!(
+            related_collection_hub(
+                "collection.related.2.1",
+                "/library/sections/3/all?type=1&tagId=812&sort=originallyAvailableAt,year:nullsLast"
+            ),
+            Some((3, 812)),
+            "the key's own section and tag win"
+        );
+        assert_eq!(
+            related_collection_hub("collection.related.2.1", ""),
+            Some((2, 0)),
+            "a keyless hub still names its section; the store resolves the title"
+        );
+        assert_eq!(related_collection_hub("collection.relatedness", "/x"), None);
+        assert_eq!(related_collection_hub("movie.similar.1", "/x"), None);
+        assert_eq!(
+            related_collection_hub("custom.collection.1.420.420", "/library/collections/420/children"),
+            None
+        );
     }
 
     // Dev-only: this fixture drives a plaintext loopback PMS with a real client that carries a

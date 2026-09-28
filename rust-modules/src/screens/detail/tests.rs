@@ -118,6 +118,7 @@ fn bare(_guard: &crate::testlock::Serial, sid: ServerId, rk: &str) -> DetailScre
         tab_scroll: Spring::at(0.0),
         episode_scale: [Spring::at(1.0); EP_SCALE_MAX],
         related: CardRow::new(),
+        collection: CardRow::new(),
         extras: CardRow::new(),
         cast: CardRow::new(),
         tabs: TabStrip::new(),
@@ -260,7 +261,7 @@ fn logical_hash_names_the_full_restore_target() {
         section: 2,
         col: 1,
         ep_text: true,
-        saved_col: [0, 1, 2, 3, 4, 5, 0],
+        saved_col: [0, 1, 2, 3, 4, 5, 0, 0],
         season: Some(2),
     };
     let right = left.clone();
@@ -3118,4 +3119,210 @@ fn legacy_detail_inventory_has_73_unique_source_names() {
     assert!(LEGACY_TEST_MAP
         .iter()
         .all(|(_, destination)| !destination.is_empty()));
+}
+
+// ---- The collection shelf (a member movie's collection, split out of Related) ----
+
+fn collection_member(sid: ServerId, rk: &str) -> crate::pms::PmsMovie {
+    crate::pms::PmsMovie { sid, rk: rk.into(), title: format!("Film {rk}"), sec: 1, ..Default::default() }
+}
+
+fn collection_movie(sid: ServerId) -> Detail {
+    Detail {
+        sid,
+        rk: "m1".into(),
+        kind: "movie".into(),
+        part: "/library/parts/1".into(),
+        collection: Some(crate::metadata::CollectionShelf {
+            title: "Example Trilogy".into(),
+            section: 1,
+            tag: 812,
+            members: ["m1", "m2", "m3", "m4"].iter().map(|rk| collection_member(sid, rk)).collect(),
+        }),
+        related: ["r1", "r2"].iter().map(|rk| collection_member(sid, rk)).collect(),
+        ..Default::default()
+    }
+}
+
+fn collection_move(
+    screen: &DetailScreen,
+    engine: &mut crate::ui::focus::FocusEngine<u32>,
+    dir: Dir,
+) -> crate::ui::focus::Outcome<u32> {
+    let owner = crate::ui::machine::InputOwner::Entry(EntryId(7));
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let context = Cx { focus: engine.read(owner), ..cx(&measure, None) };
+    let mut links = Vec::new();
+    Screen::<TestHost>::links(screen, &mut links);
+    engine.move_dir(owner, screen, &links, dir, &context)
+}
+
+fn moved_to(outcome: crate::ui::focus::Outcome<u32>, why: &str) -> u32 {
+    match outcome {
+        crate::ui::focus::Outcome::Moved { to, .. } => to.elem,
+        other => panic!("{why}: expected a move, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_collection_shelf_sits_above_related_under_a_linked_heading() {
+    let sid = ServerId::UNSET;
+    let _guard = install(collection_movie(sid));
+    let screen = bare(&_guard, sid, "m1");
+    let meta = test_store().view();
+    let d = screen.detail(meta).unwrap();
+    let (sections, n) = screen.sections(Some(d));
+    assert_eq!(&sections[..n], &[0, 7, 3, 5], "collection, then Related, then About");
+    let measure = crate::ui::fixture::FixtureMeasure;
+    assert!(screen.section_top(7, d, &measure) < screen.section_top(3, d, &measure));
+
+    assert_eq!(screen.engine_key(collection::HEADING_ELEM), Some(collection::HEADING_ELEM),
+        "the heading is a slot, not an interned item");
+    assert!(screen.locate(collection::HEADING_ELEM, meta) == Some(Located::CollectionHeading));
+    for i in 0..4 {
+        let key = screen.engine_key(collection::elem(i).unwrap()).expect("a member card key");
+        assert!(key >= FIRST_ITEM_ELEM);
+        assert!(screen.locate(key, meta) == Some(Located::Collection(i)));
+        assert!(screen.keys.iter().any(|k| k.elem == key
+            && matches!(&k.identity, DetailIdentity::CollectionMember { rk, .. } if *rk == format!("m{}", i + 1))));
+    }
+
+    let mut groups = Vec::new();
+    Focusable::<TestHost>::groups(&screen, &cx(&measure, None), &mut groups);
+    let heading = groups.iter().find(|g| g.id == collection::HEADING_GROUP).expect("the heading group");
+    let shelf = groups.iter().find(|g| g.id == collection::COLLECTION_GROUP).expect("the shelf group");
+    assert_eq!((heading.len, shelf.len), (1, 4));
+    assert!(heading.extent.y + heading.extent.h <= shelf.extent.y, "the heading sits above the cards");
+    clear();
+}
+
+#[test]
+fn a_page_without_a_collection_declares_no_collection_stops() {
+    let sid = ServerId::UNSET;
+    let mut d = collection_movie(sid);
+    d.collection = None;
+    let _guard = install(d);
+    let screen = bare(&_guard, sid, "m1");
+    let meta = test_store().view();
+    let (sections, n) = screen.sections(screen.detail(meta));
+    assert!(!sections[..n].contains(&7));
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let mut groups = Vec::new();
+    Focusable::<TestHost>::groups(&screen, &cx(&measure, None), &mut groups);
+    assert!(groups.iter().all(|g| g.id != collection::HEADING_GROUP && g.id != collection::COLLECTION_GROUP));
+    assert_eq!(Focusable::<TestHost>::group_of(&screen, &collection::HEADING_ELEM, &cx(&measure, None)), None,
+        "a heading with no collection is no focus stop");
+    clear();
+}
+
+#[test]
+fn up_from_a_member_reaches_the_heading_and_down_returns_to_that_member() {
+    use crate::ui::focus::{FocusEngine, Outcome};
+    let sid = ServerId::UNSET;
+    let _guard = install(collection_movie(sid));
+    let screen = bare(&_guard, sid, "m1");
+    let owner = crate::ui::machine::InputOwner::Entry(EntryId(7));
+    let mut engine = FocusEngine::new();
+    let member = |i| screen.engine_key(collection::elem(i).unwrap()).unwrap();
+    let key = |elem| FocusKey { entry: EntryId(7), elem };
+
+    assert!(matches!(engine.set(owner, key(member(2)), Some(collection::COLLECTION_GROUP), By::Restore),
+        Outcome::Moved { .. }));
+    assert_eq!(moved_to(collection_move(&screen, &mut engine, Dir::Up), "UP from a member"),
+        collection::HEADING_ELEM);
+    assert!(matches!(collection_move(&screen, &mut engine, Dir::Left), Outcome::Nothing),
+        "LEFT on the heading is inert");
+    assert!(matches!(collection_move(&screen, &mut engine, Dir::Right), Outcome::Nothing),
+        "RIGHT on the heading is inert");
+    assert_eq!(moved_to(collection_move(&screen, &mut engine, Dir::Down), "DOWN from the heading"),
+        member(2), "DOWN returns to the member the shelf remembered");
+
+    // From the hero, DOWN stops on the heading first — the document order.
+    engine.set(owner, key(hero::ELEM_PLAY), Some(hero::HERO_GROUP), By::Restore);
+    assert_eq!(moved_to(collection_move(&screen, &mut engine, Dir::Down), "DOWN from the hero"),
+        collection::HEADING_ELEM);
+    // From Related, UP reaches the collection's CARDS; the heading is one more UP.
+    let related = screen.engine_key(related::elem(0).unwrap()).unwrap();
+    engine.set(owner, key(related), Some(related::RELATED_GROUP), By::Restore);
+    let up = moved_to(collection_move(&screen, &mut engine, Dir::Up), "UP from Related");
+    assert!(matches!(screen.locate(up, test_store().view()), Some(Located::Collection(_))));
+    assert_eq!(moved_to(collection_move(&screen, &mut engine, Dir::Up), "UP again"),
+        collection::HEADING_ELEM);
+    clear();
+}
+
+#[test]
+fn ok_on_the_heading_opens_the_collection_and_ok_on_a_member_opens_its_detail() {
+    let sid = ServerId::UNSET;
+    let _guard = install(collection_movie(sid));
+    let mut screen = bare(&_guard, sid, "m1");
+    let (_, effects) = step(&mut screen, &ScreenEvent::Activate(collection::HEADING_ELEM),
+        Some(collection::HEADING_ELEM));
+    assert!(effects.iter().any(|e| matches!(&e.fx,
+        Fx::App(AppFx::Content(ContentReq::Push(ContentArg::Collection { rk, sec: 1, tag: 812, name, .. })))
+            if rk.is_empty() && name == "Example Trilogy")),
+        "the page opens by section and tag; the collection store resolves the rating key");
+    let member = collection::elem(1).unwrap();
+    let (_, effects) = step(&mut screen, &ScreenEvent::Activate(member), Some(member));
+    assert!(effects.iter().any(|e| matches!(&e.fx,
+        Fx::App(AppFx::Content(ContentReq::Push(ContentArg::Detail { rk, .. }))) if rk == "m2")));
+    clear();
+}
+
+#[test]
+fn the_heading_is_a_hover_focus_stop_that_wins_over_the_member_cards() {
+    use crate::ui::hit::{HitMap, PointerKind};
+    let sid = ServerId::UNSET;
+    let _guard = install(collection_movie(sid));
+    let mut screen = bare(&_guard, sid, "m1");
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let top = {
+        let d = screen.detail(test_store().view()).unwrap();
+        screen.section_top(7, d, &measure) - crate::ui::detail_layout::TOP_MARGIN
+    };
+    screen.scroll.jump(top);
+    screen.scroll_target = top;
+    let heading = FocusKey { entry: EntryId(7), elem: collection::HEADING_ELEM };
+    let context = cx(&measure, Some(heading.elem));
+    let mut draw = DrawFrame::new(&context, crate::ui::Painter::root());
+    screen.record_stops(&mut draw);
+    let stops = draw.into_stops();
+    let at = stops.iter().position(|s| s.key == heading).expect("the heading registers a stop");
+    assert_eq!(stops[at].hover, Hover::Focus);
+    let last_member = screen.engine_key(collection::elem(3).unwrap()).unwrap();
+    assert!(stops.iter().position(|s| s.key.elem == last_member).unwrap() < at,
+        "registered after the cards, so it wins where its focused face overlaps them");
+    let placed = Focusable::<TestHost>::place(&screen, &heading.elem, &context, At::Drawn).unwrap();
+    assert_eq!((stops[at].rect.x, stops[at].rect.y, stops[at].rect.w, stops[at].rect.h),
+        (placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h), "the hit rect is the drawn face");
+    let mut map = HitMap::new();
+    map.fill(stops);
+    map.swap();
+    let hit = map.resolve(Some(heading.entry), PointerKind::Click, placed.rect.cx(), placed.rect.cy(), None);
+    assert_eq!(hit.hit, Some(heading));
+    clear();
+}
+
+#[test]
+fn member_keys_follow_the_member_and_the_heading_spot_restores_the_heading() {
+    let sid = ServerId::UNSET;
+    let _guard = install(collection_movie(sid));
+    let mut screen = bare(&_guard, sid, "m1");
+    let m3 = screen.engine_key(collection::elem(2).unwrap()).unwrap();
+    let mut reordered = collection_movie(sid);
+    reordered.collection.as_mut().unwrap().members.reverse();
+    crate::metadata::set_current_for_test(test_store().state_mut(), Some(reordered));
+    screen.sync_keys(test_store().view());
+    assert_eq!(screen.engine_key(collection::elem(1).unwrap()), Some(m3),
+        "a refetch that reorders the collection keeps each member's key");
+
+    let spot = screen.spot(Some(FocusKey { entry: EntryId(7), elem: collection::HEADING_ELEM }),
+        SpotFacts::of(&screen, test_store().view()));
+    assert_eq!((spot.section, spot.col), (7, -1));
+    screen.restore(&spot, test_store().view());
+    let measure = crate::ui::fixture::FixtureMeasure;
+    let restored = Focusable::<TestHost>::reconcile(&screen,
+        FocusKey { entry: EntryId(7), elem: hero::ELEM_PLAY }, &cx(&measure, None));
+    assert_eq!(restored.elem, collection::HEADING_ELEM, "Back from the collection page lands on the heading");
+    clear();
 }

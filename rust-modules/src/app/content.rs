@@ -913,7 +913,7 @@ mod library_publication_tests {
             section: 2,
             col: 3,
             ep_text: true,
-            saved_col: [0, 1, 3, 0, 0, 0, 0],
+            saved_col: [0, 1, 3, 0, 0, 0, 0, 0],
             season: Some(2),
         };
         let focus = crate::ui::machine::FocusKey { entry, elem: 3003 };

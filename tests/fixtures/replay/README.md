@@ -161,3 +161,10 @@ optional heading group, which moves the screen census. The prior anchors were ob
 refused (`replay: REFUSED — invalid or incompatible recording`, all three, both modes), then all
 three were re-recorded with `tools/plxnative-rec rerecord` against shape `2955617958233795258`
 and passed Targets and Resolve with zero difference counters.
+
+The detail page's collection shelf (#205) adds an eighth Detail section slot
+(`SectionId::Collections`), its remembered column and the `CollectionMember` identity to the page
+memory, which moves the screen census again. The anchors recorded against `2955617958233795258`
+were observed being refused (`replay: REFUSED — invalid or incompatible recording`, all three,
+both modes), then all three were re-recorded with `tools/plxnative-rec rerecord` against shape
+`12050413345652660670` and passed Targets and Resolve with zero difference counters.

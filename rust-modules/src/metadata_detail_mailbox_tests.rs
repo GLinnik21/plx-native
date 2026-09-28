@@ -68,7 +68,7 @@ fn related_rows_carry_the_watch_state_the_wire_already_had() {
     let mc = serde_json::from_str::<crate::plex::Envelope>(body)
         .expect("parses")
         .media_container;
-    let rows = related_rows(&mc, SRV_B);
+    let rows = related_rows(&mc, SRV_B, "page").related;
     assert_eq!(rows.len(), 4, "every hub row with a key becomes a tile");
 
     // …and every row is stamped with the server it was FETCHED from. A related item is a key on
@@ -118,9 +118,70 @@ fn related_rows_do_not_emit_collections_as_movie_cards() {
         {"ratingKey":"11","type":"movie","title":"A Film","thumb":"/m"}
     ]}]}}"#;
     let mc = serde_json::from_str::<crate::plex::Envelope>(body).expect("parses").media_container;
-    let rows = related_rows(&mc, SRV_A);
+    let rows = related_rows(&mc, SRV_A, "page").related;
     assert_eq!(rows.len(), 1, "the collection row must be filtered out");
     assert_eq!(rows[0].rk, "11");
+}
+
+/// A member movie's `collection.related` hub (measured shape: the whole collection, the item
+/// itself included, in the collection's order, keyed by the section's `tagId` filter) becomes the
+/// collection shelf and leaves the Related row: no member is ever also a Related tile, whichever
+/// order the hubs arrive in.
+#[test]
+fn the_collection_hub_is_split_out_of_related_and_never_duplicated() {
+    let body = r#"{"MediaContainer":{"Hub":[
+        {"hubIdentifier":"movie.similar.1","title":"Similar Movies","Metadata":[
+            {"ratingKey":"31","type":"movie","title":"a sequel"},
+            {"ratingKey":"40","type":"movie","title":"a stranger"}]},
+        {"hubIdentifier":"collection.related.1.1","title":"Example Trilogy",
+         "key":"/library/sections/1/all?type=1&tagId=812&sort=originallyAvailableAt,year:nullsLast",
+         "Metadata":[
+            {"ratingKey":"30","type":"movie","title":"the first","librarySectionID":1},
+            {"ratingKey":"31","type":"movie","title":"a sequel","librarySectionID":1},
+            {"ratingKey":"32","type":"movie","title":"the last","librarySectionID":1}]},
+        {"hubIdentifier":"movie.by.actor.or.director.1.5","title":"More with someone","Metadata":[
+            {"ratingKey":"32","type":"movie","title":"the last"},
+            {"ratingKey":"41","type":"movie","title":"another stranger"}]}
+    ]}}"#;
+    let mc = serde_json::from_str::<crate::plex::Envelope>(body).expect("parses").media_container;
+    let rows = related_rows(&mc, SRV_A, "30");
+    let shelf = rows.collection.expect("a member with company gets its collection shelf");
+    assert_eq!((shelf.title.as_str(), shelf.section, shelf.tag), ("Example Trilogy", 1, 812));
+    let members: Vec<&str> = shelf.members.iter().map(|m| m.rk.as_str()).collect();
+    assert_eq!(members, ["30", "31", "32"], "server order, the page's own film included");
+    assert!(shelf.members.iter().all(|m| m.sid == SRV_A));
+    let related: Vec<&str> = rows.related.iter().map(|m| m.rk.as_str()).collect();
+    assert_eq!(related, ["40", "41"], "no collection member is repeated in Related");
+}
+
+/// A collection whose only listed member is the page's own film is no shelf — and its hub still
+/// adds nothing to Related. The shelf is capped like Related.
+#[test]
+fn a_lone_member_gets_no_collection_shelf_and_a_large_one_is_capped() {
+    let body = r#"{"MediaContainer":{"Hub":[
+        {"hubIdentifier":"collection.related.1.1","title":"Just Me",
+         "key":"/library/sections/1/all?type=1&tagId=9","Metadata":[
+            {"ratingKey":"30","type":"movie","title":"alone"}]},
+        {"hubIdentifier":"movie.similar.1","title":"Similar","Metadata":[
+            {"ratingKey":"40","type":"movie","title":"a stranger"}]}
+    ]}}"#;
+    let mc = serde_json::from_str::<crate::plex::Envelope>(body).expect("parses").media_container;
+    let rows = related_rows(&mc, SRV_A, "30");
+    assert!(rows.collection.is_none());
+    assert_eq!(rows.related.iter().map(|m| m.rk.as_str()).collect::<Vec<_>>(), ["40"]);
+
+    let many: Vec<String> = (100..130)
+        .map(|k| format!(r#"{{"ratingKey":"{k}","type":"movie","title":"t{k}"}}"#))
+        .collect();
+    let body = format!(
+        r#"{{"MediaContainer":{{"Hub":[{{"hubIdentifier":"collection.related.1.1","title":"Big",
+            "key":"/library/sections/1/all?tagId=7","Metadata":[{}]}}]}}}}"#,
+        many.join(",")
+    );
+    let mc = serde_json::from_str::<crate::plex::Envelope>(&body).expect("parses").media_container;
+    let rows = related_rows(&mc, SRV_A, "100");
+    assert_eq!(rows.collection.expect("a shelf").members.len(), COLLECTION_MAX);
+    assert!(rows.related.is_empty(), "the members past the cap do not spill into Related");
 }
 
 /// The two bounds on the shelf, which are one function's job and were easy to lose in the move
@@ -148,7 +209,7 @@ fn related_rows_dedupe_across_hubs_and_cap_the_shelf() {
     let mc = serde_json::from_str::<crate::plex::Envelope>(&body)
         .expect("parses")
         .media_container;
-    let rows = related_rows(&mc, SRV_A);
+    let rows = related_rows(&mc, SRV_A, "page").related;
     let keys: Vec<&str> = rows.iter().map(|m| m.rk.as_str()).collect();
     assert_eq!(
         keys,
@@ -162,7 +223,7 @@ fn related_rows_dedupe_across_hubs_and_cap_the_shelf() {
     let mc = serde_json::from_str::<crate::plex::Envelope>(body)
         .expect("parses")
         .media_container;
-    assert!(related_rows(&mc, SRV_A).is_empty(), "no ratingKey, no tile");
+    assert!(related_rows(&mc, SRV_A, "page").related.is_empty(), "no ratingKey, no tile");
 
     // the cap, counted in KEPT rows: 30 distinct keys, each repeated twice
     let many: Vec<i32> = (0..30).collect();
@@ -174,7 +235,7 @@ fn related_rows_dedupe_across_hubs_and_cap_the_shelf() {
     let mc = serde_json::from_str::<crate::plex::Envelope>(&body)
         .expect("parses")
         .media_container;
-    let rows = related_rows(&mc, SRV_A);
+    let rows = related_rows(&mc, SRV_A, "page").related;
     assert_eq!(rows.len(), RELATED_MAX, "the shelf is capped");
     assert_eq!(
         rows.last().map(|m| m.rk.as_str()),

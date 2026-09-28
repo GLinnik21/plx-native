@@ -1505,9 +1505,22 @@ class MockPms:
             if sub == "related":
                 it = lib.items.get(rk)
                 pool = [x for x in lib.items.values() if it and x["type"] == it["type"] and x is not it]
-                return j(self.container(Hub=[{"title": "related", "type": it["type"] if it else "movie",
-                                              "hubIdentifier": "related", "size": min(8, len(pool)),
-                                              "Metadata": pool[:8]}]))
+                hubs = [{"title": "related", "type": it["type"] if it else "movie",
+                         "hubIdentifier": "related", "size": min(8, len(pool)), "Metadata": pool[:8]}]
+                # A member movie also gets one `collection.related.{section}.{n}` hub per
+                # collection (a live probe): titled with the collection, keyed by the section's
+                # TAG-id filter, listing EVERY member — the movie itself included.
+                tags = it.get("Collection", []) if it and it["type"] == "movie" else []
+                for n, tag in enumerate(tags, 1):
+                    members = lib.collection_rows(tag["id"])
+                    sec = it.get("librarySectionID", 1)
+                    hubs.append({
+                        "title": tag["tag"], "type": "movie", "size": len(members),
+                        "hubIdentifier": f"collection.related.{sec}.{n}",
+                        "key": f"/library/sections/{sec}/all?type=1&tagId={tag['id']}"
+                               "&sort=originallyAvailableAt,year:nullsLast",
+                        "Metadata": members})
+                return j(self.container(Hub=hubs))
             if catalog:
                 img = lib.image(p, q.get("width"), q.get("height"))
                 return (200, *img) if img else (404, "text/plain", b"no image")

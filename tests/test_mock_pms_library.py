@@ -99,6 +99,27 @@ class LibraryRail(unittest.TestCase):
                    if h["hubIdentifier"] != "collection"]
         self.assertEqual(plain, flagged)
 
+    def test_a_member_movies_related_carries_its_whole_collection(self):
+        lib = Library()
+        pms = MockPms(lib)
+        member = next(it for it in lib.items.values()
+                      if it["type"] == "movie" and it.get("Collection"))
+        tag = member["Collection"][0]
+        hubs = get(pms, f"/library/metadata/{member['ratingKey']}/related")["Hub"]
+        own = [h for h in hubs if h["hubIdentifier"].startswith("collection.related.")]
+        self.assertEqual(len(own), len(member["Collection"]))
+        hub = own[0]
+        self.assertEqual(hub["title"], tag["tag"])
+        self.assertIn(f"tagId={tag['id']}", hub["key"])
+        self.assertTrue(hub["key"].startswith(f"/library/sections/{member['librarySectionID']}/all?"))
+        keys = [m["ratingKey"] for m in hub["Metadata"]]
+        self.assertIn(member["ratingKey"], keys, "the member lists itself")
+        self.assertEqual(keys, [m["ratingKey"] for m in lib.collection_rows(tag["id"])])
+        loner = next(it for it in lib.items.values()
+                     if it["type"] == "movie" and not it.get("Collection"))
+        hubs = get(pms, f"/library/metadata/{loner['ratingKey']}/related")["Hub"]
+        self.assertFalse(any(h["hubIdentifier"].startswith("collection.related") for h in hubs))
+
     def test_default_generated_data_is_stable(self):
         hashes = {
             1: "179ea74803d88bfd0b0a4ab0e4bbb38aaf4612f73da1d50ef8d1416f5b2d29aa",
