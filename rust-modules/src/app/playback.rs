@@ -462,7 +462,10 @@ pub(crate) fn commit_track(
     match commit {
         TrackCommit::Audio(audio) => crate::route::commit_audio_selection(ps, audio),
         TrackCommit::Subtitle { render_ordinal, stream_id, sidecar_key, sidecar_codec } => {
-            crate::route::commit_subtitle_selection(ps, render_ordinal, stream_id);
+            // What the client can draw itself — an embedded ordinal or an external sidecar — is
+            // what an Original route (issue #266's candidate) can carry without a burn.
+            let client_renderable = render_ordinal >= 0 || sidecar_key.is_some();
+            crate::route::commit_subtitle_selection(ps, render_ordinal, stream_id, client_renderable);
             // An EXTERNAL pick has no demuxer ordinal (`render_ordinal` is -1, so the embedded
             // renderer is off) — on direct play `player::sidecar` fetches and draws it instead.
             // While transcoding the commit above already asked for a burn and the sidecar draw
