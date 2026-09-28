@@ -787,6 +787,10 @@ impl Bridge {
         self.with_home(d, |home, _, _| home.snap_target()).unwrap_or(0.0)
     }
 
+    pub(crate) fn home_snap_pos(&self, d: &Dispatcher<AppHost>) -> f32 {
+        self.with_home(d, |home, _, _| home.snap_pos()).unwrap_or(0.0)
+    }
+
     fn capture_chrome(&mut self, d: &mut Dispatcher<AppHost>) {
         let route = d.top_arg().cloned().unwrap_or(AppArg::Home);
         let route = &route;

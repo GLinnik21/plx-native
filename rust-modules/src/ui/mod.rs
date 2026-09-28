@@ -1149,14 +1149,7 @@ impl Painter {
             k.record(data);
         }) { return; }
         if self.text_recorder { return; }
-        let a = self.a.clamp(0.0, 1.0);
-        let g = theme::SURFACE_APP; // `theme::mix` is rgba; a wash corner is rgb
-        let k = if a >= 1.0 {
-            k
-        } else {
-            k.map(|c| std::array::from_fn(|i| g[i] + (c[i] - g[i]) * a))
-        };
-        let k = k.map(|c| c.map(|v| v * self.rgb));
+        let k = self.wash_corners(k);
         crate::gfx::draw_ambient(
             r.x + self.dx,
             r.y + self.dy,
@@ -1168,6 +1161,99 @@ impl Painter {
             k[2].as_ptr(),
             k[3].as_ptr(),
         );
+    }
+    /// [`ambient`](Self::ambient) over `r` with the texture `tex` dissolved INTO it — the pixels
+    /// [`tex_uv`](Self::tex_uv)`(tex, uv, art, 0.0, tint)` would have blended over the wash, in the
+    /// same pass as the wash itself. `r` must lie inside `art`; [`AmbientWash::draw_ground`] is the
+    /// caller that owns that geometry, and the one to reach for. Each half takes the cascade
+    /// exactly as its own primitive does, so the pair and this are one picture.
+    ///
+    /// [`AmbientWash::draw_ground`]: crate::ui::widgets::AmbientWash::draw_ground
+    ///
+    /// `ink` is the screen's ramp over both, exactly as [`ambient_inked`](Self::ambient_inked) takes
+    /// it (zero alphas for none).
+    #[allow(clippy::too_many_arguments)]
+    pub fn ambient_art(
+        self,
+        r: Rect,
+        k: [[f32; 3]; 4],
+        tex: u32,
+        art: Rect,
+        uv: [f32; 4],
+        tint: [f32; 4],
+        ink: ([f32; 4], [f32; 2]),
+    ) {
+        if self.declare(r, 22, |data| {
+            use frame::backdrop::Value;
+            k.record(data);
+            tex.record(data);
+            crate::gfx::tex_ledger::revision(tex).record(data);
+            [art.x + self.dx, art.y + self.dy, art.w, art.h].record(data);
+            uv.record(data);
+            tint.record(data);
+            ink.0.record(data);
+            ink.1.record(data);
+        }) { return; }
+        if self.text_recorder { return; }
+        let t = self.c(tint);
+        let (ink, inka) = self.ink(ink);
+        crate::gfx::draw_art_wash(
+            (r.x + self.dx, r.y + self.dy, r.w, r.h),
+            self.wash_corners(k),
+            tex,
+            (art.x + self.dx, art.y + self.dy, art.w, art.h),
+            uv,
+            t.as_ptr(),
+            ink,
+            inka,
+        );
+    }
+    /// [`ambient`](Self::ambient) over `r` with a vertical INK RAMP in the same pass: `ink.0`'s rgb at
+    /// an alpha running linearly from `ink.1[0]` at `r`'s top to `ink.1[1]` at its bottom — the same
+    /// picture as `ambient(r, 1.0, k)` then a full-width `rect` of that ink over it, and the pair it
+    /// replaces. Callers must check `gfx::wash_ink_ok` ([`AmbientWash::draw_ground`] does).
+    ///
+    /// [`AmbientWash::draw_ground`]: crate::ui::widgets::AmbientWash::draw_ground
+    pub fn ambient_inked(self, r: Rect, k: [[f32; 3]; 4], ink: ([f32; 4], [f32; 2])) {
+        if self.declare(r, 23, |data| {
+            use frame::backdrop::Value;
+            k.record(data);
+            ink.0.record(data);
+            ink.1.record(data);
+        }) { return; }
+        if self.text_recorder { return; }
+        let k = self.wash_corners(k);
+        let (ink, inka) = self.ink(ink);
+        crate::gfx::draw_ambient_inked(
+            r.x + self.dx,
+            r.y + self.dy,
+            r.w,
+            r.h,
+            1.0,
+            [k[0].as_ptr(), k[1].as_ptr(), k[2].as_ptr(), k[3].as_ptr()],
+            ink,
+            inka,
+        );
+    }
+    /// An ink ramp through the cascade, exactly as the `rect` it stands in for took its two stops
+    /// through [`Self::c`]: rgb by the gain, both alphas by the painter's alpha.
+    fn ink(self, (ink, a): ([f32; 4], [f32; 2])) -> ([f32; 3], [f32; 2]) {
+        let c = self.c(ink);
+        ([c[0], c[1], c[2]], [a[0] * self.a, a[1] * self.a])
+    }
+    /// A wash's corners through the cascade — [`ambient`](Self::ambient)'s rule, which
+    /// [`ambient_art`](Self::ambient_art) must apply identically: the wash stays OPAQUE, so an alpha
+    /// below 1 mixes it toward [`theme::SURFACE_APP`] rather than thinning it, and the rgb gain
+    /// scales what is left.
+    fn wash_corners(self, k: [[f32; 3]; 4]) -> [[f32; 3]; 4] {
+        let a = self.a.clamp(0.0, 1.0);
+        let g = theme::SURFACE_APP; // `theme::mix` is rgba; a wash corner is rgb
+        let k = if a >= 1.0 {
+            k
+        } else {
+            k.map(|c| std::array::from_fn(|i| g[i] + (c[i] - g[i]) * a))
+        };
+        k.map(|c| c.map(|v| v * self.rgb))
     }
     /// Bilinear 4-corner gradient with real per-corner ALPHA, folded through the cascade — the
     /// counterpart of [`ambient`](Self::ambient), which is opaque by contract and therefore cannot

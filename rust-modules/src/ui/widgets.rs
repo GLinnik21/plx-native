@@ -3186,6 +3186,160 @@ impl AmbientWash {
     pub(crate) fn draw(&self, p: Painter, r: Rect) {
         p.ambient(r, 1.0, self.corners.map(|c| [c[0].pos, c[1].pos, c[2].pos]));
     }
+    /// **Paint the whole GROUND over `r`: this wash, the photograph dissolving over it, and the
+    /// screen's atmospheric ramp of scrim ink over both** — the same picture as
+    /// [`draw`](Self::draw), then `p.tex_uv(art…)` at radius 0, then the ramp's full-width `rect`s,
+    /// in as few passes as the geometry allows: ONE per pixel. Where the art covers the wash, wash,
+    /// art and ramp are one fragment ([`Painter::ambient_art`]); everywhere else the wash carries
+    /// the ramp per vertex ([`Painter::ambient_inked`]), which costs its fragment nothing.
+    ///
+    /// **Why.** Home's snap dive and Detail's scroll both fade their photograph while it moves, so
+    /// on every frame of the motion the wash shows through it — and the layered ground was the
+    /// wash, the art and the ramp as three full-width passes over most of the panel. On the dev
+    /// television (Mali-T820, arithmetic-bound) Home's dive ran 17–24 ms a frame across its whole
+    /// curve; `gfx::draw_art_wash` records what each fold was worth.
+    ///
+    /// The art is always drawn — in the wash's pass when it can be, as its own layer over the wash
+    /// otherwise (a driver that refused the program, or art that misses `r`). Returns whether it
+    /// TOOK THE RAMP: when it did not, the ramp is the caller's to draw as before, over all of
+    /// this — which is also the answer whenever the ramp would have had to go UNDER an art that
+    /// stayed a layer of its own. Every fallback is the layered picture, never a different one.
+    pub(crate) fn draw_ground(
+        &self,
+        p: Painter,
+        r: Rect,
+        art: Option<WashArt>,
+        ramp: Option<WashRamp>,
+    ) -> bool {
+        let art = art.filter(|a| a.tex != 0);
+        let split = art.and_then(|a| art_wash_split(r, a.rect)).filter(|_| crate::gfx::art_wash_ok());
+        let art_taken = split.is_some();
+        // The ramp sits over the art: it can only join the wash if the art did (or there is none).
+        let ramp = ramp.filter(|_| crate::gfx::wash_ink_ok() && (art.is_none() || art_taken));
+        let (over, bands) = match split {
+            Some((over, bands)) => (Some(over), bands),
+            None => (None, [Some(r), None, None, None]),
+        };
+        let corners = |b: Rect| {
+            [(b.x, b.y), (b.x + b.w, b.y), (b.x + b.w, b.y + b.h), (b.x, b.y + b.h)]
+                .map(|(x, y)| self.sample(r, x, y))
+        };
+        let knees = ramp.map_or([None, None], |q| [Some(q.stops[0].0), Some(q.stops[1].0)]);
+        let ink = |b: Rect| {
+            ramp.map_or(([0.0; 4], [0.0; 2]), |q| (q.ink, [q.alpha(b.y), q.alpha(b.y + b.h)]))
+        };
+        for band in bands.into_iter().flatten() {
+            for b in cut_at(band, knees) {
+                if ramp.is_some() {
+                    p.ambient_inked(b, corners(b), ink(b));
+                } else {
+                    p.ambient(b, 1.0, corners(b));
+                }
+            }
+        }
+        if let (Some(over), Some(a)) = (over, art) {
+            for b in cut_at(over, knees) {
+                p.ambient_art(b, corners(b), a.tex, a.rect, a.uv, a.tint, ink(b));
+            }
+        }
+        if !art_taken {
+            if let Some(a) = art {
+                p.tex_uv(a.tex, a.uv, a.rect, 0.0, a.tint);
+            }
+        }
+        ramp.is_some()
+    }
+}
+
+/// A screen's ATMOSPHERIC RAMP as [`AmbientWash::draw_ground`] carries it: `ink` (a scrim colour;
+/// its alpha is ignored) at no alpha above `stops[0].0`, then linear through the three
+/// `(y, alpha)` stops, holding the last below it. Home's is two segments with a midpoint knee;
+/// Detail's is one, which it writes by repeating its foot.
+#[derive(Clone, Copy)]
+pub(crate) struct WashRamp {
+    pub ink: [f32; 4],
+    pub stops: [(f32, f32); 3],
+}
+
+impl WashRamp {
+    /// The ramp's alpha at `y` — the curve the layered `rect`s drew, stop to stop.
+    pub(crate) fn alpha(&self, y: f32) -> f32 {
+        let [s0, s1, s2] = self.stops;
+        let seg = |(y0, a0): (f32, f32), (y1, a1): (f32, f32)| {
+            if y1 - y0 <= 0.0 { a1 } else { a0 + (a1 - a0) * ((y - y0) / (y1 - y0)).clamp(0.0, 1.0) }
+        };
+        if y <= s0.0 {
+            0.0
+        } else if y <= s1.0 {
+            seg(s0, s1)
+        } else {
+            seg(s1, s2)
+        }
+    }
+}
+
+/// `r` cut into horizontal strips at the ramp's knees, each on a pixel row (the same
+/// `ceil(y - 0.5)` rule as [`art_wash_split`]), so the ramp is ONE straight segment within every
+/// strip — which is what lets a strip carry it per vertex exactly.
+pub(crate) fn cut_at(r: Rect, knees: [Option<f32>; 2]) -> impl Iterator<Item = Rect> {
+    let (top, bottom) = (r.y, r.y + r.h);
+    let mut ys = [top, bottom, bottom, bottom];
+    for (i, k) in knees.into_iter().enumerate() {
+        if let Some(k) = k {
+            ys[i + 1] = (k - 0.5).ceil().clamp(top, bottom);
+        }
+    }
+    ys[3] = bottom;
+    ys.sort_by(f32::total_cmp);
+    (0..3).filter_map(move |i| {
+        (ys[i + 1] > ys[i]).then(|| Rect::new(r.x, ys[i], r.w, ys[i + 1] - ys[i]))
+    })
+}
+
+/// The photograph [`AmbientWash::draw_ground`] lays over its wash: exactly the arguments the
+/// layered path hands `Painter::tex_uv` (at radius 0).
+#[derive(Clone, Copy)]
+pub(crate) struct WashArt {
+    pub tex: u32,
+    /// The quad the art is drawn at — a `Rect::cover` of the panel, typically, so larger than it.
+    pub rect: Rect,
+    /// The texture window it samples (`gfx::UV_FULL` for the whole picture).
+    pub uv: [f32; 4],
+    /// Its tint, alpha included: the dissolve.
+    pub tint: [f32; 4],
+}
+
+/// **Where the wash over `r` meets art at `art`**: the overlap, which [`AmbientWash::draw_ground`]
+/// paints as one pass, and the up-to-four bands of `r` the art does not reach (above, below, then
+/// left and right of the overlap's own rows), which it paints as wash alone. `None` when the art
+/// misses `r` entirely.
+///
+/// **Every edge is on a PIXEL boundary**, at the row or column where the art's own quad would have
+/// started or stopped covering pixel centres (`ceil(edge - 0.5)`) — so the one-pass region holds
+/// exactly the pixels the layered art covered, and the bands and the overlap share their edges
+/// as identical integer vertices, which a rasteriser fills with neither a crack nor a double row.
+pub(crate) fn art_wash_split(r: Rect, art: Rect) -> Option<(Rect, [Option<Rect>; 4])> {
+    let px = |v: f32| (v - 0.5).ceil();
+    let (rx0, ry0, rx1, ry1) = (r.x, r.y, r.x + r.w, r.y + r.h);
+    let x0 = px(art.x).clamp(rx0, rx1);
+    let y0 = px(art.y).clamp(ry0, ry1);
+    let x1 = px(art.x + art.w).clamp(rx0, rx1);
+    let y1 = px(art.y + art.h).clamp(ry0, ry1);
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    let band = |x: f32, y: f32, x_end: f32, y_end: f32| {
+        (x_end > x && y_end > y).then(|| Rect::new(x, y, x_end - x, y_end - y))
+    };
+    Some((
+        Rect::new(x0, y0, x1 - x0, y1 - y0),
+        [
+            band(rx0, ry0, rx1, y0),
+            band(rx0, y1, rx1, ry1),
+            band(rx0, y0, x0, y1),
+            band(x1, y0, rx1, y1),
+        ],
+    ))
 }
 
 // ---- PageGround: the item-keyed ground a BROWSING screen stands on. ----
@@ -7563,6 +7717,10 @@ mod poster_mark_tests;
 #[cfg(test)]
 #[path = "widgets_ambient_ground_tests.rs"]
 mod ambient_ground_tests;
+
+#[cfg(test)]
+#[path = "widgets_ground_tests.rs"]
+mod ground_tests;
 
 #[cfg(test)]
 #[path = "widgets_hero_scrim_tests.rs"]

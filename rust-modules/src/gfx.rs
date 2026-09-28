@@ -125,7 +125,10 @@ const FS_AMBIENT_PLAIN: &CStr = glsl_undithered!("shaders/fs_ambient.frag");
 const VS_AMBIENT: &CStr = glsl!("shaders/vs_ambient.vert");
 const FS_SHADOW: &CStr = glsl!("shaders/fs_shadow.frag");
 const VS_IMG: &CStr = glsl!("shaders/vs_img.vert");
-const VS_AMBIENT_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_ambient.vert");
+/// The wash's vertex shader: the dithered twin, and the only one carrying the INK RAMP
+/// ([`draw_ambient_inked`]) — the plain twin behind `draw_grad4` has real corner alpha and no ramp.
+const VS_AMBIENT_DITHERED: &CStr =
+    glsl!("shaders/vs_ambient.vert", "#define PLX_DITHER_NC\n#define PLX_WASH_INK\n");
 const VS_IMG_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_img.vert");
 const VS_SRC_DITHERED: &CStr = glsl_vs_dithered!("shaders/vs_src.vert");
 const FS_IMG: &CStr = glsl!("shaders/fs_img.frag");
@@ -134,6 +137,14 @@ const FS_FIELD_PANEL: &CStr = glsl_dithered!("shaders/fs_field_panel.frag");
 const VS_STILL: &CStr = glsl!("shaders/vs_img.vert", "#define PLX_STILL_GROUND\n");
 const FS_STILL: &CStr = glsl!("shaders/fs_img.frag", "#define PLX_STILL_GROUND\n");
 const FS_HERO: &CStr = glsl!("shaders/fs_hero.frag");
+/// The wash with its photograph dissolved into it (`draw_art_wash`): dithered, because the wash it
+/// carries always dithers, over `vs_ambient.vert`'s field mesh so its colour is the wash's own
+/// per-vertex field.
+const FS_ART_WASH: &CStr = glsl_dithered!("shaders/fs_art_wash.frag");
+const VS_ART_WASH: &CStr = glsl!(
+    "shaders/vs_ambient.vert",
+    "#define PLX_DITHER_NC\n#define PLX_WASH_INK\n#define PLX_ART_WASH\n"
+);
 const FS_BLUR: &CStr = glsl!("shaders/fs_blur.frag");
 const FS_GLASS: &CStr = glsl_dithered!("shaders/fs_glass.frag");
 const FS_FLAT: &CStr = glsl!("shaders/fs_flat.frag");
@@ -493,6 +504,9 @@ static mut AS_SIZE: c_int = 0;
 static mut AS_BAND: c_int = 0;
 static mut AS_COL: c_int = 0;
 static mut AL_DITHER: c_int = 0;
+/// The dithered wash program's ink-ramp uniforms (`u_ink`, `u_inka`) — see [`draw_ambient_inked`].
+static mut AL_INK: c_int = -1;
+static mut AL_INKA: c_int = -1;
 /// The ambient field's PLAIN program (`FS_AMBIENT_PLAIN`) — the hero scrim's (`draw_grad4`), never
 /// the wash's — and its uniforms; 0 when the link failed, in which case `APROG` serves the scrim
 /// with `u_dither` at 0.
@@ -650,6 +664,25 @@ static mut HL_INK: c_int = 0;
 static mut HL_RAMP: c_int = 0;
 static mut HL_RAMPA: c_int = 0;
 static mut HL_WEDGE: c_int = 0;
+
+/// The wash-with-art program — see [`draw_art_wash`]. Linked at [`init_image`] beside the image
+/// programs, not lazily: it serves shipped frames (Home's dive, Detail's scroll), and a link on
+/// first use would be a compile stall on the first frame of the very motion it exists to keep
+/// inside budget. `None` (a driver that refused it) keeps the two layers, which is the same picture.
+static mut ART_WASH: Option<ArtWashProgram> = None;
+
+#[derive(Clone, Copy)]
+struct ArtWashProgram {
+    prog: c_uint,
+    rect: c_int,
+    corners: [c_int; 4],
+    art: c_int,
+    uvrect: c_int,
+    tint: c_int,
+    ink: c_int,
+    inka: c_int,
+    dither: c_int,
+}
 
 /// The `#version` + compatibility preamble prepended to every shader, chosen by the DRIVER's GLSL
 /// version rather than by platform.
@@ -940,6 +973,8 @@ pub(crate) fn init_gl() {
             AL_BR = glGetUniformLocation(APROG, c"u_abr".as_ptr());
             AL_BL = glGetUniformLocation(APROG, c"u_abl".as_ptr());
             AL_DITHER = dither_uniforms(APROG);
+            AL_INK = glGetUniformLocation(APROG, c"u_ink".as_ptr());
+            AL_INKA = glGetUniformLocation(APROG, c"u_inka".as_ptr());
         }
         bind_dither_tile();
 
@@ -1355,6 +1390,22 @@ pub(crate) fn draw_ambient(
     br: *const f32,
     bl: *const f32,
 ) {
+    draw_ambient_impl(x, y, w, h, dim, tl, tr, br, bl, None);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_ambient_impl(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    dim: f32,
+    tl: *const f32,
+    tr: *const f32,
+    br: *const f32,
+    bl: *const f32,
+    ink: Option<([f32; 3], [f32; 2])>,
+) {
     if culled(x, y, w, h) || gate(Class::Ambient, x, y, w, h) {
         return;
     }
@@ -1383,9 +1434,47 @@ pub(crate) fn draw_ambient(
         glUniform4f(l_bl, c3(bl, 0) * dim, c3(bl, 1) * dim, c3(bl, 2) * dim, 1.0);
         if prog == APROG {
             glUniform1f(AL_DITHER, amp);
+            let (ink, inka) = ink.unwrap_or(([0.0; 3], [0.0; 2]));
+            glUniform3f(AL_INK, ink[0], ink[1], ink[2]);
+            glUniform2f(AL_INKA, inka[0], inka[1]);
         }
         draw_field_mesh();
     }
+}
+
+/// Can the wash carry an ink ramp ([`draw_ambient_inked`])? Only the dithered program has one; if
+/// it failed to link, the plain twin draws the wash and the caller keeps the ramp as its own layer.
+#[inline]
+pub(crate) fn wash_ink_ok() -> bool {
+    // SAFETY: written once at init on the render thread, read on the render thread.
+    unsafe { APROG != 0 }
+}
+
+/// [`draw_ambient`] with a vertical INK RAMP laid over the field in the same pass: `ink` (rgb) at an
+/// alpha running linearly from `inka[0]` at the rect's top edge to `inka[1]` at its bottom — the
+/// screen's atmospheric scrim, cut by the caller at its knees so each rect is one straight segment.
+/// The same picture as the wash and then a full-width `draw_rect` of `ink` from `inka[0]` to
+/// `inka[1]` over it, which is the pair it replaces (`AmbientWash::draw_ground`).
+///
+/// **Free where it lands.** The ramp is evaluated per VERTEX, into the one colour the fragment
+/// already reads, so the fragment does exactly what the plain wash does; a full-width blended
+/// rect over the same pixels was a pass of its own, and on Home's snap dive the ramp's two
+/// passes were most of what still carried the frame over budget once the art had joined the wash
+/// (`draw_art_wash`). Callers must check [`wash_ink_ok`] first — without the dithered program
+/// there is no ramp to carry, and this draws the wash alone.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_ambient_inked(
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    dim: f32,
+    corners: [*const f32; 4],
+    ink: [f32; 3],
+    inka: [f32; 2],
+) {
+    let [tl, tr, br, bl] = corners;
+    draw_ambient_impl(x, y, w, h, dim, tl, tr, br, bl, Some((ink, inka)));
 }
 
 /// Issue the field mesh (see [`field_mesh`]) — every four-corner draw goes through this.
@@ -1726,6 +1815,28 @@ pub(crate) fn init_image() {
             log("still image prog unavailable — using separate artwork scrim");
         }
 
+        ART_WASH = link_optional_program(VS_ART_WASH.as_ptr(), FS_ART_WASH.as_ptr()).map(|prog| {
+            let loc = |name: &CStr| glGetUniformLocation(prog, name.as_ptr());
+            // Binds `prog`, which the two constant uniforms below are then written to.
+            let dither = dither_uniforms(prog);
+            glUniform2f(loc(c"u_screen"), SCR_W, SCR_H);
+            glUniform1i(loc(c"u_tex"), 0);
+            ArtWashProgram {
+                prog,
+                rect: loc(c"u_rect"),
+                corners: [loc(c"u_atl"), loc(c"u_atr"), loc(c"u_abr"), loc(c"u_abl")],
+                art: loc(c"u_art"),
+                uvrect: loc(c"u_uvrect"),
+                tint: loc(c"u_tint"),
+                ink: loc(c"u_ink"),
+                inka: loc(c"u_inka"),
+                dither,
+            }
+        });
+        if std::ptr::addr_of!(ART_WASH).read().is_none() {
+            log("art-wash prog unavailable — the wash and its artwork stay two passes");
+        }
+
         use_prog(PROG);
     }
 }
@@ -1837,6 +1948,71 @@ pub(crate) fn draw_hero_ground(
         glBindTexture(GL_TEXTURE_2D, tex);
         glUniform4f(HL_RECT, x, y, w, h);
         glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+}
+
+/// Can the wash carry its artwork in one pass? `false` means the caller draws [`draw_ambient`] and
+/// then the art as two layers — the same picture.
+#[inline]
+pub(crate) fn art_wash_ok() -> bool {
+    // SAFETY: written once at init on the render thread, read on the render thread.
+    unsafe { std::ptr::addr_of!(ART_WASH).read().is_some() }
+}
+
+/// **The wash with a photograph dissolved into it, in ONE opaque pass**: the four-corner field
+/// `tl..br` over `(x, y, w, h)`, with the texture `tex` — laid out as the quad `art` would have drawn
+/// it, sampling its `uv` window at `tint` — composited per fragment as
+/// `mix(wash, art * tint.rgb, art.a * tint.a)`. The same picture as [`draw_ambient`] then
+/// [`draw_tex_uv`] (radius 0) over the same pixels, which is the pair it replaces. `(x, y, w, h)`
+/// must lie inside `art`: outside it the layered path drew no art, and this has no edge to stop at.
+///
+/// **Measured, dev television, 2026-09-28.** Home's snap dive draws the opaque wash and then the
+/// hero photograph fading by `1 - snap` over most of the panel, and the poster dive ran every frame
+/// of its curve at 17–24 ms (`plxnative-framedrop`, `snap=` 0.04–0.91, GPU-bound in `clear`) —
+/// 56.9 moving fps against a 55 floor, and 54.9 on a bad run. Masking the wash
+/// (`plxnative-drawmask=ambient`) took it to 59.6; drawing the wash only where the art is NOT took
+/// it to 59.9 with no frame over 18 ms. The frame is arithmetic-bound
+/// (`docs/perf-damage-tracking-verdict.md`), so the second pass over those pixels is what has to
+/// go, and here the wash is evaluated where the art already is. Folding the SCRIMS in too was
+/// tried the same day and was dearer (49 fps): it moved their arithmetic onto every pixel of the
+/// panel, including the ones they never touched.
+///
+/// `corners` are the wash's rgb corners FOR THIS RECT (a sub-rect of a wash takes the field's
+/// values at its own corners — the field is bilinear, so that is exact), already through the
+/// painter's cascade exactly as [`draw_ambient`] takes them; `tint` is the art's, likewise; and
+/// `ink`/`inka` the screen's ramp over both, exactly as [`draw_ambient_inked`] takes it (zero
+/// alphas for none).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_art_wash(
+    (x, y, w, h): (f32, f32, f32, f32),
+    corners: [[f32; 3]; 4],
+    tex: c_uint,
+    (ax, ay, aw, ah): (f32, f32, f32, f32),
+    uv: [f32; 4],
+    tint: *const f32,
+    ink: [f32; 3],
+    inka: [f32; 2],
+) {
+    // SAFETY: render thread; see `art_wash_ok`.
+    let Some(g) = (unsafe { std::ptr::addr_of!(ART_WASH).read() }) else { return };
+    if tex == 0 || culled(x, y, w, h) || gate(Class::Ambient, x, y, w, h) {
+        return;
+    }
+    let inv = |d: f32| if d.abs() > 0.001 { 1.0 / d } else { 0.0 };
+    unsafe {
+        use_prog(g.prog);
+        glUniform4f(g.rect, x, y, w, h);
+        for (loc, c) in g.corners.iter().zip(corners) {
+            glUniform4f(*loc, c[0], c[1], c[2], 1.0);
+        }
+        glUniform1f(g.dither, DITHER_LSB);
+        glUniform4f(g.art, ax, ay, inv(aw), inv(ah));
+        glUniform4f(g.uvrect, uv[0], uv[1], uv[2], uv[3]);
+        glUniform4fv(g.tint, 1, tint);
+        glUniform3f(g.ink, ink[0], ink[1], ink[2]);
+        glUniform2f(g.inka, inka[0], inka[1]);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        draw_field_mesh();
     }
 }
 
@@ -6288,6 +6464,7 @@ mod tests {
         // measured to remove.
         for (name, vs) in [
             ("vs_ambient.vert", VS_AMBIENT_DITHERED),
+            ("vs_ambient.vert (art wash)", VS_ART_WASH),
             ("vs_img.vert", VS_IMG_DITHERED),
             ("vs_src.vert", VS_SRC_DITHERED),
         ] {
@@ -6318,6 +6495,7 @@ mod tests {
             ("fs_field.frag", FS_FIELD),
             ("fs_field_panel.frag", FS_FIELD_PANEL),
             ("fs_glass.frag", FS_GLASS),
+            ("fs_art_wash.frag", FS_ART_WASH),
         ] {
             let code = shader_code(src);
             assert!(
@@ -6355,6 +6533,26 @@ mod tests {
             );
             assert!(!code.contains("fract(sin("), "{name} has a sine hash of its own");
         }
+    }
+
+    /// The ground's one-pass programs: the ink ramp rides only the dithered wash (the plain twin
+    /// behind `draw_grad4` carries real corner alpha and must not grow a ramp), the art variant hands
+    /// the ramp to the fragment instead of pre-mixing it into the wash colour (the art sits BETWEEN
+    /// wash and ink), and the fragment is opaque — it replaces three blended layers.
+    #[test]
+    fn the_art_wash_is_the_wash_program_with_the_art_between_it_and_the_ink() {
+        let wash = shader_code(VS_AMBIENT_DITHERED);
+        assert!(wash.contains("#define PLX_WASH_INK") && !wash.contains("#define PLX_ART_WASH"));
+        assert!(!shader_code(VS_AMBIENT).contains("#define PLX_WASH_INK"), "plain twin: no ramp");
+        let vs = shader_code(VS_ART_WASH);
+        for d in ["#define PLX_DITHER_NC", "#define PLX_WASH_INK", "#define PLX_ART_WASH"] {
+            assert!(vs.contains(d), "VS_ART_WASH must define {d}");
+        }
+        let fs = shader_code(FS_ART_WASH);
+        assert!(fs.contains("varying float v_inka") && fs.contains("uniform vec3 u_ink"));
+        assert!(fs.contains("mix(g, u_ink, v_inka)"), "the ink goes over the art, not under it");
+        assert!(fs.contains("c.a * u_tint.a"), "the art's own alpha times the dissolve");
+        assert!(fs.contains(", 1.0);"), "one opaque fragment: nothing below it is read");
     }
 
     /// **The card composite's box test is an exact subset of its SDF early-out.** `fs_img.frag`

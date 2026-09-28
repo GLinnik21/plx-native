@@ -256,13 +256,24 @@ impl Backdrop {
     fn draw(&self, p: Painter, env: &Env, slide: Option<(f32, f32)>) {
         let incoming_a = reveal(self.tex.0, &self.art);
         let outgoing_a = reveal(self.outgoing_tex.0, &self.outgoing_art);
-        if !wash_hidden(env.sp, incoming_a, slide.map(|_| outgoing_a))
-            && !self.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS)
-        {
-            self.wash.draw(p, Rect::FULL);
-        }
+        // THE GROUND: the wash, the one art layer dissolving over it (the snap dive, or the art
+        // fading in) and the atmospheric ramp over both, as ONE pass per pixel
+        // (`AmbientWash::draw_ground`). A hero FLIP slides two art layers, which one pass cannot
+        // carry, so there the art and the ramp stay layers of their own.
+        let wash = !wash_hidden(env.sp, incoming_a, slide.map(|_| outgoing_a))
+            && !self.wash.is_flat(theme::SURFACE_APP, AmbientWash::FLAT_EPS);
+        let art_in_ground = wash && slide.is_none() && env.sp < HERO_ART_CULL;
+        let ramp = (env.hero_a > 0.01 && slide.is_none()).then(|| hero_ramp(env.hero_a));
+        let ramp_in_ground = wash
+            && self.wash.draw_ground(
+                p,
+                Rect::FULL,
+                art_in_ground.then(|| hero_art(self.tex, env.sp, incoming_a)),
+                ramp,
+            );
 
-        let folded = env.hero_a > 0.01
+        let folded = !wash
+            && env.hero_a > 0.01
             && env.sp < 0.001
             && slide.is_none()
             && self.tex.0 != 0
@@ -278,7 +289,7 @@ impl Backdrop {
                 env.hero_a,
             );
         }
-        if !folded && env.sp < HERO_ART_CULL {
+        if !folded && !art_in_ground && env.sp < HERO_ART_CULL {
             if let Some((out_x, in_x)) = slide {
                 backdrop_art(p, self.outgoing_tex, env.sp, out_x, outgoing_a);
                 backdrop_art(p, self.tex, env.sp, in_x, incoming_a);
@@ -287,21 +298,23 @@ impl Backdrop {
             }
         }
         if !folded && env.hero_a > 0.01 {
-            let [y0, knee, mid, foot] = base_scrim_ramp(env.hero_a);
-            p.rect(
-                Rect::new(0.0, y0, SCR_W, knee - y0),
-                0.0,
-                theme::scrim(0.0),
-                theme::scrim(mid),
-                0.0,
-            );
-            p.rect(
-                Rect::new(0.0, knee, SCR_W, SCR_H - knee),
-                0.0,
-                theme::scrim(mid),
-                theme::scrim(foot),
-                0.0,
-            );
+            if !ramp_in_ground {
+                let [y0, knee, mid, foot] = base_scrim_ramp(env.hero_a);
+                p.rect(
+                    Rect::new(0.0, y0, SCR_W, knee - y0),
+                    0.0,
+                    theme::scrim(0.0),
+                    theme::scrim(mid),
+                    0.0,
+                );
+                p.rect(
+                    Rect::new(0.0, knee, SCR_W, SCR_H - knee),
+                    0.0,
+                    theme::scrim(mid),
+                    theme::scrim(foot),
+                    0.0,
+                );
+            }
             crate::ui::widgets::hero_scrim(p, env.hero_a, false);
         }
     }
@@ -1535,6 +1548,12 @@ impl HomeScreen {
         self.snap_target
     }
 
+    /// Where the hero-to-grid dive actually IS this frame (`snap_target` is where it is going).
+    /// The frame-drop line carries both, so a slow frame can be placed on the dive's curve.
+    pub(crate) fn snap_pos(&self) -> f32 {
+        self.snap.pos
+    }
+
     pub(crate) fn focused_rect<H: HomeLike>(
         &self,
         focus: Option<FocusKey<u32>>,
@@ -2426,6 +2445,25 @@ fn backdrop_art(p: Painter, tex: (u32, f32, f32), snap: f32, dx: f32, alpha: f32
         0.0,
         theme::with_a(theme::TINT_WHITE, alpha * (1.0 - snap)),
     );
+}
+/// The hero's atmospheric ramp as the ground carries it — the two `rect`s the layered path draws
+/// (`base_scrim_ramp`: nothing above `y0`, `mid` at the knee, `foot` at the panel's foot).
+fn hero_ramp(hero_a: f32) -> crate::ui::widgets::WashRamp {
+    let [y0, knee, mid, foot] = base_scrim_ramp(hero_a);
+    crate::ui::widgets::WashRamp {
+        ink: theme::scrim(1.0),
+        stops: [(y0, 0.0), (knee, mid), (SCR_H, foot)],
+    }
+}
+/// The un-sliding hero art as the layer [`AmbientWash::draw_ground`] carries — exactly what
+/// [`backdrop_art`] would have drawn at `dx = 0`, down to its skip (a texture of 0 draws no art).
+fn hero_art(tex: (u32, f32, f32), snap: f32, alpha: f32) -> crate::ui::widgets::WashArt {
+    crate::ui::widgets::WashArt {
+        tex: if alpha <= 0.01 { 0 } else { tex.0 },
+        rect: art_rect(tex, snap, 0.0),
+        uv: crate::gfx::UV_FULL,
+        tint: theme::with_a(theme::TINT_WHITE, alpha * (1.0 - snap)),
+    }
 }
 fn hero_logo_rk(item: &PmsMovie) -> &str {
     if item.kind == 3 && !item.show_rk.is_empty() {

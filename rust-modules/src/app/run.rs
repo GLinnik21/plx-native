@@ -2600,10 +2600,11 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
             let spans = crate::diag::spans::take();
             if let Some(line) = app.instr.frame_drop_line(&|| {
                 format!(
-                    "route={rn} dip={} load={} snapt={:.2} {spans}",
+                    "route={rn} dip={} load={} snapt={:.2} snap={:.3} {spans}",
                     app.pages.dip_word(),
                     crate::ui::glassload::step_index(),
-                    app.bridge.home_snap_target(&app.pages)
+                    app.bridge.home_snap_target(&app.pages),
+                    app.bridge.home_snap_pos(&app.pages)
                 )
             }) {
                 log(&line);
