@@ -21,6 +21,7 @@ use super::identity::KeyRegistry;
 use super::layout::{
     GridBand, Layout, CONTENT_TOP, GRID_RIGHT, MAX_GRID_BANDS,
 };
+use crate::ui::poster_grid::GridBands;
 
 pub(super) const GRID_GROUP: GroupId = GroupId(0x4c49_4201);
 pub(super) const RAIL_GROUP: GroupId = GroupId(0x4c49_4202);
@@ -114,60 +115,6 @@ impl GridIndexes {
 struct PublicationOps {
     slot_visits: usize,
     known_probes: usize,
-}
-
-/// Sparse caption motion: the focused row and rows still closing behind it. A catalog with
-/// ten thousand rows costs exactly as much as a short one; no per-frame allocation or row walk.
-struct GridBands {
-    focus: Option<usize>,
-    slots: [(Option<usize>, Spring); MAX_GRID_BANDS],
-}
-
-impl GridBands {
-    fn new() -> Self {
-        Self { focus: None, slots: [(None, Spring::at(0.0)); MAX_GRID_BANDS] }
-    }
-
-    fn focus(&mut self, row: Option<usize>, animate: bool) {
-        if self.focus == row { return; }
-        self.focus = row;
-        if !animate {
-            self.slots = [(None, Spring::at(0.0)); MAX_GRID_BANDS];
-            if let Some(row) = row { self.slots[0] = (Some(row), Spring::at(1.0)); }
-            return;
-        }
-        let Some(row) = row else { return };
-        if self.slots.iter().any(|(r, _)| *r == Some(row)) { return; }
-        // A stream faster than remote repeat can fill the bounded pool. Retire the smallest
-        // closing band, never the focused row; normal input leaves several spare slots.
-        let at = self.slots.iter().position(|(r, _)| r.is_none()).unwrap_or_else(|| {
-            self.slots.iter().enumerate().min_by(|(_, a), (_, b)| a.1.pos.total_cmp(&b.1.pos))
-                .map_or(0, |(at, _)| at)
-        });
-        self.slots[at] = (Some(row), Spring::at(0.0));
-    }
-
-    fn tick(&mut self, k: f32, dt: f32) {
-        for (row, spring) in &mut self.slots {
-            let Some(r) = *row else { continue };
-            let target = f32::from(self.focus == Some(r));
-            spring.step(target, k, dt);
-            if target == 0.0 && spring.pos.abs() < 1.0e-5 && spring.vel.abs() < 1.0e-4 { *row = None; }
-        }
-    }
-
-    fn geometry(&self) -> [GridBand; MAX_GRID_BANDS] {
-        self.slots.map(|(row, spring)| row.map_or(GridBand::CLOSED,
-            |row| GridBand { row, expansion: spring.pos }))
-    }
-
-    fn write(&self, c: &mut crate::ui::machine::Canon) {
-        c.option(self.focus, |c, row| { c.u32(row as u32); });
-        c.seq(self.slots.iter().filter(|(row, _)| row.is_some()).count());
-        for (row, spring) in &self.slots {
-            if let Some(row) = row { c.u32(*row as u32).f32(spring.pos).f32(spring.vel); }
-        }
-    }
 }
 
 pub(super) struct GridPart {
@@ -667,48 +614,6 @@ mod pop_tests {
     use crate::ui::card_row::RowStyle;
     use crate::ui::consts::{CARD_H, CARD_W};
     use crate::ui::machine::{EntryId, GroupId};
-
-    #[test]
-    fn all_caption_bands_open_with_shared_motion_and_stop_requesting_frames_at_rest() {
-        let mut bands = GridBands::new();
-        bands.focus(Some(0), false);
-        bands.focus(Some(1), true);
-        let k = RowStyle::HOME.k_scroll;
-        let (_, moving) = crate::ui::idle::scoped_motion(|| bands.tick(k, 1.0 / 60.0));
-        assert!(moving, "caption motion keeps the presenter awake");
-        let geometry = bands.geometry();
-        let opened = geometry.iter().find(|b| b.row == 1).unwrap().expansion;
-        let closing = geometry.iter().find(|b| b.row == 0).unwrap().expansion;
-        assert!(opened > 0.0 && opened < 1.0 && closing > 0.0 && closing < 1.0);
-        assert!((opened + closing - 1.0).abs() < 0.0001);
-        assert_eq!(card_row::band_reveal(opened), 0.0, "caption waits until its space is open");
-        for _ in 0..120 { bands.tick(k, 1.0 / 60.0); }
-        let (_, moving) = crate::ui::idle::scoped_motion(|| bands.tick(k, 1.0 / 60.0));
-        assert!(!moving, "a settled grid lets idle suppression sleep");
-        assert_eq!(bands.slots.iter().filter(|(r, _)| r.is_some()).count(), 1);
-        assert!(card_row::band_reveal(bands.geometry().iter().find(|b| b.row == 1).unwrap().expansion) > 0.999);
-        bands.focus(None, true);
-        for _ in 0..120 { bands.tick(k, 1.0 / 60.0); }
-        assert!(bands.slots.iter().all(|(r, _)| r.is_none()));
-    }
-
-    #[test]
-    fn rapid_all_row_moves_keep_animation_bounded_and_preserve_the_focused_band() {
-        let mut bands = GridBands::new();
-        bands.focus(Some(0), false);
-        for row in 1..200 {
-            bands.focus(Some(row), true);
-            bands.tick(RowStyle::EPISODE.k_scroll, 1.0 / 240.0);
-            assert!(bands.slots.iter().any(|(r, _)| *r == Some(row)));
-            assert!(bands.slots.iter().filter(|(r, _)| r.is_some()).count() <= MAX_GRID_BANDS);
-        }
-        for _ in 0..120 { bands.tick(RowStyle::EPISODE.k_scroll, 1.0 / 60.0); }
-        assert_eq!(bands.slots.iter().filter(|(r, _)| r.is_some()).count(), 1);
-        assert!(bands.geometry().iter().find(|b| b.row == 199).unwrap().expansion > 0.999);
-        let before = bands.geometry();
-        bands.focus(Some(199), true);
-        assert_eq!(bands.geometry(), before, "moving horizontally does not close the same row");
-    }
 
     #[test]
     fn episode_grid_geometry_and_page_window_share_four_column_rows() {

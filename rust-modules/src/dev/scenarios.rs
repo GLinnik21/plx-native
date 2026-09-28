@@ -120,6 +120,8 @@ pub(crate) struct Scenarios {
     pub(crate) quality_tried: bool,
     pub(crate) quality_playing_since: Option<u32>,
     pub(crate) detail_tried: bool,
+    /// `/tmp/plxnative-collection=<ratingKey>` — direct Collection-page boot.
+    pub(crate) collection_tried: bool,
     /// The headless detail-page walk (`plxnative-detail`/`-play`), see [`ContentBoot`].
     pub(crate) content_boot: Option<ContentBoot>,
     pub(crate) play_tried: bool,
@@ -1178,6 +1180,29 @@ fn detail_arm(app: &mut App, fr: &mut Frame) -> bool {
     true
 }
 
+/// `/tmp/plxnative-collection=<ratingKey>` — mount the Collection page through the same argument
+/// a kind-4 card produces. The mock/server supplies the header and children asynchronously.
+fn collection_arm(app: &mut App, fr: &mut Frame) -> bool {
+    if app.scenarios.collection_tried || fr.now.wrapping_sub(app.t0) <= 500 { return true; }
+    app.scenarios.collection_tried = true;
+    let Some(rk) = crate::dev::read("collection").filter(|rk| !rk.is_empty()) else { return true };
+    let sid = match crate::app::boot::direct_trigger_server() {
+        Ok(sid) => sid,
+        Err(_e) => {
+            #[cfg(feature = "devtriggers")]
+            crate::log(&format!("plxnative-collection: refused: {_e}"));
+            return false;
+        }
+    };
+    crate::app::bridge::nav_push(&mut app.pages, AppArg::Content(
+        crate::screens::registry::ContentArg::Collection {
+            sid, rk: rk.clone(), sec: 0, tag: 0, name: "Collection".into(),
+        }));
+    #[cfg(feature = "devtriggers")]
+    crate::log(&format!("plxnative-collection: rk={rk} server={} start", sid.raw()));
+    true
+}
+
 /// `/tmp/plxnative-play=<rk>` — fetch that item and play its leaf, headless. TWO frames at least,
 /// since phase 11: the request goes off-thread on the arming frame and the play is dispatched on
 /// the frame its landing arrives.
@@ -1554,6 +1579,9 @@ pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
     screenshot::libmenu_arm(app, fr);
     screenshot::clockstop_arm(app, fr);
     if !detail_arm(app, fr) {
+        return false;
+    }
+    if !collection_arm(app, fr) {
         return false;
     }
     if !play_arm(app, fr) {

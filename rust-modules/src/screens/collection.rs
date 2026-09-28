@@ -1,0 +1,879 @@
+//! Owned collection page: a Person-like header over a stable six-column portrait grid. The
+//! Collection store owns resolution and paging; this screen owns only presentation state and the
+//! identity→element registry that lets Back restore the exact member tile.
+
+use std::ffi::CString;
+
+use crate::collection::{Collection, CollectionStatus, CollectionTarget, PAGE_SIZE};
+use crate::plex::ServerId;
+use crate::pms::PmsMovie;
+use crate::stores::collection::CollectionCmd;
+use crate::ui::card_row::{self, TileLabel};
+use crate::ui::consts::*;
+use crate::ui::label::{HAlign, Label, VAlign};
+use crate::ui::machine::{Canon, Cx, Edge, Effects, EntryId, GroupId, Handled, InputEvent,
+    InputKind, Key, Leave, LogicalState, Machine, Tick};
+use crate::ui::present::{PresentEvent, Provenance};
+use crate::ui::screen::{Activate, At, AxisMask, By, Dir, DrawFrame, EdgeRule, ElemKind,
+    FocusSource, Focusable, GroupKind, GroupSpec, HitSource, Hover, Link, Placed,
+    RenderStrategy, Screen, ScreenEvent, Seat, Step, Stop};
+use crate::ui::text_view::TextView;
+use crate::ui::theme;
+use crate::ui::widgets::{self, AmbientWash, Art, PageGround, StatusKind, StatusOverlay};
+use crate::ui::{Env, Painter, Rect, Spring};
+
+use super::registry::{AppFx, CardIdentity, CollectionLike, CollectionMemory, ContentArg,
+    ContentLike, ContentPanel, ContentReq, PageMemory};
+
+const HEADER_ELEM: u32 = 0;
+const RETRY_ELEM: u32 = 1;
+const FIRST_CARD_ELEM: u32 = 0x1000;
+const GRID_GROUP: GroupId = GroupId(0);
+const HEADER_GROUP: GroupId = GroupId(1);
+const STATUS_GROUP: GroupId = GroupId(2);
+
+const HEADER_TOP: f32 = MARGIN_Y;
+const ART_W: f32 = CARD_W;
+const ART_H: f32 = CARD_H;
+const ART_RES: (std::os::raw::c_int, std::os::raw::c_int) = (250, 375);
+const HEADER_GAP: f32 = theme::space::XL;
+const COL_X: f32 = MARGIN_X + ART_W + HEADER_GAP;
+const TEXT_W: f32 = SCR_W - MARGIN_X - COL_X;
+const META_GAP: f32 = theme::space::MD;
+const SUMMARY_GAP: f32 = theme::space::LG;
+const SUMMARY_LINES: usize = 3;
+const SUMMARY_LEAD: f32 = 38.0;
+const MORE_GAP: f32 = theme::space::LG;
+const GRID_TOP: f32 = HEADER_TOP + ART_H + theme::space::XL;
+const STATUS_TOP: f32 = GRID_TOP;
+const LOAD_AHEAD: usize = crate::ui::poster_grid::COLS * 2;
+const AMB_HEADER_W: [f32; 4] = [0.10, 0.06, 0.02, 0.03];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Located { Header, Retry, Card(usize) }
+
+fn summary_view<'a>(summary: &'a str, measure: &'a dyn crate::ui::machine::Measure) -> TextView<'a> {
+    TextView::new(summary, theme::size::LABEL, theme::TEXT_READING)
+        .with_measure(measure)
+        .leading(SUMMARY_LEAD)
+        .max_lines(SUMMARY_LINES)
+        .fade_last(measure.width(crate::ui::text_view::MORE_MARK, theme::size::LABEL, true) + MORE_GAP)
+}
+
+pub(crate) fn member_label(item: &PmsMovie) -> String {
+    match item.kind {
+        2 if item.season_index > 0 => format!("SEASON {}", item.season_index),
+        3 => crate::ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64),
+        _ => String::new(),
+    }
+}
+
+pub(crate) fn member_caption(item: &PmsMovie) -> TileLabel {
+    if item.kind == 3 {
+        let address = crate::ui::fmt::episode_address(item.season_index as i64, item.ep_index as i64);
+        let caption = match (item.show_title.is_empty(), address.is_empty()) {
+            (false, false) => format!("{} · {}", item.show_title, address),
+            (false, true) => item.show_title.clone(),
+            (true, false) => address,
+            (true, true) => String::new(),
+        };
+        return TileLabel::titled(&item.title, &caption);
+    }
+    if item.kind == 2 && !item.show_title.is_empty() {
+        return TileLabel::titled(&item.title, &item.show_title);
+    }
+    let mut label = TileLabel::title(&item.title);
+    label.caption = card_row::focused_caption(item, false);
+    label
+}
+
+pub(crate) struct CollectionScreen {
+    entry: EntryId,
+    sid: ServerId,
+    rk: String,
+    sec: i64,
+    tag: i64,
+    name: String,
+    header_marked: bool,
+    card_keys: Vec<CardIdentity>,
+    next_elem: u32,
+    return_pending: bool,
+    teardown_closed: bool,
+    scroll: Spring,
+    scroll_target: f32,
+    ground: PageGround,
+    ground_seeded: bool,
+    summary_more: bool,
+    links_c: Vec<Link>,
+    /// `(items, summary bytes)` the last [`Self::sync`] saw — derived, not logical state. The
+    /// frame tick re-syncs only when either moved; `StoreChanged` always re-syncs.
+    synced: Option<(usize, usize)>,
+    /// The focused row's caption band and the rows still closing behind it — the Library grid's
+    /// motion (`ui::poster_grid::GridBands`), so a focused member's caption opens room under its
+    /// row rather than drawing over the posters below. Presentation, not logical state.
+    bands: crate::ui::poster_grid::GridBands,
+}
+
+impl LogicalState for CollectionScreen {
+    fn write(&self, c: &mut Canon) {
+        c.u32(self.entry.0).u32(self.sid.raw() as u32).str(&self.rk)
+            .u64(self.sec as u64).u64(self.tag as u64).str(&self.name)
+            .bool(self.header_marked).bool(self.return_pending)
+            .u32(self.next_elem).seq(self.card_keys.len());
+        for key in &self.card_keys { c.u32(key.sid.raw() as u32).str(&key.rk).u32(key.elem); }
+    }
+    fn probe(&self, out: &mut String) {
+        out.push_str(&format!("collection sid={} rk={} sec={} tag={} cards={} next={} return_pending={}",
+            self.sid.raw(), self.rk, self.sec, self.tag, self.card_keys.len(), self.next_elem,
+            self.return_pending));
+    }
+}
+
+impl CollectionScreen {
+    pub(crate) const SHAPE: &'static str = "CollectionScreen{entry:u32,sid:u32,rk:String,sec:i64,tag:i64,name:String,header_marked:bool,return_pending:bool,next_elem:u32,card_keys:[{sid:u32,rk:String,elem:u32}]}";
+
+    pub(crate) fn new(entry: EntryId, sid: ServerId, rk: String, sec: i64, tag: i64, name: String) -> Self {
+        Self { entry, sid, rk, sec, tag, name, header_marked: false, card_keys: Vec::new(),
+            next_elem: FIRST_CARD_ELEM, return_pending: false, teardown_closed: false,
+            scroll: Spring::default(), scroll_target: 0.0, ground: PageGround::new(),
+            ground_seeded: false, summary_more: false, links_c: Vec::new(), synced: None,
+            bands: crate::ui::poster_grid::GridBands::new() }
+    }
+
+    fn target(&self, want: usize) -> CollectionTarget {
+        let mut target = CollectionTarget::initial(
+            self.rk.clone(), self.sec, self.tag, self.name.clone());
+        target.want = want;
+        target
+    }
+
+    fn request_store<H: ContentLike + CollectionLike>(&mut self, want: usize, fx: &mut Effects<'_, H>) {
+        fx.push(crate::ui::machine::Fx::App(AppFx::Store(
+            crate::stores::StoreId::Collection,
+            crate::stores::StoreCmd::Collection(CollectionCmd::Open { sid: self.sid, target: self.target(want) }),
+        )));
+    }
+
+    fn collection<'a, H: CollectionLike>(&self, cx: &Cx<'a, H>) -> Option<&'a Collection> {
+        H::collection(cx).current().filter(|c| {
+            c.sid == self.sid && if !self.rk.is_empty() { c.rk == self.rk }
+                else { c.sec == self.sec && self.tag != 0 && c.tag == self.tag }
+        })
+    }
+
+    fn sync(&mut self, collection: &Collection, measure: &dyn crate::ui::machine::Measure) {
+        self.synced = Some((collection.items.len(), collection.summary.len()));
+        if self.rk.is_empty() && !collection.rk.is_empty() { self.rk = collection.rk.clone(); }
+        for item in &collection.items {
+            if self.card_keys.iter().any(|key| crate::plex::same_item(
+                (key.sid, key.rk.as_str()), (item.sid, item.rk.as_str()))) { continue; }
+            let elem = self.next_elem;
+            self.next_elem = self.next_elem.checked_add(1).expect("collection element-key space exhausted");
+            self.card_keys.push(CardIdentity { sid: item.sid, rk: item.rk.clone(), elem });
+        }
+        self.summary_more = !collection.summary.is_empty() && summary_view(&collection.summary, measure).truncates(TEXT_W);
+        self.links_c.clear();
+        if self.summary_more && !collection.items.is_empty() {
+            self.links_c.push(Link { from: HEADER_GROUP, dir: Dir::Down, to: GRID_GROUP });
+            self.links_c.push(Link { from: GRID_GROUP, dir: Dir::Up, to: HEADER_GROUP });
+        }
+    }
+
+    pub(crate) fn restore(&mut self, memory: &CollectionMemory) {
+        for saved in &memory.card_keys {
+            if self.card_keys.iter().any(|key| crate::plex::same_item(
+                (key.sid, key.rk.as_str()), (saved.sid, saved.rk.as_str()))) { continue; }
+            assert!(!self.card_keys.iter().any(|key| key.elem == saved.elem),
+                "restored collection key collision");
+            self.card_keys.push(saved.clone());
+        }
+        let after = self.card_keys.iter().map(|key| key.elem).max()
+            .and_then(|elem| elem.checked_add(1)).unwrap_or(FIRST_CARD_ELEM);
+        self.next_elem = self.next_elem.max(memory.next_elem).max(after).max(FIRST_CARD_ELEM);
+        self.header_marked |= memory.header_marked;
+    }
+
+    fn memory(&self) -> CollectionMemory {
+        CollectionMemory { card_keys: self.card_keys.clone(), next_elem: self.next_elem,
+            header_marked: self.header_marked }
+    }
+
+    /// **A Back whose member has not landed yet.** The remembered member may sit past the pages
+    /// loaded so far (a page rebuilt after its store was superseded reloads from the first page),
+    /// so focus is held on it while the model is still loading or still has pages below the
+    /// member's remembered position — `card_keys` is interned in server order, so that position
+    /// is the member's index when the page was left.
+    fn awaiting_restore(&self, collection: &Collection, elem: u32) -> bool {
+        if !self.return_pending || self.item_index(collection, elem).is_some() { return false; }
+        let Some(position) = self.card_keys.iter().position(|key| key.elem == elem) else { return false };
+        matches!(collection.status, CollectionStatus::Loading | CollectionStatus::Failed)
+            || (collection.more && collection.items.len() <= position)
+    }
+
+    /// The member count a page entry asks the store for: one page, or — returning to a page
+    /// that remembers members — every member it knew, so the remembered one can be reached.
+    fn entry_want(&self) -> usize {
+        if self.return_pending { PAGE_SIZE.max(self.card_keys.len()) } else { PAGE_SIZE }
+    }
+
+    fn elem_for(&self, item: &PmsMovie) -> Option<u32> {
+        self.card_keys.iter().find(|key| crate::plex::same_item(
+            (key.sid, key.rk.as_str()), (item.sid, item.rk.as_str()))).map(|key| key.elem)
+    }
+
+    fn item_index(&self, collection: &Collection, elem: u32) -> Option<usize> {
+        let identity = self.card_keys.iter().find(|key| key.elem == elem)?;
+        collection.items.iter().position(|item| crate::plex::same_item(
+            (identity.sid, identity.rk.as_str()), (item.sid, item.rk.as_str())))
+    }
+
+    fn locate(&self, collection: &Collection, elem: u32) -> Option<Located> {
+        if elem == HEADER_ELEM && self.summary_more { return Some(Located::Header); }
+        if elem == RETRY_ELEM && collection.status == CollectionStatus::Failed { return Some(Located::Retry); }
+        self.item_index(collection, elem).map(Located::Card)
+    }
+
+    fn key_at(&self, collection: &Collection, index: usize) -> crate::ui::machine::FocusKey<u32> {
+        crate::ui::machine::FocusKey { entry: self.entry,
+            elem: collection.items.get(index).and_then(|item| self.elem_for(item)).unwrap_or(HEADER_ELEM) }
+    }
+
+    fn card_rect(&self, index: usize, focused: bool, press: f32) -> Rect {
+        let scale = if focused { crate::ui::poster_grid::STYLE.focus_scale * if press > 0.0 { press } else { 1.0 } } else { 1.0 };
+        self.cell(index).scaled(scale)
+    }
+
+    /// Member `index`'s resting cell at the live scroll and live caption bands — the ONE rect
+    /// draw, hit stops and focus placement all read.
+    fn cell(&self, index: usize) -> Rect {
+        crate::ui::poster_grid::cell(index, GRID_TOP, self.scroll.pos, &self.bands.geometry())
+    }
+
+    /// The row whose caption band is open: the focused member's, while focus is on a member.
+    fn focused_row<H: CollectionLike>(&self, collection: &Collection, cx: &Cx<'_, H>) -> Option<usize> {
+        cx.focus.current.filter(|key| key.entry == self.entry)
+            .and_then(|key| self.item_index(collection, key.elem))
+            .map(|index| index / crate::ui::poster_grid::COLS)
+    }
+
+    fn status_frame() -> Rect {
+        Rect::new(MARGIN_X, STATUS_TOP, SCR_W - 2.0 * MARGIN_X, SCR_H - STATUS_TOP - MARGIN_Y)
+    }
+
+    /// The header text column's two anchors — the meta line's and the summary's cap tops — shared
+    /// by [`Self::draw_header`] and [`Self::header_text_bottom`] so the read-out's glyph ceiling
+    /// is the drawn header, not a copy of its arithmetic.
+    fn header_ys(measure: &dyn crate::ui::machine::Measure) -> (f32, f32) {
+        let meta_y = HEADER_TOP + measure.cap_h(theme::size::DISPLAY) + META_GAP;
+        (meta_y, meta_y + measure.cap_h(theme::size::BODY) + SUMMARY_GAP)
+    }
+
+    /// The lowest y the header's text column paints — the meta line, or the summary block under
+    /// it. A failed page keeps its header live above the read-out, as the Library keeps its tab
+    /// strip, so this is the read-out's `glyph_ceiling`.
+    fn header_text_bottom(collection: &Collection, measure: &dyn crate::ui::machine::Measure) -> f32 {
+        let (meta_y, summary_y) = Self::header_ys(measure);
+        if collection.summary.is_empty() { return meta_y + measure.line_h(theme::size::BODY); }
+        summary_y + summary_view(&collection.summary, measure).measure_h(TEXT_W)
+    }
+
+    /// The page's read-out, one per non-Ready status. Loading, Empty and Unavailable are quiet
+    /// answers centred in the grid's region; a transport failure is the page-placed `Failed`
+    /// read-out every page shares (`StatusOverlay::page`, `ui/CLAUDE.md` rule 4) — Home's and the
+    /// Library's untyped "can't reach" verdict, so their glyph too — with its glyph shrunk under
+    /// the live header rather than drawn over it.
+    fn status_overlay<'a>(collection: Option<&Collection>, tick: u32,
+        measure: &dyn crate::ui::machine::Measure) -> StatusOverlay<'a> {
+        match collection.map(|c| c.status).unwrap_or(CollectionStatus::Loading) {
+            CollectionStatus::Loading => StatusOverlay::new(Self::status_frame(), c"Loading collection…", StatusKind::Working).phase(tick),
+            CollectionStatus::Empty => StatusOverlay::new(Self::status_frame(), c"This collection is empty", StatusKind::Empty),
+            CollectionStatus::Unavailable => StatusOverlay::new(Self::status_frame(), c"This collection is not available", StatusKind::Empty),
+            CollectionStatus::Failed => {
+                let overlay = StatusOverlay::new(Rect::FULL, c"Can\u{2019}t reach your Plex server", StatusKind::Failed)
+                    .page(crate::ui::icons::Icon::ServerBadgeMinus).action(c"Try again");
+                match collection {
+                    Some(c) => overlay.glyph_ceiling(Self::header_text_bottom(c, measure)),
+                    None => overlay,
+                }
+            }
+            CollectionStatus::Ready => StatusOverlay::new(Self::status_frame(), c"", StatusKind::Empty),
+        }
+    }
+
+    /// OK on the header: the summary read in full, behind the `MORE` mark. Person's gate — the
+    /// sheet is offered exactly when the mark is drawn, and both read `summary_more`.
+    fn activate_header<H: ContentLike + CollectionLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        self.header_marked = true;
+        if self.collection(cx).is_some() && self.summary_more {
+            fx.push(crate::ui::machine::Fx::App(AppFx::Content(ContentReq::Panel(
+                ContentPanel::CollectionAbout))));
+            fx.invalidate(Provenance::Input);
+        }
+    }
+
+    fn maybe_page<H: ContentLike + CollectionLike>(&mut self, collection: &Collection, index: usize, fx: &mut Effects<'_, H>) {
+        if collection.more && index.saturating_add(LOAD_AHEAD) >= collection.items.len() {
+            self.request_store(collection.items.len().saturating_add(PAGE_SIZE), fx);
+        }
+    }
+
+    fn tick<H: ContentLike + CollectionLike>(&mut self, t: Tick, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+        let Some(collection) = self.collection(cx) else { return };
+        // `sync` walks every member against every key and measures the summary — per landing, not
+        // per frame (a few hundred members would otherwise cost a quadratic walk every tick).
+        if self.synced != Some((collection.items.len(), collection.summary.len())) {
+            self.sync(collection, cx.measure);
+        }
+        if let Some(index) = cx.focus.current.filter(|key| key.entry == self.entry)
+            .and_then(|key| self.item_index(collection, key.elem)) {
+            self.scroll_target = crate::ui::poster_grid::reveal_row(self.scroll.pos,
+                index / crate::ui::poster_grid::COLS, collection.items.len(), GRID_TOP);
+        } else { self.scroll_target = 0.0; }
+        // A focus the reader did not move (a restore, a landing) adopts its band settled; a D-pad
+        // move opens it with motion from `FocusMoved`, as the Library grid does.
+        self.bands.focus(self.focused_row(collection, cx), false);
+        self.bands.tick(crate::ui::poster_grid::STYLE.k_scroll, t.dt());
+        self.scroll.step(self.scroll_target, K_SCROLL, t.dt());
+        if (self.scroll.pos - self.scroll_target).abs() > 0.25 || self.scroll.vel.abs() > 0.5 {
+            fx.note(PresentEvent::Motion);
+        }
+        let focused = cx.focus.current.filter(|key| key.entry == self.entry)
+            .and_then(|key| self.item_index(collection, key.elem))
+            .and_then(|index| collection.items.get(index));
+        let target = focused.or_else(|| collection.items.first()).filter(|item| item.has_blur)
+            .map(|item| AmbientWash::keyed(item.blur, PageGround::CARD_W))
+            .unwrap_or_else(|| AmbientWash::target([theme::WASH_WARM; 4], AMB_HEADER_W));
+        if self.ground_seeded { self.ground.key_target(target, t.dt()); }
+        else { self.ground.jump_target(target); self.ground_seeded = true; }
+    }
+
+    pub(crate) fn focused_item<'a, H: CollectionLike>(&self,
+        focus: Option<crate::ui::machine::FocusKey<u32>>, cx: &Cx<'a, H>) -> Option<&'a PmsMovie> {
+        let collection = self.collection(cx)?;
+        let index = focus.filter(|key| key.entry == self.entry)
+            .and_then(|key| self.item_index(collection, key.elem))?;
+        collection.items.get(index)
+    }
+
+    pub(crate) fn focused_rect<H: ContentLike + CollectionLike>(&self,
+        focus: Option<crate::ui::machine::FocusKey<u32>>, cx: &Cx<'_, H>, at: At) -> Option<Rect> {
+        let key = focus.filter(|key| key.entry == self.entry)?;
+        Focusable::<H>::place(self, &key.elem, cx, at).map(|placed| placed.rect)
+    }
+
+    pub(crate) fn redraw_focused<H: ContentLike + CollectionLike>(&self,
+        f: &mut DrawFrame<'_, '_, H>, focus: Option<crate::ui::machine::FocusKey<u32>>) {
+        let Some(collection) = self.collection(f.cx) else { return };
+        let Some(index) = focus.filter(|key| key.entry == self.entry)
+            .and_then(|key| self.item_index(collection, key.elem)) else { return };
+        let Some(item) = collection.items.get(index) else { return };
+        self.draw_card(f.painter.alpha(f.page_alpha), item, index, true, f.press.scale, f.measure);
+    }
+
+    /// The header's focus rect — its text column — scrolled with the document: the header is the
+    /// top of one page with the grid, not a band pinned over it.
+    fn header_rect(&self) -> Rect {
+        Rect::new(COL_X, HEADER_TOP - self.scroll.pos, TEXT_W, ART_H)
+    }
+
+    fn draw_header(&self, p: Painter, collection: &Collection, focused: bool,
+        measure: &dyn crate::ui::machine::Measure) {
+        let dy = -self.scroll.pos;
+        if HEADER_TOP + ART_H + dy <= 0.0 { return; }
+        let art = Rect::new(MARGIN_X, HEADER_TOP + dy, ART_W, ART_H);
+        widgets::card(p, art, Art::Thumb { sid: collection.sid, key: &collection.thumb, res: ART_RES },
+            theme::CARD_RING_RAD, false, 1.0, 0.0);
+        let title = measure.fit_line(if collection.title.is_empty() { &collection.name } else { &collection.title },
+            TEXT_W, theme::size::DISPLAY, true);
+        Label::new(title.as_ptr(), theme::size::DISPLAY, theme::TEXT_PRIMARY).bold()
+            .v(VAlign::CapTop).draw(p, Rect::new(COL_X, HEADER_TOP + dy, TEXT_W, 0.0));
+        let (meta_y, summary_y) = Self::header_ys(measure);
+        let (meta_y, summary_y) = (meta_y + dy, summary_y + dy);
+        let count = if collection.child_count > 0 { collection.child_count } else { collection.total };
+        // A count of zero is only an answer once the listing says so; before the header lands (and
+        // on a failed load) the line is the kind alone rather than a false "0 items".
+        let meta = if count == 0 && collection.status != CollectionStatus::Empty {
+            CString::new("Collection").unwrap_or_default()
+        } else {
+            CString::new(format!("{count} {} · Collection", if count == 1 { "item" } else { "items" }))
+                .unwrap_or_default()
+        };
+        Label::new(meta.as_ptr(), theme::size::BODY, theme::TEXT_SECONDARY)
+            .v(VAlign::CapTop).draw(p, Rect::new(COL_X, meta_y, TEXT_W, 0.0));
+        if collection.summary.is_empty() { return; }
+        let view = summary_view(&collection.summary, measure);
+        let h = view.measure_h(TEXT_W);
+        if focused && self.header_marked && self.summary_more {
+            widgets::text_block_highlight(p, Rect::new(COL_X - theme::space::SM,
+                summary_y - theme::space::SM, TEXT_W + 2.0 * theme::space::SM,
+                h + 2.0 * theme::space::SM));
+        }
+        view.draw(p, Rect::new(COL_X, summary_y, TEXT_W, h));
+        if self.summary_more {
+            Label::new(crate::ui::text_view::MORE_MARK.as_ptr(), theme::size::LABEL,
+                if focused && self.header_marked { theme::TEXT_SECONDARY } else { theme::TEXT_TERTIARY })
+                .bold().h(HAlign::Right).v(VAlign::CapTop)
+                .draw(p, Rect::new(COL_X, view.last_line_cap_y(summary_y, h), TEXT_W, 0.0));
+        }
+    }
+
+    fn draw_card(&self, p: Painter, item: &PmsMovie, index: usize, focused: bool, press: f32,
+        measure: &dyn crate::ui::machine::Measure) {
+        let rect = self.card_rect(index, focused, press);
+        let scale = rect.w / CARD_W;
+        if !card_row::paint_visible(p, rect, scale, focused) { return; }
+        let resume = item.resume_frac();
+        if focused {
+            let row = index / crate::ui::poster_grid::COLS;
+            let open = self.bands.geometry().iter().find(|band| band.row == row).map_or(0.0, |band| band.expansion);
+            let label = member_caption(item).revealed(card_row::band_reveal(open));
+            card_row::draw_focused(p, Art::Poster(Some(item)), rect, scale,
+                &crate::ui::poster_grid::STYLE, resume, &label, measure);
+        } else {
+            card_row::draw_tile(p, Art::Poster(Some(item)), rect, scale,
+                &crate::ui::poster_grid::STYLE, resume);
+        }
+        let persistent = member_label(item);
+        if !persistent.is_empty() {
+            widgets::poster_label(p, rect,
+                crate::ui::poster_grid::STYLE.tile_radius(rect, scale), &persistent, measure);
+            if let Some(frac) = resume {
+                card_row::resume_bar(p, rect, frac,
+                    crate::ui::poster_grid::STYLE.tile_radius(rect, scale));
+            }
+        }
+    }
+
+    fn draw_grid<H: ContentLike + CollectionLike>(&self, f: &mut DrawFrame<'_, '_, H>, collection: &Collection) {
+        let focus = f.focus.current.filter(|key| key.entry == self.entry);
+        let current = focus.and_then(|key| self.item_index(collection, key.elem));
+        let p = f.painter.alpha(f.page_alpha);
+        for index in crate::ui::poster_grid::visible(collection.items.len(), GRID_TOP, self.scroll.pos) {
+            if current == Some(index) { continue; }
+            if let Some(item) = collection.items.get(index) { self.draw_card(p, item, index, false, 1.0, f.measure); }
+        }
+        if let Some(index) = current {
+            if let Some(item) = collection.items.get(index) { self.draw_card(p, item, index, true, f.press.scale, f.measure); }
+        }
+        for index in crate::ui::poster_grid::visible(collection.items.len(), GRID_TOP, self.scroll.pos) {
+            let Some(item) = collection.items.get(index) else { continue };
+            let Some(elem) = self.elem_for(item) else { continue };
+            let focused = current == Some(index);
+            let rect = self.card_rect(index, focused, if focused { f.press.scale } else { 1.0 });
+            f.stop(f.painter, Stop { key: crate::ui::machine::FocusKey { entry: self.entry, elem },
+                rect, rest_rect: self.cell(index),
+                clip: Rect::FULL, hover: Hover::Focus, activate: Activate::Press });
+        }
+    }
+}
+
+impl<H: ContentLike + CollectionLike> Focusable<H> for CollectionScreen {
+    fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
+        let Some(collection) = self.collection(cx) else { return };
+        if !collection.items.is_empty() {
+            out.push(GroupSpec { id: GRID_GROUP,
+                kind: GroupKind::Grid { cols: crate::ui::poster_grid::COLS, holes: &[] },
+                seat: Seat::Remembered, reachable: AxisMask::BOTH,
+                edge: [EdgeRule::Geometric; 4],
+                extent: Rect::new(MARGIN_X, GRID_TOP - self.scroll.pos,
+                    SCR_W - 2.0 * MARGIN_X, CARD_H), len: collection.items.len(), elem: ElemKind::Card });
+        }
+        if self.summary_more {
+            out.push(GroupSpec { id: HEADER_GROUP, kind: GroupKind::Free, seat: Seat::First,
+                reachable: AxisMask::VERTICAL, edge: [EdgeRule::Stop, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop],
+                extent: self.header_rect(), len: 1, elem: ElemKind::Bare });
+        }
+        if collection.status == CollectionStatus::Failed {
+            let rect = Self::status_overlay(Some(collection), cx.tick.ms, cx.measure).action_frame_measured(cx.measure)
+                .unwrap_or(Self::status_frame());
+            out.push(GroupSpec { id: STATUS_GROUP, kind: GroupKind::Free, seat: Seat::First,
+                reachable: AxisMask::BOTH, edge: [EdgeRule::Stop; 4], extent: rect, len: 1, elem: ElemKind::Bare });
+        }
+    }
+
+    fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
+        match self.locate(self.collection(cx)?, *key)? {
+            Located::Header => Some(HEADER_GROUP), Located::Retry => Some(STATUS_GROUP),
+            Located::Card(_) => Some(GRID_GROUP),
+        }
+    }
+
+    fn neighbour(&self, key: crate::ui::machine::FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
+        let Some(collection) = self.collection(cx) else { return Step::Edge };
+        let Some(index) = self.item_index(collection, key.elem) else { return Step::Edge };
+        let cols = crate::ui::poster_grid::COLS;
+        let next = match dir {
+            Dir::Left if index % cols > 0 => Some(index - 1),
+            Dir::Right if index % cols + 1 < cols && index + 1 < collection.items.len() => Some(index + 1),
+            Dir::Up if index >= cols => Some(index - cols),
+            // The Library grid's rule (`library/parts.rs`): Down from above a short last row lands
+            // on its last member rather than stopping where no card sits directly below.
+            Dir::Down if (index / cols + 1) * cols < collection.items.len() =>
+                Some((index + cols).min(collection.items.len() - 1)),
+            _ => None,
+        };
+        next.map(|index| Step::Move(self.key_at(collection, index))).unwrap_or(Step::Edge)
+    }
+
+    fn place(&self, key: &u32, cx: &Cx<'_, H>, _at: At) -> Option<Placed> {
+        let collection = self.collection(cx)?;
+        match self.locate(collection, *key)? {
+            Located::Header => {
+                let rect = self.header_rect();
+                Some(Placed { rect, rest_rect: rect, clip: Rect::FULL, index: Some(0) })
+            }
+            Located::Retry => {
+                let rect = Self::status_overlay(Some(collection), cx.tick.ms, cx.measure).action_frame_measured(cx.measure)?;
+                Some(Placed { rect, rest_rect: rect, clip: Rect::FULL, index: Some(0) })
+            }
+            Located::Card(index) => {
+                let rect = self.cell(index);
+                Some(Placed { rect: rect.scaled(crate::ui::poster_grid::STYLE.focus_scale),
+                    rest_rect: rect, clip: Rect::FULL, index: Some(index as u32) })
+            }
+        }
+    }
+
+    fn reconcile(&self, want: crate::ui::machine::FocusKey<u32>, cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
+        let Some(collection) = self.collection(cx) else {
+            return if self.return_pending && self.card_keys.iter().any(|key| key.elem == want.elem) { want }
+                else { crate::ui::machine::FocusKey { entry: self.entry, elem: HEADER_ELEM } };
+        };
+        if self.locate(collection, want.elem).is_some() { return crate::ui::machine::FocusKey { entry: self.entry, elem: want.elem }; }
+        if self.awaiting_restore(collection, want.elem) { return want; }
+        if !collection.items.is_empty() { return self.key_at(collection, 0); }
+        if collection.status == CollectionStatus::Failed {
+            return crate::ui::machine::FocusKey { entry: self.entry, elem: RETRY_ELEM };
+        }
+        crate::ui::machine::FocusKey { entry: self.entry, elem: HEADER_ELEM }
+    }
+
+    fn seat(&self, group: GroupId, from: Placed, cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
+        let Some(collection) = self.collection(cx) else { return crate::ui::machine::FocusKey { entry: self.entry, elem: HEADER_ELEM } };
+        if group == HEADER_GROUP { return crate::ui::machine::FocusKey { entry: self.entry, elem: HEADER_ELEM }; }
+        if group == STATUS_GROUP { return crate::ui::machine::FocusKey { entry: self.entry, elem: RETRY_ELEM }; }
+        let col = (0..crate::ui::poster_grid::COLS).min_by(|&a, &b| {
+            let d = |c: usize| (self.cell(c).cx() - from.rect.cx()).abs();
+            d(a).total_cmp(&d(b))
+        }).unwrap_or(0);
+        self.key_at(collection, col.min(collection.items.len().saturating_sub(1)))
+    }
+}
+
+impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
+    type Ev = ScreenEvent<H>;
+    fn step(&mut self, ev: &Self::Ev, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) -> Handled {
+        match ev {
+            ScreenEvent::RestoreMemory(PageMemory::Collection(memory)) => {
+                self.restore(memory); self.return_pending = true; Handled::Yes
+            }
+            ScreenEvent::Tick(t) => { self.tick(*t, cx, fx); Handled::Yes }
+            ScreenEvent::Enter(_) | ScreenEvent::Uncover => {
+                self.request_store(self.entry_want(), fx); fx.invalidate(Provenance::Nav); Handled::Yes
+            }
+            ScreenEvent::FocusMoved { to, by, .. } => {
+                if matches!(by, By::Dir | By::Pointer) { self.return_pending = false; }
+                if let Some(collection) = self.collection(cx) {
+                    let row = self.item_index(collection, to.elem).map(|index| index / crate::ui::poster_grid::COLS);
+                    self.bands.focus(row, matches!(by, By::Dir | By::Pointer));
+                    if let Some(index) = self.item_index(collection, to.elem) { self.maybe_page(collection, index, fx); }
+                    if to.elem == HEADER_ELEM && matches!(by, By::Dir | By::Pointer) { self.header_marked = true; }
+                }
+                fx.invalidate(Provenance::Input); Handled::Yes
+            }
+            ScreenEvent::Activate(elem) if *elem == RETRY_ELEM => {
+                self.request_store(PAGE_SIZE, fx); Handled::Yes
+            }
+            ScreenEvent::Activate(elem) if *elem == HEADER_ELEM => {
+                self.activate_header(cx, fx); Handled::Yes
+            }
+            ScreenEvent::PressCommit(_) => {
+                if let Some(item) = self.focused_item(cx.focus.current, cx) {
+                    fx.push(crate::ui::machine::Fx::App(AppFx::Content(ContentReq::Push(
+                        ContentArg::Detail { sid: item.sid, rk: item.rk.clone() }))));
+                }
+                Handled::Yes
+            }
+            ScreenEvent::PressHold(_) => {
+                if self.focused_item(cx.focus.current, cx).is_some() {
+                    fx.push(crate::ui::machine::Fx::App(AppFx::Content(ContentReq::ItemMenu)));
+                    Handled::Yes
+                } else { Handled::No }
+            }
+            ScreenEvent::Input(InputEvent { kind: InputKind::Key { key: Key::Back, edge: Edge::Down, .. }, .. }) => {
+                fx.push(crate::ui::machine::Fx::App(AppFx::Content(ContentReq::Back))); Handled::Yes
+            }
+            ScreenEvent::Input(InputEvent { kind: InputKind::Key { key, edge: Edge::Down, .. }, .. })
+                if matches!(key, Key::Up | Key::Down | Key::Left | Key::Right) => {
+                    self.return_pending = false; Handled::No
+                }
+            ScreenEvent::Input(InputEvent { kind: InputKind::Click { .. }, .. }) => {
+                self.return_pending = false; Handled::No
+            }
+            ScreenEvent::StoreChanged(ord, _) if *ord == crate::stores::StoreId::Collection.ord() => {
+                if let Some(collection) = self.collection(cx) { self.sync(collection, cx.measure); }
+                if self.return_pending {
+                    let settled = cx.focus.current.filter(|key| key.entry == self.entry)
+                        .is_some_and(|key| self.collection(cx).is_some_and(|c| !self.awaiting_restore(c, key.elem)));
+                    if settled { self.return_pending = false; }
+                }
+                Handled::Yes
+            }
+            ScreenEvent::WillLeave(Leave::ForGood) | ScreenEvent::Unmount => {
+                if self.collection(cx).is_some() && !self.teardown_closed {
+                    self.teardown_closed = true;
+                    fx.push(crate::ui::machine::Fx::App(AppFx::Store(crate::stores::StoreId::Collection,
+                        crate::stores::StoreCmd::Collection(CollectionCmd::Close))));
+                }
+                Handled::Yes
+            }
+            _ => Handled::No,
+        }
+    }
+}
+
+impl<H: ContentLike + CollectionLike> Screen<H> for CollectionScreen {
+    fn name(&self) -> &'static str { super::registry::word::COLLECTION }
+    fn state(&self) -> &dyn LogicalState { self }
+    fn crumb(&self, _cx: &Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> { None }
+    fn prepare(&mut self, _budget: &mut crate::ui::frame::Budget, _cx: &Cx<'_, H>) {}
+    fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
+        let p = f.painter.alpha(f.page_alpha);
+        self.ground.draw(p, Rect::FULL);
+        let collection = self.collection(f.cx);
+        if let Some(collection) = collection {
+            self.draw_header(p, collection, f.focus.current.is_some_and(|key| key.entry == self.entry && key.elem == HEADER_ELEM), f.measure);
+            if self.summary_more {
+                let rect = self.header_rect();
+                f.stop(f.painter, Stop { key: crate::ui::machine::FocusKey { entry: self.entry, elem: HEADER_ELEM },
+                    rect, rest_rect: rect, clip: Rect::FULL, hover: Hover::Focus,
+                    activate: Activate::Direct });
+            }
+            if collection.status == CollectionStatus::Ready { self.draw_grid(f, collection); }
+            else {
+                let overlay = Self::status_overlay(Some(collection), f.cx.tick.ms, f.measure)
+                    .focused(f.focus.current.is_some_and(|key| key.entry == self.entry && key.elem == RETRY_ELEM));
+                overlay.draw_measured(&Env::inert(), p, f.measure);
+                if let Some(rect) = overlay.action_frame_measured(f.measure) {
+                    f.stop(f.painter, Stop { key: crate::ui::machine::FocusKey { entry: self.entry, elem: RETRY_ELEM },
+                        rect, rest_rect: rect, clip: Rect::FULL, hover: Hover::Focus, activate: Activate::Direct });
+                }
+            }
+        } else {
+            Self::status_overlay(None, f.cx.tick.ms, f.measure).draw_measured(&Env::inert(), p, f.measure);
+        }
+    }
+    fn render(&self) -> RenderStrategy { RenderStrategy::Page }
+    fn focus_source(&self) -> FocusSource { FocusSource::Engine }
+    fn hit_source(&self) -> HitSource { HitSource::Engine }
+    fn links(&self, out: &mut Vec<Link>) { out.extend(self.links_c.iter().copied()); }
+    fn memory_at(&self, _focus: Option<crate::ui::machine::FocusKey<u32>>) -> PageMemory {
+        PageMemory::Collection(self.memory())
+    }
+    fn as_any(&self) -> Option<&dyn std::any::Any> { Some(self) }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> { Some(self) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::fixture::FixtureMeasure;
+    use crate::ui::machine::{FocusRead, Host, InputOwner, PressRead};
+
+    struct CollectionHost;
+    impl Host for CollectionHost {
+        type Arg = super::super::family::SettingsPage;
+        type Fx = AppFx;
+        type Msg = super::super::registry::AppMsg;
+        type Elem = u32;
+        type Views<'a> = crate::collection::CollectionView<'a>;
+        type Init = super::super::family::NoInit;
+        type Memory = PageMemory;
+    }
+    impl CollectionLike for CollectionHost {
+        fn collection<'a>(cx: &Cx<'a, Self>) -> crate::collection::CollectionView<'a> { cx.views }
+    }
+
+    fn item(rk: &str) -> PmsMovie { PmsMovie { rk: rk.into(), title: rk.into(), ..Default::default() } }
+    fn seeded() -> (crate::stores::collection::CollectionStore, CollectionScreen) {
+        let mut store = crate::stores::collection::CollectionStore::default();
+        store.run(CollectionCmd::Open { sid: ServerId::UNSET,
+            target: CollectionTarget::initial("50001".into(), 1, 7, "Set".into()) });
+        store.install_for_test(vec![item("a"), item("b"), item("c")], CollectionStatus::Ready);
+        let mut screen = CollectionScreen::new(EntryId(9), ServerId::UNSET, "50001".into(), 1, 7, "Set".into());
+        screen.sync(store.view().current().unwrap(), &FixtureMeasure);
+        (store, screen)
+    }
+    fn cx<'a>(view: crate::collection::CollectionView<'a>, focus: Option<crate::ui::machine::FocusKey<u32>>) -> Cx<'a, CollectionHost> {
+        Cx { views: view, tick: Tick::default(), measure: &FixtureMeasure,
+            press: PressRead::default(), focus: FocusRead { current: focus, ..Default::default() },
+            owner: InputOwner::Entry(EntryId(9)) }
+    }
+
+    #[test]
+    fn season_and_episode_projection_uses_persistent_labels_and_show_address_caption() {
+        let season = PmsMovie { kind: 2, season_index: 3, title: "Season 3".into(), ..Default::default() };
+        assert_eq!(member_label(&season), "SEASON 3");
+        let episode = PmsMovie { kind: 3, season_index: 3, ep_index: 4, title: "The Answer".into(),
+            show_title: "Example Show".into(), ..Default::default() };
+        assert_eq!(member_label(&episode), "S3 · E4");
+        let caption = member_caption(&episode);
+        assert_eq!(caption.title.unwrap().to_str().unwrap(), "The Answer");
+        assert_eq!(caption.caption.unwrap().to_str().unwrap(), "Example Show · S3 · E4");
+    }
+
+    fn step(screen: &mut CollectionScreen, ev: ScreenEvent<CollectionHost>,
+        cx: &Cx<'_, CollectionHost>) -> Vec<crate::ui::machine::Stamped<CollectionHost>> {
+        let mut present = crate::ui::present::Present::new();
+        let mut out = Vec::new();
+        let mut fx = Effects::new(&mut out,
+            crate::ui::machine::MachineId::Instance(crate::ui::machine::InstanceId(9)), &mut present);
+        Machine::<CollectionHost>::step(screen, &ev, cx, &mut fx);
+        drop(fx);
+        out
+    }
+
+    fn opens_summary(out: &[crate::ui::machine::Stamped<CollectionHost>]) -> bool {
+        out.iter().any(|e| matches!(e.fx, crate::ui::machine::Fx::App(AppFx::Content(
+            ContentReq::Panel(ContentPanel::CollectionAbout)))))
+    }
+
+    #[test]
+    fn header_ok_opens_the_full_summary_exactly_when_more_is_drawn() {
+        let (mut store, mut screen) = seeded();
+        let short = step(&mut screen, ScreenEvent::Activate(HEADER_ELEM), &cx(store.view(), None));
+        assert!(!screen.summary_more && !opens_summary(&short),
+            "a summary that fits offers no sheet: {}", store.view().current().unwrap().summary);
+
+        store.edit_for_test(|c| c.summary = "A long collection summary that runs on. ".repeat(40));
+        screen.sync(store.view().current().unwrap(), &FixtureMeasure);
+        assert!(screen.summary_more, "the MORE mark is drawn for a truncated summary");
+        let out = step(&mut screen, ScreenEvent::Activate(HEADER_ELEM), &cx(store.view(), None));
+        assert!(opens_summary(&out), "OK on the header opens the summary sheet");
+        assert!(screen.header_marked);
+    }
+
+    #[test]
+    fn focus_near_the_end_asks_the_store_for_the_next_page() {
+        let (mut store, mut screen) = seeded();
+        store.edit_for_test(|c| c.more = true);
+        let key = screen.key_at(store.view().current().unwrap(), 2);
+        let out = step(&mut screen, ScreenEvent::FocusMoved { from: None, to: key, by: By::Dir },
+            &cx(store.view(), Some(key)));
+        let want = out.iter().find_map(|e| match &e.fx {
+            crate::ui::machine::Fx::App(AppFx::Store(_, crate::stores::StoreCmd::Collection(
+                CollectionCmd::Open { target, .. }))) => Some(target.want),
+            _ => None,
+        });
+        assert_eq!(want, Some(3 + PAGE_SIZE), "the next page is requested ahead of the last row");
+
+        store.edit_for_test(|c| c.more = false);
+        let out = step(&mut screen, ScreenEvent::FocusMoved { from: None, to: key, by: By::Dir },
+            &cx(store.view(), Some(key)));
+        assert!(!out.iter().any(|e| matches!(e.fx, crate::ui::machine::Fx::App(AppFx::Store(..)))),
+            "a fully loaded collection asks for nothing");
+    }
+
+    #[test]
+    fn a_member_ok_pushes_its_detail_page() {
+        let (store, mut screen) = seeded();
+        let key = screen.key_at(store.view().current().unwrap(), 1);
+        let out = step(&mut screen, ScreenEvent::PressCommit(crate::ui::machine::PressId(1)), &cx(store.view(), Some(key)));
+        assert!(out.iter().any(|e| matches!(&e.fx, crate::ui::machine::Fx::App(AppFx::Content(
+            ContentReq::Push(ContentArg::Detail { rk, .. }))) if rk == "b")));
+    }
+
+    /// The failed page's read-out is the shared page read-out (#268): page-placed, the untyped
+    /// "can't reach" glyph Home and the Library carry, and never drawn over the live header —
+    /// with a three-line summary the glyph shrinks or drops, without one it keeps its full size.
+    /// The quiet answers (Empty, Unavailable) stay in the grid's region and carry no glyph.
+    #[test]
+    fn a_failed_page_reads_out_with_the_shared_glyph_below_the_header() {
+        let (mut store, _) = seeded();
+        store.edit_for_test(|c| { c.items.clear(); c.summary.clear(); c.status = CollectionStatus::Failed; });
+        let c = store.view().current().unwrap();
+        let overlay = CollectionScreen::status_overlay(Some(c), 0, &FixtureMeasure);
+        assert_eq!(overlay.glyph, Some(crate::ui::icons::Icon::ServerBadgeMinus));
+        let glyph = overlay.glyph_frame().expect("a bare header leaves room for the full glyph");
+        assert_eq!(glyph.h, StatusOverlay::GLYPH_SIZE);
+        assert!(glyph.y >= CollectionScreen::header_text_bottom(c, &FixtureMeasure));
+
+        store.edit_for_test(|c| c.summary = "A long collection summary that runs on. ".repeat(40));
+        let c = store.view().current().unwrap();
+        let bottom = CollectionScreen::header_text_bottom(c, &FixtureMeasure);
+        let overlay = CollectionScreen::status_overlay(Some(c), 0, &FixtureMeasure);
+        if let Some(glyph) = overlay.glyph_frame() {
+            assert!(glyph.y >= bottom, "glyph top {} is above the summary's bottom {bottom}", glyph.y);
+        }
+
+        for status in [CollectionStatus::Empty, CollectionStatus::Unavailable] {
+            store.edit_for_test(|c| c.status = status);
+            let overlay = CollectionScreen::status_overlay(store.view().current(), 0, &FixtureMeasure);
+            assert!(overlay.glyph_frame().is_none() && overlay.kind == StatusKind::Empty,
+                "{status:?} is a quiet answer, not a failure");
+        }
+    }
+
+    /// Down from above a short last row lands on its last member (the Library grid's rule)
+    /// rather than stopping where no card sits directly below.
+    #[test]
+    fn down_onto_a_short_last_row_lands_on_its_last_member() {
+        let (mut store, mut screen) = seeded();
+        store.edit_for_test(|c| c.items = (0..8).map(|i| item(&format!("m{i}"))).collect());
+        screen.sync(store.view().current().unwrap(), &FixtureMeasure);
+        let c = store.view().current().unwrap();
+        let from = screen.key_at(c, 4);
+        let step = Focusable::<CollectionHost>::neighbour(&screen, from, Dir::Down, &cx(store.view(), Some(from)));
+        assert!(matches!(step, Step::Move(key) if key == screen.key_at(c, 7)));
+        let from = screen.key_at(c, 7);
+        assert!(matches!(Focusable::<CollectionHost>::neighbour(&screen, from, Dir::Down,
+            &cx(store.view(), Some(from))), Step::Edge), "the last row has nothing below");
+    }
+
+    /// Back onto a page rebuilt from its first page holds the remembered member while the pages
+    /// above it load, and the entry asks for every member the page knew.
+    #[test]
+    fn a_restore_past_the_first_page_waits_for_its_member() {
+        let (mut store, original) = seeded();
+        let many: Vec<PmsMovie> = (0..PAGE_SIZE + 10).map(|i| item(&format!("m{i}"))).collect();
+        store.edit_for_test(|c| c.items = many.clone());
+        let mut original = original;
+        original.sync(store.view().current().unwrap(), &FixtureMeasure);
+        let focus = original.key_at(store.view().current().unwrap(), PAGE_SIZE + 5);
+        let PageMemory::Collection(memory) = Screen::<CollectionHost>::memory_at(&original, Some(focus)) else { panic!() };
+
+        store.edit_for_test(|c| { c.items = many[..PAGE_SIZE].to_vec(); c.more = true; });
+        let mut restored = CollectionScreen::new(EntryId(9), ServerId::UNSET, "50001".into(), 1, 7, "Set".into());
+        let _ = step(&mut restored, ScreenEvent::RestoreMemory(PageMemory::Collection(memory)), &cx(store.view(), None));
+        let out = step(&mut restored, ScreenEvent::Enter(crate::ui::screen::Enter::Restored), &cx(store.view(), None));
+        let want = out.iter().find_map(|e| match &e.fx {
+            crate::ui::machine::Fx::App(AppFx::Store(_, crate::stores::StoreCmd::Collection(
+                CollectionCmd::Open { target, .. }))) => Some(target.want),
+            _ => None,
+        });
+        assert!(want.is_some_and(|w| w > PAGE_SIZE + 5), "the entry asks for the remembered member's page: {want:?}");
+        restored.sync(store.view().current().unwrap(), &FixtureMeasure);
+        let got = Focusable::<CollectionHost>::reconcile(&restored, focus, &cx(store.view(), Some(focus)));
+        assert_eq!(got, focus, "focus waits on the member rather than falling to the first card");
+
+        store.edit_for_test(|c| { c.items = many.clone(); c.more = false; });
+        restored.sync(store.view().current().unwrap(), &FixtureMeasure);
+        let got = Focusable::<CollectionHost>::reconcile(&restored, focus, &cx(store.view(), Some(focus)));
+        assert_eq!(restored.focused_item(Some(got), &cx(store.view(), Some(got))).unwrap().rk,
+            format!("m{}", PAGE_SIZE + 5));
+    }
+
+    #[test]
+    fn page_memory_restores_the_same_member_after_detail() {
+        let (store, original) = seeded();
+        let focus = original.key_at(store.view().current().unwrap(), 1);
+        let PageMemory::Collection(memory) = Screen::<CollectionHost>::memory_at(&original, Some(focus)) else { panic!() };
+        let mut restored = CollectionScreen::new(EntryId(9), ServerId::UNSET, "50001".into(), 1, 7, "Set".into());
+        restored.restore(&memory);
+        restored.return_pending = true;
+        restored.sync(store.view().current().unwrap(), &FixtureMeasure);
+        let got = Focusable::<CollectionHost>::reconcile(&restored, focus, &cx(store.view(), Some(focus)));
+        assert_eq!(got, focus);
+        assert_eq!(restored.focused_item(Some(got), &cx(store.view(), Some(got))).unwrap().rk, "b");
+    }
+}

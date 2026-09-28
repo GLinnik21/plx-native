@@ -73,6 +73,7 @@ pub mod nav; // the page transition's PRESENTATION, published once a frame from 
 pub mod overdraw; // dev-only DRAW-CLASS ledger + mask — the attribution instrument (docs/backdrop-blur-profiling.md Part 5)
 pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
 pub mod player_hud;
+pub(crate) mod poster_grid; // uniform six-column portrait geometry for collection-like pages
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
 pub(crate) mod present; // RESTRUCTURE spike (spec §4.4): the present gate as a machine with an owner
 pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs it back + activates

@@ -129,6 +129,7 @@ RUN_STREAM_MARK = None  # the remote command text — see _run_stream_pids()
 # root's plxnative-*, so this no longer has to be exhaustive — it's kept for humans / grep)
 ALL_TRIGGERS = [
     "plxnative-detail", "plxnative-detailplay", "plxnative-detailsec", "plxnative-detailcol",
+    "plxnative-collection",
     "plxnative-autoseek", "plxnative-menupick", "plxnative-menu", "plxnative-noaudio",
     "plxnative-grid", "plxnative-autoplay", "plxnative-h265", "plxnative-playidx", "plxnative-url",
     "plxnative-play", "plxnative-server", "plxnative-ffprobe", "plxnative-token", "plxnative-servers",

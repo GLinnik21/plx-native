@@ -504,6 +504,31 @@ pub(crate) fn still_overlay(
     }
 }
 
+/// A persistent categorical LABEL on portrait artwork. This is deliberately separate from the
+/// three watch-state marks: it describes what the item is (for example `SEASON 3` or `S3 · E4`),
+/// while the disc/bar vocabulary describes viewing state. The label stands directly on the
+/// artwork's shared bottom scrim, never in a badge or a fourth corner mark.
+pub(crate) fn poster_label(
+    p: Painter,
+    card: Rect,
+    rad: f32,
+    text: &str,
+    measure: &dyn crate::ui::machine::Measure,
+) {
+    if text.is_empty() { return; }
+    const INSET_X: f32 = 16.0;
+    const INSET_BOT: f32 = 14.0;
+    const SCRIM_H: f32 = 72.0;
+    art_scrim(p, card, rad, SCRIM_H, STILL_SCRIM_A);
+    let run = measure.fit_line(text, (card.w - 2.0 * INSET_X).max(0.0), theme::size::LABEL, true);
+    let cap_h = measure.cap_h(theme::size::LABEL);
+    Label::new(run.as_ptr(), theme::size::LABEL, theme::TEXT_PRIMARY)
+        .bold()
+        .v(VAlign::CapTop)
+        .draw(p, Rect::new(card.x + INSET_X, card.y + card.h - INSET_BOT - cap_h,
+            card.w - 2.0 * INSET_X, cap_h));
+}
+
 /// The gradient a [`still_line`] is read against — height and peak alpha.
 ///
 /// **112 for the PAIR since 2026-09-05**, and the revision states its own reason: "the system's

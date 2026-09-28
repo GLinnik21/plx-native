@@ -1,7 +1,7 @@
 //! **Stores as machines** (restructure spec §2.1/§2.2, phase 4; `docs/stores-as-machines.md`).
 //!
-//! Six data modules provide the application's server-derived state — `browse`, `pms` (the Home
-//! hubs), `metadata`, `search`, `person`, `viewstate`. All six are physically owned by one
+//! Seven data modules provide the application's server-derived state — `browse`, `pms` (the Home
+//! hubs), `metadata`, `search`, `person`, `collection`, `viewstate`. All seven are physically owned by one
 //! [`Stores`] aggregate per `crate::app::bridge::Bridge`, each with its own per-instance state,
 //! adapter and notice (Browse/Person/ViewState landed first; Search, Hubs and Metadata completed
 //! the port). This layer puts ONE entrance in front of each: a [`StoreCmd`] is the complete,
@@ -15,7 +15,7 @@
 //! [`Stores`] value they already hold. There is no generic `apply(cmd)` dispatcher any more — every
 //! store's vocabulary is applied only through its own owner.
 //!
-//! What lives here is the vocabulary and machines plus all six stores' production aggregate; no
+//! What lives here is the vocabulary and machines plus all seven stores' production aggregate; no
 //! data stays in a legacy compatibility global any more (§14 complete). This module names data
 //! crates, `ui::machine` and — since
 //! phase 11's landing schedule — `ui::landgate`, and nothing else (spec §2.1's layer rule;
@@ -77,10 +77,11 @@ pub(crate) mod browse;
 pub(crate) mod hubs;
 pub(crate) mod metadata;
 pub(crate) mod person;
+pub(crate) mod collection;
 pub(crate) mod search;
 pub(crate) mod viewstate;
 
-/// Production store aggregate. All six stores are physical owners here — Browse, Person and
+/// Production store aggregate. All seven stores are physical owners here — Browse, Person and
 /// ViewState landed first; Search, Hubs and Metadata completed the port.
 pub(crate) struct Stores {
     /// The landing schedule belongs to the same application owner as these stores. Two Bridges
@@ -90,6 +91,7 @@ pub(crate) struct Stores {
     pub(crate) hubs: hubs::HubsStore,
     pub(crate) metadata: metadata::MetadataStore,
     pub(crate) person: person::PersonStore,
+    pub(crate) collection: collection::CollectionStore,
     pub(crate) search: search::SearchStore,
     pub(crate) viewstate: std::cell::RefCell<viewstate::ViewStateStore>,
 }
@@ -103,6 +105,7 @@ impl Default for Stores {
             hubs: hubs::HubsStore::default(),
             metadata: metadata::MetadataStore::default(),
             person: person::PersonStore::default(),
+            collection: collection::CollectionStore::default(),
             search: search::SearchStore::default(),
             viewstate: std::cell::RefCell::new(viewstate::ViewStateStore::default()),
         }
@@ -121,6 +124,16 @@ impl Stores {
 
     pub(crate) fn person_run(&mut self, cmd: person::PersonCmd) -> bool {
         self.person.run(cmd)
+    }
+
+    pub(crate) fn collection_run(&mut self, cmd: collection::CollectionCmd) -> bool {
+        self.collection.run(cmd)
+    }
+
+    pub(crate) fn collection_pump(&mut self) -> bool { self.collection.pump(&self.landgate) }
+
+    pub(crate) fn collection_view(&self) -> crate::collection::CollectionView<'_> {
+        self.collection.view()
     }
 
     pub(crate) fn person_pump(&mut self) -> bool {
@@ -177,6 +190,7 @@ impl Stores {
         let browse = std::rc::Rc::clone(&self.browse);
         let hubs = &mut self.hubs;
         let person = &mut self.person;
+        let collection = &mut self.collection;
         let search = &mut self.search;
         let metadata = &mut self.metadata;
         self.viewstate.borrow_mut().run(
@@ -184,6 +198,7 @@ impl Stores {
             &mut |cmd| browse.borrow_mut().run(cmd),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
             &mut |cmd| person.run(cmd),
+            &mut |cmd| collection.run(cmd),
             &mut |cmd| search.run_with_directory(cmd, directory),
             &mut |cmd| metadata.run(cmd),
         )
@@ -198,6 +213,7 @@ impl Stores {
         let browse = std::rc::Rc::clone(&self.browse);
         let hubs = &mut self.hubs;
         let person = &mut self.person;
+        let collection = &mut self.collection;
         let search = &mut self.search;
         let metadata = &mut self.metadata;
         self.viewstate.borrow_mut().pump_with_gate(
@@ -205,6 +221,7 @@ impl Stores {
             &mut |cmd| browse.borrow_mut().run(cmd),
             &mut |hubcmd| hubs.run_with_directory(hubcmd, directory),
             &mut |cmd| person.run(cmd),
+            &mut |cmd| collection.run(cmd),
             &mut |cmd| search.run_with_directory(cmd, directory),
             &mut |cmd| metadata.run(cmd),
         )
@@ -230,6 +247,7 @@ impl Stores {
     pub(crate) fn gen(&self, id: StoreId) -> u32 {
         match id {
             StoreId::Browse => self.browse.borrow().gen(),
+            StoreId::Collection => self.collection.gen(),
             StoreId::Hubs => self.hubs.gen(),
             StoreId::Metadata => self.metadata.gen(),
             StoreId::Person => self.person.gen(),
@@ -252,6 +270,9 @@ impl Stores {
         if let Some(generation) = self.person.take_notice() {
             notices.push((StoreId::Person, generation));
         }
+        if let Some(generation) = self.collection.take_notice() {
+            notices.push((StoreId::Collection, generation));
+        }
         if let Some(generation) = self.search.take_notice() {
             notices.push((StoreId::Search, generation));
         }
@@ -271,6 +292,8 @@ pub(crate) enum StoreId {
     Search,
     Person,
     ViewState,
+    /// Appended so every pre-collection store keeps its recorded ordinal.
+    Collection,
 }
 
 /// Route-scoped background work, distinct from a user command. Polling an idle store must not
@@ -294,13 +317,14 @@ impl StoreWork {
 }
 
 impl StoreId {
-    pub(crate) const ALL: [StoreId; 6] = [
+    pub(crate) const ALL: [StoreId; 7] = [
         StoreId::Browse,
         StoreId::Hubs,
         StoreId::Metadata,
         StoreId::Search,
         StoreId::Person,
         StoreId::ViewState,
+        StoreId::Collection,
     ];
 
     /// The library's ordinal for this store (spec §5.1: the library never names `StoreId`).
@@ -315,6 +339,7 @@ impl StoreId {
     pub(crate) fn name(self) -> &'static str {
         match self {
             StoreId::Browse => "browse",
+            StoreId::Collection => "collection",
             StoreId::Hubs => "hubs",
             StoreId::Metadata => "metadata",
             StoreId::Search => "search",
@@ -333,6 +358,7 @@ pub(crate) enum StoreCmd {
     Metadata(metadata::MetadataCmd),
     Search(search::SearchCmd),
     Person(person::PersonCmd),
+    Collection(collection::CollectionCmd),
     ViewState(viewstate::ViewStateCmd),
 }
 
@@ -344,6 +370,7 @@ impl StoreCmd {
             StoreCmd::Metadata(_) => StoreId::Metadata,
             StoreCmd::Search(_) => StoreId::Search,
             StoreCmd::Person(_) => StoreId::Person,
+            StoreCmd::Collection(_) => StoreId::Collection,
             StoreCmd::ViewState(_) => StoreId::ViewState,
         }
     }
@@ -431,6 +458,6 @@ mod tests {
         for id in StoreId::ALL {
             assert_eq!(StoreId::from_ord(id.ord()), Some(id));
         }
-        assert_eq!(StoreId::from_ord(StoreOrd(6)), None);
+        assert_eq!(StoreId::from_ord(StoreOrd(7)), None);
     }
 }

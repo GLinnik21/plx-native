@@ -191,6 +191,10 @@ pub(crate) fn validate_result(value: &Value) -> Result<(crate::stores::StoreId, 
             crate::person::validate_record(slot, &value["data"])?;
             crate::stores::StoreId::Person
         }
+        Some("collection") => {
+            crate::collection::validate_record(slot, &value["data"])?;
+            crate::stores::StoreId::Collection
+        }
         _ => return Err("unsupported content result"),
     };
     Ok((store, slot))
@@ -232,6 +236,9 @@ pub(crate) fn validate_admission(value: &Value, client: u32) -> Result<(), &'sta
                 return Err("invalid local person admission");
             }
         }
+        Some("collection") if keys(r, &["store","slot","gen","sid","client","job"])
+            && r["slot"] == 0 && r["sid"].as_u64().is_some()
+            && r["client"].as_u64().is_some() && r["job"].is_object() => {}
         _ => return Err("unsupported content admission"),
     }
     Ok(())
