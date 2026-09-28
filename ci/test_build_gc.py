@@ -521,8 +521,11 @@ class InstallDiskWatchTests(unittest.TestCase):
 
 class MakeCheckContractTests(unittest.TestCase):
     def test_host_check_runs_gc_regressions(self):
+        # `make check` is `tools/check-lock.py`'s machine-wide queue wrapper around
+        # `check-unlocked`, which carries the actual recipe (and this assertion);
+        # `make check` still runs it, just serialized.
         lines = (ROOT / "Makefile").read_text().splitlines()
-        start = next(i for i, line in enumerate(lines) if line.startswith("check:"))
+        start = next(i for i, line in enumerate(lines) if line.startswith("check-unlocked:"))
         recipe = []
         for line in lines[start + 1:]:
             if line and not line.startswith(("\t", "#")):
