@@ -1208,6 +1208,10 @@ pub(crate) fn preview_usage() -> String {
             mode: "direct",
             watched: "finished",
         },
+        DiagEvent::EnhancementRefused {
+            boost_dialog: true,
+            normalize_loudness: false,
+        },
     ] {
         let body =
             // The REAL environment this build would report, not a placeholder: it is the one
