@@ -396,7 +396,7 @@
   "browse.auth.roster_unreachable": "Не ўдалося загрузіць профілі — праверце злучэнне.",
   "browse.auth.roster_refused": "З гэтага профілю нельга змяніць профіль.",
   "browse.auth.switch_retry": "Не ўдалося змяніць профіль. Паспрабуйце зноў.",
-  "browse.auth.authority_failed": "Не ўдалося змяніць крыніцу сеанса. Паспрабуйце зноў.",
+  "browse.auth.authority_failed": "Не ўдалося змяніць крыніцу сеансу. Паспрабуйце зноў.",
   "browse.auth.finish_failed": "Не ўдалося завяршыць уваход. Паспрабуйце зноў.",
   "browse.auth.start_failed": "Не ўдалося пачаць уваход. Паспрабуйце зноў.",
   "browse.auth.rediscover_failed": "Не ўдалося перазапусціць пошук сервераў. Паспрабуйце зноў.",
