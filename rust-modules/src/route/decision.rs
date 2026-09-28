@@ -5147,6 +5147,12 @@ pub(super) fn measure_remote_original(url: &str, source_kbps: i64) -> Option<cra
 /// Encoder spin-up stays inside the existing 4s probe budget; a miss fails toward HLS rather
 /// than waiting longer. First-byte wait on this sample is the remux coming up, not a measure of
 /// transport capacity.
+///
+/// Issue #266: with an enhanced `audio` this is the FIRST decision the params reach, so the
+/// server's refusal (or silent ignoring) of them is caught here, not read as "no Original": the
+/// probe re-asks once with `NONE` on the same session — replacing the enhanced registration
+/// before any enhanced `start.mkv` is fetched — samples that plain remux, and reports
+/// [`RemuxProbe::enhancement_refused`] so the play is built without the params and records it.
 pub(super) fn measure_remote_remux(
     client: &crate::plex::Client,
     rk: &str,
@@ -5157,29 +5163,42 @@ pub(super) fn measure_remote_remux(
     // Issue #266: the DSP the play-path decision will carry on this same session, so the sample
     // is the remux that plays (`build_stream`'s `pre_audio`); `NONE` without Plex Pass.
     audio: crate::plex::AudioEnhancements,
-) -> Option<crate::abr::CapacityObservation> {
-    let spec = transcode_spec(
-        rk,
-        session,
-        session,
-        crate::plex::TranscodeOffset::Fresh,
-        audio_stream_id,
-        subtitle_stream_id,
-        crate::plex::EncodeContract {
-            remux: true,
-            delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
-            no_video_copy: false,
-            ceiling: None,
-            audio,
-        },
-    );
-    let Some(decision) = client.transcode_decision(&spec) else {
+) -> RemuxProbe {
+    let spec_for = |audio| {
+        transcode_spec(
+            rk,
+            session,
+            session,
+            crate::plex::TranscodeOffset::Fresh,
+            audio_stream_id,
+            subtitle_stream_id,
+            crate::plex::EncodeContract {
+                remux: true,
+                delivery: crate::plex::TranscodeDelivery::ProgressiveMkv,
+                no_video_copy: false,
+                ceiling: None,
+                audio,
+            },
+        )
+    };
+    let mut spec = spec_for(audio);
+    let mut decision = client.transcode_decision(&spec);
+    let mut enhancement_refused = false;
+    if audio.any() && enhancement_fallback(decision.as_ref(), audio) == Fallback::Retry {
+        // Nothing enhanced has been fetched yet: re-deciding on the same session replaces the
+        // enhanced registration, exactly as the play path's own fallback does.
+        crate::player::log("enhancement: refused/ignored by server in remote remux preflight; fell back");
+        enhancement_refused = true;
+        spec = spec_for(crate::plex::AudioEnhancements::NONE);
+        decision = client.transcode_decision(&spec);
+    }
+    let Some(decision) = decision else {
         crate::player::log("auto: remote remux preflight had no /decision; using HLS");
-        return None;
+        return RemuxProbe { sample: None, enhancement_refused };
     };
     if refusal(&decision).is_some() {
         crate::player::log("auto: remote remux preflight refused by /decision; using HLS");
-        return None;
+        return RemuxProbe { sample: None, enhancement_refused };
     }
     let sample = measure_remote_original(&client.transcode_start_url(&spec).to_url(), source_kbps);
     if sample.is_none() {
@@ -5187,7 +5206,15 @@ pub(super) fn measure_remote_remux(
         // would 503 that next start; physical-stop keeps the Streaming Resource.
         let _ = client.transcode_stop_physical(session);
     }
-    sample
+    RemuxProbe { sample, enhancement_refused }
+}
+
+/// What [`measure_remote_remux`] learned: the capacity sample (`None` = no usable sample, fall to
+/// HLS), and whether the server refused or ignored the enhancement it was asked for — in which case
+/// the sample is of the PLAIN remux and the play must be built without the params.
+pub(super) struct RemuxProbe {
+    pub(super) sample: Option<crate::abr::CapacityObservation>,
+    pub(super) enhancement_refused: bool,
 }
 
 /// MDE handshake result. `None` from [`server_decision`] means the body was missing or unusable:

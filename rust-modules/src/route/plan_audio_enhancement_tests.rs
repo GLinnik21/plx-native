@@ -455,6 +455,60 @@ fn remote_probe_and_play_decision_carry_same_params() {
     crate::plex::reset_servers_for_test();
 }
 
+/// The remote remux probe is the FIRST decision the enhanced ask reaches, so a server that refuses
+/// (or ignores) it must be caught there. Before this, the probe's refusal read as "no Original" and
+/// the play dropped to HLS — where main plays the Original remux — and, with nothing recorded, did
+/// so on every play. Now the probe re-asks once without the params on the same session, samples
+/// THAT remux, and the play is the plain Original remux with the outcome `Refused`.
+#[track_caller]
+fn remote_probe_fallback(mode: EnhMode) {
+    let mut ps = PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let bytes = remote_probe_plan(320).unwrap().target_bytes;
+    let r = resolve(&mut ps, MDE_DIRECTPLAY, mode, bytes, "/library/parts/960001/1/file.avi", "ac3",
+        |sid| {
+            let mut item = ac3_item(sid);
+            item.bitrate = 320;
+            item
+        },
+        |env, client| {
+            client.set_link(crate::plex::probe::Location::Remote);
+            env.quality = Quality::Auto;
+        });
+    assert!(r.plan.url.contains("start.mkv"), "the Original remux, not HLS: {} {:?}", r.plan.url, r.requests);
+    assert!(!r.plan.url.contains(".m3u8"), "{}", r.plan.url);
+    assert!(r.plan.contract.remux, "an Original remux");
+    assert_eq!(r.plan.contract.delivery, crate::plex::TranscodeDelivery::ProgressiveMkv);
+    assert_eq!(r.plan.contract.audio, crate::plex::AudioEnhancements::NONE);
+    assert_eq!(query_param(&r.plan.url, "normalizeLoudness"), None, "{}", r.plan.url);
+    assert_eq!(query_param(&r.plan.url, "boostDialog"), None, "{}", r.plan.url);
+    assert_eq!(r.plan.enhancement, EnhancementOutcome::Refused);
+    let decisions = transcode_decisions(&r.requests);
+    assert!(decisions.iter().any(|d| query_param(d, "normalizeLoudness") == Some("1")), "asked once: {decisions:?}");
+    // Only the probe's first decision carries the params: its re-ask and the play decision do not,
+    // and no enhanced start.mkv was ever fetched — nothing enhanced is left on the session.
+    assert_eq!(decisions.iter().filter(|d| any_param(&[d.to_string()])).count(), 1, "{decisions:?}");
+    assert!(!r.requests.iter().any(|q| q.contains("start.mkv") && any_param(&[q.clone()])), "{:?}", r.requests);
+    let sessions: Vec<_> = decisions.iter().map(|d| query_param(d, "X-Plex-Session-Identifier")).collect();
+    assert!(sessions.windows(2).all(|w| w[0] == w[1]), "one session throughout: {sessions:?}");
+    assert!(r.plan.verdict.is_none(), "a refused ENHANCEMENT is not a refused playback");
+    apply_plan(&mut ps, r.plan, "rk-enh");
+    assert_eq!(ps.cur_enhancement, EnhancementOutcome::Refused);
+    crate::plex::reset_servers_for_test();
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn remote_probe_refused_falls_back_to_remux() {
+    remote_probe_fallback(EnhMode::Refuse);
+}
+
+#[test]
+#[cfg(feature = "devtriggers")]
+fn remote_probe_ignored_falls_back_to_remux() {
+    remote_probe_fallback(EnhMode::Ignore);
+}
+
 /// M2's AAC 5.1: the audio is transcoded with or without the params, so a transcode in the answer
 /// proves nothing. Graded at the classifier, because on this host's assumed caps every track the
 /// direct-play pick can carry is in the profile's copy list — the resolve cannot reach the case,

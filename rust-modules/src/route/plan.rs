@@ -1543,6 +1543,8 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     // on this playback identity, and a later HLS `/decision` must physical-stop that encoder
     // first. A successful remux Original leaves the session for the play-path decision.
     let mut remux_probed = false;
+    // Issue #266: the remote remux probe asked the enhancement first and the server said no.
+    let mut probe_refused_enhancement = false;
     // A preview that is already not direct-playable (MDE denied Original, or the extra carries
     // no Part) is refused unconditionally below by `preview::accepts_direct_play` regardless of
     // what Auto's bandwidth probe would decide — `adaptive` cannot rescue a `directplay=false`
@@ -1573,7 +1575,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
                         // A client-rendered subtitle is not a burn; only env.sub_sid requests one.
                         let probe_audio = encode_audio_id(true, audio_id, env.audio_sid, tracks, audio_prefs);
                         put_selection(env.sid, plan.part_id, probe_audio, env.sub_sid);
-                        measure_remote_remux(
+                        let probe = measure_remote_remux(
                             client,
                             rk,
                             &session,
@@ -1581,7 +1583,9 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
                             env.sub_sid,
                             source_transport_kbps,
                             pre_audio,
-                        )
+                        );
+                        probe_refused_enhancement = probe.enhancement_refused;
+                        probe.sample
                     }
                 })
                 .flatten();
@@ -1662,7 +1666,7 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
     } else {
         RouteFamily::Other
     };
-    let audio = if remux && planned_family != RouteFamily::Other {
+    let audio = if remux && planned_family != RouteFamily::Other && !probe_refused_enhancement {
         enhancement_for(plan.auto_original.as_ref(), RouteFamily::Remux)
     } else {
         crate::plex::AudioEnhancements::NONE
@@ -1826,6 +1830,9 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
             plan.contract,
         );
         decision = client.transcode_decision(&sp);
+    } else if probe_refused_enhancement && pre_audio.any() {
+        // The remote remux probe already asked and was refused; the play was built without it.
+        plan.enhancement = super::decision::EnhancementOutcome::Refused;
     } else {
         plan.enhancement = classify_outcome(decision.as_ref(), plan.audio.as_ref(), audio);
     }
