@@ -58,22 +58,75 @@ fn corners_come_from_their_poster_and_the_front_poster_is_on_top() {
             "bottom corner = front, darkened: {c:?}"
         );
     }
-    let centre = at(&out, FAN_W / 2, (0.47 * FAN_H as f32) as u32);
+    let centre = at(&out, FAN_W / 2, (0.32 * FAN_H as f32) as u32);
     assert!(
         close(centre, [200, 200, 200], 2),
         "front poster on top: {centre:?}"
     );
-    // The side posters show beside the front one.
+    // The side posters show beside the front one, unshaded (the mock dims neither).
     assert!(
-        close(at(&out, 40, 190), [8, 164, 8], 4),
+        close(at(&out, 63, 191), [10, 200, 10], 4),
         "left poster behind: {:?}",
-        at(&out, 40, 190)
+        at(&out, 63, 191)
     );
     assert!(
-        close(at(&out, 260, 190), [8, 8, 164], 4),
+        close(at(&out, 232, 179), [10, 10, 200], 4),
         "right poster behind: {:?}",
-        at(&out, 260, 190)
+        at(&out, 232, 179)
     );
+}
+
+/// The output pixel containing the point `(lx, ly)` of a member's own frame, for a member placed
+/// by `p` (the same rotation [`draw`] inverts), and that member's half-extents.
+fn pixel_of(p: &Placement, lx: f32, ly: f32) -> (u32, u32) {
+    let (hw, hh) = member_half();
+    let (cx, cy) = (p.left * FAN_W as f32 + hw, p.top * FAN_H as f32 + hh);
+    let cos = (1.0 - p.sin * p.sin).sqrt();
+    let (dx, dy) = (lx * cos - ly * p.sin, lx * p.sin + ly * cos);
+    ((cx + dx).floor() as u32, (cy + dy).floor() as u32)
+}
+
+fn member_half() -> (f32, f32) {
+    (MEMBER_FRAC * FAN_W as f32 / 2.0, MEMBER_FRAC * FAN_H as f32 / 2.0)
+}
+
+/// Every poster in the app has rounded corners, and so do the members baked into a fan: a pixel
+/// just inside a member's corner square but outside its arc is the ground (or a shadow over it),
+/// never the poster, while the member's centre and edge midpoints are the poster. Checked on the
+/// front member and on a TILTED back member, whose corner is only round if the mask rotates with
+/// it.
+#[test]
+fn baked_members_have_rounded_corners() {
+    let ground = ring([1.0, 0.0, 0.0]);
+    let front = member([200, 200, 200], ground);
+    let left = member([10, 200, 10], ground);
+    let right = member([10, 10, 200], ground);
+    let out = compose(&front, Some(&left), Some(&right));
+    let (hw, hh) = member_half();
+    let not_poster = |p: (u32, u32), poster: [u8; 3], what: &str| {
+        let c = at(&out, p.0, p.1);
+        assert!(!close(c, poster, 40), "{what} at {p:?} is poster colour {c:?}");
+        assert!(c[0] > 60 && c[1] < 40 && c[2] < 40, "{what} at {p:?} is not ground/shadow: {c:?}");
+    };
+    let is_poster = |p: (u32, u32), poster: [u8; 3], what: &str| {
+        let c = at(&out, p.0, p.1);
+        assert!(close(c, poster, 3), "{what} at {p:?} is {c:?}, not poster {poster:?}");
+    };
+
+    // Probes sit 3 px inside an edge (clear of the 1-px anti-aliasing and the rim), and 1 px
+    // inside BOTH edges at a corner — inside the corner square, outside a 7.2-px arc.
+    let grey = [200, 200, 200];
+    is_poster(pixel_of(&FRONT, 0.0, 0.0), grey, "front centre");
+    is_poster(pixel_of(&FRONT, 0.0, -(hh - 3.0)), grey, "front top edge");
+    is_poster(pixel_of(&FRONT, -(hw - 3.0), 0.0), grey, "front left edge");
+    is_poster(pixel_of(&FRONT, hw - 3.0, 0.0), grey, "front right edge");
+    not_poster(pixel_of(&FRONT, hw - 1.0, -(hh - 1.0)), grey, "front top-right corner");
+    not_poster(pixel_of(&FRONT, -(hw - 1.0), -(hh - 1.0)), grey, "front top-left corner");
+
+    let blue = [10, 10, 200];
+    is_poster(pixel_of(&BACK_RIGHT, hw - 3.0, 0.0), blue, "right outer edge");
+    is_poster(pixel_of(&BACK_RIGHT, hw - 3.0, hh * 0.5), blue, "right outer edge, low");
+    not_poster(pixel_of(&BACK_RIGHT, hw - 1.0, -(hh - 1.0)), blue, "right top-right corner");
 }
 
 /// Without UltraBlurColors a corner is the averaged pixels of that corner of the poster.
@@ -116,8 +169,9 @@ fn the_scrim_darkens_only_the_bottom() {
     let bottom = at(&out, 2, FAN_H - 1)[0];
     assert!(close(at(&out, 2, 2), [128, 128, 128], 1));
     assert_eq!(top, mid, "above the scrim nothing changes");
+    // `.scr`: linear to rgba(0,0,0,.55) at the bottom edge, so 128 keeps 45%.
     assert!(
-        bottom < 50,
+        (bottom as i32 - 58).abs() <= 2,
         "the bottom edge is darkened for the live title: {bottom}"
     );
 }

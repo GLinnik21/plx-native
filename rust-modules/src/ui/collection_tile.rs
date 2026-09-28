@@ -11,13 +11,19 @@
 //! grid, a Home shelf and Search draw the same tile without asking. It names no application type:
 //! the caller decides that a row is a thumb-less collection and passes the name.
 //!
-//! A server's automatic 2×2 composite IS artwork and draws as an ordinary poster; replacing it
-//! with a client-drawn fan of the members is a separate piece of work.
+//! A server's automatic 2×2 composite is replaced by the poster store with a baked FAN of the
+//! first members (`app::adapters::poster::fan`). The fan leaves the name out of its pixels: the
+//! card sets it LIVE over the bake through [`draw_fan_name`], so a fan tile is told apart from its
+//! neighbours unfocused too, exactly as this neutral tile is.
 //!
 //! The name wraps to two lines through [`TextView`]'s live-font path, the same leaf-level measure
 //! `widgets::LegacyMeasure` documents: `card` is drawn by callers that hold no `Measure`, and the
 //! card composite skips recording passes entirely, so no recorded layout depends on this text.
 use crate::ui::icons::{self, Icon};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::os::raw::c_int;
+use std::rc::Rc;
 use crate::ui::label::HAlign;
 use crate::ui::text_view::TextView;
 use crate::ui::{theme, Painter, Rect};
@@ -79,6 +85,118 @@ pub(crate) fn draw(p: Painter, r: Rect, rad: f32, name: &str) {
     }
 }
 
+// ── The name on a baked fan: `Collections.dc.html` G1's `.art b`, whose CSS is written for a
+// 250×375 tile. Every length is scaled by the tile's RESTING width over that one.
+
+/// The mock tile's width: the unit the lengths below are written in.
+const FAN_MOCK_W: f32 = 250.0;
+/// `left:18px; right:18px`.
+const FAN_NAME_SIDE: f32 = 18.0;
+/// `bottom:22px` — the bottom of the last line's box.
+const FAN_NAME_BOTTOM: f32 = 22.0;
+/// `font: 700 24px/1.08` — the caption rung, bold, on a 1.08 line pitch.
+const FAN_NAME_SIZE: f32 = theme::size::CAPTION as f32;
+const FAN_NAME_LEAD: f32 = 1.08;
+/// `text-shadow: 0 2px …` — the drop's offset.
+const FAN_NAME_SHADOW_DY: f32 = 2.0;
+const FAN_NAME_LINES: usize = 2;
+/// Where CSS puts the cap top inside a 1.08 line box, in em: the half-leading plus the font's
+/// ascent-over-cap-height, about 0.15. [`TextView`] draws line 0's cap top AT its frame's `y`.
+const FAN_NAME_CAP_DROP: f32 = 0.15;
+
+/// Whether `key` is a server composite — the thumb the poster store bakes into our fan.
+pub(crate) fn is_fan(key: &str) -> bool {
+    crate::plex::collections::composite_parts(key).is_some()
+}
+
+/// A fan name's settled layout for one tile width: the upper-cased text, its size, and the
+/// BALANCED wrap width (`text-wrap: balance` — the narrowest column that keeps the line count).
+struct FanName {
+    text: String,
+    sz: c_int,
+    wrap_w: f32,
+}
+
+thread_local! {
+    /// Per (key, name, resting width): `None` when the key is not a fan. Settled once, so a frame
+    /// pays one lookup per tile rather than an upper-casing, a classification and a search.
+    static FAN_NAMES: RefCell<HashMap<u64, Option<Rc<FanName>>>> = RefCell::new(HashMap::new());
+}
+/// A bound on [`FAN_NAMES`]; past it the memo starts over (a library's collections are far fewer).
+const FAN_NAMES_CAP: usize = 512;
+
+fn fan_view(text: &str, sz: c_int, col: [f32; 4]) -> TextView<'_> {
+    TextView::new(text, sz, col)
+        .bold()
+        .h(HAlign::Center)
+        .max_lines(FAN_NAME_LINES)
+        .leading(sz as f32 * FAN_NAME_LEAD)
+}
+
+fn fan_name(key: &str, name: &str, rest_w: f32) -> Option<Rc<FanName>> {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (key, name, rest_w.to_bits()).hash(&mut h);
+    let id = h.finish();
+    if let Some(hit) = FAN_NAMES.with(|m| m.borrow().get(&id).cloned()) {
+        return hit;
+    }
+    let settled = (is_fan(key) && !name.is_empty()).then(|| Rc::new(settle(name, rest_w)));
+    FAN_NAMES.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.len() >= FAN_NAMES_CAP {
+            m.clear();
+        }
+        m.insert(id, settled.clone());
+    });
+    settled
+}
+
+/// Upper-case, size and balance a fan name for a tile `rest_w` wide.
+fn settle(name: &str, rest_w: f32) -> FanName {
+    let k = rest_w / FAN_MOCK_W;
+    let sz = (FAN_NAME_SIZE * k).round().max(1.0) as c_int;
+    let text = name.to_uppercase();
+    let column = (rest_w - 2.0 * FAN_NAME_SIDE * k).max(1.0).floor();
+    let view = fan_view(&text, sz, theme::FAN_NAME_INK);
+    let lh = sz as f32 * FAN_NAME_LEAD;
+    let fits = |w: f32| !view.truncates(w) && view.measure_h(w) <= lh * FAN_NAME_LINES as f32;
+    let mut wrap_w = column;
+    if view.measure_h(column) > lh && fits(column) {
+        // Two lines: the narrowest whole-pixel column that still sets it in two, never narrower
+        // than its widest word (which would be elided rather than wrapped).
+        let widest = text
+            .split_whitespace()
+            .map(|w| fan_view(w, sz, theme::FAN_NAME_INK).last_line_w(1.0e6))
+            .fold(0.0f32, f32::max);
+        let (mut lo, mut hi) = ((column * 0.5).max(widest.ceil()).floor(), column);
+        while hi - lo > 1.0 {
+            let mid = ((lo + hi) * 0.5).floor();
+            if fits(mid) { hi = mid } else { lo = mid }
+        }
+        wrap_w = hi;
+    }
+    FanName { text, sz, wrap_w }
+}
+
+/// Set a collection's NAME over its baked fan, as G1 does: centred, upper-case, at most two
+/// balanced lines, its last line's box `22px` above the tile's bottom, over a drop.
+///
+/// `rest` is the tile's RESTING rect and `r` the rect it is drawn at (popped when focused). The
+/// size and the wrap come from `rest`, so a focus pop never re-wraps; the block rides `r`'s centre
+/// and bottom so it moves with the art. Does nothing when `key` is not a fan.
+pub(crate) fn draw_fan_name(p: Painter, rest: Rect, r: Rect, key: &str, name: &str) {
+    let Some(f) = fan_name(key, name, rest.w) else { return };
+    let k = rest.w / FAN_MOCK_W;
+    let ink = fan_view(&f.text, f.sz, theme::FAN_NAME_INK);
+    let h = ink.measure_h(f.wrap_w);
+    let top = r.y + r.h - FAN_NAME_BOTTOM * k - h + FAN_NAME_CAP_DROP * f.sz as f32;
+    let at = Rect::new(r.cx() - f.wrap_w * 0.5, top, f.wrap_w, h);
+    let drop = Rect::new(at.x, at.y + FAN_NAME_SHADOW_DY * k, at.w, at.h);
+    fan_view(&f.text, f.sz, theme::FAN_NAME_SHADOW).draw(p, drop);
+    ink.draw(p, at);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,5 +231,33 @@ mod tests {
             .collect();
         assert!(sizes.len() <= 2, "a 1.08 pop spans at most two cached masks: {sizes:?}");
         assert!(sizes.iter().all(|px| px % 4 == 0));
+    }
+
+    #[test]
+    fn only_a_server_composite_is_a_fan() {
+        assert!(is_fan("/library/collections/7/composite/1700000000?width=400"));
+        assert!(!is_fan("/library/metadata/7/thumb/1700000000"));
+        assert!(!is_fan(""));
+    }
+
+    /// G1's name: upper-case, 24px at the mock's 250-px tile and scaled with the RESTING width,
+    /// and a two-line name set in the narrowest column that keeps it on two lines.
+    #[test]
+    fn a_fan_name_is_upper_cased_scaled_and_balanced() {
+        let _serial = crate::testlock::serial();
+        let short = settle("Cars", 250.0);
+        assert_eq!(short.text, "CARS");
+        assert_eq!(short.sz, 24);
+        assert_eq!(short.wrap_w, 250.0 - 36.0, "one line keeps the full column");
+        assert_eq!(settle("Cars", 200.0).sz, 19, "sized from the tile, not fixed");
+
+        let long = settle("Harbor Lights Mysteries", 250.0);
+        let view = fan_view(&long.text, long.sz, theme::FAN_NAME_INK);
+        let lh = long.sz as f32 * FAN_NAME_LEAD;
+        let column = 250.0 - 36.0;
+        assert!(view.measure_h(column) > lh && !view.truncates(column), "the probe name sets in two lines");
+        assert!(long.wrap_w < column, "balanced narrower than the column: {}", long.wrap_w);
+        assert!(!view.truncates(long.wrap_w) && view.measure_h(long.wrap_w) <= 2.0 * lh);
+        assert!(view.truncates(long.wrap_w - 1.0), "and no narrower column keeps two lines");
     }
 }

@@ -622,7 +622,9 @@ pub(crate) fn draw_tile(
     // composite pass; a near-neighbour mid-pop (s slightly >1) lifts smoothly toward the focused
     // shadow via `f`.
     let f = ((s - 1.0) / sty.ring_denom()).clamp(0.0, 1.0);
-    card(p, rect, art, rad, false, 1.0, f);
+    // `card` takes the RESTING rect and the scale, not the popped rect: whatever it sets from the
+    // tile's size (a fan's live name) must not re-layout on every frame of a pop.
+    card(p, rect.scaled(1.0 / s), art, rad, true, s, f);
     if let Some(frac) = resume {
         resume_bar(p, rect, frac, rad);
     }
@@ -740,7 +742,9 @@ pub(crate) fn draw_focused(
     // Home Screen focus treatment: soft drop-shadow + 1px perimeter sheen, both FOLDED into card()'s
     // single composite pass and ramped in with the pop `f` (the same 0→1 pop scalar the ring used).
     let f = ((s - 1.0) / sty.ring_denom()).clamp(0.0, 1.0);
-    card(p, rect, art, rad, false, 1.0, f);
+    // `card` takes the RESTING rect and the scale, not the popped rect: whatever it sets from the
+    // tile's size (a fan's live name) must not re-layout on every frame of a pop.
+    card(p, rect.scaled(1.0 / s), art, rad, true, s, f);
     if let Some(frac) = resume {
         resume_bar(p, rect, frac, rad);
     }

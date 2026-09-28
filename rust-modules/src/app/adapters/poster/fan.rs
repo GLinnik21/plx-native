@@ -1,9 +1,12 @@
 //! The collection FAN: what a collection shows when its thumb is the server's generated 2×2
-//! composite (`/library/collections/{rk}/composite/{stamp}`). The first three members' posters
-//! are fanned — the second rotated left behind, the third rotated right behind, the first centred
-//! on top — over a four-corner gradient combined from their `UltraBlurColors` (top-left from the
-//! left poster, top-right from the right one, both bottom corners from the front one), with a
-//! bottom scrim so the title the card draws LIVE stays legible. The title is never baked.
+//! composite (`/library/collections/{rk}/composite/{stamp}`), laid out as `Collections.dc.html`
+//! G1 draws it. The first three members' posters are fanned in the UPPER part of the tile as
+//! rounded cards with a rim and a soft shadow — the second rotated left behind, the third rotated
+//! right behind, the first upright on top — over a four-corner gradient combined from their
+//! `UltraBlurColors` (top-left from the left poster, top-right from the right one, both bottom
+//! corners from the front one), with a bottom scrim so the collection's name, which the card sets
+//! LIVE in the free lower part (`ui::collection_tile::draw_fan_name`), stays legible. The name is
+//! never baked.
 //!
 //! **Rendered once.** The poster worker bakes on the CPU into ONE image, persists it as PNG under
 //! a stamp-keyed [`crate::imgcache::classify_baked`] entry, and delivers it as an ordinary
@@ -28,7 +31,7 @@ pub(super) const FAN_H: u32 = 450;
 pub(super) const FAN_MEMBERS: usize = 3;
 /// The baked-image kind, versioned: change it whenever [`compose`]'s output changes so every
 /// persisted fan re-bakes instead of showing the old look until its stamp moves.
-pub(super) const FAN_KIND: &str = "fan.1";
+pub(super) const FAN_KIND: &str = "fan.2";
 
 /// The store key for a thumb that is a server composite; `None` for every other path.
 pub(super) fn fan_key(thumb: &str) -> Option<String> {
@@ -117,28 +120,61 @@ impl Member {
     }
 }
 
-/// Where a poster lands, in output pixels; `sin` is the sine of its tilt (positive = clockwise on
-/// screen). Tilts are constants, so no transcendental is evaluated here (`ci/allow/libm.txt`).
-struct Placement {
-    cx: f32,
-    cy: f32,
-    w: f32,
-    sin: f32,
-    shade: f32,
+// ── The G1 tile (`Collections.dc.html`, section G), whose CSS is written for a 250×375 tile.
+// Every length below is that mock's, in mock pixels, and [`mock_px`] carries it into the bake.
+
+/// The mock tile's width, in mock pixels: the unit every `*_MOCK` length is written in.
+const MOCK_TILE_W: f32 = 250.0;
+
+/// A mock length in bake pixels. The bake is the same 2:3 tile at [`FAN_W`] = 300, so ×1.2.
+fn mock_px(v: f32) -> f32 {
+    v * FAN_W as f32 / MOCK_TILE_W
 }
 
-/// sin(10°): how far the two back posters lean out.
-const TILT_SIN: f32 = 0.173_648_18;
-const SHADOW_DROP: f32 = 6.0;
-const SHADOW_SOFT: f32 = 8.0;
+/// `.mc { width:44%; height:44% }`. Percentages of a 2:3 tile, so the box is 110×165 mock px —
+/// itself exactly 2:3 — and a member's HEIGHT is 44% of the tile's height whichever way it is
+/// read (198 of 450 bake px, 132 wide). The poster is cover-fitted into that box, as before.
+const MEMBER_FRAC: f32 = 0.44;
+/// `.mc { border-radius:6px }`.
+const MEMBER_RADIUS_MOCK: f32 = 6.0;
+/// `.mc { box-shadow: 0 6px 14px rgba(0,0,0,.45) }` — offset, blur, alpha.
+const SHADOW_DY_MOCK: f32 = 6.0;
+const SHADOW_BLUR_MOCK: f32 = 14.0;
 const SHADOW_ALPHA: f32 = 0.45;
-/// Where the title scrim starts (fraction of height) and how dark it ends.
+/// `.mc { box-shadow: …, inset 0 0 0 1px rgba(255,255,255,.18) }` — the rim's width and alpha.
+const RIM_W_MOCK: f32 = 1.0;
+const RIM_ALPHA: f32 = 0.18;
+/// `.scr { height:45%; background:linear-gradient(transparent, rgba(0,0,0,.55)) }`: the scrim
+/// starts at 55% of the height and darkens LINEARLY to 0.55 at the bottom edge.
 const SCRIM_FROM: f32 = 0.55;
-const SCRIM_MAX: f32 = 0.7;
+const SCRIM_MAX: f32 = 0.55;
 
-/// Composite the fan. `front` is the collection's first member; `left`/`right` the second and
-/// third when they exist. Output is exactly [`FAN_W`]×[`FAN_H`], opaque. Everything is composed
-/// in place in the one output buffer, so a bake's scratch is that buffer plus the members.
+/// sin(9°) and sin(8°): `.c1 { rotate(-9deg) }` and `.c2 { rotate(8deg) }`. Constants, so no
+/// transcendental is evaluated at bake time (`ci/allow/libm.txt`).
+const SIN_9: f32 = 0.156_434_46;
+const SIN_8: f32 = 0.139_173_1;
+
+/// Where a member lands, as the mock places it: `left`/`top` of its box as fractions of the tile,
+/// and the sine of its tilt (positive = clockwise on screen). CSS rotates about the box's centre.
+struct Placement {
+    left: f32,
+    top: f32,
+    sin: f32,
+}
+
+/// `.c1` — the collection's SECOND member, back left.
+const BACK_LEFT: Placement = Placement { left: 0.18, top: 0.14, sin: -SIN_9 };
+/// `.c2` — the THIRD member, back right, over `.c1`.
+const BACK_RIGHT: Placement = Placement { left: 0.40, top: 0.12, sin: SIN_8 };
+/// `.c3` — the FIRST member, upright, on top.
+const FRONT: Placement = Placement { left: 0.28, top: 0.10, sin: 0.0 };
+
+/// Composite the fan in the mock's paint order: the UltraBlur ground (`.ubg`), the scrim
+/// (`.scr`, UNDER the members), then `.c1`, `.c2`, `.c3`. `front` is the collection's first
+/// member; `left`/`right` the second and third when they exist. Output is exactly
+/// [`FAN_W`]×[`FAN_H`], opaque. The name the mock sets at the bottom is drawn LIVE by the card
+/// (`ui::collection_tile::draw_fan_name`), never baked. Everything is composed in place in the one
+/// output buffer, so a bake's scratch is that buffer plus the members.
 pub(super) fn compose(front: &Member, left: Option<&Member>, right: Option<&Member>) -> Rgba {
     let (w, h) = (FAN_W, FAN_H);
     let (wf, hf) = (w as f32, h as f32);
@@ -151,94 +187,100 @@ pub(super) fn compose(front: &Member, left: Option<&Member>, right: Option<&Memb
         h,
         px: vec![255u8; (w * h * 4) as usize],
     };
+    let y0 = SCRIM_FROM * hf;
     for y in 0..h {
         let fy = y as f32 / (hf - 1.0);
+        let t = ((y as f32 + 0.5 - y0) / (hf - y0)).clamp(0.0, 1.0);
+        let keep = 1.0 - SCRIM_MAX * t;
         for x in 0..w {
             let fx = x as f32 / (wf - 1.0);
             let c: [f32; 3] = std::array::from_fn(|k| {
                 let top = tl[k] + (tr[k] - tl[k]) * fx;
                 let bot = bl[k] + (br[k] - bl[k]) * fx;
-                top + (bot - top) * fy
+                (top + (bot - top) * fy) * keep
             });
             out.put(x, y, c);
         }
     }
-    let tilt = TILT_SIN;
-    // Sized and inset so a tilted back poster's outer corner stays ~10 px inside the canvas
-    // rather than being cut by it.
-    let side = |cx: f32, sin: f32| Placement {
-        cx: cx * wf,
-        cy: 0.43 * hf,
-        w: 0.46 * wf,
-        sin,
-        shade: 0.82,
-    };
     if let Some(m) = left {
-        draw(&mut out, &m.poster, &side(0.32, -tilt));
+        draw(&mut out, &m.poster, &BACK_LEFT);
     }
     if let Some(m) = right {
-        draw(&mut out, &m.poster, &side(0.68, tilt));
+        draw(&mut out, &m.poster, &BACK_RIGHT);
     }
-    let centre = Placement {
-        cx: 0.5 * wf,
-        cy: 0.47 * hf,
-        w: 0.6 * wf,
-        sin: 0.0,
-        shade: 1.0,
-    };
-    draw(&mut out, &front.poster, &centre);
-    let y0 = SCRIM_FROM * hf;
-    for y in 0..h {
-        let t = ((y as f32 + 0.5 - y0) / (hf - y0)).clamp(0.0, 1.0);
-        let keep = 1.0 - SCRIM_MAX * t * t * (3.0 - 2.0 * t);
-        if keep < 1.0 {
-            for x in 0..w {
-                let c = out.texel(x, y);
-                out.put(x, y, [c[0] * keep, c[1] * keep, c[2] * keep]);
-            }
-        }
-    }
+    draw(&mut out, &front.poster, &FRONT);
     out
 }
 
-/// A soft drop shadow, then the poster cover-fitted into a 2:3 rectangle, both rotated about the
-/// placement centre and anti-aliased by edge coverage.
+/// Signed distance from `(x, y)` to a box of half-extents `(hw, hh)` centred on the origin whose
+/// corners are rounded by `r`: negative inside, positive outside, in pixels.
+fn rounded_box_sd(x: f32, y: f32, hw: f32, hh: f32, r: f32) -> f32 {
+    let (qx, qy) = (x.abs() - (hw - r), y.abs() - (hh - r));
+    let (ox, oy) = (qx.max(0.0), qy.max(0.0));
+    (ox * ox + oy * oy).sqrt() + qx.max(qy).min(0.0) - r
+}
+
+/// Smoothstep from 0 at `-half` to 1 at `+half`.
+fn ramp(v: f32, half: f32) -> f32 {
+    let t = ((v + half) / (2.0 * half)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// One `.mc`: its soft drop shadow, then the poster cover-fitted into the rounded 2:3 box with the
+/// inset rim over it, all rotated about the box's centre. Every edge is one signed distance to the
+/// rounded box in the member's own (rotated) frame, so the corners of the poster, its rim and its
+/// shadow are round together; the poster's edge is anti-aliased over one pixel.
 fn draw(dst: &mut Rgba, src: &Rgba, p: &Placement) {
     if src.w == 0 || src.h == 0 {
         return;
     }
-    let (hw, hh) = (p.w / 2.0, p.w * 0.75);
+    let (wf, hf) = (dst.w as f32, dst.h as f32);
+    let (hw, hh) = (MEMBER_FRAC * wf / 2.0, MEMBER_FRAC * hf / 2.0);
+    let (cx, cy) = (p.left * wf + hw, p.top * hf + hh);
+    let r = mock_px(MEMBER_RADIUS_MOCK);
+    let rim = mock_px(RIM_W_MOCK);
+    let drop = mock_px(SHADOW_DY_MOCK);
+    // CSS blurs a shadow with a Gaussian of σ = blur / 2. A smoothstep across the edge has the
+    // Gaussian CDF's slope at the edge when its half-width is σ·0.75·√(2π) ≈ 1.88σ.
+    let soft = 1.88 * mock_px(SHADOW_BLUR_MOCK) / 2.0;
     let (sin, cos) = (p.sin, (1.0 - p.sin * p.sin).sqrt());
-    let ex = hw * cos.abs() + hh * sin.abs() + SHADOW_SOFT + 1.0;
-    let ey = hw * sin.abs() + hh * cos.abs() + SHADOW_SOFT + SHADOW_DROP + 1.0;
-    let x0 = (p.cx - ex).floor().max(0.0) as u32;
-    let x1 = ((p.cx + ex).ceil().max(0.0) as u32).min(dst.w);
-    let y0 = (p.cy - ey).floor().max(0.0) as u32;
-    let y1 = ((p.cy + ey).ceil().max(0.0) as u32).min(dst.h);
+    let ex = hw * cos + hh * sin.abs() + soft + 1.0;
+    let ey = hw * sin.abs() + hh * cos + soft + drop + 1.0;
+    let x0 = (cx - ex).floor().max(0.0) as u32;
+    let x1 = ((cx + ex).ceil().max(0.0) as u32).min(dst.w);
+    let y0 = (cy - ey).floor().max(0.0) as u32;
+    let y1 = ((cy + ey).ceil().max(0.0) as u32).min(dst.h);
     let local = |dx: f32, dy: f32| (dx * cos + dy * sin, -dx * sin + dy * cos);
     let scale = (2.0 * hw / src.w as f32).max(2.0 * hh / src.h as f32);
     for y in y0..y1 {
         for x in x0..x1 {
-            let (dx, dy) = (x as f32 + 0.5 - p.cx, y as f32 + 0.5 - p.cy);
+            let (dx, dy) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
             let t = dst.texel(x, y);
             let mut c = [t[0], t[1], t[2]];
-            let (sx, sy) = local(dx, dy - SHADOW_DROP);
-            let shadow = ((hw + SHADOW_SOFT - sx.abs()) / (2.0 * SHADOW_SOFT)).clamp(0.0, 1.0)
-                * ((hh + SHADOW_SOFT - sy.abs()) / (2.0 * SHADOW_SOFT)).clamp(0.0, 1.0);
+            // The shadow's box is the member's own, pushed down the page (CSS offsets it before
+            // the rotation's frame applies, i.e. in screen space).
+            let (sx, sy) = local(dx, dy - drop);
+            let shadow = 1.0 - ramp(rounded_box_sd(sx, sy, hw, hh, r), soft);
             if shadow > 0.0 {
                 let k = 1.0 - SHADOW_ALPHA * shadow;
                 c = c.map(|v| v * k);
             }
             let (lx, ly) = local(dx, dy);
-            let cover =
-                (hw - lx.abs() + 0.5).clamp(0.0, 1.0) * (hh - ly.abs() + 0.5).clamp(0.0, 1.0);
+            let d = rounded_box_sd(lx, ly, hw, hh, r);
+            let cover = (0.5 - d).clamp(0.0, 1.0);
             if cover > 0.0 {
                 let s = src.sample(
                     src.w as f32 / 2.0 + lx / scale,
                     src.h as f32 / 2.0 + ly / scale,
                 );
+                // The rim: the band within `rim` of the edge, inside it.
+                let band = cover - (0.5 - (d + rim)).clamp(0.0, 1.0);
+                let lit = RIM_ALPHA * band.max(0.0);
                 let a = cover * s[3] / 255.0;
-                c = std::array::from_fn(|k| c[k] + (s[k] * p.shade - c[k]) * a);
+                c = std::array::from_fn(|k| {
+                    let px = s[k] + (255.0 - s[k]) * lit;
+                    c[k] + (px - c[k]) * a
+                });
             }
             dst.put(x, y, c);
         }

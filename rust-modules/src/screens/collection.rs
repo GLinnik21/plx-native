@@ -387,10 +387,10 @@ impl CollectionScreen {
         let dy = -self.scroll.pos;
         if HEADER_TOP + ART_H + dy <= 0.0 { return; }
         let art = Rect::new(MARGIN_X, HEADER_TOP + dy, ART_W, ART_H);
-        widgets::card(p, art, Art::Thumb { sid: collection.id.sid, key: &collection.thumb, res: ART_RES },
-            theme::CARD_RING_RAD, false, 1.0, 0.0);
-        let title = measure.fit_line(if collection.title.is_empty() { &collection.id.name } else { &collection.title },
-            TEXT_W, theme::size::DISPLAY, true);
+        let name = if collection.title.is_empty() { &collection.id.name } else { &collection.title };
+        widgets::card_named(p, art, Art::Thumb { sid: collection.id.sid, key: &collection.thumb, res: ART_RES },
+            Some(name), theme::CARD_RING_RAD, false, 1.0, 0.0);
+        let title = measure.fit_line(name, TEXT_W, theme::size::DISPLAY, true);
         Label::new(title.as_ptr(), theme::size::DISPLAY, theme::TEXT_PRIMARY).bold()
             .v(VAlign::CapTop).draw(p, Rect::new(COL_X, HEADER_TOP + dy, TEXT_W, 0.0));
         let (meta_y, summary_y) = Self::header_ys(measure);
