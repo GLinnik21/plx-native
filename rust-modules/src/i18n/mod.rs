@@ -40,6 +40,10 @@ impl Preference {
             Self::Be => "be",
         }
     }
+    /// Serde's `skip_serializing_if`: System is what an absent preference already means.
+    pub(crate) fn is_system(&self) -> bool {
+        *self == Self::System
+    }
     pub(crate) fn native_name(self) -> &'static str {
         match self {
             Self::System => msg::core_system_default(),

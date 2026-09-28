@@ -415,8 +415,10 @@ impl std::fmt::Debug for OpaqueExtensions {
 /// The full persisted session. Empty fields mean "not logged in yet" for that stage.
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct Session {
-    /// Install-wide UI language, applied on the next process launch.
-    #[serde(default)]
+    /// Install-wide UI language, applied on the next process launch. Absent means System, and
+    /// System is not written, so a session that never chose a language serializes exactly as it
+    /// did before localization — committed replay initials and the owner digest included.
+    #[serde(default, skip_serializing_if = "crate::i18n::Preference::is_system")]
     pub(crate) language: crate::i18n::Preference,
     /// Stable `X-Plex-Client-Identifier` — generated once, reused forever (plex.tv binds the pin
     /// and the authorized-device entry to it).

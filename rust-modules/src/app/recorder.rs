@@ -2308,8 +2308,9 @@ mod tests {
         // graded under.
         // Plaintext consent adds the captured offer and persisted answers: ControlledHomeInitV5
         // carries SessionInitV4. The previous app census was 0xb2a6_c39d_095e_c1b6.
-        // Localization adds the captured preference in ControlledHomeInitV6 / SessionInitV5.
-        assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0x5232_f81a_719f_4c3c);
+        // Localization adds the captured preference in ControlledHomeInitV6 / SessionInitV5,
+        // moving it from 0x5232_f81a_719f_4c3c (main's census at #252) to 0x3b46_89f3_2380_2be7.
+        assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0x3b46_89f3_2380_2be7);
     }
 
     /// The gate at the REAL hubs landing site, through the recording the driver loads: a result

@@ -2663,6 +2663,18 @@ fn localized_plaintext_copy_preserves_owner_names_and_the_complete_named_action(
     use crate::i18n::{LocaleContext, Preference};
     use crate::ui::text_view::TextView;
     use crate::ui::widgets::StatusOverlay;
+    use std::ffi::CStr;
+    /// `FixtureMeasure`'s half-em advance per UNICODE SCALAR rather than per UTF-8 byte. Its byte
+    /// count doubles every Cyrillic letter, so it would grade Belarusian against a font no device
+    /// has; this grades every locale on exactly the advance the English copy is held to.
+    struct ScalarMeasure;
+    impl crate::ui::machine::Measure for ScalarMeasure {
+        fn width(&self, text: &CStr, size: i32, _bold: bool) -> f32 {
+            text.to_string_lossy().chars().count() as f32 * size as f32 * 0.5
+        }
+        fn cap_h(&self, size: i32) -> f32 { size as f32 * 0.7 }
+        fn line_h(&self, size: i32) -> f32 { size as f32 * 1.2 }
+    }
     for (preference, connect, retry, settings_path) in [
         (Preference::En, "Connect", "Try again", "Settings → Unencrypted connections"),
         (Preference::Es, "Conectar", "Reintentar", "Ajustes → Conexiones sin cifrar"),
@@ -2690,7 +2702,7 @@ fn localized_plaintext_copy_preserves_owner_names_and_the_complete_named_action(
                     }
                     assert!(text.chars().count() <= 125, "reason budget: {preference:?}: {text}");
                     assert!(!TextView::new(&text, crate::ui::theme::size::BODY, crate::ui::theme::TEXT_SECONDARY)
-                        .max_lines(2).with_measure(&crate::ui::fixture::FixtureMeasure)
+                        .max_lines(2).with_measure(&ScalarMeasure)
                         .truncates(StatusOverlay::REASON_W), "complete action must fit: {text}");
                 }
             }

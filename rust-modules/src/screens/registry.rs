@@ -1925,9 +1925,10 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 /// item changes libraries while still distinguishing section-specific rows. Recorded fixtures need
 /// `tools/plxnative-rec rerecord` like any other shape-pin bump before replay is trusted.
 #[cfg(test)]
-// Localization and current-main inventories are integrated; pin updated from the computed test result.
-// Playback/account preference pages add their arguments and logical state to the inventory.
-const SCREEN_SHAPES_PIN: u64 = 0x54b17d5fd41a2606;
+// Playback/account preference pages add their arguments and logical state to the inventory
+// (0x54b17d5fd41a2606 on main). Localization's Settings pages then join it as
+// LocalizationSettingsV4, with the language picker's busy state and the login report alert.
+const SCREEN_SHAPES_PIN: u64 = 0x677d0944ef253900;
 
 #[cfg(test)]
 mod arg_tests {
