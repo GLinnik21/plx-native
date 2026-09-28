@@ -482,7 +482,22 @@ impl TrackMenuState {
         Rect::new(px, py, pw, ph)
     }
 
-    pub(crate) fn update(&mut self, dt: f32) {
+    /// `ps`/`meta` are read only for the Audio tab, and only to notice a LIVE change: a request
+    /// this menu itself fired settles asynchronously (the server's `EnhancementOutcome`, or a
+    /// mid-play route change moving the family in or out of `Remux`), and the two rows must
+    /// track that the moment it lands rather than freeze at whatever `on_ok`/`rebuild` last drew
+    /// — otherwise a refusal leaves a row reading "On" for a preference the route already gave up
+    /// on. `rebuild`'s own recomputation of `enhance_shown` is the single source of truth here
+    /// too, so this only ever asks "did that answer change since last frame", never rebuilds it a
+    /// second, divergent way.
+    pub(crate) fn update(&mut self, dt: f32, ps: &crate::route::PlaybackSession, meta: metadata::MetadataView<'_>) {
+        if self.tab == 0 {
+            let live = crate::route::audio_enhancements_offered_live(ps)
+                .then(|| crate::route::displayed_audio_enhancements(ps));
+            if live != self.enhance_shown {
+                self.rebuild(ps, meta, 0, false);
+            }
+        }
         // `update` subtracts its own top/bottom padding now — pass the panel's raw height.
         let h = self.panel_rect().h;
         self.table.update(dt, h);
@@ -1692,6 +1707,31 @@ mod enhancement_menu_tests {
         teardown(&ps);
     }
 
+    #[test]
+    fn enh_row_stops_reading_on_once_a_live_refusal_settles() {
+        let _g = crate::testlock::serial();
+        // Opens reading Normalize Loudness ON — the same shape `on_ok`'s own optimistic
+        // `self.enhance_shown = Some(a)` leaves a freshly-picked row in, before the server has
+        // answered.
+        let (mut menu, ps_ok) = audio_tab(EnhTestFixture {
+            applied: crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
+            ..Default::default()
+        });
+        assert_eq!(menu.table.sections[1].rows[1].toggle, Some(true));
+
+        // The SAME playback settles as Refused (I5 excludes it from the offer entirely) — a LIVE
+        // change this menu never caused, delivered exactly the way `PlayerOverlayScreen`'s Tick
+        // handler feeds it: a fresh `&PlaybackSession` from the host every frame, not a rebuild
+        // the panel triggers itself.
+        let (ps_refused, _sid2) = enhancement_test_session(EnhTestFixture { refused: true, ..Default::default() });
+        let store = one_track_store();
+        menu.update(0.0, &ps_refused, store.view());
+        assert_eq!(menu.enhance_shown, None, "a settled refusal must drop the offer, not leave a row reading On");
+        assert_eq!(menu.table.sections.len(), 1, "the headerless DSP section goes with it");
+
+        teardown(&ps_ok);
+    }
+
     // ---- locale + width gates ------------------------------------------------------------------
 
     /// **No row label ever leaks a "Plex Pass" mention**, in any shipped locale — the rows are
@@ -1714,6 +1754,13 @@ mod enhancement_menu_tests {
 
     /// **Every enhancement row fits the Audio panel in every shipped language**, same discipline
     /// as `every_subtitles_row_fits_the_panel_in_every_language` above over the Subtitles panel.
+    ///
+    /// `locales/be/widgets.json`'s `normalize_loudness` reads "Нармалізацыя гуку" ("normalization
+    /// of sound") rather than the more literal "Нармалізацыя гучнасці" ("normalization of
+    /// loudness") on purpose: this test measures the literal phrase at 378px against this panel's
+    /// 369px column — 9px over — while "гуку" measures under. Re-check with this test before
+    /// changing the Belarusian string back; do not assume either phrase's width from the source
+    /// text alone.
     #[test]
     fn enh_rows_fit_width_560_es_be() {
         use crate::fontcov::advances::{ShippedMeasure, HEADROOM};

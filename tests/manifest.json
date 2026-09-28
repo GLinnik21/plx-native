@@ -1793,8 +1793,8 @@
       "name": "audio_enhancement_normalize",
       "item": "movie_h264_ac3_1080p",
       "kind": "movie",
-      "title": "movie · h264/ac3 · 1080p · 1 audio track — live Normalize Loudness toggle (issue #266) turns a direct play into an enhanced remux",
-      "comment": "The Audio tab's row layout (track_menu.rs's build_audio) appends the two Plex Pass DSP rows AFTER the audio tracks: this item has exactly 1 (make_fixtures.py's movie_h264_ac3_1080p SHAPES entry), so row 0 is the AC-3 track, row 1 is Boost Dialog and row 2 is Normalize Loudness — the row this case picks.",
+      "title": "movie · h264/ac3 · 1080p — live Normalize Loudness toggle (issue #266) turns a direct play into an enhanced remux",
+      "comment": "The Audio tab's row layout (track_menu.rs's build_audio) appends the two Plex Pass DSP rows AFTER the audio tracks: `which` names the row, and run.py derives its absolute TableView row at run time as n_audio + 1, where n_audio is fetched live from /library/metadata/<rk> by pms_audio_track_count. PR4 review found the real item behind this symbolic key carries 3 audio tracks, not the 1 this case originally (and wrongly) assumed by hardcoding row 2 — the row is never hardcoded again. audio_enhancements_boot is omitted (defaults to \"off\"), so this case starts direct-playing exactly like any other movie_h264_ac3_1080p case.",
       "covers": [
         "audio-enhancement-normalize",
         "enhancement-applied",
@@ -1807,7 +1807,7 @@
         },
         {
           "op": "audio_enhancement",
-          "row": 2
+          "which": "normalize_loudness"
         }
       ],
       "expect": {
@@ -1823,10 +1823,11 @@
       "name": "audio_enhancement_normalize_reset",
       "item": "movie_h264_ac3_1080p",
       "kind": "movie",
-      "title": "movie · h264/ac3 · 1080p · cleanup: releases the Normalize Loudness preference `audio_enhancement_normalize` left ON",
-      "comment": "Boost Dialog / Normalize Loudness is a PERSISTED preference (plex/session.rs's Session::audio_enhancements), not an in-memory-only override like plxnative-quality, so a case that toggles it ON must not leave it there for whatever runs next on this install. `menupick_arm` (dev/scenarios.rs) fires its trigger exactly once per app launch, so the release cannot be a second operation in the SAME case — this is instead a second, immediately-following case: a FRESH boot inherits the persisted preference, which the resolve applies up front (route/plan.rs turns an otherwise direct-playable candidate into an enhanced remux before the first frame — hence `expect.decision` here is `transcode`, not `directplay`), and picking the SAME row again reconciles it back to NONE, releasing straight back to Direct Play since this item's candidate direct-plays (route/decision.rs's EnhancementStep::ReleaseToDirect).",
+      "title": "movie · h264/ac3 · 1080p — boots with Normalize Loudness forced ON, then releases it back to Original (issue #266)",
+      "comment": "Boost Dialog / Normalize Loudness is a PERSISTED preference (plex/session.rs's Session::audio_enhancements), not an in-memory-only override like plxnative-quality — so a harness that ever turns it on must guarantee every later case starts clean regardless of whether its own pick lands. `audio_enhancements_boot: \"loudness\"` forces the preference ON at boot through dev::scenarios::arm_audio_enhancements (the SAME persisting player::set_audio_enhancements call a real pick makes), which also proves the cold-start path: route/plan.rs's cold-start audio branch turns an otherwise direct-playable candidate into an enhanced remux before the first frame, hence expect.decision here is \"transcode\". Picking the SAME derived row again (`settle: \"released\"` selects the release grader) TOGGLES the preference back to NONE through the ordinary commit path — not a second boot trigger — so it re-persists as OFF for real and this case is its own cleanup: no second op, no dependency on run order. Releases straight back to Direct Play since this item's candidate direct-plays (route/decision.rs's EnhancementStep::ReleaseToDirect).",
       "covers": [
-        "audio-enhancement-cleanup"
+        "audio-enhancement-cleanup",
+        "audio-enhancement-cold-start-remux"
       ],
       "run_secs": 50,
       "operations": [
@@ -1835,10 +1836,11 @@
         },
         {
           "op": "audio_enhancement",
-          "row": 2,
-          "mode": "release"
+          "which": "normalize_loudness",
+          "settle": "released"
         }
       ],
+      "audio_enhancements_boot": "loudness",
       "expect": {
         "decision": "transcode",
         "codec": "h264",

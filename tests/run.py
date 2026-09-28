@@ -910,6 +910,27 @@ def pms_put_progress(host, port, rk, time_ms, token):
         return False
 
 
+def pms_audio_track_count(host, port, rk, token):
+    """The number of audio streams (`streamType == 2`) on an item's first `Part`, straight from
+    `/library/metadata/<rk>` — never assumed from the manifest's symbolic item key.
+
+    Issue #266 PR4 review: this harness once hardcoded the Normalize Loudness row as an absolute
+    `TableView` index derived from a WRONG audio-track count (`movie_h264_ac3_1080p` was assumed
+    to carry one audio track; the real server item behind that symbolic key has three). Reading
+    the count from the server the case is actually about to run against is what makes the derived
+    row correct regardless of which library filled in `manifest.local.json`'s symbolic mapping.
+    Token never printed.
+    """
+    q = urllib.parse.urlencode({"X-Plex-Token": token})
+    url = f"http://{host}:{port}/library/metadata/{rk}?{q}"
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        doc = json.load(resp)
+    meta = doc["MediaContainer"]["Metadata"][0]
+    part = meta["Media"][0]["Part"][0]
+    return sum(1 for s in part.get("Stream", []) if s.get("streamType") == 2)
+
+
 # ---------------------------------------------------------------------------
 # Trigger derivation
 # ---------------------------------------------------------------------------
@@ -988,6 +1009,14 @@ def triggers_for_case(case, url_base=None):
     gst_debug = case.get("gst_trace", {}).get("debug")
     if gst_debug:
         files.append(("plxnative-gstlog", gst_debug))
+    # issue #266 PR4 review: force the PERSISTED Boost Dialog / Normalize Loudness preference at
+    # boot on EVERY case, not just the two that exercise it — `dev::scenarios::arm_audio_enhancements`
+    # calls the real persisting setter, so a case's starting preference is a property of the
+    # manifest instead of of whatever a PREVIOUS case's (or a real person's) toggle left behind. A
+    # case opts into a non-off start with `"audio_enhancements_boot": "loudness"` (used by the
+    # reset case below to prove the cold-start "a saved preference forces a remux" path);
+    # everything else gets `"off"`.
+    files.append(("plxnative-audioenh", case.get("audio_enhancements_boot", "off")))
     # Arbitrary extra dev triggers, `{"name": content}` → `plxnative-<name>` in the runtime root
     # (`null` for a bare flag). For the one-run experiments a trigger exists for — `sinkmax`,
     # `nofps` — without teaching the harness a key per knob; the case's own triggers above win on
@@ -1048,12 +1077,22 @@ def triggers_for_case(case, url_base=None):
             files.append(("plxnative-menupick", f'{op["tab"]},{op["row"]}'))
         elif kind == "audio_enhancement":
             # issue #266: the Boost Dialog / Normalize Loudness rows live on the Audio tab (0),
-            # appended after the audio tracks (`track_menu.rs`'s `build_audio`) — an ABSOLUTE
-            # `TableView` row, exactly the row `menupick` already expects (headers do not count).
-            # The manifest states the row directly rather than a track count, because computing K
-            # here would just be re-deriving the shape SHAPES already states once in
-            # `tests/fixtures/make_fixtures.py`.
-            files.append(("plxnative-menupick", f'0,{op["row"]}'))
+            # appended after the audio tracks (`track_menu.rs`'s `build_audio`'s `enhance_base`)
+            # — an ABSOLUTE `TableView` row, exactly what `menupick` already expects (headers do
+            # not count). PR4 review: this used to be a row number HARDCODED in the manifest,
+            # derived from an assumption about the item's track count that turned out to be wrong
+            # on the real server (`movie_h264_ac3_1080p` was assumed 1 audio track; the real item
+            # has 3). Deriving it here from `n_audio` — the count `run_case` fetched from the
+            # server for THIS case, via `pms_audio_track_count` — means the row is correct
+            # whichever library `manifest.local.json` points the symbolic item key at.
+            n_audio = case.get("n_audio")
+            if n_audio is None:
+                sys.exit(f"case {case.get('name')!r}: an `audio_enhancement` op needs "
+                          f"case['n_audio'] resolved first (run_case does this before calling "
+                          f"triggers_for_case; a hand-built case must set it directly)")
+            which = op.get("which", "normalize_loudness")
+            row = n_audio if which == "boost_dialog" else n_audio + 1
+            files.append(("plxnative-menupick", f'0,{row}'))
         elif kind == "pause_resume":
             files.append((
                 "plxnative-autopause",
@@ -3622,15 +3661,19 @@ def op_audio_enhancement(lines):
 
 
 def op_audio_enhancement_release(lines):
-    """The cleanup half of `audio_enhancement_normalize`: from a FRESH boot that inherits the
-    prior case's persisted preference (the resolve applies it up front — see
-    `route/plan.rs`'s cold-start `audio = ... enhancement_for(...)`, which turns an otherwise
-    direct-playable candidate into an enhanced remux before the first frame), the SAME row is
-    picked again, which reconciles the preference back to NONE.  `enhancement_step` releases a
-    directly-playable candidate straight back to it (`route/decision.rs`'s
-    `EnhancementStep::ReleaseToDirect` -> `recover_auto_to_original_for(.. EnhancementReleased)`),
-    logging one of two lines depending on whether the candidate itself direct-plays or only
-    remuxes; both share the `enhancement: released to Original` prefix this greps for.
+    """The `audio_enhancement_normalize_reset` case's own settle grade: this case boots with
+    `plxnative-audioenh=loudness` forcing the PERSISTED preference ON before the first frame (via
+    `dev::scenarios::arm_audio_enhancements` -> `player::set_audio_enhancements`, the SAME real
+    setter a person's pick calls) — proving the cold-start `route/plan.rs` path (a saved
+    preference turns an otherwise direct-playable candidate into an enhanced remux before route
+    ever runs) — then picks the SAME row `op_audio_enhancement` picks, which `on_ok` TOGGLES: from
+    ON, that reconciles the preference back to NONE. `enhancement_step` releases a directly-
+    playable candidate straight back to it (`route/decision.rs`'s `EnhancementStep::ReleaseToDirect`
+    -> `recover_auto_to_original_for(.. EnhancementReleased)`), logging one of two lines depending
+    on whether the candidate itself direct-plays or only remuxes; both share the `enhancement:
+    released to Original` prefix this greps for. Because the toggle goes through the ordinary
+    commit path (not a second boot trigger), it also re-persists the preference as OFF for real —
+    the case ends idempotent with no second op needed.
     """
     hit = find(lines, "enhancement: released to Original")
     if hit is None:
@@ -4258,7 +4301,7 @@ def evaluate(case, lines):
             results.append(("audio_native", *op_audio_native(lines)))
         elif k == "audio_switch":
             results.append(("audio_transcode", *op_audio_transcode(lines)))
-        elif k == "audio_enhancement" and op.get("mode") == "release":
+        elif k == "audio_enhancement" and op.get("settle") == "released":
             results.append(("audio_enhancement_release", *op_audio_enhancement_release(lines)))
         elif k == "audio_enhancement":
             results.append(("audio_enhancement", *op_audio_enhancement(lines)))
@@ -4387,6 +4430,12 @@ def run_case(case, cfg, token, verbose, cond=None):
     # plxnative-token is cleared by the glob wipe that opens the command, and rewritten after it.
     # Always required — the binary carries no baked token, so plxnative-token in the runtime root
     # is the only way an automated run gets PMS access.
+    # issue #266 PR4 review: resolve the audio-track count from the SERVER, not from an assumption
+    # about the symbolic item key, before `triggers_for_case` needs it to derive the enhancement
+    # row. Only cases that actually carry an `audio_enhancement` op pay for the extra round-trip.
+    if any(op.get("op") == "audio_enhancement" for op in case.get("operations", [])):
+        case["n_audio"] = pms_audio_track_count(cfg["pms"]["host"], cfg["pms"]["port"], case["rk"], token)
+        print(f"    n_audio: {case['n_audio']} (from /library/metadata/{case['rk']})")
     files = triggers_for_case(case)
     # `session: stored` — boot from the install's own signed-in session instead of the injected
     # identity. The injected token installs the compiled PMS_HOST as a PLAINTEXT origin, which

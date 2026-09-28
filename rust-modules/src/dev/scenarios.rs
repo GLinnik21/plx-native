@@ -441,6 +441,47 @@ pub(crate) fn arm_noidle() {
     }
 }
 
+/// `/tmp/plxnative-audioenh=off|boost|loudness` — force the PERSISTED Boost Dialog / Normalize
+/// Loudness preference (issue #266) at boot, harness-only.
+///
+/// Every other boot override here (`dev::playback_quality_override`, `arm_glassload`, …) is
+/// deliberately in-memory-only, so a test can never mutate a real person's saved preference. This
+/// one is the one exception, and on purpose: `player::set_audio_enhancements` is the SAME call a
+/// person's own track-menu pick makes (it both updates the live route and re-persists through the
+/// storage worker), and an on-device harness case needs the persisted value itself pinned before
+/// boot, not just the in-memory copy — one case proves the cold-start "a saved preference turns an
+/// otherwise-direct-playable route into a remux" path (`route::plan`'s cold-start audio branch) by
+/// booting with the preference already ON, and the very next boot must not inherit whatever a
+/// FAILED previous case's toggle left behind. A toggle-based reset cannot promise that: if the
+/// pick never lands, the preference is stuck at whatever the last successful toggle set it to.
+/// Forcing the value at boot, every time, is what makes a case's starting preference a property of
+/// the manifest instead of of history — the same argument `run_case`'s per-case viewOffset reset
+/// already makes for resume position.
+///
+/// `off` clears both flags; `boost`/`loudness` sets exactly one (never both — no case here needs
+/// both at once, and a value this test-only can grow a second name later without breaking the
+/// existing ones). An unrecognised value is ignored rather than guessed at.
+pub(crate) fn arm_audio_enhancements() {
+    let Some(v) = crate::dev::read("audioenh") else { return };
+    let a = match v.trim() {
+        "off" => crate::plex::AudioEnhancements::NONE,
+        "boost" => crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false },
+        "loudness" => crate::plex::AudioEnhancements { boost_dialog: false, normalize_loudness: true },
+        #[allow(unused_variables)]
+        other => {
+            #[cfg(feature = "devtriggers")]
+            crate::log(&format!("audioenh: unrecognised value {other:?} — ignored"));
+            return;
+        }
+    };
+    crate::player::set_audio_enhancements(a);
+    #[cfg(feature = "devtriggers")]
+    crate::log(&format!(
+        "audioenh: forced boost_dialog={} normalize_loudness={} by /tmp/plxnative-audioenh",
+        a.boost_dialog, a.normalize_loudness,
+    ));
+}
+
 /// `/tmp/plxnative-nobudget` — the frame budget's A/B CONTROL LEG (spec §8.1, phase 11).
 ///
 /// Present, admission is what it was before phase 11: the `Poster` quota of three per frame and

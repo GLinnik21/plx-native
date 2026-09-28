@@ -1660,6 +1660,9 @@ class PipelineTier(unittest.TestCase):
             ("plxnative-play", "1234"),
             ("plxnative-quality", "original"),
             ("plxnative-stats", None),
+            # issue #266 PR4 review: EVERY case forces the persisted audio-enhancement preference
+            # too, default "off" -- see test_audio_enhancement_boot_trigger_defaults_off_and_is_overridable.
+            ("plxnative-audioenh", "off"),
         ])
 
     def test_an_integration_case_can_explicitly_grade_auto(self):
@@ -3168,14 +3171,45 @@ class AbrTraceMetrics(unittest.TestCase):
         self.assertFalse(run.op_audio_transcode([h264, "reload_transcode: fresh Load at offset 5s"])[0],
                          "a transcode reload with no switch line is not an audio switch")
 
-    def test_audio_enhancement_op_writes_an_absolute_menupick_row(self):
-        """issue #266: `audio_enhancement` reuses `plxnative-menupick` at tab 0 with the row taken
-        literally from the manifest — no track count is derived here, since the shape (and hence
-        the row) already lives once in `tests/fixtures/make_fixtures.py`."""
-        files = run.triggers_for_case({"rk": "1", "operations": [
-            {"op": "play"}, {"op": "audio_enhancement", "row": 2},
-        ]})
-        self.assertIn(("plxnative-menupick", "0,2"), files)
+    def test_audio_enhancement_op_derives_its_row_from_n_audio(self):
+        """issue #266 PR4 review: `audio_enhancement` reuses `plxnative-menupick` at tab 0, but the
+        row is DERIVED from `case["n_audio"]` (the audio-track count `run_case` fetches live from
+        the server via `pms_audio_track_count`, written onto the case before `triggers_for_case`
+        runs) rather than a manifest literal -- the bug this review caught was exactly a
+        hand-derived row going stale against the real server's track count. Boost Dialog sits at
+        row `n_audio`; Normalize Loudness (this suite's only consumer so far) at `n_audio + 1`,
+        for every track count a real item can carry."""
+        for n_audio in (1, 2, 3):
+            case = {
+                "rk": "1", "n_audio": n_audio,
+                "operations": [{"op": "play"}, {"op": "audio_enhancement", "which": "normalize_loudness"}],
+            }
+            files = run.triggers_for_case(case)
+            self.assertIn(("plxnative-menupick", f"0,{n_audio + 1}"), files, f"n_audio={n_audio}")
+            case["operations"][1] = {"op": "audio_enhancement", "which": "boost_dialog"}
+            files = run.triggers_for_case(case)
+            self.assertIn(("plxnative-menupick", f"0,{n_audio}"), files, f"n_audio={n_audio}")
+
+    def test_audio_enhancement_op_without_n_audio_resolved_dies_with_a_clear_reason(self):
+        """A hand-built case (or a manifest bug that skips the resolve step in `run_case`) must
+        fail loudly rather than write a wrong row silently."""
+        case = {"name": "x", "rk": "1", "operations": [
+            {"op": "play"}, {"op": "audio_enhancement", "which": "normalize_loudness"},
+        ]}
+        with self.assertRaises(SystemExit) as ctx:
+            run.triggers_for_case(case)
+        self.assertIn("n_audio", str(ctx.exception))
+
+    def test_audio_enhancement_boot_trigger_defaults_off_and_is_overridable(self):
+        """issue #266 PR4 review: EVERY case forces the persisted preference at boot (default
+        `off`), so a case's starting preference never depends on what an earlier case's pick left
+        behind; a case opts into a non-off start with `audio_enhancements_boot`."""
+        files = run.triggers_for_case({"rk": "1", "operations": [{"op": "play"}]})
+        self.assertIn(("plxnative-audioenh", "off"), files)
+        files = run.triggers_for_case({
+            "rk": "1", "audio_enhancements_boot": "loudness", "operations": [{"op": "play"}],
+        })
+        self.assertIn(("plxnative-audioenh", "loudness"), files)
 
     def test_audio_enhancement_op_grades_applied_remux_and_ac3(self):
         """A live Normalize Loudness pick that took effect: the server ran the DSP params
@@ -3243,12 +3277,12 @@ class AbrTraceMetrics(unittest.TestCase):
         ok, why = run.op_audio_enhancement_release(["some unrelated line"])
         self.assertFalse(ok, why)
 
-    def test_audio_enhancement_dispatch_picks_release_by_mode(self):
-        """`evaluate()`'s per-operation dispatch: `mode: release` grades the cleanup leg, and its
-        absence grades the ordinary apply leg -- the same `mode` idiom `audio_switch` already
-        uses for native vs. transcode."""
+    def test_audio_enhancement_dispatch_picks_release_by_settle(self):
+        """`evaluate()`'s per-operation dispatch: `settle: "released"` grades the cleanup leg, and
+        its absence grades the ordinary apply leg."""
         case = {
-            "rk": "1", "operations": [{"op": "play"}, {"op": "audio_enhancement", "row": 2}],
+            "rk": "1", "n_audio": 1,
+            "operations": [{"op": "play"}, {"op": "audio_enhancement", "which": "normalize_loudness"}],
             "expect": {},
         }
         h264 = "ff: v=#0 codec=h264 codec_id=27 1920x1080 trc=1 pri=1 spc=1 a=#1 dur_ns=1"
@@ -3257,7 +3291,10 @@ class AbrTraceMetrics(unittest.TestCase):
         _, results = run.evaluate(case, lines)
         self.assertIn("audio_enhancement", dict((label, ok) for label, ok, _ in results))
         release_case = dict(case)
-        release_case["operations"] = [{"op": "play"}, {"op": "audio_enhancement", "row": 2, "mode": "release"}]
+        release_case["operations"] = [
+            {"op": "play"},
+            {"op": "audio_enhancement", "which": "normalize_loudness", "settle": "released"},
+        ]
         _, results = run.evaluate(release_case,
                                   ["enhancement: released to Original direct play; remux encoder held pending frames"])
         self.assertIn("audio_enhancement_release", dict((label, ok) for label, ok, _ in results))
