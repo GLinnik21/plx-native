@@ -473,7 +473,7 @@ pub(crate) fn content_requests(app: &mut App, fr: &Frame) {
     home_requests(app, fr.now);
     library_requests(app, fr.now);
     search_requests(app);
-    // The player's four overlays are surfaces on its own stack, so what they decide reaches the
+    // The player's overlays are surfaces on its own stack, so what they decide reaches the
     // loop the same way every other owned screen's decision does — as requests, drained here,
     // after the dispatcher and before the frame's own arms (`playback::player_requests`).
     let mut player_reqs = app.bridge.take_player_reqs();

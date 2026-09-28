@@ -390,6 +390,25 @@ mod tests {
         req
     }
 
+    /// Every committed metadata reply must still validate against the current `Detail` wire shape.
+    /// `validate` demands a canonical round trip (`to_value(from_value(v)) == v`), so a field added
+    /// with only `#[serde(default)]` still breaks it: the old value deserializes, then re-serializes
+    /// WITH the new key. Fixture 12's Detail replies predate `Stream::language_tag`; this is the
+    /// host-side reproduction of the replay gate's `REFUSED — noncanonical detail replies`.
+    #[test]
+    fn committed_fixture_detail_replies_stay_canonical() {
+        let rows = include_str!("../../../tests/fixtures/replay/12-filmography-detail-return/rec-0000.jsonl");
+        let mut checked = 0;
+        for line in rows.lines() {
+            let row: serde_json::Value = serde_json::from_str(line).expect("fixture row is JSON");
+            if row["t"] == "async" && row["payload"]["store"] == "metadata" {
+                assert_eq!(validate(&row["payload"]["data"]), Ok(()), "frame {}", row["f"]);
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "fixture 12 carries no metadata replies");
+    }
+
     #[test]
     fn p2_real_spawn_refusal_replays_exactly_once() {
         let _guard = crate::testlock::serial();

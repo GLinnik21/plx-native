@@ -406,6 +406,7 @@ pub(crate) fn audio_rows(audio: &[Stream]) -> Vec<TrackRow> {
 /// tell them apart; a forced track never merges into a full one. First-seen order is preserved,
 /// which is the server's order, so the list still reads in container sequence.
 pub(crate) fn subtitle_rows(subs: &[Stream]) -> Vec<TrackRow> {
+    use crate::metadata::track_label;
     // (key, name, detail-head, count) — a Vec rather than a map so first-seen order survives; a
     // subtitle list is a handful of entries, so the linear scan is not worth a hash.
     let mut out: Vec<(String, String, String, usize)> = Vec::new();
@@ -415,10 +416,18 @@ pub(crate) fn subtitle_rows(subs: &[Stream]) -> Vec<TrackRow> {
         } else {
             s.lang.clone()
         };
+        // The shared parser (`metadata::track_label`, §1): the SAME kind/source split the
+        // Subtitles menu draws, instead of this panel re-deriving its own "Forced"/"SDH" tags
+        // from the raw flags and the raw `s.title` (which double-counted a title that only
+        // repeated its own kind word, e.g. "Форс. iTunes" used to read `FORCED · Форс. iTunes`).
+        let label = track_label::parse(&s.title, &name, s.forced, s.sdh);
         let mut head = s.codec.to_uppercase();
+        // Both flags can be set on one track (a forced SDH file): show both, as this panel always
+        // has; the parsed kind only ADDS a flag the title spelled out.
+        let (forced, sdh) = track_label::flags(&label, s.forced, s.sdh);
         for (on, tag) in [
-            (s.forced, crate::i18n::msg::widgets_tracks_forced()),
-            (s.sdh, crate::i18n::msg::widgets_badge_sdh()),
+            (forced, crate::i18n::msg::widgets_tracks_forced()),
+            (sdh, crate::i18n::msg::widgets_badge_sdh()),
             (s.external, crate::i18n::msg::widgets_tracks_external()),
         ] {
             if on {
@@ -429,11 +438,11 @@ pub(crate) fn subtitle_rows(subs: &[Stream]) -> Vec<TrackRow> {
                 };
             }
         }
-        if !s.title.trim().is_empty() && !s.title.eq_ignore_ascii_case(&name) {
+        if !label.source.trim().is_empty() && !label.source.eq_ignore_ascii_case(&name) {
             head = if head.is_empty() {
-                s.title.clone()
+                label.source.clone()
             } else {
-                format!("{head} \u{b7} {}", s.title.trim())
+                format!("{head} \u{b7} {}", label.source.trim())
             };
         }
         let key = format!("{}\u{0}{}", name, head);
@@ -1434,6 +1443,21 @@ mod tests {
         assert_eq!(rows[0].detail, "SUBRIP \u{b7} 2 tracks");
         assert_eq!(rows[1].detail, "SUBRIP \u{b7} Forced");
         assert_eq!(rows[2].detail, "SUBRIP \u{b7} SDH");
+    }
+
+    /// A track flagged BOTH forced and SDH says both, as this panel always has — the shared
+    /// parser's single `Kind` must not collapse the pair to its higher-priority half.
+    #[test]
+    fn a_track_flagged_forced_and_sdh_shows_both() {
+        let mut both = sub("English", "subrip");
+        both.forced = true;
+        both.sdh = true;
+        let rows = subtitle_rows(&[both]);
+        assert_eq!(rows[0].detail, "SUBRIP \u{b7} Forced \u{b7} SDH");
+        // and a title that only spells a kind adds that flag rather than repeating the word
+        let mut titled = sub("English", "subrip");
+        titled.title = "English SDH".into();
+        assert_eq!(subtitle_rows(&[titled])[0].detail, "SUBRIP \u{b7} SDH");
     }
 
     /// The VIDEO and FILE columns, against the design's `streamGroups` for the same item. Each

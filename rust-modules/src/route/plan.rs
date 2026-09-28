@@ -8,6 +8,7 @@
 //! `Instant::now`/`SystemTime::now`/`.elapsed()`; a function that needs wall time is not pure and
 //! belongs in `decision.rs`.
 
+use crate::metadata::lang_matches;
 use crate::plex::ServerId;
 use std::sync::atomic::Ordering;
 
@@ -778,6 +779,10 @@ pub(crate) struct Plan {
     pub sub_sid: i64,
     /// client-renderer ordinal for that subtitle (`metadata::sub_render_ordinal`). None = subs off.
     pub sub_render_ordinal: Option<i32>,
+    /// The subtitle-language preference this play resolved under — the SHOW's own pref if it set
+    /// one, else the ACCOUNT's — as a BCP-47 code, for the Subtitles menu's "yours" grouping
+    /// (`metadata::sub_layout::sub_sections`). `ui/` sees only this code, never a Plex account type.
+    pub sub_pref_lang: Option<String>,
     /// the playing item's track store, fetched off-thread and installed by apply_plan
     pub playing: Option<crate::metadata::PlayingItem>,
     /// The server's PRE-FLIGHT refusal (see [`refusal`]), when `/decision` said it can neither
@@ -1077,6 +1082,13 @@ pub(super) fn build_stream(rk: &str, part: &str, vcodec: &str, acodec: &str, env
         .or_else(|| tracks.first())
         .map(|s| s.lang_code.clone())
         .unwrap_or_default();
+    // The show's own pref wins over the account's — the same precedence `pick_dp_subtitle_account`
+    // gives them below — so the Subtitles menu's "yours" grouping never disagrees with what was
+    // actually picked.
+    plan.sub_pref_lang = show_prefs
+        .subtitle
+        .clone()
+        .or_else(|| account_subtitles.as_ref().and_then(|(language, _, _)| language.clone()));
     // ONE subtitle decision for the three places below (MDE handshake, the Original candidate,
     // the direct-play plan), so they cannot disagree about what will be on screen.
     let sub_pick = plan
@@ -1813,213 +1825,6 @@ fn pick_dp_audio_eligible(
     // any direct-playable track (smart direct-play over a non-DP default)
     tracks.iter().position(dp_at).map(pick)
 }
-
-/// ISO 639-1 / 639-2 bibliographic and terminology spellings from Debian iso-codes:
-/// https://salsa.debian.org/iso-codes-team/iso-codes/-/raw/main/data/iso_639-2.json
-/// (retrieved 2026-09-27). Plex preferences use 639-1; PMS commonly uses either 639-2 form.
-const LANG_SPELLINGS: &[&[&str]] = &[
-    &["aa", "aar"],
-    &["ab", "abk"],
-    &["af", "afr"],
-    &["ak", "aka"],
-    &["am", "amh"],
-    &["ar", "ara"],
-    &["an", "arg"],
-    &["as", "asm"],
-    &["av", "ava"],
-    &["ae", "ave"],
-    &["ay", "aym"],
-    &["az", "aze"],
-    &["ba", "bak"],
-    &["bm", "bam"],
-    &["be", "bel"],
-    &["bn", "ben"],
-    &["bi", "bis"],
-    &["bo", "bod", "tib"],
-    &["bs", "bos"],
-    &["br", "bre"],
-    &["bg", "bul"],
-    &["ca", "cat"],
-    &["cs", "ces", "cze"],
-    &["ch", "cha"],
-    &["ce", "che"],
-    &["cu", "chu"],
-    &["cv", "chv"],
-    &["kw", "cor"],
-    &["co", "cos"],
-    &["cr", "cre"],
-    &["cy", "cym", "wel"],
-    &["da", "dan"],
-    &["de", "deu", "ger"],
-    &["dv", "div"],
-    &["dz", "dzo"],
-    &["el", "ell", "gre"],
-    &["en", "eng"],
-    &["eo", "epo"],
-    &["et", "est"],
-    &["eu", "eus", "baq"],
-    &["ee", "ewe"],
-    &["fo", "fao"],
-    &["fa", "fas", "per"],
-    &["fj", "fij"],
-    &["fi", "fin"],
-    &["fr", "fra", "fre"],
-    &["fy", "fry"],
-    &["ff", "ful"],
-    &["gd", "gla"],
-    &["ga", "gle"],
-    &["gl", "glg"],
-    &["gv", "glv"],
-    &["gn", "grn"],
-    &["gu", "guj"],
-    &["ht", "hat"],
-    &["ha", "hau"],
-    &["he", "heb"],
-    &["hz", "her"],
-    &["hi", "hin"],
-    &["ho", "hmo"],
-    &["hr", "hrv", "scr"],
-    &["hu", "hun"],
-    &["hy", "hye", "arm"],
-    &["ig", "ibo"],
-    &["io", "ido"],
-    &["ii", "iii"],
-    &["iu", "iku"],
-    &["ie", "ile"],
-    &["ia", "ina"],
-    &["id", "ind"],
-    &["ik", "ipk"],
-    &["is", "isl", "ice"],
-    &["it", "ita"],
-    &["jv", "jav"],
-    &["ja", "jpn"],
-    &["kl", "kal"],
-    &["kn", "kan"],
-    &["ks", "kas"],
-    &["ka", "kat", "geo"],
-    &["kr", "kau"],
-    &["kk", "kaz"],
-    &["km", "khm"],
-    &["ki", "kik"],
-    &["rw", "kin"],
-    &["ky", "kir"],
-    &["kv", "kom"],
-    &["kg", "kon"],
-    &["ko", "kor"],
-    &["kj", "kua"],
-    &["ku", "kur"],
-    &["lo", "lao"],
-    &["la", "lat"],
-    &["lv", "lav"],
-    &["li", "lim"],
-    &["ln", "lin"],
-    &["lt", "lit"],
-    &["lb", "ltz"],
-    &["lu", "lub"],
-    &["lg", "lug"],
-    &["mh", "mah"],
-    &["ml", "mal"],
-    &["mr", "mar"],
-    &["mk", "mkd", "mac"],
-    &["mg", "mlg"],
-    &["mt", "mlt"],
-    &["mn", "mon"],
-    &["mi", "mri", "mao"],
-    &["ms", "msa", "may"],
-    &["my", "mya", "bur"],
-    &["na", "nau"],
-    &["nv", "nav"],
-    &["nr", "nbl"],
-    &["nd", "nde"],
-    &["ng", "ndo"],
-    &["ne", "nep"],
-    &["nl", "nld", "dut"],
-    &["nn", "nno"],
-    &["nb", "nob"],
-    &["no", "nor", "nb", "nob"],
-    &["ny", "nya"],
-    &["oc", "oci"],
-    &["oj", "oji"],
-    &["or", "ori"],
-    &["om", "orm"],
-    &["os", "oss"],
-    &["pa", "pan"],
-    &["pi", "pli"],
-    &["pl", "pol"],
-    &["pt", "por"],
-    &["ps", "pus"],
-    &["qu", "que"],
-    &["rm", "roh"],
-    &["ro", "ron", "rum"],
-    &["rn", "run"],
-    &["ru", "rus"],
-    &["sg", "sag"],
-    &["sa", "san"],
-    &["si", "sin"],
-    &["sk", "slk", "slo"],
-    &["sl", "slv"],
-    &["se", "sme"],
-    &["sm", "smo"],
-    &["sn", "sna"],
-    &["sd", "snd"],
-    &["so", "som"],
-    &["st", "sot"],
-    &["es", "spa"],
-    &["sq", "sqi", "alb"],
-    &["sc", "srd"],
-    &["sr", "srp"],
-    &["ss", "ssw"],
-    &["su", "sun"],
-    &["sw", "swa"],
-    &["sv", "swe"],
-    &["ty", "tah"],
-    &["ta", "tam"],
-    &["tt", "tat"],
-    &["te", "tel"],
-    &["tg", "tgk"],
-    &["tl", "tgl"],
-    &["th", "tha"],
-    &["ti", "tir"],
-    &["to", "ton"],
-    &["tn", "tsn"],
-    &["ts", "tso"],
-    &["tk", "tuk"],
-    &["tr", "tur"],
-    &["tw", "twi"],
-    &["ug", "uig"],
-    &["uk", "ukr"],
-    &["ur", "urd"],
-    &["uz", "uzb"],
-    &["ve", "ven"],
-    &["vi", "vie"],
-    &["vo", "vol"],
-    &["wa", "wln"],
-    &["wo", "wol"],
-    &["xh", "xho"],
-    &["yi", "yid"],
-    &["yo", "yor"],
-    &["za", "zha"],
-    &["zh", "zho", "chi"],
-    &["zu", "zul"],
-];
-
-/// Do two language tags name the same language? Either side may be a Plex preference
-/// (`"hu-HU"`, `"pt-BR"`) or a stream's ISO-639-2 `languageCode` (`"hun"`, `"ger"`/`"deu"`), so the
-/// same test serves a preference against a stream AND a picked stream against its siblings (a
-/// `fre` pick and a `fra` sibling are one language). Only the primary subtag counts — a stream
-/// says "Portuguese", never "Brazilian". An empty tag matches nothing.
-pub(super) fn lang_matches(a: &str, b: &str) -> bool {
-    let primary = |t: &str| t.trim().split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
-    let (a, b) = (primary(a), primary(b));
-    if a.is_empty() || b.is_empty() {
-        return false;
-    }
-    a == b
-        || LANG_SPELLINGS
-            .iter()
-            .any(|spellings| spellings.contains(&a.as_str()) && spellings.contains(&b.as_str()))
-}
-
 
 /// Stream id named on the remux/re-encode PUT and start.mkv — [`audio_intents`]' ranking, carried
 /// by an encoder instead of a direct play (the first entry with a usable id wins).

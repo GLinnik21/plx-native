@@ -387,30 +387,199 @@ fn activate_commits_the_bare_rows_directly() {
     );
 }
 
-/// **A Timing step commits and leaves the Subtitles panel UP.** The offset is found by pressing
-/// and watching the caption move; every other Tracks row still commits and closes.
+/// **A Color press commits and leaves the Subtitles panel UP.** The tone is found by cycling and
+/// watching the caption change; every other Tracks row (including Off) still commits and closes.
+/// Timing itself no longer steps in this panel at all — OK on it hands off to the Timing capsule
+/// overlay (`TrackOk::OpenTiming`, plan §4); see `open_timing_dismisses_tracks_and_opens_the_capsule_with_no_extend_hud`
+/// below for that hand-off.
 #[test]
-fn a_timing_step_commits_without_dismissing_the_tracks_panel() {
-    let _g = crate::testlock::serial(); // the panel seeds its offset from the player's global
+fn a_color_press_commits_without_dismissing_the_tracks_panel() {
+    let _g = crate::testlock::serial(); // the panel seeds its tone from the player's global
+    crate::player::restore_subtitle_tone(crate::plex::session::SubtitleTone::White);
+    let ps = crate::route::PlaybackSession::IDLE;
+    let meta = crate::stores::metadata::MetadataStore::default();
+    let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
+    // no playing item: Off, then the headerless Timing + Color section
+    let color = 2;
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: color }, by: By::Dir });
+    let (_, reqs, dismissed) = activate(&mut page, color);
+    assert!(!dismissed, "a Color press keeps the panel open");
+    assert!(reqs.iter().any(|r| matches!(
+        r,
+        PlayerReq::CommitTrack(crate::ui::track_menu::TrackCommit::SubtitleTone(
+            crate::plex::session::SubtitleTone::Silver
+        ))
+    )));
+    assert!(reqs.iter().any(|r| matches!(r, PlayerReq::ExtendHud(_))));
+
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: 0 }, by: By::Dir });
+    let (_, _, dismissed) = activate(&mut page, 0);
+    assert!(dismissed, "Off still commits and closes");
+}
+
+/// **OK on the dim Timing row while subtitles are Off is inert — it neither opens the capsule
+/// nor closes the panel.** The row reads "nothing to time"; an OK that silently dismissed the
+/// panel would throw away the viewer's place for no effect at all.
+#[test]
+fn ok_on_the_dim_timing_row_while_off_keeps_the_panel_open() {
+    let _g = crate::testlock::serial();
+    crate::player::sidecar::reset();
     crate::player::set_subtitle_offset(0);
     let ps = crate::route::PlaybackSession::IDLE;
     let meta = crate::stores::metadata::MetadataStore::default();
     let mut page = PlayerOverlayScreen::new(&ps, meta.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
-    // no playing item: Off, then the tone ladder, then Timing's Earlier / Later / Reset
-    let later = 1 + crate::plex::session::SubtitleTone::LADDER.len() as u32 + 1;
-    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: later }, by: By::Dir });
-    let (_, reqs, dismissed) = activate(&mut page, later);
-    assert!(!dismissed, "a Timing step keeps the panel open");
-    assert!(reqs.iter().any(|r| matches!(
-        r,
-        PlayerReq::CommitTrack(crate::ui::track_menu::TrackCommit::SubtitleOffset(100))
-    )));
-    assert!(reqs.iter().any(|r| matches!(r, PlayerReq::ExtendHud(_))));
+    // no playing item: Off, then Timing, then Color — and Off is the checked row
+    let timing = 1;
+    {
+        let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
+        assert_eq!(menu.targets()[timing as usize], crate::ui::track_menu::RowTarget::Timing);
+    }
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: timing }, by: By::Dir });
+    let (_, reqs, dismissed) = activate(&mut page, timing);
+    assert!(!dismissed, "an inert row keeps the panel up");
+    assert!(
+        !reqs.iter().any(|r| matches!(r, PlayerReq::OpenOverlay(_) | PlayerReq::CommitTrack(_))),
+        "and asks for nothing: {reqs:?}",
+    );
+}
 
-    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: 1 }, by: By::Dir });
-    let (_, _, dismissed) = activate(&mut page, 1);
-    assert!(dismissed, "a tone row still commits and closes");
+/// **The Timing hand-off.** Selecting the Subtitles menu's own Timing row while a subtitle is
+/// active returns `TrackOk::OpenTiming` (`ui::track_menu`'s own
+/// `timing_returns_open_timing_once_a_subtitle_is_active_and_is_inert_while_off`); `activate`'s
+/// Tracks arm spends that by dismissing the Tracks panel and asking for the capsule to open in its
+/// place, WITHOUT the read-time `ExtendHud` every ordinary commit raises — the capsule owns its own
+/// visible time (it hides the HUD outright, `OverlayKind::hud_policy`), so extending a HUD it is
+/// about to hide would be dead motion.
+#[test]
+fn open_timing_dismisses_tracks_and_opens_the_capsule_with_no_extend_hud() {
+    let _g = crate::testlock::serial();
+    crate::player::sidecar::reset();
     crate::player::set_subtitle_offset(0);
+    let ps = crate::route::PlaybackSession::IDLE;
+    let mut store = crate::stores::metadata::MetadataStore::default();
+    assert!(store.run(crate::stores::metadata::MetadataCmd::InstallPlaying(Some(
+        crate::metadata::PlayingItem::with_subs(vec![crate::metadata::Stream {
+            id: 1,
+            index: 0,
+            lang: "English".into(),
+            lang_code: "eng".into(),
+            codec: "srt".into(),
+            ..Default::default()
+        }]),
+    ))));
+    let mut page = PlayerOverlayScreen::new(&ps, store.view(), ENTRY, OverlayKind::Tracks { tab: 1 });
+    let (sub_row, timing_row) = {
+        let Panel::Tracks(menu) = page.panel() else { panic!("Tracks panel") };
+        let sub_row = menu
+            .targets()
+            .iter()
+            .position(|t| matches!(t, crate::ui::track_menu::RowTarget::Sub(_)))
+            .expect("a subtitle track row");
+        let timing_row = menu
+            .targets()
+            .iter()
+            .position(|t| *t == crate::ui::track_menu::RowTarget::Timing)
+            .expect("Timing row");
+        (sub_row, timing_row)
+    };
+    // Select the subtitle track first — Timing is inert while subtitles are Off.
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: sub_row as u32 }, by: By::Dir });
+    activate(&mut page, sub_row as u32);
+    deliver(&mut page, ScreenEvent::FocusMoved { from: None, to: FocusKey { entry: ENTRY, elem: timing_row as u32 }, by: By::Dir });
+    let (_, reqs, dismissed) = activate(&mut page, timing_row as u32);
+    assert!(dismissed, "OpenTiming dismisses the Tracks panel");
+    assert_eq!(
+        reqs,
+        vec![PlayerReq::OpenOverlay(OverlayKind::Timing)],
+        "and asks for exactly the capsule to open — no ExtendHud alongside it",
+    );
+}
+
+/// The Timing overlay's own word and slot, read by the same heartbeat/replay machinery every
+/// other `OverlayKind` answers through (`app::words`, `PlayerOverlayArg::write`).
+#[test]
+fn timings_word_and_slot() {
+    assert_eq!(OverlayKind::Timing.word(), "timing");
+    assert_eq!(OverlayKind::Timing.slot(), 4);
+}
+
+/// LEFT/RIGHT on the capsule commit a new `SubtitleOffset` through the ordinary `CommitTrack`
+/// path — the same request every other Tracks row's step uses, so the loop's one handler serves
+/// both.
+#[test]
+fn timing_left_and_right_commit_subtitle_offset() {
+    let _g = crate::testlock::serial();
+    crate::player::sidecar::reset();
+    crate::player::set_subtitle_offset(0);
+    let ps = crate::route::PlaybackSession::IDLE;
+    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Timing);
+    let (handled, reqs, dismissed) = press(&mut page, crate::ui::consts::SDLK_RIGHT, 0, Edge::Down);
+    assert_eq!(handled, Handled::Yes, "the capsule owns every key, never falls through");
+    assert!(!dismissed);
+    assert_eq!(
+        reqs,
+        vec![PlayerReq::CommitTrack(crate::ui::track_menu::TrackCommit::SubtitleOffset(100))],
+        "RIGHT steps +100ms",
+    );
+
+    let (_, reqs, _) = press(&mut page, crate::ui::consts::SDLK_LEFT, 0, Edge::Down);
+    assert_eq!(
+        reqs,
+        vec![PlayerReq::CommitTrack(crate::ui::track_menu::TrackCommit::SubtitleOffset(0))],
+        "LEFT steps back down",
+    );
+}
+
+/// OK and BACK both close the capsule (`TimingCapsule::key`'s `Key::Ok | Key::Back` arm) —
+/// dismissing the surface with the offset kept: neither key raises a reset commit, and neither
+/// asks for anything else (the transport staying down is `PlayerScreen::set_hud_policy`'s, for
+/// every way the surface can close).
+#[test]
+fn timing_ok_and_back_close_and_keep_the_offset() {
+    let _g = crate::testlock::serial();
+    crate::player::sidecar::reset();
+    crate::player::set_subtitle_offset(300);
+    let ps = crate::route::PlaybackSession::IDLE;
+    for (sym, wcode) in [(SDLK_RETURN, 0), (0, WCODE_BACK)] {
+        let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Timing);
+        let (handled, reqs, dismissed) = press(&mut page, sym, wcode, Edge::Down);
+        assert_eq!(handled, Handled::Yes);
+        assert!(dismissed, "sym={sym} wcode={wcode}: closes the capsule");
+        assert_eq!(reqs, vec![], "sym={sym} wcode={wcode}: no offset reset alongside it");
+    }
+}
+
+/// PLAY/PAUSE still reach the player while the capsule is up — the same transport exception the
+/// three reading panels get (`a_transport_key_is_forwarded_by_a_modal_panel_and_leaves_it_up`),
+/// checked before the Timing branch in `key()` so the capsule never swallows it.
+#[test]
+fn timing_forwards_transport_and_leaves_the_capsule_up() {
+    let _g = crate::testlock::serial();
+    crate::player::sidecar::reset();
+    crate::player::set_subtitle_offset(0);
+    let ps = crate::route::PlaybackSession::IDLE;
+    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Timing);
+    let (handled, reqs, dismissed) = press(&mut page, 0, WCODE_PAUSE, Edge::Down);
+    assert_eq!(handled, Handled::Yes);
+    assert_eq!(reqs, vec![PlayerReq::Transport(Some(false))]);
+    assert!(!dismissed, "the capsule stays up under a transport key");
+}
+
+/// No `ExtendHud` is ever raised while the capsule is the active panel's `Tick` — the capsule
+/// itself hides the HUD (`OverlayKind::extends_hud` is false), so keeping it "alive" for the transport's own
+/// read time would fight that.
+#[test]
+fn timing_ticks_do_not_extend_the_hud() {
+    let _g = crate::testlock::serial();
+    crate::player::sidecar::reset();
+    crate::player::set_subtitle_offset(0);
+    let ps = crate::route::PlaybackSession::IDLE;
+    let mut page = PlayerOverlayScreen::new(&ps, crate::stores::metadata::MetadataStore::default().view(), ENTRY, OverlayKind::Timing);
+    let (_, reqs, _) = deliver(&mut page, ScreenEvent::Tick(Tick { ms: 1_016, dt_us: 16_000 }));
+    assert!(
+        !reqs.iter().any(|r| matches!(r, PlayerReq::ExtendHud(_))),
+        "a Timing tick must not extend the HUD it is itself hiding",
+    );
 }
 
 /// **Info's split, kept from the old ladder's `Key::Ok if p.focus_is_ctl()` arm** (restructure
@@ -580,4 +749,23 @@ fn every_panel_row_the_dpad_reaches_is_clickable_with_the_pointer() {
         let gaps = pointer_gaps(&mut map, ENTRY, &rows);
         assert!(gaps.is_empty(), "{kind:?}: rows the pointer cannot click:\n{}", gaps.join("\n"));
     }
+}
+
+/// **`OverlayKind::ALL` lists every kind exactly once**, and the census derived from it cannot
+/// silently miss a new one: the `match` below names every variant with no wildcard, so adding a
+/// variant fails to compile HERE — the reminder to add it to `ALL` as well — and the slots `ALL`
+/// covers must be exactly `0..ALL.len()`, which a kind left out of `ALL` would break.
+#[test]
+fn every_kind_is_listed_once() {
+    let listed = |k: OverlayKind| match k {
+        OverlayKind::Tracks { .. }
+        | OverlayKind::Info
+        | OverlayKind::Chapters
+        | OverlayKind::More { .. }
+        | OverlayKind::Timing => OverlayKind::ALL.iter().any(|a| a.slot() == k.slot()),
+    };
+    let mut slots: Vec<u8> = OverlayKind::ALL.iter().map(|k| k.slot()).collect();
+    slots.sort_unstable();
+    assert_eq!(slots, (0..OverlayKind::ALL.len() as u8).collect::<Vec<_>>());
+    assert!(OverlayKind::ALL.into_iter().all(listed));
 }

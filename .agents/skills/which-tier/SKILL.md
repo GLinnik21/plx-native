@@ -183,7 +183,7 @@ OS-level mutex, and two jobs on it produce plausible WRONG data rather than a cl
 ./tests/run.py                 # the synthetic tier — the player pipeline, no Plex, no credentials
 ./tests/run.py --server        # the 21 library-backed cases — selection, the whole Plex chain
 ./tests/run.py --fps           # the UI fps scenes (implies --server; resolves the test identity)
-./tests/run.py --fps-player    # + the player-overlay scenes (info-panel, track-menu, chapters-panel)
+./tests/run.py --fps-player    # + the player-overlay scenes (manifest `tier: "player"`; `--list --server` names them)
 ./tests/run.py --list          # OFFLINE: the synthetic cases, each declaration and raster, and
                                #          which fixtures the pack is missing. THE census — a count
                                #          written into prose here rotted inside one commit.

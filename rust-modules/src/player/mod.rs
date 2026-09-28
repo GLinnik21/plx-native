@@ -61,7 +61,7 @@ use shared::{
 /// demonstrates.
 ///
 /// **It seeds the real store and stubs nothing else** — the same `SHARED.track_names` the demuxer
-/// writes, read back through the same `ui::track_menu::track_name` precedence. So a seeded
+/// writes, read back through the same `metadata::track_label::track_name` precedence. So a seeded
 /// screenshot verifies the ROW, honestly; what it cannot verify is the FFI read that fills the
 /// store on a television. Compiled out of a release build with every other trigger (`dev::read` is
 /// a compile-time `None`), so a shipped binary cannot be made to show a name that is not the
@@ -1497,8 +1497,13 @@ pub(crate) const SUBTITLE_OFFSET_LATEST_MS: i64 = 30_000;
 /// The earliest a SIDECAR goes. Its whole file is in memory (`sidecar`), so an advance is exactly
 /// as servable as a delay.
 pub(crate) const SUBTITLE_OFFSET_EARLIEST_SIDECAR_MS: i64 = -30_000;
-/// The Timing rows' step.
+/// The Timing capsule's step (plan `subtitle-menu-capsule` §4), read by `ui::timing_capsule` on
+/// every LEFT/RIGHT `Down`; the Subtitles menu's own Timing row no longer steps anything itself,
+/// it only opens the capsule (`ui::track_menu::TrackOk::OpenTiming`).
 pub(crate) const SUBTITLE_OFFSET_STEP_MS: i64 = 100;
+/// The capsule's step once a held direction has admitted 8 repeats (`ui::timing_capsule::key`) —
+/// a faster walk across the wide sidecar range without losing the 100 ms precision near 0.
+pub(crate) const SUBTITLE_OFFSET_FAST_STEP_MS: i64 = 500;
 
 /// **The offset range for the selected subtitle, in milliseconds (`(earliest, latest)`)** — the
 /// ONE rule the Timing rows (their clamp and their limit dimming, `ui::track_menu`) and the

@@ -88,7 +88,7 @@ pub(crate) fn draw_subtitle_message(text: &str, hud_up: bool) {
             continue;
         }
         for l in wrap(seg, 42) {
-            if lines.len() < 3 {
+            if lines.len() < MAX_CAPTION_LINES {
                 lines.push(l);
             }
         }
@@ -97,7 +97,7 @@ pub(crate) fn draw_subtitle_message(text: &str, hud_up: bool) {
         return;
     }
     let sz = 36; // subtitle caption: media chrome, a documented carve-out from theme::size (see HUD_TITLE_SZ)
-    let lh = 48.0f32;
+    let lh = CAPTION_LINE_PITCH;
     let n = lines.len() as f32;
     let cx = SCR_W * 0.5;
     // sit near the bottom normally; lift above the scrubber/tabs while the HUD is up
@@ -138,6 +138,19 @@ fn subtitle_ink_for(tone: crate::plex::session::SubtitleTone) -> [f32; 4] {
 /// ceiling — otherwise a bottom-positioned PGS cue sits behind the scrim while the user seeks.
 const SUB_BASE_Y: f32 = SCR_H - 100.0;
 const SUB_CEIL_Y: f32 = SCR_H - 300.0;
+
+/// The most caption lines [`draw_subtitle_message`] ever stacks (the rest of a longer cue is
+/// dropped), and the reason the Timing capsule's y is fixed rather than following the caption
+/// block (`ui::timing_capsule`, plan `subtitle-menu-capsule` §4): a live cue's line count changes
+/// frame to frame, and a capsule that tracked it would jump under a viewer's thumb mid-hold.
+const MAX_CAPTION_LINES: usize = 3;
+/// The vertical pitch of one caption line in [`draw_subtitle_message`] — its 36 px face plus
+/// leading.
+const CAPTION_LINE_PITCH: f32 = 48.0;
+/// The Timing capsule's bottom y — [`SUB_BASE_Y`] cleared by the tallest caption block this app
+/// ever draws ([`MAX_CAPTION_LINES`] at [`CAPTION_LINE_PITCH`]), so the capsule never overlaps
+/// even a three-line cue.
+pub(crate) const CAPSULE_BOTTOM_Y: f32 = SUB_BASE_Y - MAX_CAPTION_LINES as f32 * CAPTION_LINE_PITCH;
 
 /// Map a decoded image-subtitle rect from the stream's `cw`×`ch` authoring canvas onto the video
 /// rect — which is always the full panel here (the video track is authored 1920×1080; see the

@@ -21,7 +21,7 @@ pub enum Badge {
     Text(String),
 }
 impl Badge {
-    fn text(&self) -> &str {
+    pub(crate) fn text(&self) -> &str {
         match self {
             Badge::Ad => crate::i18n::msg::widgets_badge_ad(),
             Badge::Forced => crate::i18n::msg::widgets_badge_forced(),
@@ -1078,6 +1078,13 @@ impl TableView {
             }
         }
         0
+    }
+
+    /// **One row, for an in-place edit** — a read-out that changes while the list does not (the
+    /// Subtitles panel's Color value), so a press re-writes that row alone instead of rebuilding
+    /// every section. `None` past the end. The caller must not change the row's height class.
+    pub(crate) fn row_mut(&mut self, gi: i32) -> Option<&mut Row> {
+        usize::try_from(gi).ok().and_then(|gi| self.sections.iter_mut().flat_map(|s| s.rows.iter_mut()).nth(gi))
     }
 
     fn rows_at(&self, gi: i32) -> &Row {

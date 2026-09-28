@@ -1015,7 +1015,7 @@ unsafe fn ingest_sdl_event_with_window(app: &mut App, fr: &mut Frame,
         // (Four arms stood here — the track menu, the `…` popover, the Info card and the
         // Chapters strip, each gated on `overlay_swallows_key` so that a transport key FELL
         // THROUGH to the ordinary Pause/Play arms below while everything else was swallowed. The
-        // four panels are SURFACES on the player page's own `ModalStack` since restructure phase
+        // panels are SURFACES on the player page's own `ModalStack` since restructure phase
         // 9, so `tree_owns_key` at the top of this chain has already handed the key to the one
         // that is open and returned; the fall-through, which a surface cannot perform, is
         // `PlayerReq::Transport` — see `screens::player::overlay`'s module doc.)
@@ -2269,14 +2269,16 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         );
                         // Both subtitle paths lift clear of the transport for the same reason and
                         // by the same test — an open track menu counts, since that is exactly when
-                        // the user is reading the bottom of the screen.
-                        let lifted = app.pages.surface_up();
+                        // the user is reading the bottom of the screen. The Timing capsule is the
+                        // one panel that instead HIDES the transport outright (`HudPolicy::Hidden`
+                        // outranks `Lifted` — see `bridge::player_hud_policy`).
+                        let hud_policy = super::bridge::player_hud_policy(&app.pages);
                         if let Some(player) = super::bridge::player_mut(&mut app.pages) {
                             player.busy = busy;
                             player.transport = bare_middle;
-                            player.lifted = lifted;
+                            player.set_hud_policy(hud_policy);
                         }
-                        // THE PAGE, and its four panels: `Dispatcher::draw(.., true)` runs the page
+                        // THE PAGE, and its panels: `Dispatcher::draw(.., true)` runs the page
                         // pass (subtitles, the transport, the read-out — `PlayerScreen::draw`) and
                         // then the surfaces bottom-to-top, which is exactly the order the four
                         // hand-written `*_panel::draw()` calls used to state by hand.
@@ -2286,7 +2288,7 @@ pub(crate) unsafe fn draw(app: &mut App, fr: &mut Frame) -> (i32, i32, i32, i32)
                         // cannot read back, so there is no host snapshot to take
                         // (`RenderStrategy::VideoPlane`).
                         app.pages.draw(&mut app.bridge, true);
-                        // Skipped rather than drawn while one of the player's own four panels is
+                        // Skipped rather than drawn while one of the player's own panels is
                         // up — `More` carries this very panel's own toggle, and the panel's
                         // content routinely spans wide enough to reach any of their bottom-right
                         // rects. See `bridge::player_diagnostics_visible` (issue #163).
@@ -2995,6 +2997,7 @@ mod lifecycle_regression_tests {
                 menu_tried: Default::default(),
                 menupick_tried: Default::default(),
                 menupick_row: Default::default(),
+                subtiming: Default::default(),
                 pause_tried: Default::default(),
                 pause_script: Default::default(),
                 pause_resume_at: Default::default(),

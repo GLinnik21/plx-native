@@ -165,7 +165,7 @@ pub(crate) enum PlayerReq {
     /// take the playback session's `&mut`, which a screen never has (§2.2) — so the panel decides
     /// and the loop performs, exactly as every other request in this enum.
     CommitTrack(crate::ui::track_menu::TrackCommit),
-    /// **Present one of the four overlays directly** (restructure phase 12) — the tabs row's OK
+    /// **Present one of the player's overlays directly** (restructure phase 12) — the tabs row's OK
     /// (`OverlayKind::Info`/`::Chapters`, the old `key_ok`'s `focus == 2` arm) and the failure
     /// read-out's own recovery escape (`OverlayKind::More { quality: true }`, the old
     /// `key_player_failed`'s `ChooseQuality` arm). Both used to reach
@@ -1212,7 +1212,7 @@ impl RepeatGate {
     pub(crate) fn ready(&mut self, now: u32) -> bool {
         self.ready_every(now, Self::STEP_MS)
     }
-    /// The same gate at a caller-chosen cadence. The player's four overlay surfaces take
+    /// The same gate at a caller-chosen cadence. The player's overlay surfaces take
     /// [`PANEL_REPEAT_MS`] through this, which is what preserves the exact hold-to-move feel the
     /// loop's own client-side repeat timer gave them before phase 9 moved their input onto the
     /// dispatcher: the remote streams `Edge::Repeat` at roughly 50 ms, and a list walked at that
@@ -1383,7 +1383,7 @@ pub(crate) enum AppArg {
     /// were between them doing. There is no host to NAME because the host is the top page, which
     /// the container already knows and does not replace.
     ItemMenu(ItemMenuArg),
-    /// One of the player's four panels, presented on the PLAYER PAGE's own `ModalStack` (§6.2).
+    /// One of the player's panels, presented on the PLAYER PAGE's own `ModalStack` (§6.2).
     /// It carries only which panel: the host is the page it is presented over, which the container
     /// already knows, and the panel's own state is the instance's.
     PlayerOverlay(crate::screens::player::overlay::PlayerOverlayArg),
@@ -1428,7 +1428,7 @@ pub(crate) enum AppArg {
     /// The Search screen. A PEER of Home and the Library, not a stacking page: it is reached from
     /// the strip's last pill and BACK from it returns to Home. What it OPENS stacks; it does not.
     Search,
-    /// Playback. Its four panels are NOT here — they are entries on the player page's own
+    /// Playback. Its panels are NOT here — they are entries on the player page's own
     /// `ModalStack` ([`Self::PlayerOverlay`]), and the container owns which one is up.
     Player,
     /// A page with an ITEM IDENTITY — a detail page, a person page, a filmography. Two of these
@@ -1517,8 +1517,8 @@ impl crate::ui::screen::ScreenArg for AppArg {
     fn id(&self) -> ScreenId {
         ScreenId(match self {
             AppArg::LibraryMenu(_) => 15,
-            // One id for all four panels, exactly as `Settings(_)` collapses its root payload:
-            // they are four kinds of ONE screen, and `same_instance` must never let the container
+            // One id for every player panel, exactly as `Settings(_)` collapses its root payload:
+            // they are kinds of ONE screen, and `same_instance` must never let the container
             // think it is holding two of them.
             AppArg::PlayerOverlay(_) => 16,
             AppArg::AltSources(_) => 17,
@@ -1793,7 +1793,7 @@ where
 #[cfg(test)]
 pub(crate) fn every_surface_arg() -> Vec<AppArg> {
     use crate::screens::player::overlay::{OverlayKind, PlayerOverlayArg};
-    let args = vec![
+    let mut args = vec![
         AppArg::LibraryMenu(LibraryMenuArg {
             host: crate::ui::machine::InstanceId(1),
             target: crate::stores::browse::SectionAddress {
@@ -1828,15 +1828,11 @@ pub(crate) fn every_surface_arg() -> Vec<AppArg> {
         AppArg::AboutPanel,
         AppArg::PersonBio,
         AppArg::CollectionAbout,
-        // The four panels are ONE screen with four kinds, and each answers a different
-        // `Screen::name` — so every kind is listed, not one representative.
-        AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Tracks { tab: 0 } }),
-        AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Info }),
-        AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Chapters }),
-        AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::More { quality: false } }),
-        AppArg::Settings(SettingsPage::Root),
-        AppArg::FirstRunConsent(0),
     ];
+    // The player's panels are ONE screen with several kinds, and each answers a different
+    // `Screen::name` — so every kind is listed, not one representative.
+    args.extend(OverlayKind::ALL.map(|kind| AppArg::PlayerOverlay(PlayerOverlayArg { kind })));
+    args.extend([AppArg::Settings(SettingsPage::Root), AppArg::FirstRunConsent(0)]);
     for a in &args {
         match a {
             AppArg::LibraryMenu(_)

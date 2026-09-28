@@ -15,7 +15,7 @@
 //! **What is here and what is not.** Phase 9 moves the STATE and the DRAW; the key ladder in
 //! `app/run.rs` remains a CALLER of this screen for the bare transport, exactly as `ui::press`'s
 //! typed facade left the ladders callers of `App.input.press` in phase 2 (§14, "Press during
-//! coexistence"). The four overlays are different: they are entries on this page's own
+//! coexistence"). The overlays are different: they are entries on this page's own
 //! `ModalStack` and own their input outright, so their arms left the ladder with them.
 //!
 //! Two fields are PUBLISHED rather than owned by `player::TX` (§2.3): `hud.until` and `scrub.ns`.
@@ -95,6 +95,26 @@ impl Default for SubtitleBitmaps {
     }
 }
 
+/// **What the surfaces over the player page do to the transport this frame** — one value
+/// rather than overlapping per-frame flags, so an impossible pair (lifted AND hidden) cannot be
+/// stated. Resolved by `app::bridge::player_hud_policy` from every surface that is not `Hidden`
+/// (a closing panel is still on screen), and pushed once per frame through
+/// [`PlayerScreen::set_hud_policy`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum HudPolicy {
+    /// No surface: the transport follows its own timer and dismissal.
+    #[default]
+    Normal,
+    /// A surface is being read over the page (a player panel, or anything else presented over
+    /// it): the transport stays drawn and subtitles lift clear of it, since that is exactly when
+    /// the user is reading the bottom of the screen.
+    Lifted,
+    /// A surface sits where the transport would (the Timing capsule,
+    /// `OverlayKind::hud_policy`): the transport, the caption lift and the pointer/D-pad stops
+    /// under it are all withheld. Outranks `Lifted` when both kinds of surface are up.
+    Hidden,
+}
+
 pub(crate) struct PlayerScreen {
     entry: EntryId,
     /// The transport HUD's timer, cursor, dismissal and control-row edges.
@@ -126,9 +146,9 @@ pub(crate) struct PlayerScreen {
     /// Is the transport's MIDDLE drawn at all this frame? False while an Info card or Chapters
     /// strip has taken it — which panel is up is the container's answer, so the loop pushes it.
     pub(crate) transport: bool,
-    /// Is ANY panel up this frame? Subtitles lift clear of the transport while one is, since that
-    /// is exactly when the user is reading the bottom of the screen.
-    pub(crate) lifted: bool,
+    /// What the surfaces over this page do to the transport this frame — see [`HudPolicy`].
+    /// Pushed once per frame by `app/run.rs` through [`Self::set_hud_policy`].
+    hud_policy: HudPolicy,
     /// Where this playback returns to — see [`Origin`].
     pub(crate) origin: Option<Origin>,
     render: PlayerRender,
@@ -147,7 +167,7 @@ impl PlayerScreen {
             slot: ControlSlot::Discs,
             busy: crate::ui::player_hud::Busy::None,
             transport: true,
-            lifted: false,
+            hud_policy: HudPolicy::Normal,
             origin: None,
             render: PlayerRender::default(),
             repair_alert: {
@@ -379,9 +399,38 @@ impl PlayerScreen {
         h
     }
 
-    /// Is the transport on screen right now?
+    /// Is the transport on screen right now? `false` whenever a surface HIDES it
+    /// ([`HudPolicy::Hidden`], the Timing capsule) regardless of what the timer/dismissal say —
+    /// gated HERE, not just at the draw call site, so [`Self::clock_fingerprint`] (which calls this
+    /// too) sees the same answer the frame draws.
     pub(crate) fn hud_up(&self, ps: &crate::route::PlaybackSession, now: u32) -> bool {
         self.hud.visible(ps, now, crate::player::TX.paused.load(std::sync::atomic::Ordering::Relaxed))
+            && self.hud_policy != HudPolicy::Hidden
+    }
+
+    /// **Push this frame's [`HudPolicy`]** (`app/run.rs`, from `bridge::player_hud_policy`) — and
+    /// the ONE place a HUD-hiding surface's close becomes a dismissed transport. On the falling
+    /// edge out of [`HudPolicy::Hidden`] (the capsule's surface has just left, whatever closed it:
+    /// OK/BACK, a pointer miss through `OnMiss::Dismiss`, a playback teardown) `hud.dismissed` is
+    /// set, so the transport does not reappear over the film just because the capsule stopped
+    /// hiding it. It stays down until a bound key raises it, exactly like an UP-hide.
+    pub(crate) fn set_hud_policy(&mut self, policy: HudPolicy) {
+        if self.hud_policy == HudPolicy::Hidden && policy != HudPolicy::Hidden {
+            self.hud.dismissed = true;
+        }
+        self.hud_policy = policy;
+    }
+
+    /// Does the caption block lift clear of the transport this frame? While the transport is up,
+    /// or while a panel is being read over it.
+    fn subs_lift(&self, ps: &crate::route::PlaybackSession, now: u32) -> bool {
+        self.hud_up(ps, now) || self.hud_policy == HudPolicy::Lifted
+    }
+
+    /// Is the transport actually DRAWN this frame? Whenever the captions lift for it, unless the
+    /// repair alert has the screen.
+    fn hud_drawn(&self, ps: &crate::route::PlaybackSession, now: u32) -> bool {
+        self.subs_lift(ps, now) && !self.repair_alert.visible()
     }
 }
 
@@ -1222,12 +1271,13 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Screen<H> for Playe
         // The frame's publication of the playback session (spec §2.3) — see `AppViews::session`.
         let ps = H::session(f.cx);
         let now = f.cx.tick.ms;
-        let hud_up = self.hud_up(ps, now);
         // Both subtitle paths lift clear of the transport for the same reason and by the same
         // test — an open track menu counts, since that is exactly when the user is reading the
         // bottom of the screen. `transport` is false while the Info card or Chapters strip owns
-        // the middle, and the lift follows the panel rather than the transport there.
-        let subs_lift = hud_up || self.lifted;
+        // the middle, and the lift follows the panel rather than the transport there. The Timing
+        // capsule is the exception: it HIDES the transport rather than sharing its read time, so
+        // captions stay at their normal `SUB_BASE_Y` even while it is up (`Self::subs_lift`).
+        let subs_lift = self.subs_lift(ps, now);
         self.render.ass.draw();
         if let Some(message) = self.render.ass.error() {
             crate::ui::player_hud::draw_subtitle_message(message, subs_lift);
@@ -1247,7 +1297,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Screen<H> for Playe
         // that commit-frame dispatch with nothing to fire. Direct delivery, and the screen decides
         // what the element means — including the scrubber, whose meaning needs the click's `x`
         // and so cannot be carried by a bare `ScreenEvent::Activate` at all.
-        let hud_drawn = (hud_up || self.lifted) && !self.repair_alert.visible();
+        let hud_drawn = self.hud_drawn(ps, now);
         if hud_drawn {
             self.draw_hud(ps, now, f.measure, H::metadata(f.cx));
         }
@@ -1608,6 +1658,75 @@ mod step_ladder_tests {
             let got: Vec<u32> = f.into_stops().iter().map(|s| s.key.elem).collect();
             assert_eq!(got, want, "transport={transport} hud_drawn={hud_drawn}");
         }
+    }
+
+    /// **`HudPolicy::Hidden` withholds everything a lift would draw** (plan
+    /// `subtitle-menu-capsule` §4): no caption lift, no transport and no scrub/row/tab stop, even
+    /// with the transport otherwise up. The policy is pushed BY HAND here — no frame loop runs in
+    /// a host test, so `app/run.rs`'s per-frame `bridge::player_hud_policy` push never happens —
+    /// the same pattern [`a_control_the_frame_does_not_draw_registers_no_stop`] uses for
+    /// `hud_drawn`. `Lifted`, by contrast, draws and lifts.
+    #[test]
+    fn the_hidden_policy_withholds_the_transport_and_the_lift() {
+        use crate::ui::screen::DrawFrame;
+        let _g = crate::testlock::serial();
+        let mut page = PlayerScreen::new(ENTRY);
+        page.transport = true;
+        let cx = cx();
+        let ps = TestHost::session(&cx);
+        page.set_hud_policy(HudPolicy::Lifted);
+        assert!(page.subs_lift(ps, 1_000) && page.hud_drawn(ps, 1_000), "a panel read over the page lifts");
+        page.set_hud_policy(HudPolicy::Hidden);
+        assert!(!page.subs_lift(ps, 1_000), "captions must stay at SUB_BASE_Y under the capsule");
+        assert!(!page.hud_drawn(ps, 1_000));
+        let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+        page.record_stops(&mut f, page.hud_drawn(ps, 1_000));
+        let got: Vec<u32> = f.into_stops().iter().map(|s| s.key.elem).collect();
+        assert_eq!(got, Vec::<u32>::new(), "no scrub/row/tab stop registers under the capsule");
+    }
+
+    /// **However the capsule's surface closes, the transport stays down after it** (finding: a
+    /// pointer miss closed it through `OnMiss::Dismiss` without the key ladder's old HideHud
+    /// request). `set_hud_policy`'s falling edge is the one place that turns the close into a
+    /// dismissed HUD; a later bound key raises it again as usual.
+    #[test]
+    fn the_capsule_leaving_leaves_the_transport_dismissed_however_it_closed() {
+        let _g = crate::testlock::serial();
+        let paused = crate::player::TX.paused.swap(true, std::sync::atomic::Ordering::Relaxed);
+        let cx = cx();
+        let ps = TestHost::session(&cx);
+        let mut page = PlayerScreen::new(ENTRY);
+        page.transport = true;
+        assert!(page.hud_drawn(ps, 1_000), "paused: the transport is up before the capsule");
+        page.set_hud_policy(HudPolicy::Hidden);
+        assert!(!page.hud_drawn(ps, 1_000), "hidden under the capsule");
+        page.set_hud_policy(HudPolicy::Normal); // the surface is gone — no key reached the overlay's ladder
+        assert!(!page.hud_drawn(ps, 1_000), "and stays down once the capsule has left");
+        page.hud.note_fresh_press(ps, 1_100, true);
+        assert!(page.hud_drawn(ps, 1_100), "a bound key raises it again");
+        crate::player::TX.paused.store(paused, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// **A fresh LEFT on the capsule while paused keeps the transport hidden.** The capsule's own
+    /// first press goes through `note_global_press` → `note_fresh_press`, which clears
+    /// `hud.dismissed`; paused, that alone would put the transport back over the capsule. The
+    /// per-frame `HudPolicy::Hidden` gate is what keeps it down, and this is the layer that draws it.
+    #[test]
+    fn a_fresh_press_on_the_capsule_while_paused_keeps_the_transport_hidden() {
+        let _g = crate::testlock::serial();
+        let paused = crate::player::TX.paused.swap(true, std::sync::atomic::Ordering::Relaxed);
+        let cx = cx();
+        let ps = TestHost::session(&cx);
+        let mut page = PlayerScreen::new(ENTRY);
+        page.transport = true;
+        page.set_hud_policy(HudPolicy::Hidden);
+        page.hud.dismissed = true;
+        page.hud.note_fresh_press(ps, 1_000, true); // the LEFT that steps the capsule
+        assert!(!page.hud.dismissed, "the press did un-dismiss the HUD");
+        assert!(!page.hud_up(ps, 1_000), "yet the transport stays hidden under the capsule");
+        assert!(!page.hud_drawn(ps, 1_000));
+        assert!(!page.subs_lift(ps, 1_000), "and the captions do not lift for it");
+        crate::player::TX.paused.store(paused, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// **Issue #162's census: every control the D-pad can activate is clickable with the Magic

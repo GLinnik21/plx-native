@@ -39,6 +39,7 @@
 use std::ffi::CStr;
 
 use crate::screens::family::SettingsPage;
+use crate::screens::player::HudPolicy;
 use crate::screens::registry::{AppArg, AppFx, AppMounter, AppMsg, ConsentCmd, ContentArg, ContentReq, HomeCmd, HomeLike, HomeReq, HomeTab, ItemMenuKind, LibraryReq, LoopReq, PageMemory};
 use crate::stores::{StoreCmd, StoreEv, StoreId};
 use crate::ui::containers::modal::{HostRender, HostUpdate, Phase, Style};
@@ -2184,7 +2185,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     out
 }
 
-/// **Open one of the player's four panels on the PLAYER PAGE's own `ModalStack`** (§6.2).
+/// **Open one of the player's panels on the PLAYER PAGE's own `ModalStack`** (§6.2).
 ///
 /// Idempotent per KIND while that kind is up, for `open_settings`'s reason: a second press on the
 /// disc that opened it must not stack a second copy. Opening a DIFFERENT kind over an open one is
@@ -2248,10 +2249,35 @@ pub(crate) fn player_overlay_up(d: &Dispatcher<AppHost>) -> bool {
         .any(|s| matches!(s.entry.arg, AppArg::PlayerOverlay(_)))
 }
 
+/// **This frame's [`HudPolicy`] for the transport** (plan `subtitle-menu-capsule` §4): scans every
+/// surface whose phase is not `Hidden` — Opening, Open, AND Closing. `input_owner()`
+/// (`ModalStack::input_owner`) is deliberately NOT used here: it excludes `Closing`, and a
+/// Tracks→Timing hand-off dismisses the Tracks surface (which starts Closing the same frame the
+/// fresh Timing surface starts Opening) — reading only the input owner would see Timing alone and
+/// miss that Tracks' own closing fade must not flash the transport either.
+///
+/// [`HudPolicy::Hidden`] if ANY such player-overlay surface's kind says so
+/// (`OverlayKind::hud_policy` — today only `OverlayKind::Timing`); otherwise
+/// [`HudPolicy::Lifted`] if ANY modal surface is up, a player panel or not (subtitles clear the
+/// transport while something is being read over them — the answer the loop read from
+/// `Dispatcher::surface_up` before the capsule existed); otherwise [`HudPolicy::Normal`]. So a
+/// Tracks(Closing) + Timing(Opening) pair reads `Hidden`, never lifting the captions AND hiding
+/// the transport in one frame.
+pub(crate) fn player_hud_policy(d: &Dispatcher<AppHost>) -> HudPolicy {
+    let hides = |arg: &AppArg| matches!(arg, AppArg::PlayerOverlay(p) if p.kind.hud_policy() == HudPolicy::Hidden);
+    if surface_up(d, hides) {
+        HudPolicy::Hidden
+    } else if d.surface_up() {
+        HudPolicy::Lifted
+    } else {
+        HudPolicy::Normal
+    }
+}
+
 /// Should the player's diagnostics ("Stats for nerds") panel draw this frame?
 ///
-/// No, while any of the player's own four overlay panels (`OverlayKind::Tracks`/`Info`/
-/// `Chapters`/`More`) is up. `app/diagnostics.rs`'s panel is sized to its content rather than to
+/// No, while any of the player's own overlay panels (`OverlayKind::Tracks`/`Info`/
+/// `Chapters`/`More`/`Timing`) is up. `app/diagnostics.rs`'s panel is sized to its content rather than to
 /// the screen, but during playback that content routinely spans ~90% of the screen's width from
 /// the left safe margin — wide enough to reach every one of those panels' bottom-right-anchored
 /// rects — and on the player route it has always painted genuinely last, i.e. on TOP of them.

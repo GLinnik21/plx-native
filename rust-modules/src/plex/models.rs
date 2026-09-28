@@ -542,6 +542,10 @@ pub struct Stream {
     pub language: String,
     #[serde(rename = "languageCode", default)]
     pub language_code: String, // ISO-639 code, e.g. "eng" (route audio-track pick)
+    /// The BCP-47 tag ("es-419", "en-GB") — `language_code` is only the primary subtag.
+    /// `default` because PMS omits it on a stream with no language.
+    #[serde(rename = "languageTag", default)]
+    pub language_tag: String,
     // Video stream only: source fps for the Load esInfo. Lenient (number OR numeric string)
     // so a non-numeric frameRate never fails the whole detail parse — matches the old jfloat.
     #[serde(rename = "frameRate", default, deserialize_with = "de_f64")]

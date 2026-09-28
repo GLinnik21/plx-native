@@ -1,17 +1,17 @@
-//! **The player's four overlays, as entries on the page's own `ModalStack`** (restructure spec §6.2
+//! **The player's overlays, as entries on the page's own `ModalStack`** (restructure spec §6.2
 //! "Page-owned panels … Player: its four overlays", §9, phase 9).
 //!
 //! The track menu, the Info card, the Chapters strip and the `…` options popover were four
 //! `Route::Player { overlay }` values driven by four arms of `app/run.rs`'s key ladder, over four
-//! modules' worth of `static mut`. They are now four `AppArg` variants presented on the player
+//! modules' worth of `static mut`. They are now `AppArg` variants presented on the player
 //! page's stack, mounted by the one `Mounter`, styled `PlayerPanel { survives_failure }`, and each
 //! owning its panel's state as a field. The container owns the PHASE and the appear spring; the
 //! surface owns input while it is `Opening | Open`.
 //!
-//! **One screen type with an inner enum, not four types**, because the four differ only in which
+//! **One screen type with an inner enum, not one type per panel**, because they differ only in which
 //! panel they hold and share every rule that matters here: what a transport key does, how a held
-//! direction is paced, when a panel dismisses itself, and how a decision reaches the loop. Four
-//! copies of those rules is exactly the drift `overlay_swallows_key` was written to end.
+//! direction is paced, when a panel dismisses itself, and how a decision reaches the loop. A copy
+//! of those rules per panel is exactly the drift `overlay_swallows_key` was written to end.
 //!
 //! **The transport-key rule is the one behaviour a reader must not lose.** A viewer holding the
 //! track menu, the Info card or the Chapters strip open still expects PAUSE/PLAY to work, and the
@@ -52,7 +52,10 @@ use crate::ui::screen::{
     At, Dir, DrawFrame, FocusSource, Focusable, GroupSpec, HitSource, Part, Placed, RenderStrategy,
     Screen, ScreenEvent, Step,
 };
-use crate::ui::track_menu::TrackMenuPart;
+use crate::ui::timing_capsule::{CapsuleOut, TimingCapsule};
+use crate::ui::track_menu::{TrackMenuPart, TrackOk};
+
+use super::HudPolicy;
 use crate::ui::Rect;
 
 use super::input::{HUD_LINGER_MS, HUD_MENU_MS};
@@ -78,16 +81,35 @@ pub(crate) enum OverlayKind {
     /// quality rung — the failure read-out's recovery path, which is also why this is the one
     /// overlay whose style `survives_failure`.
     More { quality: bool },
+    /// The on-video Subtitle Timing capsule (`ui/timing_capsule.rs`, plan `subtitle-menu-capsule`
+    /// §4) — the Subtitles panel's Timing row hands off here
+    /// (`ui::track_menu::TrackOk::OpenTiming`) rather than stepping the offset itself. The only
+    /// overlay whose [`Self::hud_policy`] is [`HudPolicy::Hidden`] — the capsule sits where the
+    /// transport's caption band and scrubber would, so the two must never be up together.
+    Timing,
 }
 
 impl OverlayKind {
-    /// The heartbeat's `overlay=` word. These four spellings are the ones `tests/manifest.json`'s
+    /// **One of every kind**, parameters at their plain-open value — the list every "each panel"
+    /// census iterates (the heartbeat alphabet, `registry::every_surface_arg`, the surface
+    /// navigation tests), so a new kind is added here once rather than to each of them.
+    /// `every_kind_is_listed_once` fails to compile when a variant is added and not listed.
+    #[cfg(test)]
+    pub(crate) const ALL: [OverlayKind; 5] = [
+        OverlayKind::Tracks { tab: 0 },
+        OverlayKind::Info,
+        OverlayKind::Chapters,
+        OverlayKind::More { quality: false },
+        OverlayKind::Timing,
+    ];
+
+    /// The heartbeat's `overlay=` word. These spellings are the ones `tests/manifest.json`'s
     /// fps scenes select by; changing one silently disarms a scene rather than failing anything
     /// visible (§15.3). Since phase 10 item 4 they reach the heartbeat DIRECTLY — `app::overlay_word`
     /// is the topmost surface's own `Screen::name`, so there is no mapping table between this
     /// function and the printed line, and `app::heartbeat_word_tests` derives its alphabet by
     /// presenting every surface argument and reading the word back.
-    /// **WHICH of the four this is, with the parameter thrown away** — the identity
+    /// **WHICH panel this is, with the parameter thrown away** — the identity
     /// `ScreenArg::same_instance` compares, and the reason it is not the whole `OverlayKind`.
     ///
     /// The two on-screen discs open the SAME track menu on their own tab, and the failure
@@ -101,6 +123,7 @@ impl OverlayKind {
             OverlayKind::Info => 1,
             OverlayKind::Chapters => 2,
             OverlayKind::More { .. } => 3,
+            OverlayKind::Timing => 4,
         }
     }
 
@@ -110,7 +133,31 @@ impl OverlayKind {
             OverlayKind::Info => "info",
             OverlayKind::Chapters => "chapters",
             OverlayKind::More { .. } => "more",
+            OverlayKind::Timing => "timing",
         }
+    }
+
+    /// **What this panel does to the transport HUD while it is up** (any phase but `Hidden` —
+    /// `app::bridge::player_hud_policy`, plan `subtitle-menu-capsule` §4). Only the Timing capsule
+    /// HIDES it: it sits at the caption's own band, over the scrubber, so the transport and the
+    /// capsule must never both be drawn. The other panels leave it up and lift the captions clear
+    /// of it — the same distinction their own `survives_failure`/`swallows_transport` answer for
+    /// different questions.
+    pub(crate) fn hud_policy(self) -> HudPolicy {
+        match self {
+            OverlayKind::Timing => HudPolicy::Hidden,
+            OverlayKind::Tracks { .. } | OverlayKind::Info | OverlayKind::Chapters | OverlayKind::More { .. } => {
+                HudPolicy::Lifted
+            }
+        }
+    }
+
+    /// **Does this panel keep the transport alive while a viewer reads it** (the per-frame
+    /// `ExtendHud` of `PlayerOverlayScreen`'s `Tick`, and the ordinary linger a hand-off INTO it
+    /// leaves behind)? Every panel that shows the HUD; never one that hides it, since extending a
+    /// HUD it is hiding would fight [`HudPolicy::Hidden`].
+    pub(crate) fn extends_hud(self) -> bool {
+        self.hud_policy() != HudPolicy::Hidden
     }
 
     /// **Does this panel stay up over the terminal failure read-out?**
@@ -145,19 +192,15 @@ pub(crate) struct PlayerOverlayArg {
 
 impl LogicalState for PlayerOverlayArg {
     fn write(&self, c: &mut Canon) {
+        c.u32(self.kind.slot() as u32);
         match self.kind {
             OverlayKind::Tracks { tab } => {
-                c.u32(0).u32(tab as u32);
-            }
-            OverlayKind::Info => {
-                c.u32(1);
-            }
-            OverlayKind::Chapters => {
-                c.u32(2);
+                c.u32(tab as u32);
             }
             OverlayKind::More { quality } => {
-                c.u32(3).bool(quality);
+                c.bool(quality);
             }
+            OverlayKind::Info | OverlayKind::Chapters | OverlayKind::Timing => {}
         }
     }
     fn probe(&self, out: &mut String) {
@@ -171,6 +214,7 @@ pub(crate) enum Panel {
     Info(crate::ui::info_panel::InfoPanelState),
     Chapters(crate::ui::chapters_panel::ChaptersState),
     More(crate::ui::more_menu::MoreMenuState),
+    Timing(TimingCapsule),
 }
 
 pub(crate) struct PlayerOverlayScreen {
@@ -192,6 +236,35 @@ pub(crate) struct PlayerOverlayScreen {
     suppressed: bool,
 }
 
+/// **"Your languages"**, in preference order, for the Subtitles menu's grouping
+/// (`metadata::sub_layout::sub_sections`, plan `subtitle-menu-capsule` §2-3): the subtitle-language
+/// preference this play resolved under (the show's own, else the account's —
+/// `route::cur_sub_pref_lang`), then the playing audio's language, then the current subtitle's
+/// own — each only if it names one. `ui/` never sees a Plex account type, only these codes.
+fn subtitle_yours_langs(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>) -> Vec<String> {
+    let mut yours = Vec::new();
+    if let Some(pref) = crate::route::cur_sub_pref_lang(ps) {
+        if !pref.trim().is_empty() {
+            yours.push(pref.to_string());
+        }
+    }
+    if let Some(item) = meta.playing() {
+        let asid = crate::route::cur_audio_sid(ps);
+        if let Some(a) = item.audio.iter().find(|s| s.id == asid) {
+            if !a.lang_code.trim().is_empty() {
+                yours.push(a.lang_code.clone());
+            }
+        }
+        let ssid = crate::route::cur_sub_sid(ps);
+        if let Some(s) = item.subs.iter().find(|s| s.id == ssid) {
+            if !s.lang_code.trim().is_empty() {
+                yours.push(s.lang_code.clone());
+            }
+        }
+    }
+    yours
+}
+
 impl PlayerOverlayScreen {
     /// Every panel here answers on exactly one focus group — see each `*Part`'s own `groups()`
     /// (restructure phase 12); this screen never holds more than one panel at a time, so there is
@@ -200,9 +273,12 @@ impl PlayerOverlayScreen {
 
     pub(crate) fn new(ps: &crate::route::PlaybackSession, meta: crate::metadata::MetadataView<'_>, entry: EntryId, kind: OverlayKind) -> Self {
         let panel = match kind {
-            OverlayKind::Tracks { tab } => {
-                Panel::Tracks(crate::ui::track_menu::TrackMenuState::new(ps, meta, tab))
-            }
+            OverlayKind::Tracks { tab } => Panel::Tracks(crate::ui::track_menu::TrackMenuState::new(
+                ps,
+                meta,
+                tab,
+                subtitle_yours_langs(ps, meta),
+            )),
             OverlayKind::Info => Panel::Info(crate::ui::info_panel::InfoPanelState::new()),
             OverlayKind::Chapters => {
                 Panel::Chapters(crate::ui::chapters_panel::ChaptersState::new(meta))
@@ -212,6 +288,10 @@ impl PlayerOverlayScreen {
             }
             OverlayKind::More { quality: true } => {
                 Panel::More(crate::ui::more_menu::MoreMenuState::new_quality(ps))
+            }
+            OverlayKind::Timing => {
+                let (lo, hi) = crate::player::subtitle_offset_range_ms();
+                Panel::Timing(TimingCapsule::new(crate::player::subtitle_offset_ms(), lo, hi))
             }
         };
         Self {
@@ -256,6 +336,9 @@ impl PlayerOverlayScreen {
             Panel::Info(p) => p.sel(),
             Panel::Chapters(p) => p.sel(),
             Panel::More(p) => p.sel(),
+            // Timing exposes no rows and no cursor — the capsule is driven entirely by its own
+            // `key()`, never by the engine's focus movement.
+            Panel::Timing(_) => 0,
         }
     }
 
@@ -269,13 +352,15 @@ impl PlayerOverlayScreen {
     /// trigger exists to leave the chosen track's panel on screen for a capture.
     pub(crate) fn pick_track_row(
         &mut self,
-        ps: &crate::route::PlaybackSession,
         meta: crate::metadata::MetadataView<'_>,
         row: c_int,
     ) -> Option<crate::ui::track_menu::TrackCommit> {
         if let Panel::Tracks(p) = &mut self.panel {
             p.focus_row(row);
-            return p.on_ok(ps, meta);
+            return match p.on_ok(meta) {
+                TrackOk::Commit { commit, .. } => Some(commit),
+                TrackOk::Dismiss | TrackOk::OpenTiming | TrackOk::Inert => None,
+            };
         }
         None
     }
@@ -323,23 +408,40 @@ impl PlayerOverlayScreen {
     /// way the panel's own cursor is already correct — every `FocusMoved` this screen sees writes
     /// it back (`step`'s own arm below) — so this reads the panel's OWN `on_ok`, exactly as the
     /// old ladder's `Key::Ok` arms did.
-    fn activate<H: AppLike + crate::screens::registry::MetadataLike>(&mut self, ps: &crate::route::PlaybackSession, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
+    fn activate<H: AppLike + crate::screens::registry::MetadataLike>(&mut self, cx: &Cx<'_, H>, fx: &mut Effects<'_, H>) {
         match &mut self.panel {
-            Panel::Tracks(p) => {
-                // asked BEFORE `on_ok`, which may rebuild the rows under the cursor
-                let stays = p.ok_keeps_open();
-                if let Some(commit) = p.on_ok(ps, H::metadata(cx)) {
+            Panel::Tracks(p) => match p.on_ok(H::metadata(cx)) {
+                TrackOk::Commit { commit, keep_open } => {
                     fx.push(Fx::App(AppFx::Player(PlayerReq::CommitTrack(commit))));
+                    if keep_open {
+                        // a Color cycle: the viewer is watching the tone change, so the transport
+                        // keeps a menu's read time rather than starting to close
+                        self.moved(fx);
+                    } else {
+                        self.dismiss(fx);
+                        self.closing(fx);
+                    }
                 }
-                if stays {
-                    // a Timing step: the viewer is watching the caption move, so the transport
-                    // keeps a menu's read time rather than starting to close
-                    self.moved(fx);
-                } else {
+                TrackOk::Dismiss => {
                     self.dismiss(fx);
                     self.closing(fx);
                 }
-            }
+                // the dim Timing row while subtitles are Off: nothing happens and the panel stays
+                TrackOk::Inert => self.moved(fx),
+                TrackOk::OpenTiming => {
+                    // The Tracks→Timing hand-off (plan §4): dismiss THIS entry and ask for a fresh
+                    // `Timing` overlay. `open_player_overlay` sees a different slot
+                    // (`OverlayKind::slot`) than the one being dismissed, so it presents a new
+                    // entry rather than re-addressing this one. The ordinary linger is left only
+                    // if the panel taking over keeps the HUD at all — the capsule hides it.
+                    let next = OverlayKind::Timing;
+                    self.dismiss(fx);
+                    Self::ask(fx, PlayerReq::OpenOverlay(next));
+                    if next.extends_hud() {
+                        self.closing(fx);
+                    }
+                }
+            },
             Panel::More(p) => {
                 let action = p.on_ok();
                 self.dismiss(fx);
@@ -360,6 +462,11 @@ impl PlayerOverlayScreen {
                 }
                 self.closing(fx);
             }
+            // Unreachable in practice: Timing publishes no focus group and no `ElemKind::Bare`
+            // row (`Focusable::groups` answers empty, `key()` returns `Handled::Yes` for every
+            // key before `Machine::step` ever reaches its `Activate`/`PressCommit` arms), so
+            // nothing ever calls `activate()` while this variant is up. Exhaustiveness only.
+            Panel::Timing(_) => {}
         }
     }
 
@@ -391,7 +498,7 @@ impl PlayerOverlayScreen {
         Handled::Yes
     }
 
-    /// The one key ladder these four share, for everything the ENGINE does not already resolve
+    /// The one key ladder these panels share, for everything the ENGINE does not already resolve
     /// (§7.3 step 1). Transport keys always fall through here first (module doc) — the only keys
     /// this ladder still fully owns. A direction is paced by [`PANEL_REPEAT_MS`] and then handed
     /// to the engine's own `neighbour`/`EdgeRule` (`Handled::No`) unless the engine has already
@@ -424,6 +531,36 @@ impl PlayerOverlayScreen {
                         _ => None,
                     }),
                 );
+            }
+            return Handled::Yes;
+        }
+        // The Timing capsule owns every key itself — it has no focus group for the engine to
+        // walk, so it never falls through to the directional block below and OK/BACK must not
+        // reach `Machine::step`'s `Activate` arm either (the capsule has nothing for that
+        // machinery to activate). The cadence is the SAME `RepeatGate` every other panel here
+        // paces a held direction with — one admission rule, reused rather than a second copy of
+        // it living in `ui::timing_capsule`.
+        if let Panel::Timing(cap) = &mut self.panel {
+            match edge {
+                Edge::Down => self.repeat.rearm(now),
+                Edge::Repeat if !self.repeat.ready_every(now, PANEL_REPEAT_MS) => {
+                    return Handled::Yes
+                }
+                Edge::Up => return Handled::Yes,
+                _ => {}
+            }
+            match cap.key(key, edge, now) {
+                Some(CapsuleOut::Step(v)) => {
+                    Self::ask(
+                        fx,
+                        PlayerReq::CommitTrack(crate::ui::track_menu::TrackCommit::SubtitleOffset(v)),
+                    );
+                }
+                // The transport stays down after the capsule leaves — not asked for here, since a
+                // pointer miss closes it without reaching this ladder; `PlayerScreen::set_hud_policy`
+                // turns ANY close into a dismissed HUD on the frame the surface is gone.
+                Some(CapsuleOut::Close) => self.dismiss(fx),
+                Some(CapsuleOut::Bump) | None => {}
             }
             return Handled::Yes;
         }
@@ -513,6 +650,10 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
                     Panel::Info(p) => p.set_focus(i),
                     Panel::Chapters(p) => p.set_sel(i),
                     Panel::More(p) => p.set_sel(i),
+                    // Timing has no cursor the engine could have moved — its own `key()` owns
+                    // every press and always returns `Handled::Yes`, so this arm is unreached for
+                    // it in practice.
+                    Panel::Timing(_) => {}
                 }
                 self.moved(fx);
                 Handled::No
@@ -523,14 +664,14 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
             // `PressCommit`, on release — except `Info`, whose `PressCommit` defers instead to
             // the loop's own tvOS dip (`Self::activate`'s doc explains the split).
             ScreenEvent::Activate(_) => {
-                self.activate(ps, cx, fx);
+                self.activate(cx, fx);
                 Handled::No
             }
             ScreenEvent::PressCommit(_) => {
                 if let Panel::Info(_) = &self.panel {
                     Self::ask(fx, PlayerReq::ArmInfoPress);
                 } else {
-                    self.activate(ps, cx, fx);
+                    self.activate(cx, fx);
                 }
                 Handled::No
             }
@@ -541,11 +682,15 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
                     Panel::Info(p) => p.update(dt),
                     Panel::Chapters(p) => p.update(dt, H::metadata(cx)),
                     Panel::More(p) => p.update(dt),
+                    Panel::Timing(p) => p.update(dt),
                 }
                 // The transport must not auto-hide out from under a panel a viewer is reading —
                 // the rule `app/run.rs` kept as "keep the HUD alive while the track menu / Info
                 // card / Chapters strip is open", stated once here by the surface that IS open.
-                Self::ask(fx, PlayerReq::ExtendHud(HUD_LINGER_MS));
+                // A panel that HIDES the HUD (the Timing capsule) does not share its read time.
+                if self.kind.extends_hud() {
+                    Self::ask(fx, PlayerReq::ExtendHud(HUD_LINGER_MS));
+                }
                 Handled::Yes
             }
             _ => Handled::No,
@@ -568,6 +713,9 @@ impl PlayerOverlayScreen {
             Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.draw(f, Rect::FULL),
             Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.draw(f, Rect::FULL),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.draw(f, Rect::FULL),
+            // Timing owns its own key ladder and never asks the engine for focus, so it has no
+            // per-row geometry to register — `draw`, below, paints the capsule itself.
+            Panel::Timing(_) => {}
         }
     }
 }
@@ -581,7 +729,7 @@ impl PlayerOverlayScreen {
 /// `Focusable` impl (§7.1: "the engine never mutates a screen"), which is why each wrapper's
 /// `state` field is `&'a StateType` rather than `&'a mut` (see each wrapper's own doc). This
 /// screen holds exactly one panel at a time, so there is no `Composed`/`layout()` here — that
-/// trait concatenates SEVERAL simultaneous parts, and these four never coexist.
+/// trait concatenates SEVERAL simultaneous parts, and one instance's panels never coexist.
 impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::MetadataLike> Focusable<H> for PlayerOverlayScreen {
     fn groups(&self, cx: &Cx<'_, H>, out: &mut Vec<GroupSpec>) {
         match &self.panel {
@@ -589,6 +737,9 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
             Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.groups(cx, out),
             Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.groups(cx, out),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.groups(cx, out),
+            // Timing declares no group at all — the capsule's own `key()` swallows every press
+            // (`Handled::Yes`) before the engine's focus machinery ever sees one.
+            Panel::Timing(_) => {}
         }
     }
     fn group_of(&self, key: &u32, cx: &Cx<'_, H>) -> Option<GroupId> {
@@ -597,6 +748,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
             Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.group_of(key, cx),
             Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.group_of(key, cx),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.group_of(key, cx),
+            Panel::Timing(_) => None,
         }
     }
     fn neighbour(&self, key: FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
@@ -605,6 +757,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
             Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.neighbour(key, dir, cx),
             Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.neighbour(key, dir, cx),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.neighbour(key, dir, cx),
+            Panel::Timing(_) => Step::Edge,
         }
     }
     fn place(&self, key: &u32, cx: &Cx<'_, H>, at: At) -> Option<Placed> {
@@ -613,6 +766,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
             Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.place(key, cx, at),
             Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.place(key, cx, at),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.place(key, cx, at),
+            Panel::Timing(_) => None,
         }
     }
     fn reconcile(&self, want: FocusKey<u32>, cx: &Cx<'_, H>) -> FocusKey<u32> {
@@ -621,6 +775,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
             Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.reconcile(want, cx),
             Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.reconcile(want, cx),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.reconcile(want, cx),
+            Panel::Timing(_) => want,
         }
     }
     fn seat(&self, g: GroupId, from: Placed, cx: &Cx<'_, H>) -> FocusKey<u32> {
@@ -629,6 +784,7 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
             Panel::Info(p) => InfoPanelPart { state: p, entry: self.entry, group: Self::GROUP }.seat(g, from, cx),
             Panel::Chapters(p) => ChaptersPart { state: p, entry: self.entry, group: Self::GROUP }.seat(g, from, cx),
             Panel::More(p) => MoreMenuPart { state: p, entry: self.entry, group: Self::GROUP }.seat(g, from, cx),
+            Panel::Timing(_) => FocusKey { entry: self.entry, elem: 0 },
         }
     }
 }
@@ -671,7 +827,8 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
         match self.panel {
             Panel::Tracks(_) => crate::ui::screen::Scrim::over_video(DIM_PLAYER, self.corners),
             Panel::More(_) => crate::ui::screen::Scrim::over_video(DIM_SHEET, self.corners),
-            Panel::Info(_) | Panel::Chapters(_) => crate::ui::screen::Scrim::NONE,
+            // The capsule sits over the video like the Info card and the Chapters strip — no dim.
+            Panel::Info(_) | Panel::Chapters(_) | Panel::Timing(_) => crate::ui::screen::Scrim::NONE,
         }
     }
     fn draw(&mut self, f: &mut DrawFrame<'_, '_, H>) {
@@ -691,6 +848,8 @@ impl<H: crate::screens::registry::PlayerLike + crate::screens::registry::Metadat
             Panel::Info(p) => p.draw(ps, appear, measure, H::metadata(f.cx)),
             Panel::Chapters(p) => p.draw(ps, appear, measure, H::metadata(f.cx)),
             Panel::More(p) => p.draw(appear, measure),
+            // Fixed y, never the live caption's own baseline — see `player_hud::CAPSULE_BOTTOM_Y`.
+            Panel::Timing(p) => p.draw(crate::ui::player_hud::CAPSULE_BOTTOM_Y, appear),
         }
         self.record_stops(f);
     }

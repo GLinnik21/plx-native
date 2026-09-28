@@ -627,18 +627,6 @@
     "value": "Timing",
     "description": "tracks timing"
   },
-  "widgets.tracks.earlier": {
-    "value": "Earlier",
-    "description": "tracks earlier"
-  },
-  "widgets.tracks.later": {
-    "value": "Later",
-    "description": "tracks later"
-  },
-  "widgets.tracks.reset": {
-    "value": "Reset",
-    "description": "tracks reset"
-  },
   "widgets.tracks.external_badge": {
     "value": "EXTERNAL",
     "description": "tracks external_badge"
@@ -821,5 +809,148 @@
   "widgets.badge.ad": {
     "value": "AD",
     "description": "Badge: the title has an audio-description track. Must match the abbreviation in browse.detail.audio_description (es: audiodescripción, AD)."
+  },
+  "widgets.tracks.other_languages": {
+    "value": "Other languages",
+    "description": "Subtitles panel of the player's track selector. Heading of the section listing subtitle languages that are not the viewer's own."
+  },
+  "widgets.tracks.language_count": {
+    "value": {
+      "one": "{count} language",
+      "other": "{count} languages"
+    },
+    "description": "Subtitles panel of the player's track selector. Count of distinct languages beside the Other languages heading.",
+    "args": {
+      "count": "i64"
+    }
+  },
+  "widgets.tracks.track_ordinal": {
+    "value": "Track {number}",
+    "description": "Subtitles panel of the player's track selector. Tells apart subtitle tracks that are otherwise identical; the number is the track's position among them.",
+    "args": {
+      "number": "i64"
+    }
+  },
+  "widgets.tracks.kind_full": {
+    "value": "Full",
+    "description": "Subtitles panel of the player's track selector. Label of a nameless subtitle track that carries every line of dialogue (not forced-only, not SDH)."
+  },
+  "widgets.tracks.kind_commentary": {
+    "value": "Commentary",
+    "description": "Subtitles panel of the player's track selector. Label of a nameless subtitle track that transcribes a commentary."
+  },
+  "widgets.tracks.capsule_later": {
+    "value": "Subtitles {duration} later",
+    "description": "On-video timing control of the player: subtitles are shown this much later than the file's own timing. The duration is already formatted, e.g. \"0.3 s\".",
+    "args": {
+      "duration": "str"
+    }
+  },
+  "widgets.tracks.capsule_earlier": {
+    "value": "Subtitles {duration} earlier",
+    "description": "On-video timing control of the player: subtitles are shown this much earlier than the file's own timing. The duration is already formatted, e.g. \"0.3 s\".",
+    "args": {
+      "duration": "str"
+    }
+  },
+  "widgets.tracks.capsule_original": {
+    "value": "Original timing",
+    "description": "On-video timing control of the player: subtitles use the file's own timing (no offset)."
+  },
+  "widgets.region.gb": {
+    "value": "United Kingdom",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.us": {
+    "value": "United States",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.br": {
+    "value": "Brazil",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.pt": {
+    "value": "Portugal",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.es": {
+    "value": "Spain",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.mx": {
+    "value": "Mexico",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.fr": {
+    "value": "France",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.be": {
+    "value": "Belgium",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.ca": {
+    "value": "Canada",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.de": {
+    "value": "Germany",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.at": {
+    "value": "Austria",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.ch": {
+    "value": "Switzerland",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.cn": {
+    "value": "China",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.tw": {
+    "value": "Taiwan",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.hk": {
+    "value": "Hong Kong",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.in": {
+    "value": "India",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.au": {
+    "value": "Australia",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.ru": {
+    "value": "Russia",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.ua": {
+    "value": "Ukraine",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.it": {
+    "value": "Italy",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.jp": {
+    "value": "Japan",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.kr": {
+    "value": "South Korea",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.nl": {
+    "value": "Netherlands",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
+  },
+  "widgets.region.latin_america": {
+    "value": "Latin America",
+    "description": "Region name shown under a subtitle track's language when the track carries no name of its own (a BCP-47 region subtag)."
   }
 }

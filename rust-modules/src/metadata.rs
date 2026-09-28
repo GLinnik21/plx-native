@@ -5,6 +5,8 @@
 //! buffers from the C port are gone.
 use std::os::raw::c_int;
 pub(crate) mod record;
+pub(crate) mod sub_layout;
+pub(crate) mod track_label;
 use std::panic::catch_unwind;
 
 /// **Stage B of the store-ownership migration** (`docs/stores-as-machines.md`, D4): a borrowed
@@ -722,6 +724,16 @@ pub(crate) struct Stream {
     pub(crate) index: i64,   // PMS stream index (container order) — the ordinal mapping sorts by it
     pub(crate) lang: String, // display name ("English")
     pub(crate) lang_code: String, // ISO code ("eng") — the route's language preference matches this
+    /// PMS `Stream.languageTag` — the BCP-47 tag ("es-419", "en-GB"), region and all, where
+    /// `lang_code` is only the ISO-639 primary subtag. `metadata::track_label`'s region fallback
+    /// is the one reader (a nameless track with a regional tag names the region instead of
+    /// nothing). This struct is a recorded wire value: controlled replay carries whole `Detail`s
+    /// (`metadata::record`), and `record::validate` refuses any reply that does not re-serialize
+    /// byte-for-byte. So an absent tag must stay absent both ways — `default` reads a recording
+    /// made before the field existed, `skip_serializing_if` keeps an empty tag off the wire so
+    /// that recording (fixture 12, whose mock server sends no `languageTag`) still round-trips.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub(crate) language_tag: String,
     pub(crate) codec: String,
     pub(crate) channels: i64,
     pub(crate) layout: String, // audioChannelLayout, e.g. "5.1(side)"
@@ -2054,6 +2066,7 @@ fn convert_streams(streams: &[crate::plex::Stream]) -> Streams {
             index: s.index,
             lang: s.language.clone(),
             lang_code: s.language_code.to_lowercase(),
+            language_tag: s.language_tag.clone(),
             codec: s.codec.clone(),
             channels: s.channels,
             layout: s.audio_channel_layout.clone(),
@@ -2214,6 +2227,29 @@ pub(crate) struct PlayingItem {
     /// so this is the one honest source of "the light under the panel" there
     /// (`screen::Scrim::over_video`).
     pub(crate) blur: Option<[[f32; 3]; 4]>,
+}
+
+#[cfg(test)]
+impl PlayingItem {
+    /// A playing item on server slot 0 carrying only `subs` — the fixture the track-menu and
+    /// overlay tests install, where nothing but the subtitle list is read.
+    pub(crate) fn with_subs(subs: Vec<Stream>) -> Self {
+        PlayingItem {
+            sid: crate::plex::ServerId::from_raw(0),
+            rk: "rk".into(),
+            show_rk: String::new(),
+            audio: Vec::new(),
+            subs,
+            video_fps: 0.0,
+            width: 0,
+            height: 0,
+            bitrate: 0,
+            dovi: Default::default(),
+            markers: Vec::new(),
+            chapters: Vec::new(),
+            blur: None,
+        }
+    }
 }
 /// Load the playing-item track store for `rk` at play time (route::build_stream). Reuses the
 /// loaded detail's streams when it IS this item (no extra GET on the play path — the same
@@ -2390,6 +2426,273 @@ pub(crate) fn sub_render_ordinal(subs: &[Stream], i: usize) -> i32 {
         .enumerate()
         .filter(|(j, s)| !s.external && (s.index, *j) < me)
         .count() as i32
+}
+
+// ---- language matching (moved from `route::plan`, §1) -------------------------------------
+// `route::plan`'s audio/subtitle preference ladder and `metadata::sub_layout`'s "yours"/"Other
+// languages" grouping both need to know whether two language tags name the same language, so
+// this lives in the data layer both sides already name rather than in either one's own module.
+
+/// ISO 639-1 / 639-2 bibliographic and terminology spellings from Debian iso-codes:
+/// https://salsa.debian.org/iso-codes-team/iso-codes/-/raw/main/data/iso_639-2.json
+/// (retrieved 2026-09-27). Plex preferences use 639-1; PMS commonly uses either 639-2 form.
+const LANG_SPELLINGS: &[&[&str]] = &[
+    &["aa", "aar"],
+    &["ab", "abk"],
+    &["af", "afr"],
+    &["ak", "aka"],
+    &["am", "amh"],
+    &["ar", "ara"],
+    &["an", "arg"],
+    &["as", "asm"],
+    &["av", "ava"],
+    &["ae", "ave"],
+    &["ay", "aym"],
+    &["az", "aze"],
+    &["ba", "bak"],
+    &["bm", "bam"],
+    &["be", "bel"],
+    &["bn", "ben"],
+    &["bi", "bis"],
+    &["bo", "bod", "tib"],
+    &["bs", "bos"],
+    &["br", "bre"],
+    &["bg", "bul"],
+    &["ca", "cat"],
+    &["cs", "ces", "cze"],
+    &["ch", "cha"],
+    &["ce", "che"],
+    &["cu", "chu"],
+    &["cv", "chv"],
+    &["kw", "cor"],
+    &["co", "cos"],
+    &["cr", "cre"],
+    &["cy", "cym", "wel"],
+    &["da", "dan"],
+    &["de", "deu", "ger"],
+    &["dv", "div"],
+    &["dz", "dzo"],
+    &["el", "ell", "gre"],
+    &["en", "eng"],
+    &["eo", "epo"],
+    &["et", "est"],
+    &["eu", "eus", "baq"],
+    &["ee", "ewe"],
+    &["fo", "fao"],
+    &["fa", "fas", "per"],
+    &["fj", "fij"],
+    &["fi", "fin"],
+    &["fr", "fra", "fre"],
+    &["fy", "fry"],
+    &["ff", "ful"],
+    &["gd", "gla"],
+    &["ga", "gle"],
+    &["gl", "glg"],
+    &["gv", "glv"],
+    &["gn", "grn"],
+    &["gu", "guj"],
+    &["ht", "hat"],
+    &["ha", "hau"],
+    &["he", "heb"],
+    &["hz", "her"],
+    &["hi", "hin"],
+    &["ho", "hmo"],
+    &["hr", "hrv", "scr"],
+    &["hu", "hun"],
+    &["hy", "hye", "arm"],
+    &["ig", "ibo"],
+    &["io", "ido"],
+    &["ii", "iii"],
+    &["iu", "iku"],
+    &["ie", "ile"],
+    &["ia", "ina"],
+    &["id", "ind"],
+    &["ik", "ipk"],
+    &["is", "isl", "ice"],
+    &["it", "ita"],
+    &["jv", "jav"],
+    &["ja", "jpn"],
+    &["kl", "kal"],
+    &["kn", "kan"],
+    &["ks", "kas"],
+    &["ka", "kat", "geo"],
+    &["kr", "kau"],
+    &["kk", "kaz"],
+    &["km", "khm"],
+    &["ki", "kik"],
+    &["rw", "kin"],
+    &["ky", "kir"],
+    &["kv", "kom"],
+    &["kg", "kon"],
+    &["ko", "kor"],
+    &["kj", "kua"],
+    &["ku", "kur"],
+    &["lo", "lao"],
+    &["la", "lat"],
+    &["lv", "lav"],
+    &["li", "lim"],
+    &["ln", "lin"],
+    &["lt", "lit"],
+    &["lb", "ltz"],
+    &["lu", "lub"],
+    &["lg", "lug"],
+    &["mh", "mah"],
+    &["ml", "mal"],
+    &["mr", "mar"],
+    &["mk", "mkd", "mac"],
+    &["mg", "mlg"],
+    &["mt", "mlt"],
+    &["mn", "mon"],
+    &["mi", "mri", "mao"],
+    &["ms", "msa", "may"],
+    &["my", "mya", "bur"],
+    &["na", "nau"],
+    &["nv", "nav"],
+    &["nr", "nbl"],
+    &["nd", "nde"],
+    &["ng", "ndo"],
+    &["ne", "nep"],
+    &["nl", "nld", "dut"],
+    &["nn", "nno"],
+    &["nb", "nob"],
+    &["no", "nor", "nb", "nob"],
+    &["ny", "nya"],
+    &["oc", "oci"],
+    &["oj", "oji"],
+    &["or", "ori"],
+    &["om", "orm"],
+    &["os", "oss"],
+    &["pa", "pan"],
+    &["pi", "pli"],
+    &["pl", "pol"],
+    &["pt", "por"],
+    &["ps", "pus"],
+    &["qu", "que"],
+    &["rm", "roh"],
+    &["ro", "ron", "rum"],
+    &["rn", "run"],
+    &["ru", "rus"],
+    &["sg", "sag"],
+    &["sa", "san"],
+    &["si", "sin"],
+    &["sk", "slk", "slo"],
+    &["sl", "slv"],
+    &["se", "sme"],
+    &["sm", "smo"],
+    &["sn", "sna"],
+    &["sd", "snd"],
+    &["so", "som"],
+    &["st", "sot"],
+    &["es", "spa"],
+    &["sq", "sqi", "alb"],
+    &["sc", "srd"],
+    &["sr", "srp"],
+    &["ss", "ssw"],
+    &["su", "sun"],
+    &["sw", "swa"],
+    &["sv", "swe"],
+    &["ty", "tah"],
+    &["ta", "tam"],
+    &["tt", "tat"],
+    &["te", "tel"],
+    &["tg", "tgk"],
+    &["tl", "tgl"],
+    &["th", "tha"],
+    &["ti", "tir"],
+    &["to", "ton"],
+    &["tn", "tsn"],
+    &["ts", "tso"],
+    &["tk", "tuk"],
+    &["tr", "tur"],
+    &["tw", "twi"],
+    &["ug", "uig"],
+    &["uk", "ukr"],
+    &["ur", "urd"],
+    &["uz", "uzb"],
+    &["ve", "ven"],
+    &["vi", "vie"],
+    &["vo", "vol"],
+    &["wa", "wln"],
+    &["wo", "wol"],
+    &["xh", "xho"],
+    &["yi", "yid"],
+    &["yo", "yor"],
+    &["za", "zha"],
+    &["zh", "zho", "chi"],
+    &["zu", "zul"],
+];
+
+/// **The one canonical spelling of a language tag's LANGUAGE**, the key [`lang_matches`] compares
+/// by: the primary subtag, lower-cased, folded onto the first spelling of its [`LANG_SPELLINGS`]
+/// row(s) when it has one (`"fr-CA"`, `"fre"` and `"fra"` all answer `"fr"`), or itself when it
+/// has none. `None` for an empty tag, which names no language and so matches nothing. A caller that
+/// groups many tracks computes this ONCE per track and buckets by it, rather than asking
+/// `lang_matches` pairwise.
+pub(crate) fn lang_key(tag: &str) -> Option<std::borrow::Cow<'static, str>> {
+    let primary = tag.trim().split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
+    if primary.is_empty() {
+        return None;
+    }
+    // The smallest spelling over EVERY row that lists it, not the first row's head: Norwegian is
+    // listed both as `nb`/`nob` and as `no`/`nor`/`nb`/`nob`, and all four must share one key.
+    let canonical = LANG_SPELLINGS
+        .iter()
+        .filter(|spellings| spellings.contains(&primary.as_str()))
+        .flat_map(|spellings| spellings.iter().copied())
+        .min();
+    Some(match canonical {
+        Some(spelling) => std::borrow::Cow::Borrowed(spelling),
+        None => std::borrow::Cow::Owned(primary),
+    })
+}
+
+/// Do two language tags name the same language? Either side may be a Plex preference
+/// (`"hu-HU"`, `"pt-BR"`) or a stream's ISO-639-2 `languageCode` (`"hun"`, `"ger"`/`"deu"`), so the
+/// same test serves a preference against a stream AND a picked stream against its siblings (a
+/// `fre` pick and a `fra` sibling are one language). Only the primary subtag counts — a stream
+/// says "Portuguese", never "Brazilian". An empty tag matches nothing. Same [`lang_key`] = same
+/// language.
+pub(crate) fn lang_matches(a: &str, b: &str) -> bool {
+    matches!((lang_key(a), lang_key(b)), (Some(a), Some(b)) if a == b)
+}
+
+#[cfg(test)]
+mod lang_matches_tests {
+    use super::lang_matches;
+
+    #[test]
+    fn a_regional_bcp47_tag_matches_the_iso_639_2_bibliographic_and_terminology_forms() {
+        assert!(lang_matches("fr-CA", "fra"));
+        assert!(lang_matches("fr-CA", "fre"));
+        assert!(!lang_matches("fr-CA", "eng"));
+    }
+
+    /// **`lang_key` agrees with the pairwise row rule it replaced** — two spellings share a key
+    /// exactly when some [`LANG_SPELLINGS`](super::LANG_SPELLINGS) row lists both (Norwegian's
+    /// overlapping rows included).
+    #[test]
+    fn lang_key_agrees_with_the_pairwise_row_rule() {
+        let rows = super::LANG_SPELLINGS;
+        // every pair a row lists is one language…
+        for row in rows {
+            for a in row.iter() {
+                for b in row.iter() {
+                    assert!(lang_matches(a, b), "{a} vs {b}");
+                }
+            }
+        }
+        // …and two rows that share no spelling are two
+        for r1 in rows {
+            for r2 in rows {
+                if !r1.iter().any(|a| r2.contains(a)) {
+                    assert!(!lang_matches(r1[0], r2[0]), "{} vs {}", r1[0], r2[0]);
+                }
+            }
+        }
+        assert_eq!(super::lang_key("fre").as_deref(), Some("fr"));
+        assert_eq!(super::lang_key("xx-YY").as_deref(), Some("xx"));
+        assert_eq!(super::lang_key("  "), None);
+    }
 }
 
 /// fetch one item's full metadata and parse its streams into `d` — used to borrow a
