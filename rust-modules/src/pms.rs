@@ -145,7 +145,7 @@ impl PmsMovie {
     /// end up with a full bar and no check. `ui::detail::ep_state` has always applied this rule to
     /// an episode still; now a poster and the filmstrip beside it cannot describe one item two ways.
     pub(crate) fn resume_frac(&self) -> Option<f32> {
-        (self.kind != KIND_COLLECTION && self.resume_ms > 0 && self.dur_ns > 0
+        (self.resume_ms > 0 && self.dur_ns > 0
             && self.resume_ms * 1_000_000 < self.dur_ns)
             .then(|| (self.resume_ms as f32 * 1_000_000.0 / self.dur_ns as f32).clamp(0.0, 1.0))
     }
@@ -318,6 +318,10 @@ pub(crate) fn parse_item(it: &crate::plex::Metadata, sid: ServerId) -> PmsMovie 
         }
         _ => {}
     }
+    // A COLLECTION HAS NO WATCH OR RESUME STATE of its own, whatever counters the server sends
+    // with it. This is the one place that says so: both flags are false and `resume_ms` is zero
+    // below, and every reader (the poster mark, `resume_frac`, the item menu) trusts the row.
+    //
     // shows/seasons count leaves (a show with any watched episode is no longer "unwatched");
     // movies/episodes key on viewCount absence (docs/pms-api.md §2)
     m.unwatched = match m.kind {
@@ -343,7 +347,7 @@ pub(crate) fn parse_item(it: &crate::plex::Metadata, sid: ServerId) -> PmsMovie 
     } else {
         0
     };
-    m.resume_ms = it.view_offset;
+    m.resume_ms = if m.kind == KIND_COLLECTION { 0 } else { it.view_offset };
     // poster: prefer the show poster for episodes (grandparentThumb) so a landscape
     // episode still doesn't fill a portrait card
     let thumb = if it.grandparent_thumb.is_empty() {
@@ -996,7 +1000,7 @@ fn merge_with_scope(srcs: &[Src], scope: &BrowseScope) -> HubBuild {
                 break;
             }
             let m = &new_cat[idx];
-            if m.art.is_empty() || m.kind == 2 || m.kind == KIND_COLLECTION {
+            if m.art.is_empty() || m.kind == 2 {
                 continue; // need landscape art; skip seasons
             }
             // dedup by the item's IDENTITY, not by its bare key: two shelves merged from two
@@ -2211,9 +2215,9 @@ impl crate::ui::tile::Tile for PmsMovie {
         self.resume_frac()
     }
     fn watched(&self) -> bool {
-        self.kind != KIND_COLLECTION && self.watched
+        self.watched
     }
     fn unwatched(&self) -> bool {
-        self.kind != KIND_COLLECTION && self.unwatched
+        self.unwatched
     }
 }
