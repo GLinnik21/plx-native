@@ -14,8 +14,9 @@
 //! container's own `seat` (`column_near_x`'s contract), `Remembered` from the remembered
 //! cursor — except that an UP/DOWN press into a card lattice (`ElemKind::Card` `Row` or `Grid`)
 //! lands through `seat` too, on the card above or below the cursor ("down, right, up" closes a
-//! square) — `RememberedNear{rows}` only within `rows` element-widths, `First` at the extent's
-//! head;
+//! square) — `RememberedFirst` is the explicit linked-heading door (remembered cursor, then the
+//! first element), `RememberedNear{rows}` only within `rows` element-widths, `First` at the
+//! extent's head;
 //! (5) the engine records the move and emits it; (6) after a landing, the owner's pure
 //! `reconcile(want)` — if the answer differs, `FocusMoved{by: Reconcile}` (the Slot→Item
 //! promotion is exactly this); (7) scope: the input owner's groups only.
@@ -265,6 +266,13 @@ impl<K: Copy + Eq + Hash> FocusEngine<K> {
                 },
                 None => projected,
             },
+            Seat::RememberedFirst => {
+                let entry = entry_of(projected);
+                match self.remembered_in(entry, spec.id) {
+                    Some(elem) => FocusKey { entry, elem },
+                    None => f.seat(spec.id, head_of(spec.extent), cx),
+                }
+            }
             Seat::RememberedNear { rows } => {
                 let entry = entry_of(projected);
                 match self.remembered_in(entry, spec.id) {

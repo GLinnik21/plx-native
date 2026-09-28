@@ -57,6 +57,7 @@ pub mod lab_toast; // the Lab Diagnostics upload read-out (lab builds only — s
 #[cfg(feature = "threadcheck")]
 pub(crate) mod runtime_warning;
 pub mod label;
+pub(crate) mod linked_heading; // linked shelf-entry control: shared entry/heading geometry, focus and hits
 pub(crate) mod landgate; // RESTRUCTURE (spec §3.3 step 3): a replay delivers a landing on its RECORDED frame
 pub(crate) mod landing; // RESTRUCTURE spike (spec §5.2): the bounded per-addressee result queue
 pub(crate) mod machine; // RESTRUCTURE spike (spec §3.1): the layer-neutral contract — Host, Machine, Effects, Fx
@@ -570,10 +571,9 @@ impl Painter {
     pub fn dx(self) -> f32 {
         self.dx
     }
-    /// The cascade's vertical translate — [`dx`](Self::dx)'s twin, with the same warning. Its one
-    /// caller records a POINTER hit rect for a control drawn inside a `ScrollColumn` child, where
-    /// the child painter has already been translated to the block top minus the scroll and that
-    /// offset is not otherwise recoverable from inside the block (`person::draw_entry`).
+    /// The cascade's vertical translate — [`dx`](Self::dx)'s twin, with the same warning. The hit
+    /// map reads it when a control is drawn inside a translated child: the child's painter already
+    /// carries the block-top/scroll offset, which is not otherwise recoverable at registration.
     pub fn dy(self) -> f32 {
         self.dy
     }

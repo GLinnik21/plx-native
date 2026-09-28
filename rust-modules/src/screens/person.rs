@@ -22,6 +22,7 @@ use crate::stores::person::PersonCmd;
 use crate::ui::card_row::{self, CardRow, RowStyle};
 use crate::ui::consts::*;
 use crate::ui::label::{HAlign, Label, VAlign};
+use crate::ui::linked_heading::LinkedHeading;
 use crate::ui::machine::{
     Canon, Cx, Edge, Effects, EntryId, GroupId, Handled, InputEvent, InputKind, Key, Leave,
     LogicalState, Machine, Measure, Tick,
@@ -114,17 +115,9 @@ const SHELF_STYLE: RowStyle = RowStyle::HOME;
 const TOP_MARGIN: f32 = HEADER_TOP;
 const BOTTOM_PAD: f32 = crate::ui::consts::MARGIN_Y;
 
-const ENTRY_H: f32 = 60.0;
-const ENTRY_OUTER_PAD: f32 = theme::space::MD;
-const ENTRY_MARK: f32 = 24.0;
-const ENTRY_MARK_INK: (f32, f32) = crate::ui::icons::ink_x(crate::ui::icons::Icon::Chevron);
-const ENTRY_MARK_BEARING_L: f32 = ENTRY_MARK * ENTRY_MARK_INK.0;
-const ENTRY_MARK_BEARING_R: f32 = ENTRY_MARK * (1.0 - ENTRY_MARK_INK.1);
-const ENTRY_CHEVRON_GAP: f32 = theme::space::SM;
 // The owner's reference mock, 2026-09-19: the bio-to-pill gap drops two rungs from `LG` to `SM` —
 // the pill reads as the header block's own closing line, not a new section starting under it.
 const ENTRY_GAP: f32 = theme::space::SM;
-const ENTRY_RUN_GAP: f32 = theme::space::XS;
 
 const AMB_HEADER_W: [f32; 4] = [0.10, 0.06, 0.02, 0.03];
 const AMB_CARD_W: [f32; 4] = PageGround::CARD_W;
@@ -248,7 +241,7 @@ fn header_flow(
     if has_entry {
         y += ENTRY_GAP;
         f.entry_y = Some(y);
-        y += ENTRY_H;
+        y += LinkedHeading::HEIGHT;
     }
     let bare = !pending && f.meta_y.is_none() && f.life_y.is_none() && f.bio_y.is_none();
     f.exp_d = if bare { PORTRAIT_BARE } else { PORTRAIT_EXP };
@@ -934,13 +927,19 @@ impl PersonScreen {
     /// below fell back to bare `MARGIN_X` — under the circular portrait. `col_x(self.header.
     /// exp_d)` is the one expression both read, so the drawn pill and its focus/hit rect cannot
     /// disagree about where it sits.
-    fn entry_rect(&self, p: &Person, measure: &dyn Measure) -> Rect {
+    fn entry_rect(&self, _p: &Person, measure: &dyn Measure) -> Rect {
         let x = col_x(self.header.exp_d);
         let Some(ey) = self.header.entry_y else {
             return Rect::new(x, HEADER_TOP, 0.0, 1.0);
         };
-        let w = entry_w(p, &self.entry_count_c, measure);
-        Rect::new(x, HEADER_TOP + ey, w.max(1.0), ENTRY_H)
+        let entry = LinkedHeading::entry("Filmography", self.entry_count_c.to_str().unwrap_or(""));
+        let measured = entry.measure(measure);
+        entry.face_rect(
+            x,
+            HEADER_TOP + ey - self.scroll.scroll.pos,
+            0.0,
+            &measured,
+        )
     }
 
     /// A shelf's absolute SCREEN-space row-y, given its flow position among the present shelves —
@@ -1280,7 +1279,9 @@ impl PersonScreen {
         if let Some(y) = flow.entry_y {
             // Same x the name/roles/life column starts at (`col_x_`, above) — never bare
             // `MARGIN_X`, which is the pre-phase-7 regression `entry_rect`'s doc explains.
-            self.draw_entry(p, person, col_x_, y, focus_elem == Some(ENTRY_ELEM), measure);
+            let entry = LinkedHeading::entry("Filmography", self.entry_count_c.to_str().unwrap_or(""));
+            let measured = entry.measure(measure);
+            entry.draw(p, col_x_, y, f32::from(focus_elem == Some(ENTRY_ELEM)), &measured);
         }
     }
 
@@ -1370,84 +1371,10 @@ impl PersonScreen {
         .draw(env, p);
     }
 
-    fn draw_entry(&self, p: Painter, person: &Person, x: f32, y: f32, focused: bool, measure: &dyn Measure) {
-        let w = entry_w(person, &self.entry_count_c, measure);
-        let e = if focused {
-            crate::ui::widgets::CTRL_FOCUS_SCALE
-        } else {
-            1.0
-        };
-        let (pw, ph) = (w * e, ENTRY_H * e);
-        let pill = Rect::new(x, y - (ph - ENTRY_H) * 0.5, pw, ph);
-        crate::ui::widgets::draw_control_face(
-            p,
-            pill,
-            if focused {
-                crate::ui::ACCENT
-            } else {
-                theme::CONTROL_IDLE_FILL
-            },
-            focused,
-            crate::ui::widgets::ControlGround::Keyed,
-        );
-        let (ink, count_ink) = if focused {
-            (crate::ui::ACCENT_INK, theme::ROW_VALUE_INK_ON)
-        } else {
-            (theme::TEXT_PRIMARY, theme::TEXT_TERTIARY)
-        };
-        let cy = pill.y + pill.h * 0.5;
-        let mut rx = x + entry_run_x(w, e);
-        rx += Label::new(c"Filmography".as_ptr(), theme::size::LABEL, ink)
-            .bold()
-            .v(VAlign::Middle)
-            .draw(p, Rect::new(rx, cy, 0.0, 0.0));
-        if !self.entry_count_c.as_bytes().is_empty() {
-            rx += ENTRY_RUN_GAP;
-            rx += Label::new(
-                c"\u{b7}".as_ptr(),
-                theme::size::LABEL,
-                theme::TEXT_SEPARATOR,
-            )
-            .v(VAlign::Middle)
-            .draw(p, Rect::new(rx, cy, 0.0, 0.0));
-            rx += ENTRY_RUN_GAP;
-            rx += Label::new(self.entry_count_c.as_ptr(), theme::size::LABEL, count_ink)
-                .v(VAlign::Middle)
-                .draw(p, Rect::new(rx, cy, 0.0, 0.0));
-        }
-        rx += ENTRY_CHEVRON_GAP - ENTRY_MARK_BEARING_L;
-        crate::ui::icons::draw(
-            p,
-            crate::ui::icons::Icon::Chevron,
-            Rect::new(rx, cy - ENTRY_MARK * 0.5, ENTRY_MARK, ENTRY_MARK),
-            ink,
-        );
-        let _ = person;
-    }
 }
 
 /// Shelves, in flow order. Kind 0 = Movies, 1 = Shows.
 const SHELF_TITLE: [&std::ffi::CStr; NSHELF] = [c"Movies", c"Shows"];
-
-/// The Filmography entry pill's width, sized to its own runs.
-fn entry_w(_p: &Person, entry_count_c: &std::ffi::CStr, m: &dyn Measure) -> f32 {
-    let label = m.width(c"Filmography", theme::size::LABEL, true);
-    let count = if entry_count_c.to_bytes().is_empty() {
-        0.0
-    } else {
-        ENTRY_RUN_GAP
-            + m.width(c"\u{b7}", theme::size::LABEL, false)
-            + ENTRY_RUN_GAP
-            + m.width(entry_count_c, theme::size::LABEL, false)
-    };
-    2.0 * ENTRY_OUTER_PAD + label + count + ENTRY_CHEVRON_GAP + ENTRY_MARK
-        - ENTRY_MARK_BEARING_L
-        - ENTRY_MARK_BEARING_R
-}
-
-fn entry_run_x(w: f32, e: f32) -> f32 {
-    (w * e - (w - 2.0 * ENTRY_OUTER_PAD)) * 0.5
-}
 
 // -------------------------------------------------------------------------------------------
 // Focusable / Machine / Screen
@@ -1871,23 +1798,6 @@ impl PersonScreen {
                 activate: Activate::Direct,
             },
         );
-        if entry_reachable(person) {
-            let r = self.entry_rect(person, f.measure);
-            f.stop(
-                hp,
-                Stop {
-                    key: crate::ui::machine::FocusKey {
-                        entry: self.entry,
-                        elem: ENTRY_ELEM,
-                    },
-                    rect: r,
-                    rest_rect: r,
-                    clip: Rect::FULL,
-                    hover: Hover::Focus,
-                    activate: Activate::Direct,
-                },
-            );
-        }
         for kind in 0..NSHELF {
             let Some(shelf) = self.offset_shelf(person, kind) else {
                 continue;
@@ -1909,6 +1819,16 @@ impl PersonScreen {
                         hover: Hover::Focus,
                         activate: Activate::Press,
                     },
+                );
+            }
+        }
+        if entry_reachable(person) {
+            let r = self.entry_rect(person, f.measure);
+            if crate::ui::on_axis(r.y, r.h, SCR_H, 0.0) {
+                LinkedHeading::entry("Filmography", self.entry_count_c.to_str().unwrap_or("")).stop(
+                    f,
+                    r,
+                    crate::ui::machine::FocusKey { entry: self.entry, elem: ENTRY_ELEM },
                 );
             }
         }
@@ -2334,6 +2254,59 @@ mod tests {
             col_x(PORTRAIT_EXP),
             "the pill must sit in the text column, exactly where the name/roles start"
         );
+        store.run(PersonCmd::Close);
+    }
+
+    /// The entry stop is appended after the shelf stops, so a stale unscrolled pill rectangle
+    /// wins their overlap in `HitMap`'s last-stop z-order. Put a first-shelf tile exactly under
+    /// that stale rectangle: the live, scrolled entry geometry must leave the click with the tile.
+    #[test]
+    fn a_scrolled_filmography_stop_does_not_steal_the_first_shelf_tile() {
+        use crate::ui::hit::{HitMap, PointerKind};
+        use crate::ui::screen::DrawFrame;
+
+        let _serial = crate::testlock::serial();
+        let (mut store, mut s) = seed(2, 0);
+        store.install_credits_for_test(&[("Actor", 3)]);
+        let measure = FixtureMeasure;
+        s.refresh_store_cache(&cx(&measure, store.view()));
+        s.remeasure_header(store.view().current().unwrap(), &measure);
+        s.header.exp_d = PORTRAIT_BARE;
+        for _ in 0..120 {
+            s.shelves[0].update(2, Some(1), &SHELF_STYLE, 0.016);
+        }
+
+        let key = focus_of(&s, &store, 0, 1);
+        let stale_entry = s.entry_rect(store.view().current().unwrap(), &measure);
+        let initial_tile = Focusable::<PersonHost>::place(
+            &s, &key.elem, &cx(&measure, store.view()), At::Drawn)
+            .expect("the seeded first-shelf tile is drawn");
+        let scroll = initial_tile.rect.cy() - stale_entry.cy();
+        assert!(scroll > 0.0, "the shelf starts below Filmography");
+        s.scroll.scroll.jump(scroll);
+
+        let context = cx(&measure, store.view());
+        let tile = Focusable::<PersonHost>::place(&s, &key.elem, &context, At::Drawn)
+            .expect("the scrolled first-shelf tile remains drawn");
+        let stale_overlap = stale_entry.intersect(tile.rect);
+        assert!(stale_overlap.w > 0.0 && stale_overlap.h > 0.0,
+            "the fixture must reproduce the stale pill/tile overlap");
+        let (x, y) = (stale_overlap.cx(), stale_overlap.cy());
+        let mut frame = DrawFrame::new(&context, crate::ui::Painter::root());
+        s.record_stops(&mut frame, store.view().current().unwrap(), None);
+        let mut hit = HitMap::new();
+        hit.fill(frame.into_stops());
+        hit.swap();
+        let resolved = hit.resolve(Some(s.entry), PointerKind::Click, x, y, None);
+        assert_eq!(resolved.hit, Some(key), "the tile must remain above no stale pill stop");
+
+        let entry = s.entry_rect(store.view().current().unwrap(), &measure);
+        s.scroll.scroll.jump(s.scroll.scroll.pos + entry.y + entry.h + 1.0);
+        let context = cx(&measure, store.view());
+        let mut frame = DrawFrame::new(&context, crate::ui::Painter::root());
+        s.record_stops(&mut frame, store.view().current().unwrap(), None);
+        assert!(frame.stops().iter().all(|stop| stop.key.elem != ENTRY_ELEM),
+            "an entry wholly above the viewport registers no pointer stop");
         store.run(PersonCmd::Close);
     }
 
@@ -3300,15 +3273,4 @@ mod tests {
         assert_eq!(SHELF_LABEL_H, TITLE_DY + CARD_DY);
     }
 
-    #[test]
-    fn the_entry_pill_shows_equal_air_at_both_ends_when_focused() {
-        for width in [2.0 * ENTRY_OUTER_PAD + 60.0, 307.0, 420.0] {
-            let group = width - 2.0 * ENTRY_OUTER_PAD;
-            let scale = crate::ui::widgets::CTRL_FOCUS_SCALE;
-            let leading = entry_run_x(width, scale);
-            let trailing = width * scale - leading - group;
-            assert!((leading - trailing).abs() < 0.01);
-            assert!(leading > ENTRY_OUTER_PAD);
-        }
-    }
 }
