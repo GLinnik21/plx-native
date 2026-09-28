@@ -42,7 +42,7 @@ use crate::ui::widgets::{AmbientWash, Art, PageGround, StatusKind, StatusOverlay
 use crate::ui::{Column, Env, Painter, Rect, ScrollColumn, View};
 
 use super::registry::{
-    AppFx, CardIdentity, ContentArg, ContentLike, ContentReq, PageMemory, PersonLike, PersonMemory,
+    AppFx, CardIdentity, CardKeys, CardPageMemory, ContentArg, ContentLike, ContentReq, PageMemory, PersonLike,
 };
 
 // -------------------------------------------------------------------------------------------
@@ -536,8 +536,7 @@ pub(crate) struct PersonScreen {
     header_marked: bool,
     /// Stable item-key interning. This maps identities to engine elements; it never stores which
     /// element is focused.
-    card_keys: Vec<CardIdentity>,
-    next_card_elem: u32,
+    cards: CardKeys,
     /// One-shot return hydration. While set, a known engine card key may remain unpublished until
     /// that card's own source answers; the engine remains the sole owner of the key itself.
     return_pending: bool,
@@ -588,9 +587,9 @@ impl LogicalState for PersonScreen {
             .str(&self.thumb)
             .bool(self.header_marked)
             .bool(self.return_pending)
-            .u32(self.next_card_elem)
-            .u32(self.card_keys.len() as u32);
-        for card in &self.card_keys {
+            .u32(self.cards.next)
+            .u32(self.cards.len() as u32);
+        for card in &self.cards.keys {
             w.u32(card.sid.raw() as u32).str(&card.rk).u32(card.elem);
         }
     }
@@ -602,8 +601,8 @@ impl LogicalState for PersonScreen {
             self.key,
             self.header_marked,
             self.return_pending,
-            self.card_keys.len(),
-            self.next_card_elem
+            self.cards.len(),
+            self.cards.next
         ));
     }
 }
@@ -631,8 +630,7 @@ impl PersonScreen {
             name,
             thumb,
             header_marked: false,
-            card_keys: Vec::new(),
-            next_card_elem: FIRST_CARD_ELEM,
+            cards: CardKeys::new(FIRST_CARD_ELEM),
             return_pending: false,
             teardown_closed: false,
             shelves: [CardRow::new(); NSHELF],
@@ -678,23 +676,8 @@ impl PersonScreen {
         let Some(p) = self.person(cx) else {
             return;
         };
-        for item in (0..NSHELF).flat_map(|kind| p.shelf(kind).iter()) {
-            if self.card_keys.iter().any(|k| {
-                crate::plex::same_item((k.sid, k.rk.as_str()), (item.sid, item.rk.as_str()))
-            }) {
-                continue;
-            }
-            let elem = self.next_card_elem;
-            self.next_card_elem = self
-                .next_card_elem
-                .checked_add(1)
-                .expect("person element-key space exhausted");
-            self.card_keys.push(CardIdentity {
-                sid: item.sid,
-                rk: item.rk.clone(),
-                elem,
-            });
-        }
+        let shelved = (0..NSHELF).flat_map(|kind| p.shelf(kind).iter());
+        self.cards.intern_all(shelved.map(|item| (item.sid, item.rk.as_str())), "person");
     }
 
     fn refresh_store_cache<H: PersonLike>(&mut self, cx: &Cx<'_, H>) {
@@ -721,49 +704,21 @@ impl PersonScreen {
         }
     }
 
-    pub(crate) fn restore(&mut self, memory: &PersonMemory) {
-        // A live covered body can intern a landing after the request-time snapshot. Merge the
-        // frozen registry; replacing it would rewind those identities and could reuse an elem.
-        for saved in &memory.card_keys {
-            if self.card_keys.iter().any(|card| {
-                crate::plex::same_item((card.sid, card.rk.as_str()), (saved.sid, saved.rk.as_str()))
-            }) {
-                continue;
-            }
-            assert!(
-                !self.card_keys.iter().any(|card| card.elem == saved.elem),
-                "restored person key collision"
-            );
-            self.card_keys.push(saved.clone());
-        }
-        let after_last = self
-            .card_keys
-            .iter()
-            .map(|card| card.elem)
-            .max()
-            .and_then(|elem| elem.checked_add(1))
-            .unwrap_or(FIRST_CARD_ELEM);
-        self.next_card_elem = memory.next_card_elem.max(FIRST_CARD_ELEM).max(after_last);
+    pub(crate) fn restore(&mut self, memory: &CardPageMemory) {
+        self.cards.merge(&memory.cards, FIRST_CARD_ELEM, "person");
         self.header_marked |= memory.header_marked;
     }
 
-    fn memory(&self) -> PersonMemory {
-        PersonMemory {
-            card_keys: self.card_keys.clone(),
-            next_card_elem: self.next_card_elem,
-            header_marked: self.header_marked,
-        }
+    fn memory(&self) -> CardPageMemory {
+        CardPageMemory { cards: self.cards.clone(), header_marked: self.header_marked }
     }
 
     fn elem_for(&self, item: &PmsMovie) -> Option<u32> {
-        self.card_keys
-            .iter()
-            .find(|k| crate::plex::same_item((k.sid, k.rk.as_str()), (item.sid, item.rk.as_str())))
-            .map(|k| k.elem)
+        self.cards.elem_for(item.sid, &item.rk)
     }
 
     fn card_for_elem(&self, elem: u32) -> Option<&CardIdentity> {
-        self.card_keys.iter().find(|card| card.elem == elem)
+        self.cards.get(elem)
     }
 
     /// Retire return hydration only after the engine's saved card has an answer from its own
@@ -800,7 +755,7 @@ impl PersonScreen {
         if elem == ENTRY_ELEM {
             return Some(Located::Entry);
         }
-        let id = self.card_keys.iter().find(|k| k.elem == elem)?;
+        let id = self.cards.get(elem)?;
         for kind in 0..NSHELF {
             if let Some(col) = p.shelf(kind).iter().position(|m| {
                 crate::plex::same_item((m.sid, m.rk.as_str()), (id.sid, id.rk.as_str()))
@@ -2579,20 +2534,19 @@ mod tests {
             "Idina Menzel".to_string(),
             String::new(),
         );
-        b.card_keys = a.card_keys.clone();
-        b.next_card_elem = a.next_card_elem;
+        b.cards = a.cards.clone();
         assert_eq!(
             hash(&a),
             hash(&b),
             "identical machine state hashes identically"
         );
 
-        b.next_card_elem += 1;
+        b.cards.next += 1;
         assert_ne!(hash(&a), hash(&b), "the future allocator is part of state");
-        b.next_card_elem = a.next_card_elem;
-        b.card_keys[0].elem += 1;
+        b.cards.next = a.cards.next;
+        b.cards.keys[0].elem += 1;
         assert_ne!(hash(&a), hash(&b), "the identity registry is part of state");
-        b.card_keys = a.card_keys.clone();
+        b.cards = a.cards.clone();
         b.return_pending = true;
         assert_ne!(
             hash(&a),
@@ -2657,7 +2611,7 @@ mod tests {
         let newer_elem = screen
             .elem_for(&store.view().current().unwrap().shelf(0)[1])
             .expect("the live body interned the later landing");
-        let live_next = screen.next_card_elem;
+        let live_next = screen.cards.next;
 
         screen.restore(&frozen);
 
@@ -2666,7 +2620,7 @@ mod tests {
             Some(newer_elem),
             "request-time memory merges into a live interner instead of replacing it"
         );
-        assert_eq!(screen.next_card_elem, live_next);
+        assert_eq!(screen.cards.next, live_next);
         store.run(PersonCmd::Close);
     }
 

@@ -550,18 +550,96 @@ pub(crate) struct CardIdentity {
     pub(crate) elem: u32,
 }
 
+/// A card page's stable item-key interning: which engine element each `(sid, rk)` card owns, and
+/// the next element to hand out. It maps identities to elements and never stores which one is
+/// focused. The Person and Collection pages share it; each page picks its own first element.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CardKeys {
+    pub(crate) keys: Vec<CardIdentity>,
+    pub(crate) next: u32,
+}
+
+impl CardKeys {
+    pub(crate) fn new(first: u32) -> Self {
+        Self { keys: Vec::new(), next: first }
+    }
+
+    /// The element `(sid, rk)` owns, interning a fresh one on first sight. `page` names the page
+    /// in the exhaustion panic.
+    pub(crate) fn intern(&mut self, sid: crate::plex::ServerId, rk: &str, page: &str) -> u32 {
+        if let Some(elem) = self.elem_for(sid, rk) { return elem; }
+        let elem = self.next;
+        self.next = elem.checked_add(1).unwrap_or_else(|| panic!("{page} element-key space exhausted"));
+        self.keys.push(CardIdentity { sid, rk: rk.to_string(), elem });
+        elem
+    }
+
+    /// Intern every card in order and answer their elements, index for index. Known cards are
+    /// found through one index built for the pass, so a page landing costs O(cards + keys)
+    /// rather than a scan of every key per card.
+    pub(crate) fn intern_all<'a>(&mut self,
+        cards: impl Iterator<Item = (crate::plex::ServerId, &'a str)>, page: &str) -> Vec<u32> {
+        let mut known: std::collections::HashMap<(crate::plex::ServerId, String), u32> =
+            self.keys.iter().map(|k| ((k.sid, k.rk.clone()), k.elem)).collect();
+        cards.map(|(sid, rk)| {
+            if let Some(&elem) = known.get(&(sid, rk.to_string())) { return elem; }
+            let elem = self.intern(sid, rk, page);
+            known.insert((sid, rk.to_string()), elem);
+            elem
+        }).collect()
+    }
+
+    /// Merge a frozen registry back in. A live covered body can intern a landing after the
+    /// request-time snapshot, so this MERGES — replacing would rewind those identities and could
+    /// reuse an element. `next` never moves backwards and never below `first`.
+    pub(crate) fn merge(&mut self, saved: &CardKeys, first: u32, page: &str) {
+        for key in &saved.keys {
+            if self.elem_for(key.sid, &key.rk).is_some() { continue; }
+            assert!(self.get(key.elem).is_none(), "restored {page} key collision");
+            self.keys.push(key.clone());
+        }
+        let after = self.keys.iter().map(|key| key.elem).max()
+            .and_then(|elem| elem.checked_add(1)).unwrap_or(first);
+        self.next = self.next.max(saved.next).max(after).max(first);
+    }
+
+    pub(crate) fn elem_for(&self, sid: crate::plex::ServerId, rk: &str) -> Option<u32> {
+        self.keys.iter().find(|k| crate::plex::same_item((k.sid, k.rk.as_str()), (sid, rk))).map(|k| k.elem)
+    }
+
+    /// The identity that owns `elem`.
+    pub(crate) fn get(&self, elem: u32) -> Option<&CardIdentity> {
+        self.keys.iter().find(|k| k.elem == elem)
+    }
+
+    /// Where `elem` was interned — the card's order of first sight.
+    pub(crate) fn position(&self, elem: u32) -> Option<usize> {
+        self.keys.iter().position(|k| k.elem == elem)
+    }
+
+    pub(crate) fn len(&self) -> usize { self.keys.len() }
+
+    /// This registry's canonical bytes after the page's `next` — `len` then `(sid, rk, elem)` per
+    /// key, the order every card page and both [`PageMemory`] arms have always written.
+    fn write_keys(&self, c: &mut crate::ui::machine::Canon) {
+        for key in &self.keys { c.u32(u32::from(key.sid.raw())).str(&key.rk).u32(key.elem); }
+    }
+}
+
+/// What a card page (Person, Collection) leaves behind on a push: its [`CardKeys`] and whether an
+/// explicit press had marked the header.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct PersonMemory {
-    pub(crate) card_keys: Vec<CardIdentity>,
-    pub(crate) next_card_elem: u32,
+pub(crate) struct CardPageMemory {
+    pub(crate) cards: CardKeys,
     pub(crate) header_marked: bool,
 }
 
-#[derive(Clone, Debug, Default)]
-pub(crate) struct CollectionMemory {
-    pub(crate) card_keys: Vec<CardIdentity>,
-    pub(crate) next_elem: u32,
-    pub(crate) header_marked: bool,
+impl CardPageMemory {
+    /// `tag` is the [`PageMemory`] arm's canonical tag: 2 for Person, 7 for Collection.
+    fn write(&self, tag: u32, c: &mut crate::ui::machine::Canon) {
+        c.u32(tag).u32(self.cards.next).bool(self.header_marked).seq(self.cards.len());
+        self.cards.write_keys(c);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -634,8 +712,8 @@ pub(crate) enum PageMemory {
     #[default]
     None,
     Detail(DetailMemory),
-    Person(PersonMemory),
-    Collection(CollectionMemory),
+    Person(CardPageMemory),
+    Collection(CardPageMemory),
     Filmography(FilmographyMemory),
     Home(HomeMemory),
     Library(LibraryMemory),
@@ -668,14 +746,8 @@ impl crate::ui::machine::LogicalState for PageMemory {
                 c.u32(memory.next_elem).seq(memory.keys.len());
                 for key in &memory.keys { key.identity.write(c); c.u32(key.elem); }
             }
-            Self::Person(memory) => {
-                c.u32(2).u32(memory.next_card_elem).bool(memory.header_marked).seq(memory.card_keys.len());
-                for key in &memory.card_keys { c.u32(u32::from(key.sid.raw())).str(&key.rk).u32(key.elem); }
-            }
-            Self::Collection(memory) => {
-                c.u32(7).u32(memory.next_elem).bool(memory.header_marked).seq(memory.card_keys.len());
-                for key in &memory.card_keys { c.u32(u32::from(key.sid.raw())).str(&key.rk).u32(key.elem); }
-            }
+            Self::Person(memory) => memory.write(2, c),
+            Self::Collection(memory) => memory.write(7, c),
             Self::Filmography(memory) => {
                 c.u32(3).u32(memory.next_elem).str(&memory.department).seq(memory.keys.len());
                 for key in &memory.keys {
