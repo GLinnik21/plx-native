@@ -19,7 +19,7 @@
         "plxnative-postergate": "settle",
         "plxnative-library": true
       },
-      "comment": "Finite 18-row scroll followed by a complete art window. Requires >=152 library items with reachable artwork. Motion FPS and zero new admissions for fast-moving cards are graded separately from the settled request/upload/render proof. No activation or viewing-history writes."
+      "comment": "Finite fast scroll from the grid head to its deepest row (row 18 at most), followed by a complete art window. The scene sizes the sweep to the Library grid it boots into and logs the plan (`poster-gate: ... phase=planned`); the settled row must lie beyond the head's screenful, so it needs a grid of rows_per_screen+1 rows (4 rows = 19+ items at six columns, 1080p) with reachable artwork, and a smaller one fails as UNFIT CATALOG rather than as a regression. Motion FPS and zero new admissions for fast-moving cards are graded separately from the settled request/upload/render proof. No activation or viewing-history writes."
     },
     {
       "name": "poster-eviction-reversal",
@@ -36,7 +36,7 @@
         "plxnative-postergate": "eviction",
         "plxnative-library": true
       },
-      "comment": "Warm grid rows 0, 6 and 12 under an explicit 12 MiB texture ceiling, reverse quickly across the actually evicted rows, then require them to rearm and render fully. The source retains 64 slots; this scene exercises real byte-LRU eviction before source identity recycling. Requires >=104 library items. No activation or viewing-history writes."
+      "comment": "Warm the grid head, a middle row and the deepest row (rows 0, 6 and 12 at most; sized to the booted Library grid) under an explicit texture ceiling of 1.5x the measured warm window, never above 12 MiB (`phase=ceiling`), reverse quickly across the actually evicted rows, then require them to rearm and render fully. The source retains 64 slots; this scene exercises real byte-LRU eviction before source identity recycling, and the grade requires real evictions, evicted refusals in the reversal and rearms at rest. Needs 2x rows_per_screen grid rows (6 rows = 31+ items at six columns, 1080p); a smaller grid fails as UNFIT CATALOG. No activation or viewing-history writes."
     },
     {
       "name": "poster-hero-grid-dive",
@@ -52,7 +52,7 @@
       "triggers": {
         "plxnative-postergate": "dive"
       },
-      "comment": "Warm Home shelf 0 at column 11, return to the hero, then dive back through the retained horizontal offset. The explicit 12 MiB texture ceiling makes hero art evict shelf art, so the dive must refuse actual demand and refill it at rest. Requires >=12 items in Home shelf 0. No activation or viewing-history writes."
+      "comment": "Warm Home shelf 0 at its deepest card (column 11 at most), return to the hero, then dive back through the retained horizontal offset. Shelf 0 is the only one the hero's DOWN door lands on, so the column, not the shelf, is sized to the catalog. The explicit 12 MiB texture ceiling makes hero art evict shelf art, so the dive must refuse actual demand and refill it at rest. Needs Home shelf 0 to retain the graded 1000 px offset, i.e. >=10 cards; a shorter shelf fails as UNFIT CATALOG. Seeding focus onto a card activates nothing: no OK, no play, no viewing-history writes."
     },
     {
       "name": "home-hero",

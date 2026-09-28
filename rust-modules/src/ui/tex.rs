@@ -180,6 +180,18 @@ pub(crate) fn scene_residency_budget(bytes: usize) {
     CACHE.with(|c| c.borrow_mut().bytes_max = bytes * render_area());
 }
 
+/// The product cache's LRU clock, for [`bytes_used_since`].
+#[cfg(feature = "devtriggers")]
+pub(crate) fn use_clock() -> u64 {
+    CACHE.with(|c| c.borrow().use_clock())
+}
+
+/// The decoded bytes of the product cache's residents used since `mark` ([`use_clock`]).
+#[cfg(feature = "devtriggers")]
+pub(crate) fn bytes_used_since(mark: u64) -> usize {
+    CACHE.with(|c| c.borrow().bytes_used_since(mark))
+}
+
 /// Start a host test with the real product wrapper/cache but a deliberately small byte ceiling.
 /// The cache is thread-local, so this changes only the calling test's instance.
 #[cfg(test)]
@@ -549,6 +561,19 @@ impl<K: Copy + Eq + Hash> TexCache<K> {
     pub fn resident_bytes(&self) -> usize {
         self.bytes
     }
+
+    /// The LRU clock as it stands: a mark for [`TexCache::bytes_used_since`].
+    #[cfg(any(test, feature = "devtriggers"))]
+    pub(crate) fn use_clock(&self) -> u64 {
+        self.clock
+    }
+
+    /// The decoded bytes of the resident textures used after `mark` — taken before a frame's
+    /// draws, the working set that frame actually needed.
+    #[cfg(any(test, feature = "devtriggers"))]
+    pub(crate) fn bytes_used_since(&self, mark: u64) -> usize {
+        self.resident.values().filter(|e| e.last_used > mark).map(|e| e.bytes).sum()
+    }
 }
 
 #[cfg(test)]
@@ -650,6 +675,28 @@ mod tests {
         assert_eq!(up.warmed, vec![1, 2, 3]);
         assert!(present.take(16), "a resident texture is one damage");
         assert!(c.resolve(3).is_some() && c.resolve(1).is_none());
+    }
+
+    /// A mark taken before a frame's draws measures exactly the bytes that frame used: not the
+    /// residents it left alone, and not a texture it only uploaded without drawing again.
+    #[test]
+    fn bytes_used_since_a_mark_are_the_working_set_of_what_followed() {
+        let mut c: TexCache<u32> = TexCache::new(8);
+        let mut up = StubUp { next: 0, freed: vec![], warmed: vec![] };
+        let mut present = Present::new();
+        let mut b = Budget::new();
+        let one = 2 * 2 * 4; // `ready`'s 2x2 RGBA
+        for k in 1..=3 { c.accept(ready(k)); }
+        b.begin_frame(0);
+        let mut ph = PresentHandle(&mut present);
+        assert_eq!(c.prepare(&mut b, &mut up, &mut ph, || 0), 3);
+        for k in 1..=3 { assert!(c.resolve(k).is_some()); }
+        let mark = c.use_clock();
+        assert_eq!(c.bytes_used_since(mark), 0, "nothing used yet");
+        assert!(c.resolve(2).is_some() && c.resolve(3).is_some() && c.resolve(2).is_some());
+        assert!(c.resolve(9).is_none(), "a miss uses nothing");
+        assert_eq!(c.bytes_used_since(mark), 2 * one, "each used texture counts once");
+        assert_eq!(c.resident_bytes(), 3 * one);
     }
 
     /// `bytes` is the accumulator lane B's `RenderSet` reads. It is incremented at every upload

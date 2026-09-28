@@ -540,6 +540,13 @@ impl LibraryScreen {
         self.pair.detail.index_of(key.elem).map(|index| (index / self.layout.cols(), index % self.layout.cols()))
     }
 
+    /// The grid's shape as the scenes that drive it see it: `(rows, rows_per_screen)`, once the
+    /// listing has answered with at least one row.
+    #[cfg(feature = "devtriggers")]
+    pub(crate) fn grid_extent(&self) -> Option<(usize, usize)> {
+        (self.layout.rows > 0).then(|| (self.layout.rows, self.layout.rows_per_screen()))
+    }
+
     /// The focused hub-shelf card, `(shelf, col)`, if focus is on a shelf above the grid.
     pub(crate) fn shelf_position(&self, focus: Option<FocusKey<u32>>) -> Option<(usize, usize)> {
         let key = focus.filter(|key| key.entry == self.entry)?;

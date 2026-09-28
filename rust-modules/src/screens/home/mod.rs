@@ -1517,6 +1517,12 @@ impl HomeScreen {
         self.focused_grid(focus)
     }
 
+    /// How many cards shelf `row` holds, once the catalog has projected it.
+    #[cfg(feature = "devtriggers")]
+    pub(crate) fn shelf_len(&self, row: usize) -> Option<usize> {
+        self.rows.get(row).map(|projection| projection.elems.len())
+    }
+
     /// Diagnostic view of the actual animated state: snap, retained shelf offset,
     /// shelf velocity. No second motion owner or stored telemetry state.
     #[cfg(feature = "devtriggers")]
