@@ -151,6 +151,7 @@ for a in "$@"; do
     --worktrees)   MODE=worktrees ;;
     --cache)       MODE=cache ;;
     --all)         MODE=all ;;
+    --auto)        MODE=auto ;;
     -n|--dry-run)  DRY=1 ;;
     -h|--help)
       sed -n '2,/^set -eu/p' "$0" | grep '^#' | sed 's/^# \{0,1\}//'
@@ -192,6 +193,21 @@ usage: tools/build-gc.sh [MODE] [-n]
                   The tarball is kept; it is 11 MB and every checkout copies from it.
   --all           --incremental everywhere plus --lanes, --orphans and --cache, and the main checkout's vendor build
                   trees. Leaves the main checkout's target dirs.
+  --auto          staged reclaim, driven by free space on this volume, and the mode a hook or
+                  launchd job runs unattended — see `tools/install-disk-watch.sh`. Always runs
+                  --orphans first (cheap, safe, unconditional). Below $PLX_GC_MIN_FREE_GIB GiB
+                  free (default 20): --incremental, then --worktrees, then --lanes restricted to
+                  lanes idle for at least $PLX_GC_IDLE_MIN minutes (default 60, judged by the
+                  newest mtime anywhere under the worktree, target dirs included) — a lane an
+                  agent might resume in the next few minutes is not the same as one nobody is
+                  touching, and a needless rebuild costs real money. Never the main checkout's
+                  target dirs, never --cache, never a tracked file. Single-instance: a mkdir lock
+                  (stale-safe, $PLX_GC_LOCK_DIR) means a second --auto exits 0 quietly rather than
+                  racing the first. Logs one line per stage to $PLX_GC_LOG (default
+                  ~/Library/Logs/plxnative-build-gc.log on macOS,
+                  ${XDG_STATE_HOME:-~/.cache}/plxnative/build-gc.log elsewhere), truncated to its
+                  last ~200 lines past ~1 MB. `--auto -n` previews every stage the current free
+                  space would trigger, deletes nothing, and still takes the lock.
   -n, --dry-run   print what would go, delete nothing.
 
 Nothing here touches a tracked file, the shared FFmpeg cache under $PLX_BUILD_CACHE, or the
@@ -201,6 +217,192 @@ USAGE
     *) echo "build-gc: unknown argument $a (try --help)" >&2; exit 2 ;;
   esac
 done
+
+# --- `--auto` support ------------------------------------------------------------------------
+# Everything below is DEFINITIONS ONLY (a shell function body is not evaluated until it is
+# called), so it is safe to place these before `owner_is_alive`, `worktrees`, `fmt_kb` and the
+# rest of the functions their bodies call — none of those run until `run_auto_mode` is invoked,
+# far below, by which point every one of them has already been defined by the top-to-bottom pass
+# through this script. What DOES have to happen this early is the single-instance lock check
+# itself (see the `if [ "$MODE" = auto ]` gate just above the ordinary preflight, near the bottom
+# of the argument handling): a second `--auto` must exit before it even enumerates worktrees or
+# takes the FFmpeg lock, not after.
+#
+# `--auto` reclaims by SHELLING OUT to this same script, one mode at a time
+# (`sh "$SELF" --incremental`, `sh "$SELF" --worktrees`, ...), rather than reimplementing any
+# mode's logic a second time. That is not laziness — `--worktrees`' squash-merge ancestry check,
+# its live-build re-check immediately before `git worktree remove`, and `--lanes`' external-tree
+# cleanup are exactly the kind of logic that drifts the moment it is copied, and every one of
+# those modes already carries its own preflight (the busy guard, the empty-enumeration refusal).
+# Re-running that preflight once per stage costs a few `pgrep`/`lsof` calls, not a rebuild.
+SELF="$ROOT/tools/build-gc.sh"
+
+# Free space on the volume holding the repo, in KiB. `df -Pk` (POSIX output) rather than plain
+# `df -k`: a long device name wraps GNU df's default format onto two lines, which would put the
+# free-space column on a line `awk 'NR==2'` never sees. `PLX_GC_TEST_FREE_KIB` is a TEST-ONLY
+# override — ci/test_build_gc.py stubs pressure without needing to fill a real disk.
+free_kib() {
+  if [ -n "${PLX_GC_TEST_FREE_KIB-}" ]; then printf '%s' "$PLX_GC_TEST_FREE_KIB"; return 0; fi
+  df -Pk "$ROOT" 2>/dev/null | awk 'NR==2{print $4}'
+}
+
+# Where the auto log lives. macOS gets the platform's own log directory; anything else follows
+# the XDG state dir, falling back to ~/.cache like every other dotfile-averse Linux tool here.
+# `PLX_GC_LOG` overrides both, for a caller (or a test) that wants a known path.
+gc_log_path() {
+  if [ -n "${PLX_GC_LOG-}" ]; then printf '%s' "$PLX_GC_LOG"; return 0; fi
+  case "$(uname -s 2>/dev/null)" in
+    Darwin) printf '%s' "$HOME/Library/Logs/plxnative-build-gc.log" ;;
+    *)
+      if [ -n "${XDG_STATE_HOME-}" ]; then printf '%s' "$XDG_STATE_HOME/plxnative/build-gc.log"
+      else printf '%s' "$HOME/.cache/plxnative/build-gc.log"; fi ;;
+  esac
+}
+# One line per stage. Bounded rather than rotated: this is a diagnostic trail for a human to skim
+# occasionally, not an audit log, so keeping the last ~200 lines once the file crosses ~1 MB is
+# simpler than a rotation scheme and never leaves the disk problem this script exists for
+# unbounded on the one file guaranteed to grow forever otherwise. Every step fails open — a log
+# nobody can write to must not be why an unattended reclaim stops reclaiming.
+gc_log() {
+  lp=$(gc_log_path)
+  [ -n "$lp" ] || return 0
+  d=$(dirname "$lp")
+  mkdir -p "$d" 2>/dev/null || return 0
+  if [ -f "$lp" ]; then
+    sz=$(wc -c <"$lp" 2>/dev/null | tr -d ' ')
+    case "$sz" in ''|*[!0-9]*) sz=0 ;; esac
+    if [ "$sz" -gt 1048576 ]; then
+      tail -n 200 "$lp" >"$lp.tmp.$$" 2>/dev/null && mv "$lp.tmp.$$" "$lp" 2>/dev/null
+    fi
+  fi
+  printf '%s %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date)" "$1" >>"$lp" 2>/dev/null || true
+}
+
+# Has anything under this lane's worktree — sources, staged files, the target dirs beneath it —
+# been touched in the last $2 minutes? Used only to SPARE a lane from `--lanes` under `--auto`
+# pressure, never to decide whether a build is running (that is `in_live_checkout`, which this
+# does not replace). Deliberately a recursive `find -mmin`, not the directory's own mtime: a
+# target dir's top-level entry does not move while a compiler writes beneath it — see
+# `live_checkouts`' note on the identical trap — so the only honest answer is a walk. Piped into
+# `head -1` so a single recent hit short-circuits the walk instead of statting a multi-gigabyte
+# tree just to answer yes/no; `.git` is excluded because `git worktree remove` and routine git
+# housekeeping touch it without the lane itself being active.
+#
+# `-mmin -0` is handled BEFORE ever calling `find`, not left for it to answer: "less than zero
+# minutes old" ought to match nothing, and it did in isolated testing — but under real load
+# (`ci/test_build_gc.py` measured this failing roughly every other run of its own idle-guard test,
+# every failure showing `find` matching every file in the tree it should have matched none of) the
+# exact zero boundary is not reliable across the (`stat`, `find`'s own clock read, filesystem mtime
+# resolution) chain this walks. `$PLX_GC_IDLE_MIN=0` has an honest meaning anyway — "no idle guard,
+# a lane is always eligible" — so answering it without `find` at all removes the flaky boundary
+# case instead of trying to make it trustworthy. Non-numeric input is treated the same way: a
+# caller-supplied guard this function cannot parse is not a reason to spare or to reclaim by
+# accident, and "always eligible" is the same answer `run_auto_mode`'s own `case` gives a garbage
+# `$PLX_GC_IDLE_MIN` before it ever reaches here.
+idle_lane() {
+  _w=$1 _mins=$2
+  case "$_mins" in ''|*[!0-9]*) _mins=0 ;; esac
+  [ "$_mins" -gt 0 ] || return 0
+  if find "$_w" -mmin -"$_mins" -not -path '*/.git/*' -not -path '*/.git' 2>/dev/null \
+       | head -1 | grep -q .; then
+    return 1
+  fi
+  return 0
+}
+
+# The single-instance lock. mkdir is atomic even over NFS, which is the whole reason it is the
+# mutex primitive everywhere else in this script (`prune_lock`, below). Stale-lock safe by the
+# same protocol `prune_lock` uses for the FFmpeg cache: an unowned lock directory older than
+# $PLX_GC_LOCK_STALE_MIN (default 120) is reclaimed rather than trusted forever, because the
+# process most likely to leave a lock behind — one killed mid `--worktrees` `du` sweep, or a
+# laptop that slept through it — is exactly the one that can never release it itself.
+AUTO_LOCK_DIR=${PLX_GC_LOCK_DIR:-${TMPDIR:-/tmp}/plx-build-gc-auto.lock}
+acquire_auto_lock() {
+  if mkdir "$AUTO_LOCK_DIR" 2>/dev/null; then
+    echo $$ >"$AUTO_LOCK_DIR/pid" 2>/dev/null || true
+    ps -o pgid= -p $$ 2>/dev/null | tr -d ' ' >"$AUTO_LOCK_DIR/pgid" || true
+    return 0
+  fi
+  if ! owner_is_alive "$AUTO_LOCK_DIR" \
+     && [ -n "$(find "$AUTO_LOCK_DIR" -maxdepth 0 -mmin +"${PLX_GC_LOCK_STALE_MIN:-120}" 2>/dev/null)" ]; then
+    if mv "$AUTO_LOCK_DIR" "$AUTO_LOCK_DIR.stale.$$" 2>/dev/null; then rm -rf "$AUTO_LOCK_DIR.stale.$$"; fi
+    if mkdir "$AUTO_LOCK_DIR" 2>/dev/null; then
+      echo $$ >"$AUTO_LOCK_DIR/pid" 2>/dev/null || true
+      ps -o pgid= -p $$ 2>/dev/null | tr -d ' ' >"$AUTO_LOCK_DIR/pgid" || true
+      return 0
+    fi
+  fi
+  return 1
+}
+release_auto_lock() { rm -rf "$AUTO_LOCK_DIR" 2>/dev/null || true; }
+
+# Run one stage as a fresh invocation of this script, log the free-space delta and reclaimed-line
+# count, and echo its own report through — under `-n` a caller (human or the gate that runs
+# `--auto -n`) is reading this output directly, and it must show every stage the current pressure
+# would trigger, not just the log line.
+run_auto_stage() {
+  _name=$1; shift
+  _before=$(free_kib); _before=${_before:-0}
+  if [ -n "$DRY" ]; then _out=$(sh "$SELF" "$@" -n 2>&1) || true
+  else _out=$(sh "$SELF" "$@" 2>&1) || true
+  fi
+  printf '%s\n' "$_out"
+  _after=$(free_kib); _after=${_after:-0}
+  # `|| true`: `grep -c` exits 1 on zero matches (the common case — nothing to reclaim), and under
+  # `set -eu` an unguarded assignment from a failing command substitution kills the whole script.
+  _n=$(printf '%s\n' "$_out" | grep -cE '  removed|would remove' || true)
+  gc_log "$_name: reclaimed=$_n free $(fmt_kb "$_before")->$(fmt_kb "$_after")"
+}
+
+# The orchestrator. Stops staging the moment free space clears the threshold (real runs only —
+# under `-n` nothing is ever freed, so `cur` never moves and every stage the CURRENT pressure
+# would trigger is shown, which is the honest reading of "preview the plan"). `--orphans` runs
+# first and unconditionally: it is the cheapest, safest mode this script has, reclaiming trees
+# that literally nothing on the machine can refer to again, so there is no reason to gate it on
+# pressure at all. Everything past it is gated, and `--lanes` additionally passes
+# `PLX_GC_AUTO_IDLE_MIN` so that mode's own dispatch (below) spares any lane touched inside the
+# idle window — see `idle_lane`. Manual `--lanes` never sets that variable and is unaffected.
+run_auto_mode() {
+  if [ -z "$DRY" ]; then
+    if ! acquire_auto_lock; then
+      gc_log "lock held ($AUTO_LOCK_DIR) — exiting quietly"
+      return 0
+    fi
+    trap release_auto_lock EXIT
+  fi
+
+  _min_gib=${PLX_GC_MIN_FREE_GIB:-20}
+  _idle_min=${PLX_GC_IDLE_MIN:-60}
+  case "$_min_gib" in ''|*[!0-9]*) _min_gib=20 ;; esac
+  case "$_idle_min" in ''|*[!0-9]*) _idle_min=60 ;; esac
+  _min_kib=$((_min_gib * 1048576))
+
+  _cur=$(free_kib); _cur=${_cur:-0}
+  echo "== auto: staged reclaim (threshold ${_min_gib} GiB free, lane idle guard ${_idle_min}m) =="
+  gc_log "start free=$(fmt_kb "$_cur") threshold=${_min_gib}GiB idle=${_idle_min}m dry=${DRY:-0}"
+
+  run_auto_stage orphans --orphans
+  _cur=$(free_kib); _cur=${_cur:-0}
+
+  if [ "$_cur" -lt "$_min_kib" ] 2>/dev/null; then
+    run_auto_stage incremental --incremental
+    [ -n "$DRY" ] || { _cur=$(free_kib); _cur=${_cur:-0}; }
+  else
+    echo "auto: free space already above threshold — incremental/worktrees/lanes skipped"
+  fi
+  if [ "$_cur" -lt "$_min_kib" ] 2>/dev/null; then
+    run_auto_stage worktrees --worktrees
+    [ -n "$DRY" ] || { _cur=$(free_kib); _cur=${_cur:-0}; }
+  fi
+  if [ "$_cur" -lt "$_min_kib" ] 2>/dev/null; then
+    PLX_GC_AUTO_IDLE_MIN=$_idle_min run_auto_stage "lanes (idle >= ${_idle_min}m)" --lanes
+    [ -n "$DRY" ] || { _cur=$(free_kib); _cur=${_cur:-0}; }
+  fi
+
+  gc_log "end free=$(fmt_kb "$_cur")"
+  echo "auto: $(fmt_kb "$_cur") free now"
+  return 0
+}
 
 # A delete under a live `cargo` is how a target dir becomes corrupt rather than absent, and this
 # script cannot tell which checkout a running rustc belongs to. Refusing globally is the honest
@@ -653,6 +855,15 @@ worktree_reason() {
 
 install_worktree_cargo_policy
 
+# `--auto` is fully self-contained (it shells back out to this same script per stage, each of
+# which runs its own preflight) and exits here, BEFORE the ordinary preflight below — the lock
+# gate inside `run_auto_mode` has to be the very first thing a second concurrent `--auto` hits,
+# not something reached only after it has already enumerated worktrees and taken the FFmpeg lock.
+if [ "$MODE" = auto ]; then
+  run_auto_mode
+  exit $?
+fi
+
 if [ "$MODE" != report ]; then
   if [ -z "$DRY" ] && [ -z "$(worktrees)" ]; then
     echo "build-gc: cannot enumerate this repository's worktrees — refusing to delete anything." >&2
@@ -918,12 +1129,38 @@ esac
 case "$MODE" in
 lanes|all)
   echo "== derived trees in linked worktrees (the main checkout is left alone) =="
+  # PLX_GC_AUTO_IDLE_MIN is set ONLY by `run_auto_mode`'s recursive call into this mode, never by
+  # a human typing `--lanes` — a manual reclaim is an explicit ask and idleness is not this mode's
+  # business; the idle guard belongs to the pressure-driven caller, not to the mode itself.
   worktrees | while IFS= read -r w; do
     [ "$w" = "$MAIN" ] && continue
+    if [ -n "${PLX_GC_AUTO_IDLE_MIN-}" ] && ! idle_lane "$w" "$PLX_GC_AUTO_IDLE_MIN"; then
+      printf '  recently active, skipped  %s\n' "$w" >&2
+      continue
+    fi
     lane_trees "$w"
   done | skip_live | drop
   echo "== external lane build trees =="
-  external_trees | sort -u | skip_live | drop
+  if [ -n "${PLX_GC_AUTO_IDLE_MIN-}" ]; then
+    external_trees | sort -u | while IFS= read -r d; do
+      _lane=$(basename "$(dirname "$d")")
+      _w=$(worktrees | while IFS= read -r ww; do
+        [ "$(basename "$ww")" = "$_lane" ] && { echo "$ww"; break; }
+      done)
+      # Check BOTH: the worktree source tree (edits, checkouts) AND the external tree itself
+      # (`$d`) — a lane's own `cargo build` writes into `$d`, not into the worktree, so a worktree
+      # that has sat untouched for the idle window can still be mid-build if the target dir under
+      # `$PLX_FLEET_DIR` is fresh. Either one being recently active is enough to spare the lane.
+      if { [ -n "$_w" ] && ! idle_lane "$_w" "$PLX_GC_AUTO_IDLE_MIN"; } \
+         || ! idle_lane "$d" "$PLX_GC_AUTO_IDLE_MIN"; then
+        printf '  recently active, skipped  %s\n' "$d" >&2
+        continue
+      fi
+      echo "$d"
+    done | skip_live | drop
+  else
+    external_trees | sort -u | skip_live | drop
+  fi
   ;;
 esac
 

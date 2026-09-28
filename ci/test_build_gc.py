@@ -36,7 +36,12 @@ class BuildGcTests(unittest.TestCase):
                 del env[key]
         env.update(PLX_FLEET_DIR=str(fleet), PLX_BUILD_CACHE=str(cache),
                    PLX_CACHE_MAX_DAYS="30", GIT_CONFIG_GLOBAL=os.devnull,
-                   GIT_CONFIG_NOSYSTEM="1")
+                   GIT_CONFIG_NOSYSTEM="1",
+                   # `--auto`'s log and lock live under THIS fixture's own root — never the real
+                   # ~/Library/Logs or /tmp/plx-build-gc-auto.lock, which a concurrent real
+                   # `--auto` (the SessionEnd hook, launchd) could be holding on the very machine
+                   # running this suite.
+                   PLX_GC_LOG=str(root / "gc.log"), PLX_GC_LOCK_DIR=str(root / "gc.lock"))
         subprocess.run(["git", "init", "-q", str(repo)], env=env, check=True)
         # Suppress unrelated compiler-named processes only. PGID checks use real pgrep;
         # PID checks remain the script's actual shell kill -0 builtin.
@@ -70,6 +75,14 @@ class BuildGcTests(unittest.TestCase):
         repo, env, _, _ = fixture
         return subprocess.run(["sh", "tools/build-gc.sh", *args], cwd=repo, env=env,
                               text=True, capture_output=True, timeout=20)
+
+    def run_auto(self, fixture, *args, extra_env=None, timeout=30):
+        repo, env, _, _ = fixture
+        env = dict(env)
+        if extra_env:
+            env.update(extra_env)
+        return subprocess.run(["sh", "tools/build-gc.sh", "--auto", *args], cwd=repo, env=env,
+                              text=True, capture_output=True, timeout=timeout)
 
     def assert_live_refusal(self, pid, pgid):
         for mode in MODES:
@@ -308,6 +321,202 @@ class BuildGcTests(unittest.TestCase):
         self.assertNotIn("in use, skipped", diagnostic)
         for stranded in sentinels:
             self.assertFalse(stranded.exists(), "ancestor mistaken for a builder: " + diagnostic)
+
+    # --- `--auto` ----------------------------------------------------------------------------
+    # `PLX_GC_TEST_FREE_KIB` stands in for `df`, and `PLX_GC_MIN_FREE_GIB`/`PLX_GC_IDLE_MIN`
+    # (both in the units the script itself takes) drive the staging and idle-guard decisions
+    # without ever touching a real disk or a real clock.
+
+    def test_auto_above_threshold_only_runs_orphans(self):
+        # A huge free-space stub against a tiny threshold: every below-threshold stage must be
+        # skipped, and only the always-on --orphans stage may fire. sentinels[0] is the repo's own
+        # (== main checkout's) incremental cache, sentinels[1] is the orphaned external lane tree,
+        # sentinels[2] is a stale FFmpeg cache entry --auto must never touch (no --cache stage).
+        fixture = self.fixture(0, 0)
+        result = self.run_auto(fixture, extra_env={
+            "PLX_GC_TEST_FREE_KIB": "999999999", "PLX_GC_MIN_FREE_GIB": "1"})
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertIn("already above threshold", diagnostic)
+        _, _, sentinels, _ = fixture
+        self.assertTrue(sentinels[0].exists(), "touched the main checkout above threshold: " + diagnostic)
+        self.assertFalse(sentinels[1].exists(), "orphans must run even above threshold: " + diagnostic)
+        self.assertTrue(sentinels[2].exists(), "--auto must never run --cache: " + diagnostic)
+
+    def test_auto_below_threshold_runs_every_stage_in_order(self):
+        # An impossible threshold (999999 GiB) against a tiny stub free value keeps every stage
+        # gated "below threshold" throughout, including after stages that free nothing (this repo
+        # never actually reclaims enough to cross a threshold that high) — the point is to prove
+        # the STAGE ORDER, not a real crossing.
+        fixture = self.fixture(0, 0)
+        roots = self._add_worktrees(fixture, 2, prefix="lane", add_target=True)
+        result = self.run_auto(fixture, extra_env={
+            "PLX_GC_TEST_FREE_KIB": "1", "PLX_GC_MIN_FREE_GIB": "999999",
+            "PLX_GC_IDLE_MIN": "0"})
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        for wt in roots:
+            self.assertFalse((wt / "rust-modules/target").exists(),
+                             "idle lane target survived a below-threshold --auto: " + diagnostic)
+        repo, env, _, _ = fixture
+        log = Path(env["PLX_GC_LOG"]).read_text()
+        order = [s for s in ("orphans:", "incremental:", "worktrees:", "lanes")
+                 if s in log]
+        self.assertEqual(order, ["orphans:", "incremental:", "worktrees:", "lanes"],
+                         "stages ran out of order:\n" + log)
+
+    def test_auto_idle_guard_spares_a_recently_touched_lane(self):
+        # Same setup as the ordering test, but the DEFAULT idle window (60 minutes) — a lane
+        # `_add_worktrees` just created has a target dir with an mtime of right now, so it must be
+        # spared even though free space is far below threshold. A stopped agent might resume in
+        # the next few minutes; a needless rebuild is real money, not a rounding error.
+        fixture = self.fixture(0, 0)
+        roots = self._add_worktrees(fixture, 1, prefix="lane", add_target=True)
+        result = self.run_auto(fixture, extra_env={
+            "PLX_GC_TEST_FREE_KIB": "1", "PLX_GC_MIN_FREE_GIB": "999999"})
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertIn("recently active, skipped", diagnostic)
+        self.assertTrue((roots[0] / "rust-modules/target").exists(),
+                        "a lane touched seconds ago was reclaimed: " + diagnostic)
+
+    def test_auto_idle_guard_checks_the_external_tree_too(self):
+        # A lane's `cargo build` writes into `$PLX_FLEET_DIR/<lane>/target`, not into the
+        # worktree — `fleet-plan` exports `CARGO_TARGET_DIR` precisely so `git worktree remove`
+        # stays meaningful. So a worktree that has sat untouched past the idle window, while its
+        # lane is still mid-build (the only fresh mtime is in the external tree), must still be
+        # spared. Checking only the worktree's own mtime — the bug this test guards — would
+        # reclaim a tree a live build is using out from under it.
+        #
+        # `add_target=False`, and dirty by an untracked file OUTSIDE `rust-modules/target*`: a
+        # `rust-modules/target` inside the worktree would itself get deleted by the earlier
+        # "derived trees in linked worktrees" stage, and that deletion bumps the worktree's own
+        # directory mtime to "now" — which would make `idle_lane "$_w"` read active anyway and
+        # mask exactly the bug this test exists to catch. The scratch file keeps `git status
+        # --porcelain` non-empty (so the even-earlier `--worktrees` stage does not remove the
+        # whole worktree, and the external tree along with it) without giving any stage before
+        # `--lanes` something of its own to delete.
+        fixture = self.fixture(0, 0)
+        roots = self._add_worktrees(fixture, 1, prefix="lane", add_target=False)
+        wt = roots[0]
+        (wt / "scratch.txt").write_text("keeps git status dirty\n")
+        old = time.time() - 3600
+        for p in [wt, *wt.rglob("*")]:
+            try:
+                os.utime(p, (old, old), follow_symlinks=False)
+            except (FileNotFoundError, NotADirectoryError, OSError):
+                pass
+        repo, env, sentinels, _ = fixture
+        fleet = Path(env["PLX_FLEET_DIR"])
+        ext_target = fleet / wt.name / "target"
+        ext_target.mkdir(parents=True)
+        (ext_target / "sentinel").write_text("synthetic build output\n")
+        result = self.run_auto(fixture, extra_env={
+            "PLX_GC_TEST_FREE_KIB": "1", "PLX_GC_MIN_FREE_GIB": "999999",
+            "PLX_GC_IDLE_MIN": "30"})
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertIn("recently active, skipped", diagnostic)
+        self.assertTrue((ext_target / "sentinel").exists(),
+                        "external tree with a fresh write was reclaimed: " + diagnostic)
+
+    def test_auto_lock_held_exits_quietly(self):
+        # A genuinely live owner (this TEST PROCESS's own pid, guaranteed alive for the duration
+        # of the call) holding the lock must make a second --auto a silent no-op: exit 0, nothing
+        # reclaimed, no refusal noise — the contract that lets a hook and a launchd tick overlap
+        # without racing each other.
+        fixture = self.fixture(0, 0)
+        repo, env, sentinels, _ = fixture
+        lock_dir = Path(env["PLX_GC_LOCK_DIR"])
+        lock_dir.mkdir(parents=True)
+        (lock_dir / "pid").write_text(str(os.getpid()) + "\n")
+        result = self.run_auto(fixture, extra_env={
+            "PLX_GC_TEST_FREE_KIB": "1", "PLX_GC_MIN_FREE_GIB": "999999"})
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertTrue(sentinels[1].exists(), "reclaimed while another --auto held the lock: " + diagnostic)
+        log = Path(env["PLX_GC_LOG"])
+        if log.exists():
+            self.assertIn("lock held", log.read_text())
+
+    def test_auto_dry_run_deletes_nothing_and_leaves_no_lock(self):
+        fixture = self.fixture(0, 0)
+        roots = self._add_worktrees(fixture, 1, prefix="lane", add_target=True)
+        result = self.run_auto(fixture, "-n", extra_env={
+            "PLX_GC_TEST_FREE_KIB": "1", "PLX_GC_MIN_FREE_GIB": "999999",
+            "PLX_GC_IDLE_MIN": "0"})
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        self.assertIn("would remove", diagnostic)
+        self.assertTrue((roots[0] / "rust-modules/target").exists(),
+                        "-n deleted a lane target: " + diagnostic)
+        _, env, sentinels, _ = fixture
+        for s in sentinels:
+            self.assertTrue(s.exists(), "-n deleted a sentinel: " + diagnostic)
+        self.assertFalse(Path(env["PLX_GC_LOCK_DIR"]).exists(),
+                         "-n took the single-instance lock: " + diagnostic)
+
+
+class InstallDiskWatchTests(unittest.TestCase):
+    """Regression: running the installer FROM a linked worktree must still resolve and launch
+    the MAIN checkout's own `tools/build-gc.sh`, never the worktree's — that worktree can be
+    removed by a squash-merge teardown while the plist it would otherwise have baked in outlives
+    it. Only the resolution is under test; launchd/tmutil are stubbed out entirely."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix="install-disk-watch-tests-")
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve()
+
+    def test_resolves_the_main_checkout_not_the_calling_lane(self):
+        main = self.root / "main"
+        (main / "tools").mkdir(parents=True)
+        for name in ("install-disk-watch.sh", "build-gc.sh"):
+            (main / "tools" / name).write_bytes((ROOT / "tools" / name).read_bytes())
+        (main / "tools" / "install-disk-watch.sh").chmod(0o755)
+
+        home = self.root / "home"
+        (home / "Library/LaunchAgents").mkdir(parents=True)
+        (home / "Library/Logs").mkdir(parents=True)
+        stub_bin = self.root / "bin"
+        stub_bin.mkdir()
+        # `uname` -> Darwin so the script takes the launchd path; `launchctl` is a silent no-op
+        # (this test is about WHICH plist gets written, not about a real gui/$(id -u) domain);
+        # `tmutil` fails `destinationinfo` so the Time Machine block is skipped without needing a
+        # real backup destination on the runner.
+        (stub_bin / "uname").write_text("#!/bin/sh\necho Darwin\n")
+        (stub_bin / "launchctl").write_text("#!/bin/sh\nexit 0\n")
+        (stub_bin / "tmutil").write_text("#!/bin/sh\nexit 1\n")
+        for name in ("uname", "launchctl", "tmutil"):
+            (stub_bin / name).chmod(0o755)
+
+        env = dict(os.environ)
+        env["HOME"] = str(home)
+        env["PATH"] = str(stub_bin) + os.pathsep + env.get("PATH", "")
+
+        subprocess.run(["git", "init", "-q", str(main)], env=env, check=True)
+        (main / "README").write_text("seed\n")
+        subprocess.run(["git", "-C", str(main), "add", "README", "tools"], env=env, check=True)
+        subprocess.run(["git", "-C", str(main), "-c", "user.email=t@t", "-c", "user.name=t",
+                        "commit", "-q", "-m", "seed"], env=env, check=True)
+        subprocess.run(["git", "-C", str(main), "branch", "-m", "main"], env=env, check=True)
+        lane = self.root / "lane0"
+        subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", "-b", "lane0",
+                        str(lane)], env=env, check=True)
+
+        # The installer is invoked FROM the lane, not from `main` — exactly the case that broke:
+        # `ROOT=$(cd "$(dirname "$0")/.." && pwd)` alone would resolve to the LANE.
+        result = subprocess.run(["sh", str(lane / "tools" / "install-disk-watch.sh")],
+                                cwd=lane, env=env, text=True, capture_output=True, timeout=20)
+        diagnostic = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, diagnostic)
+        plist = home / "Library/LaunchAgents/com.plxnative.build-gc.plist"
+        self.assertTrue(plist.exists(), diagnostic)
+        contents = plist.read_text()
+        self.assertIn(str(main / "tools/build-gc.sh"), contents,
+                      "plist did not point at the main checkout's script:\n" + contents)
+        self.assertNotIn(str(lane), contents,
+                         "plist baked in the calling lane's own path:\n" + contents)
 
 
 class MakeCheckContractTests(unittest.TestCase):

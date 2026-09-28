@@ -136,7 +136,10 @@ the pinned Sentry Native cross-build), and `sshpass` (Homebrew, for deploy/run).
   `tools/build-gc.sh` now installs `.claude/worktrees/.cargo/config.toml` with
   `incremental = false`, which every cargo reads and which stops above the main checkout. Since
   2026-09-18 the same file also sets `[profile.dev] debug = "line-tables-only"` and `debug = false`
-  for third-party packages in lanes (main keeps full DWARF).)
+  for third-party packages in lanes (main keeps full DWARF). None of this reclaim has to be run by
+  hand anymore: `tools/build-gc.sh --auto` runs the same modes on its own, staged by free-space
+  pressure, from a `SessionEnd` hook and the per-user launchd agent `make disk-watch` installs —
+  `make disk` remains the report to read before deciding whether to intervene yourself.)
   `SYMBOLS` is in the `RUST_CFG` stamp beside `RELEASE`, and it has to be: a debuginfo build and a
   plain one produce **different build ids from identical sources**, so without the stamp
   `make RELEASE=1 ipk` followed by `make RELEASE=1 SYMBOLS=1 symbols` would hand you a `.debug`

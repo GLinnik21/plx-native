@@ -167,6 +167,11 @@ What keeps that in check:
   anything but `make` output or a lane worktree already fully on `main`. Run it when a lane starts
   failing for space, before launching a fleet, and `--worktrees` followed by `--orphans` after
   tearing one down (see "Collecting the work" below).
+- **`tools/build-gc.sh --auto` runs the same reclaim on its own**, staged by free space on the
+  volume and, for `--lanes`, by an idle guard that spares a lane touched inside the last hour —
+  from a `SessionEnd` hook and an optional hourly `make disk-watch` launchd agent. You do not have
+  to remember `make disk` for an ordinary fleet; it stays the report to read when deciding whether
+  to intervene by hand, or when a lane needs reclaiming faster than the automatic pressure trigger.
 - **A linked worktree does not write an incremental cache.** The Makefile sets
   `CARGO_INCREMENTAL=0` when `.git` is a file rather than a directory, which covers the cargo runs
   `make` launches; `tools/build-gc.sh` also installs `.claude/worktrees/.cargo/config.toml` with
