@@ -75,7 +75,7 @@ def appinfo_for(flavor: str) -> dict:
 
     Only `id`, `title` and — for `nightly` ONLY — `version` move. The icon FIELDS deliberately do
     not: they name `icon.png` and `largeIcon.png`, and the badged artwork is staged over those
-    basenames from `pkg/dev/` by the Makefile — so the flavour lives in the directory a file is
+    basenames from `pkg/dev/` (or `pkg/nightly/`) by the Makefile — so the flavour lives in the directory a file is
     read from and never in the name it is packaged under. `ci/check-package.py` grades the payload
     by basename, and appinfo's own fields have to match what is in the box.
     """
