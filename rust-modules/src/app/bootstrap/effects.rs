@@ -71,6 +71,7 @@ fn page_memory(memory: &crate::screens::registry::PageMemory) -> Result<Value, &
                     Related { sid, rk } => json!({"related":[sid.raw(),rk]}),
                     Cast { sid, key, guid, name, role } => json!({"cast":[sid.raw(),key,guid,name,role]}),
                     Extra { sid, rk } => json!({"extra":[sid.raw(),rk]}),
+                    CollectionMember { sid, rk } => json!({"collection_member":[sid.raw(),rk]}),
                 }])
             }).collect::<Vec<_>>()}}),
         PageMemory::Person(m) => json!({"person":{"next_card_elem":m.next_card_elem,

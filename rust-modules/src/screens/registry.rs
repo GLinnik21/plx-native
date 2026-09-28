@@ -528,6 +528,9 @@ pub(crate) enum DetailIdentity {
     Related { sid: crate::plex::ServerId, rk: String },
     Cast { sid: crate::plex::ServerId, key: String, guid: String, name: String, role: String },
     Extra { sid: crate::plex::ServerId, rk: String },
+    /// A card of the collection shelf. Its own variant rather than `Related`: the two shelves are
+    /// different rows, and a movie that moves between them across a refetch is a different card.
+    CollectionMember { sid: crate::plex::ServerId, rk: String },
 }
 
 #[derive(Clone, Debug)]
@@ -651,6 +654,7 @@ impl crate::ui::machine::LogicalState for DetailIdentity {
             Self::Related { sid, rk } => { c.u32(2).u32(u32::from(sid.raw())).str(rk); }
             Self::Cast { sid, key, guid, name, role } => { c.u32(3).u32(u32::from(sid.raw())).str(key).str(guid).str(name).str(role); }
             Self::Extra { sid, rk } => { c.u32(5).u32(u32::from(sid.raw())).str(rk); }
+            Self::CollectionMember { sid, rk } => { c.u32(6).u32(u32::from(sid.raw())).str(rk); }
         }
     }
     fn probe(&self, out: &mut String) { out.push_str("detail_identity"); }
@@ -773,7 +777,7 @@ fn write_home_hub(hub: &HomeHubIdentity, c: &mut crate::ui::machine::Canon) {
     }
 }
 
-pub(crate) const PAGE_MEMORY_SHAPE: &str = "PageMemory{None,Detail:{spot:Spot{section:i32,col:i32,ep_text:bool,saved_col:[i32;7],season:Option<i64>},next_elem:u32,keys:[{identity:DetailIdentity{Season(sid:u32,show:str,rk:str),Episode(sid:u32,rk:str,text:bool),Related(sid:u32,rk:str),Cast(sid:u32,key:str,guid:str,name:str,role:str),Extra(sid:u32,rk:str),Slot(u32)},elem:u32}]},Person:{next_card_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Collection:{next_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Filmography:{next_elem:u32,department:String,keys:[{department:String,catalog_id:Option<String>,elem:u32}],preview:Option<(String,String)>},Home:{next_group:u32,next_elem:u32,groups:[{identity:HomeHubIdentity{ContinueWatching,Identifier{sid:ServerId,id:String,key:String},Key{sid:ServerId,key:String},Ephemeral{generation:u32,ordinal:u32}},group:u32}],items:[{identity:HomeItemIdentity{Item{hub:HomeHubIdentity,sid:ServerId,rk:String},Slot{hub:HomeHubIdentity,generation:u32,ordinal:u32}},elem:u32,last_row:u32,last_col:u32}],carousel:Option<(ServerId,String)>,strip_chosen:bool,scroll_y:f32,row_scroll:[(group:u32,scroll:f32)]},Library:{next_elem:u32,section:Option<{sid:ServerId,key:i64}>,scroll:f32,keys:[{identity:LibraryIdentity,elem:u32,last_group:u32,last_index:u32}],shelf_scroll:[(hub:String,scroll:f32)],epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,viewports:[LibraryViewport{epoch:u32,section:{sid:u32,key:u64},scroll:f32,shelves:[(id:str,x:f32)]}]}}";
+pub(crate) const PAGE_MEMORY_SHAPE: &str = "PageMemory{None,Detail:{spot:Spot{section:i32,col:i32,ep_text:bool,saved_col:[i32;8],season:Option<i64>},next_elem:u32,keys:[{identity:DetailIdentity{Season(sid:u32,show:str,rk:str),Episode(sid:u32,rk:str,text:bool),Related(sid:u32,rk:str),Cast(sid:u32,key:str,guid:str,name:str,role:str),Extra(sid:u32,rk:str),CollectionMember(sid:u32,rk:str),Slot(u32)},elem:u32}]},Person:{next_card_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Collection:{next_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Filmography:{next_elem:u32,department:String,keys:[{department:String,catalog_id:Option<String>,elem:u32}],preview:Option<(String,String)>},Home:{next_group:u32,next_elem:u32,groups:[{identity:HomeHubIdentity{ContinueWatching,Identifier{sid:ServerId,id:String,key:String},Key{sid:ServerId,key:String},Ephemeral{generation:u32,ordinal:u32}},group:u32}],items:[{identity:HomeItemIdentity{Item{hub:HomeHubIdentity,sid:ServerId,rk:String},Slot{hub:HomeHubIdentity,generation:u32,ordinal:u32}},elem:u32,last_row:u32,last_col:u32}],carousel:Option<(ServerId,String)>,strip_chosen:bool,scroll_y:f32,row_scroll:[(group:u32,scroll:f32)]},Library:{next_elem:u32,section:Option<{sid:ServerId,key:i64}>,scroll:f32,keys:[{identity:LibraryIdentity,elem:u32,last_group:u32,last_index:u32}],shelf_scroll:[(hub:String,scroll:f32)],epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,viewports:[LibraryViewport{epoch:u32,section:{sid:u32,key:u64},scroll:f32,shelves:[(id:str,x:f32)]}]}}";
 
 /// Effects cross the screen/loop boundary; screens do not poll one another's pending latches.
 pub(crate) enum ContentReq {
@@ -1990,13 +1994,18 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 /// **Linked collection shelves** (`0x9f04_34b2_c8db_d655` → this): the Library's owned
 /// `Shelf` gains `heading`, the linked heading's group and element for a promoted
 /// `custom.collection.*` shelf. Re-record replay fixtures before trusting a Library transcript.
+///
+/// **Detail collection shelf** (`0x38a9_2955_0af8_72f6` → this): detail `Spot.saved_col` grows an
+/// eighth identity-keyed slot for the collection shelf, and `DetailIdentity` grows
+/// `CollectionMember`. Re-record replay fixtures like any other shape-pin bump.
 #[cfg(test)]
 // Playback/account preference pages add their arguments and logical state to the inventory.
 // The Library's TYPE transaction now names a listing type by code (`LibraryType{code:u32}`) since
 // movie sections list their collections too, and its layout reserves an empty answer's read-out
 // band (`LibraryLayout{…empty:bool…}`); the previous pin was 0x44f2_b3ed_2851_659a. Linked
-// collection shelves then moved it from 0x9f04_34b2_c8db_d655 (see the doc paragraph above).
-const SCREEN_SHAPES_PIN: u64 = 0x38a9_2955_0af8_72f6;
+// collection shelves then moved it from 0x9f04_34b2_c8db_d655, and the detail collection shelf
+// from 0x38a9_2955_0af8_72f6 (see the doc paragraphs above).
+const SCREEN_SHAPES_PIN: u64 = 0xbb81_9301_0d21_bc8a;
 
 #[cfg(test)]
 mod arg_tests {

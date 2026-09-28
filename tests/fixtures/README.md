@@ -190,11 +190,12 @@ fill `items` with the ratingKeys. The shape keys are identical on both sides:
 
   "movie_in_home_catalog":           "12345",
   "movie_cast0_in_both_libraries":   "<ratingKey>",
-  "collection":                      "<ratingKey>"
+  "collection":                      "<ratingKey>",
+  "collection_member_movie":         "<ratingKey>"
 }
 ```
 
-The last three are **fps-scene keys, not playback shapes**, and they are in the example
+The last four are **fps-scene keys, not playback shapes**, and they are in the example
 overlay too — leaving them out of this block is how `fps:detail-transition` and
 `fps:home-detail-nav` get silently dropped for no reason. `movie_in_home_catalog` is
 satisfied by **any** of the movies above once it appears in Home's recently-added row, so
@@ -203,7 +204,8 @@ generator cannot satisfy at all — Personal Media items carry no cast — so le
 and `fps:person-page` skips by name. `collection` is a movie COLLECTION's ratingKey (two or
 more members with posters, in the Movies library the library scenes enter); this generator
 builds none, so leave it bracketed too and `fps:collection-page` / `fps:library-collections`
-skip by name.
+skip by name. `collection_member_movie` needs cast and extras, which this generator's items
+do not have, so leave it bracketed as well and `fps:detail-collection-shelf` skips by name.
 
 `episode_hevc_4k_hdr10_eac3_next` must be the episode that *follows* the one above it in
 the same season — s01e02 of `PlxTest HDR Show`, which is what the generator built it as.
@@ -346,7 +348,7 @@ reading `codec=h264 … (want hevc)` while the media is perfectly fine. Enable *
 Transcoder → Enable HEVC video encoding*, or bracket `movie_av1_no_dp_audio` in
 `manifest.local.json` and let the three skip by name.
 
-**`movie_cast0_in_both_libraries`** — one of the three fps-scene item keys. It needs a *matched*
+**`movie_cast0_in_both_libraries`** — one of the four fps-scene item keys. It needs a *matched*
 item whose first-billed cast member has titles in **both** libraries, so the person page
 draws two poster shelves. Personal Media items have no cast at all, so this is
 unreachable by construction; the `person-page` scene stays a real-library scene.

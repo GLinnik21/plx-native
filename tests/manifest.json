@@ -205,6 +205,22 @@
       "_fps_ceiling_note": "The page settles; this guards a retry/spinner/scroll path reporting frames forever. Device baseline still owed."
     },
     {
+      "name": "detail-collection-shelf",
+      "tier": "ui",
+      "route": "detail",
+      "loop_floor": 50,
+      "run_secs": 20,
+      "warmup_s": 6,
+      "item": "collection_member_movie",
+      "comment": "Detail page of a movie that belongs to a collection with at least two members, so /related carries a collection.related hub and the page draws the collection shelf under its linked heading above Related. detailsec=3 walks focus from the hero to that shelf (hero, extras, cast, collection: the item needs extras and cast too), which scrolls the page and lifts the heading label with the shelf's focus. On the simulator, mock_pms movie 1041 (a member of collection 50001) has that shape. Device baselines are not yet measured.",
+      "triggers": {
+        "plxnative-detail": "$rk",
+        "plxnative-detailsec": 3
+      },
+      "fps_ceiling": 5,
+      "_fps_ceiling_note": "The page settles once the section scroll, the shelf's label lift and the poster landings are done; this guards the new shelf or its heading reporting frames forever. Device baseline still owed."
+    },
+    {
       "name": "library-scroll",
       "tier": "ui",
       "route": "library",

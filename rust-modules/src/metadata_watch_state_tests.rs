@@ -253,6 +253,35 @@ fn an_optimistic_watch_flip_reaches_the_related_shelf_the_menu_was_opened_on() {
     clear(test_state(), test_adapter());
 }
 
+/// The collection shelf's members are tiles with a context menu too, and the page's own film is
+/// one of them — a flip reaches the member tile, and the loaded item moves with it.
+#[test]
+fn an_optimistic_watch_flip_reaches_the_collection_shelf() {
+    let _serial = crate::testlock::serial();
+    let member = |rk: &str| Related { sid: SRV_A, rk: rk.into(), unwatched: true, ..Default::default() };
+    set_current_for_test(test_state(), Some(Detail {
+        sid: SRV_A,
+        rk: "m1".into(),
+        collection: Some(crate::metadata::CollectionShelf {
+            title: "A Pair".into(),
+            section: 1,
+            tag: 5,
+            members: vec![member("m1"), member("m2")],
+        }),
+        ..Default::default()
+    }));
+    assert!(set_watched_local(test_state(), SRV_A, "m2", true));
+    let d = current(test_state()).unwrap();
+    let members = &d.collection.as_ref().unwrap().members;
+    assert!(members[1].watched && !members[1].unwatched, "the pressed member ticks");
+    assert!(members[0].unwatched && !d.watched, "nothing else moved");
+    assert!(set_watched_local(test_state(), SRV_A, "m1", true));
+    let d = current(test_state()).unwrap();
+    assert!(d.watched && d.collection.as_ref().unwrap().members[0].watched,
+        "the page's own film and its own tile agree");
+    clear(test_state(), test_adapter());
+}
+
 /// `cached_playing` is the fast path that SKIPS the PMS fetch, so a false hit is the worst of
 /// the five collisions: the whole `PlayingItem` — the `Stream.id`s that get PUT to a server, the
 /// frame size the direct-play gate reasons about, the fps, the chapters, the markers — would be
