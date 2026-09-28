@@ -133,9 +133,9 @@ pub struct EncodeContract {
     /// above. By the time a `Some` reaches here, `route::quality_policy` has already refused the
     /// two flavors no number can bind.
     pub ceiling: Option<Ceiling>,
-    /// Plex Pass DSP for the carried audio track (issue #266). `NONE` on every path this PR
-    /// builds — the offering policy that ever sets it lands in a later PR; here it exists only so
-    /// the field, the query emission and the session projections have somewhere honest to live.
+    /// Plex Pass DSP for the carried audio track (issue #266). Set only by `build_stream`, from
+    /// `route::desired_audio` — `NONE` unless the enhancement is offered (Plex Pass, a capable
+    /// carried track, the Original route, no subtitle, no Dolby Vision) and the viewer opted in.
     pub audio: AudioEnhancements,
 }
 

@@ -1414,6 +1414,7 @@ fn a_retry_keeps_the_subtitle_offset_a_new_item_does_not() {
         audio_sid: 17,
         sub_sid: 23,
         sub_offset_ms: crate::player::subtitle_offset_ms(),
+        suppress_enhancement: false,
     };
     reset_track_selection(Some(retry));
     assert_eq!(
@@ -1473,6 +1474,7 @@ fn a_refused_retry_keeps_its_position_and_full_request_for_the_next_quality() {
             audio_sid: 17,
             sub_sid: 23,
             sub_offset_ms: 0,
+            suppress_enhancement: false,
         },
         "a rescue must not silently restore the server-default tracks",
     );
@@ -2256,4 +2258,47 @@ fn picking_a_different_subtitle_track_resets_the_offset_and_re_picking_it_keeps_
     reset_player_control_for_test(&ps);
     crate::player::reset_subtitle();
     crate::player::set_subtitle_offset(0);
+}
+
+/// Issue #266: a START-FAILURE rescue of an enhanced playback resolves the retry WITHOUT the
+/// enhancement — an enhanced `start.mkv` that failed to open is the one failure a plain retry
+/// repeats verbatim. The in-flight contract-change re-resolve (`current_retry_context`) and a
+/// rescue of an UNenhanced playback keep the viewer's preference untouched.
+#[test]
+fn retry_after_start_failure_suppresses_enhancement() {
+    let mut ps = crate::route::PlaybackSession::IDLE;
+    let _g = fresh_registry(&mut ps);
+    let enh = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: true };
+    crate::player::restore_audio_enhancements(enh);
+    let sid = unregistered_sid();
+    let fresh_env = |ps: &PlaybackSession| {
+        ResolveEnv::snapshot(ps, crate::stores::metadata::MetadataStore::default().view(), sid, "rk-r")
+    };
+    assert_eq!(fresh_env(&ps).audio_enhancements, enh, "the snapshot carries the preference");
+
+    // The failed route was enhanced.
+    ps.cur_contract.audio = enh;
+    let rescue = rescue_retry_context(&ps, 5_000);
+    assert!(rescue.suppress_enhancement);
+    let mut env = fresh_env(&ps);
+    apply_retry_enhancement(&mut env, rescue);
+    assert_eq!(env.audio_enhancements, crate::plex::AudioEnhancements::NONE);
+
+    // The contract-change re-resolve of the same playback does not suppress.
+    let inflight = current_retry_context(&ps, 5_000);
+    assert!(!inflight.suppress_enhancement);
+    let mut env = fresh_env(&ps);
+    apply_retry_enhancement(&mut env, inflight);
+    assert_eq!(env.audio_enhancements, enh);
+
+    // Nor does a rescue of a playback that carried no enhancement.
+    ps.cur_contract.audio = crate::plex::AudioEnhancements::NONE;
+    let plain = rescue_retry_context(&ps, 5_000);
+    assert!(!plain.suppress_enhancement);
+    let mut env = fresh_env(&ps);
+    apply_retry_enhancement(&mut env, plain);
+    assert_eq!(env.audio_enhancements, enh, "the viewer's preference is never rewritten");
+    assert_eq!(crate::player::audio_enhancements(), enh, "suppression is per-resolve, not persisted");
+
+    crate::player::restore_audio_enhancements(crate::plex::AudioEnhancements::NONE);
 }

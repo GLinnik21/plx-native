@@ -615,9 +615,10 @@ pub struct Session {
     #[serde(default, deserialize_with = "de_soft_vec")]
     pub(crate) plaintext_consent: Vec<PlaintextConsent>,
     /// Plex Pass per-track transcoder DSP preference (issue #266): dialog boost / loudness
-    /// normalization. `NONE` on every path this PR builds — the offering policy that ever turns
-    /// a toggle on lands in a later PR — so this is skipped on write and every session persisted
-    /// before the field existed round-trips byte-identical to what it wrote before. Soft-parsed
+    /// normalization. `NONE` by default and skipped on write while `NONE`, so every session
+    /// persisted before the field existed — and every viewer who never opted in — round-trips
+    /// byte-identical to what it wrote before. Restored into `player::audio_enhancements` at boot
+    /// and at the credentials handoff; written by `player::set_audio_enhancements`. Soft-parsed
     /// like every preference in this struct: an unknown shape costs the preference, never the
     /// credentials.
     #[serde(default, deserialize_with = "de_soft_audio_enhancements", skip_serializing_if = "crate::plex::AudioEnhancements::is_none")]
@@ -945,6 +946,17 @@ pub(crate) fn set_subtitle_tone(tone: SubtitleTone) -> bool {
             return None;
         }
         Some(cur.with_subtitle_tone(tone))
+    })
+}
+
+/// Persist the Plex Pass audio-DSP preference (issue #266) through [`update`], merging with the
+/// current disk record — the same door as [`set_subtitle_tone`].
+pub(crate) fn set_audio_enhancements(enhancements: crate::plex::AudioEnhancements) -> bool {
+    update(|cur| {
+        if cur.audio_enhancements == enhancements {
+            return None;
+        }
+        Some(cur.with_audio_enhancements(enhancements))
     })
 }
 
@@ -2758,6 +2770,31 @@ mod cache_timing_tests {
         crate::storage_worker::drain_for_test();
         assert!(edit.unwrap().wait_blocking().unwrap(), "the edit must survive admission backpressure");
         assert!(peek().auto_sign_in());
+    }
+
+    /// Issue #266: the audio-DSP preference round-trips through the player's one write door
+    /// (`player::set_audio_enhancements` -> retained worker job -> `session::set_audio_enhancements`)
+    /// and comes back through the boot-time restore, merged into the record rather than replacing
+    /// it. A record saved before the field existed loads as NONE.
+    #[test]
+    fn audio_enhancements_persist_and_restore() {
+        let _serial = crate::testlock::serial();
+        let _session = test_support::TempSession::new("audio-enhancements");
+        save(&test_support::signed_in());
+        assert_eq!(load().audio_enhancements(), crate::plex::AudioEnhancements::NONE, "absent field = NONE");
+
+        let enh = crate::plex::AudioEnhancements { boost_dialog: true, normalize_loudness: false };
+        crate::player::set_audio_enhancements(enh);
+        crate::storage_worker::drain_for_test();
+        let saved = load();
+        assert_eq!(saved.audio_enhancements(), enh);
+        assert_eq!(saved.client_id, test_support::signed_in().client_id, "merged, not replaced");
+
+        crate::player::restore_audio_enhancements(crate::plex::AudioEnhancements::NONE);
+        crate::player::restore_audio_enhancements(saved.audio_enhancements());
+        assert_eq!(crate::player::audio_enhancements(), enh, "boot restores what was saved");
+        assert!(!set_audio_enhancements(enh), "an unchanged preference is not rewritten");
+        crate::player::restore_audio_enhancements(crate::plex::AudioEnhancements::NONE);
     }
 
     #[test]

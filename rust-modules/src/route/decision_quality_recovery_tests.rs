@@ -1603,7 +1603,7 @@ fn audio_selected_during_original_trial_uses_the_route_that_actually_lands() {
                 ceiling: Some(crate::abr::Rung::P1080High.ceiling()),
                 ..Default::default()
             },
-            audio_sid: 7,
+            audio: Some(CarriedAudio::named(7, -1)),
             auto_original: Some(AutoOriginalCandidate {
                 url: "https://example.invalid/source.mkv".into(),
                 probe_part: "https://example.invalid/source.mkv".into(),

@@ -3781,6 +3781,87 @@
       "_wire_note": "MEASURED 2026-08-22 on the dev TV: a play-only case on this same clip is 1 open / 0 ranged, and this case is 4 / 3. So the ranged floor is a real assertion and not something container probing satisfies for free — which was the worry, since Matroska cues live at the end of the file. It corroborates `seek_inplace` rather than replacing it: an autoseek past EOF (the bug this case caught) still produced ranged opens while the in-place path never ran."
     }
   ],
+  "_pending_cases_comment": "#266 Boost Dialog / Normalize Loudness resolve (PR 2). RECORDED, NOT RUN: run.py does not load this key. Each case plays tests/mock_pms.py's 960001 AC3 2.0 fixture on the TV with the flags in `mock` and is graded by the mock's request log (GET /_mock/requests) as described in `mock_requests`. They move into `cases` once run.py can point a case at the mock and read its request log, and the viewer's enhancement preference can be switched on on the device (the Audio-tab toggle is a later PR). Until then the same three contracts are graded headless by rust-modules/src/route/plan_audio_enhancement_tests.rs against a loopback PMS.",
+  "pending_cases": [
+    {
+      "name": "enhance_resolve_pass_capable",
+      "item": "movie_h264_ac3_1080p",
+      "kind": "movie",
+      "title": "movie · h264/ac3 2.0 · Plex Pass server, Boost Dialog on — the direct-playable file is remuxed with the enhancement",
+      "covers": [
+        "audio-enhancement-offered",
+        "enhancement-remux",
+        "mde-before-params"
+      ],
+      "mock": "tests/mock_pms.py",
+      "mock_requests": [
+        "the MDE decision (hasMDE=1) carries NO boostDialog/normalizeLoudness",
+        "a later transcode decision on the SAME session carries boostDialog=1",
+        "start.mkv carries the same params, directStream=1, audio to ac3"
+      ],
+      "run_secs": 45,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "decision": "transcode",
+        "no_playing_error": true
+      }
+    },
+    {
+      "name": "enhance_resolve_no_pass",
+      "item": "movie_h264_ac3_1080p",
+      "kind": "movie",
+      "title": "movie · h264/ac3 2.0 · server without Plex Pass, Boost Dialog on — byte-identical to no preference",
+      "covers": [
+        "audio-enhancement-not-offered",
+        "no-pass-byte-identical"
+      ],
+      "mock": "tests/mock_pms.py --no-plex-pass",
+      "mock_requests": [
+        "no request carries boostDialog or normalizeLoudness",
+        "the Part is played directly, exactly as with the preference off"
+      ],
+      "run_secs": 45,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "decision": "directplay",
+        "no_playing_error": true
+      }
+    },
+    {
+      "name": "enhance_resolve_refused",
+      "item": "movie_h264_ac3_1080p",
+      "kind": "movie",
+      "title": "movie · h264/ac3 2.0 · Plex Pass server that declines the enhancement — falls back to the Part",
+      "covers": [
+        "audio-enhancement-refused",
+        "enhancement-fallback-direct"
+      ],
+      "mock": "tests/mock_pms.py --refuse-enhancements",
+      "mock_requests": [
+        "one transcode decision carries boostDialog=1 and is refused",
+        "no later request carries the params",
+        "the Part is played directly; the log shows `enhancement: refused/ignored by server; fell back`"
+      ],
+      "run_secs": 45,
+      "operations": [
+        {
+          "op": "play"
+        }
+      ],
+      "expect": {
+        "decision": "directplay",
+        "no_playing_error": true
+      }
+    }
+  ],
   "library_gaps": {
     "_comment": "Combos the survey found NO real library item can exercise. Not covered by any case above; would need synthetic ffmpeg clips fed via the plxnative-url trigger (see README).",
     "video": [
