@@ -134,6 +134,12 @@ pub(crate) struct Scenarios {
     /// old doc: the panel opens and is picked on separate frames, so the pick is carried here until
     /// the surface it names exists.
     pub(crate) menupick_row: Option<c_int>,
+    /// `/tmp/plxnative-subtiming` — see [`subtiming_arm`]'s own doc: `true` once stage 1 (the
+    /// subtitle commit) has fired, so a later frame does not commit a second time.
+    pub(crate) subtiming_tried: bool,
+    /// Stage 1's committed stream id, held until `route::cur_sub_sid` agrees — stage 2's own
+    /// gate — then cleared once the capsule has been asked to open.
+    pub(crate) subtiming_sid: Option<i64>,
     pub(crate) pause_tried: bool,
     /// An armed Pause edge: (due at, hold ms, the media position it also waits for).
     pub(crate) pause_script: Option<(u32, Option<u32>, Option<u32>)>,
@@ -1467,6 +1473,62 @@ fn menupick_arm(app: &mut App, fr: &mut Frame) {
     }
 }
 
+/// `/tmp/plxnative-subtiming` — the Timing capsule's own headless trigger (plan
+/// `subtitle-menu-capsule` §5), self-contained rather than riding `plxnative-menupick`: that one
+/// fires at 7000 ms and would stack a Tracks panel on top of the capsule this trigger wants alone.
+///
+/// **Stage 1**, once the film is playing and not transcoding: pick the first embedded TEXT
+/// subtitle, preferring English (on `movie_h264_ac3_1080p` that is index 2, the same track
+/// `subtitle_text_srt` already selects, so the fixture server sees no new selection) and commit
+/// it exactly as `menupick_arm` commits a picked row.
+///
+/// **Stage 2**, on a later frame once [`crate::route::cur_sub_sid`] agrees the commit has landed:
+/// open the capsule directly — no `pin_headless_hud` call, because the production capsule frame
+/// hides the HUD rather than pinning it (`OverlayKind::hides_hud`, `PlayerReq::HideHud`).
+fn subtiming_arm(app: &mut App, _fr: &mut Frame) {
+    if let Some(sid) = app.scenarios.subtiming_sid {
+        if crate::route::cur_sub_sid(&app.player.session) == sid {
+            app.scenarios.subtiming_sid = None;
+            crate::app::bridge::open_player_overlay(
+                &app.player.session,
+                app.bridge.metadata_view(),
+                &mut app.pages,
+                crate::screens::player::overlay::OverlayKind::Timing,
+            );
+        }
+        return;
+    }
+    if app.scenarios.subtiming_tried || !crate::dev::flag("subtiming") {
+        return;
+    }
+    if !matches!(app.route(), AppArg::Player)
+        || !crate::player::is_playing(&app.player.session)
+        || crate::route::is_transcoding(&app.player.session)
+    {
+        return;
+    }
+    let Some(item) = app.bridge.metadata_view().playing() else { return };
+    let idx = item
+        .subs
+        .iter()
+        .position(|s| !crate::ui::track_menu::is_image_sub_codec(&s.codec) && s.lang_code == "eng")
+        .or_else(|| item.subs.iter().position(|s| !crate::ui::track_menu::is_image_sub_codec(&s.codec)));
+    let Some(i) = idx else { return };
+    let stream_id = item.subs[i].id;
+    let render_ordinal = crate::metadata::sub_render_ordinal(&item.subs, i);
+    app.scenarios.subtiming_tried = true;
+    app.scenarios.subtiming_sid = Some(stream_id);
+    crate::app::playback::commit_track(
+        &mut app.player.session,
+        crate::ui::track_menu::TrackCommit::Subtitle {
+            render_ordinal,
+            stream_id,
+            sidecar_key: None,
+            sidecar_codec: String::new(),
+        },
+    );
+}
+
 fn marker_arm(app: &mut App, _fr: &mut Frame) {
     if !app.scenarios.marker_tried && matches!(app.route(), AppArg::Player) && crate::player::is_playing(&mut app.player.session) {
         match crate::dev::read("marker") {
@@ -1546,8 +1608,9 @@ pub(crate) fn failure_fixture(session: &mut crate::route::PlaybackSession) {
 }
 
 /// The boot-trigger SCRIPTS (autoplay, grid, settings, press, itemmenu, detail, play, seek,
-/// quality, pause, menu, marker), called once per iteration from `app::run::run` at exactly the
-/// position `dev_scripts` occupied. `false` propagates a refused trigger (an invalid
+/// quality, pause, menu, menupick, subtiming, marker), called once per iteration from
+/// `app::run::run` at exactly the position `dev_scripts` occupied. `false` propagates a refused
+/// trigger (an invalid
 /// `plxnative-server` slot) — the loop `continue`s exactly as it always did, skipping the rest of
 /// this frame's arms and phases alike.
 pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
@@ -1578,6 +1641,7 @@ pub(crate) unsafe fn each_frame(app: &mut App, fr: &mut Frame) -> bool {
     autopause_arm(app, fr);
     menu_arm(app, fr);
     menupick_arm(app, fr);
+    subtiming_arm(app, fr);
     marker_arm(app, fr);
     if crate::app::bridge::player(&app.pages).is_some() {
         failure_fixture(&mut app.player.session);

@@ -167,6 +167,13 @@ impl TrackMenuState {
         self.table.sel
     }
 
+    /// The row alphabet at its current tab, for a caller that needs a row's index without
+    /// duplicating this layout by hand (`screens::player::overlay_tests`'s Timing hand-off test).
+    #[cfg(test)]
+    pub(crate) fn targets(&self) -> &[RowTarget] {
+        &self.targets
+    }
+
     /// **Write back the engine's own focus cursor** (restructure phase 12): the Column group
     /// [`TrackMenuPart`] answers is the source of geometry, but the ENGINE owns the current
     /// element (§7.3 step 5) — the owner's `step` is the only place that mutates in response to a

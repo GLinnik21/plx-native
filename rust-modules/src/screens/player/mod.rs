@@ -129,6 +129,11 @@ pub(crate) struct PlayerScreen {
     /// Is ANY panel up this frame? Subtitles lift clear of the transport while one is, since that
     /// is exactly when the user is reading the bottom of the screen.
     pub(crate) lifted: bool,
+    /// Is the Timing capsule up this frame (`OverlayKind::hides_hud`, plan `subtitle-menu-capsule`
+    /// §4)? The transport, the caption lift and the pointer/D-pad stops that would otherwise sit
+    /// under the capsule all gate on this — pushed once per frame by `app/run.rs`
+    /// (`bridge::player_overlay_hud_state`), the same way `lifted` is.
+    pub(crate) hud_hidden: bool,
     /// Where this playback returns to — see [`Origin`].
     pub(crate) origin: Option<Origin>,
     render: PlayerRender,
@@ -148,6 +153,7 @@ impl PlayerScreen {
             busy: crate::ui::player_hud::Busy::None,
             transport: true,
             lifted: false,
+            hud_hidden: false,
             origin: None,
             render: PlayerRender::default(),
             repair_alert: {
@@ -379,9 +385,26 @@ impl PlayerScreen {
         h
     }
 
-    /// Is the transport on screen right now?
+    /// Is the transport on screen right now? `false` whenever the Timing capsule is up
+    /// (`hud_hidden`, plan `subtitle-menu-capsule` §4) regardless of what the timer/dismissal say —
+    /// gated HERE, not just at the draw call site, so [`Self::clock_fingerprint`] (which calls this
+    /// too) sees the same answer the frame draws.
     pub(crate) fn hud_up(&self, ps: &crate::route::PlaybackSession, now: u32) -> bool {
         self.hud.visible(ps, now, crate::player::TX.paused.load(std::sync::atomic::Ordering::Relaxed))
+            && !self.hud_hidden
+    }
+
+    /// Does the caption block lift clear of the transport this frame? [`Self::hud_up`] already
+    /// excludes `hud_hidden`, but `self.lifted` does not (a Tracks→Timing hand-off can leave a
+    /// stale `lifted` from the same frame's OTHER surface), so this re-asserts the gate rather than
+    /// relying on `hud_up`'s alone.
+    fn subs_lift(&self, ps: &crate::route::PlaybackSession, now: u32) -> bool {
+        (self.hud_up(ps, now) || self.lifted) && !self.hud_hidden
+    }
+
+    /// Is the transport actually DRAWN this frame? Same reasoning as [`Self::subs_lift`].
+    fn hud_drawn(&self, ps: &crate::route::PlaybackSession, now: u32) -> bool {
+        (self.hud_up(ps, now) || self.lifted) && !self.repair_alert.visible() && !self.hud_hidden
     }
 }
 
@@ -1222,12 +1245,13 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Screen<H> for Playe
         // The frame's publication of the playback session (spec §2.3) — see `AppViews::session`.
         let ps = H::session(f.cx);
         let now = f.cx.tick.ms;
-        let hud_up = self.hud_up(ps, now);
         // Both subtitle paths lift clear of the transport for the same reason and by the same
         // test — an open track menu counts, since that is exactly when the user is reading the
         // bottom of the screen. `transport` is false while the Info card or Chapters strip owns
-        // the middle, and the lift follows the panel rather than the transport there.
-        let subs_lift = hud_up || self.lifted;
+        // the middle, and the lift follows the panel rather than the transport there. The Timing
+        // capsule is the exception: it HIDES the transport rather than sharing its read time, so
+        // captions stay at their normal `SUB_BASE_Y` even while it is up (`Self::subs_lift`).
+        let subs_lift = self.subs_lift(ps, now);
         self.render.ass.draw();
         if let Some(message) = self.render.ass.error() {
             crate::ui::player_hud::draw_subtitle_message(message, subs_lift);
@@ -1247,7 +1271,7 @@ impl<H: PlayerLike + crate::screens::registry::MetadataLike> Screen<H> for Playe
         // that commit-frame dispatch with nothing to fire. Direct delivery, and the screen decides
         // what the element means — including the scrubber, whose meaning needs the click's `x`
         // and so cannot be carried by a bare `ScreenEvent::Activate` at all.
-        let hud_drawn = (hud_up || self.lifted) && !self.repair_alert.visible();
+        let hud_drawn = self.hud_drawn(ps, now);
         if hud_drawn {
             self.draw_hud(ps, now, f.measure, H::metadata(f.cx));
         }
@@ -1608,6 +1632,30 @@ mod step_ladder_tests {
             let got: Vec<u32> = f.into_stops().iter().map(|s| s.key.elem).collect();
             assert_eq!(got, want, "transport={transport} hud_drawn={hud_drawn}");
         }
+    }
+
+    /// **The Timing capsule's `hud_hidden` gate outranks a stale `lifted`** (plan
+    /// `subtitle-menu-capsule` §4). Both flags are set BY HAND here — no frame loop runs in a host
+    /// test, so `app/run.rs`'s per-frame `bridge::player_overlay_hud_state` push never happens —
+    /// the same pattern [`a_control_the_frame_does_not_draw_registers_no_stop`] uses for
+    /// `hud_drawn`. `lifted = true` is deliberately kept true (a Tracks(Closing) + Timing(Opening)
+    /// hand-off frame) to prove `hud_hidden` wins rather than merely happening to agree with it.
+    #[test]
+    fn hud_hidden_outranks_a_stale_lifted() {
+        use crate::ui::screen::DrawFrame;
+        let _g = crate::testlock::serial();
+        let mut page = PlayerScreen::new(ENTRY);
+        page.transport = true;
+        page.lifted = true;
+        page.hud_hidden = true;
+        let cx = cx();
+        let ps = TestHost::session(&cx);
+        assert!(!page.subs_lift(ps, 1_000), "captions must stay at SUB_BASE_Y under the capsule");
+        assert!(!page.hud_drawn(ps, 1_000));
+        let mut f = DrawFrame::new(&cx, crate::ui::Painter::root());
+        page.record_stops(&mut f, page.hud_drawn(ps, 1_000));
+        let got: Vec<u32> = f.into_stops().iter().map(|s| s.key.elem).collect();
+        assert_eq!(got, Vec::<u32>::new(), "no scrub/row/tab stop registers under the capsule");
     }
 
     /// **Issue #162's census: every control the D-pad can activate is clickable with the Magic

@@ -132,7 +132,7 @@ ALL_TRIGGERS = [
     "plxnative-collection",
     # the Library's listing type (TYPE menu value), for scenes such as library-collections
     "plxnative-libtype",
-    "plxnative-autoseek", "plxnative-menupick", "plxnative-menu", "plxnative-noaudio",
+    "plxnative-autoseek", "plxnative-menupick", "plxnative-menu", "plxnative-subtiming", "plxnative-noaudio",
     "plxnative-grid", "plxnative-autoplay", "plxnative-h265", "plxnative-playidx", "plxnative-url",
     "plxnative-play", "plxnative-server", "plxnative-ffprobe", "plxnative-token", "plxnative-servers",
     # UI/FPS scenes (both profiler triggers MUST be cleared; either invalidates production pacing)

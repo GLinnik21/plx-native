@@ -2230,6 +2230,32 @@ pub(crate) fn player_overlay_up(d: &Dispatcher<AppHost>) -> bool {
         .any(|s| matches!(s.entry.arg, AppArg::PlayerOverlay(_)))
 }
 
+/// **This frame's `(hud_hidden, lifted)` read for the transport** (plan `subtitle-menu-capsule`
+/// §4): scans every player-overlay surface whose phase is not `Hidden` — Opening, Open, AND
+/// Closing. `input_owner()` (`ModalStack::input_owner`) is deliberately NOT used here: it excludes
+/// `Closing`, and a Tracks→Timing hand-off dismisses the Tracks surface (which starts Closing the
+/// same frame the fresh Timing surface starts Opening) — reading only the input owner would see
+/// Timing alone and miss that Tracks' own closing fade must not flash the transport either.
+///
+/// `hud_hidden` is true if ANY such surface's kind [`hides_hud`](OverlayKind::hides_hud) — today
+/// only [`OverlayKind::Timing`]. `lifted` is the OLD `surface_up`-style answer (any panel counts,
+/// subtitles clear the transport while it is read) but only when `hud_hidden` is false: a
+/// Tracks(Closing) + Timing(Opening) pair must read `(true, false)`, not lift the captions AND
+/// hide the transport in the same frame.
+pub(crate) fn player_overlay_hud_state(d: &Dispatcher<AppHost>) -> (bool, bool) {
+    let mut hud_hidden = false;
+    let mut any = false;
+    for s in d.nav.modals.surfaces.iter().filter(|s| s.phase != Phase::Hidden) {
+        if let AppArg::PlayerOverlay(arg) = &s.entry.arg {
+            any = true;
+            if arg.kind.hides_hud() {
+                hud_hidden = true;
+            }
+        }
+    }
+    (hud_hidden, !hud_hidden && any)
+}
+
 /// Should the player's diagnostics ("Stats for nerds") panel draw this frame?
 ///
 /// No, while any of the player's own four overlay panels (`OverlayKind::Tracks`/`Info`/

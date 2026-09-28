@@ -288,6 +288,7 @@ mod heartbeat_word_tests {
             OverlayKind::Info,
             OverlayKind::Chapters,
             OverlayKind::More { quality: false },
+            OverlayKind::Timing,
         ] {
             assert!(
                 overlays.contains(&kind.word()),

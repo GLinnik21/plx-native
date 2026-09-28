@@ -93,6 +93,7 @@ pub mod testpat; // dev-only SYNTHETIC GROUNDS — the page's picture replaced b
 pub mod text_view;
 pub(crate) mod text_buffer;
 pub mod theme;
+pub mod timing_capsule; // the on-video Subtitle Timing capsule (plan `subtitle-menu-capsule` §4)
 pub mod track_menu;
 pub(crate) mod underlay; // the shared UNDERLAY FIELD: a coarse, spatially faithful colour field of what is drawn beneath an overlay
 pub mod up_next; // end-of-episode Up Next card + auto-advance countdown

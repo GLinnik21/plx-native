@@ -508,7 +508,37 @@
         "plxnative-play": "$rk",
         "plxnative-menu": "0"
       },
-      "_more_note": "overlay=more (the \"...\" options popover; it IS one of OVERLAY_WORDS, see app/mod.rs) has no fps:more-menu scene here on purpose, not by omission: it has no headless boot trigger. app/playback.rs and app/run.rs only ever open ui::more_menu from a live remote key (MORE, or the OK-hold item context path), the same way info-panel/track-menu/chapters-panel are opened from plxnative-info/plxnative-menu/plxnative-chapters. If a plxnative-more (or equivalent) boot trigger is ever added, mirror this scene as fps:more-menu: route player, overlay more, tier player, loop_floor 45, run_secs 26, warmup_s 9, the same item shape."
+      "_more_note": "overlay=more (the \"...\" options popover; it IS one of OVERLAY_WORDS, see app/mod.rs) has no fps:more-menu scene here on purpose, not by omission: it has no headless boot trigger. app/playback.rs and app/run.rs only ever open ui::more_menu from a live remote key (MORE, or the OK-hold item context path), the same way info-panel/track-menu/chapters-panel/timing-capsule are opened from plxnative-info/plxnative-menu/plxnative-chapters/plxnative-subtiming. If a plxnative-more (or equivalent) boot trigger is ever added, mirror this scene as fps:more-menu: route player, overlay more, tier player, loop_floor 45, run_secs 26, warmup_s 9, the same item shape."
+    },
+    {
+      "name": "track-menu-subs",
+      "tier": "player",
+      "route": "player",
+      "overlay": "menu",
+      "loop_floor": 45,
+      "run_secs": 26,
+      "warmup_s": 9,
+      "item": "movie_h264_ac3_1080p",
+      "comment": "track-menu's own item (movie_hevc_4k_hdr10_truehd) has no subs (make_fixtures.py), so its Subtitles tab measures only the Off row. This variant opens tab 1 on movie_h264_ac3_1080p, which carries embedded subrip, so the grouped Subtitles panel (plan `subtitle-menu-capsule`) is actually measured with rows in it.",
+      "triggers": {
+        "plxnative-play": "$rk",
+        "plxnative-menu": "1"
+      }
+    },
+    {
+      "name": "timing-capsule",
+      "tier": "player",
+      "route": "player",
+      "overlay": "timing",
+      "loop_floor": 45,
+      "run_secs": 26,
+      "warmup_s": 9,
+      "item": "movie_h264_ac3_1080p",
+      "comment": "The Timing capsule (plan `subtitle-menu-capsule` §4): opened by the self-contained plxnative-subtiming trigger, which selects the item's first embedded English subtitle and then opens the capsule directly, never through plxnative-menupick (that one fires at 7000ms and would stack a Tracks panel underneath). movie_h264_ac3_1080p is used rather than track-menu's 4K HDR item because it has embedded subrip and plays direct, so committing a subtitle track does not reload the pipeline mid-scene.",
+      "triggers": {
+        "plxnative-play": "$rk",
+        "plxnative-subtiming": "1"
+      }
     },
     {
       "name": "chapters-panel",

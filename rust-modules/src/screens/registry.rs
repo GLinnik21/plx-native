@@ -158,6 +158,12 @@ pub(crate) enum PlayerReq {
     /// Keep the transport alive while a panel is being read (`HUD_MENU_MS`), or hand it the
     /// ordinary linger as a panel closes (`HUD_LINGER_MS`).
     ExtendHud(u32),
+    /// **The Timing capsule closed** (plan `subtitle-menu-capsule` §4): sets `hud.dismissed = true`
+    /// so the transport does not flash back over the film for the one frame between the capsule's
+    /// `hud_hidden` going false and whatever `note_fresh_press`/`ExtendHud` would next un-dismiss
+    /// it. The capsule itself never asks for [`ExtendHud`](PlayerReq::ExtendHud) — it hides the HUD
+    /// rather than sharing its read time — so this is its own, opposite request.
+    HideHud,
     /// The Info card's OK landed on a control FACE, which has a press dip of its own: arm the
     /// tvOS press and commit on the spring-back rather than acting now.
     ArmInfoPress,
@@ -1828,12 +1834,13 @@ pub(crate) fn every_surface_arg() -> Vec<AppArg> {
         AppArg::AboutPanel,
         AppArg::PersonBio,
         AppArg::CollectionAbout,
-        // The four panels are ONE screen with four kinds, and each answers a different
+        // The five panels are ONE screen with five kinds, and each answers a different
         // `Screen::name` — so every kind is listed, not one representative.
         AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Tracks { tab: 0 } }),
         AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Info }),
         AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Chapters }),
         AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::More { quality: false } }),
+        AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Timing }),
         AppArg::Settings(SettingsPage::Root),
         AppArg::FirstRunConsent(0),
     ];

@@ -732,6 +732,7 @@ fn a_player_panel_is_a_surface_on_the_players_own_page_and_leaves_the_instance_a
         crate::screens::player::overlay::OverlayKind::Info,
         crate::screens::player::overlay::OverlayKind::Chapters,
         crate::screens::player::overlay::OverlayKind::More { quality: false },
+        crate::screens::player::overlay::OverlayKind::Timing,
     ] {
         open_player_overlay(&ps, crate::stores::metadata::MetadataStore::default().view(), &mut d, kind);
         frame(&mut d, &mut rig, AppArg::Player, tick(1), vec![]);
@@ -777,6 +778,7 @@ fn same_instance_reads_the_playback_and_not_the_overlay() {
         OverlayKind::Info,
         OverlayKind::Chapters,
         OverlayKind::More { quality: false },
+        OverlayKind::Timing,
     ] {
         let panel = AppArg::PlayerOverlay(PlayerOverlayArg { kind });
         assert!(
@@ -796,6 +798,66 @@ fn same_instance_reads_the_playback_and_not_the_overlay() {
         .same_instance(&AppArg::PlayerOverlay(PlayerOverlayArg {
             kind: OverlayKind::Tracks { tab: 1 }
         })));
+}
+
+/// **The Tracks→Timing hand-off never stacks a second surface.** `PlayerOverlayScreen::activate`'s
+/// `TrackOk::OpenTiming` arm (`screens/player/overlay.rs`) dismisses the Tracks entry and asks for
+/// a fresh `Timing` one in the same beat this test drives by hand — `open_player_overlay` +
+/// `dismiss_player_overlays` + `open_player_overlay` mirrors exactly what that arm does, one call
+/// each. The frame in between is the one plan §4 calls out by name: Tracks is `Closing` while
+/// Timing is `Opening`, and `bridge::player_overlay_hud_state`'s `(hud_hidden, lifted)` must read
+/// `(true, false)` right there — Timing's own `hides_hud` outranking Tracks' still-fading `lifted`
+/// — never a frame where the HUD is neither lifted nor hidden, and never one where both panels
+/// still count as "up" for `player_overlay_kind`'s purposes.
+#[test]
+fn tracks_to_timing_hands_off_without_stacking_a_second_surface() {
+    use crate::screens::player::overlay::OverlayKind;
+    let ps = crate::route::PlaybackSession::IDLE;
+    let _g = crate::testlock::serial();
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    frame(&mut d, &mut rig, AppArg::Player, tick(0), vec![]);
+
+    open_player_overlay(&ps, crate::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Tracks { tab: 1 });
+    frame(&mut d, &mut rig, AppArg::Player, tick(1), vec![]);
+    assert_eq!(player_overlay_kind(&d), Some(OverlayKind::Tracks { tab: 1 }));
+
+    // The hand-off: dismiss Tracks, open Timing, in the one beat `activate`'s OpenTiming arm does.
+    dismiss_player_overlays(&mut d);
+    open_player_overlay(&ps, crate::stores::metadata::MetadataStore::default().view(), &mut d, OverlayKind::Timing);
+    frame(&mut d, &mut rig, AppArg::Player, tick(2), vec![]);
+
+    let surfaces: Vec<(OverlayKind, Phase)> = d
+        .nav
+        .modals
+        .surfaces
+        .iter()
+        .filter_map(|s| match &s.entry.arg {
+            AppArg::PlayerOverlay(a) => Some((a.kind, s.phase)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(surfaces.len(), 2, "Tracks closing + Timing opening, never zero and never a third");
+    assert!(
+        surfaces.iter().any(|(kind, phase)| matches!(kind, OverlayKind::Tracks { .. }) && *phase == Phase::Closing),
+        "Tracks is fading out, not gone: {surfaces:?}",
+    );
+    assert!(
+        surfaces.iter().any(|(kind, phase)| *kind == OverlayKind::Timing && *phase != Phase::Hidden),
+        "Timing is up: {surfaces:?}",
+    );
+    assert_eq!(
+        crate::app::bridge::player_overlay_hud_state(&d),
+        (true, false),
+        "hud_hidden outranks Tracks' own still-fading lifted, exactly this one frame",
+    );
+
+    // Let the fade finish: Tracks disappears and Timing alone remains the input owner.
+    frame(&mut d, &mut rig, AppArg::Player, tick(3), vec![]);
+    frame(&mut d, &mut rig, AppArg::Player, tick(4), vec![]);
+    assert_eq!(player_overlay_kind(&d), Some(OverlayKind::Timing), "Timing alone owns input once Tracks is gone");
+    let left: Vec<_> = d.nav.modals.surfaces.iter().filter(|s| matches!(s.entry.arg, AppArg::PlayerOverlay(_))).collect();
+    assert_eq!(left.len(), 1, "exactly one player-overlay surface once the fade settles");
 }
 
 /// **THE FOURTH ROOT** (`app/input.rs`'s `back_at_root`, and the key ladder's dispatcher arm).

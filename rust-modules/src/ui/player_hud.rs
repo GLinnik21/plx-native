@@ -139,6 +139,16 @@ fn subtitle_ink_for(tone: crate::plex::session::SubtitleTone) -> [f32; 4] {
 const SUB_BASE_Y: f32 = SCR_H - 100.0;
 const SUB_CEIL_Y: f32 = SCR_H - 300.0;
 
+/// The most caption lines [`draw_subtitle_message`] ever stacks, and the reason the Timing
+/// capsule's y is fixed rather than following the caption block (`ui::timing_capsule`, plan
+/// `subtitle-menu-capsule` §4): a live cue's line count changes frame to frame, and a capsule that
+/// tracked it would jump under a viewer's thumb mid-hold.
+const MAX_CAPTION_LINES: f32 = 3.0;
+/// The Timing capsule's bottom y — [`SUB_BASE_Y`] cleared by the tallest caption block this app
+/// ever draws (`MAX_CAPTION_LINES` at the caption line pitch used there), so the capsule never
+/// overlaps even a three-line cue.
+pub(crate) const CAPSULE_BOTTOM_Y: f32 = SUB_BASE_Y - MAX_CAPTION_LINES * 48.0;
+
 /// Map a decoded image-subtitle rect from the stream's `cw`×`ch` authoring canvas onto the video
 /// rect — which is always the full panel here (the video track is authored 1920×1080; see the
 /// `docs/agent-reference.md`). A subtitle canvas is the picture's own storage grid, so this is exactly the

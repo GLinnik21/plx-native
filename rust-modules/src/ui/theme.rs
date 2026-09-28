@@ -137,6 +137,13 @@ pub const TEXT_TERTIARY: [f32; 4] = COOL_400;
 /// them is a per-site decision about whether the extra draw call is worth it.
 pub const TEXT_SEPARATOR: [f32; 4] = with_a(TEXT_TERTIARY, 0.45);
 
+/// **The ink a control shows when it has reached a hard limit** — the Timing capsule's chevron on
+/// the side already at its range's edge (`ui::timing_capsule`, plan `subtitle-menu-capsule` §4,
+/// `player.html`'s `leftInk`/`rightInk` at `.22`). A control-specific alpha, not a text rung: it
+/// answers "can this direction do anything right now", the same question `TEXT_TERTIARY` answers
+/// for words.
+pub const INK_DISABLED: [f32; 4] = with_a(WHITE, 0.22);
+
 /// **The inks a client-rendered subtitle may be drawn in**, lightest first — one per rung of
 /// `plex::session::SubtitleTone::LADDER`, indexed by `SubtitleTone::index` (a host test pins the
 /// two lengths together). The caption is media chrome over the video plane rather than app text,
