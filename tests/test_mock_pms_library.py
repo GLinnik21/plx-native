@@ -14,7 +14,9 @@ import urllib.parse
 import urllib.request
 
 from mock_pms import (
-    EXTRA_MEDIA_RK_BASE, PLEX_DIRECT_HASH, Library, MockPms, plaintext_only_lan_resources, serve,
+    ENHANCEMENT_AAC_51_RK, ENHANCEMENT_AC3_2CH_RK, ENHANCEMENT_DEFAULT_SRT_RK,
+    ENHANCEMENT_DV_P8_RK, ENHANCEMENT_EXTERNAL_SRT_RK, EXTRA_MEDIA_RK_BASE, PLEX_DIRECT_HASH,
+    Library, MockPms, plaintext_only_lan_resources, serve,
 )
 
 
@@ -121,9 +123,12 @@ class LibraryRail(unittest.TestCase):
         self.assertFalse(any(h["hubIdentifier"].startswith("collection.related") for h in hubs))
 
     def test_default_generated_data_is_stable(self):
+        # #266 added canNormalizeLoudness to every generated audio stream and five fixed
+        # enhancement fixture movies (own section id, invisible to sections 1/2) to every
+        # Library — both hashes moved when that landed.
         hashes = {
-            1: "179ea74803d88bfd0b0a4ab0e4bbb38aaf4612f73da1d50ef8d1416f5b2d29aa",
-            7: "6519eaed52dfbbc730648c80d3cf7b55daa36cb9f2aa43841fa669ed5ed6d5a8",
+            1: "c900e01d9e26ead0c63f0e2cfbf5bfad1cf410ba9a047ca701f41806246e2564",
+            7: "e59fb64f00c787449263070404aed8060e07bcf644ebcc3a2184626e416d6616",
         }
         for seed, expected in hashes.items():
             payload = json.dumps(Library(seed=seed).__dict__, sort_keys=True).encode()
@@ -392,6 +397,193 @@ class PlaintextOnlyLan(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+
+class Enhancement266(unittest.TestCase):
+    """#266 (Boost Dialog / Normalize Loudness) mock support: the plex-pass/loudness-capability
+    flags, the /decision enhancement shapes, the runtime /_mock/config toggle, the request log,
+    and --transcode-fixture."""
+
+    def _audio(self, item):
+        return next(s for s in item["Media"][0]["Part"][0]["Stream"] if s["streamType"] == 2)
+
+    def test_no_plex_pass_flag(self):
+        pms = MockPms(Library())
+        self.assertIs(get(pms, "/identity")["myPlexSubscription"], True)
+        self.assertEqual(get(pms, "/identity")["version"], "1.41.0.0000-synthetic")
+
+        server, pms2 = serve(0, seed=1, plex_pass=False)
+        try:
+            identity = json.loads(pms2.handle("GET", "/identity")[2])["MediaContainer"]
+            self.assertIs(identity["myPlexSubscription"], False)
+            # tools/mock-guest.py keys off this exact version string — untouched by the flag.
+            self.assertEqual(identity["version"], "1.41.0.0000-synthetic")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        # also flippable live
+        pms.handle("POST", "/_mock/config", json.dumps({"plex_pass": False}).encode())
+        self.assertIs(get(pms, "/identity")["myPlexSubscription"], False)
+
+    def test_loudness_attr_default_and_flag(self):
+        lib_on = Library(movies=1)
+        self.assertEqual(self._audio(lib_on.items[1001])["canNormalizeLoudness"], "1")
+        self.assertEqual(
+            self._audio(lib_on.items[ENHANCEMENT_AC3_2CH_RK])["canNormalizeLoudness"], "1")
+
+        lib_off = Library(movies=1, loudness_analysis=False)
+        self.assertNotIn("canNormalizeLoudness", self._audio(lib_off.items[1001]))
+        self.assertNotIn("canNormalizeLoudness",
+                         self._audio(lib_off.items[ENHANCEMENT_AC3_2CH_RK]))
+
+    def test_fixture_items_have_the_documented_properties(self):
+        lib = Library()
+        ac3 = lib.items[ENHANCEMENT_AC3_2CH_RK]
+        self.assertEqual((ac3["Media"][0]["audioCodec"], ac3["Media"][0]["audioChannels"]),
+                         ("ac3", 2))
+        aac = lib.items[ENHANCEMENT_AAC_51_RK]
+        self.assertEqual((aac["Media"][0]["audioCodec"], aac["Media"][0]["audioChannels"]),
+                         ("aac", 6))
+        dv = lib.items[ENHANCEMENT_DV_P8_RK]
+        video = next(s for s in dv["Media"][0]["Part"][0]["Stream"] if s["streamType"] == 1)
+        self.assertEqual(video["DOVIProfile"], 8)
+        self.assertIs(video["DOVIPresent"], True)
+        default_srt = lib.items[ENHANCEMENT_DEFAULT_SRT_RK]
+        sub = next(s for s in default_srt["Media"][0]["Part"][0]["Stream"] if s["streamType"] == 3)
+        self.assertIs(sub["default"], True)
+        self.assertIs(sub["selected"], True)
+        external = lib.items[ENHANCEMENT_EXTERNAL_SRT_RK]
+        ext_sub = next(s for s in external["Media"][0]["Part"][0]["Stream"]
+                       if s["streamType"] == 3 and s.get("external"))
+        self.assertIs(ext_sub["selected"], True)
+        self.assertEqual(ext_sub["codec"], "srt")
+        self.assertTrue(ext_sub["key"])
+        # invisible to the ordinary section listings/rails/counts
+        self.assertEqual(get(MockPms(lib), "/library/sections/1/all")["totalSize"], 48)
+
+    def test_decision_enhancement_shapes(self):
+        pms = MockPms(Library())
+        rk = ENHANCEMENT_AC3_2CH_RK
+        base_q = f"path=%2Flibrary%2Fmetadata%2F{rk}&directPlay=0&directStream=1"
+        path = f"/video/:/transcode/universal/decision?{base_q}"
+
+        baseline = get(pms, path)
+        self.assertEqual(baseline["generalDecisionCode"], 1000)
+        self.assertEqual(baseline["Metadata"], [])
+        # a param of 0 is byte-identical to no param at all
+        self.assertEqual(get(pms, path + "&normalizeLoudness=0"), baseline)
+        self.assertEqual(get(pms, path + "&boostDialog=0&normalizeLoudness=0"), baseline)
+
+        on = get(pms, path + "&normalizeLoudness=1")
+        part = on["Metadata"][0]["Media"][0]["Part"][0]
+        self.assertEqual(part["decision"], "transcode")
+        video = next(s for s in part["Stream"] if s["streamType"] == 1)
+        audio = next(s for s in part["Stream"] if s["streamType"] == 2)
+        self.assertEqual(video["decision"], "copy")
+        self.assertEqual(audio["decision"], "transcode")
+        self.assertEqual(audio["codec"], "ac3")
+        self.assertEqual(audio["channels"], 2, "source channel count is preserved")
+
+        # the MDE shape with a live param mimics the same M1 outcome
+        mde_q = f"path=%2Flibrary%2Fmetadata%2F{rk}&directPlay=1&directStreamAudio=1&boostDialog=1"
+        mde = get(pms, f"/video/:/transcode/universal/decision?{mde_q}")
+        mde_part = mde["Metadata"][0]["Media"][0]["Part"][0]
+        self.assertEqual(mde_part["decision"], "transcode")
+        mde_audio = next(s for s in mde_part["Stream"] if s["streamType"] == 2)
+        self.assertEqual((mde_audio["decision"], mde_audio["codec"]), ("transcode", "ac3"))
+
+        pms.refuse_enhancements = True
+        refused = get(pms, path + "&normalizeLoudness=1")
+        self.assertEqual(refused["generalDecisionCode"], 2000)
+        self.assertEqual(refused["Metadata"], [])
+        self.assertTrue(refused["transcodeDecisionText"])
+        pms.refuse_enhancements = False
+
+        pms.ignore_enhancements = True
+        ignored = get(pms, path + "&normalizeLoudness=1")
+        ig_part = ignored["Metadata"][0]["Media"][0]["Part"][0]
+        self.assertEqual(ig_part["decision"], "transcode")
+        ig_audio = next(s for s in ig_part["Stream"] if s["streamType"] == 2)
+        self.assertEqual(ig_audio["decision"], "copy")
+
+    @staticmethod
+    def _requests(pms):
+        status, ctype, body = pms.handle("GET", "/_mock/requests")
+        assert status == 200 and ctype == "application/json", (status, ctype)
+        return json.loads(body)
+
+    def test_mock_config_runtime_toggle(self):
+        pms = MockPms(Library())
+        status, _, body = pms.handle(
+            "POST", "/_mock/config", json.dumps({"refuse_enhancements": True}).encode())
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {
+            "refuse_enhancements": True, "ignore_enhancements": False, "plex_pass": True})
+        self.assertIs(pms.refuse_enhancements, True)
+        self.assertIs(pms.ignore_enhancements, False)
+
+        status, _, body = pms.handle("POST", "/_mock/config", json.dumps({"bogus": True}).encode())
+        self.assertEqual(status, 400)
+
+        # a case can resolve once, then refuse only from the next decision on
+        pms2 = MockPms(Library())
+        rk = ENHANCEMENT_AC3_2CH_RK
+        path = (f"/video/:/transcode/universal/decision?path=%2Flibrary%2Fmetadata%2F{rk}"
+                "&directPlay=0&directStream=1&normalizeLoudness=1")
+        self.assertEqual(get(pms2, path)["generalDecisionCode"], 1000)
+        pms2.handle("POST", "/_mock/config", json.dumps({"refuse_enhancements": True}).encode())
+        self.assertEqual(get(pms2, path)["generalDecisionCode"], 2000)
+
+    def test_request_log(self):
+        pms = MockPms(Library())
+        pms.handle("GET", "/identity?X-Plex-Token=SECRET&foo=bar",
+                  headers={"X-Plex-Session-Identifier": "sess-1"})
+        log = self._requests(pms)
+        entry = next(e for e in log if e["path"] == "/identity")
+        self.assertEqual(entry["method"], "GET")
+        self.assertEqual(entry["query"], {"foo": "bar"})
+        self.assertNotIn("X-Plex-Token", entry["query"])
+        self.assertEqual(entry["session"], "sess-1")
+
+        status, _, _ = pms.handle("DELETE", "/_mock/requests")
+        self.assertEqual(status, 200)
+        after = self._requests(pms)
+        self.assertEqual(len(after), 1)
+        self.assertEqual((after[0]["method"], after[0]["path"]), ("GET", "/_mock/requests"))
+
+    @unittest.skipUnless(
+        HAS_FFMPEG_AND_FFPROBE,
+        "needs ffmpeg+ffprobe; the host CI runner has neither",
+    )
+    def test_transcode_fixture_served(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = pathlib.Path(tmp) / "fixture.mkv"
+            subprocess.check_call([
+                "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                "color=size=64x64:rate=24:duration=1", "-f", "lavfi", "-i",
+                "sine=frequency=330:duration=1", "-c:v", "libx264", "-c:a", "aac", "-t", "1",
+                str(clip)])
+            server, pms = serve(0, movies=0, transcode_fixture=clip)
+            try:
+                base = f"http://127.0.0.1:{server.server_address[1]}"
+                url = base + "/video/:/transcode/universal/start.mkv?path=x"
+                with urllib.request.urlopen(url, timeout=5) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(response.read(), clip.read_bytes())
+                    self.assertEqual(response.headers["Accept-Ranges"], "bytes")
+                request = urllib.request.Request(url, headers={"Range": "bytes=1-3"})
+                with urllib.request.urlopen(request) as response:
+                    self.assertEqual(response.status, 206)
+                    self.assertEqual(response.read(), clip.read_bytes()[1:4])
+                    self.assertTrue(response.headers["Content-Range"].startswith("bytes 1-3/"))
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_missing_transcode_fixture_file_is_rejected(self):
+        with self.assertRaises(ValueError):
+            serve(0, movies=0, transcode_fixture=pathlib.Path("/no/such/fixture.mkv"))
 
 
 if __name__ == "__main__":
