@@ -32,10 +32,12 @@ starts.
 
 ```bash
 tools/tv-lock.sh status                             # who has it, and is anybody on it unlocked
-tools/tv-lock.sh acquire --why "verify HUD change"  # take it (add --wait 540 to queue for it)
-  … device work: tools/tv-session.sh up, ./tests/run.py, make deploy, captures …
+make                                               # build FIRST — never under the lease
+tools/tv-lock.sh acquire --ttl 30 --why "verify HUD change"  # take it (add --wait 540 to queue)
+  … ONE run: make deploy, tools/tv-session.sh up, keys, shots / ./tests/run.py --filter … …
 tools/tv-session.sh down                            # hand the APP back (interactive boot)
-tools/tv-lock.sh release                            # hand the TELEVISION back
+tools/tv-lock.sh release                            # hand the TELEVISION back — now, not later
+  … read the captures and logs, fix, rebuild — all lease-free; then queue again for the next run
 ```
 
 One-shot jobs get the whole thing in a single command, released even on Ctrl-C:
@@ -44,24 +46,43 @@ One-shot jobs get the whole thing in a single command, released even on Ctrl-C:
 tools/tv-lock.sh with --why "fps suite" -- ./tests/run.py --fps
 ```
 
-**Take a lease for the SESSION, not per command.** Every TV-facing tool already takes a short
-implicit lease when nobody holds the set, so a lone `make deploy` cannot collide — but that lease
-ends with the command, and *the gap between two of your own commands is exactly where another lane
-lands*. If you are going to touch the set more than once, acquire first.
+**A lease covers ONE test run — minutes, never hours.** Other lanes queue behind you, and a
+`--wait` poll gives up after ~9 minutes, so a lease held across a whole working session starves
+the queue: every other lane times out, falls back to guesswork, or reaches for `break`. One lease
+is one bounded piece of device work — deploy, run the case or the capture, collect the log — and
+it is released the moment that run finishes, pass or fail. Then:
+
+- **Release before anything host-side.** Building, reading captures or logs, editing code,
+  thinking about the failure, writing Markdown — none of that needs the set, so none of it
+  happens under a lease. `make deploy` lists `tv-lock-require` as its LAST prerequisite for
+  exactly this reason; do not undo that by acquiring before `make`.
+- **Next run, next lease.** Iterating on a fix is acquire → run → release, repeated. Re-queueing
+  costs seconds when the set is idle and is exactly the turn-taking the queue needs when it is
+  not. Prefer `tools/tv-lock.sh with -- CMD` so the release cannot be forgotten.
+- **Within one run, hold it across your own commands.** Every TV-facing tool takes a short
+  implicit lease when nobody holds the set, but that lease ends with the command, and *the gap
+  between two of your own commands is exactly where another lane lands*. So a run that is
+  `tv-session.sh up` → `key` → `shot` → `down` takes one explicit lease around the whole
+  sequence — and only that sequence.
+- **Never `renew` just to keep the set.** Renewal exists so one long run (a full `--fps` suite)
+  does not age out under itself, not to park on the TV between runs. If a run is going to take
+  more than ~30 minutes, split it or say so in `--why`.
 
 | command | what it does |
 |---|---|
 | `status` | holder, how long held, how long left, why — plus the unlocked-user pre-flight |
 | `acquire [--why T] [--wait S] [--ttl MIN] [--as LABEL]` | take it; `--wait` polls instead of failing |
-| `renew [--ttl MIN]` | extend a lease you hold (long sessions; `with` does it for you) |
+| `renew [--ttl MIN]` | extend a lease you hold mid-run (a long suite; `with` does it for you) — never between runs |
 | `release` | hand it back |
 | `require [--quiet] [--advisory]` | assert + renew; what the tools call, rarely typed by hand |
 | `with [opts] -- CMD…` | acquire → run → release, through Ctrl-C, SIGTERM and a crash |
 | `break [--yes]` | steal a lease; names the holder first and refuses a LIVE one without `--yes` |
 | `selftest` | exercises the entire protocol against a temp dir — **no television involved** |
 
-Default lease: **45 minutes**, renewed automatically whenever a tool uses the set, so a real
-session never ages out under itself. The implicit one is **10 minutes**.
+Default lease: **45 minutes**, renewed automatically whenever a tool uses the set, so a long run
+never ages out under itself. The implicit one is **10 minutes**. The TTL is a crash backstop, not a
+budget: a lease that is idle because you are reading, building or writing should already be
+released. Pass `--ttl 30` (or less) for an ordinary run.
 
 ## It is enforced, not advisory
 

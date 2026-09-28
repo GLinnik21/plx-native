@@ -13,12 +13,13 @@ description: >
 # Working on the TV
 
 > **FIRST: take the television's lock.** One set, no OS-level mutex — two jobs on it produce
-> plausible WRONG data rather than a clean failure. `tools/tv-lock.sh acquire --why "…"` before the
-> session and `release` after (and `tools/tv-lock.sh status` to see who has it). Every driving
-> subcommand below refuses without it; `log` and `status` are read-only and only name the holder.
-> The **`tv-lock` skill** is the workflow, and the reason to take one lease for the whole session
-> rather than letting each command take its own: the gap between two of your own commands is where
-> another lane lands.
+> plausible WRONG data rather than a clean failure. `tools/tv-lock.sh acquire --ttl 30 --why "…"` before
+> one run (`up` … `down`) and `release` right after it (and `tools/tv-lock.sh status` to see who
+> has it). Every driving subcommand below refuses without it; `log` and `status` are read-only and
+> only name the holder. The **`tv-lock` skill** is the workflow: one lease spans the commands of
+> ONE run, because the gap between two of your own commands is where another lane lands — but
+> never a whole working session. Build, read captures and fix with the lease released, then queue
+> again for the next run; other lanes are waiting on the same set.
 
 > **Before booking the TV: can the simulator answer this?** `make sim` runs the same app core on
 > macOS — real UI, real PMS data, boot triggers, the same FIFO tokens, self-screenshotting, and
