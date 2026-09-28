@@ -68,14 +68,17 @@ pub(crate) struct NameStyle {
     pub lead: f32,
     /// Upper-case the name (Unicode-aware; a caseless script passes through).
     pub upper: bool,
+    /// Clear air at the top of the name's band, in lines of its own pitch (the fan keeps half a
+    /// line between its front member and the block).
+    pub gap: f32,
 }
 
 /// G1's `.art b`: `font: 700 24px/1.08`, `left:18px; right:18px`, upper-case.
 pub(crate) const FAN_NAME: NameStyle =
-    NameStyle { size: 24.0, step: 20.0, floor: 18.0, side: 18.0, lead: 1.08, upper: true };
+    NameStyle { size: 24.0, step: 20.0, floor: 18.0, side: 18.0, lead: 1.08, upper: true, gap: 0.5 };
 /// G1's `.ety div`: `font: 700 24px/1.12`, the neutral tile's 10% column inset, as written.
 pub(crate) const NEUTRAL_NAME: NameStyle =
-    NameStyle { size: 24.0, step: 20.0, floor: 18.0, side: 25.0, lead: 1.12, upper: false };
+    NameStyle { size: 24.0, step: 20.0, floor: 18.0, side: 25.0, lead: 1.12, upper: false, gap: 0.0 };
 /// `bottom:22px` — the least air under the name block, in mock px.
 const NAME_BOTTOM: f32 = 22.0;
 
@@ -181,7 +184,7 @@ fn set_line(text: String, sz: c_int, floor: c_int, column: f32, m: &dyn Measure)
 ///    tile, as the mock sets it — scaled down only on a tile narrower than [`TYPE_FULL_W`];
 /// 2. a name that fits on one line stays one centred line at the NORMAL size — never grown;
 /// 3. a longer one is balance-wrapped (`text-wrap: balance`) into as many lines as the band holds
-///    at that size — there is no fixed line cap;
+///    at that size, less the style's clear `gap` at its top — there is no fixed line cap;
 /// 4. only if that overflows the band: the ONE smaller size, again as many lines as fit;
 /// 5. only if that still overflows: the last line that fits ends in an ellipsis;
 /// 6. a single word wider than the column shrinks toward the style's floor, then elides;
@@ -196,7 +199,7 @@ pub(crate) fn fit_name(name: &str, style: &NameStyle, rest_w: f32, band: f32,
     let text = if style.upper { name.to_uppercase() } else { name.to_owned() };
     let words: Vec<&str> = text.split_whitespace().collect();
     let pitch = |sz: c_int| sz as f32 * style.lead;
-    let room = |sz: c_int| ((band / pitch(sz)).floor() as usize).max(1);
+    let room = |sz: c_int| (((band - style.gap * pitch(sz)) / pitch(sz)).floor() as usize).max(1);
     if words.is_empty() {
         return FittedName { lines: Vec::new(), sz: normal, pitch: pitch(normal), column };
     }
@@ -320,10 +323,12 @@ pub(crate) fn is_fan(key: &str) -> bool {
 }
 
 /// Where a fitted fan name's cap top sits on a `rest` tile, from the tile's top: its INK centred in
-/// [`fan_band`] — one line in the middle of the band, a full block filling it. The fan never moves.
+/// [`fan_band`] below the style's clear gap — one line in the middle of the band, a full block
+/// filling it, never closer than half a line to the fan. The fan never moves.
 pub(crate) fn fan_name_top(rest: Rect, fit: &FittedName, m: &dyn Measure) -> f32 {
     let (top, band) = fan_band(rest);
-    top + (band - fit.ink(m)) * 0.5
+    let gap = FAN_NAME.gap * fit.pitch;
+    top + gap + ((band - gap - fit.ink(m)) * 0.5).max(0.0)
 }
 
 /// Set a collection's NAME over its baked fan, as G1 does: [`fit_name`]'s block centred in the band
@@ -366,7 +371,8 @@ mod tests {
     /// The ink's centre, relative to the band's centre.
     fn off_centre(f: &FittedName, w: f32) -> f32 {
         let (top, band) = fan_band(tile(w));
-        fan_name_top(tile(w), f, &ShippedMeasure) + f.ink(&ShippedMeasure) * 0.5 - (top + band * 0.5)
+        let gap = FAN_NAME.gap * f.pitch;
+        fan_name_top(tile(w), f, &ShippedMeasure) + f.ink(&ShippedMeasure) * 0.5 - (top + gap + (band - gap) * 0.5)
     }
 
     #[test]
@@ -460,27 +466,42 @@ mod tests {
         assert_eq!(f.sz, 24);
     }
 
-    /// A long name uses every line the band holds — there is no line cap — and renders complete
-    /// with no ellipsis while it fits: at the normal size if it can, else at the one step down. A
-    /// block that uses all the band's lines fills it.
+    /// A long name uses every line the band holds below its clear gap — there is no line cap — and
+    /// renders complete with no ellipsis while it fits: at the normal size if it can, else at the
+    /// one step down. A block that uses all the band's lines fills it.
     #[test]
     fn a_long_name_renders_complete_while_it_fits_the_band() {
-        let long = "The Complete Blender Foundation Open Movie Projects Archive Collection";
+        let (_, band) = fan_band(tile(250.0));
+        let room = |f: &FittedName| band - FAN_NAME.gap * f.pitch;
+        let long = "Blender Foundation Open Movie Projects Archive Collection";
         let f = fit(long, 250.0);
         assert!(!elided(&f) && fits_column(&f), "{:?} at {}", texts(&f), f.sz);
         assert!(f.lines.len() > 3, "no three-line cap: {:?}", texts(&f));
-        let (_, band) = fan_band(tile(250.0));
         let at_normal = greedy(&long.to_uppercase().split_whitespace().collect::<Vec<_>>(), f.column, 24, &ShippedMeasure);
-        assert_eq!(f.sz, if at_normal.len() as f32 * 24.0 * 1.08 <= band { 24 } else { 20 },
+        assert_eq!(f.sz, if at_normal.len() as f32 * 24.0 * 1.08 <= band - 0.5 * 24.0 * 1.08 { 24 } else { 20 },
             "the normal size unless it overflows the band");
         assert_eq!(texts(&f).join(" "), long.to_uppercase());
-        assert!(f.height() <= band + 0.01 && off_centre(&f, 250.0).abs() < 0.01);
-        let full = (band / f.pitch).floor() as usize;
-        if f.lines.len() == full {
-            assert!(band - f.height() < f.pitch, "a full block fills the band");
+        assert!(f.height() <= room(&f) + 0.01 && off_centre(&f, 250.0).abs() < 0.01);
+        if f.lines.len() == (room(&f) / f.pitch).floor() as usize {
+            assert!(room(&f) - f.height() < f.pitch, "a full block fills the band");
         }
         let f = fit("Starfall Saga Anniversary Collection", 200.0);
-        assert!(!elided(&f) && f.sz == 24, "{:?}", texts(&f));
+        assert!(!elided(&f), "{:?}", texts(&f));
+    }
+
+    /// The block never crowds the fan: its cap top sits at least half a line below the front
+    /// member's bottom edge and the reach of its drop shadow, however long the name.
+    #[test]
+    fn a_long_names_block_keeps_clear_of_the_front_member() {
+        let long = "The Complete Blender Foundation Open Movie Projects Archive Collection";
+        for w in [200.0, 250.0] {
+            let f = fit(long, w);
+            let clear = (FAN_FRONT_TOP + FAN_MEMBER_FRAC) * w * 1.5 + FAN_SHADOW_REACH * w / MOCK_W
+                + 0.5 * f.pitch;
+            let top = fan_name_top(tile(w), &f, &ShippedMeasure);
+            assert!(top >= clear - 0.01, "{w}: block top {top} above {clear}: {:?} at {}", texts(&f), f.sz);
+            assert!(fits_column(&f));
+        }
     }
 
     /// Past the band at the normal size the name steps down ONCE, uses as many lines as fit there,
@@ -492,7 +513,8 @@ mod tests {
             let f = fit(long, w);
             let (_, band) = fan_band(tile(w));
             assert_eq!(f.sz, 20, "{w}");
-            assert_eq!(f.lines.len(), (band / f.pitch).floor() as usize, "{w}: every line the band holds");
+            assert_eq!(f.lines.len(), ((band - FAN_NAME.gap * f.pitch) / f.pitch).floor() as usize,
+                "{w}: every line the band holds");
             assert!(f.lines.last().unwrap().text.ends_with('\u{2026}'), "{w}: {:?}", texts(&f));
             assert!(fits_column(&f));
         }
