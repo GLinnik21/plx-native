@@ -142,3 +142,11 @@ state to the screen census. The prior anchors were observed being refused, then 
 freshly recorded against shape `13142456728797643905` and passed Targets and Resolve with zero
 difference counters. Account/preference I/O remains outside the controlled replay domain: typed
 preference effects are rejected by the bridge before capture, worker admission, or persistence.
+
+Localization adds the captured language preference to the controlled initial input
+(`ControlledHomeInitV6` / `SessionInitV5`); controlled System resolves to en-US with a 24-hour
+clock whatever the host's `LANG`. The #217 anchors were observed being refused on that shape, then
+all three were freshly recorded against shape `14389175148146224086` and passed Targets and
+Resolve with zero difference counters. The recorded text differs where the change meant it to:
+Settings gains the Language destination, the Filmography count is measured as it wraps, and
+Detail's release date is the locale's short numeric date (`3/14/2011`, no longer `14 Mar 2011`).
