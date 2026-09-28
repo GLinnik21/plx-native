@@ -1047,6 +1047,14 @@ pub(crate) struct CollectionShelf {
     pub(crate) members: Vec<Related>,
 }
 
+impl CollectionShelf {
+    /// Where the shelf's linked heading leads: the collection by section and tag, for the
+    /// collection store to resolve.
+    pub(crate) fn link(&self, sid: crate::plex::ServerId) -> crate::plex::collections::CollectionRef {
+        crate::plex::collections::CollectionRef::by_tag(sid, self.section, self.tag, &self.title)
+    }
+}
+
 /// What `/related` becomes on a Detail page: the item's own collection (when it shares one with
 /// another title) and the flattened Related row, which never repeats a collection member.
 #[derive(Default)]

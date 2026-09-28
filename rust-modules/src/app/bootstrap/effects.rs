@@ -12,7 +12,7 @@ fn content(arg: &crate::screens::registry::ContentArg) -> Value {
         ContentArg::Detail { sid, rk } => json!({"detail":[sid.raw(),rk]}),
         ContentArg::Person { sid, key, guid, name, thumb } => json!({"person":[sid.raw(),key,guid,name,thumb]}),
         ContentArg::Filmography { sid, key } => json!({"filmography":[sid.raw(),key]}),
-        ContentArg::Collection { sid, rk, sec, tag, name } => json!({"collection":[sid.raw(),rk,sec,tag,name]}),
+        ContentArg::Collection(id) => json!({"collection":[id.sid.raw(),id.rk,id.sec,id.tag,id.name]}),
     }
 }
 fn argument(arg: &crate::screens::registry::AppArg) -> Result<Value, &'static str> {
@@ -55,6 +55,9 @@ fn home_item(identity: &crate::screens::registry::HomeItemIdentity) -> Value {
     }
 }
 
+fn card_keys(cards: &crate::screens::registry::CardKeys) -> Value {
+    cards.keys.iter().map(|k| json!([k.sid.raw(),k.rk,k.elem])).collect()
+}
 fn page_memory(memory: &crate::screens::registry::PageMemory) -> Result<Value, &'static str> {
     use crate::screens::registry::PageMemory;
     Ok(match memory {
@@ -74,12 +77,10 @@ fn page_memory(memory: &crate::screens::registry::PageMemory) -> Result<Value, &
                     CollectionMember { sid, rk } => json!({"collection_member":[sid.raw(),rk]}),
                 }])
             }).collect::<Vec<_>>()}}),
-        PageMemory::Person(m) => json!({"person":{"next_card_elem":m.next_card_elem,
-            "header_marked":m.header_marked,"card_keys":m.card_keys.iter()
-                .map(|k| json!([k.sid.raw(),k.rk,k.elem])).collect::<Vec<_>>()}}),
-        PageMemory::Collection(m) => json!({"collection":{"next_elem":m.next_elem,
-            "header_marked":m.header_marked,"card_keys":m.card_keys.iter()
-                .map(|k| json!([k.sid.raw(),k.rk,k.elem])).collect::<Vec<_>>()}}),
+        PageMemory::Person(m) => json!({"person":{"next_card_elem":m.cards.next,
+            "header_marked":m.header_marked,"card_keys":card_keys(&m.cards)}}),
+        PageMemory::Collection(m) => json!({"collection":{"next_elem":m.cards.next,
+            "header_marked":m.header_marked,"card_keys":card_keys(&m.cards)}}),
         PageMemory::Filmography(m) => json!({"filmography":{"next_elem":m.next_elem,
             "department":m.department,"preview":m.preview,"keys":m.keys.iter()
                 .map(|k| json!([k.department,k.catalog_id,k.elem])).collect::<Vec<_>>()}}),
@@ -238,7 +239,7 @@ fn store(command: &crate::stores::StoreCmd) -> Result<Value, &'static str> {
         StoreCmd::Collection(cmd) => {
             use crate::stores::collection::CollectionCmd;
             json!({"collection":match cmd {
-                CollectionCmd::Open { sid, target } => json!({"open":[sid.raw(),target.rk,target.sec,target.tag,target.name,target.want]}),
+                CollectionCmd::Open { target } => json!({"open":[target.id.sid.raw(),target.id.rk,target.id.sec,target.id.tag,target.id.name,target.want]}),
                 CollectionCmd::Close => json!("close"),
                 CollectionCmd::Reset => json!("reset"),
                 CollectionCmd::SetWatchedLocal { .. } => return Err("unsupported controlled collection command"),

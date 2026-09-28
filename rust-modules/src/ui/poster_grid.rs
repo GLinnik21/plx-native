@@ -6,7 +6,8 @@
 //! rows below it move down by what that row grows. The free functions are the six-column grid
 //! of a page without an alphabet rail (the Collection page) — row pitch, band-aware cell
 //! placement, culling window and reveal arithmetic, so draw, focus placement, scrolling and
-//! paging all describe the same cells.
+//! paging all describe the same cells. [`neighbour`], [`settled`] and [`growth_before`] are
+//! column-count agnostic, and the Library's rail-aware layout uses them too.
 
 use crate::ui::card_row::{self, RowStyle, LABEL_BAND_COLLAPSED, UNDER_LABEL_H};
 use crate::ui::consts::{CARD_H, CARD_W, MARGIN_X, MARGIN_Y, SCR_H, SCR_W, UNDER_LABEL_AIR};
@@ -93,7 +94,8 @@ pub(crate) fn settled(row: Option<usize>) -> [GridBand; 1] {
 
 pub(crate) fn rows(len: usize) -> usize { len.div_ceil(COLS) }
 
-fn growth_before(row: usize, bands: &[GridBand]) -> f32 {
+/// How far every open band above row `row` pushes it down.
+pub(crate) fn growth_before(row: usize, bands: &[GridBand]) -> f32 {
     bands.iter().filter(|band| band.row < row)
         .map(|band| card_row::under_band(band.expansion) - LABEL_BAND_COLLAPSED).sum()
 }
@@ -123,6 +125,20 @@ pub(crate) fn reveal_row(current: f32, row: usize, len: usize, top: f32) -> f32 
         row_top + CARD_H + UNDER_LABEL_H - (SCR_H - MARGIN_Y),
         row_top - MARGIN_Y,
         max_scroll(len, top, &bands))
+}
+
+/// The D-pad neighbour of card `index` in a `len`-card grid of `cols` columns. Down from above a
+/// short last row lands on its last card rather than stopping where no card sits directly below.
+pub(crate) fn neighbour(index: usize, len: usize, cols: usize, dir: crate::ui::screen::Dir) -> Option<usize> {
+    use crate::ui::screen::Dir;
+    let (row, col) = (index / cols, index % cols);
+    match dir {
+        Dir::Left => col.checked_sub(1).map(|c| row * cols + c),
+        Dir::Right => (col + 1 < cols).then_some(index + 1),
+        Dir::Up => row.checked_sub(1).map(|r| r * cols + col),
+        Dir::Down => ((row + 1) * cols < len).then(|| ((row + 1) * cols + col).min(len - 1)),
+    }
+    .filter(|&i| i < len)
 }
 
 /// The members that can touch the screen at `scroll` — one row wider on each side than the

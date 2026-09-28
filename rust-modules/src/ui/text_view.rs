@@ -66,8 +66,8 @@ fn wrap_memo(key: u64, compute: impl FnOnce() -> Wrapped) -> Rc<Wrapped> {
     v
 }
 
-/// The one mark drawn to open a truncated block of text — the About card's footer and the person
-/// page's bio panel are its two callers today. **Clickable text marks are always ALL CAPS** (owner
+/// The one mark drawn to open a truncated block of text — the About card's footer, the person
+/// page's bio and the collection page's summary (both through [`TextView::draw_more`]). **Clickable text marks are always ALL CAPS** (owner
 /// rule, 2026-09-19): it is a general rule for clickable text blocks, not a per-screen style
 /// choice, so every screen reads this accessor rather than spelling its own literal. An earlier
 /// commit (`fc63c0c1`) drew the person page's mark as sentence-case `"More"`; that was wrong and is
@@ -477,6 +477,24 @@ impl<'a> TextView<'a> {
     /// view that drew the text.
     pub fn last_line_cap_y(&self, top: f32, drawn_h: f32) -> f32 {
         top + drawn_h - self.line_h()
+    }
+
+    /// Reserve [`fade_last`](Self::fade_last) room for a right-pinned [`more_mark`] at this
+    /// block's own size, plus `gap` of air before it — the clamped-prose idiom of the Person bio
+    /// and the Collection summary. Needs [`with_measure`](Self::with_measure) first; without a
+    /// measure only the gap is reserved.
+    pub(crate) fn fade_for_more(self, gap: f32) -> Self {
+        let mark = self.measure.map_or(0.0, |m| m.width(more_mark(), self.sz, true));
+        self.fade_last(mark + gap)
+    }
+
+    /// Draw the [`more_mark`] pinned right on the last line of this block, drawn at `x`/`top` in a
+    /// `w`-wide column to `drawn_h`: `TEXT_SECONDARY` while `marked` (the block holds a pressed
+    /// focus), `TEXT_TERTIARY` otherwise. The pair to [`fade_for_more`](Self::fade_for_more).
+    pub(crate) fn draw_more(&self, p: Painter, x: f32, top: f32, w: f32, drawn_h: f32, marked: bool) {
+        let ink = if marked { crate::ui::theme::TEXT_SECONDARY } else { crate::ui::theme::TEXT_TERTIARY };
+        Label::new(more_mark().as_ptr(), self.sz, ink).bold().h(HAlign::Right).v(VAlign::CapTop)
+            .draw(p, Rect::new(x, self.last_line_cap_y(top, drawn_h), w, 0.0));
     }
 
     /// The drawn width of the block's LAST wrapped line at `width` — what a caller pinning an

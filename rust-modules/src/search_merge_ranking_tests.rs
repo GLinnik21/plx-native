@@ -486,15 +486,16 @@ fn collection_rows_become_kind_four_hits_and_other_rows_stay_ordinary_cards() {
     assert_eq!((hit.tag, hit.item.child_count), (7, 12));
     assert_eq!(hit.item.thumb, "/library/collections/50007/composite/1700000000");
     assert_eq!(p[4][0].title(), "Aardman Shorts");
-    assert_eq!(hit.route(), crate::screens::registry::ContentArg::Collection {
-        sid, rk: "50007".into(), sec: 1, tag: 7, name: "Aardman Shorts".into() });
+    assert_eq!(hit.route(), Some(crate::screens::registry::ContentArg::Collection(crate::plex::collections::CollectionRef {
+        sid, rk: "50007".into(), sec: 1, tag: 7, name: "Aardman Shorts".into() })));
     let Item::Media(film) = &p[0][0] else { panic!("a film stays an ordinary card") };
     assert_eq!((film.kind, film.rk.as_str()), (0, "1971"));
 }
 
-/// A server that IGNORES the flag still answers tag-shaped `Directory[]` rows — no ratingKey —
-/// and those keep their section so the page can resolve the tag id there. With no section or no
-/// tag id there is nothing to resolve, so there is no route.
+/// A server that IGNORES the flag still answers tag-shaped `Directory[]` rows — no ratingKey.
+/// Once folded they land as the same collection hit a full row makes: a thumb-less kind-4 row
+/// with the tag's name, section and count, routed by section + tag id. With no section or no tag
+/// id there is nothing to resolve, so there is no route.
 #[test]
 fn a_tag_shaped_collection_hit_routes_by_section_and_tag_id() {
     let sid = ServerId::from_raw(3);
@@ -509,9 +510,13 @@ fn a_tag_shaped_collection_hit_routes_by_section_and_tag_id() {
     }];
     let mc = MediaContainer { hub: vec![collection], ..Default::default() };
     let p = project(&mc, sid, NO_FAVS);
-    let Item::Tag(tag) = &p[4][0] else { panic!("a Directory row is still a tag hit") };
-    assert_eq!(tag.collection_route(), Some(crate::screens::registry::ContentArg::Collection {
-        sid, rk: String::new(), sec: 1, tag: 7, name: "Aardman Shorts".into() }));
-    assert!(TagHit { sec: 0, ..tag.clone() }.collection_route().is_none(), "no section");
-    assert!(TagHit { id: String::new(), ..tag.clone() }.collection_route().is_none(), "no tag id");
+    let Item::Collection(hit) = &p[4][0] else { panic!("a folded collection tag is a collection hit") };
+    assert_eq!(hit.item.kind, crate::pms::KIND_COLLECTION);
+    assert_eq!((hit.item.rk.as_str(), hit.item.thumb.as_str(), hit.item.child_count), ("", "", 12));
+    assert_eq!(p[4][0].title(), "Aardman Shorts");
+    assert_eq!(hit.route(), Some(crate::screens::registry::ContentArg::Collection(
+        crate::plex::collections::CollectionRef::by_tag(sid, 1, 7, "Aardman Shorts"))));
+    let no_section = crate::search::CollectionHit { item: PmsMovie { sec: 0, ..hit.item.clone() }, ..hit.clone() };
+    assert!(no_section.route().is_none(), "no section");
+    assert!(crate::search::CollectionHit { tag: 0, ..hit.clone() }.route().is_none(), "no tag id");
 }

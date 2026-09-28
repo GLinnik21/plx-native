@@ -5,12 +5,12 @@
 use std::ffi::CString;
 
 use crate::collection::{Collection, CollectionStatus, CollectionTarget, PAGE_SIZE};
-use crate::plex::ServerId;
+use crate::plex::collections::CollectionRef;
 use crate::pms::PmsMovie;
 use crate::stores::collection::CollectionCmd;
 use crate::ui::card_row::{self, TileLabel};
 use crate::ui::consts::*;
-use crate::ui::label::{HAlign, Label, VAlign};
+use crate::ui::label::{Label, VAlign};
 use crate::ui::machine::{Canon, Cx, Edge, Effects, EntryId, GroupId, Handled, InputEvent,
     InputKind, Key, Leave, LogicalState, Machine, Tick};
 use crate::ui::present::{PresentEvent, Provenance};
@@ -19,10 +19,10 @@ use crate::ui::screen::{Activate, At, AxisMask, By, Dir, DrawFrame, EdgeRule, El
     RenderStrategy, Screen, ScreenEvent, Seat, Step, Stop};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
-use crate::ui::widgets::{self, AmbientWash, Art, PageGround, StatusKind, StatusOverlay};
+use crate::ui::widgets::{self, Art, PageGround, StatusKind, StatusOverlay};
 use crate::ui::{Env, Painter, Rect, Spring};
 
-use super::registry::{AppFx, CardIdentity, CollectionLike, CollectionMemory, ContentArg,
+use super::registry::{AppFx, CardKeys, CardPageMemory, CollectionLike, ContentArg,
     ContentLike, ContentPanel, ContentReq, PageMemory};
 
 const HEADER_ELEM: u32 = 0;
@@ -47,7 +47,6 @@ const MORE_GAP: f32 = theme::space::LG;
 const GRID_TOP: f32 = HEADER_TOP + ART_H + theme::space::XL;
 const STATUS_TOP: f32 = GRID_TOP;
 const LOAD_AHEAD: usize = crate::ui::poster_grid::COLS * 2;
-const AMB_HEADER_W: [f32; 4] = [0.10, 0.06, 0.02, 0.03];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Located { Header, Retry, Card(usize) }
@@ -57,7 +56,25 @@ fn summary_view<'a>(summary: &'a str, measure: &'a dyn crate::ui::machine::Measu
         .with_measure(measure)
         .leading(SUMMARY_LEAD)
         .max_lines(SUMMARY_LINES)
-        .fade_last(measure.width(crate::ui::text_view::more_mark(), theme::size::LABEL, true) + MORE_GAP)
+        .fade_for_more(MORE_GAP)
+}
+
+/// The header's member count, and whether the line is the kind alone: a count of zero is only an
+/// answer once the listing says so; before the header lands (and on a failed load) the line is
+/// the kind alone rather than a false "0 items".
+fn meta_key(collection: &Collection) -> (i64, bool) {
+    let count = if collection.child_count > 0 { collection.child_count } else { collection.total };
+    let count = count as i64;
+    (count, count == 0 && collection.status != CollectionStatus::Empty)
+}
+
+/// The header's meta line — "Collection · N items", or the kind alone ([`meta_key`]).
+fn meta_line(collection: &Collection) -> CString {
+    match meta_key(collection) {
+        (_, true) => crate::i18n::msg::browse_collection_kind_c().to_owned(),
+        (count, false) => CString::new(crate::i18n::msg::browse_collection_meta(&crate::ui::fmt::item_count(count)))
+            .unwrap_or_default(),
+    }
 }
 
 pub(crate) fn member_label(item: &PmsMovie) -> String {
@@ -79,24 +96,25 @@ pub(crate) fn member_caption(item: &PmsMovie) -> TileLabel {
         };
         return TileLabel::titled(&item.title, &caption);
     }
-    if item.kind == 2 && !item.show_title.is_empty() {
-        return TileLabel::titled(&item.title, &item.show_title);
-    }
-    let mut label = TileLabel::title(&item.title);
-    label.caption = card_row::focused_caption(item, false);
-    label
+    card_row::poster_label(item)
 }
 
 pub(crate) struct CollectionScreen {
     entry: EntryId,
-    sid: ServerId,
-    rk: String,
-    sec: i64,
-    tag: i64,
-    name: String,
+    /// The page's argument; `id.rk` adopts the store's resolution of a tag route.
+    id: CollectionRef,
     header_marked: bool,
-    card_keys: Vec<CardIdentity>,
-    next_elem: u32,
+    cards: CardKeys,
+    /// `elems[i]` is the engine element of the synced collection's `items[i]`, rebuilt by
+    /// [`Self::sync`] so a frame finds a card's element or index without scanning identities.
+    /// Derived, not logical state.
+    elems: Vec<u32>,
+    /// `labels[i]` is `items[i]`'s persistent poster label ([`member_label`]), built beside
+    /// [`Self::elems`] so a frame formats none. Derived, not logical state.
+    labels: Vec<String>,
+    /// The header's meta line and the `(count, kind-only)` it was built for ([`meta_line`]).
+    /// Derived, not logical state.
+    meta: ((i64, bool), CString),
     return_pending: bool,
     teardown_closed: bool,
     scroll: Spring,
@@ -116,15 +134,15 @@ pub(crate) struct CollectionScreen {
 
 impl LogicalState for CollectionScreen {
     fn write(&self, c: &mut Canon) {
-        c.u32(self.entry.0).u32(self.sid.raw() as u32).str(&self.rk)
-            .u64(self.sec as u64).u64(self.tag as u64).str(&self.name)
+        c.u32(self.entry.0).u32(self.id.sid.raw() as u32).str(&self.id.rk)
+            .u64(self.id.sec as u64).u64(self.id.tag as u64).str(&self.id.name)
             .bool(self.header_marked).bool(self.return_pending)
-            .u32(self.next_elem).seq(self.card_keys.len());
-        for key in &self.card_keys { c.u32(key.sid.raw() as u32).str(&key.rk).u32(key.elem); }
+            .u32(self.cards.next).seq(self.cards.len());
+        for key in &self.cards.keys { c.u32(key.sid.raw() as u32).str(&key.rk).u32(key.elem); }
     }
     fn probe(&self, out: &mut String) {
         out.push_str(&format!("collection sid={} rk={} sec={} tag={} cards={} next={} return_pending={}",
-            self.sid.raw(), self.rk, self.sec, self.tag, self.card_keys.len(), self.next_elem,
+            self.id.sid.raw(), self.id.rk, self.id.sec, self.id.tag, self.cards.len(), self.cards.next,
             self.return_pending));
     }
 }
@@ -132,45 +150,36 @@ impl LogicalState for CollectionScreen {
 impl CollectionScreen {
     pub(crate) const SHAPE: &'static str = "CollectionScreen{entry:u32,sid:u32,rk:String,sec:i64,tag:i64,name:String,header_marked:bool,return_pending:bool,next_elem:u32,card_keys:[{sid:u32,rk:String,elem:u32}]}";
 
-    pub(crate) fn new(entry: EntryId, sid: ServerId, rk: String, sec: i64, tag: i64, name: String) -> Self {
-        Self { entry, sid, rk, sec, tag, name, header_marked: false, card_keys: Vec::new(),
-            next_elem: FIRST_CARD_ELEM, return_pending: false, teardown_closed: false,
+    pub(crate) fn new(entry: EntryId, id: CollectionRef) -> Self {
+        Self { entry, id, header_marked: false, cards: CardKeys::new(FIRST_CARD_ELEM),
+            elems: Vec::new(), labels: Vec::new(), meta: ((0, true), CString::default()), return_pending: false, teardown_closed: false,
             scroll: Spring::default(), scroll_target: 0.0, ground: PageGround::new(),
             ground_seeded: false, summary_more: false, links_c: Vec::new(), synced: None,
             bands: crate::ui::poster_grid::GridBands::new() }
     }
 
     fn target(&self, want: usize) -> CollectionTarget {
-        let mut target = CollectionTarget::initial(
-            self.rk.clone(), self.sec, self.tag, self.name.clone());
-        target.want = want;
-        target
+        CollectionTarget { id: self.id.clone(), want }
     }
 
     fn request_store<H: ContentLike + CollectionLike>(&mut self, want: usize, fx: &mut Effects<'_, H>) {
         fx.push(crate::ui::machine::Fx::App(AppFx::Store(
             crate::stores::StoreId::Collection,
-            crate::stores::StoreCmd::Collection(CollectionCmd::Open { sid: self.sid, target: self.target(want) }),
+            crate::stores::StoreCmd::Collection(CollectionCmd::Open { target: self.target(want) }),
         )));
     }
 
     fn collection<'a, H: CollectionLike>(&self, cx: &Cx<'a, H>) -> Option<&'a Collection> {
-        H::collection(cx).current().filter(|c| {
-            c.sid == self.sid && if !self.rk.is_empty() { c.rk == self.rk }
-                else { c.sec == self.sec && self.tag != 0 && c.tag == self.tag }
-        })
+        H::collection(cx).current().filter(|c| c.id.same_collection(&self.id))
     }
 
     fn sync(&mut self, collection: &Collection, measure: &dyn crate::ui::machine::Measure) {
         self.synced = Some((collection.items.len(), collection.summary.len()));
-        if self.rk.is_empty() && !collection.rk.is_empty() { self.rk = collection.rk.clone(); }
-        for item in &collection.items {
-            if self.card_keys.iter().any(|key| crate::plex::same_item(
-                (key.sid, key.rk.as_str()), (item.sid, item.rk.as_str()))) { continue; }
-            let elem = self.next_elem;
-            self.next_elem = self.next_elem.checked_add(1).expect("collection element-key space exhausted");
-            self.card_keys.push(CardIdentity { sid: item.sid, rk: item.rk.clone(), elem });
-        }
+        if self.id.rk.is_empty() && !collection.id.rk.is_empty() { self.id.rk = collection.id.rk.clone(); }
+        self.elems = self.cards.intern_all(
+            collection.items.iter().map(|item| (item.sid, item.rk.as_str())), "collection");
+        self.labels = collection.items.iter().map(member_label).collect();
+        self.meta = (meta_key(collection), meta_line(collection));
         self.summary_more = !collection.summary.is_empty() && summary_view(&collection.summary, measure).truncates(TEXT_W);
         self.links_c.clear();
         if self.summary_more && !collection.items.is_empty() {
@@ -179,33 +188,23 @@ impl CollectionScreen {
         }
     }
 
-    pub(crate) fn restore(&mut self, memory: &CollectionMemory) {
-        for saved in &memory.card_keys {
-            if self.card_keys.iter().any(|key| crate::plex::same_item(
-                (key.sid, key.rk.as_str()), (saved.sid, saved.rk.as_str()))) { continue; }
-            assert!(!self.card_keys.iter().any(|key| key.elem == saved.elem),
-                "restored collection key collision");
-            self.card_keys.push(saved.clone());
-        }
-        let after = self.card_keys.iter().map(|key| key.elem).max()
-            .and_then(|elem| elem.checked_add(1)).unwrap_or(FIRST_CARD_ELEM);
-        self.next_elem = self.next_elem.max(memory.next_elem).max(after).max(FIRST_CARD_ELEM);
+    pub(crate) fn restore(&mut self, memory: &CardPageMemory) {
+        self.cards.merge(&memory.cards, FIRST_CARD_ELEM, "collection");
         self.header_marked |= memory.header_marked;
     }
 
-    fn memory(&self) -> CollectionMemory {
-        CollectionMemory { card_keys: self.card_keys.clone(), next_elem: self.next_elem,
-            header_marked: self.header_marked }
+    fn memory(&self) -> CardPageMemory {
+        CardPageMemory { cards: self.cards.clone(), header_marked: self.header_marked }
     }
 
     /// **A Back whose member has not landed yet.** The remembered member may sit past the pages
     /// loaded so far (a page rebuilt after its store was superseded reloads from the first page),
     /// so focus is held on it while the model is still loading or still has pages below the
-    /// member's remembered position — `card_keys` is interned in server order, so that position
+    /// member's remembered position — `cards` is interned in server order, so that position
     /// is the member's index when the page was left.
     fn awaiting_restore(&self, collection: &Collection, elem: u32) -> bool {
         if !self.return_pending || self.item_index(collection, elem).is_some() { return false; }
-        let Some(position) = self.card_keys.iter().position(|key| key.elem == elem) else { return false };
+        let Some(position) = self.cards.position(elem) else { return false };
         matches!(collection.status, CollectionStatus::Loading | CollectionStatus::Failed)
             || (collection.more && collection.items.len() <= position)
     }
@@ -213,16 +212,24 @@ impl CollectionScreen {
     /// The member count a page entry asks the store for: one page, or — returning to a page
     /// that remembers members — every member it knew, so the remembered one can be reached.
     fn entry_want(&self) -> usize {
-        if self.return_pending { PAGE_SIZE.max(self.card_keys.len()) } else { PAGE_SIZE }
+        if self.return_pending { PAGE_SIZE.max(self.cards.len()) } else { PAGE_SIZE }
     }
 
-    fn elem_for(&self, item: &PmsMovie) -> Option<u32> {
-        self.card_keys.iter().find(|key| crate::plex::same_item(
-            (key.sid, key.rk.as_str()), (item.sid, item.rk.as_str()))).map(|key| key.elem)
+    /// Is [`Self::elems`] the index of `collection` as it stands? Items only append between
+    /// syncs, so a length match is the check; a landing the page has not synced yet falls back to
+    /// the identity scan.
+    fn indexed(&self, collection: &Collection) -> bool {
+        self.elems.len() == collection.items.len()
+    }
+
+    fn elem_at(&self, collection: &Collection, index: usize) -> Option<u32> {
+        if self.indexed(collection) { return self.elems.get(index).copied(); }
+        collection.items.get(index).and_then(|item| self.cards.elem_for(item.sid, &item.rk))
     }
 
     fn item_index(&self, collection: &Collection, elem: u32) -> Option<usize> {
-        let identity = self.card_keys.iter().find(|key| key.elem == elem)?;
+        if self.indexed(collection) { return self.elems.iter().position(|&e| e == elem); }
+        let identity = self.cards.get(elem)?;
         collection.items.iter().position(|item| crate::plex::same_item(
             (identity.sid, identity.rk.as_str()), (item.sid, item.rk.as_str())))
     }
@@ -235,7 +242,7 @@ impl CollectionScreen {
 
     fn key_at(&self, collection: &Collection, index: usize) -> crate::ui::machine::FocusKey<u32> {
         crate::ui::machine::FocusKey { entry: self.entry,
-            elem: collection.items.get(index).and_then(|item| self.elem_for(item)).unwrap_or(HEADER_ELEM) }
+            elem: self.elem_at(collection, index).unwrap_or(HEADER_ELEM) }
     }
 
     fn card_rect(&self, index: usize, focused: bool, press: f32) -> Rect {
@@ -340,9 +347,7 @@ impl CollectionScreen {
         let focused = cx.focus.current.filter(|key| key.entry == self.entry)
             .and_then(|key| self.item_index(collection, key.elem))
             .and_then(|index| collection.items.get(index));
-        let target = focused.or_else(|| collection.items.first()).filter(|item| item.has_blur)
-            .map(|item| AmbientWash::keyed(item.blur, PageGround::CARD_W))
-            .unwrap_or_else(|| AmbientWash::target([theme::WASH_WARM; 4], AMB_HEADER_W));
+        let target = PageGround::page_target(focused.or_else(|| collection.items.first()));
         if self.ground_seeded { self.ground.key_target(target, t.dt()); }
         else { self.ground.jump_target(target); self.ground_seeded = true; }
     }
@@ -367,7 +372,8 @@ impl CollectionScreen {
         let Some(index) = focus.filter(|key| key.entry == self.entry)
             .and_then(|key| self.item_index(collection, key.elem)) else { return };
         let Some(item) = collection.items.get(index) else { return };
-        self.draw_card(f.painter.alpha(f.page_alpha), item, index, true, f.press.scale, f.measure);
+        let label = self.label_at(collection, index, item);
+        self.draw_card(f.painter.alpha(f.page_alpha), item, &label, index, true, f.press.scale, f.measure);
     }
 
     /// The header's focus rect — its text column — scrolled with the document: the header is the
@@ -381,22 +387,18 @@ impl CollectionScreen {
         let dy = -self.scroll.pos;
         if HEADER_TOP + ART_H + dy <= 0.0 { return; }
         let art = Rect::new(MARGIN_X, HEADER_TOP + dy, ART_W, ART_H);
-        widgets::card(p, art, Art::Thumb { sid: collection.sid, key: &collection.thumb, res: ART_RES },
+        widgets::card(p, art, Art::Thumb { sid: collection.id.sid, key: &collection.thumb, res: ART_RES },
             theme::CARD_RING_RAD, false, 1.0, 0.0);
-        let title = measure.fit_line(if collection.title.is_empty() { &collection.name } else { &collection.title },
+        let title = measure.fit_line(if collection.title.is_empty() { &collection.id.name } else { &collection.title },
             TEXT_W, theme::size::DISPLAY, true);
         Label::new(title.as_ptr(), theme::size::DISPLAY, theme::TEXT_PRIMARY).bold()
             .v(VAlign::CapTop).draw(p, Rect::new(COL_X, HEADER_TOP + dy, TEXT_W, 0.0));
         let (meta_y, summary_y) = Self::header_ys(measure);
         let (meta_y, summary_y) = (meta_y + dy, summary_y + dy);
-        let count = if collection.child_count > 0 { collection.child_count } else { collection.total };
-        // A count of zero is only an answer once the listing says so; before the header lands (and
-        // on a failed load) the line is the kind alone rather than a false "0 items".
-        let meta = if count == 0 && collection.status != CollectionStatus::Empty {
-            crate::i18n::msg::browse_collection_kind_c().to_owned()
-        } else {
-            CString::new(crate::i18n::msg::browse_collection_meta(&crate::ui::fmt::item_count(count as i64)))
-                .unwrap_or_default()
+        let built;
+        let meta = if self.meta.0 == meta_key(collection) { &self.meta.1 } else {
+            built = meta_line(collection);
+            &built
         };
         Label::new(meta.as_ptr(), theme::size::BODY, theme::TEXT_SECONDARY)
             .v(VAlign::CapTop).draw(p, Rect::new(COL_X, meta_y, TEXT_W, 0.0));
@@ -409,16 +411,21 @@ impl CollectionScreen {
                 h + 2.0 * theme::space::SM));
         }
         view.draw(p, Rect::new(COL_X, summary_y, TEXT_W, h));
-        if self.summary_more {
-            Label::new(crate::ui::text_view::more_mark().as_ptr(), theme::size::LABEL,
-                if focused && self.header_marked { theme::TEXT_SECONDARY } else { theme::TEXT_TERTIARY })
-                .bold().h(HAlign::Right).v(VAlign::CapTop)
-                .draw(p, Rect::new(COL_X, view.last_line_cap_y(summary_y, h), TEXT_W, 0.0));
+        if self.summary_more { view.draw_more(p, COL_X, summary_y, TEXT_W, h, focused && self.header_marked); }
+    }
+
+    /// Card `index`'s persistent label: the one [`Self::sync`] built, or — for a landing the page
+    /// has not synced yet — formatted now.
+    fn label_at<'a>(&'a self, collection: &Collection, index: usize, item: &PmsMovie) -> std::borrow::Cow<'a, str> {
+        match self.labels.get(index).filter(|_| self.indexed(collection)) {
+            Some(label) => std::borrow::Cow::Borrowed(label),
+            None => std::borrow::Cow::Owned(member_label(item)),
         }
     }
 
-    fn draw_card(&self, p: Painter, item: &PmsMovie, index: usize, focused: bool, press: f32,
-        measure: &dyn crate::ui::machine::Measure) {
+    #[allow(clippy::too_many_arguments)]
+    fn draw_card(&self, p: Painter, item: &PmsMovie, persistent: &str, index: usize, focused: bool,
+        press: f32, measure: &dyn crate::ui::machine::Measure) {
         let rect = self.card_rect(index, focused, press);
         let scale = rect.w / CARD_W;
         if !card_row::paint_visible(p, rect, scale, focused) { return; }
@@ -433,10 +440,9 @@ impl CollectionScreen {
             card_row::draw_tile(p, Art::Poster(Some(item)), rect, scale,
                 &crate::ui::poster_grid::STYLE, resume);
         }
-        let persistent = member_label(item);
         if !persistent.is_empty() {
             widgets::poster_label(p, rect,
-                crate::ui::poster_grid::STYLE.tile_radius(rect, scale), &persistent, measure);
+                crate::ui::poster_grid::STYLE.tile_radius(rect, scale), persistent, measure);
             if let Some(frac) = resume {
                 card_row::resume_bar(p, rect, frac,
                     crate::ui::poster_grid::STYLE.tile_radius(rect, scale));
@@ -450,14 +456,17 @@ impl CollectionScreen {
         let p = f.painter.alpha(f.page_alpha);
         for index in crate::ui::poster_grid::visible(collection.items.len(), GRID_TOP, self.scroll.pos) {
             if current == Some(index) { continue; }
-            if let Some(item) = collection.items.get(index) { self.draw_card(p, item, index, false, 1.0, f.measure); }
+            if let Some(item) = collection.items.get(index) {
+                self.draw_card(p, item, &self.label_at(collection, index, item), index, false, 1.0, f.measure);
+            }
         }
         if let Some(index) = current {
-            if let Some(item) = collection.items.get(index) { self.draw_card(p, item, index, true, f.press.scale, f.measure); }
+            if let Some(item) = collection.items.get(index) {
+                self.draw_card(p, item, &self.label_at(collection, index, item), index, true, f.press.scale, f.measure);
+            }
         }
         for index in crate::ui::poster_grid::visible(collection.items.len(), GRID_TOP, self.scroll.pos) {
-            let Some(item) = collection.items.get(index) else { continue };
-            let Some(elem) = self.elem_for(item) else { continue };
+            let Some(elem) = self.elem_at(collection, index) else { continue };
             let focused = current == Some(index);
             let rect = self.card_rect(index, focused, if focused { f.press.scale } else { 1.0 });
             f.stop(f.painter, Stop { key: crate::ui::machine::FocusKey { entry: self.entry, elem },
@@ -501,17 +510,8 @@ impl<H: ContentLike + CollectionLike> Focusable<H> for CollectionScreen {
     fn neighbour(&self, key: crate::ui::machine::FocusKey<u32>, dir: Dir, cx: &Cx<'_, H>) -> Step<u32> {
         let Some(collection) = self.collection(cx) else { return Step::Edge };
         let Some(index) = self.item_index(collection, key.elem) else { return Step::Edge };
-        let cols = crate::ui::poster_grid::COLS;
-        let next = match dir {
-            Dir::Left if index % cols > 0 => Some(index - 1),
-            Dir::Right if index % cols + 1 < cols && index + 1 < collection.items.len() => Some(index + 1),
-            Dir::Up if index >= cols => Some(index - cols),
-            // The Library grid's rule (`library/parts.rs`): Down from above a short last row lands
-            // on its last member rather than stopping where no card sits directly below.
-            Dir::Down if (index / cols + 1) * cols < collection.items.len() =>
-                Some((index + cols).min(collection.items.len() - 1)),
-            _ => None,
-        };
+        let next = crate::ui::poster_grid::neighbour(index, collection.items.len(),
+            crate::ui::poster_grid::COLS, dir);
         next.map(|index| Step::Move(self.key_at(collection, index))).unwrap_or(Step::Edge)
     }
 
@@ -536,7 +536,7 @@ impl<H: ContentLike + CollectionLike> Focusable<H> for CollectionScreen {
 
     fn reconcile(&self, want: crate::ui::machine::FocusKey<u32>, cx: &Cx<'_, H>) -> crate::ui::machine::FocusKey<u32> {
         let Some(collection) = self.collection(cx) else {
-            return if self.return_pending && self.card_keys.iter().any(|key| key.elem == want.elem) { want }
+            return if self.return_pending && self.cards.get(want.elem).is_some() { want }
                 else { crate::ui::machine::FocusKey { entry: self.entry, elem: HEADER_ELEM } };
         };
         if self.locate(collection, want.elem).is_some() { return crate::ui::machine::FocusKey { entry: self.entry, elem: want.elem }; }
@@ -633,6 +633,9 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
 }
 
 impl<H: ContentLike + CollectionLike> Screen<H> for CollectionScreen {
+    fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<crate::ui::machine::FocusKey<u32>>) {
+        CollectionScreen::redraw_focused::<H>(self, f, focus)
+    }
     fn name(&self) -> &'static str { super::registry::word::COLLECTION }
     fn state(&self) -> &dyn LogicalState { self }
     fn crumb(&self, _cx: &Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> { None }
@@ -695,12 +698,14 @@ mod tests {
     }
 
     fn item(rk: &str) -> PmsMovie { PmsMovie { rk: rk.into(), title: rk.into(), ..Default::default() } }
+    fn set() -> CollectionRef {
+        CollectionRef { sid: crate::plex::ServerId::UNSET, rk: "50001".into(), sec: 1, tag: 7, name: "Set".into() }
+    }
     fn seeded() -> (crate::stores::collection::CollectionStore, CollectionScreen) {
         let mut store = crate::stores::collection::CollectionStore::default();
-        store.run(CollectionCmd::Open { sid: ServerId::UNSET,
-            target: CollectionTarget::initial("50001".into(), 1, 7, "Set".into()) });
+        store.run(CollectionCmd::Open { target: CollectionTarget { id: set(), want: PAGE_SIZE } });
         store.install_for_test(vec![item("a"), item("b"), item("c")], CollectionStatus::Ready);
-        let mut screen = CollectionScreen::new(EntryId(9), ServerId::UNSET, "50001".into(), 1, 7, "Set".into());
+        let mut screen = CollectionScreen::new(EntryId(9), set());
         screen.sync(store.view().current().unwrap(), &FixtureMeasure);
         (store, screen)
     }
@@ -843,7 +848,7 @@ mod tests {
         let PageMemory::Collection(memory) = Screen::<CollectionHost>::memory_at(&original, Some(focus)) else { panic!() };
 
         store.edit_for_test(|c| { c.items = many[..PAGE_SIZE].to_vec(); c.more = true; });
-        let mut restored = CollectionScreen::new(EntryId(9), ServerId::UNSET, "50001".into(), 1, 7, "Set".into());
+        let mut restored = CollectionScreen::new(EntryId(9), set());
         let _ = step(&mut restored, ScreenEvent::RestoreMemory(PageMemory::Collection(memory)), &cx(store.view(), None));
         let out = step(&mut restored, ScreenEvent::Enter(crate::ui::screen::Enter::Restored), &cx(store.view(), None));
         let want = out.iter().find_map(|e| match &e.fx {
@@ -868,7 +873,7 @@ mod tests {
         let (store, original) = seeded();
         let focus = original.key_at(store.view().current().unwrap(), 1);
         let PageMemory::Collection(memory) = Screen::<CollectionHost>::memory_at(&original, Some(focus)) else { panic!() };
-        let mut restored = CollectionScreen::new(EntryId(9), ServerId::UNSET, "50001".into(), 1, 7, "Set".into());
+        let mut restored = CollectionScreen::new(EntryId(9), set());
         restored.restore(&memory);
         restored.return_pending = true;
         restored.sync(store.view().current().unwrap(), &FixtureMeasure);

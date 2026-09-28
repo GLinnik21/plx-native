@@ -21,7 +21,8 @@
 //! - **Items arrive in two different containers** — see [`crate::plex::Hub::directory`]. That is
 //!   why [`Item`] is an enum instead of one struct. Collections are asked for with
 //!   `includeCollections=1`, which makes them full `Metadata[]` rows ([`Item::Collection`]) rather
-//!   than tag rows; a server that ignores the flag still sends [`Item::Tag`].
+//!   than tag rows; a server that ignores the flag still sends tags, which [`project`] turns into
+//!   the same [`Item::Collection`] once folded.
 //!
 //! ## Multi-source
 //!
@@ -91,8 +92,7 @@
 use crate::plex::ServerId;
 use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub(crate) mod view;
 pub(crate) mod recents;
@@ -197,15 +197,15 @@ pub(crate) struct TagHit {
     ///
     /// The search request now asks with `includeCollections=1`, which makes the server send the
     /// collection hub as full rows — [`Item::Collection`], with a `thumb` and a `ratingKey` — so a
-    /// tag-shaped collection hit only reaches this struct from a server that ignored the flag. It
-    /// still opens its page ([`TagHit::collection_route`]), which resolves the tag id to a
-    /// ratingKey and artwork there.
+    /// tag-shaped collection hit only reaches this struct from a server that ignored the flag, and
+    /// only until [`project`] has folded it: it then becomes an [`Item::Collection`] too
+    /// ([`CollectionHit::from_tag`]), whose page resolves the tag id to a ratingKey and artwork.
     pub(crate) thumb: String,
     /// The listing this tag opens — `/library/sections/1/all?collection=6068`.
     pub(crate) key: String,
     /// The `librarySectionID` of the first row folded into this hit, 0 when the server sent none.
     /// Only a COLLECTION tag reads it: a collection lives in one library, and its tag id resolves
-    /// to a collection only within that library ([`TagHit::collection_route`]).
+    /// to a collection only within that library ([`CollectionHit::from_tag`]).
     pub(crate) sec: i64,
     /// How many items carry it, for the caption line.
     pub(crate) count: i64,
@@ -244,34 +244,33 @@ impl CollectionHit {
         Self { item: parse_item(m, sid), tag: m.index }
     }
 
-    /// The collection page this hit opens: ratingKey first (the page loads it directly), with the
-    /// section + tag id carried as the second identity the page resolves by when no ratingKey is
-    /// available.
-    pub(crate) fn route(&self) -> crate::screens::registry::ContentArg {
-        crate::screens::registry::ContentArg::Collection {
-            sid: self.item.sid,
-            rk: self.item.rk.clone(),
-            sec: self.item.sec,
-            tag: self.tag,
-            name: self.item.title.clone(),
+    /// WORKER THREAD: one FOLDED tag-shaped collection hit — the answer of a server that ignored
+    /// `includeCollections=1`. It becomes the same kind-4 row a full hit carries, with no
+    /// ratingKey: the tag's name, section, artwork (none, in practice) and count, so the card, the
+    /// caption and the route treat both shapes alike. A tag id that is not a positive number
+    /// leaves `tag` 0, and with no ratingKey either the hit has no [`CollectionHit::route`].
+    pub(crate) fn from_tag(t: &TagHit) -> Self {
+        Self {
+            item: PmsMovie { sid: t.sid, sec: t.sec, title: t.name.clone(), thumb: t.thumb.clone(),
+                kind: crate::pms::KIND_COLLECTION, child_count: t.count.max(0), ..Default::default() },
+            tag: t.id.parse::<i64>().ok().filter(|tag| *tag > 0).unwrap_or(0),
         }
     }
-}
 
-impl TagHit {
-    /// The collection page a tag-shaped collection hit opens — the FALLBACK for a server that
-    /// ignored `includeCollections=1`. No ratingKey exists on such a row, so the route carries the
-    /// section and tag id and the page resolves them (`plex::collections::resolve_tag`). `None`
-    /// when either is missing: a guess would open a page for nothing.
-    pub(crate) fn collection_route(&self) -> Option<crate::screens::registry::ContentArg> {
-        let tag = self.id.parse::<i64>().ok().filter(|t| *t > 0)?;
-        (self.sec > 0).then(|| crate::screens::registry::ContentArg::Collection {
-            sid: self.sid,
-            rk: String::new(),
-            sec: self.sec,
-            tag,
-            name: self.name.clone(),
-        })
+    /// The collection page this hit opens: ratingKey first (the page loads it directly), with the
+    /// section + tag id carried as the second identity the page resolves by when no ratingKey is
+    /// available (`plex::collections::resolve_tag`). `None` when neither identity is whole: a
+    /// guess would open a page for nothing.
+    pub(crate) fn route(&self) -> Option<crate::screens::registry::ContentArg> {
+        let by_tag = self.tag > 0 && self.item.sec > 0;
+        (!self.item.rk.is_empty() || by_tag).then(|| crate::screens::registry::ContentArg::Collection(
+            crate::plex::collections::CollectionRef {
+                sid: self.item.sid,
+                rk: self.item.rk.clone(),
+                sec: self.item.sec,
+                tag: self.tag,
+                name: self.item.title.clone(),
+            }))
     }
 }
 
@@ -281,9 +280,8 @@ pub(crate) enum Item {
     /// unchanged — resume bar, watched mark, ambient blur and all.
     Media(PmsMovie),
     Tag(TagHit),
-    /// A collection that arrived as a full row — the normal case (see [`CollectionHit`]). A
-    /// server that ignores `includeCollections` still answers [`Item::Tag`] rows on the same
-    /// shelf, which [`TagHit::collection_route`] opens by tag id.
+    /// A collection result (see [`CollectionHit`]): a full row — the normal case — or a
+    /// tag-shaped row from a server that ignores `includeCollections`, converted once folded.
     Collection(CollectionHit),
 }
 
@@ -462,20 +460,10 @@ struct Mail {
 /// crosses the mailbox.
 type Projection = [Vec<Item>; NKIND];
 
-/// One registry slot's worker-touched half: the single-flight claim plus the landing mailbox.
-/// Bundled into [`SearchAdapter`], which a production `Bridge` holds as one `Arc` per owner —
-/// `person.rs`'s `Fetch`/`PersonAdapter` is the idiom this copies.
-struct Fetch {
-    in_flight: AtomicBool,
-    slot: Mutex<Option<Mail>>,
-}
-
-impl Fetch {
-    const IDLE: Fetch = Fetch {
-        in_flight: AtomicBool::new(false),
-        slot: Mutex::new(None),
-    };
-}
+/// One registry slot's worker-touched half: the single-flight claim plus the landing mailbox
+/// ([`crate::stores::Fetch`], shared with Person and Collection). Bundled into [`SearchAdapter`],
+/// which a production `Bridge` holds as one `Arc` per owner.
+type Fetch = crate::stores::Fetch<Mail>;
 
 /// The `Arc`'d worker half of one Search owner: every in-flight claim and landing mailbox, indexed
 /// by [`ServerId::raw`]. A worker captures a clone of the owning `Bridge`'s `Arc<SearchAdapter>`
@@ -842,22 +830,18 @@ fn set_watched_local(state: &mut SearchState, sid: ServerId, rk: &str, on: bool)
 /// the guard is the one piece of this machinery a test cannot reach through `set_query` —
 /// reaching it needs two overlapping real fetches.
 fn land(adapter: &SearchAdapter, i: usize, gen: u32, what: Option<Projection>) {
-    let mut slot = adapter.fetch[i].slot.lock().unwrap_or_else(|e| e.into_inner());
-    let beats = match slot.as_ref() {
-        None => true,
+    let fresh = what.is_some();
+    adapter.fetch[i].post(Mail { gen, what }, |old| match old {
         // A newer generation always wins — the monotone rule this mailbox exists for.
-        Some(m) if m.gen != gen => m.gen < gen,
+        m if m.gen != gen => m.gen < gen,
         // …but at the SAME generation an ANSWER beats a failure. The in-flight claim bounds spawns
         // and is not a hard interlock, so two workers can be out for one source at one generation;
         // with the loser's `None` arriving first, the real response was dropped and the source then
         // sat out a ~2 s backoff holding a good answer. `record` already encodes this preference on
         // the other side of the pump — "a late failure cannot unsay an answer" — and `land` is what
         // decides which mail survives to be read at all.
-        Some(m) => m.what.is_none() && what.is_some(),
-    };
-    if beats {
-        *slot = Some(Mail { gen, what });
-    }
+        m => m.what.is_none() && fresh,
+    });
 }
 
 /// Invalidate everything in flight: bump the generation (a late landing is discarded), drop every
@@ -892,8 +876,7 @@ fn supersede_with_directory(
         None => snapshot_favs(state),
     }
     for i in 0..NSRC {
-        *adapter.fetch[i].slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        adapter.fetch[i].in_flight.store(false, Ordering::SeqCst);
+        adapter.fetch[i].clear();
         state.src[i] = Source::EMPTY;
     }
 }
@@ -1005,13 +988,12 @@ fn pump_with_optional_directory(
         // the landing GATE (§3.3 step 3, `ui::landgate`): under a replay a source's answer is
         // taken on the frame the recording took it on. The debounce above and `maybe_spawn` below
         // are outside it, so the query still goes out when it went out.
+        // the take ALWAYS releases the single-flight claim, whatever the landing turns out to
+        // be — dropping a stale one without that is how the flag latches forever
         let taken = crate::stores::take_landing(gate, crate::stores::StoreId::Search, || {
-            adapter.fetch[i].slot.lock().unwrap_or_else(|e| e.into_inner()).take()
+            adapter.fetch[i].take()
         });
         if let Some(m) = taken {
-            // the take ALWAYS releases the single-flight claim, whatever the landing turns out to
-            // be — dropping a stale one without this is how the flag latches forever
-            adapter.fetch[i].in_flight.store(false, Ordering::SeqCst);
             if m.gen == state.gen {
                 record(state, i, m.what);
                 landed = true;
@@ -1237,7 +1219,7 @@ fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize) 
         return; // still settling — the keystroke burst is not over
     }
     let src = &state.src[i];
-    if adapter.fetch[i].in_flight.load(Ordering::SeqCst) || src.retry_cd > 0 {
+    if adapter.fetch[i].busy() || src.retry_cd > 0 {
         return;
     }
     if src.status == Status::Answered {
@@ -1254,7 +1236,7 @@ fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize) 
     // `browse` what was current would answer with a table from a different moment than the query it
     // was given. `pump` rejects a landing taken under a snapshot that has since moved.
     let favs = favs(state);
-    adapter.fetch[i].in_flight.store(true, Ordering::SeqCst);
+    adapter.fetch[i].claim();
     crate::log(&format!("search: q[{}ch] sid={i} asking limit={LIMIT}", q.chars().count()));
     let worker_adapter = Arc::clone(adapter);
     let spawned = crate::task::spawn_small("search", move || {
@@ -1274,7 +1256,7 @@ fn maybe_spawn(state: &mut SearchState, adapter: &Arc<SearchAdapter>, i: usize) 
         // nothing will ever fill the mailbox, and the claim is cleared only by a take — release it
         // here or this source never searches again. `maybe_spawn` runs every frame, so this retries
         // by itself.
-        adapter.fetch[i].in_flight.store(false, Ordering::SeqCst);
+        adapter.fetch[i].release();
     }
 }
 
@@ -1332,6 +1314,13 @@ fn project(
                 }
                 None => out[k].push(Item::Tag(hit)),
             }
+        }
+    }
+    // Once folded, a tag-shaped collection hit is a collection like any full row, so nothing past
+    // this point has a second representation of one to handle.
+    if let Some(k) = KINDS.iter().position(|kind| *kind == Kind::Collection) {
+        for item in &mut out[k] {
+            if let Item::Tag(tag) = item { *item = Item::Collection(CollectionHit::from_tag(tag)); }
         }
     }
     out

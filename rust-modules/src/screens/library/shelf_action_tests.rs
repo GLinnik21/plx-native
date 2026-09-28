@@ -217,8 +217,8 @@ fn a_collection_shelf_heading_is_a_linked_focus_stop_that_opens_the_collection()
         _ => None,
     }).collect();
     assert_eq!(pushed.len(), 1);
-    assert!(matches!(&pushed[0], crate::screens::registry::ContentArg::Collection {
-        rk, sec: 1, tag: 0, name, .. } if rk == "50001" && name == "Toy Story Collection"));
+    assert!(matches!(&pushed[0], crate::screens::registry::ContentArg::Collection(id)
+        if id.rk == "50001" && id.sec == 1 && id.tag == 0 && id.name == "Toy Story Collection"));
 
     // Pointer: the heading registers a hover-focus stop on its drawn face.
     page.relayout(engine.current(owner));

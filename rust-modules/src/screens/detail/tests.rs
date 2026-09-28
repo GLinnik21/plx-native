@@ -3259,8 +3259,8 @@ fn ok_on_the_heading_opens_the_collection_and_ok_on_a_member_opens_its_detail() 
     let (_, effects) = step(&mut screen, &ScreenEvent::Activate(collection::HEADING_ELEM),
         Some(collection::HEADING_ELEM));
     assert!(effects.iter().any(|e| matches!(&e.fx,
-        Fx::App(AppFx::Content(ContentReq::Push(ContentArg::Collection { rk, sec: 1, tag: 812, name, .. })))
-            if rk.is_empty() && name == "Example Trilogy")),
+        Fx::App(AppFx::Content(ContentReq::Push(ContentArg::Collection(id))))
+            if id.rk.is_empty() && id.sec == 1 && id.tag == 812 && id.name == "Example Trilogy")),
         "the page opens by section and tag; the collection store resolves the rating key");
     let member = collection::elem(1).unwrap();
     let (_, effects) = step(&mut screen, &ScreenEvent::Activate(member), Some(member));

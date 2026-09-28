@@ -77,8 +77,7 @@
 use crate::plex::{ServerId, Tag};
 use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Per-shelf item cap. A `CardRow` owns exactly [`crate::ui::card_row::MAX_ROW_ITEMS`] focus-scale
 /// springs and `scale(i)` clamps past the end, so an item beyond the cap would draw with the last
@@ -510,77 +509,10 @@ pub(crate) fn validate_record(slot: u32, value: &serde_json::Value) -> Result<()
     Ok(())
 }
 
-/// One fetch's two WORKER-VISIBLE halves: the claim that it is out, and the mailbox its answer
-/// lands in. Bundled because they move together — the claim of a worker that is out is cleared by
-/// the take of the mail answering it ([`Fetch::take`]), so emptying that mailbox any other way
-/// owes the release ([`Fetch::clear`]), and a spawn that never happened owes it too
-/// ([`Fetch::release`]). Three methods, each spelling one of those, rather than two arrays and the
-/// same rule restated at every site that touches both.
-///
-/// The retry countdown is NOT a third field here; [`RETRY_CD`] documents why it cannot be.
-struct Fetch {
-    /// The claim that this fetch is out. Once a worker holds it, it is cleared ONLY by a mailbox
-    /// take, so anything that drops the mailbox ([`supersede`]) must clear it too — otherwise the
-    /// fetch stays latched and the page spins forever. Same latch `browse.rs` documents on its
-    /// `IN_FLIGHT` array.
-    ///
-    /// It bounds spawns per *pump*, which is what matters; it is NOT a hard one-worker-at-a-time
-    /// interlock, and claiming otherwise would be wrong. Two ways a second worker can briefly
-    /// exist: [`supersede`] releases the claim while the old worker is still running, and a take
-    /// releases it before the generation check (so a stale landing can free a NEWER fetch's claim,
-    /// costing one duplicate request). Neither can wedge or corrupt — [`land`] is monotone on the
-    /// generation and [`PersonState::pump`] discards anything stale — and `browse.rs` has the identical shape.
-    in_flight: AtomicBool,
-    /// Where the worker posts what it came back with — the one half of a [`Fetch`] a worker
-    /// touches, the claim beside it being moved by the main thread alone. `None` means nothing has
-    /// landed since the last take.
-    slot: Mutex<Option<Mail>>,
-}
-
-impl Fetch {
-    const IDLE: Fetch = Fetch {
-        in_flight: AtomicBool::new(false),
-        slot: Mutex::new(None),
-    };
-
-    /// Is the claim held? [`maybe_spawn`]'s first gate.
-    fn busy(&self) -> bool {
-        self.in_flight.load(Ordering::SeqCst)
-    }
-
-    /// Claim the fetch, on the way into a spawn.
-    fn claim(&self) {
-        self.in_flight.store(true, Ordering::SeqCst);
-    }
-
-    /// Release the claim without touching the mailbox — what a REFUSED spawn (`task.rs`'s thread
-    /// ceiling) owes, since nothing will ever land to release it, and the second half of
-    /// [`Fetch::clear`].
-    fn release(&self) {
-        self.in_flight.store(false, Ordering::SeqCst);
-    }
-
-    /// Take whatever landed, RELEASING the claim with it. The release does not depend on what the
-    /// mail turns out to be — an answer, a failure, or a generation the pump is about to discard —
-    /// because once a worker is out this take and [`supersede`] are the two things that can clear
-    /// its claim: hold it while dropping a landing and this fetch never spawns again.
-    ///
-    /// An EMPTY mailbox releases nothing, which is the other half of the rule: the claim it would
-    /// clear belongs to a worker still running, and the next frame would spawn a duplicate.
-    fn take(&self) -> Option<Mail> {
-        let mail = self.slot.lock().unwrap_or_else(|e| e.into_inner()).take()?;
-        self.in_flight.store(false, Ordering::SeqCst);
-        Some(mail)
-    }
-
-    /// Drop the mailbox and release the claim with it — [`supersede`]'s per-fetch half. Releases
-    /// unconditionally, unlike [`Fetch::take`], and that difference is the point: the worker
-    /// holding this claim is still out, and what it will answer about is a person no longer open.
-    fn clear(&self) {
-        *self.slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        self.release();
-    }
-}
+/// The single-flight mailbox the Person, Search and Collection stores share; see
+/// [`crate::stores::Fetch`] for the claim/take/clear rules. The retry countdown is NOT a third
+/// field there; [`RETRY_CD`] documents why it cannot be.
+type Fetch = crate::stores::Fetch<Mail>;
 
 /// Cross-thread transport for one physical owner. Every worker captures this exact `Arc`; reset
 /// rotates the store to a fresh adapter, so a detached old worker can only fill retired slots.
@@ -602,10 +534,7 @@ impl Default for PersonAdapter {
 /// cannot reach through [`open`], because reaching it needs two overlapping real fetches.
 impl PersonAdapter {
     fn land(&self, i: usize, generation: u32, what: Landing) {
-        let mut slot = self.fetch[i].slot.lock().unwrap_or_else(|e| e.into_inner());
-        if slot.as_ref().map(|r| r.gen < generation).unwrap_or(true) {
-            *slot = Some(Mail { gen: generation, what });
-        }
+        self.fetch[i].post(Mail { gen: generation, what }, |old| old.gen < generation);
     }
 }
 
@@ -1062,19 +991,8 @@ impl PersonState {
             // The take releases the single-flight claim with the mail, whatever the landing turns
             // out to be. Under replay it happens on the recorded frame; spawning remains outside
             // that gate so the request still leaves on time.
-            let reply = if crate::app::bootstrap::stores::active() {
-                let reply = crate::app::bootstrap::stores::poll("person", i as u32, || {
-                    adapter.fetch[i].take()
-                });
-                if reply.is_some() {
-                    gate.landed(crate::stores::StoreId::Person.ord());
-                }
-                reply
-            } else {
-                crate::stores::take_landing(gate, crate::stores::StoreId::Person, || {
-                    adapter.fetch[i].take()
-                })
-            };
+            let reply = crate::app::bootstrap::stores::take_store_landing(
+                gate, crate::stores::StoreId::Person, "person", i as u32, &adapter.fetch[i]);
             if let Some(reply) = reply {
                 adapter.fetch[i].release();
                 // Every landing repaints, failures included: a shelf or stopped spinner must not
@@ -1371,7 +1289,7 @@ fn apply_landing(state: &mut PersonState, i: usize, what: Landing) -> bool {
             {
                 let s = &mut p.srcs[si];
                 // A landing addressed to a shelf list that has since been REPLACED must not settle
-                // the current one: `Fetch::in_flight`'s doc allows a brief duplicate media worker
+                // the current one: `stores::Fetch`'s doc allows a brief duplicate media worker
                 // at one generation, so a second media landing can swap this source's shelves while
                 // a roles batch for the first list is in flight. Refusing it (without arming the
                 // failure backoff — nothing failed) leaves `roled` false, and `address` simply
@@ -1988,8 +1906,7 @@ pub(crate) fn ownership_fixture_for_test(&self, adapter: &Arc<PersonAdapter>) ->
         generation: self.generation,
         retry_cd: self.retry_cd,
         flights: std::array::from_fn(|i| adapter.fetch[i].busy()),
-        mail: std::array::from_fn(|i| adapter.fetch[i].slot.lock()
-            .unwrap_or_else(|e| e.into_inner()).is_some()),
+        mail: std::array::from_fn(|i| adapter.fetch[i].has_mail()),
     }
 }
 
@@ -2177,11 +2094,7 @@ mod tests {
             [a, c]
         );
         assert!(
-            owner.adapter.fetch[fx(b, K_MEDIA).unwrap()]
-                .slot
-                .lock()
-                .unwrap()
-                .is_none(),
+            !owner.adapter.fetch[fx(b, K_MEDIA).unwrap()].has_mail(),
             "old-share mail was superseded"
         );
         assert!(owner.current()

@@ -83,8 +83,8 @@ fn a_failed_source_backs_off_alone_and_the_others_still_answer() {
     owner.set_query("wallace");
     let gen = owner.state.gen;
 
-    owner.adapter.fetch[0].in_flight.store(true, Ordering::SeqCst);
-    owner.adapter.fetch[1].in_flight.store(true, Ordering::SeqCst);
+    owner.adapter.fetch[0].claim();
+    owner.adapter.fetch[1].claim();
     owner.land(
         0,
         gen,
@@ -106,8 +106,8 @@ fn a_failed_source_backs_off_alone_and_the_others_still_answer() {
         RETRY_FRAMES,
         "the failed source backs off before retrying"
     );
-    assert!(!owner.adapter.fetch[0].in_flight.load(Ordering::SeqCst)
-        && !owner.adapter.fetch[1].in_flight.load(Ordering::SeqCst));
+    assert!(!owner.adapter.fetch[0].busy()
+        && !owner.adapter.fetch[1].busy());
     crate::plex::reset_servers_for_test();
 }
 

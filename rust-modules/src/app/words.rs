@@ -33,7 +33,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
         // The filmography sheet answers `word::PERSON` too (`FilmographyScreen::name`): the test
         // manifest intentionally records that opaque modal as `route=person`.
         AppArg::Content(ContentArg::Person { .. } | ContentArg::Filmography { .. }) => "person",
-        AppArg::Content(ContentArg::Collection { .. }) => "collection",
+        AppArg::Content(ContentArg::Collection(_)) => "collection",
         AppArg::Search => "search",
         AppArg::Player => "player",
         AppArg::Home => "home",
@@ -80,9 +80,7 @@ pub(crate) fn every_route() -> [AppArg; 10] {
         AppArg::Content(ContentArg::Person {
             sid, key: String::new(), guid: String::new(), name: String::new(), thumb: String::new(),
         }),
-        AppArg::Content(ContentArg::Collection {
-            sid, rk: String::new(), sec: 0, tag: 1, name: String::new(),
-        }),
+        AppArg::Content(ContentArg::Collection(crate::plex::collections::CollectionRef::by_tag(sid, 0, 1, ""))),
         AppArg::Search,
         AppArg::Player,
     ]

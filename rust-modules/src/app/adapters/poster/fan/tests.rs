@@ -125,8 +125,8 @@ fn the_scrim_darkens_only_the_bottom() {
 #[derive(Default)]
 struct Mock {
     cached: Option<Vec<u8>>,
-    members: Option<Members>,
-    posters: Vec<Art>,
+    members: Option<Got<Members>>,
+    posters: Vec<Got<Rgba>>,
     member_calls: usize,
     poster_calls: usize,
     discarded: bool,
@@ -140,14 +140,14 @@ impl FanIo for Mock {
     fn discard(&mut self) {
         self.discarded = true;
     }
-    fn members(&mut self) -> Members {
+    fn members(&mut self) -> Got<Members> {
         self.member_calls += 1;
-        self.members.take().unwrap_or(Members::Transient)
+        self.members.take().unwrap_or(Got::Transient)
     }
-    fn poster(&mut self, _: &str) -> Art {
+    fn poster(&mut self, _: &str) -> Got<Rgba> {
         self.poster_calls += 1;
         if self.posters.is_empty() {
-            Art::Final
+            Got::Final
         } else {
             self.posters.remove(0)
         }
@@ -157,8 +157,8 @@ impl FanIo for Mock {
     }
 }
 
-fn listed(n: usize) -> Members {
-    Members::Listed(
+fn listed(n: usize) -> Got<Members> {
+    Got::Ok(
         (0..n)
             .map(|i| (format!("/library/metadata/{i}/thumb/1"), None))
             .collect(),
@@ -170,23 +170,25 @@ fn a_cold_bake_fetches_three_members_persists_and_a_warm_hit_skips_them() {
     let mut cold = Mock {
         members: Some(listed(3)),
         posters: vec![
-            Art::Decoded(solid(20, 30, [200, 0, 0])),
-            Art::Decoded(solid(20, 30, [0, 200, 0])),
-            Art::Decoded(solid(20, 30, [0, 0, 200])),
+            Got::Ok(solid(20, 30, [200, 0, 0])),
+            Got::Ok(solid(20, 30, [0, 200, 0])),
+            Got::Ok(solid(20, 30, [0, 0, 200])),
         ],
         ..Mock::default()
     };
-    let FanOutcome::Baked(first) = bake(&mut cold) else {
+    let Got::Ok(first) = bake(&mut cold) else {
         panic!("cold bake must produce art")
     };
     assert_eq!((cold.member_calls, cold.poster_calls), (1, 3));
     let png = cold.persisted.expect("a complete bake is persisted");
+    // IHDR colour type (byte 25): 2 = truecolour RGB. The bake is opaque, so no alpha is stored.
+    assert_eq!(png[25], 2, "the baked fan is persisted as RGB, not RGBA");
 
     let mut warm = Mock {
         cached: Some(png),
         ..Mock::default()
     };
-    let FanOutcome::Baked(again) = bake(&mut warm) else {
+    let Got::Ok(again) = bake(&mut warm) else {
         panic!("warm hit must produce art")
     };
     assert_eq!(
@@ -204,27 +206,27 @@ fn an_undecodable_disk_entry_is_discarded_and_rebaked() {
     let mut io = Mock {
         cached: Some(b"not a png".to_vec()),
         members: Some(listed(1)),
-        posters: vec![Art::Decoded(solid(20, 30, [9, 9, 9]))],
+        posters: vec![Got::Ok(solid(20, 30, [9, 9, 9]))],
         ..Mock::default()
     };
-    assert!(matches!(bake(&mut io), FanOutcome::Baked(_)));
+    assert!(matches!(bake(&mut io), Got::Ok(_)));
     assert!(io.discarded && io.persisted.is_some());
 }
 
 #[test]
 fn empty_denied_or_artless_collections_have_no_art_and_never_persist() {
     for (members, posters) in [
-        (Members::Listed(Vec::new()), vec![]),
-        (Members::Final, vec![]),
-        (Members::Listed(vec![(String::new(), None)]), vec![]),
-        (listed(2), vec![Art::Final, Art::Final]),
+        (Got::Ok(Vec::new()), vec![]),
+        (Got::Final, vec![]),
+        (Got::Ok(vec![(String::new(), None)]), vec![]),
+        (listed(2), vec![Got::Final, Got::Final]),
     ] {
         let mut io = Mock {
             members: Some(members),
             posters,
             ..Mock::default()
         };
-        assert!(matches!(bake(&mut io), FanOutcome::NoArt));
+        assert!(matches!(bake(&mut io), Got::Final));
         assert!(io.persisted.is_none());
     }
 }
@@ -232,25 +234,25 @@ fn empty_denied_or_artless_collections_have_no_art_and_never_persist() {
 #[test]
 fn transient_failures_retry_and_a_degraded_bake_is_not_persisted() {
     let mut listing = Mock {
-        members: Some(Members::Transient),
+        members: Some(Got::Transient),
         ..Mock::default()
     };
-    assert!(matches!(bake(&mut listing), FanOutcome::Transient));
+    assert!(matches!(bake(&mut listing), Got::Transient));
 
     let mut all_down = Mock {
         members: Some(listed(2)),
-        posters: vec![Art::Transient, Art::Transient],
+        posters: vec![Got::Transient, Got::Transient],
         ..Mock::default()
     };
-    assert!(matches!(bake(&mut all_down), FanOutcome::Transient));
+    assert!(matches!(bake(&mut all_down), Got::Transient));
 
     let mut partial = Mock {
         members: Some(listed(2)),
-        posters: vec![Art::Decoded(solid(20, 30, [1, 2, 3])), Art::Transient],
+        posters: vec![Got::Ok(solid(20, 30, [1, 2, 3])), Got::Transient],
         ..Mock::default()
     };
     assert!(
-        matches!(bake(&mut partial), FanOutcome::Baked(_)),
+        matches!(bake(&mut partial), Got::Ok(_)),
         "show what arrived"
     );
     assert!(

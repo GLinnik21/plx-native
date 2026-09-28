@@ -10,7 +10,7 @@ use super::StoreEv;
 
 #[derive(Clone, Debug)]
 pub(crate) enum CollectionCmd {
-    Open { sid: ServerId, target: CollectionTarget },
+    Open { target: CollectionTarget },
     Close,
     Reset,
     /// Optimistic watched-state edit from the view-state fan-out (see `viewstate::fan_out`).

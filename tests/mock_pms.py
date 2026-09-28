@@ -254,10 +254,7 @@ class Library:
                     erk = srk * 10 + e
                     part += 1
                     self.items[erk] = self._episode(rng, erk, season, show, e, part)
-        empty_id = len(self.collections) + 1
-        self.collections[empty_id] = {
-            "id": empty_id, "ratingKey": 50000 + empty_id, "tag": sname(rng)
-        }
+        self._add_empty_collection(sname(rng))
         # watch state: a third watched, a sixth in progress (the Continue Watching deck)
         for i, it in enumerate(sorted(self.items.values(), key=lambda x: x["ratingKey"])):
             if it["type"] not in ("movie", "episode"):
@@ -754,6 +751,11 @@ class Library:
                     "-frames:v", "1", "-q:v", "3", "-bitexact", "-f", "image2pipe", "-vcodec", "mjpeg", "-"])
             return "image/jpeg", self._scaled[key]
 
+    def _add_empty_collection(self, tag):
+        """A collection with no members: the case a client's neutral collection tile draws."""
+        cid = len(self.collections) + 1
+        self.collections[cid] = {"id": cid, "ratingKey": 50000 + cid, "tag": tag}
+
     def collection_rows(self, cid):
         rows = [it for it in self.items.values()
                 if any(c["id"] == cid for c in it.get("Collection", []))]
@@ -765,7 +767,8 @@ class Library:
             return []
         rows = []
         for c in self.collections.values():
-            members = self.collection_rows(c["id"])
+            members = [it for it in self.collection_rows(c["id"])
+                       if it["librarySectionID"] == int(section)]
             updated = max((it.get("updatedAt", 0) for it in members), default=1_700_000_000)
             rk = c["ratingKey"]
             rows.append({
@@ -1008,10 +1011,7 @@ class CatalogLibrary(Library):
                     if "art" in self.images[rk]:
                         self.images[erk]["art"] = self.images[rk]["art"]
                     self.items[erk] = ep
-        empty_id = len(self.collections) + 1
-        self.collections[empty_id] = {
-            "id": empty_id, "ratingKey": 50000 + empty_id, "tag": "Empty Collection"
-        }
+        self._add_empty_collection("Empty Collection")
         self._pin_clock(hero or cat["hero"])
         self._roll_up()
         for it in self.items.values():
@@ -1123,39 +1123,13 @@ class CatalogLibrary(Library):
         """A collection's members (Home's shelf and the library's alike): in the catalog's
         `collection_order` for it when it has one — a real server's custom collection order —
         otherwise newest addition first."""
-        rows = [it for it in self.items.values()
-                if any(c["id"] == cid for c in it.get("Collection", []))]
-        rows.sort(key=lambda it: -it["addedAt"])
+        rows = super().collection_rows(cid)
         order = getattr(self, "catalog", {}).get("collection_order", {}).get(
             self.collections[cid]["tag"])
         if order:
             rank = {self.by_slug[slug]: n for n, slug in enumerate(order)}
             rows.sort(key=lambda it: rank[int(it["ratingKey"])])
         return rows
-
-    def collection_metadata(self, section):
-        if int(section) != 1:
-            return []
-        rows = []
-        for c in self.collections.values():
-            members = [it for it in self.collection_rows(c["id"])
-                       if it["librarySectionID"] == int(section)]
-            updated = max((it.get("updatedAt", 0) for it in members), default=1_700_000_000)
-            rk = c["ratingKey"]
-            rows.append({
-                "ratingKey": str(rk), "key": f"/library/collections/{rk}/children",
-                "type": "collection", "title": c["tag"], "titleSort": c["tag"],
-                "index": c["id"], "childCount": len(members),
-                "updatedAt": updated, "librarySectionID": int(section), "smart": 0,
-            })
-            # A collection with members has the server's automatic composite; the EMPTY one has
-            # no artwork at all, which is the case a client's neutral collection tile draws.
-            if members:
-                rows[-1]["thumb"] = f"/library/collections/{rk}/composite/{updated}"
-        return rows
-
-    def collection_by_rating_key(self, rk):
-        return next((c for c in self.collections.values() if c["ratingKey"] == rk), None)
 
     def section_collection_hubs(self, section, kind):
         """The catalog's collections in one library, as the shelves a real server lists after

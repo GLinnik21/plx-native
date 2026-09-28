@@ -8,15 +8,15 @@
 //! **Rendered once.** The poster worker bakes on the CPU into ONE image, persists it as PNG under
 //! a stamp-keyed [`crate::imgcache::classify_baked`] entry, and delivers it as an ordinary
 //! decoded poster through the store's normal admission, upload and LRU. The members' pixels live
-//! only for the duration of one bake on one worker (three ~240 KB decodes plus the 540 KB output)
+//! only for the duration of one bake on one worker (three ~375 KB decodes plus the 540 KB output)
 //! and never become GL textures. A warm disk hit decodes the baked PNG and fetches nothing.
 //!
 //! A custom poster (`/library/metadata/{rk}/thumb/…`) is untouched: only a path that
-//! [`crate::plex::collections::collection_art`] classifies as a composite is rerouted, at key
+//! [`crate::plex::collections::composite_parts`] reads as a composite is rerouted, at key
 //! build time, to the synthetic `/plx/fan/{rk}/{stamp}` key this module parses back. The server's
-//! composite is never a fallback: no usable member art is [`FanOutcome::NoArt`].
+//! composite is never a fallback: no usable member art is [`Got::Final`].
 
-use crate::plex::collections::{collection_art, CollectionArt};
+use crate::plex::collections::composite_parts;
 
 /// The store key prefix of a baked fan. Not a server path: the worker recognises it before any
 /// request is built, and it carries no token by construction.
@@ -24,9 +24,6 @@ pub(super) const FAN_PREFIX: &str = "/plx/fan/";
 /// Bake size: the portrait card at its largest use, so every consumer samples down.
 pub(super) const FAN_W: u32 = 300;
 pub(super) const FAN_H: u32 = 450;
-/// What each member poster is requested at from the transcoder.
-pub(super) const MEMBER_W: i64 = 200;
-pub(super) const MEMBER_H: i64 = 300;
 /// Members fanned, and so the page size of the children request.
 pub(super) const FAN_MEMBERS: usize = 3;
 /// The baked-image kind, versioned: change it whenever [`compose`]'s output changes so every
@@ -35,10 +32,7 @@ pub(super) const FAN_KIND: &str = "fan.1";
 
 /// The store key for a thumb that is a server composite; `None` for every other path.
 pub(super) fn fan_key(thumb: &str) -> Option<String> {
-    match collection_art(Some(thumb)) {
-        CollectionArt::Composite { rk, stamp } => Some(format!("{FAN_PREFIX}{rk}/{stamp}")),
-        CollectionArt::Custom(_) | CollectionArt::None => None,
-    }
+    composite_parts(thumb).map(|(rk, stamp)| format!("{FAN_PREFIX}{rk}/{stamp}"))
 }
 
 /// `(ratingKey, stamp)` back out of a [`fan_key`].
@@ -251,33 +245,20 @@ fn draw(dst: &mut Rgba, src: &Rgba, p: &Placement) {
     }
 }
 
-/// What the children listing answered.
-pub(super) enum Members {
-    /// Member thumbs in collection order, each with its UltraBlur corners when present.
-    Listed(Vec<(String, Option<[[f32; 3]; 4]>)>),
-    /// A final answer that there is nothing to show (denied, gone).
+/// Every answer the bake deals in — the children listing, one member poster's load and the bake
+/// itself — is one of three: the value, a final "nothing to show", or a failure that can change.
+pub(super) enum Got<T> {
+    Ok(T),
+    /// A final answer that there is nothing to show (denied, gone, no usable art). For the bake
+    /// this is final for its key: a changed collection has a new stamp and so a new key, and the
+    /// consumer draws its neutral tile.
     Final,
-    /// A failure that can change (transport, 5xx): try the bake again later.
+    /// A failure that can change (transport, 5xx): retry under the store's transient backoff.
     Transient,
 }
 
-/// One member poster's load.
-pub(super) enum Art {
-    Decoded(Rgba),
-    Final,
-    Transient,
-}
-
-/// The bake's result, which the worker maps onto the store's slot states.
-pub(super) enum FanOutcome {
-    /// One opaque [`FAN_W`]×[`FAN_H`] image, to be delivered as an ordinary decoded poster.
-    Baked(Rgba),
-    /// The collection has no usable member art: the consumer draws its neutral tile. Final for
-    /// this key (a changed collection has a new stamp and so a new key).
-    NoArt,
-    /// Retry under the store's transient backoff.
-    Transient,
-}
+/// Member thumbs in collection order, each with its UltraBlur corners when present.
+pub(super) type Members = Vec<(String, Option<[[f32; 3]; 4]>)>;
 
 /// The bake's I/O, a seam so the orchestration is host-testable without a server or a disk.
 pub(super) trait FanIo {
@@ -285,26 +266,27 @@ pub(super) trait FanIo {
     fn cached(&mut self) -> Option<Vec<u8>>;
     /// The persisted entry did not decode; drop it.
     fn discard(&mut self);
-    fn members(&mut self) -> Members;
-    fn poster(&mut self, thumb: &str) -> Art;
+    fn members(&mut self) -> Got<Members>;
+    fn poster(&mut self, thumb: &str) -> Got<Rgba>;
     fn persist(&mut self, png: &[u8]);
 }
 
 /// Disk first; otherwise list the first members, load their posters one after another,
-/// composite, persist (only a bake no transient failure degraded) and hand the pixels back.
-pub(super) fn bake(io: &mut dyn FanIo) -> FanOutcome {
+/// composite, persist (only a bake no transient failure degraded) and hand the pixels back. `Ok`
+/// is one opaque [`FAN_W`]×[`FAN_H`] image, delivered as an ordinary decoded poster.
+pub(super) fn bake(io: &mut dyn FanIo) -> Got<Rgba> {
     if let Some(bytes) = io.cached() {
         match crate::img::img_decode_owned(&bytes) {
             Some((w, h, px)) if w == FAN_W && h == FAN_H => {
-                return FanOutcome::Baked(Rgba { w, h, px })
+                return Got::Ok(Rgba { w, h, px })
             }
             _ => io.discard(),
         }
     }
     let listed = match io.members() {
-        Members::Listed(v) => v,
-        Members::Final => return FanOutcome::NoArt,
-        Members::Transient => return FanOutcome::Transient,
+        Got::Ok(v) => v,
+        Got::Final => return Got::Final,
+        Got::Transient => return Got::Transient,
     };
     let mut got: Vec<Member> = Vec::with_capacity(FAN_MEMBERS);
     let mut transient = false;
@@ -314,19 +296,13 @@ pub(super) fn bake(io: &mut dyn FanIo) -> FanOutcome {
         .take(FAN_MEMBERS)
     {
         match io.poster(&thumb) {
-            Art::Decoded(poster) if poster.w > 0 && poster.h > 0 => {
-                got.push(Member { poster, blur })
-            }
-            Art::Transient => transient = true,
-            Art::Decoded(_) | Art::Final => {}
+            Got::Ok(poster) if poster.w > 0 && poster.h > 0 => got.push(Member { poster, blur }),
+            Got::Transient => transient = true,
+            Got::Ok(_) | Got::Final => {}
         }
     }
     if got.is_empty() {
-        return if transient {
-            FanOutcome::Transient
-        } else {
-            FanOutcome::NoArt
-        };
+        return if transient { Got::Transient } else { Got::Final };
     }
     let out = {
         let mut it = got.into_iter();
@@ -341,7 +317,7 @@ pub(super) fn bake(io: &mut dyn FanIo) -> FanOutcome {
             io.persist(&png);
         }
     }
-    FanOutcome::Baked(out)
+    Got::Ok(out)
 }
 
 #[cfg(test)]

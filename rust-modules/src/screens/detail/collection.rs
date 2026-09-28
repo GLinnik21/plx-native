@@ -61,13 +61,7 @@ pub(crate) fn action(d: &Detail, key: u32) -> related::Action {
 /// collection by its TAG id, and the collection store resolves the rating key from it.
 pub(crate) fn target(d: &Detail) -> Option<crate::screens::registry::ContentArg> {
     let c = d.collection.as_ref()?;
-    Some(crate::screens::registry::ContentArg::Collection {
-        sid: d.sid,
-        rk: String::new(),
-        sec: c.section,
-        tag: c.tag,
-        name: c.title.clone(),
-    })
+    Some(crate::screens::registry::ContentArg::Collection(c.link(d.sid)))
 }
 
 pub(crate) fn heading(c: &CollectionShelf) -> LinkedHeading<'_> {

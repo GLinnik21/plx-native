@@ -6,21 +6,61 @@
 
 use super::client::{Client, JsonStatusOutcome, QueryBuilder};
 use super::models::{MediaContainer, Metadata};
+use super::ServerId;
+
+/// One collection as a link names it: by `rk` (its ratingKey) when the link carries one, else by
+/// `sec` + `tag` (the member-tag id space) for the collection store to resolve against the
+/// section's collection listing. `name` is the title shown until the collection's own metadata
+/// lands — it is never identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CollectionRef {
+    pub(crate) sid: ServerId,
+    pub(crate) rk: String,
+    pub(crate) sec: i64,
+    pub(crate) tag: i64,
+    pub(crate) name: String,
+}
+
+impl CollectionRef {
+    /// A link that knows the collection's ratingKey (a promoted shelf, a library tile).
+    pub(crate) fn by_rk(sid: ServerId, rk: &str, sec: i64, name: &str) -> Self {
+        Self { sid, rk: rk.to_owned(), sec, tag: 0, name: name.to_owned() }
+    }
+
+    /// A link that knows only the collection's tag id within a section (a member's
+    /// `collection.related` hub, a tag-shaped search hit).
+    pub(crate) fn by_tag(sid: ServerId, sec: i64, tag: i64, name: &str) -> Self {
+        Self { sid, rk: String::new(), sec, tag, name: name.to_owned() }
+    }
+
+    /// THE collection identity rule. Two ratingKeys compare when both sides carry one; otherwise
+    /// the server, section and a non-zero tag id must all agree. A ratingKey is never compared
+    /// with a tag id, and a zero tag names nothing.
+    pub(crate) fn same_collection(&self, other: &Self) -> bool {
+        if self.sid != other.sid {
+            return false;
+        }
+        if !self.rk.is_empty() && !other.rk.is_empty() {
+            self.rk == other.rk
+        } else {
+            self.sec == other.sec && self.tag != 0 && self.tag == other.tag
+        }
+    }
+
+    /// Names no collection at all — neither a ratingKey nor a tag to resolve.
+    pub(crate) fn is_identityless(&self) -> bool {
+        self.rk.is_empty() && self.tag == 0
+    }
+}
 
 /// A collection read preserves the server answers that collection UI must present distinctly.
+/// Every other failure — no response, an unexpected status, a malformed 2xx body — is one
+/// retryable `Transport`: the page presents them identically.
 pub(crate) enum CollectionOutcome {
     Ok(MediaContainer),
     Denied,
     Missing,
-    Transport(CollectionError),
-}
-
-/// Failures other than the two collection-specific HTTP answers.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CollectionError {
-    RequestFailed,
-    Http(i32),
-    Malformed,
+    Transport,
 }
 
 impl Client {
@@ -59,9 +99,7 @@ impl Client {
 
     fn collection_get(&self, path: &str) -> CollectionOutcome {
         match self.get_json_status(path) {
-            JsonStatusOutcome::Transport => {
-                CollectionOutcome::Transport(CollectionError::RequestFailed)
-            }
+            JsonStatusOutcome::Transport => CollectionOutcome::Transport,
             JsonStatusOutcome::Response {
                 status: 401 | 403, ..
             } => CollectionOutcome::Denied,
@@ -70,40 +108,25 @@ impl Client {
                 status: 200..=299,
                 parsed: Some(page),
             } => CollectionOutcome::Ok(page),
-            JsonStatusOutcome::Response {
-                status: 200..=299,
-                parsed: None,
-            } => CollectionOutcome::Transport(CollectionError::Malformed),
-            JsonStatusOutcome::Response { status, .. } => {
-                CollectionOutcome::Transport(CollectionError::Http(status))
-            }
+            JsonStatusOutcome::Response { .. } => CollectionOutcome::Transport,
         }
     }
 }
 
 /// Extract the collection rating key from either supported member-listing route.
-pub(crate) fn collection_rk_from_hub_key(key: &str) -> Option<&str> {
+fn collection_rk_from_hub_key(key: &str) -> Option<&str> {
     let path = key.split_once('?').map_or(key, |(path, _)| path);
     let tail = path.strip_prefix("/library/collections/")?;
     let (rating_key, endpoint) = tail.split_once('/')?;
     (!rating_key.is_empty() && matches!(endpoint, "children" | "items")).then_some(rating_key)
 }
 
-/// Resolve a member tag to a full collection row using the strongest live-observed identity first.
-pub(crate) fn resolve_tag<'a>(
-    rows: &'a [Metadata],
-    tag_id: i64,
-    guid: &str,
-    title: &str,
-) -> Option<&'a Metadata> {
-    (!guid.is_empty())
-        .then(|| rows.iter().find(|row| row.guid == guid))
+/// Resolve a member tag to a full collection row: the tag id (a collection row's `index`) first,
+/// then the exact title.
+pub(crate) fn resolve_tag<'a>(rows: &'a [Metadata], tag_id: i64, title: &str) -> Option<&'a Metadata> {
+    (tag_id != 0)
+        .then(|| rows.iter().find(|row| row.index == tag_id))
         .flatten()
-        .or_else(|| {
-            (tag_id != 0)
-                .then(|| rows.iter().find(|row| row.index == tag_id))
-                .flatten()
-        })
         .or_else(|| {
             (!title.is_empty())
                 .then(|| rows.iter().find(|row| row.title == title))
@@ -111,36 +134,18 @@ pub(crate) fn resolve_tag<'a>(
         })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum CollectionArt {
-    Custom(String),
-    Composite { rk: String, stamp: String },
-    None,
-}
-
-/// Classify an automatic collection composite separately from an ordinary/custom poster path.
-pub(crate) fn collection_art(thumb: Option<&str>) -> CollectionArt {
-    let Some(thumb) = thumb.filter(|thumb| !thumb.is_empty()) else {
-        return CollectionArt::None;
-    };
+/// The `(ratingKey, stamp)` of an automatic collection composite
+/// (`/library/collections/{rk}/composite/{stamp}`, possibly with a query); `None` for a custom
+/// poster path or no art at all.
+pub(crate) fn composite_parts(thumb: &str) -> Option<(&str, &str)> {
     let path = thumb.split_once('?').map_or(thumb, |(path, _)| path);
-    if let Some(tail) = path.strip_prefix("/library/collections/") {
-        let mut segments = tail.split('/');
-        if let (Some(rk), Some("composite"), Some(stamp), None) = (
-            segments.next(),
-            segments.next(),
-            segments.next(),
-            segments.next(),
-        ) {
-            if !rk.is_empty() && !stamp.is_empty() {
-                return CollectionArt::Composite {
-                    rk: rk.to_string(),
-                    stamp: stamp.to_string(),
-                };
-            }
+    let mut segments = path.strip_prefix("/library/collections/")?.split('/');
+    match (segments.next(), segments.next(), segments.next(), segments.next()) {
+        (Some(rk), Some("composite"), Some(stamp), None) if !rk.is_empty() && !stamp.is_empty() => {
+            Some((rk, stamp))
         }
+        _ => None,
     }
-    CollectionArt::Custom(thumb.to_string())
 }
 
 /// The collection a promoted `custom.collection.{section}.{rk}.{rk}` hub lists, for a linked shelf
@@ -148,7 +153,7 @@ pub(crate) fn collection_art(thumb: Option<&str>) -> CollectionArt {
 /// (`/library/collections/{rk}/children`) and falls back to the identifier's own segment; the
 /// section is the identifier's first segment (0 when it does not parse). `collection.related` hubs
 /// answer `None` — they are keyed by TAG id and a Detail page resolves them through the store.
-pub(crate) fn promoted_collection_hub<'a>(
+fn promoted_collection_hub<'a>(
     hub_identifier: &'a str,
     key: &'a str,
 ) -> Option<(i64, &'a str)> {
@@ -158,6 +163,20 @@ pub(crate) fn promoted_collection_hub<'a>(
     let rk = collection_rk_from_hub_key(key)
         .or_else(|| segments.next().filter(|rk| !rk.is_empty()))?;
     Some((section, rk))
+}
+
+/// Where a promoted collection shelf's linked heading leads: the collection its hub lists, titled
+/// with the shelf's heading. `section` is the section the shelf was published under, used when the
+/// identifier's own section segment does not parse. `None` for every other hub.
+pub(crate) fn promoted_collection_link(
+    sid: ServerId,
+    hub_identifier: &str,
+    key: &str,
+    title: &str,
+    section: i64,
+) -> Option<CollectionRef> {
+    let (sec, rk) = promoted_collection_hub(hub_identifier, key)?;
+    Some(CollectionRef::by_rk(sid, rk, if sec != 0 { sec } else { section }, title))
 }
 
 /// A member's own-collection hub from `/library/metadata/{rk}/related`:
@@ -185,12 +204,6 @@ pub(crate) fn related_collection_hub(hub_identifier: &str, key: &str) -> Option<
     Some((section, tag))
 }
 
-pub(crate) fn is_collection_hub(hub_identifier: &str) -> bool {
-    hub_identifier.starts_with("custom.collection.")
-        || hub_identifier == "collection.related"
-        || hub_identifier.starts_with("collection.related.")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,7 +219,7 @@ mod tests {
     }
 
     #[test]
-    fn redacted_collection_shapes_parse_with_lenient_numbers_and_member_tags() {
+    fn redacted_collection_shapes_parse_with_lenient_numbers_and_tag_guids() {
         let section = page(br#"{"MediaContainer":{"size":1,"totalSize":"3","offset":0,"Metadata":[
             {"ratingKey":"420","key":"/library/collections/420/children","guid":"collection://fixture-a",
              "type":"collection","title":"Placeholder Collection","subtype":"movie","index":77,
@@ -217,22 +230,12 @@ mod tests {
         assert_eq!((row.child_count, row.updated_at), (3, 1_700_000_000));
         assert_eq!(row.subtype, "movie");
 
-        let member = page(
-            br#"{"MediaContainer":{"Metadata":[{"ratingKey":"900","type":"movie",
-            "title":"Placeholder Movie","Collection":[{"id":77,"filter":"collection=77",
-            "tag":"Placeholder Collection","guid":"collection://fixture-a"}]}]}}"#,
-        );
-        let tag = &member.metadata[0].collection[0];
-        assert_eq!(tag.id, 77);
-        assert_eq!(tag.filter, "collection=77");
-        assert_eq!(tag.guid, "collection://fixture-a");
-
         let odd_guids = page(
-            br#"{"MediaContainer":{"Metadata":[{"Collection":[
+            br#"{"MediaContainer":{"Metadata":[{"Genre":[
             {"tag":"Null guid","guid":null},{"tag":"Numeric guid","guid":42}
             ]}]}}"#,
         );
-        let tags = &odd_guids.metadata[0].collection;
+        let tags = &odd_guids.metadata[0].genre;
         assert_eq!(tags[0].guid, "");
         assert_eq!(tags[1].guid, "42");
 
@@ -265,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn tag_resolution_prefers_guid_then_index_then_exact_title() {
+    fn tag_resolution_prefers_index_then_exact_title() {
         let rows = page(
             br#"{"MediaContainer":{"Metadata":[
             {"title":"Title Match","guid":"collection://wrong","index":5},
@@ -274,45 +277,25 @@ mod tests {
         )
         .metadata;
         assert_eq!(
-            resolve_tag(&rows, 77, "collection://right", "Title Match")
-                .unwrap()
-                .title,
-            "Other"
-        );
-        assert_eq!(
-            resolve_tag(&rows, 77, "", "Title Match").unwrap().title,
+            resolve_tag(&rows, 77, "Title Match").unwrap().title,
             "Index Match"
         );
         assert_eq!(
-            resolve_tag(&rows, 99, "", "Title Match").unwrap().title,
+            resolve_tag(&rows, 99, "Title Match").unwrap().title,
             "Title Match"
         );
-        assert!(resolve_tag(&rows, 99, "", "Missing").is_none());
+        assert!(resolve_tag(&rows, 99, "Missing").is_none());
     }
 
     #[test]
     fn art_distinguishes_composites_custom_paths_and_absence() {
-        assert_eq!(collection_art(None), CollectionArt::None);
-        assert_eq!(collection_art(Some("")), CollectionArt::None);
+        assert_eq!(composite_parts(""), None);
         assert_eq!(
-            collection_art(Some("/library/collections/420/composite/1700?width=400")),
-            CollectionArt::Composite {
-                rk: "420".into(),
-                stamp: "1700".into()
-            }
+            composite_parts("/library/collections/420/composite/1700?width=400"),
+            Some(("420", "1700"))
         );
-        assert_eq!(
-            collection_art(Some("/library/metadata/420/thumb/1700")),
-            CollectionArt::Custom("/library/metadata/420/thumb/1700".into())
-        );
-    }
-
-    #[test]
-    fn recognizes_promoted_and_related_collection_hubs() {
-        assert!(is_collection_hub("custom.collection.1.420.420"));
-        assert!(is_collection_hub("collection.related"));
-        assert!(is_collection_hub("collection.related.1.1"));
-        assert!(!is_collection_hub("movie.similar"));
+        assert_eq!(composite_parts("/library/metadata/420/thumb/1700"), None);
+        assert_eq!(composite_parts("/library/collections/420/composite/1700/x"), None);
     }
 
     #[test]
@@ -335,6 +318,44 @@ mod tests {
             "a related hub is tag-keyed and is resolved by the collection store"
         );
         assert_eq!(promoted_collection_hub("movie.recentlyadded.1", "/x"), None);
+    }
+
+    /// Home and the Library build a promoted shelf's link through one function, so the section a
+    /// link carries when the identifier's own segment does not parse is the publishing section on
+    /// both — never a bare 0 on one of them.
+    #[test]
+    fn a_promoted_link_falls_back_to_the_publishing_section() {
+        let sid = ServerId::from_raw(3);
+        let key = "/library/collections/420/children";
+        assert_eq!(
+            promoted_collection_link(sid, "custom.collection.1.420.420", key, "Set", 9),
+            Some(CollectionRef::by_rk(sid, "420", 1, "Set"))
+        );
+        assert_eq!(
+            promoted_collection_link(sid, "custom.collection.x.420.420", key, "Set", 9),
+            Some(CollectionRef::by_rk(sid, "420", 9, "Set"))
+        );
+        assert_eq!(promoted_collection_link(sid, "movie.similar", key, "Set", 9), None);
+    }
+
+    #[test]
+    fn collection_identity_never_compares_a_tag_with_a_rating_key() {
+        let sid = ServerId::from_raw(2);
+        let at = |rk: &str, tag| CollectionRef { sid, rk: rk.into(), sec: 4, tag, name: "A".into() };
+        assert!(at("50077", 77).same_collection(&at("50077", 99)),
+            "two resolved identities compare their ratingKey");
+        assert!(!at("50077", 77).same_collection(&at("50078", 77)),
+            "different non-empty ratingKeys do not fall through to tag identity");
+        assert!(at("", 77).same_collection(&at("", 77)),
+            "tag-only identities compare server, section and non-zero tag");
+        assert!(at("50077", 77).same_collection(&at("", 77)),
+            "a resolved identity still matches the tag route it was resolved from");
+        assert!(!at("", 0).same_collection(&at("", 0)), "zero is not a tag identity");
+        assert!(!at("50077", 0).same_collection(&at("", 50077)),
+            "a ratingKey is never compared to a numeric tag id");
+        assert!(!at("50077", 0).same_collection(&CollectionRef { sid: ServerId::from_raw(5), ..at("50077", 0) }),
+            "another server's collection is another collection");
+        assert!(at("", 0).is_identityless() && !at("", 7).is_identityless() && !at("1", 0).is_identityless());
     }
 
     #[test]

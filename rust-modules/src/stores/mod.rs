@@ -407,6 +407,88 @@ pub(crate) fn take_landing<T>(gate: &crate::ui::landgate::Gate, id: StoreId,
     gate.take(id.ord(), f)
 }
 
+/// One fetch's two WORKER-VISIBLE halves: the claim that it is out, and the mailbox its answer
+/// lands in — the single-flight mailbox the Person, Search and Collection stores share. Bundled
+/// because they move together: the claim of a worker that is out is cleared by the take of the
+/// mail answering it ([`Fetch::take`]), so emptying that mailbox any other way owes the release
+/// ([`Fetch::clear`]), and a spawn that never happened owes it too ([`Fetch::release`]).
+///
+/// The claim bounds spawns per *pump*; it is NOT a hard one-worker-at-a-time interlock. A
+/// supersede releases it while the old worker is still running, and a take releases it before
+/// the owner's generation check (so a stale landing can free a NEWER fetch's claim, costing one
+/// duplicate request). Neither can wedge or corrupt: [`Fetch::post`] is monotone on whatever the
+/// owner says beats the mail already there, and every owner discards a stale generation.
+pub(crate) struct Fetch<M> {
+    in_flight: std::sync::atomic::AtomicBool,
+    /// Where the worker posts what it came back with. `None` means nothing has landed since the
+    /// last take.
+    slot: std::sync::Mutex<Option<M>>,
+}
+
+impl<M> Default for Fetch<M> {
+    fn default() -> Self { Self::IDLE }
+}
+
+impl<M> Fetch<M> {
+    pub(crate) const IDLE: Self = Self {
+        in_flight: std::sync::atomic::AtomicBool::new(false),
+        slot: std::sync::Mutex::new(None),
+    };
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<M>> {
+        self.slot.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Is the claim held? A spawn's first gate.
+    pub(crate) fn busy(&self) -> bool {
+        self.in_flight.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Claim the fetch, on the way into a spawn.
+    pub(crate) fn claim(&self) {
+        self.in_flight.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Release the claim without touching the mailbox — what a REFUSED spawn (`task.rs`'s thread
+    /// ceiling) owes, since nothing will ever land to release it.
+    pub(crate) fn release(&self) {
+        self.in_flight.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Take whatever landed, RELEASING the claim with it, whatever the mail turns out to be. An
+    /// EMPTY mailbox releases nothing: the claim it would clear belongs to a worker still running,
+    /// and the next frame would spawn a duplicate.
+    pub(crate) fn take(&self) -> Option<M> {
+        let mail = self.lock().take()?;
+        self.release();
+        Some(mail)
+    }
+
+    /// Drop the mailbox and release the claim with it — a supersede's per-fetch half. Releases
+    /// unconditionally, unlike [`Fetch::take`]: the worker holding this claim is still out, and
+    /// what it will answer about is no longer open.
+    pub(crate) fn clear(&self) {
+        *self.lock() = None;
+        self.release();
+    }
+
+    /// WORKER THREAD: post `mail` unless the mail already waiting wins — `beats(old)` answers
+    /// whether the new mail replaces it. MONOTONE by the owner's rule: an older fetch landing late
+    /// must never clobber a newer result the pump has not consumed yet.
+    pub(crate) fn post(&self, mail: M, beats: impl FnOnce(&M) -> bool) {
+        let mut slot = self.lock();
+        if slot.as_ref().is_none_or(beats) {
+            *slot = Some(mail);
+        }
+    }
+
+    /// Is mail waiting? A test's view of the mailbox without taking it.
+    #[cfg(test)]
+    pub(crate) fn has_mail(&self) -> bool {
+        self.lock().is_some()
+    }
+}
+
 /// A mailbox drained as a QUEUE: an empty answer is not a landing.
 pub(crate) fn take_landings<T>(gate: &crate::ui::landgate::Gate, id: StoreId,
     f: impl FnMut() -> Vec<T>) -> Vec<T> {

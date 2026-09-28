@@ -3,33 +3,23 @@
 //! separate jobs so a tag-only route can publish its resolved ratingKey before later requests
 //! finish. All network work runs off the frame thread; landings are applied by [`CollectionState::pump_with_gate`].
 
-use crate::plex::collections::{resolve_tag, CollectionOutcome};
+use crate::plex::collections::{resolve_tag, CollectionOutcome, CollectionRef};
 use crate::plex::ServerId;
 use crate::pms::{parse_item, PmsMovie};
 use std::panic::catch_unwind;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub(crate) const PAGE_SIZE: usize = 60;
 const RETRY_FRAMES: u32 = 120;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CollectionTarget {
-    pub(crate) rk: String,
-    pub(crate) sec: i64,
-    pub(crate) tag: i64,
-    pub(crate) name: String,
+    pub(crate) id: CollectionRef,
     /// Number of children the visible grid currently asks the store to make available.
     pub(crate) want: usize,
 }
 
-impl CollectionTarget {
-    pub(crate) fn initial(rk: String, sec: i64, tag: i64, name: String) -> Self {
-        Self { rk, sec, tag, name, want: PAGE_SIZE }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum CollectionStatus {
     #[default]
     Loading,
@@ -40,11 +30,8 @@ pub(crate) enum CollectionStatus {
 }
 
 pub(crate) struct Collection {
-    pub(crate) sid: ServerId,
-    pub(crate) rk: String,
-    pub(crate) sec: i64,
-    pub(crate) tag: i64,
-    pub(crate) name: String,
+    /// The identity the page was opened with; `id.rk` is filled in once a tag route resolves.
+    pub(crate) id: CollectionRef,
     pub(crate) title: String,
     pub(crate) summary: String,
     pub(crate) thumb: String,
@@ -64,10 +51,12 @@ pub(crate) struct Collection {
 }
 
 impl Collection {
-    pub(crate) fn identity_matches(&self, sid: ServerId, target: &CollectionTarget) -> bool {
-        if self.sid != sid { return false; }
-        if !self.rk.is_empty() && !target.rk.is_empty() { self.rk == target.rk }
-        else { self.sec == target.sec && self.tag != 0 && self.tag == target.tag }
+    /// A collection opened (or reopened) with nothing landed yet: its title is the link's name
+    /// until the header replaces it.
+    fn loading(id: CollectionRef, want: usize, client_key: Option<(u32, u32)>) -> Self {
+        Self { title: id.name.clone(), id, summary: String::new(), thumb: String::new(),
+            child_count: 0, items: Vec::new(), total: 0, status: CollectionStatus::Loading,
+            more: true, offset: 0, want, header_ready: false, client_key }
     }
 }
 
@@ -100,8 +89,8 @@ impl CollectionState {
     pub(crate) fn run(&mut self, adapter: &Arc<CollectionAdapter>, cmd: crate::stores::collection::CollectionCmd) -> bool {
         use crate::stores::collection::CollectionCmd;
         match cmd {
-            CollectionCmd::Open { sid, target } => {
-                if let Some(current) = self.current.as_mut().filter(|c| c.identity_matches(sid, &target)) {
+            CollectionCmd::Open { target } => {
+                if let Some(current) = self.current.as_mut().filter(|c| c.id.same_collection(&target.id)) {
                     let old = current.want;
                     current.want = current.want.max(target.want);
                     let retry = current.status == CollectionStatus::Failed;
@@ -112,14 +101,8 @@ impl CollectionState {
                     return current.want != old || retry;
                 }
                 self.supersede(adapter);
-                let client_key = crate::plex::client_for(sid).map(|c| (c.instance_gen(), c.token_gen()));
-                self.current = Some(Collection {
-                    sid, rk: target.rk, sec: target.sec, tag: target.tag,
-                    name: target.name.clone(), title: target.name, summary: String::new(),
-                    thumb: String::new(), child_count: 0, items: Vec::new(), total: 0,
-                    status: CollectionStatus::Loading, more: true, offset: 0,
-                    want: target.want.max(PAGE_SIZE), header_ready: false, client_key,
-                });
+                let client_key = crate::plex::client_for(target.id.sid).map(|c| (c.instance_gen(), c.token_gen()));
+                self.current = Some(Collection::loading(target.id, target.want.max(PAGE_SIZE), client_key));
                 true
             }
             CollectionCmd::Close | CollectionCmd::Reset => {
@@ -144,30 +127,19 @@ impl CollectionState {
 
     fn refresh_if_client_changed(&mut self, adapter: &CollectionAdapter) -> bool {
         let Some(c) = self.current.as_ref() else { return false };
-        let now = crate::plex::client_for(c.sid).map(|x| (x.instance_gen(), x.token_gen()));
+        let now = crate::plex::client_for(c.id.sid).map(|x| (x.instance_gen(), x.token_gen()));
         if now == c.client_key { return false; }
-        let (sid, rk, sec, tag, name, want) =
-            (c.sid, c.rk.clone(), c.sec, c.tag, c.name.clone(), c.want);
+        let (id, want) = (c.id.clone(), c.want);
         self.supersede(adapter);
-        self.current = Some(Collection {
-            sid, rk, sec, tag, name: name.clone(), title: name, summary: String::new(),
-            thumb: String::new(), child_count: 0, items: Vec::new(), total: 0,
-            status: CollectionStatus::Loading, more: true, offset: 0, want, header_ready: false,
-            client_key: now,
-        });
+        self.current = Some(Collection::loading(id, want, now));
         true
     }
 
     pub(crate) fn pump_with_gate(&mut self, adapter: &Arc<CollectionAdapter>, gate: &crate::ui::landgate::Gate) -> bool {
         let mut changed = self.refresh_if_client_changed(adapter);
         if self.retry_cd > 0 { self.retry_cd -= 1; }
-        let reply = if crate::app::bootstrap::stores::active() {
-            let reply = crate::app::bootstrap::stores::poll("collection", 0, || adapter.fetch.take());
-            if reply.is_some() { gate.landed(crate::stores::StoreId::Collection.ord()); }
-            reply
-        } else {
-            crate::stores::take_landing(gate, crate::stores::StoreId::Collection, || adapter.fetch.take())
-        };
+        let reply = crate::app::bootstrap::stores::take_store_landing(
+            gate, crate::stores::StoreId::Collection, "collection", 0, &adapter.fetch);
         if let Some(reply) = reply {
             crate::ui::idle::invalidate();
             if reply.gen == self.generation { changed |= self.apply(reply.what); }
@@ -179,14 +151,14 @@ impl CollectionState {
     fn job(&self) -> Option<Job> {
         let c = self.current.as_ref()?;
         if c.status == CollectionStatus::Unavailable || c.status == CollectionStatus::Empty { return None; }
-        if c.rk.is_empty() {
-            return (c.sec != 0 && c.tag != 0).then(|| Job::Resolve {
-                sec: c.sec, tag: c.tag, name: c.name.clone(),
+        if c.id.rk.is_empty() {
+            return (c.id.sec != 0 && c.id.tag != 0).then(|| Job::Resolve {
+                sec: c.id.sec, tag: c.id.tag, name: c.id.name.clone(),
             });
         }
-        if !c.header_ready { return Some(Job::Header { rk: c.rk.clone() }); }
+        if !c.header_ready { return Some(Job::Header { rk: c.id.rk.clone() }); }
         if c.more && c.items.len() < c.want {
-            return Some(Job::Children { rk: c.rk.clone(), start: c.offset });
+            return Some(Job::Children { rk: c.id.rk.clone(), start: c.offset });
         }
         None
     }
@@ -195,13 +167,13 @@ impl CollectionState {
         if adapter.fetch.busy() || self.retry_cd > 0 { return; }
         let Some(job) = self.job() else { return };
         let Some(c) = self.current.as_ref() else { return };
-        let Some(client) = crate::plex::client_for(c.sid) else {
+        let Some(client) = crate::plex::client_for(c.id.sid) else {
             self.retry_cd = RETRY_FRAMES;
             if c.items.is_empty() { self.current.as_mut().unwrap().status = CollectionStatus::Failed; }
             return;
         };
         let generation = self.generation;
-        let sid = c.sid;
+        let sid = c.id.sid;
         adapter.fetch.claim();
         let worker_adapter = Arc::clone(adapter);
         let request = serde_json::json!({"store":"collection","slot":0,"gen":generation,
@@ -216,19 +188,14 @@ impl CollectionState {
     fn apply(&mut self, landing: Landing) -> bool {
         let Some(c) = self.current.as_mut() else { return false };
         match landing {
-            Landing::Resolved { rk, title, thumb, summary, child_count } => {
-                c.rk = rk;
-                if !title.is_empty() { c.title = title; }
-                c.thumb = thumb;
-                c.summary = summary;
-                c.child_count = child_count;
-                true
-            }
-            Landing::Header { title, thumb, summary, child_count } => {
-                if !title.is_empty() { c.title = title; }
-                c.thumb = thumb;
-                c.summary = summary;
-                c.child_count = child_count;
+            Landing::Header { rk, head } => {
+                // A tag route's resolution arrives with the row it was resolved from, which IS the
+                // header: no second GET for the same fields.
+                if let Some(rk) = rk { c.id.rk = rk; }
+                if !head.title.is_empty() { c.title = head.title; }
+                c.thumb = head.thumb;
+                c.summary = head.summary;
+                c.child_count = head.child_count;
                 c.header_ready = true;
                 c.status = CollectionStatus::Loading;
                 true
@@ -265,7 +232,7 @@ impl CollectionState {
     #[cfg(test)]
     pub(crate) fn install_for_test(&mut self, items: Vec<PmsMovie>, status: CollectionStatus) {
         let Some(c) = self.current.as_mut() else { return };
-        c.title = if c.name.is_empty() { "Collection".into() } else { c.name.clone() };
+        c.title = if c.id.name.is_empty() { "Collection".into() } else { c.id.name.clone() };
         c.summary = "A collection summary long enough for screen layout tests.".into();
         c.child_count = items.len();
         c.total = items.len();
@@ -295,10 +262,21 @@ enum Job {
     Children { rk: String, start: usize },
 }
 
+/// A collection row's header fields, as both the tag resolution and the metadata GET read them.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct Header { title: String, thumb: String, summary: String, child_count: usize }
+
+impl Header {
+    fn of(row: &crate::plex::Metadata) -> Self {
+        Self { title: row.title.clone(), thumb: row.thumb.clone(), summary: row.summary.clone(),
+            child_count: row.child_count.max(0) as usize }
+    }
+}
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 enum Landing {
-    Resolved { rk: String, title: String, thumb: String, summary: String, child_count: usize },
-    Header { title: String, thumb: String, summary: String, child_count: usize },
+    /// The collection's header; `rk` is `Some` when it answers a tag route's resolution.
+    Header { rk: Option<String>, head: Header },
     /// `got` is the server rows this page consumed; `items` only the listable ones among them.
     Page { start: usize, got: usize, items: Vec<PmsMovie>, total: usize },
     Denied,
@@ -320,57 +298,50 @@ pub(crate) fn member(row: &crate::plex::Metadata, sid: ServerId) -> PmsMovie {
     item
 }
 
-fn row_header(row: &crate::plex::Metadata) -> (String, String, String, usize) {
-    (row.title.clone(), row.thumb.clone(), row.summary.clone(), row.child_count.max(0) as usize)
+/// A read's page, or the landing its failure is: the one mapping of the server's non-page answers.
+fn answered(outcome: CollectionOutcome) -> Result<crate::plex::MediaContainer, Landing> {
+    match outcome {
+        CollectionOutcome::Ok(page) => Ok(page),
+        CollectionOutcome::Denied => Err(Landing::Denied),
+        CollectionOutcome::Missing => Err(Landing::Missing),
+        CollectionOutcome::Transport => Err(Landing::Transport),
+    }
 }
 
 fn run_job(client: &'static crate::plex::Client, sid: ServerId, job: Job) -> Landing {
-    match job {
-        Job::Resolve { sec, tag, name } => {
-            let mut start = 0i64;
-            loop {
-                match client.section_collections(sec, start, PAGE_SIZE as i64) {
-                    CollectionOutcome::Ok(page) => {
-                        if let Some(row) = resolve_tag(&page.metadata, tag, "", &name) {
-                            let (title, thumb, summary, child_count) = row_header(row);
-                            return Landing::Resolved { rk: row.rating_key.clone(), title, thumb, summary, child_count };
-                        }
-                        let got = page.metadata.len() as i64;
-                        let total = page.total_size.max(page.size).max(0);
-                        if got == 0 || start + got >= total { return Landing::Missing; }
-                        start += got;
+    let run = || -> Result<Landing, Landing> {
+        Ok(match job {
+            Job::Resolve { sec, tag, name } => {
+                let mut start = 0i64;
+                loop {
+                    let page = answered(client.section_collections(sec, start, PAGE_SIZE as i64))?;
+                    if let Some(row) = resolve_tag(&page.metadata, tag, &name) {
+                        break Landing::Header { rk: Some(row.rating_key.clone()), head: Header::of(row) };
                     }
-                    CollectionOutcome::Denied => return Landing::Denied,
-                    CollectionOutcome::Missing => return Landing::Missing,
-                    CollectionOutcome::Transport(_) => return Landing::Transport,
+                    let got = page.metadata.len() as i64;
+                    let total = page.total_size.max(page.size).max(0);
+                    if got == 0 || start + got >= total { break Landing::Missing; }
+                    start += got;
                 }
             }
-        }
-        Job::Header { rk } => match client.collection(&rk) {
-            CollectionOutcome::Ok(page) => match page.metadata.first() {
-                Some(row) => {
-                    let (title, thumb, summary, child_count) = row_header(row);
-                    Landing::Header { title, thumb, summary, child_count }
-                }
-                None => Landing::Missing,
-            },
-            CollectionOutcome::Denied => Landing::Denied,
-            CollectionOutcome::Missing => Landing::Missing,
-            CollectionOutcome::Transport(_) => Landing::Transport,
-        },
-        Job::Children { rk, start } => match client.collection_children(&rk, start as i64, PAGE_SIZE as i64) {
-            CollectionOutcome::Ok(page) => {
+            Job::Header { rk } => answered(client.collection(&rk))?.metadata.first()
+                .map_or(Landing::Missing, |row| Landing::Header { rk: None, head: Header::of(row) }),
+            Job::Children { rk, start } => {
+                let page = answered(client.collection_children(&rk, start as i64, PAGE_SIZE as i64))?;
                 let total = page.total_size.max(page.size).max(0) as usize;
                 let got = page.metadata.len();
                 let items = page.metadata.iter().filter(|row| crate::pms::listable(&row.kind))
                     .map(|row| member(row, sid)).collect();
                 Landing::Page { start, got, items, total }
             }
-            CollectionOutcome::Denied => Landing::Denied,
-            CollectionOutcome::Missing => Landing::Missing,
-            CollectionOutcome::Transport(_) => Landing::Transport,
-        },
-    }
+        })
+    };
+    run().unwrap_or_else(|failed| failed)
+}
+
+#[cfg(test)]
+fn header(title: &str, child_count: usize) -> Header {
+    Header { title: title.into(), thumb: String::new(), summary: String::new(), child_count }
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -384,34 +355,12 @@ pub(crate) fn validate_record(slot: u32, value: &serde_json::Value) -> Result<()
     Ok(())
 }
 
-struct Fetch { in_flight: AtomicBool, slot: Mutex<Option<Mail>> }
-
-impl Default for Fetch {
-    fn default() -> Self { Self { in_flight: AtomicBool::new(false), slot: Mutex::new(None) } }
-}
-
-impl Fetch {
-    fn busy(&self) -> bool { self.in_flight.load(Ordering::SeqCst) }
-    fn claim(&self) { self.in_flight.store(true, Ordering::SeqCst); }
-    fn release(&self) { self.in_flight.store(false, Ordering::SeqCst); }
-    fn take(&self) -> Option<Mail> {
-        let mail = self.slot.lock().unwrap_or_else(|e| e.into_inner()).take()?;
-        self.release();
-        Some(mail)
-    }
-    fn clear(&self) {
-        *self.slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        self.release();
-    }
-}
-
 #[derive(Default)]
-pub(crate) struct CollectionAdapter { fetch: Fetch }
+pub(crate) struct CollectionAdapter { fetch: crate::stores::Fetch<Mail> }
 
 impl CollectionAdapter {
     fn land(&self, generation: u32, what: Landing) {
-        let mut slot = self.fetch.slot.lock().unwrap_or_else(|e| e.into_inner());
-        if slot.as_ref().is_none_or(|old| old.gen < generation) { *slot = Some(Mail { gen: generation, what }); }
+        self.fetch.post(Mail { gen: generation, what }, |old| old.gen < generation);
     }
 
     #[cfg(test)]
@@ -427,8 +376,7 @@ impl CollectionAdapter {
 
     #[cfg(test)]
     pub(crate) fn land_resolved_for_test(&self, generation: u32, rk: &str) {
-        self.land(generation, Landing::Resolved { rk: rk.into(), title: "Resolved".into(),
-            thumb: String::new(), summary: String::new(), child_count: 0 });
+        self.land(generation, Landing::Header { rk: Some(rk.into()), head: header("Resolved", 0) });
     }
 
 
@@ -443,6 +391,11 @@ impl CollectionAdapter {
 mod tests {
     use super::*;
     use crate::stores::collection::CollectionCmd;
+
+    fn set_target(rk: &str, tag: i64, name: &str) -> CollectionTarget {
+        CollectionTarget { id: CollectionRef { sid: ServerId::UNSET, rk: rk.into(), sec: 1, tag,
+            name: name.into() }, want: PAGE_SIZE }
+    }
 
     fn row(kind: &str, thumb: &str, parent: &str, grandparent: &str) -> crate::plex::Metadata {
         crate::plex::Metadata { rating_key: "9".into(), kind: kind.into(), title: "Pilot".into(),
@@ -466,12 +419,11 @@ mod tests {
     fn paging_asks_for_the_next_page_only_when_the_grid_wants_more() {
         let adapter = Arc::new(CollectionAdapter::default());
         let mut state = CollectionState::default();
-        let target = CollectionTarget::initial("50001".into(), 1, 7, "Set".into());
-        state.run(&adapter, CollectionCmd::Open { sid: ServerId::UNSET, target: target.clone() });
+        let target = set_target("50001", 7, "Set");
+        state.run(&adapter, CollectionCmd::Open { target: target.clone() });
         assert!(matches!(state.job(), Some(Job::Header { .. })));
         let generation = state.generation();
-        adapter.land(generation, Landing::Header { title: "Set".into(), thumb: String::new(),
-            summary: String::new(), child_count: 130 });
+        adapter.land(generation, Landing::Header { rk: None, head: header("Set", 130) });
         assert!(state.take_landing_for_test(&adapter));
         assert!(matches!(state.job(), Some(Job::Children { start: 0, .. })));
         let page = (0..PAGE_SIZE).map(|i| PmsMovie { rk: i.to_string(), ..Default::default() }).collect();
@@ -483,7 +435,7 @@ mod tests {
 
         let mut more = target;
         more.want = 2 * PAGE_SIZE;
-        assert!(state.run(&adapter, CollectionCmd::Open { sid: ServerId::UNSET, target: more }),
+        assert!(state.run(&adapter, CollectionCmd::Open { target: more }),
             "a larger want on the same identity is a change, not a reopen");
         assert_eq!(state.generation(), generation, "paging does not supersede the collection");
         assert!(matches!(state.job(), Some(Job::Children { start, .. }) if start == PAGE_SIZE));
@@ -498,27 +450,23 @@ mod tests {
     fn a_page_with_unlisted_rows_advances_by_the_rows_the_server_sent() {
         let adapter = Arc::new(CollectionAdapter::default());
         let mut state = CollectionState::default();
-        state.run(&adapter, CollectionCmd::Open { sid: ServerId::UNSET,
-            target: CollectionTarget::initial("50001".into(), 1, 7, "Set".into()) });
+        state.run(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
         let generation = state.generation();
-        adapter.land(generation, Landing::Header { title: "Set".into(), thumb: String::new(),
-            summary: String::new(), child_count: 130 });
+        adapter.land(generation, Landing::Header { rk: None, head: header("Set", 130) });
         assert!(state.take_landing_for_test(&adapter));
         let listed = (0..PAGE_SIZE - 5).map(|i| PmsMovie { rk: i.to_string(), ..Default::default() }).collect();
         adapter.land(generation, Landing::Page { start: 0, got: PAGE_SIZE, items: listed, total: 130 });
         assert!(state.take_landing_for_test(&adapter));
-        state.run(&adapter, CollectionCmd::Open { sid: ServerId::UNSET, target: CollectionTarget {
-            want: 2 * PAGE_SIZE, ..CollectionTarget::initial("50001".into(), 1, 7, "Set".into()) } });
+        state.run(&adapter, CollectionCmd::Open { target: CollectionTarget {
+            want: 2 * PAGE_SIZE, ..set_target("50001", 7, "Set") } });
         assert!(matches!(state.job(), Some(Job::Children { start, .. }) if start == PAGE_SIZE),
             "the next page starts after every row the server sent, listed or not");
 
         // A collection whose every row is unlisted ends Empty rather than paging forever.
         let mut state = CollectionState::default();
-        state.run(&adapter, CollectionCmd::Open { sid: ServerId::UNSET,
-            target: CollectionTarget::initial("50002".into(), 1, 8, "Clips".into()) });
+        state.run(&adapter, CollectionCmd::Open { target: set_target("50002", 8, "Clips") });
         let generation = state.generation();
-        adapter.land(generation, Landing::Header { title: "Clips".into(), thumb: String::new(),
-            summary: String::new(), child_count: 3 });
+        adapter.land(generation, Landing::Header { rk: None, head: header("Clips", 3) });
         assert!(state.take_landing_for_test(&adapter));
         adapter.land(generation, Landing::Page { start: 0, got: 3, items: Vec::new(), total: 3 });
         assert!(state.take_landing_for_test(&adapter));
@@ -527,12 +475,27 @@ mod tests {
         assert!(state.job().is_none());
     }
 
+    /// A tag route resolves from the section's collection listing, whose row IS the collection's
+    /// header — the resolution lands it, so the next job is the first page, not a second GET of
+    /// `/library/metadata/{rk}` for the same fields.
+    #[test]
+    fn a_tag_resolution_lands_the_header_and_pages_next() {
+        let adapter = Arc::new(CollectionAdapter::default());
+        let mut state = CollectionState::default();
+        state.run(&adapter, CollectionCmd::Open { target: set_target("", 7, "Set") });
+        assert!(matches!(state.job(), Some(Job::Resolve { tag: 7, .. })));
+        adapter.land_resolved_for_test(state.generation(), "50007");
+        assert!(state.take_landing_for_test(&adapter));
+        let c = state.view().current().unwrap();
+        assert_eq!((c.id.rk.as_str(), c.title.as_str()), ("50007", "Resolved"));
+        assert!(matches!(state.job(), Some(Job::Children { start: 0, .. })), "no second header request");
+    }
+
     #[test]
     fn a_local_watched_edit_flips_the_member_in_place() {
         let adapter = Arc::new(CollectionAdapter::default());
         let mut state = CollectionState::default();
-        state.run(&adapter, CollectionCmd::Open { sid: ServerId::UNSET,
-            target: CollectionTarget::initial("50001".into(), 1, 7, "Set".into()) });
+        state.run(&adapter, CollectionCmd::Open { target: set_target("50001", 7, "Set") });
         state.install_for_test(vec![PmsMovie { rk: "a".into(), unwatched: true, ..Default::default() }],
             CollectionStatus::Ready);
         assert!(!state.run(&adapter, CollectionCmd::SetWatchedLocal { sid: ServerId::UNSET,

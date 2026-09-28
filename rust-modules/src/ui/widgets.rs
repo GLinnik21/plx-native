@@ -293,6 +293,9 @@ impl Art<'_> {
 /// The size a landscape still is transcoded at — [`crate::ui::card_row::RowStyle::EPISODE`]'s tile,
 /// so the server scales once and the texture is 1:1 on the panel.
 const STILL_RES: (c_int, c_int) = (420, 236);
+/// The box a portrait poster card asks the transcoder for. The collection fan baker requests its
+/// members at this box too, so a member already fetched for a card is a disk hit, not a refetch.
+pub(crate) const POSTER_RES: (c_int, c_int) = (250, 375);
 
 /// **Which artwork a landscape tile draws, in order of preference.** The episode's own still, the
 /// show's backdrop, then the show's poster.
@@ -591,7 +594,7 @@ pub(crate) fn resolve_card_art(p: Painter, rect: Rect, art: &Art<'_>) -> (u32, f
     let _admission = art.motion_identity()
         .map(|id| crate::ui::card_motion::Scope::card(id, p.to_screen(rect).0));
     let image = match art {
-        Art::Poster(m) => m.map(|m| resolve_tex_wh_on(m.sid, &m.thumb, 250, 375, 0)).unwrap_or((0, 0.0, 0.0)),
+        Art::Poster(m) => m.map(|m| resolve_tex_wh_on(m.sid, &m.thumb, POSTER_RES.0, POSTER_RES.1, 0)).unwrap_or((0, 0.0, 0.0)),
         Art::Still(m) => m.map(|m| resolve_tex_wh_on(m.sid, still_key(m), STILL_RES.0, STILL_RES.1, 0)).unwrap_or((0, 0.0, 0.0)),
         Art::Thumb { sid, key, res } | Art::Person { sid, key, res } => resolve_tex_wh_on(*sid, key, res.0, res.1, 0),
     };
@@ -3405,6 +3408,20 @@ impl PageGround {
         0.08,
         0.08,
     ];
+
+    /// The faint warm tint a page's HEADER leans when no focused card hands the ground colours —
+    /// strongest top-left, where the page's title sits.
+    pub(crate) const HEADER_W: [f32; 4] = [0.10, 0.06, 0.02, 0.03];
+
+    /// A header-and-cards page's ground target: `focused`'s `UltraBlurColors` along
+    /// [`CARD_W`](Self::CARD_W) when it carries any, else the warm [`HEADER_W`](Self::HEADER_W)
+    /// tint. The Person and Collection pages share it.
+    pub(crate) fn page_target(focused: Option<&crate::pms::PmsMovie>) -> [[f32; 4]; 4] {
+        match focused.filter(|m| m.has_blur) {
+            Some(m) => AmbientWash::keyed(m.blur, Self::CARD_W),
+            None => AmbientWash::target([theme::WASH_WARM; 4], Self::HEADER_W),
+        }
+    }
 
     /// A ground resting on the app's own surface — what a screen mounts with, and what it stays
     /// until something focused hands it colours.

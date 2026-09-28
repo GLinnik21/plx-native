@@ -33,6 +33,22 @@ fn a_collection_row_carries_its_member_count() {
     assert_eq!(parse_item(&row("show", 5), sid(0)).child_count, 0);
 }
 
+/// A collection has no watch or resume state of its own, whatever counters the server sends with
+/// it: `parse_item` is the one place that says so, and every reader (the poster mark, the progress
+/// bar, the item menu) trusts the row.
+#[test]
+fn a_collection_row_has_no_watch_or_resume_state() {
+    let row = crate::plex::Metadata {
+        kind: "collection".into(), rating_key: "50001".into(), title: "Trilogy".into(),
+        view_count: 2, view_offset: 60_000, duration: 120_000, leaf_count: 3, viewed_leaf_count: 3,
+        ..Default::default()
+    };
+    let m = parse_item(&row, sid(0));
+    assert!(!m.watched && !m.unwatched, "no watched disc and no unwatched triangle");
+    assert_eq!(m.resume_ms, 0, "no resume point");
+    assert_eq!(m.resume_frac(), None, "no progress bar");
+}
+
 #[test]
 #[should_panic(expected = "requires its server in the retained Browse directory")]
 fn a_directory_scoped_hubs_fixture_refuses_an_empty_browse_publication() {

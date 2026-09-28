@@ -76,7 +76,6 @@ pub(crate) fn img_decode_owned(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
         return None;
     }
     let len = data.len();
-    let magic: String = data.iter().take(6).map(|b| format!("{b:02x}")).collect();
     // decode inside catch_unwind so a decoder panic can't unwind into C. `ImageReader` rather than
     // the `load_from_memory` one-liner purely so the limits above can be attached — that helper
     // hard-codes `Limits::default()` internally, with no way to pass any.
@@ -97,37 +96,64 @@ pub(crate) fn img_decode_owned(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
     match decoded {
         Ok(Ok(t)) => Some(t),
         Ok(Err(why)) => {
-            log(&format!("img: decode-none len={len} magic={magic} — {why}"));
+            log(&format!("img: decode-none len={len} magic={} — {why}", magic(data)));
             None
         }
         Err(_) => {
-            log(&format!("img: PANIC len={len} magic={magic}"));
+            log(&format!("img: PANIC len={len} magic={}", magic(data)));
             None
         }
     }
 }
 
+/// The first six bytes as hex, for a failure line only — never built on the success path.
+fn magic(data: &[u8]) -> String {
+    data.iter().take(6).map(|b| format!("{b:02x}")).collect()
+}
+
 /// Copy owned RGBA into a `malloc`'d buffer the poster store can hold and [`img_free`] releases.
-/// Null on an empty input or a refused allocation.
-pub(crate) fn img_malloc_copy(rgba: &[u8]) -> *mut c_uchar {
+/// Null on an empty input or a refused allocation; `detail` names the picture on the failure line
+/// and is only called there.
+///
+/// The exit that is not the decoder's: the picture decoded, and it is the copy out into the
+/// `malloc`'d buffer the caller owns that came back null. The SIZE is the field worth having.
+/// `decode_limits` names this very allocation as one of the two that sit OUTSIDE the budget it
+/// sets, and puts the largest legitimate decode at ~21 MiB (1920×2880 RGBA) — on a set whose
+/// `pkg/appinfo.json` declares `requiredMemory: 160`. So the byte count answers the first question
+/// a reader has: one outsized request, or a heap already full. Same `img:` prefix as the decoder's
+/// two failures, so one `img:` grep finds this line and those.
+pub(crate) fn img_malloc_copy(rgba: &[u8], detail: impl FnOnce() -> String) -> *mut c_uchar {
     if rgba.is_empty() {
         return ptr::null_mut();
     }
-    let px = unsafe { malloc(rgba.len()) } as *mut c_uchar;
+    let n = rgba.len();
+    let px = unsafe { malloc(n) } as *mut c_uchar;
     if px.is_null() {
+        // MARKER FIRST, and it takes no allocation: `log` borrows a `&str`, so a literal reaches
+        // the file with nothing asked of the heap. The detailed line below goes through `format!`,
+        // which allocates — from the same heap that just refused `n` bytes. For the common failure
+        // (one outsized request against a heap with room for small ones) that is fine and the
+        // second line lands. For the failure a reader most wants explained — a heap actually
+        // exhausted — Rust's allocation-error handler ABORTS, so the detailed line would take the
+        // process down in place of the diagnosis it was added to give. Ordered this way, the marker
+        // survives either outcome, and a marker with no detail after it IS the second diagnosis.
         log("img: malloc-none");
+        log(&format!("img: malloc-none {n} bytes for {}", detail()));
         return ptr::null_mut();
     }
-    // SAFETY: `px` was just allocated with exactly `rgba.len()` bytes and cannot overlap `rgba`.
-    unsafe { ptr::copy_nonoverlapping(rgba.as_ptr(), px, rgba.len()) };
+    // SAFETY: `px` was just allocated with exactly `n` bytes and cannot overlap `rgba`.
+    unsafe { ptr::copy_nonoverlapping(rgba.as_ptr(), px, n) };
     px
 }
 
-/// Encode RGBA as PNG, the format baked artwork is persisted in. `None` if the encoder refuses.
+/// Encode OPAQUE RGBA as an RGB PNG, the format baked artwork is persisted in: the alpha channel
+/// is dropped (a quarter of the pixels to deflate, none of them information) and
+/// [`img_decode_owned`] restores it as 255. `None` if the encoder refuses.
 pub(crate) fn img_encode_png(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
+    let rgb: Vec<u8> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
     let mut out = Vec::new();
     let enc = image::codecs::png::PngEncoder::new(&mut out);
-    image::ImageEncoder::write_image(enc, rgba, w, h, image::ExtendedColorType::Rgba8).ok()?;
+    image::ImageEncoder::write_image(enc, &rgb, w, h, image::ExtendedColorType::Rgb8).ok()?;
     Some(out)
 }
 
@@ -144,39 +170,16 @@ pub(crate) fn img_decode_rgba(
     let Some((iw, ih, raw)) = img_decode_owned(data) else {
         return ptr::null_mut();
     };
-    let (iw, ih) = (iw as c_int, ih as c_int);
-    let magic: String = data.iter().take(6).map(|b| format!("{b:02x}")).collect();
-    let n = raw.len();
-    let px = unsafe { malloc(n) } as *mut c_uchar;
-    // The exit that is not the decoder's: the picture decoded, and it is the copy out into the
-    // `malloc`'d buffer the caller owns that came back null. The SIZE is the field worth having.
-    // `decode_limits` names this very allocation as one of the two that sit OUTSIDE the budget it
-    // sets, and puts the largest legitimate decode at ~21 MiB (1920×2880 RGBA) — on a set whose
-    // `pkg/appinfo.json` declares `requiredMemory: 160`. So `n` answers the first question a reader
-    // has: one outsized request, or a heap already full. Same `img:` prefix and the same
-    // `len=`/`magic=` tail as the two failures above, so one `img:` grep finds this line and those.
+    let px = img_malloc_copy(&raw, || format!("{iw}x{ih} len={len} magic={}", magic(data)));
     if px.is_null() {
-        // MARKER FIRST, and it takes no allocation: `log` borrows a `&str`, so a literal reaches
-        // the file with nothing asked of the heap. The detailed line below goes through `format!`,
-        // which allocates — from the same heap that just refused `n` bytes. For the common failure
-        // (one outsized request against a heap with room for small ones) that is fine and the
-        // second line lands. For the failure a reader most wants explained — a heap actually
-        // exhausted — Rust's allocation-error handler ABORTS, so the detailed line would take the
-        // process down in place of the diagnosis it was added to give. Ordered this way, the marker
-        // survives either outcome, and a marker with no detail after it IS the second diagnosis.
-        log("img: malloc-none");
-        log(&format!(
-            "img: malloc-none {n} bytes for {iw}x{ih} len={len} magic={magic}"
-        ));
         return ptr::null_mut();
     }
     unsafe {
-        ptr::copy_nonoverlapping(raw.as_ptr(), px, n);
         if !w.is_null() {
-            *w = iw;
+            *w = iw as c_int;
         }
         if !h.is_null() {
-            *h = ih;
+            *h = ih as c_int;
         }
     }
     px

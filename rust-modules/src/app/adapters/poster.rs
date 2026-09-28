@@ -514,16 +514,22 @@ fn built_key(srv: ServerId, path: &str, w: c_int, h: c_int, png: bool) -> Option
         if let Some(fan) = fan::fan_key(path) {
             return fan;
         }
-        // Supersampled simulator renders (`surface::render_scale`, 1 on a television) ask the
-        // server for the pixels they will draw; the store key stays the logical box.
-        let n = crate::surface::render_scale() as i64;
-        c.image_transcode_path(path, w as i64 * n, h as i64 * n, png)
+        transcode_request(c, path, w, h, png)
     });
     if s.len() > KEY_MAX {
         warn_key_refused(s.len());
         return None;
     }
     Some(s)
+}
+
+/// The transcoder request for `path` drawn in a `w`×`h` logical box — the one builder behind
+/// every store key and the fan baker's member fetches, so both name the same bytes on disk.
+/// Supersampled simulator renders (`surface::render_scale`, 1 on a television) ask the server
+/// for the pixels they will draw; the logical box stays the caller's.
+fn transcode_request(c: &crate::plex::Client, path: &str, w: c_int, h: c_int, png: bool) -> String {
+    let n = crate::surface::render_scale() as i64;
+    c.image_transcode_path(path, w as i64 * n, h as i64 * n, png)
 }
 
 /// A refused key logs ONCE per process, with both ceilings and the length that missed them.
@@ -1417,31 +1423,34 @@ impl fan::FanIo for WorkerFanIo<'_> {
             crate::imgcache::remove_at(self.cache_gen, k);
         }
     }
-    fn members(&mut self) -> fan::Members {
+    fn members(&mut self) -> fan::Got<fan::Members> {
         use crate::plex::collections::CollectionOutcome as O;
         match self.client.collection_children(self.rk, 0, fan::FAN_MEMBERS as i64) {
-            O::Ok(page) => fan::Members::Listed(
+            O::Ok(page) => fan::Got::Ok(
                 page.metadata
                     .into_iter()
                     .map(|m| (m.thumb, m.ultra_blur_colors.and_then(|c| c.corners())))
                     .collect(),
             ),
-            O::Denied | O::Missing => fan::Members::Final,
-            O::Transport(_) => fan::Members::Transient,
+            O::Denied | O::Missing => fan::Got::Final,
+            O::Transport => fan::Got::Transient,
         }
     }
-    fn poster(&mut self, thumb: &str) -> fan::Art {
+    fn poster(&mut self, thumb: &str) -> fan::Got<fan::Rgba> {
         if self.cache_gen != crate::imgcache::generation() {
-            return fan::Art::Final;
+            return fan::Got::Final;
         }
-        let path = self.client.image_transcode_path(thumb, fan::MEMBER_W, fan::MEMBER_H, false);
+        // The box and builder a portrait card asks for the same poster with, so a member already
+        // on screen (or on disk) is a cache hit rather than a second transcode at another size.
+        let (w, h) = crate::ui::widgets::POSTER_RES;
+        let path = transcode_request(self.client, thumb, w, h, false);
         let loaded = load_art(self.client, self.srv, &path, self.cache_gen, |b| {
             crate::img::img_decode_owned(b).map(|(w, h, px)| fan::Rgba { w, h, px })
         });
         match loaded.art {
-            Some(poster) => fan::Art::Decoded(poster),
-            None if loaded.transient => fan::Art::Transient,
-            None => fan::Art::Final,
+            Some(poster) => fan::Got::Ok(poster),
+            None if loaded.transient => fan::Got::Transient,
+            None => fan::Got::Final,
         }
     }
     fn persist(&mut self, png: &[u8]) {
@@ -1463,7 +1472,7 @@ fn bake_fan(
     stamp: &str,
     cache_gen: u64,
     token_gen: u32,
-) -> fan::FanOutcome {
+) -> fan::Got<fan::Rgba> {
     let profile = crate::plex::session::current_profile_key();
     let disk = if crate::dev::scenarios::imagecache_bypass_armed() {
         None
@@ -1504,14 +1513,14 @@ fn poster_worker() {
         {
             if let Some((rk, stamp)) = fan::parse_fan_key(&key_s) {
                 match bake_fan(client, srv, rk, stamp, cache_gen, token_gen) {
-                    fan::FanOutcome::Baked(out) => {
-                        px = img::img_malloc_copy(&out.px);
+                    fan::Got::Ok(out) => {
+                        px = img::img_malloc_copy(&out.px, || format!("{}x{} collection {rk} fan", out.w, out.h));
                         (w, h) = (out.w as c_int, out.h as c_int);
                     }
-                    fan::FanOutcome::NoArt => crate::log(&format!(
+                    fan::Got::Final => crate::log(&format!(
                         "posters: collection {rk} has no usable member art - its card draws the neutral tile"
                     )),
-                    fan::FanOutcome::Transient => transient = true,
+                    fan::Got::Transient => transient = true,
                 }
             } else {
                 let loaded = load_art(client, srv, &key_s, cache_gen, |b| {

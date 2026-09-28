@@ -399,7 +399,7 @@ impl LibraryScreen {
                             }
                             motion
                         });
-                    let heading = crate::plex::collections::promoted_collection_hub(&shelf.id, &shelf.key)
+                    let heading = shelf.link.as_ref()
                         .map(|_| {
                             let control = |kind: &str| LibraryIdentity::Control {
                                 section: section.clone(), kind: kind.into(), key: shelf.id.clone() };
@@ -623,15 +623,9 @@ impl LibraryScreen {
         if let Some(index) = self.shelves.iter().position(|row| row.heading_elem() == Some(elem)) {
             // OK on a linked heading opens the collection its shelf lists.
             let hubs = H::section_hubs(cx);
-            if let (Some(id), Some(shelf)) = (hubs.id(), hubs.shelves().get(index)) {
-                if let Some((sec, rk)) = crate::plex::collections::promoted_collection_hub(&shelf.id, &shelf.key) {
-                    fx.push(Fx::App(AppFx::Content(crate::screens::registry::ContentReq::Push(
-                        crate::screens::registry::ContentArg::Collection {
-                            sid: id.sid, rk: rk.to_owned(),
-                            sec: if sec != 0 { sec } else { id.section },
-                            tag: 0, name: shelf.title.clone(),
-                        }))));
-                }
+            if let Some(link) = hubs.shelves().get(index).and_then(|shelf| shelf.link.as_ref()) {
+                fx.push(Fx::App(AppFx::Content(crate::screens::registry::ContentReq::Push(
+                    crate::screens::registry::ContentArg::Collection(link.clone())))));
             }
             return Handled::Yes;
         }
@@ -1222,6 +1216,9 @@ fn row_group(id: GroupId, len: usize, extent: Rect, elem: ElemKind) -> GroupSpec
 }
 
 impl<H: LibraryLike> Screen<H> for LibraryScreen {
+    fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<crate::ui::machine::FocusKey<u32>>) {
+        LibraryScreen::redraw_focused::<H>(self, f, focus)
+    }
     fn name(&self) -> &'static str { "library" }
     fn state(&self) -> &dyn LogicalState { self }
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> { None }

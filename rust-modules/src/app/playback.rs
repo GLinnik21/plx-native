@@ -584,8 +584,7 @@ pub(super) fn return_from_player(
                 key.is_empty() && guid.is_empty(),
             AppArg::Content(crate::screens::registry::ContentArg::Filmography { key, .. }) =>
                 key.is_empty(),
-            AppArg::Content(crate::screens::registry::ContentArg::Collection { rk, tag, .. }) =>
-                rk.is_empty() && *tag == 0,
+            AppArg::Content(crate::screens::registry::ContentArg::Collection(id)) => id.is_identityless(),
             _ => false,
         }
     });
@@ -1565,8 +1564,7 @@ mod player_return_tests {
             AppArg::Content(ContentArg::Person { sid: A, key: String::new(), guid: String::new(),
                 name: String::new(), thumb: String::new() }),
             AppArg::Content(ContentArg::Filmography { sid: A, key: String::new() }),
-            AppArg::Content(ContentArg::Collection { sid: A, rk: String::new(), sec: 0,
-                tag: 0, name: String::new() }),
+            AppArg::Content(ContentArg::Collection(crate::plex::collections::CollectionRef::by_tag(A, 0, 0, ""))),
         ] {
             let mut p = Pages::new();
             p.stand_on(AppArg::Home).stand_on(origin);
