@@ -88,19 +88,32 @@ pub(crate) fn draw(
         0,
         1,
     );
+    draw_strip(p, &d.related, row, top, focused, measure);
+}
+
+/// A Detail poster shelf's cards under its heading — Related's, and the collection shelf's
+/// (`super::collection`), which is the same strip under a linked heading.
+pub(crate) fn draw_strip(
+    p: Painter,
+    items: &[PmsMovie],
+    row: &CardRow,
+    top: f32,
+    focused: Option<usize>,
+    measure: &dyn crate::ui::machine::Measure,
+) {
     card_row::strip(
         p,
         row,
-        d.related.len(),
+        items.len(),
         focused.map(|i| i as i32).unwrap_or(-1),
         top + LABEL_H,
         (RowStyle::HOME.w, RowStyle::HOME.h),
         RowStyle::HOME.w + RowStyle::HOME.gap,
         &RowStyle::HOME,
         crate::ui::consts::SCR_W,
-        |i| Art::Poster(d.related.get(i)),
-        |i| d.related.get(i).and_then(|m| m.resume_frac()),
-        |i| card_row::TileLabel::title(&d.related[i].title),
+        |i| Art::Poster(items.get(i)),
+        |i| items.get(i).and_then(|m| m.resume_frac()),
+        |i| card_row::TileLabel::title(&items[i].title),
         |_, _, _, _| {},
         measure,
     );
@@ -115,7 +128,20 @@ pub(crate) fn draw_focused(
     press: f32,
     measure: &dyn crate::ui::machine::Measure,
 ) {
-    let Some(item) = d.related.get(index) else {
+    draw_focused_in(p, &d.related, row, index, top, press, measure);
+}
+
+/// The focused card of a strip drawn by [`draw_strip`], last so its glow sits over its neighbours.
+pub(crate) fn draw_focused_in(
+    p: Painter,
+    items: &[PmsMovie],
+    row: &CardRow,
+    index: usize,
+    top: f32,
+    press: f32,
+    measure: &dyn crate::ui::machine::Measure,
+) {
+    let Some(item) = items.get(index) else {
         return;
     };
     let base = card_row::tile_rect(

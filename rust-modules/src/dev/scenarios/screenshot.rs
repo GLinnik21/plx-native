@@ -7,14 +7,16 @@
 //! focus the way the grid's own navigation does; `LibraryCmd::OpenMenu` is OK on the toolbar
 //! chip), and each logs one line when its state is REACHED rather than when it was asked for, so
 //! the driver can verify from the event log that the picture it captured is the one the manifest
-//! named. Every arm gives up after [`CEILING_MS`] with a log line of its own, so a scene whose data
-//! never arrives fails loudly instead of capturing the wrong screen.
+//! named. `libtype` chooses the listing (the TYPE menu's value) the others then act on. Every arm
+//! gives up after [`CEILING_MS`] with a log line of its own, so a scene whose data never arrives
+//! fails loudly instead of capturing the wrong screen.
 //!
 //! Dev-only, like every arm in [`super`]: the reads go through `dev::read`, which is `None` at
 //! compile time without the `devtriggers` feature.
 
 use crate::app::run::Frame;
 use crate::app::App;
+use crate::browse::LibraryType;
 use crate::screens::registry::{AppArg, LibraryCmd, LibraryMenuKind};
 
 /// How long an arm keeps retrying for its data before it gives up and says so.
@@ -26,6 +28,8 @@ const RESEND_MS: u32 = 400;
 /// Per-arm latches, owned by [`super::Scenarios`].
 #[derive(Default)]
 pub(crate) struct ScreenshotArms {
+    libtype_done: bool,
+    libtype_sent: Option<u32>,
     libgrid: SeatArm,
     libshelf: SeatArm,
     libmenu_done: bool,
@@ -44,7 +48,8 @@ impl ScreenshotArms {
     /// settled capture is.
     #[cfg(feature = "hostsim")]
     pub(crate) fn pending(&self) -> bool {
-        !self.libgrid.done
+        !self.libtype_done
+            || !self.libgrid.done
             || !self.libshelf.done
             || !self.libmenu_done
             || self.clockstop.is_none()
@@ -106,9 +111,57 @@ fn due(sent: Option<u32>, now: u32) -> bool {
     sent.is_none_or(|at| now.wrapping_sub(at) >= RESEND_MS)
 }
 
+/// `"<name>"` → the TYPE menu value it names.
+fn parse_type(v: &str) -> Option<LibraryType> {
+    Some(match v.trim() {
+        "primary" | "movies" | "shows" => LibraryType::Primary,
+        "seasons" => LibraryType::Seasons,
+        "episodes" => LibraryType::Episodes,
+        "collections" => LibraryType::Collections,
+        _ => return None,
+    })
+}
+
+/// `/tmp/plxnative-libtype=<movies|shows|seasons|episodes|collections>` — on the Library page,
+/// choose that TYPE menu value the way its row does, once the section's listing is there. Done
+/// when the page's committed listing REPORTS that type; `libgrid` and `libmenu` wait for it, so a
+/// seat or a menu lands on the listing this trigger asked for.
+pub(crate) fn libtype_arm(app: &mut App, fr: &Frame) {
+    if app.scenarios.shots.libtype_done {
+        return;
+    }
+    let Some(v) = crate::dev::read("libtype") else {
+        app.scenarios.shots.libtype_done = true;
+        return;
+    };
+    let Some(kind) = parse_type(&v) else {
+        #[cfg(feature = "devtriggers")]
+        crate::log(&format!("BADTRIGGER libtype {v:?}: expected movies, shows, seasons, episodes or collections"));
+        app.scenarios.shots.libtype_done = true;
+        return;
+    };
+    if crate::app::bridge::Bridge::library_listed(&app.pages) == Some(kind) {
+        crate::log(&format!("libtype: listing {}", v.trim()));
+        app.scenarios.shots.libtype_done = true;
+        return;
+    }
+    if fr.now.wrapping_sub(app.t0) > CEILING_MS {
+        crate::log(&format!("libtype: gave up; the listing never became {}", v.trim()));
+        app.scenarios.shots.libtype_done = true;
+        return;
+    }
+    if matches!(app.route(), AppArg::Library) && due(app.scenarios.shots.libtype_sent, fr.now) {
+        app.scenarios.shots.libtype_sent = Some(fr.now);
+        crate::app::bridge::Bridge::library_command(&mut app.pages, LibraryCmd::SetType(kind));
+    }
+}
+
 /// `/tmp/plxnative-libgrid=<row>,<col>` — on the Library page, seat focus on that grid card once
 /// the grid has landed. Done when the page REPORTS focus there.
 pub(crate) fn libgrid_arm(app: &mut App, fr: &Frame) {
+    if !app.scenarios.shots.libtype_done {
+        return;
+    }
     let on_library = matches!(app.route(), AppArg::Library);
     let arm = &mut app.scenarios.shots.libgrid;
     let Some((row, col)) = arm.pending("libgrid", || crate::dev::read("libgrid"), "focus seated at row {0} col {1}",
@@ -123,6 +176,9 @@ pub(crate) fn libgrid_arm(app: &mut App, fr: &Frame) {
 /// Focus on a lower shelf scrolls the ones above it up under the tab bar. Done when the page
 /// REPORTS focus there.
 pub(crate) fn libshelf_arm(app: &mut App, fr: &Frame) {
+    if !app.scenarios.shots.libtype_done {
+        return;
+    }
     let on_library = matches!(app.route(), AppArg::Library);
     let arm = &mut app.scenarios.shots.libshelf;
     let Some((shelf, col)) = arm.pending("libshelf", || crate::dev::read("libshelf"), "focus seated on shelf {0} col {1}",
@@ -184,7 +240,7 @@ impl SeatArm {
     }
 }
 
-/// `/tmp/plxnative-libmenu=<sort|filter>[,<rest ms>]` — on the Library page, open that toolbar
+/// `/tmp/plxnative-libmenu=<sort|filter|type>[,<rest ms>]` — on the Library page, open that toolbar
 /// menu, after `libgrid` (if armed) has seated its focus and, with a rest period, once the page has
 /// stopped moving ([`at_rest`]). Done when the menu SURFACE is up.
 pub(crate) fn libmenu_arm(app: &mut App, fr: &Frame) {
@@ -199,9 +255,10 @@ pub(crate) fn libmenu_arm(app: &mut App, fr: &Frame) {
     let kind = match name {
         "sort" => LibraryMenuKind::Sort,
         "filter" => LibraryMenuKind::Filter,
+        "type" => LibraryMenuKind::Type,
         _other => {
             #[cfg(feature = "devtriggers")]
-            crate::log(&format!("BADTRIGGER libmenu {_other:?}: expected sort or filter"));
+            crate::log(&format!("BADTRIGGER libmenu {_other:?}: expected sort, filter or type"));
             app.scenarios.shots.libmenu_done = true;
             return;
         }

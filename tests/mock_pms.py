@@ -256,7 +256,7 @@ class Library:
                     self.items[erk] = self._episode(rng, erk, season, show, e, part)
         empty_id = len(self.collections) + 1
         self.collections[empty_id] = {
-            "id": empty_id, "ratingKey": 50000 + empty_id, "tag": "Empty Collection"
+            "id": empty_id, "ratingKey": 50000 + empty_id, "tag": sname(rng)
         }
         # watch state: a third watched, a sixth in progress (the Continue Watching deck)
         for i, it in enumerate(sorted(self.items.values(), key=lambda x: x["ratingKey"])):
@@ -676,10 +676,13 @@ class Library:
         rows.sort(key=keyf, reverse=(direction == "desc"))
         return rows
 
-    def first_characters(self, key):
-        """Counts in the unfiltered ascending titleSort order, exactly the rail's query."""
+    def first_characters(self, key, q=None):
+        """Counts in the unfiltered ascending titleSort order, exactly the rail's query —
+        of the section's collections for `type=18`, as PMS answers `firstCharacter?type=18`."""
         counts = {}
-        for item in self.section_items(key, {}):
+        rows = (sorted(self.collection_metadata(key), key=lambda c: c["titleSort"].lower())
+                if (q or {}).get("type") == "18" else self.section_items(key, {}))
+        for item in rows:
             letter = item["titleSort"][0].upper()
             counts[letter] = counts.get(letter, 0) + 1
         return [{"key": letter.lower(), "title": letter, "size": count}
@@ -724,6 +727,33 @@ class Library:
         return [it for it in self.items.values() if it["type"] in ("movie", "show") and any(
             t["id"] == pid for t in it.get("Role", []) + it.get("Director", []) + it.get("Writer", []))]
 
+    def composite(self, rk, width, height):
+        """The server's automatic collection poster (`/library/collections/<rk>/composite/<stamp>`):
+        a 2x2 of its first members' posters, as JPEG; None (a 404) for a collection with none."""
+        c = self.collection_by_rating_key(int(rk)) if str(rk).isdigit() else None
+        paths = [self.images.get(int(it["ratingKey"]), {}).get("thumb")
+                 for it in (self.collection_rows(c["id"]) if c else [])]
+        paths = [p for p in paths if p is not None][:4]
+        if not paths:
+            return None
+        paths = (paths * 4)[:4]
+        try:
+            w, h = max(2, min(int(width), 3840)), max(2, min(int(height), 2160))
+        except (TypeError, ValueError):
+            w, h = 400, 600
+        key = ("composite", str(rk), w, h)
+        cw, ch = w // 2, h // 2
+        scale = "".join(f"[{i}]scale={cw}:{ch}:force_original_aspect_ratio=increase,crop={cw}:{ch}[t{i}];"
+                        for i in range(4))
+        with self._lock:
+            if key not in self._scaled:
+                self._scaled[key] = subprocess.check_output([
+                    "ffmpeg", "-v", "error", "-threads", "1",
+                    *[a for p in paths for a in ("-i", str(p))],
+                    "-filter_complex", scale + "[t0][t1][t2][t3]xstack=inputs=4:layout=0_0|w0_0|0_h0|w0_h0",
+                    "-frames:v", "1", "-q:v", "3", "-bitexact", "-f", "image2pipe", "-vcodec", "mjpeg", "-"])
+            return "image/jpeg", self._scaled[key]
+
     def collection_rows(self, cid):
         rows = [it for it in self.items.values()
                 if any(c["id"] == cid for c in it.get("Collection", []))]
@@ -742,15 +772,18 @@ class Library:
                 "ratingKey": str(rk), "key": f"/library/collections/{rk}/children",
                 "type": "collection", "title": c["tag"], "titleSort": c["tag"],
                 "index": c["id"], "childCount": len(members),
-                "thumb": f"/library/collections/{rk}/composite/{updated}",
                 "updatedAt": updated, "librarySectionID": int(section), "smart": 0,
             })
+            # A collection with members has the server's automatic composite; the EMPTY one has
+            # no artwork at all, which is the case a client's neutral collection tile draws.
+            if members:
+                rows[-1]["thumb"] = f"/library/collections/{rk}/composite/{updated}"
         return rows
 
     def collection_by_rating_key(self, rk):
         return next((c for c in self.collections.values() if c["ratingKey"] == rk), None)
 
-    def search(self, query, limit=3):
+    def search(self, query, limit=3, include_collections=False):
         """`/hubs/search` as hubs. Each hub holds at most `limit` rows and its `size` is the number
         it holds, as measured (docs/pms-api.md: "`limit` caps each hub separately", 3 when absent,
         and `Hub.size` is the rows returned).
@@ -763,7 +796,12 @@ class Library:
         after the direct title hits, in library order. The order and the choice of which relations
         a real server applies are assumptions: the spec names these two examples and says the hubs
         are ordered "based on quality", which the mock does not try to model. Shows, episodes and
-        the other hubs hold direct hits only."""
+        the other hubs hold direct hits only.
+
+        `include_collections` is `includeCollections=1`, measured live (docs/pms-api.md §2b): the
+        collection hub's rows move from tag-shaped `Directory[]` rows (tag `id`, `count`, `key`; no
+        ratingKey, no thumb) to the collections' full `Metadata[]` rows — the same rows
+        `/library/sections/{s}/collections` lists, plus a `score`."""
         hits = search_matcher(query)
         limit = max(1, int(limit))
         genres = [g for g in self.genres.values() if hits(g["tag"])]
@@ -792,11 +830,17 @@ class Library:
                        librarySectionID=1) for t in matched][:limit]
         hubs.append({"title": "actor", "type": "actor", "hubIdentifier": "actor",
                      "size": len(people), "Directory": people})
-        cols = [{"tag": c["tag"], "id": c["id"], "type": "collection", "librarySectionID": 1,
-                 "key": f"/library/sections/1/all?collection={c['id']}", "reasonTitle": ""}
-                for c in self.collections.values() if hits(c["tag"])][:limit]
+        if include_collections:
+            cols = [dict(row, score="0.90000") for row in self.collection_metadata(1)
+                    if hits(row["title"])][:limit]
+            container = "Metadata"
+        else:
+            cols = [{"tag": c["tag"], "id": c["id"], "type": "collection", "librarySectionID": 1,
+                     "key": f"/library/sections/1/all?collection={c['id']}", "reasonTitle": ""}
+                    for c in self.collections.values() if hits(c["tag"])][:limit]
+            container = "Directory"
         hubs.append({"title": "collection", "type": "collection", "hubIdentifier": "collection",
-                     "size": len(cols), "Directory": cols})
+                     "size": len(cols), container: cols})
         return hubs
 
 
@@ -1051,6 +1095,8 @@ class CatalogLibrary(Library):
         — a clearLogo as a transparent PNG, the rest as JPEG; None when the item has no such image
         — a 404, as for a real item without art."""
         segs = [s for s in urllib.parse.urlsplit(url).path.split("/") if s]
+        if len(segs) >= 4 and segs[:2] == ["library", "collections"] and segs[3] == "composite":
+            return self.composite(segs[2], width, height)
         if len(segs) < 4 or segs[:2] != ["library", "metadata"] or not segs[2].isdigit():
             return None
         path = self.images.get(int(segs[2]), {}).get(segs[3])
@@ -1100,9 +1146,12 @@ class CatalogLibrary(Library):
                 "ratingKey": str(rk), "key": f"/library/collections/{rk}/children",
                 "type": "collection", "title": c["tag"], "titleSort": c["tag"],
                 "index": c["id"], "childCount": len(members),
-                "thumb": f"/library/collections/{rk}/composite/{updated}",
                 "updatedAt": updated, "librarySectionID": int(section), "smart": 0,
             })
+            # A collection with members has the server's automatic composite; the EMPTY one has
+            # no artwork at all, which is the case a client's neutral collection tile draws.
+            if members:
+                rows[-1]["thumb"] = f"/library/collections/{rk}/composite/{updated}"
         return rows
 
     def collection_by_rating_key(self, rk):
@@ -1110,27 +1159,35 @@ class CatalogLibrary(Library):
 
     def section_collection_hubs(self, section, kind):
         """The catalog's collections in one library, as the shelves a real server lists after
-        Recently Added: `custom.collection.<section>.<id>.<id>`, in the catalog's order."""
+        Recently Added: `custom.collection.<section>.<ratingKey>.<ratingKey>` (a live probe: the
+        promoted hub's id is the collection's RATING key, not its tag id), in the catalog's order."""
         hubs = []
         for c in self.collections.values():
             rows = [it for it in self.collection_rows(c["id"]) if it["librarySectionID"] == section]
             if rows:
                 hubs.append({"title": c["tag"], "type": kind, "size": len(rows),
-                             "hubIdentifier": f"custom.collection.{section}.{c['id']}.{c['id']}",
+                             "hubIdentifier": f"custom.collection.{section}.{c['ratingKey']}.{c['ratingKey']}",
                              "key": f"/library/collections/{c['ratingKey']}/children", "Metadata": rows[:12]})
         return hubs
 
     def home_hubs(self):
-        """`/hubs` after Continue Watching: the catalog's shelves, in its order."""
+        """`/hubs` after Continue Watching: the catalog's shelves, in its order. A collection shelf
+        is published the way a real server promotes one — `custom.collection.<section>.<rk>.<rk>`
+        keyed by the collection's member listing — so its heading links to the collection page."""
         out = []
         for h in self.catalog["hubs"]:
             if "recent" in h:
                 rows = self.recent(h["recent"], 12)
+                ident, key = h["hubIdentifier"], f"/hubs/demo/{h['hubIdentifier']}"
             else:
-                rows = self.collection_rows(
-                    next(c["id"] for c in self.collections.values() if c["tag"] == h["collection"]))
-            out.append({"title": h["title"], "type": h["type"], "hubIdentifier": h["hubIdentifier"],
-                        "key": f"/hubs/demo/{h['hubIdentifier']}", "Metadata": rows})
+                coll = next(c for c in self.collections.values() if c["tag"] == h["collection"])
+                rows = self.collection_rows(coll["id"])
+                section = rows[0]["librarySectionID"] if rows else 1
+                rk = coll["ratingKey"]
+                ident = f"custom.collection.{section}.{rk}.{rk}"
+                key = f"/library/collections/{rk}/children"
+            out.append({"title": h["title"], "type": h["type"], "hubIdentifier": ident,
+                        "key": key, "Metadata": rows})
         return out
 
 
@@ -1285,7 +1342,13 @@ class MockPms:
                 mc["size"] = len(mc[k])
         return {"MediaContainer": mc}
 
-    def sort_meta(self):
+    def sort_meta(self, kind=None):
+        if kind == "18":
+            # PMS's collection listing declares ONE sort (probed on 1.43): titleSort.
+            return {"Type": [{"key": "/library/sections/1/all?type=18", "type": "collection",
+                              "title": "Collections", "active": True,
+                              "Sort": [{"key": "titleSort", "defaultDirection": "asc",
+                                        "descKey": "titleSort:desc", "title": "Title"}]}]}
         return {"Type": [{"key": "/library/sections/1/all?type=1", "type": "movie", "title": "movie",
                           "active": True,
                           "Sort": [{"key": "titleSort", "defaultDirection": "asc", "title": "Title"},
@@ -1403,7 +1466,7 @@ class MockPms:
                 rows = lib.section_items(segs[2], q)
             page, extra = paged(rows)
             if q.get("includeMeta") == "1":
-                extra["Meta"] = self.sort_meta()
+                extra["Meta"] = self.sort_meta(q.get("type"))
             return j(self.container(Metadata=page, **extra))
         if len(segs) == 4 and segs[:2] == ["library", "sections"]:
             d = segs[3]
@@ -1415,7 +1478,7 @@ class MockPms:
                                                     "fastKey": f"/library/sections/{segs[2]}/all?genre={g['id']}"}
                                                    for g in lib.genres.values()]))
             if d == "firstCharacter":
-                return j(self.container(Directory=lib.first_characters(segs[2])))
+                return j(self.container(Directory=lib.first_characters(segs[2], q)))
             return j(self.container(Directory=[]))
         if len(segs) >= 3 and segs[:2] == ["library", "metadata"]:
             ids = segs[2]
@@ -1442,9 +1505,22 @@ class MockPms:
             if sub == "related":
                 it = lib.items.get(rk)
                 pool = [x for x in lib.items.values() if it and x["type"] == it["type"] and x is not it]
-                return j(self.container(Hub=[{"title": "related", "type": it["type"] if it else "movie",
-                                              "hubIdentifier": "related", "size": min(8, len(pool)),
-                                              "Metadata": pool[:8]}]))
+                hubs = [{"title": "related", "type": it["type"] if it else "movie",
+                         "hubIdentifier": "related", "size": min(8, len(pool)), "Metadata": pool[:8]}]
+                # A member movie also gets one `collection.related.{section}.{n}` hub per
+                # collection (a live probe): titled with the collection, keyed by the section's
+                # TAG-id filter, listing EVERY member — the movie itself included.
+                tags = it.get("Collection", []) if it and it["type"] == "movie" else []
+                for n, tag in enumerate(tags, 1):
+                    members = lib.collection_rows(tag["id"])
+                    sec = it.get("librarySectionID", 1)
+                    hubs.append({
+                        "title": tag["tag"], "type": "movie", "size": len(members),
+                        "hubIdentifier": f"collection.related.{sec}.{n}",
+                        "key": f"/library/sections/{sec}/all?type=1&tagId={tag['id']}"
+                               "&sort=originallyAvailableAt,year:nullsLast",
+                        "Metadata": members})
+                return j(self.container(Hub=hubs))
             if catalog:
                 img = lib.image(p, q.get("width"), q.get("height"))
                 return (200, *img) if img else (404, "text/plain", b"no image")
@@ -1508,7 +1584,8 @@ class MockPms:
             return j(self.container(Hub=hubs))
         if p == "/hubs/search":
             lim = q.get("limit", "")
-            return j(self.container(Hub=lib.search(q.get("query", ""), int(lim) if lim.isdigit() else 3)))
+            return j(self.container(Hub=lib.search(q.get("query", ""), int(lim) if lim.isdigit() else 3,
+                                                   include_collections=q.get("includeCollections") == "1")))
         if p == "/photo/:/transcode" and catalog:
             img = lib.image(q.get("url", ""), q.get("width"), q.get("height"))
             return (200, *img) if img else (404, "text/plain", b"no image")

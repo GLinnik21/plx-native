@@ -584,6 +584,8 @@ pub(super) fn return_from_player(
                 key.is_empty() && guid.is_empty(),
             AppArg::Content(crate::screens::registry::ContentArg::Filmography { key, .. }) =>
                 key.is_empty(),
+            AppArg::Content(crate::screens::registry::ContentArg::Collection { rk, tag, .. }) =>
+                rk.is_empty() && *tag == 0,
             _ => false,
         }
     });
@@ -1563,6 +1565,8 @@ mod player_return_tests {
             AppArg::Content(ContentArg::Person { sid: A, key: String::new(), guid: String::new(),
                 name: String::new(), thumb: String::new() }),
             AppArg::Content(ContentArg::Filmography { sid: A, key: String::new() }),
+            AppArg::Content(ContentArg::Collection { sid: A, rk: String::new(), sec: 0,
+                tag: 0, name: String::new() }),
         ] {
             let mut p = Pages::new();
             p.stand_on(AppArg::Home).stand_on(origin);

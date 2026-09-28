@@ -504,6 +504,31 @@ pub(crate) fn still_overlay(
     }
 }
 
+/// A persistent categorical LABEL on portrait artwork. This is deliberately separate from the
+/// three watch-state marks: it describes what the item is (for example `SEASON 3` or `S3 · E4`),
+/// while the disc/bar vocabulary describes viewing state. The label stands directly on the
+/// artwork's shared bottom scrim, never in a badge or a fourth corner mark.
+pub(crate) fn poster_label(
+    p: Painter,
+    card: Rect,
+    rad: f32,
+    text: &str,
+    measure: &dyn crate::ui::machine::Measure,
+) {
+    if text.is_empty() { return; }
+    const INSET_X: f32 = 16.0;
+    const INSET_BOT: f32 = 14.0;
+    const SCRIM_H: f32 = 72.0;
+    art_scrim(p, card, rad, SCRIM_H, STILL_SCRIM_A);
+    let run = measure.fit_line(text, (card.w - 2.0 * INSET_X).max(0.0), theme::size::LABEL, true);
+    let cap_h = measure.cap_h(theme::size::LABEL);
+    Label::new(run.as_ptr(), theme::size::LABEL, theme::TEXT_PRIMARY)
+        .bold()
+        .v(VAlign::CapTop)
+        .draw(p, Rect::new(card.x + INSET_X, card.y + card.h - INSET_BOT - cap_h,
+            card.w - 2.0 * INSET_X, cap_h));
+}
+
 /// The gradient a [`still_line`] is read against — height and peak alpha.
 ///
 /// **112 for the PAIR since 2026-09-05**, and the revision states its own reason: "the system's
@@ -575,6 +600,12 @@ pub(crate) fn resolve_card_art(p: Painter, rect: Rect, art: &Art<'_>) -> (u32, f
     image
 }
 
+/// The name a poster card draws on the neutral collection tile, when it draws one: a collection
+/// row whose server sent no `thumb`. A composite or custom thumb is artwork and draws as a poster.
+fn neutral_collection_name(m: Option<&crate::pms::PmsMovie>) -> Option<&str> {
+    m.filter(|m| m.kind == crate::pms::KIND_COLLECTION && m.thumb.is_empty()).map(|m| m.title.as_str())
+}
+
 pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, scale: f32, f: f32) {
     // Text prewarming visits an offscreen page. This leaf has no text: starting
     // image work here would bypass on-screen admission, and pollute its history.
@@ -593,6 +624,13 @@ pub(crate) fn card(p: Painter, frame: Rect, art: Art, rad: f32, focused: bool, s
             // library drew skeletons for most tiles and OUR films for the few ratingKeys that
             // happen to collide — both servers number from 1, so collisions are the normal case.
             let (t, tw, th) = image;
+            if let Some(name) = neutral_collection_name(m) {
+                // A collection with no artwork of its own: nothing will ever resolve, so a skeleton
+                // would read as loading forever. It wears its mark and name instead, and no state
+                // mark — a collection has no watch state (`poster_mark`).
+                crate::ui::collection_tile::draw(p, r, rad, name);
+                return;
+            }
             if t != 0 {
                 p.tex_carded(t, art_uv(&art, tw, th, r), r, rad, theme::TINT_WHITE, f);
             } else {
@@ -4919,7 +4957,7 @@ impl TabStrip {
                 // `Button::plate`) — owner correction, 2026-09-06: a plated strip's focused pill IS
                 // a control face (this fn's own doc says so, two paragraphs down) and a control face
                 // that never casts reads as a sticker pasted on the artwork rather than a pressable
-                // button, exactly the defect `person.rs::draw_entry` had before its own fix. Never
+                // button, exactly the defect `linked_heading::Entry` had before its own fix. Never
                 // for a TRACKED pill or the selection plate — see the call sites' own comments for
                 // why each of those stays flat.
                 if cast {
@@ -4982,7 +5020,7 @@ impl TabStrip {
         // was missing the fifth thing a control face wears, the CAST** — `Button::plate`'s own
         // `control_cast` before the fill, which is what turns a flat coloured shape sitting flush
         // against the artwork into something that reads as a pressable control lifted off it. This
-        // pill sits bare on artwork exactly the way `person.rs::draw_entry` sits bare on the page,
+        // pill sits bare on artwork exactly the way `linked_heading::Entry` sits bare on the page,
         // and it had the identical defect for the identical reason, so `cast: true` below.
         match ground {
             TabGround::Plated { pop } => {
@@ -6984,8 +7022,8 @@ impl Button {
 /// **A standalone control face for a caller outside this module** — the same plate
 /// [`Button::plate`] draws (the capsule outline, the edge sheen, and the focus cast), for a control
 /// whose layout does not fit `Button`'s one-label-two-icons shape and so cannot be a `Button`
-/// itself. `person.rs`'s Filmography route entry is the one caller today: three independent text
-/// runs (label, separator, count) and a trailing chevron, drawn by hand rather than through
+/// itself. [`super::linked_heading`] uses it for its entry and heading presentations: independent
+/// text runs (label, separator, count) and a trailing chevron, drawn by hand rather than through
 /// `Button::icon`/`label`/`trailing_icon`. It used to fill itself with a bare `Painter::rrect`/
 /// `rrect_sheened` — a plain rounded rect with no capsule outline, no edge sheen and no focus cast,
 /// the one pill-shaped control in the app that skipped the construction [`control_rim`] gives every

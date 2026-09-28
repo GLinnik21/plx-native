@@ -539,6 +539,17 @@ class Catalog(unittest.TestCase):
         self.assertIn("Blender Open Movies", pinned)
         self.assertTrue(any(h["title"] not in pinned for h in hubs), "one collection keeps the default")
 
+    def test_a_collection_composite_is_a_poster_and_an_empty_collection_has_none(self):
+        """The server's automatic composite (a 2x2 of members' posters) serves as JPEG at the
+        requested size; the empty collection sends no thumb, so the client draws its neutral tile."""
+        rows = self.get("/library/sections/1/all?type=18")["Metadata"]
+        with_art = [r for r in rows if r.get("thumb")]
+        self.assertTrue(with_art and any(not r.get("thumb") for r in rows))
+        url = urllib.parse.quote(with_art[0]["thumb"], safe="")
+        status, ctype, data = self.pms.handle("GET", f"/photo/:/transcode?width=250&height=375&minSize=1&url={url}")
+        self.assertEqual((status, ctype), (200, "image/jpeg"))
+        self.assertTrue(data.startswith(b"\xff\xd8"))
+
     def test_check_refuses_a_collection_order_that_is_not_the_whole_collection(self):
         assets, catalog = tool.load()
         order = dict(catalog["collection_order"])

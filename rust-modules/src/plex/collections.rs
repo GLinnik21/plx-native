@@ -143,6 +143,48 @@ pub(crate) fn collection_art(thumb: Option<&str>) -> CollectionArt {
     CollectionArt::Custom(thumb.to_string())
 }
 
+/// The collection a promoted `custom.collection.{section}.{rk}.{rk}` hub lists, for a linked shelf
+/// heading: `(section, ratingKey)`. The rating key comes from the hub's listing `key`
+/// (`/library/collections/{rk}/children`) and falls back to the identifier's own segment; the
+/// section is the identifier's first segment (0 when it does not parse). `collection.related` hubs
+/// answer `None` — they are keyed by TAG id and a Detail page resolves them through the store.
+pub(crate) fn promoted_collection_hub<'a>(
+    hub_identifier: &'a str,
+    key: &'a str,
+) -> Option<(i64, &'a str)> {
+    let tail = hub_identifier.strip_prefix("custom.collection.")?;
+    let mut segments = tail.split('.');
+    let section = segments.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let rk = collection_rk_from_hub_key(key)
+        .or_else(|| segments.next().filter(|rk| !rk.is_empty()))?;
+    Some((section, rk))
+}
+
+/// A member's own-collection hub from `/library/metadata/{rk}/related`:
+/// `collection.related.{section}.{n}`, whose `key` filters its section by the collection's TAG id
+/// (`/library/sections/{s}/all?type=1&tagId={tag}&sort=…`). Answers `(section, tag)` — the section
+/// from the key's path, else the identifier's first segment, else 0; the tag from `tagId`, else 0
+/// (the collection store then resolves by title alone). Any other hub answers `None`.
+pub(crate) fn related_collection_hub(hub_identifier: &str, key: &str) -> Option<(i64, i64)> {
+    let tail = hub_identifier.strip_prefix("collection.related")?;
+    if !(tail.is_empty() || tail.starts_with('.')) {
+        return None;
+    }
+    let (path, query) = key.split_once('?').unwrap_or((key, ""));
+    let section = path
+        .strip_prefix("/library/sections/")
+        .and_then(|rest| rest.split('/').next())
+        .and_then(|s| s.parse().ok())
+        .or_else(|| tail.strip_prefix('.')?.split('.').next()?.parse().ok())
+        .unwrap_or(0);
+    let tag = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("tagId="))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    Some((section, tag))
+}
+
 pub(crate) fn is_collection_hub(hub_identifier: &str) -> bool {
     hub_identifier.starts_with("custom.collection.")
         || hub_identifier == "collection.related"
@@ -152,7 +194,9 @@ pub(crate) fn is_collection_hub(hub_identifier: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "devtriggers")]
     use crate::plex::{Origin, ServerId};
+    #[cfg(feature = "devtriggers")]
     use std::io::{Read, Write};
 
     fn page(json: &[u8]) -> MediaContainer {
@@ -271,6 +315,57 @@ mod tests {
         assert!(!is_collection_hub("movie.similar"));
     }
 
+    #[test]
+    fn a_promoted_collection_hub_names_its_section_and_rating_key() {
+        assert_eq!(
+            promoted_collection_hub(
+                "custom.collection.1.420.420",
+                "/library/collections/420/children"
+            ),
+            Some((1, "420"))
+        );
+        assert_eq!(
+            promoted_collection_hub("custom.collection.2.77.77", ""),
+            Some((2, "77")),
+            "an absent key falls back to the identifier's own rating key"
+        );
+        assert_eq!(
+            promoted_collection_hub("collection.related.1.1", "/library/sections/1/all?tagId=9"),
+            None,
+            "a related hub is tag-keyed and is resolved by the collection store"
+        );
+        assert_eq!(promoted_collection_hub("movie.recentlyadded.1", "/x"), None);
+    }
+
+    #[test]
+    fn a_related_collection_hub_names_its_section_and_tag() {
+        assert_eq!(
+            related_collection_hub(
+                "collection.related.2.1",
+                "/library/sections/3/all?type=1&tagId=812&sort=originallyAvailableAt,year:nullsLast"
+            ),
+            Some((3, 812)),
+            "the key's own section and tag win"
+        );
+        assert_eq!(
+            related_collection_hub("collection.related.2.1", ""),
+            Some((2, 0)),
+            "a keyless hub still names its section; the store resolves the title"
+        );
+        assert_eq!(related_collection_hub("collection.relatedness", "/x"), None);
+        assert_eq!(related_collection_hub("movie.similar.1", "/x"), None);
+        assert_eq!(
+            related_collection_hub("custom.collection.1.420.420", "/library/collections/420/children"),
+            None
+        );
+    }
+
+    // Dev-only: this fixture drives a plaintext loopback PMS with a real client that carries a
+    // token, which a store build's `CredentialPolicy::HttpsOnly` refuses before the request ever
+    // reaches the wire (see `http::credential_transport_allowed`) — the connection this test
+    // waits on then never arrives. See `client.rs`'s
+    // `malformed_2xx_remains_a_response_after_its_deadline_passes` for the same gating.
+    #[cfg(feature = "devtriggers")]
     fn outcome_for(status: &str) -> Option<CollectionOutcome> {
         // The agent sandbox denies loopback binds; the coordinator and ordinary host suite run
         // this branch. This is the same skip convention used by the transport's own tests.
@@ -306,6 +401,7 @@ mod tests {
         Some(outcome)
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn authorization_and_absence_keep_their_http_meanings() {
         let Some(denied) = outcome_for("403 Forbidden") else {

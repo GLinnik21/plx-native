@@ -10,6 +10,7 @@ import socket
 import subprocess
 import tempfile
 import unittest
+import urllib.parse
 import urllib.request
 
 from mock_pms import (
@@ -51,10 +52,78 @@ class LibraryRail(unittest.TestCase):
         self.assertTrue(any(c.get("childCount") == 0 for c in collections),
                         "the fixture includes an empty collection")
 
+    def test_collection_listing_matches_the_library_type_menu_contract(self):
+        """The Library's Collections type: `all?type=18&includeMeta=1` declares only titleSort,
+        `firstCharacter?type=18` counts collections, and only a collection with members has art."""
+        pms = MockPms(Library())
+        first = get(pms, "/library/sections/1/all?type=18&includeMeta=1"
+                         "&X-Plex-Container-Start=0&X-Plex-Container-Size=60")
+        kinds = first["Meta"]["Type"]
+        self.assertEqual([k["type"] for k in kinds], ["collection"])
+        self.assertEqual([s["key"] for s in kinds[0]["Sort"]], ["titleSort"])
+        self.assertEqual(first["totalSize"], len(first["Metadata"]))
+        letters = get(pms, "/library/sections/1/firstCharacter?type=18")["Directory"]
+        self.assertEqual(sum(d["size"] for d in letters), first["totalSize"])
+        self.assertEqual([d["title"] for d in letters],
+                         sorted({row["titleSort"][0].upper() for row in first["Metadata"]}),
+                         "the rail's letters come in the listing's titleSort order")
+        for row in first["Metadata"]:
+            self.assertEqual("thumb" in row, row["childCount"] > 0, row["title"])
+
+    def test_search_with_include_collections_answers_full_collection_rows(self):
+        pms = MockPms(Library())
+        listed = get(pms, "/library/sections/1/collections")["Metadata"]
+        name = listed[0]["title"]
+        query = urllib.parse.quote(name.split()[0])
+
+        def hub(path):
+            return next(h for h in get(pms, path)["Hub"] if h["hubIdentifier"] == "collection")
+
+        # without the flag: tag rows under Directory — no ratingKey, no thumb
+        tags = hub(f"/hubs/search?query={query}&limit=12")
+        self.assertNotIn("Metadata", tags)
+        self.assertTrue(all("ratingKey" not in t and "thumb" not in t for t in tags["Directory"]))
+        # with it: the collection's own full rows under Metadata, both ids intact
+        rows = hub(f"/hubs/search?query={query}&limit=12&includeCollections=1")
+        self.assertNotIn("Directory", rows)
+        self.assertEqual(rows["size"], len(rows["Metadata"]))
+        row = next(r for r in rows["Metadata"] if r["title"] == name)
+        self.assertEqual({k: v for k, v in row.items() if k != "score"}, listed[0])
+        self.assertEqual(row["type"], "collection")
+        self.assertNotEqual(row["index"], int(row["ratingKey"]))
+        self.assertTrue(row["thumb"])
+        # every other hub is unchanged by the flag
+        plain = [h for h in get(pms, f"/hubs/search?query={query}&limit=12")["Hub"]
+                 if h["hubIdentifier"] != "collection"]
+        flagged = [h for h in get(pms, f"/hubs/search?query={query}&limit=12&includeCollections=1")["Hub"]
+                   if h["hubIdentifier"] != "collection"]
+        self.assertEqual(plain, flagged)
+
+    def test_a_member_movies_related_carries_its_whole_collection(self):
+        lib = Library()
+        pms = MockPms(lib)
+        member = next(it for it in lib.items.values()
+                      if it["type"] == "movie" and it.get("Collection"))
+        tag = member["Collection"][0]
+        hubs = get(pms, f"/library/metadata/{member['ratingKey']}/related")["Hub"]
+        own = [h for h in hubs if h["hubIdentifier"].startswith("collection.related.")]
+        self.assertEqual(len(own), len(member["Collection"]))
+        hub = own[0]
+        self.assertEqual(hub["title"], tag["tag"])
+        self.assertIn(f"tagId={tag['id']}", hub["key"])
+        self.assertTrue(hub["key"].startswith(f"/library/sections/{member['librarySectionID']}/all?"))
+        keys = [m["ratingKey"] for m in hub["Metadata"]]
+        self.assertIn(member["ratingKey"], keys, "the member lists itself")
+        self.assertEqual(keys, [m["ratingKey"] for m in lib.collection_rows(tag["id"])])
+        loner = next(it for it in lib.items.values()
+                     if it["type"] == "movie" and not it.get("Collection"))
+        hubs = get(pms, f"/library/metadata/{loner['ratingKey']}/related")["Hub"]
+        self.assertFalse(any(h["hubIdentifier"].startswith("collection.related") for h in hubs))
+
     def test_default_generated_data_is_stable(self):
         hashes = {
-            1: "d6de46102484a4fa867e459da01b3d83fd3b631854bf5e1bc472a5ca4ee3a73c",
-            7: "c529e55987409704cbc6b694d29a339eaa046ad557848850f2745fb35da9d6c7",
+            1: "179ea74803d88bfd0b0a4ab0e4bbb38aaf4612f73da1d50ef8d1416f5b2d29aa",
+            7: "6519eaed52dfbbc730648c80d3cf7b55daa36cb9f2aa43841fa669ed5ed6d5a8",
         }
         for seed, expected in hashes.items():
             payload = json.dumps(Library(seed=seed).__dict__, sort_keys=True).encode()

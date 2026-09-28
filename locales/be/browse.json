@@ -460,5 +460,6 @@
   "browse.diagnostics.feed_none": "— яшчэ нічога не пададзена",
   "browse.diagnostics.fed_rate": "{video} кадр/с · {audio}/с",
   "browse.diagnostics.uncertainty": " · ±{percent} %",
-  "browse.diagnostics.plex_pass": "{version} · Plex Pass"
+  "browse.diagnostics.plex_pass": "{version} · Plex Pass",
+  "browse.library.no_collections": "У бібліятэцы «{library}» няма калекцый"
 }

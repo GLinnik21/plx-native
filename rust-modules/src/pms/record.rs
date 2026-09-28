@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use super::{Landing, LandingClient, SourceBuild};
 
-pub(crate) const SHAPE: &str = "HubsResultV1{gen:u32,seq:u32,sid:u16,client:Option<u32>,token_gen:u32,build:Option<{cw:[{last_viewed_at:i64,m:PmsMovie}],shelves:[{title:str,hub_id:str,key:str,items:[PmsMovie]}]}>};PmsMovie{sid:u16,sec:i64,title:str,year:i32,rating:str,dur_ns:i64,part:str,thumb:str,still:str,art:str,summary:str,rk:str,vcodec:str,acodec:str,blur:[[f32bits;3];4],has_blur:bool,kind:i32,resume_ms:i64,show_rk:str,season_index:i32,show_title:str,ep_index:i32,unwatched:bool,watched:bool,aired:str}";
+pub(crate) const SHAPE: &str = "HubsResultV1{gen:u32,seq:u32,sid:u16,client:Option<u32>,token_gen:u32,build:Option<{cw:[{last_viewed_at:i64,m:PmsMovie}],shelves:[{title:str,hub_id:str,key:str,items:[PmsMovie]}]}>};PmsMovie{sid:u16,sec:i64,title:str,year:i32,rating:str,dur_ns:i64,part:str,thumb:str,still:str,art:str,summary:str,rk:str,vcodec:str,acodec:str,blur:[[f32bits;3];4],has_blur:bool,kind:i32,resume_ms:i64,show_rk:str,season_index:i32,show_title:str,ep_index:i32,unwatched:bool,watched:bool,aired:str,child_count:i64}";
 
 pub(crate) fn encode(landing: &Landing) -> Value {
     let Landing { gen, seq, sid, client, token_gen, build } = landing;
@@ -111,7 +111,7 @@ mod tests {
             blur: [[-0.0, f32::from_bits(0x7fc01234), f32::INFINITY]; 4], has_blur: true,
             kind: 3, resume_ms: 12345, show_rk: "10".into(), season_index: 2,
             show_title: "Show".into(), ep_index: 4, unwatched: false, watched: true,
-            aired: "2026-09-08".into(),
+            aired: "2026-09-08".into(), child_count: i64::MAX,
         };
         Landing { gen: 7, seq: 19, sid: m.sid, client: None, token_gen: 5,
             build: Some(SourceBuild {

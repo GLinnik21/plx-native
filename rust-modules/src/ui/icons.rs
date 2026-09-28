@@ -121,6 +121,10 @@ pub enum Icon {
     Episode,
     /// A stack of layers — the item menu's "Go to Show" leading glyph (a series of episodes).
     Show,
+    /// A portrait card with a second one behind it — a COLLECTION, drawn by the neutral tile of a
+    /// collection that has no artwork of its own (`ui::collection_tile`). Two stroked elements
+    /// that never touch (a unit of air between them), so rule 1's crease cannot form.
+    Collection,
     /// A play triangle behind a leading bar — **"Play from Start"** (restart, not resume), worn by
     /// the card menu's row of that name and by nothing else.
     ///
@@ -287,6 +291,7 @@ fn src(id: Icon) -> &'static str {
         Icon::Backspace => include_str!("../../../assets/icons/backspace.svg"),
         Icon::Episode => include_str!("../../../assets/icons/episode.svg"),
         Icon::Show => include_str!("../../../assets/icons/show.svg"),
+        Icon::Collection => include_str!("../../../assets/icons/collection.svg"),
         Icon::PlayStart => include_str!("../../../assets/icons/play-start.svg"),
         Icon::Close => include_str!("../../../assets/icons/close.svg"),
         Icon::More => include_str!("../../../assets/icons/more.svg"),
@@ -529,6 +534,24 @@ mod ink_tests {
             for y in 0..px {
                 assert_eq!(alpha(0, y), 0, "{id:?} has ink on the left border");
                 assert_eq!(alpha(px - 1, y), 0, "{id:?} has ink on the right border");
+            }
+        }
+    }
+
+    /// The collection mark at the sizes its tile draws it (`collection_tile::glyph_px` across a
+    /// grid poster's rest and pop, and a shelf's): full opacity inside, nothing on the border.
+    #[test]
+    fn the_collection_mark_rasterizes_clean_at_its_tile_sizes() {
+        for px in [64, 72, 76, 80, 84] {
+            let rgba = crate::svg::rasterize(src(Icon::Collection), px, px)
+                .unwrap_or_else(|| panic!("Collection failed to rasterize at {px}px"));
+            let alpha = |x: i32, y: i32| rgba[((y * px + x) * 4 + 3) as usize];
+            let max_alpha = (0..px).flat_map(|y| (0..px).map(move |x| alpha(x, y))).max().unwrap();
+            assert_eq!(max_alpha, 255, "Collection never reaches full opacity at {px}px");
+            for i in 0..px {
+                for (x, y) in [(i, 0), (i, px - 1), (0, i), (px - 1, i)] {
+                    assert_eq!(alpha(x, y), 0, "Collection has ink on the border at {px}px ({x},{y})");
+                }
             }
         }
     }

@@ -29,6 +29,7 @@ pub(crate) mod card_motion_metrics;
 pub(crate) mod value_chip; // shared label/value/owner capsule used by menu-opening controls
 pub mod chapters_panel;
 pub(crate) mod containers; // RESTRUCTURE (spec §6.2): Navigation = TabContainer → NavStack → ModalStack, the transitions, the host fold
+pub(crate) mod collection_tile; // the neutral tile a thumb-less collection draws on every surface
 pub mod consts;
 pub(crate) mod decision_alert;
 pub(crate) mod decision_prompt;
@@ -58,6 +59,7 @@ pub mod lab_toast; // the Lab Diagnostics upload read-out (lab builds only — s
 #[cfg(feature = "threadcheck")]
 pub(crate) mod runtime_warning;
 pub mod label;
+pub(crate) mod linked_heading; // linked shelf-entry control: shared entry/heading geometry, focus and hits
 pub(crate) mod landgate; // RESTRUCTURE (spec §3.3 step 3): a replay delivers a landing on its RECORDED frame
 pub(crate) mod landing; // RESTRUCTURE spike (spec §5.2): the bounded per-addressee result queue
 pub(crate) mod machine; // RESTRUCTURE spike (spec §3.1): the layer-neutral contract — Host, Machine, Effects, Fx
@@ -73,6 +75,7 @@ pub mod nav; // the page transition's PRESENTATION, published once a frame from 
 pub mod overdraw; // dev-only DRAW-CLASS ledger + mask — the attribution instrument (docs/backdrop-blur-profiling.md Part 5)
 pub mod pill; // THE CAPSULE OUTLINE — three blended arcs per corner, solved; not a stadium
 pub mod player_hud;
+pub(crate) mod poster_grid; // uniform six-column portrait geometry for collection-like pages
 pub mod popover; // shared modal open/appear choreography (track menu / info / chapters / account)
 pub(crate) mod present; // RESTRUCTURE spike (spec §4.4): the present gate as a machine with an owner
 pub mod press; // tvOS-style click: OK-down dips the focused card, OK-up springs it back + activates
@@ -571,10 +574,9 @@ impl Painter {
     pub fn dx(self) -> f32 {
         self.dx
     }
-    /// The cascade's vertical translate — [`dx`](Self::dx)'s twin, with the same warning. Its one
-    /// caller records a POINTER hit rect for a control drawn inside a `ScrollColumn` child, where
-    /// the child painter has already been translated to the block top minus the scroll and that
-    /// offset is not otherwise recoverable from inside the block (`person::draw_entry`).
+    /// The cascade's vertical translate — [`dx`](Self::dx)'s twin, with the same warning. The hit
+    /// map reads it when a control is drawn inside a translated child: the child's painter already
+    /// carries the block-top/scroll offset, which is not otherwise recoverable at registration.
     pub fn dy(self) -> f32 {
         self.dy
     }

@@ -908,7 +908,7 @@ class StoredSessionGate(unittest.TestCase):
 
 class ItemResolution(unittest.TestCase):
     def test_placeholder_reads_as_absent(self):
-        """The stranger's dominant path is `cp` the example, which ships all twelve keys bracketed.
+        """The stranger's dominant path is `cp` the example, which ships every key bracketed.
         If only the ABSENT branch skipped, that path would still die — one guard further down."""
         items = {"present": 1234, "blank": "<ratingKey>"}
         self.assertEqual(run._item_rk(items, "present"), "1234")   # ints are stringified
@@ -1478,6 +1478,49 @@ class LoadManifest(unittest.TestCase):
         self.assertFalse([c["name"] for c in m["cases"] if c.get("skip")])
         self.assertFalse([s["name"] for s in m.get("fps_scenes", []) if s.get("skip")])
 
+    def test_collection_scenes_resolve_through_the_overlay(self):
+        """manifest.json is installation-independent, so the collection scenes may not carry a
+        mock_pms ratingKey: on a real server `plxnative-collection=50001` opens a collection that
+        does not exist and the page's fps_ceiling passes vacuously on its failure read-out."""
+        tracked = {s["name"]: s for s in _manifest()["fps_scenes"]}
+        for name in ("collection-page", "library-collections"):
+            with self.subTest(scene=name):
+                self.assertEqual(tracked[name]["item"], "collection")
+        self.assertEqual(tracked["collection-page"]["triggers"]["plxnative-collection"], "$rk")
+
+        items = self._all_keys()
+        items["collection"] = 424242
+        scenes = {s["name"]: s for s in self._load(_overlay(items))["fps_scenes"]}
+        page = scenes["collection-page"]
+        self.assertIn(("plxnative-collection", "424242"), run.fps_trigger_files(page))
+        # library-collections declares the key as a requirement only: nothing reads its `$rk`.
+        self.assertNotIn("424242", [v for _, v in run.fps_trigger_files(scenes["library-collections"])])
+
+        items["collection"] = "<ratingKey: a movie COLLECTION, not a movie>"
+        scenes = {s["name"]: s for s in self._load(_overlay(items))["fps_scenes"]}
+        for name in ("collection-page", "library-collections"):
+            with self.subTest(scene=name):
+                self.assertIn("template placeholder", scenes[name]["skip"])
+                self.assertNotIn("rk", scenes[name])
+
+    def test_no_fps_trigger_holds_a_literal_ratingkey(self):
+        """A scene that opens one item names it by `item` + `$rk`, never by a number that is true
+        on one server only. These are the triggers whose value carries a ratingKey."""
+        takes_rk = ("plxnative-detail", "plxnative-collection", "plxnative-play", "plxnative-navosc",
+                    "plxnative-pushbench", "plxnative-modalbench", "plxnative-deepbench")
+        for scene in _manifest()["fps_scenes"]:
+            for trigger, value in scene.get("triggers", {}).items():
+                if trigger in takes_rk and value is not True:
+                    with self.subTest(scene=scene["name"], trigger=trigger):
+                        self.assertIn("$rk", str(value))
+                        self.assertIn("item", scene)
+
+    def test_the_example_overlay_names_every_item_key(self):
+        """A key missing from the template is a scene nobody copying it can ever run."""
+        with open(run.MANIFEST_LOCAL_EXAMPLE) as f:
+            example = json.load(f)["items"]
+        self.assertFalse(set(self._all_keys()) - set(example))
+
     def test_placeholders_outside_items_are_still_fatal(self):
         """No run of any size can proceed without these, so they keep the loud death."""
         local = _overlay({})
@@ -1845,6 +1888,20 @@ class DefaultTier(unittest.TestCase):
         for extra in ("--server", "--fps", "--fps-player"):
             self.assertNotEqual(self._list("--pipeline", extra).returncode, 0,
                                 f"--pipeline {extra} should refuse")
+
+    def test_fps_listing_survives_a_bench_scene_with_no_loop_floor(self):
+        """`--fps --list` walks every fps_scene and printed `loop_floor={s['loop_floor']}`
+        unconditionally, which assumed every scene gates on it. The push/modal/deep-100 bench
+        scenes gate on `bench_worst_ms` instead and carry no `loop_floor` at all, so the listing
+        crashed with KeyError('loop_floor') partway through printing — after the ordinary cases,
+        so a bare `--list` (the pipeline-tier listing) never saw it. The fix must print what a
+        bench scene actually gates on rather than assuming every scene shares one key."""
+        out = self._list("--fps")
+        self.assertEqual(out.returncode, 0,
+                         f"--fps --list crashed:\n{out.stdout}\n{out.stderr}")
+        self.assertIn("fps:push-100", out.stdout)
+        self.assertNotIn("Traceback", out.stderr)
+        self.assertNotIn("KeyError", out.stderr)
 
     def test_the_manifest_declares_a_frame_rate_axis(self):
         """Every fixture ran at 24p until 2026-08-22, so `engine::fps_rational`'s branches had one

@@ -167,14 +167,14 @@ fn movies(items: &[PmsMovie], w: &mut impl Sink) {
 fn movie(m: &PmsMovie, w: &mut impl Sink) {
     let PmsMovie { sid, sec, title, year, rating, dur_ns, part, thumb, still, art, summary, rk,
         vcodec, acodec, blur, has_blur, kind, resume_ms, show_rk, season_index, show_title,
-        ep_index, unwatched, watched, aired } = m;
+        ep_index, unwatched, watched, aired, child_count } = m;
     w.u32(sid.raw().into()); w.u64(*sec as u64); w.text(title); w.u32(*year as u32);
     w.text(rating); w.u64(*dur_ns as u64);
     for text in [part, thumb, still, art, summary, rk, vcodec, acodec] { w.text(text); }
     for row in blur { for component in row { w.u32(component.to_bits()); } }
     w.boolean(*has_blur); w.u32(*kind as u32); w.u64(*resume_ms as u64); w.text(show_rk);
     w.u32(*season_index as u32); w.text(show_title); w.u32(*ep_index as u32);
-    w.boolean(*unwatched); w.boolean(*watched); w.text(aired);
+    w.boolean(*unwatched); w.boolean(*watched); w.text(aired); w.u64(*child_count as u64);
 }
 
 #[cfg(test)]

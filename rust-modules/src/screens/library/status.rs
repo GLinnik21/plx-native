@@ -85,14 +85,7 @@ impl LibraryScreen {
                     else if directory.sections().is_empty() { crate::i18n::msg::browse_library_empty().into() }
                     else if listing.unwatched() || listing.genre().is_some() { crate::i18n::msg::browse_library_no_matches().into() }
                     else if let Some(section) = directory.current().and_then(|i| directory.sections().get(i)) {
-                        match section.kind {
-                            SecKind::Movie => crate::i18n::msg::browse_library_no_movies(&section.row.title),
-                            SecKind::Show => match listing.library_type() {
-                                crate::browse::LibraryType::Shows => crate::i18n::msg::browse_library_no_shows(&section.row.title),
-                                crate::browse::LibraryType::Seasons => crate::i18n::msg::browse_library_no_seasons(&section.row.title),
-                                crate::browse::LibraryType::Episodes => crate::i18n::msg::browse_library_no_episodes(&section.row.title),
-                            },
-                        }
+                        listing.library_type().empty_readout(section.kind, &section.row.title)
                     } else { crate::i18n::msg::browse_library_no_matches().into() };
                 (caption, None)
             }
@@ -103,6 +96,11 @@ impl LibraryScreen {
     }
 
     pub(super) fn status_frame(&self) -> Rect {
+        // Under shelves, an empty answer stands in its own document band below the heading row
+        // (`Layout::empty_band`) and scrolls with it; the fixed region would put it on a shelf.
+        if let Some((top, h)) = self.layout.empty_band().filter(|_| self.layout.shelves > 0) {
+            return Rect::new(MARGIN_X, CONTENT_TOP + top - self.scroll.pos, SCR_W - 2.0 * MARGIN_X, h);
+        }
         // The legacy readout occupies the fixed content region, inside the overscan frame.
         const STATUS_TOP: f32 = 232.0;
         Rect::new(MARGIN_X, STATUS_TOP, SCR_W - 2.0 * MARGIN_X,

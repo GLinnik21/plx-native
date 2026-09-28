@@ -298,34 +298,90 @@ pub(crate) struct BrowseSection {
     pub(crate) pinned: bool,
 }
 
-/// The flat listings offered by a TV library. Separate from the section's kind: selecting
-/// episodes changes the query, while the section remains a TV library in the tab strip.
+/// **What a library lists** — the TYPE menu's value. Separate from the section's kind: choosing
+/// episodes or collections changes the query, while the section stays a movie or TV library in
+/// the tab strip.
+///
+/// [`LibraryType::Primary`] is the section's own metadata type — films in a movie library, shows
+/// in a TV library — and the only type the user's Unwatched/Genre filters and the client-side
+/// Plays sort apply to without qualification. Which values a section offers is
+/// [`LibraryType::offered`]: a movie library lists its films or its collections, a TV library its
+/// shows, seasons, episodes or collections.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum LibraryType {
     #[default]
-    Shows,
+    Primary,
     Seasons,
     Episodes,
+    /// The section's collections — `all?type=18`, measured on PMS to page with `totalSize`, to
+    /// answer `firstCharacter?type=18` and to declare `titleSort` as its only sort.
+    Collections,
 }
 
 impl LibraryType {
-    pub(crate) fn title(self) -> &'static str {
-        self.title_in(crate::i18n::current())
-    }
-
-    fn title_in(self, locale: &crate::i18n::LocaleContext) -> &'static str {
-        match self {
-            Self::Shows => crate::i18n::msg::browse_kind_tv_shows_in(locale),
-            Self::Seasons => crate::i18n::msg::browse_kind_seasons_in(locale),
-            Self::Episodes => crate::i18n::msg::browse_kind_episodes_in(locale),
+    /// The TYPE menu's rows for a section of `kind`, in menu order.
+    pub(crate) fn offered(kind: SecKind) -> &'static [LibraryType] {
+        match kind {
+            SecKind::Movie => &[Self::Primary, Self::Collections],
+            SecKind::Show => &[Self::Primary, Self::Seasons, Self::Episodes, Self::Collections],
         }
     }
 
-    pub(crate) fn plex_type(self) -> i64 {
+    pub(crate) fn title(self, kind: SecKind) -> &'static str {
+        self.title_in(kind, crate::i18n::current())
+    }
+
+    fn title_in(self, kind: SecKind, locale: &crate::i18n::LocaleContext) -> &'static str {
+        match (self, kind) {
+            (Self::Primary, SecKind::Movie) => crate::i18n::msg::browse_kind_movies_in(locale),
+            (Self::Primary, SecKind::Show) => crate::i18n::msg::browse_kind_tv_shows_in(locale),
+            (Self::Seasons, _) => crate::i18n::msg::browse_kind_seasons_in(locale),
+            (Self::Episodes, _) => crate::i18n::msg::browse_kind_episodes_in(locale),
+            (Self::Collections, _) => crate::i18n::msg::browse_kind_collections_in(locale),
+        }
+    }
+
+    /// The empty read-out for this type in the library titled `library` ("No collections in
+    /// Films"): one whole catalog phrase per type, because the noun's case and the phrase's word
+    /// order differ by language.
+    pub(crate) fn empty_readout(self, kind: SecKind, library: &str) -> String {
+        match (self, kind) {
+            (Self::Primary, SecKind::Movie) => crate::i18n::msg::browse_library_no_movies(library),
+            (Self::Primary, SecKind::Show) => crate::i18n::msg::browse_library_no_shows(library),
+            (Self::Seasons, _) => crate::i18n::msg::browse_library_no_seasons(library),
+            (Self::Episodes, _) => crate::i18n::msg::browse_library_no_episodes(library),
+            (Self::Collections, _) => crate::i18n::msg::browse_library_no_collections(library),
+        }
+    }
+
+    /// The `type=` a listing of this type sends in a section of `kind`, or `None` for the
+    /// section's own default listing. A movie library's films have always been asked for without
+    /// one, and still are; a TV library's shows name `type=2` explicitly, as they always did.
+    pub(crate) fn plex_type(self, kind: SecKind) -> Option<i64> {
+        match (self, kind) {
+            (Self::Primary, SecKind::Movie) => None,
+            (Self::Primary, SecKind::Show) => Some(2),
+            (Self::Seasons, _) => Some(3),
+            (Self::Episodes, _) => Some(4),
+            (Self::Collections, _) => Some(18),
+        }
+    }
+
+    /// Do the Unwatched and Genre filters apply? A collection has no watch state of its own and
+    /// no genre, so both are hidden — and not sent — while collections are listed. The section's
+    /// Unwatched switch is kept for when its own type is listed again (a genre never survives a
+    /// type change: it names one type's menu).
+    pub(crate) fn filters(self) -> bool {
+        self != Self::Collections
+    }
+
+    /// A kind-independent code for canonical encodings and menu identities.
+    pub(crate) fn code(self) -> u32 {
         match self {
-            Self::Shows => 2,
-            Self::Seasons => 3,
-            Self::Episodes => 4,
+            Self::Primary => 0,
+            Self::Seasons => 1,
+            Self::Episodes => 2,
+            Self::Collections => 3,
         }
     }
 }
@@ -582,12 +638,15 @@ impl Default for SecState {
 impl SecState {
     fn query_filters(&self, section_kind: SecKind) -> Vec<(String, String)> {
         let mut filters = Vec::new();
-        if section_kind == SecKind::Show {
-            filters.push(("type".into(), self.library_type.plex_type().to_string()));
+        if let Some(kind) = self.library_type.plex_type(section_kind) {
+            filters.push(("type".into(), kind.to_string()));
+        }
+        if !self.library_type.filters() {
+            return filters;
         }
         if self.unwatched {
             let key = match (section_kind, self.library_type) {
-                (SecKind::Show, LibraryType::Shows | LibraryType::Seasons) => "unwatchedLeaves",
+                (SecKind::Show, LibraryType::Primary | LibraryType::Seasons) => "unwatchedLeaves",
                 _ => "unwatched",
             };
             filters.push((key.into(), "1".into()));
@@ -931,7 +990,7 @@ impl BrowseState {
     }
     fn set_library_type(&mut self, library_type: LibraryType) -> bool {
         let current = self.cur();
-        if self.section_kind(current) != Some(SecKind::Show) {
+        if !self.section_kind(current).is_some_and(|kind| LibraryType::offered(kind).contains(&library_type)) {
             return false;
         }
         let Some(state) = self.states.get_mut(current) else { return false };
@@ -964,7 +1023,7 @@ impl BrowseState {
     }
     fn set_genre_by_id(&mut self, id: Option<&str>) -> bool {
         if id.is_some() && self.cur_state().is_some_and(|state| {
-            state.library_type != LibraryType::Shows
+            state.library_type != LibraryType::Primary
         }) {
             return false;
         }
@@ -1113,8 +1172,7 @@ impl BrowseState {
         }
         let key = self.sections[current].key;
         let library_type = self.states[current].library_type;
-        let metadata_type = (self.sections[current].kind == SecKind::Show)
-            .then(|| library_type.plex_type());
+        let metadata_type = library_type.plex_type(self.sections[current].kind);
         let epoch = self.table_epoch();
         let worker_adapter = Arc::clone(&adapter);
         let spawned = crate::task::spawn_small("directory", move || {
@@ -2106,7 +2164,9 @@ impl BrowseState {
             .map(|sort| sort.query(state.sort_desc))
             .unwrap_or_default();
         let filters = state.query_filters(section.kind);
-        let confirm_sort = section.kind == SecKind::Show && state.library_type != LibraryType::Shows;
+        // Every listing but the section's own default is ordered by the menu it has just
+        // discovered — seasons and episodes by Show, collections by the Title they declare.
+        let confirm_sort = state.library_type != LibraryType::Primary;
         let gen = self.query_gen();
         let key = section.key;
         let Some(sid) = self.section_sid(current) else { return };
@@ -2211,7 +2271,7 @@ impl BrowseState {
                                 state.fetch = SecFetch::Ready;
                                 if let Some(sorts) = result.sorts {
                                     if state.sorts.is_empty() {
-                                        let sorts = if state.library_type == LibraryType::Shows {
+                                        let sorts = if state.library_type == LibraryType::Primary {
                                             match kind {
                                                 Some(kind) => with_plays_sort(sorts, kind),
                                                 None => sorts,
@@ -3207,22 +3267,23 @@ mod library_type_tests;
 
 #[cfg(test)]
 mod localized_type_tests {
-    use super::LibraryType;
+    use super::{LibraryType, SecKind};
 
     #[test]
     fn library_type_titles_translate_without_changing_the_pms_query_type() {
         use crate::i18n::{LocaleContext, Preference};
         for (preference, expected) in [
-            (Preference::En, ["TV Shows", "Seasons", "Episodes"]),
-            (Preference::Es, ["Series", "Temporadas", "Episodios"]),
-            (Preference::Be, ["Серыялы", "Сезоны", "Серыі"]),
+            (Preference::En, ["Movies", "Collections", "TV Shows", "Seasons", "Episodes", "Collections"]),
+            (Preference::Es, ["Películas", "Colecciones", "Series", "Temporadas", "Episodios", "Colecciones"]),
+            (Preference::Be, ["Фільмы", "Калекцыі", "Серыялы", "Сезоны", "Серыі", "Калекцыі"]),
         ] {
             let locale = LocaleContext::resolve(preference, None, None, None, None);
-            for ((kind, wire_type), title) in [
-                (LibraryType::Shows, 2), (LibraryType::Seasons, 3), (LibraryType::Episodes, 4),
-            ].into_iter().zip(expected) {
-                assert_eq!(kind.title_in(&locale), title);
-                assert_eq!(kind.plex_type(), wire_type);
+            let rows = LibraryType::offered(SecKind::Movie).iter().map(|&t| (t, SecKind::Movie))
+                .chain(LibraryType::offered(SecKind::Show).iter().map(|&t| (t, SecKind::Show)));
+            let wire = [None, Some(18), Some(2), Some(3), Some(4), Some(18)];
+            for (((kind, section), wire_type), title) in rows.zip(wire).zip(expected) {
+                assert_eq!(kind.title_in(section, &locale), title);
+                assert_eq!(kind.plex_type(section), wire_type);
             }
         }
     }

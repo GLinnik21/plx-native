@@ -446,5 +446,6 @@
   "browse.diagnostics.feed_none": "— aún no se ha enviado nada",
   "browse.diagnostics.fed_rate": "{video} fps · {audio}/s",
   "browse.diagnostics.uncertainty": " · ±{percent} %",
-  "browse.diagnostics.plex_pass": "{version} · Plex Pass"
+  "browse.diagnostics.plex_pass": "{version} · Plex Pass",
+  "browse.library.no_collections": "No hay colecciones en {library}"
 }

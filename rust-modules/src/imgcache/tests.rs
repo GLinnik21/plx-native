@@ -80,6 +80,46 @@ fn keys_include_namespace_source_version_and_every_transform() {
 }
 
 #[test]
+fn baked_keys_are_stable_versioned_by_stamp_and_carry_no_request() {
+    let key = |ns: &str, kind: &str, rk: &str, stamp: &str, w: u32, h: u32| {
+        classify_baked(ns, kind, rk, stamp, w, h).map(|k| k.name)
+    };
+    let name = key("machine:m|profile:", "fan", "901", "1700000000", 300, 450).unwrap();
+    assert_eq!(
+        Some(name.clone()),
+        key("machine:m|profile:", "fan", "901", "1700000000", 300, 450),
+        "the same inputs must name the same file on every boot"
+    );
+    assert!(cache_name(&name), "baked files must survive the startup scan: {name}");
+    for other in [
+        key("machine:n|profile:", "fan", "901", "1700000000", 300, 450),
+        key("machine:m|profile:u1", "fan", "901", "1700000000", 300, 450),
+        key("machine:m|profile:", "other", "901", "1700000000", 300, 450),
+        key("machine:m|profile:", "fan", "902", "1700000000", 300, 450),
+        key("machine:m|profile:", "fan", "901", "1700000001", 300, 450),
+        key("machine:m|profile:", "fan", "901", "1700000000", 301, 450),
+        key("machine:m|profile:", "fan", "901", "1700000000", 300, 451),
+    ] {
+        assert_ne!(Some(name.clone()), other);
+    }
+    // A baked identity never collides with a transcode of the same source path.
+    assert_ne!(
+        Some(name.clone()),
+        classify("machine:m|profile:", POSTER).map(|k| k.name)
+    );
+    for (ns, kind, rk, stamp, w, h) in [
+        ("", "fan", "1", "2", 3, 4),
+        ("n", "", "1", "2", 3, 4),
+        ("n", "fan", "", "2", 3, 4),
+        ("n", "fan", "1", "", 3, 4),
+        ("n", "fan", "1", "2", 0, 4),
+        ("n", "fan", "1", "2", 3, 0),
+    ] {
+        assert!(key(ns, kind, rk, stamp, w, h).is_none());
+    }
+}
+
+#[test]
 fn avatar_only_ignores_roster_stamp_and_preserves_other_queries() {
     let key = classify("server-a", AVATAR).unwrap();
     assert_eq!(

@@ -68,6 +68,69 @@ fn decode_limits() -> image::Limits {
     l
 }
 
+/// Decode compressed bytes into an OWNED RGBA buffer under the same limits, panic guard and
+/// failure lines as [`img_decode_rgba`] — for a worker that composes pixels itself (the collection
+/// fan baker) rather than handing a `malloc`'d buffer across the store.
+pub(crate) fn img_decode_owned(data: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    if data.is_empty() {
+        return None;
+    }
+    let len = data.len();
+    let magic: String = data.iter().take(6).map(|b| format!("{b:02x}")).collect();
+    // decode inside catch_unwind so a decoder panic can't unwind into C. `ImageReader` rather than
+    // the `load_from_memory` one-liner purely so the limits above can be attached — that helper
+    // hard-codes `Limits::default()` internally, with no way to pass any.
+    //
+    // The failure now carries its REASON, which it did not have to before: with limits in force,
+    // "no image came back" covers both a corrupt file and one this device refuses to decode, and
+    // those want opposite responses (ignore it vs. re-open the numbers in `decode_limits`). Same
+    // `img: decode-none` prefix, so anything grepping the event log for it still matches.
+    let decoded = catch_unwind(AssertUnwindSafe(|| -> Result<(u32, u32, Vec<u8>), String> {
+        let mut rdr = image::ImageReader::new(std::io::Cursor::new(data))
+            .with_guessed_format()
+            .map_err(|e| format!("unreadable: {e}"))?;
+        rdr.limits(decode_limits());
+        let img = rdr.decode().map_err(|e| e.to_string())?;
+        let r = img.to_rgba8();
+        Ok((r.width(), r.height(), r.into_raw()))
+    }));
+    match decoded {
+        Ok(Ok(t)) => Some(t),
+        Ok(Err(why)) => {
+            log(&format!("img: decode-none len={len} magic={magic} — {why}"));
+            None
+        }
+        Err(_) => {
+            log(&format!("img: PANIC len={len} magic={magic}"));
+            None
+        }
+    }
+}
+
+/// Copy owned RGBA into a `malloc`'d buffer the poster store can hold and [`img_free`] releases.
+/// Null on an empty input or a refused allocation.
+pub(crate) fn img_malloc_copy(rgba: &[u8]) -> *mut c_uchar {
+    if rgba.is_empty() {
+        return ptr::null_mut();
+    }
+    let px = unsafe { malloc(rgba.len()) } as *mut c_uchar;
+    if px.is_null() {
+        log("img: malloc-none");
+        return ptr::null_mut();
+    }
+    // SAFETY: `px` was just allocated with exactly `rgba.len()` bytes and cannot overlap `rgba`.
+    unsafe { ptr::copy_nonoverlapping(rgba.as_ptr(), px, rgba.len()) };
+    px
+}
+
+/// Encode RGBA as PNG, the format baked artwork is persisted in. `None` if the encoder refuses.
+pub(crate) fn img_encode_png(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let enc = image::codecs::png::PngEncoder::new(&mut out);
+    image::ImageEncoder::write_image(enc, rgba, w, h, image::ExtendedColorType::Rgba8).ok()?;
+    Some(out)
+}
+
 pub(crate) fn img_decode_rgba(
     buf: *const c_uchar,
     len: c_int,
@@ -78,37 +141,11 @@ pub(crate) fn img_decode_rgba(
         return ptr::null_mut();
     }
     let data = unsafe { std::slice::from_raw_parts(buf, len as usize) };
-    let magic: String = data.iter().take(6).map(|b| format!("{b:02x}")).collect();
-    // decode inside catch_unwind so a decoder panic can't unwind into C. `ImageReader` rather than
-    // the `load_from_memory` one-liner purely so the limits above can be attached — that helper
-    // hard-codes `Limits::default()` internally, with no way to pass any.
-    //
-    // The failure now carries its REASON, which it did not have to before: with limits in force,
-    // "no image came back" covers both a corrupt file and one this device refuses to decode, and
-    // those want opposite responses (ignore it vs. re-open the numbers in `decode_limits`). Same
-    // `img: decode-none` prefix, so anything grepping the event log for it still matches.
-    let decoded = catch_unwind(AssertUnwindSafe(
-        || -> Result<(c_int, c_int, Vec<u8>), String> {
-            let mut rdr = image::ImageReader::new(std::io::Cursor::new(data))
-                .with_guessed_format()
-                .map_err(|e| format!("unreadable: {e}"))?;
-            rdr.limits(decode_limits());
-            let img = rdr.decode().map_err(|e| e.to_string())?;
-            let r = img.to_rgba8();
-            Ok((r.width() as c_int, r.height() as c_int, r.into_raw()))
-        },
-    ));
-    let (iw, ih, raw) = match decoded {
-        Ok(Ok(t)) => t,
-        Ok(Err(why)) => {
-            log(&format!("img: decode-none len={len} magic={magic} — {why}"));
-            return ptr::null_mut();
-        }
-        Err(_) => {
-            log(&format!("img: PANIC len={len} magic={magic}"));
-            return ptr::null_mut();
-        }
+    let Some((iw, ih, raw)) = img_decode_owned(data) else {
+        return ptr::null_mut();
     };
+    let (iw, ih) = (iw as c_int, ih as c_int);
+    let magic: String = data.iter().take(6).map(|b| format!("{b:02x}")).collect();
     let n = raw.len();
     let px = unsafe { malloc(n) } as *mut c_uchar;
     // The exit that is not the decoder's: the picture decoded, and it is the copy out into the

@@ -65,7 +65,6 @@
 //! a property of the host snapshot rather than a condition of the material. It still clears the
 //! design's `--glass-edge-clear` 68 on all four sides ([`EDGE_CLEAR`]) — a layout margin now.
 
-use crate::metadata;
 use crate::ui::consts::{SCR_H, SCR_W};
 use crate::ui::text_view::TextView;
 use crate::ui::theme;
@@ -253,16 +252,38 @@ pub(crate) const SHAPE: &str = "AboutPanelScreen{}";
 /// owns the spring; this is only the distance it drives.
 const RISE: f32 = crate::ui::popover::Popover::RISE;
 
+/// **Whose prose the sheet reads.** The panel is the same §1A sheet behind two pages' `MORE`: the
+/// Detail page's About card (`metadata::current()`) and the Collection page's 3-line summary
+/// (`collection::current()`). The source is fixed by the ARGUMENT that mounted it
+/// (`AppArg::AboutPanel` / `AppArg::CollectionAbout`), so it is not logical state of its own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AboutSource {
+    Detail,
+    Collection,
+}
+
 /// The About footer's card, read in full. Presented on the Detail page's own `ModalStack`
-/// (`registry::ContentPanel::About`), dismissed by BACK or OK.
+/// (`registry::ContentPanel::About`), dismissed by BACK or OK — and, with no layout change, the
+/// Collection page's summary behind its `MORE` (`registry::ContentPanel::CollectionAbout`).
 pub(crate) struct AboutPanelScreen {
     entry: crate::ui::machine::EntryId,
+    source: AboutSource,
 }
 
 impl AboutPanelScreen {
     pub(crate) fn new(entry: crate::ui::machine::EntryId) -> Self {
         Self {
             entry,
+            source: AboutSource::Detail,
+        }
+    }
+
+    /// The Collection page's summary, read in full: the same sheet over the collection store's
+    /// current collection. A collection has no tagline, so that block is absent.
+    pub(crate) fn collection(entry: crate::ui::machine::EntryId) -> Self {
+        Self {
+            entry,
+            source: AboutSource::Collection,
         }
     }
 
@@ -273,7 +294,8 @@ impl AboutPanelScreen {
     /// and the slide are this draw's own, and the scrim is already down (see [`Self::scrim`]).
     fn paint(
         &mut self,
-        d: &metadata::Detail,
+        summary: &str,
+        tagline: &str,
         appear: f32,
         measure: &dyn crate::ui::machine::Measure,
         field: Option<&crate::ui::underlay::UnderlayField>,
@@ -285,13 +307,13 @@ impl AboutPanelScreen {
         // The tagline first, because the synopsis's line budget is what is LEFT after it.
         let mut b = Blocks {
             synopsis: 0.0,
-            tagline: if d.tagline.is_empty() { 0.0 } else { FINE_LEAD },
+            tagline: if tagline.is_empty() { 0.0 } else { FINE_LEAD },
         };
-        let syn = TextView::new(&d.summary, theme::size::BODY, theme::TEXT_READING)
+        let syn = TextView::new(summary, theme::size::BODY, theme::TEXT_READING)
             .h(theme::alert::TEXT_ALIGN)
             .leading(SYN_LEAD)
             .max_lines(syn_lines(b));
-        b.synopsis = if d.summary.is_empty() {
+        b.synopsis = if summary.is_empty() {
             0.0
         } else {
             syn.measure_h(CONTENT_W)
@@ -325,7 +347,7 @@ impl AboutPanelScreen {
         }
         if s.tagline > 0.0 {
             run(
-                &d.tagline,
+                tagline,
                 s.tagline,
                 theme::size::CAPTION,
                 FINE_LEAD,
@@ -457,7 +479,7 @@ impl crate::ui::machine::LogicalState for AboutPanelScreen {
     }
 }
 
-impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLike> crate::ui::screen::Screen<H> for AboutPanelScreen {
+impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLike + crate::screens::registry::CollectionLike> crate::ui::screen::Screen<H> for AboutPanelScreen {
     fn name(&self) -> &'static str {
         "about"
     }
@@ -492,7 +514,16 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
         // `metadata::current()` keeps this module's dependency at the store it always had rather
         // than adding a copy of the page's identity to an argument that carries nothing.
         let meta = H::metadata(f.cx);
-        let Some(d) = meta.current() else { return };
+        let (summary, tagline) = match self.source {
+            AboutSource::Detail => {
+                let Some(d) = meta.current() else { return };
+                (d.summary.as_str(), d.tagline.as_str())
+            }
+            AboutSource::Collection => {
+                let Some(c) = H::collection(f.cx).current() else { return };
+                (c.summary.as_str(), "")
+            }
+        };
         // The container owns the appear spring; `DrawFrame::page_alpha` IS `Surface::motion.appear`
         // for a surface, which is what this panel's own `Popover` used to hold.
         let appear = f.page_alpha;
@@ -501,7 +532,7 @@ impl<H: crate::screens::registry::AppLike + crate::screens::registry::MetadataLi
         // this sheet is up can be read as the PANEL or as the host under it rather than as one
         // `main.ui` total.
         let field = f.underlay;
-        crate::ui::profile::phase("dt.about", || self.paint(&d, appear, measure, field));
+        crate::ui::profile::phase("dt.about", || self.paint(summary, tagline, appear, measure, field));
     }
     fn render(&self) -> crate::ui::screen::RenderStrategy {
         crate::ui::screen::RenderStrategy::Page
@@ -784,6 +815,12 @@ mod tests {
 
     fn test_store() -> &'static mut crate::stores::metadata::MetadataStore {
         TEST_METADATA.with(|cell| unsafe { &mut *cell.get() })
+    }
+
+    impl crate::screens::registry::CollectionLike for TestHost {
+        fn collection<'a>(_cx: &Cx<'a, Self>) -> crate::collection::CollectionView<'a> {
+            crate::collection::CollectionView::default()
+        }
     }
 
     impl crate::screens::registry::MetadataLike for TestHost {

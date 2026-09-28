@@ -1932,5 +1932,12 @@
       "version": "str"
     },
     "description": "Diagnostics: the server version, and that its owner has Plex Pass (a product name; keep it untranslated)."
+  },
+  "browse.library.no_collections": {
+    "value": "No collections in {library}",
+    "args": {
+      "library": "str"
+    },
+    "description": "Empty collection listing in the selected library"
   }
 }

@@ -767,11 +767,13 @@ fn failed_and_empty_readouts_offer_only_their_real_owned_controls() {
     let _guard = crate::testlock::serial();
     let mut fixture = Fixture::new();
     let original = fixture.listing.clone();
-    for (fetch, total, expected, grid, retry) in [
-        (SecFetch::Failed, 36, Readout::Grid, true, false),
-        (SecFetch::Ready, 0, Readout::Empty, false, false),
-        (SecFetch::Failed, -1, Readout::Failed, false, true),
-        (SecFetch::Loading, -1, Readout::Loading, false, false),
+    // An empty answer keeps the heading row (its TYPE chip is how the reader leaves the empty
+    // listing), so `head` is not `grid`.
+    for (fetch, total, expected, grid, head, retry) in [
+        (SecFetch::Failed, 36, Readout::Grid, true, true, false),
+        (SecFetch::Ready, 0, Readout::Empty, false, true, false),
+        (SecFetch::Failed, -1, Readout::Failed, false, false, true),
+        (SecFetch::Loading, -1, Readout::Loading, false, false, false),
     ] {
         fixture.listing = original.clone().with_fetch(fetch, total);
         let page = fixture.screen();
@@ -780,8 +782,9 @@ fn failed_and_empty_readouts_offer_only_their_real_owned_controls() {
         let mut groups = Vec::new();
         page.groups(&cx, &mut groups);
         assert_eq!(groups.iter().any(|g| g.id == page.pair.groups_config().detail), grid);
-        assert_eq!(page.place(&SORT, &cx, At::SpringTarget).is_some(), grid);
-        assert_eq!(page.place(&FILTER, &cx, At::SpringTarget).is_some(), grid);
+        for control in [TYPE, SORT, FILTER] {
+            assert_eq!(page.place(&control, &cx, At::SpringTarget).is_some(), head);
+        }
         assert_eq!(page.place(&RETRY, &cx, At::SpringTarget).is_some(), retry);
         if !grid {
             assert!(!groups.iter().any(|g| g.id == page.pair.groups_config().master), "stale letters are not a live rail");

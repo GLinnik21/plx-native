@@ -127,7 +127,12 @@ pub(crate) unsafe fn activate_card(
     now: u32,
 ) {
     if mm.kind == crate::pms::KIND_COLLECTION {
-        crate::log(&format!("collection: activation deferred rk={}", mm.rk));
+        let arg = crate::screens::registry::AppArg::Content(
+            collection_content_arg(mm));
+        match ret.take() {
+            Some(ret) => super::bridge::nav_push_with_return(pages, arg, ret),
+            None => super::bridge::nav_push(pages, arg),
+        }
         return;
     }
     let rk = mm.rk.clone();
@@ -174,6 +179,16 @@ pub(crate) unsafe fn activate_card(
         super::bridge::open_detail(pages, bridge, mm.sid, &rk, None, ret.take());
     } else {
         super::bridge::open_detail(pages, bridge, mm.sid, &rk, None, ret.take());
+    }
+}
+
+fn collection_content_arg(mm: &crate::pms::PmsMovie) -> crate::screens::registry::ContentArg {
+    crate::screens::registry::ContentArg::Collection {
+        sid: mm.sid,
+        rk: mm.rk.clone(),
+        sec: mm.sec,
+        tag: 0,
+        name: mm.title.clone(),
     }
 }
 
@@ -337,7 +352,7 @@ mod activate_card_tests {
     }
 
     #[test]
-    fn a_collection_card_is_inert_until_the_collection_page_exists() {
+    fn a_collection_card_opens_the_collection_page() {
         let _guard = crate::testlock::serial();
         let mut ps = crate::route::PlaybackSession::default();
         let mt = unsafe { crate::task::MainThread::assume() };
@@ -349,7 +364,11 @@ mod activate_card_tests {
             kind: crate::pms::KIND_COLLECTION, ..Default::default() };
         unsafe { activate_card(&mut ps, &mut pa, &collection, false, 1000, None,
             &mut pages, &mut bridge, &mut menu_play_await, 0); }
-        assert!(!pages.has_pending_navigation(), "a collection must not open movie Detail");
+        assert!(pages.has_pending_navigation(), "a collection must queue its own page");
+        assert!(matches!(collection_content_arg(&collection),
+            crate::screens::registry::ContentArg::Collection {
+                rk, sec: 0, tag: 0, name, ..
+            } if rk == "50001" && name.is_empty()));
         assert!(menu_play_await.is_none(), "a collection must not arm playback");
         assert!(!crate::metadata::detail_loading(bridge.metadata_mut().adapter_ref()),
             "a collection must not request movie metadata");

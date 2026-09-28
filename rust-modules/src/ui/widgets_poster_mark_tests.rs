@@ -150,3 +150,18 @@ fn a_leaf_asks_the_poster_and_gets_its_answer_unchanged() {
         );
     }
 }
+
+/// A collection with no `thumb` draws the neutral tile (its mark and its name); one with a
+/// composite or custom thumb is artwork and draws as an ordinary poster, as does every other kind.
+#[test]
+fn only_a_thumbless_collection_draws_the_neutral_tile() {
+    let collection = |thumb: &str| PmsMovie {
+        kind: crate::pms::KIND_COLLECTION, title: "Empty Collection".into(), thumb: thumb.into(),
+        ..Default::default()
+    };
+    assert_eq!(neutral_collection_name(Some(&collection(""))), Some("Empty Collection"));
+    assert_eq!(neutral_collection_name(Some(&collection("/library/collections/50001/composite/1"))), None);
+    assert_eq!(neutral_collection_name(Some(&PmsMovie { title: "Film".into(), ..Default::default() })), None,
+        "a film without art keeps the ordinary skeleton");
+    assert_eq!(neutral_collection_name(None), None);
+}

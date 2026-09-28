@@ -2170,3 +2170,223 @@ fn a_failed_home_over_an_offered_server_asks_the_shared_question() {
     assert!(!s.plaintext_alert.is_open());
     crate::plex::grant::reset_for_test();
 }
+
+// ---- linked collection shelves (#205) -------------------------------------------------------
+
+const COLLECTION_ROWS: [(&str, &str, &str); 3] = [
+    ("movie.recentlyadded.1", "/hubs/sections/1/recentlyAdded", "Recently Added"),
+    ("custom.collection.1.50001.50001", "/library/collections/50001/children", "Toy Story Collection"),
+    ("movie.recentlyviewed.1", "/hubs/sections/1/recentlyViewed", "Recently Viewed"),
+];
+
+fn collection_home(
+    state: &mut crate::pms::PmsState,
+    adapter: &std::sync::Arc<crate::pms::PmsAdapter>,
+) -> crate::pms::HubsSnapshot {
+    crate::pms::seed_named_hubs_for_test(state, adapter, 6, &COLLECTION_ROWS);
+    crate::pms::hubs_snapshot(state)
+}
+
+fn on_grid(s: &mut HomeScreen) {
+    s.snap.jump(1.0);
+    s.snap_target = 1.0;
+    s.layout_grid();
+}
+
+fn heading_key(s: &HomeScreen, row: usize) -> FocusKey<u32> {
+    FocusKey { entry: s.entry, elem: heading_elem(s.rows[row].group) }
+}
+
+fn move_from(
+    s: &HomeScreen,
+    view: HubsView<'_>,
+    engine: &mut FocusEngine<u32>,
+    dir: Dir,
+) -> Outcome<u32> {
+    let owner = InputOwner::Entry(s.entry);
+    let focus = engine.read(owner);
+    let context = Cx { focus, ..cx(view, None) };
+    let mut links = Vec::new();
+    <HomeScreen as Screen<TestHost>>::links(s, &mut links);
+    engine.move_dir(owner, s, &links, dir, &context)
+}
+
+#[test]
+fn only_a_promoted_collection_shelf_gets_a_linked_heading() {
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let snapshot = collection_home(&mut state, &adapter);
+    let s = screen(snapshot.view());
+    assert_eq!(s.rows.len(), 3);
+    assert!(s.linked(0).is_none() && s.linked(2).is_none());
+    let linked = s.linked(1).expect("the custom.collection row links to its collection");
+    assert_eq!((linked.sec, linked.rk), (1, "50001"));
+    assert_eq!(s.locate(heading_elem(s.rows[0].group)), None,
+        "an unlinked shelf has no heading stop to land on");
+    assert_eq!(s.locate(heading_key(&s, 1).elem), Some(Located::Heading(1)));
+    let mut groups = Vec::new();
+    let context = cx(snapshot.view(), None);
+    Focusable::<TestHost>::groups(&s, &context, &mut groups);
+    let headings: Vec<_> = groups.iter().filter(|g| g.id.0 & HEADING_BASE != 0).collect();
+    assert_eq!(headings.len(), 1, "exactly one heading stop: the collection's");
+    assert_eq!(headings[0].id, heading_group(s.rows[1].group));
+    assert_eq!(headings[0].len, 1);
+    // Member cards stay exactly as they were: no collection tile, no SEE ALL tile.
+    assert_eq!(s.rows[1].elems.len(), 6);
+}
+
+#[test]
+fn up_from_any_collection_card_reaches_the_heading_and_down_returns_to_that_card() {
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let snapshot = collection_home(&mut state, &adapter);
+    let mut s = screen(snapshot.view());
+    on_grid(&mut s);
+    let owner = InputOwner::Entry(s.entry);
+    let card = FocusKey { entry: s.entry, elem: s.rows[1].elems[4] };
+    let mut engine = FocusEngine::new();
+    engine.set(owner, card, Some(s.rows[1].group), By::Restore);
+
+    let Outcome::Moved { to, .. } = move_from(&s, snapshot.view(), &mut engine, Dir::Up) else {
+        panic!("UP from a collection card must move");
+    };
+    assert_eq!(to, heading_key(&s, 1), "UP lands on the linked heading, not the shelf above");
+    for dir in [Dir::Left, Dir::Right] {
+        assert_eq!(move_from(&s, snapshot.view(), &mut engine, dir), Outcome::Nothing,
+            "LEFT/RIGHT are inert on the heading");
+    }
+    let Outcome::Moved { to, .. } = move_from(&s, snapshot.view(), &mut engine, Dir::Down) else {
+        panic!("DOWN from the heading must return to the shelf");
+    };
+    assert_eq!(to, card, "DOWN restores the remembered card, not the one under the heading");
+
+    // UP from the heading goes on to the shelf above.
+    engine.set(owner, heading_key(&s, 1), Some(heading_group(s.rows[1].group)), By::Restore);
+    let Outcome::Moved { to, .. } = move_from(&s, snapshot.view(), &mut engine, Dir::Up) else {
+        panic!("UP from the heading must reach the shelf above");
+    };
+    assert!(s.rows[0].elems.contains(&to.elem));
+}
+
+#[test]
+fn down_from_the_shelf_above_stops_on_the_heading_and_plain_shelves_keep_projection() {
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let snapshot = collection_home(&mut state, &adapter);
+    let mut s = screen(snapshot.view());
+    on_grid(&mut s);
+    let owner = InputOwner::Entry(s.entry);
+    let mut engine = FocusEngine::new();
+    engine.set(owner, FocusKey { entry: s.entry, elem: s.rows[0].elems[2] },
+        Some(s.rows[0].group), By::Restore);
+    let Outcome::Moved { to, .. } = move_from(&s, snapshot.view(), &mut engine, Dir::Down) else {
+        panic!("DOWN from the shelf above must move");
+    };
+    assert_eq!(to, heading_key(&s, 1));
+
+    // The plain shelf below the collection is entered from its cards and has no heading stop.
+    engine.set(owner, FocusKey { entry: s.entry, elem: s.rows[2].elems[0] },
+        Some(s.rows[2].group), By::Restore);
+    let Outcome::Moved { to, .. } = move_from(&s, snapshot.view(), &mut engine, Dir::Up) else {
+        panic!("UP from the plain shelf must move");
+    };
+    assert!(s.rows[1].elems.contains(&to.elem),
+        "UP from a plain shelf enters the collection's cards, not its heading");
+}
+
+#[test]
+fn ok_on_the_linked_heading_opens_the_collection_page() {
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let snapshot = collection_home(&mut state, &adapter);
+    let mut s = screen(snapshot.view());
+    on_grid(&mut s);
+    let heading = heading_key(&s, 1);
+    let (_, out, _) = step(&mut s, snapshot.view(), Some(heading), &ScreenEvent::Activate(heading.elem));
+    let pushed: Vec<_> = out.iter().filter_map(|stamped| match &stamped.fx {
+        Fx::App(AppFx::Content(ContentReq::Push(arg))) => Some(arg.clone()),
+        _ => None,
+    }).collect();
+    assert_eq!(pushed.len(), 1);
+    assert!(matches!(&pushed[0], ContentArg::Collection { rk, sec: 1, tag: 0, name, .. }
+        if rk == "50001" && name == "Toy Story Collection"), "{:?}", pushed[0]);
+    assert!(!has_home(&out, |r| matches!(r, HomeReq::Detail { .. } | HomeReq::Play { .. })),
+        "the heading opens the collection, never a member");
+}
+
+#[test]
+fn the_heading_keeps_focus_on_the_grid_and_reveals_its_row() {
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let snapshot = collection_home(&mut state, &adapter);
+    let mut s = screen(snapshot.view());
+    on_grid(&mut s);
+    let from = FocusKey { entry: s.entry, elem: s.rows[1].elems[0] };
+    let heading = heading_key(&s, 1);
+    step(&mut s, snapshot.view(), Some(heading),
+        &ScreenEvent::FocusMoved { from: Some(from), to: heading, by: By::Dir });
+    assert_eq!(s.snap_target, 1.0, "a heading is on the shelves, not the hero");
+    assert!(s.visible_activation.is_none());
+    // BACK from the heading folds to the hero like any shelf focus.
+    let back = ScreenEvent::Input(InputEvent {
+        at: Tick::default(),
+        source: Source::Sdl,
+        kind: InputKind::Key { key: Key::Back, sym: 0, wcode: 0, edge: Edge::Down, at_edge: false },
+    });
+    let (_, out, _) = step(&mut s, snapshot.view(), Some(heading), &back);
+    assert!(has_home(&out, |r| matches!(r, HomeReq::FoldToHero)));
+}
+
+#[test]
+fn the_linked_heading_is_a_hover_focus_stop_that_wins_over_the_cards() {
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let snapshot = collection_home(&mut state, &adapter);
+    let mut s = screen(snapshot.view());
+    on_grid(&mut s);
+    let card = FocusKey { entry: s.entry, elem: s.rows[1].elems[0] };
+    let context = cx(snapshot.view(), Some(card));
+    let mut frame = DrawFrame::new(&context, Painter::root());
+    s.record_stops(&mut frame, snapshot.view());
+    let stops = frame.into_stops();
+    let heading = heading_key(&s, 1);
+    let stop = stops.iter().find(|stop| stop.key == heading).expect("the heading registers a stop");
+    assert_eq!(stop.hover, Hover::Focus);
+    assert!(stops.iter().all(|stop| stop.key.elem != heading_elem(s.rows[0].group)),
+        "an unlinked heading is not a pointer target");
+    let placed = Focusable::<TestHost>::place(&s, &heading.elem, &context, At::Drawn).unwrap();
+    assert_eq!((stop.rect.x, stop.rect.y, stop.rect.w, stop.rect.h),
+        (placed.rect.x, placed.rect.y, placed.rect.w, placed.rect.h), "the hit rect is the drawn face");
+    let mut map = HitMap::new();
+    map.fill(stops);
+    map.swap();
+    let resolution = map.resolve(Some(heading.entry), PointerKind::Click,
+        placed.rect.cx(), placed.rect.cy(), Some(card));
+    assert_eq!(resolution.hit, Some(heading));
+}
+
+#[test]
+fn back_from_the_collection_page_returns_focus_to_the_heading() {
+    let _guard = crate::testlock::serial();
+    let mut state = crate::pms::PmsState::default();
+    let adapter = std::sync::Arc::new(crate::pms::PmsAdapter::default());
+    let snapshot = collection_home(&mut state, &adapter);
+    let original = screen(snapshot.view());
+    let heading = heading_key(&original, 1);
+    let PageMemory::Home(memory) = <HomeScreen as Screen<TestHost>>::memory(&original) else {
+        unreachable!()
+    };
+    // An evicted page remounts from its memory; the return state names the heading key.
+    let mut restored = HomeScreen::new(EntryId(7), InstanceId(9));
+    restored.restore(&memory);
+    restored.sync_catalog(&cx(snapshot.view(), None));
+    let context = cx(snapshot.view(), Some(heading));
+    assert_eq!(Focusable::<TestHost>::reconcile(&restored, heading, &context), heading,
+        "the heading is a stable key: the restored page lands back on it");
+}

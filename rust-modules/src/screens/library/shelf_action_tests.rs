@@ -139,3 +139,93 @@ fn shelf_activate_and_hold_keep_the_deck_promise_and_engine_item_identity() {
         }
     }
 }
+
+/// #205: a promoted collection shelf keeps its member cards and gains a linked heading — UP from a
+/// card reaches it, LEFT/RIGHT are inert, DOWN returns to that card, OK opens the collection, and
+/// the heading is a hover-focus pointer stop. Every other shelf keeps its plain heading.
+#[test]
+fn a_collection_shelf_heading_is_a_linked_focus_stop_that_opens_the_collection() {
+    use crate::ui::focus::Outcome;
+    use crate::ui::screen::{DrawFrame, Hover};
+    let _guard = crate::testlock::serial();
+    let session = crate::plex::session::TempSession::new("library-linked-heading");
+    session.watching("u-library-linked-heading");
+    let stores = crate::stores::Stores::default();
+    stores.browse.borrow_mut().seed_two_source_table_for_test();
+    let mut directory = crate::stores::browse::DirectorySnapshot::default();
+    stores.capture_browse(&mut directory);
+    stores.browse_run(BrowseCmd::SetCur(0));
+    {
+        let mut browse = stores.browse.borrow_mut();
+        browse.seed_items_for_test(12);
+        browse.seed_named_shelves_for_test(0, &[
+            ("movie.recentlyadded.1", "/hubs/sections/1/recentlyAdded", "Recently Added"),
+            ("custom.collection.1.50001.50001", "/library/collections/50001/children", "Toy Story Collection"),
+        ], 5);
+    }
+    let publication = stores.capture_browse(&mut directory);
+    let listing = publication.listing;
+    let hubs = publication.section_hubs;
+    let entry = EntryId(83);
+    let owner = InputOwner::Entry(entry);
+    let mut engine = FocusEngine::new();
+    let cx = |engine: &FocusEngine<u32>| Cx::<TestHost> {
+        views: Views { listing: listing.view(), directory: directory.view(), hubs: hubs.view() },
+        tick: Tick::default(),
+        measure: &FixtureMeasure,
+        focus: engine.read(owner),
+        press: PressRead::default(),
+        owner,
+    };
+    let mut page = LibraryScreen::new(entry, InstanceId(21), SecKind::Movie);
+    page.sync(&cx(&engine));
+    assert_eq!(page.shelves.len(), 2);
+    assert!(page.shelves[0].heading.is_none(), "an ordinary shelf has no linked heading");
+    let (heading_group, heading) = page.shelves[1].heading.expect("the collection shelf is linked");
+    assert_eq!(page.shelves[1].elems.len(), 5, "members stay ordinary cards, no extra tile");
+    assert_eq!(page.shelves[1].id, "custom.collection.1.50001.50001",
+        "the shelf keeps its hub identity for page memory");
+
+    let mut links = Vec::new();
+    Screen::<TestHost>::links(&page, &mut links);
+    let card = page.key(page.shelves[1].elems[3]);
+    engine.set(owner, card, Some(page.shelves[1].group), By::Restore);
+    let step = |engine: &mut FocusEngine<u32>, dir| engine.move_dir(owner, &page, &links, dir, &cx(engine));
+    let Outcome::Moved { to, .. } = step(&mut engine, Dir::Up) else { panic!("UP must reach the heading") };
+    assert_eq!(to, page.key(heading));
+    assert_eq!(Focusable::<TestHost>::group_of(&page, &heading, &cx(&engine)), Some(heading_group));
+    assert_eq!(step(&mut engine, Dir::Left), Outcome::Nothing);
+    assert_eq!(step(&mut engine, Dir::Right), Outcome::Nothing);
+    let Outcome::Moved { to, .. } = step(&mut engine, Dir::Down) else { panic!("DOWN must return") };
+    assert_eq!(to, card, "DOWN restores the remembered card");
+
+    // Down from the shelf above stops on the heading first.
+    engine.set(owner, page.key(page.shelves[0].elems[1]), Some(page.shelves[0].group), By::Restore);
+    let Outcome::Moved { to, .. } = step(&mut engine, Dir::Down) else { panic!("DOWN must move") };
+    assert_eq!(to, page.key(heading));
+
+    // OK opens the collection page.
+    engine.set(owner, page.key(heading), Some(heading_group), By::Restore);
+    let mut out = Vec::new();
+    let mut present = crate::ui::present::Present::new();
+    let handled = page.step(&ScreenEvent::Activate(heading), &cx(&engine),
+        &mut Effects::new(&mut out, MachineId::Instance(InstanceId(21)), &mut present));
+    assert_eq!(handled, Handled::Yes);
+    let pushed: Vec<_> = out.into_iter().filter_map(|effect| match effect.fx {
+        Fx::App(AppFx::Content(crate::screens::registry::ContentReq::Push(arg))) => Some(arg),
+        Fx::App(AppFx::Library(req)) => panic!("the heading must not emit {req:?}"),
+        _ => None,
+    }).collect();
+    assert_eq!(pushed.len(), 1);
+    assert!(matches!(&pushed[0], crate::screens::registry::ContentArg::Collection {
+        rk, sec: 1, tag: 0, name, .. } if rk == "50001" && name == "Toy Story Collection"));
+
+    // Pointer: the heading registers a hover-focus stop on its drawn face.
+    page.relayout(engine.current(owner));
+    let context = cx(&engine);
+    let mut frame = DrawFrame::new(&context, crate::ui::Painter::root());
+    page.record_stops(&mut frame);
+    let stops = frame.into_stops();
+    let stop = stops.iter().find(|stop| stop.key.elem == heading).expect("heading stop");
+    assert_eq!(stop.hover, Hover::Focus);
+}

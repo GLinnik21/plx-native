@@ -128,6 +128,9 @@ pub struct PmsMovie {
     /// Released"). Formatted by [`crate::ui::fmt::pretty_date`], which already takes `year` as the
     /// fallback for an item the server dated only to a year.
     pub(crate) aired: String,
+    /// A collection's member count (`childCount`) — its tile's caption, "12 items". 0 on every
+    /// other kind, where the listing's count fields mean leaves rather than members.
+    pub(crate) child_count: i64,
 }
 
 impl PmsMovie {
@@ -329,6 +332,9 @@ pub(crate) fn parse_item(it: &crate::plex::Metadata, sid: ServerId) -> PmsMovie 
         KIND_COLLECTION => false,
         _ => it.view_count > 0,
     };
+    if m.kind == KIND_COLLECTION {
+        m.child_count = it.child_count.max(0);
+    }
     m.title = clean(&it.title);
     m.year = it.year as c_int;
     m.rating = clean(&it.content_rating);
@@ -2117,6 +2123,29 @@ pub(crate) fn seed_grid_for_test(state: &mut PmsState, adapter: &Arc<PmsAdapter>
     source.shelves = (0..rows).map(|row| {
         let mut shelf = build_test(items).shelves.remove(0);
         shelf.hub_id = format!("test.row.{row}");
+        shelf
+    }).collect();
+    let build = merge(&state.srcs);
+    commit(state, build);
+}
+
+/// [`seed_grid_for_test`] with each row's provider identity named: `(hubIdentifier, key, title)`.
+/// A linked collection shelf is a `custom.collection.*` row, so its fixtures need both halves.
+#[cfg(test)]
+pub(crate) fn seed_named_hubs_for_test(
+    state: &mut PmsState,
+    adapter: &Arc<PmsAdapter>,
+    items: usize,
+    rows: &[(&str, &str, &str)],
+) {
+    crate::testlock::assert_held("the pms hub catalog (seed_named_hubs_for_test)");
+    seed_for_test(state, adapter, items, HubState::Ready);
+    let source = state.srcs[0].last.as_mut().unwrap();
+    source.shelves = rows.iter().map(|(hub_id, key, title)| {
+        let mut shelf = build_test(items).shelves.remove(0);
+        shelf.hub_id = (*hub_id).into();
+        shelf.key = (*key).into();
+        shelf.title = (*title).into();
         shelf
     }).collect();
     let build = merge(&state.srcs);

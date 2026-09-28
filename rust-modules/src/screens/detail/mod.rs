@@ -7,6 +7,7 @@
 
 mod about;
 mod cast;
+mod collection;
 mod episodes;
 mod extras;
 mod hero;
@@ -78,7 +79,7 @@ const EP_SCALE_MAX: usize = 40;
 const K_SCROLL: f32 = crate::ui::consts::K_SCROLL;
 const K_STRIP_SCROLL: f32 = 240.0;
 
-pub(crate) const SHAPE: &str = "DetailScreen{return_pending:bool,next_elem:u32,keys:[DetailKey{identity:DetailIdentity,elem:u32}],sid:u32,rk:str,pending_season:opt<u32>,season_settle:f32,refresh:u32,restore:opt<RestoreIntent{spot:Spot{section:u32,col:u32,ep_text:bool,saved_col:[u32;7],season:opt<u64>},episode:opt<str>,season_requested:bool}>}";
+pub(crate) const SHAPE: &str = "DetailScreen{return_pending:bool,next_elem:u32,keys:[DetailKey{identity:DetailIdentity,elem:u32}],sid:u32,rk:str,pending_season:opt<u32>,season_settle:f32,refresh:u32,restore:opt<RestoreIntent{spot:Spot{section:u32,col:u32,ep_text:bool,saved_col:[u32;8],season:opt<u64>},episode:opt<str>,season_requested:bool}>}";
 
 const _: () = assert!(hero::HERO_ELEM_RANGE_END == season::SEASON_ELEM_RANGE_START);
 const _: () = assert!(season::SEASON_ELEM_RANGE_END == episodes::EPISODES_ELEM_RANGE_START);
@@ -86,7 +87,8 @@ const _: () = assert!(episodes::EPISODES_ELEM_RANGE_END == related::RELATED_ELEM
 const _: () = assert!(related::RELATED_ELEM_RANGE_END == cast::CAST_ELEM_RANGE_START);
 const _: () = assert!(cast::CAST_ELEM_RANGE_END == about::ABOUT_ELEM_RANGE_START);
 const _: () = assert!(about::ABOUT_ELEM_RANGE_END == extras::EXTRAS_ELEM_RANGE_START);
-const _: () = assert!(extras::EXTRAS_ELEM_RANGE_END <= FIRST_ITEM_ELEM);
+const _: () = assert!(extras::EXTRAS_ELEM_RANGE_END == collection::COLLECTION_ELEM_RANGE_START);
+const _: () = assert!(collection::COLLECTION_ELEM_RANGE_END <= FIRST_ITEM_ELEM);
 
 #[derive(Clone)]
 struct RestoreIntent {
@@ -190,6 +192,7 @@ pub(crate) struct DetailScreen {
     tab_scroll: Spring,
     episode_scale: [Spring; EP_SCALE_MAX],
     related: CardRow,
+    collection: CardRow,
     extras: CardRow,
     cast: CardRow,
     tabs: TabStrip,
@@ -285,6 +288,7 @@ struct LayoutStamp {
     content_hash: u64,
     n_cast: u32,
     n_rel: u32,
+    n_col: u32,
     n_extras: u32,
     n_sea: u32,
     flags: u8,
@@ -321,6 +325,7 @@ impl LayoutStamp {
             content_hash,
             n_cast: d.credits_len() as u32,
             n_rel: d.related.len() as u32,
+            n_col: collection::len(d) as u32,
             n_extras: d.extras.len() as u32,
             n_sea: d.seasons.len() as u32,
             flags,
@@ -369,6 +374,7 @@ impl DetailScreen {
             tab_scroll: Spring::at(0.0),
             episode_scale: [Spring::at(1.0); EP_SCALE_MAX],
             related: CardRow::new(),
+            collection: CardRow::new(),
             extras: CardRow::new(),
             cast: CardRow::new(),
             tabs: TabStrip::new(),
@@ -410,7 +416,10 @@ impl DetailScreen {
     }
 
     fn engine_key(&self, local: u32) -> Option<u32> {
-        if local < season::SEASON_ELEM_RANGE_START || local >= about::ABOUT_ELEM_RANGE_START && local < about::ABOUT_ELEM_RANGE_END {
+        if local < season::SEASON_ELEM_RANGE_START
+            || local >= about::ABOUT_ELEM_RANGE_START && local < about::ABOUT_ELEM_RANGE_END
+            || local == collection::HEADING_ELEM
+        {
             Some(local)
         } else {
             self.key_by_local.get(&local).copied()
@@ -448,6 +457,11 @@ impl DetailScreen {
                     identities.push((local, DetailIdentity::Related { sid: related.sid, rk: related.rk.clone() }));
                 }
             }
+            for (i, member) in collection::members(d).iter().enumerate() {
+                if let Some(local) = collection::elem(i) {
+                    identities.push((local, DetailIdentity::CollectionMember { sid: member.sid, rk: member.rk.clone() }));
+                }
+            }
             for i in 0..d.credits_len() {
                 if let (Some(local), Some(cast)) = (cast::elem(i), d.credit(i)) {
                     let key = cast.person_key();
@@ -461,7 +475,8 @@ impl DetailScreen {
         self.local_by_key.clear();
         for (local, identity) in identities {
             let identity = match &identity {
-                DetailIdentity::Season { rk, .. } | DetailIdentity::Episode { rk, .. } | DetailIdentity::Related { rk, .. } | DetailIdentity::Extra { rk, .. } if rk.is_empty() => DetailIdentity::Slot(local),
+                DetailIdentity::Season { rk, .. } | DetailIdentity::Episode { rk, .. } | DetailIdentity::Related { rk, .. } | DetailIdentity::Extra { rk, .. }
+                | DetailIdentity::CollectionMember { rk, .. } if rk.is_empty() => DetailIdentity::Slot(local),
                 _ => identity,
             };
             let elem = *interned.entry(identity.clone()).or_insert_with(|| {
@@ -501,12 +516,14 @@ impl DetailScreen {
             .and_then(|k| self.locate_with(k.elem, facts.detail, facts.tracks))
             .map(|l| {
                 let col = match l {
-                    Located::Hero(control) => hero::index_of(facts.hero, control).unwrap_or(0),
-                    _ => l.index(),
+                    Located::Hero(control) => hero::index_of(facts.hero, control).unwrap_or(0) as i32,
+                    // The heading shares its section with the cards; -1 is the slot no card has.
+                    Located::CollectionHeading => -1,
+                    _ => l.index() as i32,
                 };
                 (
                     l.section(),
-                    col as i32,
+                    col,
                     matches!(l, Located::Episode(_, episodes::Row::Text)),
                 )
             })
@@ -551,13 +568,20 @@ impl DetailScreen {
         (!s.rk.is_empty()).then(|| (s.rk.clone(), season::watch_state(s)))
     }
 
+    /// The focused card of a poster shelf that is some other item — Related, or the collection
+    /// shelf — for the press-and-hold item menu.
     pub(crate) fn focused_related<'a>(
         &self,
         focus: Option<FocusKey<u32>>,
         meta: crate::metadata::MetadataView<'a>,
     ) -> Option<&'a crate::pms::PmsMovie> {
         let key = focus.filter(|k| k.entry == self.entry)?.elem;
-        related::item(self.detail(meta)?, self.locate(key, meta)?.local_key()?)
+        let d = self.detail(meta)?;
+        match self.locate(key, meta)? {
+            located @ Located::Related(_) => related::item(d, located.local_key()?),
+            located @ Located::Collection(_) => collection::item(d, located.local_key()?),
+            _ => None,
+        }
     }
 
     pub(crate) fn focused_rect<H: ContentLike + crate::screens::registry::MetadataLike>(
@@ -616,6 +640,15 @@ impl DetailScreen {
                 &self.extras,
                 i,
                 self.section_top(6, d, measure) - self.scroll.pos,
+                f.press.scale,
+                f.measure,
+            ),
+            Some(Located::Collection(i)) => collection::draw_focused(
+                f.painter,
+                d,
+                &self.collection,
+                i,
+                self.section_top(7, d, measure) - self.scroll.pos,
                 f.press.scale,
                 f.measure,
             ),
@@ -682,6 +715,7 @@ impl DetailScreen {
             1 => season::ROW_H,
             2 => episodes::block_h(d, measure),
             3 => related::block_h(0.0),
+            7 => collection::block_h(0.0),
             4 => cast::block_h(),
             6 => extras::block_h(0.0),
             _ => 0.0,
@@ -699,6 +733,7 @@ impl DetailScreen {
         let row = match section {
             3 => &self.related,
             6 => &self.extras,
+            7 => &self.collection,
             _ => return 0.0,
         };
         card_row::BAND_OPEN * row.band_expand().clamp(0.0, 1.0)
@@ -726,7 +761,7 @@ impl DetailScreen {
     fn section_gap(section: i32, next: Option<i32>) -> f32 {
         match section {
             1 if next == Some(2) => TAB_EP_GAP,
-            3 | 4 | 6 => crate::ui::consts::UNDER_LABEL_AIR,
+            3 | 4 | 6 | 7 => crate::ui::consts::UNDER_LABEL_AIR,
             _ => SECTION_GAP,
         }
     }
@@ -794,6 +829,10 @@ impl DetailScreen {
             }
             if !d.extras.is_empty() {
                 out[n] = section::SectionId::Extras.raw();
+                n += 1;
+            }
+            if collection::len(d) > 0 {
+                out[n] = section::SectionId::Collections.raw();
                 n += 1;
             }
             if !d.related.is_empty() {
@@ -892,6 +931,12 @@ impl DetailScreen {
         if let Some(i) = extras::locate(elem) {
             return Some(Located::Extras(i));
         }
+        if elem == collection::HEADING_ELEM {
+            return Some(Located::CollectionHeading);
+        }
+        if let Some(i) = collection::locate(elem) {
+            return Some(Located::Collection(i));
+        }
         if let Some(i) = cast::locate(elem) {
             return Some(Located::Cast(i));
         }
@@ -959,6 +1004,13 @@ impl DetailScreen {
             }
             3 if !d.related.is_empty() => related::elem(clamp(intent.spot.col, d.related.len())),
             6 if !d.extras.is_empty() => extras::elem(clamp(intent.spot.col, extras::len(d))),
+            7 if collection::len(d) > 0 => {
+                if intent.spot.col < 0 {
+                    Some(collection::HEADING_ELEM)
+                } else {
+                    collection::elem(clamp(intent.spot.col, collection::len(d)))
+                }
+            }
             4 if d.credits_len() > 0 => cast::elem(clamp(intent.spot.col, d.credits_len())),
             5 => Some(
                 if intent.spot.col > 0 && self.tracks_available(meta) {
@@ -1077,6 +1129,32 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                     len: d.related.len().min(512),
                     elem: ElemKind::Card,
                 }),
+                7 => {
+                    if let Some(c) = d.collection.as_ref() {
+                        let heading = collection::heading_rect(c, top, 0.0, false, measure);
+                        out.push(crate::ui::linked_heading::group_spec(collection::HEADING_GROUP, heading));
+                    }
+                    out.push(GroupSpec {
+                        id: collection::COLLECTION_GROUP,
+                        kind: GroupKind::Row { wrap: false },
+                        seat: crate::ui::linked_heading::shelf_seat(
+                            &cx.focus,
+                            collection::HEADING_ELEM,
+                            collection::COLLECTION_GROUP,
+                            Seat::Remembered,
+                        ),
+                        reachable: AxisMask::BOTH,
+                        edge: [EdgeRule::Geometric, EdgeRule::Geometric, EdgeRule::Stop, EdgeRule::Stop],
+                        extent: Rect::new(
+                            crate::ui::consts::MARGIN_X,
+                            top + related::LABEL_H,
+                            crate::ui::consts::SCR_W - 2.0 * crate::ui::consts::MARGIN_X,
+                            self.block_h(7, d, measure) - related::LABEL_H,
+                        ),
+                        len: collection::len(d),
+                        elem: ElemKind::Card,
+                    });
+                }
                 4 => out.push(GroupSpec {
                     id: cast::CAST_GROUP,
                     kind: GroupKind::Row { wrap: false },
@@ -1165,6 +1243,12 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                 row_move(i, self.detail(meta).map(extras::len).unwrap_or(0), dir)
                     .and_then(extras::elem)
             }
+            Located::Collection(i) => {
+                row_move(i, self.detail(meta).map(collection::len).unwrap_or(0), dir)
+                    .and_then(collection::elem)
+            }
+            // A lone stop: UP leaves by the heading group's own edge, DOWN by the shelf link.
+            Located::CollectionHeading => None,
             Located::Cast(i) => {
                 row_move(i, self.detail(meta).map(|d| d.credits_len()).unwrap_or(0), dir)
                     .and_then(cast::elem)
@@ -1263,6 +1347,23 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                     extras::rect(&self.extras, i, top, false),
                     Some(i as u32),
                 )
+            }
+            Located::Collection(i) => {
+                let top = self.section_top_at(7, d?, measure, at) - vertical;
+                (
+                    collection::rect(&self.collection, i, top, at == At::Drawn),
+                    collection::rect(&self.collection, i, top, false),
+                    Some(i as u32),
+                )
+            }
+            Located::CollectionHeading => {
+                let d = d?;
+                let c = d.collection.as_ref()?;
+                let top = self.section_top_at(7, d, measure, at) - vertical;
+                let lift = if at == At::Drawn { self.collection.lift() } else { 0.0 };
+                let focused = cx.focus.current.is_some_and(|k| k.elem == collection::HEADING_ELEM);
+                let rect = collection::heading_rect(c, top, lift, focused, measure);
+                (rect, collection::heading_rect(c, top, 0.0, true, measure), Some(0))
             }
             Located::Cast(i) => {
                 let top = self.section_top_at(4, d?, measure, at) - vertical;
@@ -1434,6 +1535,20 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Focusable<H> for D
                 from_i,
             ))
             .unwrap_or(related::RELATED_ELEM_RANGE_START)
+        } else if group == collection::HEADING_GROUP {
+            collection::HEADING_ELEM
+        } else if group == collection::COLLECTION_GROUP {
+            let n = d.map(collection::len).unwrap_or(0);
+            collection::elem(card_row::column_near_x(
+                from.rect.cx(),
+                crate::ui::consts::MARGIN_X,
+                RowStyle::HOME.w + RowStyle::HOME.gap,
+                RowStyle::HOME.w,
+                self.collection.scroll_x(),
+                n,
+                from_i,
+            ))
+            .unwrap_or(collection::COLLECTION_ELEM_RANGE_START + 1)
         } else if group == cast::CAST_GROUP {
             let n = d.map(|d| d.credits_len()).unwrap_or(0).min(512);
             cast::elem(card_row::column_near_x(
@@ -1474,6 +1589,8 @@ impl DetailScreen {
             }
             Located::Related(i) => d.is_some_and(|d| i < d.related.len().min(512)),
             Located::Extras(i) => d.is_some_and(|d| i < extras::len(d)),
+            Located::Collection(i) => d.is_some_and(|d| i < collection::len(d)),
+            Located::CollectionHeading => d.is_some_and(|d| collection::len(d) > 0),
             Located::Cast(i) => d.is_some_and(|d| i < d.credits_len().min(512)),
             Located::About(0) => d.is_some(),
             Located::About(1) => d.is_some() && self.tracks_available(meta),
@@ -1605,6 +1722,7 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Machine<H> for Det
                             Located::Season(_)
                                 | Located::Episode(_, episodes::Row::Still)
                                 | Located::Related(_)
+                                | Located::Collection(_)
                         )
                     });
                 if supported {
@@ -1922,6 +2040,18 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
                         },
                         f.measure,
                     ),
+                    7 => collection::draw(
+                        below_hero,
+                        d,
+                        &self.collection,
+                        top,
+                        match focus {
+                            Some(Located::Collection(i)) => Some(i),
+                            _ => None,
+                        },
+                        focus == Some(Located::CollectionHeading),
+                        f.measure,
+                    ),
                     3 => related::draw(
                         below_hero,
                         d,
@@ -1996,6 +2126,16 @@ impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for Deta
 
     fn hit_source(&self) -> HitSource {
         HitSource::Engine
+    }
+
+    /// The collection shelf's heading door: UP from any member reaches the heading, DOWN from it
+    /// returns to the member the shelf remembered. Inert while the page has no collection shelf —
+    /// a link to a group that was not declared resolves nothing.
+    fn links(&self, out: &mut Vec<crate::ui::screen::Link>) {
+        out.extend(crate::ui::linked_heading::links(
+            collection::HEADING_GROUP,
+            collection::COLLECTION_GROUP,
+        ));
     }
 
     fn memory_at(&self, focus: Option<FocusKey<u32>>) -> PageMemory {
@@ -2469,6 +2609,15 @@ impl DetailScreen {
                     .filter_map(|i| extras::elem(i).map(|e| (e, Activate::Press))),
             );
             elems.extend(
+                (0..collection::len(d))
+                    .filter_map(|i| collection::elem(i).map(|e| (e, Activate::Press))),
+            );
+            // After the member cards, so the heading wins wherever its focused face overlaps
+            // them (`LinkedHeading::stop`).
+            if collection::len(d) > 0 {
+                elems.push((collection::HEADING_ELEM, Activate::Direct));
+            }
+            elems.extend(
                 (0..d.related.len().min(512))
                     .filter_map(|i| related::elem(i).map(|e| (e, Activate::Press))),
             );
@@ -2637,6 +2786,8 @@ enum Located {
     Extras(usize),
     Cast(usize),
     About(usize),
+    Collection(usize),
+    CollectionHeading,
 }
 
 impl Located {
@@ -2647,6 +2798,8 @@ impl Located {
             Self::Episode(index, row) => episodes::elem(index, row),
             Self::Related(index) => related::elem(index),
             Self::Extras(index) => extras::elem(index),
+            Self::Collection(index) => collection::elem(index),
+            Self::CollectionHeading => Some(collection::HEADING_ELEM),
             Self::Cast(index) => cast::elem(index),
             Self::About(0) => Some(about::CARD_ELEM),
             Self::About(_) => Some(about::LANGUAGES_ELEM),
@@ -2659,6 +2812,7 @@ impl Located {
             Self::Episode(_, _) => 2,
             Self::Related(_) => 3,
             Self::Extras(_) => 6,
+            Self::Collection(_) | Self::CollectionHeading => 7,
             Self::Cast(_) => 4,
             Self::About(_) => 5,
         }
@@ -2671,6 +2825,8 @@ impl Located {
             Self::Episode(_, _) => episodes::EPISODES_GROUP,
             Self::Related(_) => related::RELATED_GROUP,
             Self::Extras(_) => extras::EXTRAS_GROUP,
+            Self::Collection(_) => collection::COLLECTION_GROUP,
+            Self::CollectionHeading => collection::HEADING_GROUP,
             Self::Cast(_) => cast::CAST_GROUP,
             Self::About(_) => about::ABOUT_GROUP,
         }
@@ -2679,7 +2835,9 @@ impl Located {
     fn index(self) -> usize {
         match self {
             Self::Hero(c) => c.elem() as usize,
-            Self::Season(i) | Self::Episode(i, _) | Self::Related(i) | Self::Extras(i) | Self::Cast(i) => i,
+            Self::Season(i) | Self::Episode(i, _) | Self::Related(i) | Self::Extras(i) | Self::Cast(i)
+            | Self::Collection(i) => i,
+            Self::CollectionHeading => 0,
             Self::About(0) => 0,
             // Legacy Spot/focusprobe vocabulary keeps the four visual About columns numbered
             // Card=0, Information=1, Languages=2, Accessibility=3 even though only two are stops.
@@ -2902,6 +3060,12 @@ impl DetailScreen {
             };
             self.related
                 .update(d.related.len(), related_focus, &RowStyle::HOME, dt);
+            let collection_focus = match focused {
+                Some(Located::Collection(i)) => Some(i),
+                _ => None,
+            };
+            self.collection
+                .update(collection::len(d), collection_focus, &RowStyle::HOME, dt);
             let extras_focus = match focused {
                 Some(Located::Extras(i)) => Some(i),
                 _ => None,
@@ -3373,6 +3537,20 @@ impl DetailScreen {
                     .unwrap_or(related::Action::None);
                 if let related::Action::OpenDetail(sid, rk) = action {
                     self.content(fx, ContentReq::Push(ContentArg::Detail { sid, rk }));
+                }
+            }
+            Some(Located::Collection(_)) => {
+                let action = self
+                    .detail(meta)
+                    .map(|d| collection::action(d, local))
+                    .unwrap_or(related::Action::None);
+                if let related::Action::OpenDetail(sid, rk) = action {
+                    self.content(fx, ContentReq::Push(ContentArg::Detail { sid, rk }));
+                }
+            }
+            Some(Located::CollectionHeading) => {
+                if let Some(target) = self.detail(meta).and_then(collection::target) {
+                    self.content(fx, ContentReq::Push(target));
                 }
             }
             Some(Located::Extras(_)) => {

@@ -270,6 +270,7 @@ impl ViewStateState {
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
     hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
     person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+    collection: &mut dyn FnMut(crate::stores::collection::CollectionCmd) -> bool,
     search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
     metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
 ) -> bool {
@@ -288,7 +289,7 @@ impl ViewStateState {
     // OPTIMISTIC, before the request: the press must land on the panel now, not one WAN round trip
     // from now. Only THIS copy — the other sources' keys are not known until the fan-out resolves
     // them, which is what [`pump`] finishes the job with.
-    edit_local_with_owners(sid, rk, w, browse, hubs, person, search, metadata);
+    edit_local_with_owners(sid, rk, w, browse, hubs, person, collection, search, metadata);
     self.coalesce(sid, rk, w);
     let id = self.mint_request_id();
     self.queue.push(Req {
@@ -320,6 +321,7 @@ fn edit_local_with_owners(
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
     hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
     person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+    collection: &mut dyn FnMut(crate::stores::collection::CollectionCmd) -> bool,
     search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
     metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
 ) {
@@ -334,10 +336,10 @@ fn edit_local_with_owners(
             // the user was looking at until a refetch, which reads as the row having done nothing.
             //
             // `metadata::set_watched_local` covers TWO of those surfaces, which is why the list below
-            // is five calls and not six: the detail page holds the loaded item, its season's episodes
+            // is six calls and not seven: the detail page holds the loaded item, its season's episodes
             // AND the Related tiles, and that one call walks all three.
             //
-            // All five are no-ops where the item does not appear — a walk of an empty or unrelated
+            // All six are no-ops where the item does not appear — a walk of an empty or unrelated
             // store — so a press from any one screen still costs about what it did.
             //
             // Through the store VOCABULARY (`crate::stores`, restructure phase 4) rather than the
@@ -364,6 +366,11 @@ fn edit_local_with_owners(
                 on,
             });
             person(crate::stores::person::PersonCmd::SetWatchedLocal {
+                sid,
+                rk: rk.to_string(),
+                on,
+            });
+            collection(crate::stores::collection::CollectionCmd::SetWatchedLocal {
                 sid,
                 rk: rk.to_string(),
                 on,
@@ -481,6 +488,7 @@ pub(crate) fn pump_with_gate(
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
     hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
     person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+    collection: &mut dyn FnMut(crate::stores::collection::CollectionCmd) -> bool,
     search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
     metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
 ) -> crate::stores::EndpointRefreshSet {
@@ -508,7 +516,7 @@ pub(crate) fn pump_with_gate(
             // the ones their server took. A press that reached no other source does nothing here,
             // which is every press on a one-server install.
             for (osid, ork) in &done.also {
-                edit_local_with_owners(*osid, ork, r.w, browse, hubs, person, search, metadata);
+                edit_local_with_owners(*osid, ork, r.w, browse, hubs, person, collection, search, metadata);
             }
             // The refresh is owed whether or not the server took it: on success it is the reconcile,
             // and on failure it is what puts the optimistic edit back to whatever the server really
@@ -551,10 +559,11 @@ pub(crate) fn pump(
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
     hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
     person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+    collection: &mut dyn FnMut(crate::stores::collection::CollectionCmd) -> bool,
     search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
     metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
 ) -> crate::stores::EndpointRefreshSet {
-    self.pump_with_gate(adapter, crate::ui::landgate::fixture_gate(), browse, hubs, person,
+    self.pump_with_gate(adapter, crate::ui::landgate::fixture_gate(), browse, hubs, person, collection,
         search, metadata)
 }
 
@@ -812,13 +821,14 @@ pub(crate) fn run(
     browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
     hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> crate::stores::StoreOutcome,
     person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+    collection: &mut dyn FnMut(crate::stores::collection::CollectionCmd) -> bool,
     search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
     metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
 ) -> bool {
     use crate::stores::viewstate::ViewStateCmd;
     match cmd {
         ViewStateCmd::Request { sid, rk, write, detail, guid } => {
-            self.request(adapter, sid, &rk, write, detail, &guid, browse, hubs, person, search, metadata)
+            self.request(adapter, sid, &rk, write, detail, &guid, browse, hubs, person, collection, search, metadata)
         }
         ViewStateCmd::Reset => {
             self.reset();
@@ -842,6 +852,7 @@ mod tests {
         let mut browse = Vec::new();
         let mut hubs = Vec::new();
         let mut person = Vec::new();
+        let mut collection = Vec::new();
         let mut search = Vec::new();
         let mut metadata_store = crate::stores::metadata::MetadataStore::default();
 
@@ -859,6 +870,7 @@ mod tests {
                 crate::stores::StoreOutcome::default()
             },
             &mut |cmd| { person.push(cmd); true },
+            &mut |cmd| { collection.push(cmd); true },
             &mut |cmd| { search.push(cmd); true },
             &mut |cmd| metadata_store.run(cmd),
         ));
@@ -872,6 +884,9 @@ mod tests {
         assert!(matches!(person.as_slice(), [crate::stores::person::PersonCmd::SetWatchedLocal {
             sid: seen, rk, on: true
         }] if *seen == sid && rk == "7"));
+        assert!(matches!(collection.as_slice(), [crate::stores::collection::CollectionCmd::SetWatchedLocal {
+            sid: seen, rk, on: true
+        }] if *seen == sid && rk == "7"), "a collection member's disc flips with the press");
         assert!(matches!(search.as_slice(), [crate::stores::search::SearchCmd::SetWatchedLocal {
             sid: seen, rk, on: true
         }] if *seen == sid && rk == "7"));
@@ -935,6 +950,7 @@ mod tests {
                 crate::stores::StoreOutcome::default()
             },
             &mut |cmd| { person.push(cmd); true },
+            &mut |_| false,
             &mut |_| false,
             &mut |_| false,
         );
@@ -1281,7 +1297,7 @@ mod tests {
         }));
 
         edit_local_with_owners(SRV_A, "4", Write::Watched, &mut |_| false,
-            &mut |_cmd| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false,
+            &mut |_cmd| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false, &mut |_| false,
             &mut |cmd| metadata_store.run(cmd));
         assert!(
             !metadata_store.view().current().unwrap().watched,
@@ -1289,7 +1305,7 @@ mod tests {
         );
 
         edit_local_with_owners(SRV_B, "4", Write::Watched, &mut |_| false,
-            &mut |_cmd| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false,
+            &mut |_cmd| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false, &mut |_| false,
             &mut |cmd| metadata_store.run(cmd));
         assert!(metadata_store.view().current().unwrap().watched);
         assert_eq!(
@@ -1335,7 +1351,7 @@ mod tests {
         });
 
         let _outcome = state.pump(&adapter, &mut |_| false,
-            &mut |_cmd| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false,
+            &mut |_cmd| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false, &mut |_| false,
             &mut |cmd| metadata_store.run(cmd));
 
         assert!(
@@ -1373,7 +1389,7 @@ mod tests {
         });
 
         let _ = state.pump(&adapter, &mut |_| false,
-            &mut |_| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false,
+            &mut |_| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false, &mut |_| false,
             &mut |_| false);
 
         assert_eq!(state.sent.as_ref().map(|request| request.id), Some(second_id),
@@ -1399,7 +1415,7 @@ mod tests {
             Some(Completion { id, done: Done::default() });
 
         let _ = state.pump(&adapter, &mut |_| false,
-            &mut |_| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false,
+            &mut |_| crate::stores::StoreOutcome::default(), &mut |_| false, &mut |_| false, &mut |_| false,
             &mut |_| false);
 
         assert_eq!(state.take_detail_refresh(), Some(target));

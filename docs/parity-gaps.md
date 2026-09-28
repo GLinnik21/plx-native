@@ -133,7 +133,8 @@ input, while every other screen handles clicks.
 
 **C. Library browse is a permanent type destination.** We ship Movies and TV Shows grids; the
 reference ships Recommended (the
-section's own hubs), Library, Collections and Categories. We have no collections call, no category
+section's own hubs), Library, Collections and Categories. Collections are reached through the
+All grid's TYPE menu rather than a tab of their own; there is no category
 browse axis beyond genre, and the filter menu exposes **1 facet out of the server's ~27** —
 `Meta.Type[].Filter[]` is not even parsed, so the server's own menu is discarded on arrival.
 Additional same-type libraries are addressed through the Source panel rather than extra top pills.
@@ -728,7 +729,8 @@ player, transport and tracks auditors, and is counted once in the themes above.
 - **The related response's multiple hubs are flattened into one nameless 20-item strip** — `minor` / `medium`  
   PMS's /related returns SEVERAL titled hubs ("More with <actor>", "Similar Movies", "From the same director"…). The official client shows each as its own shelf under its own heading. We concatenate them into a single row labelled "Related" and discard every hub title.  
   *Where:* rust-modules/src/metadata.rs:86 and :599 (group into Vec<(String, Vec<Related>)>), rust-modules/src/ui/detail.rs:163 + :205 + :1053 (one ScrollColumn child per hub, one CardRow each). No new endpoint.  
-  *Verified:* Confirmed line for line. metadata.rs fetch_related loops the hubs, dedupes by rating_key into ONE flat Vec, never reads hub titles, and caps the strip. Effort correction: a new hub shelf needs a section id past extras (6). The fixed array is already 7 (`SPOT_SECTION_SLOTS`), indexed by section id, not visual order.
+  *Verified:* Confirmed line for line. metadata.rs fetch_related loops the hubs, dedupes by rating_key into ONE flat Vec, never reads hub titles, and caps the strip. Effort correction: a new hub shelf needs a section id past extras (6). The fixed array is already 7 (`SPOT_SECTION_SLOTS`), indexed by section id, not visual order.  
+  *Partly closed 2026-09-28 (#205):* the `collection.related.*` hub is no longer flattened: it is its own shelf (section 7, `SectionId::Collections`, `SPOT_SECTION_SLOTS` now 8) under a linked heading with the collection's title, above Related, and Related no longer repeats its members. Every other hub is still flattened into the one "Related" strip.
 
 - **Related posters carry no watch state — no unwatched mark, no resume bar** — `minor` / `small` — **CLOSED 2026-08-21; this is the same gap as the one above, audited twice.** Both marks draw now. See that entry for why the proposed fix here ("let the `Thumb` arm take the same badges") is the one that was *not* taken: the row, not the art variant, was what was missing.  
   Everywhere else in the app a poster shows the amber unwatched corner or the amber resume bar. On the Related shelf the same posters are bare, so you cannot tell what you have already seen in the row the official client uses to keep you browsing.  
@@ -790,10 +792,11 @@ player, transport and tracks auditors, and is counted once in the themes above.
   *Where:* New `rust-modules/src/ui/search.rs` (screen + on-screen alphanumeric keyboard, ideally promoted into `ui/widgets.rs` as a reusable Keyboard view), a new `search.rs` async store beside `browse.rs`/`metadata.rs` (spawn_small + mailbox + generation, same idiom), a `Route::Search` arm in `app.rs` (key/pointer/draw), and a search entry in `ui/widgets.rs::draw_tab_row`. PMS endpoint: `GET /hubs/search?query=&limit=` (already implemented at plex/hubs.rs:23); `/hubs/search?sectionId=` scopes it to one library.  
   *Verified:* CONFIRMED. `Client::search` exists at plex/hubs.rs:23-29 (`GET /hubs/search?query=&limit=`) and is dead code — `rg -n "search" rust-modules/src` yields only that definition, the plex/mod.rs:13 admission ("the ops written ahead of a UI feature (search/browse/leaves — no callers yet)"), and unrelated byte/binary-search helpers in stream.rs:37, text.rs:327/357, remote.rs:76/119/138, plus `av_opt_set`'s `search_flags` param name in ff.rs:272. app.rs:586-594 `enum Route` = Login/Profiles/Home/Account/Library/Detail/Player{overlay} — no Search arm, and no Search entry in `modal_of` (app.rs:608). ui/
 
-- **No Collections — not as a tab, not as a filter, not as a detail-page link** — `major` / `large`  
-  The official Library screen has a "Collections" top tab showing the section's collections as poster cards, drilling into the collection's children; the type dropdown also offers Collections, and a movie's detail page links to its collection. We have none of it: no `/library/sections/{k}/collections` call, no `/library/collections/{rk}/children` call, no `collection=<tag>` filter in the filter menu, and `Metadata` doesn't even model the `Collection[]` tag array.  
-  *Where:* `plex/library.rs` (add `collections(section_key)` → `GET /library/sections/{k}/collections`, and `collection_children(rating_key)` → `GET /library/collections/{rk}/children`), `browse.rs` (a view-mode axis on `SecState` — Library vs Collections — so the same sparse paged store serves both), `ui/library.rs` (a sub-tab row above the toolbar + a collection-drilldown grid state), `plex/models.rs` (a `Collection` tag array on `Metadata` if the detail-page link is wanted).  
-  *Verified:* CONFIRMED, with two partials worth knowing. plex/library.rs (120 lines) has sections/section_items/section_items_paged/section_items_query/section_directory/metadata/metadata_many/children/all_leaves/related/scrobble/unscrobble/select_streams/direct_play_url — no `collections()` and no `collection_children()`. `rg -ni collection` over rust-modules/src yields ONLY `std::collections` imports, the doc line at plex/library.rs:48 listing `collection` among the directories `section_directory` COULD fetch, and prose at pms.rs:224 / ui/home.rs:102. browse.rs:557-559 pushes only a `genre` filter pair; 
+- **Collections: no filter facet and no detail-page link yet** — `minor` / `medium` — **in progress under #205.**
+  The official Library screen shows a section's collections as poster cards that drill into the collection's children, its type dropdown offers Collections, and a movie's detail page links to its collection. What now exists: `plex/collections.rs` has typed reads for `GET /library/sections/{k}/collections` (`section_collections`), a collection's own metadata (`collection`) and its members (`collection_children`), each returning a `CollectionOutcome` that keeps a denied section, a missing collection and a transport failure apart. A collection row parses to its own `KIND_COLLECTION` kind, so it never opens a fake Detail page, offers Play, or scrobbles (#270). The Library's TYPE menu offers Collections for movie and TV libraries (`all?type=18`, the poster grid, an "N items" caption, a neutral glyph-and-name tile for a collection without artwork), and OK on a collection card opens the collection page.
+  Still missing: a `collection=<tag>` facet in the filter menu, and the detail-page link from a movie to the collections it belongs to (see "Collections the item belongs to are never shown" above, which covers that half).  
+  *Where:* the filter menu (`screens/library/menu.rs`) and Detail.  
+  *Verified:* `LibraryType::offered` lists Collections for both section kinds and `LibraryType::plex_type` sends `type=18`; the filter menu still offers only Unwatched and Genre.
 
 - **No "Categories" browse (by genre / year / director / actor / country / content rating)** — `major` / `large`  
   The official client's Categories tab is a browsable index: pick an axis (Genre, Year, Decade, Director, Actor, Country, Content Rating, Studio, Resolution…), see the values as tiles, drill into one to get the filtered grid. We only ever fetch ONE axis (`genre`) and only as a flat single-select filter list — there is no category browse view, and no other axis is reachable at all.  
@@ -847,10 +850,11 @@ player, transport and tracks auditors, and is counted once in the themes above.
   `https://discover.provider.plex.tv/actions/addToWatchlist`.
   *Verified:* CONFIRMED. `rg -ni "watchlist|discover|provider\.plex\.tv"` over rust-modules/src returns zero watchlist hits and zero provider hits; every `discover` hit is LAN server discovery or an unrelated comment — auth.rs:3/25-26/295/297/307/314/375/462 (`Phase::Discovering`, `discover_and_store`), plex/account.rs:1/10/83, plex/session.rs:2/45, browse.rs:29/201, app.rs:354/2299, lib.rs:8. plex/mod.rs:27 confirms `account.rs` is the ONLY non-PMS surface (plex.tv login / server discovery / home-users), and plex/hubs.rs:23-29 `search` goes through `Client::get_json`, i.e. the local PMS host. Severity/effo
 
-- **Collection and folder views remain unavailable** — `minor` / `medium`
-  TV libraries offer a Type selector in All with TV Shows, Seasons and Episodes. The query sends
-  `type=2|3|4`, reloads the selected type's sort options, and displays episodes as landscape stills.
-  Collection and folder views remain open; neither is an option in this selector.
+- **Folder views remain unavailable** — `minor` / `medium`
+  Libraries offer a Type selector in All: TV libraries list TV Shows, Seasons, Episodes and
+  Collections; movie libraries list Movies and Collections. The query sends `type=2|3|4|18` (a
+  movie library's films stay untyped), reloads the selected type's sort options, and displays
+  episodes as landscape stills. Folder views remain open; they are not an option in this selector.
   *Where:* `browse::LibraryType`, `screens/library/menu.rs`, and `screens/library/layout.rs`.
 
 - **The grid's watched/progress state goes stale after playback — its per-owner retained listing publication is not refreshed** — `minor` / `small`

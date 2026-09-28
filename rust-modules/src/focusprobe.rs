@@ -139,6 +139,7 @@ pub(crate) enum Screen {
     Library,
     Detail,
     Person,
+    Collection,
     Search,
     /// `overlay` is the same word the heartbeat prints after `overlay=`, supplied by `app.rs` from
     /// its own exhaustive match on the private `Overlay` enum.
@@ -262,7 +263,7 @@ fn push_fields(ps: &crate::route::PlaybackSession, s: &mut String, screen: Scree
         }
         Screen::Home => s.push_str(content),
         Screen::Library => s.push_str(content),
-        Screen::Detail | Screen::Person => s.push_str(content),
+        Screen::Detail | Screen::Person | Screen::Collection => s.push_str(content),
         // Owned like Library/Detail/Person: the content string is built generically by the
         // caller (`super::bridge::content_probe`, from the mounted `SearchScreen`'s own
         // `LogicalState::probe` output), not read off a legacy global here.
@@ -428,6 +429,7 @@ mod tests {
             ("library", Screen::Library),
             ("detail", Screen::Detail),
             ("person", Screen::Person),
+            ("collection", Screen::Collection),
             ("search", Screen::Search),
             ("player", Screen::Player { overlay: "none" }),
             ("player", Screen::Player { overlay: "info" }),

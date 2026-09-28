@@ -451,10 +451,67 @@ fn a_person_shelf_counts_people_and_everything_else_counts_results() {
     assert_eq!(Kind::Collection.count_label(0), "0 results");
 
     assert_eq!(
-        (Kind::Collection.count_label(3), items_label(12)),
+        (Kind::Collection.count_label(3), crate::ui::fmt::item_count(12)),
         ("3 results".to_owned(), "12 items".to_owned())
     );
-    assert_eq!(items_label(1), "1 item");
+    assert_eq!(crate::ui::fmt::item_count(1), "1 item");
     // Cardinal rules apply to the absolute value, including negative wire counts.
-    assert_eq!((items_label(0), items_label(-1)), ("0 items".to_owned(), "-1 item".to_owned()));
+    assert_eq!((crate::ui::fmt::item_count(0), crate::ui::fmt::item_count(-1)),
+        ("0 items".to_owned(), "-1 item".to_owned()));
+}
+
+/// **`includeCollections=1` hands the Collections shelf full rows**, and those are KIND-4 cards
+/// carrying both of a collection's ids: the ratingKey (`/library/collections/{rk}`, what the page
+/// loads) and the tag id (`index`, a DIFFERENT number — docs/pms-api.md §2b). The rest of the
+/// response is unchanged by the flag, so a film on the same answer is still an ordinary card.
+#[test]
+fn collection_rows_become_kind_four_hits_and_other_rows_stay_ordinary_cards() {
+    let sid = ServerId::from_raw(3);
+    let mut collection = hub("collection", "collection");
+    collection.metadata = vec![Metadata {
+        index: 7,
+        child_count: 12,
+        library_section_id: 1,
+        thumb: "/library/collections/50007/composite/1700000000".into(),
+        ..meta("collection", "50007", "Aardman Shorts")
+    }];
+    let mut movie = hub("movie", "movie");
+    movie.metadata = vec![meta("movie", "1971", "A Close Shave")];
+    let mc = MediaContainer { hub: vec![collection, movie], ..Default::default() };
+
+    let p = project(&mc, sid, NO_FAVS);
+    let Item::Collection(hit) = &p[4][0] else { panic!("a collection row is a collection hit") };
+    assert_eq!(hit.item.kind, crate::pms::KIND_COLLECTION);
+    assert_eq!((hit.item.sid, hit.item.rk.as_str(), hit.item.sec), (sid, "50007", 1));
+    assert_eq!((hit.tag, hit.item.child_count), (7, 12));
+    assert_eq!(hit.item.thumb, "/library/collections/50007/composite/1700000000");
+    assert_eq!(p[4][0].title(), "Aardman Shorts");
+    assert_eq!(hit.route(), crate::screens::registry::ContentArg::Collection {
+        sid, rk: "50007".into(), sec: 1, tag: 7, name: "Aardman Shorts".into() });
+    let Item::Media(film) = &p[0][0] else { panic!("a film stays an ordinary card") };
+    assert_eq!((film.kind, film.rk.as_str()), (0, "1971"));
+}
+
+/// A server that IGNORES the flag still answers tag-shaped `Directory[]` rows — no ratingKey —
+/// and those keep their section so the page can resolve the tag id there. With no section or no
+/// tag id there is nothing to resolve, so there is no route.
+#[test]
+fn a_tag_shaped_collection_hit_routes_by_section_and_tag_id() {
+    let sid = ServerId::from_raw(3);
+    let mut collection = hub("collection", "collection");
+    collection.directory = vec![Tag {
+        tag: "Aardman Shorts".into(),
+        id: 7,
+        library_section_id: 1,
+        count: 12,
+        key: "/library/sections/1/all?collection=7".into(),
+        ..Default::default()
+    }];
+    let mc = MediaContainer { hub: vec![collection], ..Default::default() };
+    let p = project(&mc, sid, NO_FAVS);
+    let Item::Tag(tag) = &p[4][0] else { panic!("a Directory row is still a tag hit") };
+    assert_eq!(tag.collection_route(), Some(crate::screens::registry::ContentArg::Collection {
+        sid, rk: String::new(), sec: 1, tag: 7, name: "Aardman Shorts".into() }));
+    assert!(TagHit { sec: 0, ..tag.clone() }.collection_route().is_none(), "no section");
+    assert!(TagHit { id: String::new(), ..tag.clone() }.collection_route().is_none(), "no tag id");
 }

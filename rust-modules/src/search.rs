@@ -19,7 +19,9 @@
 //!   shelf order here is FIXED ([`KINDS`]) and ranking is honoured only *inside* a shelf.
 //!   Reordering shelves per keystroke would move the row under the user's focus while they type.
 //! - **Items arrive in two different containers** — see [`crate::plex::Hub::directory`]. That is
-//!   why [`Item`] has two variants instead of being one struct.
+//!   why [`Item`] is an enum instead of one struct. Collections are asked for with
+//!   `includeCollections=1`, which makes them full `Metadata[]` rows ([`Item::Collection`]) rather
+//!   than tag rows; a server that ignores the flag still sends [`Item::Tag`].
 //!
 //! ## Multi-source
 //!
@@ -136,7 +138,12 @@ impl Kind {
             Kind::Collection => crate::i18n::msg::browse_kind_collections(),
         }
     }
-    /// Complete localized shelf count; people and result counts have different grammar.
+    /// The count read-out beside it — how many RESULTS are on this shelf, as one complete
+    /// localized phrase: people are counted as people, everything else as results. The other
+    /// count on this screen — how many things are inside ONE collection ("12 items") — is
+    /// `ui::fmt::item_count`, shared with every collection tile and the collection page, so a
+    /// heading saying "3 results" and a tile saying "12 items" are two different questions
+    /// answered by two different formatters.
     pub(crate) fn count_label(self, n: usize) -> String {
         match self {
             Kind::Person => crate::i18n::msg::browse_search_people(n as i64),
@@ -153,11 +160,6 @@ impl Kind {
             Kind::Collection => &["collection"],
         }
     }
-}
-
-/// Complete localized collection-membership count, separate from a shelf's result count.
-pub(crate) fn items_label(n: i64) -> String {
-    crate::i18n::msg::browse_search_items(n)
 }
 
 /// A person or collection result: the `Directory[]` shape, which carries no `ratingKey` and — for
@@ -193,20 +195,18 @@ pub(crate) struct TagHit {
     /// store on failures), so the tile draws the skeleton face the design specifies for art the
     /// server has not given us.
     ///
-    /// Resolving one anyway is possible and was measured, in case a later unit wants it: `GET
-    /// /library/sections/{librarySectionID}/collections` returns `Metadata[]` with real `thumb`
-    /// paths, and the join is **`index` == this row's `id`** — the id here is NOT the collection's
-    /// `ratingKey`, which is a different number entirely. (`guid` would join too, but this struct
-    /// does not keep it: add a field before reaching for that, rather than re-parsing the hub.) Note the shape of the
-    /// cost, which is better than it first looks: **one request per library SECTION**, not per
-    /// collection, and cacheable for the session. Neither of the two obvious shortcuts works —
-    /// following `key` returns the collection's MEMBERS under the section's own generic art, and
-    /// the `/library/sections/{k}/collection` tag axis carries no thumb at all. It is still a
-    /// second store with its own fetch, cache and invalidation for a shelf that is usually a row
-    /// or two, which is why the skeleton stands for now.
+    /// The search request now asks with `includeCollections=1`, which makes the server send the
+    /// collection hub as full rows — [`Item::Collection`], with a `thumb` and a `ratingKey` — so a
+    /// tag-shaped collection hit only reaches this struct from a server that ignored the flag. It
+    /// still opens its page ([`TagHit::collection_route`]), which resolves the tag id to a
+    /// ratingKey and artwork there.
     pub(crate) thumb: String,
     /// The listing this tag opens — `/library/sections/1/all?collection=6068`.
     pub(crate) key: String,
+    /// The `librarySectionID` of the first row folded into this hit, 0 when the server sent none.
+    /// Only a COLLECTION tag reads it: a collection lives in one library, and its tag id resolves
+    /// to a collection only within that library ([`TagHit::collection_route`]).
+    pub(crate) sec: i64,
     /// How many items carry it, for the caption line.
     pub(crate) count: i64,
     /// **Does any FAVOURITE library contribute to this tag?** Ranking only — it never removes a
@@ -223,12 +223,68 @@ pub(crate) struct TagHit {
     pub(crate) fav: bool,
 }
 
+/// A collection result as the server sends it when asked with `includeCollections=1`
+/// ([`crate::plex::Client::search`]): a full `type=collection` `Metadata[]` row. The row itself is
+/// the ordinary card DTO ([`crate::pms::KIND_COLLECTION`], so the poster, the ambient blur and the
+/// poster store's keying are the ones every other tile uses); the two numbers beside it are the
+/// one [`PmsMovie`] has no field for and the collection route needs (its `child_count` is the
+/// caption's "N items").
+#[derive(Clone, Default)]
+pub(crate) struct CollectionHit {
+    /// `kind == KIND_COLLECTION`; `rk` is the collection's ratingKey, `sec` its library.
+    pub(crate) item: PmsMovie,
+    /// The collection's TAG id (`index`) — a different id space from `item.rk`
+    /// (docs/pms-api.md §2b). 0 when the server sent none.
+    pub(crate) tag: i64,
+}
+
+impl CollectionHit {
+    /// WORKER THREAD: one `type=collection` search row.
+    pub(crate) fn from_row(m: &crate::plex::Metadata, sid: ServerId) -> Self {
+        Self { item: parse_item(m, sid), tag: m.index }
+    }
+
+    /// The collection page this hit opens: ratingKey first (the page loads it directly), with the
+    /// section + tag id carried as the second identity the page resolves by when no ratingKey is
+    /// available.
+    pub(crate) fn route(&self) -> crate::screens::registry::ContentArg {
+        crate::screens::registry::ContentArg::Collection {
+            sid: self.item.sid,
+            rk: self.item.rk.clone(),
+            sec: self.item.sec,
+            tag: self.tag,
+            name: self.item.title.clone(),
+        }
+    }
+}
+
+impl TagHit {
+    /// The collection page a tag-shaped collection hit opens — the FALLBACK for a server that
+    /// ignored `includeCollections=1`. No ratingKey exists on such a row, so the route carries the
+    /// section and tag id and the page resolves them (`plex::collections::resolve_tag`). `None`
+    /// when either is missing: a guess would open a page for nothing.
+    pub(crate) fn collection_route(&self) -> Option<crate::screens::registry::ContentArg> {
+        let tag = self.id.parse::<i64>().ok().filter(|t| *t > 0)?;
+        (self.sec > 0).then(|| crate::screens::registry::ContentArg::Collection {
+            sid: self.sid,
+            rk: String::new(),
+            sec: self.sec,
+            tag,
+            name: self.name.clone(),
+        })
+    }
+}
+
 #[derive(Clone)]
 pub(crate) enum Item {
     /// A movie, show or episode: the ordinary card DTO, so every existing tile path draws it
     /// unchanged — resume bar, watched mark, ambient blur and all.
     Media(PmsMovie),
     Tag(TagHit),
+    /// A collection that arrived as a full row — the normal case (see [`CollectionHit`]). A
+    /// server that ignores `includeCollections` still answers [`Item::Tag`] rows on the same
+    /// shelf, which [`TagHit::collection_route`] opens by tag id.
+    Collection(CollectionHit),
 }
 
 impl Item {
@@ -236,12 +292,14 @@ impl Item {
         match self {
             Item::Media(m) => &m.title,
             Item::Tag(t) => &t.name,
+            Item::Collection(c) => &c.item.title,
         }
     }
     pub(crate) fn sid(&self) -> ServerId {
         match self {
             Item::Media(m) => m.sid,
             Item::Tag(t) => t.sid,
+            Item::Collection(c) => c.item.sid,
         }
     }
 
@@ -261,6 +319,7 @@ impl Item {
         match self {
             Item::Tag(t) => t.fav,
             Item::Media(m) => section_is_fav(favs, m.sid, m.sec),
+            Item::Collection(c) => section_is_fav(favs, c.item.sid, c.item.sec),
         }
     }
 }
@@ -1237,7 +1296,13 @@ fn project(
         // not per response (`Hub::directory`). Walking both is how this stops being a thing to
         // remember.
         for m in &hub.metadata {
-            out[k].push(Item::Media(parse_item(m, sid)));
+            // `includeCollections=1` puts the collection hub's rows HERE, as full rows
+            // ([`CollectionHit`]); every other type is the ordinary card.
+            out[k].push(if m.kind == "collection" {
+                Item::Collection(CollectionHit::from_row(m, sid))
+            } else {
+                Item::Media(parse_item(m, sid))
+            });
         }
         for t in &hub.directory {
             let hit = tag_hit(t, sid, favs);
@@ -1319,6 +1384,7 @@ fn tag_hit(t: &crate::plex::Tag, sid: ServerId, favs: &[(ServerId, i64, bool)]) 
         },
         thumb: t.thumb.clone(),
         key: t.key.clone(),
+        sec: t.library_section_id,
         count: t.count,
     }
 }

@@ -287,7 +287,7 @@ fn owned_search_wheel_scrolls_without_moving_focus_and_dpad_reveals_again() {
         let parts = CxParts { tick: tick(0), press: Default::default(),
             focus: d.input.engine.read(InputOwner::Entry(field.entry)), owner: InputOwner::Entry(field.entry) };
         let cx = parts.cx::<AppHost>(AppViews { auth: rig.session.read(), hubs: rig.hubs.view(), listing: rig.listing.view(),
-directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), metadata: rig.stores.metadata_view(), person: rig.stores.person_view(), session: crate::route::idle_session_for_test() }, &rig.measure);
+directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), metadata: rig.stores.metadata_view(), person: rig.stores.person_view(), collection: rig.stores.collection_view(), session: crate::route::idle_session_for_test() }, &rig.measure);
         d.top_screen().unwrap().place(&field.elem, &cx, At::Drawn).unwrap().rest_rect.y
     };
     let before = field_y(&d, &rig);
@@ -683,7 +683,7 @@ fn owned_search_return_memory_reconstructs_positions_with_a_query_guard() {
     let parts = CxParts { tick: tick(100), press: Default::default(), focus: d.input.engine.read(InputOwner::Entry(key.entry)), owner: InputOwner::Entry(key.entry) };
     let old_rect = {
         let cx = parts.cx::<AppHost>(AppViews { auth: rig.session.read(), hubs: rig.hubs.view(), listing: rig.listing.view(),
-            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), metadata: rig.stores.metadata_view(), person: rig.stores.person_view(), session: crate::route::idle_session_for_test() }, &rig.measure);
+            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), metadata: rig.stores.metadata_view(), person: rig.stores.person_view(), collection: rig.stores.collection_view(), session: crate::route::idle_session_for_test() }, &rig.measure);
         d.top_screen().unwrap().place(&key.elem, &cx, At::Drawn).unwrap().rest_rect
     };
     assert!(old_rect.x < 1800.0, "the last card must have scrolled into view: {old_rect:?}");
@@ -694,7 +694,7 @@ fn owned_search_return_memory_reconstructs_positions_with_a_query_guard() {
             rig.search = rig.stores.search_snapshot(rig.directory.view());
         }
         let cx = parts.cx::<AppHost>(AppViews { auth: rig.session.read(), hubs: rig.hubs.view(), listing: rig.listing.view(),
-            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), metadata: rig.stores.metadata_view(), person: rig.stores.person_view(), session: crate::route::idle_session_for_test() }, &rig.measure);
+            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), metadata: rig.stores.metadata_view(), person: rig.stores.person_view(), collection: rig.stores.collection_view(), session: crate::route::idle_session_for_test() }, &rig.measure);
         let mut restored = crate::screens::search::SearchScreen::new(key.entry, InstanceId(900));
         restored.restore(memory);
         let mut present = crate::ui::present::Present::new();
@@ -1049,4 +1049,45 @@ fn owned_search_content_probe_reports_zone_row_col_pill_and_card_as_focus_moves(
     assert!(on_strip.contains("zone=Strip"), "Up from the field must reach the shared strip: {on_strip}");
     assert!(on_strip.contains(" row=-1 col=-1 recent=-1 pill=1 card=0 "),
         "the Search pill (Home, Search — no library tabs seeded here) sits at index 1, off this screen's own groups: {on_strip}");
+}
+
+/// OK on a Collections-shelf tile asks for the COLLECTION page with the hit's identity, and the
+/// app layer turns that request into `ContentArg::Collection` from the retained selection — not
+/// the item detail a bare ratingKey would open.
+#[test]
+fn owned_search_ok_on_a_collection_requests_its_collection_page() {
+    let _serial = crate::testlock::serial();
+    let session = crate::plex::session::TempSession::new("owned-search-collection");
+    session.watching("synthetic-collection-profile");
+    crate::plex::session::update(|s| {
+        let mut next = s.clone();
+        next.set_recents_for("synthetic-collection-profile", vec!["synthetic".into()]);
+        Some(next)
+    });
+    crate::plex::reset_servers_for_test();
+    let a = crate::plex::register_for_test("search-coll", "127.0.0.1", 1, "a", "search");
+    let hit = crate::search::Item::Collection(crate::search::CollectionHit {
+        item: crate::pms::PmsMovie { sid: a, rk: "50007".into(), sec: 1, title: "Synthetic set".into(),
+            kind: crate::pms::KIND_COLLECTION, ..Default::default() },
+        tag: 7 });
+    let mut d = Dispatcher::<AppHost>::new();
+    let mut rig = Bridge::for_test(|| 0);
+    rig.search_run(crate::stores::search::SearchCmd::SetQuery("synthetic".into()));
+    rig.stores.search.publish_shelves_for_test(vec![crate::search::Shelf {
+        kind: crate::search::Kind::Collection, items: vec![hit] }]);
+    frame(&mut d, &mut rig, AppArg::Search, tick(0), vec![]);
+    frame(&mut d, &mut rig, AppArg::Search, tick(1), script_key(Key::Down, tick(1)));
+    frame(&mut d, &mut rig, AppArg::Search, tick(2), script_key(Key::Ok, tick(2)));
+    for i in 3..33 { frame(&mut d, &mut rig, AppArg::Search, tick(i), vec![]); }
+    let requests = rig.take_search_reqs();
+    let (_, _, ret) = requests.iter().find(|(_, req, _)| matches!(req,
+        crate::screens::registry::SearchReq::Collection { sid, rk, tag }
+            if *sid == a && rk == "50007" && *tag == 7))
+        .expect("OK on a collection requests its page");
+    assert!(!requests.iter().any(|(_, req, _)| matches!(req,
+        crate::screens::registry::SearchReq::Detail { .. })), "never an item detail");
+    let entry = d.nav.top_page().unwrap().id;
+    let (selected, _) = rig.search_selection(&d, entry, ret.focus).unwrap();
+    assert!(matches!(selected, crate::search::Item::Collection(c) if c.item.rk == "50007"));
+    crate::plex::reset_servers_for_test();
 }

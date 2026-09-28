@@ -106,6 +106,7 @@ fn bare(sid: ServerId, rk: &str) -> DetailScreen {
         tab_scroll: Spring::at(0.0),
         episode_scale: [Spring::at(1.0); EP_SCALE_MAX],
         related: CardRow::new(),
+        collection: CardRow::new(),
         extras: CardRow::new(),
         cast: CardRow::new(),
         tabs: TabStrip::new(),

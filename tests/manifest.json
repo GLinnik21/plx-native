@@ -190,6 +190,37 @@
       "_fps_ceiling_note": "This route had NO fps scene at all while it grew three clocks: a horizontal scroll spring for its department strip (tab_hscroll), a preview poster on its own settle timer (PV_SETTLE) and an Xfade for the swap. Only the spring reports to ui::idle for free. The ceiling is the direction that catches all three, because an animator that never reports done costs the whole present gate and trips no floor anywhere in the suite. 5 leaves room for a late preview poster landing. There is no FLOOR twin yet and that is a stated gap rather than an oversight: the strip has no oscillator trigger, and a scene with no motion grades nothing."
     },
     {
+      "name": "collection-page",
+      "tier": "ui",
+      "route": "collection",
+      "loop_floor": 50,
+      "run_secs": 20,
+      "warmup_s": 6,
+      "item": "collection",
+      "comment": "Direct Collection-page boot on the `collection` item (a MOVIE collection with at least two members that have posters), resolved through manifest.local.json like every other `item`: `$rk` below becomes that collection's ratingKey. The screen loads its header and ordered children through the real collection store and settles after artwork and scroll motion. An installation that maps no collection SKIPS this scene rather than opening a ratingKey its server does not hold, which would settle on the failure read-out and pass the ceiling vacuously. By hand in the simulator against tests/mock_pms.py, the trigger's value is that mock's collection ratingKey, 50001. MEASURED on the dev set 2026-09-28 (main c468aaf8, panel off): loop/s robust_min 61, median 61 (n=13, two runs); fps robust_max 1, median 0 once the page settles.",
+      "triggers": {
+        "plxnative-collection": "$rk"
+      },
+      "fps_ceiling": 3,
+      "_fps_ceiling_note": "The page settles; this guards a retry/spinner/scroll path reporting frames forever. MEASURED on the dev set 2026-09-28: robust_max 1, median 0 after settle. Ceiling moved 5 -> 3 to match home-idle/library-idle's settled-scene ceiling (ui::idle's KEEPALIVE_MS backstop is 2s, i.e. 0.5/s, so 3 leaves room for a late poster landing without letting a regression through)."
+    },
+    {
+      "name": "detail-collection-shelf",
+      "tier": "ui",
+      "route": "detail",
+      "loop_floor": 50,
+      "run_secs": 20,
+      "warmup_s": 6,
+      "item": "collection_member_movie",
+      "comment": "Detail page of a movie that belongs to a collection with at least two members, so /related carries a collection.related hub and the page draws the collection shelf under its linked heading above Related. detailsec=3 walks focus from the hero to that shelf (hero, extras, cast, collection: the item needs extras and cast too), which scrolls the page and lifts the heading label with the shelf's focus. On the simulator, mock_pms movie 1041 (a member of collection 50001) has that shape. MEASURED on the dev set 2026-09-28 (main c468aaf8, panel off): loop/s robust_min 60-61, median 61; fps robust_max 1, median 0 once the page settles.",
+      "triggers": {
+        "plxnative-detail": "$rk",
+        "plxnative-detailsec": 3
+      },
+      "fps_ceiling": 3,
+      "_fps_ceiling_note": "The page settles once the section scroll, the shelf's label lift and the poster landings are done; this guards the new shelf or its heading reporting frames forever. MEASURED on the dev set 2026-09-28: robust_max 1, median 0 after settle. Ceiling moved 5 -> 3 to match home-idle/library-idle's settled-scene ceiling (ui::idle's KEEPALIVE_MS backstop is 2s, i.e. 0.5/s, so 3 leaves room for a late poster landing without letting a regression through)."
+    },
+    {
       "name": "library-scroll",
       "tier": "ui",
       "route": "library",
@@ -203,6 +234,23 @@
       "fps_floor": 30,
       "_rebaseline_note": "REBASELINED on device 2026-09-05, after the one-scroll rewrite. Measured median 60 fps (min 60, max 60, n=12) against the July poster-wall number of 49, and the reason is the sweep rather than the fill rate: `libosc` reverses at the document's own ends now (`ui::library::osc_step`) instead of on a 3s clock, which at 350ms could not reach the grid of a twelve-shelf library at all — so something is in motion on every frame and the scene never falls into the idle gate between steps. The floor moves 25 → 30, which keeps the same ratio to the healthy median the old pair had; a FROZEN animator still reads ~0.5/s, so the margin is unchanged. Measured on a one-shelf library: a library with twelve shelves spends more of the leg in the shelf run, so treat 60 as this library's number and the floor as the frozen/alive separator it is meant to be.",
       "_fps_floor_note": "SUPERSEDED by _rebaseline_note above; kept for its reasoning. Measured healthy median 49 fps on device 2026-07-31 (this scene's oscillator steps focus every 350ms and the spring now settles inside that period, so the gaps are real idle — the drop from ~60 is the settle predicate working, not a regression). A FROZEN animator reads ~0.5/s, the keepalive alone, so 25 separates them by a wide margin without gating on the exact duty cycle. Fill-rate regressions stay on `loop_floor`, which grades loop= and falls with the render rate while presenting."
+    },
+    {
+      "name": "library-collections",
+      "tier": "ui",
+      "route": "library",
+      "loop_floor": 50,
+      "run_secs": 18,
+      "warmup_s": 6,
+      "item": "collection",
+      "comment": "The Movies library listed as its collections (TYPE menu > Collections, `all?type=18`): `libtype` switches the listing through the TYPE menu's own edit, then `libosc` sweeps the collection grid, whose cards mix posters and the neutral glyph-and-name tile. `plxnative-library` enters the server's preferred MOVIES library and no trigger names a section, so the scene declares the `collection` item for its REQUIREMENT, not its ratingKey (no trigger reads `$rk`): an installation that maps no collection skips it instead of sweeping an empty grid, and the mapped collection must live in that same Movies library. MEASURED on the dev set 2026-09-28 (main c468aaf8, panel off): loop/s median 60; fps median 60, min 58-59, max 61, over a 3-card collections grid.",
+      "triggers": {
+        "plxnative-library": true,
+        "plxnative-libtype": "collections",
+        "plxnative-libosc": true
+      },
+      "fps_floor": 30,
+      "_fps_floor_note": "MEASURED on the dev set 2026-09-28: flat ~60 fps (median 60, min 58-59, max 61) against this floor of 30, the same frozen/alive separator library-scroll keeps for its own flat 60. Kept at 30 rather than raised: the test identity's mapped collection is a tiny 3-card grid, well short of library-scroll's twelve-shelf library, and a bigger collections grid may spend more of the sweep filling tiles the way library-scroll's larger library does — so 30 stays the frozen/alive line here rather than a tight bound on this one grid's size."
     },
     {
       "name": "library-switch",

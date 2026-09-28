@@ -129,6 +129,9 @@ RUN_STREAM_MARK = None  # the remote command text — see _run_stream_pids()
 # root's plxnative-*, so this no longer has to be exhaustive — it's kept for humans / grep)
 ALL_TRIGGERS = [
     "plxnative-detail", "plxnative-detailplay", "plxnative-detailsec", "plxnative-detailcol",
+    "plxnative-collection",
+    # the Library's listing type (TYPE menu value), for scenes such as library-collections
+    "plxnative-libtype",
     "plxnative-autoseek", "plxnative-menupick", "plxnative-menu", "plxnative-noaudio",
     "plxnative-grid", "plxnative-autoplay", "plxnative-h265", "plxnative-playidx", "plxnative-url",
     "plxnative-play", "plxnative-server", "plxnative-ffprobe", "plxnative-token", "plxnative-servers",
@@ -5280,6 +5283,28 @@ def fps_run_needs_token(scenes, has_shared_server):
                 or any(fps_scene_needs_token(s, has_shared_server) for s in scenes))
 
 
+def fps_trigger_files(scene):
+    """A scene's `triggers` as (name, content) trigger files, `$rk` substituted.
+
+    `$rk` is how a scene names the ratingKey its `item` key resolved to (see _resolve_items); a
+    tracked scene never holds a ratingKey itself, because manifest.json is installation-independent.
+    `None` content is a bare flag file. Reads scene["rk"] only when a value names `$rk`, so a
+    scene whose `item` is a requirement rather than a target (library-collections) needs none."""
+    files = []
+    for tname, tval in scene.get("triggers", {}).items():
+        if tval is True:
+            files.append((tname, None))
+        elif isinstance(tval, str) and "$rk" in tval:
+            # Exact `"$rk"` is the common case (home-detail-nav's `plxnative-navosc`,
+            # collection-page's `plxnative-collection`); the substring form is what a bench
+            # scene's `plxnative-pushbench=<n>,$rk` needs, since its ratingKey rides inside a
+            # larger, comma-joined value.
+            files.append((tname, tval.replace("$rk", str(scene["rk"]))))
+        else:
+            files.append((tname, str(tval)))
+    return files
+
+
 def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
                   instrumented=False, log_suffix="", before_run=None):
     name = scene["name"]
@@ -5296,17 +5321,7 @@ def run_fps_scene(scene, cfg, token, *, extra_triggers=(), capture=None,
     print(f"\n=== fps:{name}  (route={tag}, loop_floor {loop_floor}/s) ===")
 
     make(["kill", f"TV={tv}"], timeout=40)
-    files = []
-    for tname, tval in scene.get("triggers", {}).items():
-        if tval is True:
-            files.append((tname, None))
-        elif isinstance(tval, str) and "$rk" in tval:
-            # Exact `"$rk"` is the common case (home-detail-nav's `plxnative-navosc`); the
-            # substring form is what a bench scene's `plxnative-pushbench=<n>,$rk` needs, since
-            # its ratingKey rides inside a larger, comma-joined value.
-            files.append((tname, tval.replace("$rk", str(scene["rk"]))))
-        else:
-            files.append((tname, str(tval)))
+    files = fps_trigger_files(scene)
     # Player FPS baselines were calibrated on the established Original route. Pin that route just
     # as the server matrix does; otherwise a persisted Auto choice turns this into an HLS encoder
     # benchmark and makes the number describe a different workload. Future adaptive FPS scenes
@@ -5913,7 +5928,15 @@ def main():
                   f"{ops:20s} {', '.join(c.get('covers', []))}{mark}")
         for s in manifest.get("fps_scenes", []):
             tag = s["route"] + (f"/{s.get('overlay')}" if s.get("overlay") else "")
-            gates = f"loop_floor={s['loop_floor']}"
+            # A bench scene (push/modal/deep-100) gates on bench_worst_ms, not loop_floor — it has
+            # no `loop_floor` key at all, so assuming one crashed the listing partway through
+            # printing. Print whichever this scene actually declares.
+            if s.get("loop_floor") is not None:
+                gates = f"loop_floor={s['loop_floor']}"
+            elif s.get("bench_worst_ms") is not None:
+                gates = f"bench_worst_ms={s['bench_worst_ms']}"
+            else:
+                gates = "gate=?"
             if s.get("fps_floor") is not None:
                 gates += f" fps_floor={s['fps_floor']}"
             if s.get("fps_ceiling") is not None:

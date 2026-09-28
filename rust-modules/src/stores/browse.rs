@@ -311,6 +311,21 @@ impl BrowseStore {
     }
 
     #[cfg(test)]
+    pub(crate) fn seed_named_shelves_for_test(
+        &mut self,
+        section: usize,
+        rows: &[(&str, &str, &str)],
+        per_row: usize,
+    ) {
+        crate::browse::section_hubs::seed_named_shelves_for_owner_test(
+            &mut self.state,
+            section,
+            rows,
+            per_row,
+        );
+    }
+
+    #[cfg(test)]
     pub(crate) fn seed_landscape_for_test(&mut self, section: usize, show: &str) {
         crate::browse::section_hubs::seed_landscape_for_owner_test(
             &mut self.state,

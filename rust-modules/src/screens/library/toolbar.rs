@@ -15,8 +15,10 @@ impl Chip {
 }
 
 impl LibraryScreen {
+    /// Every library lists more than one type ([`crate::browse::LibraryType::offered`]), so TYPE
+    /// always leads; FILTER goes while the listed type takes no filters (collections).
     pub(super) fn toolbar_elems(&self) -> &'static [u32] {
-        if self.kind == SecKind::Show { &[TYPE, SORT, FILTER] } else { &[SORT, FILTER] }
+        if self.listed.filters() { &[TYPE, SORT, FILTER] } else { &[TYPE, SORT] }
     }
 
     pub(super) fn view_section<H: LibraryLike>(&self, cx: &Cx<'_, H>) -> Option<usize> {
@@ -56,7 +58,7 @@ impl LibraryScreen {
                 Some(GridAction::LibraryType(kind)) => *kind,
                 _ => listing.library_type(),
             };
-            (crate::i18n::msg::browse_library_type_c(), kind.title().to_owned())
+            (crate::i18n::msg::browse_library_type_c(), kind.title(self.kind).to_owned())
         } else if elem == SORT {
             let sort = match queued {
                 Some(GridAction::Sort { key, .. }) => listing.sorts().iter().find(|sort| &sort.key == key),

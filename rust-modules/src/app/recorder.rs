@@ -2308,9 +2308,17 @@ mod tests {
         // graded under.
         // Plaintext consent adds the captured offer and persisted answers: ControlledHomeInitV5
         // carries SessionInitV4. The previous app census was 0xb2a6_c39d_095e_c1b6.
+        //
+        // **A collection's member count moves it to 0x4687_2768_0762_9a4d.** `PmsMovie` gained
+        // `child_count:i64` (the Library's "N items" caption), carried by both the hubs record and
+        // the hubs initial state, so a recorded collection row is no longer byte-identical to one
+        // without its count. The predecessor 0x5232_f81a_719f_4c3c is kept here for the same
+        // reason every value above it is.
+        //
         // Localization adds the captured preference in ControlledHomeInitV6 / SessionInitV5,
-        // moving it from 0x5232_f81a_719f_4c3c (main's census at #252) to 0x3b46_89f3_2380_2be7.
-        assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0x3b46_89f3_2380_2be7);
+        // moving main's census (0x4687_2768_0762_9a4d, above; 0x3b46_89f3_2380_2be7 before the
+        // collections member count) to this value.
+        assert_eq!(crate::ui::rec::state_fp(APP_SHAPES), 0xa1e4_897f_3373_3a4e);
     }
 
     /// The gate at the REAL hubs landing site, through the recording the driver loads: a result
@@ -2519,7 +2527,12 @@ mod tests {
 
     #[test]
     fn consent_and_session_frame_shapes_refuse_their_predecessors() {
+        // The predecessor censuses were graded under the `PmsMovie` record before it carried
+        // `child_count`; they are history, so they keep the record they were computed with.
+        const PRE_CHILD_COUNT_RECORD_SHAPE: &str = "HubsResultV1{gen:u32,seq:u32,sid:u16,client:Option<u32>,token_gen:u32,build:Option<{cw:[{last_viewed_at:i64,m:PmsMovie}],shelves:[{title:str,hub_id:str,key:str,items:[PmsMovie]}]}>};PmsMovie{sid:u16,sec:i64,title:str,year:i32,rating:str,dur_ns:i64,part:str,thumb:str,still:str,art:str,summary:str,rk:str,vcodec:str,acodec:str,blur:[[f32bits;3];4],has_blur:bool,kind:i32,resume_ms:i64,show_rk:str,season_index:i32,show_title:str,ep_index:i32,unwatched:bool,watched:bool,aired:str}";
         let mut pre_settings = APP_SHAPES.to_vec();
+        let record = pre_settings.iter().position(|shape| *shape == crate::pms::record::SHAPE).unwrap();
+        pre_settings[record] = PRE_CHILD_COUNT_RECORD_SHAPE;
         pre_settings[APP_SHAPES.len() - 2] = super::super::bootstrap::PRE_SETTINGS_SHAPE;
         assert_eq!(crate::ui::rec::state_fp(&pre_settings), 0x9f03_9e4f_2ff6_4d19,
             "retain the pre-typed-Settings census");

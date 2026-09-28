@@ -21,6 +21,7 @@ use crate::ui::frame::Budget;
 use crate::ui::hero_logo::{self, HeroLogo, LogoRung};
 use crate::ui::icons::Icon;
 use crate::ui::label::{Label, VAlign};
+use crate::ui::linked_heading::{self, LinkedHeading};
 use crate::ui::landing_hero::{
     base_scrim_ramp, stack_top as hero_stack_top, COL_W as HERO_COL_W,
     TEXT_BOTTOM as HERO_TEXT_BOTTOM,
@@ -45,7 +46,7 @@ use crate::ui::{hero_alpha, on_axis, Env, Painter, Rect, Spring, View};
 
 use super::plaintext_question::{self, AlertStep, Near, OfferWatch, PlaintextAlert};
 use super::registry::{
-    AppFx, AppMsg, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
+    AppFx, AppMsg, ContentArg, ContentReq, HomeCmd, HomeGroupKey, HomeHubIdentity, HomeItemIdentity, HomeItemKey, HomeLike,
     HomeMemory, HomeReq, HomeTab, LoopReq, PageMemory,
 };
 
@@ -54,6 +55,11 @@ const FIRST_HUB_GROUP: u32 = 0x100;
 const HERO_PLAY_ELEM: u32 = 0;
 const HERO_INFO_ELEM: u32 = 1;
 const FIRST_ITEM_ELEM: u32 = 0x1000;
+/// A collection shelf's linked heading (`ui::linked_heading`) is keyed off its shelf's group: the
+/// heading's group AND its one element are `HEADING_BASE | shelf group`. Both derive from the
+/// interned hub group, so they survive reorder and page memory without a registry of their own;
+/// item elements and hub groups stay below this bit.
+const HEADING_BASE: u32 = 0x8000_0000;
 const HERO_NBTN: usize = 2;
 /// "Connect without encryption?" over the failure read-out (`screens::plaintext_question`): its
 /// group sits between the hero's and the first hub's, its two answers below the first item key.
@@ -116,6 +122,40 @@ struct HubProjection {
 enum Located {
     Hero(usize),
     Item(usize, usize),
+    /// A collection shelf's linked heading, by row.
+    Heading(usize),
+}
+
+impl Located {
+    /// On the shelves (a card or a linked heading) rather than the hero.
+    fn on_grid(self) -> bool {
+        matches!(self, Self::Item(..) | Self::Heading(_))
+    }
+}
+
+/// The collection shelf a promoted `custom.collection.*` hub lists: where its linked heading
+/// leads. Every other hub is unlinked and keeps its plain heading.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Linked<'a> {
+    sid: crate::plex::ServerId,
+    sec: i64,
+    rk: &'a str,
+}
+
+fn linked_of(identity: &HomeHubIdentity) -> Option<Linked<'_>> {
+    let HomeHubIdentity::Identifier { sid, id, key } = identity else {
+        return None;
+    };
+    let (sec, rk) = crate::plex::collections::promoted_collection_hub(id, key)?;
+    Some(Linked { sid: *sid, sec, rk })
+}
+
+fn heading_group(shelf: GroupId) -> GroupId {
+    GroupId(HEADING_BASE | shelf.0)
+}
+
+fn heading_elem(shelf: GroupId) -> u32 {
+    HEADING_BASE | shelf.0
 }
 
 struct Grid {
@@ -414,10 +454,7 @@ impl HomeScreen {
         self.next_group = group
             .checked_add(1)
             .expect("Home group-key space exhausted");
-        assert!(
-            group < crate::ui::containers::tabs::STRIP.0,
-            "Home groups overlap chrome"
-        );
+        assert!(group < HEADING_BASE, "Home groups overlap the linked headings");
         self.groups.push(HomeGroupKey {
             identity: identity.clone(),
             group,
@@ -433,10 +470,7 @@ impl HomeScreen {
         self.next_elem = elem
             .checked_add(1)
             .expect("Home element-key space exhausted");
-        assert!(
-            elem < crate::ui::dispatch::STRIP_BASE,
-            "Home elements overlap chrome"
-        );
+        assert!(elem < HEADING_BASE, "Home elements overlap the linked headings");
         self.items.push(HomeItemKey { identity, elem, last_row: 0, last_col: 0 });
         self.items.last_mut().unwrap()
     }
@@ -601,6 +635,11 @@ impl HomeScreen {
             HERO_INFO_ELEM => return Some(Located::Hero(1)),
             _ => {}
         }
+        if elem & HEADING_BASE != 0 {
+            return self.rows.iter().position(|row| {
+                heading_elem(row.group) == elem && linked_of(&row.identity).is_some()
+            }).map(Located::Heading);
+        }
         self.rows.iter().enumerate().find_map(|(row, hub)| {
             hub.elems
                 .iter()
@@ -618,8 +657,52 @@ impl HomeScreen {
     fn focused_grid(&self, focus: Option<FocusKey<u32>>) -> Option<(usize, usize)> {
         match self.focused_loc(focus)? {
             Located::Item(row, col) => Some((row, col)),
-            Located::Hero(_) => None,
+            Located::Hero(_) | Located::Heading(_) => None,
         }
+    }
+
+    /// The row a focused linked heading heads.
+    fn focused_heading(&self, focus: Option<FocusKey<u32>>) -> Option<usize> {
+        match self.focused_loc(focus)? {
+            Located::Heading(row) => Some(row),
+            Located::Hero(_) | Located::Item(..) => None,
+        }
+    }
+
+    /// The row whose label band is open (or opening) for `focus` — the focused card's row, `None`
+    /// on a linked heading, and `fallback` (the row a hero→grid door would open) otherwise.
+    fn band_row(&self, focus: Option<FocusKey<u32>>, fallback: usize) -> Option<usize> {
+        match self.focused_loc(focus) {
+            Some(Located::Item(row, _)) => Some(row),
+            Some(Located::Heading(_)) => None,
+            Some(Located::Hero(_)) | None => Some(fallback),
+        }
+    }
+
+    /// Where a row's linked heading leads, if it has one.
+    fn linked(&self, row: usize) -> Option<Linked<'_>> {
+        linked_of(&self.rows.get(row)?.identity)
+    }
+
+    /// The linked heading of `row`: title case, the hub's own title and source annotation.
+    fn heading_widget<'a>(&self, view: HubsView<'a>, row: usize) -> Option<LinkedHeading<'a>> {
+        self.linked(row)?;
+        let hub = self.hub(view, row)?;
+        Some(LinkedHeading::heading(hub.title, hub.source))
+    }
+
+    /// The heading's face: its cap top rides the row exactly as an unlinked heading does.
+    fn heading_rect(&self, view: HubsView<'_>, row: usize, measure: &dyn Measure, at: At,
+        focus: Option<FocusKey<u32>>) -> Option<Rect> {
+        let heading = self.heading_widget(view, row)?;
+        let m = heading.measure(measure);
+        let focused = self.focused_heading(focus) == Some(row);
+        let y = match at {
+            At::Drawn => heading_y(self.grid.shelves[row].base_y, self.grid.shelves[row].lift()),
+            At::SpringTarget => GRID_TOP_Y + shelf_top_banded(row, self.band_row(focus, row))
+                - self.grid.scroll_target - TITLE_DY,
+        };
+        Some(heading.face_rect(MARGIN_X, y, f32::from(focused), &m))
     }
 
     fn visible_focus(&self, focus: Option<FocusKey<u32>>) -> Option<FocusKey<u32>> {
@@ -666,8 +749,10 @@ impl HomeScreen {
                 .map(|(_, c)| c);
             self.grid.shelves[row].update(count, col, &RowStyle::HOME, dt);
         }
-        if let Some((row, _)) = focused.filter(|(r, _)| *r < self.rows.len()) {
-            let (lo, hi) = row_reveal_band(shelf_top_settled(row, row));
+        let revealed = focused.map(|(row, _)| (row, Some(row)))
+            .or_else(|| self.focused_heading(cx.focus.current).map(|row| (row, None)));
+        if let Some((row, band_row)) = revealed.filter(|(r, _)| *r < self.rows.len()) {
+            let (lo, hi) = row_reveal_band(shelf_top_banded(row, band_row));
             self.grid.scroll_target = card_row::reveal(
                 self.grid.scroll_y.pos,
                 lo,
@@ -764,7 +849,7 @@ impl HomeScreen {
         // `SNAP_REST_POS`/`SNAP_REST_VEL` for why both terms are needed.
         let snap_moving = (self.snap.pos - self.snap_target).abs() > SNAP_REST_POS
             || self.snap.vel.abs() > SNAP_REST_VEL;
-        let engine_on_grid = self.focused_grid(cx.focus.current).is_some();
+        let engine_on_grid = self.focused_loc(cx.focus.current).is_some_and(Located::on_grid);
         let picture_is_grid = self.snap.pos >= 0.5;
         if engine_on_grid == picture_is_grid {
             self.visible_activation = None;
@@ -1011,6 +1096,21 @@ impl HomeScreen {
                 )
             }
             Located::Hero(_) => return,
+            Located::Heading(row) => {
+                // OK on a linked heading opens the collection it names. BACK from that page
+                // returns here: the heading is an ordinary engine key the return state restores.
+                let (Some(linked), Some(hub)) = (self.linked(row), self.hub(view, row)) else {
+                    return;
+                };
+                fx.push(Fx::App(AppFx::Content(ContentReq::Push(ContentArg::Collection {
+                    sid: linked.sid,
+                    rk: linked.rk.to_owned(),
+                    sec: linked.sec,
+                    tag: 0,
+                    name: hub.title.to_owned(),
+                }))));
+                return;
+            }
             Located::Item(row, col) => {
                 let Some(item) = self.item_at(view, row, col) else {
                     return;
@@ -1070,7 +1170,8 @@ impl HomeScreen {
             });
         }
         crate::ui::profile::phase("hm.grid", || {
-            self.draw_grid(view, &env, p, f.press.scale, grid_focus, f.measure)
+            let heading = self.focused_heading(visible_focus);
+            self.draw_grid(view, &env, p, f.press.scale, grid_focus, heading, f.measure)
         });
         crate::ui::profile::phase("hm.status", || self.draw_status(view, &env, p, focus));
         crate::ui::testpat::underlay(p);
@@ -1188,6 +1289,7 @@ impl HomeScreen {
         p: Painter,
         press_scale: f32,
         focused: Option<(usize, usize)>,
+        heading: Option<usize>,
         measure: &dyn Measure,
     ) {
         for row in 0..self.rows.len() {
@@ -1198,7 +1300,18 @@ impl HomeScreen {
             if !on_axis(row_y, CARD_H, SCR_H, 0.0) {
                 continue;
             }
-            if env.sp > 0.02 {
+            if let Some(linked) = self.heading_widget(view, row).filter(|_| env.sp > 0.02) {
+                let m = linked.measure(measure);
+                let focus_t = f32::from(heading == Some(row) && env.sp > 0.5);
+                linked.draw(
+                    p.alpha(env.sp),
+                    MARGIN_X,
+                    heading_y(row_y, self.grid.shelves[row].lift()),
+                    focus_t,
+                    &m,
+                    measure,
+                );
+            } else if env.sp > 0.02 {
                 card_row::draw_heading(
                     p.alpha(env.sp),
                     hub.title,
@@ -1361,6 +1474,20 @@ impl HomeScreen {
                         },
                     );
                 }
+                // After the row's tiles, so a popped tile's glow never wins the heading's hit.
+                let row_index = self.rows.iter().position(|r| r.group == row.group);
+                if let Some(row_index) = row_index {
+                    if let (Some(heading), Some(rect)) = (
+                        self.heading_widget(view, row_index),
+                        self.heading_rect(view, row_index, f.measure, At::Drawn, focus),
+                    ) {
+                        let visible = rect.y >= crate::ui::widgets::TOP_BAR_BOTTOM
+                            && rect.y + rect.h <= SCR_H;
+                        if visible {
+                            heading.stop(f, rect, FocusKey { entry: self.entry, elem: heading_elem(row.group) });
+                        }
+                    }
+                }
             }
         }
     }
@@ -1378,6 +1505,7 @@ impl HomeScreen {
         match self.focused_loc(focus)? {
             Located::Hero(_) => self.selected_hero(view).map(|h| h.item),
             Located::Item(row, col) => self.item_at(view, row, col),
+            Located::Heading(_) => None,
         }
     }
 
@@ -1540,16 +1668,32 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
             len: hero_len,
             elem: ElemKind::Control,
         });
-        let focus_row = self
-            .focused_grid(cx.focus.current)
-            .map(|(r, _)| r)
-            .unwrap_or(0);
+        let band_row = self.band_row(cx.focus.current, 0);
         for (row, projection) in self.rows.iter().enumerate() {
-            let top = GRID_TOP_Y + shelf_top_settled(row, focus_row) - self.grid.scroll_target;
+            let top = GRID_TOP_Y + shelf_top_banded(row, band_row) - self.grid.scroll_target;
+            let linked = self.linked(row).is_some();
+            if linked {
+                if let Some(rect) =
+                    self.heading_rect(view, row, cx.measure, At::SpringTarget, cx.focus.current)
+                {
+                    out.push(linked_heading::group_spec(heading_group(projection.group), rect));
+                }
+            }
             out.push(GroupSpec {
                 id: projection.group,
                 kind: GroupKind::Row { wrap: false },
-                seat: Seat::Nearest,
+                // DOWN from the linked heading returns to the card this shelf remembered;
+                // every other door keeps the shelf's nearest-column projection.
+                seat: if linked {
+                    linked_heading::shelf_seat(
+                        &cx.focus,
+                        heading_elem(projection.group),
+                        projection.group,
+                        Seat::Nearest,
+                    )
+                } else {
+                    Seat::Nearest
+                },
                 reachable: AxisMask::BOTH,
                 edge: [
                     EdgeRule::Geometric,
@@ -1576,6 +1720,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
         match self.locate(*key)? {
             Located::Hero(index) => (index < hero_group_len(H::hubs(cx))).then_some(HERO_GROUP),
             Located::Item(row, _) => self.rows.get(row).map(|r| r.group),
+            Located::Heading(row) => self.rows.get(row).map(|r| heading_group(r.group)),
         }
     }
 
@@ -1603,7 +1748,8 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
                     .copied(),
                 _ => None,
             },
-            None => None,
+            // One element, LEFT/RIGHT inert; UP/DOWN are the group's doors.
+            Some(Located::Heading(_)) | None => None,
         };
         next.map(|elem| {
             Step::Move(FocusKey {
@@ -1645,6 +1791,20 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
                     rest_rect: base.scaled(crate::ui::widgets::CTRL_FOCUS_SCALE),
                     clip: Rect::FULL,
                     index: Some(index as u32),
+                })
+            }
+            Located::Heading(row) => {
+                let rect = self.heading_rect(view, row, cx.measure, at, cx.focus.current)?;
+                Some(Placed {
+                    rect,
+                    rest_rect: rect,
+                    clip: Rect::new(
+                        0.0,
+                        crate::ui::widgets::TOP_BAR_BOTTOM,
+                        SCR_W,
+                        SCR_H - crate::ui::widgets::TOP_BAR_BOTTOM,
+                    ),
+                    index: None,
                 })
             }
             Located::Item(row, col) => {
@@ -1705,7 +1865,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
         if let Some(located) = self.locate(want.elem) {
             let valid = match located {
                 Located::Hero(index) => index < hero_group_len(H::hubs(cx)),
-                Located::Item(_, _) => true,
+                Located::Item(_, _) | Located::Heading(_) => true,
             };
             if valid {
                 return want;
@@ -1749,6 +1909,12 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
                 elem: HERO_PLAY_ELEM,
             };
         }
+        if let Some(row) = self.rows.iter().find(|r| heading_group(r.group) == group) {
+            return FocusKey {
+                entry: self.entry,
+                elem: heading_elem(row.group),
+            };
+        }
         let Some((row_index, row)) = self.rows.iter().enumerate().find(|(_, r)| r.group == group)
         else {
             return FocusKey {
@@ -1774,7 +1940,7 @@ impl<H: HomeLike> Focusable<H> for HomeScreen {
 
 impl HomeScreen {
     fn activation_elem(&self, engine_elem: u32) -> u32 {
-        let engine_grid = matches!(self.locate(engine_elem), Some(Located::Item(_, _)));
+        let engine_grid = self.locate(engine_elem).is_some_and(Located::on_grid);
         let picture_grid = self.snap.pos >= 0.5;
         if engine_grid != picture_grid {
             self.visible_activation.unwrap_or(engine_elem)
@@ -1876,16 +2042,14 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
             ScreenEvent::FocusMoved { from, to, by } => {
                 let from_loc = from.and_then(|key| self.locate(key.elem));
                 let to_loc = self.locate(to.elem);
-                if matches!(
-                    (from_loc, to_loc),
-                    (Some(Located::Hero(_)), Some(Located::Item(_, _)))
-                        | (Some(Located::Item(_, _)), Some(Located::Hero(_)))
-                ) {
-                    self.visible_activation = from.map(|key| key.elem);
+                if let (Some(a), Some(b)) = (from_loc, to_loc) {
+                    if a.on_grid() != b.on_grid() {
+                        self.visible_activation = from.map(|key| key.elem);
+                    }
                 }
                 match to_loc {
                     Some(Located::Hero(_)) => self.snap_target = 0.0,
-                    Some(Located::Item(_, _)) => self.snap_target = 1.0,
+                    Some(Located::Item(_, _) | Located::Heading(_)) => self.snap_target = 1.0,
                     None => {}
                 }
                 if matches!(by, By::Restore) && self.restore_reveal {
@@ -1972,7 +2136,7 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
             }) => {
                 if self.snap_target >= 0.5
                     || self.snap.pos >= 0.5
-                    || self.focused_grid(cx.focus.current).is_some()
+                    || self.focused_loc(cx.focus.current).is_some_and(Located::on_grid)
                 {
                     self.snap_target = 0.0;
                     self.visible_activation = cx
@@ -2023,6 +2187,20 @@ impl<H: HomeLike> Screen<H> for HomeScreen {
             dir: Dir::Up,
             to: crate::ui::containers::tabs::STRIP,
         });
+        // A collection shelf's linked heading sits between the shelf above and its own cards:
+        // UP from any card reaches it, DOWN returns to the remembered card, and it is the next
+        // stop DOWN from the shelf above. The engine takes the FIRST matching link, so these
+        // precede the first shelf's UP door to the hero.
+        for (row, projection) in self.rows.iter().enumerate() {
+            if linked_of(&projection.identity).is_none() {
+                continue;
+            }
+            let heading = heading_group(projection.group);
+            out.extend(linked_heading::links(heading, projection.group));
+            let above = row.checked_sub(1).map_or(HERO_GROUP, |r| self.rows[r].group);
+            out.push(Link { from: heading, dir: Dir::Up, to: above });
+            out.push(Link { from: above, dir: Dir::Down, to: heading });
+        }
         if let Some(first) = self.rows.first() {
             out.push(Link {
                 from: HERO_GROUP,
@@ -2203,7 +2381,12 @@ fn grid_max_scroll(rows: usize) -> f32 {
     (h - (SCR_H - CONTENT_Y) + 60.0).max(0.0)
 }
 fn shelf_top_settled(row: usize, focus_row: usize) -> f32 {
-    card_row::settled_top(row, Some(focus_row), card_row::ROW_PITCH_FIXED)
+    shelf_top_banded(row, Some(focus_row))
+}
+/// [`shelf_top_settled`] with the open label band named explicitly: `None` while a linked heading
+/// holds focus, which opens no row's band.
+fn shelf_top_banded(row: usize, band_row: Option<usize>) -> f32 {
+    card_row::settled_top(row, band_row, card_row::ROW_PITCH_FIXED)
 }
 
 fn wash_corners(hero: Option<&PmsMovie>, grid: [[f32; 4]; 4], snap: f32) -> [[f32; 4]; 4] {

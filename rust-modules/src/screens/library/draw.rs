@@ -138,8 +138,15 @@ impl LibraryScreen {
                 let Some(shelf) = H::section_hubs(f.cx).shelves().get(index) else { continue };
                 let origin = self.layout.shelf_y(index, self.scroll.pos);
                 if !shelf_on_screen(origin, self.layout.shelf_pitch(index)) { continue; }
-                card_row::draw_heading(p, &shelf.title, "", MARGIN_X,
-                    origin - crate::ui::consts::TITLE_DY - row.motion.lift(), layout::GRID_RIGHT - MARGIN_X, f.measure);
+                let heading_y = origin - crate::ui::consts::TITLE_DY - row.motion.lift();
+                if let Some(heading) = self.heading_widget(index, f.cx) {
+                    let focused = f.focus.current.is_some_and(|key| key.entry == self.entry
+                        && Some(key.elem) == row.heading_elem());
+                    heading.draw(p, MARGIN_X, heading_y, f32::from(focused), &heading.measure(f.measure), f.measure);
+                } else {
+                    card_row::draw_heading(p, &shelf.title, "", MARGIN_X,
+                        heading_y, layout::GRID_RIGHT - MARGIN_X, f.measure);
+                }
                 let focused = f.focus.current.and_then(|key| row.elems.iter().position(|elem| *elem == key.elem));
                 for col in 0..row.elems.len() {
                     if focused == Some(col) { continue; }
@@ -214,6 +221,11 @@ impl LibraryScreen {
             let focused = f.focus.current.filter(|key| key.entry == self.entry).map(|key| key.elem);
             for &elem in row.elems.iter().filter(|elem| Some(**elem) != focused) { self.stop(elem, f); }
             if let Some(elem) = focused.filter(|elem| row.elems.contains(elem)) { self.stop(elem, f); }
+            // After the row's cards, so the heading wins where a popped card's glow overlaps it.
+            if let (Some(elem), Some(heading), Some(rect)) = (row.heading_elem(),
+                self.heading_widget(index, f.cx), self.heading_rect(index, f.cx, At::Drawn)) {
+                heading.stop(f, rect, self.key(elem));
+            }
         }
         if self.layout.grid_head { for &elem in self.toolbar_elems() { self.stop(elem, f); } }
         if self.readout == Readout::Failed { self.stop(RETRY, f); }

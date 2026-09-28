@@ -150,3 +150,29 @@ all three were freshly recorded against shape `14389175148146224086` and passed 
 Resolve with zero difference counters. The recorded text differs where the change meant it to:
 Settings gains the Language destination, the Filmography count is measured as it wraps, and
 Detail's release date is the locale's short numeric date (`3/14/2011`, no longer `14 Mar 2011`).
+
+The collection page (#205) adds `AppArg`'s Collection argument, its page memory and the
+Collection screen's logical state to the screen census. The prior anchors were observed being
+refused (`replay: REFUSED — invalid or incompatible recording`, all three, both modes), then all
+three were re-recorded with `tools/plxnative-rec rerecord` against shape `7683106202277674285`
+and passed Targets and Resolve with zero difference counters.
+
+The Library's Collections type (#205) moves both halves of the census: `PmsMovie` gains
+`child_count` (the hubs record and initial state), and the Library's TYPE transaction and layout
+change shape (`LibraryType{code:u32}`, `LibraryLayout{…empty:bool…}`). The prior anchors were
+observed being refused (`replay: REFUSED — invalid or incompatible recording`, all three, both
+modes), then all three were re-recorded with `tools/plxnative-rec rerecord` against shape
+`5354288741423994209` and passed Targets and Resolve with zero difference counters.
+
+The linked collection shelves on Home and the Library (#205) give a Library section-hub shelf an
+optional heading group, which moves the screen census. The prior anchors were observed being
+refused (`replay: REFUSED — invalid or incompatible recording`, all three, both modes), then all
+three were re-recorded with `tools/plxnative-rec rerecord` against shape `2955617958233795258`
+and passed Targets and Resolve with zero difference counters.
+
+The detail page's collection shelf (#205) adds an eighth Detail section slot
+(`SectionId::Collections`), its remembered column and the `CollectionMember` identity to the page
+memory, which moves the screen census again. The anchors recorded against `2955617958233795258`
+were observed being refused (`replay: REFUSED — invalid or incompatible recording`, all three,
+both modes), then all three were re-recorded with `tools/plxnative-rec rerecord` against shape
+`12050413345652660670` and passed Targets and Resolve with zero difference counters.

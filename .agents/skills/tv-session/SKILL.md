@@ -89,7 +89,8 @@ token injected → close-first relaunch → process alive → the route heartbea
 on the screen you asked for → the remote FIFO exists. A live view is one flag away.
 
 `--screen` accepts: `home` (default), `profiles`, `login`, `account`, `library[=N]`,
-`detail=<ratingKey>`, `person=<MOVIE ratingKey>`, `player=<ratingKey>`, `itemmenu`.
+`detail=<ratingKey>`, `collection=<ratingKey>`, `person=<MOVIE ratingKey>`, `player=<ratingKey>`,
+`itemmenu`.
 (That is the script's whole `case`; `tools/tv-session.sh --help` is the other copy.)
 
 For a multi-server boot, `--server <slot>` supplies the server half of a `detail=` or `player=`

@@ -8,17 +8,7 @@ pub(super) const COLS: usize = 6;
 const EPISODE_COLS: usize = 4;
 pub(super) const MAX_LIBRARY_PILLS: usize = 8;
 pub(super) const MAX_SHELVES: usize = 12;
-/// Only the focused and closing bands are represented, independent of catalog size.
-/// Sixteen spans more row moves than a complete spring at normal remote repeat speed.
-pub(super) const MAX_GRID_BANDS: usize = 16;
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct GridBand {
-    pub row: usize,
-    pub expansion: f32,
-}
-impl GridBand {
-    pub const CLOSED: Self = Self { row: usize::MAX, expansion: 0.0 };
-}
+pub(super) use crate::ui::poster_grid::{GridBand, MAX_GRID_BANDS};
 pub(super) const MAX_LETTERS: usize = 64;
 pub(super) const CONTENT_TOP: f32 = crate::ui::consts::GRID_TOP_Y;
 pub(super) const LIBRARY_ROW_H: f32 = crate::ui::widgets::StatusOverlay::CTRL_H + crate::ui::consts::CARD_DY + crate::ui::consts::TITLE_DY;
@@ -54,17 +44,20 @@ pub(super) struct Layout {
     pub rows: usize,
     pub grid_head: bool,
     pub status: bool,
+    /// An empty answer under the heading row: the document keeps one grid pitch below the
+    /// heading for its read-out, so the read-out scrolls with the page and never lands on a shelf.
+    pub empty: bool,
     episodes: bool,
     pitches: [f32; MAX_SHELVES],
     grid_bands: [GridBand; MAX_GRID_BANDS],
 }
 
 impl Layout {
-    pub(super) const SHAPE: &'static str = "LibraryLayout{libraries:bool,shelves:u32,rows:u32,grid_head:bool,status:bool,episodes:bool,pitches:[f32;12],grid_bands:[(row:u32,expansion:f32)]}";
+    pub(super) const SHAPE: &'static str = "LibraryLayout{libraries:bool,shelves:u32,rows:u32,grid_head:bool,status:bool,empty:bool,episodes:bool,pitches:[f32;12],grid_bands:[(row:u32,expansion:f32)]}";
 
     pub(super) fn write(&self, c: &mut crate::ui::machine::Canon) {
-        let Self { libraries, shelves, rows, grid_head, status, episodes, pitches, grid_bands } = self;
-        c.bool(*libraries).u32(*shelves as u32).u32(*rows as u32).bool(*grid_head).bool(*status).bool(*episodes);
+        let Self { libraries, shelves, rows, grid_head, status, empty, episodes, pitches, grid_bands } = self;
+        c.bool(*libraries).u32(*shelves as u32).u32(*rows as u32).bool(*grid_head).bool(*status).bool(*empty).bool(*episodes);
         for pitch in pitches { c.f32(*pitch); }
         c.seq(grid_bands.iter().filter(|band| band.row != usize::MAX).count());
         for band in grid_bands.iter().filter(|band| band.row != usize::MAX) {
@@ -83,6 +76,7 @@ impl Layout {
             rows,
             grid_head,
             status: false,
+            empty: false,
             episodes: false,
             pitches,
             grid_bands: [GridBand::CLOSED; MAX_GRID_BANDS],
@@ -182,7 +176,13 @@ impl Layout {
 
     pub(super) fn doc_to_grid(&self, scroll: f32) -> f32 { scroll - self.grid_top() }
 
-    pub(super) fn doc_h(&self) -> f32 { self.row_top(self.rows) }
+    pub(super) fn doc_h(&self) -> f32 { self.row_top(self.rows) + self.empty_band().map_or(0.0, |(_, h)| h) }
+
+    /// The document band an empty answer's read-out stands in — `(top, height)` in document
+    /// space, directly under the heading row — when the layout reserves one.
+    pub(super) fn empty_band(&self) -> Option<(f32, f32)> {
+        (self.empty && self.grid_head && self.rows == 0).then(|| (self.grid_top(), self.grid_pitch()))
+    }
 
     pub(super) fn max_scroll(&self) -> f32 {
         (self.doc_h() - (SCR_H - CONTENT_TOP) + MARGIN_Y).max(0.0)
