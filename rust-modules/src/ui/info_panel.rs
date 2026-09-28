@@ -379,13 +379,13 @@ impl InfoPanelState {
                 push(tag, ChipKind::Badge);
             }
             if !subs.is_empty() {
-                push("CC".to_string(), ChipKind::Badge);
+                push(crate::i18n::msg::widgets_badge_cc().to_string(), ChipKind::Badge);
             }
             if subs.iter().any(|s| s.sdh) {
-                push("SDH".to_string(), ChipKind::Badge);
+                push(crate::i18n::msg::widgets_badge_sdh().to_string(), ChipKind::Badge);
             }
             if audio.iter().any(|s| s.ad) {
-                push("AD".to_string(), ChipKind::Badge);
+                push(crate::i18n::msg::widgets_badge_ad().to_string(), ChipKind::Badge);
             }
 
             let n = chips_that_fit(chips.iter().map(|c| (c.w, c.gap_before)), tw);

@@ -18,19 +18,29 @@ pub(crate) enum DvCapability {
 }
 
 impl DvCapability {
-    pub(crate) const fn compact(self) -> &'static str {
-        match self {
-            Self::Supported => "yes",
-            Self::Unsupported => "no",
-            Self::Unknown => "?",
-        }
-    }
-
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Supported => "supported",
             Self::Unsupported => "unsupported",
             Self::Unknown => "unknown",
+        }
+    }
+
+    /// The one-word answer for the diagnostics header, in the UI language.
+    pub(crate) fn compact_display(self) -> &'static str {
+        match self {
+            Self::Supported => crate::i18n::msg::browse_diagnostics_dv_yes(),
+            Self::Unsupported => crate::i18n::msg::browse_diagnostics_dv_no(),
+            Self::Unknown => "?",
+        }
+    }
+
+    /// [`Self::label`] in the UI language, for the diagnostics read-out. The log keeps `label`.
+    pub(crate) fn display(self) -> &'static str {
+        match self {
+            Self::Supported => crate::i18n::msg::browse_diagnostics_dv_supported(),
+            Self::Unsupported => crate::i18n::msg::browse_diagnostics_dv_unsupported(),
+            Self::Unknown => crate::i18n::msg::browse_diagnostics_unknown(),
         }
     }
 }
@@ -67,8 +77,14 @@ impl DvProbe {
         }
     }
 
+    /// Capability and provenance for the screen. The source names (`configd`, `host`) and failure
+    /// stages are technical identifiers and stay as written; only the override is a word.
     pub(crate) fn full_state(self) -> String {
-        format!("{} · {}", self.capability.label(), self.provenance())
+        let source = match self.source {
+            ProbeSource::Override => crate::i18n::msg::browse_diagnostics_dv_forced(),
+            _ => self.provenance(),
+        };
+        format!("{} · {source}", self.capability.display())
     }
 }
 

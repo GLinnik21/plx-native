@@ -116,16 +116,16 @@ impl Rows {
         self.access.clear();
         if !d.subs.is_empty() {
             self.access.push((
-                "CC",
+                crate::i18n::msg::widgets_badge_cc(),
                 crate::i18n::msg::browse_detail_closed_captions(),
             ));
         }
         if d.subs.iter().any(|s| s.sdh) {
-            self.access.push(("SDH", crate::i18n::msg::browse_detail_sdh()));
+            self.access.push((crate::i18n::msg::widgets_badge_sdh(), crate::i18n::msg::browse_detail_sdh()));
         }
         if d.audio.iter().any(|a| a.ad) {
             self.access.push((
-                "AD",
+                crate::i18n::msg::widgets_badge_ad(),
                 crate::i18n::msg::browse_detail_audio_description(),
             ));
         }

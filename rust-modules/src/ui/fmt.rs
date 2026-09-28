@@ -253,7 +253,59 @@ pub(crate) fn pretty_date(iso: &str, year: i64) -> String {
 pub(crate) fn rating_score(art: crate::metadata::RatingArt, value: f64) -> String {
     match art {
         crate::metadata::RatingArt::Imdb => crate::i18n::current().decimal((value * 10.0).round() as i64, 1),
-        _ => format!("{}%", crate::i18n::current().number((value * 10.0).round().clamp(0.0, 100.0) as i64)),
+        _ => percent((value * 10.0).round().clamp(0.0, 100.0) as i64),
+    }
+}
+
+/// A whole percentage in the UI locale: the catalog pattern owns the sign's placement (Spanish and
+/// Belarusian set it off with a no-break space; English does not).
+pub(crate) fn percent(value: i64) -> String {
+    crate::i18n::msg::core_percent(&crate::i18n::current().number(value))
+}
+
+/// `value` rounded to `scale` fractional digits, in the UI locale's numerals and separators.
+pub(crate) fn decimal(value: f64, scale: i16) -> String {
+    let factor = 10f64.powi(i32::from(scale));
+    crate::i18n::current().decimal((value * factor).round() as i64, scale)
+}
+
+/// [`decimal`] that always carries a sign, as a delta is written (`+0.4`, `-1.2`).
+pub(crate) fn signed_decimal(value: f64, scale: i16) -> String {
+    let factor = 10f64.powi(i32::from(scale));
+    let scaled = (value * factor).round() as i64;
+    let digits = crate::i18n::current().decimal(scaled, scale);
+    if scaled >= 0 {
+        format!("+{digits}")
+    } else {
+        digits
+    }
+}
+
+/// A bitrate given in kbps: `28.9 Mbps` from a megabit up, otherwise whole `640 kbps`, in the UI
+/// locale's numerals and unit spelling.
+pub(crate) fn bitrate(kbps: i64) -> String {
+    if kbps >= 1000 {
+        crate::i18n::msg::widgets_tracks_mbps(&decimal(kbps as f64 / 1000.0, 1))
+    } else {
+        crate::i18n::msg::widgets_tracks_kbps(&crate::i18n::current().number(kbps))
+    }
+}
+
+/// A byte count in binary units with the UI locale's numerals — `2.50 GB`, `12.3 MB`, `640 kB`.
+/// `scales` is the number of fractional digits for GB, MB and kB respectively; a count below a
+/// kilobyte is whole bytes (`B`).
+pub(crate) fn bytes(bytes: i64, scales: (i16, i16, i16)) -> String {
+    use crate::i18n::msg;
+    const K: f64 = 1024.0;
+    let b = bytes as f64;
+    if b >= K * K * K {
+        msg::core_unit_gb(&decimal(b / (K * K * K), scales.0))
+    } else if b >= K * K {
+        msg::core_unit_mb(&decimal(b / (K * K), scales.1))
+    } else if b >= K {
+        msg::core_unit_kb(&decimal(b / K, scales.2))
+    } else {
+        msg::core_unit_b(&crate::i18n::current().number(bytes))
     }
 }
 

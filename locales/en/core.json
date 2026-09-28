@@ -160,5 +160,40 @@
   "core.preview_domain_original_outcome": {
     "value": "Original outcome",
     "description": "Field name in the consent preview's list of possible playback-error values: the result of an original-quality attempt."
+  },
+  "core.unit_gb": {
+    "value": "{value} GB",
+    "args": {
+      "value": "str"
+    },
+    "description": "A size in gigabytes."
+  },
+  "core.unit_mb": {
+    "value": "{value} MB",
+    "args": {
+      "value": "str"
+    },
+    "description": "A size in megabytes."
+  },
+  "core.unit_kb": {
+    "value": "{value} kB",
+    "args": {
+      "value": "str"
+    },
+    "description": "A size in kilobytes."
+  },
+  "core.percent": {
+    "value": "{value}%",
+    "args": {
+      "value": "str"
+    },
+    "description": "A percentage. es and be put a no-break space before the percent sign."
+  },
+  "core.unit_b": {
+    "value": "{value} B",
+    "args": {
+      "value": "str"
+    },
+    "description": "A size in bytes, abbreviated (B), for compact technical read-outs."
   }
 }

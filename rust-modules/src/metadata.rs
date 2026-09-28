@@ -629,6 +629,15 @@ impl DvPresentation {
         }
     }
 
+    /// [`Self::label`] in the UI language, for the diagnostics read-out. Logs keep `label`.
+    pub(crate) fn display(&self) -> &'static str {
+        match self {
+            Self::NotDv => crate::i18n::msg::browse_diagnostics_dv_base_layer(),
+            Self::Declare(_) => crate::i18n::msg::browse_diagnostics_dv_declare(),
+            Self::Refuse(_) => crate::i18n::msg::browse_diagnostics_dv_refuse(),
+        }
+    }
+
     /// Direct play is refused (and, at `build_stream`, the reason for the log line).
     pub(crate) fn refusal(&self) -> Option<&'static str> {
         match self {

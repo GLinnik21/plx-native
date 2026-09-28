@@ -200,21 +200,11 @@ pub(crate) fn fmt_size(bytes: i64) -> Option<String> {
     if bytes <= 0 {
         return None;
     }
-    const K: f64 = 1024.0;
-    let b = bytes as f64;
-    let (v, unit) = if b >= K * K * K {
-        (b / (K * K * K), "GB")
-    } else if b >= K * K {
-        (b / (K * K), "MB")
-    } else if b >= K {
-        (b / K, "kB")
-    } else {
-        (b, "bytes")
-    };
-    Some(if unit == "bytes" {
+    // Below a kilobyte the Info panel spells the count in words rather than as a bare `B`.
+    Some(if bytes < 1024 {
         crate::i18n::msg::widgets_tracks_bytes(bytes)
     } else {
-        format!("{} {unit}", crate::i18n::current().decimal((v * 100.0).round() as i64, 2))
+        crate::ui::fmt::bytes(bytes, (2, 2, 2))
     })
 }
 
@@ -223,8 +213,7 @@ pub(crate) fn fmt_size(bytes: i64) -> Option<String> {
 pub(crate) fn fmt_bitrate(kbps: i64) -> Option<String> {
     match kbps {
         k if k <= 0 => None,
-        k if k >= 1000 => Some(crate::i18n::msg::widgets_tracks_mbps(&crate::i18n::current().decimal((k as f64 / 100.0).round() as i64, 1))),
-        k => Some(crate::i18n::msg::widgets_tracks_kbps(&crate::i18n::current().number(k))),
+        k => Some(crate::ui::fmt::bitrate(k)),
     }
 }
 
@@ -429,7 +418,7 @@ pub(crate) fn subtitle_rows(subs: &[Stream]) -> Vec<TrackRow> {
         let mut head = s.codec.to_uppercase();
         for (on, tag) in [
             (s.forced, crate::i18n::msg::widgets_tracks_forced()),
-            (s.sdh, "SDH"),
+            (s.sdh, crate::i18n::msg::widgets_badge_sdh()),
             (s.external, crate::i18n::msg::widgets_tracks_external()),
         ] {
             if on {

@@ -28,5 +28,10 @@
   "core.preview_domain_hls_direction": "кірунак HLS",
   "core.preview_domain_delivery_reason": "прычына спосабу дастаўкі",
   "core.preview_domain_original_phase": "этап арыгінала (уключна з захаванымі гістарычнымі кодамі)",
-  "core.preview_domain_original_outcome": "вынік арыгінала"
+  "core.preview_domain_original_outcome": "вынік арыгінала",
+  "core.unit_gb": "{value} ГБ",
+  "core.unit_mb": "{value} МБ",
+  "core.unit_kb": "{value} КБ",
+  "core.percent": "{value} %",
+  "core.unit_b": "{value} Б"
 }

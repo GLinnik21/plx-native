@@ -261,7 +261,12 @@ const CHART_ROWS: usize = LEFT_ROWS - RIGHT_ROWS;
 /// Sixteen seconds at 2 Hz is long enough to show a segment acquisition, a quality transaction and
 /// its buffer consequence while keeping every cell wide enough to survive a phone camera.
 const HIST_N: usize = 32;
-const CHART_LABELS: [&str; 3] = ["BUDGET / DEMAND", "NETWORK ACTIVITY", "BUFFER HEALTH"];
+/// The three plot keys, in the UI language. A function rather than a table because the catalog is
+/// the only place the words live; [`Diagnostics::chart_key_width`] measures exactly these runs.
+fn chart_labels() -> [&'static str; 3] {
+    use crate::i18n::msg;
+    [msg::browse_diagnostics_chart_budget(), msg::browse_diagnostics_chart_network(), msg::browse_diagnostics_chart_buffer()]
+}
 /// Conservative paint width before SDL_ttf is ready. The live path measures the same three runs
 /// the chart draws; this fallback is the widest one's 1920×1080 simulator measurement rounded up.
 const CHART_LABEL_FALLBACK_PX: f32 = 200.0;
@@ -460,16 +465,18 @@ fn header(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, now: u32)
         // product name and version cannot disagree between surfaces, and this one is photographed.
         // The firmware CODENAME is dropped — it identifies the release no better than the release
         // number does, and this line has to fit beside it.
-        format!(
-            "{} {} · {} · {os} · DV {} · surface {vw}x{vh}",
+        crate::i18n::msg::browse_diagnostics_header(
+            if cfg!(feature = "devtriggers") {
+                crate::i18n::msg::browse_diagnostics_build_dev()
+            } else {
+                crate::i18n::msg::browse_diagnostics_build_release()
+            },
+            crate::webos::caps::capability().compact_display(),
+            &vh.to_string(),
+            &os,
             crate::plex::identity::PRODUCT,
             crate::plex::identity::VERSION,
-            if cfg!(feature = "devtriggers") {
-                "dev"
-            } else {
-                "release"
-            },
-            crate::webos::caps::capability().compact(),
+            &vw.to_string(),
         ),
         playback_line(ps, d, now),
     ]
@@ -551,7 +558,7 @@ fn device_rows() -> Vec<Field> {
     let set_unknown = set.is_empty();
     v.push(
         Field::new(
-            "Set",
+            crate::i18n::msg::browse_diagnostics_field_set(),
             if set_unknown {
                 crate::i18n::msg::browse_diagnostics_unknown_device().to_string()
             } else {
@@ -565,7 +572,7 @@ fn device_rows() -> Vec<Field> {
     // webosbrew buckets its firmware by — so it is the field that turns "webOS 4.10.2" into an
     // image somebody else can go and look at.
     v.push(Field::new(
-        "Firmware",
+        crate::i18n::msg::browse_diagnostics_field_firmware(),
         match (i.name.as_str(), i.codename.as_str()) {
             // Bare "unknown": the head line above already carries the REASON in this state
             // ("webOS unknown — os_info.json unreadable"), and a photograph should not spend two
@@ -584,7 +591,7 @@ fn device_rows() -> Vec<Field> {
     let measured = crate::devcaps::measured();
     v.push(
         Field::new(
-            "Decoder",
+            crate::i18n::msg::browse_diagnostics_field_decoder(),
             format!(
                 "{} · {} · {}",
                 if c.hevc {
@@ -598,18 +605,18 @@ fn device_rows() -> Vec<Field> {
         )
         .fault(!measured),
     );
-    v.push(Field::new("Audio", c.audio.clone()));
+    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_audio(), c.audio.clone()));
 
     let dv = crate::webos::caps::probe();
     v.push(
-        Field::new("Dolby Vision", dv.full_state())
+        Field::new(crate::i18n::msg::browse_diagnostics_field_dolby_vision(), dv.full_state())
             .fault(dv.capability == crate::webos::caps::DvCapability::Unknown),
     );
 
     // The same row the pipeline block leads with, minus the direct-play/transcode half that has no
     // meaning yet: it answers "did the server ever reply", which IS the failure when nothing plays.
     v.push(Field::new(
-        "Server",
+        crate::i18n::msg::browse_diagnostics_field_server(),
         server_line(
             &crate::plex::serverinfo::version(),
             crate::plex::serverinfo::subscription(),
@@ -636,8 +643,8 @@ fn rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, prev: (i64,
 
 fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> Vec<Field> {
     let mut v = Vec::with_capacity(LEFT_ROWS);
-    v.push(Field::new("Connection", connection_line(ps)));
-    v.push(Field::new("AppArg", route_line(ps, d)));
+    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_connection(), connection_line(ps)));
+    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_route(), route_line(ps, d)));
 
     let mut video = chain(
         crate::route::source_vcodec(ps),
@@ -651,21 +658,25 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
             " · Dolby Vision P{}.{} · {} ({})",
             dv.profile,
             dv.bl_compat,
-            decision.presentation.label(),
-            decision.capability.label(),
+            decision.presentation.display(),
+            decision.capability.display(),
         ));
     }
-    v.push(Field::new("Video", video));
+    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_video(), video));
 
     let mut audio = chain(
         crate::route::source_acodec(ps),
         crate::route::stream_acodec(ps),
-        d.load_a_str(),
+        if d.load_a == 0 {
+            crate::i18n::msg::browse_diagnostics_no_audio_payload()
+        } else {
+            d.load_a_str()
+        },
     );
     if crate::route::stream_immersive(ps) {
         audio.push_str(" · Dolby Atmos");
     }
-    v.push(Field::new("Audio", audio).fault(d.load_a == 0 && d.load_v != 0));
+    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_audio(), audio).fault(d.load_a == 0 && d.load_v != 0));
 
     // **The frame rate here is a CLAIM, and the row says whose.** `video_fps_milli` is what LG's
     // pipeline announced in its own `sourceInfo` callback, and on this set that is not a
@@ -685,7 +696,7 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
     };
     v.push(
         Field::new(
-            "Picture",
+            crate::i18n::msg::browse_diagnostics_field_picture(),
             match (d.video_w, d.video_h) {
                 (0, _) | (_, 0) => crate::i18n::msg::browse_diagnostics_unopened().to_string(),
                 (w, h) if fps_milli > 0 => {
@@ -697,7 +708,7 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
         .fault(d.video_w == 0 || d.video_h == 0),
     );
     v.push(Field::new(
-        "Timeline",
+        crate::i18n::msg::browse_diagnostics_field_timeline(),
         format!(
             "{} / {}",
             crate::ui::fmt::clock(d.pos_ns / 1_000_000),
@@ -708,22 +719,22 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
             },
         ),
     ));
-    v.push(Field::new("A/V sync", skew(d)).fault(skew_bad(d)));
+    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_av_sync(), skew(d)).fault(skew_bad(d)));
 
     let (plane, plane_bad) = plane_line(d);
-    v.push(Field::new("Video plane", plane).fault(plane_bad));
+    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_video_plane(), plane).fault(plane_bad));
 
     let transfer = match (d.http_status, d.net_rx) {
         (0, _) => crate::i18n::msg::browse_diagnostics_no_connection().to_string(),
         (st, rx) => crate::i18n::msg::browse_diagnostics_received(&mb(rx), &st.to_string()),
     };
     v.push(
-        Field::new("Transfer", transfer)
+        Field::new(crate::i18n::msg::browse_diagnostics_field_transfer(), transfer)
             .fault(d.http_status != 0 && !(200..300).contains(&d.http_status)),
     );
     v.push(
         Field::new(
-            "Load",
+            crate::i18n::msg::browse_diagnostics_field_load(),
             format!(
                 "{} · {}",
                 if d.load_failed {
@@ -744,7 +755,7 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
     );
     v.push(
         Field::new(
-            "Feed",
+            crate::i18n::msg::browse_diagnostics_field_feed(),
             format!(
                 "{} · {}",
                 if d.pushed_any {
@@ -752,29 +763,48 @@ fn pipeline_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, pr
                 } else {
                     crate::i18n::msg::browse_diagnostics_nothing_demuxed().to_string()
                 },
-                d.feed_state_str(),
+                feed_state_label(d),
             ),
         )
         .fault(!d.pushed_any || (d.fed_v == 0 && d.load_completed) || d.feed_is_fault()),
     );
     let (cv, ca) = crate::player::aq_caps();
     v.push(Field::new(
-        "Queues",
-        crate::i18n::msg::browse_diagnostics_queues(&format!("{:.2}", mb_f(d.aq_audio)), &format!("{:.1}", mb_f(ca)), &format!("{:.1}", mb_f(d.aq_video)), &format!("{:.1}", mb_f(cv))),
+        crate::i18n::msg::browse_diagnostics_field_queues(),
+        crate::i18n::msg::browse_diagnostics_queues(&decimal(mb_f(d.aq_audio), 2), &decimal(mb_f(ca), 1), &decimal(mb_f(d.aq_video), 1), &decimal(mb_f(cv), 1)),
     ));
     v.push(
-        Field::new("Frames", frames_str(d, now))
+        Field::new(crate::i18n::msg::browse_diagnostics_field_frames(), frames_str(d, now))
             .fault(!d.seen_frame && d.load_completed && since(d.load_at, now) > STALL_MS),
     );
     debug_assert_eq!(v.len(), LEFT_ROWS);
     v
 }
 
+use crate::ui::fmt::decimal;
+
+/// The video feeder's state in the UI language. `Diag::feed_state_str` is the lab snapshot's wire
+/// spelling of the same states and stays English.
+fn feed_state_label(d: &crate::player::Diag) -> &'static str {
+    use crate::i18n::msg;
+    match d.feed_state {
+        1 => msg::browse_diagnostics_feed_accepting(),
+        2 => msg::browse_diagnostics_feed_full(),
+        3 => msg::browse_diagnostics_feed_refused(),
+        4 => msg::browse_diagnostics_feed_holding(),
+        5 => msg::browse_diagnostics_feed_empty(),
+        _ => msg::browse_diagnostics_feed_none(),
+    }
+}
+
 fn fps_milli_str(fps_milli: i64) -> String {
     if fps_milli % 1_000 == 0 {
         (fps_milli / 1_000).to_string()
     } else {
-        format!("{:.3}", fps_milli as f64 / 1_000.0)
+        // Three places, then the trailing zeros dropped (23.976, 29.97): a non-integral rate always
+        // keeps at least one fractional digit, so the separator is never left dangling.
+        crate::i18n::current()
+            .decimal(fps_milli, 3)
             .trim_end_matches('0')
             .to_string()
     }
@@ -824,7 +854,7 @@ fn plane_line(d: &crate::player::Diag) -> (String, bool) {
     let mode = match d.vp_mode {
         crate::player::VP_EXPORTED => crate::i18n::msg::browse_diagnostics_exported_window(),
         crate::player::VP_ACB => "ACB",
-        _ => d.vp_mode_str(),
+        _ => crate::i18n::msg::browse_diagnostics_no_video_path(),
     };
     match d.vp_mode {
         crate::player::VP_EXPORTED => {
@@ -840,7 +870,7 @@ fn plane_line(d: &crate::player::Diag) -> (String, bool) {
             let placed = match d.place_rv {
                 i32::MIN => crate::i18n::msg::browse_diagnostics_not_placed().to_string(),
                 0 => crate::i18n::msg::browse_diagnostics_placement_failed().to_string(),
-                rv => format!("src {}x{} rv={rv}", d.placed_w, d.placed_h),
+                rv => crate::i18n::msg::browse_diagnostics_placed(&d.placed_h.to_string(), &rv.to_string(), &d.placed_w.to_string()),
             };
             (
                 format!("{mode} · {win} · {placed}"),
@@ -912,18 +942,18 @@ fn model_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag) -> Ve
 }
 
 fn abr_rows(ps: &crate::route::PlaybackSession, d: &crate::player::Diag, selected: crate::route::Quality, v: &mut Vec<Field>) {
-    v.push(Field::new("Mode", abr_mode(d, selected)));
-    v.push(Field::new("Quality", abr_quality(d, selected)));
-    v.push(Field::new("Sample", abr_link(d, selected)));
-    v.push(Field::new("Conservative", abr_budget(d, selected)));
-    v.push(Field::new("Buffer", abr_buffer(d, selected)));
+    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_mode(), abr_mode(d, selected)));
+    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_quality(), abr_quality(d, selected)));
+    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_sample(), abr_link(d, selected)));
+    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_conservative(), abr_budget(d, selected)));
+    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_buffer(), abr_buffer(d, selected)));
     v.push(
-        Field::new("Risk", abr_risk(d, selected))
+        Field::new(crate::i18n::msg::browse_diagnostics_field_risk(), abr_risk(d, selected))
             .fault(d.abr_why == crate::player::ABR_WHY_STARVATION),
     );
-    v.push(Field::new("Acquisition", abr_acquisition_cadence(ps, d)));
-    v.push(Field::new("Action", abr_action(d, selected)));
-    v.push(Field::new("Reason", abr_reason(d, selected)));
+    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_acquisition(), abr_acquisition_cadence(ps, d)));
+    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_action(), abr_action(d, selected)));
+    v.push(Field::new(crate::i18n::msg::browse_diagnostics_field_reason(), abr_reason(d, selected)));
 }
 
 fn abr_mode(d: &crate::player::Diag, selected: crate::route::Quality) -> String {
@@ -958,7 +988,7 @@ fn abr_link(d: &crate::player::Diag, selected: crate::route::Quality) -> String 
     }
     let mut s = crate::i18n::msg::browse_diagnostics_stream_limited(&abr_rate(d.abr_net_kbps));
     if d.abr_unc_pm >= 0 {
-        s.push_str(&format!(" · ±{}%", d.abr_unc_pm / 10));
+        s.push_str(&crate::i18n::msg::browse_diagnostics_uncertainty(&crate::i18n::current().number(d.abr_unc_pm / 10)));
     }
     if d.abr_samples >= 0 {
         s.push_str(&format!(" · n={}", d.abr_samples));
@@ -1005,9 +1035,9 @@ fn abr_buffer(d: &crate::player::Diag, selected: crate::route::Quality) -> Strin
     };
     if d.abr_mode == 0 {
         return if selected == crate::route::Quality::Auto {
-            crate::i18n::msg::browse_diagnostics_reserve_idle(&format!("{:.1}", buffer_ms as f64 / 1_000.0))
+            crate::i18n::msg::browse_diagnostics_reserve_idle(&decimal(buffer_ms as f64 / 1_000.0, 1))
         } else {
-            crate::i18n::msg::browse_diagnostics_reserve(&format!("{:.1}", buffer_ms as f64 / 1_000.0))
+            crate::i18n::msg::browse_diagnostics_reserve(&decimal(buffer_ms as f64 / 1_000.0, 1))
         };
     }
     let trend = match d.abr_slope_ms_per_s.cmp(&0) {
@@ -1015,7 +1045,7 @@ fn abr_buffer(d: &crate::player::Diag, selected: crate::route::Quality) -> Strin
         std::cmp::Ordering::Less => crate::i18n::msg::browse_diagnostics_draining(),
         std::cmp::Ordering::Equal => crate::i18n::msg::browse_diagnostics_steady(),
     };
-    crate::i18n::msg::browse_diagnostics_buffer_trend(&format!("{:.1}", buffer_ms as f64 / 1_000.0), &format!("{:+.2}", d.abr_slope_ms_per_s as f64 / 1_000.0), trend)
+    crate::i18n::msg::browse_diagnostics_buffer_trend(&decimal(buffer_ms as f64 / 1_000.0, 1), &crate::ui::fmt::signed_decimal(d.abr_slope_ms_per_s as f64 / 1_000.0, 2), trend)
 }
 
 fn risk_percent(d: &crate::player::Diag) -> Option<i64> {
@@ -1035,7 +1065,7 @@ fn abr_risk(d: &crate::player::Diag, selected: crate::route::Quality) -> String 
         _ => crate::i18n::msg::browse_diagnostics_no_deficit().to_string(),
     };
     if let Some(pct) = risk_percent(d) {
-        s.push_str(&crate::i18n::msg::browse_diagnostics_risk_percent(&pct.to_string()));
+        s.push_str(&crate::i18n::msg::browse_diagnostics_risk_percent(&crate::i18n::current().number(pct)));
     }
     s
 }
@@ -1057,9 +1087,9 @@ fn abr_acquisition_cadence(ps: &crate::route::PlaybackSession, d: &crate::player
     if d.abr_ratio_pm < 0 {
         return crate::i18n::msg::browse_diagnostics_timing_unsampled().to_string();
     }
-    let mut s = crate::i18n::msg::browse_diagnostics_measured_ratio(&format!("{:.2}", d.abr_ratio_pm as f64 / 1_000.0));
+    let mut s = crate::i18n::msg::browse_diagnostics_measured_ratio(&decimal(d.abr_ratio_pm as f64 / 1_000.0, 2));
     if d.abr_pred_pm >= 0 {
-        s.push_str(&crate::i18n::msg::browse_diagnostics_predicted_ratio(&format!("{:.2}", d.abr_pred_pm as f64 / 1_000.0)));
+        s.push_str(&crate::i18n::msg::browse_diagnostics_predicted_ratio(&decimal(d.abr_pred_pm as f64 / 1_000.0, 2)));
     }
     s
 }
@@ -1091,10 +1121,8 @@ fn abr_raster(kbps: i64) -> &'static str {
 fn abr_rate(kbps: i64) -> String {
     if kbps <= 0 {
         crate::i18n::msg::browse_diagnostics_unknown().to_string()
-    } else if kbps >= 1_000 {
-        format!("{:.1} Mbps", kbps as f64 / 1_000.0)
     } else {
-        format!("{kbps} kbps")
+        crate::ui::fmt::bitrate(kbps)
     }
 }
 
@@ -1133,7 +1161,7 @@ fn network_activity_kbps(net_rx: i64, prev_net_rx: i64, prev_at: u32, now: u32) 
 fn chart_rate(kbps: i64) -> String {
     match kbps {
         ..=-1 => "—".to_string(),
-        0 => "0 kbps".to_string(),
+        0 => crate::ui::fmt::bitrate(0),
         _ => abr_rate(kbps),
     }
 }
@@ -1144,7 +1172,7 @@ fn chart_budget_demand(budget_kbps: i64, demand_kbps: i64) -> String {
             if v < 0 {
                 "—".to_string()
             } else {
-                format!("{:.1}", v as f64 / 1_000.0)
+                decimal(v as f64 / 1_000.0, 1)
             }
         };
         crate::i18n::msg::browse_diagnostics_chart_budget_mbps(&n(budget_kbps), &n(demand_kbps))
@@ -1153,7 +1181,7 @@ fn chart_budget_demand(budget_kbps: i64, demand_kbps: i64) -> String {
             if v < 0 {
                 "—".to_string()
             } else {
-                v.to_string()
+                crate::i18n::current().number(v)
             }
         };
         crate::i18n::msg::browse_diagnostics_chart_budget_kbps(&n(budget_kbps), &n(demand_kbps))
@@ -1168,7 +1196,7 @@ fn chart_values(history: &SweepHistory) -> [String; 3] {
         chart_budget_demand(s.budget_kbps, s.demand_kbps),
         crate::i18n::msg::browse_diagnostics_network_mean(&history.mean_activity_kbps().map(chart_rate).unwrap_or_else(|| "—".to_string()), &chart_rate(s.activity_kbps)),
         if s.buffer_ms >= 0 {
-            format!("{:.1} s", s.buffer_ms as f64 / 1_000.0)
+            crate::i18n::msg::core_seconds(&decimal(s.buffer_ms as f64 / 1_000.0, 1))
         } else {
             "—".to_string()
         },
@@ -1195,7 +1223,7 @@ fn chart_key_width(&self) -> f32 {
     // same `TtfMeasure` a `DrawFrame` would have handed it: the device/simulator `Measure`, which
     // is what every other render-time site converted to.
     let measure = crate::text::TtfMeasure;
-    let measured = CHART_LABELS
+    let measured = chart_labels()
         .iter()
         .map(|label| measure.width_str(label, theme::size::DIAGNOSTIC, false))
         .fold(0.0f32, f32::max);
@@ -1381,7 +1409,7 @@ fn abr_why_text(why: u8) -> Option<&'static str> {
 /// the project asked what an AU was.
 fn fed_rate(d: &crate::player::Diag, prev: (i64, i64, u32), now: u32) -> String {
     match fed_rates(d, prev, now) {
-        Some((rv, ra)) => format!("{rv} fps · {ra}/s"),
+        Some((rv, ra)) => crate::i18n::msg::browse_diagnostics_fed_rate(&crate::i18n::current().number(ra), &crate::i18n::current().number(rv)),
         None => "—".to_string(),
     }
 }
@@ -1408,7 +1436,7 @@ fn skew(d: &crate::player::Diag) -> String {
         return "—".to_string();
     }
     let ms = (d.fed_v_pts - d.fed_a_pts) / 1_000_000;
-    format!("{:+.1} s", ms as f64 / 1000.0)
+    crate::i18n::msg::core_seconds(&crate::ui::fmt::signed_decimal(ms as f64 / 1000.0, 1))
 }
 
 /// A lane trailing by more than this is starving rather than merely interleaved. Real containers
@@ -1461,7 +1489,7 @@ fn server_line(version: &str, sub: crate::plex::serverinfo::Subscription) -> Str
     }
     let v = short_version(version);
     match sub {
-        S::Yes => format!("{v} · Plex Pass"),
+        S::Yes => crate::i18n::msg::browse_diagnostics_plex_pass(v),
         S::No => crate::i18n::msg::browse_diagnostics_no_plex_pass(&v),
         S::Unknown => v.to_string(),
     }
@@ -1488,10 +1516,7 @@ fn mb_f(b: i64) -> f64 {
 /// promote it there the moment a second screen wants it.
 fn mb(b: i64) -> String {
     match b {
-        b if b >= 1 << 30 => format!("{:.2} GB", b as f64 / (1u64 << 30) as f64),
-        b if b >= 1 << 20 => format!("{:.1} MB", b as f64 / (1u64 << 20) as f64),
-        b if b >= 1 << 10 => format!("{} kB", b >> 10),
-        b => format!("{b} B"),
+        b => crate::ui::fmt::bytes(b, (2, 1, 0)),
     }
 }
 
@@ -1713,7 +1738,7 @@ fn draw_chart(&self, p: Painter, r: Rect) {
     let value_x = bx + bars_w + CHART_GAP;
     let bw = bars_w / HIST_N as f32;
 
-    for (i, label) in CHART_LABELS.into_iter().enumerate() {
+    for (i, label) in chart_labels().into_iter().enumerate() {
         let by = r.y + i as f32 * lane_h;
         let band = (lane_h - 4.0).max(8.0);
         if let Ok(cs) = CString::new(label) {
@@ -2513,7 +2538,8 @@ mod tests {
             val(&v, "Conservative"),
             "11.0 Mbps budget · 3.2 Mbps measured stream · headroom 7.8 Mbps",
         );
-        assert_eq!(val(&v, "Buffer"), "6.2 s · +0.12 s/s · filling");
+        // 6.25 s: the locale formatter rounds a tie away from zero, where `{:.1}` rounded it to even.
+        assert_eq!(val(&v, "Buffer"), "6.3 s · +0.12 s/s · filling");
         assert_eq!(val(&v, "Risk"), "no conservative deficit · risk 0%");
         assert_eq!(val(&v, "Action"), "changed up to 4.0 Mbps");
         assert_eq!(val(&v, "Reason"), "link has room");
@@ -2702,7 +2728,7 @@ mod tests {
         let feed = v.iter().find(|f| f.key == "Feed").expect("Feed row");
         let val = feed.val.as_deref().unwrap_or_default();
         assert!(
-            val.contains("1200 fps · 0/s"),
+            val.contains("1,200 fps · 0/s"),
             "the rate must show the dead lane: {val}"
         );
 
@@ -3002,6 +3028,28 @@ mod tests {
             .and_then(|field| field.val)
             .expect("Video row");
         assert!(video.contains("declare (supported)"), "{video}");
+    }
+
+    /// Row keys are right-aligned into a [`FIELD_KEY_W`] gutter at the dense diagnostic size, so a
+    /// translation that grows past about a dozen characters runs into the panel's edge. Every
+    /// locale's keys are held to the English budget: "Conservative" and "Dolby Vision".
+    #[test]
+    fn every_locale_keeps_its_row_keys_inside_the_gutter() {
+        for lang in ["en", "es", "be"] {
+            let path = format!("{}/../locales/{lang}/browse.json", env!("CARGO_MANIFEST_DIR"));
+            let text = std::fs::read_to_string(&path).expect("catalog");
+            let catalog: serde_json::Map<String, serde_json::Value> = serde_json::from_str(&text).expect("catalog JSON");
+            let mut keys = 0;
+            for (key, value) in &catalog {
+                if !key.starts_with("browse.diagnostics.field.") {
+                    continue;
+                }
+                let words = value.get("value").unwrap_or(value).as_str().expect("a plain string");
+                assert!(words.chars().count() <= 12, "{lang} {key} = {words:?} is too wide for the key gutter");
+                keys += 1;
+            }
+            assert!(keys >= 27, "{lang}: every row key is in the catalog ({keys})");
+        }
     }
 
     #[test]

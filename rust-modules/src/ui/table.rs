@@ -23,10 +23,10 @@ pub enum Badge {
 impl Badge {
     fn text(&self) -> &str {
         match self {
-            Badge::Ad => "AD",
+            Badge::Ad => crate::i18n::msg::widgets_badge_ad(),
             Badge::Forced => crate::i18n::msg::widgets_badge_forced(),
-            Badge::Sdh => "SDH",
-            Badge::Cc => "CC",
+            Badge::Sdh => crate::i18n::msg::widgets_badge_sdh(),
+            Badge::Cc => crate::i18n::msg::widgets_badge_cc(),
             Badge::Text(s) => s.as_str(),
         }
     }

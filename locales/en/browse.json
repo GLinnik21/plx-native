@@ -1696,5 +1696,241 @@
   "browse.person.other": {
     "value": "Other",
     "description": "Filmography tab on a person page that gathers the departments with only a few credits."
+  },
+  "browse.diagnostics.field.set": {
+    "value": "Set",
+    "description": "Row label in the playback diagnostics read-out (which television model and board this is). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.firmware": {
+    "value": "Firmware",
+    "description": "Row label in the playback diagnostics read-out (the television firmware name and codename). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.decoder": {
+    "value": "Decoder",
+    "description": "Row label in the playback diagnostics read-out (which video codecs the hardware decoder supports). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.audio": {
+    "value": "Audio",
+    "description": "Row label in the playback diagnostics read-out (the audio codec chain or audio capabilities). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.dolby_vision": {
+    "value": "Dolby Vision",
+    "description": "Row label in the playback diagnostics read-out (the brand name of the HDR format; keep it untranslated). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.server": {
+    "value": "Server",
+    "description": "Row label in the playback diagnostics read-out (the Plex Media Server version). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.connection": {
+    "value": "Connection",
+    "description": "Row label in the playback diagnostics read-out (how the app reaches the server). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.route": {
+    "value": "AppArg",
+    "description": "Row label in the playback diagnostics read-out (the delivery route: streaming transport and whether the server converts the file). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.video": {
+    "value": "Video",
+    "description": "Row label in the playback diagnostics read-out (the video codec chain). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.picture": {
+    "value": "Picture",
+    "description": "Row label in the playback diagnostics read-out (the decoded picture size and frame rate). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.timeline": {
+    "value": "Timeline",
+    "description": "Row label in the playback diagnostics read-out (playback position and duration). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.av_sync": {
+    "value": "A/V sync",
+    "description": "Row label in the playback diagnostics read-out (how far audio trails video). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.video_plane": {
+    "value": "Video plane",
+    "description": "Row label in the playback diagnostics read-out (the television's hardware video layer). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.transfer": {
+    "value": "Transfer",
+    "description": "Row label in the playback diagnostics read-out (bytes received from the server). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.load": {
+    "value": "Load",
+    "description": "Row label in the playback diagnostics read-out (whether the television's media pipeline accepted the stream). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.feed": {
+    "value": "Feed",
+    "description": "Row label in the playback diagnostics read-out (how fast data is being fed to the decoder). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.queues": {
+    "value": "Queues",
+    "description": "Row label in the playback diagnostics read-out (decoder queue fill). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.frames": {
+    "value": "Frames",
+    "description": "Row label in the playback diagnostics read-out (decoded frame count). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.mode": {
+    "value": "Mode",
+    "description": "Row label in the playback diagnostics read-out (automatic or manual quality mode). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.quality": {
+    "value": "Quality",
+    "description": "Row label in the playback diagnostics read-out (the requested and decoded quality). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.sample": {
+    "value": "Sample",
+    "description": "Row label in the playback diagnostics read-out (the last measured transfer rate). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.conservative": {
+    "value": "Conservative",
+    "description": "Row label in the playback diagnostics read-out (the conservative bandwidth budget). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.buffer": {
+    "value": "Buffer",
+    "description": "Row label in the playback diagnostics read-out (how much playable media is buffered). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.risk": {
+    "value": "Risk",
+    "description": "Row label in the playback diagnostics read-out (the risk of running out of buffered media). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.acquisition": {
+    "value": "Acquisition",
+    "description": "Row label in the playback diagnostics read-out (how long each piece of media takes to arrive). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.action": {
+    "value": "Action",
+    "description": "Row label in the playback diagnostics read-out (what the quality controller is doing). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.field.reason": {
+    "value": "Reason",
+    "description": "Row label in the playback diagnostics read-out (why the quality controller is doing it). It is right-aligned into a narrow gutter at the dense diagnostic size, so it must stay short (about 12 characters)."
+  },
+  "browse.diagnostics.chart.budget": {
+    "value": "BUDGET / DEMAND",
+    "description": "Uppercase key beside one of the three plots in the playback diagnostics chart (bandwidth the quality controller may spend beside what the stream needs)."
+  },
+  "browse.diagnostics.chart.network": {
+    "value": "NETWORK ACTIVITY",
+    "description": "Uppercase key beside one of the three plots in the playback diagnostics chart (bytes arriving from the network)."
+  },
+  "browse.diagnostics.chart.buffer": {
+    "value": "BUFFER HEALTH",
+    "description": "Uppercase key beside one of the three plots in the playback diagnostics chart (seconds of media buffered)."
+  },
+  "browse.diagnostics.build_dev": {
+    "value": "dev",
+    "description": "Build kind in the diagnostics header: a developer build with test hooks."
+  },
+  "browse.diagnostics.build_release": {
+    "value": "release",
+    "description": "Build kind in the diagnostics header: the build users install."
+  },
+  "browse.diagnostics.header": {
+    "value": "{product} {version} · {build} · {os} · DV {dv} · surface {width}x{height}",
+    "args": {
+      "build": "str",
+      "dv": "str",
+      "height": "str",
+      "os": "str",
+      "product": "str",
+      "version": "str",
+      "width": "str"
+    },
+    "description": "Identity line of the diagnostics read-out: app name and version, build kind, TV software, whether the TV supports Dolby Vision (DV), and the drawing surface size in pixels."
+  },
+  "browse.diagnostics.dv_yes": {
+    "value": "yes",
+    "description": "Diagnostics header: the TV supports Dolby Vision."
+  },
+  "browse.diagnostics.dv_no": {
+    "value": "no",
+    "description": "Diagnostics header: the TV does not support Dolby Vision."
+  },
+  "browse.diagnostics.dv_supported": {
+    "value": "supported",
+    "description": "Diagnostics: the TV reports Dolby Vision support."
+  },
+  "browse.diagnostics.dv_unsupported": {
+    "value": "unsupported",
+    "description": "Diagnostics: the TV reports no Dolby Vision support."
+  },
+  "browse.diagnostics.dv_forced": {
+    "value": "forced",
+    "description": "Diagnostics: the Dolby Vision answer was forced by a test override rather than asked of the TV."
+  },
+  "browse.diagnostics.dv_base_layer": {
+    "value": "base-layer",
+    "description": "Diagnostics: a Dolby Vision file is played through its ordinary HDR base layer."
+  },
+  "browse.diagnostics.dv_declare": {
+    "value": "declare",
+    "description": "Diagnostics: Dolby Vision is declared to the TV for direct play."
+  },
+  "browse.diagnostics.dv_refuse": {
+    "value": "refuse",
+    "description": "Diagnostics: direct play of this Dolby Vision file is refused."
+  },
+  "browse.diagnostics.placed": {
+    "value": "src {width}x{height} rv={rv}",
+    "args": {
+      "height": "str",
+      "rv": "str",
+      "width": "str"
+    },
+    "description": "Diagnostics: the video layer was placed with this source size; rv is the platform call's technical return value."
+  },
+  "browse.diagnostics.no_video_path": {
+    "value": "NONE — no video path",
+    "description": "Diagnostics fault: the app has no way to show video on this TV."
+  },
+  "browse.diagnostics.no_audio_payload": {
+    "value": "NONE (needAudio:false)",
+    "description": "Diagnostics: the TV was told the stream has no audio; needAudio:false is the literal technical flag."
+  },
+  "browse.diagnostics.feed_accepting": {
+    "value": "accepting",
+    "description": "Diagnostics: the decoder is accepting data."
+  },
+  "browse.diagnostics.feed_full": {
+    "value": "BufferFull (sink is full)",
+    "description": "Diagnostics: the decoder's buffer is full; BufferFull is the TV's literal status code."
+  },
+  "browse.diagnostics.feed_refused": {
+    "value": "REFUSED",
+    "description": "Diagnostics fault: the decoder refused data."
+  },
+  "browse.diagnostics.feed_holding": {
+    "value": "holding ~1.6 s ahead",
+    "description": "Diagnostics: feeding is paused on purpose to stay about 1.6 seconds ahead of the picture."
+  },
+  "browse.diagnostics.feed_empty": {
+    "value": "queue empty (no data)",
+    "description": "Diagnostics: there is no data waiting to be fed."
+  },
+  "browse.diagnostics.feed_none": {
+    "value": "— nothing fed yet",
+    "description": "Diagnostics: nothing has been fed to the decoder yet."
+  },
+  "browse.diagnostics.fed_rate": {
+    "value": "{video} fps · {audio}/s",
+    "args": {
+      "audio": "str",
+      "video": "str"
+    },
+    "description": "Diagnostics: video frames and audio packets fed per second."
+  },
+  "browse.diagnostics.uncertainty": {
+    "value": " · ±{percent}%",
+    "args": {
+      "percent": "str"
+    },
+    "description": "Diagnostics suffix: the measurement's uncertainty as a percentage. es and be put a no-break space before the percent sign."
+  },
+  "browse.diagnostics.plex_pass": {
+    "value": "{version} · Plex Pass",
+    "args": {
+      "version": "str"
+    },
+    "description": "Diagnostics: the server version, and that its owner has Plex Pass (a product name; keep it untranslated)."
   }
 }

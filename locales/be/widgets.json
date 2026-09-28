@@ -200,5 +200,8 @@
   "widgets.ass.invalid_pixels": "Модуль стылізаваных субцітраў вярнуў няправільныя пікселі",
   "widgets.ass.overlapping_regions": "Модуль стылізаваных субцітраў вярнуў вобласці, якія перакрываюцца",
   "widgets.sidecar.fetch_failed": "Не ўдалося загрузіць гэтыя субцітры з сервера",
-  "widgets.sidecar.empty": "У гэтым файле субцітраў няма радкоў, якія можна прачытаць"
+  "widgets.sidecar.empty": "У гэтым файле субцітраў няма радкоў, якія можна прачытаць",
+  "widgets.badge.cc": "CC",
+  "widgets.badge.sdh": "SDH",
+  "widgets.badge.ad": "AD"
 }

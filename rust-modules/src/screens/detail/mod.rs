@@ -2261,9 +2261,9 @@ impl DetailScreen {
             ) + theme::space::XS;
         }
         for (present, label) in [
-            (!d.subs.is_empty(), "CC"),
-            (d.subs.iter().any(|s| s.sdh), "SDH"),
-            (d.audio.iter().any(|s| s.ad), "AD"),
+            (!d.subs.is_empty(), crate::i18n::msg::widgets_badge_cc()),
+            (d.subs.iter().any(|s| s.sdh), crate::i18n::msg::widgets_badge_sdh()),
+            (d.audio.iter().any(|s| s.ad), crate::i18n::msg::widgets_badge_ad()),
         ] {
             if present {
                 x += crate::ui::widgets::keyline_chip(p, x, cy, label, theme::TEXT_SECONDARY, measure)

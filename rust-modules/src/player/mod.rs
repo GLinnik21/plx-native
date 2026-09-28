@@ -1156,6 +1156,8 @@ fn playable_buffer_ms(
 }
 
 impl Diag {
+    /// The lab snapshot's wire spelling; the on-screen read-out words its own labels.
+    #[cfg_attr(not(feature = "lab-diagnostics"), allow(dead_code))]
     pub fn vp_mode_str(&self) -> &'static str {
         match self.vp_mode {
             VP_EXPORTED => "exported window (webOS 5+)",
@@ -1192,6 +1194,7 @@ impl Diag {
     /// state a healthy playback sits in most of the time, because the feeder deliberately stays
     /// within `MAX_FEED_AHEAD_NS` of the presented position. The first person to see the panel in
     /// the wild asked why playback was stuck; it was not.
+    #[cfg_attr(not(feature = "lab-diagnostics"), allow(dead_code))]
     pub fn feed_state_str(&self) -> &'static str {
         match self.feed_state {
             1 => "accepting",

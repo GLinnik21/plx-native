@@ -196,5 +196,8 @@
   "widgets.ass.invalid_pixels": "El renderizador de subtítulos con estilo devolvió píxeles no válidos",
   "widgets.ass.overlapping_regions": "El renderizador de subtítulos con estilo devolvió regiones superpuestas",
   "widgets.sidecar.fetch_failed": "No se pudo cargar este subtítulo desde el servidor",
-  "widgets.sidecar.empty": "Este archivo de subtítulos no tiene líneas legibles"
+  "widgets.sidecar.empty": "Este archivo de subtítulos no tiene líneas legibles",
+  "widgets.badge.cc": "CC",
+  "widgets.badge.sdh": "SDH",
+  "widgets.badge.ad": "AD"
 }

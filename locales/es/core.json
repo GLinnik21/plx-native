@@ -28,5 +28,10 @@
   "core.preview_domain_hls_direction": "dirección de HLS",
   "core.preview_domain_delivery_reason": "motivo de la entrega",
   "core.preview_domain_original_phase": "fase de Original (incluidos los códigos históricos que se conservan)",
-  "core.preview_domain_original_outcome": "resultado de Original"
+  "core.preview_domain_original_outcome": "resultado de Original",
+  "core.unit_gb": "{value} GB",
+  "core.unit_mb": "{value} MB",
+  "core.unit_kb": "{value} kB",
+  "core.percent": "{value} %",
+  "core.unit_b": "{value} B"
 }
