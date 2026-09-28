@@ -178,7 +178,7 @@ mod tests {
         let state = SecState { library_type: LibraryType::Episodes, unwatched: true, ..Default::default() };
         let filters = state.query_filters(SecKind::Show);
         let first = SectionQuery { section_key: 2, sort: "", filters: &filters, start: 0, size: 60, include_meta: true };
-        let (items, total, sorts) = fetch_listing_page(client, sid, &first, true);
+        let ListingPage { items, total, sorts, .. } = fetch_listing_page(client, sid, &first, true, None);
         assert_eq!(total, 121);
         assert_eq!(items[0].rk, "11", "the unsorted discovery page must never be published");
         assert_eq!(items[0].still, "/episode/still");
@@ -187,13 +187,13 @@ mod tests {
         assert_eq!(sorts[0].key, "show.titleSort,episode.index");
         let ascending = sorts[0].query(false);
         let next = SectionQuery { start: 60, sort: &ascending, include_meta: false, ..first };
-        let (items, total, _) = fetch_listing_page(client, sid, &next, true);
+        let ListingPage { items, total, .. } = fetch_listing_page(client, sid, &next, true, None);
         assert_eq!(items[0].rk, "71");
         assert_eq!(total, 121);
         let descending = sorts[0].query(true);
         assert_eq!(descending, "show.titleSort:desc,episode.index");
         let reversed = SectionQuery { start: 0, sort: &descending, ..next };
-        assert_eq!(fetch_listing_page(client, sid, &reversed, true).0[0].rk, "91");
+        assert_eq!(fetch_listing_page(client, sid, &reversed, true, None).items[0].rk, "91");
         assert_eq!(client.section_directory(2, "firstCharacter", Some(4)).unwrap().directory[0].size, 121);
         let requests: Vec<String> = (0..5).map(|_| rx.recv().unwrap()).collect();
         for request in &requests[..4] {

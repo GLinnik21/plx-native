@@ -408,7 +408,7 @@ fn page_failure_and_recovery_republish_directory_reachability() {
                 }]
             },
             total,
-            sorts: None,
+            sorts: None, restored: None,
         });
         browse.adapter.fetching.store(true, Ordering::SeqCst);
         let _outcome = browse.pump();
