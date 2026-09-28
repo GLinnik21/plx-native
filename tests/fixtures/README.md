@@ -189,17 +189,21 @@ fill `items` with the ratingKeys. The shape keys are identical on both sides:
   "movie_hevc_4k_pgs_subs":          "12354",
 
   "movie_in_home_catalog":           "12345",
-  "movie_cast0_in_both_libraries":   "<ratingKey>"
+  "movie_cast0_in_both_libraries":   "<ratingKey>",
+  "collection":                      "<ratingKey>"
 }
 ```
 
-The last two are **fps-scene keys, not playback shapes**, and they are in the example
+The last three are **fps-scene keys, not playback shapes**, and they are in the example
 overlay too — leaving them out of this block is how `fps:detail-transition` and
 `fps:home-detail-nav` get silently dropped for no reason. `movie_in_home_catalog` is
 satisfied by **any** of the movies above once it appears in Home's recently-added row, so
 reuse a ratingKey you already have. `movie_cast0_in_both_libraries` is the one key this
 generator cannot satisfy at all — Personal Media items carry no cast — so leave it bracketed
-and `fps:person-page` skips by name.
+and `fps:person-page` skips by name. `collection` is a movie COLLECTION's ratingKey (two or
+more members with posters, in the Movies library the library scenes enter); this generator
+builds none, so leave it bracketed too and `fps:collection-page` / `fps:library-collections`
+skip by name.
 
 `episode_hevc_4k_hdr10_eac3_next` must be the episode that *follows* the one above it in
 the same season — s01e02 of `PlxTest HDR Show`, which is what the generator built it as.
@@ -342,11 +346,11 @@ reading `codec=h264 … (want hevc)` while the media is perfectly fine. Enable *
 Transcoder → Enable HEVC video encoding*, or bracket `movie_av1_no_dp_audio` in
 `manifest.local.json` and let the three skip by name.
 
-**`movie_cast0_in_both_libraries`** — one of the two fps-scene item keys. It needs a *matched*
+**`movie_cast0_in_both_libraries`** — one of the three fps-scene item keys. It needs a *matched*
 item whose first-billed cast member has titles in **both** libraries, so the person page
 draws two poster shelves. Personal Media items have no cast at all, so this is
 unreachable by construction; the `person-page` scene stays a real-library scene.
-(`movie_in_home_catalog`, the other fps-only key, is satisfied in practice by any of these
+(`movie_in_home_catalog`, another fps-only key, is satisfied in practice by any of these
 movies — a freshly scanned library puts them all in recently-added — but that is a property
 of the Home catalog, not something this script verifies.)
 
