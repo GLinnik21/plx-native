@@ -1627,6 +1627,8 @@ fn a_held_page_has_its_text_resident_before_its_replacement_capture() {
     let screen = |d: &Dispatcher<FixtureHost>| {
         let s = d.top_screen().unwrap().as_any().unwrap()
             .downcast_ref::<crate::ui::fixture::FixtureScreen>().unwrap();
+        assert_eq!(s.speculative_draws, s.recorded_draws,
+            "every text walk is speculative to the recorder: a replay must not refuse on what it warms");
         (s.draw_at, s.recorded_draws)
     };
     let (floor_draw, recorded) = screen(&d);

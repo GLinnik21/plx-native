@@ -81,6 +81,12 @@ after an observed loader refusal and added the content-return anchor. **Phase 11
 three onto schema 2**, which carries the landing schedule above. **The product Resolve milestone
 rerecorded them onto schema 3**, adding a typed, bit-exact Width/Cap/Line measurement table, one
 final `fo` after all drains in each product frame, and ordered `rs` Focus/Hit observations.
+A key missing from that table refuses the replay, with one exception: the text-prewarm walks
+(`rec::speculative`), which lay out a page no frame is drawing yet so its glyphs are resident.
+Their answers are recorded like any other. A key an older recording lacks inside such a walk
+answers 0.0, and state, presents, effects and Focus/Hit are still graded on every frame. The
+held-page walk measures Flow 12's focused cast caption, which that anchor never drew, because the
+Person page is pushed before Detail's replacement capture.
 
 **Current migration:** Home, Settings, and Flow 12 Filmography anchors are accepted
 controlled-replay coverage. Flow 12 has typed initial state, exact synchronous admissions,

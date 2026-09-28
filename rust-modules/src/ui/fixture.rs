@@ -325,6 +325,8 @@ pub struct FixtureScreen {
     pub recorded_draws: u32,
     /// The [`draw_order`] tick of the latest recording draw.
     pub recorded_at: usize,
+    /// Recording draws made inside a [`crate::ui::rec::speculative`] pass.
+    pub speculative_draws: u32,
 }
 
 crate::focusable_via_composed!(FixtureScreen, FixtureHost);
@@ -487,6 +489,7 @@ impl Screen<FixtureHost> for FixtureScreen {
         if f.painter.is_recording() {
             self.recorded_draws += 1;
             self.recorded_at = draw_order();
+            self.speculative_draws += u32::from(crate::ui::rec::speculating());
         } else {
             self.draw_at = draw_order();
         }
@@ -600,7 +603,7 @@ impl FixtureModal {
                                     kind: ElemKind::Card,
                                 },
                                 draw_at: 0,
-                                recorded_draws: 0, recorded_at: 0,
+                                recorded_draws: 0, recorded_at: 0, speculative_draws: 0,
                             }),
                             inflight: Vec::new(),
                             staged: false,
@@ -856,7 +859,7 @@ impl Mounter<FixtureHost> for FixtureMounter {
                 kind,
             },
             draw_at: 0,
-            recorded_draws: 0, recorded_at: 0,
+            recorded_draws: 0, recorded_at: 0, speculative_draws: 0,
         })
     }
 }

@@ -1320,8 +1320,12 @@ where
                     );
                     f.page_alpha = 0.0;
                     // Raw screen clears bypass Painter::recording; they must not erase
-                    // the outgoing page while its destination only records text.
-                    crate::gfx::without_frame_clear(|| inst.screen.draw(&mut f));
+                    // the outgoing page while its destination only records text. The walk
+                    // measures ahead of any frame that draws the page, so it is speculative to
+                    // the recorder (`rec::speculative`).
+                    crate::gfx::without_frame_clear(|| {
+                        super::rec::speculative(|| inst.screen.draw(&mut f))
+                    });
                 }
             }
         }
