@@ -1098,7 +1098,10 @@ def triggers_for_case(case, url_base=None):
                 "plxnative-autopause",
                 f'delay={int(op.get("delay_ms", 0))},hold={int(op["hold_ms"])}',
             ))
-        # "play" and startup "resume" need no extra trigger (resume rides the seeded viewOffset).
+        # "play", startup "resume" and "audio_enhancement_withheld" need no extra trigger: the last
+        # of those grades a boot-forced preference the `plxnative-audioenh` trigger above already
+        # wrote, and there is no menu row to pick because the rows are withheld from the screen
+        # (resume rides the seeded viewOffset).
     return files
 
 
@@ -3684,6 +3687,40 @@ def op_audio_enhancement_release(lines):
     return True, f"enhancement released back to Original :: {hit.strip()}"
 
 
+def op_audio_enhancement_withheld(lines):
+    """`audio_enhancement_withheld_under_subtitle`'s grade: the device-level proof that a shown
+    subtitle withholds Boost Dialog / Normalize Loudness even when the PERSISTED preference is
+    forced ON at boot (`plxnative-audioenh=loudness`, the same `dev::scenarios::arm_audio_enhancements`
+    trigger `op_audio_enhancement_release` above uses) — route/plan.rs's cold-start audio branch
+    computes `subtitle_shown` and feeds it into `enhancements_offered` for the same candidate the
+    preference would otherwise decorate, so the preference is evaluated and refused before the
+    first frame rather than merely hidden from the Audio tab's menu (track_menu.rs's
+    `enh_rows_absent_subtitle_shown`).
+
+    Graded on three POSITIVE lines, not on the absence of one: the boot-forced preference actually
+    armed (`audioenh: forced ..`), the precondition this case depends on actually held on the
+    server (`server-selected subtitle: ..` — if a future server or library stops selecting a
+    subtitle on this item, this case must FAIL LOUDLY rather than pass vacuously because there was
+    nothing left to withhold), and no `enhancement:`-prefixed line of any kind (applied, released,
+    refused/ignored, displaced, or the plan-time `.. becomes an enhanced remux` line) — proving the
+    enhancement was never even attempted, not merely that it failed.
+    """
+    forced = find(lines, "audioenh: forced boost_dialog=false normalize_loudness=true")
+    if forced is None:
+        return False, "no `audioenh: forced boost_dialog=false normalize_loudness=true` boot line " \
+                      "(the plxnative-audioenh=loudness trigger never armed the preference)"
+    sub = find(lines, "server-selected subtitle:")
+    if sub is None:
+        return False, ("precondition failed: no `server-selected subtitle: ..` line — this item no "
+                        "longer has a server-selected subtitle for this identity, so the subtitle "
+                        "gate this case proves was never exercised")
+    enh = next((ln for ln in lines if "enhancement:" in ln), None)
+    if enh is not None:
+        return False, f"an `enhancement:` line appeared despite the shown subtitle :: {enh.strip()}"
+    return True, (f"preference forced ON, subtitle shown, enhancement withheld :: "
+                  f"{forced.strip()} / {sub.strip()}")
+
+
 def op_subtitle(lines):
     for ln in lines:
         m = RE_SUBCUE.search(ln)
@@ -4305,6 +4342,8 @@ def evaluate(case, lines):
             results.append(("audio_enhancement_release", *op_audio_enhancement_release(lines)))
         elif k == "audio_enhancement":
             results.append(("audio_enhancement", *op_audio_enhancement(lines)))
+        elif k == "audio_enhancement_withheld":
+            results.append(("audio_enhancement_withheld", *op_audio_enhancement_withheld(lines)))
         elif k == "subtitle" and op.get("image"):
             results.append(("image_subtitle", *op_image_subtitle(lines)))
         elif k == "subtitle":

@@ -1791,10 +1791,10 @@
     },
     {
       "name": "audio_enhancement_normalize",
-      "item": "movie_h264_ac3_1080p",
-      "kind": "movie",
-      "title": "movie · h264/ac3 · 1080p — live Normalize Loudness toggle (issue #266) turns a direct play into an enhanced remux",
-      "comment": "The Audio tab's row layout (track_menu.rs's build_audio) appends the two Plex Pass DSP rows AFTER the audio tracks: `which` names the row, and run.py derives its absolute TableView row at run time as n_audio + 1, where n_audio is fetched live from /library/metadata/<rk> by pms_audio_track_count. PR4 review found the real item behind this symbolic key carries 3 audio tracks, not the 1 this case originally (and wrongly) assumed by hardcoding row 2 — the row is never hardcoded again. audio_enhancements_boot is omitted (defaults to \"off\"), so this case starts direct-playing exactly like any other movie_h264_ac3_1080p case.",
+      "item": "episode_h264_aac",
+      "kind": "episode",
+      "title": "episode · h264/aac · 1080p · no subtitle — live Normalize Loudness toggle (issue #266) turns a direct play into an enhanced remux",
+      "comment": "Retargeted off movie_h264_ac3_1080p (PR4 device run, 2026-09-29): the Guest identity PMS pre-selects an SRT subtitle on that item (`server-selected subtitle: sid=2698 render_idx=2`), and the enhancement rows are withheld by design whenever a subtitle is shown (M4: text subs are not carried into the enhanced progressive MKV; see route/plan.rs's `subtitle_shown` gate on `enhancements_offered`) — so the rows never appeared and the case direct-played without ever exercising the toggle. episode_h264_aac has no subtitle selected for Guest, so the rows are offered. The Audio tab's row layout (track_menu.rs's build_audio) appends the two Plex Pass DSP rows AFTER the audio tracks: `which` names the row, and run.py derives its absolute TableView row at run time as n_audio + 1, where n_audio is fetched live from /library/metadata/<rk> by pms_audio_track_count — this item carries 2 audio tracks, but the row is derived, never hardcoded, so that number is not repeated here. audio_enhancements_boot is omitted (defaults to \"off\"), so this case starts direct-playing exactly like dp_h264_aac_episode.",
       "covers": [
         "audio-enhancement-normalize",
         "enhancement-applied",
@@ -1821,10 +1821,10 @@
     },
     {
       "name": "audio_enhancement_normalize_reset",
-      "item": "movie_h264_ac3_1080p",
-      "kind": "movie",
-      "title": "movie · h264/ac3 · 1080p — boots with Normalize Loudness forced ON, then releases it back to Original (issue #266)",
-      "comment": "Boost Dialog / Normalize Loudness is a PERSISTED preference (plex/session.rs's Session::audio_enhancements), not an in-memory-only override like plxnative-quality — so a harness that ever turns it on must guarantee every later case starts clean regardless of whether its own pick lands. `audio_enhancements_boot: \"loudness\"` forces the preference ON at boot through dev::scenarios::arm_audio_enhancements (the SAME persisting player::set_audio_enhancements call a real pick makes), which also proves the cold-start path: route/plan.rs's cold-start audio branch turns an otherwise direct-playable candidate into an enhanced remux before the first frame, hence expect.decision here is \"transcode\". Picking the SAME derived row again (`settle: \"released\"` selects the release grader) TOGGLES the preference back to NONE through the ordinary commit path — not a second boot trigger — so it re-persists as OFF for real and this case is its own cleanup: no second op, no dependency on run order. Releases straight back to Direct Play since this item's candidate direct-plays (route/decision.rs's EnhancementStep::ReleaseToDirect).",
+      "item": "episode_h264_aac",
+      "kind": "episode",
+      "title": "episode · h264/aac · 1080p · no subtitle — boots with Normalize Loudness forced ON, then releases it back to Original (issue #266)",
+      "comment": "Retargeted off movie_h264_ac3_1080p (PR4 device run, 2026-09-29) for the same reason as audio_enhancement_normalize above: Guest has a server-selected SRT subtitle on that item, and a shown subtitle withholds the enhancement rows by design, so the case never reached the toggle it exists to exercise. episode_h264_aac has no subtitle selected for Guest. Boost Dialog / Normalize Loudness is a PERSISTED preference (plex/session.rs's Session::audio_enhancements), not an in-memory-only override like plxnative-quality — so a harness that ever turns it on must guarantee every later case starts clean regardless of whether its own pick lands. `audio_enhancements_boot: \"loudness\"` forces the preference ON at boot through dev::scenarios::arm_audio_enhancements (the SAME persisting player::set_audio_enhancements call a real pick makes), which also proves the cold-start path: route/plan.rs's cold-start audio branch turns an otherwise direct-playable candidate into an enhanced remux before the first frame, hence expect.decision here is \"transcode\". Picking the SAME derived row again (`settle: \"released\"` selects the release grader) TOGGLES the preference back to NONE through the ordinary commit path — not a second boot trigger — so it re-persists as OFF for real and this case is its own cleanup: no second op, no dependency on run order. Releases straight back to Direct Play since this item's candidate direct-plays (route/decision.rs's EnhancementStep::ReleaseToDirect). The row is still derived n_audio + 1 (this item carries 2 audio tracks) — never hardcoded.",
       "covers": [
         "audio-enhancement-cleanup",
         "audio-enhancement-cold-start-remux"
@@ -1843,6 +1843,34 @@
       "audio_enhancements_boot": "loudness",
       "expect": {
         "decision": "transcode",
+        "codec": "h264",
+        "min_timeline_climb_s": 8,
+        "no_playing_error": true,
+        "require_video_bound": true
+      },
+      "known_gap": false
+    },
+    {
+      "name": "audio_enhancement_withheld_under_subtitle",
+      "item": "movie_h264_ac3_1080p",
+      "kind": "movie",
+      "title": "movie · h264/ac3 · 1080p · server-selected subtitle — a shown subtitle withholds the enhancement even with the preference forced ON (issue #266)",
+      "comment": "The device-level proof of the subtitle gate that audio_enhancement_normalize and audio_enhancement_normalize_reset had to move off this item to avoid: Guest's PMS pre-selects an SRT subtitle on movie_h264_ac3_1080p (`server-selected subtitle: sid=2698 render_idx=2`), and route/plan.rs's cold-start audio branch computes `subtitle_shown` and feeds it into `enhancements_offered` for the SAME candidate the boot-forced preference would otherwise decorate — so with a subtitle on screen the preference is evaluated and refused before the first frame, not merely hidden from the menu. `audio_enhancements_boot: \"loudness\"` forces the PERSISTED preference ON at boot through dev::scenarios::arm_audio_enhancements, exactly like audio_enhancement_normalize_reset — and it is reset back to \"off\" by the SAME per-case `plxnative-audioenh` boot trigger run.py writes for every case (triggers_for_case: `files.append((\"plxnative-audioenh\", case.get(\"audio_enhancements_boot\", \"off\")))`), so this case needs no cleanup op of its own. There is no menu row to pick here — the rows are withheld from the Audio tab entirely (track_menu.rs's enh_rows_absent_subtitle_shown) — so the only operation is `play`, and op_audio_enhancement_withheld grades the boot log directly: the forced-preference line must be present, a server-selected-subtitle line must be present (the precondition this case depends on — its absence fails loudly instead of passing vacuously if a future server or library stops selecting a subtitle here), and no `enhancement:` line of any kind may appear. Because the enhancement is refused, not applied, the candidate direct-plays exactly like any other movie_h264_ac3_1080p case.",
+      "covers": [
+        "audio-enhancement-subtitle-gate"
+      ],
+      "run_secs": 60,
+      "operations": [
+        {
+          "op": "play"
+        },
+        {
+          "op": "audio_enhancement_withheld"
+        }
+      ],
+      "audio_enhancements_boot": "loudness",
+      "expect": {
+        "decision": "directplay",
         "codec": "h264",
         "min_timeline_climb_s": 8,
         "no_playing_error": true,
