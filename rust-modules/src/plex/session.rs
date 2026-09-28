@@ -2158,9 +2158,9 @@ fn empty_session() -> std::sync::Arc<Session> {
 fn session_of(state: &ReadState) -> std::sync::Arc<Session> {
     match state {
         ReadState::Ready { session, .. } => session.clone(),
-        ReadState::Missing | ReadState::Locked | ReadState::Blocked | ReadState::Cleared => {
-            empty_session()
-        }
+        ReadState::Cleared { language } | ReadState::Locked { language } =>
+            std::sync::Arc::new(Session { language: *language, ..Default::default() }),
+        ReadState::Missing | ReadState::Blocked => empty_session(),
     }
 }
 
@@ -2172,11 +2172,11 @@ fn session_of(state: &ReadState) -> std::sync::Arc<Session> {
 /// deterministic and a miss in the simulated future cannot move the retry anchor backwards.
 fn cached_arm(state: std::sync::Arc<ReadState>, now: std::time::Instant) -> Cached {
     match &*state {
-        ReadState::Locked | ReadState::Blocked | ReadState::Ready { retry_canonical: true, .. } => Cached::Transient {
+        ReadState::Locked { .. } | ReadState::Blocked | ReadState::Ready { retry_canonical: true, .. } => Cached::Transient {
             state,
             retry_at: now + LOCKED_RETRY,
         },
-        ReadState::Ready { .. } | ReadState::Missing | ReadState::Cleared => Cached::Settled(state),
+        ReadState::Ready { .. } | ReadState::Missing | ReadState::Cleared { .. } => Cached::Settled(state),
     }
 }
 
@@ -2369,7 +2369,7 @@ static VISIBLE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::Ato
 pub(crate) fn install_transient_for_test(locked: bool) {
     crate::testlock::assert_held("session read fixture");
     let _io = io();
-    install_locked(std::sync::Arc::new(if locked { ReadState::Locked } else { ReadState::Blocked }));
+    install_locked(std::sync::Arc::new(if locked { ReadState::Locked { language: crate::i18n::saved_preference() } } else { ReadState::Blocked }));
 }
 
 pub(crate) fn visible_generation() -> u64 {
@@ -2757,7 +2757,7 @@ mod cache_timing_tests {
         bridge.land_session_cache();
         for (read, damage) in [
             ((|| ReadState::Blocked) as fn() -> ReadState, 0),
-            ((|| ReadState::Locked) as fn() -> ReadState, 0),
+            ((|| ReadState::Locked { language: crate::i18n::Preference::System }) as fn() -> ReadState, 0),
             ((|| ReadState::Ready {
                 session: std::sync::Arc::new(test_support::signed_in()), plaintext: false, retry_canonical: false,
             }) as fn() -> ReadState, 1),
@@ -2873,9 +2873,9 @@ fn peek_locked() -> Session {
 fn session_from_read(read: &ReadState) -> Session {
     match read {
         ReadState::Ready { session, .. } => (**session).clone(),
-        ReadState::Missing | ReadState::Locked | ReadState::Blocked | ReadState::Cleared => {
-            Session::default()
-        }
+        ReadState::Cleared { language } | ReadState::Locked { language } =>
+            Session { language: *language, ..Default::default() },
+        ReadState::Missing | ReadState::Blocked => Session::default(),
     }
 }
 
@@ -2899,7 +2899,7 @@ enum ReadState {
     /// A recognized encrypted file whose device key is temporarily or permanently unavailable.
     /// It must shadow every lower-priority candidate: treating it as corrupt and then writing a
     /// fresh client id would destroy the only copy of the credentials.
-    Locked,
+    Locked { language: crate::i18n::Preference },
     /// The canonical authority could not answer safely. It shadows legacy candidates exactly as
     /// `Locked` does, so a fresh client id can never overwrite the only copy of the credentials.
     Blocked,
@@ -2910,7 +2910,7 @@ enum ReadState {
     /// variant rather than `Missing` itself for the one property it does NOT share with `Missing`:
     /// it must still shadow a reappearing legacy file, exactly as `Locked`/`Blocked` do, so a
     /// stale pre-DB8 `auth.json` can never resurrect a tenure this device already cleared.
-    Cleared,
+    Cleared { language: crate::i18n::Preference },
 }
 
 /// The canonical authority's answer, retaining whether protected data exists but cannot be opened.
@@ -2939,8 +2939,8 @@ fn read_locked(canonical: persistence::CanonicalRead) -> ReadState {
         // It is also deliberately not Blocked/Locked: those carry locked/blocked UI framing that a
         // cleanly signed-out device must not present. `ReadState::Cleared` is its own variant so
         // downstream `match`es are forced to decide, rather than silently inheriting either policy.
-        persistence::CanonicalRead::Cleared { .. } => ReadState::Cleared,
-        persistence::CanonicalRead::Locked { .. } => ReadState::Locked,
+        persistence::CanonicalRead::Cleared { language, .. } => ReadState::Cleared { language },
+        persistence::CanonicalRead::Locked { public, .. } => ReadState::Locked { language: public.language },
         persistence::CanonicalRead::Pending { .. } => ReadState::Blocked,
         persistence::CanonicalRead::Blocked(_) => ReadState::Blocked,
     }
@@ -2970,7 +2970,8 @@ fn read_live_locked() -> ReadState {
                     plaintext,
                     retry_canonical: true,
                 },
-                ReadState::Locked => ReadState::Locked,
+                ReadState::Locked { language } => ReadState::Locked { language },
+                ReadState::Cleared { language } => ReadState::Locked { language },
                 _ => ReadState::Blocked,
             }
         }
@@ -3051,7 +3052,7 @@ fn read_legacy_filtered_locked(fallback_only: bool) -> ReadState {
             if envelope.format == SECURE_FORMAT && envelope.version == 1 {
                 let Some(plain) = crate::keymanager::open(&envelope.sealed) else {
                     crate::log("session: secure file is present but its device key is unavailable");
-                    return ReadState::Locked;
+                    return ReadState::Locked { language: install_preferences::load().unwrap_or_default() };
                 };
                 return serde_json::from_slice::<Session>(&plain)
                     .map(|session| ReadState::Ready {
@@ -3059,12 +3060,12 @@ fn read_legacy_filtered_locked(fallback_only: bool) -> ReadState {
                         plaintext: false,
                         retry_canonical: marked,
                     })
-                    .unwrap_or(ReadState::Locked);
+                    .unwrap_or(ReadState::Locked { language: install_preferences::load().unwrap_or_default() });
             }
         }
         if identifies_secure_envelope(&bytes) {
             crate::log("session: unsupported or damaged secure envelope is locked");
-            return ReadState::Locked;
+            return ReadState::Locked { language: install_preferences::load().unwrap_or_default() };
         }
         if let Ok(session) = serde_json::from_value::<Session>(value) {
             return ReadState::Ready {
@@ -3074,7 +3075,7 @@ fn read_legacy_filtered_locked(fallback_only: bool) -> ReadState {
             };
         }
     }
-    ReadState::Missing
+    install_preferences::load().map_or(ReadState::Missing, |language| ReadState::Cleared { language })
 }
 
 
@@ -3162,8 +3163,8 @@ pub(crate) fn load_login_client_id() -> String {
     }
     static FALLBACK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     let id = FALLBACK.get_or_init(new_client_id).clone();
-    if matches!(read, ReadState::Missing | ReadState::Cleared) {
-        let fresh = Session { client_id: id.clone(), ..Default::default() };
+    if matches!(read, ReadState::Missing | ReadState::Cleared { .. }) {
+        let fresh = Session { client_id: id.clone(), ..session_from_read(&read) };
         save_locked(&fresh);
     }
     id
@@ -3178,11 +3179,12 @@ pub(crate) struct DeferredLoad {
 fn read_identity(read: &ReadState) -> Vec<u8> {
     match read {
         ReadState::Missing => vec![0],
-        ReadState::Locked | ReadState::Blocked => vec![1],
+        ReadState::Blocked => vec![1],
+        ReadState::Locked { language } => [vec![1], language.tag().as_bytes().to_vec()].concat(),
         // Its own bucket, distinct from both Missing and Locked/Blocked: a concurrent transition
         // into or out of Cleared must be detectable by `DeferredLoad::apply`'s identity check, not
         // silently matched against whichever of those two buckets it happens to share a vec! with.
-        ReadState::Cleared => vec![2],
+        ReadState::Cleared { language } => [vec![2], language.tag().as_bytes().to_vec()].concat(),
         ReadState::Ready { session, .. } => serde_json::to_vec(&**session).expect("Session serialization"),
     }
 }
@@ -3278,8 +3280,8 @@ fn prepare_load(read: &ReadState, mint: impl FnOnce() -> String) -> (Session, bo
     // A cleared tenure is grouped with Missing here, deliberately not with Locked/Blocked: it is
     // not "a persisted session exists" (there is nothing to preserve), and — the actual fix this
     // exists for — it must not be `locked`, which is what drives locked/blocked UI/boot framing.
-    let persisted = !matches!(read, ReadState::Missing | ReadState::Cleared);
-    let locked = matches!(read, ReadState::Locked | ReadState::Blocked);
+    let persisted = !matches!(read, ReadState::Missing | ReadState::Cleared { .. });
+    let locked = matches!(read, ReadState::Locked { .. } | ReadState::Blocked);
     let plaintext = matches!(
         read,
         ReadState::Ready {
@@ -3290,8 +3292,8 @@ fn prepare_load(read: &ReadState, mint: impl FnOnce() -> String) -> (Session, bo
     );
     let mut s = match read {
         ReadState::Ready { session, .. } => (**session).clone(),
-        ReadState::Missing | ReadState::Locked | ReadState::Blocked | ReadState::Cleared => {
-            let mut fresh = Session::default();
+        ReadState::Missing | ReadState::Locked { .. } | ReadState::Blocked | ReadState::Cleared { .. } => {
+            let mut fresh = session_from_read(read);
             // Product default is on. `Default` for a bool is off, and this is the path that
             // writes the first file, so set it before that save.
             fresh.trailer_autoplay = true;
@@ -4088,8 +4090,35 @@ fn clear_cleanup_outcome(outcome: persistence::ClearCleanupOutcome) -> ClearOutc
 /// Takes [`IO`] like every other entry point, and that is not tidiness: a sign-out racing an
 /// in-flight worker's read-modify-write would otherwise delete the file and have the worker put it
 /// straight back, account token and all.
+///
+/// This is an ordinary sign-out: the install-wide language survives it. The erase queue calls
+/// [`clear_for_erase`] directly, which also serves "Delete all local data" and its retries.
 pub fn clear() -> ClearOutcome {
+    let report = clear_for_erase(false, None);
+    if report.preference_failures.is_empty() { report.outcome } else { ClearOutcome::NotDurable }
+}
+
+/// Worker receipt: retaining/resetting a public preference never republishes credentials.
+pub(crate) struct Erasure {
+    pub(crate) outcome: ClearOutcome,
+    pub(crate) retained_language: crate::i18n::Preference,
+    pub(crate) preference_failures: Vec<String>,
+}
+
+/// Clear the credentials for a sign-out (`all_local == false`), which retains the install-wide
+/// language, or for "Delete all local data", which then resets that language to System.
+///
+/// A retry carries the first worker's confirmed language, so a failed auxiliary write cannot
+/// replace it with System after the credentials themselves have already been cleared.
+pub(crate) fn clear_for_erase(all_local: bool, retry_language: Option<crate::i18n::Preference>) -> Erasure {
     let _io = io();
+    let language = retry_language.unwrap_or_else(|| session_from_read(&read_live_locked()).language);
+    let native = cfg!(all(target_os = "linux", target_arch = "arm", not(feature = "hostsim"), not(test)));
+    // File backends need a credential-free resource before the credential file disappears.
+    let mut preference_failures = Vec::new();
+    if !all_local && !native && !install_preferences::save(language) {
+        preference_failures.push("language preference could not be retained".into());
+    }
     // Signing out changes what `peek` answers exactly as durably as a save does — and it must drop
     // the cached `Arc<Session>` immediately rather than merely marking it stale: that `Arc` holds
     // the very account/server tokens sign-out means to get rid of, and leaving it cached would
@@ -4209,7 +4238,21 @@ pub fn clear() -> ClearOutcome {
     if let ClearOutcome::Durable { legacy_swept: complete } = &mut outcome {
         *complete &= legacy_swept;
     }
-    outcome
+    let mut retained_language = language;
+    if all_local {
+        // Native ClearTenure deliberately retains preferences. Remove only language with a
+        // public-only, same-generation CAS after confirmed clearing, never ReplaceAuth.
+        let reset = !native || matches!(persistence::reset_cleared_language(),
+            persistence::CanonicalCommit::Durable { .. });
+        if !reset { preference_failures.push("stored language preference could not be reset".into()); }
+        preference_failures.extend(install_preferences::erase());
+        if reset && preference_failures.is_empty() { retained_language = crate::i18n::Preference::System; }
+    } else if native && !matches!(outcome, ClearOutcome::Durable { .. })
+        && !install_preferences::save(language) {
+        // A failed helper clear can still leave only an explicitly supported file fallback.
+        preference_failures.push("fallback language preference could not be retained".into());
+    }
+    Erasure { outcome, retained_language, preference_failures }
 }
 
 /// Sibling markers are independent of auth.json: a read-only credential inode/directory can
@@ -4627,6 +4670,7 @@ mod migration_tests;
 
 #[allow(dead_code)] // Stage B connects typed owner admission/completions.
 pub(crate) mod async_persistence;
+mod install_preferences;
 
 #[cfg(test)]
 mod direct_play_mode_tests {
