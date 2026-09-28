@@ -1216,6 +1216,9 @@ fn row_group(id: GroupId, len: usize, extent: Rect, elem: ElemKind) -> GroupSpec
 }
 
 impl<H: LibraryLike> Screen<H> for LibraryScreen {
+    fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<crate::ui::machine::FocusKey<u32>>) {
+        LibraryScreen::redraw_focused::<H>(self, f, focus)
+    }
     fn name(&self) -> &'static str { "library" }
     fn state(&self) -> &dyn LogicalState { self }
     fn crumb(&self, _: &Cx<'_, H>) -> Option<Cow<'_, str>> { None }

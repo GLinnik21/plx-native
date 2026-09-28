@@ -2173,6 +2173,9 @@ impl<H: HomeLike> Machine<H> for HomeScreen {
 }
 
 impl<H: HomeLike> Screen<H> for HomeScreen {
+    fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<crate::ui::machine::FocusKey<u32>>) {
+        HomeScreen::redraw_focused::<H>(self, f, focus)
+    }
     fn name(&self) -> &'static str {
         super::registry::word::HOME
     }

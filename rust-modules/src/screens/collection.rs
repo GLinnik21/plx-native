@@ -597,6 +597,9 @@ impl<H: ContentLike + CollectionLike> Machine<H> for CollectionScreen {
 }
 
 impl<H: ContentLike + CollectionLike> Screen<H> for CollectionScreen {
+    fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<crate::ui::machine::FocusKey<u32>>) {
+        CollectionScreen::redraw_focused::<H>(self, f, focus)
+    }
     fn name(&self) -> &'static str { super::registry::word::COLLECTION }
     fn state(&self) -> &dyn LogicalState { self }
     fn crumb(&self, _cx: &Cx<'_, H>) -> Option<std::borrow::Cow<'_, str>> { None }

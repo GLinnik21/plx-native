@@ -1939,6 +1939,9 @@ impl DetailScreen {
 }
 
 impl<H: ContentLike + crate::screens::registry::MetadataLike> Screen<H> for DetailScreen {
+    fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<crate::ui::machine::FocusKey<u32>>) {
+        DetailScreen::redraw_focused::<H>(self, f, focus)
+    }
     fn name(&self) -> &'static str {
         "detail"
     }

@@ -1650,6 +1650,9 @@ impl<H: ContentLike + PersonLike> Machine<H> for PersonScreen {
 }
 
 impl<H: ContentLike + PersonLike> Screen<H> for PersonScreen {
+    fn redraw_focused(&self, f: &mut DrawFrame<'_, '_, H>, focus: Option<crate::ui::machine::FocusKey<u32>>) {
+        PersonScreen::redraw_focused::<H>(self, f, focus)
+    }
     fn name(&self) -> &'static str {
         // Filmography deliberately returns the same word: the manifest records that opaque modal
         // as the Person route with a separate `filmography=1` state bit.

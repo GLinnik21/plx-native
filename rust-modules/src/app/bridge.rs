@@ -116,6 +116,23 @@ pub(crate) struct AppViews<'a> {
     pub(crate) session: &'a crate::route::PlaybackSession,
 }
 
+impl Bridge {
+    /// Every store's read handle for one context, taken from this Bridge's frame boundary — the
+    /// one spelling of the [`AppViews`] a screen reads through.
+    pub(crate) fn views(&self) -> AppViews<'_> {
+        self.views_with(&self.playback)
+    }
+
+    /// [`Self::views`] reading `session` as the playback publication — what a test rig with no
+    /// player of its own passes.
+    pub(crate) fn views_with<'a>(&'a self, session: &'a crate::route::PlaybackSession) -> AppViews<'a> {
+        AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
+            directory: self.directory.view(), section_hubs: self.section_hubs.view(),
+            search: self.search.view(), metadata: self.stores.metadata_view(),
+            person: self.stores.person_view(), collection: self.stores.collection_view(), session }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct BridgeInit;
 
@@ -611,8 +628,7 @@ impl Bridge {
         let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::search::SearchScreen>()?;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus, ..Default::default() }, owner: InputOwner::Entry(entry) };
-        let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
-            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), session: &self.playback }, &self.measure);
+        let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         let item = page.selected_item(focus, &cx)?.clone();
         let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
         Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
@@ -631,8 +647,7 @@ impl Bridge {
         let page = d.nav.entry(entry)?.inst.as_ref()?.screen.as_any()?.downcast_ref::<crate::screens::library::LibraryScreen>()?;
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry) };
-        let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(), hubs: self.hubs.view(), listing: self.listing.view(),
-            directory: self.directory.view(), section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), session: &self.playback }, &self.measure);
+        let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         let item = page.focused_item(focus, &cx)?.clone();
         let rect = page.place(&focus?.elem, &cx, At::Drawn)?.rest_rect;
         Some((item, crate::ui::popover::Opener { rect: Some(rect), ..crate::ui::popover::Opener::NONE }))
@@ -714,12 +729,7 @@ impl Bridge {
             let screen = &d.nav.entry(entry)?.inst.as_ref()?.screen;
             let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
                 focus: crate::ui::machine::FocusRead { current: Some(key) , ..Default::default() }, owner: InputOwner::Entry(entry) };
-            let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(),
-                hubs: self.hubs.view(),
-                listing: self.listing.view(),
-                directory: self.directory.view(),
-                section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), session: &self.playback,
-            }, &self.measure);
+            let cx = parts.cx::<AppHost>(self.views(), &self.measure);
             screen.as_any()?.downcast_ref::<crate::screens::home::HomeScreen>()?
                 .focused_rect::<AppHost>(Some(key), &cx, At::Drawn)
         });
@@ -755,12 +765,7 @@ impl Bridge {
         let focus = Self::home_focus(d);
         let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(entry.id) };
-        let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(),
-            hubs: self.hubs.view(),
-            listing: self.listing.view(),
-            directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), session: &self.playback,
-        }, &self.measure);
+        let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         Some(f(home, &cx, focus))
     }
 
@@ -890,12 +895,7 @@ impl Bridge {
         if <crate::screens::home::HomeScreen as Screen<AppHost>>::strip_reachable(home) { return false; }
         let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: Self::home_focus(d) , ..Default::default() }, owner: InputOwner::Entry(entry.id) };
-        let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(),
-            hubs: self.hubs.view(),
-            listing: self.listing.view(),
-            directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), session: &self.playback,
-        }, &self.measure);
+        let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         if home.grid_position::<AppHost>(parts.focus.current, &cx).is_none() { return false; }
         self.home_command(HomeCmd::ItemMenu)
     }
@@ -915,12 +915,7 @@ impl Bridge {
             owner: crate::ui::machine::InputOwner::Entry(entry) };
         parts.owner = crate::ui::machine::InputOwner::Entry(entry);
         parts.focus.current = ret.focus;
-        let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(),
-            hubs: self.hubs.view(),
-            listing: self.listing.view(),
-            directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), session: &self.playback,
-        }, &self.measure);
+        let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
             let sid = match &e.arg { AppArg::Content(ContentArg::Detail { sid, .. }) => *sid, _ => return None };
             let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
@@ -936,15 +931,17 @@ impl Bridge {
                 let item = page.focused_related(ret.focus, meta).filter(|m| crate::screens::item_menu::has_actions(m))?;
                 Some(card_menu_arg(item, false, false, entry, ret.focus, rect))
             }
-        } else if let Some(page) = screen.downcast_ref::<crate::screens::person::PersonScreen>() {
-            let item = page.focused_item(ret.focus, &cx).filter(|m| crate::screens::item_menu::has_actions(m))?;
-            let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
+        } else {
+            // A card page — Person or Collection — answers its focused card and where it sits.
+            let (item, rect) = if let Some(page) = screen.downcast_ref::<crate::screens::person::PersonScreen>() {
+                (page.focused_item(ret.focus, &cx), page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn))
+            } else {
+                let page = screen.downcast_ref::<crate::screens::collection::CollectionScreen>()?;
+                (page.focused_item(ret.focus, &cx), page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn))
+            };
+            let item = item.filter(|m| crate::screens::item_menu::has_actions(m))?;
             Some(card_menu_arg(item, false, false, entry, ret.focus, rect))
-        } else if let Some(page) = screen.downcast_ref::<crate::screens::collection::CollectionScreen>() {
-            let item = page.focused_item(ret.focus, &cx).filter(|m| crate::screens::item_menu::has_actions(m))?;
-            let rect = page.focused_rect::<AppHost>(ret.focus, &cx, At::Drawn);
-            Some(card_menu_arg(item, false, false, entry, ret.focus, rect))
-        } else { None }
+        }
     }
 
     /// **The opener LIFT: the focused tile repainted above the modal dim.** Render-only, and the
@@ -960,7 +957,7 @@ impl Bridge {
     pub(crate) fn redraw_opener(&self, d: &Dispatcher<AppHost>) {
         let Some((entry, focus)) = item_menu(d).map(|menu| menu.opener()) else { return };
         if d.nav.top_page().map(|e| e.id) != Some(entry) { return; }
-        let Some(screen) = d.nav.entry(entry).and_then(|e| e.inst.as_ref()).and_then(|i| i.screen.as_any()) else { return };
+        let Some(screen) = d.nav.entry(entry).and_then(|e| e.inst.as_ref()).map(|i| &i.screen) else { return };
         // The page pass may be submitting a cached host quad. Opener lifts are live paint
         // above that quad, like Popover::scrim_lifting's legacy callback scope.
         let _live = crate::ui::popover::host::live();
@@ -970,26 +967,9 @@ impl Bridge {
             owner: crate::ui::machine::InputOwner::Entry(entry) };
         parts.owner = crate::ui::machine::InputOwner::Entry(entry);
         parts.focus.current = focus;
-        let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(),
-            hubs: self.hubs.view(),
-            listing: self.listing.view(),
-            directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), session: &self.playback,
-        }, &self.measure);
+        let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         let mut frame = DrawFrame::with_navigation(&cx, crate::ui::Painter::root(), self.navigation_presentation());
-        if let Some(page) = screen.downcast_ref::<crate::screens::detail::DetailScreen>() {
-            page.redraw_focused::<AppHost>(&mut frame, focus);
-        } else if let Some(page) = screen.downcast_ref::<crate::screens::person::PersonScreen>() {
-            page.redraw_focused::<AppHost>(&mut frame, focus);
-        } else if let Some(page) = screen.downcast_ref::<crate::screens::collection::CollectionScreen>() {
-            page.redraw_focused::<AppHost>(&mut frame, focus);
-        } else if let Some(page) = screen.downcast_ref::<crate::screens::home::HomeScreen>() {
-            page.redraw_focused::<AppHost>(&mut frame, focus);
-        } else if let Some(page) = screen.downcast_ref::<crate::screens::library::LibraryScreen>() {
-            page.redraw_focused::<AppHost>(&mut frame, focus);
-        } else if let Some(page) = screen.downcast_ref::<crate::screens::search::SearchScreen>() {
-            page.redraw_focused::<AppHost>(&mut frame, focus);
-        }
+        screen.redraw_focused(&mut frame, focus);
     }
 
     /// Drive `popover`'s host-user counters from the surface phases (module doc).
@@ -1444,12 +1424,7 @@ impl Rig<AppHost> for Bridge {
             }
             _ => {}
         }
-        let cx = parts.cx::<AppHost>(AppViews { auth: self.session.read(),
-            hubs: self.hubs.view(),
-            listing: self.listing.view(),
-            directory: self.directory.view(),
-            section_hubs: self.section_hubs.view(), search: self.search.view(), metadata: self.stores.metadata_view(), person: self.stores.person_view(), collection: self.stores.collection_view(), session: &self.playback,
-        }, &self.measure);
+        let cx = parts.cx::<AppHost>(self.views(), &self.measure);
         match msg {
             AppMsg::Store(StoreCmd::Browse(c)) => {
                 self.stores.browse.borrow_mut().step(&StoreEv::Cmd(c.clone()), &cx, fx)
@@ -2031,12 +2006,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let focus = Bridge::home_focus(d);
         let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 }, press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
-        let cx = parts.cx::<AppHost>(AppViews { auth: rig.session.read(),
-            hubs: rig.hubs.view(),
-            listing: rig.listing.view(),
-            directory: rig.directory.view(),
-            section_hubs: rig.section_hubs.view(), search: rig.search.view(), metadata: rig.stores.metadata_view(), person: rig.stores.person_view(), collection: rig.stores.collection_view(), session: &rig.playback,
-        }, &rig.measure);
+        let cx = parts.cx::<AppHost>(rig.views(), &rig.measure);
         let position = home.grid_position::<AppHost>(focus, &cx);
         let (row, col) = position.map(|(r, c)| (r as i64, c as i64)).unwrap_or((-1, -1));
         let hf = match rig.chrome.focus(focus) {
@@ -2056,8 +2026,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
         let focus = d.input.engine.current(InputOwner::Entry(page.id));
         let parts = CxParts { tick: Tick::default(), press: Default::default(),
             focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(page.id) };
-        let cx = parts.cx::<AppHost>(AppViews { auth: rig.session.read(), hubs: rig.hubs.view(), listing: rig.listing.view(),
-            directory: rig.directory.view(), section_hubs: rig.section_hubs.view(), search: rig.search.view(), metadata: rig.stores.metadata_view(), person: rig.stores.person_view(), collection: rig.stores.collection_view(), session: &rig.playback }, &rig.measure);
+        let cx = parts.cx::<AppHost>(rig.views(), &rig.measure);
         let menu = d.top_surface_name() == Some("library_menu");
         let pill = if menu { -1 } else { match rig.chrome.focus(focus) {
             crate::ui::widgets::TopFocus::Pill(index) => index as i32, _ => -1,
@@ -2095,12 +2064,7 @@ fn page_probe(d: &Dispatcher<AppHost>, rig: &Bridge) -> String {
     let parts = CxParts { tick: Tick { ms: 0, dt_us: 0 },
         press: crate::ui::machine::PressRead { scale: 1.0, is_long: false },
         focus: crate::ui::machine::FocusRead { current: focus , ..Default::default() }, owner: InputOwner::Entry(owner) };
-    let cx = parts.cx::<AppHost>(AppViews { auth: rig.session.read(),
-        hubs: rig.hubs.view(),
-        listing: rig.listing.view(),
-        directory: rig.directory.view(),
-        section_hubs: rig.section_hubs.view(), search: rig.search.view(), metadata: rig.stores.metadata_view(), person: rig.stores.person_view(), collection: rig.stores.collection_view(), session: &rig.playback,
-    }, &rig.measure);
+    let cx = parts.cx::<AppHost>(rig.views(), &rig.measure);
     let mut groups = Vec::new();
     instance.screen.groups(&cx, &mut groups);
     let group = focus.and_then(|f| instance.screen.group_of(&f.elem, &cx));

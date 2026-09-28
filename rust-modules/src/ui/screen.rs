@@ -313,6 +313,11 @@ pub trait Screen<H: Host>: Machine<H, Ev = ScreenEvent<H>> + Focusable<H> {
     fn memory_at(&self, _focus: Option<FocusKey<H::Elem>>) -> H::Memory {
         self.memory()
     }
+    /// **Repaint the focused element above a modal dim** — the item-menu opener lift, asked of
+    /// whichever page hosts the menu. `focus` is the engine key the surface was opened from, passed
+    /// explicitly so the page never keeps a cursor of its own. A page with no card to lift draws
+    /// nothing, which is the default.
+    fn redraw_focused(&self, _f: &mut DrawFrame<'_, '_, H>, _focus: Option<FocusKey<H::Elem>>) {}
     /// Typed application inspection during migration; the library never names a screen type.
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         None
