@@ -256,7 +256,7 @@ class Library:
                     self.items[erk] = self._episode(rng, erk, season, show, e, part)
         empty_id = len(self.collections) + 1
         self.collections[empty_id] = {
-            "id": empty_id, "ratingKey": 50000 + empty_id, "tag": "Empty Collection"
+            "id": empty_id, "ratingKey": 50000 + empty_id, "tag": sname(rng)
         }
         # watch state: a third watched, a sixth in progress (the Continue Watching deck)
         for i, it in enumerate(sorted(self.items.values(), key=lambda x: x["ratingKey"])):

@@ -53,8 +53,8 @@ class LibraryRail(unittest.TestCase):
 
     def test_default_generated_data_is_stable(self):
         hashes = {
-            1: "d6de46102484a4fa867e459da01b3d83fd3b631854bf5e1bc472a5ca4ee3a73c",
-            7: "c529e55987409704cbc6b694d29a339eaa046ad557848850f2745fb35da9d6c7",
+            1: "179ea74803d88bfd0b0a4ab0e4bbb38aaf4612f73da1d50ef8d1416f5b2d29aa",
+            7: "6519eaed52dfbbc730648c80d3cf7b55daa36cb9f2aa43841fa669ed5ed6d5a8",
         }
         for seed, expected in hashes.items():
             payload = json.dumps(Library(seed=seed).__dict__, sort_keys=True).encode()

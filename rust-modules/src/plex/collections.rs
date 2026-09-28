@@ -152,7 +152,9 @@ pub(crate) fn is_collection_hub(hub_identifier: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "devtriggers")]
     use crate::plex::{Origin, ServerId};
+    #[cfg(feature = "devtriggers")]
     use std::io::{Read, Write};
 
     fn page(json: &[u8]) -> MediaContainer {
@@ -271,6 +273,12 @@ mod tests {
         assert!(!is_collection_hub("movie.similar"));
     }
 
+    // Dev-only: this fixture drives a plaintext loopback PMS with a real client that carries a
+    // token, which a store build's `CredentialPolicy::HttpsOnly` refuses before the request ever
+    // reaches the wire (see `http::credential_transport_allowed`) — the connection this test
+    // waits on then never arrives. See `client.rs`'s
+    // `malformed_2xx_remains_a_response_after_its_deadline_passes` for the same gating.
+    #[cfg(feature = "devtriggers")]
     fn outcome_for(status: &str) -> Option<CollectionOutcome> {
         // The agent sandbox denies loopback binds; the coordinator and ordinary host suite run
         // this branch. This is the same skip convention used by the transport's own tests.
@@ -306,6 +314,7 @@ mod tests {
         Some(outcome)
     }
 
+    #[cfg(feature = "devtriggers")]
     #[test]
     fn authorization_and_absence_keep_their_http_meanings() {
         let Some(denied) = outcome_for("403 Forbidden") else {
