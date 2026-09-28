@@ -265,13 +265,13 @@ pub(crate) fn percent(value: i64) -> String {
 
 /// `value` rounded to `scale` fractional digits, in the UI locale's numerals and separators.
 pub(crate) fn decimal(value: f64, scale: i16) -> String {
-    let factor = 10f64.powi(i32::from(scale));
+    let factor = 10i64.pow(u32::try_from(scale).unwrap_or(0)) as f64;
     crate::i18n::current().decimal((value * factor).round() as i64, scale)
 }
 
 /// [`decimal`] that always carries a sign, as a delta is written (`+0.4`, `-1.2`).
 pub(crate) fn signed_decimal(value: f64, scale: i16) -> String {
-    let factor = 10f64.powi(i32::from(scale));
+    let factor = 10i64.pow(u32::try_from(scale).unwrap_or(0)) as f64;
     let scaled = (value * factor).round() as i64;
     let digits = crate::i18n::current().decimal(scaled, scale);
     if scaled >= 0 {
