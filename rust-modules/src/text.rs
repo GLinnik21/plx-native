@@ -432,6 +432,13 @@ pub(crate) fn drain_prewarm(budget_us: u64, now: impl FnMut() -> u64) -> usize {
     })
 }
 
+/// Recorded text a prewarm pass has not yet rasterised. A held page image is not replaced by a
+/// live capture while this is true (`ui::dispatch`'s quiescence predicate), so the capture frame
+/// never pays for a page's newly landed strings all at once.
+pub(crate) fn prewarm_pending() -> bool {
+    PREWARM.with(|q| !q.borrow().is_empty())
+}
+
 /// A transition ended or was replaced. Never carry its destination's work into an unrelated dip.
 pub(crate) fn clear_prewarm() {
     PREWARM.with(|q| q.borrow_mut().clear());

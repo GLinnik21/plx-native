@@ -1481,6 +1481,8 @@ fn reset_for_profile_clears_a_pending_op_so_it_cannot_apply_over_the_emptied_tre
 struct CountingSnapshot {
     valid: bool,
     begins: std::rc::Rc<std::cell::Cell<u32>>,
+    /// The fixture [`draw_order`](crate::ui::fixture::draw_order) tick of the latest image draw.
+    drawn_at: std::rc::Rc<std::cell::Cell<usize>>,
 }
 impl super::transition::PageSnapshot for CountingSnapshot {
     fn available(&self) -> bool { true }
@@ -1491,6 +1493,7 @@ impl super::transition::PageSnapshot for CountingSnapshot {
         true
     }
     fn finish(&mut self) { self.valid = true; }
+    fn draw(&self, _alpha: f32, _clear: bool) { self.drawn_at.set(crate::ui::fixture::draw_order()); }
     fn release(&mut self) { self.valid = false; }
 }
 
@@ -1557,7 +1560,7 @@ fn frozen_dispatch_holds_past_the_dip_while_page_motion_and_resource_work_remain
     let _guard = crate::testlock::serial();
     let (mut d, mut rig) = frozen_fixture();
     let begins = std::rc::Rc::new(std::cell::Cell::new(0));
-    d.page_snapshot = Box::new(CountingSnapshot { valid: false, begins: begins.clone() });
+    d.page_snapshot = Box::new(CountingSnapshot { valid: false, begins: begins.clone(), drawn_at: Default::default() });
     d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(QUIESCENCE_PAGE)));
     d.frame_with(&mut rig, tick(0), vec![], vec![], &mut NoTap, false);
     d.draw(&mut rig, true); // outgoing capture
@@ -1594,6 +1597,79 @@ fn frozen_dispatch_holds_past_the_dip_while_page_motion_and_resource_work_remain
     d.draw(&mut rig, true);
     assert!(page_draw_order(&d) > replacement, "live begins only after the matching image frame");
     assert_eq!(begins.get(), 3, "the handoff never captures a second replacement");
+}
+
+/// **A page's text is resident before its replacement capture draws it.** Content that lands
+/// after the dip's floor — a detail page's metadata — is drawn by nothing while the image stands in
+/// for the page, so the one settled capture used to rasterise every new string in a single frame
+/// (84 ms on the television, 48 ms of it text). The held page is walked through the text recorder
+/// instead, and the capture waits for that queue to drain.
+#[test]
+fn a_held_page_has_its_text_resident_before_its_replacement_capture() {
+    let _guard = crate::testlock::serial();
+    let (mut d, mut rig) = frozen_fixture();
+    let begins = std::rc::Rc::new(std::cell::Cell::new(0));
+    let image_drawn = std::rc::Rc::new(std::cell::Cell::new(0));
+    d.page_snapshot = Box::new(CountingSnapshot { valid: false, begins: begins.clone(), drawn_at: image_drawn.clone() });
+    d.request(MachineId::Nav, NavOp::Push(FixtureArg::Page(7)));
+    d.frame_with(&mut rig, tick(0), vec![], vec![], &mut NoTap, false);
+    d.draw(&mut rig, true); // outgoing capture
+    let mut ms = 0;
+    while d.top_arg() != Some(&FixtureArg::Page(7)) {
+        ms += 16;
+        assert!(ms < 400, "the push reaches its floor");
+        crate::ui::idle::frame_begin(1.0 / 60.0);
+        d.frame_with(&mut rig, tick(ms), vec![], vec![], &mut NoTap, false);
+        d.draw(&mut rig, true);
+    }
+    // The page's text "lands" now: forget what the dip-out warmed.
+    crate::text::reset_prewarm_for_test();
+    let screen = |d: &Dispatcher<FixtureHost>| {
+        let s = d.top_screen().unwrap().as_any().unwrap()
+            .downcast_ref::<crate::ui::fixture::FixtureScreen>().unwrap();
+        (s.draw_at, s.recorded_draws)
+    };
+    let (floor_draw, recorded) = screen(&d);
+    let floor_begins = begins.get();
+    ms += 16;
+    crate::ui::idle::frame_begin(1.0 / 60.0);
+    d.frame_with(&mut rig, tick(ms), vec![], vec![], &mut NoTap, false);
+    d.draw(&mut rig, true);
+    assert_eq!(screen(&d).0, floor_draw, "premise: an image stands in for the page");
+    assert!(screen(&d).1 > recorded, "the held page is walked through the text recorder");
+    assert!(crate::text::prewarm_resident_for_test(b"pending page text", 24, 0));
+    // The walk is CPU only; it runs ahead of the frame's first framebuffer command (the held
+    // image's draw), where the driver waits out the previous frame's GPU work, so it overlaps
+    // that wait rather than stacking on it.
+    let walked_at = d.top_screen().unwrap().as_any().unwrap()
+        .downcast_ref::<crate::ui::fixture::FixtureScreen>().unwrap().recorded_at;
+    assert!(walked_at < image_drawn.get(), "the text walk precedes the held image's draw");
+
+    // Past the dip, ten frames each find a string recorded but not yet rasterised: every one of
+    // them keeps the image. Without the gate the page settles and is captured inside this window.
+    while d.nav.tabs.stack.transition.in_flight() {
+        ms += 16;
+        crate::ui::idle::frame_begin(1.0 / 60.0);
+        d.frame_with(&mut rig, tick(ms), vec![], vec![], &mut NoTap, false);
+        d.draw(&mut rig, true);
+    }
+    for _ in 0..10 {
+        ms += 16;
+        crate::ui::idle::frame_begin(1.0 / 60.0);
+        d.frame_with(&mut rig, tick(ms), vec![], vec![], &mut NoTap, false);
+        crate::text::queue_prewarm(c"late string".as_ptr(), 24, 0);
+        d.draw(&mut rig, true);
+        assert_eq!(begins.get(), floor_begins, "a pending prewarm defers the replacement capture");
+    }
+    let settled_at = ms;
+    while begins.get() == floor_begins {
+        ms += 16;
+        assert!(ms < settled_at + 200, "the drained page is captured promptly");
+        crate::ui::idle::frame_begin(1.0 / 60.0);
+        d.frame_with(&mut rig, tick(ms), vec![], vec![], &mut NoTap, false);
+        d.draw(&mut rig, true);
+    }
+    assert!(screen(&d).0 > floor_draw, "the replacement capture draws the page");
 }
 
 #[test]
