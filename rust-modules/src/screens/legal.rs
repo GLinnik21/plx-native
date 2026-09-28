@@ -142,11 +142,6 @@ impl LogicalState for IndexState {
 }
 
 impl LegalIndex {
-    #[cfg(test)]
-    pub(crate) fn table_for_test(&self) -> &TableView {
-        &self.table
-    }
-
     pub(crate) fn new(entry: EntryId) -> Self {
         let mut s = Section::new(crate::i18n::msg::settings_legal_section());
         for page in Page::ALL {
@@ -1096,5 +1091,22 @@ mod tests {
             hash_before,
             "…and it must leave the reading position and every other hashed fact untouched"
         );
+    }
+
+    /// Every Legal notices row fits its column in every shipped language, measured with the
+    /// device's whole-pixel advances (see `settings_text_fit_tests.rs` for the Settings root).
+    #[test]
+    fn every_legal_row_fits_its_column_in_every_language() {
+        use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
+        use crate::i18n::{language_on_this_thread_for_test, Preference};
+        let frame_w = crate::ui::route_screen::RouteLayout::screen().sectioned_table().w;
+        let mut out = Vec::new();
+        for language in [Preference::En, Preference::Es, Preference::Be] {
+            let _guard = language_on_this_thread_for_test(language);
+            let tag = language.tag();
+            out.extend(LegalIndex::new(EntryId(0)).table.elided_rows(frame_w, &ShippedMeasure, HEADROOM)
+                .into_iter().map(|e| format!("{tag}: {e}")));
+        }
+        assert!(out.is_empty(), "rows the television would end in an ellipsis:\n  {}", out.join("\n  "));
     }
 }

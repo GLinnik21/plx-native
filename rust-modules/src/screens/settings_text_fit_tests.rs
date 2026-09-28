@@ -6,7 +6,8 @@
 //! справаздачы, звесткі пра прыватнасць і лака…"), invisible in the simulator because its newer
 //! SDL_ttf sums fractional advances while the device rounds each glyph to a whole pixel.
 //! [`crate::fontcov::advances::ShippedMeasure`] measures the shipped faces the device's way, so
-//! these assertions are about the television, not the Mac.
+//! these assertions are about the television, not the Mac. The Legal notices and Privacy & data
+//! pages carry the same guard in their own modules (`legal.rs`, `consent_text_fit_tests.rs`).
 
 use super::*;
 use crate::fontcov::advances::{ShippedMeasure, HEADROOM};
@@ -49,12 +50,6 @@ fn every_settings_row_fits_its_column_in_every_language() {
         overflowing(&format!("{tag} root"), &RootPage::new(EntryId(0), test_support::cx(None).views).table, &mut out);
         overflowing(&format!("{tag} root (signed in)"), &signed_in_root_rows(), &mut out);
         overflowing(&format!("{tag} language"), &LanguagePage::new(EntryId(0)).table, &mut out);
-        overflowing(&format!("{tag} legal"), crate::screens::legal::LegalIndex::new(EntryId(0)).table_for_test(), &mut out);
-        let cx = test_support::cx(None);
-        let (mut sink, mut present) = (Vec::new(), crate::ui::present::Present::new());
-        let mut fx = Effects::new(&mut sink, MachineId::Instance(InstanceId(0)), &mut present);
-        let privacy = crate::screens::consent::ConsentPage::settings(EntryId(0), &cx, &mut fx);
-        overflowing(&format!("{tag} privacy"), privacy.table_for_test(), &mut out);
     }
     assert!(out.is_empty(), "rows the television would end in an ellipsis:\n  {}", out.join("\n  "));
 }
