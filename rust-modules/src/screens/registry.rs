@@ -474,6 +474,7 @@ pub(crate) enum ContentArg {
     Detail { sid: crate::plex::ServerId, rk: String },
     Person { sid: crate::plex::ServerId, key: String, guid: String, name: String, thumb: String },
     Filmography { sid: crate::plex::ServerId, key: String },
+    Collection { sid: crate::plex::ServerId, rk: String, sec: i64, tag: i64, name: String },
 }
 
 impl crate::ui::machine::LogicalState for ContentArg {
@@ -482,6 +483,9 @@ impl crate::ui::machine::LogicalState for ContentArg {
             Self::Detail { sid, rk } => { c.u32(0).u32(u32::from(sid.raw())).str(rk); }
             Self::Person { sid, key, guid, name, thumb } => { c.u32(1).u32(u32::from(sid.raw())).str(key).str(guid).str(name).str(thumb); }
             Self::Filmography { sid, key } => { c.u32(2).u32(u32::from(sid.raw())).str(key); }
+            Self::Collection { sid, rk, sec, tag, name } => {
+                c.u32(3).u32(u32::from(sid.raw())).str(rk).u64(*sec as u64).u64(*tag as u64).str(name);
+            }
         }
     }
     fn probe(&self, out: &mut String) { out.push_str("content_arg"); }
@@ -497,6 +501,11 @@ impl ContentArg {
                 if !g.is_empty() && !h.is_empty() { g == h } else { a == b && x == y },
             (Self::Filmography { sid: a, key: x }, Self::Filmography { sid: b, key: y }) =>
                 a == b && x == y,
+            (Self::Collection { sid: a, rk: x, sec: as_, tag: at, .. },
+             Self::Collection { sid: b, rk: y, sec: bs, tag: bt, .. }) => {
+                if !x.is_empty() && !y.is_empty() { a == b && x == y }
+                else { a == b && *as_ == *bs && *at != 0 && at == bt }
+            }
             _ => false,
         }
     }
@@ -538,6 +547,13 @@ pub(crate) struct CardIdentity {
 pub(crate) struct PersonMemory {
     pub(crate) card_keys: Vec<CardIdentity>,
     pub(crate) next_card_elem: u32,
+    pub(crate) header_marked: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct CollectionMemory {
+    pub(crate) card_keys: Vec<CardIdentity>,
+    pub(crate) next_elem: u32,
     pub(crate) header_marked: bool,
 }
 
@@ -612,6 +628,7 @@ pub(crate) enum PageMemory {
     None,
     Detail(DetailMemory),
     Person(PersonMemory),
+    Collection(CollectionMemory),
     Filmography(FilmographyMemory),
     Home(HomeMemory),
     Library(LibraryMemory),
@@ -645,6 +662,10 @@ impl crate::ui::machine::LogicalState for PageMemory {
             }
             Self::Person(memory) => {
                 c.u32(2).u32(memory.next_card_elem).bool(memory.header_marked).seq(memory.card_keys.len());
+                for key in &memory.card_keys { c.u32(u32::from(key.sid.raw())).str(&key.rk).u32(key.elem); }
+            }
+            Self::Collection(memory) => {
+                c.u32(7).u32(memory.next_elem).bool(memory.header_marked).seq(memory.card_keys.len());
                 for key in &memory.card_keys { c.u32(u32::from(key.sid.raw())).str(&key.rk).u32(key.elem); }
             }
             Self::Filmography(memory) => {
@@ -745,7 +766,7 @@ fn write_home_hub(hub: &HomeHubIdentity, c: &mut crate::ui::machine::Canon) {
     }
 }
 
-pub(crate) const PAGE_MEMORY_SHAPE: &str = "PageMemory{None,Detail:{spot:Spot{section:i32,col:i32,ep_text:bool,saved_col:[i32;7],season:Option<i64>},next_elem:u32,keys:[{identity:DetailIdentity{Season(sid:u32,show:str,rk:str),Episode(sid:u32,rk:str,text:bool),Related(sid:u32,rk:str),Cast(sid:u32,key:str,guid:str,name:str,role:str),Extra(sid:u32,rk:str),Slot(u32)},elem:u32}]},Person:{next_card_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Filmography:{next_elem:u32,department:String,keys:[{department:String,catalog_id:Option<String>,elem:u32}],preview:Option<(String,String)>},Home:{next_group:u32,next_elem:u32,groups:[{identity:HomeHubIdentity{ContinueWatching,Identifier{sid:ServerId,id:String,key:String},Key{sid:ServerId,key:String},Ephemeral{generation:u32,ordinal:u32}},group:u32}],items:[{identity:HomeItemIdentity{Item{hub:HomeHubIdentity,sid:ServerId,rk:String},Slot{hub:HomeHubIdentity,generation:u32,ordinal:u32}},elem:u32,last_row:u32,last_col:u32}],carousel:Option<(ServerId,String)>,strip_chosen:bool,scroll_y:f32,row_scroll:[(group:u32,scroll:f32)]},Library:{next_elem:u32,section:Option<{sid:ServerId,key:i64}>,scroll:f32,keys:[{identity:LibraryIdentity,elem:u32,last_group:u32,last_index:u32}],shelf_scroll:[(hub:String,scroll:f32)],epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,viewports:[LibraryViewport{epoch:u32,section:{sid:u32,key:u64},scroll:f32,shelves:[(id:str,x:f32)]}]}}";
+pub(crate) const PAGE_MEMORY_SHAPE: &str = "PageMemory{None,Detail:{spot:Spot{section:i32,col:i32,ep_text:bool,saved_col:[i32;7],season:Option<i64>},next_elem:u32,keys:[{identity:DetailIdentity{Season(sid:u32,show:str,rk:str),Episode(sid:u32,rk:str,text:bool),Related(sid:u32,rk:str),Cast(sid:u32,key:str,guid:str,name:str,role:str),Extra(sid:u32,rk:str),Slot(u32)},elem:u32}]},Person:{next_card_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Collection:{next_elem:u32,header_marked:bool,card_keys:[{sid:ServerId,rk:String,elem:u32}]},Filmography:{next_elem:u32,department:String,keys:[{department:String,catalog_id:Option<String>,elem:u32}],preview:Option<(String,String)>},Home:{next_group:u32,next_elem:u32,groups:[{identity:HomeHubIdentity{ContinueWatching,Identifier{sid:ServerId,id:String,key:String},Key{sid:ServerId,key:String},Ephemeral{generation:u32,ordinal:u32}},group:u32}],items:[{identity:HomeItemIdentity{Item{hub:HomeHubIdentity,sid:ServerId,rk:String},Slot{hub:HomeHubIdentity,generation:u32,ordinal:u32}},elem:u32,last_row:u32,last_col:u32}],carousel:Option<(ServerId,String)>,strip_chosen:bool,scroll_y:f32,row_scroll:[(group:u32,scroll:f32)]},Library:{next_elem:u32,section:Option<{sid:ServerId,key:i64}>,scroll:f32,keys:[{identity:LibraryIdentity,elem:u32,last_group:u32,last_index:u32}],shelf_scroll:[(hub:String,scroll:f32)],epoch:Option<u32>,query:Option<u32>,grid_reset_pending:bool,viewports:[LibraryViewport{epoch:u32,section:{sid:u32,key:u64},scroll:f32,shelves:[(id:str,x:f32)]}]}}";
 
 /// Effects cross the screen/loop boundary; screens do not poll one another's pending latches.
 pub(crate) enum ContentReq {
@@ -792,7 +813,8 @@ pub(crate) enum ContentReq {
 }
 
 /// **Which page-owned panel [`ContentReq::Panel`] asks for** — any content page's, not one
-/// screen's: the Detail page's three and the Person page's biography sheet.
+/// screen's: the Detail page's three, the Person page's biography sheet and the Collection page's
+/// summary sheet.
 ///
 /// One variant per panel rather than one screen with an inner kind — unlike the player's four
 /// overlays, which share a key ladder and a transport rule. These share nothing: two are read-only
@@ -814,6 +836,10 @@ pub(crate) enum ContentPanel {
     /// page's `MORE` mark. It carries nothing and takes no subject: the sheet is about the person
     /// the person store holds, and this page has no `(sid, rk)` to give.
     Bio,
+    /// The **Collection** page's summary, in full — the alert behind that page's `MORE` mark. The
+    /// About sheet (`screens::about_panel`) reading the collection store's current collection; it
+    /// carries nothing, for `Bio`'s reason.
+    CollectionAbout,
 }
 
 impl ContentPanel {
@@ -856,6 +882,7 @@ impl ContentPanel {
             ),
             Self::About => (Style::Alert, AppArg::AboutPanel),
             Self::Bio => (Style::Alert, AppArg::PersonBio),
+            Self::CollectionAbout => (Style::Alert, AppArg::CollectionAbout),
         })
     }
 }
@@ -892,6 +919,10 @@ impl<H: AppLike<Memory = PageMemory>> ContentLike for H {}
 /// A host publishing the Person model borrowed from its concrete store owner for this frame.
 pub(crate) trait PersonLike: AppLike + Sized {
     fn person<'a>(cx: &Cx<'a, Self>) -> crate::person::PersonView<'a>;
+}
+
+pub(crate) trait CollectionLike: AppLike + Sized {
+    fn collection<'a>(cx: &Cx<'a, Self>) -> crate::collection::CollectionView<'a>;
 }
 
 /// A host publishing the Metadata layer's read surface borrowed from its concrete store owner
@@ -1062,6 +1093,7 @@ pub(crate) mod word {
     /// tool that greps for it are unchanged too.
     pub(crate) const ITEM_MENU: &str = "itemmenu";
     pub(crate) const PERSON: &str = "person";
+    pub(crate) const COLLECTION: &str = "collection";
     pub(crate) const SETTINGS: &str = "settings";
     pub(crate) const PRIVACY: &str = "privacy";
     pub(crate) const LEGAL: &str = "legal";
@@ -1361,6 +1393,9 @@ pub(crate) enum AppArg {
     /// `AboutPanel`'s reasons: the sheet describes `person::current()`, it opens at the top of the
     /// prose every time, and the host it is presented over is the container's own knowledge.
     PersonBio,
+    /// The Collection page's summary sheet — the About panel over `collection::current()`. **It
+    /// carries nothing**, for `PersonBio`'s reasons.
+    CollectionAbout,
     /// plex.tv sign-in (QR) — shown when there is no usable session.
     Login,
     /// The "who's watching" Plex Home picker.
@@ -1395,10 +1430,10 @@ pub(crate) enum AppArg {
     FirstRunConsent(u8),
 }
 
-pub(crate) const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,Search,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8)},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
+pub(crate) const ARG_SHAPE: &str = "AppArg{Login,Profiles,Onboard,Home,Library,Search,Player,Content:{Detail{sid:u32,rk:str},Person{sid:u32,key:str,guid:str,name:str,thumb:str},Filmography{sid:u32,key:str},Collection{sid:u32,rk:str,sec:i64,tag:i64,name:str}},Settings:SettingsPage{Root,Playback,AudioSubtitles,Favourites,Privacy,Legal,About,Document(u8),Preview(u8),ConsentStage(u8)},FirstRunConsent(u8),LibraryMenu{host:u32,target:{epoch:u32,sid:u32,section:u64},kind:u32,anchor:[u32;4]},\
      PlayerOverlay{Tracks(tab:i32),Info,Chapters,More(quality:bool)},\
      AltSources{host:u32,sid:u32,rk:str,anchor:[u32;4]},\
-     TracksPanel{page:i32},AboutPanel,PersonBio,AccountMenu,\
+     TracksPanel{page:i32},AboutPanel,PersonBio,CollectionAbout,AccountMenu,\
      ItemMenu{sid:u32,rk:str,kind:{Card{from_deck:bool,type:u32},Episode{mark:u32},Season{mark:u32}},\
      host:u32,focus:Option<{entry:u32,elem:u32}>,anchor:[u32;4],loaded_episode:bool,from_home:bool}}";
 
@@ -1414,6 +1449,7 @@ impl LogicalState for AppArg {
             // a replay. They are allocated forward, exactly as `ScreenId` is.
             Self::AboutPanel => { c.u32(10); }
             Self::PersonBio => { c.u32(11); }
+            Self::CollectionAbout => { c.u32(12); }
             // 8 and 9 rather than the 6/7 the profile and card menus carried on their own
             // branch: this canon tag is the surface's identity in a recorded state, so two
             // surfaces merged from two lanes may not share one. 4/5 are the library and player
@@ -1462,7 +1498,8 @@ impl crate::ui::screen::ScreenArg for AppArg {
             | AppArg::AltSources(_)
             | AppArg::TracksPanel(_)
             | AppArg::AboutPanel
-            | AppArg::PersonBio => Chrome::None,
+            | AppArg::PersonBio
+            | AppArg::CollectionAbout => Chrome::None,
         }
     }
     fn id(&self) -> ScreenId {
@@ -1478,6 +1515,7 @@ impl crate::ui::screen::ScreenArg for AppArg {
             // the screen that replaced it.
             AppArg::AboutPanel => 21,
             AppArg::PersonBio => 22,
+            AppArg::CollectionAbout => 24,
             // 19 and 20, not the 5 and 6 `Route::Account`/`Route::ItemMenu` vacated when this
             // phase deleted them, and not the 17/18 these two carried on their own branch: ids
             // are allocated forward here so a retired identity is never handed to the screen
@@ -1505,6 +1543,7 @@ impl crate::ui::screen::ScreenArg for AppArg {
             AppArg::Content(ContentArg::Detail { .. }) => 8,
             AppArg::Content(ContentArg::Person { .. }) => 9,
             AppArg::Content(ContentArg::Filmography { .. }) => 14,
+            AppArg::Content(ContentArg::Collection { .. }) => 23,
         })
     }
     fn title(&self) -> Option<&str> {
@@ -1583,7 +1622,7 @@ pub(crate) struct AppMounter {
 /// it for its own host exactly as the dispatcher instantiates everything else.
 impl<H> Mounter<H> for AppMounter
 where
-    H: crate::ui::machine::Host<Arg = AppArg> + HomeLike + LibraryLike + SearchLike + PlayerLike + AuthLike + PersonLike + MetadataLike,
+    H: crate::ui::machine::Host<Arg = AppArg> + HomeLike + LibraryLike + SearchLike + PlayerLike + AuthLike + PersonLike + CollectionLike + MetadataLike,
 {
     fn mount(
         &mut self,
@@ -1616,6 +1655,9 @@ where
             AppArg::PersonBio => Box::new(
                 crate::screens::person_bio::PersonBioScreen::new(entry),
             ),
+            AppArg::CollectionAbout => Box::new(
+                crate::screens::about_panel::AboutPanelScreen::collection(entry),
+            ),
             AppArg::Content(ContentArg::Detail { sid, rk }) => {
                 let mut page = crate::screens::detail::DetailScreen::new(entry, *sid, rk.clone(), H::hubs(cx));
                 // No `RequestDetail` push here: `DetailScreen`'s own `Enter(Fresh)` handler (fired
@@ -1642,6 +1684,12 @@ where
                 let mut page = crate::screens::filmography::FilmographyScreen::new(
                     entry, *sid, key.clone(), H::person(cx));
                 if let PageMemory::Filmography(memory) = &ret.memory { page.restore(memory, cx); }
+                Box::new(page)
+            }
+            AppArg::Content(ContentArg::Collection { sid, rk, sec, tag, name }) => {
+                let mut page = crate::screens::collection::CollectionScreen::new(
+                    entry, *sid, rk.clone(), *sec, *tag, name.clone());
+                if let PageMemory::Collection(memory) = &ret.memory { page.restore(memory); }
                 Box::new(page)
             }
             // the first-run Favourites screen is OWNED (§14: "retirement 5b Onboard"); the route
@@ -1767,6 +1815,7 @@ pub(crate) fn every_surface_arg() -> Vec<AppArg> {
         AppArg::TracksPanel(crate::screens::tracks_panel::TracksPanelArg { page: 1 }),
         AppArg::AboutPanel,
         AppArg::PersonBio,
+        AppArg::CollectionAbout,
         // The four panels are ONE screen with four kinds, and each answers a different
         // `Screen::name` — so every kind is listed, not one representative.
         AppArg::PlayerOverlay(PlayerOverlayArg { kind: OverlayKind::Tracks { tab: 0 } }),
@@ -1785,6 +1834,7 @@ pub(crate) fn every_surface_arg() -> Vec<AppArg> {
             | AppArg::TracksPanel(_)
             | AppArg::AboutPanel
             | AppArg::PersonBio
+            | AppArg::CollectionAbout
             | AppArg::PlayerOverlay(_)
             | AppArg::Settings(_)
             | AppArg::FirstRunConsent(_) => {}
@@ -1842,6 +1892,7 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
     crate::screens::detail::SHAPE,
     crate::screens::person::PersonScreen::SHAPE,
     crate::screens::filmography::FilmographyScreen::SHAPE,
+    crate::screens::collection::CollectionScreen::SHAPE,
     crate::screens::player::SHAPE,
     crate::screens::player::overlay::SHAPE,
     crate::screens::alt_sources::SHAPE[0],
@@ -1922,9 +1973,15 @@ pub(crate) const SCREEN_SHAPES: &[&str] = &[
 /// gains the provider-published listing key, keeping mixed-section hubs stable when their leading
 /// item changes libraries while still distinguishing section-specific rows. Recorded fixtures need
 /// `tools/plxnative-rec rerecord` like any other shape-pin bump before replay is trusted.
+///
+/// **Collection page** (`0x54b1_7d5f_d41a_2606` → this): `ARG_SHAPE` gains the Collection
+/// identity and the `CollectionAbout` summary sheet (the About panel over the collection store),
+/// `PAGE_MEMORY_SHAPE` gains its stable member interner, and `CollectionScreen::SHAPE`
+/// joins the inventory. Existing replay fixtures cannot name or restore this page and must be
+/// re-recorded before a collection transcript is trusted.
 #[cfg(test)]
 // Playback/account preference pages add their arguments and logical state to the inventory.
-const SCREEN_SHAPES_PIN: u64 = 0x54b17d5fd41a2606;
+const SCREEN_SHAPES_PIN: u64 = 0x44f2_b3ed_2851_659a;
 
 #[cfg(test)]
 mod arg_tests {
@@ -2002,6 +2059,10 @@ mod arg_tests {
                 sid: crate::plex::ServerId::UNSET, key: String::new(), guid: String::new(),
                 name: String::new(), thumb: String::new(),
             }),
+            AppArg::Content(crate::screens::registry::ContentArg::Collection {
+                sid: crate::plex::ServerId::UNSET, rk: String::new(), sec: 0, tag: 1,
+                name: String::new(),
+            }),
             AppArg::Login,
             AppArg::Profiles,
             AppArg::Onboard,
@@ -2012,5 +2073,60 @@ mod arg_tests {
                 "only the bar-wearing screens carry the profile chip"
             );
         }
+    }
+
+    #[test]
+    fn collection_content_arg_has_the_pinned_canonical_field_order() {
+        let sid = crate::plex::ServerId::from_raw(7);
+        let arg = ContentArg::Collection {
+            sid, rk: "50077".into(), sec: 8, tag: 77, name: "Fixture".into(),
+        };
+        let mut expected = Canon::new();
+        expected.u32(3).u32(7).str("50077").u64(8).u64(77).str("Fixture");
+        assert_eq!(arg.hash(), expected.finish());
+    }
+
+    #[test]
+    fn collection_identity_never_compares_a_tag_with_a_rating_key() {
+        let sid = crate::plex::ServerId::from_raw(2);
+        let by_rk = |rk: &str, tag| ContentArg::Collection {
+            sid, rk: rk.into(), sec: 4, tag, name: "A".into(),
+        };
+        assert!(by_rk("50077", 77).same_item(&by_rk("50077", 99)),
+            "two resolved arguments compare their ratingKey");
+        assert!(!by_rk("50077", 77).same_item(&by_rk("50078", 77)),
+            "different non-empty ratingKeys do not fall through to tag identity");
+        assert!(by_rk("", 77).same_item(&by_rk("", 77)),
+            "tag-only arguments compare server, section and non-zero tag");
+        assert!(!by_rk("", 0).same_item(&by_rk("", 0)), "zero is not a tag identity");
+        assert!(!by_rk("50077", 0).same_item(&by_rk("", 50077)),
+            "a ratingKey is never compared to a numeric tag id");
+    }
+
+    #[test]
+    fn the_collection_more_sheet_is_its_own_alert_surface() {
+        let (style, arg) = ContentPanel::CollectionAbout
+            .surface(crate::ui::machine::InstanceId(1), None)
+            .expect("a page with no item subject can still offer its summary");
+        assert!(matches!(style, crate::ui::containers::modal::Style::Alert));
+        assert!(matches!(arg, AppArg::CollectionAbout));
+        assert_ne!(arg.id(), AppArg::AboutPanel.id(),
+            "the Detail About sheet and the Collection summary are distinct surfaces");
+        assert_ne!(arg.hash(), AppArg::AboutPanel.hash());
+    }
+
+    #[test]
+    fn collection_is_its_own_page_identity() {
+        let a = AppArg::Content(ContentArg::Collection {
+            sid: crate::plex::ServerId::UNSET, rk: "50001".into(), sec: 1, tag: 1, name: "A".into(),
+        });
+        let b = AppArg::Content(ContentArg::Collection {
+            sid: crate::plex::ServerId::UNSET, rk: "50001".into(), sec: 1, tag: 9, name: "Renamed".into(),
+        });
+        assert_eq!(a.id(), ScreenId(23));
+        assert!(a.same_instance(&b));
+        assert!(!a.same_instance(&AppArg::Content(ContentArg::Detail {
+            sid: crate::plex::ServerId::UNSET, rk: "50001".into(),
+        })));
     }
 }

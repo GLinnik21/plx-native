@@ -22,7 +22,7 @@
 #                     the close, the launch, the triggers and the log all follow it.
 #
 # `up` options:
-#   --screen <name>   home (default) | profiles | library[=N] | detail=<rk> | person=<movie rk>
+#   --screen <name>   home (default) | profiles | library[=N] | detail=<rk> | collection=<rk> | person=<movie rk>
 #                     | player=<rk> | login | account | itemmenu
 #   --server <slot>   open detail=/player= on this registered Plex server slot instead of the
 #                     current one; boots through the signed-in stored roster so secondary slots
@@ -572,8 +572,8 @@ configure_direct_screen() {
     *) bad "--server must use canonical decimal (no leading zero), got: $server_slot"; return 2 ;;
   esac
   case "$screen" in
-    detail=*|player=*) ;;
-    *) bad "--server applies only to --screen detail=<rk> or player=<rk>"; return 2 ;;
+    detail=*|collection=*|player=*) ;;
+    *) bad "--server applies only to --screen detail=<rk>, collection=<rk>, or player=<rk>"; return 2 ;;
   esac
   direct_kind="${screen%%=*}"
   direct_rk="${screen#*=}"
@@ -733,6 +733,7 @@ cmd_up() {
     library)   files+=("plxnative-library="); want_route=library ;;
     library=*) files+=("plxnative-library=${screen#*=}"); want_route=library ;;
     detail=*)  files+=("plxnative-detail=${screen#*=}"); want_route=detail ;;
+    collection=*) files+=("plxnative-collection=${screen#*=}"); want_route=collection ;;
     # the person page has no boot trigger of its own — it is REACHED, by opening a movie's
     # detail page, walking focus down to Cast & Crew (a movie's second section) and pressing
     # OK on the first headshot. So the rk here is the MOVIE's, not the person's.

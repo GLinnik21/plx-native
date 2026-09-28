@@ -279,6 +279,7 @@ pub(super) fn activate_server_owned(
     bridge.search_run(crate::stores::search::SearchCmd::Reset);
     let _ = bridge.hubs_run(crate::stores::hubs::HubsCmd::Reset).changed;
     bridge.person_run(crate::stores::person::PersonCmd::Reset);
+    bridge.collection_run(crate::stores::collection::CollectionCmd::Reset);
     bridge.viewstate_run(crate::stores::viewstate::ViewStateCmd::Reset);
     bridge.metadata_run(crate::stores::metadata::MetadataCmd::Reset);
     let mut endpoints = bridge.hubs_run(crate::stores::hubs::HubsCmd::RefetchHubs).endpoints;
@@ -1159,6 +1160,7 @@ pub(crate) unsafe fn construct(
     let quality_tried = false;
     let quality_playing_since: Option<u32> = None;
     let detail_tried = false;
+    let collection_tried = false;
     let play_tried = false;
     let menu_tried = false;
     let menupick_tried = false;
@@ -1280,6 +1282,7 @@ pub(crate) unsafe fn construct(
             quality_tried,
             quality_playing_since,
             detail_tried,
+            collection_tried,
             content_boot: None,
             play_tried,
             play_await: None,

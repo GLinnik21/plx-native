@@ -142,3 +142,9 @@ state to the screen census. The prior anchors were observed being refused, then 
 freshly recorded against shape `13142456728797643905` and passed Targets and Resolve with zero
 difference counters. Account/preference I/O remains outside the controlled replay domain: typed
 preference effects are rejected by the bridge before capture, worker admission, or persistence.
+
+The collection page (#205) adds `AppArg`'s Collection argument, its page memory and the
+Collection screen's logical state to the screen census. The prior anchors were observed being
+refused (`replay: REFUSED — invalid or incompatible recording`, all three, both modes), then all
+three were re-recorded with `tools/plxnative-rec rerecord` against shape `7683106202277674285`
+and passed Targets and Resolve with zero difference counters.

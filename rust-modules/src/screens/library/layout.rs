@@ -8,17 +8,7 @@ pub(super) const COLS: usize = 6;
 const EPISODE_COLS: usize = 4;
 pub(super) const MAX_LIBRARY_PILLS: usize = 8;
 pub(super) const MAX_SHELVES: usize = 12;
-/// Only the focused and closing bands are represented, independent of catalog size.
-/// Sixteen spans more row moves than a complete spring at normal remote repeat speed.
-pub(super) const MAX_GRID_BANDS: usize = 16;
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(super) struct GridBand {
-    pub row: usize,
-    pub expansion: f32,
-}
-impl GridBand {
-    pub const CLOSED: Self = Self { row: usize::MAX, expansion: 0.0 };
-}
+pub(super) use crate::ui::poster_grid::{GridBand, MAX_GRID_BANDS};
 pub(super) const MAX_LETTERS: usize = 64;
 pub(super) const CONTENT_TOP: f32 = crate::ui::consts::GRID_TOP_Y;
 pub(super) const LIBRARY_ROW_H: f32 = crate::ui::widgets::StatusOverlay::CTRL_H + crate::ui::consts::CARD_DY + crate::ui::consts::TITLE_DY;

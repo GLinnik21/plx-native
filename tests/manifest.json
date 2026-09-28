@@ -190,6 +190,20 @@
       "_fps_ceiling_note": "This route had NO fps scene at all while it grew three clocks: a horizontal scroll spring for its department strip (tab_hscroll), a preview poster on its own settle timer (PV_SETTLE) and an Xfade for the swap. Only the spring reports to ui::idle for free. The ceiling is the direction that catches all three, because an animator that never reports done costs the whole present gate and trips no floor anywhere in the suite. 5 leaves room for a late preview poster landing. There is no FLOOR twin yet and that is a stated gap rather than an oversight: the strip has no oscillator trigger, and a scene with no motion grades nothing."
     },
     {
+      "name": "collection-page",
+      "tier": "ui",
+      "route": "collection",
+      "loop_floor": 50,
+      "run_secs": 20,
+      "warmup_s": 6,
+      "comment": "Direct Collection-page boot against mock_pms collection ratingKey 50001. The screen loads its header and ordered children through the real collection store and settles after artwork and scroll motion. Device baselines are not yet measured.",
+      "triggers": {
+        "plxnative-collection": 50001
+      },
+      "fps_ceiling": 5,
+      "_fps_ceiling_note": "The page settles; this guards a retry/spinner/scroll path reporting frames forever. Device baseline still owed."
+    },
+    {
       "name": "library-scroll",
       "tier": "ui",
       "route": "library",

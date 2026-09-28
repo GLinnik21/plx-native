@@ -33,6 +33,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
         // The filmography sheet answers `word::PERSON` too (`FilmographyScreen::name`): the test
         // manifest intentionally records that opaque modal as `route=person`.
         AppArg::Content(ContentArg::Person { .. } | ContentArg::Filmography { .. }) => "person",
+        AppArg::Content(ContentArg::Collection { .. }) => "collection",
         AppArg::Search => "search",
         AppArg::Player => "player",
         AppArg::Home => "home",
@@ -49,7 +50,8 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
         | AppArg::AltSources(_)
         | AppArg::TracksPanel(_)
         | AppArg::AboutPanel
-        | AppArg::PersonBio => "",
+        | AppArg::PersonBio
+        | AppArg::CollectionAbout => "",
     }
 }
 /// **Every PAGE argument, one per heartbeat word** — the domain [`route_word`] is applied over to DERIVE the
@@ -65,7 +67,7 @@ pub(crate) fn route_word(route: &AppArg) -> &'static str {
 /// holds one and asks about it. Its two readers are this module's word derivation and
 /// `app::bridge`'s argument tests, which used to keep a second copy of the same list.
 #[cfg(test)]
-pub(crate) fn every_route() -> [AppArg; 9] {
+pub(crate) fn every_route() -> [AppArg; 10] {
     use crate::screens::registry::ContentArg;
     let sid = crate::plex::ServerId::UNSET;
     [
@@ -77,6 +79,9 @@ pub(crate) fn every_route() -> [AppArg; 9] {
         AppArg::Content(ContentArg::Detail { sid, rk: String::new() }),
         AppArg::Content(ContentArg::Person {
             sid, key: String::new(), guid: String::new(), name: String::new(), thumb: String::new(),
+        }),
+        AppArg::Content(ContentArg::Collection {
+            sid, rk: String::new(), sec: 0, tag: 1, name: String::new(),
         }),
         AppArg::Search,
         AppArg::Player,

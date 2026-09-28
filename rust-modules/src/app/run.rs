@@ -2180,6 +2180,7 @@ pub(crate) unsafe fn update(app: &mut App, fr: &mut Frame) {
         let upgrades = app.plaintext_upgrade.due(fr.now);
         super::bridge::execute_endpoint_outcomes(&mut app.pages, upgrades);
         app.bridge.person_pump();
+        app.bridge.collection_pump();
         if let Some(target) = app.bridge.take_detail_refresh() {
             refresh_content(&mut app.pages, &mut app.bridge, target);
         }
@@ -2492,7 +2493,10 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                 AppArg::Library => crate::focusprobe::Screen::Library,
                 AppArg::Content(crate::screens::registry::ContentArg::Detail { .. }) =>
                     crate::focusprobe::Screen::Detail,
-                AppArg::Content(_) => crate::focusprobe::Screen::Person,
+                AppArg::Content(crate::screens::registry::ContentArg::Person { .. }
+                    | crate::screens::registry::ContentArg::Filmography { .. }) => crate::focusprobe::Screen::Person,
+                AppArg::Content(crate::screens::registry::ContentArg::Collection { .. }) =>
+                    crate::focusprobe::Screen::Collection,
                 AppArg::Search => crate::focusprobe::Screen::Search,
                 // The same words the heartbeat's `overlay=` uses, and — since phase 9 — from the
                 // same place: the SURFACE that is up. There is no second table; see
@@ -2512,7 +2516,8 @@ pub(crate) unsafe fn report(app: &mut App, fr: &mut Frame) {
                 | AppArg::AltSources(_)
                 | AppArg::TracksPanel(_)
                 | AppArg::AboutPanel
-                | AppArg::PersonBio => crate::focusprobe::Screen::Home,
+                | AppArg::PersonBio
+                | AppArg::CollectionAbout => crate::focusprobe::Screen::Home,
         };
         // The probe reads the OWNER, and answers the resting cursor when no player is mounted —
         // which is what every non-player screen used to read off `App`'s second copy.
@@ -2974,6 +2979,7 @@ mod lifecycle_regression_tests {
                 quality_tried: Default::default(),
                 quality_playing_since: Default::default(),
                 detail_tried: Default::default(),
+                collection_tried: Default::default(),
                 content_boot: Default::default(),
                 play_tried: Default::default(),
                 play_await: Default::default(),

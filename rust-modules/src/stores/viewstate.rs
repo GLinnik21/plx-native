@@ -71,13 +71,14 @@ impl ViewStateStore {
         browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
         hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> super::StoreOutcome,
         person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+        collection: &mut dyn FnMut(crate::stores::collection::CollectionCmd) -> bool,
         search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
         metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
     ) -> bool {
         if matches!(&cmd, ViewStateCmd::Reset) {
             self.adapter = Arc::new(Default::default());
         }
-        let answer = self.state.run(&self.adapter, cmd, browse, hubs, person, search, metadata);
+        let answer = self.state.run(&self.adapter, cmd, browse, hubs, person, collection, search, metadata);
         self.bump();
         answer
     }
@@ -89,12 +90,13 @@ impl ViewStateStore {
         browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
         hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> super::StoreOutcome,
         person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+        collection: &mut dyn FnMut(crate::stores::collection::CollectionCmd) -> bool,
         search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
         metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
     ) -> super::EndpointRefreshSet {
         let busy = self.state.is_busy();
         let endpoints = self.state.pump_with_gate(&self.adapter, gate,
-            browse, hubs, person, search, metadata);
+            browse, hubs, person, collection, search, metadata);
         if busy != self.state.is_busy() {
             self.bump();
         }
@@ -107,10 +109,11 @@ impl ViewStateStore {
         browse: &mut dyn FnMut(crate::stores::browse::BrowseCmd) -> bool,
         hubs: &mut dyn FnMut(crate::stores::hubs::HubsCmd) -> super::StoreOutcome,
         person: &mut dyn FnMut(crate::stores::person::PersonCmd) -> bool,
+        collection: &mut dyn FnMut(crate::stores::collection::CollectionCmd) -> bool,
         search: &mut dyn FnMut(crate::stores::search::SearchCmd) -> bool,
         metadata: &mut dyn FnMut(crate::stores::metadata::MetadataCmd) -> bool,
     ) -> super::EndpointRefreshSet {
-        self.pump_with_gate(crate::ui::landgate::fixture_gate(), browse, hubs, person, search,
+        self.pump_with_gate(crate::ui::landgate::fixture_gate(), browse, hubs, person, collection, search,
             metadata)
     }
 
