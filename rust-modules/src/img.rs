@@ -146,11 +146,14 @@ pub(crate) fn img_malloc_copy(rgba: &[u8], detail: impl FnOnce() -> String) -> *
     px
 }
 
-/// Encode RGBA as PNG, the format baked artwork is persisted in. `None` if the encoder refuses.
+/// Encode OPAQUE RGBA as an RGB PNG, the format baked artwork is persisted in: the alpha channel
+/// is dropped (a quarter of the pixels to deflate, none of them information) and
+/// [`img_decode_owned`] restores it as 255. `None` if the encoder refuses.
 pub(crate) fn img_encode_png(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
+    let rgb: Vec<u8> = rgba.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
     let mut out = Vec::new();
     let enc = image::codecs::png::PngEncoder::new(&mut out);
-    image::ImageEncoder::write_image(enc, rgba, w, h, image::ExtendedColorType::Rgba8).ok()?;
+    image::ImageEncoder::write_image(enc, &rgb, w, h, image::ExtendedColorType::Rgb8).ok()?;
     Some(out)
 }
 

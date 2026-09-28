@@ -293,6 +293,9 @@ impl Art<'_> {
 /// The size a landscape still is transcoded at — [`crate::ui::card_row::RowStyle::EPISODE`]'s tile,
 /// so the server scales once and the texture is 1:1 on the panel.
 const STILL_RES: (c_int, c_int) = (420, 236);
+/// The box a portrait poster card asks the transcoder for. The collection fan baker requests its
+/// members at this box too, so a member already fetched for a card is a disk hit, not a refetch.
+pub(crate) const POSTER_RES: (c_int, c_int) = (250, 375);
 
 /// **Which artwork a landscape tile draws, in order of preference.** The episode's own still, the
 /// show's backdrop, then the show's poster.
@@ -591,7 +594,7 @@ pub(crate) fn resolve_card_art(p: Painter, rect: Rect, art: &Art<'_>) -> (u32, f
     let _admission = art.motion_identity()
         .map(|id| crate::ui::card_motion::Scope::card(id, p.to_screen(rect).0));
     let image = match art {
-        Art::Poster(m) => m.map(|m| resolve_tex_wh_on(m.sid, &m.thumb, 250, 375, 0)).unwrap_or((0, 0.0, 0.0)),
+        Art::Poster(m) => m.map(|m| resolve_tex_wh_on(m.sid, &m.thumb, POSTER_RES.0, POSTER_RES.1, 0)).unwrap_or((0, 0.0, 0.0)),
         Art::Still(m) => m.map(|m| resolve_tex_wh_on(m.sid, still_key(m), STILL_RES.0, STILL_RES.1, 0)).unwrap_or((0, 0.0, 0.0)),
         Art::Thumb { sid, key, res } | Art::Person { sid, key, res } => resolve_tex_wh_on(*sid, key, res.0, res.1, 0),
     };
