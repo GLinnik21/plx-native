@@ -726,10 +726,12 @@ pub(crate) struct Stream {
     /// PMS `Stream.languageTag` — the BCP-47 tag ("es-419", "en-GB"), region and all, where
     /// `lang_code` is only the ISO-639 primary subtag. `metadata::track_label`'s region fallback
     /// is the one reader (a nameless track with a regional tag names the region instead of
-    /// nothing). `#[serde(default)]` for the same reason `plex::Stream::language_tag` is: the
-    /// replay fixture `tests/fixtures/replay/12-filmography-detail-return/rec-0000.jsonl`
-    /// serializes streams recorded before this field existed.
-    #[serde(default)]
+    /// nothing). This struct is a recorded wire value: controlled replay carries whole `Detail`s
+    /// (`metadata::record`), and `record::validate` refuses any reply that does not re-serialize
+    /// byte-for-byte. So an absent tag must stay absent both ways — `default` reads a recording
+    /// made before the field existed, `skip_serializing_if` keeps an empty tag off the wire so
+    /// that recording (fixture 12, whose mock server sends no `languageTag`) still round-trips.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) language_tag: String,
     pub(crate) codec: String,
     pub(crate) channels: i64,

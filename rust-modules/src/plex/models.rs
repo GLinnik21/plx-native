@@ -543,9 +543,7 @@ pub struct Stream {
     #[serde(rename = "languageCode", default)]
     pub language_code: String, // ISO-639 code, e.g. "eng" (route audio-track pick)
     /// The BCP-47 tag ("es-419", "en-GB") — `language_code` is only the primary subtag.
-    /// `#[serde(default)]` because the replay fixture
-    /// `tests/fixtures/replay/12-filmography-detail-return/rec-0000.jsonl` serializes streams
-    /// recorded before this field existed.
+    /// `default` because PMS omits it on a stream with no language.
     #[serde(rename = "languageTag", default)]
     pub language_tag: String,
     // Video stream only: source fps for the Load esInfo. Lenient (number OR numeric string)
