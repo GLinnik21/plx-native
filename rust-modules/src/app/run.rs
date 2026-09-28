@@ -467,6 +467,10 @@ pub(crate) fn rig_clear_opaque_region() {
     crate::system::clear_opaque_region();
 }
 
+/// One idle iteration's font-warming slice: a key pressed during it waits at most this long more
+/// than the idle poll already makes it wait.
+const FONT_WARM_SLICE_US: u64 = 2_000;
+
 /// **Draw, capture, swap — or sleep one frame period** (spec §3.3 step 10). Everything in here is
 /// inside the present gate's decision, which `prepare_window` has already taken into `fr.present`.
 unsafe fn present_and_swap(
@@ -547,6 +551,10 @@ unsafe fn present_and_swap(
         }
     } else {
         app.instr.skip_present_phases();
+        // The one stretch of main-thread time nothing is waiting on: spend a bounded slice of it
+        // opening the theme faces and loading their glyph metrics (`text::warm_fonts_idle`), so
+        // a page's first layout does not pay for them inside a transition. A no-op once warm.
+        crate::text::warm_fonts_idle(FONT_WARM_SLICE_US, crate::diag::heartbeat::now_us);
         // Device and macOS presented frames block in swap; WSLg/X11 presented frames use the
         // software budget above. A skipped frame reaches neither path, so sleep here to keep a
         // settled screen from becoming a CPU spinner.
